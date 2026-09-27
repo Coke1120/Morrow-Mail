@@ -28,16 +28,14 @@ writeFileSync(join(directory, 'update-manifest.sig'), signature);
 expected.push('update-manifest.json', 'update-manifest.sig');
 const notes = `Morrow Mail ${version}
 
-A Today dashboard, background indexing navigation and a more flexible native mail workspace. Both packages are built from this same Git tag and pass the paired checks before publication.
+A native cold-start layout correction, retaining the Today dashboard and background indexing navigation from beta.10. Both packages are built from this same Git tag and pass the paired checks before publication.
 
-What changed since 0.6.0-beta.9:
-- Move Workspace above All accounts and add Today in both clients, showing downloaded mailbox totals and existing per-account summaries for your local day. Summary History opens AI Studio; opening the dashboard does not start AI.
-- Keep reviewed embedding batches running when leaving Search/Model or closing Settings. Progress remains in Activity; pending requests, unsaved edits and duplicate starts retain their guards.
-- Remove the native title/toolbar band. Place the sidebar toggle beside Morrow, Compose in the sidebar, Sync beside View/Sort and Expand/Restore in the reader. Allow wider sidebar/list panes and add layouts to the macOS View menu.
-- Fix native scrolling over formatted mail while preserving HTML isolation, external-image consent and link review.
-- Stop describing every OAuth refresh failure as expired consent. Distinguish temporary network/provider failures, app configuration errors and authorization requiring reconnect; preserve saved credentials and rotated refresh tokens.
-- Show safe embedding HTTP, input/response and vector errors without exposing provider response bodies. Completed valid entries remain. OpenAI-compatible and Ollama multi-message/chunk fixtures pass; model-specific limits, quota and availability still apply. No automatic paid retries are added.
-- Preserve the Rust desktop service, account-bound drafts, reviewed provider operations, encrypted settings, backup and signed updater contracts.
+What changed since 0.6.0-beta.10:
+- Fix the sidebar sometimes occupying half a restored window on cold launch. Set its starting position after the native split view is attached and laid out, without resetting later user resizing.
+- Add native regression checks for delayed attachment, narrow/wide windows, bottom reading and adjusted dividers. The delayed-attachment check fails the beta.10 implementation and passes this correction.
+- Retain Workspace above All accounts, Today, background reviewed indexing, View-menu layouts and formatted-mail scrolling from beta.10.
+- Retain safe OAuth and embedding diagnostics. A successful short embedding probe does not establish that all model input limits, quota and service availability requirements are satisfied. No automatic paid retries are added.
+- Preserve the Rust desktop service, account-bound drafts, reviewed provider operations, encrypted settings, backup and signed updater contracts. Published beta.10 binaries remain unchanged.
 
 CLI quick start:
 - macOS: '/Applications/Morrow Mail.app/Contents/Resources/morrow-service' cli --help

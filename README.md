@@ -64,6 +64,8 @@ This beta switches both desktop packages to the shared Rust service, adds bounde
 
 **0.6.0-beta.10** adds Today, background indexing navigation, adjustable native panes and View-menu layouts. OAuth errors distinguish temporary failures from required reauthorization, and embedding errors identify safe HTTP/response causes without exposing provider response text. See the [changelog](CHANGELOG.md).
 
+**0.6.0-beta.11** fixes the beta.10 cold-start sidebar occasionally occupying half a restored window. Native panes remain freely adjustable.
+
 ## In-place mail assistance
 
 **Summarize**, **Suggest Reply** and **Translate** open a popup over the selected message. You can review or copy the result; **Use in Draft** creates a reply from that message’s original account. AI Studio remains available for broader tools. No AI action sends mail automatically.

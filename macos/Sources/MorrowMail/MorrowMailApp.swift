@@ -60,6 +60,39 @@ struct MorrowMailApp: App {
 }
 #endif
 
+// Wait for the native pane to join its window and finish its first layout.
+// SwiftUI can update the representable before any split-view ancestor exists.
+struct InitialSplitPosition: NSViewRepresentable {
+    let position: CGFloat
+    init(_ position: CGFloat) { self.position = position }
+    func makeNSView(context: Context) -> Marker { Marker() }
+    func updateNSView(_ view: Marker, context: Context) { view.position = position }
+    final class Marker: NSView {
+        var position: CGFloat = 0
+        private var applied = false
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            needsLayout = true
+        }
+        override func layout() {
+            super.layout()
+            guard !applied, window != nil else { return }
+            var parent = superview
+            while let current = parent {
+                if let split = current as? NSSplitView {
+                    guard split.arrangedSubviews.count > 1,
+                          split.bounds.width > 0, split.bounds.height > 0 else { return }
+                    applied = true
+                    let initial = position
+                    DispatchQueue.main.async { [weak split] in split?.setPosition(initial, ofDividerAt: 0) }
+                    return
+                }
+                parent = current.superview
+            }
+        }
+    }
+}
+
 struct ReadingLayoutCommands: Commands {
     @ObservedObject var model: AppModel
     @AppStorage("mailReaderLayout") private var layout = "right"

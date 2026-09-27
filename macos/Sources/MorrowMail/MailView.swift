@@ -81,7 +81,7 @@ struct MailWorkspace: View {
         // Keep the reader in the same container when layouts change, including its AI task state.
         HSplitView {
             if layout == "right" || (layout == "focus" && model.current == nil) {
-                messageList.frame(minWidth: 260, idealWidth: 320).background(InitialSplitPosition(320))
+                messageList.frame(minWidth: 260, idealWidth: 320)
             }
             VSplitView {
                 if layout == "bottom" { messageList.frame(minHeight: 160, idealHeight: 240).background(InitialSplitPosition(240)) }
@@ -260,30 +260,6 @@ struct MailWorkspace: View {
             Button { if error { model.error = "" } else { model.notice = "" } } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("Dismiss status")
         }.padding(12).background(.bar)
     }
-}
-
-// SwiftUI split views otherwise divide unrestricted panes equally on creation.
-// Set only the starting divider; subsequent dragging is entirely native.
-private struct InitialSplitPosition: NSViewRepresentable {
-    let position: CGFloat
-    init(_ position: CGFloat) { self.position = position }
-    func makeNSView(context: Context) -> NSView { NSView() }
-    func makeCoordinator() -> Coordinator { Coordinator() }
-    func updateNSView(_ view: NSView, context: Context) {
-        DispatchQueue.main.async {
-            guard !context.coordinator.applied else { return }
-            var parent = view.superview
-            while let current = parent {
-                if let split = current as? NSSplitView, split.subviews.count > 1 {
-                    split.setPosition(position, ofDividerAt: 0)
-                    context.coordinator.applied = true
-                    return
-                }
-                parent = current.superview
-            }
-        }
-    }
-    final class Coordinator { var applied = false }
 }
 
 struct MessageReader: View {

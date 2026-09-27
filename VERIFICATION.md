@@ -1,5 +1,26 @@
 # Verification — 27 September 2026
 
+## 0.6.0-beta.11 local preparation
+
+Postpublication startup inspection found that beta.10's asynchronous representable update could run before a native split-view ancestor existed, leaving the sidebar at half of a restored large window. Initialization now waits for window attachment and native layout, sets only the initial divider, and never falls through an incomplete inner split to an outer one. The mail list retains native flexible sizing; the sidebar and bottom-list starting sizes are set independently.
+
+The delayed-ancestor native regression fails the beta.10 implementation and passes the correction. Checks also cover 1040/1877-point windows, bottom layout and manually adjusted dividers without a later model refresh. An isolated optimized production SwiftUI app (actual MorrowMailApp entry point, released Rust service, unique bundle/workspace and fictional cached mail) starts at a 230-point sidebar, restores a large window after quit/relaunch with the same initial sidebar width, and preserves a manual 400-point width when navigating to Today. No live provider/model request was made by these fixtures.
+
+`npm run macos:test` and `CARGO_INCREMENTAL=0 npm run macos:rust:test` passed, including full SwiftUI compilation, the split/window/WebKit checks, Node native integration and the production Rust native lifecycle/mail/draft/backup harness. Release publication still requires the unchanged paired CI gates.
+
+## 0.6.0-beta.10 paired prerelease
+
+[beta.10](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.10) was published at 2026-09-27T04:38:49Z from `fccfcbcb231a53935402b282353aaf38dc232476`. All five platform jobs and the publisher in [tag CI 36293293433](https://github.com/Coke1120/Morrow-Mail/actions/runs/36293293433) passed. Both desktop pipelines passed actual upgrade/restart/backup acceptance; the redundant main run was cancelled while the tag retained every required gate.
+
+All six public assets were downloaded. The pinned Ed25519 signature, sizes, SHA-256/checksum files, archive paths and Rust/version/OAuth/notices metadata passed. Both packages contain no separate Node backend or private workspace data. The public Mac app passed deep/strict ad-hoc codesign, plist, service version and CLI checks. Isolated live GitHub checks using the published beta.9 and beta.10 services correctly report beta.10 available and up to date respectively; no mail/model endpoint was contacted.
+
+| Public archive | Bytes | SHA-256 |
+| --- | ---: | --- |
+| macOS arm64 | 11,218,121 | `88fcd35ac96995e6fbb5323ba78b5909888fd230076ca46415580f88f55474bb` |
+| Windows x64 | 167,920,967 | `df6921d44031554cd47708cf5a84c82883587d4af0bd055832d83f3ff12782c1` |
+
+The cold-start sidebar issue found after publication is corrected separately in beta.11; beta.10 assets remain unchanged. Existing ad-hoc signing, unsigned Windows and incomplete live-model/provider acceptance limitations apply.
+
 ## 0.6.0-beta.10 local preparation
 
 Both clients permit navigation away from Search/Model and closing Settings after a reviewed indexing start request returns. The service continues the batch while Morrow runs; Activity and reopening Search show progress. Pending save/test/start requests, unsaved forms and conflicting starts retain their guards. The loopback HTTP regression verifies 202 acceptance, progress with no settings polling, completion of the same job and duplicate-start rejection without extra model calls.
