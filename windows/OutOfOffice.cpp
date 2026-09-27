@@ -17,7 +17,7 @@ namespace {
 struct OfficePage;
 using Page = std::shared_ptr<OfficePage>;
 enum class Operation { Refresh, Save, Disable, Consent, Webmail };
-fire_and_forget operate(Page p, Operation operation);
+IAsyncAction operate(Page p, Operation operation);
 
 void require(bool condition, wchar_t const* message) {
     if (!condition) throw hresult_error(E_INVALIDARG, message);
@@ -425,7 +425,7 @@ IAsyncAction perform(Page p, Operation operation) {
         p->tell(disable ? L"Automatic replies disabled. Provider templates were retained." : L"Automatic reply settings saved by the provider.");
     }
 }
-fire_and_forget operate(Page p, Operation operation) {
+IAsyncAction operate(Page p, Operation operation) {
     if (!p->connected() || p->busy || p->shell->dialogOpen) co_return;
     p->busy = true; p->shell->dirty.insert(p->busyKey); p->shell->navigation.IsEnabled(false); p->update();
     p->tell(operation == Operation::Refresh ? L"Reading provider settings…" : L"");
@@ -459,7 +459,7 @@ IAsyncAction outOfOfficePage(std::shared_ptr<Shell> shell) {
     root.Children().Append(p->notice); root.Children().Append(p->body);
     root.Unloaded([p](auto const&, auto const&) { p->dispose(); });
     shell->show(scroll(root));
-    if (p->connected()) operate(p, Operation::Refresh);
+    if (p->connected()) co_await operate(p, Operation::Refresh);
     co_return;
 }
 }

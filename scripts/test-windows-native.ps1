@@ -366,13 +366,48 @@ try {
                 $crashCapture = New-CrashCapture
             }
             $process = [Diagnostics.Process]::Start($ui)
-            $startupDiagnostics = $process.StandardError.ReadToEndAsync()
-            Require ($process.WaitForExit(180000)) 'Native UI fixture did not finish within 180 seconds.'
-            $diagnostics = $startupDiagnostics.GetAwaiter().GetResult()
-            $safeStartup = '^Native startup: [A-Za-z0-9 .(),:_-]{1,120}$|^Native (startup|XAML) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native startup (constructor|OnLaunched) \((installing unhandled exception handler|reading application resources|reading merged dictionaries|constructing control resources|appending control resources)\) HRESULT: 0x[0-9A-Fa-f]{8}$'
-            $diagnostics = (($diagnostics -split '\r?\n') | Where-Object { $_ -cmatch $safeStartup } | Select-Object -Last 20) -join "`n"
+            $startupDiagnostics = $process.StandardError.ReadLineAsync()
+            $completed = $process.WaitForExit(180000)
+            if (-not $completed) {
+                # Only the UI process launched above, never a name-based/tree kill.
+                try { if (-not $process.HasExited) { $process.Kill() }; [void] $process.WaitForExit(5000) }
+                catch { Write-Warning 'Timed-out fixture UI termination could not be confirmed.' }
+            }
+            $safeStartup = '^Native startup: [A-Za-z0-9 .(),:_-]{1,120}$|^Native (startup|XAML) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native startup (constructor|OnLaunched) \((installing unhandled exception handler|reading application resources|reading merged dictionaries|constructing control resources|appending control resources)\) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native smoke: [a-z-]{1,64}$'
+            $safeLines = [Collections.Generic.List[string]]::new()
+            $stderrDeadline = [Environment]::TickCount64 + 2000
+            try {
+                for ($lineIndex = 0; $lineIndex -lt 256; $lineIndex++) {
+                    $remaining = [Math]::Max(0, $stderrDeadline - [Environment]::TickCount64)
+                    if (-not $startupDiagnostics.Wait([int] $remaining)) { break }
+                    $line = $startupDiagnostics.GetAwaiter().GetResult()
+                    if ($null -eq $line) { break }
+                    if ($line.Length -le 256 -and $line -cmatch $safeStartup) { $safeLines.Add($line) }
+                    $startupDiagnostics = $process.StandardError.ReadLineAsync()
+                }
+            } catch { Write-Warning 'Fixture stderr collection was incomplete; only validated phases are retained.' }
+            $diagnostics = ($safeLines | Select-Object -Last 20) -join "`n"
             if ($diagnostics.Length -gt 1024) { $diagnostics = $diagnostics.Substring($diagnostics.Length - 1024) }
             if ($diagnostics) { Write-Host $diagnostics }
+            if (-not $completed) {
+                try {
+                    Require (Test-Path -LiteralPath (Join-Path $case.path 'disposable-native-fixture')) 'Timeout evidence requires a marked fixture.'
+                    $evidence = Join-Path $root 'test-results'
+                    [void] (New-Item -ItemType Directory -Force $evidence)
+                    $phase = @($safeLines | Where-Object { $_ -cmatch '^Native smoke: [a-z-]{1,64}$' } | Select-Object -Last 1) -join ''
+                    $timeout = @{ ok = $false; mode = $case.mode; timedOut = $true; phase = $phase; diagnostics = $diagnostics } | ConvertTo-Json -Compress
+                    [IO.File]::WriteAllText((Join-Path $evidence "windows-native-ui-$caseIndex-timeout.json"), $timeout, [Text.UTF8Encoding]::new($false))
+                    if (Test-Path -LiteralPath $resultFile -PathType Leaf) {
+                        $record = Get-Item -LiteralPath $resultFile
+                        Require (-not ($record.Attributes -band [IO.FileAttributes]::ReparsePoint)) 'Fixture result must be a regular file.'
+                        $reader = [IO.BinaryReader]::new([IO.File]::Open($resultFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite))
+                        try { $bytes = $reader.ReadBytes(16385) } finally { $reader.Dispose() }
+                        Require ($bytes.Length -gt 0 -and $bytes.Length -le 16384) 'Fixture result exceeds the diagnostic limit.'
+                        [IO.File]::WriteAllBytes((Join-Path $evidence "windows-native-ui-$caseIndex.json"), $bytes)
+                    }
+                } catch { Write-Warning 'Some optional timeout evidence could not be retained; the timeout remains a failure.' }
+                throw 'Native UI fixture did not finish within 180 seconds.'
+            }
             if ($process.ExitCode -ne 0) {
                 $exitCode = $process.ExitCode
                 Write-Host ('Native UI exit code: {0} (0x{1:X8})' -f $exitCode, ($exitCode -band 0xffffffffL))
@@ -398,8 +433,9 @@ try {
 } finally {
     Restore-CrashCapture $crashCapture
     if ($process) {
-        if (-not $process.HasExited) { $process.Kill(); $process.WaitForExit() }
-        $process.Dispose()
+        try { if (-not $process.HasExited) { $process.Kill(); [void] $process.WaitForExit(5000) } }
+        catch { Write-Warning 'Fixture process cleanup could not be confirmed.' }
+        finally { $process.Dispose() }
     }
     $client.Dispose()
     foreach ($path in $fixtures) { Remove-Item -LiteralPath $path -Recurse -Force }
