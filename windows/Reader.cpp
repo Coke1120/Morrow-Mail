@@ -2,6 +2,7 @@
 #include "Ui.h"
 #include <winrt/Microsoft.Web.WebView2.Core.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
+#include <winrt/Windows.Security.Cryptography.h>
 #include <winrt/Windows.Storage.Streams.h>
 #include <winrt/Windows.System.h>
 #include <winhttp.h>
@@ -22,6 +23,38 @@ namespace {
 constexpr size_t maxImageBytes = 8 * 1024 * 1024;
 constexpr size_t maxMessageImageBytes = 16 * 1024 * 1024;
 constexpr unsigned maxImages = 16;
+constexpr size_t maxDocumentBytes = 2 * 1024 * 1024;
+constexpr size_t maxDocumentBase64 = ((maxDocumentBytes + 2) / 3) * 4;
+constexpr std::wstring_view htmlBase64Prefix = L"data:text/html;base64,";
+constexpr std::wstring_view htmlUtf8Base64Prefix = L"data:text/html;charset=utf-8;base64,";
+
+hstring documentBase64(hstring const& content) {
+    if (content.empty() || content.size() > maxDocumentBytes) return {};
+    try {
+        using namespace Windows::Security::Cryptography;
+        auto bytes = CryptographicBuffer::ConvertStringToBinary(content, BinaryStringEncoding::Utf8);
+        if (bytes.Length() > maxDocumentBytes) return {};
+        return CryptographicBuffer::EncodeToBase64String(bytes);
+    } catch (hresult_error const&) { return {}; }
+}
+bool matchesDocument(hstring const& uri, hstring const& expectedBase64) {
+    if (expectedBase64.empty() || expectedBase64.size() > maxDocumentBase64
+        || uri.size() > maxDocumentBase64 + htmlUtf8Base64Prefix.size()) return false;
+    if (uri == L"about:blank") return true;
+    auto value = std::wstring_view(uri);
+    // Compare the host's canonical UTF-8 Base64 directly. No arbitrary data URI,
+    // alternate encoding, whitespace, fragment, or malformed Base64 is accepted.
+    // Only the fixed header is ASCII case-insensitive; the payload is exact.
+    for (auto prefix : {htmlBase64Prefix, htmlUtf8Base64Prefix}) {
+        if (value.size() != prefix.size() + expectedBase64.size()) continue;
+        bool headerMatches = std::equal(prefix.begin(), prefix.end(), value.begin(), [](wchar_t expected, wchar_t actual) {
+            if (actual >= L'A' && actual <= L'Z') actual = static_cast<wchar_t>(actual + (L'a' - L'A'));
+            return actual == expected;
+        });
+        if (headerMatches && value.substr(prefix.size()) == std::wstring_view(expectedBase64)) return true;
+    }
+    return false;
+}
 
 std::wstring lower(hstring const& value) {
     std::wstring result(value);
@@ -142,7 +175,7 @@ struct Reader {
     // Observed initialization outcome only; these never relax reader policy.
     hresult initializationError{S_OK};
     bool runtimeUnavailable = false;
-    hstring viewOwner, account, messageId, html, serviceOrigin;
+    hstring viewOwner, account, messageId, html, serviceOrigin, expectedDocumentBase64;
     std::filesystem::path profilePath;
     bool active = true, ready = false, initializing = false, plain = false, images = false, hasImages = false;
     bool expectingDocument = false, imageReview = false;
@@ -178,6 +211,7 @@ struct Reader {
     void close() {
         cancelled->store(true);
         active = false; images = false; ready = false; ++epoch;
+        expectingDocument = false; expectedDocumentBase64 = {};
         if (auto target = view.get()) { try { target.Close(); } catch (hresult_error const&) {} }
         core = nullptr; environment = nullptr;
     }
@@ -193,7 +227,7 @@ struct Reader {
         fixtureState("render-request");
         if (!live() || !ready) return;
         cancelled->store(true); cancelled = std::make_shared<std::atomic_bool>(false);
-        ++epoch; expectingDocument = true;
+        ++epoch; expectingDocument = false; expectedDocumentBase64 = {};
         if (auto target = view.get()) {
             target.Visibility(plain ? xaml::Visibility::Collapsed : xaml::Visibility::Visible);
             if (auto text = fallback.get()) text.Visibility(plain ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
@@ -206,7 +240,12 @@ struct Reader {
                 : L"External images blocked. Scripts, forms, and embedded content are disabled.");
             // Switching to plain text cancels the HTML document and its pending
             // requests rather than merely hiding a still-networked surface.
-            target.NavigateToString(document(plain ? hstring{} : html, images && !plain));
+            auto content = document(plain ? hstring{} : html, images && !plain);
+            expectedDocumentBase64 = documentBase64(content);
+            if (expectedDocumentBase64.empty()) { fail(); return; }
+            expectingDocument = true;
+            try { target.NavigateToString(content); }
+            catch (hresult_error const&) { fail(); return; }
             fixtureState("render-returned");
         }
     }
@@ -310,10 +349,11 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
                 }
             }
             if (!page || !page->live()) return;
-            // Host API navigations also count as user initiated. The one-use
-            // HTML expectation, exact URI and redirect check identify our load.
-            if (page->expectingDocument && args.Uri() == L"about:blank" && !args.IsRedirected()) {
-                page->expectingDocument = false; page->documentId = args.NavigationId(); args.Cancel(false);
+            // NavigateToString may expose the HTML data URI in this event even
+            // though the resulting document has about:blank origin.
+            if (page->expectingDocument && !args.IsRedirected() && matchesDocument(args.Uri(), page->expectedDocumentBase64)) {
+                page->expectingDocument = false; page->expectedDocumentBase64 = {};
+                page->documentId = args.NavigationId(); args.Cancel(false);
             } else if (args.IsUserInitiated()) openLink(page, args.Uri());
             if (page->fixtureTraceBudget) {
                 --page->fixtureTraceBudget;
@@ -467,6 +507,7 @@ void checkFallback(std::shared_ptr<Reader> const& state, hstring const& body) {
 struct RuntimeProbe {
     unsigned requests = 0, messages = 0;
     bool resourceLeak = false, navigationLeak = false, callbackFailure = false, staleNavigation = false;
+    hstring expectedDocumentBase64;
 };
 struct RuntimeCleanup {
     std::shared_ptr<Shell> shell;
@@ -574,6 +615,7 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
         co_return result;
     }
     phase("isolation-settings");
+    runtimeCheck(!state->expectingDocument && state->expectedDocumentBase64.empty(), L"The reader retained a consumed HTML navigation expectation.");
     auto core = state->core; cleanup.core = core;
     auto settings = core.Settings();
     runtimeCheck(core.Profile().IsInPrivateModeEnabled() && !settings.IsScriptEnabled()
@@ -595,7 +637,10 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
         } catch (...) { probe->callbackFailure = true; if (auto page = weak.lock()) page->close(); }
     });
     cleanup.navigation = core.NavigationStarting([probe](auto const&, CoreWebView2NavigationStartingEventArgs const& args) {
-        if (args.Uri() == L"about:blank") return;
+        if (!args.IsRedirected() && matchesDocument(args.Uri(), probe->expectedDocumentBase64)) {
+            probe->expectedDocumentBase64 = {};
+            return; // Independently match the fixture's exact next HTML load.
+        }
         if (!args.Cancel()) probe->navigationLeak = true;
         if (args.Uri() == L"https://127.0.0.1:65534/morrow-reader-fixture/stale") probe->staleNavigation = true;
         args.Cancel(true);
@@ -609,9 +654,11 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
         L"<img id='reader-initial-image' src='https://127.0.0.1:65534/morrow-reader-fixture/initial.png' onerror=\"document.documentElement.dataset.readerHandler='ran'\">"
         L"<iframe src='https://127.0.0.1:65534/morrow-reader-fixture/initial-frame'></iframe>";
     phase("html-document");
+    probe->expectedDocumentBase64 = documentBase64(document(state->html, false));
     state->render();
     co_await runtimeWait([state] { return documentReady(state) || !state->active; }, deadline, L"html-document");
     runtimeCheck(state->live() && documentReady(state), L"The actual HTML reader failed to load its fixture document.");
+    runtimeCheck(state->expectedDocumentBase64.empty() && probe->expectedDocumentBase64.empty(), L"The HTML navigation expectation was not consumed exactly once.");
     phase("script-sentinel");
     auto initial = Json::Parse(co_await runtimeScript(core, LR"JS((() => ({
         mounted: !!document.getElementById('reader-fixture-body'),
@@ -674,9 +721,11 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
         L"Reader isolation leaked a request/message or invoked native image fetching without consent.");
     auto previousCancellation = state->cancelled;
     phase("plain-document");
+    probe->expectedDocumentBase64 = documentBase64(document({}, false));
     state->plainButton.get().IsChecked(true); // Execute the production toggle handler.
     co_await runtimeWait([state] { return documentReady(state) || !state->active; }, deadline, L"plain-document");
     runtimeCheck(state->live() && state->plain && previousCancellation->load(), L"Plain text did not cancel the previous HTML document.");
+    runtimeCheck(state->expectedDocumentBase64.empty() && probe->expectedDocumentBase64.empty(), L"Plain text retained an HTML navigation expectation.");
     checkFallback(state, text(fixture, L"body"));
     phase("plain-empty-assertion");
     auto empty = Json::Parse(co_await runtimeScript(core, L"({ empty: document.body.childElementCount === 0 && !document.getElementById('reader-fixture-body') })", deadline, L"plain-empty-assertion"));
@@ -692,7 +741,8 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     phase("unload-close");
     panel.Children().Clear(); // Actual mounted Unloaded -> production close().
     co_await runtimeWait([state] { return !state->active; }, deadline, L"unload-close");
-    runtimeCheck(!state->ready && !state->core && !state->environment && state->cancelled->load(), L"Unloading the reader did not close its browser and cancel work.");
+    runtimeCheck(!state->ready && !state->core && !state->environment && state->cancelled->load()
+        && !state->expectingDocument && state->expectedDocumentBase64.empty(), L"Unloading the reader did not close its browser and cancel work.");
     bool closed = false;
     phase("closed-script");
     try { co_await runtimeScript(core, L"({ unexpectedClosedExecution: true })", deadline, L"closed-script"); }
@@ -729,6 +779,34 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
 void readerSecurityChecks() {
     auto origin = hstring(L"http://127.0.0.1:38123");
     auto check = [](bool value) { if (!value) throw hresult_error(E_FAIL, L"Reader security contract failed."); };
+    check(documentBase64(L"Fixture \u4fe1\U0001F4E7") == L"Rml4dHVyZSDkv6Hwn5On");
+    auto expected = documentBase64(document(L"<p>Fixture \u4fe1\U0001F4E7</p>", false));
+    check(!expected.empty());
+    auto encodedUri = hstring(htmlBase64Prefix) + expected;
+    check(matchesDocument(encodedUri, expected));
+    check(matchesDocument(hstring(htmlUtf8Base64Prefix) + expected, expected));
+    check(matchesDocument(L"DATA:TEXT/HTML;BASE64," + expected, expected));
+    check(matchesDocument(L"data:text/html;charset=UTF-8;base64," + expected, expected));
+    check(matchesDocument(L"DaTa:TeXt/HtMl;ChArSeT=UtF-8;BaSe64," + expected, expected));
+    auto changedCase = std::wstring(expected);
+    auto letter = std::find_if(changedCase.begin(), changedCase.end(), [](wchar_t c) { return (c >= L'A' && c <= L'Z') || (c >= L'a' && c <= L'z'); });
+    check(letter != changedCase.end());
+    *letter = static_cast<wchar_t>(*letter >= L'a' ? *letter - (L'a' - L'A') : *letter + (L'a' - L'A'));
+    check(!matchesDocument(hstring(htmlUtf8Base64Prefix) + hstring(changedCase), expected));
+    check(matchesDocument(L"about:blank", expected));
+    check(!matchesDocument(encodedUri, {}));
+    check(!matchesDocument(L"about:blank", {}));
+    check(!matchesDocument(hstring(htmlBase64Prefix) + documentBase64(document(L"<p>Different mail</p>", false)), expected));
+    for (auto prefix : {L"https://example.invalid/", L"data:application/xhtml+xml;base64,", L"data:text/plain;base64,",
+        L"data:text/html;charset=utf-16;base64,", L"data:text/html,"}) check(!matchesDocument(hstring(prefix) + expected, expected));
+    for (auto invalid : {L"", L"about:blank/", L"about:blank#unexpected", L"data:text/html;base64,%%%", L"data:text/html;base64,AA=A"})
+        check(!matchesDocument(invalid, expected));
+    for (auto suffix : {L"=", L"\n", L"#unexpected", L"%00"}) check(!matchesDocument(encodedUri + suffix, expected));
+    check(!matchesDocument(hstring(htmlBase64Prefix) + hstring(std::wstring_view(expected).substr(0, expected.size() - 1)), expected));
+    check(!matchesDocument(hstring(std::wstring(maxDocumentBase64 + htmlUtf8Base64Prefix.size() + 1, L'A')), expected));
+    check(!matchesDocument(L"about:blank", hstring(std::wstring(maxDocumentBase64 + 1, L'A'))));
+    check(documentBase64(hstring(std::wstring(maxDocumentBytes + 1, L'A'))).empty());
+    check(documentBase64(hstring(std::wstring(maxDocumentBytes / 3 + 1, L'\u4fe1'))).empty());
     for (auto url : { L"https://example.invalid/mail", L"http://example.invalid/", L"mailto:person@example.invalid", L"tel:+85212345678" })
         check(allowedUrl(url, origin, false));
     for (auto url : { L"javascript:alert(1)", L"data:text/html,test", L"file:///C:/secret", L"ms-settings:privacy",
