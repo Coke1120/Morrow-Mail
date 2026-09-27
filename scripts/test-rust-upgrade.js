@@ -11,8 +11,6 @@ import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { createStore } from '../server/store.js';
-import { validatePackage } from '../server/update-installer.js';
 
 const mac = process.platform === 'darwin' && process.arch === 'arm64';
 const windows = process.platform === 'win32' && process.arch === 'x64';
@@ -20,7 +18,16 @@ if (!mac && !windows) throw new Error('Run Rust upgrade acceptance on macOS arm6
 const repository = fileURLToPath(new URL('../', import.meta.url));
 const platform = mac ? 'macos-arm64' : 'windows-x64';
 const rootName = mac ? 'Morrow Mail.app' : 'Morrow Mail-win32-x64';
-const candidate = resolve(repository, 'build', mac ? 'macos' : 'windows', rootName);
+const options = {};
+for (const argument of process.argv.slice(2)) {
+  const match = argument.match(/^--(candidate|compatibility-root)=(.+)$/);
+  if (!match || options[match[1]]) throw new Error('Use optional --candidate=PATH and --compatibility-root=PATH exactly once.');
+  options[match[1]] = resolve(match[2]);
+}
+const candidate = options.candidate || resolve(repository, 'build', mac ? 'macos' : 'windows', rootName);
+const compatibility = options['compatibility-root'] || repository;
+const { createStore } = await import(pathToFileURL(join(compatibility, 'server/store.js')).href);
+const { validatePackage } = await import(pathToFileURL(join(compatibility, 'server/update-installer.js')).href);
 const relativeBackend = mac ? 'Contents/Resources/backend' : 'resources/app/backend';
 const relativeUI = mac ? 'Contents/MacOS/MorrowMail' : 'Morrow Mail.exe';
 const relativeService = mac ? 'Contents/Resources/morrow-service' : 'resources/app/runtime/morrow-service.exe';
@@ -76,14 +83,14 @@ async function closeFixture() {
 try {
   const backend = join(target, relativeBackend);
   mkdirSync(backend, { recursive: true });
-  for (const name of ['server', 'shared']) cpSync(resolve(repository, name), join(backend, name), { recursive: true });
+  for (const name of ['server', 'shared']) cpSync(resolve(compatibility, name), join(backend, name), { recursive: true });
   mkdirSync(join(backend, 'rust/resources'), { recursive: true });
   cpSync(resolve(repository, 'rust/resources/catalog.json'), join(backend, 'rust/resources/catalog.json'));
   writeFileSync(join(backend, 'package.json'), JSON.stringify({ type: 'module', version: '0.0.1' }));
-  symlinkSync(resolve(repository, 'node_modules'), join(backend, 'node_modules'), windows ? 'junction' : 'dir');
+  symlinkSync(resolve(compatibility, 'node_modules'), join(backend, 'node_modules'), windows ? 'junction' : 'dir');
   const keys = generateKeyPairSync('ed25519');
   writeFileSync(join(backend, 'server/update-public-key.pem'), keys.publicKey.export({ type: 'spki', format: 'pem' }));
-  for (const file of ['updater.js', 'update-installer.js', 'update-trust.js', 'updates.js']) assert.equal(digest(join(backend, 'server', file)), digest(resolve(repository, 'server', file)));
+  for (const file of ['updater.js', 'update-installer.js', 'update-trust.js', 'updates.js']) assert.equal(digest(join(backend, 'server', file)), digest(resolve(compatibility, 'server', file)));
 
   const store = createStore(workspace);
   const draftOwner = 'disconnected-upgrade@example.invalid', requestId = randomUUID();

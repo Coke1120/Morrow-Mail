@@ -35,8 +35,34 @@ jobs:
         with:
           name: winui-candidate-${{ github.sha }}
           path: |
-            build/windows-native/artifacts/*.zip
+            build/windows-native/artifacts/*
             build/windows-native/*evidence*.json
             test-results/windows-native-*.json
           if-no-files-found: ignore
           retention-days: 3
+  historical-upgrade:
+    needs: native
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: 7ab30cbb3e496118513a98f8211ec66481e282c4
+          path: .compatibility/beta16
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '22'
+      - run: npm ci --ignore-scripts
+        working-directory: .compatibility/beta16
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: winui-candidate-${{ github.sha }}
+          path: candidate-artifacts
+      - name: Fixed historical installer to actual WinUI candidate
+        shell: pwsh
+        run: |
+          $archives = @(Get-ChildItem candidate-artifacts -Recurse -Filter '*-windows-x64.zip')
+          if ($archives.Count -ne 1) { throw 'Expected exactly one native candidate archive.' }
+          Expand-Archive -LiteralPath $archives[0].FullName -DestinationPath candidate
+          node scripts/test-rust-upgrade.js --candidate=candidate/'Morrow Mail-win32-x64' --compatibility-root=.compatibility/beta16

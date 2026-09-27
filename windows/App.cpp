@@ -12,6 +12,8 @@
 #include <winrt/Windows.Globalization.h>
 #include <fstream>
 
+#pragma comment(lib, "user32.lib")
+
 namespace morrow {
 using namespace winrt;
 using namespace Windows::Foundation;
