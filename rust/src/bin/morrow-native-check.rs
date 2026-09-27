@@ -9,10 +9,15 @@ use std::{
     env,
     error::Error,
     fs,
-    io::Read,
+    io::{Read, Write},
+    net::TcpListener,
     path::{Path, PathBuf},
     process::{Child, Command, ExitCode, Stdio},
-    sync::mpsc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -171,6 +176,161 @@ fn artifact(output: &str, name: &str) -> Result<PathBuf> {
         }
     }
     path.ok_or_else(|| format!("Cargo did not report the {name} executable.").into())
+}
+
+// Same loopback sentinel as scripts/test-email-reader.js. A TCP connection alone
+// also fails this check, so an incomplete resource request cannot escape counting.
+struct ReaderNetwork {
+    port: u16,
+    stop: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<std::io::Result<usize>>>,
+}
+impl ReaderNetwork {
+    fn start() -> Result<Self> {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+        listener.set_nonblocking(true)?;
+        let port = listener.local_addr()?.port();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        let worker = thread::spawn(move || {
+            loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        stream.set_read_timeout(Some(Duration::from_millis(100)))?;
+                        stream.set_write_timeout(Some(Duration::from_millis(100)))?;
+                        let mut ignored = [0u8; 4096];
+                        let _ = stream.read(&mut ignored);
+                        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\nConnection: close\r\n\r\nblocked content");
+                        // One connection already disproves network-zero; stop
+                        // without allowing unsolicited traffic to prolong cleanup.
+                        return Ok(1);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        // Drain connections queued before the child exited.
+                        if stopped.load(Ordering::Acquire) {
+                            return Ok(0);
+                        }
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        });
+        Ok(Self {
+            port,
+            stop,
+            worker: Some(worker),
+        })
+    }
+    fn finish(mut self) -> Result<()> {
+        self.stop.store(true, Ordering::Release);
+        let connections = self
+            .worker
+            .take()
+            .ok_or("Reader network observer missing.")?
+            .join()
+            .map_err(|_| "Reader network observer failed.")??;
+        check(
+            connections == 0,
+            "Email triggered an unsolicited loopback connection.",
+        )
+    }
+}
+impl Drop for ReaderNetwork {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn compile_check(root: &Path, fixture: &Path, name: &str, arguments: &[&str]) -> Result<PathBuf> {
+    let executable = fixture.join(name);
+    print!(
+        "{}",
+        capture(
+            command(root, "swiftc")
+                .args(["-target", "arm64-apple-macosx13.5"])
+                .args(arguments)
+                .arg("-o")
+                .arg(&executable),
+            180,
+            1024 * 1024
+        )?
+    );
+    Ok(executable)
+}
+
+fn existing_native_checks(root: &Path, fixture: &Path) -> Result<()> {
+    let workspace = fixture.join("auxiliary-workspace");
+    let models = compile_check(
+        root,
+        fixture,
+        "models-checks",
+        &[
+            "macos/Sources/MorrowMail/Models.swift",
+            "macos/Checks/main.swift",
+        ],
+    )?;
+    print!(
+        "{}",
+        capture(
+            command(root, models).env("MORROW_DATA_DIR", &workspace),
+            30,
+            1024 * 1024
+        )?
+    );
+
+    let reader = compile_check(
+        root,
+        fixture,
+        "reader-checks",
+        &[
+            "-parse-as-library",
+            "macos/Sources/MorrowMail/Models.swift",
+            "macos/Sources/MorrowMail/MessageBodyView.swift",
+            "macos/Checks/MessageHTML.swift",
+        ],
+    )?;
+    let network = ReaderNetwork::start()?;
+    print!(
+        "{}",
+        capture(
+            command(root, reader)
+                .arg(network.port.to_string())
+                .env("MORROW_DATA_DIR", &workspace),
+            30,
+            1024 * 1024
+        )?
+    );
+    network.finish()?;
+    println!("Native reader: zero unsolicited loopback connections.");
+
+    let window = compile_check(
+        root,
+        fixture,
+        "window-checks",
+        &[
+            "-D",
+            "MORROW_WINDOW_CHECKS",
+            "-parse-as-library",
+            "macos/Sources/MorrowMail/Models.swift",
+            "macos/Sources/MorrowMail/AppModel.swift",
+            "macos/Sources/MorrowMail/MorrowMailApp.swift",
+            "macos/Sources/MorrowMail/CalendarView.swift",
+            "macos/Checks/WindowAssertions.swift",
+        ],
+    )?;
+    print!(
+        "{}",
+        capture(
+            command(root, window).env("MORROW_DATA_DIR", &workspace),
+            30,
+            1024 * 1024
+        )?
+    );
+    Ok(())
 }
 
 fn service(root: &Path, existing: Option<&Path>) -> Result<PathBuf> {
@@ -377,6 +537,8 @@ fn run() -> Result<()> {
         Regex::new(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$")?.is_match(version),
         "Invalid common package version.",
     )?;
+    let fixture = Fixture::new()?;
+    existing_native_checks(root, &fixture.0)?;
     let binary = service(root, existing)?;
     check(
         capture(command(root, &binary).arg("--version"), 15, 4096)?.trim()
@@ -393,7 +555,6 @@ fn run() -> Result<()> {
             == "arm64",
         "Use the production macOS arm64 service.",
     )?;
-    let fixture = Fixture::new()?;
     let contents = fixture.0.join("Checks.app/Contents");
     let resources = contents.join("Resources");
     let backend = resources.join("backend");
@@ -468,7 +629,7 @@ fn run() -> Result<()> {
         "Native acceptance or backup replaced the original fixture encryption key.",
     )?;
     println!(
-        "Native acceptance passed: production Rust service, unchanged Swift client, Rust→Rust encrypted persistence and online backup, lifecycle and account isolation. Fictional data only; Node interoperability is covered separately by the historical harness."
+        "Native acceptance passed: existing Models, HTML reader/network-zero and WindowAssertions checks; production Rust service, unchanged Swift client, Rust→Rust encrypted persistence and online backup, lifecycle and account isolation. Fictional data only; Node interoperability is covered separately by the historical harness."
     );
     Ok(())
 }
@@ -486,6 +647,24 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reader_network_observer_rejects_unsolicited_traffic() {
+        ReaderNetwork::start().unwrap().finish().unwrap();
+        let observer = ReaderNetwork::start().unwrap();
+        let mut client =
+            std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, observer.port)).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        client
+            .write_all(b"GET /image HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(observer.finish().is_err());
+    }
 
     #[test]
     fn seed_retains_native_contract_and_exclusive_ownership() {

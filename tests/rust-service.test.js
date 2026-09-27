@@ -6,7 +6,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { createStore } from '../server/store.js';
+import { nodeCompatModule } from './node-compat.js';
+
+const { createStore } = await import(nodeCompatModule('server/store.js'));
 
 const enabled = process.env.MORROW_TEST_RUST === '1';
 const executable = resolve('rust/target/debug/morrow-service' + (process.platform === 'win32' ? '.exe' : ''));

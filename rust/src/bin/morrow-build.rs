@@ -2,11 +2,12 @@
 use morrow_search::oauth::{bundled_google_oauth, parse_google_oauth};
 use regex::Regex;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     env,
     error::Error,
     fs,
-    io::Read,
+    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, ExitCode, Stdio},
 };
@@ -166,7 +167,72 @@ fn plist(version: &str) -> String {
     )
 }
 
-fn macos(root: &Path) -> Result<()> {
+fn zip_names(version: &str) -> (String, &'static str) {
+    (
+        format!("Morrow-Mail-{version}-macos-arm64.zip"),
+        "SHA256SUMS-macos-arm64.txt",
+    )
+}
+
+fn ensure_absent(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+        Ok(_) => Err("Candidate release output already exists; choose a new run after preserving or removing that generated directory. Nothing was overwritten.".into()),
+    }
+}
+
+fn write_checksum(archive: &Path, checksum: &Path) -> Result<()> {
+    let mut file = fs::File::open(archive)?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 65536];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    let name = archive
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("Invalid archive filename.")?;
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(checksum)?;
+    writeln!(output, "{:x}  {name}", hash.finalize())?;
+    output.sync_all()?;
+    Ok(())
+}
+
+fn archive_candidate(root: &Path, application: &Path, release: &Path, version: &str) -> Result<()> {
+    // The dedicated directory must be newly created: ditto never receives an
+    // existing archive, and no historical build/release output is overwritten.
+    fs::create_dir(release)?;
+    let (archive_name, checksum_name) = zip_names(version);
+    let archive = release.join(archive_name);
+    run(command(root, "/usr/bin/ditto")
+        .args(["-c", "-k", "--sequesterRsrc", "--keepParent"])
+        .arg(application)
+        .arg(&archive))?;
+    write_checksum(&archive, &release.join(checksum_name))?;
+    println!(
+        "Packaged {} with its SHA-256 checksum. Local candidate only; nothing was published.",
+        archive.display()
+    );
+    Ok(())
+}
+
+fn zip_option(arguments: &[std::ffi::OsString]) -> Result<bool> {
+    match arguments {
+        [platform] if platform == "macos" => Ok(false),
+        [platform, flag] if platform == "macos" && flag == "--zip" => Ok(true),
+        _ => Err("Usage: morrow-build macos [--zip]".into()),
+    }
+}
+
+fn macos(root: &Path, zip: bool) -> Result<()> {
     if !cfg!(target_os = "macos") || env::consts::ARCH != "aarch64" {
         return Err(
             "Build the native macOS candidate on macOS arm64 with Apple's Swift tools.".into(),
@@ -180,6 +246,10 @@ fn macos(root: &Path) -> Result<()> {
         .unwrap_or_else(|| "-".into());
     let ad_hoc = identity == "-";
     let output = directory(&directory(root, "build")?, "macos-native")?;
+    let release = output.join("release");
+    if zip {
+        ensure_absent(&release)?;
+    }
 
     // Cargo reports actual executable locations, including a caller's target dir.
     let artifacts = capture(
@@ -341,19 +411,20 @@ fn macos(root: &Path) -> Result<()> {
             "Signed candidate; notarize before public distribution."
         }
     );
+    if zip {
+        archive_candidate(root, &application, &release, version)?;
+    }
     Ok(())
 }
 
 fn main() -> ExitCode {
     let result = (|| {
-        if !env::args().skip(1).eq(["macos"]) {
-            return Err("Usage: morrow-build macos".into());
-        }
+        let zip = zip_option(&env::args_os().skip(1).collect::<Vec<_>>())?;
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .ok_or("Missing repository root.")?
             .canonicalize()?;
-        macos(&root)
+        macos(&root, zip)
     })();
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -367,6 +438,33 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn zip_option_names_checksums_and_existing_outputs_are_exact() {
+        assert!(!zip_option(&["macos".into()]).unwrap());
+        assert!(zip_option(&["macos".into(), "--zip".into()]).unwrap());
+        assert!(zip_option(&["macos".into(), "--zip".into(), "other".into()]).is_err());
+        assert!(zip_option(&["windows".into()]).is_err());
+        let root = env::temp_dir().join(format!("morrow-archive-check-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let (name, checksum) = zip_names("0.6.0-beta.16");
+        assert_eq!(name, "Morrow-Mail-0.6.0-beta.16-macos-arm64.zip");
+        assert_eq!(checksum, "SHA256SUMS-macos-arm64.txt");
+        let archive = root.join(&name);
+        let checksum = root.join(checksum);
+        // Hash framing/no-overwrite check only; this is deliberately not a ZIP
+        // acceptance test or a substitute for a real ditto candidate run.
+        fs::write(&archive, b"abc").unwrap();
+        write_checksum(&archive, &checksum).unwrap();
+        let expected =
+            format!("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  {name}\n");
+        assert_eq!(fs::read_to_string(&checksum).unwrap(), expected);
+        assert!(write_checksum(&archive, &checksum).is_err());
+        assert_eq!(fs::read_to_string(&checksum).unwrap(), expected);
+        assert!(ensure_absent(&root).is_err());
+        assert!(ensure_absent(&archive).is_err());
+        assert!(ensure_absent(&root.join("missing")).is_ok());
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn package_values_and_system_library_boundary() {
         assert_eq!(

@@ -5,13 +5,17 @@ import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { createServer } from 'node:http';
-import { createStore } from '../server/store.js';
-import { createApp } from '../server/app.js';
-import { lexicalSearch, parseSearch } from '../server/search.js';
-import { createRustSearch, rustSearchExecutable } from '../server/rust-search.js';
-import { createSmartSearch } from '../server/smart-search.js';
-import { updatePolicy } from '../server/policy.js';
+import { nodeCompatModule } from './node-compat.js';
 
+const { createStore } = await import(nodeCompatModule('server/store.js'));
+const { createApp } = await import(nodeCompatModule('server/app.js'));
+const { lexicalSearch, parseSearch } = await import(nodeCompatModule('server/search.js'));
+const { createRustSearch, rustSearchExecutable } = await import(nodeCompatModule('server/rust-search.js'));
+const { createSmartSearch } = await import(nodeCompatModule('server/smart-search.js'));
+const { updatePolicy } = await import(nodeCompatModule('server/policy.js'));
+
+// The historical bridge finds its worker in that checkout's rust/target/release.
+// Stage the current candidate there; the version assertion below stays current.
 const available = existsSync(rustSearchExecutable);
 if (process.env.MORROW_TEST_RUST && !available) throw Error('Build the release Rust worker before the required contract checks.');
 const options = { skip: !available && 'Run npm run rust:test to build the development worker.' };

@@ -5,9 +5,11 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createStore } from '../server/store.js';
-import { normalizeSearch, searchTokens } from '../server/search-index.js';
-import { configs } from 'opencc-js/preset/t2cn';
+import { nodeCompatModule, nodeCompatPackage } from './node-compat.js';
+
+const { createStore } = await import(nodeCompatModule('server/store.js'));
+const { normalizeSearch, searchTokens } = await import(nodeCompatModule('server/search-index.js'));
+const { configs } = await import(nodeCompatPackage('opencc-js/preset/t2cn'));
 
 const executable = fileURLToPath(new URL(`../rust/target/debug/examples/storage_contract${process.platform === 'win32' ? '.exe' : ''}`, import.meta.url));
 const available = existsSync(executable);

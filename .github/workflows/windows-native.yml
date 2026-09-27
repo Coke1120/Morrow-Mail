@@ -43,15 +43,13 @@ jobs:
       - name: Build SwiftUI candidate and run native acceptance
         shell: bash
         run: |
-          /bin/sh scripts/build-macos-native.sh
+          /bin/sh scripts/build-macos-native.sh --zip
           cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-native-check -- --service "$PWD/build/macos-native/Morrow Mail.app/Contents/Resources/morrow-service"
-          mkdir -p build/macos-native/artifacts
-          /usr/bin/ditto -c -k --sequesterRsrc --keepParent 'build/macos-native/Morrow Mail.app' build/macos-native/artifacts/Morrow-Mail-native-macos-arm64.zip
       - name: Retain macOS candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: swiftui-candidate-${{ github.sha }}
-          path: build/macos-native/artifacts/*
+          name: morrow-macos-arm64
+          path: build/macos-native/release/*
           retention-days: 3
   native:
     runs-on: windows-2022
@@ -72,6 +70,20 @@ jobs:
         run: |
           rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
           rustup default 1.98.0
+      - name: Rust checks without Node
+        shell: pwsh
+        run: |
+          $env:PATH = (($env:PATH -split ';') | Where-Object {
+            $_ -and -not (Test-Path -LiteralPath (Join-Path $_ 'node.exe')) -and -not (Test-Path -LiteralPath (Join-Path $_ 'npm.cmd'))
+          }) -join ';'
+          if (Get-Command node,npm -ErrorAction SilentlyContinue) { throw 'Node/npm must not be available to native checks.' }
+          "PATH=$env:PATH" >> $env:GITHUB_ENV
+          cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Rust formatting failed.' }
+          cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Rust Clippy failed.' }
+          cargo test --manifest-path rust/Cargo.toml --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Rust tests failed.' }
       - name: Compile WinUI candidate
         shell: pwsh
         run: ./scripts/build-windows-native.ps1 -CompileOnly
@@ -82,6 +94,12 @@ jobs:
       - name: Native fixture walkthrough
         shell: pwsh
         run: ./scripts/test-windows-native.ps1 -UiSmoke
+      - name: Retain paired Windows candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: morrow-windows-x64
+          path: build/windows-native/artifacts/*
+          retention-days: 3
       - name: Cache completed Rust builds
         if: ${{ !cancelled() && steps.package.outcome == 'success' && steps.rust-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809
@@ -108,9 +126,9 @@ jobs:
       matrix:
         include:
           - os: windows-2022
-            artifact: winui-candidate
+            artifact: morrow-windows-x64
           - os: macos-15
-            artifact: swiftui-candidate
+            artifact: morrow-macos-arm64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -124,6 +142,13 @@ jobs:
           node-version: '22'
       - run: npm ci --ignore-scripts
         working-directory: .compatibility/beta16
+      - name: Restore Rust build cache
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: native-rust-${{ runner.os }}-${{ runner.arch }}-1.98.0-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml') }}
       - name: Fixed historical updater and sanitizer contracts
         shell: pwsh
         run: |
@@ -135,9 +160,25 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Historical updater validation failed.' }
           cargo test --manifest-path rust/Cargo.toml --locked --test message_html node_and_rust_share_safe_reader_semantics -- --ignored
           if ($LASTEXITCODE -ne 0) { throw 'Historical HTML semantics changed.' }
+      - name: Fixed historical storage, search and service contracts
+        shell: pwsh
+        run: |
+          $env:CARGO_INCREMENTAL = '0'
+          $env:MORROW_NODE_COMPAT_ROOT = (Resolve-Path .compatibility/beta16).Path
+          $env:MORROW_TEST_RUST = '1'
+          cargo build --manifest-path rust/Cargo.toml --locked --example storage_contract --bin morrow-service
+          if ($LASTEXITCODE -ne 0) { throw 'Compatibility service/example build failed.' }
+          cargo build --manifest-path rust/Cargo.toml --locked --release --bin morrow-search
+          if ($LASTEXITCODE -ne 0) { throw 'Compatibility search worker build failed.' }
+          $extension = if ($IsWindows) { '.exe' } else { '' }
+          $destination = Join-Path $env:MORROW_NODE_COMPAT_ROOT 'rust/target/release'
+          New-Item -ItemType Directory -Force $destination | Out-Null
+          Copy-Item "rust/target/release/morrow-search$extension" $destination
+          node --test tests/rust-search.test.js tests/rust-storage.test.js tests/rust-service.test.js
+          if ($LASTEXITCODE -ne 0) { throw 'Historical differential contracts failed.' }
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
-          name: ${{ matrix.artifact }}-${{ github.sha }}
+          name: ${{ matrix.artifact }}
           path: candidate-artifacts
       - name: Fixed historical installer to actual WinUI candidate
         if: runner.os == 'Windows'
@@ -152,5 +193,7 @@ jobs:
         shell: bash
         run: |
           mkdir candidate
-          /usr/bin/ditto -x -k candidate-artifacts/Morrow-Mail-native-macos-arm64.zip candidate
+          archives=(candidate-artifacts/Morrow-Mail-*-macos-arm64.zip)
+          test "${#archives[@]}" -eq 1 && test -f "${archives[0]}"
+          /usr/bin/ditto -x -k "${archives[0]}" candidate
           node scripts/test-rust-upgrade.js '--candidate=candidate/Morrow Mail.app' --compatibility-root=.compatibility/beta16

@@ -298,6 +298,7 @@ $handler.UseProxy = $false
 $handler.AllowAutoRedirect = $false
 $client = [Net.Http.HttpClient]::new($handler)
 $client.Timeout = [TimeSpan]::FromSeconds(15)
+$acceptanceFailure = $null
 try {
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = [Diagnostics.ProcessStartInfo]::new($service)
@@ -373,7 +374,7 @@ try {
                 try { if (-not $process.HasExited) { $process.Kill() }; [void] $process.WaitForExit(5000) }
                 catch { Write-Warning 'Timed-out fixture UI termination could not be confirmed.' }
             }
-            $safeStartup = '^Native startup: [A-Za-z0-9 .(),:_-]{1,120}$|^Native (startup|XAML) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native startup (constructor|OnLaunched) \((installing unhandled exception handler|reading application resources|reading merged dictionaries|constructing control resources|appending control resources)\) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native smoke: [a-z-]{1,64}$'
+            $safeStartup = '^Native startup: [A-Za-z0-9 .(),:_-]{1,120}$|^Native (startup|XAML) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native startup (constructor|OnLaunched) \((installing unhandled exception handler|reading application resources|reading merged dictionaries|constructing control resources|appending control resources)\) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native smoke: [a-z-]{1,64}$|^Native reader: [a-z-]{1,64} \+[0-9]{1,6} ms$|^Native reader: csp-state fetchRejected=[01] imagePolicy=[01] framePolicy=[01] connectPolicy=[01] imageComplete=[01]$'
             $safeLines = [Collections.Generic.List[string]]::new()
             $stderrDeadline = [Environment]::TickCount64 + 2000
             try {
@@ -430,6 +431,9 @@ try {
         }
         Write-Host 'Native fresh/owned/restart UI smoke passed; no live providers or sending were exercised.'
     }
+} catch {
+    $acceptanceFailure = $_
+    throw
 } finally {
     Restore-CrashCapture $crashCapture
     if ($process) {
@@ -438,5 +442,31 @@ try {
         finally { $process.Dispose() }
     }
     $client.Dispose()
-    foreach ($path in $fixtures) { Remove-Item -LiteralPath $path -Recurse -Force }
+    $cleanupFailed = $false
+    foreach ($path in $fixtures) {
+        try {
+            if (-not (Test-Path -LiteralPath $path)) { continue }
+            $item = Get-Item -LiteralPath $path
+            $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar)
+            Require ($item.PSIsContainer -and -not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+                [IO.Path]::GetDirectoryName($item.FullName) -ieq $tempRoot -and $item.Name -cmatch '^morrow-native-check-[0-9a-f]{32}$') 'Refusing cleanup outside an owned temporary fixture.'
+            $marker = Get-Item -LiteralPath (Join-Path $path 'disposable-native-fixture')
+            Require (-not $marker.PSIsContainer -and -not ($marker.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+                $marker.Length -le 64 -and [IO.File]::ReadAllText($marker.FullName) -ceq 'Morrow native acceptance fixture') 'Fixture cleanup marker does not match.'
+            # Verify ownership once: a partial recursive deletion can remove the
+            # marker before a WebView child releases its BrowserMetrics file.
+            for ($attempt = 0; $attempt -lt 5; $attempt++) {
+                try { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop; break }
+                catch {
+                    if (-not (Test-Path -LiteralPath $path)) { break }
+                    if ($attempt -eq 4) { throw }
+                    Start-Sleep -Milliseconds 1000
+                }
+            }
+        } catch {
+            $cleanupFailed = $true
+            Write-Warning 'Temporary fixture cleanup did not complete; no other processes were terminated.'
+        }
+    }
+    if ($cleanupFailed -and $null -eq $acceptanceFailure) { throw 'Native acceptance fixture cleanup failed.' }
 }
