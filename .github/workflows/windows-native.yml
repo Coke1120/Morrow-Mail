@@ -35,7 +35,7 @@ jobs:
         with:
           name: winui-candidate-${{ github.sha }}
           path: |
-            build/windows-native/*.zip
+            build/windows-native/artifacts/*.zip
             build/windows-native/*evidence*.json
             test-results/windows-native-*.json
           if-no-files-found: ignore

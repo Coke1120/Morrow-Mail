@@ -55,6 +55,7 @@ private:
     std::wstring token_, updateToken_;
     std::atomic_uint writes_ = 0;
     std::atomic_bool closing_ = false;
+    mutable std::mutex processMutex_;
     mutable std::mutex stateMutex_;
     void close();
     Json requestBlocking(winrt::hstring const& path, winrt::hstring const& owner,

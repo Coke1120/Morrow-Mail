@@ -116,7 +116,9 @@ try {
         $owned = New-Fixture
         & $helper seed $owned
         Require ($LASTEXITCODE -eq 0) 'Could not seed the isolated native mailbox.'
+        $caseIndex = 0
         foreach ($case in @(@{ path = $fixture; mode = 'fresh' }, @{ path = $owned; mode = 'owned' }, @{ path = $owned; mode = 'owned' })) {
+            $caseIndex++
             $resultFile = Join-Path $case.path 'native-smoke-result.json'
             if (Test-Path -LiteralPath $resultFile) { Remove-Item -LiteralPath $resultFile }
             $ui = [Diagnostics.ProcessStartInfo]::new($exe)
@@ -129,7 +131,10 @@ try {
             Require ($process.ExitCode -eq 0) 'Native UI smoke failed.'
             Require (Test-Path -LiteralPath $resultFile) 'Native UI did not report its completed smoke checks.'
             $result = Get-Content -LiteralPath $resultFile -Raw | ConvertFrom-Json
-            Require ($result.ok -eq $true -and $result.mode -ceq $case.mode) 'Native UI fixture assertions failed.'
+            $evidence = Join-Path $root 'test-results'
+            New-Item -ItemType Directory -Force $evidence | Out-Null
+            Copy-Item -LiteralPath $resultFile -Destination (Join-Path $evidence "windows-native-ui-$caseIndex.json")
+            Require ($result.ok -eq $true -and $result.mode -ceq $case.mode) "Native UI fixture assertions failed: $($result | ConvertTo-Json -Compress -Depth 4)"
             $process.Dispose(); $process = $null
             if ($case.mode -eq 'owned') {
                 & $helper verify $case.path

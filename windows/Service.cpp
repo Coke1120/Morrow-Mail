@@ -123,6 +123,7 @@ Service::~Service() { close(); SecureZeroMemory(token_.data(), token_.size() * s
 IAsyncAction Service::start() {
     auto lifetime = shared_from_this();
     co_await resume_background();
+    std::unique_lock processLock(processMutex_);
     require(process_ == nullptr && !closing_, L"The private service is already started or closing.");
     auto root = executable().parent_path();
     auto service = root / L"resources/app/runtime/morrow-service.exe";
@@ -162,8 +163,8 @@ IAsyncAction Service::start() {
     CloseHandle(child.hThread); process_ = child.hProcess; input_ = parentInput.release();
     CloseHandle(childOutput.release()); CloseHandle(childInput.release());
     Json config;
-    put(config, L"token", token_); put(config, L"updateToken", updateToken_);
-    put(config, L"dataDirectory", directory_.wstring());
+    put(config, L"token", hstring(token_)); put(config, L"updateToken", hstring(updateToken_));
+    put(config, L"dataDirectory", hstring(directory_.wstring()));
     config.Insert(L"parentPID", Value::CreateNumberValue(GetCurrentProcessId()));
     auto data = to_string(config.Stringify()) + "\n";
     DWORD written = 0;
@@ -171,7 +172,7 @@ IAsyncAction Service::start() {
     std::string response;
     auto deadline = GetTickCount64() + 20000;
     while (GetTickCount64() < deadline) {
-        require(alive(), L"The workspace could not open. Close any other Morrow Mail window and try again. Your saved data is retained.");
+        require(WaitForSingleObject(process_, 0) == WAIT_TIMEOUT, L"The workspace could not open. Close any other Morrow Mail window and try again. Your saved data is retained.");
         DWORD available = 0;
         require(PeekNamedPipe(parentOutput.value, nullptr, 0, nullptr, &available, nullptr), L"The private service closed before startup.");
         if (!available) { Sleep(20); continue; }
@@ -184,14 +185,16 @@ IAsyncAction Service::start() {
         auto port = ready.GetNamedNumber(L"port", 0);
         require(port >= 1 && port <= 65535 && port == static_cast<unsigned short>(port), L"Invalid private service port.");
         port_ = static_cast<unsigned short>(port);
+        processLock.unlock();
         requestBlocking(L"/health", {}, L"GET", Json(), false);
         co_return;
     }
     throw hresult_error(E_FAIL, L"Private service startup timed out. Your workspace has been retained.");
 }
-bool Service::alive() const { return process_ && WaitForSingleObject(process_, 0) == WAIT_TIMEOUT; }
+bool Service::alive() const { std::lock_guard lock(processMutex_); return process_ && WaitForSingleObject(process_, 0) == WAIT_TIMEOUT; }
 hstring Service::origin() const { return L"http://127.0.0.1:" + to_hstring(port_); }
 void Service::close() {
+    std::lock_guard lock(processMutex_);
     closing_ = true;
     if (input_) { CloseHandle(input_); input_ = nullptr; }
     if (process_) {
@@ -264,6 +267,7 @@ void Service::saveClientState(hstring const& key, hstring const& value) {
     require(key == L"morrow.mail.layout" || key == L"morrow.pendingCalendar" || key == L"morrow.calendar.checked" ||
         (std::wstring_view(key).starts_with(L"morrow.account.collapsed.") && key.size() <= 300), L"Unsupported desktop state key.");
     require(value.size() <= 32768, L"Saved desktop state exceeds its limit.");
+    require(key != L"morrow.mail.layout" || value == L"right" || value == L"bottom" || value == L"focus", L"Invalid reading layout.");
     std::lock_guard lock(stateMutex_);
     auto destination = directory_ / L"client-state.json";
     auto state = readJson(destination, 262144);

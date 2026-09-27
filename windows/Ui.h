@@ -23,6 +23,8 @@ struct Shell : std::enable_shared_from_this<Shell> {
     controls::TextBlock status{nullptr};
     controls::ListView rows{nullptr};
     controls::ContentControl reader{nullptr};
+    controls::Grid mailBody{nullptr};
+    xaml::UIElement mailDivider{nullptr};
     controls::TextBox search{nullptr};
     controls::ComboBox sorting{nullptr};
     controls::Button previous{nullptr}, next{nullptr};
@@ -31,10 +33,16 @@ struct Shell : std::enable_shared_from_this<Shell> {
     std::shared_ptr<Service> service;
     Json state;
     Json selected;
+    Json updateResult;
     winrt::hstring owner, folder = L"inbox", section = L"mail", nextCursor;
+    winrt::hstring mailLayout = L"right";
+    bool readerFocused = false;
+    double listWidth = 400, listHeight = 300;
     std::vector<winrt::hstring> cursors{L""};
     uint64_t generation = 0, selectionGeneration = 0;
     bool loading = false, closing = false, dialogOpen = false, selectingNavigation = false;
+    bool checkingUpdates = false, includePrereleases = true;
+    uint64_t lastUpdateCheck = 0;
     std::set<std::wstring> dirty;
     winrt::Windows::Foundation::IAsyncAction start();
     winrt::Windows::Foundation::IAsyncAction refresh(bool rebuildNavigation = false);
@@ -44,7 +52,10 @@ struct Shell : std::enable_shared_from_this<Shell> {
     winrt::Windows::Foundation::IAsyncAction patch(Json message, Json changes);
     winrt::Windows::Foundation::IAsyncAction prepare(Json message, winrt::hstring mode, winrt::hstring body = {});
     winrt::Windows::Foundation::IAsyncAction messageAI(Json message, winrt::hstring action, bool history = false);
+    winrt::Windows::Foundation::IAsyncAction organize(Json message);
     winrt::Windows::Foundation::IAsyncAction sync();
+    winrt::Windows::Foundation::IAsyncAction checkUpdates(bool force = false);
+    void updateBadge();
     winrt::Windows::Foundation::IAsyncAction shutdown();
     winrt::Windows::Foundation::IAsyncOperation<bool> confirm(winrt::hstring title, winrt::hstring detail, winrt::hstring accept = L"Continue");
     winrt::Windows::Foundation::IAsyncAction alert(winrt::hstring title, winrt::hstring detail);
@@ -55,6 +66,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     void show(xaml::UIElement const& content);
     void rebuildNavigation();
     void mailPage();
+    void applyMailLayout();
     void renderReader(Json const& message);
 };
 winrt::Windows::Foundation::IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft = Json());

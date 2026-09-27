@@ -52,6 +52,7 @@ struct Editor {
     Json value, saved;
     std::wstring key;
     StackPanel panel{nullptr};
+    ContentControl container{nullptr};
     PasswordBox secret{nullptr};
     bool loading = false, automatic = false, locked = false;
     std::map<std::wstring, TextBox> fields;
@@ -106,20 +107,20 @@ void Editor::edit() {
 }
 void Editor::update() {
     loading = true;
-    for (auto const& [key, control] : fields) {
-        auto item = get(value, key);
+    for (auto const& [path, control] : fields) {
+        auto item = get(value, path);
         control.Text(item && item.ValueType() == JsonValueType::String ? item.GetString() : L"");
     }
-    for (auto const& [key, control] : checks) {
-        auto item = get(value, key);
+    for (auto const& [path, control] : checks) {
+        auto item = get(value, path);
         control.IsChecked(item && item.ValueType() == JsonValueType::Boolean && item.GetBoolean());
     }
-    for (auto const& [key, control] : numbers) {
-        auto item = get(value, key);
+    for (auto const& [path, control] : numbers) {
+        auto item = get(value, path);
         if (item && item.ValueType() == JsonValueType::Number) control.Value(item.GetNumber());
     }
-    for (auto const& [key, control] : choices) {
-        auto item = get(value, key);
+    for (auto const& [path, control] : choices) {
+        auto item = get(value, path);
         if (!item) continue;
         for (uint32_t i = 0; i < control.Items().Size(); ++i) {
             auto entry = control.Items().GetAt(i).as<ComboBoxItem>();
@@ -141,7 +142,10 @@ Form form(Page const& p, StackPanel const& into, Json const& values, wchar_t con
     result->page = p; result->value = copy(values); result->saved = copy(values);
     result->key = L"settings:" + std::to_wstring(p->generation) + L":" + id;
     result->panel = stack(12); result->automatic = automatic;
-    into.Children().Append(result->panel); p->forms.push_back(result);
+    result->container = ContentControl();
+    result->container.HorizontalContentAlignment(xaml::HorizontalAlignment::Stretch);
+    result->container.Content(result->panel);
+    into.Children().Append(result->container); p->forms.push_back(result);
     return result;
 }
 void help(StackPanel const& panel, hstring const& detail) { panel.Children().Append(label(detail)); }
@@ -215,14 +219,14 @@ fire_and_forget run(Page p, std::function<IAsyncAction()> action) {
     if (!p->current() || p->busy || p->saving) co_return;
     p->busy = true; ++p->revision; p->shell->dirty.insert(p->busyKey);
     p->shell->navigation.IsEnabled(false);
-    for (auto const& f : p->forms) f->panel.IsEnabled(false);
+    for (auto const& f : p->forms) f->container.IsEnabled(false);
     p->tell(L"Working…");
     try { co_await action(); }
     catch (hresult_error const& error) { p->tell(error.message()); }
     catch (...) { p->tell(L"The operation could not finish. Your saved data is retained. Try again."); }
     p->shell->dirty.erase(p->busyKey); p->busy = false;
     if (!p->shell->closing) p->shell->navigation.IsEnabled(true);
-    if (p->current()) for (auto const& f : p->forms) f->panel.IsEnabled(!f->locked);
+    if (p->current()) for (auto const& f : p->forms) f->container.IsEnabled(!f->locked);
 }
 void action(Page const& p, StackPanel const& into, hstring const& caption,
     std::function<IAsyncAction(Page)> task) {
@@ -552,7 +556,7 @@ void models(Page const& p) {
         action(p, f->panel, embedding ? L"Test embedding connection" : L"Test chat connection", [f, embedding](Page page) { return modelAction(page, f, embedding, true); });
         action(p, f->panel, embedding ? L"Save embedding model" : L"Save chat model", [f, embedding](Page page) { return modelAction(page, f, embedding, false); });
         action(p, f->panel, L"Discard connection edits", [f](Page page) -> IAsyncAction { f->accept(f->saved); f->secret.IsEnabled(true); page->tell(L"Saved connection fields restored. Entered key discarded."); co_return; });
-        if (embedding && text(object(p->searchState, L"job"), L"status") == L"running") { f->locked = true; f->panel.IsEnabled(false); help(p->body, L"An indexing batch is running. Manage it in Search before editing its connection."); }
+        if (embedding && text(object(p->searchState, L"job"), L"status") == L"running") { f->locked = true; f->container.IsEnabled(false); help(p->body, L"An indexing batch is running. Manage it in Search before editing its connection."); }
     }
 }
 
@@ -593,7 +597,7 @@ void searchStatus(Page const& p, StackPanel const& status) {
     if (!flag(value, L"permitted")) help(status, L"Enable the required saved AI permissions before reviewing a batch.");
     for (auto const& f : p->forms) if (f->key.ends_with(L":search")) {
         f->locked = text(job, L"status") == L"running";
-        f->panel.IsEnabled(!p->busy && !f->locked);
+        f->container.IsEnabled(!p->busy && !f->locked);
     }
 }
 IAsyncAction indexAction(Page p, Form f, StackPanel status, hstring operation) {
@@ -732,8 +736,9 @@ void about(Page const& p) {
     action(p, p->body, L"Back up workspace…", [destination](Page page) -> IAsyncAction {
         std::filesystem::path path{std::wstring(destination.Text())};
         if (!path.is_absolute()) throw hresult_error(E_INVALIDARG, L"Choose an absolute backup destination.");
-        if (!(co_await page->shell->confirm(L"Create workspace backup?", path.wstring() + L"\nThe destination must not already exist. The backup contains private mail and its encryption key.", L"Create backup")) || !page->current()) co_return;
-        Json body; put(body, L"destination", path.wstring());
+        hstring destinationPath(path.wstring());
+        if (!(co_await page->shell->confirm(L"Create workspace backup?", destinationPath + L"\nThe destination must not already exist. The backup contains private mail and its encryption key.", L"Create backup")) || !page->current()) co_return;
+        Json body; put(body, L"destination", destinationPath);
         auto result = co_await page->shell->service->request(L"/backup", page->owner, L"POST", body, true);
         if (!flag(result, L"saved")) throw hresult_error(E_FAIL, L"The backup was not confirmed.");
         page->tell(L"Workspace backup created. Your running service remains available.");
