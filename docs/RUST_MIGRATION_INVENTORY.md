@@ -24,7 +24,7 @@ The approved [native migration plan](RUST_NATIVE_MIGRATION_PLAN.md) replaces the
 | Signed updates / installer | `updater.rs` | Unit and `updater.rs` fixtures; real TLS downloads, signatures/ZIP/hash/platform/version, cancellation, mailbox/calendar/index busy guards, both-process wait, restart/rollback |
 | Desktop hosts | SwiftUI `AppModel`, Electron `main.cjs` | Single-instance/start-stop ownership, private pipe startup, host-only update token, actual native Rust harness and packaged smoke |
 
-Rust implementation names above are relative to `rust/src/`; Rust test names are relative to `rust/tests/`. Existing acceptance describes the current clients and service, not a future WinUI host.
+Rust implementation names above are relative to `rust/src/`; Rust test names are relative to `rust/tests/`. This map describes the published clients and service; the partial WinUI candidate results are recorded below.
 
 ## Native migration parity matrix
 
@@ -55,7 +55,7 @@ This started as a source-level classification. The first draft-builder extractio
 | Account selection, locked From and stale asynchronous response guards exist in both clients. | `service.rs`/`mail.rs` independently validate explicit owner and connection generations. | Keep selection and stale-response guards in the UI; do not invent a second account state machine or weaken server ownership checks. |
 | `SearchSettings` and `StyleLearning` display eligibility/budget/dirty-state prerequisites. | `smart_search.rs`, `learning.rs`, `reply_suggestions.rs` validate permission, identity, source, budget and transitions. | Reuse existing state projections; add a narrow missing capability only when a demonstrated mismatch needs it. Keep confirmation and unsaved edits local. |
 | Schedule date/UUID review, calendar civil-date layout and frozen retry review are represented in both clients. | `scheduled.rs` owns send transitions/grace/locks; `calendar.rs` validates reminders, writes and idempotency. | Keep platform date input, formatting, month layout and reviewed-operation identity; remove only duplicated business decisions, not the review/recovery state needed across restart. |
-| Resource, license and publisher scripts still import Node data/modules. The browser draft helper now calls the service instead of importing server recipient logic. | Current toolchain and fixed resource outputs. | Apply the N5/N6 dependency gates in the native plan. Product runtime retirement does not authorize deleting live build/test/publisher dependencies. |
+| Resource/license compatibility scripts now delegate to Rust; the normal release still calls the JS publisher. | `morrow-resources`, `morrow-notices`, versioned `rust/resources/`; `morrow-publish` remains unwired. | Complete the N5/N6 caller/workflow transition before retiring Node modules. Keep fixed-version historical checks separate from the normal build/release path. |
 
 ## API boundary
 
@@ -109,11 +109,15 @@ The updater keeps the compiled pinned Ed25519 key, paired manifest format, origi
 
 ## Build and evidence
 
-One unpublished Cargo package, lockfile, Rust 1.98 minimum; `package.json` supplies the product version. Rust candidate selection is `MORROW_SERVICE_RUNTIME=rust` at build time, stored in bundle metadata. macOS ships the native SwiftUI host and Rust executable; Windows retains Electron with Rust replacing the backend Node executable. Third-party license notices accompany the service; source links identify unmodified dependencies. `cargo audit --file rust/Cargo.lock` checks the locked graph.
+One unpublished Cargo package, lockfile, Rust 1.98 minimum; `package.json` supplies the product version. Main/production remains **v0.6.0-beta.16: SwiftUI on macOS, React/Electron on Windows, Rust service on both**. The legacy builders retain `MORROW_SERVICE_RUNTIME` selection in bundle metadata; the native candidate builders use Rust. Third-party license notices accompany the service; source links identify unmodified dependencies. `cargo audit --file rust/Cargo.lock` checks the locked graph.
 
-The native candidate path now uses `morrow-resources` for unchanged versioned catalog/OpenCC checks, `morrow-notices` for the locked production dependency graph, and `morrow-build` for the SwiftUI/Rust bundle. Shared branding/fonts live in `assets/`; the compiled update key comes from `rust/resources/`, with the same legacy Node bytes retained separately. The original npm release/compatibility paths remain until cutover gates pass. `morrow-publish` is implemented but not wired to publication; its artifact-provenance gate is under review.
+The native candidate path uses `morrow-resources` for unchanged versioned catalog/OpenCC checks, `morrow-notices` for the locked production dependency graph, and `morrow-build` for the SwiftUI/Rust bundle. Shared branding/fonts live in `assets/`; the compiled update key comes from `rust/resources/`, with the same legacy Node bytes retained separately. The normal `check.yml` release still uses npm/Node callers and `scripts/publish-release.js`. `morrow-publish` implements same-CI-run artifact verification and uploads from verified staging, but is not wired to publication. Live build/test/publisher callers must be migrated before their Node dependencies are retired.
 
-The Node-free macOS candidate build and Rust-driven Swift acceptance passed locally and in CI, followed locally by the actual fixed-beta16 installer upgrade with N4 preservation and backup checks. WinUI compilation/package inspection passed, but runtime still fails during Application initialization after the metadata-provider correction; native pages await runtime acceptance. This is not N2–N6 completion, clean-machine acceptance or a published Windows host replacement. See [verification](../VERIFICATION.md) and the native plan before removing legacy callers.
+The Node-free macOS candidate build and Rust-driven Swift acceptance passed locally and in CI, followed locally by the actual fixed-beta16 installer upgrade with preservation and backup checks. Windows candidate **`005c9fb`** passed compilation/package inspection and the all-mail, workspace and Settings phases; the reader phase failed at its 25-second limit. Full Windows walkthrough and historical-upgrade acceptance remain incomplete.
+
+Candidate **`31db6f3` is pending CI**. Its source adds Swift legacy checks to the Node-free driver, canonical versioned macOS ZIP/checksum output, Windows Cargo checks, and fixed-beta16 storage/search/service differentials. These additions are not executed-check results. **All N0–N6 completion gates remain open**, including required manual/live, accessibility/minimum-OS, signing, main cutover and paired-release gates. No native Windows production replacement is claimed. See [verification](../VERIFICATION.md) and the native plan before removing legacy callers.
+
+Published/legacy compatibility commands below are not the Node-free candidate path:
 
 ```sh
 npm run rust:test

@@ -821,6 +821,7 @@ impl Staging {
     fn new() -> Result<Self> {
         let path = env::temp_dir().join(format!("morrow-publish-{}", uuid::Uuid::new_v4()));
         let mut builder = fs::DirBuilder::new();
+        builder.recursive(false);
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
