@@ -129,10 +129,15 @@ try {
             $ui = [Diagnostics.ProcessStartInfo]::new($exe)
             $ui.ArgumentList.Add('--native-smoke')
             $ui.UseShellExecute = $false
+            $ui.RedirectStandardError = $true
             $ui.WorkingDirectory = $directory
             $ui.Environment['MORROW_DATA_DIR'] = $case.path
             $process = [Diagnostics.Process]::Start($ui)
+            $startupDiagnostics = $process.StandardError.ReadToEndAsync()
             Require ($process.WaitForExit(180000)) 'Native UI fixture did not finish within 180 seconds.'
+            $diagnostics = $startupDiagnostics.GetAwaiter().GetResult()
+            if ($diagnostics.Length -gt 8192) { $diagnostics = $diagnostics.Substring(0, 8192) }
+            if ($diagnostics) { Write-Host $diagnostics }
             if ($process.ExitCode -ne 0) {
                 $exitCode = $process.ExitCode
                 Write-Host ('Native UI exit code: {0} (0x{1:X8})' -f $exitCode, ($exitCode -band 0xffffffffL))

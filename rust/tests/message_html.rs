@@ -99,6 +99,7 @@ fn deep_input_returns_empty_without_process_abort() {
 }
 
 #[test]
+#[ignore = "Historical Node sanitizer parity: set MORROW_NODE_COMPAT_ROOT to the fixed compatibility checkout"]
 fn node_and_rust_share_safe_reader_semantics() {
     // Compare parsed trees: serializer quoting/attribute order may differ, while
     // the allowed content, CSS, URLs and security attributes must agree.
@@ -166,8 +167,13 @@ fn node_and_rust_share_safe_reader_semantics() {
         .iter()
         .map(|input| serde_json::json!([input, sanitize(input)]))
         .collect();
+    let compatibility = std::path::PathBuf::from(
+        std::env::var_os("MORROW_NODE_COMPAT_ROOT")
+            .expect("Set the fixed Node compatibility checkout"),
+    );
+    assert!(compatibility.is_absolute() && compatibility.join("server/message-html.js").is_file());
     let mut child = Command::new("node")
-        .current_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap())
+        .current_dir(compatibility)
         .args(["--input-type=module", "-e", r#"
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

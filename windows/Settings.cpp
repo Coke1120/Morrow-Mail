@@ -681,7 +681,9 @@ void search(Page const& p) {
 }
 
 void updateStatus(Page const& p, StackPanel const& content) {
+    p->release = copy(p->shell->updateResult);
     content.Children().Clear();
+    if (p->shell->checkingUpdates) help(content, L"Checking GitHub for updates…");
     if (p->release.Size()) help(content, (flag(p->release, L"updateAvailable") ? hstring(L"Update available: ") : hstring(L"Up to date for this channel: ")) + text(p->release, L"latestVersion") + L"\nInstalled: " + text(p->release, L"currentVersion") + L" · Checked: " + text(p->release, L"checkedAt"));
     auto state = p->updateState;
     help(content, L"Installer: " + text(state, L"phase", L"idle") + L" · " + number(state, L"received") + L" / " + number(state, L"total") + L" bytes");
@@ -690,6 +692,7 @@ void updateStatus(Page const& p, StackPanel const& content) {
 }
 fire_and_forget pollUpdate(Page p, StackPanel status) {
     if (!p->current() || p->busy || p->polling) co_return;
+    updateStatus(p, status);
     p->polling = true; auto revision = p->revision;
     try {
         auto next = co_await p->shell->service->request(L"/updates/status");
@@ -698,21 +701,45 @@ fire_and_forget pollUpdate(Page p, StackPanel status) {
     p->polling = false;
 }
 void about(Page const& p) {
+    p->prereleases = p->shell->includePrereleases;
+    p->release = copy(p->shell->updateResult);
     title(p->body, L"Morrow Mail"); help(p->body, L"Independent open-source mail workspace · MIT. Mail and encrypted credentials stay in the separate workspace. Only explicitly permitted AI context goes to your chosen model.");
     help(p->body, L"The host checks for public GitHub updates at launch and hourly while open. Installation always requires review, no pending writes and a verified signed package.");
     auto status = stack(8); p->body.Children().Append(status); updateStatus(p, status);
     CheckBox prereleases; prereleases.Content(box_value(L"Include alpha and beta releases")); prereleases.IsChecked(p->prereleases);
     std::weak_ptr<SettingsPage> weak = p;
-    prereleases.Click([weak](auto const& sender, auto const&) { if (auto page = weak.lock()) { page->prereleases = checked(sender.template as<CheckBox>()); page->release = Json(); } });
+    prereleases.Click([weak, status](auto const& sender, auto const&) {
+        if (auto page = weak.lock(); page && page->current()) {
+            auto control = sender.template as<CheckBox>();
+            if (page->busy || page->shell->checkingUpdates) {
+                control.IsChecked(page->shell->includePrereleases);
+                page->tell(L"Wait for the current update operation before changing channels.");
+                return;
+            }
+            page->prereleases = checked(control);
+            page->shell->includePrereleases = page->prereleases;
+            page->shell->lastUpdateCheck = 0;
+            page->shell->updateResult = Json();
+            page->shell->updateBadge();
+            updateStatus(page, status);
+            page->tell(L"Release channel changed. The host will check this channel shortly.");
+        }
+    });
     p->body.Children().Append(prereleases);
     action(p, p->body, L"Check for updates", [status](Page page) -> IAsyncAction {
-        auto channel = page->prereleases;
-        auto result = co_await page->shell->service->request(channel ? L"/updates?includePrereleases=true" : L"/updates?includePrereleases=false");
-        if (page->current() && page->prereleases == channel) { page->release = result; updateStatus(page, status); page->tell(L"Update check complete."); }
+        auto channel = page->shell->includePrereleases;
+        co_await page->shell->checkUpdates(true);
+        if (page->current() && page->shell->includePrereleases == channel) {
+            updateStatus(page, status);
+            // Shell owns error reporting; do not label a retained result as a
+            // successful fresh check when that request failed or is coalesced.
+            page->tell(page->shell->checkingUpdates ? L"An update check is already running." : L"");
+        }
     });
     action(p, p->body, L"Download verified update", [status](Page page) -> IAsyncAction {
+        page->release = copy(page->shell->updateResult);
         if (!flag(page->release, L"updateAvailable")) throw hresult_error(E_FAIL, L"Check for an available update first.");
-        Json body; boolean(body, L"includePrereleases", page->prereleases);
+        Json body; boolean(body, L"includePrereleases", page->shell->includePrereleases);
         auto result = co_await page->shell->service->request(L"/updates/download", {}, L"POST", body);
         if (page->current()) { page->updateState = result; updateStatus(page, status); page->tell(L"Downloading. You may leave Settings."); }
     });

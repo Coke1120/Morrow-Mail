@@ -12,6 +12,7 @@ IAsyncAction Shell::smoke() {
     auto check = [](bool condition, wchar_t const* message) { if (!condition) throw hresult_error(E_FAIL, message); };
     std::string failure;
     try {
+        readerSecurityChecks();
         auto directory = service->directory();
         check(std::filesystem::canonical(directory.parent_path()) == std::filesystem::canonical(std::filesystem::temp_directory_path()) && directory.filename().wstring().starts_with(L"morrow-native-check-"), L"Native acceptance requires an isolated temporary workspace.");
         std::ifstream marker(directory / L"disposable-native-fixture");
@@ -68,6 +69,20 @@ IAsyncAction Shell::smoke() {
             auto savedState=service->clientState(); auto pendingCalendar=text(savedState,L"morrow.pendingCalendar");
             service->saveClientState(L"morrow.account.collapsed.one@fixture.invalid",L"true");
             check(text(service->clientState(),L"morrow.pendingCalendar")==pendingCalendar,L"Desktop state changed a frozen calendar retry.");
+            co_await navigate(L"mail",L"one@fixture.invalid");
+            for (auto const* target : {L"today", L"activity", L"scheduled", L"calendar", L"out-of-office", L"studio", L"learning", L"brain", L"reply-suggestions", L"skills", L"summaries", L"records"}) {
+                auto previousPage = page.Content();
+                co_await navigate(target);
+                check(page.Content() && page.Content() != previousPage, L"A native workspace page failed to open.");
+                check(dirty.empty(), L"Opening a saved page incorrectly created unsaved edits.");
+            }
+            for (auto const* tab : {L"general", L"mail", L"calendar", L"model", L"search", L"policy", L"about"}) {
+                auto previousPage = page.Content();
+                co_await settingsPage(lifetime, tab);
+                check(page.Content() && page.Content() != previousPage, L"A native Settings tab failed to open.");
+                check(dirty.empty(), L"Opening a Settings tab incorrectly created unsaved edits.");
+            }
+            check(text(service->clientState(),L"morrow.pendingCalendar")==pendingCalendar,L"Opening Calendar changed its immutable recovery record.");
         }
         auto draining = shutdown();
         check(closing && !closeReady, L"Shutdown did not wait for the private service.");

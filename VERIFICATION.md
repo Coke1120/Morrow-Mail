@@ -1,5 +1,15 @@
 # Verification — 28 September 2026
 
+## Unreleased native migration candidate — Node-free macOS and N4 preservation
+
+`scripts/build-macos-native.sh` built the SwiftUI/Rust candidate with Node/npm absent from PATH. The Rust resource checker, target-specific notice collector, arm64 macOS 13.5 service/Swift compilation, Info.plist, system-library inspection and deep/strict ad-hoc signature checks passed. Output is isolated at `build/macos-native/Morrow Mail.app`; the installed application and user's workspace were untouched.
+
+The new Rust `morrow-native-check --service <candidate-service>` driver passed the unchanged Swift native acceptance against that actual service, including six sorts, duplicate IDs/combined owners, shared draft preparation, Bcc, manual unread/page retention, Pending, future scheduled creation/replay/cancellation, shutdown/restart, authenticated backup/no-overwrite and disconnect isolation. It seeds and validates with Rust. Historical Node compatibility remains a separate test, not implied by this driver.
+
+`scripts/test-rust-upgrade.js --candidate=<candidate> --compatibility-root=<fixed-beta16>` passed against an isolated archive of `7ab30cbb3e496118513a98f8211ec66481e282c4`. The unchanged historical Node installer verified/replaced the actual candidate after both fixture PIDs exited, then launched the production SwiftUI/Rust app. Both the restarted workspace and bundled CLI backup preserved keys, full uncertain-delivery drafts/attempts, calendar retry files and N4 Scheduled/Pending/Learning/Reply Suggestions records. Only specified interrupted model claims changed status; no claim replay, send or provider/model call occurred. Disconnected historical proposals being retained is not evidence of current eligibility after reconnect.
+
+Windows candidate CI [36337726204](https://github.com/Coke1120/Morrow-Mail/actions/runs/36337726204) passed compilation, package/runtime-boundary inspection and private Rust startup/authentication/EOF drain. The WinUI process then exited during startup with `0xC000027B`; native walkthrough and Windows historical upgrade have **not** passed. The programmatic Application lacked the application-level XAML metadata provider; its forwarding implementation is pending CI verification. New native Calendar, HTML reader and Intelligence work still requires Windows runtime evidence. No native cutover, release or production-readiness claim is made.
+
 ## Unreleased N1 migration — shared draft preparation
 
 Rust now prepares Reply, Reply All, Forward and provider-draft copies through authenticated `POST /api/drafts/prepare`, using the explicit mailbox header and original message ID. SwiftUI and React callers, including AI result insertion, use this operation instead of duplicating recipient/quoting rules. Saved local draft decoding and uncertain-delivery review remain unchanged. The Node development/compatibility service exposes the same contract; this is not a desktop runtime fallback. The endpoint reads current owned content without saving, sending or calling a provider/model.

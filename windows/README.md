@@ -76,7 +76,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 ```
 
 Retain the application/window and initialize `XamlControlsResources` in the
-application's merged resource dictionaries. The SDK supplies registration-free
+application's merged resource dictionaries. The programmatic Application also
+implements `IXamlMetadataProvider`, forwarding both `GetXamlType` overloads and
+`GetXmlnsDefinitions` to `XamlControlsXamlMetaDataProvider`; without generated
+App.xaml code this is required for the controls' runtime templates.
+The SDK supplies registration-free
 WinRT initialization through its native auto-initializer; do not call the
 framework-dependent bootstrapper or install MSIX packages at startup.
 

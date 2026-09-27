@@ -74,6 +74,9 @@ winrt::Windows::Foundation::IAsyncAction compose(std::shared_ptr<Shell> shell, J
 winrt::Windows::Foundation::IAsyncAction scheduledPage(std::shared_ptr<Shell> shell);
 winrt::Windows::Foundation::IAsyncAction settingsPage(std::shared_ptr<Shell> shell, winrt::hstring tab = L"mail");
 winrt::Windows::Foundation::IAsyncAction workspacePage(std::shared_ptr<Shell> shell, winrt::hstring kind);
+winrt::Windows::Foundation::IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, winrt::hstring kind);
 winrt::Windows::Foundation::IAsyncAction outOfOfficePage(std::shared_ptr<Shell> shell);
+winrt::Windows::Foundation::IAsyncAction calendarPage(std::shared_ptr<Shell> shell);
 void appendReader(std::shared_ptr<Shell> shell, controls::StackPanel const& container, Json message);
+void readerSecurityChecks();
 }

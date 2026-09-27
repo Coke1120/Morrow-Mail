@@ -10,10 +10,21 @@
 #include <winrt/Windows.System.h>
 #include <winrt/Windows.UI.Text.h>
 #include <winrt/Windows.Globalization.h>
+#include <winrt/Windows.UI.Xaml.Interop.h>
+#include <winrt/Microsoft.UI.Xaml.XamlTypeInfo.h>
 #include <fstream>
 #include <cmath>
+#include <cstdio>
 
 #pragma comment(lib, "user32.lib")
+
+namespace {
+// Fixture-only startup diagnostics; never log mailbox data or service responses.
+void startupTrace(char const* phase) {
+    if (std::wstring_view(GetCommandLineW()).find(L"--native-smoke") == std::wstring_view::npos) return;
+    std::fprintf(stderr, "Native startup: %s\n", phase); std::fflush(stderr);
+}
+}
 
 namespace morrow {
 using namespace winrt;
@@ -102,7 +113,9 @@ IAsyncAction Shell::alert(hstring title, hstring detail) {
 }
 IAsyncAction Shell::start() {
     auto lifetime = shared_from_this();
+    startupTrace("creating window");
     window = Window(); window.Title(L"Morrow Mail");
+    startupTrace("creating navigation");
     root = Grid(); root.RowDefinitions().Append(RowDefinition());
     RowDefinition statusRow; statusRow.Height(GridLengthHelper::Auto()); root.RowDefinitions().Append(statusRow);
     navigation = NavigationView(); navigation.PaneTitle(L"Morrow"); navigation.IsSettingsVisible(true);
@@ -114,6 +127,7 @@ IAsyncAction Shell::start() {
     Automation::AutomationProperties::SetLiveSetting(status, Automation::Peers::AutomationLiveSetting::Polite);
     Grid::SetRow(status, 1); root.Children().Append(status);
     window.Content(root);
+    startupTrace("window content assigned");
     window.AppWindow().Resize({1280, 840});
     auto weak = weak_from_this();
     window.AppWindow().Closing([weak](auto const&, Microsoft::UI::Windowing::AppWindowClosingEventArgs const& event) {
@@ -128,6 +142,7 @@ IAsyncAction Shell::start() {
         self->navigate(text(tag, L"section"), text(tag, L"owner"), text(tag, L"folder"));
     });
     window.Activate();
+    startupTrace("window activated");
     try {
         service = std::make_shared<Service>(Service::workspace());
         if (std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos) {
@@ -187,7 +202,7 @@ void Shell::rebuildNavigation() {
     try { desktopState = service->clientState(); } catch (...) { error(errorText()); }
     navigation.MenuItems().Clear();
     NavigationViewItemHeader header; header.Content(box_value(L"Workspace")); navigation.MenuItems().Append(header);
-    for (auto const& item : {std::pair{L"Today",L"today"}, {L"Activity",L"activity"}, {L"Scheduled",L"scheduled"}, {L"Out of Office",L"out-of-office"}})
+    for (auto const& item : {std::pair{L"Today",L"today"}, {L"Activity",L"activity"}, {L"Reply suggestions",L"reply-suggestions"}, {L"AI Studio",L"studio"}, {L"Scheduled",L"scheduled"}, {L"Calendar",L"calendar"}, {L"Out of Office",L"out-of-office"}})
         navigation.MenuItems().Append(navItem(item.first, item.second));
     if (array(state, L"accounts").Size()) navigation.MenuItems().Append(navItem(L"All accounts", L"mail", L"all"));
     for (auto const& value : array(state, L"accounts")) {
@@ -239,6 +254,7 @@ IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder
     else if (target == L"about") co_await settingsPage(lifetime, L"about");
     else if (target == L"scheduled") co_await scheduledPage(lifetime);
     else if (target == L"out-of-office") co_await outOfOfficePage(lifetime);
+    else if (target == L"calendar") co_await calendarPage(lifetime);
     else co_await workspacePage(lifetime, target);
 }
 void Shell::mailPage() {
@@ -447,8 +463,7 @@ void Shell::renderReader(Json const& message) {
     content.Children().Append(assistance);
     auto summary = object(message, L"aiSummary");
     if (!text(summary, L"text").empty()) { Expander expanded; expanded.Header(box_value(L"Saved AI summary")); expanded.Content(label(text(summary, L"text"))); content.Children().Append(expanded); }
-    auto body = label(text(message, L"body"), 15); body.Margin(ThicknessHelper::FromLengths(0, 12, 0, 0)); content.Children().Append(body);
-    if (!text(message, L"bodyHtml").empty()) content.Children().Append(label(L"Plain-text view. External images are not loaded.", 11));
+    appendReader(shared_from_this(), content, message);
     reader.Content(scroll(content));
 }
 IAsyncAction Shell::patch(Json message, Json changes) {
@@ -606,6 +621,9 @@ IAsyncAction Shell::shutdown() {
     window.Close(); Application::Current().Exit();
 }
 IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
+    if (kind == L"studio" || kind == L"learning" || kind == L"brain" || kind == L"reply-suggestions" || kind == L"skills" || kind == L"summaries" || kind == L"records") {
+        co_await intelligencePage(self, kind); co_return;
+    }
     auto version = self->generation; auto account = self->owner;
     auto content = stack(16); content.Padding(ThicknessHelper::FromUniformLength(24));
     content.Children().Append(label(kind == L"activity" ? L"Activity" : L"Today", 28));
@@ -646,9 +664,24 @@ IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
 }
 }
 
-struct MorrowApplication : winrt::Microsoft::UI::Xaml::ApplicationT<MorrowApplication> {
+struct MorrowApplication : winrt::Microsoft::UI::Xaml::ApplicationT<MorrowApplication, winrt::Microsoft::UI::Xaml::Markup::IXamlMetadataProvider> {
     std::shared_ptr<morrow::Shell> shell;
-    MorrowApplication() { Resources().MergedDictionaries().Append(winrt::Microsoft::UI::Xaml::Controls::XamlControlsResources()); }
+    winrt::Microsoft::UI::Xaml::XamlTypeInfo::XamlControlsXamlMetaDataProvider metadata;
+    // A programmatic Application has no generated App.xaml metadata provider.
+    winrt::Microsoft::UI::Xaml::Markup::IXamlType GetXamlType(winrt::hstring const& name) { return metadata.GetXamlType(name); }
+    winrt::Microsoft::UI::Xaml::Markup::IXamlType GetXamlType(winrt::Windows::UI::Xaml::Interop::TypeName const& type) { return metadata.GetXamlType(type); }
+    winrt::com_array<winrt::Microsoft::UI::Xaml::Markup::XmlnsDefinition> GetXmlnsDefinitions() { return metadata.GetXmlnsDefinitions(); }
+    MorrowApplication() {
+        startupTrace("application constructed");
+        UnhandledException([](auto const&, auto const& event) {
+            if (std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos) {
+                std::fprintf(stderr, "Native XAML HRESULT: 0x%08X\n", static_cast<unsigned>(event.Exception())); std::fflush(stderr);
+            }
+            // Do not mark handled: a failed XAML initialization must still fail acceptance.
+        });
+        Resources().MergedDictionaries().Append(winrt::Microsoft::UI::Xaml::Controls::XamlControlsResources());
+        startupTrace("control resources loaded");
+    }
     void OnLaunched(winrt::Microsoft::UI::Xaml::LaunchActivatedEventArgs const&) {
         shell = std::make_shared<morrow::Shell>(); shell->start();
     }
@@ -662,8 +695,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     }
     int result = 0;
     try {
+        startupTrace("initializing apartment");
         winrt::init_apartment(winrt::apartment_type::single_threaded);
         SetCurrentProcessExplicitAppUserModelID(L"org.morrowmail.desktop");
+        startupTrace("starting XAML application");
         winrt::Microsoft::UI::Xaml::Application::Start([](auto const&) { winrt::make<MorrowApplication>(); });
     } catch (...) { MessageBoxW(nullptr, L"Morrow Mail could not initialize. Your saved workspace is retained.", L"Morrow Mail", MB_OK | MB_ICONERROR); result = 1; }
     CloseHandle(instance); return result;

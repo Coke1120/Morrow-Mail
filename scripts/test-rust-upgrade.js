@@ -28,11 +28,163 @@ const candidate = options.candidate || resolve(repository, 'build', mac ? 'macos
 const compatibility = options['compatibility-root'] || repository;
 const { createStore } = await import(pathToFileURL(join(compatibility, 'server/store.js')).href);
 const { validatePackage } = await import(pathToFileURL(join(compatibility, 'server/update-installer.js')).href);
+const { createLearning, ownText } = await import(pathToFileURL(join(compatibility, 'server/learning.js')).href);
+const { createReplySuggestions } = await import(pathToFileURL(join(compatibility, 'server/reply-suggestions.js')).href);
+const { resolvePolicy, redactMessage } = await import(pathToFileURL(join(compatibility, 'server/policy.js')).href);
 const relativeBackend = mac ? 'Contents/Resources/backend' : 'resources/app/backend';
 const relativeUI = mac ? 'Contents/MacOS/MorrowMail' : 'Morrow Mail.exe';
 const relativeService = mac ? 'Contents/Resources/morrow-service' : 'resources/app/runtime/morrow-service.exe';
 const version = JSON.parse(readFileSync(resolve(repository, 'package.json'))).version;
 const digest = path => createHash('sha256').update(readFileSync(path)).digest('hex');
+const jsonHash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+function seedNativeFeatures(store) {
+  // Use the compatibility service's real synchronous review builders, including
+  // source hashes, stamps and token estimates. Never call generate/run/tick/send.
+  // Fictional model results below exercise persistence, not model acceptance.
+  const owners = ['first@n4-upgrade.example.invalid', 'second@n4-upgrade.example.invalid'];
+  const timestamp = Date.now(), date = new Date(timestamp).toISOString();
+  const sentId = 'n4-sent-source', inboxId = 'n4-inbox-source';
+  const reviewedPolicy = resolvePolicy({ enabled: true, maxMessages: 8,
+    summarySchedule: { timeZone: 'UTC' }, folders: { inbox: true, sent: true },
+    content: { sender: true, subject: true, body: true }, behaviors: { reply: true, memory: true },
+    triggers: { onOpen: false, onReply: false, onArrival: false, scheduledSummary: false } });
+  const connections = Object.fromEntries(owners.map(email => [email, { provider: 'google', email, connectionId: randomUUID() }]));
+  const styleLearning = Object.fromEntries(owners.map((owner, index) => [owner, { settings: {
+    enabled: true, weekly: false, months: 3, maxSamples: 1, tokenBudget: 64000,
+    identity: { displayName: `Fixture Person ${index + 1}`, aliases: [`Fixture Alias ${index + 1}`], confirmed: true },
+  } }]));
+  const replySuggestions = Object.fromEntries(owners.map(owner => [owner, { settings: { enabled: true, maxMessages: 1, tokenBudget: 64000 }, job: null, proposals: [] }]));
+  store.setSettings({ mailAccounts: connections, mail: null, aiGeneration: 7,
+    ai: { baseUrl: 'https://model.example.invalid/v1', model: 'fictional-upgrade-model', apiKey: '', maxTokens: 256 },
+    preferences: { syncInterval: 0, displayName: 'Upgrade Fixture', markReadOnOpen: false },
+    policy: reviewedPolicy, styleLearning, replySuggestions });
+  for (const [index, owner] of owners.entries()) {
+    store.upsertMessage(owner, { id: sentId, folder: 'sent', fromEmail: owner, fromName: `Fixture Person ${index + 1}`,
+      to: 'separate-learning-recipient@example.invalid', subject: 'Owned learning source',
+      body: `This is fictional Sent correspondence owned only by ${owner}. Please use clear sentences and review each proposed action before proceeding.`,
+      date: new Date(timestamp - 600000).toISOString(), read: true, starred: false, category: 'primary', labels: [] });
+    store.upsertMessage(owner, { id: inboxId, folder: 'inbox', fromEmail: 'correspondent@example.invalid', fromName: 'Fixture Correspondent', to: owner,
+      subject: 'Fictional follow-up review', body: `Hello Fixture Person ${index + 1}, could you review the fictional agenda? No real action is requested.`,
+      preview: 'Fictional follow-up review', date: new Date(timestamp - 300000).toISOString(),
+      read: false, starred: false, pending: index === 0, category: 'primary', labels: [] });
+  }
+  const noModel = () => { throw new Error('N4 fixture must never call a model.'); };
+  const learning = createLearning({ store, connection: owner => connections[owner], runModel: noModel, now: () => timestamp });
+  for (const [index, owner] of owners.entries()) {
+    const preview = learning.prepare(owner);
+    const voice = `Approved fictional style for Fixture Person ${index + 1}: concise, courteous and explicit about uncertainty.`;
+    let value = store.getSettings().styleLearning[owner];
+    store.setSettings({ styleLearning: { ...store.getSettings().styleLearning, [owner]: {
+      ...value, analyzedThrough: preview.through, preview: { ...preview, status: 'ready', voice, usage: {} },
+    } } });
+    learning.apply(owner, { previewId: preview.id, voice });
+    assert.equal(learning.voice(owner), voice, 'The approved fixture profile must have valid owned Sent sources.');
+    const replacement = learning.prepare(owner);
+    value = store.getSettings().styleLearning[owner];
+    store.setSettings({ styleLearning: { ...store.getSettings().styleLearning, [owner]: { ...value,
+      preview: index === 0
+        ? { ...replacement, status: 'ready', voice: 'Unapplied fictional replacement: retain the original approved profile.', usage: {} }
+        : { ...replacement, status: 'running' },
+    } } });
+  }
+  const sourceHistory = { matchedMessages: 1, usedMessages: 1, maxMessages: 8, scope: 'downloaded' };
+  const suggestions = createReplySuggestions({ store, connections: () => connections, styleVoice: owner => learning.voice(owner), runModel: noModel, now: () => timestamp,
+    contextFor: (action, input, owner) => {
+      assert.equal(action, 'reply');
+      assert.equal(input.messageId, inboxId);
+      assert.equal(input.includeHistory, true);
+      // The Sent sample has a different correspondent; this owned Inbox message
+      // is the entire available correspondence in this bounded fixture.
+      return { messages: [redactMessage(store.getMessage(owner, inboxId), reviewedPolicy)], history: sourceHistory };
+    },
+  });
+  for (const [index, owner] of owners.entries()) {
+    suggestions.preview(owner, { messageIds: [inboxId] });
+    let value = store.getSettings().replySuggestions[owner];
+    const item = value.job.items[0];
+    const proposal = { needsReply: true, reason: 'The fictional sender explicitly asks for review.', text: `Fictional reply from Fixture Person ${index + 1}; review before using.`,
+      id: randomUUID(), messageId: item.messageId, stamp: item.stamp, sourceHash: item.sourceHash, sources: item.sources,
+      history: value.job.samples[0].history, status: 'ready', createdAt: date };
+    store.setSettings({ replySuggestions: { ...store.getSettings().replySuggestions, [owner]: { ...value,
+      job: { ...value.job, status: 'complete', completed: 1, spentTokens: item.estimatedTokens }, proposals: [proposal],
+    } } });
+    assert.equal(suggestions.state(owner).proposals[0]?.id, proposal.id, 'The fixture proposal must be valid before disconnecting.');
+    if (index === 1) {
+      // Retain the previous ready proposal while a separately reviewed batch
+      // was interrupted. Initialization must not replay its claimed work.
+      suggestions.preview(owner, { messageIds: [inboxId] });
+      value = store.getSettings().replySuggestions[owner];
+      store.setSettings({ replySuggestions: { ...store.getSettings().replySuggestions, [owner]: { ...value,
+        job: { ...value.job, status: 'running', inflight: true, spentTokens: value.job.items[0].estimatedTokens },
+      } } });
+    }
+  }
+  const id = randomUUID(), sendAt = new Date(timestamp + 5 * 365 * 86400000).toISOString();
+  const payload = { to: 'future@example.invalid', cc: 'future-cc@example.invalid', bcc: 'future-bcc@example.invalid',
+    subject: 'Distant-future fictional scheduled draft', body: 'Immutable fixture payload. No delivery is performed by upgrade acceptance.',
+    footer: { text: 'Reviewed fixture footer', html: '' }, replyToId: inboxId };
+  const payloadHash = jsonHash({ to: payload.to, subject: payload.subject, body: payload.body, replyToId: payload.replyToId, cc: payload.cc, bcc: payload.bcc, footer: payload.footer });
+  const job = { id, accountId: owners[0], draftId: `outbox:scheduled:${id}`, sendAt, status: 'scheduled', createdAt: date, updatedAt: date,
+    connectionId: connections[owners[0]].connectionId, payload, payloadHash, fromName: 'Upgrade Fixture', replyMessageId: '' };
+  store.upsertMessage(owners[0], { id: job.draftId, fromName: job.fromName, fromEmail: owners[0], date, read: true, starred: false, category: 'primary', labels: [],
+    ...payload, preview: payload.body, folder: 'drafts', scheduledSend: { id, sendAt, status: 'scheduled' } });
+  // Disconnect after constructing genuine historical review snapshots. The old
+  // and new services receive no mailbox credentials or model configuration.
+  // Sync/weekly learning are off and the scheduled time is years away. Retained
+  // disconnected history does NOT establish current eligibility after reconnect.
+  store.setSettings({ scheduledSends: [job], mail: null, mailAccounts: {}, ai: null, aiGeneration: 8,
+    policy: { ...reviewedPolicy, enabled: false } });
+  const expected = structuredClone(store.getSettings());
+  // Only these initialize/recover mutations are allowed. The distant-future
+  // scheduled job is not claimed; its job, draft and marker must remain exact.
+  expected.styleLearning[owners[1]].preview.status = 'interrupted';
+  expected.styleLearning[owners[1]].preview.error = 'Interrupted by shutdown. Tokens may have been used. Prepare new samples to retry.';
+  expected.replySuggestions[owners[1]].job.status = 'interrupted';
+  expected.replySuggestions[owners[1]].job.error = 'Analysis failed or its approved context changed. No automatic retry was made; tokens may have been used. Review a new batch to retry.';
+  const records = owners.flatMap(owner => store.listMessages(owner).map(message => ({ owner, message: structuredClone(message) })));
+  return { owners, expected, records, reviewedPolicy, sourceHistory };
+}
+
+function verifyNativeFeatures(store, fixture) {
+  const settings = store.getSettings();
+  for (const key of ['scheduledSends', 'styleLearning', 'replySuggestions']) assert.deepEqual(settings[key], fixture.expected[key], `${key} changed beyond explicit interrupted-claim recovery.`);
+  assert.deepEqual(settings.mailAccounts, {});
+  assert.equal(settings.mail, null);
+  assert.equal(settings.ai, null);
+  assert.equal(settings.policy.enabled, false);
+  assert.equal(settings.preferences.syncInterval, 0);
+  assert.equal(settings.aiGeneration, fixture.expected.aiGeneration);
+  for (const { owner, message } of fixture.records) {
+    assert.deepEqual(store.getMessage(owner, message.id), message, 'N4 pending/source/scheduled draft records must survive exactly.');
+    assert.equal(store.getMessage('demo', message.id), null, 'N4 mail must not migrate into Demo.');
+  }
+  for (const owner of fixture.owners) {
+    assert.equal(store.listMessages(owner).length, fixture.records.filter(item => item.owner === owner).length, 'Upgrade must not create additional drafts, Sent records or other messages.');
+    const learning = settings.styleLearning[owner];
+    for (const source of [...learning.profile.sources, ...learning.preview.sources]) {
+      const message = store.getMessage(owner, source.id);
+      assert.equal(message.folder, 'sent');
+      assert.equal(message.fromEmail, owner);
+      assert.equal(source.hash, jsonHash(ownText(message.body)), 'The real owned Sent source hash must survive.');
+    }
+    const suggestions = settings.replySuggestions[owner];
+    for (const item of [...suggestions.job.items, ...suggestions.proposals]) {
+      const messages = item.sources.map(source => {
+        const message = redactMessage(store.getMessage(owner, source.id), fixture.reviewedPolicy);
+        assert.equal(source.hash, jsonHash(message), 'Reply context must retain its original owned source hash.');
+        return message;
+      });
+      assert.equal(item.sourceHash, jsonHash([messages, fixture.sourceHistory]));
+    }
+  }
+  for (const job of settings.scheduledSends) {
+    const draft = store.getMessage(job.accountId, job.draftId);
+    assert.deepEqual(draft.scheduledSend, { id: job.id, sendAt: job.sendAt, status: 'scheduled' });
+    assert.equal(store.getMessage(job.accountId, `sent:${job.id}`), null, 'Upgrade must never execute the future scheduled send.');
+  }
+}
+
 const exec = promisify(execFile);
 const quote = value => "'" + value.replaceAll("'", "''") + "'";
 const powershell = command => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from("$ErrorActionPreference='Stop'; " + command, 'utf16le').toString('base64')], { encoding: 'utf8', windowsHide: true, timeout: 240000 });
@@ -101,6 +253,7 @@ try {
   const deliveryAttempts = [{ account: draftOwner, requestId, draftId: draft.id, payloadHash, createdAt: new Date().toISOString() }];
   store.setSettings({ upgradeFixture: 'preserve-settings', mail: null, mailAccounts: {}, activeAccount: 'demo', deliveryAttempts });
   store.upsertMessage(draftOwner, draft);
+  const nativeFeatures = seedNativeFeatures(store);
   store.close();
   // Swift Codable uses seconds since 2001 for Date. These contain no credentials
   // or connected calendar, so neither client can issue a provider write.
@@ -221,6 +374,7 @@ await delay(300); assert.equal(JSON.parse(readFileSync(${JSON.stringify(join(bac
       assert.deepEqual(settings.deliveryAttempts, deliveryAttempts, 'The original owner, retry ID, payload hash and creation time must survive.');
       assert.deepEqual(restored.getMessage(draftOwner, draft.id), draft, 'The unconfirmed draft, delivery ID, To/Cc/Bcc, body and footer must survive.');
       assert.equal(restored.getMessage('demo', draft.id), null, 'The retained outbox must not migrate to another account.');
+      verifyNativeFeatures(restored, nativeFeatures);
     } finally { restored.close(); }
     for (const file of ['pending-calendar.json', 'client-state.json']) assert.equal(readFileSync(join(directory, file), 'utf8'), file === 'client-state.json' ? clientStateAfterRestart : recovery[file], `${file} recovery ID and full reviewed payload must survive.`);
     assert.equal(digest(join(directory, 'encryption.key')), keyDigest);
@@ -229,7 +383,7 @@ await delay(300); assert.equal(JSON.parse(readFileSync(${JSON.stringify(join(bac
   const backup = join(directory, 'verified-backup');
   execFileSync(servicePath, ['--backup', workspace, backup], { stdio: 'pipe', timeout: 30000 });
   verifyRecords(backup);
-  console.log('Rust upgrade acceptance passed: original Node signature/install paths, both owner PIDs exited before replacement, real production UI/Rust restart, private API, previous app retained, settings/key/uncertain draft/calendar retry preserved, bundled backup restored.');
+  console.log('Rust upgrade acceptance passed: original Node signature/install paths, both owner PIDs exited before replacement, real production UI/Rust restart, private API, previous app retained, settings/key/uncertain draft/calendar retry and N4 scheduled/pending/learning/reply records preserved, interrupted model claims not replayed, bundled backup restored.');
 } finally {
   await closeFixture();
   if (process.env.MORROW_KEEP_UPDATE_TEST === '1') console.log(`Rust upgrade fixture retained: ${directory}`);

@@ -9,6 +9,43 @@ concurrency:
   group: windows-native-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  macos-native:
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Prepare Node-free tool path
+        shell: bash
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.98.0
+          mkdir "$RUNNER_TEMP/native-tools"
+          for tool in cmake ninja; do
+            if command -v "$tool" >/dev/null; then ln -s "$(command -v "$tool")" "$RUNNER_TEMP/native-tools/$tool"; fi
+          done
+          echo "PATH=$HOME/.cargo/bin:$RUNNER_TEMP/native-tools:/usr/bin:/bin:/usr/sbin:/sbin" >> "$GITHUB_ENV"
+      - name: Rust checks without Node
+        shell: bash
+        run: |
+          if command -v node || command -v npm; then exit 1; fi
+          cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+          cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets -- -D warnings
+          cargo test --manifest-path rust/Cargo.toml --locked
+      - name: Build SwiftUI candidate and run native acceptance
+        shell: bash
+        run: |
+          /bin/sh scripts/build-macos-native.sh
+          cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-native-check -- --service "$PWD/build/macos-native/Morrow Mail.app/Contents/Resources/morrow-service"
+          mkdir -p build/macos-native/artifacts
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent 'build/macos-native/Morrow Mail.app' build/macos-native/artifacts/Morrow-Mail-native-macos-arm64.zip
+      - name: Retain macOS candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: swiftui-candidate-${{ github.sha }}
+          path: build/macos-native/artifacts/*
+          retention-days: 3
   native:
     runs-on: windows-2022
     timeout-minutes: 60
@@ -55,6 +92,17 @@ jobs:
           node-version: '22'
       - run: npm ci --ignore-scripts
         working-directory: .compatibility/beta16
+      - name: Fixed historical updater and sanitizer contracts
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup default 1.98.0
+          $env:CARGO_INCREMENTAL = '0'
+          $env:MORROW_NODE_COMPAT_ROOT = (Resolve-Path .compatibility/beta16).Path
+          cargo test --manifest-path rust/Cargo.toml --locked --lib historical_node_validator_accepts_native_layout -- --ignored
+          if ($LASTEXITCODE -ne 0) { throw 'Historical updater validation failed.' }
+          cargo test --manifest-path rust/Cargo.toml --locked --test message_html node_and_rust_share_safe_reader_semantics -- --ignored
+          if ($LASTEXITCODE -ne 0) { throw 'Historical HTML semantics changed.' }
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
           name: winui-candidate-${{ github.sha }}
@@ -65,4 +113,4 @@ jobs:
           $archives = @(Get-ChildItem candidate-artifacts -Recurse -Filter '*-windows-x64.zip')
           if ($archives.Count -ne 1) { throw 'Expected exactly one native candidate archive.' }
           Expand-Archive -LiteralPath $archives[0].FullName -DestinationPath candidate
-          node scripts/test-rust-upgrade.js --candidate=candidate/'Morrow Mail-win32-x64' --compatibility-root=.compatibility/beta16
+          node scripts/test-rust-upgrade.js '--candidate=candidate/Morrow Mail-win32-x64' --compatibility-root=.compatibility/beta16
