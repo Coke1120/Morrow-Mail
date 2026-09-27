@@ -24,6 +24,8 @@ IAsyncAction Shell::smoke() {
             check(page.Content() != nullptr, L"Add account UI did not load.");
         } else {
             check(array(state,L"accounts").Size() == 2, L"Expected two isolated fixture owners.");
+            auto restoredSize = window.AppWindow().Size();
+            check(restoredSize.Width == 1180 && restoredSize.Height == 780, L"The previous host window size was not restored.");
             co_await navigate(L"mail", L"one@fixture.invalid");
             check(rows.Items().Size() == 50 && !nextCursor.empty(), L"First mail page is incomplete.");
             std::set<std::wstring> identities;
@@ -33,7 +35,11 @@ IAsyncAction Shell::smoke() {
                 identities.insert(std::wstring(text(row,L"viewId")));
             }
             check(identities.size() == 50, L"Mail rows have duplicate UI identities.");
-            cursors.push_back(nextCursor); co_await loadPage();
+            cursors.push_back(nextCursor);
+            auto pendingPage = loadPage();
+            check(loading && !search.IsEnabled() && !sorting.IsEnabled(), L"Query and sort remained editable during pagination.");
+            co_await pendingPage;
+            check(!loading && search.IsEnabled() && sorting.IsEnabled(), L"Pagination did not restore query and sort controls.");
             check(rows.Items().Size() == 15 && nextCursor.empty(), L"Second page did not finish the mailbox.");
             cursors.pop_back(); co_await loadPage();
             for (int sort = 0; sort < 6; ++sort) {
@@ -63,7 +69,13 @@ IAsyncAction Shell::smoke() {
             service->saveClientState(L"morrow.account.collapsed.one@fixture.invalid",L"true");
             check(text(service->clientState(),L"morrow.pendingCalendar")==pendingCalendar,L"Desktop state changed a frozen calendar retry.");
         }
+        auto draining = shutdown();
+        check(closing && !closeReady, L"Shutdown did not wait for the private service.");
+        window.Close(); // A second close during the asynchronous service drain must be cancelled.
+        check(!closeReady && window.AppWindow().IsVisible(), L"A second close destroyed the window before the service drained.");
         std::ofstream(service->directory()/L"native-smoke-result.json",std::ios::binary) << (seeded ? "{\"ok\":true,\"mode\":\"owned\"}" : "{\"ok\":true,\"mode\":\"fresh\"}");
+        co_await draining;
+        co_return;
     } catch (hresult_error const& error) { failure=to_string(error.message()); }
     catch (...) { failure="Native acceptance failed."; }
     if (!failure.empty()) {

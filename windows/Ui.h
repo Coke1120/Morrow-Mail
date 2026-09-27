@@ -41,6 +41,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     std::vector<winrt::hstring> cursors{L""};
     uint64_t generation = 0, selectionGeneration = 0;
     bool loading = false, closing = false, dialogOpen = false, selectingNavigation = false;
+    bool closeReady = false;
     bool checkingUpdates = false, includePrereleases = true;
     uint64_t lastUpdateCheck = 0;
     std::set<std::wstring> dirty;
@@ -73,5 +74,6 @@ winrt::Windows::Foundation::IAsyncAction compose(std::shared_ptr<Shell> shell, J
 winrt::Windows::Foundation::IAsyncAction scheduledPage(std::shared_ptr<Shell> shell);
 winrt::Windows::Foundation::IAsyncAction settingsPage(std::shared_ptr<Shell> shell, winrt::hstring tab = L"mail");
 winrt::Windows::Foundation::IAsyncAction workspacePage(std::shared_ptr<Shell> shell, winrt::hstring kind);
+winrt::Windows::Foundation::IAsyncAction outOfOfficePage(std::shared_ptr<Shell> shell);
 void appendReader(std::shared_ptr<Shell> shell, controls::StackPanel const& container, Json message);
 }

@@ -71,6 +71,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
+      <AppContainer>false</AppContainer>
       <AdditionalDependencies>windowsapp.lib;windowscodecs.lib;runtimeobject.lib;shlwapi.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <!-- Microsoft's hybrid CRT: static C++ runtime with the OS Universal CRT. -->
       <IgnoreSpecificDefaultLibraries Condition="'$(Configuration)'=='Release'">libucrt.lib;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>

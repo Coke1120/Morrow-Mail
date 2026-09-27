@@ -54,6 +54,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 path.join("client-state.json"),
                 r#"{"morrow.pendingCalendar":"{\"review\":{\"title\":\"Preserved\"},\"requestId\":\"frozen-fixture\"}","morrow.account.collapsed.one@fixture.invalid":"false"}"#,
             )?;
+            fs::write(
+                path.join("window.json"),
+                r#"{"width":1180,"height":780,"fixturePreserved":true}"#,
+            )?;
         }
         Some("verify") => {
             let db = Store::open(&path)?;
@@ -72,6 +76,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             assert_eq!(
                 state["morrow.pendingCalendar"],
                 r#"{"review":{"title":"Preserved"},"requestId":"frozen-fixture"}"#
+            );
+            let window: serde_json::Value =
+                serde_json::from_slice(&fs::read(path.join("window.json"))?)?;
+            assert_eq!(
+                window,
+                json!({"width":1180,"height":780,"fixturePreserved":true})
             );
             let saved = db
                 .list(first)?

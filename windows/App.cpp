@@ -11,6 +11,7 @@
 #include <winrt/Windows.UI.Text.h>
 #include <winrt/Windows.Globalization.h>
 #include <fstream>
+#include <cmath>
 
 #pragma comment(lib, "user32.lib")
 
@@ -116,7 +117,7 @@ IAsyncAction Shell::start() {
     window.AppWindow().Resize({1280, 840});
     auto weak = weak_from_this();
     window.AppWindow().Closing([weak](auto const&, Microsoft::UI::Windowing::AppWindowClosingEventArgs const& event) {
-        if (auto self = weak.lock(); self && !self->closing) { event.Cancel(true); self->shutdown(); }
+        if (auto self = weak.lock(); self && !self->closeReady) { event.Cancel(true); if (!self->closing) self->shutdown(); }
     });
     navigation.ItemInvoked([weak](auto const&, NavigationViewItemInvokedEventArgs const& event) {
         auto self = weak.lock(); if (!self || self->selectingNavigation || self->loading) return;
@@ -138,6 +139,11 @@ IAsyncAction Shell::start() {
         }
         co_await service->start();
         if (closing) co_return;
+        try {
+            auto size = service->windowState();
+            auto width = size.GetNamedNumber(L"width", 1280), height = size.GetNamedNumber(L"height", 840);
+            if (std::isfinite(width) && std::isfinite(height)) window.AppWindow().Resize({static_cast<int>(std::clamp(width, 1040.0, 2400.0)), static_cast<int>(std::clamp(height, 700.0, 1600.0))});
+        } catch (...) { error(L"The previous window size could not be restored."); }
         auto savedLayout = text(service->clientState(), L"morrow.mail.layout");
         if (savedLayout == L"right" || savedLayout == L"bottom" || savedLayout == L"focus") mailLayout = savedLayout;
         co_await refresh(true);
@@ -177,23 +183,35 @@ IAsyncAction Shell::refresh(bool rebuild) {
 }
 void Shell::rebuildNavigation() {
     selectingNavigation = true;
+    Json desktopState;
+    try { desktopState = service->clientState(); } catch (...) { error(errorText()); }
     navigation.MenuItems().Clear();
     NavigationViewItemHeader header; header.Content(box_value(L"Workspace")); navigation.MenuItems().Append(header);
-    for (auto const& item : {std::pair{L"Today",L"today"}, {L"Activity",L"activity"}, {L"Scheduled",L"scheduled"}})
+    for (auto const& item : {std::pair{L"Today",L"today"}, {L"Activity",L"activity"}, {L"Scheduled",L"scheduled"}, {L"Out of Office",L"out-of-office"}})
         navigation.MenuItems().Append(navItem(item.first, item.second));
     if (array(state, L"accounts").Size()) navigation.MenuItems().Append(navItem(L"All accounts", L"mail", L"all"));
     for (auto const& value : array(state, L"accounts")) {
         auto account = value.GetObject(); auto id = text(account, L"id"); if (id == L"demo") continue;
         auto item = navItem(id, L"mail", id);
-        item.IsExpanded(true);
+        auto collapseKey = L"morrow.account.collapsed." + id;
+        item.IsExpanded(text(desktopState, collapseKey.c_str()) != L"true");
+        item.RegisterPropertyChangedCallback(NavigationViewItem::IsExpandedProperty(), [weak = weak_from_this(), collapseKey](DependencyObject const& sender, DependencyProperty const&) {
+            if (auto self = weak.lock(); self && !self->selectingNavigation && !self->closing) {
+                try { self->service->saveClientState(collapseKey, sender.as<NavigationViewItem>().IsExpanded() ? L"false" : L"true"); }
+                catch (...) { self->error(errorText()); }
+            }
+        });
         auto counts = object(account, L"counts");
         for (auto const& mailbox : {std::pair{L"Inbox",L"inbox"}, {L"Starred",L"starred"}, {L"Pending",L"pending"}, {L"Sent",L"sent"}, {L"Drafts",L"drafts"}, {L"Archive",L"archive"}, {L"Spam / Junk",L"spam"}, {L"Trash",L"trash"}}) {
             auto title = hstring(mailbox.first) + L"  " + to_hstring(static_cast<uint64_t>(counts.GetNamedNumber(mailbox.second, 0)));
-            item.MenuItems().Append(navItem(title, L"mail", id, mailbox.second));
+            auto child = navItem(title, L"mail", id, mailbox.second);
+            child.IsSelected(section == L"mail" && owner == id && folder == mailbox.second);
+            item.MenuItems().Append(child);
         }
         navigation.MenuItems().Append(item);
     }
     navigation.MenuItems().Append(navItem(L"Add account", L"settings"));
+    updateBadge();
     selectingNavigation = false;
 }
 IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder) {
@@ -220,6 +238,7 @@ IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder
     } else if (target == L"settings") co_await settingsPage(lifetime, L"mail");
     else if (target == L"about") co_await settingsPage(lifetime, L"about");
     else if (target == L"scheduled") co_await scheduledPage(lifetime);
+    else if (target == L"out-of-office") co_await outOfOfficePage(lifetime);
     else co_await workspacePage(lifetime, target);
 }
 void Shell::mailPage() {
@@ -324,6 +343,7 @@ IAsyncAction Shell::loadPage() {
     if (loading || section != L"mail" || !rows) co_return;
     loading = true; auto version = generation; auto captured = owner;
     previous.IsEnabled(false); next.IsEnabled(false);
+    search.IsEnabled(false); sorting.IsEnabled(false);
     try {
         Json options; put(options, L"folder", folder); put(options, L"cursor", cursors.back());
         if (cursors.back().empty()) options.Insert(L"offset", Value::CreateNumberValue(static_cast<double>((cursors.size() - 1) * 50)));
@@ -344,13 +364,15 @@ IAsyncAction Shell::loadPage() {
         for (auto const& item : messages) {
             auto message = item.GetObject();
             if (text(message, L"accountId").empty() || text(message, L"viewId").empty()) throw hresult_error(E_FAIL, L"The service returned an unowned mail row.");
-            auto row = stack(3); row.Padding(ThicknessHelper::FromUniformLength(8));
+            auto density = text(object(object(state, L"settings"), L"preferences"), L"density");
+            auto row = stack(density == L"compact" ? 1 : density == L"spacious" ? 6 : 3);
+            row.Padding(ThicknessHelper::FromUniformLength(density == L"compact" ? 4 : density == L"spacious" ? 12 : 8));
             Grid heading; ColumnDefinition nameColumn; nameColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); heading.ColumnDefinitions().Append(nameColumn);
             ColumnDefinition dotColumn; dotColumn.Width(GridLengthHelper::Auto()); heading.ColumnDefinitions().Append(dotColumn);
             bool unread = !flag(message, L"read");
             auto sender = label(text(message, L"fromName", text(message, L"fromEmail"))); bold(sender, unread); heading.Children().Append(sender);
             auto dot = label(unread ? L"●" : L""); Grid::SetColumn(dot, 1); heading.Children().Append(dot); row.Children().Append(heading);
-            for (auto key : {L"subject",L"preview",L"date"}) { auto content = label(text(message, key), key == std::wstring_view(L"date") ? 11 : 14); bold(content, unread); row.Children().Append(content); }
+            for (auto key : {L"subject",L"preview",L"date"}) { auto content = label(text(message, key), key == std::wstring_view(L"date") ? 11 : 14); content.MaxLines(key == std::wstring_view(L"preview") && density == L"spacious" ? 3 : 1); content.TextTrimming(TextTrimming::CharacterEllipsis); bold(content, unread); row.Children().Append(content); }
             if (captured == L"all") row.Children().Append(label(text(message, L"accountId"), 11));
             if (flag(message, L"pending")) row.Children().Append(label(L"Pending", 11));
             auto entry = preserve ? rows.Items().GetAt(index).as<ListViewItem>() : ListViewItem();
@@ -365,6 +387,7 @@ IAsyncAction Shell::loadPage() {
         pageLabel.Text(L"Page " + to_hstring(cursors.size()) + L" · " + to_hstring(static_cast<uint64_t>(result.GetNamedNumber(L"total", 0))) + L" messages");
         error(text(result, L"warning"));
     } catch (...) { error(errorText()); }
+    search.IsEnabled(true); sorting.IsEnabled(true);
     loading = false;
 }
 IAsyncAction Shell::read(Json metadata) {
@@ -571,8 +594,15 @@ IAsyncAction Shell::shutdown() {
     if (closing || dialogOpen) co_return;
     if (service && service->writing()) { error(L"Wait for the current save or provider operation before closing."); co_return; }
     if (!dirty.empty() && !co_await confirm(L"Discard unsaved changes and close?", L"Saved drafts and account data will stay on this device.", L"Discard and close")) co_return;
+    try {
+        auto presenter = window.AppWindow().Presenter().try_as<Microsoft::UI::Windowing::OverlappedPresenter>();
+        if (service && presenter && presenter.State() == Microsoft::UI::Windowing::OverlappedPresenterState::Restored) {
+            auto size = window.AppWindow().Size(); service->saveWindowSize(std::clamp(size.Width, 1040, 2400), std::clamp(size.Height, 700, 1600));
+        }
+    } catch (...) { error(L"The window size could not be saved. Mail and settings are retained."); }
     closing = true; ++generation; if (timer) timer.Stop(); navigation.IsEnabled(false); error(L"Closing the private service…");
     try { if (service) co_await service->stop(); } catch (...) {}
+    closeReady = true;
     window.Close(); Application::Current().Exit();
 }
 IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {

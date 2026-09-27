@@ -125,9 +125,23 @@ if (-not $RustNotices) {
     Push-Location $root
     try {
         Invoke-Checked 'cargo' @('fetch', '--manifest-path', 'rust/Cargo.toml', '--locked', '--target', 'x86_64-pc-windows-msvc')
-        $noticeLines = & cargo run --manifest-path rust/Cargo.toml --release --locked --bin morrow-notices -- --target x86_64-pc-windows-msvc
-        if ($LASTEXITCODE -ne 0) { throw 'Rust notice collection failed.' }
-        Write-Utf8 $RustNotices ([string]::Join("`n", $noticeLines) + "`n")
+        # PowerShell's native line pipeline rewrites embedded CRLF notices.
+        # Capture the UTF-8 stream intact, matching the canonical Rust output.
+        $noticeProcess = [Diagnostics.Process]::new()
+        try {
+            $noticeProcess.StartInfo = [Diagnostics.ProcessStartInfo]::new('cargo')
+            $noticeProcess.StartInfo.UseShellExecute = $false
+            $noticeProcess.StartInfo.WorkingDirectory = $root
+            $noticeProcess.StartInfo.RedirectStandardOutput = $true
+            $noticeProcess.StartInfo.StandardOutputEncoding = [Text.UTF8Encoding]::new($false, $true)
+            foreach ($argument in @('run', '--quiet', '--manifest-path', 'rust/Cargo.toml', '--release', '--locked', '--bin', 'morrow-notices', '--', '--target', 'x86_64-pc-windows-msvc')) { $noticeProcess.StartInfo.ArgumentList.Add($argument) }
+            if (-not $noticeProcess.Start()) { throw 'Rust notice collection could not start.' }
+            $read = $noticeProcess.StandardOutput.ReadToEndAsync()
+            $noticeProcess.WaitForExit()
+            $noticeText = $read.GetAwaiter().GetResult()
+            if ($noticeProcess.ExitCode -ne 0 -or [Text.Encoding]::UTF8.GetByteCount($noticeText) -gt 16MB) { throw 'Rust notice collection failed or exceeded its limit.' }
+            Write-Utf8 $RustNotices $noticeText
+        } finally { $noticeProcess.Dispose() }
     } finally { Pop-Location }
 }
 Required-File $RustNotices

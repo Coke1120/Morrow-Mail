@@ -10,7 +10,7 @@ Set-StrictMode -Version Latest
 if (-not $IsWindows) { throw 'Run Windows native acceptance on Windows.' }
 $directory = (Resolve-Path -LiteralPath $PackageDirectory).Path
 function Require([bool] $Value, [string] $Message) { if (-not $Value) { throw $Message } }
-function Require-X64([string] $Path) {
+function Require-X64([string] $Path, [bool] $DesktopHost = $false) {
     $stream = [IO.File]::OpenRead($Path)
     $reader = [IO.BinaryReader]::new($stream)
     try {
@@ -20,6 +20,10 @@ function Require-X64([string] $Path) {
         Require ($header -ge 0x40 -and $header -lt $stream.Length - 6) "Invalid PE header: $Path"
         $stream.Position = $header
         Require ($reader.ReadUInt32() -eq 0x00004550 -and $reader.ReadUInt16() -eq 0x8664) "Expected x64 PE: $Path"
+        if ($DesktopHost) {
+            $stream.Position = $header + 24 + 70 # PE optional-header DllCharacteristics
+            Require (($reader.ReadUInt16() -band 0x1000) -eq 0) 'An unpackaged desktop host must not carry the APPCONTAINER linker flag.'
+        }
     } finally { $reader.Dispose() }
 }
 $required = @('Morrow Mail.exe', 'Microsoft.UI.Xaml.dll', 'Microsoft.WindowsAppRuntime.dll',
@@ -40,6 +44,7 @@ $package = Get-Content -LiteralPath (Join-Path $directory 'resources/app/backend
 $hostMetadata = Get-Content -LiteralPath (Join-Path $directory 'resources/app/package.json') -Raw | ConvertFrom-Json
 Require ($hostMetadata.serviceRuntime -ceq 'rust' -and $hostMetadata.nativeHost -ceq 'winui3' -and $hostMetadata.version -ceq $package.version) 'Native host metadata does not match the common version.'
 $exe = Join-Path $directory 'Morrow Mail.exe'
+Require-X64 $exe $true
 $service = Join-Path $directory 'resources/app/runtime/morrow-service.exe'
 Require ([Diagnostics.FileVersionInfo]::GetVersionInfo($exe).ProductVersion -ceq $package.version) 'Native PE version differs from package.json.'
 $reported = & $service --version
@@ -128,7 +133,13 @@ try {
             $ui.Environment['MORROW_DATA_DIR'] = $case.path
             $process = [Diagnostics.Process]::Start($ui)
             Require ($process.WaitForExit(180000)) 'Native UI fixture did not finish within 180 seconds.'
-            Require ($process.ExitCode -eq 0) 'Native UI smoke failed.'
+            if ($process.ExitCode -ne 0) {
+                $exitCode = $process.ExitCode
+                Write-Host ('Native UI exit code: {0} (0x{1:X8})' -f $exitCode, ($exitCode -band 0xffffffffL))
+                Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = (Get-Date).AddMinutes(-4) } -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Message -like '*Morrow Mail*' } | Select-Object -First 5 TimeCreated, Id, Message | Format-List | Out-Host
+                throw 'Native UI smoke failed before successful completion.'
+            }
             Require (Test-Path -LiteralPath $resultFile) 'Native UI did not report its completed smoke checks.'
             $result = Get-Content -LiteralPath $resultFile -Raw | ConvertFrom-Json
             $evidence = Join-Path $root 'test-results'

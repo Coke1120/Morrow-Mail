@@ -73,6 +73,18 @@ Json readJson(fs::path const& path, uintmax_t limit) {
     std::string data((std::istreambuf_iterator<char>(file)), {});
     return Json::Parse(to_hstring(data));
 }
+void writeJson(fs::path const& destination, Json const& state, size_t limit) {
+    auto bytes = to_string(state.Stringify());
+    require(bytes.size() <= limit, L"Saved desktop state exceeds its limit.");
+    auto temporary = destination.parent_path() / (L"desktop-state-" + std::wstring(Service::uuid()) + L".tmp");
+    Handle file{CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr)};
+    require(file.value != INVALID_HANDLE_VALUE, L"Could not save desktop state.");
+    DWORD written = 0;
+    bool success = WriteFile(file.value, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) && written == bytes.size() && FlushFileBuffers(file.value);
+    CloseHandle(file.release());
+    if (success) success = MoveFileExW(temporary.c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    if (!success) { DeleteFileW(temporary.c_str()); throw hresult_error(E_FAIL, L"Desktop state was not saved. The previous state is retained."); }
+}
 }
 hstring text(Json const& value, wchar_t const* key, hstring const& fallback) {
     auto entry = value.TryLookup(key);
@@ -272,15 +284,18 @@ void Service::saveClientState(hstring const& key, hstring const& value) {
     auto destination = directory_ / L"client-state.json";
     auto state = readJson(destination, 262144);
     put(state, key.c_str(), value); // Preserve every existing key/string, including frozen calendar review.
-    auto bytes = to_string(state.Stringify());
-    require(bytes.size() <= 262144, L"Saved desktop state exceeds its limit.");
-    auto temporary = directory_ / (L"client-state-" + std::wstring(uuid()) + L".tmp");
-    Handle file{CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr)};
-    require(file.value != INVALID_HANDLE_VALUE, L"Could not save desktop state.");
-    DWORD written = 0;
-    bool success = WriteFile(file.value, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) && written == bytes.size() && FlushFileBuffers(file.value);
-    CloseHandle(file.release());
-    if (success) success = MoveFileExW(temporary.c_str(), destination.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
-    if (!success) { DeleteFileW(temporary.c_str()); throw hresult_error(E_FAIL, L"Desktop state was not saved. The previous state is retained."); }
+    writeJson(destination, state, 262144);
+}
+Json Service::windowState() const {
+    std::lock_guard lock(stateMutex_);
+    return readJson(directory_ / L"window.json", 4096);
+}
+void Service::saveWindowSize(int width, int height) {
+    require(width >= 1040 && width <= 2400 && height >= 700 && height <= 1600, L"Invalid window size.");
+    std::lock_guard lock(stateMutex_);
+    auto destination = directory_ / L"window.json";
+    auto state = readJson(destination, 4096);
+    state.Insert(L"width", Value::CreateNumberValue(width)); state.Insert(L"height", Value::CreateNumberValue(height));
+    writeJson(destination, state, 4096);
 }
 }

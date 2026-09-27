@@ -44,6 +44,8 @@ public:
     winrt::hstring origin() const;
     Json clientState() const;
     void saveClientState(winrt::hstring const& key, winrt::hstring const& value);
+    Json windowState() const;
+    void saveWindowSize(int width, int height);
     static std::filesystem::path workspace();
     static std::filesystem::path executable();
     static winrt::hstring uuid();

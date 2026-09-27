@@ -152,18 +152,16 @@ async fn run() -> Result<()> {
         jobs.push(tokio::spawn(async move {
             loop {
                 let seconds = match kind { 0 => 30, 1 => 1, _ => 5 };
-                tokio::select! { _ = stop.changed() => break, _ = tokio::time::sleep(Duration::from_secs(seconds)) => {} }
-                tokio::select! {
-                    _ = stop.changed() => break,
-                    _ = async {
+                if *stop.borrow() { break; }
+                tokio::select! { biased; _ = stop.changed() => break, _ = tokio::time::sleep(Duration::from_secs(seconds)) => {} }
+                if !finish_background_tick(async {
                         match kind {
                             0 => { let _ = morrow_search::background::tick(&worker).await; }
                             1 => { let _ = morrow_search::smart_search::tick(&worker).await; }
                             2 => { let _ = morrow_search::scheduled::tick(&worker).await; }
                             _ => { let _ = morrow_search::reply_suggestions::tick(&worker).await; }
                         }
-                    } => {}
-                }
+                    }, &mut stop, kind == 2).await { break; }
             }
         }));
     }
@@ -185,22 +183,42 @@ async fn run() -> Result<()> {
     morrow_search::background::stop(&app);
     morrow_search::reply_suggestions::stop(&app);
     let _ = shutdown_tx.send(true);
-    app.0.updater.stop().await;
-    for job in jobs {
-        let _ = job.await;
+    // One deadline covers worker, HTTP and DB draining, inside the host's 70-second limit.
+    match tokio::time::timeout(Duration::from_secs(65), async {
+        app.0.updater.stop().await;
+        for job in jobs {
+            let _ = job.await;
+        }
+        let _ = index_task.await;
+        let result = match completed {
+            Some(result) => result,
+            None => server.await,
+        };
+        result.map_err(|_| Error::new(500, "The private service stopped unexpectedly."))??;
+        // Acquire the same executor after draining HTTP: accepted DB writes have completed.
+        app.db(|_| Ok(())).await
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => std::process::exit(1),
     }
-    let _ = index_task.await;
-    let result = match completed {
-        Some(result) => result,
-        None => match tokio::time::timeout(Duration::from_secs(65), server).await {
-            Ok(result) => result,
-            Err(_) => std::process::exit(1),
-        },
-    };
-    result.map_err(|_| Error::new(500, "The private service stopped unexpectedly."))??;
-    // Acquire the same executor after draining HTTP: all accepted DB writes have completed before close.
-    app.db(|_| Ok(())).await?;
-    Ok(())
+}
+async fn finish_background_tick(
+    tick: impl std::future::Future<Output = ()>,
+    stop: &mut tokio::sync::watch::Receiver<bool>,
+    drain: bool,
+) -> bool {
+    if *stop.borrow() {
+        return false;
+    }
+    if drain {
+        // A scheduled send may already be accepted remotely. Observe and persist its result.
+        tick.await;
+        true
+    } else {
+        tokio::select! { biased; _ = stop.changed() => false, _ = tick => true }
+    }
 }
 async fn shutdown_signal() {
     #[cfg(unix)]
@@ -213,4 +231,55 @@ async fn shutdown_signal() {
         }
     }
     let _ = tokio::signal::ctrl_c().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn shutdown_drains_delivery_but_cancels_read_work_and_starts_no_new_tick() {
+        for drain in [true, false] {
+            let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(async move {
+                finish_background_tick(
+                    async {
+                        let _ = started_tx.send(());
+                        let _ = release_rx.await;
+                    },
+                    &mut stop_rx,
+                    drain,
+                )
+                .await
+            });
+            started_rx.await.unwrap();
+            stop_tx.send(true).unwrap();
+            if drain {
+                tokio::task::yield_now().await;
+                assert!(
+                    !task.is_finished(),
+                    "An active delivery must finish observing its result"
+                );
+                release_tx.send(()).unwrap();
+            }
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(1), task)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                drain
+            );
+        }
+        let (_, mut stop) = tokio::sync::watch::channel(true);
+        assert!(
+            !finish_background_tick(
+                async { panic!("Must not start after shutdown") },
+                &mut stop,
+                true
+            )
+            .await
+        );
+    }
 }
