@@ -274,7 +274,9 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
             auto page = weak.lock();
             args.Cancel(true);
             if (!page || !page->live()) return;
-            if (page->expectingDocument && args.Uri() == L"about:blank" && !args.IsRedirected() && !args.IsUserInitiated()) {
+            // Host API navigations also count as user initiated. The one-use
+            // HTML expectation, exact URI and redirect check identify our load.
+            if (page->expectingDocument && args.Uri() == L"about:blank" && !args.IsRedirected()) {
                 page->expectingDocument = false; page->documentId = args.NavigationId(); args.Cancel(false);
             } else if (args.IsUserInitiated()) openLink(page, args.Uri());
         });

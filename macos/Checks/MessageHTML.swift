@@ -63,11 +63,22 @@ struct ReaderFixture: View {
                     cg.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(window.windowNumber))
                     guard let event = NSEvent(cgEvent: cg) else { fatalError("Could not create wheel event") }
                     assert(target === web, "Wheel must hit the interactive HTML surface")
+                    assert(event.hasPreciseScrollingDeltas && event.scrollingDeltaY == CGFloat(delta), "Synthetic pixel wheel changed its delta: input=\(delta), actual=\(event.scrollingDeltaY), phase=\(event.phase.rawValue)")
                     target.scrollWheel(with: event)
+                }
+                @MainActor func waitForOuterY(_ expected: CGFloat, _ label: String) async throws {
+                    // AppKit applies pixel scrolling asynchronously. Establish a
+                    // completed downward baseline before reversing direction;
+                    // a fixed sleep can sample midway through the first scroll.
+                    for _ in 0..<100 {
+                        if abs(scroll.documentVisibleRect.minY - expected) < 1 { return }
+                        try await Task.sleep(nanoseconds: 20_000_000)
+                    }
+                    assert(abs(scroll.documentVisibleRect.minY - expected) < 1, "\(label): expectedY=\(expected), actual=\(scroll.documentVisibleRect), HTML=\(web.frame), contentHeight=\(state.height), OS=\(ProcessInfo.processInfo.operatingSystemVersionString)")
                 }
                 let beforeShort = scroll.documentVisibleRect.minY
                 wheel(-100)
-                try await Task.sleep(nanoseconds: 250_000_000)
+                try await waitForOuterY(beforeShort + 100, "Downward wheel did not finish")
                 assert(scroll.documentVisibleRect.minY > beforeShort, "Wheel over short HTML did not scroll the reader")
                 let beforeUp = scroll.documentVisibleRect.minY
                 wheel(0, phase: .began)
@@ -75,7 +86,7 @@ struct ReaderFixture: View {
                 wheel(30, phase: .changed)
                 try await Task.sleep(nanoseconds: 50_000_000)
                 wheel(0, phase: .ended)
-                try await Task.sleep(nanoseconds: 250_000_000)
+                try await waitForOuterY(beforeUp - 30, "Upward trackpad scrolling did not reach the reader")
                 assert(scroll.documentVisibleRect.minY < beforeUp, "Upward trackpad scrolling did not reach the reader")
 
                 state.html = "<p>Long message start</p>" + String(repeating: "<p>Formatted long email line, with enough text to wrap when this reader gets narrower.</p>", count: 1800) + "<p>Long message end</p>"
