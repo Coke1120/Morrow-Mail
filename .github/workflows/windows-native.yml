@@ -94,6 +94,15 @@ jobs:
       - name: Native fixture walkthrough
         shell: pwsh
         run: ./scripts/test-windows-native.ps1 -UiSmoke
+      - name: Measure native Windows service with fictional mail
+        shell: pwsh
+        run: |
+          if (Get-Command node,npm -ErrorAction SilentlyContinue) { throw 'Node/npm must not be available to native checks.' }
+          $driver = (Resolve-Path 'rust/target/debug/morrow-benchmark.exe').Path
+          $binary = (Resolve-Path 'build/windows-native/Morrow Mail-win32-x64/resources/app/runtime/morrow-service.exe').Path
+          $report = Join-Path $PWD "test-results/windows-native-benchmark-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT).json"
+          & $driver "--binary=$binary" "--output=$report" '--sizes=1000,10000,50000' '--idleSeconds=30'
+          if ($LASTEXITCODE -ne 0) { throw 'Native service benchmark failed; inspect its report.' }
       - name: Retain paired Windows candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

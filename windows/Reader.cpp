@@ -505,8 +505,9 @@ void checkFallback(std::shared_ptr<Reader> const& state, hstring const& body) {
         L"Reader fallback did not preserve visible plain text with images disabled.");
 }
 struct RuntimeProbe {
-    unsigned requests = 0, messages = 0;
+    unsigned requests = 0, messages = 0, auditEvents = 0, cspFlags = 0;
     bool resourceLeak = false, navigationLeak = false, callbackFailure = false, staleNavigation = false;
+    bool collectCsp = false;
     hstring expectedDocumentBase64;
 };
 struct RuntimeCleanup {
@@ -519,10 +520,13 @@ struct RuntimeCleanup {
     std::vector<std::shared_ptr<Reader>> readers;
     CoreWebView2 core{nullptr};
     event_token resource{}, navigation{}, message{};
+    CoreWebView2DevToolsProtocolEventReceiver audits{nullptr};
+    event_token audit{};
     bool observing = false;
     ~RuntimeCleanup() {
         // Keep the final deny installed until the browser has closed.
         for (auto const& state : readers) state->close();
+        if (audits) { try { audits.DevToolsProtocolEventReceived(audit); } catch (...) {} }
         if (observing && core) {
             try { core.WebResourceRequested(resource); } catch (...) {}
             try { core.NavigationStarting(navigation); } catch (...) {}
@@ -667,14 +671,51 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     }))())JS", deadline, L"script-sentinel"));
     runtimeCheck(initial.GetNamedBoolean(L"mounted") && !initial.GetNamedBoolean(L"inlineRan")
         && !initial.GetNamedBoolean(L"handlerRan"), L"Email script or an inline event handler executed in the live reader.");
+    // ExecuteScript can run with scripts disabled, but DOM event callbacks still
+    // require CanExecuteScripts. Observe enforced CSP issues in the native host
+    // instead; a failed fetch/broken image alone could just be our final 403.
+    phase("csp-observer");
+    cleanup.audits = core.GetDevToolsProtocolEventReceiver(L"Audits.issueAdded");
+    cleanup.audit = cleanup.audits.DevToolsProtocolEventReceived([probe, weak](auto const&, CoreWebView2DevToolsProtocolEventReceivedEventArgs const& args) {
+        if (!probe->collectCsp) return;
+        try {
+            auto page = weak.lock();
+            if (!page || !page->live() || ++probe->auditEvents > 64) { probe->callbackFailure = true; return; }
+            if (!args.SessionId().empty()) return; // Only this fixture's top-level document.
+            auto data = args.ParameterObjectAsJson();
+            if (data.size() > 32768) { probe->callbackFailure = true; return; }
+            auto issue = Json::Parse(data).GetNamedObject(L"issue");
+            if (text(issue, L"code") != L"ContentSecurityPolicyIssue") return;
+            auto details = issue.GetNamedObject(L"details").GetNamedObject(L"contentSecurityPolicyIssueDetails");
+            if (details.GetNamedBoolean(L"isReportOnly", true)
+                || text(details, L"contentSecurityPolicyViolationType") != L"kURLViolation") return;
+            auto directive = text(details, L"violatedDirective"), url = text(details, L"blockedURL");
+            if (directive == L"img-src" && url == L"https://127.0.0.1:65534/morrow-reader-fixture/probe.png") probe->cspFlags |= 2u;
+            if (directive == L"connect-src" && url == L"https://127.0.0.1:65534/morrow-reader-fixture/connect") probe->cspFlags |= 8u;
+            // Blink strips cross-origin frame-src report URLs to their origin.
+            // This distinct probe origin cannot match a replayed initial-frame issue.
+            if (directive == L"frame-src" && url == L"https://127.0.0.1:65533") probe->cspFlags |= 4u;
+        } catch (...) { probe->callbackFailure = true; }
+    });
+    {
+        auto enable = core.CallDevToolsProtocolMethodAsync(L"Audits.enable", L"{}");
+        struct Cancel {
+            IAsyncOperation<hstring> operation;
+            ~Cancel() { try { if (operation.Status() == AsyncStatus::Started) operation.Cancel(); } catch (...) {} }
+        } cancel{enable};
+        co_await runtimeWait([enable] { return enable.Status() != AsyncStatus::Started; }, deadline, L"csp-observer");
+        auto response = enable.GetResults();
+        runtimeCheck(response.size() <= 32768 && !Json::Parse(response).HasKey(L"error"), L"The native CSP observer could not start.");
+    }
+    runtimeCheck(!settings.IsScriptEnabled() && !settings.AreDevToolsEnabled(), L"The CSP observer changed reader script or DevTools settings.");
+    probe->collectCsp = true;
     phase("csp-probe-start");
     auto started = Json::Parse(co_await runtimeScript(core, LR"JS((() => {
-        const check = window.__morrowReaderCheck = { violations: {}, connect: 'pending' };
-        document.addEventListener('securitypolicyviolation', event => { check.violations[event.effectiveDirective] = true; });
+        const check = window.__morrowReaderCheck = { connect: 'pending' };
         const image = document.createElement('img'); image.id = 'reader-probe-image';
         image.setAttribute('onerror', "document.documentElement.dataset.readerHandler='ran'");
         image.src = 'https://127.0.0.1:65534/morrow-reader-fixture/probe.png'; document.body.appendChild(image);
-        const frame = document.createElement('iframe'); frame.src = 'https://127.0.0.1:65534/morrow-reader-fixture/probe-frame'; document.body.appendChild(frame);
+        const frame = document.createElement('iframe'); frame.src = 'https://127.0.0.1:65533/morrow-reader-fixture/probe-frame'; document.body.appendChild(frame);
         fetch('https://127.0.0.1:65534/morrow-reader-fixture/connect', { mode: 'no-cors', credentials: 'omit', cache: 'no-store' })
             .then(() => { check.connect = 'allowed'; }, () => { check.connect = 'blocked'; });
         try { window.chrome.webview.postMessage('forbidden-fixture-message'); } catch (_) {}
@@ -688,22 +729,19 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
         auto snapshot = Json::Parse(co_await runtimeScript(core, LR"JS((() => {
             const check = window.__morrowReaderCheck;
             const image = document.getElementById('reader-probe-image');
-            return { connect: check.connect, imageBlocked: !!check.violations['img-src'],
-                frameBlocked: !!check.violations['frame-src'], connectBlocked: !!check.violations['connect-src'],
+            return { connect: check.connect,
                 imageComplete: image.complete, imageWidth: image.naturalWidth,
                 inlineRan: document.documentElement.dataset.readerInline === 'ran',
                 handlerRan: document.documentElement.dataset.readerHandler === 'ran' };
         })())JS", deadline, L"csp-snapshot"));
+        runtimeCheck(!probe->callbackFailure, L"The native CSP observer failed or exceeded its bounded evidence limit.");
         runtimeCheck(text(snapshot, L"connect") != L"allowed" && !snapshot.GetNamedBoolean(L"inlineRan")
             && !snapshot.GetNamedBoolean(L"handlerRan") && snapshot.GetNamedNumber(L"imageWidth") == 0,
             L"The live reader executed mail script or allowed an unconsented resource.");
-        settled = text(snapshot, L"connect") == L"blocked" && snapshot.GetNamedBoolean(L"imageBlocked")
-            && snapshot.GetNamedBoolean(L"frameBlocked") && snapshot.GetNamedBoolean(L"connectBlocked")
+        settled = text(snapshot, L"connect") == L"blocked" && probe->cspFlags == 14u
             && snapshot.GetNamedBoolean(L"imageComplete");
         unsigned flags = (text(snapshot, L"connect") == L"blocked" ? 1u : 0u)
-            | (snapshot.GetNamedBoolean(L"imageBlocked") ? 2u : 0u)
-            | (snapshot.GetNamedBoolean(L"frameBlocked") ? 4u : 0u)
-            | (snapshot.GetNamedBoolean(L"connectBlocked") ? 8u : 0u)
+            | probe->cspFlags
             | (snapshot.GetNamedBoolean(L"imageComplete") ? 16u : 0u);
         if (flags != previousFlags) {
             previousFlags = flags;
@@ -716,6 +754,7 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
             co_await runtimeWait([next] { return GetTickCount64() >= next; }, deadline, L"csp-settle");
         }
     }
+    probe->collectCsp = false;
     runtimeCheck(!probe->resourceLeak && !probe->navigationLeak && !probe->callbackFailure && !probe->messages
         && !state->images && state->budget->requests == 0 && state->budget->bytes.load() == 0,
         L"Reader isolation leaked a request/message or invoked native image fetching without consent.");
@@ -768,6 +807,7 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     put(result, L"staleClose", L"passed"); put(result, L"script", L"blocked");
     put(result, L"webMessages", L"blocked"); put(result, L"hostObjects", L"disabled");
     put(result, L"images", L"blocked"); put(result, L"frames", L"blocked"); put(result, L"connect", L"blocked");
+    put(result, L"cspEvidence", L"native-audits");
     result.Insert(L"interceptedRequests", Value::CreateNumberValue(probe->requests));
     result.Insert(L"nativeImageRequests", Value::CreateNumberValue(state->budget->requests));
     phase("passed");

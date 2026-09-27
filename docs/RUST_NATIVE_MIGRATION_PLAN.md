@@ -7,7 +7,7 @@
 2026-09-28 候選實作進度（`codex/native-migration`，尚未切換正式 Windows 產品）：
 
 - N1：共用草稿準備已移至 Rust；catalog／OpenCC 來源固定、5,343 筆正規化 golden 與授權內容比對通過。
-- N2／N3：WinUI host、原生功能頁與隔離 HTML reader 已落盤並通過編譯。CI 已通過啟動、Fresh onboarding、重複關窗的服務排空保護、視窗精確還原、前景操作 guard、owned-mailbox 分頁、草稿、工作頁與 Settings。HTML reader 的 25 秒 timeout 已由事件診斷確認：`NavigateToString` 使用 Base64 `data:text/html` 導覽，被僅允許 `about:blank` 的 guard 取消。已加入有界、一次性的 host 文件 UTF-8 Base64 完全比對，保留 redirect／內容隔離；此修正待 Windows CI。完整 walkthrough 尚未通過，不能以編譯或啟動代替驗收。
+- N2／N3：WinUI host、原生功能頁與隔離 HTML reader 已落盤並通過編譯。CI 已通過啟動、Fresh onboarding、重複關窗的服務排空保護、視窗精確還原、前景操作 guard、owned-mailbox 分頁、草稿、工作頁與 Settings。`NavigateToString` 的 Base64 HTML 導覽已改為有界、一次性的 host 文件完全比對，初始及攻擊測試文件載入、inline script 阻擋已在 CI 36352335146 通過；目前停在停用腳本時的 CSP 事件觀測。完整 reader／walkthrough 尚未通過，不能以編譯或啟動代替驗收。
 - N4：新 Node-free macOS candidate 經固定 beta.16 舊 installer 實際升級／啟動及備份通過，包括 Scheduled、Pending、Learning、Reply Suggestions 與中斷 claim 不重播。Windows 尚待 runtime／upgrade gate。
 - N6：macOS／Windows 的 Node-inaccessible Rust fmt／Clippy／tests 已通過；新版 macOS canonical ZIP／checksum、Models、HTML／network-zero、視窗與 Rust native integration 已在 macOS 15 通過。Rust resources／notices／macOS builder／native acceptance driver 已驗證無 Node 路徑；Rust benchmark 的 1k smoke 通過。共用 assets 與 production 公鑰已解除對 React／Node 來源目錄的依賴。新 publisher 已補上同 run artifact 來源綁定，七項 focused checks 與真實 GitHub ZIP 唯讀解析通過；尚未接正式發佈。
 - N5 與所有乾淨最低 OS／IME／Narrator／DPI／真實 provider／正式簽章門檻保持未完成。既有 Electron／Node 相容路徑與發佈資產沒有刪除或替換。

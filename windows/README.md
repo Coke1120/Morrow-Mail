@@ -76,7 +76,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
 ```
 
 Retain the application/window and initialize `XamlControlsResources` in the
-application's merged resource dictionaries. The programmatic Application also
+application's merged resource dictionaries at the start of `OnLaunched`, before
+creating the shell. Application resources are not available during construction.
+The programmatic Application also
 implements `IXamlMetadataProvider`, forwarding both `GetXamlType` overloads and
 `GetXmlnsDefinitions` to `XamlControlsXamlMetaDataProvider`; without generated
 App.xaml code this is required for the controls' runtime templates.
@@ -164,11 +166,16 @@ UI run has a 180-second deadline and a checked completion result; timeout cleanu
 targets only the launched PID. The helper and workspaces are never packaged.
 
 The PowerShell AST, all nine official NuGet archive hashes, project XML and explicit
-package import paths were checked. Hosted `windows-2022` compilation, packaging and
-private Rust startup/authentication/EOF drain passed in CI 36338790648. The WinUI
-process still fails during Application initialization with `0xC000027B`; the
-metadata-provider correction did not resolve it. Native UI smoke and the complete
-feature/upgrade checks have not passed. Separately run on
+package import paths were checked. Hosted `windows-2022` Rust checks, compilation,
+packaging, private service startup/authentication/EOF drain, fresh onboarding,
+foreground interaction guards and owned mail/workspace/Settings checks passed in
+CI 36352335146. Application startup was fixed by initializing resources in
+`OnLaunched`. Exact-document matching fixed the reader's rejected Base64 HTML
+navigation; initial and adversarial documents now load and the inline-script
+sentinel passes. The current failure is the fixture's CSP event observation under
+disabled scripting; the complete reader smoke and historical upgrade gates have
+not passed.
+Separately run on
 a clean supported Windows VM with no VS, no Windows App Runtime, offline startup,
 ordinary-user permissions, and WebView2 absent. A hosted-runner pass alone cannot
 establish those clean-machine conditions. There is no production cutover here.
