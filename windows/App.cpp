@@ -724,14 +724,6 @@ struct MorrowApplication : winrt::Microsoft::UI::Xaml::ApplicationT<MorrowApplic
                 // Do not mark handled: a failed XAML initialization must still fail acceptance.
             });
             startupTrace("event installed");
-            phase = "reading application resources"; startupTrace(phase);
-            auto resources = Resources(); startupTrace("resources read");
-            phase = "reading merged dictionaries"; startupTrace(phase);
-            auto dictionaries = resources.MergedDictionaries(); startupTrace("merged dictionaries read");
-            phase = "constructing control resources"; startupTrace(phase);
-            auto controls = winrt::Microsoft::UI::Xaml::Controls::XamlControlsResources(); startupTrace("controls constructed");
-            phase = "appending control resources"; startupTrace(phase);
-            dictionaries.Append(controls); startupTrace("control resources loaded");
         } catch (...) {
             if (std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos) {
                 std::fprintf(stderr, "Native startup constructor (%s) HRESULT: 0x%08X\n", phase, static_cast<unsigned>(winrt::to_hresult())); std::fflush(stderr);
@@ -741,6 +733,23 @@ struct MorrowApplication : winrt::Microsoft::UI::Xaml::ApplicationT<MorrowApplic
     }
     void OnLaunched(winrt::Microsoft::UI::Xaml::LaunchActivatedEventArgs const&) {
         startupTrace("OnLaunched entered");
+        // Application::Start initializes the core Application after the constructor, before OnLaunched.
+        char const* phase = "reading application resources";
+        try {
+            startupTrace(phase);
+            auto resources = Resources(); startupTrace("resources read");
+            phase = "reading merged dictionaries"; startupTrace(phase);
+            auto dictionaries = resources.MergedDictionaries(); startupTrace("merged dictionaries read");
+            phase = "constructing control resources"; startupTrace(phase);
+            auto controls = winrt::Microsoft::UI::Xaml::Controls::XamlControlsResources(); startupTrace("controls constructed");
+            phase = "appending control resources"; startupTrace(phase);
+            dictionaries.Append(controls); startupTrace("control resources loaded");
+        } catch (...) {
+            if (std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos) {
+                std::fprintf(stderr, "Native startup OnLaunched (%s) HRESULT: 0x%08X\n", phase, static_cast<unsigned>(winrt::to_hresult())); std::fflush(stderr);
+            }
+            throw;
+        }
         shell = std::make_shared<morrow::Shell>(); shell->start();
     }
 };

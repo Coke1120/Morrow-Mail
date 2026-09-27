@@ -369,7 +369,7 @@ try {
             $startupDiagnostics = $process.StandardError.ReadToEndAsync()
             Require ($process.WaitForExit(180000)) 'Native UI fixture did not finish within 180 seconds.'
             $diagnostics = $startupDiagnostics.GetAwaiter().GetResult()
-            $safeStartup = '^Native startup: [A-Za-z0-9 .(),:_-]{1,120}$|^Native (startup|XAML) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native startup constructor \((installing unhandled exception handler|reading application resources|reading merged dictionaries|constructing control resources|appending control resources)\) HRESULT: 0x[0-9A-Fa-f]{8}$'
+            $safeStartup = '^Native startup: [A-Za-z0-9 .(),:_-]{1,120}$|^Native (startup|XAML) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native startup (constructor|OnLaunched) \((installing unhandled exception handler|reading application resources|reading merged dictionaries|constructing control resources|appending control resources)\) HRESULT: 0x[0-9A-Fa-f]{8}$'
             $diagnostics = (($diagnostics -split '\r?\n') | Where-Object { $_ -cmatch $safeStartup } | Select-Object -Last 20) -join "`n"
             if ($diagnostics.Length -gt 1024) { $diagnostics = $diagnostics.Substring($diagnostics.Length - 1024) }
             if ($diagnostics) { Write-Host $diagnostics }
