@@ -1,6 +1,19 @@
 # Verification — 27 September 2026
 
-The unpublished beta.15 tag was stopped by one stale UI assertion looking for the old import button label. Its Rust checks and macOS desktop/upgrade acceptance passed; the assertion now checks the enabled Start new import button while retaining all history-range and Spam/Trash exclusion checks. No product behavior was changed for this correction. After rebuilding the versioned local Rust worker, `npm run check` passed 232 checks with two conditional Rust-service checks skipped, plus the React production build. Those conditional checks remain required in the CI Rust contract step. Beta.16 reruns the complete paired release gates.
+## 0.6.0-beta.16 paired prerelease
+
+[beta.16](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.16) was published at 2026-09-27T14:24:51Z from `7ab30cbb3e496118513a98f8211ec66481e282c4`. All five platform jobs and the publisher in [tag CI 36323695599](https://github.com/Coke1120/Morrow-Mail/actions/runs/36323695599) passed. The redundant main run was cancelled; every tag gate remained. The full Rust suites, seven Node–Rust contracts, 232 Node checks (two conditional service checks are covered by the separate contracts), React builds, dependency audits and benchmarks passed on the release platforms. Both desktop pipelines passed packaged acceptance and actual old-installer upgrade, restart and backup preservation; macOS also passed the full native checks and Rust client harness.
+
+All six public assets were downloaded and verified with the pinned Ed25519 manifest, exact sizes, SHA-256/checksum files and archive confinement. Both packages identify beta.16/Rust, contain bundled Google Desktop registration and dependency notices, and exclude private workspace data and a standalone Node backend. The downloaded Mac app passed deep/strict codesign, plist, service-version and CLI checks.
+
+| Public archive | Bytes | SHA-256 |
+| --- | ---: | --- |
+| macos-arm64 | 11,948,140 | `ab5ed5f077fcea1853f132c1dc27a6145bdc5b3ebee178c797a0cda9b9d2765c` |
+| windows-x64 | 168,456,571 | `008b1300ab31caf4a919fd8040a7bc7f883f5609e561cc95146fb66b28c17586` |
+
+No Applications replacement or real provider/model action was performed for this release. The installed app remains beta.14. Yahoo HK setup is fixture-checked, not live-account accepted. Ad-hoc macOS signing, absent Apple notarization, unsigned Windows and incomplete live-provider/model/accessibility acceptance remain explicit beta limitations.
+
+The unpublished beta.15 tag was stopped by one stale UI assertion looking for the old import button label. Its Rust checks and macOS desktop/upgrade acceptance passed; the assertion now checks the enabled Start new import button while retaining all history-range and Spam/Trash exclusion checks. No product behavior was changed for this correction. After rebuilding the versioned local Rust worker, `npm run check` passed 232 checks with two conditional Rust-service checks skipped, plus the React production build. Those conditional checks remain required in the CI Rust contract step. Beta.16 subsequently passed the complete paired release gates above.
 
 ## 0.6.0-beta.16 local preparation — Settings UI/UX and Yahoo HK
 
