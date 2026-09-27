@@ -62,7 +62,6 @@ struct WindowAssertions {
             assert(split.arrangedSubviews.count == 2 && split.arrangedSubviews.first === host && host.superview === split && host.window === window, "Late attachment lost its pane")
             split.adjustSubviews()
             split.setPosition(split.bounds.width / 2, ofDividerAt: 0)
-            FileHandle.standardError.write(Data("Late pane immediately after set: \(host.frame), translates=\(host.translatesAutoresizingMaskIntoConstraints), constraints=\(host.constraints)\n".utf8))
         } else { host.rootView = vertical
             ? AnyView(HSplitView { Color.clear.frame(minWidth: 200).background(InitialSplitPosition(position)); Color.clear.frame(minWidth: 320) })
             : AnyView(VSplitView { Color.clear.frame(minHeight: 160).background(InitialSplitPosition(position)); Color.clear.frame(minHeight: 200) })
@@ -81,14 +80,6 @@ struct WindowAssertions {
         } while Date() < deadline
         guard let split, let first = split.subviews.first else { fatalError("Split fixture did not attach") }
         let context = "width=\(width), vertical=\(vertical), lateAttachment=\(lateAttachment), bounds=\(split.bounds), panes=\(split.arrangedSubviews.count)"
-        if lateAttachment {
-            func dump(_ view: NSView, _ depth: Int = 0) {
-                let properties = view is InitialSplitPosition.Marker ? String(describing: Array(Mirror(reflecting: view).children)) : ""
-                FileHandle.standardError.write(Data("\(String(repeating: " ", count: depth))\(type(of: view)) frame=\(view.frame) layout=\(view.needsLayout) \(properties)\n".utf8))
-                for child in view.subviews { dump(child, depth + 1) }
-            }
-            dump(split)
-        }
         assert(abs((vertical ? first.frame.width : first.frame.height) - position) < 2, "Initial pane size waited for an unrelated model update: \(context), pane=\(first.frame)")
         // AppKit constrains the window to its screen; leave room for the other
         // pane's minimum size instead of requesting an impossible 500 points.

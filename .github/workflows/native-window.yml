@@ -1,4 +1,4 @@
-name: Native window regression
+name: Desktop regression checks
 on:
   workflow_dispatch:
 permissions:
@@ -13,3 +13,13 @@ jobs:
         run: |
           swiftc -D MORROW_WINDOW_CHECKS -parse-as-library macos/Sources/MorrowMail/Models.swift macos/Sources/MorrowMail/AppModel.swift macos/Sources/MorrowMail/MorrowMailApp.swift macos/Checks/WindowAssertions.swift -o "$RUNNER_TEMP/window-checks"
           "$RUNNER_TEMP/window-checks"
+  settings:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts
+      - run: node --test tests/settings.test.js

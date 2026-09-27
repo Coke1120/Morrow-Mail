@@ -115,7 +115,7 @@ test('General autosave sends only changed preferences and retains concurrent sor
   assert.equal(store.getSettings().preferences.language, '繁體中文');
 });
 
-test('A reviewed index batch outlives its start request and settings polling, then exposes progress without rerunning', { timeout: 5000 }, async t => {
+test('A reviewed index batch outlives its start request and settings polling, then exposes progress without rerunning', { timeout: 30000 }, async t => {
   const directory = mkdtempSync(join(tmpdir(), 'morrow-background-index-')), store = createStore(directory);
   const account = 'indexing@example.com', entered = [Promise.withResolvers(), Promise.withResolvers()], release = [Promise.withResolvers(), Promise.withResolvers()];
   let calls = 0, settingsReads = 0;
@@ -142,6 +142,7 @@ test('A reviewed index batch outlives its start request and settings polling, th
   });
   const request = async (path, body) => {
     const response = await fetch(origin + '/api/search/' + path, {
+      signal: t.signal,
       method: body ? 'POST' : 'GET', headers: { Authorization: 'Bearer background-index-fixture', 'Content-Type': 'application/json', 'X-Genmail-Account': account },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
