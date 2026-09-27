@@ -163,11 +163,12 @@ mailbox and its restart, and verifies the saved records after the UI exits. Each
 UI run has a 180-second deadline and a checked completion result; timeout cleanup
 targets only the launched PID. The helper and workspaces are never packaged.
 
-This source was prepared on macOS. Both PowerShell files passed the PowerShell
-7.5.3 AST parser; all nine official NuGet archive hashes, project XML and explicit
-package import paths were checked. These are not a Windows compile or runtime
-pass. Hosted `windows-2022`/`windows-2025` builds, native UI
-smoke, and the complete feature/upgrade checks remain required. Separately run on
+The PowerShell AST, all nine official NuGet archive hashes, project XML and explicit
+package import paths were checked. Hosted `windows-2022` compilation, packaging and
+private Rust startup/authentication/EOF drain passed in CI 36338790648. The WinUI
+process still fails during Application initialization with `0xC000027B`; the
+metadata-provider correction did not resolve it. Native UI smoke and the complete
+feature/upgrade checks have not passed. Separately run on
 a clean supported Windows VM with no VS, no Windows App Runtime, offline startup,
 ordinary-user permissions, and WebView2 absent. A hosted-runner pass alone cannot
 establish those clean-machine conditions. There is no production cutover here.

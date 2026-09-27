@@ -61,7 +61,7 @@ $metadata = Get-Content -LiteralPath (Join-Path $root 'package.json') -Raw | Con
 $version = [string] $metadata.version
 if ($version -notmatch '^(\d+)\.(\d+)\.(\d+)(?:-[A-Za-z0-9.-]+)?$') { throw 'Invalid common package version.' }
 $numbers = "$($Matches[1]),$($Matches[2]),$($Matches[3]),0"
-$icon = (Join-Path $root 'desktop/icon.ico').Replace('\', '\\')
+$icon = (Join-Path $root 'assets/brand/morrow.ico').Replace('\', '\\')
 $versionResource = Join-Path $work 'version.rc'
 Write-Utf8 $versionResource @"
 #include <windows.h>

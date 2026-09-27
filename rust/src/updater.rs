@@ -36,7 +36,7 @@ use tokio::{
 };
 
 pub const VERSION: &str = env!("MORROW_VERSION");
-pub const PUBLIC_KEY: &str = include_str!("../../server/update-public-key.pem");
+pub const PUBLIC_KEY: &str = include_str!("../resources/update-public-key.pem");
 pub const ARCHIVE_LIMIT: u64 = 750 * 1024 * 1024;
 const PLATFORMS: [&str; 2] = ["macos-arm64", "windows-x64"];
 const REPOSITORY: &str = "https://github.com/Coke1120/Morrow-Mail";

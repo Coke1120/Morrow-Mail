@@ -105,7 +105,7 @@ app.whenReady().then(async () => {
   isolated.on('will-download', event => event.preventDefault());
   let size = {};
   try { const saved = JSON.parse(readFileSync(boundsFile)); if (Number.isFinite(saved.width) && Number.isFinite(saved.height)) size = { width: Math.max(1040, Math.min(saved.width, 2400)), height: Math.max(700, Math.min(saved.height, 1600)) }; } catch {}
-  window = new BrowserWindow({ width: 1280, height: 840, ...size, minWidth: 1040, minHeight: 700, show: !smoke, icon: join(__dirname, 'icon.ico'), backgroundColor: '#f5f4ec', title: 'Morrow Mail', webPreferences: { session: isolated, preload: join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, devTools: !app.isPackaged } });
+  window = new BrowserWindow({ width: 1280, height: 840, ...size, minWidth: 1040, minHeight: 700, show: !smoke, icon: join(__dirname, app.isPackaged ? 'icon.ico' : '../assets/brand/morrow.ico'), backgroundColor: '#f5f4ec', title: 'Morrow Mail', webPreferences: { session: isolated, preload: join(__dirname, 'preload.cjs'), nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, devTools: !app.isPackaged } });
   isolated.webRequest.onBeforeSendHeaders((details, callback) => {
     if (details.webContentsId === window.webContents.id && new URL(details.url).origin === origin) {
       for (const key of Object.keys(details.requestHeaders)) if (key.toLowerCase() === 'authorization') delete details.requestHeaders[key];

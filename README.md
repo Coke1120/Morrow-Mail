@@ -1,4 +1,4 @@
-<img src="src/assets/brand/morrow-icon.svg" alt="Morrow Mail icon" width="64" height="64">
+<img src="assets/brand/morrow-icon.svg" alt="Morrow Mail icon" width="64" height="64">
 
 # Morrow Mail
 
@@ -12,7 +12,7 @@
 
 [Download macOS / Windows beta](https://github.com/Coke1120/Morrow-Mail/releases) · [Feature coverage](FEATURE_COVERAGE.md) · [Verification](VERIFICATION.md) · [GitHub Sponsors](https://github.com/sponsors/Coke1120) · [Buy Me a Coffee](https://buymeacoffee.com/Coke1120)
 
-Morrow Mail is an independent, MIT-licensed alternative inspired by Genspark GenMail. It runs locally with a **fully native SwiftUI macOS interface** and a **React / Electron Windows desktop interface**. Both bundle the same mail service and use the same release version. The React interface also runs in a browser for development. Rust owns the production desktop backend; JavaScript remains for React, the Electron host, build/test tools and the optional Node development service. A full JavaScript rewrite is not required for the Rust desktop migration.
+Morrow Mail is an independent, MIT-licensed alternative inspired by Genspark GenMail. It runs locally with a **fully native SwiftUI macOS interface** and a **React / Electron Windows desktop interface**. Both bundle the same mail service and use the same release version. The React interface also runs in a browser for development. Rust owns the production desktop backend; JavaScript remains for React, the Electron host, build/test tools and the optional Node development service. The approved native migration now also replaces that remaining Windows host and normal build/test tooling; candidate status is described below.
 
 - **Multiple mailboxes:** Gmail, Outlook / Microsoft 365, and IMAP / SMTP; combined or separate inboxes with collapsible account groups, sorting, and compact views.
 - **Indexed search:** local full-text search, Chinese traditional/simplified matching, filters, saved searches and optional reviewed semantic indexing in both clients.
@@ -26,6 +26,25 @@ Morrow Mail is an independent, MIT-licensed alternative inspired by Genspark Gen
 AI Studio covers 19 behaviors through model-backed assistance and clearly labeled local simulations. Sending always requires an explicit action; AI does not send email automatically. Local storage does not mean every operation stays offline: connected mail/calendar providers and your configured AI endpoint receive the data needed for enabled actions.
 
 This project is not affiliated with Genspark and does not claim complete parity. See [feature coverage](FEATURE_COVERAGE.md) for implementation status and simulation limits, and [verification](VERIFICATION.md) for completed checks and remaining release validation.
+
+## Native migration candidate (unreleased)
+
+The approved [native migration plan](docs/RUST_NATIVE_MIGRATION_PLAN.md) retains SwiftUI and replaces the Windows Electron interface with WinUI 3/C++/WinRT over the existing Rust service. `windows/` and the native candidate workflow are under acceptance; published beta.16 still uses Electron on Windows. No native cutover is implied by source availability.
+
+Candidate development does not require Node/npm:
+
+```sh
+cargo test --manifest-path rust/Cargo.toml --locked
+/bin/sh scripts/build-macos-native.sh
+cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-native-check -- --service "$PWD/build/macos-native/Morrow Mail.app/Contents/Resources/morrow-service"
+# Optional fictional-mail benchmark; writes a new report and never uses your workspace.
+cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-benchmark -- --binary="$PWD/build/macos-native/Morrow Mail.app/Contents/Resources/morrow-service" --sizes=1000 --idleSeconds=0 --output=test-results/native-benchmark.json
+# Windows x64, PowerShell 7 + VS 2022 v143 prerequisites: windows/README.md
+pwsh -File scripts/build-windows-native.ps1 -Zip
+pwsh -File scripts/test-windows-native.ps1 -UiSmoke
+```
+
+Resources and redistribution notices come from `morrow-resources` and `morrow-notices`; shared branding lives in `assets/`. `morrow-publish` defaults to local checks and requires explicit paired CI evidence before publication. Historical Node interoperability runs separately against the fixed beta.16 checkout. The original npm commands below remain compatibility/release paths until the native platform gates pass. See [verification](VERIFICATION.md) for actual results and outstanding Windows, clean-machine and accessibility checks.
 
 ## Screenshots
 
@@ -179,7 +198,7 @@ $workspace = Join-Path $env:APPDATA 'Morrow Mail'
 
 To publish a new alpha or beta, update the changelog and verification notes, bump the package version with `npm version <version>-<alpha|beta>.<number> --no-git-tag-version`, commit, then push the matching `v<version>-<alpha|beta>.<number>` tag. The workflow builds both platforms from that **same tag**. It verifies both archives and their checksums, signs a two-platform update manifest, uploads all six files to a draft release, and makes the release public only after every platform job succeeds. Failed builds publish no partial release; failed uploads leave a draft. Published assets are never overwritten.
 
-The release job requires `MORROW_UPDATE_SIGNING_KEY` in GitHub Actions secrets. Its Ed25519 public key is pinned in `server/update-public-key.pem`; only the public key belongs in Git. The current private signing key is kept outside the repository at `~/.config/morrow-release/update-signing-key.pem`. Keep a secure backup: losing it prevents existing apps from accepting new update manifests. Do not rotate or replace the public key casually; a key change needs a transition release signed with the existing key. `npm run updater:test` uses generated fixture keys and temporary apps, never this release key or a real workspace.
+The release job requires `MORROW_UPDATE_SIGNING_KEY` in GitHub Actions secrets. Its Ed25519 public key is pinned in `rust/resources/update-public-key.pem`; the byte-identical `server/update-public-key.pem` remains for historical Node compatibility. Only the public key belongs in Git. The current private signing key is kept outside the repository at `~/.config/morrow-release/update-signing-key.pem`. Keep a secure backup: losing it prevents existing apps from accepting new update manifests. Do not rotate or replace the public key casually; a key change needs a transition release signed with the existing key. `npm run updater:test` uses generated fixture keys and temporary apps, never this release key or a real workspace.
 
 Every change is checked; versioned tags publish paired downloads. Unsigned automation accepts numbered alpha and beta versions; stable and release-candidate tags are rejected. Native UI differences remain explicit in [feature coverage](FEATURE_COVERAGE.md); API changes must preserve both clients.
 

@@ -4,6 +4,16 @@
 
 狀態：遷移方向與 review 修訂已核准；各階段的實作、平台驗收及發佈門檻仍須逐項完成。
 
+2026-09-28 候選實作進度（`codex/native-migration`，尚未切換正式 Windows 產品）：
+
+- N1：共用草稿準備已移至 Rust；catalog／OpenCC 來源固定、5,343 筆正規化 golden 與授權內容比對通過。
+- N2／N3：WinUI host、原生功能頁與隔離 HTML reader 已落盤並通過編譯。補上 programmatic Application 的 XAML metadata provider 後，CI 仍在 Application 初始化時崩潰；正在診斷，實際 walkthrough 尚未通過，不能以編譯代替驗收。
+- N4：新 Node-free macOS candidate 經固定 beta.16 舊 installer 實際升級／啟動及備份通過，包括 Scheduled、Pending、Learning、Reply Suggestions 與中斷 claim 不重播。Windows 尚待 runtime／upgrade gate。
+- N6：Rust resources／notices／macOS builder／native acceptance driver 已驗證無 Node 路徑；Rust benchmark 的 1k smoke 通過。共用 assets 與 production 公鑰已解除對 React／Node 來源目錄的依賴。新 publisher 尚未接正式發佈，artifact provenance gate 仍在補驗。
+- N5 與所有乾淨最低 OS／IME／Narrator／DPI／真實 provider／正式簽章門檻保持未完成。既有 Electron／Node 相容路徑與發佈資產沒有刪除或替換。
+
+逐次證據與限制以 [VERIFICATION](../VERIFICATION.md) 為準；上述進度不是所有 gate 已完成的宣告。
+
 ## 1. 目標與決策
 
 目標是 **Rust 負責全部共用業務邏輯，macOS 使用 SwiftUI，Windows 使用 WinUI 3／C++/WinRT 原生封裝**。Windows 原生化是本計畫必要階段，不再只是效能不足時的候選方案。
@@ -197,7 +207,7 @@ Windows：WinUI 3 / C++/WinRT host ┘                              └─ 郵�
 | `scripts/publish-release.js` → `server/update-trust.js` | 先以固定 manifest／簽章及 paired gate fixture 驗證替代 publisher；N5 仍使用現有 publisher 時保留 trust 模組。 |
 | `scripts/build-rust.js`、`scripts/test-rust.js` → `scripts/rust-resources.js` → `shared/features.js`、`server/demo.js`、`opencc-js` | 先固定 catalog／fixture／OpenCC 原始值與版本，再替換 generator/check caller；比對輸出與搜尋 golden corpus 後才移除來源依賴。 |
 | `scripts/build-rust.js` notices collector → `node_modules/opencc-js` 授權與套件資料 | 先保存可追溯的版本、授權、第三方 notices 及來源；新 collector 等價後才移除 npm 資料來源。 |
-| `scripts/build-macos.js` → `src/assets/brand/morrow-icon.svg` | 刪除 React 目錄前先移置仍使用的共用品牌資源並更新 caller。 |
+| 共用品牌／字型原位於 `src/assets/`、Windows icon 原位於 `desktop/` | 已移至 `assets/` 並更新原生及相容 build callers；檔案 bytes 不變，React build 通過。 |
 | `scripts/build-windows.js` → Electron packager／`desktop/`／React `dist/` | N2–N4 候選 build 與實際升級通過後，N5 才切換正式打包與移除 Electron 依賴。 |
 | `scripts/test-macos*.js`、`scripts/test-rust-upgrade.js`、`scripts/benchmark-rust-service.js` → Node harness／fixture store | 正常驗收先有替代 driver；歷史 Node decrypt／installer 證據轉入固定版本 compatibility job，不以刪除測試解除依賴。 |
 

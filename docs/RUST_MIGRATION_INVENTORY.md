@@ -111,7 +111,9 @@ The updater keeps the compiled pinned Ed25519 key, paired manifest format, origi
 
 One unpublished Cargo package, lockfile, Rust 1.98 minimum; `package.json` supplies the product version. Rust candidate selection is `MORROW_SERVICE_RUNTIME=rust` at build time, stored in bundle metadata. macOS ships the native SwiftUI host and Rust executable; Windows retains Electron with Rust replacing the backend Node executable. Third-party license notices accompany the service; source links identify unmodified dependencies. `cargo audit --file rust/Cargo.lock` checks the locked graph.
 
-The normal build still needs Node/npm: resource checking imports `shared/features.js`, `server/demo.js` and OpenCC data; notices read OpenCC package/license files; the publisher imports `server/update-trust.js`. See the native plan's N5/N6 table before removing these dependencies. WinUI's planned unpackaged/self-contained Windows App SDK deployment has not been built or accepted yet.
+The native candidate path now uses `morrow-resources` for unchanged versioned catalog/OpenCC checks, `morrow-notices` for the locked production dependency graph, and `morrow-build` for the SwiftUI/Rust bundle. Shared branding/fonts live in `assets/`; the compiled update key comes from `rust/resources/`, with the same legacy Node bytes retained separately. The original npm release/compatibility paths remain until cutover gates pass. `morrow-publish` is implemented but not wired to publication; its artifact-provenance gate is under review.
+
+The Node-free macOS candidate build and Rust-driven Swift acceptance passed locally and in CI, followed locally by the actual fixed-beta16 installer upgrade with N4 preservation and backup checks. WinUI compilation/package inspection passed, but runtime still fails during Application initialization after the metadata-provider correction; native pages await runtime acceptance. This is not N2–N6 completion, clean-machine acceptance or a published Windows host replacement. See [verification](../VERIFICATION.md) and the native plan before removing legacy callers.
 
 ```sh
 npm run rust:test

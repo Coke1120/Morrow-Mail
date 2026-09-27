@@ -45,7 +45,7 @@ if (serviceRuntime === 'rust') {
 }
 bundleOAuth(backend);
 const iconset = resolve(output, 'Morrow.iconset');
-run('swift', ['scripts/render-macos-icon.swift', 'src/assets/brand/morrow-icon.svg', iconset]);
+run('swift', ['scripts/render-macos-icon.swift', 'assets/brand/morrow-icon.svg', iconset]);
 run('/usr/bin/iconutil', ['-c', 'icns', iconset, '-o', resolve(resources, 'Morrow.icns')]);
 const { version } = JSON.parse(readFileSync(resolve(root, 'package.json')));
 writeFileSync(resolve(contents, 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>

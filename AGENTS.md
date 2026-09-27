@@ -11,6 +11,8 @@ It is a local, single-user app with a fully native SwiftUI macOS interface and
 a React / Electron Windows desktop interface and an optional browser development interface. Preserve both clients when changing
 shared API contracts.
 
+The approved native migration is in progress: `windows/` is the unpackaged WinUI 3/C++/WinRT candidate, with Rust-owned business logic. Published beta.16 still uses Electron on Windows. Keep the compatibility clients until the native plan's cutover gates pass; source/compile success alone is not native acceptance.
+
 - `macos/Sources/MorrowMail/`: SwiftUI views, native client, and local service lifecycle.
 - `rust/src/`: production desktop service: storage, authenticated API, providers, OAuth, AI, background jobs, search and signed updater. Rust is the default; `server/` remains the browser/development and explicit Node compatibility service. Keep shared contracts compatible.
 - `server/app.js`: Node mail accounts, request routing, settings, sending, AI, and workflows.
@@ -22,6 +24,8 @@ shared API contracts.
 - `desktop/`: isolated Electron Windows shell and restricted desktop bridge.
 - `rust/tests/`, `tests/`, `macos/Checks/`: Rust/Node contracts, isolated TLS fixtures and native client checks.
 - `scripts/`: development, backup, build, and test commands.
+- `assets/`: shared branding/fonts, independent of the legacy React/Electron directories.
+- `rust/resources/`: versioned catalog/OpenCC data, provenance/notices and the production pinned update public key. Never rotate that key during migration; the historical Node copy remains byte-identical.
 
 ## Implementation rules
 
@@ -110,6 +114,8 @@ plutil -lint 'build/macos/Morrow Mail.app/Contents/Info.plist'
 ```
 
 Avoid parallel builds targeting the same output. Inspect free disk space before full builds; `CARGO_INCREMENTAL=0` reduces local accumulation. Generated build cleanup must never touch private workspaces.
+
+Native candidates use `/bin/sh scripts/build-macos-native.sh`, Rust `morrow-native-check --service <candidate-service>`, and Windows `scripts/build-windows-native.ps1 -Zip` / `test-windows-native.ps1 -UiSmoke`. Normal Rust/resource/notice/native checks must work without Node on PATH. Node differential tests are explicitly ignored by the normal Cargo suite and run separately with `MORROW_NODE_COMPAT_ROOT` pointing to fixed beta.16 (`7ab30cbb3e496118513a98f8211ec66481e282c4`). Preserve that CI gate instead of silently omitting historical compatibility.
 
 Account-routing changes need coverage for duplicate IDs, combined views,
 account-specific sending/AI, reconnect/migration, and disconnect isolation.

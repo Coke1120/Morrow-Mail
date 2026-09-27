@@ -305,7 +305,7 @@ fn macos(root: &Path) -> Result<()> {
     run(command(root, "swift")
         .args([
             "scripts/render-macos-icon.swift",
-            "src/assets/brand/morrow-icon.svg",
+            "assets/brand/morrow-icon.svg",
         ])
         .arg(&iconset))?;
     let icon = resources.join("Morrow.icns");

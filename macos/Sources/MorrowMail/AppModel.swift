@@ -141,7 +141,7 @@ final class AppModel: ObservableObject {
             let backend = resources.appendingPathComponent("backend/server/native.js")
             let executable = resources.appendingPathComponent(runtime == "rust" ? "morrow-service" : "node")
             guard FileManager.default.isExecutableFile(atPath: executable.path), runtime == "rust" || FileManager.default.fileExists(atPath: backend.path) else {
-                throw APIError("Build and open Morrow Mail.app with npm run macos:build. The app includes its own runtime.")
+                throw APIError("Open a complete Morrow Mail.app bundle. Its private runtime is missing; rebuild or reinstall the app.")
             }
             var random = [UInt8](repeating: 0, count: 32)
             guard SecRandomCopyBytes(kSecRandomDefault, random.count, &random) == errSecSuccess else { throw APIError("The system could not create a private session.") }

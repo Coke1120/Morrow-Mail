@@ -2,7 +2,9 @@
 
 Morrow is an independent implementation, not a complete GenMail clone. The reference features below come from Genspark's public product-video descriptions and chapter metadata. They verify advertised capabilities, not hands-on product behavior. No claim of exhaustive parity is made.
 
-The app's authoritative behavior list is [`shared/features.js`](shared/features.js): **19 behaviors**, comprising **8 model-backed actions** and **11 local simulations**. Every behavior has a server-enforced permission checkbox.
+The app's versioned behavior catalog is [`rust/resources/catalog.json`](rust/resources/catalog.json), also consumed by the legacy [`shared/features.js`](shared/features.js): **19 behaviors**, comprising **8 model-backed actions** and **11 local simulations**. Every behavior has a server-enforced permission checkbox.
+
+The unreleased `windows/` WinUI candidate covers these same Rust APIs with native pages; its runtime walkthrough, reader isolation, clean-machine and accessibility acceptance are still being completed. Source availability does not change the published beta.16 Windows client or establish native parity. See [verification](VERIFICATION.md) for results.
 
 0.6.0-beta.8: macOS retains its current inbox page and selection when reading marks mail read. Both clients show only connected accounts (empty Add account onboarding), and offer Reply All and plain-text Forward with the source account locked; neither copies original Bcc or forwards attachments. Versions through beta.4 retain the previous UI.
 

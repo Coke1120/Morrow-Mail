@@ -18,7 +18,8 @@ if (!existsSync(resolve(root, 'dist/index.html'))) throw new Error('Run npm run 
 rmSync(stage, { recursive: true, force: true });
 mkdirSync(resolve(stage, 'runtime'), { recursive: true });
 mkdirSync(resolve(stage, 'backend/scripts'), { recursive: true });
-for (const name of ['main.cjs', 'preload.cjs', 'security.cjs', 'client-state.cjs', 'icon.ico']) cpSync(resolve(root, 'desktop', name), resolve(stage, name));
+for (const name of ['main.cjs', 'preload.cjs', 'security.cjs', 'client-state.cjs']) cpSync(resolve(root, 'desktop', name), resolve(stage, name));
+cpSync(resolve(root, 'assets/brand/morrow.ico'), resolve(stage, 'icon.ico'));
 if (serviceRuntime === 'rust') {
   buildRustService(resolve(stage, 'runtime/morrow-service.exe'));
   for (const name of ['dist', 'package.json', 'LICENSE', 'README.md', 'FEATURE_COVERAGE.md', 'VERIFICATION.md']) cpSync(resolve(root, name), resolve(stage, 'backend', name), { recursive: true });
