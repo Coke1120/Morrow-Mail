@@ -379,6 +379,7 @@ try {
             $safeStartup += '|^Native reader: nav-decision id=[0-9]{1,20} cancelled=[01] expected=[01] tracked=[0-9]{1,20}$'
             $safeStartup += '|^Native reader: nav-completed id=[0-9]{1,20} success=[01] error=-?[0-9]{1,10} live=[01] tracked=[0-9]{1,20}$'
             $safeStartup += '|^Native reader: (render-request|render-returned|initial-document-state|initial-document-failed) active=[01] ready=[01] live=[01] expected=[01] core=[01] view=[01] loaded=[01] visible=[01] id=[0-9]{1,20} completed=[0-9]{1,20} epoch=[0-9]{1,20}$'
+            $safeStartup += '|^Native reader: nav-uri empty=[01] dataHtml=[01] dataHtmlBase64=[01] aboutBlankPrefix=[01] other=[01] length=[0-9]{1,10}$'
             $safeLines = [Collections.Generic.List[string]]::new()
             $stderrDeadline = [Environment]::TickCount64 + 2000
             try {

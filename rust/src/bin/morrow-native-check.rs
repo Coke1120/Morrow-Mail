@@ -657,13 +657,16 @@ mod tests {
         client
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
-        client
-            .write_all(b"GET /image HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
-            .unwrap();
-        let mut response = String::new();
-        client.read_to_string(&mut response).unwrap();
-        assert!(response.starts_with("HTTP/1.1 200 OK"));
-        assert!(observer.finish().is_err());
+        // The observer deliberately closes after one bounded read. It may reset
+        // a late/partially read request; successful HTTP delivery is not its
+        // contract. Wait for a response or close, then verify the actual finding.
+        let _ = client.write_all(b"GET /image HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+        let _ = client.read(&mut [0u8; 1]);
+        drop(client);
+        assert_eq!(
+            observer.finish().unwrap_err().to_string(),
+            "Email triggered an unsolicited loopback connection."
+        );
     }
 
     #[test]

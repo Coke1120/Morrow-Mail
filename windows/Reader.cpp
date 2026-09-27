@@ -296,6 +296,18 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
                     static_cast<unsigned long long>(args.NavigationId()), unsigned(args.Uri() == L"about:blank"),
                     unsigned(args.IsRedirected()), unsigned(args.IsUserInitiated()), unsigned(page->expectingDocument), unsigned(page->live()));
                 std::fflush(stderr);
+                if (page->fixtureTraceBudget) {
+                    --page->fixtureTraceBudget;
+                    auto uri = args.Uri();
+                    auto prefix = lower(hstring(std::wstring_view(uri).substr(0, 96)));
+                    bool dataHtml = prefix.starts_with(L"data:text/html,") || prefix.starts_with(L"data:text/html;");
+                    bool base64 = dataHtml && prefix.find(L";base64,") != std::wstring::npos;
+                    bool aboutBlank = prefix.starts_with(L"about:blank");
+                    std::fprintf(stderr, "Native reader: nav-uri empty=%u dataHtml=%u dataHtmlBase64=%u aboutBlankPrefix=%u other=%u length=%u\n",
+                        unsigned(uri.empty()), unsigned(dataHtml), unsigned(base64), unsigned(aboutBlank),
+                        unsigned(!uri.empty() && !dataHtml && !aboutBlank), unsigned(uri.size()));
+                    std::fflush(stderr);
+                }
             }
             if (!page || !page->live()) return;
             // Host API navigations also count as user initiated. The one-use
