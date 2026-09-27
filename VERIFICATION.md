@@ -1,5 +1,18 @@
 # Verification — 27 September 2026
 
+## 0.6.0-beta.13 paired prerelease
+
+[beta.13](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.13) was published at 2026-09-27T06:25:16Z from `b82ea3f7cd896d2112f3a72473da6ee7806fc786`. All five platform jobs and the publisher in [tag CI 36298327254](https://github.com/Coke1120/Morrow-Mail/actions/runs/36298327254) passed, including the complete macOS native suite, Windows settings/background-index regression, both packaged desktop and actual upgrade/restart/backup checks. The redundant main run was cancelled; the tag retained all release gates. Beta.11 and beta.12 were not published.
+
+All six public assets were downloaded and checked: pinned Ed25519 manifest signature, exact sizes and SHA-256/checksum files, archive confinement, common version, Rust runtime, bundled OAuth registration, notices and absence of private workspace data or a separate Node backend. The public Mac package passed deep/strict ad-hoc codesign, plist, service version and CLI checks. Isolated live GitHub update checks report beta.13 available from beta.10 and current from beta.13; they did not contact mail or model endpoints.
+
+| Public archive | Bytes | SHA-256 |
+| --- | ---: | --- |
+| macOS arm64 | 11,219,163 | `ad7c135e517b01906805d46ade7d30cae0b4bb7e8a33655d9f8291d9ed467d93` |
+| Windows x64 | 167,922,505 | `0ee60f5c81b12df129d2bf5d958a6edd3f9ae743cea086b99155417332d5bf4d` |
+
+Live Gmail sync and the reported model-specific indexing failure remain unverified. UI automation disconnected while opening the installed application's settings; cached mail visibility and a responsive, bearer-protected local service are not proof of live-provider acceptance. Existing ad-hoc Mac signing, unsigned Windows and incomplete live-provider/model acceptance limitations remain.
+
 ## 0.6.0-beta.13 local preparation
 
 Postpublication startup inspection found that beta.10's asynchronous representable update could run before a native split-view ancestor existed, leaving the sidebar at half of a restored large window. Initialization now waits for window attachment and native layout, sets only the initial divider, and never falls through an incomplete inner split to an outer one. The mail list retains native flexible sizing; the sidebar and bottom-list starting sizes are set independently.
