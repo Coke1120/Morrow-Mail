@@ -27,7 +27,18 @@ IAsyncAction Shell::smoke() {
         } else {
             check(array(state,L"accounts").Size() == 2, L"Expected two isolated fixture owners.");
             auto restoredSize = window.AppWindow().Size();
-            check(restoredSize.Width == 1180 && restoredSize.Height == 780, L"The previous host window size was not restored.");
+            auto resizeDeadline = GetTickCount64() + 1000;
+            apartment_context ui;
+            while ((restoredSize.Width != 1180 || restoredSize.Height != 780) && GetTickCount64() < resizeDeadline) {
+                co_await resume_after(std::chrono::milliseconds(10));
+                co_await ui;
+                restoredSize = window.AppWindow().Size();
+            }
+            if (restoredSize.Width != 1180 || restoredSize.Height != 780) {
+                auto detail = L"The previous host window size was not restored: expected 1180x780, got " + to_hstring(restoredSize.Width) + L"x" + to_hstring(restoredSize.Height)
+                    + L"; maximum track size " + to_hstring(GetSystemMetrics(SM_CXMAXTRACK)) + L"x" + to_hstring(GetSystemMetrics(SM_CYMAXTRACK)) + L".";
+                throw hresult_error(E_FAIL, detail);
+            }
             co_await navigate(L"mail", L"one@fixture.invalid");
             check(rows.Items().Size() == 50 && !nextCursor.empty(), L"First mail page is incomplete.");
             std::set<std::wstring> identities;
