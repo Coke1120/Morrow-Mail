@@ -11,6 +11,7 @@ IAsyncAction Shell::smoke() {
     auto lifetime = shared_from_this();
     auto check = [](bool condition, wchar_t const* message) { if (!condition) throw hresult_error(E_FAIL, message); };
     std::string failure;
+    Json readerEvidence;
     try {
         readerSecurityChecks();
         auto directory = service->directory();
@@ -83,12 +84,15 @@ IAsyncAction Shell::smoke() {
                 check(dirty.empty(), L"Opening a Settings tab incorrectly created unsaved edits.");
             }
             check(text(service->clientState(),L"morrow.pendingCalendar")==pendingCalendar,L"Opening Calendar changed its immutable recovery record.");
+            readerEvidence = co_await readerRuntimeChecks(lifetime);
         }
         auto draining = shutdown();
         check(closing && !closeReady, L"Shutdown did not wait for the private service.");
         window.Close(); // A second close during the asynchronous service drain must be cancelled.
         check(!closeReady && window.AppWindow().IsVisible(), L"A second close destroyed the window before the service drained.");
-        std::ofstream(service->directory()/L"native-smoke-result.json",std::ios::binary) << (seeded ? "{\"ok\":true,\"mode\":\"owned\"}" : "{\"ok\":true,\"mode\":\"fresh\"}");
+        Json result; result.Insert(L"ok", Value::CreateBooleanValue(true)); put(result, L"mode", seeded ? L"owned" : L"fresh");
+        if (seeded) result.Insert(L"reader", readerEvidence);
+        std::ofstream(service->directory()/L"native-smoke-result.json",std::ios::binary) << to_string(result.Stringify());
         co_await draining;
         co_return;
     } catch (hresult_error const& error) { failure=to_string(error.message()); }

@@ -84,6 +84,46 @@ bool sameDay(hstring const& iso) {
     GetLocalTime(&now);
     return local.wYear == now.wYear && local.wMonth == now.wMonth && local.wDay == now.wDay;
 }
+void setupKeyboardAccelerators(std::shared_ptr<Shell> const& shell) {
+    using Key = Windows::System::VirtualKey;
+    using Modifiers = Windows::System::VirtualKeyModifiers;
+    auto invoked = [weak = std::weak_ptr<Shell>(shell)](Input::KeyboardAccelerator const& shortcut, Input::KeyboardAcceleratorInvokedEventArgs const& event) -> fire_and_forget {
+        event.Handled(true);
+        auto self = weak.lock();
+        if (!self || self->closing || self->dialogOpen || self->loading || !self->service
+            || self->service->writing() || !self->navigation.IsEnabled()) co_return;
+        auto key = shortcut.Key(); auto modifiers = shortcut.Modifiers();
+        auto captured = self->owner; auto version = self->generation;
+        try {
+            if (key == Key::N) co_await compose(self);
+            else if (key == Key::F) {
+                if (self->section != L"mail") {
+                    co_await self->navigate(L"mail", captured, self->folder);
+                    ++version;
+                }
+                if (self->current(version, captured) && self->section == L"mail"
+                    && !self->dialogOpen && !self->loading && !self->service->writing() && self->navigation.IsEnabled()
+                    && self->search && self->search.IsLoaded() && self->search.IsEnabled()) self->search.Focus(FocusState::Keyboard);
+            } else if (key == Key::R && modifiers == (Modifiers::Control | Modifiers::Shift)) {
+                auto message = self->selected; auto account = text(message, L"accountId");
+                if (self->section == L"mail" && !text(message, L"id").empty() && self->connected(account)
+                    && (captured == L"all" || captured == account) && !flag(message, L"providerDraft") && text(message, L"folder") != L"drafts")
+                    co_await self->prepare(message, L"reply");
+            } else if (key == Key::R) co_await self->sync();
+            else if (key == Key::Number1) co_await self->navigate(L"mail", captured, L"inbox");
+            else if (key == Key::Number2) co_await self->navigate(L"studio", captured);
+            else if (key == Key::Number3) co_await self->navigate(L"calendar", captured);
+            else if (key == static_cast<Key>(VK_OEM_COMMA)) co_await self->navigate(L"settings", captured);
+        } catch (...) { if (!self->closing) self->error(errorText()); }
+    };
+    // Native matching handles modifiers and IME; do not intercept ordinary typing with KeyDown.
+    for (auto key : {Key::N, Key::F, Key::R, static_cast<Key>(VK_OEM_COMMA), Key::Number1, Key::Number2, Key::Number3}) {
+        Input::KeyboardAccelerator shortcut; shortcut.Key(key); shortcut.Modifiers(Modifiers::Control);
+        shortcut.Invoked(invoked); shell->root.KeyboardAccelerators().Append(shortcut);
+    }
+    Input::KeyboardAccelerator reply; reply.Key(Key::R); reply.Modifiers(Modifiers::Control | Modifiers::Shift);
+    reply.Invoked(invoked); shell->root.KeyboardAccelerators().Append(reply);
+}
 }
 void Shell::error(hstring const& message) { if (status) status.Text(message); }
 bool Shell::connected(hstring const& account) const {
@@ -162,6 +202,7 @@ IAsyncAction Shell::start() {
         auto savedLayout = text(service->clientState(), L"morrow.mail.layout");
         if (savedLayout == L"right" || savedLayout == L"bottom" || savedLayout == L"focus") mailLayout = savedLayout;
         co_await refresh(true);
+        setupKeyboardAccelerators(lifetime);
         if (GetCommandLineW() && std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos) { co_await smoke(); co_return; }
         co_await navigate(connected(owner) || owner == L"all" ? L"mail" : L"settings");
         checkUpdates();
@@ -673,16 +714,33 @@ struct MorrowApplication : winrt::Microsoft::UI::Xaml::ApplicationT<MorrowApplic
     winrt::com_array<winrt::Microsoft::UI::Xaml::Markup::XmlnsDefinition> GetXmlnsDefinitions() { return metadata.GetXmlnsDefinitions(); }
     MorrowApplication() {
         startupTrace("application constructed");
-        UnhandledException([](auto const&, auto const& event) {
+        char const* phase = "installing unhandled exception handler";
+        try {
+            startupTrace(phase);
+            UnhandledException([](auto const&, auto const& event) {
+                if (std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos) {
+                    std::fprintf(stderr, "Native XAML HRESULT: 0x%08X\n", static_cast<unsigned>(event.Exception())); std::fflush(stderr);
+                }
+                // Do not mark handled: a failed XAML initialization must still fail acceptance.
+            });
+            startupTrace("event installed");
+            phase = "reading application resources"; startupTrace(phase);
+            auto resources = Resources(); startupTrace("resources read");
+            phase = "reading merged dictionaries"; startupTrace(phase);
+            auto dictionaries = resources.MergedDictionaries(); startupTrace("merged dictionaries read");
+            phase = "constructing control resources"; startupTrace(phase);
+            auto controls = winrt::Microsoft::UI::Xaml::Controls::XamlControlsResources(); startupTrace("controls constructed");
+            phase = "appending control resources"; startupTrace(phase);
+            dictionaries.Append(controls); startupTrace("control resources loaded");
+        } catch (...) {
             if (std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos) {
-                std::fprintf(stderr, "Native XAML HRESULT: 0x%08X\n", static_cast<unsigned>(event.Exception())); std::fflush(stderr);
+                std::fprintf(stderr, "Native startup constructor (%s) HRESULT: 0x%08X\n", phase, static_cast<unsigned>(winrt::to_hresult())); std::fflush(stderr);
             }
-            // Do not mark handled: a failed XAML initialization must still fail acceptance.
-        });
-        Resources().MergedDictionaries().Append(winrt::Microsoft::UI::Xaml::Controls::XamlControlsResources());
-        startupTrace("control resources loaded");
+            throw;
+        }
     }
     void OnLaunched(winrt::Microsoft::UI::Xaml::LaunchActivatedEventArgs const&) {
+        startupTrace("OnLaunched entered");
         shell = std::make_shared<morrow::Shell>(); shell->start();
     }
 };
@@ -700,6 +758,11 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         SetCurrentProcessExplicitAppUserModelID(L"org.morrowmail.desktop");
         startupTrace("starting XAML application");
         winrt::Microsoft::UI::Xaml::Application::Start([](auto const&) { winrt::make<MorrowApplication>(); });
-    } catch (...) { MessageBoxW(nullptr, L"Morrow Mail could not initialize. Your saved workspace is retained.", L"Morrow Mail", MB_OK | MB_ICONERROR); result = 1; }
+    } catch (...) {
+        if (std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos) {
+            std::fprintf(stderr, "Native startup HRESULT: 0x%08X\n", static_cast<unsigned>(winrt::to_hresult())); std::fflush(stderr);
+        } else MessageBoxW(nullptr, L"Morrow Mail could not initialize. Your saved workspace is retained.", L"Morrow Mail", MB_OK | MB_ICONERROR);
+        result = 1;
+    }
     CloseHandle(instance); return result;
 }

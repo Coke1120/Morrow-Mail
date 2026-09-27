@@ -7,6 +7,7 @@
 #include <winhttp.h>
 #include <atomic>
 #include <cwctype>
+#include <fstream>
 
 #pragma comment(lib, "winhttp.lib")
 
@@ -135,7 +136,10 @@ Image fetchImage(hstring const& value, std::shared_ptr<ImageBudget> const& budge
 
 struct Reader {
     std::weak_ptr<Shell> shell;
-    uint64_t generation{}, selection{}, documentId{}, epoch = 0;
+    uint64_t generation{}, selection{}, documentId{}, completedDocumentId{}, epoch = 0;
+    // Observed initialization outcome only; these never relax reader policy.
+    hresult initializationError{S_OK};
+    bool runtimeUnavailable = false;
     hstring viewOwner, account, messageId, html, serviceOrigin;
     std::filesystem::path profilePath;
     bool active = true, ready = false, initializing = false, plain = false, images = false, hasImages = false;
@@ -248,12 +252,13 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
         CoreWebView2EnvironmentOptions options;
         options.AllowSingleSignOnUsingOSPrimaryAccount(false);
         options.AreBrowserExtensionsEnabled(false);
-        state->environment = co_await CoreWebView2Environment::CreateWithOptionsAsync(L"", hstring(state->profilePath.wstring()), options);
-        if (!state->live()) co_return;
+        auto environment = co_await CoreWebView2Environment::CreateWithOptionsAsync(L"", hstring(state->profilePath.wstring()), options);
+        if (!state->live()) { state->initializing = false; state->close(); co_return; }
+        state->environment = environment;
         auto controller = state->environment.CreateCoreWebView2ControllerOptions();
         controller.ProfileName(L"MorrowMailReader"); controller.IsInPrivateModeEnabled(true);
         co_await view.EnsureCoreWebView2Async(state->environment, controller);
-        if (!state->live()) { view.Close(); co_return; }
+        if (!state->live()) { state->initializing = false; state->close(); co_return; }
         state->core = view.CoreWebView2();
         require(state->core && state->core.Profile().IsInPrivateModeEnabled());
         auto settings = state->core.Settings();
@@ -299,23 +304,32 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
             } catch (...) { if (auto page = weak.lock()) page->fail(); }
         });
         state->core.NavigationCompleted([weak](auto const&, CoreWebView2NavigationCompletedEventArgs const& args) {
-            if (auto page = weak.lock(); page && page->live() && page->documentId == args.NavigationId() && !args.IsSuccess()) page->fail();
+            if (auto page = weak.lock(); page && page->live() && page->documentId == args.NavigationId()) {
+                if (args.IsSuccess()) page->completedDocumentId = args.NavigationId();
+                else page->fail();
+            }
         });
         state->core.ProcessFailed([weak](auto const&, auto const&) { if (auto page = weak.lock()) page->fail(); });
         state->ready = true;
         if (auto images = state->imageButton.get()) images.IsEnabled(true);
         state->render();
+    } catch (hresult_error const& error) {
+        state->initializationError = error.code();
+        state->runtimeUnavailable = !state->environment && error.code() == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+        if (state->live()) state->fail();
+        else { try { view.Close(); } catch (hresult_error const&) {} }
     } catch (...) {
+        state->initializationError = E_FAIL;
         if (state->live()) state->fail();
         else { try { view.Close(); } catch (hresult_error const&) {} }
     }
-}
+    state->initializing = false;
 }
 
-void appendReader(std::shared_ptr<Shell> shell, StackPanel const& panel, Json message) {
+std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel const& panel, Json const& message) {
     auto plain = label(text(message, L"body"), 15);
     auto html = text(message, L"bodyHtml");
-    if (html.empty() || html.size() > 512 * 1024) { panel.Children().Append(plain); return; }
+    if (html.empty() || html.size() > 512 * 1024) { panel.Children().Append(plain); return {}; }
     try {
         auto state = std::make_shared<Reader>();
         state->shell = shell; state->generation = shell->generation; state->selection = shell->selectionGeneration;
@@ -346,14 +360,266 @@ void appendReader(std::shared_ptr<Shell> shell, StackPanel const& panel, Json me
         reader.Loaded([state](auto const&, auto const&) { initialize(state); });
         reader.Unloaded([state](auto const&, auto const&) { state->close(); });
         panel.Children().Append(reader);
+        return state;
     } catch (hresult_error const&) {
         panel.Children().Append(label(L"Formatted mail is unavailable. Plain text remains available.", 12));
         panel.Children().Append(label(text(message, L"body"), 15));
     }
+    return {};
+}
+}
+
+void appendReader(std::shared_ptr<Shell> shell, StackPanel const& panel, Json message) {
+    mountReader(std::move(shell), panel, message);
+}
+
+namespace {
+void runtimeCheck(bool condition, wchar_t const* message) {
+    if (!condition) throw hresult_error(E_FAIL, message);
+}
+IAsyncAction runtimeWait(std::function<bool()> done, uint64_t deadline) {
+    apartment_context ui;
+    auto cancellation = co_await get_cancellation_token();
+    for (;;) {
+        if (cancellation()) throw hresult_canceled();
+        if (GetTickCount64() >= deadline) throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT), L"Reader runtime acceptance exceeded its 25-second deadline.");
+        if (done()) co_return;
+        co_await resume_after(std::chrono::milliseconds(20));
+        co_await ui;
+    }
+}
+IAsyncOperation<hstring> runtimeScript(CoreWebView2 core, hstring script, uint64_t deadline) {
+    // Privileged assertions exist only in this fixture; production never injects script.
+    auto operation = core.ExecuteScriptAsync(script);
+    struct Cancel {
+        IAsyncOperation<hstring> operation;
+        ~Cancel() { try { if (operation.Status() == AsyncStatus::Started) operation.Cancel(); } catch (...) {} }
+    } cancel{operation};
+    co_await runtimeWait([operation] { return operation.Status() != AsyncStatus::Started; }, deadline);
+    auto result = operation.GetResults();
+    runtimeCheck(result.size() <= 32768, L"Reader runtime assertion returned oversized data.");
+    co_return result;
+}
+bool documentReady(std::shared_ptr<Reader> const& state) {
+    return state->ready && !state->expectingDocument && state->documentId
+        && state->completedDocumentId == state->documentId;
+}
+void checkFallback(std::shared_ptr<Reader> const& state, hstring const& body) {
+    auto plain = state->fallback.get(); auto view = state->view.get();
+    runtimeCheck(plain && plain.Text() == body && plain.Visibility() == xaml::Visibility::Visible
+        && view && view.Visibility() == xaml::Visibility::Collapsed && !state->images,
+        L"Reader fallback did not preserve visible plain text with images disabled.");
+}
+struct RuntimeProbe {
+    unsigned requests = 0, messages = 0;
+    bool resourceLeak = false, navigationLeak = false, callbackFailure = false, staleNavigation = false;
+};
+struct RuntimeCleanup {
+    std::shared_ptr<Shell> shell;
+    uint64_t generation;
+    Json selection;
+    hstring section;
+    winrt::Windows::Foundation::IInspectable content;
+    bool loading;
+    std::vector<std::shared_ptr<Reader>> readers;
+    CoreWebView2 core{nullptr};
+    event_token resource{}, navigation{}, message{};
+    bool observing = false;
+    ~RuntimeCleanup() {
+        // Keep the final deny installed until the browser has closed.
+        for (auto const& state : readers) state->close();
+        if (observing && core) {
+            try { core.WebResourceRequested(resource); } catch (...) {}
+            try { core.NavigationStarting(navigation); } catch (...) {}
+            try { core.WebMessageReceived(message); } catch (...) {}
+        }
+        try {
+            if (!shell->closing && shell->generation == generation) {
+                shell->selected = selection; shell->section = section; shell->loading = loading;
+                ++shell->selectionGeneration; // Never resurrect an older asynchronous read.
+                shell->page.Content(content);
+            }
+        } catch (...) {}
+    }
+};
+}
+
+// Native smoke hook only. The caller must navigate again after this temporary
+// mounted reader: selection metadata is restored, but old reader work stays stale.
+IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
+    namespace fs = std::filesystem;
+    runtimeCheck(shell && shell->service && !shell->closing && !shell->loading && !shell->dialogOpen
+        && shell->dirty.empty(), L"Reader runtime acceptance requires an idle fixture shell.");
+    auto directory = fs::canonical(shell->service->directory());
+    runtimeCheck(directory.parent_path() == fs::canonical(fs::temp_directory_path())
+        && directory.filename().wstring().starts_with(L"morrow-native-check-"),
+        L"Reader runtime acceptance requires an isolated temporary workspace.");
+    auto markerPath = directory / L"disposable-native-fixture";
+    runtimeCheck(fs::is_regular_file(fs::symlink_status(markerPath)) && fs::file_size(markerPath) <= 64,
+        L"Reader runtime fixture marker is missing or invalid.");
+    std::ifstream marker(markerPath, std::ios::binary);
+    std::string markerText((std::istreambuf_iterator<char>(marker)), {});
+    runtimeCheck(markerText == "Morrow native acceptance fixture", L"Reader runtime fixture marker does not match.");
+    auto cancellation = co_await get_cancellation_token(); cancellation.enable_propagation();
+    auto deadline = GetTickCount64() + 25000;
+    RuntimeCleanup cleanup{shell, shell->generation, shell->selected, shell->section, shell->page.Content(), shell->loading};
+    shell->loading = true; shell->section = L"mail"; ++shell->selectionGeneration;
+    Json fixture;
+    put(fixture, L"accountId", L"reader@fixture.invalid"); put(fixture, L"id", L"reader-runtime-fixture");
+    put(fixture, L"body", L"Fictional reader acceptance text. No mailbox content.");
+    // The initial production navigation is inert. Adversarial markup is supplied
+    // only after all production handlers AND the fixture last-deny are installed.
+    put(fixture, L"bodyHtml", L"<p id='reader-fixture-ready'>Fictional formatted mail.</p><img id='reader-empty-image'>");
+    shell->selected = fixture;
+    auto panel = stack(8);
+    auto state = mountReader(shell, panel, fixture);
+    runtimeCheck(state != nullptr, L"The production reader could not mount its fixture.");
+    cleanup.readers.push_back(state);
+    shell->show(scroll(panel));
+    co_await runtimeWait([state] { return documentReady(state) || !state->active; }, deadline);
+    Json result;
+    if (!state->ready) {
+        checkFallback(state, text(fixture, L"body"));
+        runtimeCheck(!state->active && state->cancelled->load() && !state->core
+            && !state->imageButton.get().IsEnabled() && !state->plainButton.get().IsEnabled(),
+            L"Unavailable reader did not close and disable its HTML controls.");
+        if (!state->runtimeUnavailable)
+            throw hresult_error(state->initializationError != S_OK ? state->initializationError : hresult(E_FAIL),
+                L"Reader runtime initialization failed; this is not a missing-runtime acceptance pass.");
+        put(result, L"htmlRuntime", L"unavailable"); put(result, L"fallback", L"passed");
+        put(result, L"staleClose", L"not_run");
+        put(result, L"reason", L"WebView2 environment was not found. HTML runtime checks did not run.");
+        co_return result;
+    }
+    auto core = state->core; cleanup.core = core;
+    auto settings = core.Settings();
+    runtimeCheck(core.Profile().IsInPrivateModeEnabled() && !settings.IsScriptEnabled()
+        && !settings.IsWebMessageEnabled() && !settings.AreHostObjectsAllowed()
+        && !settings.AreDevToolsEnabled() && !settings.IsGeneralAutofillEnabled() && !settings.IsPasswordAutosaveEnabled(),
+        L"The live WebView2 reader did not retain production isolation settings.");
+    state->imageButton.get().IsEnabled(false); // This fixture never grants image consent.
+    auto probe = std::make_shared<RuntimeProbe>();
+    auto weak = std::weak_ptr<Reader>(state);
+    cleanup.resource = core.WebResourceRequested([probe, weak](auto const& sender, CoreWebView2WebResourceRequestedEventArgs const& args) {
+        ++probe->requests;
+        bool denied = false;
+        try { auto response = args.Response(); denied = response && response.StatusCode() == 403; } catch (...) {}
+        if (!denied) probe->resourceLeak = true;
+        try {
+            // Observe production's decision first, then deny regardless. Never
+            // let an assertion failure generate DNS/TLS/provider traffic.
+            args.Response(sender.template as<CoreWebView2>().Environment().CreateWebResourceResponse(nullptr, 403, L"Fixture blocked", L"Cache-Control: no-store\r\n"));
+        } catch (...) { probe->callbackFailure = true; if (auto page = weak.lock()) page->close(); }
+    });
+    cleanup.navigation = core.NavigationStarting([probe](auto const&, CoreWebView2NavigationStartingEventArgs const& args) {
+        if (args.Uri() == L"about:blank") return;
+        if (!args.Cancel()) probe->navigationLeak = true;
+        if (args.Uri() == L"https://127.0.0.1:65534/morrow-reader-fixture/stale") probe->staleNavigation = true;
+        args.Cancel(true);
+    });
+    cleanup.message = core.WebMessageReceived([probe](auto const&, auto const&) { ++probe->messages; });
+    cleanup.observing = true;
+    // Literal loopback URLs cannot cause external DNS/preconnect traffic either;
+    // no server is started, and both production and fixture must block requests.
+    state->html = L"<p id='reader-fixture-body'>Fictional formatted mail.</p>"
+        L"<script>document.documentElement.dataset.readerInline='ran';window.chrome.webview.postMessage('forbidden-inline');</script>"
+        L"<img id='reader-initial-image' src='https://127.0.0.1:65534/morrow-reader-fixture/initial.png' onerror=\"document.documentElement.dataset.readerHandler='ran'\">"
+        L"<iframe src='https://127.0.0.1:65534/morrow-reader-fixture/initial-frame'></iframe>";
+    state->render();
+    co_await runtimeWait([state] { return documentReady(state) || !state->active; }, deadline);
+    runtimeCheck(state->live() && documentReady(state), L"The actual HTML reader failed to load its fixture document.");
+    auto initial = Json::Parse(co_await runtimeScript(core, LR"JS((() => ({
+        mounted: !!document.getElementById('reader-fixture-body'),
+        inlineRan: document.documentElement.dataset.readerInline === 'ran',
+        handlerRan: document.documentElement.dataset.readerHandler === 'ran'
+    }))())JS", deadline));
+    runtimeCheck(initial.GetNamedBoolean(L"mounted") && !initial.GetNamedBoolean(L"inlineRan")
+        && !initial.GetNamedBoolean(L"handlerRan"), L"Email script or an inline event handler executed in the live reader.");
+    auto started = Json::Parse(co_await runtimeScript(core, LR"JS((() => {
+        const check = window.__morrowReaderCheck = { violations: {}, connect: 'pending' };
+        document.addEventListener('securitypolicyviolation', event => { check.violations[event.effectiveDirective] = true; });
+        const image = document.createElement('img'); image.id = 'reader-probe-image';
+        image.setAttribute('onerror', "document.documentElement.dataset.readerHandler='ran'");
+        image.src = 'https://127.0.0.1:65534/morrow-reader-fixture/probe.png'; document.body.appendChild(image);
+        const frame = document.createElement('iframe'); frame.src = 'https://127.0.0.1:65534/morrow-reader-fixture/probe-frame'; document.body.appendChild(frame);
+        fetch('https://127.0.0.1:65534/morrow-reader-fixture/connect', { mode: 'no-cors', credentials: 'omit', cache: 'no-store' })
+            .then(() => { check.connect = 'allowed'; }, () => { check.connect = 'blocked'; });
+        try { window.chrome.webview.postMessage('forbidden-fixture-message'); } catch (_) {}
+        return { started: true };
+    })())JS", deadline));
+    runtimeCheck(started.GetNamedBoolean(L"started"), L"Privileged reader assertions did not start.");
+    bool settled = false;
+    while (!settled) {
+        auto snapshot = Json::Parse(co_await runtimeScript(core, LR"JS((() => {
+            const check = window.__morrowReaderCheck;
+            const image = document.getElementById('reader-probe-image');
+            return { connect: check.connect, imageBlocked: !!check.violations['img-src'],
+                frameBlocked: !!check.violations['frame-src'], connectBlocked: !!check.violations['connect-src'],
+                imageComplete: image.complete, imageWidth: image.naturalWidth,
+                inlineRan: document.documentElement.dataset.readerInline === 'ran',
+                handlerRan: document.documentElement.dataset.readerHandler === 'ran' };
+        })())JS", deadline));
+        runtimeCheck(text(snapshot, L"connect") != L"allowed" && !snapshot.GetNamedBoolean(L"inlineRan")
+            && !snapshot.GetNamedBoolean(L"handlerRan") && snapshot.GetNamedNumber(L"imageWidth") == 0,
+            L"The live reader executed mail script or allowed an unconsented resource.");
+        settled = text(snapshot, L"connect") == L"blocked" && snapshot.GetNamedBoolean(L"imageBlocked")
+            && snapshot.GetNamedBoolean(L"frameBlocked") && snapshot.GetNamedBoolean(L"connectBlocked")
+            && snapshot.GetNamedBoolean(L"imageComplete");
+        if (!settled) {
+            auto next = GetTickCount64() + 20;
+            co_await runtimeWait([next] { return GetTickCount64() >= next; }, deadline);
+        }
+    }
+    runtimeCheck(!probe->resourceLeak && !probe->navigationLeak && !probe->callbackFailure && !probe->messages
+        && !state->images && state->budget->requests == 0 && state->budget->bytes.load() == 0,
+        L"Reader isolation leaked a request/message or invoked native image fetching without consent.");
+    auto previousCancellation = state->cancelled;
+    state->plainButton.get().IsChecked(true); // Execute the production toggle handler.
+    co_await runtimeWait([state] { return documentReady(state) || !state->active; }, deadline);
+    runtimeCheck(state->live() && state->plain && previousCancellation->load(), L"Plain text did not cancel the previous HTML document.");
+    checkFallback(state, text(fixture, L"body"));
+    auto empty = Json::Parse(co_await runtimeScript(core, L"({ empty: document.body.childElementCount === 0 && !document.getElementById('reader-fixture-body') })", deadline));
+    runtimeCheck(empty.GetNamedBoolean(L"empty"), L"Switching to plain text left email HTML active in WebView2.");
+    ++shell->selectionGeneration;
+    auto epoch = state->epoch;
+    state->render();
+    runtimeCheck(!state->live() && state->epoch == epoch, L"A stale reader rendered after selection changed.");
+    core.Navigate(L"https://127.0.0.1:65534/morrow-reader-fixture/stale");
+    co_await runtimeWait([probe] { return probe->staleNavigation; }, deadline);
+    runtimeCheck(!probe->navigationLeak, L"A stale reader permitted navigation.");
+    panel.Children().Clear(); // Actual mounted Unloaded -> production close().
+    co_await runtimeWait([state] { return !state->active; }, deadline);
+    runtimeCheck(!state->ready && !state->core && !state->environment && state->cancelled->load(), L"Unloading the reader did not close its browser and cancel work.");
+    bool closed = false;
+    try { co_await runtimeScript(core, L"({ unexpectedClosedExecution: true })", deadline); }
+    catch (hresult_error const& error) {
+        if (error.code() == HRESULT_FROM_WIN32(ERROR_TIMEOUT) || error.code() == E_ABORT) throw;
+        closed = true;
+    }
+    runtimeCheck(closed, L"The closed WebView2 still accepted script execution.");
+    // Exercise the same explicit failure path while mounted, without changing
+    // runtime configuration or starting another document/network operation.
+    auto fallback = mountReader(shell, panel, fixture);
+    runtimeCheck(fallback != nullptr, L"The fallback reader could not mount.");
+    cleanup.readers.push_back(fallback); fallback->fail();
+    checkFallback(fallback, text(fixture, L"body"));
+    runtimeCheck(!fallback->active && !fallback->core && fallback->cancelled->load()
+        && !fallback->imageButton.get().IsEnabled() && !fallback->plainButton.get().IsEnabled(),
+        L"The production failure path did not disable HTML and preserve plain text.");
+    co_await runtimeWait([fallback] { return !fallback->initializing; }, deadline);
+    runtimeCheck(!probe->resourceLeak && !probe->navigationLeak && !probe->callbackFailure && !probe->messages
+        && !state->images && state->budget->requests == 0, L"Reader isolation failed during cleanup.");
+    put(result, L"htmlRuntime", L"passed"); put(result, L"fallback", L"passed");
+    put(result, L"staleClose", L"passed"); put(result, L"script", L"blocked");
+    put(result, L"webMessages", L"blocked"); put(result, L"hostObjects", L"disabled");
+    put(result, L"images", L"blocked"); put(result, L"frames", L"blocked"); put(result, L"connect", L"blocked");
+    result.Insert(L"interceptedRequests", Value::CreateNumberValue(probe->requests));
+    result.Insert(L"nativeImageRequests", Value::CreateNumberValue(state->budget->requests));
+    co_return result;
 }
 
 // Hook for the native smoke harness; no provider, browser, or network calls.
-// Runtime interception/scrolling still needs the WebView2 acceptance fixture.
+// Actual WebView2 isolation is checked separately by readerRuntimeChecks().
 void readerSecurityChecks() {
     auto origin = hstring(L"http://127.0.0.1:38123");
     auto check = [](bool value) { if (!value) throw hresult_error(E_FAIL, L"Reader security contract failed."); };

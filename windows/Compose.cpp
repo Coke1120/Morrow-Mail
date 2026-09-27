@@ -2,6 +2,7 @@
 #include "Ui.h"
 #include <winrt/Windows.Globalization.h>
 #include <winrt/Windows.Globalization.DateTimeFormatting.h>
+#include <winrt/Windows.System.h>
 #include <chrono>
 #include <cwchar>
 #include <vector>
@@ -417,6 +418,39 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         auto close = button(L"Close", [state] { closeComposer(state); }); state->close = make_weak(close); buttons.Children().Append(close);
         auto save = button(L"Save Draft", [state] { submit(state, false); }); state->save = make_weak(save); buttons.Children().Append(save);
         auto send = button(L"Review & Send", [state] { if (state->scheduleOn()) scheduleSend(state); else submit(state, true); }); state->send = make_weak(send); buttons.Children().Append(send);
+        // Scope shortcuts to this composer and preserve each button's enabled/review guards.
+        xaml::Input::KeyboardAccelerator saveShortcut;
+        saveShortcut.Key(Windows::System::VirtualKey::S);
+        saveShortcut.Modifiers(Windows::System::VirtualKeyModifiers::Control);
+        saveShortcut.ScopeOwner(panel);
+        saveShortcut.Invoked([state](auto const&, auto const& args) {
+            auto host = state->shell.lock(); auto view = state->save.get();
+            if (!state->live(host) || host->dialogOpen) return;
+            args.Handled(true);
+            if (view && view.IsEnabled()) submit(state, false);
+        });
+        save.KeyboardAccelerators().Append(saveShortcut);
+        xaml::Input::KeyboardAccelerator sendShortcut;
+        sendShortcut.Key(Windows::System::VirtualKey::D);
+        sendShortcut.Modifiers(Windows::System::VirtualKeyModifiers::Control | Windows::System::VirtualKeyModifiers::Shift);
+        sendShortcut.ScopeOwner(panel);
+        sendShortcut.Invoked([state](auto const&, auto const& args) {
+            auto host = state->shell.lock(); auto view = state->send.get();
+            if (!state->live(host) || host->dialogOpen) return;
+            args.Handled(true);
+            if (view && view.IsEnabled()) { if (state->scheduleOn()) scheduleSend(state); else submit(state, true); }
+        });
+        send.KeyboardAccelerators().Append(sendShortcut);
+        xaml::Input::KeyboardAccelerator closeShortcut;
+        closeShortcut.Key(Windows::System::VirtualKey::Escape);
+        closeShortcut.ScopeOwner(panel);
+        closeShortcut.Invoked([state](auto const&, auto const& args) {
+            auto host = state->shell.lock(); auto view = state->close.get();
+            if (!state->live(host) || host->dialogOpen) return;
+            args.Handled(true);
+            if (view && view.IsEnabled()) closeComposer(state);
+        });
+        close.KeyboardAccelerators().Append(closeShortcut);
         panel.Children().Append(buttons);
         from.SelectionChanged([state](auto const& sender, auto const&) {
             if (state->frozen() || state->bound) return;

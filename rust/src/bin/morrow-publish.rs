@@ -5,6 +5,8 @@
 //!  "sha":"<GITHUB_SHA>","runId":123,"runAttempt":1,
 //!  "platforms":{"macos-arm64":[111,112],"windows-x64":[113,114]}}
 //! IDs come from GitHub's jobs API, not runner IDs. No trust-key override exists.
+//! Publication also downloads the two immutable same-run Actions artifact IDs,
+//! verifies GitHub's archive digests, and compares all four files before signing.
 use base64::{Engine, engine::general_purpose::STANDARD};
 use ed25519_dalek::{Signer, SigningKey, pkcs8::DecodePrivateKey};
 use morrow_search::updater::{ARCHIVE_LIMIT, Asset, Manifest, PUBLIC_KEY, verify_manifest};
@@ -18,7 +20,7 @@ use std::{
     error::Error,
     ffi::OsString,
     fs::{self, File},
-    io::Read,
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, ExitCode, Stdio},
     sync::mpsc,
@@ -31,6 +33,8 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const REPOSITORY: &str = "Coke1120/Morrow-Mail";
 const PLATFORMS: [&str; 2] = ["macos-arm64", "windows-x64"];
 const JSON_LIMIT: u64 = 8 * 1024 * 1024;
+// One bounded release ZIP plus its checksum and the outer Actions ZIP overhead.
+const ARTIFACT_LIMIT: u64 = ARCHIVE_LIMIT + 8 * 1024 * 1024;
 const HELP: &str = "morrow-publish [--check | --dry-run | --publish] --notes-file FILE
   [--artifacts DIR] [--tag TAG] [--gate-file FILE]
 
@@ -46,6 +50,12 @@ GH_TOKEN, a tag-push GitHub Actions release job in the canonical check.yml, and
   {\"macos-arm64\":[<successful job IDs>],\"windows-x64\":[<successful job IDs>]}
 The jobs API must confirm all preceding jobs succeeded, both platform job lists
 are complete, and tag/run/attempt/SHA match. No workflow is wired by this tool.
+The same run must contain morrow-macos-arm64 and morrow-windows-x64 artifacts
+created in this attempt. Their GitHub IDs, commit SHA and SHA-256 digests are
+verified; downloaded contents must match all four local files before signing.
+Only those verified staged files are uploaded. No caller-supplied artifact hash
+or artifact override is accepted. Actions ZIPs are bounded and never extracted
+using archive-controlled paths (ZIP64/encrypted/multipart archives unsupported).
 The serialized release job needs contents: write and actions: read permissions.
 Notes must be an explicit existing UTF-8 file (1..65536 bytes).
 Existing public releases, extra/mismatched assets and missing digests are rejected.
@@ -127,7 +137,11 @@ fn read(path: &Path, limit: u64) -> Result<Vec<u8>> {
 }
 
 fn hash_file(path: &Path) -> Result<(u64, String)> {
-    let mut file = regular(path, ARCHIVE_LIMIT)?.take(ARCHIVE_LIMIT + 1);
+    bounded_hash(path, ARCHIVE_LIMIT)
+}
+
+fn bounded_hash(path: &Path, limit: u64) -> Result<(u64, String)> {
+    let mut file = regular(path, limit)?.take(limit + 1);
     let (mut hash, mut size) = (Sha256::new(), 0_u64);
     let mut buffer = [0_u8; 64 * 1024];
     loop {
@@ -136,8 +150,8 @@ fn hash_file(path: &Path) -> Result<(u64, String)> {
             break;
         }
         size += n as u64;
-        if size > ARCHIVE_LIMIT {
-            return Err("Archive exceeds the updater limit.".into());
+        if size > limit {
+            return Err("File exceeds its size limit.".into());
         }
         hash.update(&buffer[..n]);
     }
@@ -366,6 +380,15 @@ fn paired_jobs(gate: &Gate, value: &Value) -> Result<()> {
 
 // Bound stdout and wall time; never print gh output or pass it the signing key.
 fn gh(args: &[OsString], seconds: u64) -> Result<Vec<u8>> {
+    gh_output(args, seconds, Vec::new(), JSON_LIMIT).map(|(bytes, _)| bytes)
+}
+
+fn gh_output<W: Write + Send + 'static>(
+    args: &[OsString],
+    seconds: u64,
+    mut output: W,
+    limit: u64,
+) -> Result<(W, u64)> {
     let mut child = Command::new("gh")
         .args(args)
         .env_remove("MORROW_UPDATE_SIGNING_KEY")
@@ -381,22 +404,22 @@ fn gh(args: &[OsString], seconds: u64) -> Result<Vec<u8>> {
         .map_err(|_| "Could not start gh.")?;
     let stdout = child.stdout.take().ok_or("Missing gh output.")?;
     let (send, receive) = mpsc::channel();
-    thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let result = stdout.take(JSON_LIMIT + 1).read_to_end(&mut bytes);
-        let _ = send.send((result, bytes));
+    let reader = thread::spawn(move || {
+        let result = std::io::copy(&mut stdout.take(limit + 1), &mut output);
+        let _ = send.send((result, output));
     });
     let deadline = Instant::now() + Duration::from_secs(seconds);
     let result = (|| {
-        let (read, bytes) = receive
+        let (read, output) = receive
             .recv_timeout(Duration::from_secs(seconds))
             .map_err(|_| "gh timed out.")?;
-        if read.is_err() || bytes.len() as u64 > JSON_LIMIT {
+        let size = read.map_err(|_| "Could not read gh output.")?;
+        if size > limit {
             return Err("gh output exceeded its limit.".into());
         }
         loop {
             match child.try_wait()? {
-                Some(status) if status.success() => return Ok(bytes),
+                Some(status) if status.success() => return Ok((output, size)),
                 Some(_) => return Err("gh failed; no subprocess diagnostics are exposed.".into()),
                 None if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
                 None => return Err("gh timed out.".into()),
@@ -407,29 +430,32 @@ fn gh(args: &[OsString], seconds: u64) -> Result<Vec<u8>> {
         let _ = child.kill();
         let _ = child.wait();
     }
+    // Reap the writer before exclusive staging can be removed on failure.
+    let _ = reader.join();
     result
 }
 
+fn api_args(path: &str) -> Vec<OsString> {
+    vec![
+        "api".into(),
+        "--hostname".into(),
+        "github.com".into(),
+        "--method".into(),
+        "GET".into(),
+        "-H".into(),
+        "Accept: application/vnd.github+json".into(),
+        "-H".into(),
+        "X-GitHub-Api-Version: 2022-11-28".into(),
+        format!("repos/{REPOSITORY}/{path}").into(),
+    ]
+}
+
 fn api(path: &str) -> Result<Value> {
-    let bytes = gh(
-        &[
-            "api".into(),
-            "--hostname".into(),
-            "github.com".into(),
-            "--method".into(),
-            "GET".into(),
-            "-H".into(),
-            "Accept: application/vnd.github+json".into(),
-            "-H".into(),
-            "X-GitHub-Api-Version: 2022-11-28".into(),
-            format!("repos/{REPOSITORY}/{path}").into(),
-        ],
-        120,
-    )?;
+    let bytes = gh(&api_args(path), 120)?;
     serde_json::from_slice(&bytes).map_err(|_| "Invalid GitHub API response.".into())
 }
 
-fn verify_gate(gate: &Gate) -> Result<()> {
+fn verify_gate(gate: &Gate) -> Result<i64> {
     let run = api(&format!("actions/runs/{}", gate.run_id))?;
     if run["head_sha"] != gate.sha
         || run["event"] != "push"
@@ -439,17 +465,19 @@ fn verify_gate(gate: &Gate) -> Result<()> {
     {
         return Err("GitHub run does not match the paired gate.".into());
     }
+    let started = timestamp(&run["run_started_at"])?;
     let mut object = api(&format!("git/ref/tags/{}", gate.tag))?["object"].clone();
     let sha_pattern = Regex::new(r"^[a-f0-9]{40}$")?;
     for _ in 0..8 {
         if object["type"] == "commit" && object["sha"] == gate.sha {
-            return paired_jobs(
+            paired_jobs(
                 gate,
                 &api(&format!(
                     "actions/runs/{}/attempts/{}/jobs?per_page=100",
                     gate.run_id, gate.run_attempt
                 ))?,
-            );
+            )?;
+            return Ok(started);
         }
         let sha = object["sha"].as_str().ok_or("Missing tag target.")?;
         if object["type"] != "tag" || !sha_pattern.is_match(sha) {
@@ -458,6 +486,276 @@ fn verify_gate(gate: &Gate) -> Result<()> {
         object = api(&format!("git/tags/{sha}"))?["object"].clone();
     }
     Err("GitHub tag does not resolve to the reviewed CI commit.".into())
+}
+
+fn timestamp(value: &Value) -> Result<i64> {
+    Ok(chrono::DateTime::parse_from_rfc3339(
+        value.as_str().ok_or("Missing artifact/run timestamp.")?,
+    )?
+    .timestamp_millis())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RunArtifact {
+    id: u64,
+    name: String,
+    size: u64,
+    digest: String,
+    created: i64,
+}
+
+fn run_artifact(gate: &Gate, started: i64, value: &Value) -> Result<RunArtifact> {
+    let artifact = RunArtifact {
+        id: value["id"].as_u64().ok_or("Missing Actions artifact ID.")?,
+        name: value["name"]
+            .as_str()
+            .ok_or("Missing Actions artifact name.")?
+            .into(),
+        size: value["size_in_bytes"]
+            .as_u64()
+            .ok_or("Missing Actions artifact size.")?,
+        digest: value["digest"]
+            .as_str()
+            .ok_or("Missing trusted Actions artifact digest.")?
+            .into(),
+        created: timestamp(&value["created_at"])?,
+    };
+    let run = &value["workflow_run"];
+    if artifact.id == 0
+        || !PLATFORMS
+            .iter()
+            .any(|p| artifact.name == format!("morrow-{p}"))
+        || !(1..=ARTIFACT_LIMIT).contains(&artifact.size)
+        || !Regex::new(r"^sha256:[a-f0-9]{64}$")?.is_match(&artifact.digest)
+        || value["expired"] != false
+        || run["id"].as_u64() != Some(gate.run_id)
+        || run["head_sha"] != gate.sha
+        || artifact.created < started
+    {
+        return Err("Actions artifact does not belong to the approved run/attempt/commit.".into());
+    }
+    Ok(artifact)
+}
+
+fn run_artifacts(gate: &Gate, started: i64, value: &Value) -> Result<Vec<RunArtifact>> {
+    let entries = value["artifacts"]
+        .as_array()
+        .ok_or("Missing Actions artifacts.")?;
+    if entries.len() > 100 || value["total_count"].as_u64() != Some(entries.len() as u64) {
+        return Err("Actions artifact listing is incomplete or too large.".into());
+    }
+    let mut result = Vec::new();
+    for platform in PLATFORMS {
+        let name = format!("morrow-{platform}");
+        let matches: Vec<_> = entries.iter().filter(|v| v["name"] == name).collect();
+        if matches.len() != 1 {
+            return Err("Exactly one same-run artifact per release platform is required.".into());
+        }
+        let artifact = run_artifact(gate, started, matches[0])?;
+        if result.iter().any(|a: &RunArtifact| a.id == artifact.id) {
+            return Err("Actions artifact IDs must be distinct.".into());
+        }
+        result.push(artifact);
+    }
+    Ok(result)
+}
+
+fn verify_download(path: &Path, artifact: &RunArtifact) -> Result<()> {
+    let (size, hash) = bounded_hash(path, artifact.size)?;
+    if size != artifact.size || format!("sha256:{hash}") != artifact.digest {
+        return Err("Downloaded Actions archive does not match GitHub's size/digest.".into());
+    }
+    Ok(())
+}
+
+fn u16le(bytes: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes(bytes[at..at + 2].try_into().unwrap())
+}
+fn u32le(bytes: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+}
+fn zip_read(file: &mut File, size: u64, offset: u64, length: usize) -> Result<Vec<u8>> {
+    if offset > size || length as u64 > size - offset {
+        return Err("Actions ZIP offset exceeds the archive.".into());
+    }
+    file.seek(SeekFrom::Start(offset))?;
+    let mut bytes = vec![0; length];
+    file.read_exact(&mut bytes)?;
+    Ok(bytes)
+}
+
+// Deliberately narrow Actions transport ZIP reader: two flat regular files only.
+// Never extract an entry's path, symlink, directory or application ZIP contents.
+// GitHub's outer digest authenticates the transport; each expanded SHA-256 must
+// also equal the local candidate, including the exact checksum-file bytes.
+fn match_artifact_files(
+    path: &Path,
+    expected: &[(Asset, PathBuf)],
+    destination: &Path,
+) -> Result<Vec<(Asset, PathBuf)>> {
+    if expected.len() != 2 {
+        return Err("Each platform artifact must contain exactly two files.".into());
+    }
+    let mut file = regular(path, ARTIFACT_LIMIT)?;
+    let size = file.metadata()?.len();
+    let tail = zip_read(
+        &mut file,
+        size,
+        size.saturating_sub(65557),
+        size.min(65557) as usize,
+    )?;
+    let end = (0..=tail.len().saturating_sub(22))
+        .rev()
+        .find(|&at| {
+            at + 22 <= tail.len()
+                && u32le(&tail, at) == 0x06054b50
+                && at + 22 + u16le(&tail, at + 20) as usize == tail.len()
+        })
+        .ok_or("Unsupported Actions ZIP end record.")?;
+    let length = u32le(&tail, end + 12) as usize;
+    let offset = u32le(&tail, end + 16) as u64;
+    if u32le(&tail, end + 4) != 0
+        || u16le(&tail, end + 8) != 2
+        || u16le(&tail, end + 10) != 2
+        || length > 16384
+        || offset + length as u64 != size - tail.len() as u64 + end as u64
+    {
+        return Err("Actions ZIP must contain exactly two bounded ZIP32 entries.".into());
+    }
+    let central = zip_read(&mut file, size, offset, length)?;
+    let mut cursor = 0;
+    let mut seen = BTreeSet::new();
+    let mut ranges = Vec::new();
+    let mut result = Vec::new();
+    for _ in 0..2 {
+        if cursor + 46 > central.len() || u32le(&central, cursor) != 0x02014b50 {
+            return Err("Invalid Actions ZIP directory.".into());
+        }
+        let flags = u16le(&central, cursor + 8);
+        let method = u16le(&central, cursor + 10);
+        let packed = u32le(&central, cursor + 20) as u64;
+        let expanded = u32le(&central, cursor + 24) as u64;
+        let n = u16le(&central, cursor + 28) as usize;
+        let next = cursor
+            + 46
+            + n
+            + u16le(&central, cursor + 30) as usize
+            + u16le(&central, cursor + 32) as usize;
+        if next > central.len() {
+            return Err("Invalid Actions ZIP name/extra bounds.".into());
+        }
+        let name = std::str::from_utf8(&central[cursor + 46..cursor + 46 + n])?;
+        let asset = &expected
+            .iter()
+            .find(|(a, _)| a.name == name)
+            .ok_or("Unexpected Actions artifact file/path.")?
+            .0;
+        let kind = (u32le(&central, cursor + 38) >> 16) & 0xf000;
+        if !seen.insert(name.to_owned())
+            || flags & !0x0808 != 0
+            || ![0, 8].contains(&method)
+            || ![0, 0x8000].contains(&kind)
+            || u32le(&central, cursor + 38) & 0x10 != 0
+            || u16le(&central, cursor + 34) != 0
+            || expanded != asset.size
+            || packed > ARTIFACT_LIMIT
+            || (method == 0 && packed != expanded)
+        {
+            return Err("Unsafe, duplicated or mismatched Actions ZIP entry.".into());
+        }
+        let local_offset = u32le(&central, cursor + 42) as u64;
+        let local = zip_read(&mut file, size, local_offset, 30)?;
+        let data = local_offset + 30 + u16le(&local, 26) as u64 + u16le(&local, 28) as u64;
+        if u32le(&local, 0) != 0x04034b50
+            || u16le(&local, 6) != flags
+            || u16le(&local, 8) != method
+            || data + packed > offset
+            || zip_read(
+                &mut file,
+                size,
+                local_offset + 30,
+                u16le(&local, 26) as usize,
+            )? != name.as_bytes()
+            || (flags & 8 == 0
+                && (u32le(&local, 18) as u64 != packed
+                    || u32le(&local, 22) as u64 != expanded
+                    || u32le(&local, 14) != u32le(&central, cursor + 16)))
+        {
+            return Err("Inconsistent Actions ZIP local header.".into());
+        }
+        ranges.push((local_offset, data + packed));
+        file.seek(SeekFrom::Start(data))?;
+        let input = (&mut file).take(packed);
+        let source: Box<dyn Read + '_> = if method == 8 {
+            Box::new(flate2::read::DeflateDecoder::new(input))
+        } else {
+            Box::new(input)
+        };
+        // Use the prevalidated candidate filename, never the transport path.
+        let target = destination.join(&asset.name);
+        let mut output = File::create_new(&target)?;
+        if std::io::copy(&mut source.take(expanded + 1), &mut output)? != expanded {
+            return Err("Expanded Actions artifact exceeds or differs from candidate size.".into());
+        }
+        drop(output);
+        let (size, hash) = hash_file(&target)?;
+        if size != asset.size || hash != asset.sha256 {
+            return Err(
+                "Candidate bytes differ from the trusted same-run Actions artifact.".into(),
+            );
+        }
+        result.push((asset.clone(), target));
+        cursor = next;
+    }
+    ranges.sort_unstable();
+    if cursor != central.len() || ranges[0].1 > ranges[1].0 {
+        return Err("Overlapping or unexpected Actions ZIP data.".into());
+    }
+    Ok(result)
+}
+
+fn verified_run_files(
+    gate: &Gate,
+    started: i64,
+    files: &[(Asset, PathBuf)],
+    staging: &Staging,
+) -> Result<Vec<(Asset, PathBuf)>> {
+    if files.len() != 4 {
+        return Err("Exactly four candidate files are required.".into());
+    }
+    let artifacts = run_artifacts(
+        gate,
+        started,
+        &api(&format!(
+            "actions/runs/{}/artifacts?per_page=100",
+            gate.run_id
+        ))?,
+    )?;
+    let destination = staging.0.join("verified");
+    fs::create_dir(&destination)?;
+    let mut verified = Vec::new();
+    for (artifact, expected) in artifacts.iter().zip(files.as_chunks::<2>().0) {
+        let path = staging.0.join(format!("{}.zip", artifact.id));
+        let (output, _) = gh_output(
+            &api_args(&format!("actions/artifacts/{}/zip", artifact.id)),
+            900,
+            File::create_new(&path)?,
+            artifact.size,
+        )?;
+        drop(output);
+        verify_download(&path, artifact)?;
+        if run_artifact(
+            gate,
+            started,
+            &api(&format!("actions/artifacts/{}", artifact.id))?,
+        )? != *artifact
+        {
+            return Err("Trusted Actions artifact identity changed during download.".into());
+        }
+        verified.extend(match_artifact_files(&path, expected, &destination)?);
+        fs::remove_file(path)?;
+    }
+    Ok(verified)
 }
 
 fn draft(value: &Value, tag: &str) -> Result<u64> {
@@ -662,8 +960,8 @@ fn run(options: Options) -> Result<()> {
     if bytes.len() > 16384 {
         return Err("Manifest exceeds the updater limit.".into());
     }
-    let signature = trusted_signature(&bytes, &version)?;
     if !options.publish {
+        let signature = trusted_signature(&bytes, &version)?;
         println!(
             "Checked {tag}: both platform archives/checksums, explicit notes and legacy manifest. {} No files written or GitHub calls made.",
             if signature.is_some() {
@@ -674,7 +972,6 @@ fn run(options: Options) -> Result<()> {
         );
         return Ok(());
     }
-    let signature = signature.ok_or("Publishing requires MORROW_UPDATE_SIGNING_KEY.")?;
     let gate: Gate = serde_json::from_slice(&read(
         options
             .gate
@@ -686,6 +983,17 @@ fn run(options: Options) -> Result<()> {
     if env::var_os("GH_TOKEN").is_none_or(|value| value.is_empty()) {
         return Err("Publishing requires GH_TOKEN.".into());
     }
+    if env::var_os("MORROW_UPDATE_SIGNING_KEY").is_none_or(|value| value.is_empty()) {
+        return Err("Publishing requires MORROW_UPDATE_SIGNING_KEY.".into());
+    }
+    let started = verify_gate(&gate)?;
+    let staging = Staging::new()?;
+    let files = verified_run_files(&gate, started, &files, &staging)?;
+    // The private key is only used after GitHub-authenticated same-run bytes match.
+    // Upload the verified staging copies, not mutable caller-supplied paths.
+    verify_gate(&gate)?;
+    let signature = trusted_signature(&bytes, &version)?
+        .ok_or("Publishing requires MORROW_UPDATE_SIGNING_KEY.")?;
     publish(&tag, &version, &notes, &bytes, &signature, &gate, files)
 }
 
@@ -877,5 +1185,206 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    fn artifact_metadata(platform: &str, id: u64, bytes: &[u8]) -> Value {
+        json!({"id":id,"name":format!("morrow-{platform}"),"size_in_bytes":bytes.len(),
+            "digest":format!("sha256:{:x}",Sha256::digest(bytes)),"expired":false,
+            "created_at":"2026-09-28T01:02:00Z","workflow_run":{"id":99,"head_sha":gate().sha}})
+    }
+
+    #[test]
+    fn same_run_artifact_identity_rejects_wrong_run_commit_attempt_or_digest() {
+        let gate = gate();
+        let started = timestamp(&json!("2026-09-28T01:00:00Z")).unwrap();
+        let mac = artifact_metadata(PLATFORMS[0], 10, b"transport");
+        let windows = artifact_metadata(PLATFORMS[1], 20, b"transport");
+        let listing = json!({"total_count":2,"artifacts":[mac.clone(),windows.clone()]});
+        let selected = run_artifacts(&gate, started, &listing).unwrap();
+        assert_eq!(selected.iter().map(|a| a.id).collect::<Vec<_>>(), [10, 20]);
+        for (key, value) in [
+            ("id", json!(0)),
+            ("name", json!("morrow-other-platform")),
+            ("expired", json!(true)),
+            ("digest", Value::Null),
+            ("size_in_bytes", json!(ARTIFACT_LIMIT + 1)),
+            ("created_at", json!("2026-09-28T00:59:59Z")),
+            ("workflow_run", json!({"id":98,"head_sha":gate.sha})),
+            ("workflow_run", json!({"id":99,"head_sha":"b".repeat(40)})),
+        ] {
+            let mut bad = mac.clone();
+            bad[key] = value;
+            assert!(run_artifact(&gate, started, &bad).is_err(), "{key}");
+        }
+        for bad in [
+            json!({"total_count":3,"artifacts":[mac.clone(),windows]}),
+            json!({"total_count":2,"artifacts":[mac.clone(),mac.clone()]}),
+            json!({"total_count":1,"artifacts":[mac]}),
+        ] {
+            assert!(run_artifacts(&gate, started, &bad).is_err());
+        }
+    }
+
+    fn fixture_pair(platform: &str, bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let name = format!("Morrow-Mail-{VERSION}-{platform}.zip");
+        let checksum = format!("{:x}  {name}\n", Sha256::digest(bytes));
+        vec![
+            (name, bytes.to_vec()),
+            (format!("SHA256SUMS-{platform}.txt"), checksum.into_bytes()),
+        ]
+    }
+
+    // Generated, nonproduction ZIP32 fixtures, including deflate/data descriptors
+    // as used by Actions. No network, subprocess, signing key or git writes.
+    fn fixture_zip(entries: &[(String, Vec<u8>)], deflate: bool) -> Vec<u8> {
+        fn put16(bytes: &mut [u8], at: usize, n: u16) {
+            bytes[at..at + 2].copy_from_slice(&n.to_le_bytes());
+        }
+        fn put32(bytes: &mut [u8], at: usize, n: u32) {
+            bytes[at..at + 4].copy_from_slice(&n.to_le_bytes());
+        }
+        let mut zip = Vec::new();
+        let mut directory = Vec::new();
+        for (name, data) in entries {
+            let crc = !data.iter().fold(!0_u32, |crc, byte| {
+                (0..8).fold(crc ^ u32::from(*byte), |n, _| {
+                    (n >> 1) ^ (0xedb88320 & 0_u32.wrapping_sub(n & 1))
+                })
+            });
+            let packed = if deflate {
+                let mut encoder =
+                    flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+                encoder.write_all(data).unwrap();
+                encoder.finish().unwrap()
+            } else {
+                data.clone()
+            };
+            let offset = zip.len() as u32;
+            let method = if deflate { 8 } else { 0 };
+            let mut local = vec![0; 30];
+            put32(&mut local, 0, 0x04034b50);
+            put16(&mut local, 4, 20);
+            put16(&mut local, 6, 0x0808);
+            put16(&mut local, 8, method);
+            put16(&mut local, 26, name.len() as u16);
+            zip.extend(local);
+            zip.extend(name.as_bytes());
+            zip.extend(&packed);
+            for n in [0x08074b50, crc, packed.len() as u32, data.len() as u32] {
+                zip.extend(n.to_le_bytes());
+            }
+            let mut central = vec![0; 46];
+            put32(&mut central, 0, 0x02014b50);
+            put16(&mut central, 4, 0x0314);
+            put16(&mut central, 6, 20);
+            put16(&mut central, 8, 0x0808);
+            put16(&mut central, 10, method);
+            put32(&mut central, 16, crc);
+            put32(&mut central, 20, packed.len() as u32);
+            put32(&mut central, 24, data.len() as u32);
+            put16(&mut central, 28, name.len() as u16);
+            put32(&mut central, 38, 0o100644 << 16);
+            put32(&mut central, 42, offset);
+            directory.extend(central);
+            directory.extend(name.as_bytes());
+        }
+        let mut end = vec![0; 22];
+        put32(&mut end, 0, 0x06054b50);
+        put16(&mut end, 8, entries.len() as u16);
+        put16(&mut end, 10, entries.len() as u16);
+        put32(&mut end, 12, directory.len() as u32);
+        put32(&mut end, 16, zip.len() as u32);
+        zip.extend(directory);
+        zip.extend(end);
+        zip
+    }
+
+    #[test]
+    fn same_version_wrong_artifact_bytes_rejected_before_signing() {
+        let candidate = Staging::new().unwrap();
+        for platform in PLATFORMS {
+            for (name, bytes) in fixture_pair(platform, b"run A payload") {
+                fs::write(candidate.0.join(name), bytes).unwrap();
+            }
+        }
+        let (_, files) = archives(&candidate.0, VERSION).unwrap();
+        let download = Staging::new().unwrap();
+        let path = download.0.join("transport.zip");
+        let started = timestamp(&json!("2026-09-28T01:00:00Z")).unwrap();
+        // Same version, exact names, sizes, self-consistent checksums, and trusted
+        // transport digest still cannot authorize a different candidate payload.
+        let wrong = fixture_zip(&fixture_pair(PLATFORMS[0], b"run B payload"), true);
+        fs::write(&path, &wrong).unwrap();
+        let artifact = run_artifact(
+            &gate(),
+            started,
+            &artifact_metadata(PLATFORMS[0], 10, &wrong),
+        )
+        .unwrap();
+        verify_download(&path, &artifact).unwrap();
+        let output = Staging::new().unwrap();
+        let error = match_artifact_files(&path, &files[..2], &output.0)
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("Candidate bytes differ"));
+
+        for deflate in [false, true] {
+            let paired = Staging::new().unwrap();
+            for (platform, expected) in PLATFORMS.iter().zip(files.as_chunks::<2>().0) {
+                let zip = fixture_zip(&fixture_pair(platform, b"run A payload"), deflate);
+                fs::write(&path, &zip).unwrap();
+                let metadata =
+                    run_artifact(&gate(), started, &artifact_metadata(platform, 10, &zip)).unwrap();
+                verify_download(&path, &metadata).unwrap();
+                match_artifact_files(&path, expected, &paired.0).unwrap();
+            }
+            let (verified, copies) = archives(&paired.0, VERSION).unwrap();
+            assert_eq!(verified.platforms.len(), 2);
+            assert_eq!(copies.len(), 4);
+        }
+        // Digest failure is separate from inner-file SHA matching.
+        fs::write(&path, b"tampered transport").unwrap();
+        assert!(verify_download(&path, &artifact).is_err());
+    }
+
+    #[test]
+    fn actions_zip_rejects_paths_links_duplicates_and_expansion_overflow() {
+        let pair = fixture_pair(PLATFORMS[0], b"run A payload");
+        let expected: Vec<_> = pair
+            .iter()
+            .map(|(name, bytes)| (asset_bytes(name, bytes), PathBuf::new()))
+            .collect();
+        let good = fixture_zip(&pair, true);
+        let mut traversal = pair.clone();
+        traversal[0].0 = "../outside.zip".into();
+        let mut link = good.clone();
+        let central = u32le(&link, link.len() - 6) as usize;
+        link[central + 38..central + 42].copy_from_slice(&(0o120777_u32 << 16).to_le_bytes());
+        let mut expanded = pair.clone();
+        expanded[0].1 = vec![b'x'; 1024 * 1024];
+        let mut bomb = fixture_zip(&expanded, true);
+        let central = u32le(&bomb, bomb.len() - 6) as usize;
+        bomb[central + 24..central + 28].copy_from_slice(&(pair[0].1.len() as u32).to_le_bytes());
+        for zip in [
+            fixture_zip(&traversal, false),
+            link,
+            fixture_zip(&[pair[0].clone(), pair[0].clone()], false),
+            bomb,
+            good[..good.len() - 1].to_vec(),
+        ] {
+            let download = Staging::new().unwrap();
+            let output = Staging::new().unwrap();
+            let path = download.0.join("transport.zip");
+            fs::write(&path, zip).unwrap();
+            assert!(match_artifact_files(&path, &expected, &output.0).is_err());
+            for entry in fs::read_dir(&output.0).unwrap() {
+                let entry = entry.unwrap();
+                let allowed = expected
+                    .iter()
+                    .find(|(a, _)| entry.file_name() == a.name.as_str())
+                    .unwrap();
+                assert!(entry.metadata().unwrap().len() <= allowed.0.size + 1);
+            }
+        }
     }
 }

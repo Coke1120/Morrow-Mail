@@ -78,9 +78,17 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
   historical-upgrade:
-    needs: native
-    runs-on: windows-2022
-    timeout-minutes: 25
+    needs: [native, macos-native]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            artifact: winui-candidate
+          - os: macos-15
+            artifact: swiftui-candidate
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -105,12 +113,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Historical HTML semantics changed.' }
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
-          name: winui-candidate-${{ github.sha }}
+          name: ${{ matrix.artifact }}-${{ github.sha }}
           path: candidate-artifacts
       - name: Fixed historical installer to actual WinUI candidate
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $archives = @(Get-ChildItem candidate-artifacts -Recurse -Filter '*-windows-x64.zip')
           if ($archives.Count -ne 1) { throw 'Expected exactly one native candidate archive.' }
           Expand-Archive -LiteralPath $archives[0].FullName -DestinationPath candidate
           node scripts/test-rust-upgrade.js '--candidate=candidate/Morrow Mail-win32-x64' --compatibility-root=.compatibility/beta16
+      - name: Fixed historical installer to actual SwiftUI candidate
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir candidate
+          /usr/bin/ditto -x -k candidate-artifacts/Morrow-Mail-native-macos-arm64.zip candidate
+          node scripts/test-rust-upgrade.js '--candidate=candidate/Morrow Mail.app' --compatibility-root=.compatibility/beta16

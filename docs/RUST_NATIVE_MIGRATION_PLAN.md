@@ -9,7 +9,7 @@
 - N1：共用草稿準備已移至 Rust；catalog／OpenCC 來源固定、5,343 筆正規化 golden 與授權內容比對通過。
 - N2／N3：WinUI host、原生功能頁與隔離 HTML reader 已落盤並通過編譯。補上 programmatic Application 的 XAML metadata provider 後，CI 仍在 Application 初始化時崩潰；正在診斷，實際 walkthrough 尚未通過，不能以編譯代替驗收。
 - N4：新 Node-free macOS candidate 經固定 beta.16 舊 installer 實際升級／啟動及備份通過，包括 Scheduled、Pending、Learning、Reply Suggestions 與中斷 claim 不重播。Windows 尚待 runtime／upgrade gate。
-- N6：Rust resources／notices／macOS builder／native acceptance driver 已驗證無 Node 路徑；Rust benchmark 的 1k smoke 通過。共用 assets 與 production 公鑰已解除對 React／Node 來源目錄的依賴。新 publisher 尚未接正式發佈，artifact provenance gate 仍在補驗。
+- N6：Rust resources／notices／macOS builder／native acceptance driver 已驗證無 Node 路徑；Rust benchmark 的 1k smoke 通過。共用 assets 與 production 公鑰已解除對 React／Node 來源目錄的依賴。新 publisher 已補上同 run artifact 來源綁定，七項 focused checks 與真實 GitHub ZIP 唯讀解析通過；尚未接正式發佈。
 - N5 與所有乾淨最低 OS／IME／Narrator／DPI／真實 provider／正式簽章門檻保持未完成。既有 Electron／Node 相容路徑與發佈資產沒有刪除或替換。
 
 逐次證據與限制以 [VERIFICATION](../VERIFICATION.md) 為準；上述進度不是所有 gate 已完成的宣告。
