@@ -60,6 +60,7 @@ struct WindowAssertions {
             split.addArrangedSubview(NSView())
             window.contentView = split
             assert(split.arrangedSubviews.count == 2 && split.arrangedSubviews.first === host && host.superview === split && host.window === window, "Late attachment lost its pane")
+            split.adjustSubviews()
             split.setPosition(split.bounds.width / 2, ofDividerAt: 0)
             FileHandle.standardError.write(Data("Late pane immediately after set: \(host.frame), translates=\(host.translatesAutoresizingMaskIntoConstraints), constraints=\(host.constraints)\n".utf8))
         } else { host.rootView = vertical
