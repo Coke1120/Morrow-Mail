@@ -500,9 +500,12 @@ bool documentReady(std::shared_ptr<Reader> const& state) {
 }
 void checkFallback(std::shared_ptr<Reader> const& state, hstring const& body) {
     auto plain = state->fallback.get(); auto view = state->view.get();
-    runtimeCheck(plain && plain.Text() == body && plain.Visibility() == xaml::Visibility::Visible
-        && view && view.Visibility() == xaml::Visibility::Collapsed && !state->images,
-        L"Reader fallback did not preserve visible plain text with images disabled.");
+    runtimeCheck(bool(plain), L"Reader fallback: textBlockMissing.");
+    runtimeCheck(plain.Text() == body, L"Reader fallback: bodyMismatch.");
+    runtimeCheck(plain.Visibility() == xaml::Visibility::Visible, L"Reader fallback: plainNotVisible.");
+    runtimeCheck(bool(view), L"Reader fallback: webViewMissing.");
+    runtimeCheck(view.Visibility() == xaml::Visibility::Collapsed, L"Reader fallback: webViewNotCollapsed.");
+    runtimeCheck(!state->images, L"Reader fallback: imagesEnabled.");
 }
 struct RuntimeProbe {
     unsigned requests = 0, messages = 0, auditEvents = 0, cspFlags = 0;

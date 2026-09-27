@@ -169,12 +169,13 @@ The PowerShell AST, all nine official NuGet archive hashes, project XML and expl
 package import paths were checked. Hosted `windows-2022` Rust checks, compilation,
 packaging, private service startup/authentication/EOF drain, fresh onboarding,
 foreground interaction guards and owned mail/workspace/Settings checks passed in
-CI 36352335146. Application startup was fixed by initializing resources in
+CI 36353708979. Application startup was fixed by initializing resources in
 `OnLaunched`. Exact-document matching fixed the reader's rejected Base64 HTML
 navigation; initial and adversarial documents now load and the inline-script
-sentinel passes. The current failure is the fixture's CSP event observation under
-disabled scripting; the complete reader smoke and historical upgrade gates have
-not passed.
+sentinel passes. Native CSP observation now verifies blocked images, frames and
+connections with scripting disabled. The current failure is the plain-text
+fallback display assertion; the complete reader smoke, benchmark and historical
+upgrade gates have not passed.
 Separately run on
 a clean supported Windows VM with no VS, no Windows App Runtime, offline startup,
 ordinary-user permissions, and WebView2 absent. A hosted-runner pass alone cannot
