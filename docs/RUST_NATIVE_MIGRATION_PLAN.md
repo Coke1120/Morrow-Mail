@@ -7,9 +7,9 @@
 2026-09-28 候選實作進度（`codex/native-migration`，尚未切換正式 Windows 產品）：
 
 - N1：共用草稿準備已移至 Rust；catalog／OpenCC 來源固定、5,343 筆正規化 golden 與授權內容比對通過。
-- N2／N3：WinUI host、原生功能頁與隔離 HTML reader 已落盤並通過編譯。CI 已通過啟動、Fresh onboarding、重複關窗的服務排空保護、視窗精確還原、前景操作 guard、owned-mailbox 分頁、草稿、工作頁與 Settings。初始及攻擊文件的完全比對導覽、inline script 阻擋，以及停用腳本時的 native CSP 觀測均已通過。CI 36354783178 確認目前失敗是純文字 TextBlock 弱參照失效；候選修正保留可見頁面的 label 並在卸載時釋放，仍待 runtime 驗證。完整 reader／walkthrough 尚未通過，不能以編譯或啟動代替驗收。
-- N4：新 Node-free macOS candidate 經固定 beta.16 舊 installer 實際升級／啟動及備份通過，包括 Scheduled、Pending、Learning、Reply Suggestions 與中斷 claim 不重播。Windows 尚待 runtime／upgrade gate。
-- N6：macOS／Windows 的 Node-inaccessible Rust fmt／Clippy／tests 已通過；新版 macOS canonical ZIP／checksum、Models、HTML／network-zero、視窗與 Rust native integration 已在 macOS 15 通過。Rust resources／notices／macOS builder／native acceptance driver 已驗證無 Node 路徑；Rust benchmark 的 1k smoke 通過。共用 assets 與 production 公鑰已解除對 React／Node 來源目錄的依賴。新 publisher 已補上同 run artifact 來源綁定，七項 focused checks 與真實 GitHub ZIP 唯讀解析通過；尚未接正式發佈。
+- N2／N3：WinUI host、原生功能頁與隔離 HTML reader 已落盤並通過編譯。CI 已通過啟動、Fresh onboarding、重複關窗的服務排空保護、視窗精確還原、前景操作 guard、owned-mailbox 分頁、草稿、工作頁與 Settings。初始及攻擊文件的完全比對導覽、inline script 阻擋、停用腳本時的 native CSP 觀測，以及 TextBlock 生命週期修正後的純文字 fallback 均已通過。CI 36356066868 在後續空 HTML 查詢階段超時；正在修正 harness 等待期間未持續讀取 stderr 的 pipe deadlock 風險。完整 reader／walkthrough 尚未通過，不能以編譯或啟動代替驗收。
+- N4：CI 36356066868 的雙平台 candidate 經固定 beta.16 舊 installer 實際升級／啟動及備份通過，包括 Scheduled、Pending、Learning、Reply Suggestions 與中斷 claim 不重播；七項 storage/search/service 相容契約亦通過。Windows reader walkthrough 仍是獨立未通過項目。
+- N6：macOS／Windows 的 Node-inaccessible Rust fmt／Clippy／tests 已通過；新版 macOS canonical ZIP／checksum、Models、HTML／network-zero、視窗與 Rust native integration 已在 macOS 15 通過。Rust resources／notices／macOS builder／native acceptance driver 已驗證無 Node 路徑；Rust benchmark 的 1k／10k／50k service checks 已在雙平台通過（非整體 App 效能驗收）。共用 assets 與 production 公鑰已解除對 React／Node 來源目錄的依賴。新 publisher 已補上同 run artifact 來源綁定，七項 focused checks 與真實 GitHub ZIP 唯讀解析通過；尚未接正式發佈。
 - N5 與所有乾淨最低 OS／IME／Narrator／DPI／真實 provider／正式簽章門檻保持未完成。既有 Electron／Node 相容路徑與發佈資產沒有刪除或替換。
 
 逐次證據與限制以 [VERIFICATION](../VERIFICATION.md) 為準；上述進度不是所有 gate 已完成的宣告。

@@ -169,16 +169,18 @@ The PowerShell AST, all nine official NuGet archive hashes, project XML and expl
 package import paths were checked. Hosted `windows-2022` Rust checks, compilation,
 packaging, private service startup/authentication/EOF drain, fresh onboarding,
 foreground interaction guards and owned mail/workspace/Settings checks passed in
-CI 36354783178. Application startup was fixed by initializing resources in
+CI 36356066868. Application startup was fixed by initializing resources in
 `OnLaunched`. Exact-document matching fixed the reader's rejected Base64 HTML
 navigation; initial and adversarial documents now load and the inline-script
 sentinel passes. Native CSP observation now verifies blocked images, frames and
-connections with scripting disabled. The current plain-text failure is an expired
-TextBlock weak reference. The candidate retains page labels until visual unload;
-its existing reader check also requires a mounted fallback and released labels
-after unload. Runtime validation remains pending. Benchmark and historical
-preservation now run independently after packaging; a failed UI job still fails
-the workflow and cannot satisfy the publisher's all-job gate.
+connections with scripting disabled. Retaining page labels fixed the expired
+TextBlock reference: the mounted plain-text fallback now passes. The subsequent
+empty-HTML assertion did not complete before the outer harness deadline. The
+harness now drains stderr while waiting, so synchronous native
+diagnostics cannot fill its pipe and block the UI thread. Reader security checks
+and deadlines remain. Packaged-service benchmarks and both platforms' fixed
+beta.16 contracts/actual upgrades passed independently; the UI job remains
+failed and cannot satisfy the publisher's all-job gate.
 Separately run on
 a clean supported Windows VM with no VS, no Windows App Runtime, offline startup,
 ordinary-user permissions, and WebView2 absent. A hosted-runner pass alone cannot

@@ -253,6 +253,112 @@ function Isolate-NativeEnvironment([Diagnostics.ProcessStartInfo] $Start) {
     $allowed = @('SystemRoot', 'WINDIR', 'SystemDrive', 'ComSpec', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'ProgramData', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432', 'PATH', 'PATHEXT', 'PSModulePath', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'PROCESSOR_LEVEL', 'PROCESSOR_REVISION', 'OS', 'SESSIONNAME', 'USERNAME', 'USERDOMAIN', 'HOMEDRIVE', 'HOMEPATH')
     foreach ($name in @($Start.Environment.Keys)) { if ($allowed -notcontains $name) { [void] $Start.Environment.Remove($name) } }
 }
+function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMilliseconds = 180000) {
+    Require ($TimeoutMilliseconds -gt 0 -and $TimeoutMilliseconds -le 180000) 'Invalid native UI deadline.'
+    $safeStartup = '^Native startup: [A-Za-z0-9 .(),:_-]{1,120}$|^Native (startup|XAML) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native startup (constructor|OnLaunched) \((installing unhandled exception handler|reading application resources|reading merged dictionaries|constructing control resources|appending control resources)\) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native smoke: [a-z-]{1,64}$|^Native reader: [a-z-]{1,64} \+[0-9]{1,6} ms$|^Native reader: csp-state fetchRejected=[01] imagePolicy=[01] framePolicy=[01] connectPolicy=[01] imageComplete=[01]$'
+    $safeStartup += '|^Native reader: nav-start id=[0-9]{1,20} blank=[01] redirected=[01] user=[01] expected=[01] live=[01]$'
+    $safeStartup += '|^Native reader: nav-decision id=[0-9]{1,20} cancelled=[01] expected=[01] tracked=[0-9]{1,20}$'
+    $safeStartup += '|^Native reader: nav-completed id=[0-9]{1,20} success=[01] error=-?[0-9]{1,10} live=[01] tracked=[0-9]{1,20}$'
+    $safeStartup += '|^Native reader: (render-request|render-returned|initial-document-state|initial-document-failed) active=[01] ready=[01] live=[01] expected=[01] core=[01] view=[01] loaded=[01] visible=[01] id=[0-9]{1,20} completed=[0-9]{1,20} epoch=[0-9]{1,20}$'
+    $safeStartup += '|^Native reader: nav-uri empty=[01] dataHtml=[01] dataHtmlBase64=[01] aboutBlankPrefix=[01] other=[01] length=[0-9]{1,10}$'
+    $safeLines = [Collections.Generic.Queue[string]]::new()
+    $state = @{ phase = ''; characters = 0 }
+    function Keep-Line([string] $Value) {
+        if ($Value -cnotmatch $safeStartup) { return }
+        if ($Value -cmatch '^Native smoke: [a-z-]{1,64}$') { $state.phase = $Value }
+        $safeLines.Enqueue($Value); $state.characters += $Value.Length + 1
+        while ($safeLines.Count -gt 20 -or $state.characters -gt 1025) {
+            $state.characters -= $safeLines.Dequeue().Length + 1
+        }
+    }
+    # ReadAsync fills a fixed buffer while this thread polls the owned process.
+    # Never wait for process exit with an undrained pipe, or use an unbounded line
+    # reader: native fprintf/fflush can otherwise block the UI and its deadline.
+    $buffer = [char[]]::new(1024)
+    $line = [Text.StringBuilder]::new(256)
+    $discard = $false; $eof = $false; $read = $null; $readFailed = $false
+    $deadline = [Environment]::TickCount64 + $TimeoutMilliseconds
+    $tailDeadline = $null; $completed = $false
+    while ($true) {
+        $now = [Environment]::TickCount64
+        if ($null -eq $tailDeadline) {
+            if ($Process.HasExited) {
+                $completed = $true; $tailDeadline = $now + 2000
+            } elseif ($now -ge $deadline) {
+                # Only the process passed by the caller; never a name/tree kill.
+                try { $Process.Kill(); [void] $Process.WaitForExit(5000) }
+                catch { Write-Warning 'Timed-out fixture UI termination could not be confirmed.' }
+                $tailDeadline = [Environment]::TickCount64 + 2000
+            }
+        }
+        if ($null -ne $tailDeadline -and ($eof -or [Environment]::TickCount64 -ge $tailDeadline)) { break }
+        $limit = if ($null -ne $tailDeadline) { $tailDeadline } else { $deadline }
+        $wait = [int] [Math]::Min(20, [Math]::Max(0, $limit - [Environment]::TickCount64))
+        if ($eof) { if ($wait -gt 0) { Start-Sleep -Milliseconds $wait }; continue }
+        try {
+            if ($null -eq $read) { $read = $Process.StandardError.ReadAsync($buffer, 0, $buffer.Length) }
+            if (-not $read.Wait($wait)) { continue }
+            $count = $read.GetAwaiter().GetResult(); $read = $null
+            if ($count -eq 0) {
+                $eof = $true
+                if (-not $discard -and $line.Length -gt 0) { Keep-Line $line.ToString().TrimEnd([char] 13) }
+                continue
+            }
+            for ($i = 0; $i -lt $count; $i++) {
+                if ($buffer[$i] -eq [char] 10) {
+                    if (-not $discard) { Keep-Line $line.ToString().TrimEnd([char] 13) }
+                    [void] $line.Clear(); $discard = $false
+                } elseif (-not $discard) {
+                    if ($line.Length -eq 256) { [void] $line.Clear(); $discard = $true }
+                    else { [void] $line.Append($buffer[$i]) }
+                }
+            }
+        } catch { $readFailed = $true; $eof = $true }
+    }
+    if ($readFailed) { Write-Warning 'Fixture stderr collection was incomplete; only validated phases are retained.' }
+    return @{ Completed = $completed; Diagnostics = ($safeLines -join "`n"); LastSmokePhase = $state.phase }
+}
+function Test-NativeUiDrain {
+    # Real pipes, fixed fictional text only: no app, workspace or network access.
+    function Start-DrainCheck([string] $Source) {
+        $start = [Diagnostics.ProcessStartInfo]::new([Environment]::ProcessPath)
+        $start.UseShellExecute = $false; $start.RedirectStandardError = $true
+        foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Source)))) {
+            $start.ArgumentList.Add($argument)
+        }
+        return [Diagnostics.Process]::Start($start)
+    }
+    $child = $null
+    try {
+        $child = Start-DrainCheck @'
+[Console]::Error.WriteLine('Native smoke: reader-isolation')
+for ($i = 0; $i -lt 4000; $i++) { [Console]::Error.WriteLine('Native reader: csp-settle +12345 ms') }
+[Console]::Error.WriteLine('secret-token-do-not-retain')
+[Console]::Error.Write('Native smoke: ' + ('x' * 262144))
+[Console]::Error.WriteLine('secret-overlong-do-not-retain')
+for ($i = 0; $i -lt 40; $i++) { [Console]::Error.WriteLine('Native reader: render-returned active=1 ready=1 live=1 expected=1 core=1 view=1 loaded=1 visible=0 id=3 completed=3 epoch=3') }
+[Console]::Error.Flush()
+exit 0
+'@
+        $result = Wait-NativeUi $child 30000
+        Require ($result.Completed -and $child.HasExited -and $child.ExitCode -eq 0) 'High-output drain self-check did not finish.'
+        Require ($result.Diagnostics.Length -le 1024 -and @($result.Diagnostics -split "`n").Count -le 20) 'Drain self-check exceeded its retention limit.'
+        Require ($result.Diagnostics -cnotmatch 'secret|xxx' -and $result.Diagnostics -cmatch 'render-returned') 'Drain self-check retained unsafe data or lost its tail.'
+        Require ($result.LastSmokePhase -ceq 'Native smoke: reader-isolation') 'Drain self-check lost its last smoke phase.'
+        $child.Dispose(); $child = $null
+        $child = Start-DrainCheck "[Console]::Error.WriteLine('Native smoke: mail-reader'); [Console]::Error.Flush(); Start-Sleep -Seconds 20"
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        $result = Wait-NativeUi $child 750
+        Require (-not $result.Completed -and $child.HasExited -and $child.ExitCode -ne 0) 'Drain deadline self-check did not terminate its child.'
+        Require ($clock.ElapsedMilliseconds -lt 8750 -and $result.Diagnostics.Length -le 1024) 'Drain deadline self-check exceeded its bounded allowance.'
+        Write-Host 'Native UI bounded stderr drain and owned-process timeout self-check passed.'
+    } finally {
+        if ($child) {
+            try { if (-not $child.HasExited) { $child.Kill(); [void] $child.WaitForExit(5000) } }
+            finally { $child.Dispose() }
+        }
+    }
+}
 $required = @('Morrow Mail.exe', 'Microsoft.UI.Xaml.dll', 'Microsoft.WindowsAppRuntime.dll',
     'resources/app/backend/package.json', 'resources/app/package.json', 'resources/app/runtime/morrow-service.exe',
     'resources/app/runtime/THIRD_PARTY_LICENSES.txt', 'licenses/windows/packages.config', 'licenses/windows/packages.sha256.json')
@@ -335,6 +441,7 @@ try {
     $process.Dispose(); $process = $null
     Write-Host 'Private Rust startup/authentication/EOF drain passed in an isolated fresh workspace.'
     if ($UiSmoke) {
+        Test-NativeUiDrain
         $root = Split-Path $PSScriptRoot -Parent
         $savedIncremental = $env:CARGO_INCREMENTAL
         Push-Location $root
@@ -367,40 +474,16 @@ try {
                 $crashCapture = New-CrashCapture
             }
             $process = [Diagnostics.Process]::Start($ui)
-            $startupDiagnostics = $process.StandardError.ReadLineAsync()
-            $completed = $process.WaitForExit(180000)
-            if (-not $completed) {
-                # Only the UI process launched above, never a name-based/tree kill.
-                try { if (-not $process.HasExited) { $process.Kill() }; [void] $process.WaitForExit(5000) }
-                catch { Write-Warning 'Timed-out fixture UI termination could not be confirmed.' }
-            }
-            $safeStartup = '^Native startup: [A-Za-z0-9 .(),:_-]{1,120}$|^Native (startup|XAML) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native startup (constructor|OnLaunched) \((installing unhandled exception handler|reading application resources|reading merged dictionaries|constructing control resources|appending control resources)\) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native smoke: [a-z-]{1,64}$|^Native reader: [a-z-]{1,64} \+[0-9]{1,6} ms$|^Native reader: csp-state fetchRejected=[01] imagePolicy=[01] framePolicy=[01] connectPolicy=[01] imageComplete=[01]$'
-            $safeStartup += '|^Native reader: nav-start id=[0-9]{1,20} blank=[01] redirected=[01] user=[01] expected=[01] live=[01]$'
-            $safeStartup += '|^Native reader: nav-decision id=[0-9]{1,20} cancelled=[01] expected=[01] tracked=[0-9]{1,20}$'
-            $safeStartup += '|^Native reader: nav-completed id=[0-9]{1,20} success=[01] error=-?[0-9]{1,10} live=[01] tracked=[0-9]{1,20}$'
-            $safeStartup += '|^Native reader: (render-request|render-returned|initial-document-state|initial-document-failed) active=[01] ready=[01] live=[01] expected=[01] core=[01] view=[01] loaded=[01] visible=[01] id=[0-9]{1,20} completed=[0-9]{1,20} epoch=[0-9]{1,20}$'
-            $safeStartup += '|^Native reader: nav-uri empty=[01] dataHtml=[01] dataHtmlBase64=[01] aboutBlankPrefix=[01] other=[01] length=[0-9]{1,10}$'
-            $safeLines = [Collections.Generic.List[string]]::new()
-            $stderrDeadline = [Environment]::TickCount64 + 2000
-            try {
-                for ($lineIndex = 0; $lineIndex -lt 256; $lineIndex++) {
-                    $remaining = [Math]::Max(0, $stderrDeadline - [Environment]::TickCount64)
-                    if (-not $startupDiagnostics.Wait([int] $remaining)) { break }
-                    $line = $startupDiagnostics.GetAwaiter().GetResult()
-                    if ($null -eq $line) { break }
-                    if ($line.Length -le 256 -and $line -cmatch $safeStartup) { $safeLines.Add($line) }
-                    $startupDiagnostics = $process.StandardError.ReadLineAsync()
-                }
-            } catch { Write-Warning 'Fixture stderr collection was incomplete; only validated phases are retained.' }
-            $diagnostics = ($safeLines | Select-Object -Last 20) -join "`n"
-            if ($diagnostics.Length -gt 1024) { $diagnostics = $diagnostics.Substring($diagnostics.Length - 1024) }
+            $completion = Wait-NativeUi $process
+            $completed = $completion.Completed
+            $diagnostics = $completion.Diagnostics
             if ($diagnostics) { Write-Host $diagnostics }
             if (-not $completed) {
                 try {
                     Require (Test-Path -LiteralPath (Join-Path $case.path 'disposable-native-fixture')) 'Timeout evidence requires a marked fixture.'
                     $evidence = Join-Path $root 'test-results'
                     [void] (New-Item -ItemType Directory -Force $evidence)
-                    $phase = @($safeLines | Where-Object { $_ -cmatch '^Native smoke: [a-z-]{1,64}$' } | Select-Object -Last 1) -join ''
+                    $phase = $completion.LastSmokePhase
                     $timeout = @{ ok = $false; mode = $case.mode; timedOut = $true; phase = $phase; diagnostics = $diagnostics } | ConvertTo-Json -Compress
                     [IO.File]::WriteAllText((Join-Path $evidence "windows-native-ui-$caseIndex-timeout.json"), $timeout, [Text.UTF8Encoding]::new($false))
                     if (Test-Path -LiteralPath $resultFile -PathType Leaf) {
