@@ -1,10 +1,20 @@
 # Verification — 27 September 2026
 
-## Unreleased hourly update checks
+## 0.6.0-beta.15 local preparation — Settings UI/UX and Yahoo HK
+
+Both clients now put account connection controls first, separate Chat/reply and Search embedding forms without dropping their unsaved drafts, group General preferences with visible autosave status, and keep explicit permission Save/Discard visible. Search has one reviewed indexing entry and separates supported Rust batch controls from destructive vector clearing; Learning leads with account/proposal/approved-style status and separates identity from opt-in configuration. Calendar explicitly supports one account per provider; About distinguishes current version from the previous installation record. No API/provider/authentication behavior changed.
+
+Yahoo/HK uses the existing IMAP/SMTP path, complete address, Yahoo TLS servers and an app password. The preset clears entered passwords and never connects automatically. No Yahoo OAuth/calendar/Out of Office support or real Yahoo acceptance is claimed.
+
+Validation: focused Settings, Learning and Search UI/contract tests (23 checks); React production build; full native Swift compilation. A temporary native app with two fictional accounts and mocked provider/model services was used to inspect all eight tabs, visible account actions, separate model panels, retained unsaved embedding edits across the Chat switch, persistent permission controls and collapsed calendar reconnect forms. No real workspace, provider writes or paid model calls were used. Browser automation was unavailable; React checks cover rendered/handler behavior, not a Windows runtime walkthrough. Jev review was unavailable because its API key was not configured. Paired release CI is required before publication. No Applications replacement or live Yahoo acceptance was performed for these changes.
+
+The earlier installed beta.14 read-only review is retained in [Settings UX review](docs/SETTINGS_UX_REVIEW.md), now annotated with implemented changes. Screenshots and generated fixture apps remain outside version control.
+
+## 0.6.0-beta.15 local preparation — hourly update checks
 
 Both clients now check at launch and once per hour while running, with a due check on return from sleep/background. Availability is retained outside Settings and shown as an accessible red ! badge linking to About. Manual and automatic checks share the same state; failed checks retain the last successful release, channel changes clear it, and no automatic download or installation is performed.
 
-`node --test tests/updates.test.js tests/settings.test.js` passed 9/9, including deterministic hourly boundaries, manual-check coalescing, offline retention, cancellation and clock rollback. `npm run build` passed. `npm run macos:test` passed the full native compile and isolated client harness, including hourly/manual checks, channel reset and the About shortcut without changing the mailbox or global busy state. Existing Swift onChange deprecation warnings remain. These client-only changes have not been published, installed in Applications, or executed on Windows; no real provider or model action was used.
+`node --test tests/updates.test.js tests/settings.test.js` passed 9/9, including deterministic hourly boundaries, manual-check coalescing, offline retention, cancellation and clock rollback. `npm run build` passed. `npm run macos:test` passed the full native compile and isolated client harness, including hourly/manual checks, channel reset and the About shortcut without changing the mailbox or global busy state. Existing Swift onChange deprecation warnings remain. At local preparation these client-only changes had not been installed in Applications or executed on Windows; no real provider or model action was used. Paired CI supplies the release platform checks.
 
 ## 0.6.0-beta.14 paired prerelease
 

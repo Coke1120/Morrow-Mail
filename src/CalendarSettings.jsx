@@ -99,7 +99,7 @@ export default function CalendarSettings({ onNotify, onDirtyChange, onBusyChange
 
   return <div className="calendar-settings">
     <h2 className="settings-section-title">A calendar for every part of your day.</h2>
-    <p className="settings-intro">Connect Google and Outlook at the same time. Use the sign-in button to open your browser and keep Morrow open until you finish. Calendar connections are separate from email.</p>
+    <p className="settings-intro">Connect one Google and one Outlook calendar account at the same time. Each can show multiple calendars. Calendar connections are separate from email.</p>
     {window.morrowDesktop && <button className="button secondary" disabled={loading || !!busy} onClick={() => { if (!dirty || window.confirm('Refresh connections and discard unsaved calendar credentials?')) setRevision(value => value + 1); }}>Refresh connections</button>}
     <div className="settings-privacy"><CalendarDays size={19} /><div><strong>Your calendar is live.</strong><p>View calendar events and explicitly create events after reviewing them. Calendar data is not sent to your AI model. AI Studio’s calendar exercises remain local simulations.</p></div></div>
     {error && <div className="settings-error" role="alert"><p>{error}</p>{!connections.length && <button type="button" className="button secondary" disabled={loading || !!busy} onClick={() => setRevision(value => value + 1)}>Retry connections</button>}</div>}

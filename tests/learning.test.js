@@ -225,9 +225,24 @@ test('Learning UI offers direct learning only with saved opt-in, permissions, mo
     workspace: { styleLearning: { settings: { enabled: true, weekly: false, months: 3, maxSamples: 5, tokenBudget: 4000 }, permitted: true, preview: null, profile: { active: true, voice: 'Approved original style.' } } },
   };
   const preview = { id: 'prepared-fixture', status: 'prepared', sampleCount: 1, eligible: 4, effectiveCap: 5, estimatedTokens: 1500, tokenBudget: 4000, samples: [{ body: 'Full own Sent sample text for optional review.' }] };
-  const render = (value, disabled = false) => renderToString(React.createElement(StyleLearning, { state: value, disabled, onUpdate() {}, onDirtyChange() {}, onBusyChange() {} }));
+  const render = (value, disabled = false, onOpenSettings) => renderToString(React.createElement(StyleLearning, { state: value, disabled, onOpenSettings, onUpdate() {}, onDirtyChange() {}, onBusyChange() {} }));
   const button = html => html.match(/<button\b[^>]*>Learn Now · Uses AI<\/button>/)[0];
   const html = render(state);
+  assert.match(html, /Account: .*owner@example.invalid/);
+  assert.match(html, /<strong>Approved style<\/strong>/);
+  assert.ok(html.indexOf('Approved style') < html.indexOf('Learn Now · Uses AI'));
+  for (const title of ['Learning configuration', 'Your identity for this account']) {
+    assert.match(html, new RegExp(`<details class="settings-disclosure"><summary>${title}`));
+    assert.ok(html.indexOf('Learn Now · Uses AI') < html.indexOf(`<summary>${title}`));
+  }
+  assert.match(button(html), /aria-describedby="[^"]+"/);
+  assert.doesNotMatch(html, />Open (Model|Mail|AI Permissions)<\/button>/);
+  const fresh = structuredClone(state); fresh.workspace.styleLearning.profile = null;
+  assert.match(render(fresh), /<strong>Not learned<\/strong>/);
+  assert.match(render(fresh), /Preview your saved sample selection/);
+  const inactive = structuredClone(state); inactive.workspace.styleLearning.profile.active = false;
+  assert.match(render(inactive), /<strong>Approved style · inactive<\/strong>/);
+  assert.match(render(inactive), /Review learning permissions and source scope/);
   assert.match(button(html), /class="button primary"/); assert.doesNotMatch(button(html), /disabled/);
   assert.match(html, /Uses saved learning settings/); assert.match(html, /Save Approved Style activates it for writing and replies under Email Brain permission/);
   assert.match(html, /does not overwrite Email Brain contacts, notes, or voice/);
@@ -242,24 +257,62 @@ test('Learning UI offers direct learning only with saved opt-in, permissions, mo
   assert.match(identityUI, /Saved identity confirmed/); assert.match(identityUI, /Sent access is off/);
   assert.match(identityUI, /value="Leo Ho"/); assert.match(identityUI, /何先生/);
   assert.deepEqual(Object.keys(learningOptions(identified.workspace.styleLearning.settings)).sort(), ['enabled', 'maxSamples', 'months', 'tokenBudget', 'weekly']);
-  for (const block of [
-    value => { value.workspace.styleLearning.settings.enabled = false; },
-    value => { value.workspace.styleLearning.permitted = false; },
-    value => { value.settings.ai.configured = false; },
-    value => { value.workspace.styleLearning.preview = { ...preview, status: 'running' }; },
+  for (const [block, reason] of [
+    [value => { value.workspace.styleLearning.settings.enabled = false; }, 'Learning is off. Enable and save it'],
+    [value => { value.workspace.styleLearning.permitted = false; }, 'Requires saved learning opt-in plus AI Permissions'],
+    [value => { value.settings.ai.configured = false; }, 'Configure and save an AI model in Model settings first'],
+    [value => { value.workspace.styleLearning.preview = { ...preview, status: 'running' }; }, 'Analysis is already running'],
   ]) {
     const blocked = structuredClone(state); block(blocked);
-    assert.match(button(render(blocked)), /disabled=""/);
+    const blockedHTML = render(blocked);
+    assert.match(button(blockedHTML), /disabled=""/);
+    assert.ok(blockedHTML.indexOf(reason) > blockedHTML.indexOf('Learn Now · Uses AI'));
+    assert.ok(blockedHTML.indexOf(reason) < blockedHTML.indexOf('<summary>Learning configuration'));
   }
   assert.match(render(state, true), /<fieldset[^>]*disabled=""/);
+  assert.match(render(state, true), /Wait for the current operation to finish/);
   const combined = structuredClone(state); combined.account = { id: 'all', mode: 'combined' };
   assert.match(render(combined), /<fieldset[^>]*disabled=""/);
+  assert.match(render(combined), /Choose an individual connected account/);
+  const onboarding = render(combined, false, () => {});
+  assert.match(onboarding, /<button class="button secondary">Connect a mailbox in Mail<\/button>/);
+  assert.ok(onboarding.indexOf('Connect a mailbox in Mail') < onboarding.indexOf('<fieldset'));
+  const missing = structuredClone(state); missing.settings.ai.configured = false; missing.workspace.styleLearning.permitted = false;
+  let navigations = 0;
+  const withLinks = render(missing, false, () => { navigations += 1; });
+  for (const title of ['Model', 'AI Permissions', 'Mail']) assert.match(withLinks, new RegExp(`>Open ${title}</button>`));
+  assert.equal(navigations, 0);
   for (const status of ['prepared', 'ready']) {
     const value = structuredClone(state); value.workspace.styleLearning.preview = { ...preview, status, ...(status === 'ready' ? { voice: 'Proposed updated style.' } : {}) };
     const proposal = render(value);
     assert.match(proposal, /Review text sent to the model/); assert.match(proposal, /Full own Sent sample text for optional review/);
     assert.doesNotMatch(button(proposal), /disabled/);
-    if (status === 'ready') assert.match(proposal, />Save approved style<\/button>/);
-    else assert.doesNotMatch(proposal, />Save approved style<\/button>/);
+    assert.match(button(proposal), /class="button secondary"/);
+    assert.equal((proposal.match(/class="button primary"/g) || []).length, 1);
+    assert.match(proposal, /Your previously approved style is retained/);
+    assert.ok(proposal.indexOf('Review text sent to the model') < proposal.indexOf('<summary>Learning configuration'));
+    if (status === 'ready') {
+      assert.match(proposal, /<strong>Proposal ready<\/strong>/);
+      assert.match(proposal, /Generating a proposal does not apply it/);
+      assert.match(proposal, />Save approved style<\/button>/);
+      assert.ok(proposal.indexOf('>Save approved style</button>') < proposal.indexOf('Review text sent to the model'));
+      assert.ok(proposal.indexOf('>Save approved style</button>') < proposal.indexOf('<summary>Learning configuration'));
+      assert.ok(proposal.indexOf('>Save approved style</button>') < proposal.indexOf('<summary>Your identity'));
+      assert.match(render(value, true), /<fieldset[^>]*disabled=""/);
+      value.workspace.styleLearning.preview.voice = ' ';
+      const emptyStyle = render(value);
+      assert.match(emptyStyle, /<button[^>]*disabled=""[^>]*>Save approved style<\/button>/);
+      assert.match(emptyStyle, /The approved style must contain 1–2,000 characters/);
+    } else {
+      assert.doesNotMatch(proposal, />Save approved style<\/button>/);
+      assert.match(proposal, /Review the selected samples below/);
+      assert.match(proposal, />Analyze these samples · uses AI<\/button>/);
+    }
+  }
+  for (const status of ['failed', 'interrupted']) {
+    const value = structuredClone(fresh); value.workspace.styleLearning.preview = { ...preview, status };
+    const stopped = render(value);
+    assert.match(stopped, /retry explicitly; tokens may have been used/);
+    assert.doesNotMatch(stopped, />Analyze these samples · uses AI<\/button>|>Save approved style<\/button>/);
   }
 });

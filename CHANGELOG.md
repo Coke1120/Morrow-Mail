@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0-beta.15 — 2026-09-27
+
+- Reorganize Settings in SwiftUI and React: account connection first, grouped General preferences, persistent permission Save/Discard controls, collapsed calendar reconnect forms and clearer current/update history status.
+- Separate Chat/reply and Search embedding panels, retain their unsaved edits, and keep connection tests visible. Search uses one Review & Index action with explicit confirmation, supported batch controls and separate destructive clearing.
+- Lead Learning with the selected account, proposal/approved-style status and missing prerequisites; keep identity confirmation, generation and style application separate.
+- Add a Yahoo / Yahoo HK IMAP/SMTP preset with full-address and app-password guidance. It clears entered passwords and never connects automatically; live Yahoo acceptance remains pending.
+- Check for updates at launch and hourly while running, with a due check on return. A red Settings badge opens About when an update is available; download and installation remain explicit.
+- Retain Rust desktop services, owner isolation, credential and paid-operation review, and the existing ad-hoc macOS/unsigned Windows prerelease limits.
+
 ## 0.6.0-beta.14 — 2026-09-27
 
 - Add a month calendar with independently checked Google/Outlook calendars, cross-day/all-day display and date-click event creation. Review provider-native notification reminders, or Google email reminders, with the event; preserve exact retry identity and prior pending requests.

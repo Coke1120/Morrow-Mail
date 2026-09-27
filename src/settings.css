@@ -110,3 +110,31 @@
   .settings-actions > span { justify-content: center; }
   .settings-tabs { gap: 20px; }
 }
+
+/* Settings share the app's existing controls; disclosures keep advanced options nearby. */
+.settings-page-inner { width: min(1040px, 100%); padding: 28px 32px 48px; }
+.settings-modal { width: min(940px, calc(100vw - 32px)); }
+.settings-tabs { position: sticky; top: 0; z-index: 3; padding-top: 14px; gap: 20px; background: var(--settings-surface); }
+.settings-disclosure { border: 1px solid var(--settings-border); border-radius: 9px; margin: 14px 0; padding: 14px 16px; }
+.settings-disclosure > summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--settings-text); }
+.settings-disclosure[open] > summary { margin-bottom: 18px; }
+.settings-disclosure > summary:focus-visible { outline: 2px solid var(--settings-accent); outline-offset: 4px; }
+.settings-card { border: 1px solid var(--settings-border); border-radius: 9px; padding: 0 18px 14px; }
+.settings-sticky-actions { position: sticky; top: 48px; z-index: 2; margin: 12px 0 20px; padding: 12px; border: 1px solid var(--settings-border); border-radius: 8px; background: var(--settings-surface); }
+.settings-model-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 0 0 22px; }
+.settings-model-switch > button { display: grid; gap: 6px; text-align: left; padding: 16px; border: 1px solid var(--settings-border); border-radius: 9px; background: var(--settings-surface); color: var(--settings-text); font: inherit; cursor: pointer; }
+.settings-model-switch > button[aria-pressed="true"] { border-color: var(--settings-accent); background: var(--settings-soft); }
+.settings-model-switch strong { font-size: 14px; }
+.settings-model-switch span { font-size: 12px; color: var(--settings-muted); }
+.settings-model-switch > button:focus-visible { outline: 2px solid var(--settings-accent); outline-offset: 3px; }
+.settings-model-switch > button:disabled { opacity: .6; cursor: wait; }
+.settings-connected { flex-wrap: wrap; gap: 12px; margin-bottom: 14px; }
+.settings-connected > div { flex-basis: 100%; }
+.settings-connected .settings-button-row { margin-top: 12px; }
+.settings-field, .settings-help, .settings-intro { font-size: 12px; }
+@media (max-width: 540px) {
+  .settings-page-inner { padding: 20px 16px 32px; }
+  .settings-model-switch { grid-template-columns: 1fr; }
+  .settings-sticky-actions { align-items: stretch; }
+  .settings-sticky-actions .settings-button-row { justify-content: flex-end; }
+}

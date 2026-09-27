@@ -1,5 +1,11 @@
 import Foundation
 
+func yahooMailSettings(_ mail: JSON) -> JSON {
+    .object(["email": .string(mail["email"].string), "password": .string(""),
+             "imapHost": .string("imap.mail.yahoo.com"), "imapPort": .number(993),
+             "smtpHost": .string("smtp.mail.yahoo.com"), "smtpPort": .number(465)])
+}
+
 // The API owns feature and permission definitions; the native client consumes the
 // same schema as the web client instead of maintaining a second feature catalog.
 enum JSON: Codable, Equatable, Hashable, Sendable, Identifiable {

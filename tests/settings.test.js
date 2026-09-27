@@ -17,22 +17,43 @@ test('Settings renders connected IMAP, Google and Outlook with import and learni
   const vite = await createServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom' });
   t.after(async () => { await vite.close(); delete globalThis.window; });
   globalThis.window = {};
-  const { default: Settings } = await vite.ssrLoadModule('/src/Settings.jsx');
+  const { default: Settings, yahooMailSettings } = await vite.ssrLoadModule('/src/Settings.jsx');
+  const oldMail = { email: 'Owner@yahoo.com.hk', password: 'do-not-carry-this-secret', imapHost: 'old.example', smtpHost: 'old.example' };
+  assert.deepEqual(yahooMailSettings(oldMail), { email: 'Owner@yahoo.com.hk', password: '', imapHost: 'imap.mail.yahoo.com', imapPort: 993, smtpHost: 'smtp.mail.yahoo.com', smtpPort: 465 });
+  assert.equal(oldMail.password, 'do-not-carry-this-secret');
+  assert.equal(yahooMailSettings({}).email, '');
   for (const provider of ['imap', 'google', 'microsoft']) {
     const state = { account: { id: 'fixture@example.com', email: 'fixture@example.com', mode: 'live' }, accounts: [], workspace: { styleLearning: { settings: { enabled: false, weekly: false, months: 3, maxSamples: 50, tokenBudget: 16000 } } }, settings: { mail: { configured: true, provider }, ai: {}, preferences: DEFAULT_PREFERENCES, policy: DEFAULT_POLICY } };
     const html = renderToString(React.createElement(Settings, { state }));
     assert.match(html, /Learn my writing style/); assert.match(html, /History range/);
     assert.match(html, /Preferences saved automatically/); assert.doesNotMatch(html, /Save preferences/i);
-    assert.match(html, /Save model/); assert.match(html, /Save permissions/);
+    assert.match(html, /Save chat model/); assert.match(html, /Save permissions/);
+    assert.deepEqual([...html.matchAll(/id="settings-tab-([^" ]+)"/g)].map(match => match[1]), ['general', 'mail', 'calendar', 'model', 'policy', 'search', 'learning', 'about']);
+    assert.ok(html.indexOf('Add or reconnect an account') < html.indexOf('History for your next connection or import'));
+    assert.match(html, /aria-label="Model purpose"/);
+    assert.match(html, /Test chat connection/);
+    assert.doesNotMatch(html, /Summary schedule · P0/); // Disabled schedules do not bury active permissions.
+    const policyPanel = html.slice(html.indexOf('id="settings-panel-policy"'), html.indexOf('id="settings-panel-calendar"'));
+    assert.ok(policyPanel.indexOf('Save permissions</button>') < policyPanel.indexOf('Enable AI assistance'));
+    assert.match(policyPanel, /<details[^>]*><summary>Local simulations/);
     const searchPanel = html.slice(html.indexOf('id="settings-panel-search"'), html.indexOf('id="settings-panel-learning"'));
     const modelPanel = html.slice(html.indexOf('id="settings-panel-model"'), html.indexOf('id="settings-panel-policy"'));
     assert.match(searchPanel, /Loading search settings/); assert.doesNotMatch(searchPanel, /Loading embedding settings/);
     assert.match(modelPanel, /Loading embedding settings/); assert.doesNotMatch(modelPanel, /Loading search settings/);
-    if (provider === 'imap') assert.doesNotMatch(html, /Allow moving mail and managing labels/);
+    if (provider === 'imap') {
+      assert.doesNotMatch(html, /Allow moving mail and managing labels/);
+      assert.match(html, /Use Yahoo Mail \/ HK settings/);
+      assert.match(html, /hk.help.yahoo.com\/kb\/SLN15241.html/);
+      assert.match(html, /not your normal sign-in password/);
+    }
     else {
       assert.match(html, new RegExp(`Sign in with ${provider === 'google' ? 'Google' : 'Microsoft'} in browser`));
       assert.match(html, /Do not open this URL to sign in/);
       assert.match(html, /<details[^>]*><summary>Advanced: callback URL/);
+    }
+    if (provider === 'imap') {
+      state.settings.policy = { ...DEFAULT_POLICY, triggers: { ...DEFAULT_POLICY.triggers, scheduledSummary: true } };
+      assert.match(renderToString(React.createElement(Settings, { state, initialTab: 'policy' })), /Summary schedule · P0/);
     }
     if (provider !== 'imap') {
       state.settings.oauthClients = { [provider]: { configured: true } };
@@ -238,7 +259,7 @@ test('Mail settings distinguish queued, retrying, stopped and completed imports 
     if (action === 'resume') assert.match(mail, /Resume from checkpoint/); else assert.doesNotMatch(mail, /Resume from checkpoint/);
     if (action === 'pause') assert.match(mail, />Pause<\/button>/); else assert.doesNotMatch(mail, />Pause<\/button>/);
     if (job?.phase === 'retrying') assert.match(mail, /Next retry:/);
-    if (job?.recoveryAction === 'reconnect') assert.match(mail, /Reconnect this account using the sign-in form below/);
+    if (job?.recoveryAction === 'reconnect') assert.match(mail, /Use Reconnect \(or Edit for IMAP\)/);
     if (job?.errorCode === 'sent_unavailable') assert.match(mail, /Choose Inbox only/);
     if (job?.pages == null) assert.doesNotMatch(mail, /0 pages|0 checked/);
     else { assert.match(mail, /3 pages/); assert.match(mail, /40 checked/); }

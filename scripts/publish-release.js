@@ -28,16 +28,16 @@ writeFileSync(join(directory, 'update-manifest.sig'), signature);
 expected.push('update-manifest.json', 'update-manifest.sig');
 const notes = `Morrow Mail ${version}
 
-Month calendars, reviewed reminders and account-owned follow-up tools. Both packages are built from this same Git tag and pass the paired checks before publication.
+Clearer Settings, separate model panels and hourly update checks. Both packages are built from this same Git tag and pass the paired checks before publication.
 
-What changed since 0.6.0-beta.13:
-- A month calendar combines checked Google/Outlook calendars, shows cross-day/all-day events, and opens reviewed event creation when you click a date. Google supports notification or email reminders; Outlook supports notification reminders. These are provider-managed and work while Morrow is closed. No attendees or hidden reminder-email jobs are added.
-- All history removes the import date cutoff for Gmail, Outlook and selectable IMAP folders, excluding Spam/Trash. Imports stay paged, checkpointed and resumable; this is not continuous delta/deletion mirroring.
-- Pending is a separate local follow-up marker and account/combined list. It does not change provider stars or send notifications.
-- Confirm your name/aliases in Learning, then preview and approve a bounded Reply Suggestions batch using permitted downloaded correspondence and approved style. Results are proposals; Use in Draft never sends. Suggest with History also includes your permitted Sent To/Cc correspondence.
-- Out of Office reads and writes real Gmail vacation or Outlook automatic-reply settings after additional OAuth consent and review. Opening the tab or granting permission does not activate a response. IMAP is unsupported.
-- Scheduled sends retain the reviewed owner, recipients, content and time. Morrow must stay open and connected. Up to 15 minutes late can catch up; later jobs become Missed and need review. Cancel before editing; uncertain deliveries are never automatically replayed.
-- Fix equivalent Outlook Inbox/Sent next-page URLs and preserve a resized native list when changing reader layout. Retain encrypted accounts, drafts, backup and signed-update protections.
+What changed since 0.6.0-beta.14:
+- Settings puts Add/Reconnect accounts first, groups General preferences, keeps permission Save/Discard visible, and collapses advanced/import/reconnect details. General still autosaves; credentials and permissions still require explicit saving.
+- Model separates Chat & replies from Search embedding while retaining unsaved edits. Each has a clearly named connection test and save action. Search shows the saved embedding connection and a shortcut to edit it.
+- Review & Index prepares a bounded preview and asks for confirmation before paid indexing. Supported Rust batches have separate Pause/Resume/Cancel controls; Clear index has its own destructive confirmation. Reviewed work continues in the background.
+- Learning leads with the account, proposal and approved-style status. Missing prerequisites link to their settings. Confirmed identity, generating a proposal and Save Approved Style remain separate decisions; no automatic application is added.
+- Yahoo / Yahoo HK setup fills the existing secure IMAP/SMTP server fields. Enter the complete email address and a Yahoo app password. The preset clears entered passwords and does not connect automatically. No Yahoo OAuth, calendar or Out of Office support is added; live Yahoo acceptance remains pending.
+- Both clients check for updates at launch and once per hour while running, checking when due after returning from sleep/background. A red ! on Settings opens About when an update is available. Download and installation remain explicit.
+- Existing encrypted accounts, cached mail, drafts, schedules, learning proposals, calendar retries, backup and signed-update protections are retained.
 
 CLI quick start:
 - macOS: '/Applications/Morrow Mail.app/Contents/Resources/morrow-service' cli --help
@@ -62,7 +62,7 @@ Packages:
 - Both include their runtime. No Node or Rust installation is needed. Compare the supplied SHA-256 checksum before opening.
 
 Beta limitations:
-This is an ad-hoc signed/unnotarized macOS and unsigned Windows beta. Complete live-provider/model acceptance, minimum-OS/other-hardware acceptance, manual UI/IME/accessibility coverage and stable signing remain pending. A limited authorized Gmail walkthrough exercised self-addressed sending and one reviewed Learning proposal; the proposal was not applied and weekly learning stayed off. A real schedule was immediately cancelled before delivery. No live calendar event, Out of Office write or complete-history download was performed for this batch. Automated provider/model checks use isolated fixtures and do not establish provider approval or delivery reliability.
+This is an ad-hoc signed/unnotarized macOS and unsigned Windows beta. Complete live-provider/model acceptance, minimum-OS/other-hardware acceptance, manual UI/IME/accessibility coverage and stable signing remain pending. This batch used fictional-account Settings walkthroughs and isolated checks, with no new live provider/model actions. Earlier limited Gmail acceptance is recorded separately in VERIFICATION.md and does not establish live Yahoo or comprehensive multi-provider acceptance. Automated provider/model checks use isolated fixtures and do not establish provider approval or delivery reliability.
 
 Month view selects at most 12 calendars; bounded calendar reads fail visibly rather than silently showing truncated results. Provider/device settings determine actual reminder delivery. Sender-history context and reply batches use explicit message/body/token limits; they do not analyze an unlimited mailbox. Learning does not infer identity or apply a style without approval. Full provider delta/deletion sync, attachments/CID images, phishing/malware verdicts, sender blocking, app-wide AI spending caps and undo sending remain unsupported. Studio simulations stay labeled. Windows Tauri is not part of this release. See the tagged README.md, FEATURE_COVERAGE.md and VERIFICATION.md for checks and limits.
 

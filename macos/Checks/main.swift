@@ -1,5 +1,13 @@
 import Foundation
 
+let previousMail: JSON = .object(["email": .string("Owner@yahoo.com.hk"), "password": .string("do-not-carry-this-secret"), "imapHost": .string("old.example")])
+let yahooMail = yahooMailSettings(previousMail)
+assert(yahooMail["email"].string == "Owner@yahoo.com.hk" && yahooMail["password"].string.isEmpty)
+assert(yahooMail["imapHost"].string == "imap.mail.yahoo.com" && yahooMail["imapPort"].number == 993)
+assert(yahooMail["smtpHost"].string == "smtp.mail.yahoo.com" && yahooMail["smtpPort"].number == 465)
+assert(previousMail["password"].string == "do-not-carry-this-secret" && yahooMailSettings(.null)["email"].string.isEmpty)
+print("Yahoo HK preset keeps the complete address, uses TLS ports and clears the entered password.")
+
 struct WorkspaceTests {
     func testSchemaRoundTripAndUnconfirmedDraft() throws {
         let value = try JSONDecoder().decode(JSON.self, from: Data(#"{"id":"outbox:request","accountId":"owner@example.com","viewId":"unique-owned-message","to":"someone@example.com","subject":"Hello","body":"Text","deliveryStatus":"unconfirmed","deliveryRequestId":"original-request","policy":{"enabled":false},"count":8}"#.utf8))
