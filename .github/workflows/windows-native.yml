@@ -29,7 +29,7 @@ jobs:
           rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
           rustup default 1.98.0
           mkdir "$RUNNER_TEMP/native-tools"
-          for tool in cmake ninja; do
+          for tool in cmake ninja zstd zstdmt unzstd; do
             if command -v "$tool" >/dev/null; then ln -s "$(command -v "$tool")" "$RUNNER_TEMP/native-tools/$tool"; fi
           done
           echo "PATH=$HOME/.cargo/bin:$RUNNER_TEMP/native-tools:/usr/bin:/bin:/usr/sbin:/sbin" >> "$GITHUB_ENV"

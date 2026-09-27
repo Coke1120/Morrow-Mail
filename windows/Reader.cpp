@@ -138,6 +138,7 @@ Image fetchImage(hstring const& value, std::shared_ptr<ImageBudget> const& budge
 struct Reader {
     std::weak_ptr<Shell> shell;
     uint64_t generation{}, selection{}, documentId{}, completedDocumentId{}, epoch = 0;
+    unsigned fixtureTraceBudget = 0; // Enabled only after the temporary fixture marker is validated.
     // Observed initialization outcome only; these never relax reader policy.
     hresult initializationError{S_OK};
     bool runtimeUnavailable = false;
@@ -159,6 +160,20 @@ struct Reader {
             && host->section == L"mail" && text(host->selected, L"accountId") == account
             && text(host->selected, L"id") == messageId;
     }
+    void fixtureState(char const* phase) noexcept {
+        if (!fixtureTraceBudget) return;
+        --fixtureTraceBudget;
+        try {
+            auto target = view.get();
+            std::fprintf(stderr, "Native reader: %s active=%u ready=%u live=%u expected=%u core=%u view=%u loaded=%u visible=%u id=%llu completed=%llu epoch=%llu\n",
+                phase, unsigned(active), unsigned(ready), unsigned(live()), unsigned(expectingDocument), unsigned(bool(core)),
+                unsigned(bool(target)), unsigned(target && target.IsLoaded()),
+                unsigned(target && target.Visibility() == xaml::Visibility::Visible),
+                static_cast<unsigned long long>(documentId), static_cast<unsigned long long>(completedDocumentId),
+                static_cast<unsigned long long>(epoch));
+            std::fflush(stderr);
+        } catch (...) { /* Diagnostics must not replace the original runtime failure. */ }
+    }
     void say(hstring const& value) { if (auto target = notice.get()) target.Text(value); }
     void close() {
         cancelled->store(true);
@@ -175,6 +190,7 @@ struct Reader {
         close();
     }
     void render() {
+        fixtureState("render-request");
         if (!live() || !ready) return;
         cancelled->store(true); cancelled = std::make_shared<std::atomic_bool>(false);
         ++epoch; expectingDocument = true;
@@ -191,6 +207,7 @@ struct Reader {
             // Switching to plain text cancels the HTML document and its pending
             // requests rather than merely hiding a still-networked surface.
             target.NavigateToString(document(plain ? hstring{} : html, images && !plain));
+            fixtureState("render-returned");
         }
     }
 };
@@ -273,12 +290,26 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
         state->core.NavigationStarting([weak](auto const&, CoreWebView2NavigationStartingEventArgs const& args) {
             auto page = weak.lock();
             args.Cancel(true);
+            if (page && page->fixtureTraceBudget) {
+                --page->fixtureTraceBudget;
+                std::fprintf(stderr, "Native reader: nav-start id=%llu blank=%u redirected=%u user=%u expected=%u live=%u\n",
+                    static_cast<unsigned long long>(args.NavigationId()), unsigned(args.Uri() == L"about:blank"),
+                    unsigned(args.IsRedirected()), unsigned(args.IsUserInitiated()), unsigned(page->expectingDocument), unsigned(page->live()));
+                std::fflush(stderr);
+            }
             if (!page || !page->live()) return;
             // Host API navigations also count as user initiated. The one-use
             // HTML expectation, exact URI and redirect check identify our load.
             if (page->expectingDocument && args.Uri() == L"about:blank" && !args.IsRedirected()) {
                 page->expectingDocument = false; page->documentId = args.NavigationId(); args.Cancel(false);
             } else if (args.IsUserInitiated()) openLink(page, args.Uri());
+            if (page->fixtureTraceBudget) {
+                --page->fixtureTraceBudget;
+                std::fprintf(stderr, "Native reader: nav-decision id=%llu cancelled=%u expected=%u tracked=%llu\n",
+                    static_cast<unsigned long long>(args.NavigationId()), unsigned(args.Cancel()), unsigned(page->expectingDocument),
+                    static_cast<unsigned long long>(page->documentId));
+                std::fflush(stderr);
+            }
         });
         state->core.NewWindowRequested([weak](auto const&, CoreWebView2NewWindowRequestedEventArgs const& args) {
             args.Handled(true);
@@ -307,6 +338,13 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
             } catch (...) { if (auto page = weak.lock()) page->fail(); }
         });
         state->core.NavigationCompleted([weak](auto const&, CoreWebView2NavigationCompletedEventArgs const& args) {
+            if (auto page = weak.lock(); page && page->fixtureTraceBudget) {
+                --page->fixtureTraceBudget;
+                std::fprintf(stderr, "Native reader: nav-completed id=%llu success=%u error=%d live=%u tracked=%llu\n",
+                    static_cast<unsigned long long>(args.NavigationId()), unsigned(args.IsSuccess()), int(args.WebErrorStatus()),
+                    unsigned(page->live()), static_cast<unsigned long long>(page->documentId));
+                std::fflush(stderr);
+            }
             if (auto page = weak.lock(); page && page->live() && page->documentId == args.NavigationId()) {
                 if (args.IsSuccess()) page->completedDocumentId = args.NavigationId();
                 else page->fail();
@@ -485,6 +523,7 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     auto panel = stack(8);
     auto state = mountReader(shell, panel, fixture);
     runtimeCheck(state != nullptr, L"The production reader could not mount its fixture.");
+    state->fixtureTraceBudget = 24;
     cleanup.readers.push_back(state);
     shell->show(scroll(panel));
     phase("mount-loaded");
@@ -499,7 +538,13 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     }
     if (state->active) {
         phase("initial-document");
-        co_await runtimeWait([state] { return documentReady(state) || !state->active; }, deadline, L"initial-document");
+        state->fixtureState("initial-document-state");
+        try {
+            co_await runtimeWait([state] { return documentReady(state) || !state->active; }, deadline, L"initial-document");
+        } catch (hresult_error const&) {
+            state->fixtureState("initial-document-failed");
+            throw;
+        }
     }
     Json result;
     if (!state->ready) {

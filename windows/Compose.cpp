@@ -198,13 +198,33 @@ struct Composer {
     }
 };
 
+// Only the foreground composer write holds this lock; background jobs do not.
+struct ComposerWrite {
+    std::shared_ptr<Composer> state;
+    std::shared_ptr<Shell> shell;
+    bool held = true;
+    explicit ComposerWrite(std::shared_ptr<Composer> value) : state(std::move(value)), shell(state->shell.lock()) {
+        shell->navigation.IsEnabled(false);
+        state->busy = true;
+    }
+    void release() {
+        if (!std::exchange(held, false)) return;
+        state->busy = false;
+        if (!shell->closing && shell->generation == state->generation && shell->section == L"compose") {
+            shell->navigation.IsEnabled(true);
+            state->update();
+        }
+    }
+    ~ComposerWrite() { try { release(); } catch (...) {} }
+};
+
 IAsyncAction submit(std::shared_ptr<Composer> state, bool send) {
     auto shell = state->shell.lock();
-    if (!state->live(shell) || state->busy || locked(state->message) || state->scheduleAttempt.Size()) co_return;
+    if (!state->live(shell) || state->busy || !shell->navigation.IsEnabled() || locked(state->message) || state->scheduleAttempt.Size()) co_return;
     if (state->uncertain && (!send || !checked(state->reviewed.get()))) co_return;
     auto owner = state->owner;
     if (!shell->connected(owner)) { state->say(L"Reconnect this draft’s mailbox before saving or sending."); co_return; }
-    state->busy = true; state->update(); state->say(L"");
+    ComposerWrite write(state); state->update(); state->say(L"");
     bool submitted = false;
     try {
         auto payload = copy(state->payload());
@@ -213,7 +233,7 @@ IAsyncAction submit(std::shared_ptr<Composer> state, bool send) {
                 ? L"\n\nYou checked Sent. This explicit retry may send a duplicate." : L"\n\nThe message and displayed footer will be sent together.");
             bool approved = co_await shell->confirm(state->uncertain ? L"Retry this delivery?" : L"Send this message?", detail, L"Send Message");
             if (!approved || !state->live(shell) || state->owner != owner || !shell->connected(owner)) {
-                state->busy = false; state->update(); co_return;
+                co_return;
             }
         }
         if (!state->uncertain) {
@@ -233,7 +253,7 @@ IAsyncAction submit(std::shared_ptr<Composer> state, bool send) {
             auto result = co_await shell->service->request(L"/send", owner, L"POST", payload);
             ownedMessage(object(result, L"message"), owner, L"sent:" + state->requestId);
             if (!state->live(shell) || state->owner != owner) co_return;
-            shell->dirty.erase(L"compose"); state->busy = false;
+            write.release(); shell->dirty.erase(L"compose");
             co_await shell->navigate(L"mail", owner, L"sent"); co_return;
         }
     } catch (ApiError const& error) {
@@ -247,15 +267,14 @@ IAsyncAction submit(std::shared_ptr<Composer> state, bool send) {
             else state->say(L"The draft could not be confirmed; sending was not attempted. " + error.message());
         }
     }
-    state->busy = false; state->update();
 }
 
 IAsyncAction scheduleSend(std::shared_ptr<Composer> state) {
     auto shell = state->shell.lock();
-    if (!state->live(shell) || state->busy || state->uncertain || locked(state->message)) co_return;
+    if (!state->live(shell) || state->busy || !shell->navigation.IsEnabled() || state->uncertain || locked(state->message)) co_return;
     auto owner = state->owner;
     if (!shell->connected(owner)) { state->say(L"Reconnect this draft’s mailbox before scheduling."); co_return; }
-    state->busy = true; state->update(); state->say(L"");
+    ComposerWrite write(state); state->update(); state->say(L"");
     bool previousAttempt = state->scheduleAttempt.Size() != 0;
     try {
         auto value = previousAttempt ? copy(state->scheduleAttempt) : copy(state->payload());
@@ -269,7 +288,7 @@ IAsyncAction scheduleSend(std::shared_ptr<Composer> state) {
             + L"\nMorrow must be open to send. Catch-up is limited to 15 minutes; later messages are marked missed and require a new review. Cancel the schedule before editing its frozen content or time.",
             previousAttempt ? L"Retry Same Schedule" : L"Schedule Message");
         if (!approved || !state->live(shell) || state->owner != owner || !shell->connected(owner)) {
-            state->busy = false; state->update(); co_return;
+            co_return;
         }
         state->scheduleAttempt = copy(value); state->update();
         auto result = co_await shell->service->request(L"/scheduled", owner, L"POST", value);
@@ -277,7 +296,7 @@ IAsyncAction scheduleSend(std::shared_ptr<Composer> state) {
         require(text(job, L"accountId") == owner && text(job, L"id") == text(value, L"requestId")
             && text(job, L"sendAt") == text(value, L"sendAt"), L"The schedule could not be confirmed.");
         if (!state->live(shell) || state->owner != owner) co_return;
-        shell->dirty.erase(L"compose"); state->busy = false;
+        write.release(); shell->dirty.erase(L"compose");
         co_await shell->navigate(L"scheduled", owner); co_return;
     } catch (ApiError const& error) {
         if (!previousAttempt && error.status < 500) state->scheduleAttempt = Json();
@@ -287,7 +306,6 @@ IAsyncAction scheduleSend(std::shared_ptr<Composer> state) {
         if (state->live(shell)) state->say(state->scheduleAttempt.Size()
             ? L"Scheduling could not be confirmed. Retry the same request or view Scheduled before sending another copy. " + error.message() : error.message());
     }
-    state->busy = false; state->update();
 }
 
 IAsyncAction closeComposer(std::shared_ptr<Composer> state) {
@@ -341,6 +359,7 @@ IAsyncAction writingAssistant(std::shared_ptr<Composer> state, bool use) {
 }
 
 IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
+    if (shell->closing || shell->dialogOpen || !shell->navigation.IsEnabled()) co_return;
     auto generation = shell->generation;
     auto screenOwner = shell->owner;
     try {
@@ -476,6 +495,38 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         else if (state->uncertain) state->say(L"Delivery was not confirmed. Check your provider’s Sent folder before retrying this exact message. Retrying may send a duplicate.");
         state->update();
     } catch (hresult_error const& error) { shell->error(error.message()); }
+}
+
+// Native smoke invokes this before opening its first page. No send/save/model call is made.
+IAsyncAction composerWriteGuardChecks(std::shared_ptr<Shell> shell) {
+    require(std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos
+        && !shell->closing && !shell->dialogOpen && shell->dirty.empty() && shell->navigation.IsEnabled(),
+        L"Composer guard checks require an idle native fixture.");
+    auto state = std::make_shared<Composer>(); state->shell = shell;
+    state->owner = state->screenOwner = shell->owner; state->generation = ++shell->generation;
+    state->baselineOwner = state->owner; state->baseline = state->payload().Stringify();
+    shell->section = L"compose";
+    auto previousPage = shell->page.Content();
+    apartment_context ui;
+    {
+        ComposerWrite write(state);
+        co_await resume_after(std::chrono::milliseconds(20)); co_await ui;
+        require(state->busy && !shell->navigation.IsEnabled(), L"Composer write did not lock foreground navigation.");
+        co_await shell->navigate(L"today", L"blocked-switch@fixture.invalid");
+        co_await compose(shell);
+        require(shell->generation == state->generation && shell->owner == state->owner
+            && shell->section == L"compose" && shell->page.Content() == previousPage && !shell->dialogOpen,
+            L"A foreground composer write allowed navigation or a replacement composer.");
+        write.release();
+        require(!state->busy && shell->navigation.IsEnabled(), L"A completed composer write retained its navigation lock.");
+    }
+    try { ComposerWrite write(state); throw hresult_error(E_ABORT); }
+    catch (hresult_error const&) {}
+    require(!state->busy && shell->navigation.IsEnabled() && shell->dirty.empty(),
+        L"A failed composer write retained its busy or navigation guard.");
+    co_await shell->navigate(L"today", state->owner);
+    require(shell->section == L"today" && shell->owner == state->owner && shell->navigation.IsEnabled(),
+        L"Composer completion could not navigate after releasing its write guard.");
 }
 
 namespace {

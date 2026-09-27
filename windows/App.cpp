@@ -72,6 +72,15 @@ hstring errorText() {
     try { throw; } catch (hresult_error const& error) { return error.message(); }
     catch (...) { return L"The operation could not be completed. Your saved workspace has been retained."; }
 }
+IAsyncOperation<ContentDialogResult> showReaderPopup(std::shared_ptr<Shell> const& shell,
+    ContentDialog const& dialog, std::function<void()>& release) {
+    auto held = std::make_shared<bool>(true);
+    release = [shell, held] { if (std::exchange(*held, false)) shell->dialogOpen = false; };
+    dialog.Closed([release](auto const&, auto const&) { release(); });
+    shell->dialogOpen = true;
+    try { return dialog.ShowAsync(); }
+    catch (...) { release(); throw; }
+}
 bool sameDay(hstring const& iso) {
     SYSTEMTIME utc{};
     auto input = std::wstring(iso);
@@ -273,6 +282,7 @@ void Shell::rebuildNavigation() {
 IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder) {
     auto lifetime = shared_from_this();
     if (closing || loading) co_return;
+    if (section == L"compose" && !navigation.IsEnabled()) co_return;
     if (!dirty.empty() && !(co_await confirm(L"Discard unsaved changes?", L"Your current edits have not been saved.", L"Discard"))) co_return;
     dirty.clear();
     ++generation; ++selectionGeneration; selected = Json(); readerFocused = false;
@@ -591,11 +601,13 @@ IAsyncAction Shell::messageAI(Json message, hstring action, bool history) {
         (history ? L"Uses this message and permitted downloaded correspondence from the same sender, within your saved limits. " : L"Uses permitted content from this message. ") +
         L"Your configured model provider may charge. Nothing is sent or saved automatically.", L"Generate")) co_return;
     if (!current(version, captured) || sequence != selectionGeneration) co_return;
-    dialogOpen = true;
     ContentDialog dialog; dialog.XamlRoot(root.XamlRoot()); dialog.Title(box_value(history ? L"Suggest with History" : action));
     auto content = stack(); auto progress = label(L"Waiting for the configured model…"); content.Children().Append(progress);
     dialog.Content(scroll(content)); dialog.CloseButtonText(L"Close");
-    auto display = dialog.ShowAsync();
+    std::function<void()> release;
+    IAsyncOperation<ContentDialogResult> display{nullptr};
+    try { display = showReaderPopup(lifetime, dialog, release); }
+    catch (...) { error(errorText()); co_return; }
     Json result; bool failed = false;
     try {
         Json input; put(input, L"action", action); put(input, L"messageId", text(message, L"id")); input.Insert(L"includeHistory", Value::CreateBooleanValue(history));
@@ -604,11 +616,14 @@ IAsyncAction Shell::messageAI(Json message, hstring action, bool history) {
             progress.Text(text(result, L"text"));
             if (action == L"reply") dialog.PrimaryButtonText(L"Use in draft");
         }
-    } catch (...) { failed = true; progress.Text(errorText()); }
+    } catch (...) {
+        failed = true;
+        if (display.Status() == AsyncStatus::Started) progress.Text(errorText());
+    }
     ContentDialogResult choice = ContentDialogResult::None;
     try { choice = co_await display; } catch (...) {}
-    dialogOpen = false;
-    if (!failed && choice == ContentDialogResult::Primary && current(version, captured) && sequence == selectionGeneration)
+    release(); // Closed may already have released this popup; never clear a newer dialog's guard.
+    if (!failed && !dialogOpen && choice == ContentDialogResult::Primary && current(version, captured) && sequence == selectionGeneration)
         co_await prepare(message, L"reply", text(result, L"text"));
 }
 IAsyncAction Shell::sync() {
@@ -660,6 +675,57 @@ IAsyncAction Shell::shutdown() {
     try { if (service) co_await service->stop(); } catch (...) {}
     closeReady = true;
     window.Close(); Application::Current().Exit();
+}
+IAsyncAction composerWriteGuardChecks(std::shared_ptr<Shell> shell);
+
+// Called by native smoke after its disposable-workspace check, before page walkthroughs.
+// Real dialogs and foreground guards only: no model/provider/service requests.
+IAsyncAction nativeInteractionChecks(std::shared_ptr<Shell> shell) {
+    auto check = [](bool value, wchar_t const* message) { if (!value) throw hresult_error(E_FAIL, message); };
+    check(std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos
+        && !shell->closing && !shell->dialogOpen && shell->dirty.empty(), L"Interaction checks require an idle native fixture.");
+    apartment_context ui;
+    std::function<void()> lateRelease;
+    for (int i = 0; i < 2; ++i) {
+        ContentDialog dialog; dialog.XamlRoot(shell->root.XamlRoot());
+        dialog.Title(box_value(L"Fictional reader popup")); dialog.CloseButtonText(L"Close");
+        auto opened = std::make_shared<bool>(false);
+        dialog.Opened([opened](auto const&, auto const&) { *opened = true; });
+        std::function<void()> release;
+        auto display = showReaderPopup(shell, dialog, release);
+        struct Cleanup {
+            ContentDialog dialog; std::function<void()> release;
+            ~Cleanup() { try { dialog.Hide(); } catch (...) {} release(); }
+        } cleanup{dialog, release};
+        auto deadline = GetTickCount64() + 5000;
+        while (!*opened && display.Status() == AsyncStatus::Started && GetTickCount64() < deadline) {
+            co_await resume_after(std::chrono::milliseconds(20)); co_await ui;
+        }
+        check(*opened && shell->dialogOpen, L"Reader popup did not acquire its visible-dialog guard.");
+        if (lateRelease) {
+            lateRelease(); // An older model completion arrives while the next popup is visible.
+            check(shell->dialogOpen, L"An older reader popup cleared the new dialog guard.");
+        }
+        dialog.Hide();
+        while (display.Status() == AsyncStatus::Started && GetTickCount64() < deadline) {
+            co_await resume_after(std::chrono::milliseconds(20)); co_await ui;
+        }
+        check(display.Status() == AsyncStatus::Completed && !shell->dialogOpen,
+            L"Closing a reader popup retained its dialog guard.");
+        display.GetResults();
+        lateRelease = release;
+    }
+    bool rejected = false;
+    std::function<void()> release;
+    try {
+        ContentDialog unrooted; unrooted.CloseButtonText(L"Close");
+        (void)showReaderPopup(shell, unrooted, release);
+        unrooted.Hide();
+    } catch (hresult_error const&) { rejected = true; }
+    auto guardAfterFailure = shell->dialogOpen;
+    if (release) release();
+    check(rejected && !guardAfterFailure, L"A synchronous popup failure retained its dialog guard.");
+    co_await composerWriteGuardChecks(shell);
 }
 IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
     if (kind == L"studio" || kind == L"learning" || kind == L"brain" || kind == L"reply-suggestions" || kind == L"skills" || kind == L"summaries" || kind == L"records") {

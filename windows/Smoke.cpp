@@ -8,6 +8,7 @@ namespace morrow {
 using namespace winrt;
 using namespace Windows::Foundation;
 using namespace Windows::Data::Json;
+IAsyncAction nativeInteractionChecks(std::shared_ptr<Shell> shell);
 IAsyncAction Shell::smoke() {
     auto lifetime = shared_from_this();
     auto check = [](bool condition, wchar_t const* message) { if (!condition) throw hresult_error(E_FAIL, message); };
@@ -26,6 +27,8 @@ IAsyncAction Shell::smoke() {
         std::string value((std::istreambuf_iterator<char>(marker)), {});
         check(value == "Morrow native acceptance fixture", L"Native acceptance fixture marker is missing.");
         fixtureVerified = true;
+        enter("interaction-guards");
+        co_await nativeInteractionChecks(lifetime);
         bool seeded = array(state,L"accounts").Size() > 0;
         if (!seeded) {
             enter("fresh-settings");
