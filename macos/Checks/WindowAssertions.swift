@@ -52,12 +52,14 @@ struct WindowAssertions {
         if lateAttachment {
             host.rootView = AnyView(Color.clear.background(InitialSplitPosition(position)))
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
-            let split = NSSplitView(frame: window.contentView!.bounds)
+            let bounds = host.bounds
+            window.contentView = nil
+            let split = NSSplitView(frame: bounds)
             split.isVertical = true
             split.addArrangedSubview(host)
             split.addArrangedSubview(NSView())
             window.contentView = split
-            split.setPosition(width / 2, ofDividerAt: 0)
+            split.setPosition(split.bounds.width / 2, ofDividerAt: 0)
         } else { host.rootView = vertical
             ? AnyView(HSplitView { Color.clear.frame(minWidth: 200).background(InitialSplitPosition(position)); Color.clear.frame(minWidth: 320) })
             : AnyView(VSplitView { Color.clear.frame(minHeight: 160).background(InitialSplitPosition(position)); Color.clear.frame(minHeight: 200) })
@@ -75,7 +77,7 @@ struct WindowAssertions {
                abs((vertical ? first.frame.width : first.frame.height) - position) < 2 { break }
         } while Date() < deadline
         guard let split, let first = split.subviews.first else { fatalError("Split fixture did not attach") }
-        let context = "width=\(width), vertical=\(vertical), lateAttachment=\(lateAttachment), bounds=\(split.bounds)"
+        let context = "width=\(width), vertical=\(vertical), lateAttachment=\(lateAttachment), bounds=\(split.bounds), panes=\(split.arrangedSubviews.count)"
         assert(abs((vertical ? first.frame.width : first.frame.height) - position) < 2, "Initial pane size waited for an unrelated model update: \(context), pane=\(first.frame)")
         // AppKit constrains the window to its screen; leave room for the other
         // pane's minimum size instead of requesting an impossible 500 points.
