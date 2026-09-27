@@ -61,14 +61,14 @@ function policyValues(policy = {}) {
   return { ...DEFAULT_POLICY, ...policy, summarySchedule: { ...DEFAULT_POLICY.summarySchedule, ...policy.summarySchedule }, triggers: { ...DEFAULT_POLICY.triggers, ...policy.triggers }, behaviors: { ...DEFAULT_POLICY.behaviors, ...policy.behaviors }, folders: { ...DEFAULT_POLICY.folders, ...policy.folders }, content: { ...DEFAULT_POLICY.content, ...policy.content } };
 }
 
-function Permission({ checked, onChange, title, description, simulated = false }) {
+function Permission({ checked, onChange, title, description, simulated = false, disabled = false }) {
   return <label className="settings-permission">
-    <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+    <input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />
     <span><strong>{title}{simulated && <small>Simulated</small>}</strong>{description && <span>{description}</span>}</span>
   </label>;
 }
 
-export default function Settings({ state, onClose, onUpdate, notify, page = false, initialTab = 'general', onDirtyChange, onBusyChange }) {
+export default function Settings({ updates = {}, state, onClose, onUpdate, notify, page = false, initialTab = 'general', onDirtyChange, onBusyChange }) {
   const savedMail = state.settings.mail;
   const savedAi = state.settings.ai;
   const imapConfigured = savedMail.configured && (!savedMail.provider || savedMail.provider === 'imap');
@@ -102,8 +102,7 @@ export default function Settings({ state, onClose, onUpdate, notify, page = fals
   const [policy, setPolicy] = useState(() => policyValues(state.settings.policy));
   const [testResult, setTestResult] = useState('');
   const [footerPreview, setFooterPreview] = useState(null);
-  const [updateResult, setUpdateResult] = useState(null);
-  const [includePrereleases, setIncludePrereleases] = useState(__APP_VERSION__.includes('-'));
+  const { result: updateResult, includePrereleases = __APP_VERSION__.includes('-') } = updates;
   const [downloadState, setDownloadState] = useState({ supported: false, phase: 'idle' });
   useEffect(() => setFooterPreview(null), [preferences.signature, preferences.signatureFormat]);
   const saved = useRef({ mail, model: ai, general: preferences, policy });
@@ -226,18 +225,6 @@ export default function Settings({ state, onClose, onUpdate, notify, page = fals
     if (Object.keys(preferencePatch(latest.current.preferences, saved.current.general)).length) return;
     if (Object.entries(dirty).some(([key, value]) => key !== 'general' && value) && !window.confirm('Discard your unsaved settings and return to your inbox?')) return;
     onClose();
-  }
-
-  async function checkUpdates() {
-    if (operationBusy) return;
-    setBusy('updates'); setError(''); setUpdateResult(null);
-    try {
-      const response = await fetch(`/api/updates?includePrereleases=${includePrereleases}`);
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'Could not check for updates.');
-      setUpdateResult(result);
-    } catch (cause) { setError(cause.message); }
-    finally { setBusy(''); }
   }
 
   async function save(path, body, label, message, accountId = state.account.id) {
@@ -635,9 +622,10 @@ export default function Settings({ state, onClose, onUpdate, notify, page = fals
         <div className="settings-about-brand"><img src="/brand/morrow-icon.svg" alt="" width="72" height="72" /><div><h2>Morrow Mail</h2><p>Version {__APP_VERSION__} · A little more room to think.</p></div></div>
         <fieldset className="settings-fields" disabled={operationBusy}>
           <legend>App updates</legend>
-          <Permission title="Include alpha and beta releases" checked={includePrereleases} onChange={value => { setIncludePrereleases(value); setUpdateResult(null); }} />
-          <p className="settings-help">Checks public GitHub releases without sharing mail or credentials. {window.morrowDesktop ? 'Downloaded updates are verified before you choose Install & Restart.' : 'Use the release downloads to update a browser development installation.'}</p>
-          <button type="button" className="button secondary" onClick={checkUpdates}>{busy === 'updates' ? 'Checking…' : 'Check for updates'}</button>
+          <Permission title="Include alpha and beta releases" checked={includePrereleases} disabled={updates.checking} onChange={updates.setIncludePrereleases} />
+          <p className="settings-help">Checks public GitHub releases at launch and every hour while Morrow is running, without sharing mail or credentials. A red ! badge on Settings means an update is available. {window.morrowDesktop ? 'Downloaded updates are verified before you choose Install & Restart.' : 'Use the release downloads to update a browser development installation.'}</p>
+          <button type="button" className="button secondary" disabled={updates.checking || !updates.check} onClick={() => updates.check(true)}>{updates.checking ? 'Checking…' : 'Check for updates'}</button>
+          {updates.error && <p role="alert" className="settings-error">{updates.error}</p>}
           {updateResult && <div role="status" className="settings-test-result"><strong>{updateResult.updateAvailable ? `Update available: ${updateResult.latestVersion}` : 'You’re up to date for this channel.'}</strong><p>Installed: {updateResult.currentVersion} · Latest: {updateResult.latestVersion}<br />Checked: {new Date(updateResult.checkedAt).toLocaleString()}</p><a href={updateResult.url} target="_blank" rel="noreferrer">View release & downloads</a></div>}
           {updateResult?.updateAvailable && downloadState.supported && ['idle', 'error'].includes(downloadState.phase) && <button type="button" className="button primary" onClick={() => updateDownload('download')}>Download update</button>}
           {['checking', 'downloading', 'verifying'].includes(downloadState.phase) && <div role="status"><progress max={downloadState.total || 1} value={downloadState.received || 0} aria-label="Update download progress" /><p>{downloadState.phase === 'downloading' ? 'Downloading update…' : 'Verifying update…'}</p><button type="button" className="button secondary" onClick={() => updateDownload('cancel')}>Cancel download</button></div>}

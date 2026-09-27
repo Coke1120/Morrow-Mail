@@ -30,6 +30,17 @@ final class AppModel: ObservableObject {
     private var openedMessage: String?
     @Published var showSettings = false
     @Published var settingsTab = "general"
+    @Published private(set) var updateResult: JSON = .null
+    @Published private(set) var updateCheckError = ""
+    @Published private(set) var checkingUpdates = false
+    @Published var includePrereleases = (Bundle.main.object(forInfoDictionaryKey: "MorrowReleaseVersion") as? String ?? "").contains("-") {
+        didSet {
+            guard includePrereleases != oldValue else { return }
+            updateResult = .null; updateCheckError = ""; lastUpdateCheckAttempt = nil
+        }
+    }
+    private(set) var lastUpdateCheckAttempt: Date?
+    var updateAvailable: Bool { updateResult["updateAvailable"].bool }
     @Published var assistantAction = "summary"
     @Published var studioTab = "tools"
     @Published var readerAssistant: JSON?
@@ -321,6 +332,21 @@ final class AppModel: ObservableObject {
     func refreshWhenActive() {
         guard !starting, baseURL != nil, !busy, compose == nil else { return }
         perform { try await self.reload() }
+    }
+    func checkForUpdates(force: Bool = false, now: Date = Date()) async {
+        guard baseURL != nil, !checkingUpdates else { return }
+        if !force, let last = lastUpdateCheckAttempt, (0..<3600).contains(now.timeIntervalSince(last)) { return }
+        let channel = includePrereleases
+        checkingUpdates = true; lastUpdateCheckAttempt = now; updateCheckError = ""
+        defer { checkingUpdates = false }
+        do {
+            let result = try await request("/updates?includePrereleases=\(channel)", mailbox: "")
+            guard !Task.isCancelled, channel == includePrereleases else { return }
+            updateResult = result
+        } catch {
+            guard !Task.isCancelled, channel == includePrereleases else { return }
+            updateCheckError = error.localizedDescription
+        }
     }
     func perform(_ work: @escaping @MainActor () async throws -> Void) {
         guard !busy else { return }

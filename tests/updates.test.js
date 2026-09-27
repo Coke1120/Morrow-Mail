@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { checkUpdates, currentVersion } from '../server/updates.js';
+import { checkForUpdates as checkClientUpdates } from '../src/useUpdates.js';
 
 const release = (tag_name, extra = {}) => ({ tag_name, draft: false, prerelease: tag_name.includes('-'), html_url: 'https://untrusted.invalid', ...extra });
 const response = releases => async (url, options) => {
@@ -10,6 +11,48 @@ const response = releases => async (url, options) => {
   assert.ok(options.signal instanceof AbortSignal);
   return { ok: true, status: 200, json: async () => releases };
 };
+
+test('client checks hourly, coalesce manual checks, retain known updates offline and never install', async t => {
+  const state = { includePrereleases: true, controller: new AbortController(), result: null };
+  let calls = 0, fail = false, available = true, releaseRequest;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    calls++;
+    assert.match(url, /^\/api\/updates\?includePrereleases=(true|false)$/);
+    assert.equal(options.method, undefined, 'Automatic checks only use GET, never download or install.');
+    assert.equal(options.headers, undefined, 'Checks do not depend on the selected mailbox.');
+    if (fail) throw Error('offline');
+    if (releaseRequest) await releaseRequest.promise;
+    return { ok: true, json: async () => ({ updateAvailable: available, latestVersion: '1.0.0', checkedAt: new Date().toISOString() }) };
+  });
+  await checkClientUpdates(state, { now: 0 });
+  assert.equal(calls, 1); assert.equal(state.result.updateAvailable, true);
+  await checkClientUpdates(state, { now: 3_599_999 });
+  assert.equal(calls, 1);
+  await checkClientUpdates(state, { now: 3_600_000 });
+  assert.equal(calls, 2);
+  fail = true;
+  await checkClientUpdates(state, { now: 7_200_000 });
+  assert.equal(state.error, 'offline'); assert.equal(state.result.updateAvailable, true);
+  await checkClientUpdates(state, { now: 7_260_000 });
+  assert.equal(calls, 3, 'Failure must not cause a rapid retry loop.');
+  fail = false; available = false;
+  await checkClientUpdates(state, { force: true, now: 7_260_000 });
+  assert.equal(calls, 4); assert.equal(state.error, ''); assert.equal(state.result.updateAvailable, false);
+  releaseRequest = Promise.withResolvers();
+  const pending = checkClientUpdates(state, { force: true, now: 7_260_001 });
+  assert.equal(state.checking, true);
+  await checkClientUpdates(state, { force: true, now: 7_260_002 });
+  assert.equal(calls, 5);
+  // Navigation/channel teardown discards a late response even if transport ignores abort.
+  const previous = state.result;
+  state.controller.abort(); releaseRequest.resolve(); await pending;
+  assert.equal(state.result, previous); assert.equal(state.checking, false);
+  await checkClientUpdates(state, { force: true }); assert.equal(calls, 5);
+  const stable = { includePrereleases: false, controller: new AbortController(), result: null };
+  await checkClientUpdates(stable, { now: 9_000_000 });
+  await checkClientUpdates(stable, { now: 8_000_000 });
+  assert.equal(calls, 7, 'A backward clock adjustment must not suppress checks indefinitely.');
+});
 
 test('GitHub release checks compare semantic versions and filter drafts and release channels', async () => {
   const releases = [release('v0.4.0-alpha.2'), release('v0.3.0'), release('v0.4.0-alpha.10'), release('v9.0.0', { draft: true }), release('not-a-version')];

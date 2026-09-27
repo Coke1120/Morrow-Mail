@@ -23,9 +23,7 @@ struct NativeSettingsView: View {
     @State private var localError = ""
     @State private var status = ""
     @State private var footerPreview: JSON = .null
-    @State private var updateResult: JSON = .null
     @State private var downloadState: JSON = .null
-    @State private var includePrereleases = (Bundle.main.object(forInfoDictionaryKey: "MorrowReleaseVersion") as? String ?? "").contains("-")
     private let tabs = [("general", "General", "slider.horizontal.3"), ("mail", "Mail", "envelope"), ("learning", "Learning", "text.badge.star"), ("search", "Search", "magnifyingglass"), ("model", "Model", "cpu"), ("permissions", "AI Permissions", "checkmark.shield"), ("calendar", "Calendar", "calendar"), ("about", "About", "info.circle")]
     private let generalKeys = ["displayName", "signature", "signatureFormat", "theme", "density", "replyTone", "language", "translationLanguage", "syncInterval", "markReadOnOpen"]
     private var displayedAccounts: [JSON] { mailSnapshot.isNull ? model.accounts : mailSnapshot.array }
@@ -410,19 +408,19 @@ struct NativeSettingsView: View {
             Text("19 AI behaviors: model-backed assistance and explicitly labeled local simulations. Nothing sends automatically. Provider setup and consent are required for real accounts.")
             GroupBox("App updates") {
                 VStack(alignment: .leading, spacing: 12) {
-                    Toggle("Include alpha and beta releases", isOn: $includePrereleases).toggleStyle(.checkbox)
-                        .onChange(of: includePrereleases) { _ in updateResult = .null }
-                    Button("Check for Updates") {
-                        updateResult = .null
-                        run { updateResult = try await model.request("/updates?includePrereleases=\(includePrereleases)") }
-                    }
-                    Text("Checks public releases on GitHub without sharing mail or credentials. Downloaded updates are verified before you choose Install & Restart.").font(.caption).foregroundStyle(.secondary)
-                    if !updateResult.isNull {
-                        Text(updateResult["updateAvailable"].bool ? "Update available: \(updateResult["latestVersion"].string)" : "You’re up to date for this channel.").font(.headline)
-                        Text("Installed: \(updateResult["currentVersion"].string) · Latest: \(updateResult["latestVersion"].string)\nChecked: \(dateLabel(updateResult["checkedAt"].string))").font(.caption)
-                        if let url = URL(string: updateResult["url"].string) { Link("View Release & Downloads", destination: url) }
-                        if updateResult["updateAvailable"].bool && downloadState["supported"].bool && ["idle", "error"].contains(downloadState["phase"].string) {
-                            Button("Download Update") { run { downloadState = try await model.request("/updates/download", method: "POST", body: .object(["includePrereleases": .bool(includePrereleases)])) } }
+                    Toggle("Include alpha and beta releases", isOn: $model.includePrereleases).toggleStyle(.checkbox)
+                        .disabled(model.checkingUpdates)
+                    Button(model.checkingUpdates ? "Checking…" : "Check for Updates") {
+                        Task { await model.checkForUpdates(force: true) }
+                    }.disabled(model.checkingUpdates)
+                    Text("Checks public GitHub releases at launch and every hour while Morrow is running, without sharing mail or credentials. A red ! badge on Settings means an update is available. Download and Install & Restart remain your choice.").font(.caption).foregroundStyle(.secondary)
+                    if !model.updateCheckError.isEmpty { Text(model.updateCheckError).foregroundStyle(.red) }
+                    if !model.updateResult.isNull {
+                        Text(model.updateResult["updateAvailable"].bool ? "Update available: \(model.updateResult["latestVersion"].string)" : "You’re up to date for this channel.").font(.headline)
+                        Text("Installed: \(model.updateResult["currentVersion"].string) · Latest: \(model.updateResult["latestVersion"].string)\nChecked: \(dateLabel(model.updateResult["checkedAt"].string))").font(.caption)
+                        if let url = URL(string: model.updateResult["url"].string) { Link("View Release & Downloads", destination: url) }
+                        if model.updateResult["updateAvailable"].bool && downloadState["supported"].bool && ["idle", "error"].contains(downloadState["phase"].string) {
+                            Button("Download Update") { run { downloadState = try await model.request("/updates/download", method: "POST", body: .object(["includePrereleases": .bool(model.includePrereleases)])) } }
                         }
                     }
                     if ["checking", "downloading", "verifying"].contains(downloadState["phase"].string) {

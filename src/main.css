@@ -507,3 +507,7 @@ button svg { flex-shrink: 0; }
   .message-ai-content { padding: 0 18px 18px; }
   .message-ai-actions .button { flex: 1; }
 }
+
+.update-badge { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 18px; width: 18px; height: 18px; border-radius: 50%; background: #c62828; color: #fff; font-size: 12px; font-weight: 800; line-height: 1; }
+.settings-update-button { position: relative; }
+.settings-update-button .update-badge { position: absolute; top: -4px; right: -5px; }

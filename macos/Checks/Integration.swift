@@ -57,6 +57,27 @@ struct NativeClientChecks {
         print("Native bounded mail metadata, on-demand body and revision checks passed.")
         let update = try await model.request("/updates?includePrereleases=true")
         assert(update["updateAvailable"].bool && update["latestVersion"].string == "0.5.0-alpha.2")
+        model.includePrereleases = true
+        let updateTime = Date(timeIntervalSince1970: 1_000_000)
+        model.busy = true
+        await model.checkForUpdates(now: updateTime)
+        assert(model.updateAvailable && model.busy && !model.checkingUpdates)
+        assert(model.lastUpdateCheckAttempt == updateTime)
+        await model.checkForUpdates(now: updateTime.addingTimeInterval(3599))
+        assert(model.lastUpdateCheckAttempt == updateTime)
+        await model.checkForUpdates(now: updateTime.addingTimeInterval(3600))
+        assert(model.lastUpdateCheckAttempt == updateTime.addingTimeInterval(3600))
+        await model.checkForUpdates(force: true, now: updateTime.addingTimeInterval(3601))
+        assert(model.lastUpdateCheckAttempt == updateTime.addingTimeInterval(3601))
+        model.includePrereleases = false
+        assert(!model.updateAvailable && model.lastUpdateCheckAttempt == nil)
+        model.includePrereleases = true
+        await model.checkForUpdates(now: updateTime)
+        model.busy = false
+        model.settings(model.updateAvailable ? "about" : "general")
+        assert(model.showSettings && model.settingsTab == "about")
+        model.showSettings = false
+        print("Native hourly update checks, manual checks, channel reset and Settings shortcut passed.")
         let trigger: JSON = .object(["action": .string("summary"), "trigger": .string("onOpen"), "messageId": .string("demo-1")])
         let disabledTrigger = try await model.request("/ai", method: "POST", body: trigger, mailbox: "demo")
         assert(disabledTrigger["skipped"].bool)

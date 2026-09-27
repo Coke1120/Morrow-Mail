@@ -21,8 +21,19 @@ struct MorrowMailApp: App {
                 .preferredColorScheme(model.colorScheme)
                 .frame(minWidth: 1040, minHeight: 640)
                 .background(WindowGuard(model: model, delegate: delegate))
-                .task { delegate.model = model; await model.start() }
-                .onChange(of: scenePhase) { phase in if phase == .active { model.refreshWhenActive() } }
+                .task {
+                    delegate.model = model; await model.start()
+                    while !Task.isCancelled {
+                        await model.checkForUpdates()
+                        try? await Task.sleep(nanoseconds: 60_000_000_000)
+                    }
+                }
+                .onChange(of: scenePhase) { phase in
+                    if phase == .active {
+                        model.refreshWhenActive()
+                        Task { await model.checkForUpdates() }
+                    }
+                }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1220, height: 800)

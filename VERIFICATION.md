@@ -1,5 +1,11 @@
 # Verification — 27 September 2026
 
+## Unreleased hourly update checks
+
+Both clients now check at launch and once per hour while running, with a due check on return from sleep/background. Availability is retained outside Settings and shown as an accessible red ! badge linking to About. Manual and automatic checks share the same state; failed checks retain the last successful release, channel changes clear it, and no automatic download or installation is performed.
+
+`node --test tests/updates.test.js tests/settings.test.js` passed 9/9, including deterministic hourly boundaries, manual-check coalescing, offline retention, cancellation and clock rollback. `npm run build` passed. `npm run macos:test` passed the full native compile and isolated client harness, including hourly/manual checks, channel reset and the About shortcut without changing the mailbox or global busy state. Existing Swift onChange deprecation warnings remain. These client-only changes have not been published, installed in Applications, or executed on Windows; no real provider or model action was used.
+
 ## 0.6.0-beta.14 paired prerelease
 
 [beta.14](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.14) was published at 2026-09-27T09:58:56Z from `0f5b76056284ab74880cf695d48170c86f606d2a`. All five platform jobs and the publisher in [tag CI 36309158377](https://github.com/Coke1120/Morrow-Mail/actions/runs/36309158377) passed. The redundant main run was cancelled; the tag retained every gate. macOS and Windows each passed 125 Rust tests, seven Node–Rust contracts and 223 Node checks (two conditional Rust checks are covered by the separate contracts), plus React builds, audits, benchmarks, package/desktop checks and updater acceptance. The native calendar hosting regression passed on macOS 15. Both dedicated desktop jobs passed actual old-installer upgrade, restart and backup preservation.

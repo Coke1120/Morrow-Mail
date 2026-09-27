@@ -161,7 +161,17 @@ struct MailWorkspace: View {
             }.listStyle(.sidebar)
             Button { model.settings("mail") } label: { Label("Add account", systemImage: "plus") }.buttonStyle(.plain).padding(12).disabled(model.busy)
             Divider()
-            Button { model.settings() } label: { Label("Settings & connections", systemImage: "gearshape") }
+            Button { model.settings(model.updateAvailable ? "about" : "general") } label: {
+                HStack {
+                    Label("Settings & connections", systemImage: "gearshape")
+                    if model.updateAvailable {
+                        Text("!").font(.caption.bold()).foregroundStyle(.white)
+                            .frame(width: 18, height: 18).background(.red, in: Circle()).accessibilityHidden(true)
+                    }
+                }
+            }
+                .accessibilityLabel(model.updateAvailable ? "Settings & connections, update available" : "Settings & connections")
+                .help(model.updateAvailable ? "A new version is available. Open App updates." : "Settings & connections")
                 .buttonStyle(.plain).disabled(model.busy).frame(maxWidth: .infinity, alignment: .leading).padding(18).fixedSize(horizontal: false, vertical: true)
         }
     }
