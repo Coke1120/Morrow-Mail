@@ -1,4 +1,12 @@
-# Verification — 27 September 2026
+# Verification — 28 September 2026
+
+## Unreleased N1 migration — shared draft preparation
+
+Rust now prepares Reply, Reply All, Forward and provider-draft copies through authenticated `POST /api/drafts/prepare`, using the explicit mailbox header and original message ID. SwiftUI and React callers, including AI result insertion, use this operation instead of duplicating recipient/quoting rules. Saved local draft decoding and uncertain-delivery review remain unchanged. The Node development/compatibility service exposes the same contract; this is not a desktop runtime fallback. The endpoint reads current owned content without saving, sending or calling a provider/model.
+
+Validation passed: two Rust draft tests (a shared 21-case pre-migration corpus plus actual HTTP authentication/owner/input/no-write checks), scoped strict Clippy, 45 affected Node/React checks, React production build, `npm run macos:test`, and `CARGO_INCREMENTAL=0 npm run macos:rust:test`. Native acceptance covers duplicate IDs/combined views, service-owned forward content, provider-draft copy with To/Cc/Bcc and unchanged original, no persistence from preparation, competing requests and selection/account/connection/composer/sheet changes, as well as the existing lifecycle, backup, Pending, scheduled-send and recovery checks. React handler tests exercise success, cancellation, stale context, duplicate clicks and preparation errors; SSR checks retain sender locking and uncertain delivery review.
+
+All work used fictional isolated fixtures. No real mail/model/provider action, Applications replacement, candidate packaging or release was performed. These checks do not establish Windows runtime/WinUI acceptance or complete N0/N1. The native migration plan and inventory track the remaining shared logic, deployment, baseline and toolchain gates.
 
 ## 0.6.0-beta.16 paired prerelease
 

@@ -77,6 +77,8 @@ try {
   const backend = join(target, relativeBackend);
   mkdirSync(backend, { recursive: true });
   for (const name of ['server', 'shared']) cpSync(resolve(repository, name), join(backend, name), { recursive: true });
+  mkdirSync(join(backend, 'rust/resources'), { recursive: true });
+  cpSync(resolve(repository, 'rust/resources/catalog.json'), join(backend, 'rust/resources/catalog.json'));
   writeFileSync(join(backend, 'package.json'), JSON.stringify({ type: 'module', version: '0.0.1' }));
   symlinkSync(resolve(repository, 'node_modules'), join(backend, 'node_modules'), windows ? 'junction' : 'dir');
   const keys = generateKeyPairSync('ed25519');

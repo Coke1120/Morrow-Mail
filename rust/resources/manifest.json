@@ -1,0 +1,77 @@
+{
+  "formatVersion": 1,
+  "resourceVersion": 1,
+  "provenance": {
+    "catalog": {
+      "sourceCommit": "e613b3b48af665879d0579fe00d23f38c074a428",
+      "sources": [
+        "shared/features.js",
+        "server/demo.js"
+      ],
+      "demoEpochMilliseconds": 0,
+      "summaryScheduleTimeZone": "UTC",
+      "license": "MIT"
+    },
+    "opencc": {
+      "preset": "hk2s",
+      "packages": [
+        {
+          "name": "opencc-js",
+          "version": "1.4.2",
+          "license": "MIT AND Apache-2.0",
+          "sourceArchive": "https://registry.npmjs.org/opencc-js/-/opencc-js-1.4.2.tgz",
+          "repository": "https://github.com/nk2028/opencc-js"
+        },
+        {
+          "name": "opencc-data",
+          "version": "1.4.2",
+          "license": "Apache-2.0",
+          "sourceArchive": "https://registry.npmjs.org/opencc-data/-/opencc-data-1.4.2.tgz",
+          "repository": "https://github.com/nk2028/opencc-data"
+        }
+      ],
+      "generatorCommit": "e613b3b48af665879d0579fe00d23f38c074a428",
+      "generator": "scripts/rust-resources.js",
+      "transformation": "Flatten each dictionary group in reverse dictionary order into insertion-ordered key/value pairs; later duplicate keys replace values without moving their position. Retain normalization/segmentation/conversion chain order. Serialize compact UTF-8 JSON with one LF."
+    }
+  },
+  "files": [
+    {
+      "name": "catalog.json",
+      "bytes": 19482,
+      "sha256": "b3cfda7f77f84981860cd5c0e7af1bb027e3a0a9125f7337f2b177d327e6fc54"
+    },
+    {
+      "name": "opencc.json",
+      "bytes": 96137,
+      "sha256": "c1ff6654714ff3d138ffb000fd3cf7100a60ca583531e92211a5fde1ca778129"
+    },
+    {
+      "name": "OPENCC-JS-LICENSE.txt",
+      "bytes": 1080,
+      "sha256": "960f7fc16d8baa126802316a7df9078a383af4fb6bc60033adb28e85c08d5e5e"
+    },
+    {
+      "name": "OPENCC-DATA-LICENSE.txt",
+      "bytes": 9165,
+      "sha256": "b534e465949558eec2597b04f5092b5e161236a68dfbfd04d547592ac3964308"
+    },
+    {
+      "name": "OPENCC-NOTICES.md",
+      "bytes": 10232,
+      "sha256": "42c7dbe71c178fcca97ba945e9ac9ff360fb69bbfea4cb50556f6c65bfa59806"
+    }
+  ],
+  "searchGolden": {
+    "source": "tests/rust-storage.test.js at e613b3b48af665879d0579fe00d23f38c074a428; Node opencc-js 1.4.2 normalizeSearch/searchTokens",
+    "order": "Unique canonical dictionary keys sorted by UTF-8 bytes, then additionalInputs in order; SHA-256 of compact UTF-8 JSON [[input,normalized,tokens],...] without final LF.",
+    "additionalInputs": [
+      "ＡＢＣ café 中文123 email@example.invalid",
+      "﻿ İ I ς ΣΟΣ σος\t\n\r",
+      "  ⿰木發 ⿲𠀀發財 繁體香港詞  ",
+      "emoji🚀一𠀀二𞓬"
+    ],
+    "cases": 5343,
+    "sha256": "9428ca3813de29806f30b33da180779892766209348a8ba474d1baf0b3b51d08"
+  }
+}

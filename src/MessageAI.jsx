@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { LoaderCircle, Sparkles } from 'lucide-react';
 import Modal from './Modal';
 import { api } from './api';
-import { replyDraft } from './message-draft';
+import { prepareDraft } from './message-draft';
 
 export function messageAIContext(state, message, action, includeHistory = false, loaded = true) {
   const settings = state?.settings || {}, policy = settings.policy || {};
@@ -19,12 +19,12 @@ export function messageAIContext(state, message, action, includeHistory = false,
   return { reason, key: JSON.stringify([state?.account?.id, owner?.id, owner?.settings, source, policy, settings.ai, settings.preferences, settings.footer, state?.workspace?.brain, state?.workspace?.styleLearning?.profile]) };
 }
 
-export default function MessageAI({ state, message, action, includeHistory = false, loaded, onClose, onUse }) {
+export default function MessageAI({ state, message, action, includeHistory = false, loaded, disabled = false, onClose, onUse }) {
   const context = messageAIContext(state, message, action, includeHistory, loaded);
   const [original] = useState(() => ({ key: context.key, message }));
   const current = useRef(context), pending = useRef(null), invalidated = useRef(false);
   current.current = context;
-  if (context.key !== original.key || context.reason) invalidated.current = true;
+  if (context.key !== original.key || context.reason || disabled) invalidated.current = true;
   const valid = () => !invalidated.current && !current.current.reason && current.current.key === original.key;
   const [busy, setBusy] = useState(false), [result, setResult] = useState(null), [error, setError] = useState('');
   const title = includeHistory ? 'Suggest with History' : { summary: 'Summarize message', reply: 'Suggest reply', translate: 'Translate message' }[action];
@@ -42,13 +42,24 @@ export default function MessageAI({ state, message, action, includeHistory = fal
       if (pending.current === controller && !controller.signal.aborted && valid()) setError(cause.message);
     } finally { if (pending.current === controller) { pending.current = null; setBusy(false); } }
   }
+  async function useDraft() {
+    if (!result?.text || pending.current || !valid()) return;
+    const controller = new AbortController(); pending.current = controller;
+    setBusy(true); setError('');
+    try {
+      const draft = await prepareDraft(original.message, 'reply', { body: result.text, signal: controller.signal });
+      if (pending.current === controller && !controller.signal.aborted && valid()) { onUse(draft); close(); }
+    } catch (cause) {
+      if (pending.current === controller && !controller.signal.aborted && valid()) setError(cause.message);
+    } finally { if (pending.current === controller) { pending.current = null; setBusy(false); } }
+  }
   useEffect(() => {
     let active = true;
     // A StrictMode rehearsal must not submit a second paid request.
     queueMicrotask(() => { if (active && !includeHistory) generate(); });
     return () => { active = false; cancel(); };
   }, []);
-  useEffect(() => { if (!valid()) { cancel(); setBusy(false); setResult(null); setError(''); } }, [context.key, context.reason]);
+  useEffect(() => { if (!valid()) { cancel(); setBusy(false); setResult(null); setError(''); } }, [context.key, context.reason, disabled]);
   const usable = valid();
   return <Modal title={title} description={original.message.accountId} onClose={close} className="message-ai-modal">
     <div className="message-ai-content">
@@ -69,7 +80,7 @@ export default function MessageAI({ state, message, action, includeHistory = fal
         </section>}
         <div className="message-ai-actions">
           {(includeHistory || error || result) && <button className="button secondary" disabled={busy} onClick={generate}><Sparkles size={15} />{result ? 'Generate again' : error ? 'Try again' : 'Generate reply'}</button>}
-          {result?.text && action === 'reply' && <button className="button primary" disabled={busy} onClick={() => { if (valid() && !pending.current) { onUse(replyDraft(original.message, { body: result.text })); close(); } }}>Use in Draft</button>}
+          {result?.text && action === 'reply' && <button className="button primary" disabled={busy} onClick={useDraft}>Use in Draft</button>}
         </div>
       </>}
       <p className="message-privacy">Review before using. Nothing is sent or saved automatically. Closing stops waiting; a model request already received may still be charged.</p>

@@ -10,6 +10,8 @@ struct StudioView: View {
     @State private var prompt = ""
     @State private var draftText = ""
     @State private var result: JSON = .null
+    @State private var resultID = UUID()
+    @State private var resultGeneration: Int?
     @State private var preview: JSON = .null
     @State private var when = Date().addingTimeInterval(86400)
     @State private var voice = ""
@@ -135,7 +137,7 @@ struct StudioView: View {
                         Text(result["text"].string).textSelection(.enabled).lineSpacing(5)
                         HStack {
                             Button("Copy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(result["text"].string, forType: .string) }
-                            if ["write", "reply", "rewrite", "translate"].contains(action) { Button("Review in a Draft") { useDraft() } }
+                            if ["write", "reply", "rewrite", "translate"].contains(action) { Button("Review in a Draft") { useDraft() }.disabled(model.busy || model.preparingDraft || resultGeneration != model.draftGeneration) }
                         }
                     }
                     if !preview.isNull {
@@ -244,20 +246,36 @@ struct StudioView: View {
         if action == "skill" { payload["skillId"] = .string(skillID) }
         if ["followup", "schedule"].contains(action) { payload["when"] = .string(utcDate(when)) }
         let simulation = feature["mock"].bool
+        let owner = feature["context"].string == "selected" ? chosen["accountId"].string : model.account
+        guard !owner.isEmpty, owner != "all" else { return }
         clearResult()
+        let run = resultID, generation = model.draftGeneration
         model.perform {
-            let response = try await model.request(simulation ? "/workflows/preview" : "/ai", method: "POST", body: payload)
-            if simulation { preview = response["preview"] } else { result = response }
+            let response = try await model.request(simulation ? "/workflows/preview" : "/ai", method: "POST", body: payload, mailbox: owner)
+            guard !Task.isCancelled, run == resultID, generation == model.draftGeneration, model.section == "studio" else { return }
+            if simulation { preview = response["preview"] } else { result = response; resultGeneration = generation }
         }
     }
     func record(_ collection: String, _ item: JSON, _ payload: JSON) { model.perform { model.state = try await model.request("/workspace/\(collection)/" + encodedPath(item.id), method: "PATCH", body: payload) } }
     func useDraft() {
-        var draft = action == "reply" ? Draft(message: chosen, reply: true) : Draft()
-        draft.body = result["text"].string
-        if action == "translate" { draft.subject = chosen["subject"].string }
-        model.newDraft(draft)
+        guard !result.isNull, resultGeneration == model.draftGeneration, !model.busy, !model.preparingDraft else { return }
+        let text = result["text"].string, message = chosen, run = resultID
+        if action == "reply" {
+            Task { @MainActor in
+                do {
+                    let draft = try await model.prepareDraft(message: message, mode: "reply", body: text)
+                    guard run == resultID, resultGeneration == model.draftGeneration else { return }
+                    model.newDraft(draft)
+                } catch is CancellationError { }
+                catch { if run == resultID { model.error = error.localizedDescription } }
+            }
+        } else {
+            var draft = Draft(); draft.accountID = model.account; draft.body = text
+            if action == "translate" { draft.subject = message["subject"].string }
+            model.newDraft(draft)
+        }
     }
-    func clearResult() { result = .null; preview = .null }
+    func clearResult() { resultID = UUID(); resultGeneration = nil; result = .null; preview = .null }
     func loadBrain() { voice = workspace["brain"]["voice"].string; notes = workspace["brain"]["notes"].string; savedVoice = voice; savedNotes = notes }
 }
 

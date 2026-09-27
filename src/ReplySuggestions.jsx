@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from './api.js';
-import { replyDraft } from './message-draft.js';
+import { prepareDraft } from './message-draft.js';
 
 export default function ReplySuggestions({ state, onCompose, disabled = false, onDirtyChange, onConfigureIdentity }) {
   const owner = state.account?.mode === 'live' ? state.account.id : '';
   const currentOwner = useRef(owner), inFlight = useRef(false), revision = useRef(0);
+  const contextKey = JSON.stringify([owner, disabled, state.accounts?.find(item => item.id === owner)?.settings, state.settings, state.workspace?.brain, state.workspace?.styleLearning?.profile]);
+  const currentContext = useRef(contextKey), preparing = useRef(null);
+  currentContext.current = contextKey;
   const [value, setValue] = useState(null), [options, setOptions] = useState(null), [selected, setSelected] = useState([]);
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
   currentOwner.current = owner;
@@ -27,20 +30,25 @@ export default function ReplySuggestions({ state, onCompose, disabled = false, o
     refresh();
     return () => { active = false; clearTimeout(timer); controller.abort(); };
   }, [owner]);
-  useEffect(() => () => { currentOwner.current = null; }, []);
+  useEffect(() => { preparing.current?.abort(); preparing.current = null; }, [contextKey]);
+  useEffect(() => () => { currentOwner.current = null; preparing.current?.abort(); preparing.current = null; }, []);
   async function action(path, body = {}) {
     if (!owner || inFlight.current || disabled) return;
     if (path === 'run' && !window.confirm(`Generate reply suggestions for ${owner}?\n${job.sampleCount} messages · estimated tokens ≤ ${job.estimatedTokens} · budget ${job.tokenBudget}\nModel: ${value.model.model}\nEndpoint: ${value.model.baseUrl}\nUses the reviewed, bounded downloaded history, confirmed identity and any permitted approved writing style. No mail will be sent. Continue?`)) return;
     inFlight.current = true; revision.current++; setBusy(true); setError('');
+    const context = contextKey;
+    const controller = new AbortController(); preparing.current = controller;
+    const valid = () => currentOwner.current === owner && currentContext.current === context && !controller.signal.aborted;
     try {
-      const next = await api(`/reply-suggestions/${path}`, { method: 'POST', account: owner, body: JSON.stringify(body) });
-      if (currentOwner.current !== owner) return;
+      const next = await api(`/reply-suggestions/${path}`, { method: 'POST', account: owner, signal: controller.signal, body: JSON.stringify(body) });
+      if (!valid()) return;
       if (path === 'use') {
         if (next.message?.accountId !== owner) throw new Error('The suggestion belongs to a different mailbox. Reopen it from its original account.');
-        onCompose(replyDraft(next.message, { body: next.text }));
+        const draft = await prepareDraft(next.message, 'reply', { body: next.text, signal: controller.signal });
+        if (valid()) onCompose(draft);
       } else { setValue(next); if (path === 'settings') setOptions(next.settings); }
-    } catch (cause) { if (currentOwner.current === owner) setError(cause.message); }
-    finally { revision.current++; inFlight.current = false; if (currentOwner.current != null) setBusy(false); }
+    } catch (cause) { if (valid()) setError(cause.message); }
+    finally { if (preparing.current === controller) preparing.current = null; revision.current++; inFlight.current = false; if (currentOwner.current != null) setBusy(false); }
   }
   const locked = busy || disabled;
   const previewBlocked = locked || dirty || running || !value?.permitted || !value?.identityReady || !selected.length || selected.length > (value?.settings.maxMessages || 0);

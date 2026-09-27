@@ -25,6 +25,8 @@ try {
   mkdirSync(workspace); writeFileSync(join(workspace, 'do-not-change.txt'), 'existing workspace');
   const backend = join(target, relativeBackend);
   for (const item of ['server', 'shared']) cpSync(resolve(item), join(backend, item), { recursive: true });
+  mkdirSync(join(backend, 'rust/resources'), { recursive: true });
+  cpSync(resolve('rust/resources/catalog.json'), join(backend, 'rust/resources/catalog.json'));
   writeFileSync(join(backend, 'package.json'), JSON.stringify({ type: 'module', version: '0.0.1' }));
   symlinkSync(resolve('node_modules'), join(backend, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
   writeFileSync(join(incoming, relativeBackend, 'package.json'), JSON.stringify({ type: 'module', version: '0.0.2' }));

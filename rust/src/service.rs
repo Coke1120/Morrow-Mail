@@ -464,6 +464,7 @@ async fn handle_inner(app: App, request: axum::http::Request<Body>) -> Result<Re
         && matches!(
             route.as_slice(),
             ["send" | "drafts" | "ai" | "sync" | "skills"]
+                | ["drafts", "prepare"]
                 | ["messages", _]
                 | ["messages", _, "organize"]
                 | [

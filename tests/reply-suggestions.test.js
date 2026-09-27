@@ -8,7 +8,6 @@ import { createStore } from '../server/store.js';
 import { createLearning } from '../server/learning.js';
 import { modelPayload } from '../server/integrations.js';
 import { updatePolicy } from '../server/policy.js';
-import { replyDraft } from '../src/message-draft.js';
 
 const A = 'owner@example.invalid', B = 'other@example.invalid';
 const result = JSON.stringify({ needsReply: true, reason: 'The sender asks for a review.', reply: 'Thank you. Could you clarify the proposed date?' });
@@ -35,7 +34,7 @@ async function fixture(t, model = async () => ({ text: result })) {
   const f = { calls, get store() { return store; }, get queue() { return app.locals.replySuggestions; }, learning, confirmIdentity };
   f.request = (path = '', body, account = A, extraHeaders = {}) => new Promise((resolve, reject) => {
     const headers = Object.fromEntries(Object.entries({ 'Content-Type': 'application/json', Authorization: 'Bearer reply-fixture', Origin: origin, 'X-Genmail-Account': account, ...extraHeaders }).filter(([, value]) => value !== undefined));
-    const req = httpRequest(`${origin}/api/reply-suggestions${path}`, { method: body === undefined ? 'GET' : 'POST', headers }, response => {
+    const req = httpRequest(origin + (path.startsWith('/api/') ? path : `/api/reply-suggestions${path}`), { method: body === undefined ? 'GET' : 'POST', headers }, response => {
       const chunks = []; response.on('data', chunk => chunks.push(chunk)); response.on('error', reject); response.on('end', () => resolve({ status: response.statusCode, data: JSON.parse(Buffer.concat(chunks)) }));
     }); req.on('error', reject); req.end(body === undefined ? undefined : JSON.stringify(body));
   });
@@ -71,7 +70,10 @@ test('reply suggestions require authentication, owner, consent, identity and rev
   assert.match(f.calls[0][3], /Confirmed Alice/); assert.doesNotMatch(JSON.stringify(f.calls[0]), /Confirmed Bob|OTHER OWNER PRIVATE|TRASH PRIVATE|PRIVATE SUBJECT|PRIVATE BCC/);
   const proposal = f.queue.state(A).proposals[0];
   assert.equal((await f.request('/use', { id: proposal.id }, B)).status, 404);
-  const used = (await f.request('/use', { id: proposal.id })).data, draft = replyDraft(used.message, { body: used.text });
+  const used = (await f.request('/use', { id: proposal.id })).data;
+  const prepared = await f.request('/api/drafts/prepare', { messageId: used.message.id, mode: 'reply', body: used.text });
+  assert.equal(prepared.status, 200);
+  const draft = prepared.data.draft;
   assert.equal(draft.accountId, A); assert.equal(draft.replyToId, 'target'); assert.equal(draft.bcc, ''); assert.equal(f.store.getSettings().activeAccount, 'all');
   assert.equal(f.store.listMessages(A).some(m => m.folder === 'drafts'), false);
   assert.equal((await f.request('/dismiss', { id: proposal.id })).status, 200); assert.equal(f.queue.state(A).proposals.length, 1);

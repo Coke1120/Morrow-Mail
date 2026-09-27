@@ -1,0 +1,11 @@
+{
+  "Microsoft.Web.WebView2.1.0.3719.77": "2f6be3a10a1a8d6d1fde986af4131dab344f8181fffe75590824e0f4b037ed73",
+  "Microsoft.Windows.CppWinRT.3.0.260818.1": "a8993608ae9263a8288e1a1d9ee2684a5632f4acc59e1e89ddd86b3b889a7367",
+  "Microsoft.Windows.SDK.BuildTools.10.0.26100.4654": "5f5783658a200f83ea2addfd406e2303a901b27ad7c49b0347c34aefcc21883d",
+  "Microsoft.Windows.SDK.BuildTools.MSIX.1.7.251221100": "e61c560805029f5ae15433be52e153f3862b6faaf725292638a9ece592f7a060",
+  "Microsoft.WindowsAppSDK.Base.2.0.4": "e3e13478c4c80c59ed5f8f89542fe49a2985daa484753e93a5858e90c2d46a4d",
+  "Microsoft.WindowsAppSDK.Foundation.2.3.12": "ce04d01d68cb16b5dc85a5c9efb8162dba876bc2e5b766b5968979899d4efa9e",
+  "Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.9": "f9159d73e3e46717f159606e43b4acf8336aaff5bdd4d395fe3a93fdb41437ac",
+  "Microsoft.WindowsAppSDK.Runtime.2.5.1": "2fbd27012291be50cafed6942306964281d37167af6a6af3887e1163ec5cf063",
+  "Microsoft.WindowsAppSDK.WinUI.2.3.9": "d36145bd6c0f46fc04e07fb4af365d093fb42c39b625948d0ead07a0b26fce96"
+}

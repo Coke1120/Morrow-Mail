@@ -18,6 +18,8 @@ try {
   mkdirSync(join(bundle, 'MacOS'), { recursive: true });
   mkdirSync(backend, { recursive: true });
   for (const path of ['server', 'shared', 'package.json']) cpSync(resolve(path), join(backend, path), { recursive: true });
+  mkdirSync(join(backend, 'rust/resources'), { recursive: true });
+  cpSync(resolve('rust/resources/catalog.json'), join(backend, 'rust/resources/catalog.json'));
   bundleOAuth(backend, { MORROW_GOOGLE_OAUTH_JSON: JSON.stringify({ installed: { client_id: 'fixture.apps.googleusercontent.com', client_secret: 'fixture-bundled-secret' } }) });
   symlinkSync(resolve('node_modules'), join(backend, 'node_modules'), 'dir');
   symlinkSync(process.execPath, join(resources, 'node'));

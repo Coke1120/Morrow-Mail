@@ -42,6 +42,69 @@ struct NativeRustChecks {
         throw APIError("Native Rust acceptance: rejected operation unexpectedly succeeded: " + path)
     }
 
+    @MainActor static func checkPreparedDrafts(_ model: AppModel, sources: [JSON]) async throws {
+        let before = try await model.request("/state/revision", mailbox: "")
+        for source in sources {
+            let owner = source["accountId"].string
+            // Supply only metadata, including a misleading client body: the service must load the owned source.
+            var metadata = source; metadata["body"] = .string("Never use this client message body")
+            let reply = try await model.prepareDraft(message: metadata, mode: "reply", body: "Reviewed suggestion")
+            try check(reply.accountID == owner && reply.replyToID == source.id && reply.to == "sender0@example.invalid" && reply.body == "Reviewed suggestion", "prepared reply lost its owner, original ID or reviewed body")
+            let all = try await model.prepareDraft(message: source, mode: "replyAll")
+            try check(all.accountID == owner && all.replyToID == source.id && all.to == reply.to && all.cc.isEmpty && all.bcc.isEmpty, "prepared Reply All included its owner or lost thread identity")
+            let forward = try await model.prepareDraft(message: metadata, mode: "forward")
+            try check(forward.accountID == owner && forward.forwarding && forward.replyToID.isEmpty && forward.to.isEmpty && forward.cc.isEmpty && forward.bcc.isEmpty, "prepared forward retained threading or recipients")
+            try check(forward.body.contains("Owned by " + owner) && !forward.body.contains("Never use this client") && !forward.body.contains("Fixture footer"), "prepare used client content, another owner or the source footer")
+            try check(reply.savedID.isEmpty && all.savedID.isEmpty && forward.savedID.isEmpty && reply.footer.isNull && forward.footer.isNull, "prepare persisted a draft or supplied a footer")
+        }
+        let providerPath = "/messages/" + encodedPath("google:provider-draft")
+        let originalProvider = try await model.request(providerPath, mailbox: first)
+        let copied = try await model.prepareDraft(message: originalProvider["message"], mode: "copy")
+        try check(copied.sourceDraft && copied.accountID == first && copied.savedID.isEmpty && copied.replyToID.isEmpty && copied.footer.isNull && !copied.unconfirmed, "provider copy retained remote delivery identity")
+        try check(copied.to == "to@example.invalid" && copied.cc == "cc@example.invalid" && copied.bcc == "hidden@example.invalid" && copied.body == "Original provider draft; never sent.", "provider copy changed reviewed content or recipients")
+        let retainedProvider = try await model.request(providerPath, mailbox: first)
+        try check(retainedProvider == originalProvider, "copy changed the original provider draft")
+        let source = sources[0], payload: JSON = .object(["messageId": .string(sources[0].id), "mode": .string("reply")])
+        for owner in ["", "all", "missing@native-rust.invalid"] {
+            try await expectFailure(model, path: "/drafts/prepare", body: payload, owner: owner)
+        }
+        for id in [source.viewID, "missing-message"] {
+            try await expectFailure(model, path: "/drafts/prepare", body: .object(["messageId": .string(id), "mode": .string("reply")]), owner: first)
+        }
+        try await expectFailure(model, path: "/drafts/prepare", body: .object(["messageId": .string(source.id), "mode": .string("copy")]), owner: first)
+        let after = try await model.request("/state/revision", mailbox: "")
+        try check(before == after && model.compose == nil, "preparing a draft changed persisted state or opened a composer")
+
+        // Hold the main actor after the request begins: no artificial provider delay or real send is needed.
+        for change in ["selection", "account", "composer", "connection", "sheet", "cancel"] {
+            let pending = Task { @MainActor in try await model.prepareDraft(message: source, mode: "reply") }
+            for _ in 0..<1000 { if model.preparingDraft { break }; await Task.yield() }
+            try check(model.preparingDraft, "draft request did not start")
+            do {
+                _ = try await model.prepareDraft(message: source, mode: "forward")
+                throw APIError("Native Rust acceptance: duplicate draft preparation was accepted")
+            } catch is CancellationError { }
+            if change == "selection" {
+                let selection = model.selectedMessage; model.selectedMessage = "another-message"; model.selectedMessage = selection
+            } else if change == "account" {
+                let selected = model.state["account"]; model.state["account"] = .object(["id": .string(second)]); model.state["account"] = selected
+            } else if change == "composer" {
+                model.newDraft(); try check(model.compose != nil, "manual draft did not open")
+                model.compose = nil // Even opening and closing another composer invalidates the old request.
+            } else if change == "connection" {
+                let accounts = model.state["accounts"]; model.state["accounts"] = .array([]); model.state["accounts"] = accounts
+            } else if change == "sheet" {
+                model.organizing = source; model.organizing = nil
+            } else { pending.cancel() }
+            do {
+                _ = try await pending.value
+                throw APIError("Native Rust acceptance: stale draft response was accepted after " + change)
+            } catch is CancellationError { }
+            try check(!model.preparingDraft && model.compose == nil, "cancelled prepare left a lock or reopened the composer")
+        }
+        print("Native Rust: service draft preparation, explicit owners/IDs, no persistence, duplicate and stale-response guards passed without sending.")
+    }
+
     @MainActor static func checkNewWorkspaceFeatures(_ model: AppModel, draft: Draft) async throws {
         try check(model.account == second && !model.policy["enabled"].bool, "new feature fixture must start on the other account with AI disabled")
         try check(mailFolders.contains("pending") && !permissionFolders.contains("pending"), "Pending is a local view, not an AI permission folder")
@@ -198,6 +261,7 @@ struct NativeRustChecks {
             let detail = try await model.request("/messages/" + encodedPath(row.id), mailbox: row["accountId"].string)
             try check(detail["message"]["body"].string.contains("Owned by " + row["accountId"].string), "detail routed through a different account")
         }
+        try await checkPreparedDrafts(model, sources: duplicates)
         let opened = duplicates.first { $0["accountId"].string == first }!
         model.selectedMessage = opened.viewID
         await model.loadMessage()
@@ -244,7 +308,7 @@ struct NativeRustChecks {
         model.newDraft()
         try check(model.compose?.accountID == first, "new combined draft chose an invalid From account")
         model.compose = nil
-        model.newDraft(Draft(message: opened, reply: true))
+        await model.openDraft(message: opened, mode: "reply")
         try check(model.compose?.accountID == first && model.compose?.replyToID == opened.id, "reply lost original owner")
         var draft = model.compose!
         draft.subject = "Native Rust owned draft"
@@ -254,6 +318,9 @@ struct NativeRustChecks {
         draft.bcc = "hidden@example.invalid"
         model.compose = nil
         try await model.selectAccount(second, folder: "inbox")
+        await model.openDraft(message: opened, mode: "replyAll", body: "Original owner review")
+        try check(model.compose?.accountID == first && model.compose?.body == "Original owner review", "prepared reply followed the globally selected mailbox")
+        model.compose = nil
         let saved = try await model.request("/drafts", method: "POST", body: draft.payload, mailbox: draft.accountID)
         let savedDraft = Draft(message: saved["message"])
         try check(savedDraft.accountID == first && savedDraft.bcc == draft.bcc && savedDraft.footer == draft.footer, "saved draft dropped owner, Bcc or footer")
@@ -357,6 +424,7 @@ struct NativeRustChecks {
         let remaining = try await collect(model, expected: 65)
         try check(remaining.allSatisfy { $0["accountId"].string == second }, "disconnected account remained visible")
         try await expectFailure(model, path: "/messages/" + encodedPath(savedDraft.savedID), method: "GET", owner: first)
+        try await expectFailure(model, path: "/drafts/prepare", body: .object(["messageId": .string(opened.id), "mode": .string("reply")]), owner: first)
         let finalBase = model.baseURL!
         model.stop()
         try await waitForStop(finalBase)

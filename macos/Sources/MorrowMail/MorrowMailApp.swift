@@ -55,7 +55,7 @@ struct MorrowMailApp: App {
             }
             CommandMenu("Mailbox") {
                 Button("Search Mail") { if !mailFolders.contains(model.section) { model.section = "inbox" }; model.searchFocus += 1 }.keyboardShortcut("f").disabled(!model.canNavigate || model.compose != nil || model.showSettings)
-                Button("Reply") { if let message = model.current { model.newDraft(Draft(message: message, reply: true)) } }.keyboardShortcut("r", modifiers: [.command, .shift]).disabled(!model.canNavigate || model.current == nil || model.messageDetail.viewID != model.current?.viewID || model.current?["folder"].string == "drafts")
+                Button("Reply") { if let message = model.current { Task { await model.openDraft(message: message, mode: "reply") } } }.keyboardShortcut("r", modifiers: [.command, .shift]).disabled(!model.canNavigate || model.current == nil || model.messageDetail.viewID != model.current?.viewID || model.current?["folder"].string == "drafts")
                 Button("Move / Labels / Spam on Provider…") { model.organizing = model.current }.keyboardShortcut("m", modifiers: [.command, .shift]).disabled(!model.canNavigate || !(model.current.map(model.canOrganize) ?? false))
                 Button("Archive Locally") { if let message = model.current { model.patch(message, .object(["folder": .string("archive")])) } }.keyboardShortcut("a", modifiers: [.command, .shift]).disabled(!model.canNavigate || model.current == nil || model.current?["folder"].string == "drafts")
                 Button("Toggle Read Locally") { if let message = model.current { model.patch(message, .object(["read": .bool(!message["read"].bool)])) } }.keyboardShortcut("u", modifiers: [.command, .shift]).disabled(!model.canNavigate || model.current == nil)

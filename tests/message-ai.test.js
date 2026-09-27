@@ -10,7 +10,6 @@ test('Reader AI popup scope, guards and compact disclosures preserve the origina
   t.after(() => vite.close());
   const { default: MessageAI, messageAIContext } = await vite.ssrLoadModule('/src/MessageAI.jsx');
   const { ReaderHeader, ReaderSummary } = await vite.ssrLoadModule('/src/App.jsx');
-  const { replyDraft } = await vite.ssrLoadModule('/src/message-draft.js');
   const message = { id: 'collision', viewId: 'owned-fixture', accountId: 'one@example.invalid', folder: 'inbox', subject: 'A short subject', fromName: 'Sender', fromEmail: 'sender@example.invalid', to: 'one@example.invalid', cc: 'cc@example.invalid', bcc: 'private@example.invalid', date: '2026-09-27T10:15:00Z', body: 'A fixture message.', labels: ['Custom label'] };
   const state = { revision: 'fixture-1', account: { id: 'all', mode: 'combined' }, accounts: [{ id: message.accountId, settings: { configured: true, provider: 'google' } }, { id: 'two@example.invalid' }], settings: { policy: structuredClone(DEFAULT_POLICY), preferences: DEFAULT_PREFERENCES, ai: { configured: true, model: 'fixture-model' } }, workspace: {} };
   const render = (options = {}) => renderToStaticMarkup(React.createElement(MessageAI, { state, message, action: 'reply', includeHistory: true, loaded: true, onClose() {}, onUse() {}, ...options }));
@@ -67,9 +66,6 @@ test('Reader AI popup scope, guards and compact disclosures preserve the origina
     value => { value.workspace.brain = { voice: 'Changed writing style' }; },
   ]) { const changed = structuredClone(state); mutate(changed); assert.notEqual(context(changed).key, original); }
   assert.equal(context(state, { ...message, read: true, starred: true }).key, original, 'read/star updates are not a new source');
-  const draft = replyDraft(message, { body: 'Reviewed reply.' });
-  assert.equal(draft.accountId, message.accountId); assert.equal(draft.replyToId, message.id);
-  assert.equal(draft.to, message.fromEmail); assert.equal(draft.bcc, '');
 
   const header = renderToStaticMarkup(React.createElement(ReaderHeader, { message }));
   assert.match(header, /<details class="reader-details"><summary>/);

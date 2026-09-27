@@ -525,6 +525,10 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
     let owner = ctx.owner.clone();
     let result = match (ctx.method.as_str(), path.as_slice()) {
         ("POST", ["send"]) => send(app, ctx).await?,
+        ("POST", ["drafts", "prepare"]) => {
+            app.db(move |db| crate::drafts::prepare(db, &owner, &body))
+                .await?
+        }
         ("POST", ["drafts"]) => {
             let value = content::content(&body, true)?;
             ensure_draft_idle(app, &owner, string(&body, "id"))?;

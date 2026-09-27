@@ -12,7 +12,7 @@ struct ReplySuggestionsView: View {
     private var job: JSON { value["job"] }
     private var running: Bool { ["queued", "running"].contains(job["status"].string) }
     private var changed: Bool { !options.isNull && !value.isNull && options != value["settings"] }
-    private var locked: Bool { busy || model.busy }
+    private var locked: Bool { busy || model.busy || model.preparingDraft }
     private var previewBlocked: Bool { locked || changed || running || !value["permitted"].bool || !value["identityReady"].bool || selected.isEmpty || selected.count > Int(value["settings"]["maxMessages"].number) }
     var body: some View {
         ScrollView {
@@ -120,7 +120,7 @@ struct ReplySuggestionsView: View {
     private func number(_ key: String) -> Binding<Int> { Binding(get: { Int(options[key].number) }, set: { options[key] = .number(Double($0)) }) }
     private func action(_ path: String, body: JSON = .object([:])) {
         guard !owner.isEmpty, !locked else { return }
-        let account = owner
+        let account = owner, generation = model.draftGeneration
         if path == "run" && !model.confirm("Generate reply suggestions?", detail: "\(account) · \(Int(job["sampleCount"].number)) messages · estimated tokens ≤ \(Int(job["estimatedTokens"].number)) · budget \(Int(job["tokenBudget"].number)).\nModel: \(value["model"]["model"].string)\nEndpoint: \(value["model"]["baseUrl"].string)\nUses the reviewed downloaded history and confirmed identity. No mail will be sent.") { return }
         revision += 1; busy = true; error = ""
         Task { @MainActor in
@@ -130,9 +130,13 @@ struct ReplySuggestionsView: View {
                 guard model.account == account else { return }
                 if path == "use" {
                     guard next["message"]["accountId"].string == account else { throw APIError("The suggestion belongs to a different mailbox.") }
-                    var draft = Draft(message: next["message"], reply: true); draft.body = next["text"].string; model.newDraft(draft)
+                    guard generation == model.draftGeneration else { return }
+                    let draft = try await model.prepareDraft(message: next["message"], mode: "reply", body: next["text"].string)
+                    guard generation == model.draftGeneration, owner == account else { return }
+                    model.newDraft(draft)
                 } else { value = next; if path == "settings" { options = next["settings"] } }
-            } catch { if model.account == account { self.error = error.localizedDescription } }
+            } catch is CancellationError { }
+            catch { if model.account == account { self.error = error.localizedDescription } }
         }
     }
 }

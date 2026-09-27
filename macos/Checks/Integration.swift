@@ -172,15 +172,24 @@ struct NativeClientChecks {
         assert(search["total"].number == 3 && Set(search["messages"].array.map(\.viewID)).count == 3)
         assert(search["messages"].array.allSatisfy { !$0["searchSnippet"].array.isEmpty })
         model.searchResponse = search; model.selectedMessage = search["messages"].array[1].viewID
-        assert(Draft(message: model.current!, reply: true).accountID == search["messages"].array[1]["accountId"].string)
+        let searchReply = try await model.prepareDraft(message: model.current!, mode: "reply")
+        assert(searchReply.accountID == search["messages"].array[1]["accountId"].string)
         _ = try await model.request("/search/preferences", method: "POST", body: .object(["action": .string("save"), "value": searchOptions]))
         let savedSearch = try await model.request("/search/preferences")
         assert(savedSearch["saved"].array.first?["query"].string == "Owned")
         model.searchResponse = .null
         model.selectedMessage = duplicates[1].viewID
         assert(model.current?["accountId"] == duplicates[1]["accountId"])
+        for source in duplicates {
+            let reply = try await model.prepareDraft(message: source, mode: "replyAll", body: "Reviewed native suggestion")
+            assert(reply.accountID == source["accountId"].string && reply.replyToID == source.id)
+            assert(reply.to == "sender@example.com" && reply.bcc.isEmpty && reply.body == "Reviewed native suggestion")
+            let forward = try await model.prepareDraft(message: source, mode: "forward")
+            assert(forward.forwarding && forward.accountID == reply.accountID && forward.replyToID.isEmpty)
+            assert(forward.to.isEmpty && forward.cc.isEmpty && forward.bcc.isEmpty && forward.body.contains("Owned by " + reply.accountID))
+        }
         model.state = try await model.request("/settings/preferences", method: "POST", body: .object(["signatureFormat": .string("html"), "signature": .string("<b>Native signature</b>")]))
-        model.newDraft(Draft(message: duplicates[1], reply: true))
+        await model.openDraft(message: duplicates[1], mode: "reply")
         assert(model.compose?.accountID == duplicates[1]["accountId"].string)
         assert(model.compose?.footer["html"].string == "<b>Native signature</b>")
         let reply = model.compose!

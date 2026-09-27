@@ -96,7 +96,7 @@ function checkLicenseParser() {
 }
 export function buildRustService(destination) {
   if (!(process.platform === 'darwin' && process.arch === 'arm64') && !(process.platform === 'win32' && process.arch === 'x64')) throw new Error('Build Rust desktop services on macOS arm64 or Windows x64.');
-  execFileSync(process.execPath, ['scripts/rust-resources.js', '--check'], { cwd: root, stdio: 'inherit' });
+  execFileSync('cargo', ['run', '--manifest-path', 'rust/Cargo.toml', '--locked', '--bin', 'morrow-resources', '--', '--check'], { cwd: root, stdio: 'inherit' });
   const env = { ...process.env, ...(process.platform === 'darwin' ? { MACOSX_DEPLOYMENT_TARGET: '13.5' } : {}) };
   execFileSync('cargo', ['build', '--manifest-path', 'rust/Cargo.toml', '--bin', 'morrow-service', '--release', '--locked'], { cwd: root, stdio: 'inherit', env });
   const target = resolve(root, process.env.CARGO_TARGET_DIR || 'rust/target', 'release', process.platform === 'win32' ? 'morrow-service.exe' : 'morrow-service');

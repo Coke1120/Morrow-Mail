@@ -9,7 +9,7 @@ struct MailWorkspace: View {
     @State private var expandedReader = false
     @State private var rightListWidth: CGFloat?
     @State private var outOfOfficeDirty = false
-    @State private var assistantDraft: Draft?
+    @State private var assistantDraft: (draft: Draft, generation: Int)?
     @EnvironmentObject var model: AppModel
     private var layout: String { expandedReader ? "focus" : ["right", "bottom", "focus"].contains(readerLayout) ? readerLayout : "right" }
     var filtered: [JSON] {
@@ -66,7 +66,7 @@ struct MailWorkspace: View {
                     ActivityStatusView(value: model.activity, error: model.activityError, onOpenSettings: { model.settings("mail") }).padding(.horizontal, 12).padding(.vertical, 5).background(.bar)
                     if !model.error.isEmpty { statusBar(model.error, error: true) }
                     else if !model.notice.isEmpty { statusBar(model.notice, error: false) }
-                    else if model.busy { HStack { ProgressView().controlSize(.small); Text("Working…").foregroundStyle(.secondary); Spacer() }.padding(9).background(.bar) }
+                    else if model.busy || model.preparingDraft { HStack { ProgressView().controlSize(.small); Text(model.preparingDraft ? "Preparing draft…" : "Working…").foregroundStyle(.secondary); Spacer() }.padding(9).background(.bar) }
               }
             }
         }
@@ -79,9 +79,12 @@ struct MailWorkspace: View {
         .sheet(item: $model.compose) { draft in ComposeView(initial: draft).environmentObject(model) }
         .sheet(item: $model.organizing) { message in OrganizeMailView(message: message).environmentObject(model) }
         .sheet(item: $model.readerAssistant, onDismiss: {
-            if let draft = assistantDraft { assistantDraft = nil; model.newDraft(draft) }
+            if let pending = assistantDraft {
+                assistantDraft = nil
+                if model.draftGeneration == pending.generation { model.newDraft(pending.draft) }
+            }
         }) { request in
-            ReaderAssistanceView(request: request) { draft in assistantDraft = draft }.environmentObject(model)
+            ReaderAssistanceView(request: request) { draft in assistantDraft = (draft, model.draftGeneration) }.environmentObject(model)
         }
         .sheet(isPresented: $model.showSettings) { NativeSettingsView().environmentObject(model) }
     }
@@ -308,12 +311,15 @@ struct MessageReader: View {
             HStack {
                 if focused { Button(action: onBack) { Label("Back to Messages", systemImage: "chevron.left") }.labelStyle(.iconOnly).help("Back to Messages").disabled(!model.canNavigate) }
                 if message["folder"].string == "drafts" {
-                    Button(["scheduled", "sending"].contains(message["scheduledSend"]["status"].string) ? "Manage Schedule" : message["providerDraft"].bool ? "Copy to Local Draft" : "Edit Draft") { model.newDraft(Draft(message: message)) }
+                    Button(["scheduled", "sending"].contains(message["scheduledSend"]["status"].string) ? "Manage Schedule" : message["providerDraft"].bool ? "Copy to Local Draft" : "Edit Draft") {
+                        if message["providerDraft"].bool { Task { await model.openDraft(message: message, mode: "copy") } }
+                        else { model.newDraft(Draft(message: message)) }
+                    }
                 }
                 else {
-                    Button { model.newDraft(Draft(message: message, reply: true)) } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }.labelStyle(.iconOnly).help("Reply")
-                    Button { model.newDraft(Draft(message: message, replyAll: true)) } label: { Label("Reply All", systemImage: "arrowshape.turn.up.left.2") }.labelStyle(.iconOnly).help("Reply All")
-                    Button { model.newDraft(Draft(forwarding: message)) } label: { Label("Forward", systemImage: "arrowshape.turn.up.right") }.labelStyle(.iconOnly).help("Forward")
+                    Button { Task { await model.openDraft(message: message, mode: "reply") } } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }.labelStyle(.iconOnly).help("Reply")
+                    Button { Task { await model.openDraft(message: message, mode: "replyAll") } } label: { Label("Reply All", systemImage: "arrowshape.turn.up.left.2") }.labelStyle(.iconOnly).help("Reply All")
+                    Button { Task { await model.openDraft(message: message, mode: "forward") } } label: { Label("Forward", systemImage: "arrowshape.turn.up.right") }.labelStyle(.iconOnly).help("Forward")
                 }
                 Spacer()
                 if model.canOrganize(message) { Button { model.organizing = message } label: { Label("Move / Labels / Spam", systemImage: "folder") }.labelStyle(.iconOnly).help("Move, label, or move to Spam on this mailbox’s provider") }
@@ -441,7 +447,7 @@ struct ReaderAssistanceView: View {
             if !current {
                 Label("The message, account or AI settings changed. Close this window and reopen the action to review the new context.", systemImage: "exclamationmark.circle").foregroundStyle(.secondary)
             } else if loading {
-                HStack { ProgressView().controlSize(.small); Text("Generating…"); Spacer(); Button("Cancel") { stop(); localError = "Stopped waiting. The model may already be processing; no retry was started." } }
+                HStack { ProgressView().controlSize(.small); Text(model.preparingDraft ? "Preparing draft…" : "Generating…"); Spacer(); Button("Cancel") { stop(); localError = "Stopped waiting. The model may already be processing; no retry was started." } }
             } else if !localError.isEmpty {
                 Text(localError).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
             }
@@ -468,11 +474,8 @@ struct ReaderAssistanceView: View {
                     }
                     if action == "reply" {
                         Button("Use in Draft") {
-                            guard current, !loading, !model.busy else { return }
-                            var draft = Draft(message: message, reply: true)
-                            draft.body = result["text"].string
-                            useDraft(draft); dismiss()
-                        }.buttonStyle(.borderedProminent).disabled(model.busy)
+                            prepareDraft()
+                        }.buttonStyle(.borderedProminent).disabled(loading || model.busy || model.preparingDraft)
                     }
                 }
             }
@@ -487,6 +490,20 @@ struct ReaderAssistanceView: View {
         }
         .onChange(of: model.readerAssistantIsCurrent(request)) { valid in if !valid { invalidate() } }
         .onDisappear { stop() }
+    }
+    private func prepareDraft() {
+        guard current, !loading, !model.busy, !model.preparingDraft else { return }
+        let run = UUID(), text = result["text"].string
+        runID = run; loading = true; localError = ""
+        work = Task { @MainActor in
+            defer { if runID == run { loading = false; work = nil } }
+            do {
+                let draft = try await model.prepareDraft(message: message, mode: "reply", body: text)
+                guard !Task.isCancelled, runID == run, current else { return }
+                useDraft(draft); dismiss()
+            } catch is CancellationError { }
+            catch { if !Task.isCancelled, runID == run, current { localError = error.localizedDescription } }
+        }
     }
     private func stop() { work?.cancel(); work = nil; runID = UUID(); loading = false }
     private func invalidate() { stop(); invalidated = true; result = .null; localError = "" }

@@ -1,0 +1,794 @@
+#include "pch.h"
+#include "Ui.h"
+#include <winrt/Windows.System.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
+#include <map>
+#include <cmath>
+
+namespace morrow {
+using namespace winrt;
+using namespace Windows::Foundation;
+using namespace Windows::Data::Json;
+using namespace controls;
+namespace {
+struct SettingsPage;
+struct Editor;
+using Page = std::shared_ptr<SettingsPage>;
+using Form = std::shared_ptr<Editor>;
+
+Json copy(Json const& value) { return Json::Parse(value.Stringify()); }
+void boolean(Json const& value, wchar_t const* key, bool enabled) {
+    value.Insert(key, Value::CreateBooleanValue(enabled));
+}
+hstring number(Json const& value, wchar_t const* key) {
+    auto item = value.TryLookup(key);
+    return item && item.ValueType() == JsonValueType::Number ? item.Stringify() : L"0";
+}
+bool checked(CheckBox const& input) { auto value = input.IsChecked(); return value && value.Value(); }
+void remove(Json const& value, wchar_t const* key) { if (value.HasKey(key)) value.Remove(key); }
+IJsonValue get(Json const& source, std::wstring const& path) {
+    auto dot = path.find(L'.');
+    return dot == std::wstring::npos ? source.TryLookup(path) : object(source, path.substr(0, dot).c_str()).TryLookup(path.substr(dot + 1));
+}
+void set(Json const& source, std::wstring const& path, IJsonValue const& value) {
+    auto dot = path.find(L'.');
+    if (dot == std::wstring::npos) source.Insert(path, value);
+    else {
+        auto key = path.substr(0, dot);
+        auto group = object(source, key.c_str());
+        group.Insert(path.substr(dot + 1), value);
+        source.Insert(key, group);
+    }
+}
+Json pick(Json const& source, std::initializer_list<wchar_t const*> keys) {
+    Json result;
+    for (auto key : keys) if (auto value = source.TryLookup(key)) result.Insert(key, value);
+    return copy(result);
+}
+
+struct Editor {
+    std::weak_ptr<SettingsPage> page;
+    Json value, saved;
+    std::wstring key;
+    StackPanel panel{nullptr};
+    PasswordBox secret{nullptr};
+    bool loading = false, automatic = false, locked = false;
+    std::map<std::wstring, TextBox> fields;
+    std::map<std::wstring, CheckBox> checks;
+    std::map<std::wstring, ComboBox> choices;
+    std::map<std::wstring, NumberBox> numbers;
+    bool changed() const { return value.Stringify() != saved.Stringify() || (secret && !secret.Password().empty()); }
+    void edit();
+    void update();
+    void accept(Json const& next);
+};
+struct SettingsPage : std::enable_shared_from_this<SettingsPage> {
+    std::shared_ptr<Shell> shell;
+    hstring owner, tab;
+    uint64_t generation, revision = 0;
+    bool live = true, busy = false, saving = false, polling = false, saveFailed = false;
+    StackPanel body{nullptr};
+    TextBlock notice{nullptr};
+    xaml::DispatcherTimer timer{nullptr}, autosave{nullptr};
+    std::vector<Form> forms;
+    Json searchState, updateState, release;
+    bool prereleases = true;
+    std::wstring busyKey;
+    bool current() const { return live && shell->current(generation, owner); }
+    void tell(hstring const& value) { if (current() && notice) notice.Text(value); }
+    void dispose() {
+        if (!live) return;
+        live = false;
+        if (timer) timer.Stop();
+        if (autosave) autosave.Stop();
+        for (auto const& form : forms) {
+            if (form->secret) form->secret.Password(L"");
+            shell->dirty.erase(form->key);
+            // Release button closures that refer to their form and any entered
+            // credential controls when this page leaves the visual tree.
+            if (form->panel) form->panel.Children().Clear();
+        }
+        // An in-flight request retains its own busy marker until it finishes.
+        forms.clear(); body = nullptr; notice = nullptr; timer = nullptr; autosave = nullptr;
+    }
+};
+
+void Editor::edit() {
+    auto p = page.lock();
+    if (!p || !p->current() || loading) return;
+    if (changed()) p->shell->dirty.insert(key); else p->shell->dirty.erase(key);
+    if (automatic && p->autosave) {
+        p->saveFailed = false;
+        p->autosave.Stop(); p->autosave.Start();
+        p->tell(L"Waiting to save preferences…");
+    }
+}
+void Editor::update() {
+    loading = true;
+    for (auto const& [key, control] : fields) {
+        auto item = get(value, key);
+        control.Text(item && item.ValueType() == JsonValueType::String ? item.GetString() : L"");
+    }
+    for (auto const& [key, control] : checks) {
+        auto item = get(value, key);
+        control.IsChecked(item && item.ValueType() == JsonValueType::Boolean && item.GetBoolean());
+    }
+    for (auto const& [key, control] : numbers) {
+        auto item = get(value, key);
+        if (item && item.ValueType() == JsonValueType::Number) control.Value(item.GetNumber());
+    }
+    for (auto const& [key, control] : choices) {
+        auto item = get(value, key);
+        if (!item) continue;
+        for (uint32_t i = 0; i < control.Items().Size(); ++i) {
+            auto entry = control.Items().GetAt(i).as<ComboBoxItem>();
+            if (unbox_value<hstring>(entry.Tag()) == item.Stringify()) control.SelectedIndex(static_cast<int32_t>(i));
+        }
+    }
+    loading = false;
+}
+void Editor::accept(Json const& next) {
+    value = copy(next); saved = copy(next);
+    if (secret) secret.Password(L"");
+    if (secret) secret.IsEnabled(!flag(value, L"clearApiKey"));
+    update();
+    if (auto p = page.lock()) p->shell->dirty.erase(key);
+}
+
+Form form(Page const& p, StackPanel const& into, Json const& values, wchar_t const* id, bool automatic = false) {
+    auto result = std::make_shared<Editor>();
+    result->page = p; result->value = copy(values); result->saved = copy(values);
+    result->key = L"settings:" + std::to_wstring(p->generation) + L":" + id;
+    result->panel = stack(12); result->automatic = automatic;
+    into.Children().Append(result->panel); p->forms.push_back(result);
+    return result;
+}
+void help(StackPanel const& panel, hstring const& detail) { panel.Children().Append(label(detail)); }
+void title(StackPanel const& panel, hstring const& value) { panel.Children().Append(label(value, 20)); }
+TextBox input(Form const& f, wchar_t const* path, wchar_t const* caption, int limit = 200, bool multiline = false) {
+    auto value = get(f->value, path);
+    auto control = field(caption, value && value.ValueType() == JsonValueType::String ? value.GetString() : L"", multiline);
+    control.MaxLength(limit);
+    std::weak_ptr<Editor> weak = f;
+    control.TextChanged([weak, key = std::wstring(path)](auto const& sender, auto const&) {
+        if (auto item = weak.lock(); item && !item->loading) {
+            set(item->value, key, Value::CreateStringValue(sender.template as<TextBox>().Text())); item->edit();
+        }
+    });
+    f->fields[path] = control; f->panel.Children().Append(control); return control;
+}
+CheckBox toggle(Form const& f, wchar_t const* path, hstring const& caption) {
+    CheckBox control; control.Content(box_value(caption));
+    auto value = get(f->value, path);
+    control.IsChecked(value && value.ValueType() == JsonValueType::Boolean && value.GetBoolean());
+    std::weak_ptr<Editor> weak = f;
+    control.Click([weak, key = std::wstring(path)](auto const& sender, auto const&) {
+        if (auto item = weak.lock(); item && !item->loading) {
+            set(item->value, key, Value::CreateBooleanValue(checked(sender.template as<CheckBox>()))); item->edit();
+        }
+    });
+    f->checks[path] = control; f->panel.Children().Append(control); return control;
+}
+NumberBox numeric(Form const& f, wchar_t const* path, wchar_t const* caption, double minimum, double maximum, double step = 1) {
+    NumberBox control; control.Header(box_value(caption)); control.Minimum(minimum); control.Maximum(maximum);
+    control.SmallChange(step); control.SpinButtonPlacementMode(NumberBoxSpinButtonPlacementMode::Compact);
+    auto value = get(f->value, path); if (value && value.ValueType() == JsonValueType::Number) control.Value(value.GetNumber());
+    std::weak_ptr<Editor> weak = f;
+    control.ValueChanged([weak, key = std::wstring(path)](NumberBox const& sender, auto const&) {
+        if (auto item = weak.lock(); item && !item->loading) {
+            set(item->value, key, std::isfinite(sender.Value()) ? Value::CreateNumberValue(sender.Value()) : Value::CreateNullValue()); item->edit();
+        }
+    });
+    f->numbers[path] = control; f->panel.Children().Append(control); return control;
+}
+ComboBox choice(Form const& f, wchar_t const* path, wchar_t const* caption,
+    std::initializer_list<std::pair<wchar_t const*, wchar_t const*>> options, bool numericValue = false) {
+    ComboBox control; control.Header(box_value(caption)); control.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
+    auto value = get(f->value, path);
+    for (auto const& [key, name] : options) {
+        auto stored = numericValue ? Value::CreateNumberValue(std::stod(key)) : Value::CreateStringValue(key);
+        ComboBoxItem item; item.Content(box_value(name)); item.Tag(box_value(stored.Stringify()));
+        control.Items().Append(item);
+        if (value && value.Stringify() == stored.Stringify()) control.SelectedItem(item);
+    }
+    std::weak_ptr<Editor> weak = f;
+    control.SelectionChanged([weak, key = std::wstring(path)](auto const& sender, auto const&) {
+        if (auto item = weak.lock(); item && !item->loading) {
+            auto selected = sender.template as<ComboBox>().SelectedItem().template try_as<ComboBoxItem>();
+            if (selected) { set(item->value, key, Value::Parse(unbox_value<hstring>(selected.Tag()))); item->edit(); }
+        }
+    });
+    f->choices[path] = control; f->panel.Children().Append(control); return control;
+}
+PasswordBox password(Form const& f, wchar_t const* caption) {
+    PasswordBox control; control.Header(box_value(caption)); control.MaxLength(4096);
+    control.PasswordRevealMode(PasswordRevealMode::Hidden);
+    std::weak_ptr<Editor> weak = f;
+    control.PasswordChanged([weak](auto const&, auto const&) { if (auto item = weak.lock()) item->edit(); });
+    f->secret = control; f->panel.Children().Append(control); return control;
+}
+
+// The owning std::function stays in this coroutine frame while a coroutine
+// callback awaits; no suspended callback borrows a destroyed button closure.
+fire_and_forget run(Page p, std::function<IAsyncAction()> action) {
+    if (!p->current() || p->busy || p->saving) co_return;
+    p->busy = true; ++p->revision; p->shell->dirty.insert(p->busyKey);
+    p->shell->navigation.IsEnabled(false);
+    for (auto const& f : p->forms) f->panel.IsEnabled(false);
+    p->tell(L"Working…");
+    try { co_await action(); }
+    catch (hresult_error const& error) { p->tell(error.message()); }
+    catch (...) { p->tell(L"The operation could not finish. Your saved data is retained. Try again."); }
+    p->shell->dirty.erase(p->busyKey); p->busy = false;
+    if (!p->shell->closing) p->shell->navigation.IsEnabled(true);
+    if (p->current()) for (auto const& f : p->forms) f->panel.IsEnabled(!f->locked);
+}
+void action(Page const& p, StackPanel const& into, hstring const& caption,
+    std::function<IAsyncAction(Page)> task) {
+    std::weak_ptr<SettingsPage> weak = p;
+    into.Children().Append(button(caption, [weak, task = std::move(task)] {
+        if (auto page = weak.lock()) run(page, [page, task] { return task(page); });
+    }));
+}
+Json patch(Form const& f) {
+    Json result;
+    for (auto const& item : f->value) {
+        auto old = f->saved.TryLookup(item.Key());
+        if (!old || old.Stringify() != item.Value().Stringify()) result.Insert(item.Key(), item.Value());
+    }
+    if (result.HasKey(L"signature") || result.HasKey(L"signatureFormat")) {
+        result.Insert(L"signature", f->value.Lookup(L"signature"));
+        result.Insert(L"signatureFormat", f->value.Lookup(L"signatureFormat"));
+    }
+    return copy(result);
+}
+IAsyncAction savePreferences(Page p, Form f) {
+    if (!p->current() || p->saving || p->busy) co_return;
+    p->autosave.Stop();
+    auto sent = patch(f);
+    if (!sent.Size()) co_return;
+    p->saving = true; p->shell->navigation.IsEnabled(false); p->shell->dirty.insert(p->busyKey); p->tell(L"Saving preferences…");
+    try {
+        auto result = co_await p->shell->service->request(L"/settings/preferences", p->owner, L"POST", sent);
+        if (p->current()) {
+            auto received = object(object(result, L"settings"), L"preferences");
+            bool sameFooter = text(f->value, L"signature") == text(sent, L"signature") && text(f->value, L"signatureFormat") == text(sent, L"signatureFormat");
+            for (auto const& item : sent) {
+                auto next = received.TryLookup(item.Key());
+                if (!next) throw hresult_error(E_FAIL, L"The service did not acknowledge preferences. Retry saving.");
+                auto now = f->value.TryLookup(item.Key());
+                if (now && now.Stringify() == item.Value().Stringify() &&
+                    ((item.Key() != L"signature" && item.Key() != L"signatureFormat") || sameFooter)) f->value.Insert(item.Key(), next);
+                f->saved.Insert(item.Key(), next);
+            }
+            auto settings = object(p->shell->state, L"settings");
+            settings.Insert(L"preferences", received);
+            settings.Insert(L"footer", object(object(result, L"settings"), L"footer"));
+            p->shell->state.Insert(L"settings", settings);
+            f->update();
+            if (!f->changed()) p->shell->dirty.erase(f->key);
+            p->saveFailed = false; p->tell(f->changed() ? L"Saving your newer changes next…" : L"Preferences saved automatically.");
+        }
+    } catch (hresult_error const& error) { p->saveFailed = true; p->tell(error.message() + L" Your edits are retained. Retry saving."); }
+    catch (...) { p->saveFailed = true; p->tell(L"Preferences were not saved. Your edits are retained. Retry saving."); }
+    p->saving = false; p->shell->dirty.erase(p->busyKey);
+    if (!p->shell->closing) p->shell->navigation.IsEnabled(true);
+    if (p->current() && f->changed() && !p->saveFailed) p->autosave.Start();
+}
+
+IAsyncAction changeTab(Page p, hstring next) {
+    if (!p->current() || p->busy || p->saving) co_return;
+    if (p->tab == L"general" && !p->forms.empty()) {
+        co_await savePreferences(p, p->forms.front());
+        if (!p->current() || p->forms.front()->changed()) co_return;
+    }
+    bool dirty = std::any_of(p->forms.begin(), p->forms.end(), [](auto const& f) { return f->changed(); });
+    if (dirty && !(co_await p->shell->confirm(L"Discard unsaved settings?", L"Only saved settings take effect. Entered keys and unsaved edits will be discarded.", L"Discard"))) co_return;
+    if (!p->current()) co_return;
+    auto shell = p->shell;
+    p->dispose();
+    co_await settingsPage(shell, next);
+}
+void general(Page const& p) {
+    title(p->body, L"General"); help(p->body, L"Preferences save automatically. Credentials, permissions and model batches always require explicit review.");
+    auto f = form(p, p->body, object(object(p->shell->state, L"settings"), L"preferences"), L"general", true);
+    choice(f, L"theme", L"Theme", {{L"system", L"Match device"}, {L"light", L"Light"}, {L"dark", L"Dark"}});
+    choice(f, L"density", L"Mail list density", {{L"comfortable", L"Comfortable"}, {L"compact", L"Compact"}, {L"spacious", L"Spacious"}});
+    toggle(f, L"markReadOnOpen", L"Mark mail as read when opened (local to Morrow)");
+    title(f->panel, L"Writing identity");
+    help(f->panel, L"Display name and footer apply across accounts. Confirmed Learning identity remains account-specific.");
+    input(f, L"displayName", L"Display name", 100);
+    choice(f, L"signatureFormat", L"Footer format", {{L"plain", L"Plain text"}, {L"html", L"HTML"}});
+    input(f, L"signature", L"Signature / HTML source", 12000, true);
+    help(f->panel, L"Saved drafts retain their reviewed footer. HTML supports text, tables and links; images and active content are removed.");
+    action(p, f->panel, L"Preview footer text", [f](Page page) -> IAsyncAction {
+        auto result = co_await page->shell->service->request(L"/signature/preview", page->owner, L"POST", pick(f->value, {L"signature", L"signatureFormat"}));
+        if (page->current()) co_await page->shell->alert(L"Sanitized footer — text fallback", text(object(result, L"footer"), L"text", L"(Empty footer)"));
+    });
+    choice(f, L"replyTone", L"Default reply tone", {{L"friendly", L"Friendly"}, {L"professional", L"Professional"}, {L"concise", L"Concise"}, {L"warm", L"Warm"}});
+    input(f, L"language", L"Preferred AI response language", 60);
+    input(f, L"translationLanguage", L"Translation language (blank uses preferred language)", 60);
+    choice(f, L"syncInterval", L"Refresh connected mailboxes while Morrow is open", {{L"0", L"Manually"}, {L"1", L"Every minute"}, {L"5", L"Every 5 minutes"}, {L"15", L"Every 15 minutes"}, {L"30", L"Every 30 minutes"}}, true);
+    std::weak_ptr<SettingsPage> weak = p;
+    p->autosave = xaml::DispatcherTimer(); p->autosave.Interval(std::chrono::milliseconds(500));
+    p->autosave.Tick([weak, f](auto const&, auto const&) { if (auto page = weak.lock()) savePreferences(page, f); });
+    p->body.Children().Append(button(L"Retry saving preferences", [weak, f] { if (auto page = weak.lock()) savePreferences(page, f); }));
+    p->tell(L"Preferences saved automatically.");
+}
+
+IAsyncAction launchOAuth(Page p, Json result, hstring provider, bool calendar) {
+    if (!p->current()) co_return;
+    Uri url(text(result, L"url")); Uri local(p->shell->service->origin());
+    auto expected = L"/api/" + hstring(calendar ? L"calendar-oauth/" : L"oauth/") + provider + L"/authorize";
+    auto query = url.QueryParsed();
+    if (url.SchemeName() != L"http" || url.Host() != L"localhost" || url.Port() != local.Port() ||
+        url.Path() != expected || !url.UserName().empty() || !url.Password().empty() || !url.Fragment().empty() ||
+        query.Size() != 1 || query.GetAt(0).Name() != L"state" || query.GetAt(0).Value().empty() || query.GetAt(0).Value().size() > 200)
+        throw hresult_error(E_INVALIDARG, L"The sign-in URL is invalid. Start sign-in again.");
+    if (!(co_await Windows::System::Launcher::LaunchUriAsync(url))) throw hresult_error(E_FAIL, L"Windows could not open your browser.");
+    p->tell(L"Complete sign-in in your browser, keep Morrow open, then select Refresh connections.");
+}
+
+Form historyOptions(Page const& p) {
+    Json options; options.Insert(L"months", Value::CreateNumberValue(3));
+    boolean(options, L"allMail", true); boolean(options, L"inbox", true); boolean(options, L"sent", true);
+    title(p->body, L"Next connection / history import");
+    auto f = form(p, p->body, options, L"import-options");
+    choice(f, L"months", L"History range", {{L"0", L"All available history"}, {L"1", L"Last month"}, {L"3", L"Last 3 months"}, {L"6", L"Last 6 months"}, {L"12", L"Last 12 months"}}, true);
+    toggle(f, L"allMail", L"All normal folders"); toggle(f, L"inbox", L"Inbox (when All normal folders is off)"); toggle(f, L"sent", L"Sent (when All normal folders is off)");
+    help(f->panel, L"Gmail / Outlook exclude Spam/Junk and Trash. IMAP relies on special-use flags and skips virtual/non-selectable folders. Imported mail stays local; this does not call AI.");
+    return f;
+}
+
+void mailEditor(Page const& p, Form const& history, Json const& existing = Json()) {
+    title(p->body, existing.Size() ? L"Edit IMAP connection" : L"Add or reconnect mail");
+    auto clients = object(object(p->shell->state, L"settings"), L"oauthClients");
+    for (auto provider : {L"google", L"microsoft"}) {
+        Expander expander; expander.Header(box_value(provider == std::wstring_view(L"google") ? L"Gmail — browser sign-in" : L"Outlook / Microsoft 365 — browser sign-in"));
+        auto content = stack(12); expander.Content(content); p->body.Children().Append(expander);
+        Json initial; boolean(initial, L"useDefaultClient", flag(object(clients, provider), L"configured")); boolean(initial, L"organize", false); put(initial, L"clientId", L"");
+        auto f = form(p, content, initial, provider);
+        toggle(f, L"useDefaultClient", L"Use Morrow’s bundled OAuth client");
+        input(f, L"clientId", L"Own desktop application client ID (only when bundled client is off)", 1000);
+        if (provider == std::wstring_view(L"google")) password(f, L"Own Google desktop client secret");
+        toggle(f, L"organize", L"Allow reviewed provider moves / label changes (additional permission)");
+        help(content, L"Microsoft desktop clients need no secret. For Google custom clients, use Desktop app credentials. Keep Morrow open for the browser callback; reconnecting preserves other accounts.");
+        action(p, content, L"Sign in through browser", [f, history, provider = hstring(provider)](Page page) -> IAsyncAction {
+            auto body = pick(f->value, {L"useDefaultClient", L"organize"});
+            if (!flag(body, L"useDefaultClient")) { put(body, L"clientId", text(f->value, L"clientId")); if (f->secret) put(body, L"clientSecret", f->secret.Password()); }
+            body.Insert(L"importOptions", copy(history->value));
+            struct Clear { Form f; Json body; ~Clear() { if (f->secret) f->secret.Password(L""); remove(body, L"clientSecret"); } } clear{f, body};
+            auto result = co_await page->shell->service->request(L"/oauth/" + provider + L"/start", page->owner, L"POST", body);
+            if (!page->current()) co_return;
+            f->accept(f->value); history->accept(history->value);
+            co_await launchOAuth(page, result, provider, false);
+        });
+    }
+    Expander expander; expander.Header(box_value(L"Yahoo Mail / HK and other IMAP accounts")); expander.IsExpanded(existing.Size() != 0);
+    auto content = stack(12); expander.Content(content); p->body.Children().Append(expander);
+    Json initial; put(initial, L"email", text(existing, L"email")); put(initial, L"imapHost", text(existing, L"imapHost", L"imap.gmail.com")); put(initial, L"smtpHost", text(existing, L"smtpHost", L"smtp.gmail.com"));
+    initial.Insert(L"imapPort", Value::CreateNumberValue(existing.GetNamedNumber(L"imapPort", 993)));
+    initial.Insert(L"smtpPort", Value::CreateNumberValue(existing.GetNamedNumber(L"smtpPort", 465)));
+    auto f = form(p, content, initial, L"imap");
+    input(f, L"email", L"Full email address", 254); password(f, L"App password");
+    input(f, L"imapHost", L"IMAP server", 253); numeric(f, L"imapPort", L"IMAP TLS port", 1, 65535);
+    input(f, L"smtpHost", L"SMTP server", 253); choice(f, L"smtpPort", L"SMTP port", {{L"465", L"465 — TLS"}, {L"587", L"587 — STARTTLS"}}, true);
+    std::weak_ptr<SettingsPage> weak = p;
+    content.Children().Append(button(L"Use Yahoo Mail / HK settings", [weak, f] {
+        if (auto page = weak.lock(); page && page->current() && !page->busy) {
+            put(f->value, L"imapHost", L"imap.mail.yahoo.com"); put(f->value, L"smtpHost", L"smtp.mail.yahoo.com");
+            f->value.Insert(L"imapPort", Value::CreateNumberValue(993)); f->value.Insert(L"smtpPort", Value::CreateNumberValue(465));
+            f->secret.Password(L""); f->update(); f->edit();
+        }
+    }));
+    help(content, L"Yahoo HK works with your full @yahoo.com.hk address and a Yahoo app password. A blank password is kept only for the same existing address and unchanged servers. Passwords are never read back here.");
+    action(p, content, L"Connect / update and import", [f, history](Page page) -> IAsyncAction {
+        auto body = copy(f->value); if (!f->secret.Password().empty()) put(body, L"password", f->secret.Password());
+        body.Insert(L"importOptions", copy(history->value));
+        struct Clear { Form f; Json body; ~Clear() { f->secret.Password(L""); remove(body, L"password"); } } clear{f, body};
+        auto result = co_await page->shell->service->request(L"/settings/mail", page->owner, L"POST", body);
+        if (!page->current()) co_return;
+        f->accept(f->value); history->accept(history->value);
+        page->tell(L"Connected. History imports while Morrow is open. Refresh connections to see progress.");
+        // Do not replace the selected owner with the newly connected account.
+        page->shell->state.Insert(L"accounts", array(result, L"accounts")); page->shell->rebuildNavigation();
+    });
+}
+
+void accounts(Page const& p, StackPanel const& panel, Json const& state, Form const& history) {
+    panel.Children().Clear();
+    for (auto const& value : array(state, L"accounts")) {
+        auto account = value.GetObject(); auto owner = text(account, L"id");
+        if (owner == L"demo" || owner == L"all" || owner.empty()) continue;
+        auto job = object(account, L"import"); auto status = text(job, L"status");
+        title(panel, text(account, L"email") + L" · " + text(account, L"provider"));
+        help(panel, status.empty() ? L"History import has not started." : L"History: " + status + L" · " + text(job, L"phase") + L" · " + number(job, L"imported") + L" imported · " + number(job, L"processed") + L" checked · " + number(job, L"pages") + L" pages");
+        if (!text(job, L"error").empty()) help(panel, text(job, L"error"));
+        if (!text(job, L"nextRetryAt").empty()) help(panel, L"Next retry: " + text(job, L"nextRetryAt") + L" · retry " + number(job, L"retryCount"));
+        auto recovery = text(job, L"recoveryAction");
+        if (recovery == L"reconnect") help(panel, L"Reconnect this mailbox above, then start a new import. Existing cached mail is retained.");
+        if (recovery == L"restart") help(panel, L"Start a new import to replace the unusable checkpoint. Downloaded mail is retained.");
+        if (status != L"running") action(p, panel, L"Start new history import…", [history, owner](Page page) -> IAsyncAction {
+            auto options = copy(history->value);
+            if (!(co_await page->shell->confirm(L"Start history import?", owner + L"\n" + (options.GetNamedNumber(L"months", 3) == 0 ? hstring(L"All available history") : number(options, L"months") + L" months") + L"\n" + (flag(options, L"allMail") ? hstring(L"All normal folders") : hstring(L"Selected Inbox / Sent folders")) + L"\nCached mail is retained. No AI call is made.", L"Start import")) || !page->current()) co_return;
+            co_await page->shell->service->request(L"/imports/start", owner, L"POST", options);
+            if (page->current()) { history->accept(history->value); page->tell(L"History import started. Refresh progress for its current status."); }
+        });
+        bool resume = (status == L"paused" || status == L"failed" || status == L"interrupted" || status == L"stopped") && recovery != L"reconnect" && recovery != L"restart";
+        if (status == L"running" || resume) action(p, panel, resume ? L"Resume from checkpoint" : L"Pause import", [owner, resume](Page page) -> IAsyncAction {
+            co_await page->shell->service->request(resume ? L"/imports/resume" : L"/imports/pause", owner, L"POST");
+            page->tell(L"Import updated. Refresh progress to see the current checkpoint.");
+        });
+        if (text(account, L"provider") == L"imap") action(p, panel, L"Load IMAP connection for editing", [account](Page page) -> IAsyncAction {
+            for (auto const& f : page->forms) if (f->key.ends_with(L":imap")) {
+                if (f->changed() && !(co_await page->shell->confirm(L"Discard IMAP edits?", L"Load this account’s saved server addresses. Saved passwords remain private.", L"Load connection"))) co_return;
+                if (!page->current()) co_return;
+                auto config = object(account, L"settings");
+                if (text(config, L"email").empty()) put(config, L"email", text(account, L"email"));
+                f->accept(pick(config, {L"email", L"imapHost", L"imapPort", L"smtpHost", L"smtpPort"}));
+                page->tell(L"IMAP server addresses loaded above. Blank password preserves it only if the address and servers remain unchanged.");
+                break;
+            }
+        });
+        action(p, panel, L"Disconnect this account…", [owner](Page page) -> IAsyncAction {
+            if (!(co_await page->shell->confirm(L"Disconnect mailbox?", owner + L"\nOnly its credentials are removed. Cached mail, drafts and other connections remain.", L"Disconnect")) || !page->current()) co_return;
+            co_await page->shell->service->request(L"/account/disconnect", owner, L"POST");
+            if (page->current()) { page->tell(L"Disconnected. Cached mail and drafts remain. Refresh connections."); co_await page->shell->refresh(true); }
+        });
+    }
+}
+void mail(Page const& p) {
+    title(p->body, L"Mail accounts"); help(p->body, L"Connect multiple Gmail, Outlook and Yahoo / IMAP accounts. Reconnecting changes only that address.");
+    auto history = historyOptions(p); mailEditor(p, history);
+    auto list = stack(12); p->body.Children().Append(list);
+    accounts(p, list, p->shell->state, history);
+    action(p, p->body, L"Refresh connections / progress", [list, history](Page page) -> IAsyncAction {
+        auto next = co_await page->shell->service->request(L"/state", page->owner);
+        if (!page->current()) co_return;
+        page->shell->state.Insert(L"accounts", array(next, L"accounts"));
+        accounts(page, list, next, history); page->shell->rebuildNavigation(); page->tell(L"Connection and history status refreshed.");
+    });
+}
+
+void calendar(Page const& p, Json const& response) {
+    title(p->body, L"Calendar connections");
+    help(p->body, L"One Google and one Outlook calendar account can be connected independently of mail. Multiple calendars can be selected in Calendar. Calendar data is never shared with AI.");
+    for (auto const& item : array(response, L"connections")) {
+        auto connection = item.GetObject(); auto provider = text(connection, L"provider");
+        if (provider != L"google" && provider != L"microsoft") continue;
+        title(p->body, provider == L"google" ? L"Google Calendar" : L"Outlook Calendar");
+        help(p->body, flag(connection, L"connected") ? text(connection, L"email") : L"Not connected");
+        Json initial; boolean(initial, L"useDefaultClient", flag(connection, L"hasDefaultClient")); put(initial, L"clientId", text(connection, L"clientId"));
+        auto f = form(p, p->body, initial, (L"calendar-" + std::wstring(provider)).c_str());
+        toggle(f, L"useDefaultClient", L"Use Morrow’s bundled OAuth client");
+        input(f, L"clientId", L"Own desktop application client ID", 1000); password(f, L"Own client secret (not needed for Microsoft public clients)");
+        help(f->panel, flag(connection, L"hasClientSecret") ? L"A blank secret keeps the saved secret only for the same client ID." : L"Google custom clients require their desktop app secret. Microsoft public clients do not.");
+        help(f->panel, L"Register the callback below for your custom desktop app. Do not open it to sign in:\n" + text(connection, L"redirectUri"));
+        action(p, f->panel, L"Sign in / reconnect through browser", [f, provider](Page page) -> IAsyncAction {
+            Json body; boolean(body, L"useDefaultClient", flag(f->value, L"useDefaultClient"));
+            if (!flag(body, L"useDefaultClient")) { put(body, L"clientId", text(f->value, L"clientId")); put(body, L"clientSecret", f->secret.Password()); }
+            struct Clear { Form f; Json body; ~Clear() { f->secret.Password(L""); remove(body, L"clientSecret"); } } clear{f, body};
+            auto result = co_await page->shell->service->request(L"/calendars/" + provider + L"/connect", {}, L"POST", body);
+            if (!page->current()) co_return;
+            f->accept(f->value); co_await launchOAuth(page, result, provider, true);
+        });
+        if (flag(connection, L"connected")) action(p, f->panel, L"Disconnect calendar…", [provider, email = text(connection, L"email")](Page page) -> IAsyncAction {
+            if (!(co_await page->shell->confirm(L"Disconnect calendar?", email + L"\nProvider events and the independent mailbox connection remain unchanged.", L"Disconnect")) || !page->current()) co_return;
+            Json body; put(body, L"connectionEmail", email);
+            co_await page->shell->service->request(L"/calendars/" + provider + L"/disconnect", {}, L"POST", body);
+            page->tell(L"Calendar disconnected. Refresh connections to update this page.");
+        });
+    }
+}
+
+void permissions(Page const& p) {
+    title(p->body, L"AI permissions"); help(p->body, L"These permissions apply across accounts. Context stays account-specific. Changes become active only after Save permissions.");
+    auto f = form(p, p->body, object(object(p->shell->state, L"settings"), L"policy"), L"policy");
+    toggle(f, L"enabled", L"Enable AI assistance");
+    title(f->panel, L"When assistance starts");
+    help(f->panel, L"Automatic triggers may charge model tokens. Drafts / Trash are excluded from automatic triggers. Suggestions never send mail or create provider events automatically.");
+    for (auto const& [key, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{{L"onOpen", L"Summarize when opening a message"}, {L"onReply", L"Suggest text when starting a reply"}, {L"onArrival", L"Summarize newly synced messages"}, {L"scheduledSummary", L"Generate scheduled inbox summaries"}, {L"inboxOnly", L"Only messages in Inbox"}, {L"starredOnly", L"Only starred messages"}})
+        toggle(f, (L"triggers." + std::wstring(key)).c_str(), caption);
+    choice(f, L"summarySchedule.cadence", L"Summary schedule", {{L"daily", L"Daily at a set time"}, {L"interval", L"Every few hours"}});
+    input(f, L"summarySchedule.time", L"Daily time (24-hour HH:mm)", 5);
+    input(f, L"summarySchedule.timeZone", L"IANA time zone, e.g. Asia/Hong_Kong", 100);
+    numeric(f, L"summarySchedule.everyHours", L"Interval in hours", 1, 168);
+    help(f->panel, L"Runs while Morrow is open. Daily schedules catch up once; interval timing starts when enabled. Failed model jobs never replay automatically. Results are available in Today / AI Studio.");
+    title(f->panel, L"Available AI features");
+    for (auto const& entry : array(p->shell->state, L"features")) {
+        auto feature = entry.GetObject(); auto id = text(feature, L"id");
+        if (!object(f->value, L"behaviors").HasKey(id)) continue;
+        toggle(f, (L"behaviors." + std::wstring(id)).c_str(), text(feature, L"label") + (flag(feature, L"mock") ? L" — Local simulation" : L""));
+        help(f->panel, text(feature, L"description"));
+    }
+    for (auto group : {L"folders", L"content"}) {
+        title(f->panel, group == std::wstring_view(L"folders") ? L"Permitted folders" : L"Permitted information");
+        for (auto const& entry : object(f->value, group)) toggle(f, (std::wstring(group) + L"." + std::wstring(entry.Key())).c_str(), entry.Key());
+    }
+    help(f->panel, L"Contacts refer to local Email Brain notes. Calendar and attachment permissions cover simulations only, not live calendars or attachment files.");
+    numeric(f, L"maxMessages", L"Maximum messages per request", 1, 50);
+    action(p, f->panel, L"Save permissions", [f](Page page) -> IAsyncAction {
+        auto result = co_await page->shell->service->request(L"/settings/policy", page->owner, L"POST", copy(f->value));
+        if (!page->current()) co_return;
+        auto policy = object(object(result, L"settings"), L"policy"); f->accept(policy);
+        object(page->shell->state, L"settings").Insert(L"policy", policy); page->tell(L"AI permissions saved.");
+    });
+    action(p, f->panel, L"Discard permission changes", [f](Page page) -> IAsyncAction { f->accept(f->saved); page->tell(L"Saved permissions restored."); co_return; });
+}
+
+Json modelFields(Json const& source, bool embedding) {
+    auto value = embedding ? pick(source, {L"protocol", L"baseUrl", L"model"}) : pick(source, {L"baseUrl", L"model", L"temperature", L"maxTokens"});
+    boolean(value, L"clearApiKey", false); return value;
+}
+IAsyncAction modelAction(Page p, Form f, bool embedding, bool testing) {
+    auto body = copy(f->value);
+    if (!f->secret.Password().empty()) put(body, L"apiKey", f->secret.Password());
+    struct Clear { Form f; Json body; ~Clear() { f->secret.Password(L""); remove(body, L"apiKey"); } } clear{f, body};
+    auto path = embedding ? (testing ? L"/search/test" : L"/search/settings") : (testing ? L"/settings/ai/test" : L"/settings/ai");
+    auto result = co_await p->shell->service->request(path, p->owner, L"POST", body);
+    if (!p->current()) co_return;
+    if (testing) p->tell(embedding ? L"Connection succeeded · " + number(result, L"dimensions") + L" dimensions. Settings unchanged; no mail shared." : text(result, L"text"));
+    else {
+        auto config = embedding ? object(result, L"settings") : object(object(result, L"settings"), L"ai");
+        f->accept(modelFields(config, embedding));
+        if (embedding) p->searchState = result; else object(p->shell->state, L"settings").Insert(L"ai", config);
+        p->tell(embedding ? L"Embedding connection saved. Review scope and batches in Search." : L"Chat model saved.");
+    }
+}
+void models(Page const& p) {
+    title(p->body, L"Models"); help(p->body, L"Chat and embedding use separate connections and explicit Save controls. Tests use a fixed sentence, never mail, and may charge provider tokens.");
+    for (bool embedding : {false, true}) {
+        title(p->body, embedding ? L"Search embedding" : L"Chat and replies");
+        auto config = embedding ? object(p->searchState, L"settings") : object(object(p->shell->state, L"settings"), L"ai");
+        auto f = form(p, p->body, modelFields(config, embedding), embedding ? L"embedding" : L"chat");
+        if (embedding) choice(f, L"protocol", L"Embedding protocol", {{L"openai", L"OpenAI-compatible /embeddings"}, {L"ollama", L"Ollama native /api/embed"}});
+        input(f, L"baseUrl", L"API base URL", 2000); input(f, L"model", L"Model ID", 200); password(f, L"API key (optional for local endpoints)");
+        auto clear = toggle(f, L"clearApiKey", L"Remove saved API key");
+        std::weak_ptr<Editor> weak = f;
+        clear.Click([weak](auto const& sender, auto const&) { if (auto item = weak.lock()) { bool remove = checked(sender.template as<CheckBox>()); if (remove) item->secret.Password(L""); item->secret.IsEnabled(!remove); } });
+        help(f->panel, flag(config, L"hasApiKey") ? L"A key is saved. Blank keeps it only at the same base URL; enter it again when changing endpoint. Saved keys are never displayed." : L"No saved API key. Remote endpoints require HTTPS; HTTP is supported only on loopback.");
+        if (!embedding) { numeric(f, L"temperature", L"Temperature", 0, 2, 0.1); numeric(f, L"maxTokens", L"Maximum response tokens", 128, 4096); }
+        action(p, f->panel, embedding ? L"Test embedding connection" : L"Test chat connection", [f, embedding](Page page) { return modelAction(page, f, embedding, true); });
+        action(p, f->panel, embedding ? L"Save embedding model" : L"Save chat model", [f, embedding](Page page) { return modelAction(page, f, embedding, false); });
+        action(p, f->panel, L"Discard connection edits", [f](Page page) -> IAsyncAction { f->accept(f->saved); f->secret.IsEnabled(true); page->tell(L"Saved connection fields restored. Entered key discarded."); co_return; });
+        if (embedding && text(object(p->searchState, L"job"), L"status") == L"running") { f->locked = true; f->panel.IsEnabled(false); help(p->body, L"An indexing batch is running. Manage it in Search before editing its connection."); }
+    }
+}
+
+hstring selectedFields(Json const& value) {
+    hstring result;
+    for (auto const& entry : value) if (entry.Value().ValueType() == JsonValueType::Boolean && entry.Value().GetBoolean()) result = result + (result.empty() ? L"" : L", ") + entry.Key();
+    return result;
+}
+hstring indexReview(Json const& value) {
+    auto settings = object(value, L"settings"), job = object(value, L"job");
+    hstring owners;
+    for (auto const& owner : array(settings, L"accounts")) owners = owners + (owners.empty() ? L"" : L", ") + owner.GetString();
+    auto result = L"Model: " + text(settings, L"model") + L"\nEndpoint: " + text(settings, L"baseUrl") + L"\nAccounts: " + owners +
+        L"\nFolders: " + selectedFields(object(settings, L"folders")) + L"\nFields: " + selectedFields(object(settings, L"content")) +
+        L"\nLast " + number(settings, L"months") + L" months · " + number(job, L"sampleCount") + L" messages / " + number(job, L"chunks") + L" chunks" +
+        L"\nEstimated tokens ≤ " + number(job, L"estimatedTokens") + L" · budget " + number(settings, L"tokenBudget") +
+        L"\nOnly permitted downloaded text is sent. Remote models may charge. In-flight requests may already have used tokens.";
+    uint32_t count = 0;
+    for (auto const& item : array(value, L"samples")) {
+        if (count++ == 3) break;
+        auto sample = item.GetObject(); auto excerpt = std::wstring(text(sample, L"text"));
+        // Avoid cutting a UTF-16 surrogate pair in the bounded review excerpt.
+        if (excerpt.size() > 200) { excerpt.resize(200); if (excerpt.back() >= 0xd800 && excerpt.back() <= 0xdbff) excerpt.pop_back(); }
+        result = result + L"\n\n" + text(sample, L"account") + L": " + hstring(excerpt);
+    }
+    return result;
+}
+void searchStatus(Page const& p, StackPanel const& status) {
+    status.Children().Clear();
+    auto value = p->searchState, job = object(value, L"job"), settings = object(value, L"settings");
+    help(status, text(settings, L"model", L"No embedding model saved") + L" · " + text(settings, L"baseUrl"));
+    help(status, number(value, L"indexed") + L" / " + number(value, L"eligible") + L" eligible messages indexed · " + number(value, L"pending") + L" pending");
+    if (job.Size()) {
+        help(status, text(job, L"status") + L" · " + number(job, L"completed") + L" / " + number(job, L"sampleCount") + L" messages · tokens " + number(job, L"spentTokens") + L" / " + number(job, L"budget"));
+        if (!text(job, L"error").empty()) help(status, text(job, L"error"));
+    }
+    if (text(job, L"status") == L"running") help(status, L"Indexing continues in the background while Morrow is open. You may leave this page. Return here or open Activity for progress.");
+    if (!flag(value, L"permitted")) help(status, L"Enable the required saved AI permissions before reviewing a batch.");
+    for (auto const& f : p->forms) if (f->key.ends_with(L":search")) {
+        f->locked = text(job, L"status") == L"running";
+        f->panel.IsEnabled(!p->busy && !f->locked);
+    }
+}
+IAsyncAction indexAction(Page p, Form f, StackPanel status, hstring operation) {
+    if ((operation == L"preview" || operation == L"resume") && f->changed()) throw hresult_error(E_FAIL, L"Save search scope before reviewing or resuming a batch.");
+    Json body;
+    auto previousId = text(object(p->searchState, L"job"), L"id");
+    if (operation == L"cancel" || operation == L"clear") {
+        if (!(co_await p->shell->confirm(operation == L"clear" ? L"Clear semantic index?" : L"Cancel indexing batch?", operation == L"clear" ? L"All semantic vectors will be removed. Your mail and keyword index remain. Rebuilding requires a new review and may charge model tokens." : L"Unfinished work is discarded. Completed valid vectors and mail remain. In-flight requests may already have used provider tokens.", operation == L"clear" ? L"Clear index" : L"Cancel batch")) || !p->current()) co_return;
+    }
+    if (operation != L"preview" && operation != L"clear") {
+        if (previousId.empty()) throw hresult_error(E_FAIL, L"There is no batch to control. Refresh search status.");
+        put(body, L"previewId", previousId);
+    }
+    if (operation == L"resume") {
+        if (!(co_await p->shell->confirm(L"Resume reviewed batch?", indexReview(p->searchState) + L"\nOnly the remaining approved batch will run. An interrupted request may be charged again.", L"Resume")) || !p->current()) co_return;
+    }
+    auto result = co_await p->shell->service->request(L"/search/index/" + operation, p->owner, L"POST", body);
+    if (!p->current()) co_return;
+    p->searchState = result; searchStatus(p, status);
+    if (operation == L"preview") {
+        auto id = text(object(result, L"job"), L"id");
+        if (id.empty()) throw hresult_error(E_FAIL, L"The service did not return an indexing review.");
+        if (!(co_await p->shell->confirm(L"Review and start indexing?", indexReview(result), L"Start reviewed batch")) || !p->current()) { p->tell(L"Preview retained. No embedding request was started."); co_return; }
+        Json approved; put(approved, L"previewId", id);
+        result = co_await p->shell->service->request(L"/search/index/run", p->owner, L"POST", approved);
+        if (!p->current()) co_return;
+        p->searchState = result; searchStatus(p, status);
+    }
+    p->tell(L"Indexing state updated. Background work does not lock navigation.");
+}
+fire_and_forget pollSearch(Page p, StackPanel status) {
+    if (!p->current() || p->busy || p->polling) co_return;
+    p->polling = true; auto revision = p->revision;
+    try {
+        auto result = co_await p->shell->service->request(L"/search/settings", p->owner);
+        if (p->current() && !p->busy && revision == p->revision) { p->searchState = result; searchStatus(p, status); }
+    } catch (...) { p->tell(L"Index status could not refresh. Last known status is shown; running work is not cancelled."); }
+    p->polling = false;
+}
+void search(Page const& p) {
+    title(p->body, L"Search and semantic indexing"); help(p->body, L"Keyword search stays local. Embedding is optional and processes only a reviewed batch of downloaded, permitted mail. Configure its connection in Model.");
+    auto status = stack(8); p->body.Children().Append(status); searchStatus(p, status);
+    action(p, p->body, L"Test saved embedding connection", [](Page page) -> IAsyncAction {
+        auto result = co_await page->shell->service->request(L"/search/test", page->owner, L"POST");
+        page->tell(L"Connection succeeded · " + number(result, L"dimensions") + L" dimensions. No mail shared and no settings changed.");
+    });
+    auto f = form(p, p->body, pick(object(p->searchState, L"settings"), {L"enabled", L"accounts", L"months", L"tokenBudget", L"folders", L"content"}), L"search");
+    toggle(f, L"enabled", L"Enable Smart Search");
+    title(f->panel, L"Accounts to index");
+    for (auto const& item : array(p->shell->state, L"accounts")) {
+        auto account = item.GetObject(); auto id = text(account, L"id"); if (id.empty() || id == L"demo" || id == L"all") continue;
+        CheckBox check; check.Content(box_value(text(account, L"email"))); bool included = false;
+        for (auto const& selected : array(f->value, L"accounts")) if (selected.GetString() == id) included = true;
+        check.IsChecked(included); std::weak_ptr<Editor> weak = f;
+        check.Click([weak, id](auto const& sender, auto const&) {
+            if (auto editor = weak.lock()) {
+                Array next; for (auto const& selected : array(editor->value, L"accounts")) if (selected.GetString() != id) next.Append(selected);
+                if (checked(sender.template as<CheckBox>())) next.Append(Value::CreateStringValue(id));
+                editor->value.Insert(L"accounts", next); editor->edit();
+            }
+        }); f->panel.Children().Append(check);
+    }
+    for (auto group : {L"folders", L"content"}) {
+        title(f->panel, group);
+        for (auto const& entry : object(f->value, group)) toggle(f, (std::wstring(group) + L"." + std::wstring(entry.Key())).c_str(), entry.Key() == L"sender" ? L"Sender / recipients, including Cc and Bcc" : entry.Key());
+    }
+    choice(f, L"months", L"Index history", {{L"1", L"Last month"}, {L"3", L"Last 3 months"}, {L"6", L"Last 6 months"}, {L"12", L"Last 12 months"}}, true);
+    numeric(f, L"tokenBudget", L"Estimated token budget per reviewed batch", 4000, 64000, 1000);
+    help(f->panel, L"Global AI permissions still apply. Conservative UTF-8 estimates are not billing guarantees. At most 50 chunks per reviewed batch; new mail requires another review.");
+    action(p, f->panel, L"Save search scope", [f, status](Page page) -> IAsyncAction {
+        auto result = co_await page->shell->service->request(L"/search/settings", page->owner, L"POST", copy(f->value));
+        if (!page->current()) co_return;
+        f->accept(pick(object(result, L"settings"), {L"enabled", L"accounts", L"months", L"tokenBudget", L"folders", L"content"}));
+        page->searchState = result; searchStatus(page, status); page->tell(L"Search scope saved.");
+    });
+    for (auto const& [operation, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{{L"preview", L"Review & Index…"}, {L"pause", L"Pause batch"}, {L"resume", L"Resume batch…"}, {L"cancel", L"Cancel batch…"}, {L"clear", L"Clear semantic index…"}})
+        action(p, p->body, caption, [f, status, operation = hstring(operation)](Page page) { return indexAction(page, f, status, operation); });
+    searchStatus(p, status);
+    p->timer = xaml::DispatcherTimer(); p->timer.Interval(std::chrono::seconds(2)); std::weak_ptr<SettingsPage> weak = p;
+    p->timer.Tick([weak, status](auto const&, auto const&) { if (auto page = weak.lock()) pollSearch(page, status); }); p->timer.Start();
+}
+
+void updateStatus(Page const& p, StackPanel const& content) {
+    content.Children().Clear();
+    if (p->release.Size()) help(content, (flag(p->release, L"updateAvailable") ? hstring(L"Update available: ") : hstring(L"Up to date for this channel: ")) + text(p->release, L"latestVersion") + L"\nInstalled: " + text(p->release, L"currentVersion") + L" · Checked: " + text(p->release, L"checkedAt"));
+    auto state = p->updateState;
+    help(content, L"Installer: " + text(state, L"phase", L"idle") + L" · " + number(state, L"received") + L" / " + number(state, L"total") + L" bytes");
+    if (!flag(state, L"supported")) help(content, L"In-app installation is unavailable outside a supported signed package layout.");
+    for (auto key : {L"error", L"previous"}) if (!text(state, key).empty()) help(content, text(state, key));
+}
+fire_and_forget pollUpdate(Page p, StackPanel status) {
+    if (!p->current() || p->busy || p->polling) co_return;
+    p->polling = true; auto revision = p->revision;
+    try {
+        auto next = co_await p->shell->service->request(L"/updates/status");
+        if (p->current() && !p->busy && revision == p->revision) { p->updateState = next; updateStatus(p, status); }
+    } catch (...) { p->tell(L"Update status could not refresh. Your installed app has not changed."); }
+    p->polling = false;
+}
+void about(Page const& p) {
+    title(p->body, L"Morrow Mail"); help(p->body, L"Independent open-source mail workspace · MIT. Mail and encrypted credentials stay in the separate workspace. Only explicitly permitted AI context goes to your chosen model.");
+    help(p->body, L"The host checks for public GitHub updates at launch and hourly while open. Installation always requires review, no pending writes and a verified signed package.");
+    auto status = stack(8); p->body.Children().Append(status); updateStatus(p, status);
+    CheckBox prereleases; prereleases.Content(box_value(L"Include alpha and beta releases")); prereleases.IsChecked(p->prereleases);
+    std::weak_ptr<SettingsPage> weak = p;
+    prereleases.Click([weak](auto const& sender, auto const&) { if (auto page = weak.lock()) { page->prereleases = checked(sender.template as<CheckBox>()); page->release = Json(); } });
+    p->body.Children().Append(prereleases);
+    action(p, p->body, L"Check for updates", [status](Page page) -> IAsyncAction {
+        auto channel = page->prereleases;
+        auto result = co_await page->shell->service->request(channel ? L"/updates?includePrereleases=true" : L"/updates?includePrereleases=false");
+        if (page->current() && page->prereleases == channel) { page->release = result; updateStatus(page, status); page->tell(L"Update check complete."); }
+    });
+    action(p, p->body, L"Download verified update", [status](Page page) -> IAsyncAction {
+        if (!flag(page->release, L"updateAvailable")) throw hresult_error(E_FAIL, L"Check for an available update first.");
+        Json body; boolean(body, L"includePrereleases", page->prereleases);
+        auto result = co_await page->shell->service->request(L"/updates/download", {}, L"POST", body);
+        if (page->current()) { page->updateState = result; updateStatus(page, status); page->tell(L"Downloading. You may leave Settings."); }
+    });
+    action(p, p->body, L"Cancel download", [status](Page page) -> IAsyncAction {
+        auto result = co_await page->shell->service->request(L"/updates/cancel", {}, L"POST");
+        if (page->current()) { page->updateState = result; updateStatus(page, status); page->tell(L"Download cancelled."); }
+    });
+    action(p, p->body, L"Install & Restart…", [](Page page) -> IAsyncAction {
+        if (text(page->updateState, L"phase") != L"ready") throw hresult_error(E_FAIL, L"Download and verify an update first.");
+        auto dirty = page->shell->dirty; dirty.erase(page->busyKey);
+        if (!dirty.empty() || page->shell->service->writing()) throw hresult_error(E_FAIL, L"Save or discard edits and wait for pending writes before installing.");
+        if (!(co_await page->shell->confirm(L"Install verified update and restart?", L"Morrow will close after the installer is prepared. Both UI and service must stop before replacement. The previous app and your separate workspace are retained.", L"Install & Restart")) || !page->current()) co_return;
+        co_await page->shell->service->request(L"/updates/install", {}, L"POST", Json(), true);
+        if (!page->current()) co_return;
+        page->shell->dirty.erase(page->busyKey); page->busy = false;
+        co_await page->shell->shutdown();
+    });
+    title(p->body, L"Workspace backup");
+    help(p->body, L"Choose a new absolute directory. Backup includes mail, encrypted settings and its key. Existing destinations are refused; protect the resulting folder.");
+    auto destination = field(L"New backup directory (absolute path)"); destination.MaxLength(4096); p->body.Children().Append(destination);
+    action(p, p->body, L"Back up workspace…", [destination](Page page) -> IAsyncAction {
+        std::filesystem::path path{std::wstring(destination.Text())};
+        if (!path.is_absolute()) throw hresult_error(E_INVALIDARG, L"Choose an absolute backup destination.");
+        if (!(co_await page->shell->confirm(L"Create workspace backup?", path.wstring() + L"\nThe destination must not already exist. The backup contains private mail and its encryption key.", L"Create backup")) || !page->current()) co_return;
+        Json body; put(body, L"destination", path.wstring());
+        auto result = co_await page->shell->service->request(L"/backup", page->owner, L"POST", body, true);
+        if (!flag(result, L"saved")) throw hresult_error(E_FAIL, L"The backup was not confirmed.");
+        page->tell(L"Workspace backup created. Your running service remains available.");
+    });
+    p->timer = xaml::DispatcherTimer(); p->timer.Interval(std::chrono::seconds(2));
+    p->timer.Tick([weak, status](auto const&, auto const&) { if (auto page = weak.lock()) pollUpdate(page, status); }); p->timer.Start();
+}
+} // namespace
+
+IAsyncAction settingsPage(std::shared_ptr<Shell> shell, hstring tab) {
+    if (tab == L"learning") { co_await workspacePage(shell, L"learning"); co_return; }
+    auto p = std::make_shared<SettingsPage>(); p->shell = shell; p->owner = shell->owner; p->tab = tab;
+    p->generation = ++shell->generation; p->busyKey = L"settings-request:" + std::to_wstring(p->generation);
+    auto root = stack(18); root.MaxWidth(920); root.HorizontalAlignment(xaml::HorizontalAlignment::Left); root.Margin(xaml::Thickness{24, 20, 24, 32});
+    title(root, L"Settings");
+    auto tabs = stack(6); tabs.Orientation(Orientation::Horizontal);
+    for (auto const& [id, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{{L"general", L"General"}, {L"mail", L"Mail"}, {L"calendar", L"Calendar"}, {L"model", L"Model"}, {L"search", L"Search"}, {L"policy", L"AI permissions"}, {L"learning", L"Learning"}, {L"about", L"About"}}) {
+        std::weak_ptr<SettingsPage> weak = p;
+        auto control = button(caption, [weak, target = hstring(id)] { if (auto page = weak.lock()) changeTab(page, target); });
+        if (tab == id) control.IsEnabled(false);
+        tabs.Children().Append(control);
+    }
+    ScrollViewer tabScroll; tabScroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto); tabScroll.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled); tabScroll.Content(tabs); root.Children().Append(tabScroll);
+    p->notice = label(L"Loading settings…");
+    xaml::Automation::AutomationProperties::SetLiveSetting(p->notice, xaml::Automation::Peers::AutomationLiveSetting::Polite);
+    root.Children().Append(p->notice); p->body = stack(16); root.Children().Append(p->body);
+    root.Unloaded([p](auto const&, auto const&) { p->dispose(); });
+    shell->show(scroll(root));
+    try {
+        if (tab == L"model" || tab == L"search") {
+            auto response = co_await shell->service->request(L"/search/settings", p->owner);
+            if (!p->current()) co_return; p->searchState = response;
+        }
+        if (tab == L"general") general(p);
+        else if (tab == L"mail") mail(p);
+        else if (tab == L"policy") permissions(p);
+        else if (tab == L"model") models(p);
+        else if (tab == L"search") search(p);
+        else if (tab == L"about") {
+            auto result = co_await shell->service->request(L"/updates/status");
+            if (!p->current()) co_return; p->updateState = result; about(p);
+        } else if (tab == L"calendar") {
+            auto response = co_await shell->service->request(L"/calendars");
+            if (!p->current()) co_return; calendar(p, response);
+            action(p, p->body, L"Refresh calendar connections", [](Page page) -> IAsyncAction {
+                bool dirty = std::any_of(page->forms.begin(), page->forms.end(), [](auto const& f) { return f->changed(); });
+                if (dirty && !(co_await page->shell->confirm(L"Discard calendar edits?", L"Refresh saved calendar connections and discard entered credentials.", L"Refresh"))) co_return;
+                if (!page->current()) co_return;
+                auto owner = page->shell; page->dispose(); co_await settingsPage(owner, L"calendar");
+            });
+        } else throw hresult_error(E_INVALIDARG, L"Unknown Settings page.");
+        if (p->current() && tab != L"general") p->tell(L"");
+    } catch (hresult_error const& error) {
+        p->tell(error.message());
+        if (p->current()) action(p, p->body, L"Retry loading settings", [tab](Page page) -> IAsyncAction { auto owner = page->shell; page->dispose(); co_await settingsPage(owner, tab); });
+    } catch (...) { p->tell(L"Settings could not load. Return to Settings to retry."); }
+}
+} // namespace morrow

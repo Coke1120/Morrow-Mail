@@ -77,80 +77,23 @@ struct Draft: Identifiable, Equatable {
         return .object(value)
     }
     init() {}
-    init(message: JSON, reply: Bool = false) {
+    init(message: JSON) {
         accountID = message["accountId"].string
-        if reply {
-            to = Self.mailboxes(message[message["folder"].string == "sent" ? "to" : "fromEmail"].string).joined(separator: ", ")
-            subject = message["subject"].string.lowercased().hasPrefix("re:") ? message["subject"].string : "Re: " + message["subject"].string
-            replyToID = message.id
-        } else {
-            sourceDraft = message["providerDraft"].bool
-            savedID = sourceDraft ? "" : message.id; to = message["to"].string; cc = message["cc"].string; bcc = message["bcc"].string
-            subject = message["subject"].string; body = message["body"].string; footer = message["footer"]
-            if sourceDraft {
-                to = Self.mailboxes(to).joined(separator: ", ")
-                cc = Self.mailboxes(cc).joined(separator: ", ")
-                bcc = Self.mailboxes(bcc).joined(separator: ", ")
-            }
-            replyToID = message["replyToId"].string
-            unconfirmed = message["deliveryStatus"].string == "unconfirmed"
-            if message["deliveryRequestId"].nonempty { requestID = message["deliveryRequestId"].string }
-            scheduledSend = message["scheduledSend"]
-        }
+        savedID = message.id; to = message["to"].string; cc = message["cc"].string; bcc = message["bcc"].string
+        subject = message["subject"].string; body = message["body"].string; footer = message["footer"]
+        replyToID = message["replyToId"].string
+        unconfirmed = message["deliveryStatus"].string == "unconfirmed"
+        if message["deliveryRequestId"].nonempty { requestID = message["deliveryRequestId"].string }
+        scheduledSend = message["scheduledSend"]
     }
-    init(message: JSON, replyAll: Bool) {
-        self.init(message: message, reply: true)
-        guard replyAll else { return }
-        var seen: Set<String> = [accountID == "demo" ? "alex@genmail.example" : accountID.lowercased()]
-        func unique(_ fields: [String]) -> String {
-            fields.flatMap { Self.mailboxes(message[$0].string) }.filter { seen.insert($0.lowercased()).inserted }.joined(separator: ", ")
-        }
-        to = unique(message["folder"].string == "sent" ? ["to"] : ["fromEmail", "to"])
-        cc = unique(["cc"])
-    }
-    init(forwarding message: JSON) {
-        accountID = message["accountId"].string; forwarding = true
-        subject = message["subject"].string
-        if !subject.lowercased().hasPrefix("fwd:") && !subject.lowercased().hasPrefix("fw:") { subject = "Fwd: " + subject }
-        let name = message["fromName"].string, email = message["fromEmail"].string
-        let from = name.isEmpty || name == email ? email : email.isEmpty ? name : "\(name) <\(email)>"
-        let headers = [("From", from), ("Date", message["date"].string), ("Subject", message["subject"].string), ("To", message["to"].string), ("Cc", message["cc"].string)]
-            .filter { !$0.1.isEmpty }.map { "\($0.0): " + $0.1.replacingOccurrences(of: "[\\r\\n]+", with: " ", options: .regularExpression) }
-        let quoted = (headers + ["", message["body"].string]).joined(separator: "\n").replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
-        body = "\n\n---------- Forwarded message ----------\n" + quoted.components(separatedBy: "\n").map { "> " + $0 }.joined(separator: "\n")
-    }
-    private static func mailboxes(_ value: String) -> [String] {
-        if value.rangeOfCharacter(from: CharacterSet(charactersIn: "\r\n\0")) != nil { return [value] }
-        let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { return [] }
-        // ponytail: normalize simple mailbox lists; keep unsupported syntax for review until an RFC group-address editor is needed.
-        var tokens: [String] = [], token = "", quoted = false, escaped = false, angle = false
-        for character in value {
-            if escaped { escaped = false }
-            else if quoted && character == "\\" { escaped = true }
-            else if character == "\"" { quoted.toggle() }
-            else if !quoted {
-                if character == "<" { if angle { return [value] }; angle = true }
-                else if character == ">" { if !angle { return [value] }; angle = false }
-                else if !angle && ["(", ")", ":"].contains(character) { return [value] }
-                else if !angle && (character == "," || character == ";") { tokens.append(token); token = ""; continue }
-            }
-            token.append(character)
-        }
-        guard !quoted, !escaped, !angle else { return [value] }
-        tokens.append(token)
-        var addresses: [String] = []
-        for token in tokens {
-            var address = token.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let open = address.firstIndex(of: "<"), let close = address.lastIndex(of: ">") {
-                guard !address[..<open].contains("@"), address[address.index(after: close)...].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [value] }
-                address = String(address[address.index(after: open)..<close]).trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-            let pattern = #"^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?)+$"#
-            guard address.count <= 254, address.range(of: pattern, options: .regularExpression) != nil, !address.hasPrefix("."), !address.contains(".."), !address.contains(".@") else { return [value] }
-            addresses.append(address)
-        }
-        return addresses
+    init(prepared: JSON) throws {
+        guard ["accountId", "to", "cc", "bcc", "subject", "body"].allSatisfy({ if case .string = prepared[$0] { return true }; return false }),
+              prepared["accountId"].nonempty else { throw APIError("The local service returned an incomplete draft.") }
+        accountID = prepared["accountId"].string
+        to = prepared["to"].string; cc = prepared["cc"].string; bcc = prepared["bcc"].string
+        subject = prepared["subject"].string; body = prepared["body"].string
+        replyToID = prepared["replyToId"].string
+        forwarding = prepared["forwarding"].bool; sourceDraft = prepared["sourceDraft"].bool
     }
 }
 

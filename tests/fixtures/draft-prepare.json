@@ -1,0 +1,802 @@
+[
+  {
+    "name": "incoming reply",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "inbox",
+      "fromName": "Sender",
+      "fromEmail": "sender@example.com",
+      "to": "\"Doe, Jane\" <JANE@example.com>, OWNER@example.com; teammate@example.com, SENDER@example.com",
+      "cc": "\"Smith, \\\"JJ\\\"\" <jane@example.com>, copy@example.com, sender@example.com, owner@example.com",
+      "bcc": "hidden@example.com",
+      "subject": "Question",
+      "body": "First line\r\nSecond line",
+      "date": "2026-09-26T12:30:00Z",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "reply"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "to": "sender@example.com",
+        "cc": "",
+        "bcc": "",
+        "subject": "Re: Question",
+        "body": "",
+        "replyToId": "same"
+      }
+    }
+  },
+  {
+    "name": "reply all with provided AI text",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "inbox",
+      "fromName": "Sender",
+      "fromEmail": "sender@example.com",
+      "to": "\"Doe, Jane\" <JANE@example.com>, OWNER@example.com; teammate@example.com, SENDER@example.com",
+      "cc": "\"Smith, \\\"JJ\\\"\" <jane@example.com>, copy@example.com, sender@example.com, owner@example.com",
+      "bcc": "hidden@example.com",
+      "subject": "Question",
+      "body": "First line\r\nSecond line",
+      "date": "2026-09-26T12:30:00Z",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "replyAll",
+      "body": "My answer"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "to": "sender@example.com, JANE@example.com, teammate@example.com",
+        "cc": "copy@example.com",
+        "bcc": "",
+        "subject": "Re: Question",
+        "body": "My answer",
+        "replyToId": "same"
+      }
+    }
+  },
+  {
+    "name": "sent reply",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "sent",
+      "fromName": "Sender",
+      "fromEmail": "sending-alias@example.com",
+      "to": "\"Doe, Jane\" <JANE@example.com>, OWNER@example.com; teammate@example.com, SENDER@example.com",
+      "cc": "\"Smith, \\\"JJ\\\"\" <jane@example.com>, copy@example.com, sender@example.com, owner@example.com",
+      "bcc": "hidden@example.com",
+      "subject": "Question",
+      "body": "First line\r\nSecond line",
+      "date": "2026-09-26T12:30:00Z",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "reply"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "to": "JANE@example.com, OWNER@example.com, teammate@example.com, SENDER@example.com",
+        "cc": "",
+        "bcc": "",
+        "subject": "Re: Question",
+        "body": "",
+        "replyToId": "same"
+      }
+    }
+  },
+  {
+    "name": "sent reply all",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "sent",
+      "fromName": "Sender",
+      "fromEmail": "sending-alias@example.com",
+      "to": "\"Doe, Jane\" <JANE@example.com>, OWNER@example.com; teammate@example.com, SENDER@example.com",
+      "cc": "\"Smith, \\\"JJ\\\"\" <jane@example.com>, copy@example.com, sender@example.com, owner@example.com",
+      "bcc": "hidden@example.com",
+      "subject": "Question",
+      "body": "First line\r\nSecond line",
+      "date": "2026-09-26T12:30:00Z",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "replyAll"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "to": "JANE@example.com, teammate@example.com, SENDER@example.com",
+        "cc": "copy@example.com",
+        "bcc": "",
+        "subject": "Re: Question",
+        "body": "",
+        "replyToId": "same"
+      }
+    }
+  },
+  {
+    "name": "self-only reply all",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "inbox",
+      "fromName": "Sender",
+      "fromEmail": "Owner@example.com",
+      "to": "Owner@example.com",
+      "cc": "",
+      "bcc": "hidden@example.com",
+      "subject": "Question",
+      "body": "First line\r\nSecond line",
+      "date": "2026-09-26T12:30:00Z",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "replyAll"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "to": "",
+        "cc": "",
+        "bcc": "",
+        "subject": "Re: Question",
+        "body": "",
+        "replyToId": "same"
+      }
+    }
+  },
+  {
+    "name": "demo owner excluded",
+    "owner": "demo",
+    "message": {
+      "id": "same",
+      "folder": "inbox",
+      "fromName": "Sender",
+      "fromEmail": "sender@example.com",
+      "to": "alex@genmail.example",
+      "cc": "",
+      "bcc": "hidden@example.com",
+      "subject": "Question",
+      "body": "First line\r\nSecond line",
+      "date": "2026-09-26T12:30:00Z",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "replyAll"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "demo",
+        "to": "sender@example.com",
+        "cc": "",
+        "bcc": "",
+        "subject": "Re: Question",
+        "body": "",
+        "replyToId": "same"
+      }
+    }
+  },
+  {
+    "name": "reply prefix",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "inbox",
+      "fromName": "Sender",
+      "fromEmail": "sender@example.com",
+      "to": "\"Doe, Jane\" <JANE@example.com>, OWNER@example.com; teammate@example.com, SENDER@example.com",
+      "cc": "\"Smith, \\\"JJ\\\"\" <jane@example.com>, copy@example.com, sender@example.com, owner@example.com",
+      "bcc": "hidden@example.com",
+      "subject": "rE: Already replied",
+      "body": "First line\r\nSecond line",
+      "date": "2026-09-26T12:30:00Z",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "reply"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "to": "sender@example.com",
+        "cc": "",
+        "bcc": "",
+        "subject": "rE: Already replied",
+        "body": "",
+        "replyToId": "same"
+      }
+    }
+  },
+  {
+    "name": "forward plaintext",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "inbox",
+      "fromName": "Sender",
+      "fromEmail": "sender@example.com",
+      "to": "\"Doe, Jane\" <JANE@example.com>, OWNER@example.com; teammate@example.com, SENDER@example.com",
+      "cc": "\"Smith, \\\"JJ\\\"\" <jane@example.com>, copy@example.com, sender@example.com, owner@example.com",
+      "bcc": "hidden@example.com",
+      "subject": "Question",
+      "body": "First line\r\nSecond line",
+      "date": "2026-09-26T12:30:00Z",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "forward"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "forwarding": true,
+        "to": "",
+        "cc": "",
+        "bcc": "",
+        "subject": "Fwd: Question",
+        "body": "\n\n---------- Forwarded message ----------\n> From: Sender <sender@example.com>\n> Date: 2026-09-26T12:30:00Z\n> Subject: Question\n> To: \"Doe, Jane\" <JANE@example.com>, OWNER@example.com; teammate@example.com, SENDER@example.com\n> Cc: \"Smith, \\\"JJ\\\"\" <jane@example.com>, copy@example.com, sender@example.com, owner@example.com\n> \n> First line\n> Second line"
+      }
+    }
+  },
+  {
+    "name": "forward prefix",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "inbox",
+      "fromName": "Sender",
+      "fromEmail": "sender@example.com",
+      "to": "\"Doe, Jane\" <JANE@example.com>, OWNER@example.com; teammate@example.com, SENDER@example.com",
+      "cc": "\"Smith, \\\"JJ\\\"\" <jane@example.com>, copy@example.com, sender@example.com, owner@example.com",
+      "bcc": "hidden@example.com",
+      "subject": "FW: Already forwarded",
+      "body": "First line\r\nSecond line",
+      "date": "2026-09-26T12:30:00Z",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "forward"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "forwarding": true,
+        "to": "",
+        "cc": "",
+        "bcc": "",
+        "subject": "FW: Already forwarded",
+        "body": "\n\n---------- Forwarded message ----------\n> From: Sender <sender@example.com>\n> Date: 2026-09-26T12:30:00Z\n> Subject: FW: Already forwarded\n> To: \"Doe, Jane\" <JANE@example.com>, OWNER@example.com; teammate@example.com, SENDER@example.com\n> Cc: \"Smith, \\\"JJ\\\"\" <jane@example.com>, copy@example.com, sender@example.com, owner@example.com\n> \n> First line\n> Second line"
+      }
+    }
+  },
+  {
+    "name": "forward without headers",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "inbox",
+      "fromName": "",
+      "fromEmail": "",
+      "to": "",
+      "cc": "",
+      "bcc": "hidden@example.com",
+      "subject": "",
+      "body": "",
+      "date": "",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "forward"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "forwarding": true,
+        "to": "",
+        "cc": "",
+        "bcc": "",
+        "subject": "Fwd: ",
+        "body": "\n\n---------- Forwarded message ----------\n> \n> "
+      }
+    }
+  },
+  {
+    "name": "header newlines kept single-line",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "inbox",
+      "fromName": "Sender\r\nFake",
+      "fromEmail": "sender@example.com",
+      "to": "\"Doe, Jane\" <JANE@example.com>, OWNER@example.com; teammate@example.com, SENDER@example.com",
+      "cc": "\"Smith, \\\"JJ\\\"\" <jane@example.com>, copy@example.com, sender@example.com, owner@example.com",
+      "bcc": "hidden@example.com",
+      "subject": "Subject\nInjection",
+      "body": "First line\r\nSecond line",
+      "date": "Date\rTest",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "forward"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "forwarding": true,
+        "to": "",
+        "cc": "",
+        "bcc": "",
+        "subject": "Fwd: Subject\nInjection",
+        "body": "\n\n---------- Forwarded message ----------\n> From: Sender Fake <sender@example.com>\n> Date: Date Test\n> Subject: Subject Injection\n> To: \"Doe, Jane\" <JANE@example.com>, OWNER@example.com; teammate@example.com, SENDER@example.com\n> Cc: \"Smith, \\\"JJ\\\"\" <jane@example.com>, copy@example.com, sender@example.com, owner@example.com\n> \n> First line\n> Second line"
+      }
+    }
+  },
+  {
+    "name": "provider draft copy",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "drafts",
+      "fromName": "Sender",
+      "fromEmail": "sender@example.com",
+      "to": "\"Doe, Jane\" <JANE@example.com>, OWNER@example.com; teammate@example.com, SENDER@example.com",
+      "cc": "\"Smith, \\\"JJ\\\"\" <jane@example.com>, copy@example.com, sender@example.com, owner@example.com",
+      "bcc": "hidden@example.com",
+      "subject": "Question",
+      "body": "First line\r\nSecond line",
+      "date": "2026-09-26T12:30:00Z",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com",
+      "providerDraft": true
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "copy"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "sourceDraft": true,
+        "to": "JANE@example.com, OWNER@example.com, teammate@example.com, SENDER@example.com",
+        "cc": "jane@example.com, copy@example.com, sender@example.com, owner@example.com",
+        "bcc": "hidden@example.com",
+        "subject": "Question",
+        "body": "First line\r\nSecond line"
+      }
+    }
+  },
+  {
+    "name": "malformed list 12",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "inbox",
+      "fromName": "Sender",
+      "fromEmail": "sender@example.com",
+      "to": "valid@example.com, broken-recipient",
+      "cc": "valid@example.com, broken-recipient",
+      "bcc": "hidden@example.com",
+      "subject": "Question",
+      "body": "First line\r\nSecond line",
+      "date": "2026-09-26T12:30:00Z",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "replyAll"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "to": "sender@example.com, valid@example.com, broken-recipient",
+        "cc": "",
+        "bcc": "",
+        "subject": "Re: Question",
+        "body": "",
+        "replyToId": "same"
+      }
+    }
+  },
+  {
+    "name": "malformed list 13",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "inbox",
+      "fromName": "Sender",
+      "fromEmail": "sender@example.com",
+      "to": "\"Unclosed name <a@example.com>",
+      "cc": "\"Unclosed name <a@example.com>",
+      "bcc": "hidden@example.com",
+      "subject": "Question",
+      "body": "First line\r\nSecond line",
+      "date": "2026-09-26T12:30:00Z",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "replyAll"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "to": "sender@example.com, \"Unclosed name <a@example.com>",
+        "cc": "",
+        "bcc": "",
+        "subject": "Re: Question",
+        "body": "",
+        "replyToId": "same"
+      }
+    }
+  },
+  {
+    "name": "malformed list 14",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "inbox",
+      "fromName": "Sender",
+      "fromEmail": "sender@example.com",
+      "to": "Missing <>",
+      "cc": "Missing <>",
+      "bcc": "hidden@example.com",
+      "subject": "Question",
+      "body": "First line\r\nSecond line",
+      "date": "2026-09-26T12:30:00Z",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "replyAll"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "to": "sender@example.com, Missing <>",
+        "cc": "",
+        "bcc": "",
+        "subject": "Re: Question",
+        "body": "",
+        "replyToId": "same"
+      }
+    }
+  },
+  {
+    "name": "malformed list 15",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "inbox",
+      "fromName": "Sender",
+      "fromEmail": "sender@example.com",
+      "to": "Two <a@example.com, b@example.com>",
+      "cc": "Two <a@example.com, b@example.com>",
+      "bcc": "hidden@example.com",
+      "subject": "Question",
+      "body": "First line\r\nSecond line",
+      "date": "2026-09-26T12:30:00Z",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "replyAll"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "to": "sender@example.com, Two <a@example.com, b@example.com>",
+        "cc": "",
+        "bcc": "",
+        "subject": "Re: Question",
+        "body": "",
+        "replyToId": "same"
+      }
+    }
+  },
+  {
+    "name": "malformed list 16",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "inbox",
+      "fromName": "Sender",
+      "fromEmail": "sender@example.com",
+      "to": "a@example.com,",
+      "cc": "a@example.com,",
+      "bcc": "hidden@example.com",
+      "subject": "Question",
+      "body": "First line\r\nSecond line",
+      "date": "2026-09-26T12:30:00Z",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "replyAll"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "to": "sender@example.com, a@example.com,",
+        "cc": "",
+        "bcc": "",
+        "subject": "Re: Question",
+        "body": "",
+        "replyToId": "same"
+      }
+    }
+  },
+  {
+    "name": "malformed list 17",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "inbox",
+      "fromName": "Sender",
+      "fromEmail": "sender@example.com",
+      "to": "a@example.com\r\nBcc: injected@example.com",
+      "cc": "a@example.com\r\nBcc: injected@example.com",
+      "bcc": "hidden@example.com",
+      "subject": "Question",
+      "body": "First line\r\nSecond line",
+      "date": "2026-09-26T12:30:00Z",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "replyAll"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "to": "sender@example.com, a@example.com\r\nBcc: injected@example.com",
+        "cc": "",
+        "bcc": "",
+        "subject": "Re: Question",
+        "body": "",
+        "replyToId": "same"
+      }
+    }
+  },
+  {
+    "name": "malformed list 18",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "inbox",
+      "fromName": "Sender",
+      "fromEmail": "sender@example.com",
+      "to": "Group: a@example.com;",
+      "cc": "Group: a@example.com;",
+      "bcc": "hidden@example.com",
+      "subject": "Question",
+      "body": "First line\r\nSecond line",
+      "date": "2026-09-26T12:30:00Z",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "replyAll"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "to": "sender@example.com, Group: a@example.com;",
+        "cc": "",
+        "bcc": "",
+        "subject": "Re: Question",
+        "body": "",
+        "replyToId": "same"
+      }
+    }
+  },
+  {
+    "name": "malformed list 19",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "inbox",
+      "fromName": "Sender",
+      "fromEmail": "sender@example.com",
+      "to": "Doe, Jane <jane@example.com>",
+      "cc": "Doe, Jane <jane@example.com>",
+      "bcc": "hidden@example.com",
+      "subject": "Question",
+      "body": "First line\r\nSecond line",
+      "date": "2026-09-26T12:30:00Z",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "replyAll"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "to": "sender@example.com, Doe, Jane <jane@example.com>",
+        "cc": "",
+        "bcc": "",
+        "subject": "Re: Question",
+        "body": "",
+        "replyToId": "same"
+      }
+    }
+  },
+  {
+    "name": "unicode whitespace and literal escaped name",
+    "owner": "Owner@example.com",
+    "message": {
+      "id": "same",
+      "folder": "inbox",
+      "fromName": "Sender",
+      "fromEmail": "sender@example.com",
+      "to": "﻿\"名, \\\"字\\\"\" <one@example.com>　; owner@example.com",
+      "cc": "",
+      "bcc": "hidden@example.com",
+      "subject": "Question",
+      "body": "First line\r\nSecond line",
+      "date": "2026-09-26T12:30:00Z",
+      "footer": {
+        "text": "Old footer"
+      },
+      "replyToId": "old-thread",
+      "deliveryRequestId": "old-request",
+      "viewId": "other-view",
+      "accountId": "wrong@example.com"
+    },
+    "input": {
+      "messageId": "same",
+      "mode": "replyAll"
+    },
+    "expected": {
+      "draft": {
+        "accountId": "Owner@example.com",
+        "to": "sender@example.com, one@example.com",
+        "cc": "",
+        "bcc": "",
+        "subject": "Re: Question",
+        "body": "",
+        "replyToId": "same"
+      }
+    }
+  }
+]

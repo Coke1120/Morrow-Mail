@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{DF04C5E8-0B52-4A9B-A0BD-6CCBE8AFBC39}</ProjectGuid>
+    <RootNamespace>MorrowMail</RootNamespace>
+    <ProjectName>MorrowMail</ProjectName>
+    <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformMinVersion>10.0.17763.0</WindowsTargetPlatformMinVersion>
+    <ApplicationType>Windows Store</ApplicationType>
+    <ApplicationTypeRevision>10.0</ApplicationTypeRevision>
+    <AppContainerApplication>false</AppContainerApplication>
+    <AppxPackage>false</AppxPackage>
+    <WindowsPackageType>None</WindowsPackageType>
+    <UseWinUI>true</UseWinUI>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <WindowsAppSdkUndockedRegFreeWinRTInitialize>true</WindowsAppSdkUndockedRegFreeWinRTInitialize>
+    <WindowsAppSdkBootstrapInitialize>false</WindowsAppSdkBootstrapInitialize>
+    <WindowsAppSdkDeploymentManagerInitialize>false</WindowsAppSdkDeploymentManagerInitialize>
+    <CppWinRTOptimized>true</CppWinRTOptimized>
+    <CppWinRTGenerateWindowsMetadata>false</CppWinRTGenerateWindowsMetadata>
+    <CppWinRTEnableComponentProjection>false</CppWinRTEnableComponentProjection>
+    <PackageRoot>$(MSBuildThisFileDirectory)..\build\windows-native\packages\</PackageRoot>
+    <DefaultLanguage>en-US</DefaultLanguage>
+  </PropertyGroup>
+  <Import Project="$(PackageRoot)Microsoft.Windows.CppWinRT.3.0.260818.1\build\native\Microsoft.Windows.CppWinRT.props" />
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <DesktopCompatible>true</DesktopCompatible>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Release'">false</UseDebugLibraries>
+    <WholeProgramOptimization Condition="'$(Configuration)'=='Release'">true</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+    <Import Project="$(PackageRoot)Microsoft.Windows.SDK.BuildTools.10.0.26100.4654\build\Microsoft.Windows.SDK.BuildTools.props" />
+    <Import Project="$(PackageRoot)Microsoft.Windows.SDK.BuildTools.MSIX.1.7.251221100\build\Microsoft.Windows.SDK.BuildTools.MSIX.props" />
+    <Import Project="$(PackageRoot)Microsoft.WindowsAppSDK.Base.2.0.4\build\native\Microsoft.WindowsAppSDK.Base.props" />
+    <Import Project="$(PackageRoot)Microsoft.WindowsAppSDK.Runtime.2.5.1\build\native\Microsoft.WindowsAppSDK.Runtime.props" />
+    <Import Project="$(PackageRoot)Microsoft.WindowsAppSDK.Foundation.2.3.12\build\native\Microsoft.WindowsAppSDK.Foundation.props" />
+    <Import Project="$(PackageRoot)Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.9\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.props" />
+    <Import Project="$(PackageRoot)Microsoft.WindowsAppSDK.WinUI.2.3.9\build\native\Microsoft.WindowsAppSDK.WinUI.props" />
+  </ImportGroup>
+  <PropertyGroup>
+    <TargetName>Morrow Mail</TargetName>
+    <OutDir>$(MSBuildThisFileDirectory)..\build\windows-native\bin\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(MSBuildThisFileDirectory)..\build\windows-native\obj\$(Platform)\$(Configuration)\</IntDir>
+    <LinkIncremental>false</LinkIncremental>
+    <AppxPriInitialPath />
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <ForcedIncludeFiles>pch.h;%(ForcedIncludeFiles)</ForcedIncludeFiles>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <WarningLevel>Level4</WarningLevel>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalOptions>/utf-8 /bigobj /Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;UNICODE;_UNICODE;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeLibrary Condition="'$(Configuration)'=='Release'">MultiThreaded</RuntimeLibrary>
+      <RuntimeLibrary Condition="'$(Configuration)'=='Debug'">MultiThreadedDebug</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <AdditionalDependencies>windowsapp.lib;windowscodecs.lib;runtimeobject.lib;shlwapi.lib;comctl32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <!-- Microsoft's hybrid CRT: static C++ runtime with the OS Universal CRT. -->
+      <IgnoreSpecificDefaultLibraries Condition="'$(Configuration)'=='Release'">libucrt.lib;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <AdditionalOptions Condition="'$(Configuration)'=='Release'">/defaultlib:ucrt.lib %(AdditionalOptions)</AdditionalOptions>
+      <IgnoreSpecificDefaultLibraries Condition="'$(Configuration)'=='Debug'">libucrtd.lib;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+      <AdditionalOptions Condition="'$(Configuration)'=='Debug'">/defaultlib:ucrtd.lib %(AdditionalOptions)</AdditionalOptions>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <!-- Only this native source directory; fixture sources belong in Checks/. -->
+    <ClCompile Include="*.cpp" Exclude="pch.cpp" />
+    <ClCompile Include="pch.cpp"><PrecompiledHeader>Create</PrecompiledHeader></ClCompile>
+    <ClInclude Include="*.h" />
+    <Manifest Include="app.manifest" />
+    <ResourceCompile Include="$(MorrowVersionResource)" Condition="'$(MorrowVersionResource)'!=''" />
+    <None Include="packages.config" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+    <Import Project="$(PackageRoot)Microsoft.Windows.SDK.BuildTools.10.0.26100.4654\build\Microsoft.Windows.SDK.BuildTools.targets" />
+    <Import Project="$(PackageRoot)Microsoft.Windows.SDK.BuildTools.MSIX.1.7.251221100\build\Microsoft.Windows.SDK.BuildTools.MSIX.targets" />
+    <Import Project="$(PackageRoot)Microsoft.WindowsAppSDK.Runtime.2.5.1\build\native\Microsoft.WindowsAppSDK.Runtime.targets" />
+    <Import Project="$(PackageRoot)Microsoft.WindowsAppSDK.Foundation.2.3.12\build\native\Microsoft.WindowsAppSDK.Foundation.targets" />
+    <Import Project="$(PackageRoot)Microsoft.WindowsAppSDK.InteractiveExperiences.2.1.9\build\native\Microsoft.WindowsAppSDK.InteractiveExperiences.targets" />
+    <Import Project="$(PackageRoot)Microsoft.Web.WebView2.1.0.3719.77\build\native\Microsoft.Web.WebView2.targets" />
+    <Import Project="$(PackageRoot)Microsoft.WindowsAppSDK.WinUI.2.3.9\build\native\Microsoft.WindowsAppSDK.WinUI.targets" />
+    <Import Project="$(PackageRoot)Microsoft.WindowsAppSDK.Base.2.0.4\build\native\Microsoft.WindowsAppSDK.Base.targets" />
+    <Import Project="$(PackageRoot)Microsoft.Windows.CppWinRT.3.0.260818.1\build\native\Microsoft.Windows.CppWinRT.targets" />
+  </ImportGroup>
+  <Target Name="CheckNativeConfiguration" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(Platform)'!='x64'" Text="Morrow native candidates currently target x64 only." />
+    <Error Condition="'$(WindowsPackageType)'!='None' or '$(WindowsAppSDKSelfContained)'!='true'" Text="Morrow requires unpackaged self-contained deployment." />
+  </Target>
+</Project>

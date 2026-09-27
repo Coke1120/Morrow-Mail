@@ -36,6 +36,8 @@ if (serviceRuntime === 'rust') {
 } else {
   cpSync(node, resolve(resources, 'node'));
   for (const path of ['server', 'shared', 'package.json', 'package-lock.json', 'LICENSE', 'README.md', 'FEATURE_COVERAGE.md', 'VERIFICATION.md']) cpSync(resolve(root, path), resolve(backend, path), { recursive: true });
+  mkdirSync(resolve(backend, 'rust/resources'), { recursive: true });
+  cpSync(resolve(root, 'rust/resources/catalog.json'), resolve(backend, 'rust/resources/catalog.json'));
   cpSync(nodeLicense, resolve(resources, 'NODE-LICENSE.txt'));
   mkdirSync(resolve(backend, 'scripts'));
   cpSync(resolve(root, 'scripts/backup.js'), resolve(backend, 'scripts/backup.js'));

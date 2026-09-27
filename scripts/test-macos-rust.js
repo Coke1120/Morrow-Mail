@@ -57,6 +57,9 @@ try {
           });
         }
       }
+      store.upsertMessage(accounts[0], { id: 'google:provider-draft', folder: 'drafts', providerDraft: true,
+        to: '"Fixture, Recipient" <to@example.invalid>', cc: 'cc@example.invalid', bcc: 'hidden@example.invalid',
+        subject: 'Provider draft fixture', body: 'Original provider draft; never sent.', date: '2026-09-25T00:00:00.000Z' });
     });
   } finally { store.close(); }
   const client = join(contents, 'MacOS/checks');

@@ -4,31 +4,39 @@ import Security
 
 @MainActor
 final class AppModel: ObservableObject {
-    @Published var state: JSON = .null
+    @Published var state: JSON = .null {
+        didSet {
+            if state["account"]["id"] != oldValue["account"]["id"] || state["settings"] != oldValue["settings"] ||
+                accounts.map({ $0.picking(["id", "settings"]) }) != oldValue["accounts"].array.map({ $0.picking(["id", "settings"]) }) ||
+                state["workspace"].picking(["brain", "styleLearning"]) != oldValue["workspace"].picking(["brain", "styleLearning"]) { draftGeneration += 1 }
+        }
+    }
     @Published var busy = false
     @Published var starting = true
     @Published var error = ""
     @Published var notice = ""
     @Published var activity: JSON = .null
     @Published var activityError = ""
-    @Published var section = "inbox"
+    @Published var section = "inbox" { didSet { if section != oldValue { draftGeneration += 1 } } }
     @Published var scheduledAccount = ""
     @Published var selectedMessage: String? {
-        didSet { if selectedMessage != oldValue { openedMessage = nil } }
+        didSet { if selectedMessage != oldValue { openedMessage = nil; draftGeneration += 1 } }
     }
-    @Published var compose: Draft?
-    @Published var organizing: JSON?
+    @Published var compose: Draft? { didSet { if compose != oldValue { draftGeneration += 1 } } }
+    @Published private(set) var preparingDraft = false
+    private(set) var draftGeneration = 0
+    @Published var organizing: JSON? { didSet { if organizing != oldValue { draftGeneration += 1 } } }
     @Published var searchFocus = 0
     @Published var searchResponse: JSON = .null
     @Published var mailPage: JSON = .null
     @Published var mailLoading = false
     @Published var unreadOnly = false
-    @Published var messageDetail: JSON = .null
+    @Published var messageDetail: JSON = .null { didSet { if messageDetail != oldValue { draftGeneration += 1 } } }
     @Published var mailCursors = [""]
     private var mailGeneration = 0
     private var mailPageKey = ""
     private var openedMessage: String?
-    @Published var showSettings = false
+    @Published var showSettings = false { didSet { if showSettings != oldValue { draftGeneration += 1 } } }
     @Published var settingsTab = "general"
     @Published private(set) var updateResult: JSON = .null
     @Published private(set) var updateCheckError = ""
@@ -402,8 +410,45 @@ final class AppModel: ObservableObject {
             await self.loadMessage()
         }
     }
+    func prepareDraft(message: JSON, mode: String, body: String? = nil) async throws -> Draft {
+        guard !busy, !preparingDraft, compose == nil, organizing == nil, !showSettings else { throw CancellationError() }
+        guard unsavedForms.isEmpty else { throw APIError("Save your current changes before opening a new draft.") }
+        let owner = message["accountId"].string
+        guard !owner.isEmpty, owner != "all", !message.id.isEmpty,
+              senderAccounts.contains(where: { $0.id == owner }) else { throw APIError("Reconnect this message’s mailbox before replying or editing its draft.") }
+        let replying = ["reply", "replyAll"].contains(mode)
+        guard ["reply", "replyAll", "forward", "copy"].contains(mode), body == nil || replying else { throw APIError("Invalid draft preparation request.") }
+        let generation = draftGeneration, assistant = readerAssistant
+        var payload: JSON = .object(["messageId": .string(message.id), "mode": .string(mode)])
+        if let body { payload["body"] = .string(body) }
+        preparingDraft = true
+        defer { preparingDraft = false }
+        do {
+            let result = try await request("/drafts/prepare", method: "POST", body: payload, mailbox: owner)
+            guard !Task.isCancelled, generation == draftGeneration, readerAssistant == assistant,
+                  !busy, compose == nil, unsavedForms.isEmpty else { throw CancellationError() }
+            let prepared = result["draft"], draft = try Draft(prepared: result["draft"])
+            let fields = ["accountId", "to", "cc", "bcc", "subject", "body"] + (replying ? ["replyToId"] : mode == "forward" ? ["forwarding"] : ["sourceDraft"])
+            guard draft.accountID == owner, prepared.object.keys.allSatisfy({ fields.contains($0) }),
+                  replying ? draft.replyToID == message.id : prepared.object["replyToId"] == nil,
+                  mode != "forward" || prepared["forwarding"] == .bool(true),
+                  mode != "copy" || prepared["sourceDraft"] == .bool(true) else {
+                throw APIError("The prepared draft could not be verified. Reopen the original message and try again.")
+            }
+            return draft
+        } catch {
+            guard !Task.isCancelled, generation == draftGeneration, readerAssistant == assistant else { throw CancellationError() }
+            throw error
+        }
+    }
+    func openDraft(message: JSON, mode: String, body: String? = nil) async {
+        guard readerAssistant == nil else { return }
+        do { newDraft(try await prepareDraft(message: message, mode: mode, body: body)) }
+        catch is CancellationError { }
+        catch { self.error = error.localizedDescription }
+    }
     func newDraft(_ value: Draft? = nil) {
-        guard !busy, compose == nil, readerAssistant == nil else { return }
+        guard !busy, compose == nil, organizing == nil, readerAssistant == nil, !showSettings else { return }
         guard unsavedForms.isEmpty else { notice = "Save your current changes before opening a new draft."; return }
         var draft = value ?? Draft()
         guard (draft.replyToID.isEmpty && !draft.forwarding && !draft.sourceDraft) || !draft.accountID.isEmpty else { error = "The original mailbox is unavailable. Reopen the original message."; return }

@@ -1,0 +1,42 @@
+name: Windows native candidate
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/native-migration]
+permissions:
+  contents: read
+concurrency:
+  group: windows-native-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Lock Rust toolchain
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.98.0
+      - name: Compile WinUI candidate
+        shell: pwsh
+        run: ./scripts/build-windows-native.ps1 -CompileOnly
+      - name: Build and inspect native package without Node
+        shell: pwsh
+        run: ./scripts/build-windows-native.ps1 -Zip
+      - name: Native fixture walkthrough
+        shell: pwsh
+        run: ./scripts/test-windows-native.ps1 -UiSmoke
+      - name: Retain candidate evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: winui-candidate-${{ github.sha }}
+          path: |
+            build/windows-native/*.zip
+            build/windows-native/*evidence*.json
+            test-results/windows-native-*.json
+          if-no-files-found: ignore
+          retention-days: 3

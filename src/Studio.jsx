@@ -1,4 +1,6 @@
 import { useMailPage } from './mail-page';
+import { prepareDraft } from './message-draft';
+import { messageAIContext } from './MessageAI';
 import { useEffect, useRef, useState } from 'react';
 import { ArrowRight, Bell, BookOpen, Brain, CalendarDays, Check, CheckCheck, ChevronRight, FilePenLine, FolderCheck, Languages, ListFilter, LoaderCircle, Mail, MessageSquare, NotebookPen, Paperclip, Pencil, Plus, Save, Search, ShieldCheck, Sparkles, Star, Tag, Trash2, UserRound, WandSparkles, X } from 'lucide-react';
 import { AI_BEHAVIORS, DEFAULT_POLICY } from '../shared/features';
@@ -23,14 +25,14 @@ const emptySkill = () => ({ name: '', instructions: '', enabled: true, folders: 
 const dateLabel = value => value && !Number.isNaN(new Date(value).getTime()) ? new Date(value).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'No date';
 const tomorrow = () => { const date = new Date(); date.setDate(date.getDate() + 1); date.setHours(9, 0, 0, 0); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}T09:00`; };
 
-export default function Studio({ state, selectedMessage, onUpdate, onCompose, onSettings, notify, onDirtyChange, onBusyChange, initialTab = 'tools' }) {
+export default function Studio({ state, selectedMessage, onUpdate, onCompose, composeOpen = false, onSettings, notify, onDirtyChange, onBusyChange, initialTab = 'tools' }) {
   const savedPolicy = state.settings?.policy || {};
   const policy = { ...DEFAULT_POLICY, ...savedPolicy, behaviors: { ...DEFAULT_POLICY.behaviors, ...savedPolicy.behaviors }, folders: { ...DEFAULT_POLICY.folders, ...savedPolicy.folders }, content: { ...DEFAULT_POLICY.content, ...savedPolicy.content } };
   const workspace = state.workspace || {};
   const skills = workspace.skills || [];
   const brain = workspace.brain;
   const accountKey = state.account.id;
-  const contextKey = `${accountKey}:${JSON.stringify(policy)}`;
+  const contextKey = JSON.stringify([accountKey, policy, state.accounts.find(item => item.id === accountKey)?.settings, state.settings.ai, state.settings.preferences, brain]);
   const currentContext = useRef(contextKey);
   currentContext.current = contextKey;
   const pending = useRef(null);
@@ -58,6 +60,9 @@ export default function Studio({ state, selectedMessage, onUpdate, onCompose, on
   const counts = accountKey === 'demo' ? state.demoStats?.counts || {} : state.accounts.find(item => item.id === accountKey)?.counts || {};
   const permittedCount = Object.entries(counts).filter(([folder]) => folder !== 'starred' && policy.folders[folder]).reduce((sum, [, count]) => sum + count, 0);
   const chosen = permitted.find(message => message.id === messageId) || permitted.find(message => message.id === selectedMessage?.id) || permitted[0];
+  const draftContextKey = JSON.stringify([contextKey, tab, action, output, messageAIContext(state, chosen, 'reply').key, composeOpen]);
+  const draftContext = useRef(draftContextKey);
+  draftContext.current = draftContextKey;
   const feature = AI_BEHAVIORS.find(item => item.id === action);
   const usesDraft = action === 'rewrite' || (action === 'translate' && translateSource === 'draft');
   const usesSelected = feature.context === 'selected' && !usesDraft;
@@ -71,6 +76,9 @@ export default function Studio({ state, selectedMessage, onUpdate, onCompose, on
     setSkillForm(emptySkill());
   }, [contextKey]);
   useEffect(() => () => { pending.current?.controller.abort(); pending.current = null; }, []);
+  useEffect(() => {
+    if (pending.current?.draft && pending.current.context !== draftContextKey) { pending.current.controller.abort(); pending.current = null; setBusy(''); }
+  }, [draftContextKey]);
   useEffect(() => { setVoice(brain?.voice || ''); setNotes(brain?.notes || ''); }, [accountKey, brain?.voice, brain?.notes]);
 
   const originalSkill = skillForm.id ? skills.find(skill => skill.id === skillForm.id) : emptySkill();
@@ -138,10 +146,22 @@ export default function Studio({ state, selectedMessage, onUpdate, onCompose, on
   function applyPreview() {
     request('/workflows/apply', { previewId: preview.id }, 'apply', next => { onUpdate(next); setPreview(null); notify('Simulation applied to your local workspace.'); });
   }
-  function useDraft() {
+  async function useDraft() {
+    if (!output || pending.current || composeOpen) return;
     const message = output.message;
-    const reply = output.action === 'reply';
-    onCompose({ accountId: message?.accountId || state.account.id, body: output.text, to: message && policy.content.sender ? (message.folder === 'sent' ? message.to : message.fromEmail) : '', subject: message && policy.content.subject ? (reply && !/^re:/i.test(message.subject) ? `Re: ${message.subject}` : message.subject) : '', ...(reply && message ? { replyToId: message.id } : {}) });
+    if (output.action !== 'reply') {
+      onCompose({ accountId: message?.accountId || accountKey, body: output.text, to: message && policy.content.sender ? (message.folder === 'sent' ? message.to : message.fromEmail) : '', subject: message && policy.content.subject ? message.subject : '' });
+      return;
+    }
+    if (!message || message.accountId !== accountKey || messageAIContext(state, message, 'reply').key !== messageAIContext(state, chosen, 'reply').key) { setError('The source message changed. Generate a new reply before opening a draft.'); return; }
+    const token = { controller: new AbortController(), draft: true, context: draftContextKey };
+    pending.current = token; setBusy('draft'); setError('');
+    const valid = () => pending.current === token && !token.controller.signal.aborted && draftContext.current === token.context;
+    try {
+      const draft = await prepareDraft(message, 'reply', { body: output.text, signal: token.controller.signal });
+      if (valid()) onCompose(draft);
+    } catch (cause) { if (valid()) setError(cause.message); }
+    finally { if (pending.current === token) { pending.current = null; setBusy(''); } }
   }
   function saveSkill(event) {
     event.preventDefault();
@@ -186,7 +206,7 @@ export default function Studio({ state, selectedMessage, onUpdate, onCompose, on
           {(blockReason || modelMissing) && <div className="studio-notice"><p>{blockReason || 'Connect an AI model in Settings to use this tool with your mailbox.'}</p><button type="button" onClick={() => skillReason && !blocked(feature, usesDraft) ? setTab('skills') : onSettings(blockReason ? 'permissions' : 'model')}>{skillReason && !blocked(feature, usesDraft) ? 'Manage skills' : 'Open Settings'}<ArrowRight size={14} /></button></div>}
           <div className="studio-form-actions"><span>{feature.mock ? 'Review the full preview before applying.' : state.settings.ai?.configured ? 'Permitted content is sent to your configured model.' : 'Illustrative demo output. Configure a model for real AI.'}</span><button type="submit" className="button primary" disabled={!!busy || !!blockReason || modelMissing || invalid}>{['generate', 'preview'].includes(busy) ? <LoaderCircle className="spinning" size={16} /> : <Sparkles size={16} />}{feature.mock ? 'Create preview' : 'Generate response'}</button></div>
         </form>
-        {output && <section className="studio-result" aria-live="polite"><div className="studio-result-title"><Sparkles size={16} /><h3>Your result</h3><span className="studio-badge">{output.source === 'demo' ? 'Illustrative demo' : 'AI response'}</span></div><div className="studio-result-text">{output.text}</div>{output.source === 'demo' && <p className="studio-caption">This is sample output, not an AI analysis. Connect your model in Settings for real responses.</p>}{['reply', 'write', 'rewrite', 'translate'].includes(output.action) && <button className="button primary" onClick={useDraft} disabled={!!busy}>Review in a draft<ArrowRight size={15} /></button>}</section>}
+        {output && <section className="studio-result" aria-live="polite"><div className="studio-result-title"><Sparkles size={16} /><h3>Your result</h3><span className="studio-badge">{output.source === 'demo' ? 'Illustrative demo' : 'AI response'}</span></div><div className="studio-result-text">{output.text}</div>{output.source === 'demo' && <p className="studio-caption">This is sample output, not an AI analysis. Connect your model in Settings for real responses.</p>}{['reply', 'write', 'rewrite', 'translate'].includes(output.action) && <button className="button primary" onClick={useDraft} disabled={!!busy || composeOpen}>Review in a draft<ArrowRight size={15} /></button>}</section>}
         {preview && <section className="studio-result" aria-live="polite"><div className="studio-result-title"><ShieldCheck size={16} /><h3>{preview.title}</h3><span className="studio-badge simulation">Local simulation</span></div><p className="studio-caption">{preview.summary}</p><ul className="studio-preview-items">{preview.items?.map((item, index) => <li key={`${item.messageId || ''}-${index}`}><Check size={15} /><div><strong>{item.title}</strong><p>{item.detail}</p></div></li>)}</ul><div className="studio-preview-footer"><p>Preview expires after 10 minutes. Applying changes only this local workspace.</p><div><button className="button secondary" onClick={() => setPreview(null)} disabled={!!busy}>Dismiss</button><button className="button primary" onClick={applyPreview} disabled={!!busy || !!blockReason}>{busy === 'apply' ? <LoaderCircle size={16} className="spinning" /> : <Check size={16} />}Apply local simulation</button></div></div></section>}
       </section>
     </>}

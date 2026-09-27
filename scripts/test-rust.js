@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-execFileSync(process.execPath, ['scripts/rust-resources.js', '--check'], { stdio: 'inherit' });
+execFileSync('cargo', ['run', '--manifest-path', 'rust/Cargo.toml', '--locked', '--bin', 'morrow-resources', '--', '--check'], { stdio: 'inherit' });
 for (const args of [
   ['fmt', '--check'], ['clippy', '--locked', '--all-targets', '--', '-D', 'warnings'],
   ['test', '--locked', '--no-fail-fast'], ['build', '--release', '--locked'], ['build', '--locked', '--example', 'storage_contract'], ['build', '--locked', '--bin', 'morrow-service'],

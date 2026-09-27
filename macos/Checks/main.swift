@@ -16,7 +16,6 @@ struct WorkspaceTests {
         expectEqual(value["count"].number, 8)
         let draft = Draft(message: value)
         expectEqual(draft.accountID, "owner@example.com")
-        expectEqual(Draft(message: value, reply: true).accountID, "owner@example.com")
         expectEqual(value.viewID, "unique-owned-message")
         assert(draft.unconfirmed)
         expectEqual(draft.requestID, "original-request")
@@ -167,67 +166,35 @@ for order in ["oldest", "subject", "unread", "starred"] { expectEqual(sortedMail
 for order in ["newest", "sender"] { expectEqual(sortedMail(sortFixture, by: order).first?.id, "new") }
 print("Native multi-recipient and six sorting checks passed.")
 
-var original: JSON = .object(["id": .string("same-provider-id"), "accountId": .string("receiver@example.com"), "fromEmail": .string("sender@example.com"), "to": .string("alias@example.com"), "subject": .string("Question"), "folder": .string("inbox")])
-let reply = Draft(message: original, reply: true)
-expectEqual(reply.accountID, "receiver@example.com")
-expectEqual(reply.to, "sender@example.com")
-expectEqual(reply.replyToID, "same-provider-id")
-original["folder"] = .string("sent")
-expectEqual(Draft(message: original, reply: true).to, "alias@example.com")
-original["footer"] = .object(["text": .string("Leo"), "html": .string("<b>Leo</b>")])
-expectEqual(Draft(message: original).payload["footer"], original["footer"])
-print("Native reply ownership and footer persistence checks passed.")
-
-let recipientsMessage: JSON = .object([
-    "id": .string("provider-id"), "accountId": .string("Owner@example.com"), "folder": .string("inbox"),
-    "fromName": .string("Sender"), "fromEmail": .string("sender@example.com"),
-    "to": .string(#""Doe, Jane" <JANE@example.com>, OWNER@example.com; teammate@example.com, SENDER@example.com"#),
-    "cc": .string(#""Smith, \"JJ\"" <jane@example.com>, copy@example.com, sender@example.com, owner@example.com"#),
-    "bcc": .string("hidden@example.com"), "subject": .string("Question"), "body": .string("First line\r\nSecond line"),
-    "date": .string("2026-09-26T12:30:00Z"), "footer": .object(["text": .string("Old footer")]), "replyToId": .string("old-thread")
-])
-let allReply = Draft(message: recipientsMessage, replyAll: true)
-expectEqual(allReply.accountID, "Owner@example.com")
-expectEqual(allReply.to, "sender@example.com, JANE@example.com, teammate@example.com")
-expectEqual(allReply.cc, "copy@example.com"); expectEqual(allReply.bcc, "")
-expectEqual(allReply.subject, "Re: Question"); expectEqual(allReply.replyToID, "provider-id")
-assert(!allReply.forwarding); expectEqual(allReply.savedID, ""); expectEqual(allReply.footer, .null)
-expectEqual(Draft(message: recipientsMessage, replyAll: false).to, "sender@example.com")
-var sentMessage = recipientsMessage
-sentMessage["folder"] = .string("sent"); sentMessage["fromEmail"] = .string("sending-alias@example.com")
-expectEqual(Draft(message: sentMessage, reply: true).to, "JANE@example.com, OWNER@example.com, teammate@example.com, SENDER@example.com")
-expectEqual(Draft(message: sentMessage, replyAll: true).to, "JANE@example.com, teammate@example.com, SENDER@example.com")
-expectEqual(Draft(message: sentMessage, replyAll: true).cc, "copy@example.com")
-var demoMessage = recipientsMessage
-demoMessage["accountId"] = .string("demo"); demoMessage["to"] = .string("alex@genmail.example"); demoMessage["cc"] = .string("")
-expectEqual(Draft(message: demoMessage, replyAll: true).to, "sender@example.com")
-for invalid in ["valid@example.com, broken-recipient", #""Unclosed name <a@example.com>"#, "Missing <>", "Two <a@example.com, b@example.com>", "a@example.com,", "a@example.com\r\nBcc: injected@example.com", "Group: a@example.com;", "Doe, Jane <jane@example.com>"] {
-    var message = recipientsMessage; message["to"] = .string(invalid); message["cc"] = .string("")
-    expectEqual(Draft(message: message, replyAll: true).to, "sender@example.com, " + invalid)
-    message["to"] = .string(""); message["cc"] = .string(invalid)
-    expectEqual(Draft(message: message, replyAll: true).cc, invalid)
+// Shared service output is decoded verbatim; recipient and quoting rules live in the service.
+let prepared = try JSONDecoder().decode(JSON.self, from: Data(#"{"draft":{"accountId":"owner@example.com","to":"sender@example.com, editable-invalid","cc":"copy@example.com","bcc":"","subject":"Re: Question","body":"Reviewed AI text","replyToId":"same-provider-id"}}"#.utf8))
+let reply = try Draft(prepared: prepared["draft"])
+expectEqual(reply.accountID, "owner@example.com"); expectEqual(reply.replyToID, "same-provider-id")
+expectEqual(reply.to, "sender@example.com, editable-invalid"); expectEqual(reply.cc, "copy@example.com")
+expectEqual(reply.body, "Reviewed AI text"); expectEqual(reply.bcc, "")
+assert(reply.savedID.isEmpty && reply.footer.isNull && !reply.forwarding && !reply.sourceDraft)
+var forwardPayload = prepared["draft"]
+forwardPayload["to"] = .string(""); forwardPayload["cc"] = .string(""); forwardPayload["replyToId"] = .null
+forwardPayload["subject"] = .string("Fwd: Question"); forwardPayload["body"] = .string("Service-quoted text")
+forwardPayload["forwarding"] = .bool(true)
+let forward = try Draft(prepared: forwardPayload)
+assert(forward.forwarding && forward.savedID.isEmpty && forward.replyToID.isEmpty)
+expectEqual(forward.body, "Service-quoted text"); expectEqual(forward.subject, "Fwd: Question")
+assert(forward.payload["replyToId"].isNull && forward.payload["forwarding"].isNull)
+var copyPayload = forwardPayload
+copyPayload["forwarding"] = .null; copyPayload["sourceDraft"] = .bool(true)
+copyPayload["to"] = .string("to@example.com"); copyPayload["bcc"] = .string("hidden@example.com")
+// A prepared draft cannot inherit a persisted ID, delivery attempt, schedule or footer.
+copyPayload["id"] = .string("provider-draft"); copyPayload["footer"] = .object(["text": .string("Old footer")])
+copyPayload["deliveryStatus"] = .string("unconfirmed"); copyPayload["deliveryRequestId"] = .string("old-request")
+copyPayload["scheduledSend"] = .object(["status": .string("scheduled")])
+let copy = try Draft(prepared: copyPayload)
+assert(copy.sourceDraft && copy.savedID.isEmpty && !copy.forwarding && !copy.unconfirmed && !copy.scheduleLocked)
+expectEqual(copy.accountID, "owner@example.com"); expectEqual(copy.bcc, "hidden@example.com")
+assert(copy.footer.isNull && copy.requestID != "old-request" && copy.payload["sourceDraft"].isNull)
+for malformed in [JSON.null, .object(["accountId": .string("owner@example.com")])] {
+    do { _ = try Draft(prepared: malformed); assertionFailure("Incomplete service draft accepted") } catch is APIError { }
 }
-let forward = Draft(forwarding: recipientsMessage)
-assert(forward.forwarding); expectEqual(forward.accountID, "Owner@example.com")
-expectEqual(forward.to, ""); expectEqual(forward.cc, ""); expectEqual(forward.bcc, "")
-expectEqual(forward.savedID, ""); expectEqual(forward.replyToID, ""); expectEqual(forward.footer, .null)
-expectNil(forward.payload.object["replyToId"]); expectNil(forward.payload.object["forwarding"])
-expectEqual(forward.subject, "Fwd: Question")
-assert(forward.body.contains("> From: Sender <sender@example.com>"))
-assert(forward.body.contains("> Date: 2026-09-26T12:30:00Z"))
-assert(forward.body.contains("> To: ")); assert(forward.body.contains("> Cc: "))
-assert(forward.body.hasSuffix("> First line\n> Second line"))
-assert(!forward.body.contains("hidden@example.com")); assert(!forward.body.contains("Bcc:")); assert(!forward.body.contains("Old footer"))
-for subject in ["Fwd: Already forwarded", "FW: Already forwarded"] {
-    var message = recipientsMessage; message["subject"] = .string(subject)
-    expectEqual(Draft(forwarding: message).subject, subject)
-}
-print("Native Reply All recipient privacy and unthreaded Forward checks passed.")
-
-let gmailDraft = Draft(message: .object(["id": .string("google:draft"), "accountId": .string("owner@example.invalid"), "providerDraft": .bool(true), "folder": .string("drafts"), "to": .string("to@example.invalid"), "cc": .string("cc@example.invalid"), "bcc": .string("bcc@example.invalid"), "body": .string("Unsent provider text")]))
-assert(gmailDraft.sourceDraft && gmailDraft.savedID.isEmpty)
-expectEqual(gmailDraft.accountID, "owner@example.invalid")
-expectEqual(gmailDraft.payload["body"].string, "Unsent provider text")
-expectEqual(gmailDraft.payload["bcc"].string, "bcc@example.invalid")
-assert(gmailDraft.payload["id"].isNull && gmailDraft.payload["sourceDraft"].isNull)
-print("Native Gmail draft copy preserves owner and content without mutating the provider draft.")
+let savedFooter: JSON = .object(["text": .string("Saved signature")])
+expectEqual(Draft(message: .object(["id": .string("local-draft"), "footer": savedFooter])).footer, savedFooter)
+print("Native prepared draft decoding preserves service recipients, reply/copy/forward flags and text; saved draft recovery stays synchronous.")

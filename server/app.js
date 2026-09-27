@@ -16,6 +16,7 @@ import * as integrations from './integrations.js';
 import * as providers from './providers.js';
 import { normalizeFooter, preferencesFooter } from './footer.js';
 import { recipients } from './recipients.js';
+import { prepareDraft } from './message-draft.js';
 import { AI_BEHAVIORS, DEFAULT_PREFERENCES, DEFAULT_SKILLS, matchesAITrigger } from '../shared/features.js';
 import { checkUpdates } from './updates.js';
 import { createAutomation } from './automation.js';
@@ -113,7 +114,7 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
   app.use('/api', (req, res, next) => {
     const routePath = req.path.toLowerCase().replace(/\/+$/, '');
     const supplied = req.get('X-Genmail-Account');
-    const bound = ['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method) && /^\/(send|drafts|ai|sync|messages\/[^/]+(?:\/organize)?|workflows\/.*|imports\/.*|style\/.*|skills(?:\/.*)?|workspace\/.*|scheduled(?:\/.*)?|reply-suggestions(?:\/.*)?|out-of-office(?:\/.*)?|account\/disconnect)$/.test(routePath);
+    const bound = ['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method) && /^\/(send|drafts(?:\/prepare)?|ai|sync|messages\/[^/]+(?:\/organize)?|workflows\/.*|imports\/.*|style\/.*|skills(?:\/.*)?|workspace\/.*|scheduled(?:\/.*)?|reply-suggestions(?:\/.*)?|out-of-office(?:\/.*)?|account\/disconnect)$/.test(routePath);
     if (bound && !validAccount(supplied) && !(routePath === '/sync' && supplied === 'all')) {
       return res.status(409).json({ error: 'Choose a connected mailbox before continuing. This account may have been disconnected.' });
     }
@@ -570,6 +571,9 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
     const address = account === 'demo' ? 'alex@genmail.example' : account;
     return { id: randomUUID(), fromName: settings().preferences?.displayName || (account === 'demo' ? 'Alex Morgan' : address), fromEmail: address, date: new Date().toISOString(), read: true, starred: false, category: 'primary', labels: [], ...value, preview: value.body.replace(/\s+/g, ' ').slice(0, 180), ...extra };
   }
+  app.post('/api/drafts/prepare', (req, res) => {
+    res.json(prepareDraft(req.mailAccount, req.body, id => ownedMessage(req.mailAccount, getMessage(req.mailAccount, id))));
+  });
   app.post('/api/drafts', (req, res) => {
     const input = req.body || {};
     const value = content(input, true);

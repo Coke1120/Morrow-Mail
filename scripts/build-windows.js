@@ -26,6 +26,8 @@ if (serviceRuntime === 'rust') {
   cpSync(node, resolve(stage, 'runtime/node.exe'));
   cpSync(license, resolve(stage, 'NODE-LICENSE.txt'));
   for (const name of ['server', 'shared', 'dist', 'package.json', 'package-lock.json', 'LICENSE', 'README.md', 'FEATURE_COVERAGE.md', 'VERIFICATION.md']) cpSync(resolve(root, name), resolve(stage, 'backend', name), { recursive: true });
+  mkdirSync(resolve(stage, 'backend/rust/resources'), { recursive: true });
+  cpSync(resolve(root, 'rust/resources/catalog.json'), resolve(stage, 'backend/rust/resources/catalog.json'));
   cpSync(resolve(root, 'scripts/backup.js'), resolve(stage, 'backend/scripts/backup.js'));
   if (!process.env.npm_execpath) throw new Error('Run this builder through npm run windows:build.');
   execFileSync(process.execPath, [process.env.npm_execpath, 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: resolve(stage, 'backend'), stdio: 'inherit' });

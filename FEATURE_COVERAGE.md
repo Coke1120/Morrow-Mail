@@ -10,6 +10,8 @@ The app's authoritative behavior list is [`shared/features.js`](shared/features.
 
 0.6.0-beta.13 fixes delayed native split-view initialization on cold launch; pane resizing remains available.
 
+Unreleased native migration: both clients delegate Reply/Reply All/Forward/provider-draft preparation to the local service, using its current owned source. Desktop preparation runs in Rust; Node development retains a compatible endpoint. Preparing is read-only and performs no provider/model request. UI guards discard results after navigation or a competing composer opens. Windows remains Electron pending the separate WinUI implementation and acceptance gates.
+
 ## 0.6.0-beta.14 additions
 
 Complete history removes the import date cutoff while retaining Spam/Trash exclusion, bounded pages and resumable checkpoints. Pending is a separate local account-owned marker and virtual folder. Learning adds explicitly confirmed account names/aliases; reviewed background reply-suggestion batches use permitted correspondent history and approved style, produce drafts only, and do not establish that all unanswered mail was found. Gmail/Outlook Out of Office reads and writes the provider's real settings after explicit consent/review; IMAP is unsupported. Scheduled sends require the app to stay open, have a 15-minute late grace period, and preserve uncertain-send review without automatic replay. Month view combines up to 12 checked calendars, displays cross-day/all-day events and opens reviewed creation from a clicked day. Google event reminders support notification/email; Outlook supports notification. Provider reminders work while Morrow is closed; Morrow does not send reminder emails itself.
