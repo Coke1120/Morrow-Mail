@@ -7,7 +7,7 @@
 2026-09-28 候選實作進度（`codex/native-migration`，尚未切換正式 Windows 產品）：
 
 - N1：共用草稿準備已移至 Rust；catalog／OpenCC 來源固定、5,343 筆正規化 golden 與授權內容比對通過。
-- N2／N3：WinUI host、原生功能頁與隔離 HTML reader 已落盤並通過編譯。CI 已通過啟動、Fresh onboarding、重複關窗的服務排空保護、視窗精確還原、前景操作 guard、owned-mailbox 分頁、草稿、工作頁與 Settings。初始及攻擊文件的完全比對導覽、inline script 阻擋、停用腳本時的 native CSP 觀測，以及 TextBlock 生命週期修正後的純文字 fallback 均已通過。CI 36356066868 在後續空 HTML 查詢階段超時；正在修正 harness 等待期間未持續讀取 stderr 的 pipe deadlock 風險。完整 reader／walkthrough 尚未通過，不能以編譯或啟動代替驗收。
+- N2／N3：CI 36357924382（`62f3913`）的雙平台 native gates 全部通過。Windows 包括 fresh／owned／restart、關窗排空、視窗還原、前景 guard、分頁／草稿／工作頁／Settings，以及 Reader 的 host 文件完全比對、native CSP、純文字／失敗 fallback、空 HTML、過時導覽與卸載關閉。TextBlock 生命週期修正及 harness 持續清空 stderr 均已實跑；瀏覽器安全設定與期限未放寬。這不代替整體 App 比較量測或人工 IME／Narrator／DPI 驗收。
 - N4：CI 36356066868 的雙平台 candidate 經固定 beta.16 舊 installer 實際升級／啟動及備份通過，包括 Scheduled、Pending、Learning、Reply Suggestions 與中斷 claim 不重播；七項 storage/search/service 相容契約亦通過。Windows reader walkthrough 仍是獨立未通過項目。
 - N6：macOS／Windows 的 Node-inaccessible Rust fmt／Clippy／tests 已通過；新版 macOS canonical ZIP／checksum、Models、HTML／network-zero、視窗與 Rust native integration 已在 macOS 15 通過。Rust resources／notices／macOS builder／native acceptance driver 已驗證無 Node 路徑；Rust benchmark 的 1k／10k／50k service checks 已在雙平台通過（非整體 App 效能驗收）。共用 assets 與 production 公鑰已解除對 React／Node 來源目錄的依賴。新 publisher 已補上同 run artifact 來源綁定，七項 focused checks 與真實 GitHub ZIP 唯讀解析通過；尚未接正式發佈。
 - N5 與所有乾淨最低 OS／IME／Narrator／DPI／真實 provider／正式簽章門檻保持未完成。既有 Electron／Node 相容路徑與發佈資產沒有刪除或替換。
@@ -131,7 +131,7 @@ Windows：WinUI 3 / C++/WinRT host ┘                              └─ 郵�
 
 完成門檻：
 
-- [ ] Windows 真實 packaged executable 能啟動、讀信、關閉與重啟；Rust service 無遺留程序或雙 writer。
+- [x] Windows 真實 packaged executable 能啟動、讀信、關閉與重啟；Rust service 無遺留程序或雙 writer。（CI 36357924382 的隔離 fixture；乾淨機器另列。）
 - [ ] 在無 Visual Studio／Windows App SDK、離線、一般使用者權限的乾淨支援版本 Windows 驗證首次啟動及舊版升級；WebView2 缺少時仍可讀取純文字。所需 native runtime 不依賴開發機預裝內容。
 - [ ] 清單切換不整頁閃爍／重載，owner 與 viewId 一致，正文按需載入。
 - [ ] 郵件腳本、frames、forms、host objects、web messages、未同意的外部請求均無法越過 reader 邊界。
@@ -158,7 +158,7 @@ Windows：WinUI 3 / C++/WinRT host ┘                              └─ 郵�
 - [ ] N0 功能矩陣逐項通過，缺失功能不能以隱藏入口冒充對等。
 - [ ] 草稿／設定在取消、切換帳戶、關窗與重啟時符合既有保存規則。
 - [ ] 已有 provider 限制維持如實呈現；附件、CID、phishing report、sender block 等未實作能力不宣稱已支援。
-- [ ] macOS 原生 integration 與 Windows 原生 packaged walkthrough 同時通過。
+- [x] macOS 原生 integration 與 Windows 原生 packaged walkthrough 同時通過。（`62f3913` 同一 CI run。）
 
 ### N4 — 資料、安裝、更新與回退驗收
 
@@ -174,8 +174,8 @@ Windows：WinUI 3 / C++/WinRT host ┘                              └─ 郵�
 
 完成門檻：
 
-- [ ] 真正的候選 App 升級與重啟成功，不僅是 generated fixture 成功。
-- [ ] credentials 可解密；owner、完整草稿、deliveryAttempts、Bcc、Scheduled／Pending／Learning／Reply Suggestions、calendar retry 與備份還原均逐記錄驗證；Out of Office 仍由 provider 保存，升級不得觸發寫入。
+- [x] 真正的候選 App 升級與重啟成功，不僅是 generated fixture 成功。（雙平台固定 beta.16 installer → actual candidate，CI 36357924382。）
+- [x] credentials 可解密；owner、完整草稿、deliveryAttempts、Bcc、Scheduled／Pending／Learning／Reply Suggestions、calendar retry 與備份還原均逐記錄驗證；Out of Office 仍由 provider 保存，升級不得觸發寫入。（同 run 的雙平台隔離 fixture。）
 - [ ] installer 等待 host／service 關閉，遭中斷可恢復，不覆寫私有 workspace。
 - [ ] 回退只在資料格式相容時換回 binary；不得用舊備份覆蓋新版已產生的使用者資料。
 
