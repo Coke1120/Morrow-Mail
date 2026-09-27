@@ -1,12 +1,12 @@
 # Verification — 27 September 2026
 
-## 0.6.0-beta.12 local preparation
+## 0.6.0-beta.13 local preparation
 
 Postpublication startup inspection found that beta.10's asynchronous representable update could run before a native split-view ancestor existed, leaving the sidebar at half of a restored large window. Initialization now waits for window attachment and native layout, sets only the initial divider, and never falls through an incomplete inner split to an outer one. The mail list retains native flexible sizing; the sidebar and bottom-list starting sizes are set independently.
 
 The delayed-ancestor native regression fails the beta.10 implementation and passes the correction. Checks also cover 1040/1877-point windows, bottom layout and manually adjusted dividers without a later model refresh. An isolated optimized production SwiftUI app (actual MorrowMailApp entry point, released Rust service, unique bundle/workspace and fictional cached mail) starts at a 230-point sidebar, restores a large window after quit/relaunch with the same initial sidebar width, and preserves a manual 400-point width when navigating to Today. No live provider/model request was made by these fixtures.
 
-`npm run macos:test` and `CARGO_INCREMENTAL=0 npm run macos:rust:test` passed, including full SwiftUI compilation, the split/window/WebKit checks, Node native integration and the production Rust native lifecycle/mail/draft/backup harness. Release publication still requires the unchanged paired CI gates. The unpublished beta.11 tag was blocked by a fixture assumption: a 500-point bottom pane exceeded the CI screen-constrained window minus the reader minimum. A local 620-point window reproduces the clamp to 419 points. Beta.12 chooses a manual size within actual split bounds and retains exact size-preservation assertions, with an additional short-window case and geometry diagnostics. Production code is unchanged from beta.11; its tag and failed CI evidence remain intact.
+`npm run macos:test` and `CARGO_INCREMENTAL=0 npm run macos:rust:test` passed, including full SwiftUI compilation, the split/window/WebKit checks, Node native integration and the production Rust native lifecycle/mail/draft/backup harness. Release publication still requires the unchanged paired CI gates. The unpublished beta.11 tag was blocked by a fixture assumption: a 500-point bottom pane exceeded the CI screen-constrained window minus the reader minimum. A local 620-point window reproduces the clamp to 419 points. Beta.12 chooses a manual size within actual split bounds and retains exact size-preservation assertions, with an additional short-window case and geometry diagnostics. The unpublished beta.12 tag then exposed a manually assembled NSSplitView fixture with two zero-size panes on macOS 15: the helper ran, but the fixture had not called adjustSubviews before moving the divider. The fixture now detaches its prior window content, establishes the same sidebar minimum width as production, verifies pane topology and performs native sizing before testing the divider. The isolated macOS 15 workflow passes. A separate Windows background-index fixture exceeded its whole-test five-second deadline under CI load; its bound is now 30 seconds with HTTP cancellation, preserving the gated 202-before-model-completion and exactly-two-model-calls assertions. Both targeted jobs (macOS 15 window and Windows settings) pass in [manual CI 36298216962](https://github.com/Coke1120/Morrow-Mail/actions/runs/36298216962). The final fixture still fails against the beta.10 helper locally; the current full macOS suite passes. Production code is unchanged from beta.11; both failed tags and CI evidence remain intact.
 
 ## 0.6.0-beta.10 paired prerelease
 
@@ -19,7 +19,7 @@ All six public assets were downloaded. The pinned Ed25519 signature, sizes, SHA-
 | macOS arm64 | 11,218,121 | `88fcd35ac96995e6fbb5323ba78b5909888fd230076ca46415580f88f55474bb` |
 | Windows x64 | 167,920,967 | `df6921d44031554cd47708cf5a84c82883587d4af0bd055832d83f3ff12782c1` |
 
-The cold-start sidebar issue found after publication is corrected separately in beta.12; beta.10 assets remain unchanged. Existing ad-hoc signing, unsigned Windows and incomplete live-model/provider acceptance limitations apply.
+The cold-start sidebar issue found after publication is corrected separately in beta.13; beta.10 assets remain unchanged. Existing ad-hoc signing, unsigned Windows and incomplete live-model/provider acceptance limitations apply.
 
 ## 0.6.0-beta.10 local preparation
 
