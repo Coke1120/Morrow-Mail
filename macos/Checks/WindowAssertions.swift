@@ -11,6 +11,7 @@ struct WindowAssertions {
         app.setActivationPolicy(.regular)
         for width in [1040.0, 1877.0] { checkInitialSplit(width: width, vertical: true) }
         checkInitialSplit(width: 1040, vertical: false)
+        checkInitialSplit(width: 1040, vertical: false, height: 620)
         checkInitialSplit(width: 1877, vertical: true, lateAttachment: true)
         let model = AppModel(), delegate = MorrowDelegate()
         let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 400, height: 260), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
@@ -39,8 +40,8 @@ struct WindowAssertions {
         print("Window close/reopen preserves pending work and unsaved forms.")
     }
 
-    @MainActor static func checkInitialSplit(width: CGFloat, vertical: Bool, lateAttachment: Bool = false) {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 800), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+    @MainActor static func checkInitialSplit(width: CGFloat, vertical: Bool, lateAttachment: Bool = false, height: CGFloat = 800) {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let position: CGFloat = vertical ? 230 : 240
         let host = NSHostingView(rootView: AnyView(Color.clear))
@@ -74,11 +75,18 @@ struct WindowAssertions {
                abs((vertical ? first.frame.width : first.frame.height) - position) < 2 { break }
         } while Date() < deadline
         guard let split, let first = split.subviews.first else { fatalError("Split fixture did not attach") }
-        assert(abs((vertical ? first.frame.width : first.frame.height) - position) < 2, "Initial pane size waited for an unrelated model update")
-        split.setPosition(500, ofDividerAt: 0)
+        let context = "width=\(width), vertical=\(vertical), lateAttachment=\(lateAttachment), bounds=\(split.bounds)"
+        assert(abs((vertical ? first.frame.width : first.frame.height) - position) < 2, "Initial pane size waited for an unrelated model update: \(context), pane=\(first.frame)")
+        // AppKit constrains the window to its screen; leave room for the other
+        // pane's minimum size instead of requesting an impossible 500 points.
+        let extent = vertical ? split.bounds.width : split.bounds.height
+        let minimumOther: CGFloat = lateAttachment ? 0 : (vertical ? 320 : 200)
+        let manual = min(position + 100, extent - minimumOther - split.dividerThickness)
+        assert(manual > position + 20, "Fixture has no room to resize: \(context)")
+        split.setPosition(manual, ofDividerAt: 0)
         host.layoutSubtreeIfNeeded()
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-        assert(abs((vertical ? first.frame.width : first.frame.height) - 500) < 2, "Initial sizing reset the user's divider")
+        assert(abs((vertical ? first.frame.width : first.frame.height) - manual) < 2, "Initial sizing reset the user's divider: \(context), requested=\(manual), pane=\(first.frame)")
         window.close()
     }
 }

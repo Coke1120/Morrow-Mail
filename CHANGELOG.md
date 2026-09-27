@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.0-beta.11 — 2026-09-27
+## 0.6.0-beta.12 — 2026-09-27
 
 - Fix beta.10 sidebar sizing on cold launch: wait for the native split view to attach and lay out before setting its initial divider. Keep subsequent user resizing intact.
 - Cover delayed attachment, narrow/wide windows, bottom layout and user-adjusted dividers in the native window checks.

@@ -8,7 +8,7 @@ The app's authoritative behavior list is [`shared/features.js`](shared/features.
 
 0.6.0-beta.10 adds a **Today** dashboard in both clients using existing per-account reports (latest 20, local report day), allows reviewed embedding batches to continue after leaving Settings, and moves native toolbar actions into the sidebar/list/reader. Workspace appears first; native panes can expand with the window and the macOS View menu exposes reading layouts. OAuth and embedding failures show safe, specific diagnostics; temporary refresh errors do not imply credentials were deleted.
 
-0.6.0-beta.11 fixes delayed native split-view initialization on cold launch; pane resizing remains available.
+0.6.0-beta.12 fixes delayed native split-view initialization on cold launch; pane resizing remains available.
 
 ## Status definitions
 
