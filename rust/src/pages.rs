@@ -28,7 +28,7 @@ const FIELDS: &[(&str, usize)] = &[
     ("deliveryStatus", 40),
 ];
 const FOLDERS: &[&str] = &[
-    "inbox", "starred", "sent", "drafts", "archive", "spam", "trash",
+    "inbox", "starred", "pending", "sent", "drafts", "archive", "spam", "trash",
 ];
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
@@ -67,6 +67,11 @@ pub fn summary(message: &Value) -> Value {
     }
     result["read"] = json!(message["read"] == true || message["read"] == 1);
     result["starred"] = json!(message["starred"] == true || message["starred"] == 1);
+    result["pending"] = json!(message["pending"] == true || message["pending"] == 1);
+    if let Some(value) = message["scheduledSend"].as_object() {
+        result["scheduledSend"] =
+            json!({"id":value.get("id"),"sendAt":value.get("sendAt"),"status":value.get("status")});
+    }
     result
 }
 pub fn owned(account: &str, mut message: Value) -> Value {
@@ -127,6 +132,14 @@ pub fn stats(store: &Store, accounts: &[String]) -> Result<Value> {
             entry["counts"]["starred"] =
                 (entry["counts"]["starred"].as_i64().unwrap_or(0) + starred).into();
         }
+    }
+    let mut pending = store.conn.prepare(&format!("SELECT account,count(*) FROM messages WHERE json_extract(data,'$.pending')=1 AND account IN ({scope}) AND COALESCE(json_extract(data,'$.folder'),'') NOT IN ('trash','spam') GROUP BY account"))?;
+    let counts = pending.query_map(params_from_iter(accounts), |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    for count in counts {
+        let (account, count) = count?;
+        result[&account]["counts"]["pending"] = count.into();
     }
     Ok(result)
 }
@@ -197,6 +210,8 @@ pub(crate) fn page_at(
     let mut params: Vec<Sql> = accounts.iter().cloned().map(Sql::Text).collect();
     if options.folder == "starred" {
         conditions.push("d.starred=1 AND d.folder NOT IN ('trash','spam')".into());
+    } else if options.folder == "pending" {
+        conditions.push("d.rowid IN (SELECT rowid FROM messages WHERE json_extract(data,'$.pending')=1) AND d.folder NOT IN ('trash','spam')".into());
     } else if !options.folder.is_empty() {
         conditions.push("d.folder=?".into());
         params.push(options.folder.clone().into());
@@ -334,6 +349,8 @@ pub(crate) fn page_at(
         .chain([
             "'read',json_extract(m.data,'$.read')".into(),
             "'starred',json_extract(m.data,'$.starred')".into(),
+            "'pending',json_extract(m.data,'$.pending')".into(),
+            "'scheduledSend',json_extract(m.data,'$.scheduledSend')".into(),
         ])
         .collect::<Vec<_>>()
         .join(",");

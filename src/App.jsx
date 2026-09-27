@@ -14,11 +14,15 @@ import ActivityStatus from './ActivityStatus';
 import Dashboard from './Dashboard';
 import Studio from './Studio';
 import Calendar from './Calendar';
+import Scheduled, { scheduledReview, ScheduledReview } from './Scheduled';
+import ReplySuggestions from './ReplySuggestions';
+import OutOfOffice from './OutOfOffice';
 import { AI_BEHAVIORS, DEFAULT_POLICY, DEFAULT_PREFERENCES } from '../shared/features';
 
 const messageKey = message => message?.viewId || JSON.stringify([message?.accountId, message?.id]);
 const folders = [
   { id: 'inbox', name: 'Inbox', icon: Inbox }, { id: 'starred', name: 'Starred', icon: Star },
+  { id: 'pending', name: 'Pending', icon: CheckCheck },
   { id: 'sent', name: 'Sent', icon: Send }, { id: 'drafts', name: 'Drafts', icon: FilePenLine },
   { id: 'archive', name: 'Archive', icon: Archive }, { id: 'spam', name: 'Spam', icon: ShieldCheck }, { id: 'trash', name: 'Trash', icon: Trash2 },
 ];
@@ -93,7 +97,7 @@ function AutomaticAssistance({ messageId, account, trigger, policy, modelKey, on
   </section>;
 }
 
-export function Compose({ initial, account: currentAccount, accounts, preferences, footer, policy, modelKey, onClose, onSaved, onSent, onSettings, notify }) {
+export function Compose({ initial, account: currentAccount, accounts, preferences, footer, policy, modelKey, onClose, onSaved, onSent, onScheduled, onSettings, notify }) {
   if (initial?.providerDraft) initial = copyProviderDraft(initial);
   const [owner, setOwner] = useState(initial?.id || initial?.replyToId || initial?.forwarding || initial?.sourceDraft ? initial.accountId || '' : initial?.accountId || (currentAccount.id === 'all' ? accounts[0]?.id || '' : currentAccount.id));
   const account = accounts.find(item => item.id === owner) || { id: owner, email: owner, mode: 'live' };
@@ -106,13 +110,16 @@ export function Compose({ initial, account: currentAccount, accounts, preference
   const [needsReview, setNeedsReview] = useState(initial?.deliveryStatus === 'unconfirmed');
   const [deliveryReviewed, setDeliveryReviewed] = useState(false);
   const [reviewSend, setReviewSend] = useState(false);
+  const [scheduleOpen, setScheduleOpen] = useState(false), [sendAt, setSendAt] = useState(''), [scheduleReview, setScheduleReview] = useState(null), [scheduleUnconfirmed, setScheduleUnconfirmed] = useState(false);
+  const scheduleLock = ['scheduled', 'sending'].includes(initial?.scheduledSend?.status);
   const [showAI, setShowAI] = useState(false);
   const [aiAction, setAiAction] = useState('write');
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiBusy, setAiBusy] = useState(false);
   const [aiResult, setAiResult] = useState(null);
   const aiAllowed = policy.enabled && policy.behaviors[aiAction] && (aiAction === 'write' || (policy.folders.drafts && policy.content.body));
-  const dirty = JSON.stringify({ to: draft.to, cc: draft.cc, bcc: draft.bcc, subject: draft.subject, body: draft.body, footer: draft.footer }) !== saved || (!draft.id && [draft.to, draft.cc, draft.bcc, draft.subject, draft.body].some(value => value.trim()));
+  const editingLocked = !!busy || needsReview || !!scheduleLock || scheduleUnconfirmed;
+  const dirty = scheduleOpen || JSON.stringify({ to: draft.to, cc: draft.cc, bcc: draft.bcc, subject: draft.subject, body: draft.body, footer: draft.footer }) !== saved || (!draft.id && [draft.to, draft.cc, draft.bcc, draft.subject, draft.body].some(value => value.trim()));
   useEffect(() => {
     if (!dirty) return;
     const warn = event => { event.preventDefault(); event.returnValue = ''; };
@@ -122,10 +129,14 @@ export function Compose({ initial, account: currentAccount, accounts, preference
   useEffect(() => () => { aiRequest.current += 1; }, []);
   useEffect(() => { aiRequest.current += 1; setAiBusy(false); setAiResult(null); }, [JSON.stringify(policy)]);
 
-  function edit(field, value) { setReviewSend(false); aiRequest.current += 1; setAiBusy(false); setAiResult(null); setDraft(previous => ({ ...previous, [field]: value, requestId: crypto.randomUUID() })); }
-  function close() { if (!busy && (!dirty || window.confirm('Discard your unsaved changes? Save draft to keep them.'))) onClose(); }
+  function edit(field, value) { if (editingLocked) return; setReviewSend(false); setScheduleReview(null); aiRequest.current += 1; setAiBusy(false); setAiResult(null); setDraft(previous => ({ ...previous, [field]: value, requestId: crypto.randomUUID() })); }
+  function close() {
+    if (busy) return;
+    if (scheduleUnconfirmed) { if (window.confirm('Scheduling could not be confirmed. Close this draft and check Scheduled before sending or creating another schedule?')) { onClose(); onScheduled?.(); } return; }
+    if (!dirty || window.confirm('Discard your unsaved changes? Save draft to keep them.')) onClose();
+  }
   async function generate() {
-    if (aiBusy || busy || !aiAllowed) return;
+    if (aiBusy || editingLocked || !aiAllowed) return;
     const request = ++aiRequest.current;
     setAiBusy(true); setAiResult(null); setError('');
     try {
@@ -135,7 +146,7 @@ export function Compose({ initial, account: currentAccount, accounts, preference
     finally { if (request === aiRequest.current) setAiBusy(false); }
   }
   async function submit(send, confirmed = false) {
-    if (sendLock.current || (send && needsReview && !deliveryReviewed)) return;
+    if (sendLock.current || scheduleOpen || scheduleUnconfirmed || scheduleLock || (needsReview && (!send || !deliveryReviewed))) return;
     if (!accounts.some(item => item.id === owner)) { setError('Reconnect the original mailbox before saving or sending this draft.'); return; }
     if (send && !confirmed) { setReviewSend(true); return; }
     sendLock.current = true; setReviewSend(false);
@@ -163,6 +174,27 @@ export function Compose({ initial, account: currentAccount, accounts, preference
     }
     finally { sendLock.current = false; setBusy(''); }
   }
+  function reviewSchedule() {
+    if (sendLock.current || aiBusy || editingLocked) return;
+    if (!accounts.some(item => item.id === owner) || ['all', 'demo'].includes(owner)) { setError('Choose the connected mailbox that owns this draft.'); return; }
+    try {
+      setError(''); setReviewSend(false);
+      setScheduleReview(scheduledReview(draft, owner, sendAt));
+    } catch (cause) { setError(cause.message); }
+  }
+  async function confirmSchedule() {
+    if (sendLock.current || !scheduleReview || needsReview || scheduleLock || scheduleReview.owner !== owner) return;
+    if (!accounts.some(item => item.id === scheduleReview.owner)) { setError('Reconnect the original mailbox before scheduling this draft.'); return; }
+    sendLock.current = true; setBusy('schedule'); setError('');
+    try {
+      const result = await api('/scheduled', { account: scheduleReview.owner, method: 'POST', body: JSON.stringify(scheduleReview.payload) });
+      if (result.job?.id !== scheduleReview.payload.requestId || result.job.accountId !== scheduleReview.owner || result.job.sendAt !== scheduleReview.payload.sendAt) throw new Error('The schedule could not be confirmed.');
+      onSaved(result.message); notify(result.job.status === 'scheduled' ? 'Scheduled on this device. Keep Morrow open to send.' : 'Schedule request found. Check its current status in Scheduled.'); onClose(); onScheduled?.();
+    } catch (cause) {
+      setError(cause.message);
+      if (!cause.status || cause.status >= 500) { setScheduleUnconfirmed(true); setError('Scheduling could not be confirmed. Retry this exact request or close and check Scheduled before sending or creating another schedule.'); }
+    } finally { sendLock.current = false; setBusy(''); }
+  }
   useEffect(() => {
     const shortcut = event => {
       if (!(event.ctrlKey || event.metaKey) || busy || aiBusy) return;
@@ -172,26 +204,32 @@ export function Compose({ initial, account: currentAccount, accounts, preference
     document.addEventListener('keydown', shortcut); return () => document.removeEventListener('keydown', shortcut);
   });
   return <Modal title={draft.replyToId ? 'A thoughtful reply' : initial?.forwarding ? 'Forward message' : 'A fresh conversation'} description={account.mode === 'demo' ? 'Demo mode · Sending is simulated. No email leaves your device.' : `Sending from ${preferences.displayName || account.name || ''} <${account.email}>`} onClose={close} closeDisabled={!!busy} className="compose-modal">
-    <form className="compose-form" onSubmit={event => { event.preventDefault(); submit(true); }}>
-      <label className="compose-field"><span>From</span><select aria-label="Sending account" value={owner} disabled={!!busy || aiBusy || !!draft.id || !!draft.replyToId || initial?.forwarding || initial?.sourceDraft || needsReview} onChange={event => { setOwner(event.target.value); setAiResult(null); setDraft(previous => ({ ...previous, requestId: crypto.randomUUID() })); }}>{accounts.map(item => <option key={item.id} value={item.id}>{item.email}</option>)}</select></label>
+    <form className="compose-form" onSubmit={event => { event.preventDefault(); if (scheduleOpen) reviewSchedule(); else submit(true); }}>
+      <label className="compose-field"><span>From</span><select aria-label="Sending account" value={owner} disabled={editingLocked || aiBusy || !!draft.id || !!draft.replyToId || initial?.forwarding || initial?.sourceDraft} onChange={event => { setOwner(event.target.value); setReviewSend(false); setScheduleReview(null); aiRequest.current++; setAiResult(null); setDraft(previous => ({ ...previous, requestId: crypto.randomUUID() })); }}>{accounts.map(item => <option key={item.id} value={item.id}>{item.email}</option>)}</select></label>
       {(initial?.sourceDraft) && <small className="reply-owner">Editing a local copy without attachments. The original Gmail draft stays in Gmail; changes here are not uploaded to it.</small>}
       {initial?.forwarding && <small className="reply-owner">Forwarding the message text. Attachments are not included.</small>}
       {draft.replyToId && <small className="reply-owner"><ShieldCheck size={14} />Replying from the mailbox that received this conversation.</small>}
       {initial?.replyToId && !initial.id && !initial.body && !needsReview && <AutomaticAssistance messageId={initial.replyToId} account={owner} trigger="onReply" policy={policy} modelKey={modelKey} onUse={text => { if (!busy && (!draft.body || window.confirm('Replace your current draft text with this suggestion?'))) edit('body', text); }} />}
-      {['to', 'cc', 'bcc'].map(field => <label className="compose-field" key={field}><span>{field === 'to' ? 'To' : field === 'cc' ? 'Cc' : 'Bcc'}</span><input aria-label={field.toUpperCase()} value={draft[field]} onChange={event => edit(field, event.target.value)} placeholder="Email addresses, separated by commas or semicolons" autoFocus={field === 'to'} disabled={!!busy || needsReview} /></label>)}
+      {['to', 'cc', 'bcc'].map(field => <label className="compose-field" key={field}><span>{field === 'to' ? 'To' : field === 'cc' ? 'Cc' : 'Bcc'}</span><input aria-label={field.toUpperCase()} value={draft[field]} onChange={event => edit(field, event.target.value)} placeholder="Email addresses, separated by commas or semicolons" autoFocus={field === 'to'} disabled={editingLocked} /></label>)}
       <small>Up to 100 plain email addresses across To, Cc and Bcc. Bcc stays hidden from other recipients.</small>
-      <label className="compose-field"><span>Subject</span><input value={draft.subject} onChange={event => edit('subject', event.target.value)} placeholder="What’s on your mind?" disabled={!!busy || needsReview} /></label>
-      <div className="compose-ai-toggle"><button type="button" className="button ghost" onClick={() => setShowAI(!showAI)} aria-expanded={showAI} disabled={needsReview}><Sparkles size={15} />Writing assistant<ChevronDown size={13} /></button><span>{preferences.replyTone} · {preferences.language}</span></div>
-      {showAI && !needsReview && <div className="compose-ai-panel"><div className="compose-ai-tools"><label>Action<select value={aiAction} disabled={aiBusy || !!busy} onChange={event => { setAiAction(event.target.value); setAiResult(null); }}><option value="write">Write from instructions</option><option value="rewrite">Rewrite this draft</option><option value="translate">Translate this draft</option></select></label><label>{aiAction === 'translate' ? 'Language / instructions' : 'Instructions'}<input value={aiPrompt} maxLength={2000} disabled={aiBusy || !!busy} onChange={event => { setAiPrompt(event.target.value); setAiResult(null); }} placeholder={aiAction === 'translate' ? `Translate into ${preferences.translationLanguage || preferences.language}` : aiAction === 'write' ? 'Thank Sam for the proposal and ask for a call Friday' : 'Make this clearer and more concise'} /></label><button type="button" className="button secondary" onClick={generate} disabled={!aiAllowed || aiBusy || !!busy || (aiAction === 'write' ? !aiPrompt.trim() : !draft.body.trim())}>{aiBusy ? <LoaderCircle size={15} className="spinning" /> : <Sparkles size={15} />}Preview</button></div>
+      <label className="compose-field"><span>Subject</span><input value={draft.subject} onChange={event => edit('subject', event.target.value)} placeholder="What’s on your mind?" disabled={editingLocked} /></label>
+      <div className="compose-ai-toggle"><button type="button" className="button ghost" onClick={() => setShowAI(!showAI)} aria-expanded={showAI} disabled={editingLocked}><Sparkles size={15} />Writing assistant<ChevronDown size={13} /></button><span>{preferences.replyTone} · {preferences.language}</span></div>
+      {showAI && !editingLocked && <div className="compose-ai-panel"><div className="compose-ai-tools"><label>Action<select value={aiAction} disabled={aiBusy || !!busy} onChange={event => { setAiAction(event.target.value); setAiResult(null); }}><option value="write">Write from instructions</option><option value="rewrite">Rewrite this draft</option><option value="translate">Translate this draft</option></select></label><label>{aiAction === 'translate' ? 'Language / instructions' : 'Instructions'}<input value={aiPrompt} maxLength={2000} disabled={aiBusy || !!busy} onChange={event => { setAiPrompt(event.target.value); setAiResult(null); }} placeholder={aiAction === 'translate' ? `Translate into ${preferences.translationLanguage || preferences.language}` : aiAction === 'write' ? 'Thank Sam for the proposal and ask for a call Friday' : 'Make this clearer and more concise'} /></label><button type="button" className="button secondary" onClick={generate} disabled={!aiAllowed || aiBusy || !!busy || (aiAction === 'write' ? !aiPrompt.trim() : !draft.body.trim())}>{aiBusy ? <LoaderCircle size={15} className="spinning" /> : <Sparkles size={15} />}Preview</button></div>
         {!aiAllowed && <div className="policy-notice"><ShieldCheck size={14} /><span>This action is disabled by your AI permissions.</span><button type="button" onClick={() => { if (!dirty || window.confirm('Discard unsaved changes and open settings?')) { onClose(); onSettings(); } }}>Settings</button></div>}
         {aiResult && <div className="compose-ai-preview"><div><strong>Review before inserting</strong><span>{aiResult.source === 'demo' ? 'ILLUSTRATIVE DEMO' : 'AI GENERATED'}</span></div><pre>{aiResult.text}</pre><button type="button" className="button primary" onClick={() => edit('body', aiResult.text)}>Replace draft text<ArrowRight size={14} /></button></div>}
       </div>}
-      <textarea className="compose-body" aria-label="Message body" placeholder="Make someone's inbox a little brighter…" value={draft.body} onChange={event => edit('body', event.target.value)} required disabled={!!busy || needsReview} />
-      {(draft.footer?.text || draft.footer?.html) && <section className="draft-signature"><header><strong>Email footer</strong><button type="button" className="button ghost" disabled={!!busy || needsReview} onClick={() => edit('footer', { text: '', html: '' })}>Remove</button></header><FooterPreview footer={draft.footer} /></section>}
+      <textarea className="compose-body" aria-label="Message body" placeholder="Make someone's inbox a little brighter…" value={draft.body} onChange={event => edit('body', event.target.value)} required disabled={editingLocked} />
+      {(draft.footer?.text || draft.footer?.html) && <section className="draft-signature"><header><strong>Email footer</strong><button type="button" className="button ghost" disabled={editingLocked} onClick={() => edit('footer', { text: '', html: '' })}>Remove</button></header><FooterPreview footer={draft.footer} /></section>}
+      {scheduleLock && <div className="inline-error" role="status"><p>This draft belongs to a scheduled delivery. Cancel its schedule before editing or sending. A delivery that has already started cannot be cancelled.</p><button type="button" className="button secondary" disabled={!!busy} onClick={() => { onClose(); onScheduled?.(); }}>Open Scheduled</button></div>}
+      {!needsReview && <section className="compose-schedule" aria-label="Send timing">
+        <label><input type="checkbox" checked={scheduleOpen} disabled={editingLocked || aiBusy || account.mode === 'demo'} onChange={event => { setScheduleOpen(event.target.checked); setReviewSend(false); setScheduleReview(null); }} />Schedule send</label>
+        {scheduleOpen && <><label>Send date and time<input type="datetime-local" required value={sendAt} disabled={editingLocked} onChange={event => { setSendAt(event.target.value); setScheduleReview(null); }} /></label><small>Time zone: {Intl.DateTimeFormat().resolvedOptions().timeZone}. Morrow must be open to send. It may send up to 15 minutes late; later sends are marked missed and require review.</small></>}
+      </section>}
+      {scheduleReview && <ScheduledReview review={scheduleReview} busy={!!busy} locked={!!scheduleLock} uncertain={scheduleUnconfirmed} onConfirm={confirmSchedule} onEdit={() => setScheduleReview(null)} />}
       {needsReview && <div className="inline-error" role="alert"><p>This delivery is unconfirmed. Check your provider’s Sent folder before retrying. The saved draft is preserved; another send may create a duplicate.</p><label><input type="checkbox" checked={deliveryReviewed} disabled={!!busy} onChange={event => setDeliveryReviewed(event.target.checked)} /> I checked Sent and want to retry this delivery.</label></div>}
       {error && <div className="inline-error" role="alert">{error}</div>}
-      {reviewSend && <section className="compose-ai-panel" aria-label="Send review"><strong>Review recipients before sending</strong><pre>{`From: ${account.email}\nTo: ${draft.to}\nCc: ${draft.cc}\nBcc: ${draft.bcc}\nSubject: ${draft.subject || '(No subject)'}`}</pre><button type="button" className="button primary" disabled={!!busy} onClick={() => submit(true, true)}>Confirm send</button><button type="button" className="button secondary" onClick={() => setReviewSend(false)}>Cancel review</button></section>}
-      <div className="compose-footer"><div className="compose-note"><ShieldCheck size={15} /><span>Review first. Send when ready.</span></div><div className="compose-actions"><button type="button" className="button secondary" onClick={() => submit(false)} disabled={!!busy || needsReview}>{busy === 'save' && <LoaderCircle size={16} className="spinning" />}Save draft</button><button type="submit" className="button primary" disabled={!!busy || (needsReview && !deliveryReviewed)}>{busy === 'send' ? <LoaderCircle size={16} className="spinning" /> : <Send size={16} />}{account.mode === 'demo' ? 'Send demo' : 'Send email'}</button></div></div>
+      {reviewSend && !scheduleOpen && <section className="compose-ai-panel" aria-label="Send review"><strong>Review recipients before sending</strong><pre>{`From: ${account.email}\nTo: ${draft.to}\nCc: ${draft.cc}\nBcc: ${draft.bcc}\nSubject: ${draft.subject || '(No subject)'}`}</pre><button type="button" className="button primary" disabled={!!busy} onClick={() => submit(true, true)}>Confirm send</button><button type="button" className="button secondary" onClick={() => setReviewSend(false)}>Cancel review</button></section>}
+      <div className="compose-footer"><div className="compose-note"><ShieldCheck size={15} /><span>Review first. Send when ready.</span></div><div className="compose-actions"><button type="button" className="button secondary" onClick={() => submit(false)} disabled={editingLocked || scheduleOpen}>{busy === 'save' && <LoaderCircle size={16} className="spinning" />}Save draft</button><button type="submit" className="button primary" disabled={!!busy || !!scheduleLock || scheduleUnconfirmed || (needsReview && !deliveryReviewed) || (scheduleOpen && aiBusy)}>{busy === 'send' ? <LoaderCircle size={16} className="spinning" /> : <Send size={16} />}{scheduleOpen ? 'Review schedule' : account.mode === 'demo' ? 'Send demo' : 'Send email'}</button></div></div>
     </form>
   </Modal>;
 }
@@ -243,6 +281,7 @@ export default function App() {
   const [calendarBusy, setCalendarBusy] = useState(false);
   const [studioDirty, setStudioDirty] = useState(false);
   const [studioBusy, setStudioBusy] = useState(false);
+  const [workspaceDirty, setWorkspaceDirty] = useState(false), [workspaceBusy, setWorkspaceBusy] = useState(false);
   const [studioSelectedId, setStudioSelectedId] = useState(null);
   const [studioInitialTab, setStudioInitialTab] = useState('tools');
   const settingsOpen = page === 'settings';
@@ -315,7 +354,7 @@ export default function App() {
     return () => media.removeEventListener('change', update);
   }, [preferences.theme]);
   useEffect(() => {
-    if (!state || compose || organizing || settingsOpen || calendarBusy || calendarDirty || studioBusy || studioDirty || aiBusy || syncing || pendingIds.size) return;
+    if (!state || compose || organizing || settingsOpen || calendarBusy || calendarDirty || studioBusy || studioDirty || workspaceBusy || workspaceDirty || aiBusy || syncing || pendingIds.size) return;
     let active = true, pending = false;
     // The service owns provider polling; clients only refresh their visible account.
     const timer = window.setInterval(async () => {
@@ -327,7 +366,7 @@ export default function App() {
       finally { pending = false; }
     }, 30000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [!!state, state?.account.id, compose, organizing, settingsOpen, calendarBusy, calendarDirty, studioBusy, studioDirty, aiBusy, syncing, pendingIds.size]);
+  }, [!!state, state?.account.id, compose, organizing, settingsOpen, calendarBusy, calendarDirty, studioBusy, studioDirty, workspaceBusy, workspaceDirty, aiBusy, syncing, pendingIds.size]);
   useEffect(() => {
     const media = window.matchMedia('(max-width: 760px)');
     const update = () => setIsNarrow(media.matches);
@@ -338,7 +377,7 @@ export default function App() {
     function shortcut(event) {
       if (readerAI) return;
       const editing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
-      if ((event.ctrlKey || event.metaKey) && !compose && !settingsBusy && !calendarBusy && !studioBusy && !syncing) {
+      if ((event.ctrlKey || event.metaKey) && !compose && !settingsBusy && !calendarBusy && !studioBusy && !workspaceBusy && !syncing) {
         const key = event.key.toLowerCase();
         if (key === 'n') { event.preventDefault(); if (!hasMailbox) setSettingsOpen(true, 'mail'); else if (navigate('mail')) setCompose({}); }
         if (key === 'f') { event.preventDefault(); if (navigate('mail')) searchInput.current?.focus(); }
@@ -354,16 +393,16 @@ export default function App() {
 
   const hasMailbox = !!state?.accounts.length && state.account.id !== 'demo';
   const messages = hasMailbox ? state.messages : [];
-  const mail = useMailPage(hasMailbox && page !== 'today' ? state.account.id : null, state?.revision, { folder, category, sort: preferences.sort });
+  const mail = useMailPage(hasMailbox && !['today', 'scheduled', 'suggestions', 'out-of-office'].includes(page) ? state.account.id : null, state?.revision, { folder, category, sort: preferences.sort });
   const filtered = hasMailbox ? searchResult?.messages ?? mail.messages : [];
   const selectedRow = filtered.find(message => messageKey(message) === selectedId) ||
-    (detail && (!selectedId || messageKey(detail) === selectedId) && !searchResult && (state?.account.id === detail.accountId || state?.account.id === 'all' && state.accounts.some(a => a.id === detail.accountId)) && (folder === 'starred' ? detail.starred && !['trash', 'spam'].includes(detail.folder) : detail.folder === folder) && (category === 'all' || detail.category === category) ? detail : filtered[0]) || null;
+    (detail && (!selectedId || messageKey(detail) === selectedId) && !searchResult && (state?.account.id === detail.accountId || state?.account.id === 'all' && state.accounts.some(a => a.id === detail.accountId)) && (folder === 'pending' ? detail.pending && !['trash', 'spam'].includes(detail.folder) : folder === 'starred' ? detail.starred && !['trash', 'spam'].includes(detail.folder) : detail.folder === folder) && (category === 'all' || detail.category === category) ? detail : filtered[0]) || null;
   const detailLoaded = !!selectedRow && messageKey(detail) === messageKey(selectedRow);
   const selected = detailLoaded ? { ...selectedRow, ...detail } : selectedRow;
   const unread = (state?.accounts || []).filter(item => state.account.id === 'all' || item.id === state.account.id).reduce((sum, item) => sum + item.unread, 0);
   useEffect(() => {
     setDetailError('');
-    if (page === 'today' || !selectedRow) return;
+    if (['today', 'scheduled', 'suggestions', 'out-of-office'].includes(page) || !selectedRow) return;
     const controller = new AbortController();
     api('/messages/' + encodeURIComponent(selectedRow.id), { account: selectedRow.accountId, signal: controller.signal })
       .then(result => { if (!controller.signal.aborted) { setDetail(result.message); if (draftToOpen === messageKey(result.message)) { setCompose(result.message); setDraftToOpen(null); } } })
@@ -386,6 +425,7 @@ export default function App() {
       setDetail(previous => messageKey(previous) === messageKey(result.message) ? result.message : previous);
       localUpdate();
       if (!silent && changes.folder) notify(changes.folder === 'archive' ? 'Moved to Archive on this device.' : changes.folder === 'trash' ? 'Moved to Trash on this device.' : 'Moved to Inbox on this device.');
+      if (!silent && 'pending' in changes) notify(changes.pending ? 'Marked pending on this device.' : 'Removed from Pending on this device.');
     } catch (cause) { if (version === accountVersion.current) notify(cause.message, 'error'); }
     finally { setPendingIds(previous => { const next = new Set(previous); next.delete(messageKey(message)); return next; }); }
   }, [localUpdate, notify, state?.account.email, state?.account.mode]);
@@ -413,6 +453,11 @@ export default function App() {
       if (studioBusy) { notify('Wait for AI Studio to finish.', 'error'); return false; }
       if (studioDirty && !window.confirm('Discard unsaved AI Studio changes?')) return false;
       setStudioDirty(false);
+    }
+    if (['scheduled', 'suggestions', 'out-of-office'].includes(page) && next !== page) {
+      if (workspaceBusy) { notify('Wait for the current operation to finish.', 'error'); return false; }
+      if (workspaceDirty && !window.confirm('Discard your unsaved workspace changes?')) return false;
+      setWorkspaceDirty(false);
     }
     setPage(next); setSidebarOpen(false); return true;
   }
@@ -448,7 +493,7 @@ export default function App() {
     catch (error) { notify(error.message, 'error'); }
   }
   async function selectAccount(accountId, nextFolder = 'inbox', nextPage = 'mail') {
-    if (syncLock.current || syncing || settingsBusy || pendingIds.size || compose || !navigate(nextPage)) return;
+    if (syncLock.current || syncing || settingsBusy || workspaceBusy || pendingIds.size || compose || !navigate(nextPage)) return;
     if (accountId === state.account.id) { if (nextPage === 'mail') changeFolder(nextFolder); return; }
     syncLock.current = true; setSyncing(true);
     try { applyState(await api('/account/select', { method: 'POST', body: JSON.stringify({ accountId }) })); setFolder(nextFolder); setSidebarOpen(false); }
@@ -463,12 +508,15 @@ export default function App() {
     {sidebarOpen && <button className="nav-backdrop" aria-label="Close navigation" onClick={() => setSidebarOpen(false)} />}
     <aside className="sidebar" aria-label="Mailbox navigation">
       <a href="#" className="brand" onClick={event => { event.preventDefault(); changeFolder('inbox'); }}><img className="brand-image" src="/brand/morrow-icon.svg" alt="" /><span>morrow<span className="brand-dot">.</span></span><span className="open-tag">OPEN</span></a>
-      <button className="compose-button" disabled={settingsBusy || !hasMailbox} onClick={() => { setCompose({}); setSidebarOpen(false); }}><Pencil size={18} />Compose<span><Plus size={16} /></span></button>
+      <button className="compose-button" disabled={settingsBusy || workspaceBusy || !hasMailbox} onClick={() => { setCompose({}); setSidebarOpen(false); }}><Pencil size={18} />Compose<span><Plus size={16} /></span></button>
       <div className="nav-label">WORKSPACE</div>
       <button className={`nav-item today-nav ${page === 'today' ? 'active' : ''}`} onClick={() => navigate('today')} aria-current={page === 'today' ? 'page' : undefined}><CalendarDays size={19} /><span>Today</span></button>
       <button className={`nav-item studio-nav ${page === 'studio' ? 'active' : ''}`} onClick={openStudio} aria-current={page === 'studio' ? 'page' : undefined}><Sparkles size={19} /><span>AI Studio</span><span className="tiny-tag">{AI_BEHAVIORS.length}</span></button>
       <button className={`nav-item ${page === 'calendar' ? 'active' : ''}`} onClick={() => navigate('calendar')} aria-current={page === 'calendar' ? 'page' : undefined}><CalendarDays size={19} /><span>Calendar</span></button>
       <button className={`nav-item assistant-nav ${assistantOpen ? 'selected' : ''}`} disabled={!hasMailbox} onClick={() => { if (navigate('mail')) setAssistantOpen(previous => !previous); }}><Sparkles size={19} /><span>AI assistant</span><span className="tiny-tag">AI</span></button>
+      <button className={`nav-item ${page === 'scheduled' ? 'active' : ''}`} onClick={() => navigate('scheduled')} aria-current={page === 'scheduled' ? 'page' : undefined}><CalendarDays size={19} /><span>Scheduled</span></button>
+      <button className={`nav-item ${page === 'suggestions' ? 'active' : ''}`} onClick={() => navigate('suggestions')} aria-current={page === 'suggestions' ? 'page' : undefined}><ReplyAll size={19} /><span>Reply Suggestions</span></button>
+      <button className={`nav-item ${page === 'out-of-office' ? 'active' : ''}`} onClick={() => navigate('out-of-office')} aria-current={page === 'out-of-office' ? 'page' : undefined}><MailOpen size={19} /><span>Out of Office</span></button>
       <div className="nav-label">ACCOUNTS</div>
       <nav aria-label="Account views" className="account-groups">
         {[...(state.accounts.length ? [{ id: 'all', email: 'All accounts', provider: 'Combined mail' }] : []), ...state.accounts].map(account => <AccountGroup key={account.id} account={account} active={state.account.id === account.id}>
@@ -476,7 +524,7 @@ export default function App() {
             const Icon = item.icon;
             const count = account.id === 'all' ? state.accounts.reduce((total, row) => total + (item.id === 'inbox' ? row.unread : row.counts?.[item.id] || 0), 0) : item.id === 'inbox' ? account.unread : account.counts?.[item.id] || 0;
             const active = state.account.id === account.id && page === 'mail' && folder === item.id;
-            return <button key={item.id} className={`nav-item ${active ? 'active' : ''}`} disabled={syncing || settingsBusy || pendingIds.size > 0} onClick={() => selectAccount(account.id, item.id)} aria-current={active ? 'page' : undefined}><Icon size={16} /><span>{item.name}</span>{['inbox', 'drafts'].includes(item.id) && count > 0 && <span className="nav-count">{count}</span>}</button>;
+            return <button key={item.id} className={`nav-item ${active ? 'active' : ''}`} disabled={syncing || settingsBusy || workspaceBusy || pendingIds.size > 0} onClick={() => selectAccount(account.id, item.id)} aria-current={active ? 'page' : undefined}><Icon size={16} /><span>{item.name}</span>{['inbox', 'drafts', 'pending'].includes(item.id) && count > 0 && <span className="nav-count">{count}</span>}</button>;
           })}
         </AccountGroup>)}
       </nav>
@@ -489,10 +537,10 @@ export default function App() {
     </aside>
 
     <main className="workspace">
-      <header className="topbar"><div className="breadcrumbs"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}><Menu size={20} /></button><span className="breadcrumb-home">Workspace</span><ChevronRight size={13} /><strong>{page === 'today' ? 'Today' : page === 'settings' ? 'Settings' : page === 'studio' ? 'AI Studio' : page === 'calendar' ? 'Calendar' : currentFolder.name}</strong></div><div className="topbar-right"><span className={`mode-badge ${state.account.mode}`}><span />{page === 'calendar' ? 'Live calendars' : !hasMailbox ? 'No mailbox selected' : 'Connected'}</span><button className="topbar-sync" aria-label="Sync mail" onClick={() => sync()} disabled={!hasMailbox || syncing || settingsBusy || pendingIds.size > 0}><RefreshCw size={14} className={syncing ? 'spinning' : ''} /><span>{syncing ? 'Syncing…' : 'Sync mail'}</span></button><span className="topbar-separator" /><IconButton icon={SettingsIcon} label="Settings and connections" onClick={() => setSettingsOpen(true)} /></div></header>
+      <header className="topbar"><div className="breadcrumbs"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}><Menu size={20} /></button><span className="breadcrumb-home">Workspace</span><ChevronRight size={13} /><strong>{page === 'scheduled' ? 'Scheduled' : page === 'suggestions' ? 'Reply Suggestions' : page === 'out-of-office' ? 'Out of Office' : page === 'today' ? 'Today' : page === 'settings' ? 'Settings' : page === 'studio' ? 'AI Studio' : page === 'calendar' ? 'Calendar' : currentFolder.name}</strong></div><div className="topbar-right"><span className={`mode-badge ${state.account.mode}`}><span />{page === 'calendar' ? 'Live calendars' : !hasMailbox ? 'No mailbox selected' : 'Connected'}</span><button className="topbar-sync" aria-label="Sync mail" onClick={() => sync()} disabled={!hasMailbox || syncing || settingsBusy || workspaceBusy || pendingIds.size > 0}><RefreshCw size={14} className={syncing ? 'spinning' : ''} /><span>{syncing ? 'Syncing…' : 'Sync mail'}</span></button><span className="topbar-separator" /><IconButton icon={SettingsIcon} label="Settings and connections" onClick={() => setSettingsOpen(true)} /></div></header>
       <div style={{ padding: '0 20px', borderBottom: '1px solid var(--border)' }}><ActivityStatus value={activity} error={activityError} onOpenSettings={() => setSettingsOpen(true, 'mail')} /></div>
-      {page === 'settings' ? <Settings page initialTab={settingsTab} state={state} onClose={() => { setSettingsDirty(false); setPage('mail'); setFolder('inbox'); setCategory('all'); setQuery(''); setSearchResult(null); setSelectedId(null); setMobileReading(false); }} onUpdate={applyState} notify={notify} onDirtyChange={setSettingsDirty} onBusyChange={setSettingsBusy} /> : page === 'calendar' ? <Calendar onNotify={notify} onOpenSettings={() => setSettingsOpen(true, 'calendar')} onDirtyChange={setCalendarDirty} onBusyChange={setCalendarBusy} /> : page === 'today' ? <Dashboard state={state} busy={syncing || pendingIds.size > 0} onSelectAccount={accountId => selectAccount(accountId, 'inbox', 'today')} onSettings={tab => setSettingsOpen(true, tab)} onStudio={() => openStudio('summaries')} onInbox={unreadOnly => { changeFolder('inbox'); if (unreadOnly) { setQuery('is:unread'); setSearchResult({ messages: [], waiting: true }); } }} /> : !hasMailbox ? <div className="reader-empty"><Mail size={42} /><h2>{state.accounts.length ? 'Choose a mailbox' : 'Add your first account'}</h2><p>Connect Gmail, Outlook, or an IMAP account to start reading your mail.</p><button className="button primary" onClick={() => setSettingsOpen(true, 'mail')}><Plus size={16} />Add account</button></div> : page === 'studio' ? state.account.id === 'all' ? <div className="page-heading"><div><h1>Choose an account.</h1><p>Select a mailbox in the sidebar to use its AI Studio. Each account has its own context, skills, and activity.</p></div></div> : <Studio key={state.account.id} initialTab={studioInitialTab} onDirtyChange={setStudioDirty} onBusyChange={setStudioBusy} state={state} selectedMessage={selected && messageKey(selected) === studioSelectedId ? selected : messages.find(message => messageKey(message) === studioSelectedId) || null} onUpdate={applyState} onCompose={setCompose} onSettings={tab => setSettingsOpen(true, tab)} notify={notify} /> : <>
-      <div className="page-heading"><div><div className="eyebrow"><span />A LITTLE MORE HEADSPACE</div><h1>{currentFolder.name}<span className="heading-period">.</span></h1><p>{folder === 'inbox' ? unread ? `You have ${unread} unread ${unread === 1 ? 'message' : 'messages'}. Let’s make room for what matters.` : 'You’re all caught up. Make room for what matters.' : folder === 'starred' ? 'The conversations you want to keep close.' : folder === 'drafts' ? 'Good things start with a few words.' : folder === 'sent' ? 'Thoughts shared. Conversations started.' : folder === 'archive' ? 'Out of the way. Always here when you need them.' : 'A little room to let things go.'}</p></div><button className={`button assistant-toggle ${assistantOpen ? 'is-active' : ''}`} aria-label="Ask your inbox" onClick={() => setAssistantOpen(previous => !previous)} aria-expanded={assistantOpen}><Sparkles size={17} /><span>Ask your inbox</span><span className="keyboard-hint">AI</span></button></div>
+      {page === 'settings' ? <Settings page initialTab={settingsTab} state={state} onClose={() => { setSettingsDirty(false); setPage('mail'); setFolder('inbox'); setCategory('all'); setQuery(''); setSearchResult(null); setSelectedId(null); setMobileReading(false); }} onUpdate={applyState} notify={notify} onDirtyChange={setSettingsDirty} onBusyChange={setSettingsBusy} /> : page === 'calendar' ? <Calendar onNotify={notify} onOpenSettings={() => setSettingsOpen(true, 'calendar')} onDirtyChange={setCalendarDirty} onBusyChange={setCalendarBusy} /> : page === 'today' ? <Dashboard state={state} busy={syncing || pendingIds.size > 0} onSelectAccount={accountId => selectAccount(accountId, 'inbox', 'today')} onSettings={tab => setSettingsOpen(true, tab)} onStudio={() => openStudio('summaries')} onInbox={unreadOnly => { changeFolder('inbox'); if (unreadOnly) { setQuery('is:unread'); setSearchResult({ messages: [], waiting: true }); } }} /> : !hasMailbox ? <div className="reader-empty"><Mail size={42} /><h2>{state.accounts.length ? 'Choose a mailbox' : 'Add your first account'}</h2><p>Connect Gmail, Outlook, or an IMAP account to start reading your mail.</p><button className="button primary" onClick={() => setSettingsOpen(true, 'mail')}><Plus size={16} />Add account</button></div> : page === 'scheduled' ? <Scheduled key={state.account.id} state={state} onUpdate={localUpdate} notify={notify} onBusyChange={setWorkspaceBusy} onReview={setCompose} /> : page === 'suggestions' ? <div className="settings-page workspace-feature-page"><ReplySuggestions key={state.account.id} state={state} onCompose={setCompose} onDirtyChange={setWorkspaceDirty} onConfigureIdentity={() => setSettingsOpen(true, 'learning')} disabled={syncing || pendingIds.size > 0 || !!compose} /></div> : page === 'out-of-office' ? <div className="settings-page workspace-feature-page"><OutOfOffice key={state.account.id} state={state} onDirtyChange={setWorkspaceDirty} onBusyChange={setWorkspaceBusy} disabled={syncing || pendingIds.size > 0 || !!compose} /></div> : page === 'studio' ? state.account.id === 'all' ? <div className="page-heading"><div><h1>Choose an account.</h1><p>Select a mailbox in the sidebar to use its AI Studio. Each account has its own context, skills, and activity.</p></div></div> : <Studio key={state.account.id} initialTab={studioInitialTab} onDirtyChange={setStudioDirty} onBusyChange={setStudioBusy} state={state} selectedMessage={selected && messageKey(selected) === studioSelectedId ? selected : messages.find(message => messageKey(message) === studioSelectedId) || null} onUpdate={applyState} onCompose={setCompose} onSettings={tab => setSettingsOpen(true, tab)} notify={notify} /> : <>
+      <div className="page-heading"><div><div className="eyebrow"><span />A LITTLE MORE HEADSPACE</div><h1>{currentFolder.name}<span className="heading-period">.</span></h1><p>{folder === 'inbox' ? unread ? `You have ${unread} unread ${unread === 1 ? 'message' : 'messages'}. Let’s make room for what matters.` : 'You’re all caught up. Make room for what matters.' : folder === 'pending' ? 'Messages you marked for follow-up on this device.' : folder === 'starred' ? 'The conversations you want to keep close.' : folder === 'drafts' ? 'Good things start with a few words.' : folder === 'sent' ? 'Thoughts shared. Conversations started.' : folder === 'archive' ? 'Out of the way. Always here when you need them.' : 'A little room to let things go.'}</p></div><button className={`button assistant-toggle ${assistantOpen ? 'is-active' : ''}`} aria-label="Ask your inbox" onClick={() => setAssistantOpen(previous => !previous)} aria-expanded={assistantOpen}><Sparkles size={17} /><span>Ask your inbox</span><span className="keyboard-hint">AI</span></button></div>
       <div className={`mail-workspace layout-${mailLayout} ${mobileReading ? 'show-reader' : ''} ${assistantOpen ? 'with-assistant' : ''}`}>
         <section className="message-pane" aria-label="Messages">
           <MailSearch key={state.account.id + ':' + folder} api={api} account={state.account.id} folder={folder} query={query} setQuery={setQuery} inputRef={searchInput} revision={state.revision} onResult={setSearchResult} onSettings={() => setSettingsOpen(true, 'search')} />
@@ -504,7 +552,7 @@ export default function App() {
             {filtered.length ? filtered.map(message => <article key={messageKey(message)} className={`message-row ${messageKey(selected) === messageKey(message) ? 'selected' : ''} ${!message.read ? 'unread' : ''}`}>
               <button className="message-select" onClick={() => selectMessage(message)} aria-label={`${message.read ? '' : 'Unread: '}${message.fromName}, ${message.subject}`} aria-current={messageKey(selected) === messageKey(message) ? 'true' : undefined}>
                 <div className="message-row-top"><Avatar name={message.fromName} /><span className="message-sender">{message.folder === 'sent' || message.folder === 'drafts' ? `To: ${message.to || 'New recipient'}` : message.fromName}</span><time dateTime={message.date}>{shortDate(message.date)}</time><span className="unread-indicator">{!message.read && <span className="unread-dot" aria-label="Unread" />}</span></div>
-                <div className="message-row-content">{(state.account.id === 'all' || searchResult) && <small className="mailbox-label">{message.accountId}</small>}<h3><SearchHighlight segments={message.searchSubject} fallback={message.subject || '(No subject)'} /></h3><p><SearchHighlight segments={message.searchSnippet} fallback={message.preview || message.body || 'An empty page, ready for your words.'} /></p>{message.searchMatch && <small className="search-match">{message.folder} · {message.searchMatch}</small>}<div className="message-row-bottom"><span className={`category-label ${message.category}`}><span />{message.category === 'primary' ? 'Primary' : message.category === 'updates' ? 'Updates' : 'Newsletter'}</span></div></div>
+                <div className="message-row-content">{(state.account.id === 'all' || searchResult) && <small className="mailbox-label">{message.accountId}</small>}<h3><SearchHighlight segments={message.searchSubject} fallback={message.subject || '(No subject)'} /></h3><p><SearchHighlight segments={message.searchSnippet} fallback={message.preview || message.body || 'An empty page, ready for your words.'} /></p>{message.searchMatch && <small className="search-match">{message.folder} · {message.searchMatch}</small>}<div className="message-row-bottom">{message.pending && <span className="pending-label"><CheckCheck size={12} />Pending</span>}<span className={`category-label ${message.category}`}><span />{message.category === 'primary' ? 'Primary' : message.category === 'updates' ? 'Updates' : 'Newsletter'}</span></div></div>
               </button>
               <button className={`message-star ${message.starred ? 'starred' : ''}`} aria-label={message.starred ? 'Remove star' : 'Star message'} title={message.starred ? 'Remove star' : 'Star message'} onClick={() => patch(message, { starred: !message.starred }, true)} disabled={pendingIds.has(messageKey(message)) || syncing}><Star size={15} fill={message.starred ? 'currentColor' : 'none'} /></button>
             </article>) : <div className="list-empty"><Search size={27} strokeWidth={1.4} /><h3>{query ? 'No matches, just yet.' : 'A little breathing room.'}</h3><p>{query ? 'Try a different name or keyword.' : category !== 'all' ? 'No messages in this category.' : `Your ${currentFolder.name.toLowerCase()} is empty.`}</p>{(query || category !== 'all') && <button className="button secondary" onClick={() => { setQuery(''); setCategory('all'); }}>Clear filters</button>}</div>}
@@ -512,7 +560,7 @@ export default function App() {
         </section>
         <section className="reader-pane" aria-label="Message detail">
           {selected ? <>
-            <div className="reader-toolbar"><div>{/^(google|microsoft|imap):/.test(selected.remoteId || selected.id) && <button className="button ghost" disabled={syncing || pendingIds.has(messageKey(selected))} onClick={() => setOrganizing(selected)}>Move / Labels / Spam</button>}<button className={`icon-button reader-back ${mailLayout === "focus" ? "focus-back" : ""}`} aria-label="Back to messages" onClick={() => setMobileReading(false)}><ArrowLeft size={18} /></button><IconButton icon={selected.folder === 'archive' || selected.folder === 'trash' ? Inbox : Archive} label={selected.folder === 'archive' || selected.folder === 'trash' ? 'Move to inbox locally' : 'Archive locally'} onClick={() => patch(selected, { folder: selected.folder === 'archive' || selected.folder === 'trash' ? 'inbox' : 'archive' })} disabled={pendingIds.has(messageKey(selected)) || syncing || selected.folder === 'drafts' || selected.folder === 'sent'} /><IconButton icon={Trash2} label="Move to trash locally" onClick={() => patch(selected, { folder: 'trash' })} disabled={pendingIds.has(messageKey(selected)) || syncing || selected.folder === 'trash'} /><span className="toolbar-divider" /><IconButton icon={selected.read ? Mail : MailOpen} label={selected.read ? 'Mark unread locally' : 'Mark read locally'} onClick={() => patch(selected, { read: !selected.read }, true)} disabled={pendingIds.has(messageKey(selected)) || syncing} /><button className={`icon-button ${selected.starred ? 'starred' : ''}`} title={selected.starred ? 'Remove star' : 'Star message'} aria-label={selected.starred ? 'Remove star' : 'Star message'} onClick={() => patch(selected, { starred: !selected.starred }, true)} disabled={pendingIds.has(messageKey(selected)) || syncing}><Star size={18} fill={selected.starred ? 'currentColor' : 'none'} /></button></div><div className="reader-pagination"><span>{selectedIndex + 1} of {filtered.length}</span><IconButton icon={ChevronLeft} label="Previous message" disabled={selectedIndex <= 0} onClick={() => setSelectedId(messageKey(filtered[selectedIndex - 1]))} /><IconButton icon={ChevronRight} label="Next message" disabled={selectedIndex >= filtered.length - 1} onClick={() => setSelectedId(messageKey(filtered[selectedIndex + 1]))} /></div></div>
+            <div className="reader-toolbar"><div>{/^(google|microsoft|imap):/.test(selected.remoteId || selected.id) && <button className="button ghost" disabled={syncing || pendingIds.has(messageKey(selected))} onClick={() => setOrganizing(selected)}>Move / Labels / Spam</button>}<button className={`icon-button reader-back ${mailLayout === "focus" ? "focus-back" : ""}`} aria-label="Back to messages" onClick={() => setMobileReading(false)}><ArrowLeft size={18} /></button><IconButton icon={selected.folder === 'archive' || selected.folder === 'trash' ? Inbox : Archive} label={selected.folder === 'archive' || selected.folder === 'trash' ? 'Move to inbox locally' : 'Archive locally'} onClick={() => patch(selected, { folder: selected.folder === 'archive' || selected.folder === 'trash' ? 'inbox' : 'archive' })} disabled={pendingIds.has(messageKey(selected)) || syncing || selected.folder === 'drafts' || selected.folder === 'sent'} /><IconButton icon={Trash2} label="Move to trash locally" onClick={() => patch(selected, { folder: 'trash' })} disabled={pendingIds.has(messageKey(selected)) || syncing || selected.folder === 'trash'} /><button className="button ghost" aria-pressed={!!selected.pending} disabled={!detailLoaded || pendingIds.has(messageKey(selected)) || syncing} onClick={() => patch(selected, { pending: !selected.pending })}><CheckCheck size={16} />{selected.pending ? 'Clear pending' : 'Mark pending'}</button><span className="toolbar-divider" /><IconButton icon={selected.read ? Mail : MailOpen} label={selected.read ? 'Mark unread locally' : 'Mark read locally'} onClick={() => patch(selected, { read: !selected.read }, true)} disabled={pendingIds.has(messageKey(selected)) || syncing} /><button className={`icon-button ${selected.starred ? 'starred' : ''}`} title={selected.starred ? 'Remove star' : 'Star message'} aria-label={selected.starred ? 'Remove star' : 'Star message'} onClick={() => patch(selected, { starred: !selected.starred }, true)} disabled={pendingIds.has(messageKey(selected)) || syncing}><Star size={18} fill={selected.starred ? 'currentColor' : 'none'} /></button></div><div className="reader-pagination"><span>{selectedIndex + 1} of {filtered.length}</span><IconButton icon={ChevronLeft} label="Previous message" disabled={selectedIndex <= 0} onClick={() => setSelectedId(messageKey(filtered[selectedIndex - 1]))} /><IconButton icon={ChevronRight} label="Next message" disabled={selectedIndex >= filtered.length - 1} onClick={() => setSelectedId(messageKey(filtered[selectedIndex + 1]))} /></div></div>
             <div className="reader-content" key={messageKey(selected)}><ReaderHeader message={selected} />
               {selected.aiSummary ? <ReaderSummary title={`${selected.aiSummary.source === 'demo' ? 'Demo summary' : 'AI summary'}${selected.aiSummary.items?.[0]?.priority ? ` · ${selected.aiSummary.items[0].priority}` : ''}`} text={selected.aiSummary.items?.[0]?.summary} metadata={`${fullDate(selected.aiSummary.completedAt)} · Review AI priorities.`} /> : detailLoaded && selectedId === messageKey(selected) && (!isNarrow || mobileReading) && <AutomaticAssistance compact messageId={selected.id} account={selected.accountId} trigger="onOpen" policy={policy} modelKey={JSON.stringify([state.settings.ai, state.settings.preferences])} />}
               <div className="message-content">{detailError ? <span role="alert">{detailError} <button onClick={() => setDetailRetry(value => value + 1)}>Retry loading message</button></span> : !detailLoaded ? <span role="status">Loading message…</span> : <MessageBody key={messageKey(selected)} message={selected} />}</div>
@@ -541,7 +589,7 @@ export default function App() {
     </main>
     {organizing && <OrganizeMail message={organizing} onClose={() => setOrganizing(null)} onUpdate={localUpdate} />}
     {readerAI && <MessageAI {...readerAI} state={state} message={selected} loaded={page === 'mail' && detailLoaded} onClose={() => setReaderAI(null)} onUse={setCompose} />}
-    {compose && <Compose initial={compose} account={state.account} accounts={state.accounts} preferences={preferences} footer={state.settings.footer} policy={policy} modelKey={JSON.stringify(state.settings.ai)} onSettings={() => setSettingsOpen(true, 'policy')} onClose={() => setCompose(null)} onSaved={localUpdate} onSent={sent} notify={notify} />}
+    {compose && <Compose initial={compose} account={state.account} accounts={state.accounts} preferences={preferences} footer={state.settings.footer} policy={policy} modelKey={JSON.stringify(state.settings.ai)} onSettings={() => setSettingsOpen(true, 'policy')} onClose={() => setCompose(null)} onSaved={localUpdate} onSent={sent} onScheduled={() => navigate('scheduled')} notify={notify} />}
     {toast && <div className={`toast ${toast.type}`} role={toast.type === 'error' ? 'alert' : 'status'}>{toast.type === 'error' ? <CircleHelp size={18} /> : <Check size={18} />}<span>{toast.message}</span><button aria-label="Dismiss notification" onClick={() => setToast(null)}><X size={15} /></button></div>}
   </div>;
 }

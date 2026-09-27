@@ -180,7 +180,7 @@ fn input() -> Value {
     json!({"calendarId":"work@example.invalid","title":"Planning","description":"First line\n<script>text</script>","location":"Desk","start":"2026-10-01T09:00:00+08:00","end":"2026-10-01T10:00:00+08:00","requestId":"5c4b819c-b301-4ed5-bd2d-997315b47835","connectionEmail":"google@example.invalid"})
 }
 fn calendars() -> Value {
-    json!({"items":[{"id":"work@example.invalid","summary":"Work","primary":true,"accessRole":"owner"}],"value":[{"id":"work@example.invalid","name":"Work","canEdit":true}]})
+    json!({"items":[{"id":"work@example.invalid","summary":"Work","primary":true,"accessRole":"owner","backgroundColor":"#Ab1234"}],"value":[{"id":"work@example.invalid","name":"Work","canEdit":true,"hexColor":"#456DEF"}]})
 }
 fn context(method: &str, path: &str, body: Value) -> Context {
     let parsed = url::Url::parse(&format!("http://localhost{path}")).unwrap();
@@ -252,6 +252,7 @@ async fn provider_contracts_pagination_normalization_and_idempotency() {
             if stage==3 {return(200,json!({"items":(0..501).map(|i|json!({"id":i.to_string()})).collect::<Vec<_>>()}));}
             if method=="POST" {
                 assert!(body.get("attendees").is_none());assert!(body.get("recurrence").is_none());
+                assert!(body.get("reminders").is_none());assert!(body.get("isReminderOn").is_none());assert!(body.get("reminderMinutesBeforeStart").is_none());
                 if google {
                     assert_eq!(url.query(),Some("sendUpdates=none"));assert!(string(&body,"description").contains("&lt;script&gt;"));
                     let mut saved=saved.lock().unwrap();if !saved.is_null(){return(409,json!({"error":"fixture-private"}));}*saved=body.clone();return(200,body);
@@ -262,14 +263,14 @@ async fn provider_contracts_pagination_normalization_and_idempotency() {
             }
             if url.path().contains("/events/m") {return(200,saved.lock().unwrap().clone());}
             if url.path().ends_with("calendarList") {
-                return if url.query_pairs().any(|(k,_)|k=="pageToken") {(200,json!({"items":[{"id":"shared","summary":"Shared","accessRole":"reader"}]}))}else{let mut list=calendars();list["nextPageToken"]="next/token".into();(200,list)};
+                return if url.query_pairs().any(|(k,_)|k=="pageToken") {(200,json!({"items":[{"id":"shared","summary":"Shared","accessRole":"reader","backgroundColor":["#123456"]}]}))}else{let mut list=calendars();list["nextPageToken"]="next/token".into();(200,list)};
             }
             if url.path().ends_with("/calendars") {return(200,calendars());}
             if google {
                 assert!(url.query_pairs().any(|(k,v)|k=="singleEvents"&&v=="true"));
                 return(200,json!({"items":[{"id":"normal","description":"<b>Agenda</b>","start":{"dateTime":"2026-10-01T09:00:00+08:00"},"end":{"dateTime":"2026-10-01T10:00:00+08:00"}},{"id":"holiday","start":{"date":"2026-10-01"},"end":{"date":"2026-10-02"}},{"id":"cancelled","status":"cancelled"}]}));
             }
-            (200,json!({"value":[{"id":"ms-event","body":{"contentType":"html","content":"<p>Prepare</p><script>secret()</script>"},"start":{"dateTime":"2026-10-01T01:00:00.0000000","timeZone":"UTC"},"end":{"dateTime":"2026-10-01T02:00:00.0000000","timeZone":"UTC"},"webLink":"javascript:bad()"}]}))
+            (200,json!({"value":[{"id":"ms-event","body":{"contentType":"html","content":"<p>Prepare</p><script>secret()</script>"},"start":{"dateTime":"2026-10-01T01:00:00.0000000","timeZone":"UTC"},"end":{"dateTime":"2026-10-01T02:00:00.0000000","timeZone":"UTC"},"webLink":"javascript:bad()"},{"id":"ms-all-day","isAllDay":true,"start":{"dateTime":"2026-10-01T00:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-10-03T00:00:00","timeZone":"UTC"}}]}))
         }.boxed()
     })).await;
     let google = connection("google");
@@ -279,6 +280,14 @@ async fn provider_contracts_pagination_normalization_and_idempotency() {
         .unwrap();
     assert_eq!(listed.len(), 2);
     assert_eq!(listed[1]["canWrite"], false);
+    assert_eq!(listed[0]["color"], "#Ab1234");
+    assert!(listed[1].get("color").is_none());
+    assert_eq!(
+        calendar::list_calendars(&fixture.client, &microsoft)
+            .await
+            .unwrap()[0]["color"],
+        "#456DEF"
+    );
     for conn in [&google, &microsoft] {
         let events = calendar::list_events(
             &fixture.client,
@@ -298,6 +307,9 @@ async fn provider_contracts_pagination_normalization_and_idempotency() {
         } else {
             assert_eq!(events[0]["webUrl"], "");
             assert_eq!(string(&events[0], "description").trim(), "Prepare");
+            assert_eq!(events[1]["allDay"], true);
+            assert_eq!(events[1]["start"], "2026-10-01");
+            assert_eq!(events[1]["end"], "2026-10-03");
         }
     }
     let first = calendar::create_event(&fixture.client, &google, &input())
@@ -357,6 +369,176 @@ async fn provider_contracts_pagination_normalization_and_idempotency() {
                 .is_err()
         );
     }
+}
+
+fn outlook_all_day(id: &str, positive: bool, local: bool) -> Value {
+    let zone = if positive {
+        "Line Islands Standard Time"
+    } else {
+        "Pacific Standard Time"
+    };
+    json!({"id":id,"isAllDay":true,"subject":"All day","originalStartTimeZone":zone,"originalEndTimeZone":zone,
+        "start":{"dateTime":if local {"2026-09-24T00:00:00.0000000"} else if positive {"2026-09-23T10:00:00.0000000"} else {"2026-09-24T07:00:00.0000000"},"timeZone":if local {zone} else {"UTC"}},
+        "end":{"dateTime":if local {"2026-09-26T00:00:00.0000000"} else if positive {"2026-09-25T10:00:00.0000000"} else {"2026-09-26T07:00:00.0000000"},"timeZone":if local {zone} else {"UTC"}}})
+}
+
+#[tokio::test]
+async fn outlook_all_day_repairs_are_bounded_and_dates_fail_closed_when_unverifiable() {
+    let mut items = (0..6)
+        .map(|i| outlook_all_day(&format!("converted/{i}"), i % 2 == 0, false))
+        .collect::<Vec<_>>();
+    items.extend((0..101).map(|i| {
+        let mut item = outlook_all_day(&format!("utc-{i}"), true, true);
+        item["start"]["timeZone"] = "UTC".into();
+        item["end"]["timeZone"] = "UTC".into();
+        item
+    }));
+    let data = Arc::new(Mutex::new((items, None::<Value>, 200u16)));
+    let gets = Arc::new(AtomicUsize::new(0));
+    let active = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let (d, g, a, p) = (data.clone(), gets.clone(), active.clone(), peak.clone());
+    let fixture = Fixture::new(Arc::new(move |method, path, headers, _| {
+        let (data, gets, active, peak) = (d.clone(), g.clone(), a.clone(), p.clone());
+        async move {
+            assert_eq!(method, "GET");
+            assert_eq!(headers["host"], "graph.microsoft.com");
+            assert_eq!(headers["authorization"], "Bearer fixture-access");
+            let url = url::Url::parse(&format!("https://graph.microsoft.com{path}")).unwrap();
+            let (items, override_result, status) = data.lock().unwrap().clone();
+            if url.path().ends_with("/calendarView") {
+                assert!(
+                    headers["prefer"]
+                        .to_str()
+                        .unwrap()
+                        .contains("timezone=\"UTC\"")
+                );
+                assert!(url.query_pairs().any(|(k, v)| k == "$select"
+                    && v.contains("originalStartTimeZone,originalEndTimeZone")));
+                return (200, json!({"value":items}));
+            }
+            assert!(
+                url.path()
+                    .starts_with("/v1.0/me/calendars/work%2Fpart/events/")
+            );
+            let item = items
+                .iter()
+                .find(|item| {
+                    url.path().ends_with(&format!(
+                        "/{}",
+                        morrow_search::providers::component(string(item, "id"))
+                    ))
+                })
+                .unwrap();
+            assert_eq!(
+                headers["prefer"].to_str().unwrap(),
+                format!(
+                    "outlook.timezone=\"{}\", outlook.body-content-type=\"text\"",
+                    string(item, "originalStartTimeZone")
+                )
+            );
+            gets.fetch_add(1, Ordering::SeqCst);
+            peak.fetch_max(active.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            active.fetch_sub(1, Ordering::SeqCst);
+            if status != 200 {
+                return (status, json!({"error":"private-provider-text"}));
+            }
+            (
+                200,
+                override_result.unwrap_or_else(|| {
+                    outlook_all_day(
+                        string(item, "id"),
+                        item["originalStartTimeZone"] == "Line Islands Standard Time",
+                        true,
+                    )
+                }),
+            )
+        }
+        .boxed()
+    }))
+    .await;
+    let app = fixture.app();
+    set(
+        &app,
+        json!({"calendars":{"microsoft":connection("microsoft")}}),
+    )
+    .await;
+    let path = "/api/calendars/microsoft/events?calendarId=work%2Fpart&start=2026-09-01T00%3A00%3A00Z&end=2026-10-01T00%3A00%3A00Z";
+    let (status, _, body) = call(&app, context("GET", path, Value::Null)).await;
+    assert_eq!(status, 200, "{body}");
+    let events = body["events"].as_array().unwrap();
+    assert_eq!(events.len(), 107);
+    assert!(events.iter().all(|event| event["allDay"] == true
+        && event["start"] == "2026-09-24"
+        && event["end"] == "2026-09-26"));
+    assert_eq!(gets.load(Ordering::SeqCst), 6);
+    assert_eq!(peak.load(Ordering::SeqCst), 4);
+
+    // 101 already-UTC-midnight dates above needed no repair; only extra reads consume this cap.
+    data.lock().unwrap().0 = (0..101)
+        .map(|i| outlook_all_day(&format!("bound-{i}"), true, false))
+        .collect();
+    gets.store(0, Ordering::SeqCst);
+    let (status, _, body) = call(&app, context("GET", path, Value::Null)).await;
+    assert_eq!(status, 502);
+    assert_eq!(body["code"], "calendar_all_day_limit");
+    assert!(string(&body, "error").contains("smaller date range"));
+    assert_eq!(gets.load(Ordering::SeqCst), 0);
+    data.lock().unwrap().0.pop();
+    let (status, _, body) = call(&app, context("GET", path, Value::Null)).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["events"].as_array().unwrap().len(), 100);
+    assert_eq!(gets.load(Ordering::SeqCst), 100);
+
+    gets.store(0, Ordering::SeqCst);
+    for zone in [
+        "",
+        "tzone://Microsoft/Custom",
+        "UTC\"\r\nInjected: true",
+        "UTC ",
+    ] {
+        let mut item = outlook_all_day("source", true, false);
+        item["originalStartTimeZone"] = zone.into();
+        item["originalEndTimeZone"] = zone.into();
+        data.lock().unwrap().0 = vec![item];
+        let (status, _, body) = call(&app, context("GET", path, Value::Null)).await;
+        assert_eq!(status, 502);
+        assert_eq!(body["code"], "calendar_all_day_timezone");
+    }
+    assert_eq!(gets.load(Ordering::SeqCst), 0);
+    data.lock().unwrap().0 = vec![outlook_all_day("source", true, false)];
+    for patch in [
+        json!({"id":"other"}),
+        json!({"isAllDay":false}),
+        json!({"isCancelled":true}),
+        json!({"originalStartTimeZone":"UTC"}),
+        json!({"originalEndTimeZone":"UTC"}),
+        json!({"start":{"dateTime":"2026-09-24T01:00:00","timeZone":"Line Islands Standard Time"}}),
+        json!({"end":{"dateTime":"2026-09-26T00:00:00","timeZone":"UTC"}}),
+        json!({"end":{"dateTime":"2026-09-23T00:00:00","timeZone":"Line Islands Standard Time"}}),
+    ] {
+        let mut repaired = outlook_all_day("source", true, true);
+        repaired
+            .as_object_mut()
+            .unwrap()
+            .extend(patch.as_object().unwrap().clone());
+        data.lock().unwrap().1 = Some(repaired);
+        let (status, _, body) = call(&app, context("GET", path, Value::Null)).await;
+        assert_eq!(status, 502);
+        assert_eq!(body["code"], "calendar_all_day_timezone");
+        assert!(string(&body, "error").contains("original timezone"));
+    }
+    {
+        let mut data = data.lock().unwrap();
+        data.0[0]["originalStartTimeZone"] = "Not A Timezone".into();
+        data.0[0]["originalEndTimeZone"] = "Not A Timezone".into();
+        data.2 = 400;
+    }
+    let (status, _, body) = call(&app, context("GET", path, Value::Null)).await;
+    assert_eq!(status, 502);
+    assert_eq!(body["code"], "calendar_all_day_timezone");
+    assert!(!body.to_string().contains("private-provider-text"));
 }
 
 #[tokio::test]
@@ -428,6 +610,17 @@ async fn persistent_requests_restart_legacy_hash_and_uncertain_recovery() {
     assert_eq!(replay.2, first.2);
     assert_eq!(posts.load(Ordering::SeqCst), 1);
     let mut changed = value.clone();
+    changed["reminder"] = json!({"method":"none"});
+    assert_eq!(
+        call(
+            &app,
+            context("POST", "/api/calendars/google/events", changed)
+        )
+        .await
+        .0,
+        409
+    );
+    let mut changed = value.clone();
     changed["title"] = "Changed".into();
     assert_eq!(
         call(
@@ -441,6 +634,7 @@ async fn persistent_requests_restart_legacy_hash_and_uncertain_recovery() {
     uncertain.store(1, Ordering::SeqCst);
     let mut retry = value;
     retry["requestId"] = uuid::Uuid::new_v4().to_string().into();
+    retry["reminder"] = json!({"method":"popup","minutes":0});
     let failed = call(
         &app,
         context("POST", "/api/calendars/google/events", retry.clone()),
@@ -451,8 +645,32 @@ async fn persistent_requests_restart_legacy_hash_and_uncertain_recovery() {
     let recorded = app.settings().await.unwrap()["calendarRequests"][1].clone();
     assert_eq!(recorded["payload"]["requestId"], retry["requestId"]);
     assert_eq!(recorded["payload"]["start"], "2026-10-01T01:00:00.000Z");
+    assert_eq!(recorded["payload"]["reminder"], retry["reminder"]);
     drop(app);
     let app = fixture.app();
+    for reminder in [
+        None,
+        Some(json!({"method":"none"})),
+        Some(json!({"method":"email","minutes":0})),
+        Some(json!({"method":"popup","minutes":1})),
+    ] {
+        let mut changed = retry.clone();
+        if let Some(reminder) = reminder {
+            changed["reminder"] = reminder;
+        } else {
+            changed.as_object_mut().unwrap().remove("reminder");
+        }
+        assert_eq!(
+            call(
+                &app,
+                context("POST", "/api/calendars/google/events", changed)
+            )
+            .await
+            .0,
+            409
+        );
+    }
+    assert_eq!(posts.load(Ordering::SeqCst), 2);
     uncertain.store(0, Ordering::SeqCst);
     let recovered = call(&app, context("POST", "/api/calendars/google/events", retry)).await;
     assert_eq!(recovered.0, 200, "{}", recovered.2);
@@ -499,6 +717,159 @@ async fn persistent_requests_restart_legacy_hash_and_uncertain_recovery() {
         2
     );
     assert!(app.settings().await.unwrap()["mailAccounts"]["mail@example.invalid"].is_object());
+}
+
+#[tokio::test]
+async fn reminders_validate_before_network_and_map_to_native_provider_fields() {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let count = requests.clone();
+    let saved = Arc::new(Mutex::new(json!({})));
+    let captured = saved.clone();
+    let bodies = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let sent = bodies.clone();
+    let fixture = Fixture::new(Arc::new(move |method, target, headers, body| {
+        let saved = captured.clone();
+        let count = count.clone();
+        let sent = sent.clone();
+        async move {
+            count.fetch_add(1, Ordering::SeqCst);
+            if method != "POST" {
+                return (
+                    200,
+                    saved.lock().unwrap()[target.rsplit('/').next().unwrap()].clone(),
+                );
+            }
+            assert!(body.get("attendees").is_none());
+            sent.lock().unwrap().push(body.clone());
+            if headers["host"] == "www.googleapis.com" {
+                assert!(target.ends_with("?sendUpdates=none"));
+                let id = string(&body, "id").to_owned();
+                let mut saved = saved.lock().unwrap();
+                if saved.get(&id).is_some() {
+                    return (409, json!({}));
+                }
+                saved[id] = body.clone();
+                (200, body)
+            } else {
+                let mut body = body;
+                body["id"] = "ms-reminder".into();
+                (200, body)
+            }
+        }
+        .boxed()
+    }))
+    .await;
+    let app = fixture.app();
+    set(
+        &app,
+        json!({"calendars":{"google":connection("google"),"microsoft":connection("microsoft")}}),
+    )
+    .await;
+    for reminder in [
+        Value::Null,
+        json!([]),
+        json!({}),
+        json!({"method":"default"}),
+        json!({"method":"popup"}),
+        json!({"method":"popup","minutes":"30"}),
+        json!({"method":"popup","minutes":true}),
+        json!({"method":"popup","minutes":0.5}),
+        json!({"method":"popup","minutes":-1}),
+        json!({"method":"email","minutes":40321}),
+        json!({"method":"none","attendees":[]}),
+    ] {
+        let mut value = input();
+        value["reminder"] = reminder;
+        assert_eq!(
+            call(
+                &app,
+                context("POST", "/api/calendars/google/events", value.clone())
+            )
+            .await
+            .0,
+            400
+        );
+        assert!(
+            calendar::create_event(&fixture.client, &connection("google"), &value)
+                .await
+                .is_err()
+        );
+    }
+    let mut unsupported = input();
+    unsupported["connectionEmail"] = "microsoft@example.invalid".into();
+    unsupported["reminder"] = json!({"method":"email","minutes":30});
+    assert_eq!(
+        call(
+            &app,
+            context(
+                "POST",
+                "/api/calendars/microsoft/events",
+                unsupported.clone()
+            )
+        )
+        .await
+        .0,
+        400
+    );
+    assert!(
+        calendar::create_event(&fixture.client, &connection("microsoft"), &unsupported)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("popup reminders only")
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    assert!(app.settings().await.unwrap()["calendarRequests"].is_null());
+    for (provider, reminder) in [
+        ("google", json!({"method":"none","minutes":30})),
+        ("google", json!({"method":"popup","minutes":0})),
+        ("google", json!({"method":"email","minutes":40320})),
+        ("microsoft", json!({"method":"none","minutes":30})),
+        ("microsoft", json!({"method":"popup","minutes":40320})),
+    ] {
+        let mut value = input();
+        value["requestId"] = uuid::Uuid::new_v4().to_string().into();
+        value["reminder"] = reminder.clone();
+        let first = calendar::create_event(&fixture.client, &connection(provider), &value)
+            .await
+            .unwrap();
+        let body = bodies.lock().unwrap().last().unwrap().clone();
+        if provider == "google" {
+            assert_eq!(
+                body["reminders"],
+                json!({"useDefault":false,"overrides":if reminder["method"]=="none" {vec![]} else {vec![reminder.clone()]}})
+            );
+            let id = string(&body, "id").to_owned();
+            if reminder["method"] == "none" {
+                saved.lock().unwrap()[&id]["reminders"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("overrides");
+            }
+            assert_eq!(
+                calendar::create_event(&fixture.client, &connection(provider), &value)
+                    .await
+                    .unwrap(),
+                first
+            );
+            saved.lock().unwrap()[&id]["reminders"] = json!({"useDefault":true});
+            assert_eq!(
+                calendar::create_event(&fixture.client, &connection(provider), &value)
+                    .await
+                    .unwrap_err()
+                    .status,
+                409
+            );
+        } else {
+            assert!(body.get("reminders").is_none());
+            assert_eq!(body["isReminderOn"], reminder["method"] != "none");
+            if reminder["method"] == "popup" {
+                assert_eq!(body["reminderMinutesBeforeStart"], 40320);
+            } else {
+                assert!(body.get("reminderMinutesBeforeStart").is_none());
+            }
+        }
+    }
 }
 
 async fn begin(app: &App, calendar: bool, provider: &str) -> (url::Url, String, url::Url) {

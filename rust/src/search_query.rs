@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use std::{collections::HashSet, sync::LazyLock};
 
 pub const FOLDERS: &[&str] = &[
-    "inbox", "sent", "drafts", "archive", "spam", "trash", "starred",
+    "inbox", "sent", "drafts", "archive", "spam", "trash", "starred", "pending",
 ];
 const FIELDS: &[&str] = &[
     "from", "to", "subject", "after", "before", "is", "label", "in",
@@ -203,8 +203,10 @@ fn add(conditions: &mut Vec<Condition>, key: &str, value: &Value) -> Result<()> 
     {
         return Err(Error::invalid("Use a valid date: YYYY-MM-DD."));
     }
-    if key == "is" && !["read", "unread", "starred"].contains(&value) {
-        return Err(Error::invalid("Use is:read, is:unread or is:starred."));
+    if key == "is" && !["read", "unread", "starred", "pending"].contains(&value) {
+        return Err(Error::invalid(
+            "Use is:read, is:unread, is:starred or is:pending.",
+        ));
     }
     if key == "in" && !FOLDERS.contains(&value) {
         return Err(Error::invalid("Choose a valid mailbox folder."));
@@ -235,6 +237,10 @@ pub fn where_clause(
         }
         if value == "starred" {
             clauses.push("d.starred=1 AND d.folder NOT IN ('trash','spam')".into());
+        } else if value == "pending" {
+            clauses.push(
+                "json_extract(m.data,'$.pending')=1 AND d.folder NOT IN ('trash','spam')".into(),
+            );
         } else {
             clauses.push("d.folder=?".into());
             params.push(value.to_owned().into());
@@ -257,6 +263,7 @@ pub fn where_clause(
                     "read" => "d.unread=0",
                     "unread" => "d.unread=1",
                     "starred" => "d.starred=1",
+                    "pending" => "json_extract(m.data,'$.pending')=1",
                     _ => return Err(Error::invalid("Invalid search state.")),
                 }
                 .into(),

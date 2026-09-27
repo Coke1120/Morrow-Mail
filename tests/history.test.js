@@ -37,16 +37,21 @@ function fixture(t) {
   return f;
 }
 
-test('all-mail options are explicit, Google-only and retain legacy folder validation', t => {
+test('all-mail options accept supported providers with strict option validation', t => {
   const f = fixture(t);
   assert.deepEqual(importOptions(), { months: 3, inbox: true, sent: true, allMail: false });
   assert.equal(importOptions({ allMail: true, inbox: false, sent: false }).allMail, true);
   for (const input of [null, [], { allMail: 'true' }, { allMail: true, inbox: 1 }, { allMail: true, months: 2 }, { inbox: false, sent: false }, { allMail: false, inbox: false, sent: false }, { unknown: true }]) assert.throws(() => importOptions(input), { status: 400 });
   const before = f.store.getSettings();
+  f.store.setSettings({ mailAccounts: { ...before.mailAccounts, [B]: { ...before.mailAccounts[B], provider: 'unsupported' } } });
   assert.throws(() => f.history.start(B, { allMail: true }), { status: 400 });
+  f.store.setSettings({ mailAccounts: before.mailAccounts });
   assert.throws(() => f.history.start('missing@example.invalid', { allMail: true }), { status: 400 });
   assert.deepEqual(f.store.getSettings(), before);
   assert.equal(f.refreshes, 0); assert.equal(f.calls.length, 0);
+  f.history.start(B, { allMail: true, months: 0 });
+  assert.equal(f.history.status(B).currentFolder, 'all');
+  assert.equal(f.history.status(B).since, '');
   f.history.start(B, {});
   assert.equal(f.history.status(B).currentFolder, 'inbox');
   assert.equal(f.history.status(B).options.allMail, false);
@@ -251,4 +256,27 @@ test('public import status derives errors and recovery only from safe codes, inc
     assert.equal(status.recoveryAction, code === 'authorization' ? 'reconnect' : code === 'invalid_cursor' ? 'restart' : 'resume');
     assert.ok(status.error.length > 0);
   }
+});
+
+test('unlimited history keeps a fixed upper boundary and a durable folder checkpoint', async t => {
+  const f = fixture(t);
+  for (const months of [-1, 0.5, '0', null]) assert.throws(() => importOptions({ months }), { status: 400 });
+  f.history.start(B, { months: 0, allMail: true, inbox: false, sent: false });
+  const before = f.history.status(B).before;
+  assert.deepEqual(f.history.status(B).coverage, { provider: 'microsoft', folders: ['all'], excludes: ['spam', 'trash'], folderLimit: 300 });
+  const cursor = { version: 1, folders: [{ id: 'inbox-id', kind: 'inbox', name: 'Inbox' }], index: 0, next: 'private-next' };
+  f.fetch = async (_, options) => {
+    assert.equal(options.since, ''); assert.equal(options.before, before);
+    return { messages: [{ ...message('old'), date: '1999-01-01T00:00:00.000Z' }, { ...message('future'), date: '2099-01-01T00:00:00.000Z' }], nextCursor: cursor };
+  };
+  await f.history.tick();
+  assert.ok(f.store.getMessage(B, 'old')); assert.equal(f.store.getMessage(B, 'future'), null);
+  f.history.control(B, 'pause'); f.restart(); f.now += 86400000; f.history.control(B, 'resume');
+  f.fetch = async (_, options) => {
+    assert.equal(options.since, ''); assert.equal(options.before, before); assert.deepEqual(options.cursor, cursor);
+    return { messages: [], nextCursor: null };
+  };
+  await f.history.tick();
+  assert.equal(f.history.status(B).status, 'complete'); assert.equal(f.history.status(B).imported, 1);
+  assert.ok(!JSON.stringify(f.history.status(B)).includes('private-next'));
 });

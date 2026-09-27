@@ -42,6 +42,94 @@ struct NativeRustChecks {
         throw APIError("Native Rust acceptance: rejected operation unexpectedly succeeded: " + path)
     }
 
+    @MainActor static func checkNewWorkspaceFeatures(_ model: AppModel, draft: Draft) async throws {
+        try check(model.account == second && !model.policy["enabled"].bool, "new feature fixture must start on the other account with AI disabled")
+        try check(mailFolders.contains("pending") && !permissionFolders.contains("pending"), "Pending is a local view, not an AI permission folder")
+        let legacy: JSON = .object(["id": .string("legacy"), "accountId": .string(first), "folder": .string("drafts")])
+        try check(!messageMatchesFolder(legacy, folder: "pending") && !Draft(message: legacy).scheduleLocked, "older messages require no new flag or schedule fields")
+
+        let messagePath = "/messages/" + encodedPath("google:shared")
+        let original = try await model.request(messagePath, mailbox: first)
+        // Exercise the same owner-capturing patch helper as the reader toggle,
+        // while the global selected account is deliberately different.
+        model.patch(original["message"], .object(["pending": .bool(true)]))
+        for _ in 0..<1000 {
+            if !model.busy { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try check(!model.busy && model.error.isEmpty && model.account == second, "Pending toggle failed or changed the selected account: \(model.error)")
+        let other = try await model.request(messagePath, mailbox: second)
+        try check(!other["message"]["pending"].bool, "Pending toggle changed the other account's duplicate ID")
+        try await expectFailure(model, path: messagePath, method: "PATCH", body: .object(["pending": .bool(true)]), owner: "all")
+        try await model.selectAccount("all", folder: "pending")
+        let pending = try await collect(model, expected: 1)
+        try check(pending[0].viewID == original["message"].viewID && pending[0]["pending"].bool && pending[0]["accountId"].string == first, "Pending page lost its flag or owner")
+        try check(model.accounts.first { $0.id == first }?["counts"]["pending"].number == 1 && model.accounts.first { $0.id == second }?["counts"]["pending"].number == 0, "Pending sidebar counts crossed accounts")
+        model.selectedMessage = pending[0].viewID
+        await model.loadMessage()
+        try check(model.current?["pending"].bool == true && model.current?["accountId"].string == first, "Pending reader failed to resolve the owned detail")
+        _ = try await model.request(messagePath, method: "PATCH", body: .object(["pending": .bool(false)]), mailbox: first)
+        try await model.reload()
+        await model.loadMessage()
+        _ = try await collect(model, expected: 0)
+        try check(model.current == nil, "Cleared Pending message remained in the reader")
+        model.selectedMessage = nil; model.messageDetail = .null
+        try await model.selectAccount(second, folder: "inbox")
+        print("Native Rust: Pending reader toggle, combined page, owner isolation and clearing passed.")
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let requestID = UUID().uuidString
+        var payload = draft.payload.picking(["to", "cc", "bcc", "subject", "body", "footer", "replyToId"])
+        payload["draftId"] = .string(draft.savedID)
+        payload["requestId"] = .string(requestID)
+        // Never due during this fixture; do not invoke /send or a provider.
+        payload["sendAt"] = .string(formatter.string(from: Date().addingTimeInterval(30 * 86400)))
+        let created = try await model.request("/scheduled", method: "POST", body: payload, mailbox: first)
+        let job = created["job"], scheduledDraft = Draft(message: created["message"])
+        try check(job.id == requestID && job["accountId"].string == first && job["status"].string == "scheduled", "Schedule create lost its UUID or owner")
+        try check(created["appOpenRequired"].bool && created["lateGraceMinutes"].number == 15, "Schedule review's open-app/catch-up contract changed")
+        try check(job["payload"]["bcc"].string == draft.bcc && job["payload"]["footer"] == draft.footer && job["sendAt"] == payload["sendAt"], "Schedule changed the reviewed recipients, footer or time")
+        try check(scheduledDraft.scheduleLocked && scheduledDraft.scheduledSend["id"].string == job.id, "Scheduled draft marker did not lock the native model")
+        model.newDraft(scheduledDraft)
+        try check(model.compose == nil && model.section == "scheduled" && model.scheduledAccount == first && model.account == second, "Scheduled draft did not open its owner's management tab")
+        let replay = try await model.request("/scheduled", method: "POST", body: payload, mailbox: first)
+        try check(replay["job"].id == job.id, "Retrying the reviewed schedule created a different job")
+        let list = try await model.request("/scheduled", mailbox: first)
+        let otherList = try await model.request("/scheduled", mailbox: second)
+        try check(list["scheduled"].array.count == 1 && list["scheduled"].array[0].id == job.id && otherList["scheduled"].array.isEmpty, "Scheduled listing duplicated a retry or crossed owners")
+        let cancelPath = "/scheduled/" + encodedPath(job.id) + "/cancel"
+        try await expectFailure(model, path: cancelPath, owner: second)
+        try await expectFailure(model, path: "/drafts", body: draft.payload, owner: first)
+        try await model.selectAccount(first, folder: "drafts")
+        try check(await model.loadMailPage(), "Scheduled draft page failed")
+        guard let row = model.listedMessages.first(where: { $0.id == draft.savedID }) else { throw APIError("Native Rust acceptance: scheduled draft metadata missing") }
+        try check(row["scheduledSend"]["id"].string == job.id && row["scheduledSend"]["status"].string == "scheduled" && row["body"].isNull && row["footer"].isNull, "Draft list omitted safe schedule metadata or exposed content")
+        let cancelled = try await model.request(cancelPath, method: "POST", body: .object([:]), mailbox: first)
+        let unlocked = Draft(message: cancelled["message"])
+        try check(cancelled["job"]["status"].string == "cancelled" && unlocked.scheduledSend["status"].string == "cancelled" && !unlocked.scheduleLocked, "Cancel did not atomically unlock the draft")
+        try check(unlocked.payload == draft.payload && !unlocked.unconfirmed, "Cancel changed the draft or claimed uncertain delivery")
+        model.newDraft(unlocked)
+        try check(model.compose?.savedID == draft.savedID && model.compose?.accountID == first, "Cancelled draft could not reopen for review")
+        model.compose = nil
+        try await expectFailure(model, path: "/messages/" + encodedPath("sent:" + requestID), method: "GET", owner: first)
+        print("Native Rust: future schedule create/replay, owned metadata, lock and cancel passed without sending.")
+
+        // The fixture connections have no Out of Office scope. GET returns only
+        // capabilities before the provider path; suggestions remain AI-disabled.
+        for owner in [first, second] {
+            let suggestions = try await model.request("/reply-suggestions", mailbox: owner)
+            try check(suggestions["owner"].string == owner && suggestions["scope"].string == "downloaded" && !suggestions["settings"]["enabled"].bool && !suggestions["permitted"].bool, "Reply Suggestions tab permission/owner contract changed")
+            try check(suggestions["job"].isNull && suggestions["proposals"] == .array([]) && suggestions["candidates"] == .array([]), "Opening Reply Suggestions started or exposed unapproved work")
+            let office = try await model.request("/out-of-office", mailbox: owner)
+            try check(office["accountId"].string == owner && office["supported"].bool && office["requiresReconnect"].bool && !office["canRead"].bool && !office["canWrite"].bool && office["settings"].isNull, "Out of Office tab bypassed explicit permission or lost its owner")
+        }
+        for route in ["/scheduled", "/reply-suggestions", "/out-of-office"] { try await expectFailure(model, path: route, method: "GET", owner: "all") }
+        try await model.selectAccount(second, folder: "inbox")
+        try check(!model.policy["enabled"].bool && model.preferences["syncInterval"].number == 0, "New tabs enabled background provider or AI work")
+        print("Native Rust: new workspace tab contracts and permission gates passed without AI/provider calls.")
+    }
+
     static func waitForStop(_ base: URL) async throws {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 0.5
@@ -174,6 +262,8 @@ struct NativeRustChecks {
         model.compose = nil
         try await expectFailure(model, path: "/messages/" + encodedPath(savedDraft.savedID), method: "GET", owner: second)
         print("Native Rust: replies and saved draft ownership, Bcc and signature round trips passed.")
+
+        try await checkNewWorkspaceFeatures(model, draft: savedDraft)
 
         let oldBase = model.baseURL!
         let oldRevision = model.state["revision"].string

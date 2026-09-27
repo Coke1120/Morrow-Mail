@@ -1,16 +1,24 @@
 import { useEffect, useRef, useState } from 'react';
 
+export const learningOptions = settings => Object.fromEntries(['enabled', 'weekly', 'months', 'maxSamples', 'tokenBudget'].map(key => [key, settings[key]]));
+const emptyIdentity = () => ({ displayName: '', aliases: [], confirmed: false });
+
 export default function StyleLearning({ state, onUpdate, onDirtyChange, onBusyChange, disabled = false }) {
-  const value = state.workspace.styleLearning, saved = value.settings;
+  const value = state.workspace.styleLearning, saved = learningOptions(value.settings), savedIdentity = value.settings.identity || emptyIdentity();
   const [options, setOptions] = useState(saved), [voice, setVoice] = useState(value.preview?.voice || '');
+  const [identity, setIdentity] = useState(savedIdentity), [aliases, setAliases] = useState(savedIdentity.aliases.join('\n'));
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
   const inFlight = useRef(false), currentOwner = useRef(state.account.id);
   currentOwner.current = state.account.id;
   useEffect(() => { currentOwner.current = state.account.id; return () => { currentOwner.current = null; }; }, [state.account.id]);
   const preview = value.preview;
-  useEffect(() => { setOptions(saved); setVoice(preview?.voice || ''); }, [state.account.id, JSON.stringify(saved), preview?.id, preview?.voice]);
+  useEffect(() => { setOptions(saved); }, [state.account.id, JSON.stringify(saved)]);
+  useEffect(() => { setVoice(preview?.voice || ''); }, [state.account.id, preview?.id, preview?.voice]);
+  useEffect(() => { setIdentity(savedIdentity); setAliases(savedIdentity.aliases.join('\n')); }, [state.account.id, JSON.stringify(savedIdentity)]);
+  const identityValue = { ...identity, aliases: aliases.split(/\r?\n/).map(name => name.trim()).filter(Boolean) };
+  const identityDirty = JSON.stringify(identityValue) !== JSON.stringify(savedIdentity);
   const settingsDirty = JSON.stringify(options) !== JSON.stringify(saved);
-  const dirty = settingsDirty || voice !== (preview?.voice || '');
+  const dirty = settingsDirty || identityDirty || voice !== (preview?.voice || '');
   const analysisBlocked = dirty || !saved.enabled || !value.permitted || !state.settings.ai?.configured || preview?.status === 'running';
   useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
   useEffect(() => { onBusyChange(busy); }, [busy, onBusyChange]);
@@ -19,7 +27,9 @@ export default function StyleLearning({ state, onUpdate, onDirtyChange, onBusyCh
     if (inFlight.current || busy || disabled || state.account.mode !== 'live') return;
     if (['preview', 'generate'].includes(path) && analysisBlocked) return;
     const owner = state.account.id;
-    if (['settings', 'preview'].includes(path) && preview?.status === 'ready' && !window.confirm('Replace the current style proposal? Your approved style will be retained.')) return;
+    const identityOnly = path === 'settings' && Object.keys(body).every(key => key === 'identity');
+    if (identityOnly && preview && !window.confirm('Save identity and discard this style preview? Pending AI results will be invalidated. Your approved style will be retained.')) return;
+    if ((path === 'preview' || (path === 'settings' && !identityOnly)) && preview?.status === 'ready' && !window.confirm('Replace the current style proposal? Your approved style will be retained.')) return;
     if (currentOwner.current !== owner) return;
     inFlight.current = true;
     setBusy(true); setError('');
@@ -49,9 +59,17 @@ export default function StyleLearning({ state, onUpdate, onDirtyChange, onBusyCh
     <h2 className="settings-section-title">Learn my writing style</h2>
     <p className="settings-intro">{state.account.email || 'Choose an individual connected account in the sidebar.'} · Optional. Only your own Sent text is analyzed; contact and project memory stay separate. Importing mail does not use AI tokens.</p>
     <fieldset className="settings-fields" disabled={busy || disabled || state.account.mode !== 'live'}>
+      <h3>Your identity for this account</h3>
+      <p className="settings-help">Confirm the names people use when addressing you, including in group mail. AI can use only your saved, confirmed identity under its existing permissions. Names inferred from signatures or messages are not automatically verified. This does not change your From address or Email Brain notes.</p>
+      <label className="settings-field">Your display name<input maxLength={100} autoComplete="off" value={identity.displayName} onChange={event => setIdentity({ ...identity, displayName: event.target.value, confirmed: false })} /></label>
+      <label className="settings-field">Other names or nicknames — one per line<textarea rows={3} maxLength={1100} value={aliases} onChange={event => { setAliases(event.target.value); setIdentity({ ...identity, confirmed: false }); }} /><span className="settings-help">Up to 10 aliases, 100 characters each. Include only names that refer to you.</span></label>
+      <label className="settings-permission"><input type="checkbox" checked={identity.confirmed} disabled={!identity.displayName.trim()} onChange={event => setIdentity({ ...identity, confirmed: event.target.checked })} /><span>I confirm this name and these aliases identify me for this account</span></label>
+      <div className="settings-actions"><button className="button secondary" disabled={!identityDirty} onClick={() => action('settings', { identity: identityValue })}>Save identity · no AI call</button><span>{savedIdentity.confirmed ? 'Saved identity confirmed' : 'No confirmed identity is active'}</span></div>
+      <p className="settings-help">Identity confirmation does not need Sent access or enable learning. Editing a name requires confirmation again; save with confirmation unchecked to stop using it.</p>
+      <h3>Writing style</h3>
       <div className="settings-actions"><button className="button primary" disabled={analysisBlocked} onClick={() => action('preview', {}, 'POST', true)}>Learn Now · Uses AI</button></div>
       <p className="settings-help">Uses saved learning settings. Review samples and the token estimate before AI analysis generates a proposed writing style. Save Approved Style activates it for writing and replies under Email Brain permission; it does not overwrite Email Brain contacts, notes, or voice.</p>
-      {dirty && <p className="settings-help">Save learning settings and save or discard any proposal edits before learning again.</p>}
+      {dirty && <p className="settings-help">Save identity or learning settings and save or discard any proposal edits before learning again.</p>}
       {!state.settings.ai?.configured && <p className="settings-help">Configure and save an AI model in Model settings first.</p>}
       <label className="settings-permission"><input type="checkbox" checked={options.enabled} onChange={e => setOptions({ ...options, enabled: e.target.checked, weekly: e.target.checked && options.weekly })} /><span>Enable writing-style learning for this account</span></label>
       <label className="settings-permission"><input type="checkbox" checked={options.weekly} disabled={!options.enabled} onChange={e => setOptions({ ...options, weekly: e.target.checked })} /><span>Analyze newly sent mail weekly within this budget. Each update still needs review and Save. Uses cached Sent mail while Morrow is open; enable mail refresh to capture mail sent elsewhere. Paused while a preview awaits review.</span></label>
@@ -60,6 +78,7 @@ export default function StyleLearning({ state, onUpdate, onDirtyChange, onBusyCh
       <label className="settings-field">Token budget per analysis<input type="number" min="4000" max="64000" step="1000" value={options.tokenBudget} onChange={e => setOptions({ ...options, tokenBudget: Number(e.target.value) })} /><span className="settings-help">Conservative UTF-8 estimate including response allowance; your custom model’s billing may differ. No currency estimate.</span></label>
       <div className="settings-actions"><button className="button secondary" onClick={() => action('settings', options)} disabled={preview?.status === 'running'}>Save learning settings</button><button className="button secondary" disabled={analysisBlocked} onClick={() => action('preview')}>Preview samples · no AI call</button></div>
       {!value.permitted && <p className="settings-help">Requires saved learning opt-in plus AI Permissions: AI on, Email Brain, Sent and email body access.</p>}
+      {state.settings.policy.folders?.sent === false && <p className="settings-help">Sent access is off. Enable Sent in AI permissions before analyzing your writing style, then import Sent mail in Mail settings. Your confirmed identity can remain saved without Sent access.</p>}
       {preview && <div className="settings-test-result" role="status"><strong>{preview.status} · {preview.sampleCount} / {preview.eligible} useful samples</strong><p>Estimated tokens ≤ {preview.estimatedTokens.toLocaleString()} · budget {preview.tokenBudget.toLocaleString()} · effective sample cap {preview.effectiveCap}. Quote/signature removal is heuristic; review the exact text below.</p>
         <details><summary>Review text sent to the model</summary>{preview.samples.map((sample, i) => <pre key={i} style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{sample.body}</pre>)}</details>
         {preview.error && <p>{preview.error}</p>}
@@ -67,7 +86,7 @@ export default function StyleLearning({ state, onUpdate, onDirtyChange, onBusyCh
         {preview.status === 'ready' && <><label className="settings-field">Review and edit proposed style<textarea rows="7" maxLength="2000" value={voice} onChange={e => setVoice(e.target.value)} /></label><p>Provider-reported tokens: {preview.usage?.total_tokens ?? 'not supplied'}</p><button className="button primary" disabled={!voice.trim() || voice.length > 2000 || settingsDirty} onClick={() => action('apply', { previewId: preview.id, voice })}>Save approved style</button></>}
       </div>}
       {value.profile && <div className="settings-test-result"><strong>Saved style · {value.profile.active ? 'active for writing and replies' : 'inactive under current permissions or source scope'}</strong><p style={{ whiteSpace: 'pre-wrap' }}>{value.profile.voice}</p></div>}
-      <button className="button secondary" onClick={() => { if (window.confirm('Delete this account’s learned style and sample preview, and turn off learning?')) action('profile', {}, 'DELETE'); }}>Delete learned style & stop learning</button>
+      <button className="button secondary" onClick={() => { if (window.confirm('Delete this account’s learned style and sample preview, and turn off learning? Your confirmed identity is retained.')) action('profile', {}, 'DELETE'); }}>Delete learned style & stop learning</button>
     </fieldset>
     {busy && <p role="status">Working…</p>}{error && <p role="alert" className="settings-error">{error}</p>}
   </section>;

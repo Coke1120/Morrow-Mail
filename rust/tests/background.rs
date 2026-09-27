@@ -124,19 +124,14 @@ fn gmail_all_mail_scope_and_progress_are_durable_safe_and_backward_compatible() 
     let options = json!({"allMail":true,"inbox":false,"sent":false});
     assert_eq!(jobs::import_options(&options).unwrap()["allMail"], true);
     let before = db.settings().unwrap();
-    assert_eq!(
-        jobs::start_import(&db, A, &options).unwrap_err().status,
-        400
-    );
-    assert_eq!(db.settings().unwrap(), before);
+    jobs::start_import(&db, A, &options).unwrap();
+    assert_eq!(jobs::import_status(&db, A).unwrap()["currentFolder"], "all");
     let mut accounts = before["mailAccounts"].clone();
     accounts[A]["provider"] = "google".into();
     accounts[B]["provider"] = "microsoft".into();
     db.set_settings(&json!({"mailAccounts":accounts})).unwrap();
-    assert_eq!(
-        jobs::start_import(&db, B, &options).unwrap_err().status,
-        400
-    );
+    jobs::start_import(&db, B, &options).unwrap();
+    assert_eq!(jobs::import_status(&db, B).unwrap()["currentFolder"], "all");
     jobs::start_import(&db, A, &options).unwrap();
     let status = jobs::import_status(&db, A).unwrap();
     assert_eq!(status["currentFolder"], "all");
@@ -770,5 +765,35 @@ async fn imports_require_owner_header_and_background_respects_mailbox_gate() {
         "paused"
     );
     drop(app);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unlimited_history_preserves_old_mail_checkpoint_and_fixed_upper_bound() {
+    let root = directory();
+    let db = Store::open(&root).unwrap();
+    configure(&db);
+    jobs::start_import(&db, A, &json!({"months":0,"allMail":true})).unwrap();
+    let job = db.settings().unwrap()["imports"][A].clone();
+    assert_eq!(job["since"], "");
+    let before = job["before"].clone();
+    let cursor = json!({"version":1,"folders":[{"path":"INBOX","kind":"inbox"}],"index":0,"next":{"path":"INBOX","validity":"55","uid":51}});
+    jobs::apply_import_page(&db,A,&job,&json!({"messages":[{"id":"old","folder":"inbox","date":"1999-01-01T00:00:00.000Z"},{"id":"future","folder":"inbox","date":"2099-01-01T00:00:00.000Z"}],"nextCursor":cursor})).unwrap();
+    assert!(db.get(A, "old").unwrap().is_some());
+    assert!(db.get(A, "future").unwrap().is_none());
+    jobs::control_import(&db, A, "pause").unwrap();
+    drop(db);
+    let db = Store::open(&root).unwrap();
+    jobs::control_import(&db, A, "resume").unwrap();
+    let job = db.settings().unwrap()["imports"][A].clone();
+    assert_eq!(job["since"], "");
+    assert_eq!(job["before"], before);
+    assert_eq!(job["cursor"], cursor);
+    jobs::apply_import_page(&db, A, &job, &json!({"messages":[],"nextCursor":null})).unwrap();
+    let status = jobs::import_status(&db, A).unwrap();
+    assert_eq!(status["status"], "complete");
+    assert_eq!(status["imported"], 1);
+    assert!(status.get("cursor").is_none());
+    drop(db);
     fs::remove_dir_all(root).unwrap();
 }

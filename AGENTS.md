@@ -46,7 +46,17 @@ Replies, forwards, provider-draft copies and saved drafts keep their owner. Repl
 
 Only new unsaved messages may choose a different From account. Keep uncertain-send records and explicit retry review;
 never automatically resend. Calendar creation retains its original request ID
-and payload across retries and app restarts.
+and payload across retries and app restarts. Optional calendar reminders belong to that same reviewed payload; absent means provider default and preserves legacy retry hashes. Google supports popup/email, Microsoft popup only. Use provider reminders rather than creating hidden scheduled mail. Month views use civil dates for all-day events and exclusive end dates.
+Scheduled sends freeze the reviewed owner, payload, footer, headers and time; lock their
+associated drafts until cancelled, send only while the app runs within the 15-minute
+late grace, and recover interrupted claims as uncertain without replay. Pending is a
+local marker independent of stars and must survive imports. Out of Office changes
+are provider-managed writes requiring explicit review and additional OAuth consent;
+never replace a connection after partial consent or an obsolete authorization attempt.
+Confirmed learning identity is per account and never inferred from signatures.
+Reply-suggestion batches require preview/confirmation and may only create drafts;
+use permitted downloaded correspondence and source-validated approved writing style.
+
 
 Keep provider metadata separate from explicit local changes: Gmail imports use
 `providerSnapshot` and server-written `localOverrides`. Never trust client-supplied

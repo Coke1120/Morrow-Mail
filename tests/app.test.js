@@ -720,8 +720,8 @@ test('new-mail summaries skip initial import, classify only newly synced mail, a
 });
 
 test('first import is account-bound, keeps folder IDs separate, resumes, and never triggers arrival AI for history', async t => {
-  let calls = 0;
-  const f = await workspace(t, { verifySmtp: async () => {}, fetchImapPage: async (mail, { folder }) => { calls++; return { messages: [{ id: folder === 'sent' ? 'imap-folder:U2VudA:7:1' : 'imap:7:1', remoteId: 'imap:7:1', providerFolderId: folder === 'sent' ? 'Sent' : 'INBOX', messageId: folder === 'sent' ? '<already-sent@fixture>' : '', fromEmail: mail.email, to: 'friend@example.com', date: '2026-09-23T12:00:00.000Z', body: 'This is a sent or received history sample of useful length.', folder }], nextCursor: null }; }, now: () => Date.parse('2026-09-24T12:00:00Z') });
+  let calls = 0, lastFolder;
+  const f = await workspace(t, { verifySmtp: async () => {}, fetchImapPage: async (mail, { folder }) => { calls++; lastFolder = folder; return { messages: [{ id: folder === 'sent' ? 'imap-folder:U2VudA:7:1' : 'imap:7:1', remoteId: 'imap:7:1', providerFolderId: folder === 'sent' ? 'Sent' : 'INBOX', messageId: folder === 'sent' ? '<already-sent@fixture>' : '', fromEmail: mail.email, to: 'friend@example.com', date: '2026-09-23T12:00:00.000Z', body: 'This is a sent or received history sample of useful length.', folder }], nextCursor: null }; }, now: () => Date.parse('2026-09-24T12:00:00Z') });
   const a = 'import@example.com';
   let result = await f.post('/api/settings/mail', { ...mailConfig(a), importOptions: { months: 3, inbox: true, sent: true } });
   assert.equal(result.status, 200); assert.equal(result.data.accounts[0].import.status, 'running'); assert.equal(result.data.messages.length, 0);
@@ -745,6 +745,10 @@ test('first import is account-bound, keeps folder IDs separate, resumes, and nev
   await f.post('/api/imports/start', { months: 1, inbox: false, sent: true }); await f.automation.tick();
   assert.equal(f.store.listMessages(a).length, 2); // Shorter imports retain cache and do not duplicate Sent.
   assert.equal((await f.post('/api/imports/start', { months: 2 })).status, 400);
+  result = await f.post('/api/settings/mail', { ...mailConfig('all-import@example.com'), importOptions: { months: 0, allMail: true, inbox: false, sent: false } });
+  assert.equal(result.status, 200);
+  assert.equal(lastFolder, 'all', 'All Mail connection verification must not require a special-use Sent folder');
+  assert.equal(f.store.getSettings().imports['all-import@example.com'].since, '');
 });
 
 test('style API requires review, redacts to Sent bodies, honors account ownership and supplies only approved voice to replies', async t => {
@@ -768,4 +772,50 @@ test('style API requires review, redacts to Sent bodies, honors account ownershi
   await f.request('/api/style/profile', { method: 'DELETE', body: {} });
   await f.post('/api/ai', { action: 'reply', messageId: 'sent' });
   assert.equal(calls.at(-1).options.styleVoice, '');
+});
+
+test('Out of Office OAuth upgrades are explicit, bound to the original account and preserve its workspace', async t => {
+  let returnedEmail = 'owner@example.invalid', calls = 0, grantedScopes;
+  const { store, request, post } = await workspace(t, { oauthFinish: (provider, { config }) => {
+    calls++; return { provider, ...config, email: returnedEmail, accessToken: 'fixture-rotated', grantedScopes: grantedScopes ?? config.mailScope };
+  } });
+  for (const provider of ['google', 'microsoft']) {
+    const owner = { provider, email: 'owner@example.invalid', connectionId: 'original', clientId: 'fixture-client', clientSecret: 'fixture-secret', refreshToken: 'fixture-refresh', accessToken: 'fixture-access', grantedScopes: provider === 'google' ? 'https://www.googleapis.com/auth/gmail.modify' : 'Mail.ReadWrite Mail.Send' };
+    const accounts = { [owner.email]: owner, 'other@example.invalid': { ...owner, email: 'other@example.invalid', connectionId: 'other' } };
+    store.setSettings({ activeAccount: 'all', mailAccounts: accounts, imports: { [owner.email]: { retained: true } } });
+    const input = { outOfOffice: true, forAccount: owner.email };
+    assert.equal((await post(`/api/oauth/${provider}/start`, input)).status, 400);
+    const begin = async () => {
+      const start = await request(`/api/oauth/${provider}/start`, { method: 'POST', body: input, headers: { 'X-Genmail-Account': owner.email } });
+      assert.equal(start.status, 200); assert.doesNotMatch(start.raw, /fixture-secret|fixture-refresh|fixture-access/);
+      const url = new URL(start.data.url), auth = await request(url.pathname + url.search);
+      const scopes = new URL(auth.headers.get('location')).searchParams.get('scope');
+      assert.ok(scopes.includes(provider === 'google' ? 'gmail.settings.basic' : 'MailboxSettings.ReadWrite'));
+      assert.ok(scopes.includes(provider === 'google' ? 'gmail.modify' : 'Mail.ReadWrite'));
+      return () => request(`/api/oauth/${provider}/callback?state=${encodeURIComponent(url.searchParams.get('state'))}&code=fixture-code`, { headers: { Cookie: auth.headers.get('set-cookie').split(';')[0] } });
+    };
+    returnedEmail = 'wrong@example.invalid';
+    let finish = await begin(); let result = await finish();
+    assert.ok(new URL(result.headers.get('location')).searchParams.has('connectionError'));
+    assert.deepEqual(store.getSettings().mailAccounts, accounts);
+    returnedEmail = owner.email;
+    finish = await begin(); store.setSettings({ mailAccounts: { ...accounts, [owner.email]: { ...owner, connectionId: 'replaced' } } });
+    result = await finish(); assert.ok(new URL(result.headers.get('location')).searchParams.has('connectionError'));
+    store.setSettings({ mailAccounts: accounts });
+    for (const partial of [owner.grantedScopes, provider === 'google' ? 'https://www.googleapis.com/auth/gmail.settings.basic' : 'MailboxSettings.ReadWrite']) {
+      grantedScopes = partial; finish = await begin(); result = await finish();
+      assert.ok(new URL(result.headers.get('location')).searchParams.has('connectionError'));
+      assert.deepEqual(store.getSettings().mailAccounts, accounts, 'Partial consent retains the original grant');
+    }
+    grantedScopes = undefined;
+    const staleFinish = await begin(); finish = await begin(); result = await finish();
+    assert.equal(new URL(result.headers.get('location')).searchParams.get('connected'), provider);
+    const saved = store.getSettings(); assert.equal(saved.activeAccount, 'all'); assert.equal(saved.mailAccounts[owner.email].connectionId, 'original');
+    assert.equal(saved.mailAccounts[owner.email].refreshToken, 'fixture-refresh'); assert.deepEqual(saved.mailAccounts['other@example.invalid'], accounts['other@example.invalid']);
+    assert.deepEqual(saved.imports[owner.email], { retained: true });
+    assert.ok(saved.mailAccounts[owner.email].authorizationId);
+    result = await staleFinish(); assert.ok(new URL(result.headers.get('location')).searchParams.has('connectionError'));
+    assert.deepEqual(store.getSettings().mailAccounts, saved.mailAccounts, 'An older consent window cannot overwrite the new grant');
+    const exchanges = calls; await finish(); assert.equal(calls, exchanges, 'One-use callback cannot exchange again');
+  }
 });

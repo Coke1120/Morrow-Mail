@@ -31,7 +31,7 @@ function importFailure(error, stage) {
 export function importOptions(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !['months', 'inbox', 'sent', 'allMail'].includes(key))) invalid('Invalid import options.');
   const options = { months: 3, inbox: true, sent: true, allMail: false, ...value };
-  if (![1, 3, 6, 12].includes(options.months) || typeof options.inbox !== 'boolean' || typeof options.sent !== 'boolean' || typeof options.allMail !== 'boolean' || !(options.allMail || options.inbox || options.sent)) invalid('Choose 1, 3, 6, or 12 months and at least one folder.');
+  if (![0, 1, 3, 6, 12].includes(options.months) || typeof options.inbox !== 'boolean' || typeof options.sent !== 'boolean' || typeof options.allMail !== 'boolean' || !(options.allMail || options.inbox || options.sent)) invalid('Choose all history or 1, 3, 6, or 12 months and at least one folder.');
   return options;
 }
 export function monthsAgo(months, now = Date.now()) {
@@ -51,9 +51,9 @@ export function createHistory({ store, connection, currentMail, fetchPage, impor
     const options = importOptions(input);
     const mail = connection(account);
     if (!mail) invalid('Choose a connected mailbox.');
-    if (options.allMail && mail.provider !== 'google') invalid('All mail import is available only for Gmail.');
+    if (options.allMail && !['google', 'microsoft', 'imap', undefined, ''].includes(mail.provider)) invalid('Unsupported mailbox provider.');
     const before = new Date(now()).toISOString();
-    write(account, { id: randomUUID(), options, since: monthsAgo(options.months, now()), before, folderIndex: 0, cursor: null, visited: [], status: 'running', imported: 0, pages: 0, processed: 0, connectionId: mail.connectionId, updatedAt: before, ...clearFailure });
+    write(account, { id: randomUUID(), options, since: options.months === 0 ? '' : monthsAgo(options.months, now()), before, folderIndex: 0, cursor: null, visited: [], status: 'running', imported: 0, pages: 0, processed: 0, connectionId: mail.connectionId, updatedAt: before, ...clearFailure });
   }
   function control(account, action) {
     const job = read(account);
@@ -68,7 +68,9 @@ export function createHistory({ store, connection, currentMail, fetchPage, impor
     const errorCode = Object.hasOwn(importErrors, job.errorCode) ? job.errorCode : status === 'failed' ? 'import_failed' : null;
     const error = errorCode ? importErrors[errorCode] : '';
     const recoveryAction = status === 'running' && job.nextRetryAt ? 'retry' : ['failed', 'paused'].includes(status) ? errorCode === 'authorization' ? 'reconnect' : ['invalid_cursor', 'invalid_page', 'sent_unavailable', 'connection_changed'].includes(errorCode) ? 'restart' : 'resume' : null;
-    return { options, since, before, status, imported, updatedAt, error, errorCode, recoveryAction, nextRetryAt: job.nextRetryAt ?? null, retryCount: job.retryCount ?? 0, currentFolder: folders(job)[job.folderIndex] ?? null, phase: status === 'running' ? (job.nextRetryAt ? 'retrying' : 'queued') : status, pages: job.pages ?? null, processed: job.processed ?? null, lastPageChecked: job.lastPageChecked ?? null, lastPageAdded: job.lastPageAdded ?? null };
+    const provider = connection(account) ? connection(account).provider || 'imap' : null;
+    const coverage = { provider, folders: folders(job), excludes: ['spam', 'trash'], folderLimit: options.allMail && ['microsoft', 'imap'].includes(provider) ? 300 : null };
+    return { options, since, before, status, imported, updatedAt, coverage, error, errorCode, recoveryAction, nextRetryAt: job.nextRetryAt ?? null, retryCount: job.retryCount ?? 0, currentFolder: folders(job)[job.folderIndex] ?? null, phase: status === 'running' ? (job.nextRetryAt ? 'retrying' : 'queued') : status, pages: job.pages ?? null, processed: job.processed ?? null, lastPageChecked: job.lastPageChecked ?? null, lastPageAdded: job.lastPageAdded ?? null };
   }
   async function tick() {
     // One read-only page per tick keeps interactive mailbox operations responsive.

@@ -2,13 +2,16 @@ import AppKit
 import SwiftUI
 
 // Standalone fixture, without starting the service or opening any workspace:
-// swiftc -D MORROW_WINDOW_CHECKS -parse-as-library macos/Sources/MorrowMail/{Models,AppModel,MorrowMailApp}.swift macos/Checks/WindowAssertions.swift -o /tmp/morrow-window-checks
+// swiftc -D MORROW_WINDOW_CHECKS -parse-as-library macos/Sources/MorrowMail/{Models,AppModel,MorrowMailApp,CalendarView}.swift macos/Checks/WindowAssertions.swift -o /tmp/morrow-window-checks
 // /tmp/morrow-window-checks
 @main
 struct WindowAssertions {
     @MainActor static func main() {
         let app = NSApplication.shared
         app.setActivationPolicy(.regular)
+        checkRestoredListWidth()
+        if CommandLine.arguments.contains("--list-width-only") { return }
+        checkCalendarLayout()
         for width in [1040.0, 1877.0] { checkInitialSplit(width: width, vertical: true) }
         checkInitialSplit(width: 1040, vertical: false)
         checkInitialSplit(width: 1040, vertical: false, height: 620)
@@ -38,6 +41,95 @@ struct WindowAssertions {
         assert(window.isVisible && model.unsavedForms.contains("fixture-draft"))
         assert(MorrowDelegate().applicationShouldTerminate(app) == .terminateNow)
         print("Window close/reopen preserves pending work and unsaved forms.")
+    }
+
+    @MainActor static func checkCalendarLayout() {
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("morrow-calendar-layout-\(UUID())")
+        let previous = getenv("MORROW_DATA_DIR").map { String(cString: $0) }
+        setenv("MORROW_DATA_DIR", temporary.path, 1)
+        let model = AppModel()
+        if let previous { setenv("MORROW_DATA_DIR", previous, 1) } else { unsetenv("MORROW_DATA_DIR") }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1220, height: 800), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close(); try? FileManager.default.removeItem(at: temporary) }
+        let host = NSHostingView(rootView: HSplitView {
+            Color.clear.frame(width: 230)
+            NativeCalendarView().environmentObject(model)
+        })
+        window.contentView = host
+        window.orderBack(nil)
+        for size in [NSSize(width: 1220, height: 800), NSSize(width: 1040, height: 640), NSSize(width: 1440, height: 900)] {
+            window.setContentSize(size)
+            host.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+            let settled = host.frame
+            host.layoutSubtreeIfNeeded()
+            assert(host.frame == settled && host.frame.height.isFinite, "Calendar layout must settle without an AppKit constraint loop.")
+        }
+        print("Calendar month grid settles at compact, standard and wide window sizes.")
+    }
+
+    @MainActor static func checkRestoredListWidth() {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1220, height: 800), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        var layout = "right", sidebarVisible = true
+        var remembered: CGFloat?
+        // Match MailWorkspace's conditional panes, including the outer sidebar.
+        func content() -> some View {
+            HSplitView {
+                if sidebarVisible { Color.clear.frame(minWidth: 200, idealWidth: 230).background(InitialSplitPosition(230)) }
+                HSplitView {
+                    if layout == "right" {
+                        Color.clear.frame(minWidth: 260, idealWidth: 320)
+                            .background(InitialSplitPosition(remembered) { if layout == "right" { remembered = $0 } })
+                    }
+                    VSplitView {
+                        if layout == "bottom" { Color.clear.frame(minHeight: 160, idealHeight: 240).background(InitialSplitPosition(240)) }
+                        Color.clear.frame(minHeight: 200)
+                    }.frame(minWidth: 320)
+                }
+            }
+        }
+        let host = NSHostingView(rootView: content())
+        window.contentView = host
+        window.orderBack(nil)
+        func splits(_ view: NSView) -> [NSSplitView] {
+            ((view as? NSSplitView).map { [$0] } ?? []) + view.subviews.flatMap(splits)
+        }
+        func listSplit() -> NSSplitView {
+            guard let split = splits(host).filter({ $0.isVertical }).last else { fatalError("Right list split did not attach") }
+            return split
+        }
+        func settle() {
+            host.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        settle()
+        let initial = listSplit()
+        assert(initial.arrangedSubviews.count == 2 && remembered != nil, "Right list width was not captured")
+        let manual = min(400, initial.bounds.width - 320 - initial.dividerThickness)
+        assert(manual > 280, "Fixture has no room to resize: \(initial.bounds)")
+        initial.setPosition(manual, ofDividerAt: 0)
+        settle()
+        assert(abs((remembered ?? 0) - manual) < 2, "Manual list width was not captured: \(String(describing: remembered))")
+        for temporary in ["focus", "bottom"] {
+            layout = temporary; sidebarVisible = temporary != "focus"
+            host.rootView = content()
+            settle()
+            assert(abs((remembered ?? 0) - manual) < 2, "Removing the list overwrote its width: \(temporary)")
+            layout = "right"; sidebarVisible = true
+            host.rootView = content()
+            settle()
+            let restored = listSplit()
+            let actual = restored.arrangedSubviews.first?.frame.width ?? 0
+            assert(restored.arrangedSubviews.count == 2 && abs(actual - manual) < 2, "List width reset after \(temporary): expected=\(manual), actual=\(actual), bounds=\(restored.bounds)")
+        }
+        let resized = manual - 30
+        listSplit().setPosition(resized, ofDividerAt: 0)
+        settle()
+        assert(abs((listSplit().arrangedSubviews.first?.frame.width ?? 0) - resized) < 2 && abs((remembered ?? 0) - resized) < 2, "Restoration kept reapplying over the user's divider")
+        print("Right list width survives Expand/Restore and Below/Right, and remains resizable.")
     }
 
     @MainActor static func checkInitialSplit(width: CGFloat, vertical: Bool, lateAttachment: Bool = false, height: CGFloat = 800) {

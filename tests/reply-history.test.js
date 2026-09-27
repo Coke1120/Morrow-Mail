@@ -206,3 +206,21 @@ test('history replies discard changed Email Brain and redacted brain sources out
     assert.equal(result.status, 409); assert.doesNotMatch(JSON.stringify(result.data), /STALE BRAIN REPLY/);
   }
 });
+
+test('correspondent history includes permitted own Sent To/Cc, excluding Bcc, strangers and other owners', async t => {
+  let seen;
+  const f = await fixture(t, async (...args) => { seen = args; return 'Reviewed reply'; });
+  f.store.setSettings({ policy: { folders: { sent: true }, maxMessages: 8 } });
+  for (const row of [
+    message('own-sent', { folder: 'sent', fromEmail: owner, to: '"Sender, Team" <SENDER@example.invalid>', date: '2026-03-01T00:00:00Z' }),
+    message('own-cc', { folder: 'sent', fromEmail: owner, to: other, cc: 'sender@example.invalid' }),
+    message('bcc-only', { folder: 'sent', fromEmail: owner, to: other, bcc: 'sender@example.invalid' }),
+    message('not-owner', { folder: 'sent', fromEmail: other, to: 'sender@example.invalid' }),
+    message('prefix-recipient', { folder: 'sent', fromEmail: owner, to: 'prefixsender@example.invalid' }),
+  ]) f.store.upsertMessage(owner, row);
+  f.store.upsertMessage(other, message('foreign-sent', { folder: 'sent', fromEmail: other, to: 'sender@example.invalid' }));
+  const result = await f.reply(); assert.equal(result.status, 200);
+  assert.deepEqual(new Set(seen[2].map(m => m.id)), new Set(['target', 'history', 'own-sent', 'own-cc']));
+  f.store.setSettings({ policy: { folders: { sent: false } } });
+  await f.reply(); assert.deepEqual(seen[2].map(m => m.id), ['target', 'history']);
+});

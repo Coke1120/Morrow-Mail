@@ -162,7 +162,7 @@ pub fn import_messages(db: &Store, mail: &Value, messages: &[Value]) -> Result<V
         let mut existing=existing.map(|s|serde_json::from_str::<Value>(&s)).transpose()?;
         if existing.is_none()&&(message["folder"]=="sent"||(mail["provider"]=="google"&&message["providerSent"]==true))&&string(message,"fromEmail").eq_ignore_ascii_case(account)&&!string(message,"messageId").is_empty(){let local:Option<String>=db.conn.query_row("SELECT data FROM messages WHERE account=? AND id LIKE 'sent:%' AND COALESCE(json_extract(data,'$.remoteId'),'')='' AND json_extract(data,'$.messageId')=? LIMIT 1",params![account,string(message,"messageId")],|row|row.get(0)).optional()?;existing=local.map(|s|serde_json::from_str(&s)).transpose()?;}
         if existing.is_none()&&db.get(account,string(message,"id"))?.is_none(){new_ids.push(string(message,"id").to_owned());}
-        let mut value=message.clone();if let Some(existing)=&existing{if string(existing,"id").starts_with("sent:"){value=merge(value,existing);}for key in ["id","folder","read","starred","labels"]{if let Some(entry)=existing.get(key){value[key]=entry.clone();}}value["remoteId"]=existing["remoteId"].as_str().filter(|s|!s.is_empty()).unwrap_or(remote).into();for key in ["providerFolderId","providerFolderName"]{if let Some(entry)=existing.get(key).filter(|v|!v.is_null()){value[key]=entry.clone();}}}
+        let mut value=message.clone();if let Some(existing)=&existing{if string(existing,"id").starts_with("sent:"){value=merge(value,existing);}for key in ["id","folder","read","starred","labels","pending"]{if let Some(entry)=existing.get(key){value[key]=entry.clone();}}value["remoteId"]=existing["remoteId"].as_str().filter(|s|!s.is_empty()).unwrap_or(remote).into();for key in ["providerFolderId","providerFolderName"]{if let Some(entry)=existing.get(key).filter(|v|!v.is_null()){value[key]=entry.clone();}}}
         if mail["provider"]=="google"{value=merge(value,&google_import_state(message,existing.as_ref()));}db.upsert(account,&value)?;
     }Ok(())})?;
     Ok(new_ids)
@@ -223,8 +223,22 @@ async fn send(app: &App, ctx: &Context) -> Result<Value> {
     let _mailbox = app.0.mailbox.try_lock().map_err(|_| {
         Error::conflict("Another mailbox operation is running. Try again when it finishes.")
     })?;
+    send_locked(app, ctx, None).await
+}
+// The scheduler holds the same mailbox gate before calling this shared path.
+pub(crate) async fn send_locked(
+    app: &App,
+    ctx: &Context,
+    scheduled: Option<Value>,
+) -> Result<Value> {
     let input = ctx.body.clone();
     let mut value = content::content(&input, false)?;
+    if let Some(job) = &scheduled
+        && input.get("footer").is_some()
+        && input["footer"] == job["payload"]["footer"]
+    {
+        value["footer"] = job["payload"]["footer"].clone();
+    }
     let request = validation::text(&input["requestId"], "Send request ID", 100, false)?.to_owned();
     if request.len() < 8
         || !request
@@ -243,8 +257,11 @@ async fn send(app: &App, ctx: &Context) -> Result<Value> {
     let request_clone = request.clone();
     let initial_value = value.clone();
     let input_clone = input.clone();
+    let scheduled_review = scheduled.clone();
     let prepared=app.db(move|db|{
         let config=db.settings()?;if !valid_account(&config,&owner){return Err(Error::conflict("This account was disconnected."));}
+        crate::scheduled::guard_send(db,&owner,&input_clone,scheduled_review.as_ref().map(|j|string(j,"id")))?;
+        if let Some(job)=&scheduled_review { crate::scheduled::validate_review(db,&owner,&input_clone,job)?; }
         if !string(&input_clone,"draftId").is_empty() && db.get(&owner,string(&input_clone,"draftId"))?.is_some_and(|draft|draft["providerDraft"]==true) {return Err(Error::conflict("This is a read-only provider draft. Copy it to a local draft before editing or sending."));}
         let previous=attempts(&config).into_iter().find(|a|a["account"]==owner&&(a["requestId"]==request_clone||!string(&input_clone,"draftId").is_empty()&&a["draftId"]==input_clone["draftId"]));
         let mut value=initial_value;value["replyToId"]=input_clone.get("replyToId").cloned().unwrap_or(json!(""));
@@ -268,6 +285,9 @@ if previous["payloadHash"]!=hash{return Err(Error::conflict("This draft has an u
         );
     }
     value = prepared["value"].clone();
+    if let Some(job) = &scheduled {
+        value["fromName"] = job["fromName"].clone();
+    }
     let draft_id = string(&prepared, "draftId").to_owned();
     struct Sending {
         app: App,
@@ -312,10 +332,18 @@ if previous["payloadHash"]!=hash{return Err(Error::conflict("This draft has an u
         let reviewed_input = input.clone();
         let send_settings=app.db(move|db|db.transaction(|db|{crate::cli::guard_review(db,&owner,&reviewed_input)?;let config=db.settings()?;let mut extra=json!({"id":draft,"folder":"drafts","deliveryStatus":"unconfirmed","deliveryRequestId":request_clone});if !reply.is_empty(){extra["replyToId"]=reply.into();}draft_value.as_object_mut().unwrap().remove("replyToId");db.upsert(&owner,&outgoing(&config,&owner,&draft_value,&extra))?;let mut pending=attempts(&config);if !pending.iter().any(|a|a["account"]==owner&&a["requestId"]==saved_attempt["requestId"]){pending.push(saved_attempt);}db.set_settings(&json!({"deliveryAttempts":pending}))?;Ok(config)})).await?;
         let mut message = value.clone();
-        message["fromName"] = string(&send_settings["preferences"], "displayName").into();
-        message["replyMessageId"] = string(&prepared["original"], "messageId")
-            .replace(['\r', '\n'], "")
-            .into();
+        message["fromName"] = scheduled
+            .as_ref()
+            .map(|job| job["fromName"].clone())
+            .unwrap_or_else(|| string(&send_settings["preferences"], "displayName").into());
+        message["replyMessageId"] = scheduled
+            .as_ref()
+            .map(|job| job["replyMessageId"].clone())
+            .unwrap_or_else(|| {
+                string(&prepared["original"], "messageId")
+                    .replace(['\r', '\n'], "")
+                    .into()
+            });
         let result = if ["", "imap"].contains(&string(&mail, "provider")) {
             imap::send(&mail, &message).await
         } else {
@@ -526,6 +554,7 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                         "This draft has an unconfirmed delivery. Check Sent before retrying.",
                     ));
                 }
+                crate::scheduled::guard_draft(db, &owner, &id, None)?;
                 let mut extra = json!({"id":id,"folder":"drafts"});
                 if !string(&body, "replyToId").is_empty() {
                     get_message(db, &owner, string(&body, "replyToId"))?;
@@ -617,16 +646,12 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             };
             mail["password"] = validation::text(password, "Mailbox password", 4096, false)?.into();
             let options = body.get("importOptions").cloned();
-            if let Some(options) = &options
-                && crate::background::import_options(options)?["allMail"] == true
-            {
-                return Err(Error::invalid(
-                    "All mail import is available only for Gmail.",
-                ));
+            if let Some(options) = &options {
+                crate::background::import_options(options)?;
             }
             imap::verify_smtp(&mail).await?;
             let input = if let Some(options) = &options {
-                json!({"folder":if options["inbox"]!=false{"inbox"}else{"sent"},"since":(chrono::Utc::now()-chrono::Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Millis,true)})
+                json!({"folder":if options["allMail"]==true{"all"}else if options["inbox"]!=false{"inbox"}else{"sent"},"since":(chrono::Utc::now()-chrono::Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Millis,true)})
             } else {
                 json!({})
             };

@@ -26,6 +26,7 @@ pub struct Runtime {
     dist: std::path::PathBuf,
     pub background: crate::background::Runtime,
     pub ai: crate::ai::Runtime,
+    pub reply_suggestions: crate::reply_suggestions::Runtime,
     pub workflows: Mutex<std::collections::HashMap<String, Value>>,
     pub calendars: crate::calendar::CalendarState,
     pub oauth: crate::oauth::OAuthState,
@@ -111,12 +112,15 @@ impl App {
         let store = Store::open(directory)?;
         crate::background::recover(&store)?;
         crate::learning::initialize(&store)?;
+        crate::scheduled::recover(&store)?;
+        crate::reply_suggestions::initialize(&store)?;
         crate::smart_search::reconcile(&store)?;
         Ok(Self(Arc::new(Runtime {
             activity: Default::default(),
             dist,
             background: Default::default(),
             ai: Default::default(),
+            reply_suggestions: Default::default(),
             workflows: Default::default(),
             calendars: Default::default(),
             oauth: Default::default(),
@@ -463,7 +467,14 @@ async fn handle_inner(app: App, request: axum::http::Request<Body>) -> Result<Re
                 | ["messages", _]
                 | ["messages", _, "organize"]
                 | [
-                    "workflows" | "imports" | "style" | "skills" | "workspace",
+                    "workflows"
+                        | "imports"
+                        | "style"
+                        | "skills"
+                        | "workspace"
+                        | "scheduled"
+                        | "out-of-office"
+                        | "reply-suggestions",
                     ..
                 ]
                 | ["account", "disconnect"]
@@ -559,6 +570,15 @@ pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
         return Ok(response);
     }
     if let Some(response) = crate::learning::handle(app, &context).await? {
+        return Ok(response);
+    }
+    if let Some(response) = crate::reply_suggestions::handle(app, &context).await? {
+        return Ok(response);
+    }
+    if let Some(response) = crate::out_of_office::handle(app, &context).await? {
+        return Ok(response);
+    }
+    if let Some(response) = crate::scheduled::handle(app, &context).await? {
         return Ok(response);
     }
     if let Some(response) = crate::mail::handle(app, &context).await? {
@@ -730,11 +750,14 @@ pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
                     return Err(Error::conflict("This account was disconnected."));
                 }
                 let original = get_message(db, &owner, &id)?;
+                crate::scheduled::guard_draft(db, &owner, &id, None)?;
                 let mut patch = json!({});
-                for key in ["read", "starred"] {
+                for key in ["read", "starred", "pending"] {
                     if let Some(value) = body.get(key) {
                         if !value.is_boolean() {
-                            return Err(Error::invalid("Read and starred must be true or false."));
+                            return Err(Error::invalid(
+                                "Read, starred and pending must be true or false.",
+                            ));
                         }
                         patch[key] = value.clone();
                     }
@@ -756,7 +779,9 @@ pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
                         .cloned()
                         .unwrap_or_default();
                     for key in patch.as_object().unwrap().keys() {
-                        overrides.insert(key.clone(), Value::Bool(true));
+                        if key != "pending" {
+                            overrides.insert(key.clone(), Value::Bool(true));
+                        }
                     }
                     patch["localOverrides"] = Value::Object(overrides);
                 }

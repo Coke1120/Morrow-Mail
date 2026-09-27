@@ -1,5 +1,5 @@
 const { readFileSync, writeFileSync, renameSync } = require('node:fs');
-function validKey(key) { return typeof key === 'string' && key.length <= 512 && (key === 'morrow.mail.layout' || key === 'morrow.pendingCalendar' || key.startsWith('morrow.account.collapsed.')); }
+function validKey(key) { return typeof key === 'string' && key.length <= 512 && (key === 'morrow.mail.layout' || key === 'morrow.pendingCalendar' || key === 'morrow.calendar.checked' || key.startsWith('morrow.account.collapsed.')); }
 function clientState(file, operation, key, value) {
   if (!validKey(key) || !['get', 'set', 'remove'].includes(operation)) throw new Error('Invalid client state request.');
   let state = {};

@@ -146,10 +146,26 @@ async fn run() -> Result<()> {
         }
     });
     let mut jobs = Vec::new();
-    for kind in 0..2 {
+    for kind in 0..4 {
         let worker = app.clone();
         let mut stop = shutdown_rx.clone();
-        jobs.push(tokio::spawn(async move {loop{tokio::select!{_=stop.changed()=>break,_=tokio::time::sleep(Duration::from_secs(if kind==0{30}else{1}))=>{}}tokio::select!{_=stop.changed()=>break,_=async {match kind {0=>{let _=morrow_search::background::tick(&worker).await;},_=>{let _=morrow_search::smart_search::tick(&worker).await;}}}=>{}}}}));
+        jobs.push(tokio::spawn(async move {
+            loop {
+                let seconds = match kind { 0 => 30, 1 => 1, _ => 5 };
+                tokio::select! { _ = stop.changed() => break, _ = tokio::time::sleep(Duration::from_secs(seconds)) => {} }
+                tokio::select! {
+                    _ = stop.changed() => break,
+                    _ = async {
+                        match kind {
+                            0 => { let _ = morrow_search::background::tick(&worker).await; }
+                            1 => { let _ = morrow_search::smart_search::tick(&worker).await; }
+                            2 => { let _ = morrow_search::scheduled::tick(&worker).await; }
+                            _ => { let _ = morrow_search::reply_suggestions::tick(&worker).await; }
+                        }
+                    } => {}
+                }
+            }
+        }));
     }
     let router = app.router();
     let mut server = tokio::spawn(async move {
@@ -167,6 +183,7 @@ async fn run() -> Result<()> {
     std::io::stdout().flush()?;
     let completed = tokio::select! { result = &mut server => Some(result), _=closed_rx.changed()=>None,_ = shutdown_signal()=>None };
     morrow_search::background::stop(&app);
+    morrow_search::reply_suggestions::stop(&app);
     let _ = shutdown_tx.send(true);
     app.0.updater.stop().await;
     for job in jobs {

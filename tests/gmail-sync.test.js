@@ -138,13 +138,13 @@ test('provider drafts require an explicit local copy; sending retries and mailbo
   assert.deepEqual(store.getMessage(A, draft.id), draft);
 });
 
-test('legacy fetchMessages injection still works and nonGoogle allMail fails before provider activity', async t => {
+test('legacy fetchMessages injection still works and malformed allMail fails before provider activity', async t => {
   const fetched = []; let network = 0;
   const { store, call } = await fixture(t, { fetchProviderMessages: async mail => { fetched.push(mail.email); return [remote('legacy', ['INBOX'])]; }, fetchImapMessages: async mail => { fetched.push(mail.email); return []; }, verifySmtp: async () => { network++; }, oauthStart: () => { network++; throw new Error('Must not call'); } });
   store.setSettings({ mailAccounts: { [A]: connection(A), [B]: { email: B, provider: 'imap' } } });
   assert.equal((await call('/api/sync')).status, 200); assert.equal((await call('/api/sync', {}, B)).status, 200);
   assert.deepEqual(fetched, [A, B]);
-  assert.equal((await call('/api/oauth/microsoft/start', { importOptions: { allMail: true } })).status, 400);
-  assert.equal((await call('/api/settings/mail', { email: B, imapHost: 'imap.example.invalid', smtpHost: 'smtp.example.invalid', password: 'fixture', importOptions: { allMail: true } })).status, 400);
+  assert.equal((await call('/api/oauth/microsoft/start', { importOptions: { allMail: 'true' } })).status, 400);
+  assert.equal((await call('/api/settings/mail', { email: B, imapHost: 'imap.example.invalid', smtpHost: 'smtp.example.invalid', password: 'fixture', importOptions: { allMail: 'true' } })).status, 400);
   assert.equal(network, 0);
 });

@@ -1076,3 +1076,50 @@ async fn http_routes_require_mailbox_and_keep_active_view_separate() {
         .unwrap();
     assert_eq!(response.status(), 400);
 }
+
+#[test]
+fn reply_history_includes_only_permitted_sent_correspondence() {
+    let tmp = Temporary::new();
+    let db = Store::open(&tmp.0).unwrap();
+    db.set_settings(&settings("https://fixture.invalid/v1"))
+        .unwrap();
+    let sender = "sender@example.test";
+    db.upsert(OWNER, &message("target", sender)).unwrap();
+    for (id, to, cc, bcc) in [
+        ("own-sent", "\"Sender, Team\" <SENDER@example.test>", "", ""),
+        ("own-cc", OTHER, sender, ""),
+        ("bcc-only", OTHER, "", sender),
+        ("prefix", "prefixsender@example.test", "", ""),
+    ] {
+        db.upsert(
+            OWNER,
+            &merge(
+                message(id, OWNER),
+                &json!({"folder":"sent","to":to,"cc":cc,"bcc":bcc}),
+            ),
+        )
+        .unwrap();
+    }
+    db.upsert(
+        OTHER,
+        &merge(
+            message("foreign", OTHER),
+            &json!({"folder":"sent","to":sender}),
+        ),
+    )
+    .unwrap();
+    let input = json!({"action":"reply","messageId":"target","includeHistory":true});
+    let context = ai::context_for(&db, "reply", &input, OWNER).unwrap();
+    let ids: std::collections::HashSet<_> =
+        context.messages.iter().map(|m| string(m, "id")).collect();
+    assert_eq!(ids, ["target", "own-sent", "own-cc"].into_iter().collect());
+    db.set_settings(&json!({"policy":{"folders":{"sent":false}}}))
+        .unwrap();
+    assert_eq!(
+        ai::context_for(&db, "reply", &input, OWNER)
+            .unwrap()
+            .messages
+            .len(),
+        1
+    );
+}

@@ -1280,3 +1280,96 @@ async fn oauth_refresh_after_restart_retains_rotation_omission_clients_scopes_an
         server.shutdown().await;
     }
 }
+
+#[tokio::test]
+async fn full_history_microsoft_traverses_folders_with_private_checkpoints_and_exclusions() {
+    let calls = Arc::new(Mutex::new(Vec::<String>::new()));
+    let saved = calls.clone();
+    let fixture = Fixture::new(Arc::new(move |request| {
+        let saved = saved.clone(); async move {
+            assert_eq!(request.host(),"graph.microsoft.com");
+            let url=url::Url::parse(&format!("https://graph.microsoft.com{}",request.path)).unwrap();
+            saved.lock().unwrap().push(url.path().to_owned());
+            let known = match url.path() {
+                "/v1.0/me/mailFolders/inbox"=>Some("i="), "/v1.0/me/mailFolders/sentitems"=>Some("s="), "/v1.0/me/mailFolders/drafts"=>Some("d="), "/v1.0/me/mailFolders/junkemail"=>Some("j="), "/v1.0/me/mailFolders/deleteditems"=>Some("t="), _=>None,
+            };
+            let value=if let Some(id)=known {json!({"id":id})} else if url.path()=="/v1.0/me/mailFolders" {
+                json!({"value":[{"id":"i=","displayName":"Inbox"},{"id":"s=","displayName":"Sent"},{"id":"d=","displayName":"Drafts"},{"id":"p=","displayName":"Projects","childFolderCount":1},{"id":"j=","displayName":"Junk","childFolderCount":2},{"id":"t=","displayName":"Trash","childFolderCount":3}]})
+            } else if url.path()=="/v1.0/me/mailFolders/p%3D/childFolders" { json!({"value":[{"id":"c=","displayName":"Child"}]}) } else {
+                let id = if url.path().contains("('i=')") { "i=" } else { match url.path().split('/').nth(4).unwrap() {"i%3D"=>"i=","s%3D"=>"s=","d%3D"=>"d=","p%3D"=>"p=","c%3D"=>"c=", _=>panic!("Excluded or unknown folder was fetched")}};
+                let query=url.query_pairs().collect::<std::collections::HashMap<_,_>>(); assert_eq!(query["$top"],"50"); assert!(!query["$filter"].contains(" ge ")); assert!(query["$filter"].contains(" lt 2026-")); assert!(request.headers["prefer"].to_str().unwrap().contains("ImmutableId"));
+                let mut row=microsoft_message(id,A,"Fixture only"); row["receivedDateTime"]="2000-01-01T00:00:00Z".into(); row["sentDateTime"]="2000-01-02T00:00:00Z".into(); row["createdDateTime"]="2000-01-03T00:00:00Z".into(); row["isDraft"]=(id=="d=").into();
+                let next=if id=="i=" && !query.contains_key("$skip") {json!(format!("https://graph.microsoft.com/v1.0/me/mailFolders('i=')/messages?{}&$skip=50",url.query().unwrap()))} else {Value::Null};
+                json!({"value":if id=="p="{vec![]}else{vec![row]},"@odata.nextLink":next})
+            };
+            Reply::Json(200,value)
+        }.boxed()
+    })).await;
+    let mail =
+        json!({"provider":"microsoft","accessToken":"fixture-token","grantedScopes":"Mail.Read"});
+    let mut options = json!({"folder":"all","since":"","before":"2026-09-27T00:00:00.000Z"});
+    let first = providers::fetch_page(&fixture.client, &mail, &options)
+        .await
+        .unwrap();
+    assert_eq!(first["messages"][0]["folder"], "inbox");
+    assert_eq!(first["nextCursor"]["folders"].as_array().unwrap().len(), 5);
+    let count = calls.lock().unwrap().len();
+    for next in [
+        "https://evil.invalid/v1.0/me/mailFolders/i%3D/messages",
+        "https://graph.microsoft.com/v1.0/me/mailFolders('s=')/messages",
+        "https://graph.microsoft.com/v1.0/me/mailFolders('i=')/messages/extra",
+        "https://graph.microsoft.com/v1.0/me/mailFolders('i=')/messages#fragment",
+    ] {
+        options["cursor"] = first["nextCursor"].clone();
+        options["cursor"]["next"] = next.into();
+        assert!(
+            providers::fetch_page(&fixture.client, &mail, &options)
+                .await
+                .is_err()
+        );
+    }
+    assert_eq!(calls.lock().unwrap().len(), count);
+    let mut messages = first["messages"].as_array().unwrap().clone();
+    let mut cursor = first["nextCursor"].clone();
+    let mut pages = 1;
+    while !cursor.is_null() {
+        options["cursor"] =
+            serde_json::from_slice::<Value>(&serde_json::to_vec(&cursor).unwrap()).unwrap();
+        let page = providers::fetch_page(&fixture.client, &mail, &options)
+            .await
+            .unwrap();
+        messages.extend(page["messages"].as_array().unwrap().clone());
+        cursor = page["nextCursor"].clone();
+        pages += 1;
+        assert!(pages <= 6);
+    }
+    assert_eq!(pages, 6);
+    assert_eq!(
+        messages
+            .iter()
+            .map(|v| v["folder"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["inbox", "inbox", "sent", "drafts", "archive"]
+    );
+    assert_eq!(messages[2]["providerSent"], true);
+    assert_eq!(messages[3]["providerDraft"], true);
+    assert_eq!(messages[3]["date"], "2000-01-03T00:00:00.000Z");
+    assert_eq!(messages[4]["providerFolderName"], "Projects / Child");
+    assert_eq!(messages[4]["providerFolderId"], "c=");
+    assert_eq!(
+        calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| *s == "/v1.0/me/mailFolders")
+            .count(),
+        1
+    );
+    assert_eq!(
+        providers::folders(&fixture.client, &mail)
+            .await
+            .unwrap_err()
+            .status,
+        403
+    );
+}

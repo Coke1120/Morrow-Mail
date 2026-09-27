@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createStore } from '../server/store.js';
 import { createHistory, importOptions, monthsAgo } from '../server/history.js';
-import { createLearning, ownText } from '../server/learning.js';
+import { createLearning, identity, ownText } from '../server/learning.js';
 import { updatePolicy } from '../server/policy.js';
 
 function fixture(t, runModel = async () => ({ text: 'Friendly, direct, short paragraphs.', usage: { total_tokens: 250 } })) {
@@ -150,13 +150,75 @@ test('manual learning keeps approved style through preview cancellation and prop
   assert.equal(f.learning.state(f.accounts[1]).profile, null);
 });
 
+test('account identity requires explicit confirmation, validates safe fields and never infers from signatures', async t => {
+  let calls = 0;
+  const f = fixture(t, async () => { calls += 1; throw new Error('Identity must not call AI'); }), a = f.accounts[0], b = f.accounts[1];
+  const workspaces = { [a]: { brain: { notes: 'Keep notes', voice: 'Keep manual voice', contacts: ['Keep contact'] } } };
+  f.store.setSettings({ workspaces, preferences: { displayName: 'Not confirmed', signature: 'Inferred name' } });
+  f.add(a, 'signed', { body: 'Hello, this signature is not a confirmed identity. Kind regards, Inferred Name.' });
+  assert.equal(identity(f.store.getSettings(), a), null);
+  assert.deepEqual(f.learning.state(a).settings.identity, { displayName: '', aliases: [], confirmed: false });
+  f.learning.updateSettings(a, { identity: { displayName: ' Leo Ho ', aliases: [' Leo ', 'leo', 'LEO HO', '何先生'], confirmed: false } });
+  assert.equal(identity(f.store.getSettings(), a), null);
+  f.learning.updateSettings(a, { identity: { displayName: ' Leo Ho ', aliases: [' Leo ', 'leo', 'LEO HO', '何先生'], confirmed: true } });
+  assert.deepEqual(identity(f.store.getSettings(), a), { displayName: 'Leo Ho', aliases: ['Leo', '何先生'] });
+  const generation = f.store.getSettings().aiGeneration;
+  f.learning.updateSettings(a, { identity: { displayName: 'Leo Ho', aliases: ['Leo', '何先生'], confirmed: true } });
+  assert.equal(f.store.getSettings().aiGeneration, generation);
+  assert.equal(identity(f.store.getSettings(), b), null);
+  assert.equal(identity(f.store.getSettings(), 'all'), null);
+  assert.equal(f.learning.state(a).settings.enabled, false);
+  assert.equal(f.learning.state(a).profile, null); assert.equal(f.learning.state(a).preview, null);
+  assert.deepEqual(f.store.getSettings().workspaces, workspaces); assert.equal(calls, 0);
+  const before = f.store.getSettings().styleLearning;
+  const valid = { displayName: 'Leo', aliases: [], confirmed: true };
+  for (const input of [null, [], { displayName: 'Implicit confirmation' }, { ...valid, extra: 'secret' }, { ...valid, confirmed: 'yes' }, { ...valid, displayName: '' }, { ...valid, displayName: 'a'.repeat(101) }, { ...valid, displayName: '😀'.repeat(51) }, { ...valid, displayName: '\ud800' }, { ...valid, displayName: 'Leo\nAnother' }, { ...valid, aliases: ['bad\u0085name'] }, { ...valid, aliases: [''] }, { ...valid, aliases: Array(11).fill('Alias') }]) {
+    assert.throws(() => f.learning.updateSettings(a, { identity: input }), { status: 400 });
+    assert.deepEqual(f.store.getSettings().styleLearning, before);
+  }
+  f.learning.updateSettings(a, { identity: { ...valid, confirmed: false } });
+  assert.equal(identity(f.store.getSettings(), a), null);
+  assert.equal(f.store.getSettings().aiGeneration, generation + 1);
+  f.learning.updateSettings(a, { identity: { displayName: 'Leo Ho', aliases: ['Leo', '何先生'], confirmed: true } });
+  assert.equal(f.store.getSettings().aiGeneration, generation + 2);
+  const atomicBefore = f.store.getSettings();
+  assert.throws(() => f.store.transaction(() => { f.learning.updateSettings(a, { identity: { ...valid, confirmed: false } }); throw new Error('Rollback fixture'); }), /Rollback fixture/);
+  assert.deepEqual(f.store.getSettings(), atomicBefore);
+  const bad = f.store.getSettings(); bad.styleLearning[a].settings.identity = { ...valid, aliases: [{ apiKey: 'must-not-be-projected' }] };
+  f.store.setSettings({ styleLearning: bad.styleLearning });
+  assert.equal(identity(f.store.getSettings(), a), null);
+  assert.deepEqual(f.learning.state(a).settings.identity, { displayName: '', aliases: [], confirmed: false });
+  f.learning.updateSettings(a, { identity: valid });
+  f.store.setSettings({ mailAccounts: { [b]: f.connection(b) } });
+  assert.equal(identity(f.store.getSettings(), a), null);
+  assert.throws(() => f.learning.updateSettings(a, { identity: valid }), { status: 409 });
+});
+
+test('identity-only edits revoke pending results but retain approved style, schedule and learning consent', async t => {
+  const f = fixture(t), a = f.accounts[0];
+  f.add(a, 'sample'); f.learning.updateSettings(a, { enabled: true, weekly: true });
+  const first = f.learning.prepare(a); await f.learning.generate(a, first.id);
+  f.learning.apply(a, { previewId: first.id, voice: 'Explicitly approved writing style.' });
+  const preview = f.learning.prepare(a), previous = f.store.getSettings().styleLearning[a];
+  f.learning.updateSettings(a, { identity: { displayName: 'Leo', aliases: ['何先生'], confirmed: true } });
+  assert.equal(f.learning.state(a).preview, null);
+  await assert.rejects(f.learning.generate(a, preview.id), { status: 409 });
+  assert.deepEqual(f.store.getSettings().styleLearning[a].profile, previous.profile);
+  assert.equal(f.store.getSettings().styleLearning[a].lastWeeklyAt, previous.lastWeeklyAt);
+  assert.equal(f.learning.voice(a), 'Explicitly approved writing style.');
+  f.learning.clear(a);
+  assert.equal(f.learning.state(a).profile, null); assert.equal(f.learning.state(a).settings.enabled, false);
+  assert.deepEqual(identity(f.store.getSettings(), a), { displayName: 'Leo', aliases: ['何先生'] });
+  assert.deepEqual(createLearning(f.options).state(a).settings.identity, { displayName: 'Leo', aliases: ['何先生'], confirmed: true });
+});
+
 test('Learning UI offers direct learning only with saved opt-in, permissions, model and idle state', async t => {
   const { createServer } = await import('vite');
   const { default: React } = await import('react');
   const { renderToString } = await import('react-dom/server');
-  const vite = await createServer({ server: { middlewareMode: true }, appType: 'custom' });
+  const vite = await createServer({ server: { middlewareMode: true, hmr: false }, appType: 'custom' });
   t.after(() => vite.close());
-  const { default: StyleLearning } = await vite.ssrLoadModule('/src/StyleLearning.jsx');
+  const { default: StyleLearning, learningOptions } = await vite.ssrLoadModule('/src/StyleLearning.jsx');
   const state = {
     account: { id: 'owner@example.invalid', email: 'owner@example.invalid', mode: 'live' },
     settings: { ai: { configured: true, model: 'fixture', baseUrl: 'http://localhost:11434/v1' }, policy: { maxMessages: 10 } },
@@ -170,6 +232,16 @@ test('Learning UI offers direct learning only with saved opt-in, permissions, mo
   assert.match(html, /Uses saved learning settings/); assert.match(html, /Save Approved Style activates it for writing and replies under Email Brain permission/);
   assert.match(html, /does not overwrite Email Brain contacts, notes, or voice/);
   assert.match(html, /Approved original style/); assert.doesNotMatch(html, />Save approved style<\/button>/);
+  assert.match(html, /Save identity · no AI call/); assert.match(html, /No confirmed identity is active/);
+  assert.match(html, /Names inferred from signatures or messages are not automatically verified/);
+  const identified = structuredClone(state);
+  identified.settings.policy.folders = { sent: false };
+  identified.workspace.styleLearning.settings.identity = { displayName: 'Leo Ho', aliases: ['Leo', '何先生'], confirmed: true };
+  identified.workspace.styleLearning.permitted = false;
+  const identityUI = render(identified);
+  assert.match(identityUI, /Saved identity confirmed/); assert.match(identityUI, /Sent access is off/);
+  assert.match(identityUI, /value="Leo Ho"/); assert.match(identityUI, /何先生/);
+  assert.deepEqual(Object.keys(learningOptions(identified.workspace.styleLearning.settings)).sort(), ['enabled', 'maxSamples', 'months', 'tokenBudget', 'weekly']);
   for (const block of [
     value => { value.workspace.styleLearning.settings.enabled = false; },
     value => { value.workspace.styleLearning.permitted = false; },

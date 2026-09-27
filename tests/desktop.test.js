@@ -19,9 +19,14 @@ test('desktop state persists recovery and disclosure across origins, validates k
   const pending = JSON.stringify({ requestId: 'original-id', review: { provider: 'google', title: 'Reviewed event' } });
   clientState(file, 'set', 'morrow.pendingCalendar', pending);
   clientState(file, 'set', 'morrow.account.collapsed.work@example.com', 'true');
+  const calendars = JSON.stringify({ '["google","primary"]': true, '["microsoft","primary"]': false });
+  clientState(file, 'set', 'morrow.calendar.checked', calendars);
+  assert.equal(clientState(file, 'get', 'morrow.calendar.checked'), calendars);
+  assert.throws(() => clientState(file, 'set', 'morrow.calendar.checked', 'x'.repeat(32769)));
   assert.equal(clientState(file, 'get', 'morrow.pendingCalendar'), pending);
   assert.equal(clientState(file, 'get', 'morrow.account.collapsed.work@example.com'), 'true');
   assert.throws(() => clientState(file, 'set', '__proto__', 'bad'));
+  assert.throws(() => clientState(file, 'set', 'morrow.calendar.arbitrary', 'bad'));
   assert.throws(() => clientState(file, 'set', 'morrow.pendingCalendar', 'x'.repeat(32769)));
   assert.equal(clientState(file, 'get', 'morrow.pendingCalendar'), pending);
   clientState(file, 'remove', 'morrow.pendingCalendar');

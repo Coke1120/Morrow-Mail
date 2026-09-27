@@ -185,3 +185,27 @@ test('IMAP history keeps folder-specific identity and refuses changed UIDVALIDIT
   validity = 56n;
   await assert.rejects(fetchImapPage(mail, { folder: 'sent', cursor: sent.nextCursor }), /folder changed/);
 });
+
+test('IMAP all history persists Unicode folder and UID checkpoints while excluding special-use subtrees', async t => {
+  const { fetchImapPage } = await import('../server/integrations.js');
+  const opened = []; let lists = 0, validity = 55n;
+  const definitions = [
+    { path: 'INBOX' }, { path: 'INBOX' }, { path: '已寄件', specialUse: '\\Sent' }, { path: 'Drafts', specialUse: '\\Drafts' }, { path: 'Projects' },
+    { path: '垃圾', specialUse: '\\Junk' }, { path: '垃圾/Child' }, { path: 'Trash', specialUse: '\\Trash' }, { path: 'Trash/Child' },
+    { path: 'All', specialUse: '\\All' }, { path: 'Flagged', specialUse: '\\Flagged' }, { path: 'Hidden', specialUse: '\\Noselect' },
+  ].map(item => ({ ...item, delimiter: '/', flags: new Set(item.specialUse ? [item.specialUse] : []) }));
+  t.mock.method(ImapFlow.prototype, 'connect', async function () { this.mailbox = { uidValidity: validity, uidNext: 61, exists: 60 }; });
+  t.mock.method(ImapFlow.prototype, 'logout', async () => {});
+  t.mock.method(ImapFlow.prototype, 'list', async () => { lists++; return definitions; });
+  t.mock.method(ImapFlow.prototype, 'getMailboxLock', async (path, options) => { opened.push(path); assert.ok(['INBOX', '已寄件', 'Drafts', 'Projects'].includes(path)); assert.equal(options.readOnly, true); return { release() {} }; });
+  t.mock.method(ImapFlow.prototype, 'search', async query => { assert.equal(query.since, undefined); assert.equal(query.sentSince, undefined); const [lo,hi]=query.uid.split(':').map(Number); return Array.from({length:60},(_,i)=>i+1).filter(uid=>uid>=lo&&uid<=hi); });
+  t.mock.method(ImapFlow.prototype, 'fetch', async function* (range) { for (const uid of range.split(',').map(Number)) yield { uid, flags: new Set(), size: 100, internalDate: new Date('2000-01-01T00:00:00Z') }; });
+  t.mock.method(ImapFlow.prototype, 'fetchOne', async () => ({ source: Buffer.from('From: a@example.com\r\nSubject: Fixture\r\nDate: Sat, 1 Jan 2000 00:00:00 +0000\r\n\r\nFixture') }));
+  const mail={email:'me@example.invalid',password:'fixture',imapHost:'fixture.invalid'}, options={folder:'all',since:'',before:'2026-09-27T00:00:00.000Z'};
+  const first=await fetchImapPage(mail,options); assert.equal(first.messages.length,50); assert.equal(first.nextCursor.index,0); assert.equal(first.nextCursor.next.uid,11);
+  validity=56n; await assert.rejects(fetchImapPage(mail,{...options,cursor:first.nextCursor}),/folder changed/); validity=55n;
+  let cursor=JSON.parse(JSON.stringify(first.nextCursor)), rows=[...first.messages], pages=1;
+  while(cursor) {const page=await fetchImapPage(mail,{...options,cursor}); rows.push(...page.messages); cursor=JSON.parse(JSON.stringify(page.nextCursor)); pages++; assert.ok(pages<=8);}
+  assert.equal(pages,8); assert.equal(rows.length,240); assert.equal(lists,1); assert.equal(new Set(rows.map(row=>row.id)).size,240);
+  assert.equal(rows[60].folder,'sent'); assert.equal(rows[60].providerFolderId,'已寄件'); assert.equal(rows[120].providerDraft,true); assert.equal(rows[180].folder,'archive');
+});

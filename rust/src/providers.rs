@@ -159,6 +159,18 @@ pub fn oauth_start(provider: &str, config: &Value, redirect: &str, purpose: &str
             def.scope
         }
         .into();
+        if config["outOfOffice"] == true {
+            saved["mailScope"] = format!(
+                "{} {}",
+                string(&saved, "mailScope"),
+                if provider == "google" {
+                    "https://www.googleapis.com/auth/gmail.settings.basic"
+                } else {
+                    "MailboxSettings.ReadWrite"
+                }
+            )
+            .into();
+        }
     }
     if !string(config, "clientSecret").is_empty() {
         saved["clientSecret"] =
@@ -598,7 +610,7 @@ pub async fn fetch_page(client: &Client, mail: &Value, options: &Value) -> Resul
     let supported = if provider == "google" {
         &["all", "inbox", "sent", "drafts", "starred"][..]
     } else {
-        &["inbox", "sent"][..]
+        &["all", "inbox", "sent"][..]
     };
     if !supported.contains(&folder) {
         return Err(Error::invalid("Unsupported import folder."));
@@ -696,21 +708,38 @@ pub async fn fetch_page(client: &Client, mail: &Value, options: &Value) -> Resul
             json!({"messages":messages,"nextCursor":list.get("nextPageToken").unwrap_or(&Value::Null)}),
         );
     }
+    let traversal = if folder == "all" {
+        Some(microsoft_import_cursor(client, mail, &options["cursor"]).await?)
+    } else {
+        None
+    };
+    if traversal
+        .as_ref()
+        .is_some_and(|v| v["folders"].as_array().unwrap().is_empty())
+    {
+        return Ok(json!({"messages":[],"nextCursor":null}));
+    }
+    let current_folder = traversal
+        .as_ref()
+        .map(|v| &v["folders"][v["index"].as_u64().unwrap() as usize]);
+    let folder = current_folder.map_or(folder, |v| string(v, "kind"));
     let date = if folder == "sent" {
         "sentDateTime"
+    } else if folder == "drafts" {
+        "createdDateTime"
     } else {
         "receivedDateTime"
     };
-    let path = format!(
-        "/v1.0/me/mailFolders/{}/messages",
-        if folder == "sent" {
+    let identity = current_folder
+        .map(|v| string(v, "id"))
+        .unwrap_or(if folder == "sent" {
             "sentitems"
         } else {
             "inbox"
-        }
-    );
+        });
+    let path = format!("/v1.0/me/mailFolders/{}/messages", component(identity));
     let mut url = url::Url::parse(&format!("https://graph.microsoft.com{path}")).unwrap();
-    url.query_pairs_mut().extend_pairs([("$top","50"),("$orderby",&format!("{date} desc")),("$select","id,from,sender,toRecipients,ccRecipients,bccRecipients,subject,body,receivedDateTime,sentDateTime,isRead,flag,internetMessageId,internetMessageHeaders")]);
+    url.query_pairs_mut().extend_pairs([("$top","50"),("$orderby",&format!("{date} desc")),("$select","id,from,sender,toRecipients,ccRecipients,bccRecipients,subject,body,receivedDateTime,sentDateTime,createdDateTime,isDraft,isRead,flag,internetMessageId,internetMessageHeaders")]);
     let mut filters = Vec::new();
     for (key, operator) in [("since", "ge"), ("before", "lt")] {
         if !string(options, key).is_empty() {
@@ -724,8 +753,15 @@ pub async fn fetch_page(client: &Client, mail: &Value, options: &Value) -> Resul
         url.query_pairs_mut()
             .append_pair("$filter", &filters.join(" and "));
     }
-    if !string(options, "cursor").is_empty() {
-        url = validated_next(string(options, "cursor"), &url)?;
+    let cursor = traversal
+        .as_ref()
+        .map_or(string(options, "cursor"), |v| string(v, "next"));
+    if !cursor.is_empty() {
+        url = if traversal.is_some() {
+            validated_folder_next(cursor, &url, identity, "messages")?
+        } else {
+            validated_mail_next(cursor, &url)?
+        };
     }
     let result = request(
         client
@@ -739,18 +775,120 @@ pub async fn fetch_page(client: &Client, mail: &Value, options: &Value) -> Resul
     )
     .await?;
     let folder = folder.to_owned();
+    let current_folder = current_folder.cloned();
     tokio::task::spawn_blocking(move || {
         let entries = result["value"].as_array().ok_or_else(remote_error)?;
-        if entries.len() > 50 { return Err(remote_error()); }
+        if entries.len() > 50
+            || result.get("@odata.nextLink").is_some_and(|v| {
+                !v.is_null() && (!v.is_string() || v.as_str().unwrap().len() > 8192)
+            })
+        {
+            return Err(remote_error());
+        }
         let mut messages = Vec::new();
         for raw in entries {
             let mut value = normalize_microsoft(raw)?;
             value["folder"] = folder.clone().into();
             value["date"] = iso(string(raw, date)).into();
+            if let Some(current) = &current_folder {
+                value["providerFolderId"] = current["id"].clone();
+                value["providerFolderName"] = current["name"].clone();
+                value["providerSent"] = (folder == "sent").into();
+                value["providerDraft"] = (folder == "drafts" || raw["isDraft"] == true).into();
+                if raw["isDraft"] == true {
+                    value["folder"] = "drafts".into();
+                }
+            }
             messages.push(value);
         }
-        Ok(json!({"messages":messages,"nextCursor":result.get("@odata.nextLink").unwrap_or(&Value::Null)}))
-    }).await.map_err(|_| remote_error())?
+        let mut next = result
+            .get("@odata.nextLink")
+            .cloned()
+            .filter(|v| v != "")
+            .unwrap_or(Value::Null);
+        if let Some(mut traversal) = traversal {
+            let index = traversal["index"].as_u64().unwrap() as usize + usize::from(next.is_null());
+            if index < traversal["folders"].as_array().unwrap().len() {
+                traversal["index"] = index.into();
+                traversal["next"] = next;
+                next = traversal;
+            } else {
+                next = Value::Null;
+            }
+        }
+        Ok(json!({"messages":messages,"nextCursor":next}))
+    })
+    .await
+    .map_err(|_| remote_error())?
+}
+fn valid_microsoft_folder_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 2048
+        && id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || b"_+=/-".contains(&c))
+}
+async fn microsoft_import_cursor(client: &Client, mail: &Value, cursor: &Value) -> Result<Value> {
+    if cursor.is_null() {
+        return Ok(
+            json!({"version":1,"folders":microsoft_folders(client,mail,true).await?,"index":0,"next":null}),
+        );
+    }
+    let folders = cursor["folders"].as_array().ok_or_else(remote_error)?;
+    let mut ids = HashSet::new();
+    if cursor["version"] != 1
+        || folders.is_empty()
+        || folders.len() > 300
+        || !cursor["index"]
+            .as_u64()
+            .is_some_and(|v| v < folders.len() as u64)
+        || (!cursor["next"].is_null()
+            && (!cursor["next"].is_string() || string(cursor, "next").len() > 8192))
+        || folders.iter().any(|v| {
+            !valid_microsoft_folder_id(string(v, "id"))
+                || !ids.insert(string(v, "id"))
+                || !v["name"].is_string()
+                || string(v, "name").encode_utf16().count() > 512
+                || !["inbox", "sent", "drafts", "archive"].contains(&string(v, "kind"))
+        })
+    {
+        return Err(Error::invalid("Invalid mailbox import cursor."));
+    }
+    Ok(cursor.clone())
+}
+// Only the two exact spellings for the already-resolved folder are equivalent.
+fn validated_folder_next(
+    next: &str,
+    original: &url::Url,
+    id: &str,
+    collection: &str,
+) -> Result<url::Url> {
+    validated_next(next, original)
+        .or_else(|_| {
+            let mut alias = original.clone();
+            alias.set_path(&format!(
+                "/v1.0/me/mailFolders('{}')/{collection}",
+                component(id)
+            ));
+            validated_next(next, &alias)
+        })
+        .or_else(|_| {
+            let mut alias = original.clone();
+            alias.set_path(&format!("/v1.0/me/mailFolders('{id}')/{collection}"));
+            validated_next(next, &alias)
+        })
+}
+pub fn validated_mail_next(next: &str, original: &url::Url) -> Result<url::Url> {
+    let equivalent = match original.path() {
+        "/v1.0/me/mailFolders/inbox/messages" => "/v1.0/me/mailFolders('inbox')/messages",
+        "/v1.0/me/mailFolders/sentitems/messages" => "/v1.0/me/mailFolders('sentitems')/messages",
+        _ => return validated_next(next, original),
+    };
+    validated_next(next, original).or_else(|_| {
+        let mut alias = original.clone();
+        alias.set_path(equivalent);
+        validated_next(next, &alias)
+    })
 }
 pub fn validated_next(next: &str, original: &url::Url) -> Result<url::Url> {
     if next.len() > 8192 {
@@ -899,10 +1037,30 @@ pub async fn folders(client: &Client, mail: &Value) -> Result<Vec<Value>> {
         );
         return Ok(folders);
     }
+    microsoft_folders(client, mail, false).await
+}
+async fn microsoft_folders(client: &Client, mail: &Value, importing: bool) -> Result<Vec<Value>> {
+    let mut known = HashMap::new();
+    if importing {
+        for (alias, kind) in [
+            ("inbox", "inbox"),
+            ("sentitems", "sent"),
+            ("drafts", "drafts"),
+            ("junkemail", "spam"),
+            ("deleteditems", "trash"),
+        ] {
+            let folder = get(client, mail, &format!("/mailFolders/{alias}?$select=id")).await?;
+            let id = string(&folder, "id");
+            if !valid_microsoft_folder_id(id) || known.insert(id.to_owned(), kind).is_some() {
+                return Err(remote_error());
+            }
+        }
+    }
     let mut folders = Vec::new();
-    let mut pending = VecDeque::from([("/mailFolders".to_owned(), String::new())]);
+    let mut pending = VecDeque::from([("/mailFolders".to_owned(), String::new(), String::new())]);
     let mut seen = HashSet::new();
-    while let Some((path, prefix)) = pending.pop_front() {
+    let mut ids = HashSet::new();
+    while let Some((path, prefix, parent)) = pending.pop_front() {
         let original = url::Url::parse(&format!("{}{path}", definition("microsoft")?.api)).unwrap();
         let mut next = format!("{path}?$top=100&$select=id,displayName,childFolderCount");
         let mut pages = 0;
@@ -912,10 +1070,22 @@ pub async fn folders(client: &Client, mail: &Value) -> Result<Vec<Value>> {
                 return Err(remote_error());
             }
             let result = get(client, mail, &next).await?;
-            for folder in result["value"].as_array().ok_or_else(remote_error)? {
+            let entries = result["value"].as_array().ok_or_else(remote_error)?;
+            if entries.len() > 100 {
+                return Err(remote_error());
+            }
+            for folder in entries {
                 let id = string(folder, "id");
-                if id.is_empty() {
+                if !valid_microsoft_folder_id(id) || !ids.insert(id.to_owned()) {
                     return Err(remote_error());
+                }
+                let kind =
+                    known
+                        .get(id)
+                        .copied()
+                        .unwrap_or(if importing { "archive" } else { "folder" });
+                if importing && ["spam", "trash"].contains(&kind) {
+                    continue;
                 }
                 let name = format!(
                     "{prefix}{}",
@@ -924,7 +1094,14 @@ pub async fn folders(client: &Client, mail: &Value) -> Result<Vec<Value>> {
                         .filter(|s| !s.is_empty())
                         .unwrap_or("Untitled folder")
                 );
-                folders.push(json!({"id":id,"name":name,"kind":"folder"}));
+                let name = name
+                    .chars()
+                    .scan(0, |count, c| {
+                        *count += c.len_utf16();
+                        (*count <= 512).then_some(c)
+                    })
+                    .collect::<String>();
+                folders.push(json!({"id":id,"name":name,"kind":kind}));
                 if folders.len() > 300 {
                     return Err(Error::new(
                         502,
@@ -935,12 +1112,22 @@ pub async fn folders(client: &Client, mail: &Value) -> Result<Vec<Value>> {
                     pending.push_back((
                         format!("/mailFolders/{}/childFolders", component(id)),
                         format!("{name} / "),
+                        id.to_owned(),
                     ));
                 }
             }
             next = String::new();
             if !string(&result, "@odata.nextLink").is_empty() {
-                let url = validated_next(string(&result, "@odata.nextLink"), &original)?;
+                let url = if parent.is_empty() {
+                    validated_next(string(&result, "@odata.nextLink"), &original)?
+                } else {
+                    validated_folder_next(
+                        string(&result, "@odata.nextLink"),
+                        &original,
+                        &parent,
+                        "childFolders",
+                    )?
+                };
                 next = format!(
                     "{}?{}",
                     url.path()
@@ -950,6 +1137,9 @@ pub async fn folders(client: &Client, mail: &Value) -> Result<Vec<Value>> {
                 );
             }
         }
+    }
+    if importing {
+        return Ok(folders);
     }
     let inbox = get(client, mail, "/mailFolders/inbox?$select=id").await?;
     let junk = get(client, mail, "/mailFolders/junkemail?$select=id").await?;

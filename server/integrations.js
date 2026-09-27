@@ -33,19 +33,48 @@ export async function fetchImapMessages(mail) {
 }
 
 export async function fetchImapPage(mail, { folder = 'inbox', since, before, cursor } = {}) {
+  if (!['all', 'inbox', 'sent'].includes(folder)) throw new Error('Unsupported import folder.');
   const client = imapClient(mail);
   try {
     await client.connect();
-    const path = folder === 'inbox' ? 'INBOX' : (await client.list()).find(item => item.specialUse === '\\Sent')?.path;
+    let traversal = null;
+    if (folder === 'all') {
+      traversal = cursor ?? { version: 1, folders: imapImportFolders(await client.list()), index: 0, next: null };
+      if (cursor == null && !traversal.folders.length) return { messages: [], nextCursor: null };
+      if (traversal.version !== 1 || !Array.isArray(traversal.folders) || !traversal.folders.length || traversal.folders.length > 300 || !Number.isInteger(traversal.index) || traversal.index < 0 || traversal.index >= traversal.folders.length || traversal.folders.some(item => typeof item?.path !== 'string' || !item.path || Buffer.byteLength(item.path) > 4096 || /[\x00-\x1f\x7f]/.test(item.path) || !['inbox', 'sent', 'drafts', 'archive'].includes(item.kind)) || new Set(traversal.folders.map(item => item.path)).size !== traversal.folders.length) throw new Error('Invalid IMAP cursor.');
+      folder = traversal.folders[traversal.index].kind; cursor = traversal.next;
+    }
+    const finish = page => {
+      if (!traversal) return page;
+      const index = traversal.index + Number(!page.nextCursor);
+      return { ...page, nextCursor: index < traversal.folders.length ? { ...traversal, index, next: page.nextCursor } : null };
+    };
+    const path = traversal ? traversal.folders[traversal.index].path : folder === 'inbox' ? 'INBOX' : (await client.list()).find(item => item.specialUse === '\\Sent')?.path;
     if (!path) throw new Error('The IMAP server does not identify a Sent folder. Import Inbox only or configure Sent on your provider.');
     const lock = await client.getMailboxLock(path, { readOnly: true });
     try {
       const count = client.mailbox.exists;
-      if (!count) return { messages: [], nextCursor: null };
       if (cursor && (cursor.path !== path || cursor.validity !== String(client.mailbox.uidValidity))) throw new Error('The IMAP folder changed. Start the import again.');
+      if (cursor && (!Number.isInteger(cursor.uid) || cursor.uid < 1 || cursor.uid > 0xffffffff)) throw new Error('Invalid IMAP cursor.');
+      if (!count || cursor?.uid === 1) return finish({ messages: [], nextCursor: null });
       const query = { ...(since ? { [folder === 'sent' ? 'sentSince' : 'since']: new Date(since) } : {}), ...(before ? { [folder === 'sent' ? 'sentBefore' : 'before']: new Date(Date.parse(before) + 86400000) } : {}), ...(cursor ? { uid: `1:${cursor.uid - 1}` } : {}) };
       // ponytail: SEARCH returns matching UIDs in memory; use ESEARCH ranges if huge mailboxes require it.
-      const ids = ((await client.search(Object.keys(query).length ? query : { all: true }, { uid: true })) || []).filter(uid => !cursor || uid < cursor.uid).sort((a, b) => b - a);
+      let ids, nextUid;
+      if (traversal) {
+        let upper = cursor ? cursor.uid - 1 : client.mailbox.uidNext > 1 ? client.mailbox.uidNext - 1 : (await client.fetchOne('*', { uid: true }, { uid: true }))?.uid;
+        if (!Number.isInteger(upper) || upper < 1 || upper > 0xffffffff) throw new Error('Invalid IMAP UID range.');
+        ids = [];
+        for (let window = 0; window < 32 && upper > 0 && ids.length <= 50; window++) {
+          const lower = Math.max(1, upper - 8191);
+          const found = (await client.search({ ...query, uid: `${lower}:${upper}` }, { uid: true })) || [];
+          if (!Array.isArray(found) || found.length > 8192 || found.some(uid => !Number.isInteger(uid) || uid < lower || uid > upper)) throw new Error('Invalid IMAP UID page.');
+          ids = [...new Set([...ids, ...found])].sort((a, b) => b - a).slice(0, 51); upper = lower - 1;
+        }
+        nextUid = ids.length > 50 ? ids[49] : upper > 0 ? upper + 1 : null;
+      } else {
+        ids = ((await client.search(Object.keys(query).length ? query : { all: true }, { uid: true })) || []).filter(uid => !cursor || uid < cursor.uid).sort((a, b) => b - a);
+        nextUid = ids.length > 50 ? ids[49] : null;
+      }
       const selected = ids.slice(0, 50), metadata = [];
       if (selected.length) for await (const entry of client.fetch(selected.join(','), { uid: true, flags: true, envelope: true, size: true, internalDate: true }, { uid: true })) metadata.push(entry);
       const messages = [];
@@ -59,20 +88,33 @@ export async function fetchImapPage(mail, { folder = 'inbox', since, before, cur
         const body = large ? 'This message exceeds the 5 MB import limit. Open it in your original mailbox to read it.' : (parsed.text || '(This message has no readable text.)');
         const date = parsed?.date || entry.internalDate || new Date();
         messages.push({
-          id: folder === 'inbox' ? `imap:${client.mailbox.uidValidity}:${entry.uid}` : `imap-folder:${Buffer.from(path).toString('base64url')}:${client.mailbox.uidValidity}:${entry.uid}`,
+          id: path.toUpperCase() === 'INBOX' ? `imap:${client.mailbox.uidValidity}:${entry.uid}` : `imap-folder:${Buffer.from(path).toString('base64url')}:${client.mailbox.uidValidity}:${entry.uid}`,
           remoteId: `imap:${client.mailbox.uidValidity}:${entry.uid}`, providerFolderId: path, providerFolderName: path, fromName: from.name || from.address || 'Unknown sender',
           fromEmail: from.address || '', to: parsed?.to?.text || mail.email, cc: parsed?.cc?.text || '', bcc: parsed?.bcc?.text || '',
           subject: parsed?.subject || entry.envelope?.subject || '(No subject)',
           body: body.slice(0, 100000), bodyHtml: sanitizeMessageHTML(parsed?.html), preview: body.replace(/\s+/g, ' ').slice(0, 180),
           date: Number.isNaN(new Date(date).getTime()) ? new Date().toISOString() : new Date(date).toISOString(),
-          folder, automated: large || ['auto-submitted', 'list-id', 'list-unsubscribe'].some(key => parsed?.headers.has(key) && parsed.headers.get(key) !== 'no'), read: entry.flags.has('\\Seen'), starred: entry.flags.has('\\Flagged'),
+          folder, ...(traversal ? { providerSent: folder === 'sent', providerDraft: folder === 'drafts' || entry.flags.has('\\Draft'), ...(entry.flags.has('\\Draft') ? { folder: 'drafts' } : {}) } : {}), automated: large || ['auto-submitted', 'list-id', 'list-unsubscribe'].some(key => parsed?.headers.has(key) && parsed.headers.get(key) !== 'no'), read: entry.flags.has('\\Seen'), starred: entry.flags.has('\\Flagged'),
           category: parsed?.headers.has('list-unsubscribe') ? 'newsletters' : 'primary', labels: [],
           messageId: parsed?.messageId || entry.envelope?.messageId || '',
         });
       }
-      return { messages: messages.filter(message => (!since || message.date >= since) && (!before || message.date < before)), nextCursor: ids.length > 50 ? { path, validity: String(client.mailbox.uidValidity), uid: selected.at(-1) } : null };
+      return finish({ messages: messages.filter(message => (!since || message.date >= since) && (!before || message.date < before)), nextCursor: nextUid ? { path, validity: String(client.mailbox.uidValidity), uid: nextUid } : null });
     } finally { lock.release(); }
   } finally { await client.logout().catch(() => client.close()); }
+}
+
+function imapImportFolders(folders) {
+  if (!Array.isArray(folders) || folders.length > 300) throw new Error('This mailbox exceeds the 300 folder limit.');
+  const special = folder => [folder.specialUse, ...(folder.flags || [])].map(flag => String(flag).toLowerCase());
+  const excluded = folders.filter(folder => special(folder).some(flag => ['\\junk', '\\trash', '\\all', '\\flagged'].includes(flag)));
+  const seen = new Set();
+  return folders.filter(folder => !special(folder).includes('\\noselect') && !excluded.some(item => item.path === folder.path || (item.delimiter && folder.path.startsWith(item.path + item.delimiter)))).flatMap(folder => {
+    const path = folder.path.toUpperCase() === 'INBOX' ? 'INBOX' : folder.path;
+    if (seen.has(path)) return []; seen.add(path);
+    const flags = special(folder), kind = path === 'INBOX' ? 'inbox' : flags.includes('\\sent') ? 'sent' : flags.includes('\\drafts') ? 'drafts' : 'archive';
+    return [{ path, kind }];
+  });
 }
 
 export async function sendSmtpMessage(mail, message) {

@@ -141,6 +141,26 @@ test('history pages use chosen folders and dates and reject foreign Graph contin
   assert.match(seen[2].url.searchParams.get('$filter'), /^sentDateTime ge/);
   await assert.rejects(fetchProviderPage({ provider: 'microsoft', accessToken: 'private' }, { ...options, cursor: graph.nextCursor }), /Invalid mailbox pagination/);
   assert.equal(seen.length, 3);
+  for (const folder of ['inbox', 'sent']) {
+    const wellKnown = folder === 'sent' ? 'sentitems' : 'inbox';
+    const cursor = `https://graph.microsoft.com/v1.0/me/mailFolders('${wellKnown}')/messages?$top=50&$skip=50&$orderby=receivedDateTime%20desc&$filter=receivedDateTime%20ge%202026-06-24T00:00:00Z&$select=id,body`;
+    await fetchProviderPage({ provider: 'microsoft', accessToken: 'private' }, { ...options, folder, cursor });
+    assert.equal(seen.at(-1).url.href, cursor);
+    assert.match(seen.at(-1).options.headers.Prefer, /IdType="ImmutableId"/);
+  }
+  const calls = seen.length;
+  for (const cursor of [
+    "https://graph.microsoft.com/v1.0/me/mailFolders('sentitems')/messages?$folder=inbox",
+    "https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages/extra",
+    "https://graph.microsoft.com/v1.0/me/mailFolders('%69nbox')/messages",
+    "https://graph.microsoft.com/v1.0/me/mailFolders('opaque-id')/messages",
+    "http://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages",
+    "https://evil.example/v1.0/me/mailFolders('inbox')/messages",
+    "https://graph.microsoft.com:444/v1.0/me/mailFolders('inbox')/messages",
+    "https://user:secret@graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages",
+    "https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages#fragment",
+  ]) await assert.rejects(fetchProviderPage({ provider: 'microsoft', accessToken: 'private' }, { folder: 'inbox', cursor }), /Invalid mailbox pagination/);
+  assert.equal(seen.length, calls);
 });
 
 test('Google normalization derives folder precedence and independent Sent/Draft flags from exact labels', async () => {
@@ -206,7 +226,7 @@ test('Google pages cover all five scopes, keep stable IDs and resolve user label
   assert.equal(labelRequests, 5); assert.equal(details, 10);
   await assert.rejects(listProviderFolders(mail), /Allow moving mail/);
   assert.equal(labelRequests, 5); // Readonly fetch does not weaken organization authorization.
-  for (const folder of ['all', 'drafts', 'starred']) await assert.rejects(fetchProviderPage({ ...mail, provider: 'microsoft' }, { folder }), /Unsupported import folder/);
+  for (const folder of ['drafts', 'starred']) await assert.rejects(fetchProviderPage({ ...mail, provider: 'microsoft' }, { folder }), /Unsupported import folder/);
 });
 
 test('Google custom label changes retain exact Sent and Draft classification from confirmed labels', async t => {
@@ -249,4 +269,69 @@ test('Google page and label discovery reject oversized or malformed remote lists
   labels = { labels: [{ id: 'Label_1', name: null, type: 'user' }] };
   await assert.rejects(fetchProviderPage(mail), /too many or invalid labels/);
   assert.equal(detailRequests, 0);
+});
+
+test('Microsoft all-mail traverses normal folders with bounded durable pages and excludes Junk/Trash subtrees', async t => {
+  const calls = [], folders = [
+    { id: 'i=', displayName: 'Inbox' }, { id: 's=', displayName: 'Sent' }, { id: 'd=', displayName: 'Drafts' },
+    { id: 'p=', displayName: 'Projects', childFolderCount: 1 },
+    { id: 'j=', displayName: 'Junk', childFolderCount: 2 }, { id: 't=', displayName: 'Deleted', childFolderCount: 3 },
+  ];
+  const known = { inbox: 'i=', sentitems: 's=', drafts: 'd=', junkemail: 'j=', deleteditems: 't=' };
+  t.mock.method(globalThis, 'fetch', async (input, options) => {
+    const url = new URL(input), path = url.pathname; calls.push(url);
+    assert.equal(url.origin, 'https://graph.microsoft.com'); assert.equal(options.headers.Authorization, 'Bearer fixture');
+    const alias = path.match(/^\/v1\.0\/me\/mailFolders\/([a-z]+)$/)?.[1];
+    let value;
+    if (known[alias]) value = { id: known[alias] };
+    else if (path === '/v1.0/me/mailFolders') value = { value: folders };
+    else if (path === '/v1.0/me/mailFolders/p%3D/childFolders') value = { value: [{ id: 'c=', displayName: 'Child' }] };
+    else {
+      assert.ok(!/[jt](?:%3D|=)/.test(path), 'excluded folders and their children are never fetched');
+      assert.equal(url.searchParams.get('$top'), '50');
+      assert.doesNotMatch(url.searchParams.get('$filter'), / ge /); assert.match(url.searchParams.get('$filter'), / lt 2026-/);
+      assert.match(options.headers.Prefer, /ImmutableId/);
+      const id = path.includes("('i=')") ? 'i=' : decodeURIComponent(path.split('/')[4]);
+      assert.ok(['i=', 's=', 'd=', 'p=', 'c='].includes(id));
+      const next = id === 'i=' && !url.searchParams.has('$skip') ? `https://graph.microsoft.com/v1.0/me/mailFolders('i=')/messages?${url.searchParams}&$skip=50` : null;
+      value = { value: id === 'p=' ? [] : [{ id: `${id}-${url.searchParams.get('$skip') || 0}`, subject: id, receivedDateTime: '2000-01-01T00:00:00Z', sentDateTime: '2000-01-02T00:00:00Z', createdDateTime: '2000-01-03T00:00:00Z', isDraft: id === 'd=', body: { contentType: 'text', content: 'Fixture' } }], '@odata.nextLink': next };
+    }
+    return new Response(JSON.stringify(value));
+  });
+  const mail = { provider: 'microsoft', accessToken: 'fixture', grantedScopes: 'Mail.Read' };
+  const options = { folder: 'all', since: '', before: '2026-09-27T00:00:00.000Z' };
+  const first = await fetchProviderPage(mail, options);
+  assert.equal(first.messages[0].folder, 'inbox'); assert.equal(first.nextCursor.index, 0);
+  assert.equal(first.nextCursor.folders.length, 5); assert.match(first.nextCursor.next, /\$skip=50/);
+  const metadataCalls = calls.length;
+  for (const next of ['https://evil.invalid/v1.0/me/mailFolders/i%3D/messages', "https://graph.microsoft.com/v1.0/me/mailFolders('s=')/messages", "https://graph.microsoft.com/v1.0/me/mailFolders('i=')/messages/extra", "https://graph.microsoft.com/v1.0/me/mailFolders('i=')/messages#fragment"]) {
+    await assert.rejects(fetchProviderPage(mail, { ...options, cursor: { ...first.nextCursor, next } }), /pagination/);
+  }
+  assert.equal(calls.length, metadataCalls);
+  const rows = [...first.messages]; let cursor = JSON.parse(JSON.stringify(first.nextCursor)), pages = 1;
+  while (cursor) {
+    const page = await fetchProviderPage(mail, { ...options, cursor });
+    rows.push(...page.messages); cursor = JSON.parse(JSON.stringify(page.nextCursor)); pages++;
+    assert.ok(pages <= 6);
+  }
+  assert.equal(pages, 6); assert.deepEqual(rows.map(row => row.folder), ['inbox', 'inbox', 'sent', 'drafts', 'archive']);
+  assert.equal(rows[2].providerSent, true); assert.equal(rows[3].providerDraft, true);
+  assert.equal(rows[3].date, '2000-01-03T00:00:00.000Z');
+  assert.equal(rows[4].providerFolderName, 'Projects / Child'); assert.equal(rows[4].providerFolderId, 'c=');
+  assert.equal(calls.filter(url => url.pathname === '/v1.0/me/mailFolders').length, 1);
+  await assert.rejects(listProviderFolders(mail), /Reconnect/); // Reading history does not grant write access.
+  await assert.rejects(fetchProviderPage(mail, { ...options, cursor: { ...first.nextCursor, folders: Array(301).fill(first.nextCursor.folders[0]) } }), /cursor/);
+});
+
+test('out-of-office scope is explicit, additive to organize, and never changes calendar', () => {
+  for (const [provider, scope] of [['google', 'https://www.googleapis.com/auth/gmail.settings.basic'], ['microsoft', 'MailboxSettings.ReadWrite']]) {
+    for (const organize of [false, true]) {
+      const config = { clientId: 'fixture-client', organize };
+      const before = oauthStart(provider, config, 'http://localhost/callback');
+      const opted = oauthStart(provider, { ...config, outOfOffice: true }, 'http://localhost/callback');
+      assert.equal(new URL(opted.url).searchParams.get('scope'), `${new URL(before.url).searchParams.get('scope')} ${scope}`);
+      const calendar = oauthStart(provider, { ...config, outOfOffice: true }, 'http://localhost/callback', 'calendar');
+      assert.ok(!new URL(calendar.url).searchParams.get('scope').includes(scope));
+    }
+  }
 });

@@ -319,6 +319,20 @@ async fn connect(mail: &Value, connector: &native_tls::TlsConnector) -> Result<M
     .map_err(|_| providers::remote_error())?
 }
 async fn names(session: &mut Mailbox) -> Result<Vec<(String, bool)>> {
+    Ok(list_names(session)
+        .await?
+        .into_iter()
+        .filter(|v| v.selectable)
+        .map(|v| (v.path, v.kind == "sent"))
+        .collect())
+}
+struct ImportFolder {
+    path: String,
+    kind: &'static str,
+    delimiter: Option<String>,
+    selectable: bool,
+}
+async fn list_names(session: &mut Mailbox) -> Result<Vec<ImportFolder>> {
     let mut stream = session.list(None, Some("*")).await.map_err(imap_error)?;
     let mut names = Vec::new();
     let mut count = 0;
@@ -330,13 +344,31 @@ async fn names(session: &mut Mailbox) -> Result<Vec<(String, bool)>> {
                 "This mailbox exceeds the 300 folder limit.",
             ));
         }
-        if !name.attributes().contains(&NameAttribute::NoSelect) {
-            let sent = name.attributes().iter().any(|attribute| {
-                matches!(attribute, NameAttribute::Sent)
-                    || matches!(attribute, NameAttribute::Extension(value) if value.eq_ignore_ascii_case("\\Sent"))
-            });
-            names.push((decode_folder(name.name())?, sent));
-        }
+        let path = decode_folder(name.name())?;
+        let has = |expected: NameAttribute<'_>, text: &str| {
+            name.attributes().iter().any(|attribute| *attribute == expected || matches!(attribute, NameAttribute::Extension(value) if value.eq_ignore_ascii_case(text)))
+        };
+        let kind = if has(NameAttribute::Junk, "\\Junk") {
+            "spam"
+        } else if has(NameAttribute::Trash, "\\Trash") {
+            "trash"
+        } else if has(NameAttribute::All, "\\All") || has(NameAttribute::Flagged, "\\Flagged") {
+            "virtual"
+        } else if path.eq_ignore_ascii_case("INBOX") {
+            "inbox"
+        } else if has(NameAttribute::Sent, "\\Sent") {
+            "sent"
+        } else if has(NameAttribute::Drafts, "\\Drafts") {
+            "drafts"
+        } else {
+            "archive"
+        };
+        names.push(ImportFolder {
+            path,
+            kind,
+            delimiter: name.delimiter().map(str::to_owned),
+            selectable: !name.attributes().contains(&NameAttribute::NoSelect),
+        });
     }
     Ok(names)
 }
@@ -379,12 +411,97 @@ async fn fetch_inner(
     options: &Value,
     connector: &native_tls::TlsConnector,
 ) -> Result<Value> {
+    if options["folder"] != "all" {
+        return fetch_folder(mail, options, connector, None).await;
+    }
+    let mut traversal = options["cursor"].clone();
+    if traversal.is_null() {
+        let mut session = connect(mail, connector).await?;
+        let names = list_names(&mut session).await?;
+        let _ = session.logout().await;
+        let mut seen = std::collections::HashSet::new();
+        let folders = names
+            .iter()
+            .filter(|v| {
+                v.selectable
+                    && !["spam", "trash", "virtual"].contains(&v.kind)
+                    && !names.iter().any(|excluded| {
+                        ["spam", "trash", "virtual"].contains(&excluded.kind)
+                            && (v.path == excluded.path
+                                || excluded.delimiter.as_ref().is_some_and(|delimiter| {
+                                    !delimiter.is_empty()
+                                        && v.path
+                                            .starts_with(&format!("{}{delimiter}", excluded.path))
+                                }))
+                    })
+                    && seen.insert(if v.path.eq_ignore_ascii_case("INBOX") {
+                        "INBOX".to_owned()
+                    } else {
+                        v.path.clone()
+                    })
+            })
+            .map(|v| json!({"path":if v.kind=="inbox"{"INBOX"}else{&v.path},"kind":v.kind}))
+            .collect::<Vec<_>>();
+        if folders.is_empty() {
+            return Ok(json!({"messages":[],"nextCursor":null}));
+        }
+        traversal = json!({"version":1,"folders":folders,"index":0,"next":null});
+    }
+    let folders = traversal["folders"]
+        .as_array()
+        .ok_or_else(|| Error::invalid("Invalid IMAP cursor."))?;
+    let mut seen = std::collections::HashSet::new();
+    if traversal["version"] != 1
+        || folders.is_empty()
+        || folders.len() > 300
+        || !traversal["index"]
+            .as_u64()
+            .is_some_and(|index| index < folders.len() as u64)
+        || folders.iter().any(|v| {
+            string(v, "path").is_empty()
+                || string(v, "path").len() > 4096
+                || string(v, "path").chars().any(char::is_control)
+                || !seen.insert(string(v, "path"))
+                || !["inbox", "sent", "drafts", "archive"].contains(&string(v, "kind"))
+        })
+    {
+        return Err(Error::invalid("Invalid IMAP cursor."));
+    }
+    let index = traversal["index"].as_u64().unwrap() as usize;
+    let current = &folders[index];
+    let page_options = merge(
+        options.clone(),
+        &json!({"folder":current["kind"],"cursor":traversal["next"]}),
+    );
+    let mut page = fetch_folder(
+        mail,
+        &page_options,
+        connector,
+        Some(string(current, "path")),
+    )
+    .await?;
+    let index = index + usize::from(page["nextCursor"].is_null());
+    if index < folders.len() {
+        traversal["index"] = index.into();
+        traversal["next"] = page["nextCursor"].clone();
+        page["nextCursor"] = traversal;
+    }
+    Ok(page)
+}
+async fn fetch_folder(
+    mail: &Value,
+    options: &Value,
+    connector: &native_tls::TlsConnector,
+    selected_path: Option<&str>,
+) -> Result<Value> {
     let folder = options["folder"].as_str().unwrap_or("inbox");
-    if !["inbox", "sent"].contains(&folder) {
+    if selected_path.is_none() && !["inbox", "sent"].contains(&folder) {
         return Err(Error::invalid("Unsupported import folder."));
     }
     let mut session = connect(mail, connector).await?;
-    let path = if folder == "inbox" {
+    let path = if let Some(path) = selected_path {
+        path.to_owned()
+    } else if folder == "inbox" {
         "INBOX".to_owned()
     } else {
         names(&mut session).await?.into_iter().find(|(_,sent)|*sent).map(|(path,_)|path).ok_or_else(||Error::new(409,"This IMAP server does not identify a Sent folder. Import Inbox only or configure Sent on your provider."))?
@@ -551,7 +668,7 @@ async fn fetch_inner(
             value
         };
         let remote = format!("imap:{validity}:{uid}");
-        let id = if folder == "inbox" {
+        let id = if path.eq_ignore_ascii_case("INBOX") {
             remote.clone()
         } else {
             format!(
@@ -571,6 +688,14 @@ async fn fetch_inner(
             value,
             &json!({"id":id,"remoteId":remote,"providerFolderId":path,"providerFolderName":path,"folder":folder,"read":row.flags().any(|flag|flag==Flag::Seen),"starred":row.flags().any(|flag|flag==Flag::Flagged)}),
         );
+        if selected_path.is_some() {
+            value["providerSent"] = (folder == "sent").into();
+            value["providerDraft"] =
+                (folder == "drafts" || row.flags().any(|flag| flag == Flag::Draft)).into();
+            if value["providerDraft"] == true {
+                value["folder"] = "drafts".into();
+            }
+        }
         value["preview"] = providers::preview(string(&value, "body")).into();
         if (string(options, "since").is_empty()
             || string(&value, "date") >= string(options, "since"))

@@ -28,14 +28,16 @@ writeFileSync(join(directory, 'update-manifest.sig'), signature);
 expected.push('update-manifest.json', 'update-manifest.sig');
 const notes = `Morrow Mail ${version}
 
-A native cold-start layout correction, retaining the Today dashboard and background indexing navigation from beta.10. Both packages are built from this same Git tag and pass the paired checks before publication.
+Month calendars, reviewed reminders and account-owned follow-up tools. Both packages are built from this same Git tag and pass the paired checks before publication.
 
-What changed since 0.6.0-beta.10:
-- Fix the sidebar sometimes occupying half a restored window on cold launch. Set its starting position after the native split view is attached and laid out, without resetting later user resizing.
-- Add native regression checks for delayed attachment, narrow/wide windows, bottom reading and adjusted dividers. The delayed-attachment check fails the beta.10 implementation and passes this correction.
-- Retain Workspace above All accounts, Today, background reviewed indexing, View-menu layouts and formatted-mail scrolling from beta.10.
-- Retain safe OAuth and embedding diagnostics. A successful short embedding probe does not establish that all model input limits, quota and service availability requirements are satisfied. No automatic paid retries are added.
-- Preserve the Rust desktop service, account-bound drafts, reviewed provider operations, encrypted settings, backup and signed updater contracts. Published beta.10 binaries remain unchanged.
+What changed since 0.6.0-beta.13:
+- A month calendar combines checked Google/Outlook calendars, shows cross-day/all-day events, and opens reviewed event creation when you click a date. Google supports notification or email reminders; Outlook supports notification reminders. These are provider-managed and work while Morrow is closed. No attendees or hidden reminder-email jobs are added.
+- All history removes the import date cutoff for Gmail, Outlook and selectable IMAP folders, excluding Spam/Trash. Imports stay paged, checkpointed and resumable; this is not continuous delta/deletion mirroring.
+- Pending is a separate local follow-up marker and account/combined list. It does not change provider stars or send notifications.
+- Confirm your name/aliases in Learning, then preview and approve a bounded Reply Suggestions batch using permitted downloaded correspondence and approved style. Results are proposals; Use in Draft never sends. Suggest with History also includes your permitted Sent To/Cc correspondence.
+- Out of Office reads and writes real Gmail vacation or Outlook automatic-reply settings after additional OAuth consent and review. Opening the tab or granting permission does not activate a response. IMAP is unsupported.
+- Scheduled sends retain the reviewed owner, recipients, content and time. Morrow must stay open and connected. Up to 15 minutes late can catch up; later jobs become Missed and need review. Cancel before editing; uncertain deliveries are never automatically replayed.
+- Fix equivalent Outlook Inbox/Sent next-page URLs and preserve a resized native list when changing reader layout. Retain encrypted accounts, drafts, backup and signed-update protections.
 
 CLI quick start:
 - macOS: '/Applications/Morrow Mail.app/Contents/Resources/morrow-service' cli --help
@@ -49,6 +51,7 @@ Updating:
 - The signed manifest, pinned Ed25519 key, exact platform/version checks and SHA-256 validation remain unchanged. Read-only installation directories retain the manual-download option.
 
 OAuth setup:
+- Additional Google scopes reuse the existing Desktop OAuth client; no new JSON is needed. The project owner adds gmail.settings.basic for Out of Office, or calendar.calendarlist.readonly + calendar.events for Calendar under Google Auth Platform → Data Access, then the user grants consent from the relevant Morrow screen. Calendar reminders require no additional email-send scope.
 - Built-in Google Desktop OAuth remains available for Gmail and Google Calendar. Google Cloud API enablement, test-user access and provider verification remain publisher responsibilities; bundling the registration does not remove Testing restrictions.
 - Outlook mail and Calendar use the bundled public Microsoft desktop registration by default; no user-supplied client ID, JSON or secret is required. Custom registrations remain available under Advanced. Organization policies may require administrator approval. Live Microsoft consent and Entra registration acceptance remain unverified; fixture checks do not establish provider approval.
 - Bundled desktop app identifiers are extractable and are not user credentials. No mailbox tokens or private update signing key are shipped.
@@ -59,7 +62,9 @@ Packages:
 - Both include their runtime. No Node or Rust installation is needed. Compare the supplied SHA-256 checksum before opening.
 
 Beta limitations:
-Live-account/provider acceptance, minimum-OS and other-hardware acceptance, complete manual UI/IME/accessibility testing and stable distribution signing remain pending. Sender-history context is bounded by the saved 1–50 message limit; each historical body is truncated to 5,000 UTF-16 characters and the selected body to 18,000. It is not an exhaustive model analysis of the whole mailbox. Native API, WebKit isolation and window lifecycle checks passed locally; browser fixture walkthroughs are not full native visual or live-account acceptance. The browser automation connection failed during an external-link confirmation check; protocol/sandbox tests passed, but that interactive step is not claimed. Provider/model tests used isolated fixtures without real sends, invitations or paid inference. Full provider delta/deletion sync, attachments, phishing/malware verdicts, sender blocking, app-wide AI spending caps and delayed/undo sending are not included. Studio simulations remain clearly labeled. Windows Tauri is not part of this release. This beta does not establish stable production readiness; see the tagged README.md, FEATURE_COVERAGE.md and VERIFICATION.md.
+This is an ad-hoc signed/unnotarized macOS and unsigned Windows beta. Complete live-provider/model acceptance, minimum-OS/other-hardware acceptance, manual UI/IME/accessibility coverage and stable signing remain pending. A limited authorized Gmail walkthrough exercised self-addressed sending and one reviewed Learning proposal; the proposal was not applied and weekly learning stayed off. A real schedule was immediately cancelled before delivery. No live calendar event, Out of Office write or complete-history download was performed for this batch. Automated provider/model checks use isolated fixtures and do not establish provider approval or delivery reliability.
+
+Month view selects at most 12 calendars; bounded calendar reads fail visibly rather than silently showing truncated results. Provider/device settings determine actual reminder delivery. Sender-history context and reply batches use explicit message/body/token limits; they do not analyze an unlimited mailbox. Learning does not infer identity or apply a style without approval. Full provider delta/deletion sync, attachments/CID images, phishing/malware verdicts, sender blocking, app-wide AI spending caps and undo sending remain unsupported. Studio simulations stay labeled. Windows Tauri is not part of this release. See the tagged README.md, FEATURE_COVERAGE.md and VERIFICATION.md for checks and limits.
 
 Support development: https://github.com/sponsors/Coke1120 · https://buymeacoffee.com/Coke1120
 `;

@@ -496,12 +496,37 @@ fn sender_history(
     let mut ids = Vec::new();
     let mut matched = 1usize;
     // ponytail: one metadata scan per explicit request; add a sender index if large-mailbox profiling warrants it.
-    let mut statement = db.conn.prepare("SELECT id,COALESCE(json_extract(data,'$.fromEmail'),''),COALESCE(json_extract(data,'$.folder'),'') FROM messages WHERE account=? AND id<>? ORDER BY COALESCE(json_extract(data,'$.date'),'') DESC,id")?;
+    let mut statement = db.conn.prepare("SELECT id,COALESCE(json_extract(data,'$.fromEmail'),''),COALESCE(json_extract(data,'$.folder'),''),COALESCE(json_extract(data,'$.to'),''),COALESCE(json_extract(data,'$.cc'),'') FROM messages WHERE account=? AND id<>? ORDER BY COALESCE(json_extract(data,'$.date'),'') DESC,id")?;
     let mut rows = statement.query(rusqlite::params![owner, string(selected, "id")])?;
     while let Some(row) = rows.next()? {
         let address: String = row.get(1)?;
         let folder: String = row.get(2)?;
-        if policy["folders"][&folder] == true && address.trim().eq_ignore_ascii_case(&sender) {
+        if policy["folders"][&folder] != true {
+            continue;
+        }
+        let mut matches = address.trim().eq_ignore_ascii_case(&sender);
+        if !matches && folder == "sent" && address.trim().eq_ignore_ascii_case(owner) {
+            let to: String = row.get(3)?;
+            let cc: String = row.get(4)?;
+            if to.len() + cc.len() <= 52000
+                && !to.contains(['\r', '\n', '\0'])
+                && !cc.contains(['\r', '\n', '\0'])
+            {
+                let header = format!("To: {to}\r\nCc: {cc}\r\n\r\n");
+                if let Some(parsed) = mail_parser::MessageParser::default().parse(header.as_bytes())
+                {
+                    matches = [parsed.to(), parsed.cc()]
+                        .into_iter()
+                        .flatten()
+                        .any(|list| {
+                            list.iter().any(|a| {
+                                a.address().is_some_and(|v| v.eq_ignore_ascii_case(&sender))
+                            })
+                        });
+                }
+            }
+        }
+        if matches {
             matched += 1;
             if ids.len() < cap - 1 {
                 ids.push(row.get::<_, String>(0)?);

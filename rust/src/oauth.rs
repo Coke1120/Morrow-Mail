@@ -2,7 +2,7 @@ use crate::{
     background, calendar,
     error::{Error, Result},
     mail, providers,
-    service::{App, Context, canonical_address, save_connection},
+    service::{App, Context, canonical_address, connections, save_connection},
     store::{merge, random_bytes, string},
     validation,
 };
@@ -32,6 +32,7 @@ struct Attempt {
     expires_at: i64,
     started: bool,
     import_options: Option<Value>,
+    upgrade: Option<Value>,
 }
 pub fn parse_google_oauth(source: &str) -> Result<Value> {
     let invalid = || Error::invalid("Use a valid Google Desktop app OAuth JSON file.");
@@ -146,12 +147,44 @@ pub(crate) async fn invalidate_calendar(app: &App, provider: &str) {
 }
 async fn start(app: &App, ctx: &Context, provider: &str, calendar: bool) -> Result<Response> {
     providers::definition(provider)?;
-    let credentials = credentials(provider, &ctx.body, app.0.google_oauth.as_ref())?;
+    if ctx.body.get("outOfOffice").is_some_and(|v| !v.is_boolean()) {
+        return Err(Error::invalid("Choose a valid automatic-reply permission."));
+    }
+    let upgrade = if ctx.body.get("forAccount").is_some() {
+        let owner = validation::email(&ctx.body["forAccount"])?;
+        if calendar
+            || ctx.body["outOfOffice"] != true
+            || ctx.header("x-genmail-account") != owner
+            || ctx
+                .body
+                .as_object()
+                .unwrap()
+                .keys()
+                .any(|key| !["forAccount", "outOfOffice"].contains(&key.as_str()))
+        {
+            return Err(Error::invalid(
+                "Authorize automatic replies for this mailbox only.",
+            ));
+        }
+        let saved = connections(&app.settings().await?)
+            .get(&owner)
+            .cloned()
+            .filter(|mail| mail["provider"] == provider)
+            .ok_or_else(|| Error::conflict("Choose a connected mailbox for this provider."))?;
+        Some(saved)
+    } else {
+        None
+    };
+    let credentials = if let Some(saved) = &upgrade {
+        saved.clone()
+    } else {
+        credentials(provider, &ctx.body, app.0.google_oauth.as_ref())?
+    };
     let id = calendar::text(&credentials["clientId"], "OAuth client ID", 1024, false)?.trim();
     if id.contains(['\r', '\n', '\t']) {
         return Err(Error::invalid("OAuth client ID must be a single line."));
     }
-    let mut config = json!({"clientId":id,"organize":ctx.body["organize"]==true});
+    let mut config = json!({"clientId":id,"organize":upgrade.as_ref().map(providers::can_organize).unwrap_or(ctx.body["organize"]==true),"outOfOffice":!calendar && ctx.body["outOfOffice"]==true});
     if calendar {
         let settings = app.settings().await?;
         let existing = &settings["calendars"][provider];
@@ -180,6 +213,12 @@ async fn start(app: &App, ctx: &Context, provider: &str, calendar: bool) -> Resu
         .trim()
         .into();
     }
+    if upgrade.is_some()
+        && provider == "microsoft"
+        && !string(&credentials, "clientSecret").is_empty()
+    {
+        config["clientSecret"] = credentials["clientSecret"].clone();
+    }
     if string(&config, "clientSecret").contains(['\r', '\n', '\t']) {
         return Err(Error::invalid("Client secret must be a single line."));
     }
@@ -191,15 +230,6 @@ async fn start(app: &App, ctx: &Context, provider: &str, calendar: bool) -> Resu
     } else {
         None
     };
-    if options
-        .as_ref()
-        .is_some_and(|value| value["allMail"] == true)
-        && provider != "google"
-    {
-        return Err(Error::invalid(
-            "All mail import is available only for Gmail.",
-        ));
-    }
     let prefix = if calendar { "calendar-oauth" } else { "oauth" };
     let redirect_uri = format!(
         "http://localhost:{}/api/{prefix}/{provider}/callback",
@@ -247,6 +277,7 @@ async fn start(app: &App, ctx: &Context, provider: &str, calendar: bool) -> Resu
             expires_at: now + 600_000,
             started: false,
             import_options: options,
+            upgrade,
         },
     );
     Ok(Json(json!({"url":format!("http://localhost:{}/api/{prefix}/{provider}/authorize?state={}",app.0.port,providers::component(&state))})).into_response())
@@ -292,7 +323,7 @@ async fn finish_mail(app: &App, attempt: &Attempt, code: &str) -> Result<()> {
         providers::oauth_finish(&app.0.client, &attempt.provider, &attempt.value, code)
             .await
             .map_err(|_| failed())?;
-    let messages = if attempt.import_options.is_none() {
+    let messages = if attempt.import_options.is_none() && attempt.upgrade.is_none() {
         let result = providers::fetch_page(&app.0.client, &connection, &json!({}))
             .await
             .map_err(|_| failed())?;
@@ -305,11 +336,29 @@ async fn finish_mail(app: &App, attempt: &Attempt, code: &str) -> Result<()> {
         Vec::new()
     };
     let options = attempt.import_options.clone();
+    let upgrade = attempt.upgrade.clone();
     app.db(move |db| {
         db.transaction(|db| {
             let email =
                 canonical_address(&db.settings()?, &validation::email(&connection["email"])?);
             connection["email"] = email.clone().into();
+            if let Some(previous) = upgrade {
+                let current = connections(&db.settings()?);
+                let owner = string(&previous,"email");
+                if !email.eq_ignore_ascii_case(owner) || current.get(owner).is_none_or(|v| v["connectionId"] != previous["connectionId"] || v["authorizationId"] != previous["authorizationId"] || v["provider"] != previous["provider"] || v["clientId"] != previous["clientId"]) {
+                    return Err(Error::conflict("The mailbox changed. Authorize automatic replies again for the original account."));
+                }
+                if crate::out_of_office::capability(&connection, owner)["canWrite"] != true
+                    || (providers::can_organize(&current[owner]) && !providers::can_organize(&connection)) {
+                    return Err(Error::new(403, "Automatic reply permissions were not fully granted. The existing mail connection was retained."));
+                }
+                connection = merge(current[owner].clone(), &connection);
+                // Keep history checkpoints but reject older authorization windows.
+                connection["authorizationId"] = uuid::Uuid::new_v4().to_string().into();
+                save_connection(db, &connection, false)?;
+                crate::ai::invalidate(db)?;
+                return Ok(());
+            }
             mail::import_messages(db, &connection, &messages)?;
             save_connection(db, &connection, true)?;
             if let Some(options) = options {

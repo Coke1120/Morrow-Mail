@@ -585,21 +585,21 @@ async fn provider_draft_apis_reject_original_allow_local_copy_and_preserve_send_
 }
 
 #[tokio::test]
-async fn non_google_all_mail_is_rejected_before_oauth_or_mailbox_connections() {
+async fn malformed_all_mail_is_rejected_before_oauth_or_mailbox_connections() {
     let f = Fixture::new().await;
     for (path, body) in [
         (
             "/api/oauth/microsoft/start",
-            json!({"clientId":"fixture-client","importOptions":{"allMail":true}}),
+            json!({"clientId":"fixture-client","importOptions":{"allMail":"true"}}),
         ),
         (
             "/api/settings/mail",
-            json!({"email":B,"imapHost":"127.0.0.1","imapPort":9,"smtpHost":"127.0.0.1","smtpPort":9,"password":"fixture","importOptions":{"allMail":true}}),
+            json!({"email":B,"imapHost":"127.0.0.1","imapPort":9,"smtpHost":"127.0.0.1","smtpPort":9,"password":"fixture","importOptions":{"allMail":"true"}}),
         ),
     ] {
         let (status, result) = f.call("POST", path, A, body).await;
         assert_eq!(status, 400);
-        assert!(string(&result, "error").contains("All mail import is available only for Gmail"));
+        assert!(!string(&result, "error").is_empty());
     }
     assert!(f.hits.lock().unwrap().is_empty());
 }

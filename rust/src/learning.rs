@@ -20,8 +20,72 @@ use std::{
 fn defaults() -> Value {
     json!({"enabled":false,"weekly":false,"months":3,"maxSamples":50,"tokenBudget":16000})
 }
+fn empty_identity() -> Value {
+    json!({"displayName":"","aliases":[],"confirmed":false})
+}
+fn checked_identity(input: &Value) -> Result<Value> {
+    if !input.as_object().is_some_and(|map| {
+        map.len() == 3
+            && map
+                .keys()
+                .all(|key| ["displayName", "aliases", "confirmed"].contains(&key.as_str()))
+    }) || !input["confirmed"].is_boolean()
+        || !input["aliases"]
+            .as_array()
+            .is_some_and(|aliases| aliases.len() <= 10)
+    {
+        return Err(Error::invalid(
+            "Provide a display name, up to 10 aliases and explicit identity confirmation.",
+        ));
+    }
+    fn name(value: &Value, empty: bool) -> Result<String> {
+        let text = crate::validation::text(value, "Name", 100, empty)?;
+        if text
+            .chars()
+            .any(|c| c.is_control() || ['\u{2028}', '\u{2029}'].contains(&c))
+        {
+            return Err(Error::invalid(
+                "Names must be single-line text of 1–100 characters.",
+            ));
+        }
+        Ok(text.trim().to_owned())
+    }
+    let display_name = name(&input["displayName"], input["confirmed"] != true)?;
+    let mut seen = HashSet::from([display_name.to_lowercase()]);
+    let mut aliases = Vec::new();
+    for input in input["aliases"].as_array().unwrap() {
+        let alias = name(input, false)?;
+        if seen.insert(alias.to_lowercase()) {
+            aliases.push(alias);
+        }
+    }
+    Ok(json!({"displayName":display_name,"aliases":aliases,"confirmed":input["confirmed"]}))
+}
+/// Explicit account-owned context only. Callers must still enforce AI/content permissions.
+pub fn identity(settings: &Value, owner: &str) -> Value {
+    let value = checked_identity(&settings["styleLearning"][owner]["settings"]["identity"])
+        .unwrap_or_else(|_| empty_identity());
+    if !["all", "demo"].contains(&owner)
+        && connections(settings)
+            .get(owner)
+            .is_some_and(Value::is_object)
+        && value["confirmed"] == true
+    {
+        json!({"displayName":value["displayName"],"aliases":value["aliases"]})
+    } else {
+        Value::Null
+    }
+}
 fn config(settings: &Value, owner: &str) -> Value {
-    merge(defaults(), &settings["styleLearning"][owner]["settings"])
+    let mut options = merge(defaults(), &settings["styleLearning"][owner]["settings"]);
+    options["identity"] =
+        checked_identity(&options["identity"]).unwrap_or_else(|_| empty_identity());
+    options
+}
+fn style_options(settings: &Value, owner: &str) -> Value {
+    let mut options = config(settings, owner);
+    options.as_object_mut().unwrap().remove("identity");
+    options
 }
 fn read(settings: &Value, owner: &str) -> Value {
     merge(
@@ -57,7 +121,7 @@ fn stamp(settings: &Value, owner: &str) -> String {
         settings["ai"],
         policy::resolve(&settings["policy"]),
         settings["preferences"],
-        config(settings, owner)
+        style_options(settings, owner)
     ]))
 }
 // ponytail: deterministic quote/signature heuristics; samples remain reviewable because mail formats vary.
@@ -192,14 +256,17 @@ pub fn update_settings_at(
     if connections(&settings).get(owner).is_none() {
         return Err(Error::conflict("Choose a connected mailbox."));
     }
-    if !input
-        .as_object()
-        .is_some_and(|map| map.keys().all(|key| defaults().get(key).is_some()))
-    {
+    if !input.as_object().is_some_and(|map| {
+        map.keys()
+            .all(|key| key == "identity" || defaults().get(key).is_some())
+    }) {
         return Err(Error::invalid("Invalid style settings."));
     }
     let previous = config(&settings, owner);
-    let next = merge(previous.clone(), input);
+    let mut next = merge(previous.clone(), input);
+    if input.get("identity").is_some() {
+        next["identity"] = checked_identity(&input["identity"])?;
+    }
     if !next["enabled"].is_boolean()
         || !next["weekly"].is_boolean()
         || !next["months"]
@@ -222,13 +289,30 @@ pub fn update_settings_at(
         ));
     }
     let mut current = read(&settings, owner);
-    if next["weekly"] == true && previous["weekly"] != true {
-        current["weeklySince"] = time.to_rfc3339_opts(SecondsFormat::Millis, true).into();
+    let identity_changed = next["identity"] != previous["identity"];
+    if identity_changed {
+        current["preview"] = Value::Null;
+    }
+    if input
+        .as_object()
+        .unwrap()
+        .keys()
+        .any(|key| key != "identity")
+    {
+        if next["weekly"] == true && previous["weekly"] != true {
+            current["weeklySince"] = time.to_rfc3339_opts(SecondsFormat::Millis, true).into();
+        }
+        current["preview"] = Value::Null;
+        current["lastWeeklyAt"] = time.timestamp_millis().into();
     }
     current["settings"] = next;
-    current["preview"] = Value::Null;
-    current["lastWeeklyAt"] = time.timestamp_millis().into();
-    write(db, owner, current)
+    db.transaction(|db| {
+        write(db, owner, current)?;
+        if identity_changed {
+            crate::ai::invalidate(db)?;
+        }
+        Ok(())
+    })
 }
 fn model_settings(settings: &Value) -> Value {
     merge(

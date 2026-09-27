@@ -121,4 +121,92 @@ fn oauth_pkce_and_cursor_boundaries() {
     ] {
         assert!(providers::validated_next(path, &original).is_err());
     }
+    for folder in ["inbox", "sentitems"] {
+        let original = url::Url::parse(&format!(
+            "https://graph.microsoft.com/v1.0/me/mailFolders/{folder}/messages"
+        ))
+        .unwrap();
+        let query = "$top=50&$skip=50&$orderby=receivedDateTime%20desc&$filter=receivedDateTime%20ge%202026-06-24T00:00:00Z&$select=id,body";
+        for path in [
+            original.path().to_owned(),
+            format!("/v1.0/me/mailFolders('{folder}')/messages"),
+        ] {
+            let cursor = format!("https://graph.microsoft.com{path}?{query}");
+            let parsed = providers::validated_mail_next(&cursor, &original).unwrap();
+            assert_eq!(parsed.as_str(), cursor);
+            assert_eq!(parsed.query(), Some(query));
+            if path != original.path() {
+                assert!(providers::validated_next(&cursor, &original).is_err());
+            }
+        }
+    }
+    for cursor in [
+        "https://graph.microsoft.com/v1.0/me/mailFolders('sentitems')/messages?$folder=inbox",
+        "https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages/extra",
+        "https://graph.microsoft.com/v1.0/me/mailFolders('%69nbox')/messages",
+        "https://graph.microsoft.com/v1.0/me/mailFolders('opaque-id')/messages",
+        "http://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages",
+        "https://evil.example/v1.0/me/mailFolders('inbox')/messages",
+        "https://graph.microsoft.com:444/v1.0/me/mailFolders('inbox')/messages",
+        "https://user:secret@graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages",
+        "https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages#fragment",
+    ] {
+        assert!(
+            providers::validated_mail_next(cursor, &original).is_err(),
+            "{cursor}"
+        );
+    }
+    assert!(
+        providers::validated_mail_next(
+            &format!("{}?$skip={}", original, "x".repeat(8192)),
+            &original
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn out_of_office_scope_is_explicit_and_preserves_organize_and_calendar() {
+    for (provider, scope) in [
+        (
+            "google",
+            "https://www.googleapis.com/auth/gmail.settings.basic",
+        ),
+        ("microsoft", "MailboxSettings.ReadWrite"),
+    ] {
+        for organize in [false, true] {
+            let base = providers::oauth_start(
+                provider,
+                &json!({"clientId":"fixture","organize":organize}),
+                "http://localhost/callback",
+                "mail",
+            )
+            .unwrap();
+            let opted = providers::oauth_start(
+                provider,
+                &json!({"clientId":"fixture","organize":organize,"outOfOffice":true}),
+                "http://localhost/callback",
+                "mail",
+            )
+            .unwrap();
+            assert_eq!(
+                opted["config"]["mailScope"],
+                format!("{} {scope}", base["config"]["mailScope"].as_str().unwrap())
+            );
+            let calendar = providers::oauth_start(
+                provider,
+                &json!({"clientId":"fixture","organize":organize,"outOfOffice":true}),
+                "http://localhost/callback",
+                "calendar",
+            )
+            .unwrap();
+            assert!(
+                !calendar["url"]
+                    .as_str()
+                    .unwrap()
+                    .contains("MailboxSettings")
+            );
+            assert!(!calendar["url"].as_str().unwrap().contains("settings.basic"));
+        }
+    }
 }

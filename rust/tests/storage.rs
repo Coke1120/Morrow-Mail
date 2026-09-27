@@ -219,3 +219,53 @@ fn partial_index_keeps_all_metadata_pages_consistent_during_backfill() {
     drop(db);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn pending_marker_keeps_owner_and_metadata_during_index_recovery() {
+    use morrow_search::{pages, search_query};
+    let root = std::env::temp_dir().join(format!("morrow-pending-{}", uuid::Uuid::new_v4()));
+    let db = Store::open(&root).unwrap();
+    let accounts = vec![
+        "a@example.invalid".to_owned(),
+        "b@example.invalid".to_owned(),
+    ];
+    let message = json!({"id":"same","folder":"inbox","subject":"Follow up","body":"Private text","date":"2026-09-27T00:00:00Z","pending":true});
+    db.upsert(&accounts[0], &message).unwrap();
+    db.upsert(
+        &accounts[1],
+        &json!({"id":"same","folder":"inbox","pending":false}),
+    )
+    .unwrap();
+    for rebuilding in [false, true] {
+        if rebuilding {
+            db.conn
+                .execute_batch("DELETE FROM search_documents; DELETE FROM search_meta;")
+                .unwrap();
+        }
+        let page = pages::page(&db, &accounts, &json!({"folder":"pending"}), &[42; 32]).unwrap();
+        assert_eq!(page["total"], 1);
+        assert_eq!(page["messages"][0]["accountId"], accounts[0]);
+        assert_eq!(page["messages"][0]["pending"], true);
+        assert!(page["messages"][0].get("body").is_none());
+        assert_eq!(
+            pages::stats(&db, &accounts).unwrap()[&accounts[0]]["counts"]["pending"],
+            1
+        );
+    }
+    while db.index_remaining().unwrap() > 0 {
+        db.backfill_batch().unwrap();
+    }
+    let query = search_query::parse(&json!({"query":"is:pending","scope":"all"})).unwrap();
+    assert_eq!(
+        search_query::lexical(&db, &query, &accounts, false).unwrap()["total"],
+        1
+    );
+    db.update(&accounts[0], "same", &json!({"folder":"spam"}))
+        .unwrap();
+    assert_eq!(
+        pages::page(&db, &accounts, &json!({"folder":"pending"}), &[42; 32]).unwrap()["total"],
+        0
+    );
+    drop(db);
+    fs::remove_dir_all(root).unwrap();
+}

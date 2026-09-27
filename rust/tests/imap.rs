@@ -111,6 +111,7 @@ struct ImapScenario {
     search_ids: Option<Vec<u32>>,
     search_outside: bool,
     hidden_folders: usize,
+    extra_folders: &'static str,
     mapping: Option<&'static str>,
     extra_mapping: Option<&'static str>,
 }
@@ -135,6 +136,7 @@ impl Default for ImapScenario {
             search_ids: None,
             search_outside: false,
             hidden_folders: 1,
+            extra_folders: "",
             mapping: Some("88 7 19"),
             extra_mapping: None,
         }
@@ -254,7 +256,7 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
             let hidden = (0..scenario.hidden_folders)
                 .map(|index| format!("* LIST (\\Noselect) \"/\" \"Hidden{index}\"\r\n"))
                 .collect::<String>();
-            write(&mut stream,&format!("* LIST () \"/\" \"INBOX\"\r\n{sent}* LIST () \"/\" \"&mAV27g- &- stuff\"\r\n{hidden}{tag} OK list\r\n")).await?;
+            write(&mut stream,&format!("* LIST () \"/\" \"INBOX\"\r\n{sent}* LIST () \"/\" \"&mAV27g- &- stuff\"\r\n{hidden}{}{tag} OK list\r\n",scenario.extra_folders)).await?;
         } else if upper.starts_with("EXAMINE ") || upper.starts_with("SELECT ") {
             let next = if scenario.omit_uidnext {
                 String::new()
@@ -1022,5 +1024,64 @@ async fn smtp_tls_auth_and_recipient_failures_do_not_downgrade_or_claim_success(
             .commands()
             .iter()
             .any(|line| line.starts_with("tls:AUTH"))
+    );
+}
+
+#[tokio::test]
+async fn full_history_imap_persists_folder_and_uid_checkpoints_excluding_special_subtrees() {
+    let fixture=ImapFixture::new(ImapScenario { extra_folders: "* LIST () \"/\" \"INBOX\"\r\n* LIST (\\Drafts) \"/\" \"Drafts\"\r\n* LIST (\\Junk) \"/\" \"Junk\"\r\n* LIST () \"/\" \"Junk/Child\"\r\n* LIST (\\Trash) \"/\" \"Trash\"\r\n* LIST () \"/\" \"Trash/Child\"\r\n* LIST (\\All) \"/\" \"All\"\r\n* LIST (\\Flagged) \"/\" \"Flagged\"\r\n", ..Default::default() }).await;
+    let mut options = json!({"folder":"all","since":"","before":"2027-01-01T00:00:00.000Z"});
+    let first = fixture.fetch(options.clone()).await.unwrap();
+    assert_eq!(first["messages"].as_array().unwrap().len(), 50);
+    assert_eq!(first["nextCursor"]["folders"].as_array().unwrap().len(), 4);
+    assert_eq!(first["nextCursor"]["next"]["uid"], 11);
+    options["cursor"] = first["nextCursor"].clone();
+    fixture.update(|s| s.validity = 56);
+    assert_eq!(
+        fixture.fetch(options.clone()).await.unwrap_err().status,
+        409
+    );
+    fixture.update(|s| s.validity = 55);
+    let mut cursor = first["nextCursor"].clone();
+    let mut rows = first["messages"].as_array().unwrap().clone();
+    let mut pages = 1;
+    while !cursor.is_null() {
+        options["cursor"] =
+            serde_json::from_slice::<Value>(&serde_json::to_vec(&cursor).unwrap()).unwrap();
+        let page = fixture.fetch(options.clone()).await.unwrap();
+        rows.extend(page["messages"].as_array().unwrap().clone());
+        cursor = page["nextCursor"].clone();
+        pages += 1;
+        assert!(pages <= 8);
+    }
+    assert_eq!(pages, 8);
+    assert_eq!(rows.len(), 240);
+    assert_eq!(
+        rows.iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        240
+    );
+    assert_eq!(rows[60]["folder"], "sent");
+    assert_eq!(rows[60]["providerSent"], true);
+    assert_eq!(rows[60]["providerFolderId"], SENT);
+    assert_eq!(rows[120]["folder"], "archive");
+    assert_eq!(rows[180]["providerDraft"], true);
+    let commands = fixture.commands();
+    assert_eq!(
+        commands.iter().filter(|s| s.starts_with("LIST ")).count(),
+        1
+    );
+    for command in commands.iter().filter(|s| s.starts_with("EXAMINE ")) {
+        for excluded in ["Junk", "Trash", "All", "Flagged", "Hidden"] {
+            assert!(!command.contains(excluded));
+        }
+    }
+    assert!(
+        commands
+            .iter()
+            .filter(|s| s.starts_with("UID SEARCH "))
+            .all(|s| !s.contains("SINCE"))
     );
 }

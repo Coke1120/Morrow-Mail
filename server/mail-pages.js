@@ -1,22 +1,23 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 
-const folders = ['inbox', 'starred', 'sent', 'drafts', 'archive', 'spam', 'trash'];
+const folders = ['inbox', 'starred', 'pending', 'sent', 'drafts', 'archive', 'spam', 'trash'];
 const sorts = ['newest', 'oldest', 'sender', 'subject', 'unread', 'starred'];
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
 const fields = { id: null, fromName: 254, fromEmail: 254, to: 4096, subject: 1000, preview: 240, date: 40, folder: 20, category: 40, remoteId: null, deliveryStatus: 40 };
 export function messageSummary(message) {
-  return { ...Object.fromEntries(Object.entries(fields).filter(([key]) => message[key] !== undefined).map(([key, limit]) => [key, limit ? String(message[key] ?? '').slice(0, limit) : message[key]])), read: !!message.read, starred: !!message.starred };
+  return { ...Object.fromEntries(Object.entries(fields).filter(([key]) => message[key] !== undefined).map(([key, limit]) => [key, limit ? String(message[key] ?? '').slice(0, limit) : message[key]])), read: !!message.read, starred: !!message.starred, pending: !!message.pending, ...(message.scheduledSend ? { scheduledSend: { id: message.scheduledSend.id, sendAt: message.scheduledSend.sendAt, status: message.scheduledSend.status } } : {}) };
 }
 
 export function createMailPages(db, revision) {
   // ponytail: uncommon text sorts scan scoped metadata; persist ICU sort keys only if measured necessary.
   let textRanks = new Map();
   db.function('mail_order', value => textRanks.get(String(value ?? '')) ?? 0);
-  db.exec(`CREATE INDEX IF NOT EXISTS mail_date ON search_documents(account,date DESC,id);
+  db.exec(`CREATE INDEX IF NOT EXISTS mail_pending ON messages(account) WHERE json_extract(data,'$.pending')=1;
+    CREATE INDEX IF NOT EXISTS mail_date ON search_documents(account,date DESC,id);
     CREATE INDEX IF NOT EXISTS mail_folder_date ON search_documents(account,folder,date DESC,id);
     CREATE INDEX IF NOT EXISTS mail_counts ON search_documents(account,folder,unread,starred);`);
   const secret = randomBytes(32), sign = value => createHmac('sha256', secret).update(value).digest('base64url');
-  const projection = `json_object(${Object.entries(fields).flatMap(([key, limit]) => [`'${key}'`, limit ? `substr(json_extract(m.data,'$.${key}'),1,${limit})` : `json_extract(m.data,'$.${key}')`]).join(',')},'read',NOT d.unread,'starred',d.starred)`;
+  const projection = `json_object(${Object.entries(fields).flatMap(([key, limit]) => [`'${key}'`, limit ? `substr(json_extract(m.data,'$.${key}'),1,${limit})` : `json_extract(m.data,'$.${key}')`]).join(',')},'read',NOT d.unread,'starred',d.starred,'pending',json_extract(m.data,'$.pending'),'scheduledSend',json_extract(m.data,'$.scheduledSend'))`;
   return {
     stats(accounts) {
       const result = Object.fromEntries(accounts.map(account => [account, { unread: 0, total: 0, counts: Object.fromEntries(folders.map(folder => [folder, 0])) }]));
@@ -27,6 +28,7 @@ export function createMailPages(db, revision) {
         if (row.folder === 'inbox') entry.unread += row.unread;
         if (!['trash', 'spam'].includes(row.folder)) entry.counts.starred += row.starred;
       }
+      for (const row of db.prepare(`SELECT account,count(*) AS count FROM messages WHERE json_extract(data,'$.pending')=1 AND account IN (${accounts.map(() => '?').join(',') || 'NULL'}) AND COALESCE(json_extract(data,'$.folder'),'') NOT IN ('trash','spam') GROUP BY account`).all(...accounts)) result[row.account].counts.pending = row.count;
       return result;
     },
     page(accounts, input = {}) {
@@ -39,6 +41,7 @@ export function createMailPages(db, revision) {
       const scope = createHash('sha256').update(JSON.stringify([accounts, folder, category, unreadOnly, sort, pageSize, locale, revision()])).digest('hex');
       const clauses = [`d.account IN (${accounts.map(() => '?').join(',') || 'NULL'})`], params = [...accounts];
       if (folder === 'starred') clauses.push("d.starred=1 AND d.folder NOT IN ('trash','spam')");
+      else if (folder === 'pending') clauses.push("d.rowid IN (SELECT rowid FROM messages WHERE json_extract(data,'$.pending')=1) AND d.folder NOT IN ('trash','spam')");
       else if (folder) { clauses.push('d.folder=?'); params.push(folder); }
       if (category !== 'all') { clauses.push('d.category=?'); params.push(category); }
       if (unreadOnly) clauses.push('d.unread=1');

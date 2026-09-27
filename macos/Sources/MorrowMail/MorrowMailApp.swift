@@ -54,6 +54,10 @@ struct MorrowMailApp: App {
                 Button("AI Studio") { model.section = "studio" }.keyboardShortcut("2").disabled(!model.canNavigate)
                 Button("Calendar") { model.section = "calendar" }.keyboardShortcut("3").disabled(!model.canNavigate)
                 Button("Today") { model.section = "today" }.keyboardShortcut("4").disabled(!model.canNavigate)
+                Button("Pending") { model.section = "pending" }.disabled(!model.canNavigate || !model.hasMailbox)
+                Button("Reply Suggestions") { model.section = "reply-suggestions" }.disabled(!model.canNavigate || !model.hasMailbox)
+                Button("Out of Office") { model.section = "out-of-office" }.disabled(!model.canNavigate || !model.hasMailbox)
+                Button("Scheduled") { model.section = "scheduled" }.disabled(!model.canNavigate || !model.hasMailbox)
             }
         }
     }
@@ -63,32 +67,81 @@ struct MorrowMailApp: App {
 // Wait for the native pane to join its window and finish its first layout.
 // SwiftUI can update the representable before any split-view ancestor exists.
 struct InitialSplitPosition: NSViewRepresentable {
-    let position: CGFloat
-    init(_ position: CGFloat) { self.position = position }
+    let position: CGFloat?
+    var onResize: ((CGFloat) -> Void)?
+    init(_ position: CGFloat?, onResize: ((CGFloat) -> Void)? = nil) {
+        self.position = position
+        self.onResize = onResize
+    }
     func makeNSView(context: Context) -> Marker { Marker() }
-    func updateNSView(_ view: Marker, context: Context) { view.position = position }
+    func updateNSView(_ view: Marker, context: Context) {
+        view.position = position
+        view.onResize = onResize
+    }
+    static func dismantleNSView(_ view: Marker, coordinator: ()) { view.stopRemembering() }
     final class Marker: NSView {
-        var position: CGFloat = 0
+        var position: CGFloat?
+        var onResize: ((CGFloat) -> Void)?
         private var applied = false
+        private var dismantled = false
+        private var resizeObserver: NSObjectProtocol?
+        deinit { if let resizeObserver { NotificationCenter.default.removeObserver(resizeObserver) } }
+        func stopRemembering() {
+            dismantled = true
+            onResize = nil
+            if let resizeObserver { NotificationCenter.default.removeObserver(resizeObserver) }
+            resizeObserver = nil
+        }
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             needsLayout = true
         }
         override func layout() {
             super.layout()
-            guard !applied, window != nil else { return }
+            guard !applied, !dismantled, window != nil else { return }
             var parent = superview
             while let current = parent {
                 if let split = current as? NSSplitView {
                     guard split.arrangedSubviews.count > 1,
                           split.bounds.width > 0, split.bounds.height > 0 else { return }
                     applied = true
-                    let initial = position
-                    DispatchQueue.main.async { [weak split] in split?.setPosition(initial, ofDividerAt: 0) }
+                    DispatchQueue.main.async { [weak self, weak split] in
+                        guard let self, let split else { return }
+                        if self.onResize == nil { self.applyPosition(in: split) }
+                        else {
+                            // The outer sidebar also applies its initial position
+                            // asynchronously. Restore after that changes our extent.
+                            DispatchQueue.main.async { [weak self, weak split] in
+                                if let self, let split { self.applyPosition(in: split) }
+                            }
+                        }
+                    }
                     return
                 }
                 parent = current.superview
             }
+        }
+        private func applyPosition(in split: NSSplitView) {
+            guard !dismantled, window != nil, isDescendant(of: split),
+                  split.arrangedSubviews.count > 1 else { return }
+            // nil keeps AppKit's flexible allocation on the first display.
+            if let position { split.setPosition(position, ofDividerAt: 0) }
+            guard onResize != nil else { return }
+            rememberPosition(in: split)
+            resizeObserver = NotificationCenter.default.addObserver(forName: NSSplitView.didResizeSubviewsNotification, object: split, queue: .main) { [weak self, weak split] _ in
+                // Read after layout, outside SwiftUI's update transaction.
+                DispatchQueue.main.async { [weak self, weak split] in
+                    if let self, let split { self.rememberPosition(in: split) }
+                }
+            }
+        }
+        private func rememberPosition(in split: NSSplitView) {
+            guard !dismantled, window != nil, split.arrangedSubviews.count > 1,
+                  let pane = split.arrangedSubviews.first, isDescendant(of: pane) else { return }
+            let value = split.isVertical ? pane.frame.width : pane.frame.height
+            guard value.isFinite, value > 0, value != position else { return }
+            position = value
+            onResize?(value)
         }
     }
 }

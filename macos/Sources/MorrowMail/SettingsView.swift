@@ -242,19 +242,20 @@ struct NativeSettingsView: View {
     }
     var mailPage: some View {
         Group {
-            SectionHeading(title: "Bring your inbox along", detail: "Connect multiple Gmail, Outlook, or IMAP accounts. Sync checks recent mail in bounded batches. History imports fill the chosen date window while Morrow is open, without AI calls.")
+            SectionHeading(title: "Bring your inbox along", detail: "Connect multiple Gmail, Outlook, or IMAP accounts. Sync checks recent mail in bounded batches. History imports fill the chosen range while Morrow is open, without AI calls.")
             GroupBox("Import history for new connections or Start Import below") {
                 VStack(alignment: .leading, spacing: 12) {
                     ActivityStatusView(value: model.activity, error: model.activityError)
-                    Picker("History range", selection: Binding(get: { Int(importSettings["months"].number) }, set: { importSettings["months"] = .number(Double($0)) })) { ForEach([1, 3, 6, 12], id: \.self) { Text("Last \($0) month(s)").tag($0) } }
-                    if provider == "google" || displayedAccounts.contains(where: { $0["provider"].string == "google" }) {
-                        Toggle("All Gmail mail (Inbox, Sent, Drafts, Starred and labels; excluding Spam/Trash)", isOn: Binding(get: { importSettings["allMail"].bool }, set: { importSettings["allMail"] = .bool($0) })).toggleStyle(.checkbox)
+                    Picker("History range", selection: Binding(get: { Int(importSettings["months"].number) }, set: { importSettings["months"] = .number(Double($0)) })) {
+                        Text("All history (no date limit)").tag(0)
+                        ForEach([1, 3, 6, 12], id: \.self) { Text("Last \($0) month(s)").tag($0) }
                     }
-                    if provider != "google" || !importSettings["allMail"].bool || displayedAccounts.contains(where: { $0["provider"].string != "google" }) {
-                        Text("Outlook / IMAP, or Gmail with All Gmail mail off:").font(.caption).foregroundStyle(.secondary)
+                    Toggle("All normal folders (excluding Spam/Trash)", isOn: Binding(get: { importSettings["allMail"].bool }, set: { importSettings["allMail"] = .bool($0) })).toggleStyle(.checkbox)
+                    if !importSettings["allMail"].bool {
+                        Text("Import selected folders:").font(.caption).foregroundStyle(.secondary)
                         ForEach(["inbox", "sent"], id: \.self) { folder in Toggle(folder.capitalized, isOn: Binding(get: { importSettings[folder].bool }, set: { importSettings[folder] = .bool($0) })).toggleStyle(.checkbox) }
                     }
-                    Text("Choose All Gmail mail or at least one folder. Only mail inside the chosen date window is imported; cached mail is retained when choosing a shorter range. IMAP Sent requires the provider’s Sent special-use folder. Style learning is a separate opt-in in Learning.").font(.caption).foregroundStyle(.secondary)
+                    Text("Choose All normal folders or at least one folder. All history removes the date limit; choosing a shorter range keeps cached mail. Gmail and Outlook exclude Spam/Trash. IMAP skips folders identified by the provider as Junk or Trash, plus virtual and non-selectable folders. Style learning is a separate opt-in in Learning.").font(.caption).foregroundStyle(.secondary)
                     Button("Refresh Import Progress") { run { await refreshImportProgress() } }
                     if !importRefreshError.isEmpty { Text(importRefreshError).font(.caption).foregroundStyle(.orange) }
                 }.padding(8)
@@ -286,7 +287,7 @@ struct NativeSettingsView: View {
                         if account["import"]["recoveryAction"].string == "restart" { Text("Start a new import below to replace the unusable checkpoint. Downloaded mail is retained.").font(.caption) }
                     } else { Text("History import has not started.").font(.caption).foregroundStyle(.secondary) }
                     HStack {
-                        Button(account["provider"].string == "google" && importSettings["allMail"].bool ? "Start All Gmail Import" : "Start Import with Chosen Range") { importAction("start", account: account) }.disabled(!canImport(account["provider"].string))
+                        Button(importOptions(for: account["provider"].string)["allMail"].bool ? "Start All Normal Folders Import" : "Start Import with Chosen Range") { importAction("start", account: account) }.disabled(!canImport(account["provider"].string))
                         if let action = importControl(account["import"]) {
                             Button(action == "pause" ? "Pause" : "Resume from Checkpoint") { importAction(action, account: account) }
                         }
@@ -315,7 +316,7 @@ struct NativeSettingsView: View {
             } else {
                 oauthForm(provider, calendar: false)
             }
-            Text("Read, star, archive, and trash shortcuts stay local. The Move / Labels dialog applies reviewed changes on the provider. Sending contacts your provider only after you review and send. Mail is plain text without attachments.").font(.caption).foregroundStyle(.secondary)
+            Text("Read, star, archive, and trash shortcuts stay local. The Move / Labels dialog applies reviewed changes on the provider. Sending requires an explicit send or schedule review. Formatted mail uses a protected reader; attachments and CID images are not supported.").font(.caption).foregroundStyle(.secondary)
         }
     }
     var calendarPage: some View {
@@ -450,7 +451,7 @@ struct NativeSettingsView: View {
     }
     func importOptions(for provider: String) -> JSON {
         var options = importSettings
-        options["allMail"] = .bool(provider == "google" && importSettings["allMail"].bool)
+        options["allMail"] = .bool(["google", "microsoft", "imap"].contains(provider) && importSettings["allMail"].bool)
         return options
     }
     func canImport(_ provider: String) -> Bool {
@@ -461,8 +462,10 @@ struct NativeSettingsView: View {
         let labels = ["running": "History import in progress", "paused": "History import paused", "failed": "History import stopped after an error", "interrupted": "History import interrupted", "stopped": "History import stopped", "complete": "Chosen history range completed", "completed": "Chosen history range completed"]
         let runningLabels = ["retrying": "Temporary connection problem — waiting to retry", "queued": "History import queued — waiting for the next page"]
         let label = (job["status"].string == "running" ? runningLabels[job["phase"].string] : nil) ?? labels[job["status"].string] ?? "History import status unknown"
-        var details = [label, "\(Int(job["imported"].number)) new messages", "\(Int(job["options"]["months"].number)) months"]
-        if job["currentFolder"].nonempty { details.append(job["currentFolder"].string == "all" ? "All Gmail mail" : job["currentFolder"].string.capitalized) }
+        let months = job["options"]["months"]
+        let range = months.isNull ? "History range unavailable" : months.number == 0 ? "All history (no date limit)" : "\(Int(months.number)) months"
+        var details = [label, "\(Int(job["imported"].number)) new messages", range]
+        if job["currentFolder"].nonempty { details.append(job["currentFolder"].string == "all" ? "All normal folders" : job["currentFolder"].string.capitalized) }
         if !job["pages"].isNull { details.append("\(Int(job["pages"].number)) pages") }
         if !job["processed"].isNull { details.append("\(Int(job["processed"].number)) checked") }
         return details.joined(separator: " · ")

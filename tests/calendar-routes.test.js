@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request as httpRequest } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createApp } from '../server/app.js';
@@ -132,6 +132,19 @@ test('ninety local calendar dates tolerate DST rollback while event durations re
   assert.equal((await request('/api/calendars/google/events', { ...eventInput(), start, end })).status, 400);
 });
 
+test('calendar reads expose fixed all-day repair limits and timezone errors without provider details', async t => {
+  let code = 'calendar_all_day_limit';
+  const { store, request } = await workspace(t, { listCalendarEvents: async () => { throw Object.assign(new Error('private-provider-text'), { code }); } });
+  store.setSettings({ calendars: { microsoft: connection('microsoft') } });
+  const load = () => request('/api/calendars/microsoft/events?calendarId=primary&start=2026-09-01T00%3A00%3A00Z&end=2026-10-01T00%3A00%3A00Z');
+  for (const [next, expected] of [['calendar_all_day_limit', /100.*smaller date range/], ['calendar_all_day_timezone', /original timezone.*custom or unrecognized/], ['provider_private_error', /Could not load events/]]) {
+    code = next;
+    const result = await load();
+    assert.equal(result.status, 502); assert.match(result.data.error, expected);
+    assert.doesNotMatch(result.raw, /private-provider-text|provider_private_error/);
+  }
+});
+
 test('pending event creation blocks reconnect, disconnect, and duplicate creation while other provider works', async t => {
   const entered = deferred(), finish = deferred();
   const { store, request } = await workspace(t, { createCalendarEvent: async () => { entered.resolve(); await finish.promise; return { id: 'created' }; } });
@@ -165,4 +178,46 @@ test('concurrent refresh is shared and disconnected connections cannot resurrect
   assert.equal(events.status, 409);
   assert.equal(store.getSettings().calendars.google, null);
   assert.doesNotMatch(listed.raw + events.raw, /new-private-token/);
+});
+
+test('reminder validation precedes provider calls and persists canonical review/hash through retries', async t => {
+  let refreshes = 0, lists = 0, uncertain = false;
+  const calls = [];
+  const { store, request, restart } = await workspace(t, {
+    refreshMail: async value => { refreshes++; return value; },
+    listCalendars: async () => { lists++; return [calendar]; },
+    createCalendarEvent: async (_, value) => { calls.push(structuredClone(value)); if (uncertain) throw new Error('uncertain'); return { id: value.requestId }; },
+  });
+  store.setSettings({ calendars: { google: connection('google'), microsoft: connection('microsoft') } });
+  const value = eventInput();
+  for (const reminder of [null, [], {}, { method: 'default' }, { method: 'popup' }, { method: 'popup', minutes: '30' }, { method: 'popup', minutes: true }, { method: 'popup', minutes: 0.5 }, { method: 'popup', minutes: -1 }, { method: 'email', minutes: 40321 }, { method: 'none', attendees: [] }]) {
+    assert.equal((await request('/api/calendars/google/events', { ...value, reminder })).status, 400);
+  }
+  assert.equal((await request('/api/calendars/microsoft/events', { ...value, connectionEmail: 'microsoft@example.com', reminder: { method: 'email', minutes: 30 } })).status, 400);
+  assert.deepEqual([refreshes, lists, calls.length], [0, 0, 0]);
+  assert.equal(store.getSettings().calendarRequests, undefined);
+  // A pre-reminder Node record has only the old fingerprint; no payload or reminder key.
+  const legacyPayload = { calendarId: value.calendarId, title: value.title, description: value.description, location: value.location, start: '2026-10-01T01:00:00.000Z', end: '2026-10-01T02:00:00.000Z', requestId: value.requestId };
+  const legacyHash = createHash('sha256').update(JSON.stringify(legacyPayload)).digest('hex');
+  store.setSettings({ calendarRequests: [{ provider: 'google', email: 'google@example.com', requestId: value.requestId, payloadHash: legacyHash, event: { id: 'legacy' } }] });
+  assert.equal((await request('/api/calendars/google/events', value)).data.event.id, 'legacy');
+  assert.equal((await request('/api/calendars/google/events', { ...value, reminder: { method: 'none' } })).status, 409);
+  assert.deepEqual([refreshes, lists, calls.length], [0, 0, 0]);
+  const selected = { ...eventInput(), reminder: { method: 'popup', minutes: 0 } };
+  uncertain = true;
+  assert.equal((await request('/api/calendars/google/events', selected)).status, 502);
+  const record = store.getSettings().calendarRequests[1];
+  assert.deepEqual(record.payload.reminder, selected.reminder);
+  assert.equal(record.payloadHash, createHash('sha256').update(JSON.stringify(record.payload)).digest('hex'));
+  for (const reminder of [undefined, { method: 'none' }, { method: 'email', minutes: 0 }, { method: 'popup', minutes: 1 }]) {
+    assert.equal((await request('/api/calendars/google/events', { ...selected, reminder })).status, 409);
+  }
+  restart(); uncertain = false;
+  assert.equal((await request('/api/calendars/google/events', selected)).status, 200);
+  assert.deepEqual(calls[0], calls[1]);
+  const none = { ...eventInput(), reminder: { method: 'none', minutes: 999 } };
+  assert.equal((await request('/api/calendars/google/events', none)).status, 200);
+  assert.deepEqual(calls[2].reminder, { method: 'none' });
+  assert.equal((await request('/api/calendars/google/events', { ...none, reminder: { method: 'none' } })).status, 200);
+  assert.equal(calls.length, 3);
 });

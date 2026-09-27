@@ -12,6 +12,7 @@ final class AppModel: ObservableObject {
     @Published var activity: JSON = .null
     @Published var activityError = ""
     @Published var section = "inbox"
+    @Published var scheduledAccount = ""
     @Published var selectedMessage: String? {
         didSet { if selectedMessage != oldValue { openedMessage = nil } }
     }
@@ -72,7 +73,7 @@ final class AppModel: ObservableObject {
     var mailScopeKey: String { [account, section, preferences["sort"].string, String(unreadOnly)].joined(separator: "\n") }
     var mailQueryKey: String { mailScopeKey + "\n" + state["revision"].string }
     var listedMessages: [JSON] {
-        if mailPage.isNull { return messages.filter { section == "studio" || (section == "starred" ? $0["starred"].bool && !["trash", "spam"].contains($0["folder"].string) : $0["folder"].string == section) } }
+        if mailPage.isNull { return messages.filter { section == "studio" || messageMatchesFolder($0, folder: section) } }
         return mailPageKey == mailScopeKey ? mailPage["messages"].array : []
     }
     var current: JSON? {
@@ -80,8 +81,7 @@ final class AppModel: ObservableObject {
             message.viewID == selectedMessage && (message["accountId"].string == "demo" ? account == "demo" : accounts.contains { $0.id == message["accountId"].string })
         }
         let owner = messageDetail["accountId"].string
-        let folder = messageDetail["folder"].string
-        let inFolder = section == "studio" || (section == "starred" ? messageDetail["starred"].bool && !["trash", "spam"].contains(folder) : section == folder)
+        let inFolder = section == "studio" || messageMatchesFolder(messageDetail, folder: section)
         let visible = row != nil || (searchResponse.isNull && inFolder && (account == owner || combined && accounts.contains { $0.id == owner }))
         if visible && messageDetail.viewID == selectedMessage && !messageDetail.isNull { return messageDetail }
         return row
@@ -384,6 +384,11 @@ final class AppModel: ObservableObject {
         if accounts.isEmpty { settings("mail"); return }
         if draft.accountID.isEmpty { draft.accountID = combined ? accounts.first?.id ?? "" : account }
         guard senderAccounts.contains(where: { $0.id == draft.accountID }) else { error = "Reconnect this message’s mailbox before replying or editing its draft."; return }
+        if draft.scheduleLocked {
+            scheduledAccount = draft.accountID; section = "scheduled"
+            notice = "Cancel this message’s schedule before editing or sending its draft."
+            return
+        }
         if draft.savedID.isEmpty, draft.footer.isNull { draft.footer = state["settings"]["footer"] }
         compose = draft
     }

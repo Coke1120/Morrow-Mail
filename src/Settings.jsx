@@ -23,7 +23,7 @@ function mailValues(mail) {
 }
 
 export function mailImportOptions(options, provider) {
-  return { ...options, allMail: provider === 'google' && options.allMail };
+  return { ...options, allMail: ['google', 'microsoft', 'imap'].includes(provider) && options.allMail };
 }
 
 const GENERAL_KEYS = ['displayName', 'signature', 'signatureFormat', 'theme', 'density', 'replyTone', 'language', 'translationLanguage', 'syncInterval', 'markReadOnOpen'];
@@ -392,22 +392,22 @@ export default function Settings({ state, onClose, onUpdate, notify, page = fals
       <section id="settings-panel-mail" role="tabpanel" aria-labelledby="settings-tab-mail" hidden={tab !== 'mail'}>
         <fieldset className="settings-fields" disabled={operationBusy}>
           <h2>Import history</h2><p className="settings-help">Sync checks recent mail in bounded batches. These options fill the chosen date window when connecting or starting an import below, without AI calls. Cached mail is retained when you choose a shorter range.</p>
-          <label className="settings-field">History range<select value={importOptions.months} onChange={e => setImportOptions({ ...importOptions, months: Number(e.target.value) })}>{[1, 3, 6, 12].map(n => <option key={n} value={n}>Last {n} month{n > 1 ? 's' : ''}</option>)}</select></label>
-          {(provider === 'google' || displayedAccounts.some(account => account.provider === 'google')) && <label className="settings-permission"><input type="checkbox" checked={importOptions.allMail} onChange={event => setImportOptions({ ...importOptions, allMail: event.target.checked })} /><span>All Gmail mail (Inbox, Sent, Drafts, Starred and labels; excluding Spam/Trash)</span></label>}
-          {(provider !== 'google' || !importOptions.allMail || displayedAccounts.some(account => account.provider !== 'google')) && <>
-            <p className="settings-help">Outlook / IMAP, or Gmail with All Gmail mail off:</p>
+          <label className="settings-field">History range<select value={importOptions.months} onChange={e => setImportOptions({ ...importOptions, months: Number(e.target.value) })}><option value={0}>All available history</option>{[1, 3, 6, 12].map(n => <option key={n} value={n}>Last {n} month{n > 1 ? 's' : ''}</option>)}</select></label>
+          <label className="settings-permission"><input type="checkbox" checked={importOptions.allMail} onChange={event => setImportOptions({ ...importOptions, allMail: event.target.checked })} /><span>All mail (normal folders)</span></label>
+          {!importOptions.allMail && <>
+            <p className="settings-help">With All mail off:</p>
             {['inbox', 'sent'].map(folder => <label className="settings-permission" key={folder}><input type="checkbox" checked={importOptions[folder]} onChange={e => setImportOptions({ ...importOptions, [folder]: e.target.checked })} /><span>{folder === 'inbox' ? 'Inbox' : 'Sent — for optional writing-style learning'}</span></label>)}
           </>}
-          <p className="settings-help">Choose All Gmail mail or at least one folder. IMAP Sent requires the server’s Sent special-use folder. Configure style learning separately in Learning.</p>
+          <p className="settings-help">Choose All mail for Gmail, Outlook or IMAP, or at least one folder. Gmail / Outlook exclude Spam/Junk and Trash/Deleted Items. IMAP relies on the server’s special-use flags to exclude Junk and Trash; folders without those flags may be imported. IMAP also skips virtual All / Flagged views and folders that cannot be selected. Configure style learning separately in Learning.</p>
           <button className="button secondary" onClick={async () => { setBusy('refresh'); try { const response = await fetch('/api/state', { headers: { 'X-Genmail-Account': state.account.id, 'X-Morrow-View': 'paged' } }); const next = await response.json(); if (!response.ok || !Array.isArray(next.accounts)) throw new Error(); setMailSnapshot(next.accounts); setImportRefreshError(''); } catch { setImportRefreshError('Import status could not be refreshed. Showing last known status.'); } finally { setBusy(''); } }}>Refresh progress</button>
           {importRefreshError && <p role="alert" className="settings-error">{importRefreshError}</p>}
         </fieldset>
         {displayedAccounts.map(account => <div className="settings-connected" key={account.id}>
-          <div><strong>{account.email}</strong><p>{account.provider.toUpperCase()} · Disconnect removes only this account’s credentials. Cached mail and drafts stay on this computer.</p><p role="status">{importStatusLabel(account.import)}{account.import && <> · {account.import.imported} new messages · {account.import.options.months} months{account.import.currentFolder && ` · ${account.import.currentFolder === 'all' ? 'All Gmail mail' : account.import.currentFolder}`}{account.import.pages != null && ` · ${account.import.pages} pages`}{account.import.processed != null && ` · ${account.import.processed} checked`}{account.import.error && ` · ${account.import.error}`}</>}</p>
+          <div><strong>{account.email}</strong><p>{account.provider.toUpperCase()} · Disconnect removes only this account’s credentials. Cached mail and drafts stay on this computer.</p><p role="status">{importStatusLabel(account.import)}{account.import && <> · {account.import.imported} new messages · {account.import.options.months === 0 ? 'All available history' : `${account.import.options.months} months`}{account.import.currentFolder && ` · ${account.import.currentFolder === 'all' ? 'All normal folders' : account.import.currentFolder}`}{account.import.pages != null && ` · ${account.import.pages} pages`}{account.import.processed != null && ` · ${account.import.processed} checked`}{account.import.error && ` · ${account.import.error}`}</>}</p>
           {account.import?.phase === 'retrying' && account.import.nextRetryAt && <p>Next retry: {new Date(account.import.nextRetryAt).toLocaleString()}. You can pause this import.</p>}
           {account.import?.recoveryAction === 'reconnect' && <p>Reconnect this account using the sign-in form below, then start a new import.</p>}
           {account.import?.recoveryAction === 'restart' && <p>Start a new import below to replace the unusable checkpoint. Downloaded mail is retained.</p>}
-          <div className="settings-actions"><button className="button secondary" disabled={operationBusy || !canImport(account.provider)} onClick={() => save('imports/start', mailImportOptions(importOptions, account.provider), 'import', 'Import started.', account.id)}>{account.provider === 'google' && importOptions.allMail ? 'Start all Gmail import' : 'Start chosen import'}</button>
+          <div className="settings-actions"><button className="button secondary" disabled={operationBusy || !canImport(account.provider)} onClick={() => save('imports/start', mailImportOptions(importOptions, account.provider), 'import', 'Import started.', account.id)}>{mailImportOptions(importOptions, account.provider).allMail ? 'Start all mail import' : 'Start chosen import'}</button>
           {importControl(account.import) && <button className="button secondary" disabled={operationBusy} onClick={() => save(`imports/${importControl(account.import)}`, {}, 'import', 'Import updated.', account.id)}>{importControl(account.import) === 'pause' ? 'Pause' : 'Resume from checkpoint'}</button>}</div></div>
           <button type="button" className="button secondary" disabled={operationBusy} onClick={() => save('account/select', { accountId: account.id }, 'select', 'Mailbox selected.')}>Use mailbox</button>
           {account.provider === 'imap' && <button type="button" className="button secondary" disabled={operationBusy} onClick={() => { if (dirty.mail && !window.confirm('Discard unsaved mail settings?')) return; const value = mailValues(account.settings); saved.current.mail = value; setMail(value); setProvider('imap'); }}>Edit</button>}
@@ -448,7 +448,7 @@ export default function Settings({ state, onClose, onUpdate, notify, page = fals
                 onChange={(event) => setOauth({ ...oauth, google: { ...oauth.google, clientSecret: event.target.value } })} />
             </label>}
             <label className="settings-permission"><input type="checkbox" checked={!!oauth[provider].organize} onChange={event => setOauth({ ...oauth, [provider]: { ...oauth[provider], organize: event.target.checked } })} /><span>Allow moving mail and managing labels (Gmail modify / Outlook Mail.ReadWrite). Reconnect existing accounts to enable.</span></label>
-            <p className="settings-help settings-scope">Read, star, archive, and trash shortcuts stay local. Move / Labels applies reviewed provider changes. Messages are sent only when you click Send. Outgoing email supports plain text, without attachments.</p>
+            <p className="settings-help settings-scope">Read, star, archive, and trash shortcuts stay local. Move / Labels applies reviewed provider changes. Sending requires an explicit send or schedule review. Formatted mail uses a protected reader; attachments and CID images are not supported.</p>
             <div className="settings-actions">
               <span><ShieldCheck size={15} /> Credentials encrypted on disk</span>
               <button className="button primary" type="submit" disabled={!canImport(provider)}>
@@ -501,7 +501,7 @@ export default function Settings({ state, onClose, onUpdate, notify, page = fals
                 </select>
               </label>
             </div>
-            <p className="settings-help settings-scope">Read, star, archive, and trash shortcuts stay local. Move / Labels applies reviewed provider changes. Sending uses SMTP only when you click Send. Outgoing email supports plain text, without attachments.</p>
+            <p className="settings-help settings-scope">Read, star, archive, and trash shortcuts stay local. Move / Labels applies reviewed provider changes. SMTP sending requires an explicit send or schedule review. Formatted mail uses a protected reader; attachments and CID images are not supported.</p>
             <div className="settings-actions">
               <span><ShieldCheck size={15} /> Credentials encrypted on disk</span>
               <button className="button primary" type="submit" disabled={!canImport('imap')}>

@@ -7,6 +7,8 @@ struct MailWorkspace: View {
     @AppStorage("mailSidebarVisible") private var sidebarVisible = true
     @State private var previousSidebarVisible = true
     @State private var expandedReader = false
+    @State private var rightListWidth: CGFloat?
+    @State private var outOfOfficeDirty = false
     @State private var assistantDraft: Draft?
     @EnvironmentObject var model: AppModel
     private var layout: String { expandedReader ? "focus" : ["right", "bottom", "focus"].contains(readerLayout) ? readerLayout : "right" }
@@ -48,6 +50,11 @@ struct MailWorkspace: View {
                             } else { StudioView().id(model.account) }
                         }
                         else if model.section == "calendar" { NativeCalendarView() }
+                        else if model.section == "reply-suggestions" { ReplySuggestionsView() }
+                        else if model.section == "out-of-office" {
+                            ScrollView { OutOfOfficeView(dirty: $outOfOfficeDirty).padding(28).frame(maxWidth: .infinity, alignment: .leading) }
+                        }
+                        else if model.section == "scheduled" { ScheduledMailView() }
                         else {
                             VStack(spacing: 0) {
                               NativeMailSearch().id(model.account + ":" + model.section)
@@ -67,6 +74,7 @@ struct MailWorkspace: View {
         .task(id: (model.selectedMessage ?? "") + model.state["revision"].string) { await model.loadMessage() }
         .onChange(of: model.section) { section in if section != "studio" { model.selectedMessage = nil; model.messageDetail = .null }; model.mailPage = .null }
         .onChange(of: readerLayout) { _ in leaveExpandedReader() }
+        .onChange(of: outOfOfficeDirty) { model.dirty("out-of-office", $0) }
         .onChange(of: model.selectedMessage) { selection in if selection == nil { leaveExpandedReader() } }
         .sheet(item: $model.compose) { draft in ComposeView(initial: draft).environmentObject(model) }
         .sheet(item: $model.organizing) { message in OrganizeMailView(message: message).environmentObject(model) }
@@ -82,6 +90,13 @@ struct MailWorkspace: View {
         HSplitView {
             if layout == "right" || (layout == "focus" && model.current == nil) {
                 messageList.frame(minWidth: 260, idealWidth: 320)
+                    .background {
+                        if layout == "right" {
+                            InitialSplitPosition(rightListWidth) { width in
+                                if layout == "right" { rightListWidth = width }
+                            }
+                        }
+                    }
             }
             VSplitView {
                 if layout == "bottom" { messageList.frame(minHeight: 160, idealHeight: 240).background(InitialSplitPosition(240)) }
@@ -131,8 +146,11 @@ struct MailWorkspace: View {
             })) {
                 Section("Workspace") {
                     Label("Today", systemImage: "sun.max").tag("today").accessibilityIdentifier("workspace.today")
+                    Label("Reply Suggestions", systemImage: "text.bubble").tag("reply-suggestions").accessibilityIdentifier("workspace.reply-suggestions")
+                    Label("Out of Office", systemImage: "moon").tag("out-of-office").accessibilityIdentifier("workspace.out-of-office")
                     Label("AI Studio", systemImage: "sparkles").tag("studio")
                     Label("Calendar", systemImage: "calendar").tag("calendar")
+                    Label("Scheduled", systemImage: "clock.arrow.circlepath").tag("scheduled").accessibilityIdentifier("workspace.scheduled")
                 }
                 if !model.accounts.isEmpty {
                     accountGroup("all", title: "All accounts", subtitle: "Combined mail", symbol: "tray.2")
@@ -173,10 +191,10 @@ struct MailWorkspace: View {
     func folderRows(_ account: String) -> some View {
         ForEach(mailFolders, id: \.self) { folder in
             HStack {
-                Label(folder.capitalized, systemImage: ["inbox": "tray", "starred": "star", "sent": "paperplane", "drafts": "doc", "archive": "archivebox", "spam": "exclamationmark.shield", "trash": "trash"][folder]!)
+                Label(folder.capitalized, systemImage: ["inbox": "tray", "starred": "star", "pending": "clock", "sent": "paperplane", "drafts": "doc", "archive": "archivebox", "spam": "exclamationmark.shield", "trash": "trash"][folder] ?? "folder")
                 Spacer()
                 let count = folderCount(account, folder)
-                if count > 0 && ["inbox", "drafts"].contains(folder) { Text("\(count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+                if count > 0 && ["inbox", "pending", "drafts"].contains(folder) { Text("\(count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
             }.tag(account + "\n" + folder).accessibilityIdentifier("mailbox.\(account).\(folder)")
         }
     }
@@ -220,6 +238,7 @@ struct MailWorkspace: View {
                             Text(["sent", "drafts"].contains(message["folder"].string) ? "To: " + message["to"].string : message["fromName"].string).lineLimit(1)
                             Spacer(minLength: 2)
                             if message["starred"].bool { Image(systemName: "star.fill").foregroundStyle(.orange).font(.caption) }
+                            if message["pending"].bool { Image(systemName: "clock.fill").foregroundStyle(morrowGreen).font(.caption).accessibilityLabel("Pending") }
                             Circle().fill(message["read"].bool ? .clear : morrowGreen).frame(width: 6, height: 6).accessibilityLabel(message["read"].bool ? "Read" : "Unread")
                         }
                         searchHighlighted(message["searchSubject"], fallback: message["subject"].nonempty ? message["subject"].string : "(No subject)").font(.system(size: 13)).fontWeight(message["read"].bool ? .regular : .bold).lineLimit(1)
@@ -228,10 +247,13 @@ struct MailWorkspace: View {
                         if message["searchMatch"].nonempty { Text(message["folder"].string + " · " + message["searchMatch"].string).font(.caption2).foregroundStyle(.secondary) }
                         Text(dateLabel(message["date"].string)).font(.caption2).foregroundStyle(.tertiary)
                         if message["deliveryStatus"].string == "unconfirmed" { Label("Check delivery", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange) }
+                        if message["scheduledSend"]["status"].string == "scheduled" { Label("Scheduled: " + dateLabel(message["scheduledSend"]["sendAt"].string), systemImage: "clock").font(.caption).foregroundStyle(.secondary) }
+                        if message["scheduledSend"]["status"].string == "sending" { Label("Sending", systemImage: "paperplane").font(.caption).foregroundStyle(.secondary) }
                     }.fontWeight(message["read"].bool ? .regular : .bold).padding(.vertical, model.preferences["density"].string == "compact" ? 3 : model.preferences["density"].string == "spacious" ? 14 : 8).tag(message.viewID)
                     .contextMenu {
                         if model.canOrganize(message) { Button("Move / Labels / Spam on Provider…") { model.organizing = message } }
                         Button(message["starred"].bool ? "Unstar" : "Star") { model.patch(message, .object(["starred": .bool(!message["starred"].bool)])) }
+                        Button(message["pending"].bool ? "Clear Pending" : "Mark Pending") { model.patch(message, .object(["pending": .bool(!message["pending"].bool)])) }
                         Button(message["read"].bool ? "Mark Unread" : "Mark Read") { model.patch(message, .object(["read": .bool(!message["read"].bool)])) }
                         if message["folder"].string != "drafts" { Button("Archive Locally") { model.patch(message, .object(["folder": .string("archive")])) } }
                         Button("Move to Local Trash") { model.patch(message, .object(["folder": .string("trash")])) }
@@ -275,7 +297,9 @@ struct MessageReader: View {
         VStack(spacing: 0) {
             HStack {
                 if focused { Button(action: onBack) { Label("Back to Messages", systemImage: "chevron.left") }.labelStyle(.iconOnly).help("Back to Messages").disabled(!model.canNavigate) }
-                if message["folder"].string == "drafts" { Button(message["providerDraft"].bool ? "Copy to Local Draft" : "Edit Draft") { model.newDraft(Draft(message: message)) } }
+                if message["folder"].string == "drafts" {
+                    Button(["scheduled", "sending"].contains(message["scheduledSend"]["status"].string) ? "Manage Schedule" : message["providerDraft"].bool ? "Copy to Local Draft" : "Edit Draft") { model.newDraft(Draft(message: message)) }
+                }
                 else {
                     Button { model.newDraft(Draft(message: message, reply: true)) } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }.labelStyle(.iconOnly).help("Reply")
                     Button { model.newDraft(Draft(message: message, replyAll: true)) } label: { Label("Reply All", systemImage: "arrowshape.turn.up.left.2") }.labelStyle(.iconOnly).help("Reply All")
@@ -284,6 +308,7 @@ struct MessageReader: View {
                 Spacer()
                 if model.canOrganize(message) { Button { model.organizing = message } label: { Label("Move / Labels / Spam", systemImage: "folder") }.labelStyle(.iconOnly).help("Move, label, or move to Spam on this mailbox’s provider") }
                 Button { model.patch(message, .object(["starred": .bool(!message["starred"].bool)])) } label: { Image(systemName: message["starred"].bool ? "star.fill" : "star") }.help("Toggle star").accessibilityLabel("Toggle star")
+                Button { model.patch(message, .object(["pending": .bool(!message["pending"].bool)])) } label: { Image(systemName: message["pending"].bool ? "clock.fill" : "clock") }.help(message["pending"].bool ? "Clear Pending" : "Mark Pending locally").accessibilityLabel(message["pending"].bool ? "Clear Pending" : "Mark Pending")
                 if message["folder"].string != "drafts" {
                     Button { model.patch(message, .object(["folder": .string(message["folder"].string == "inbox" ? "archive" : "inbox")])) } label: { Image(systemName: message["folder"].string == "inbox" ? "archivebox" : "tray") }.help("Move locally").accessibilityLabel("Move locally")
                 }
@@ -587,6 +612,121 @@ struct OrganizeMailView: View {
     }
 }
 
+struct ScheduledMailView: View {
+    @EnvironmentObject var model: AppModel
+    @State private var jobs: [JSON] = []
+    @State private var loading = false
+    @State private var loadGeneration = 0
+    @State private var localError = ""
+    private var account: String {
+        if !model.scheduledAccount.isEmpty { return model.accounts.contains { $0.id == model.scheduledAccount } ? model.scheduledAccount : "" }
+        return model.combined ? model.accounts.first?.id ?? "" : model.account
+    }
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                SectionHeading(title: "Scheduled", detail: "Morrow must be open to send. Delivery can catch up within 15 minutes of the chosen time; later messages wait for a new review.")
+                HStack {
+                    Picker("Mailbox", selection: Binding(get: { account }, set: { model.scheduledAccount = $0 })) {
+                        ForEach(model.accounts) { Text($0["email"].string).tag($0.id) }
+                    }.disabled(model.busy)
+                    Spacer()
+                    Button("Refresh") { Task { await load() } }.disabled(loading || model.busy || account.isEmpty)
+                    if loading { ProgressView().controlSize(.small) }
+                }
+                if !localError.isEmpty { Text(localError).foregroundStyle(.red).textSelection(.enabled) }
+                if jobs.isEmpty && !loading { Text("No scheduled messages in this mailbox.").foregroundStyle(.secondary) }
+                ForEach(jobs) { job in
+                    let message = job["payload"].isNull ? job : job["payload"]
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text(message["subject"].nonempty ? message["subject"].string : "(No subject)").font(.headline)
+                                Spacer()
+                                Text(statusLabel(job)).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Text("To: " + message["to"].string).textSelection(.enabled)
+                            if message["cc"].nonempty { Text("Cc: " + message["cc"].string).textSelection(.enabled) }
+                            if message["bcc"].nonempty { Text("Bcc: " + message["bcc"].string).textSelection(.enabled) }
+                            Text("Send at: " + dateLabel(job["sendAt"].string)).font(.callout)
+                            if job["error"].nonempty { Text(job["error"].string).font(.callout).foregroundStyle(.orange).textSelection(.enabled) }
+                            HStack {
+                                if ["scheduled", "missed", "blocked"].contains(job["status"].string) {
+                                    Button("Cancel Schedule") { cancel(job, reschedule: false) }
+                                    Button("Review New Schedule") { cancel(job, reschedule: true) }.disabled(job["payload"].isNull)
+                                }
+                                if job["status"].string == "uncertain" || job["requiresSendReview"].bool {
+                                    Button("Review Delivery") { reviewDelivery(job) }.disabled(!job["draftId"].nonempty)
+                                }
+                            }.disabled(model.busy)
+                            if job["status"].string == "uncertain" { Text("Delivery may already have happened. Check Sent before reviewing a retry; this schedule cannot be cancelled.").font(.caption).foregroundStyle(.orange) }
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                    }
+                }
+            }.padding(28).frame(maxWidth: .infinity, alignment: .leading)
+        }.task(id: account) {
+            await load()
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+                if NSApp?.isActive == true && !model.busy { await load() }
+            }
+        }
+    }
+    private func statusLabel(_ job: JSON) -> String {
+        ["scheduled": "Scheduled", "sending": "Sending", "sent": "Sent", "cancelled": "Cancelled", "missed": "Missed — review required", "blocked": "Blocked — review required", "uncertain": "Check delivery"][job["status"].string] ?? "Status unavailable"
+    }
+    private func load() async {
+        let owner = account
+        loadGeneration += 1
+        let generation = loadGeneration
+        guard !owner.isEmpty, owner != "all", owner != "demo" else { jobs = []; loading = false; return }
+        loading = true; localError = ""; jobs = jobs.filter { $0["accountId"].string == owner }
+        defer { if generation == loadGeneration { loading = false } }
+        do {
+            let result = try await model.request("/scheduled", mailbox: owner)
+            guard !Task.isCancelled, account == owner, generation == loadGeneration else { return }
+            guard case .array = result["scheduled"] else { throw APIError("Morrow received an incomplete schedule list.") }
+            jobs = result["scheduled"].array.filter { $0["accountId"].string == owner }
+        } catch { if !Task.isCancelled, account == owner, generation == loadGeneration { localError = error.localizedDescription } }
+    }
+    private func cancel(_ job: JSON, reschedule: Bool) {
+        let owner = job["accountId"].string
+        let message = job["payload"].isNull ? job : job["payload"]
+        guard owner == account, ["scheduled", "missed", "blocked"].contains(job["status"].string),
+              model.confirm(reschedule ? "Cancel this schedule and review a new one?" : "Cancel this scheduled message?", detail: "Mailbox: \(owner)\nSubject: \(message["subject"].string)\nThe saved draft remains available. No replacement is scheduled until you review and confirm it.") else { return }
+        model.perform {
+            do {
+                let result = try await model.request("/scheduled/" + encodedPath(job.id) + "/cancel", method: "POST", body: .object([:]), mailbox: owner)
+                guard result["job"]["id"] == job["id"], result["job"]["accountId"].string == owner, result["job"]["status"].string == "cancelled" else { throw APIError("Cancellation could not be confirmed. Refresh Scheduled before retrying.") }
+                model.notice = "Schedule cancelled. The draft is retained."
+                try? await model.reload()
+                await load()
+                if reschedule {
+                    var message = job["payload"]
+                    message["accountId"] = .string(owner); message["id"] = job["draftId"]
+                    var draft = Draft(message: message)
+                    draft.scheduleDate = max(parsedDate(job["sendAt"].string) ?? Date(), Date().addingTimeInterval(3600))
+                    let reviewedDraft = draft
+                    // perform keeps busy true until it returns; open the editor afterwards.
+                    DispatchQueue.main.async { model.newDraft(reviewedDraft) }
+                }
+            } catch { localError = error.localizedDescription }
+        }
+    }
+    private func reviewDelivery(_ job: JSON) {
+        let owner = job["accountId"].string
+        guard owner == account, job["draftId"].nonempty else { return }
+        model.perform {
+            do {
+                let result = try await model.request("/messages/" + encodedPath(job["draftId"].string), mailbox: owner)
+                let message = result["message"]
+                guard message["accountId"].string == owner, message["deliveryStatus"].string == "unconfirmed" else { throw APIError("Refresh Scheduled and check Sent before retrying this message.") }
+                DispatchQueue.main.async { model.newDraft(Draft(message: message)) }
+            } catch { localError = error.localizedDescription }
+        }
+    }
+}
+
 struct ComposeView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) var dismiss
@@ -599,8 +739,19 @@ struct ComposeView: View {
     @State private var aiSource = ""
     @State private var localError = ""
     @State private var confirmSend = false
-    init(initial: Draft) { self.initial = initial; _draft = State(initialValue: initial); _saved = State(initialValue: initial.payload) }
-    var dirty: Bool { draft.payload != saved || (draft.savedID.isEmpty && (!draft.to.isEmpty || !draft.cc.isEmpty || !draft.bcc.isEmpty || !draft.subject.isEmpty || !draft.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)) }
+    @State private var scheduleEnabled = false
+    @State private var sendAt: Date
+    @State private var confirmSchedule = false
+    @State private var scheduleRequestID = UUID().uuidString
+    @State private var scheduleAttempt: JSON?
+    init(initial: Draft) {
+        self.initial = initial; _draft = State(initialValue: initial); _saved = State(initialValue: initial.payload)
+        _sendAt = State(initialValue: initial.scheduleDate ?? Date().addingTimeInterval(3600))
+        _scheduleEnabled = State(initialValue: initial.scheduleDate != nil)
+    }
+    var dirty: Bool { scheduleEnabled || scheduleAttempt != nil || draft.payload != saved || (draft.savedID.isEmpty && (!draft.to.isEmpty || !draft.cc.isEmpty || !draft.bcc.isEmpty || !draft.subject.isEmpty || !draft.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)) }
+    private var frozen: Bool { model.busy || draft.unconfirmed || draft.scheduleLocked || scheduleAttempt != nil }
+    private var reviewedSendAt: Date { scheduleAttempt.flatMap { parsedDate($0["sendAt"].string) } ?? sendAt }
     var body: some View {
         VStack(spacing: 0) {
           ScrollView {
@@ -615,14 +766,18 @@ struct ComposeView: View {
             } else {
                 Picker("From", selection: $draft.accountID) {
                     ForEach(model.senderAccounts) { account in Text(account["email"].string).tag(account.id) }
-                }.disabled(model.busy)
+                }.disabled(frozen)
                 .onChange(of: draft.accountID) { _ in aiResult = ""; draft.requestID = UUID().uuidString }
             }
             if draft.sourceDraft { Text("Editing a local copy without attachments. The original Gmail draft stays in Gmail; changes here are not uploaded to it.").font(.caption).foregroundStyle(.secondary) }
             if draft.forwarding { Text("Forwarding the message text. Attachments are not included.").font(.caption).foregroundStyle(.secondary) }
+            if draft.scheduleLocked {
+                Label("This draft is scheduled for \(dateLabel(draft.scheduledSend["sendAt"].string)). Open Scheduled and cancel its schedule before editing or sending it.", systemImage: "lock.fill").font(.callout).foregroundStyle(.orange)
+            }
             if !draft.replyToID.isEmpty { Label("Replying from the mailbox that owns this conversation", systemImage: "lock.fill").font(.caption).foregroundStyle(.secondary) }
             if !initial.replyToID.isEmpty && initial.savedID.isEmpty && initial.body.isEmpty && !draft.unconfirmed {
                 AutomaticAssistance(messageID: initial.replyToID, account: initial.accountID, trigger: "onReply") { text in
+                    guard !frozen else { return }
                     if draft.body.isEmpty || model.confirm("Replace this draft’s text?", detail: "Your current text will be replaced with the suggestion. Recipients and footer stay the same.") { draft.body = text }
                 }
             }
@@ -637,18 +792,18 @@ struct ComposeView: View {
                 Text("Use plain email addresses separated by commas or semicolons (100 recipients total). Bcc recipients are hidden from other recipients.").font(.caption).foregroundStyle(.secondary)
                 TextField("Subject", text: $draft.subject)
                 TextArea(title: "Message", text: $draft.body, height: 210)
-            }.textFieldStyle(.roundedBorder).disabled(model.busy || draft.unconfirmed)
+            }.textFieldStyle(.roundedBorder).disabled(frozen)
             if draft.footer["text"].nonempty || draft.footer["html"].nonempty {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Label("Email footer", systemImage: "signature").font(.caption).foregroundStyle(.secondary)
                         Spacer()
-                        Button("Remove") { draft.footer = .object(["text": .string(""), "html": .string("")]) }.buttonStyle(.borderless).disabled(model.busy || draft.unconfirmed)
+                        Button("Remove") { draft.footer = .object(["text": .string(""), "html": .string("")]) }.buttonStyle(.borderless).disabled(frozen)
                     }
                     FooterPreview(footer: draft.footer)
                 }.padding(12).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
             }
-            if !draft.unconfirmed {
+            if !draft.unconfirmed && !draft.scheduleLocked && scheduleAttempt == nil {
                 DisclosureGroup("Writing assistance") {
                     VStack(alignment: .leading, spacing: 12) {
                         TextField("Instructions for your assistant", text: $aiPrompt).textFieldStyle(.roundedBorder)
@@ -665,27 +820,50 @@ struct ComposeView: View {
                     }.padding(.top, 8)
                 }
             }
+            if !draft.unconfirmed {
+                Toggle("Schedule for later", isOn: $scheduleEnabled).toggleStyle(.checkbox).disabled(frozen)
+                if scheduleEnabled {
+                    DatePicker("Send at", selection: $sendAt, displayedComponents: [.date, .hourAndMinute]).disabled(frozen)
+                    Text("Time zone: \(TimeZone.current.identifier). Morrow must be open to send. A missed time can catch up within 15 minutes; after that, review and schedule again. Scheduled message contents stay locked until you cancel the schedule.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if scheduleAttempt != nil {
+                Text("The scheduling request has been submitted. If confirmation was lost, retry the same request or check Scheduled before sending another copy.").font(.callout).foregroundStyle(.orange)
+            }
             if !localError.isEmpty { Text(localError).foregroundStyle(.red).font(.callout).textSelection(.enabled) }
            }.padding(24)
           }
           Divider()
             HStack {
-                Button(draft.unconfirmed ? "Close" : "Cancel") { close() }.keyboardShortcut(.cancelAction).disabled(model.busy)
+                Button(scheduleAttempt != nil || draft.scheduleLocked ? "View Scheduled" : draft.unconfirmed ? "Close" : "Cancel") { close() }.keyboardShortcut(.cancelAction).disabled(model.busy)
                 Spacer()
                 if model.busy { ProgressView().controlSize(.small) }
-                Button("Save Draft") { save() }.keyboardShortcut("s").disabled(model.busy || draft.unconfirmed)
-                Button(draft.unconfirmed ? "Review Retry" : "Review & Send") { confirmSend = true }
-                    .keyboardShortcut("d", modifiers: [.command, .shift]).buttonStyle(.borderedProminent).disabled(model.busy || [draft.to, draft.cc, draft.bcc].allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } || draft.body.isEmpty || (draft.unconfirmed && !reviewed))
+                Button("Save Draft") { save() }.keyboardShortcut("s").disabled(frozen)
+                if scheduleEnabled && !draft.unconfirmed {
+                    Button(scheduleAttempt == nil ? "Review Schedule" : "Retry Same Schedule") { confirmSchedule = true }
+                        .buttonStyle(.borderedProminent).disabled(model.busy || draft.scheduleLocked || [draft.to, draft.cc, draft.bcc].allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } || draft.body.isEmpty || (scheduleAttempt == nil && sendAt <= Date()))
+                } else {
+                  Button(draft.unconfirmed ? "Review Retry" : "Review & Send") { confirmSend = true }
+                    .keyboardShortcut("d", modifiers: [.command, .shift]).buttonStyle(.borderedProminent).disabled(model.busy || draft.scheduleLocked || [draft.to, draft.cc, draft.bcc].allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } || draft.body.isEmpty || (draft.unconfirmed && !reviewed))
+                }
             }.padding(20)
         }.frame(width: 690, height: min(780, (NSScreen.main?.visibleFrame.height ?? 900) - 100))
         .interactiveDismissDisabled(dirty || model.busy)
         .onAppear { model.dirty("compose", dirty) }
         .onChange(of: draft) { _ in model.dirty("compose", dirty) }
+        .onChange(of: scheduleEnabled) { _ in model.dirty("compose", dirty) }
+        .onChange(of: scheduleAttempt) { _ in model.dirty("compose", dirty) }
         .onDisappear { model.dirty("compose", false) }
         .confirmationDialog(draft.accountID == "demo" ? "Simulate sending this message?" : "Send this message to the listed recipients?", isPresented: $confirmSend, titleVisibility: .visible) {
             Button(draft.accountID == "demo" ? "Simulate Send" : "Send Message") { send() }
             Button("Cancel", role: .cancel) {}
         } message: { Text("From: \(draft.accountID)\nTo: \(draft.to)\nCc: \(draft.cc)\nBcc: \(draft.bcc)\nSubject: \(draft.subject.isEmpty ? "(No subject)" : draft.subject)\n\(draft.unconfirmed ? "This retry may create a duplicate." : "The message and displayed footer will be sent together.")") }
+        .confirmationDialog("Schedule this message?", isPresented: $confirmSchedule, titleVisibility: .visible) {
+            Button(scheduleAttempt == nil ? "Schedule Message" : "Retry Same Schedule") { schedule() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("From: \(draft.accountID)\nTo: \(draft.to)\nCc: \(draft.cc)\nBcc: \(draft.bcc)\nSubject: \(draft.subject.isEmpty ? "(No subject)" : draft.subject)\nSend at: \(reviewedSendAt.formatted(date: .abbreviated, time: .shortened)) (\(TimeZone.current.identifier))\nMorrow must be open. Catch-up is limited to 15 minutes; later delivery requires a new review. The reviewed message and displayed footer will be locked until this schedule is cancelled.")
+        }
     }
     func recipientField(_ label: String, text: Binding<String>, placeholder: String) -> some View {
         HStack {
@@ -693,8 +871,12 @@ struct ComposeView: View {
             TextField(placeholder, text: text).accessibilityLabel(label)
         }
     }
-    func close() { if !dirty || draft.unconfirmed || model.confirmDiscard("Discard this draft’s unsaved changes?") { dismiss() } }
+    func close() {
+        if scheduleAttempt != nil || draft.scheduleLocked { dismiss(); model.scheduledAccount = draft.accountID; model.section = "scheduled" }
+        else if !dirty || draft.unconfirmed || model.confirmDiscard("Discard this draft’s unsaved changes?") { dismiss() }
+    }
     func save() {
+        guard !draft.scheduleLocked, scheduleAttempt == nil else { return }
         let payload = draft.payload, account = draft.accountID
         model.perform {
             do {
@@ -705,6 +887,7 @@ struct ComposeView: View {
         }
     }
     func send() {
+        guard !draft.scheduleLocked, scheduleAttempt == nil else { return }
         let account = draft.accountID
         model.perform {
             var submitted = false
@@ -737,6 +920,31 @@ struct ComposeView: View {
                     if model.messages.contains(where: { $0.id == "sent:" + draft.requestID && $0["accountId"].string == account }) { model.notice = "Message sent."; dismiss() }
                 } else { localError = "The draft could not be saved, so sending was not attempted. " + error.localizedDescription }
             }
+        }
+    }
+    func schedule() {
+        let account = draft.accountID
+        guard !draft.scheduleLocked, !draft.unconfirmed, scheduleAttempt != nil || sendAt > Date() else { localError = "Choose a future send time for an unlocked draft."; return }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let reviewedPayload = draft.payload, reviewedTime = formatter.string(from: sendAt)
+        model.perform {
+            do {
+                if scheduleAttempt == nil {
+                    let savedDraft = try await model.request("/drafts", method: "POST", body: reviewedPayload, mailbox: account)
+                    draft.savedID = savedDraft["message"].id; saved = draft.payload
+                    guard !draft.savedID.isEmpty else { throw APIError("The draft could not be confirmed, so scheduling was not attempted.") }
+                    var payload = reviewedPayload.picking(["to", "cc", "bcc", "subject", "body", "footer", "replyToId"])
+                    payload["draftId"] = .string(draft.savedID)
+                    payload["requestId"] = .string(scheduleRequestID)
+                    payload["sendAt"] = .string(reviewedTime)
+                    scheduleAttempt = payload
+                }
+                guard let payload = scheduleAttempt else { return }
+                _ = try await model.request("/scheduled", method: "POST", body: payload, mailbox: account)
+                model.notice = "Message scheduled. Keep Morrow open at the chosen time."
+                try? await model.reload(); dismiss(); model.scheduledAccount = account; model.section = "scheduled"
+            } catch { localError = error.localizedDescription }
         }
     }
     func assist(_ action: String) {

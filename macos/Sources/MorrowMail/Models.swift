@@ -58,6 +58,11 @@ struct Draft: Identifiable, Equatable {
     var unconfirmed = false
     var forwarding = false
     var sourceDraft = false
+    var scheduleDate: Date?
+    var scheduledSend: JSON = .null
+    var scheduleLocked: Bool {
+        ["scheduled", "sending"].contains(scheduledSend["status"].string)
+    }
     var payload: JSON {
         var value: [String: JSON] = ["to": .string(to), "cc": .string(cc), "bcc": .string(bcc), "subject": .string(subject), "body": .string(body)]
         if !footer.isNull { value["footer"] = footer }
@@ -84,6 +89,7 @@ struct Draft: Identifiable, Equatable {
             replyToID = message["replyToId"].string
             unconfirmed = message["deliveryStatus"].string == "unconfirmed"
             if message["deliveryRequestId"].nonempty { requestID = message["deliveryRequestId"].string }
+            scheduledSend = message["scheduledSend"]
         }
     }
     init(message: JSON, replyAll: Bool) {
@@ -142,8 +148,15 @@ struct Draft: Identifiable, Equatable {
     }
 }
 
-let mailFolders = ["inbox", "starred", "sent", "drafts", "archive", "spam", "trash"]
-let permissionFolders = mailFolders.filter { !["starred", "spam"].contains($0) }
+let mailFolders = ["inbox", "starred", "pending", "sent", "drafts", "archive", "spam", "trash"]
+let permissionFolders = mailFolders.filter { !["starred", "pending", "spam"].contains($0) }
+func messageMatchesFolder(_ message: JSON, folder: String) -> Bool {
+    if folder == "starred" || folder == "pending" {
+        // Missing flags on older cached messages decode as false.
+        return message[folder].bool && !["trash", "spam"].contains(message["folder"].string)
+    }
+    return message["folder"].string == folder
+}
 func encodedPath(_ value: String) -> String {
     value.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
 }
@@ -168,19 +181,144 @@ func summariesForDay(_ reports: [JSON], now: Date = Date(), calendar: Calendar =
 func utcDate(_ date: Date) -> String { ISO8601DateFormatter().string(from: date) }
 func providerLabel(_ id: String) -> String { id == "google" ? "Google" : "Outlook" }
 
+struct CalendarSource: Identifiable, Equatable {
+    let provider: String, calendarID: String, name: String, email: String, color: String
+    let canWrite: Bool, primary: Bool
+    var id: String { provider + ":" + encodedPath(calendarID) }
+    var preferenceKey: String { id + ":" + encodedPath(email) }
+    init(_ value: JSON, connections: [JSON]) {
+        provider = value["provider"].string; calendarID = value.id
+        name = value["name"].nonempty ? value["name"].string : "Untitled calendar"
+        email = connections.first { $0["provider"] == value["provider"] }?["email"].string ?? ""
+        color = value["color"].string; canWrite = value["canWrite"].bool; primary = value["primary"].bool
+    }
+}
+
+struct CalendarMonth {
+    let interval: DateInterval
+    let days: [Date]
+    let calendar: Calendar
+    init(containing date: Date, calendar: Calendar = .current) {
+        self.calendar = calendar
+        interval = calendar.dateInterval(of: .month, for: date)!
+        let leading = (calendar.component(.weekday, from: interval.start) - calendar.firstWeekday + 7) % 7
+        let first = calendar.date(byAdding: .day, value: -leading, to: interval.start)!
+        let count = calendar.dateComponents([.day], from: interval.start, to: interval.end).day!
+        days = (0..<((leading + count + 6) / 7 * 7)).compactMap { calendar.date(byAdding: .day, value: $0, to: first) }
+    }
+    var visibleInterval: DateInterval {
+        DateInterval(start: days[0], end: calendar.date(byAdding: .day, value: 1, to: days.last!)!)
+    }
+}
+
+struct CalendarEntry: Identifiable {
+    let source: CalendarSource
+    let value: JSON
+    let start: Date, end: Date
+    var id: String { source.id + ":" + encodedPath(value.id) }
+    var allDay: Bool { value["allDay"].bool }
+    init(_ value: JSON, source: CalendarSource, calendar: Calendar = .current) throws {
+        self.value = value; self.source = source
+        // Provider all-day dates are civil dates, not UTC instants. Keep their
+        // exclusive end; timed events keep their actual offset across DST.
+        func date(_ text: String) -> Date? {
+            guard value["allDay"].bool else { return parsedDate(text) }
+            guard text.count == 10 else { return nil }
+            let parts = text.split(separator: "-", omittingEmptySubsequences: false)
+            guard parts.count == 3, parts[0].count == 4, parts[1].count == 2, parts[2].count == 2,
+                  let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2]) else { return nil }
+            var gregorian = Calendar(identifier: .gregorian); gregorian.timeZone = calendar.timeZone
+            guard let result = gregorian.date(from: DateComponents(year: year, month: month, day: day)),
+                  gregorian.component(.year, from: result) == year, gregorian.component(.month, from: result) == month,
+                  gregorian.component(.day, from: result) == day else { return nil }
+            return result
+        }
+        guard !value.id.isEmpty, let start = date(value["start"].string), let end = date(value["end"].string),
+              end >= start, !value["allDay"].bool || end > start else {
+            throw APIError("This calendar returned an event with invalid dates. Its events could not be displayed completely.")
+        }
+        self.start = start; self.end = end
+    }
+    func overlaps(_ interval: DateInterval) -> Bool {
+        start < interval.end && (end > interval.start || (end == start && start >= interval.start))
+    }
+}
+
+struct CalendarReminder: Codable, Equatable {
+    var method: String
+    var minutes: Int?
+    var payload: JSON {
+        var value: JSON = .object(["method": .string(method)])
+        if method != "none", let minutes { value["minutes"] = .number(Double(minutes)) }
+        return value
+    }
+    func isValid(for provider: String) -> Bool {
+        method == "none" || (["popup", "email"].contains(method) && (method != "email" || provider == "google") && minutes.map { (0...40320).contains($0) } == true)
+    }
+    var label: String {
+        if method == "none" { return "No reminder" }
+        let when = minutes == 0 ? "at the start" : "\(minutes ?? 0) minutes before"
+        return "\(method == "email" ? "Email" : "Notification") · \(when)"
+    }
+}
+
 struct CalendarDraft: Codable, Identifiable, Equatable {
     var id = UUID().uuidString
     var provider: String, calendarID: String, calendarName: String, email: String
     var title = "", location = "", description = ""
-    var start = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: Date().addingTimeInterval(86400)) ?? Date()
-    var end = Calendar.current.date(bySettingHour: 10, minute: 0, second: 0, of: Date().addingTimeInterval(86400)) ?? Date().addingTimeInterval(3600)
+    var start: Date, end: Date
+    var reminder: CalendarReminder?
     var attempted = false
-    var payload: JSON { .object(["requestId": .string(id), "calendarId": .string(calendarID), "connectionEmail": .string(email), "title": .string(title), "location": .string(location), "description": .string(description), "start": .string(utcDate(start)), "end": .string(utcDate(end))]) }
+    private var submittedPayload: JSON?
+    private var submittedProvider: String?
+    var requestProvider: String { submittedProvider ?? provider }
+    private var editedPayload: JSON {
+        var value: JSON = .object(["requestId": .string(id), "calendarId": .string(calendarID), "connectionEmail": .string(email), "title": .string(title), "location": .string(location), "description": .string(description), "start": .string(utcDate(start)), "end": .string(utcDate(end))])
+        if let reminder { value["reminder"] = reminder.payload }
+        return value
+    }
+    var payload: JSON { submittedPayload ?? editedPayload }
+    init(provider: String, calendarID: String, calendarName: String, email: String, day: Date? = nil, calendar: Calendar = .current) {
+        self.provider = provider; self.calendarID = calendarID; self.calendarName = calendarName; self.email = email
+        let day = day ?? calendar.date(byAdding: .day, value: 1, to: Date())!
+        start = calendar.date(bySettingHour: 9, minute: 0, second: 0, of: day) ?? calendar.startOfDay(for: day)
+        end = calendar.date(byAdding: .hour, value: 1, to: start)!
+    }
+    private enum CodingKeys: String, CodingKey {
+        case id, provider, calendarID, calendarName, email, title, location, description, start, end, reminder, attempted, submittedPayload, submittedProvider
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        provider = try c.decode(String.self, forKey: .provider); calendarID = try c.decode(String.self, forKey: .calendarID)
+        calendarName = try c.decode(String.self, forKey: .calendarName); email = try c.decode(String.self, forKey: .email)
+        title = try c.decode(String.self, forKey: .title); location = try c.decode(String.self, forKey: .location); description = try c.decode(String.self, forKey: .description)
+        start = try c.decode(Date.self, forKey: .start); end = try c.decode(Date.self, forKey: .end)
+        reminder = try c.decodeIfPresent(CalendarReminder.self, forKey: .reminder)
+        attempted = try c.decodeIfPresent(Bool.self, forKey: .attempted) ?? false
+        submittedPayload = try c.decodeIfPresent(JSON.self, forKey: .submittedPayload)
+        submittedProvider = try c.decodeIfPresent(String.self, forKey: .submittedProvider)
+        // Old pending files have no snapshot/reminder. Freeze the legacy payload
+        // on decode without adding a default reminder or changing its email.
+        if attempted { prepareForSubmission() }
+    }
+    mutating func prepareForSubmission() {
+        if submittedPayload == nil { submittedPayload = editedPayload }
+        if submittedProvider == nil { submittedProvider = provider }
+        attempted = true
+    }
     func savePending(in directory: URL) throws {
         let url = directory.appendingPathComponent("pending-calendar.json")
         // Persist the same request ID and payload before the external write. A
         // restart offers this exact request again instead of creating a duplicate.
-        try JSONEncoder().encode(self).write(to: url, options: .atomic)
+        var snapshot = self; snapshot.prepareForSubmission()
+        if let existing = try Self.pending(in: directory) {
+            guard existing.payload == snapshot.payload, existing.requestProvider == snapshot.requestProvider else {
+                throw APIError("Resolve the original pending calendar request before creating a different event.")
+            }
+            return
+        }
+        try JSONEncoder().encode(snapshot).write(to: url, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
     static func pending(in directory: URL) throws -> CalendarDraft? {

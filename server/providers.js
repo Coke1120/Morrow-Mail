@@ -98,6 +98,7 @@ export function oauthStart(provider, config, redirectUri, purpose = 'mail') {
   const savedConfig = { clientId: config.clientId.trim() };
   if (purpose === 'calendar') savedConfig.purpose = purpose;
   if (purpose === 'mail') savedConfig.mailScope = config.organize === true ? definition.organizeScope : definition.scope;
+  if (purpose === 'mail' && config.outOfOffice === true) savedConfig.mailScope += provider === 'google' ? ' https://www.googleapis.com/auth/gmail.settings.basic' : ' MailboxSettings.ReadWrite';
   if (config.clientSecret) savedConfig.clientSecret = String(config.clientSecret);
   const state = randomBytes(32).toString('base64url');
   const verifier = randomBytes(48).toString('base64url');
@@ -234,7 +235,7 @@ export async function fetchProviderMessages(mail) {
 }
 
 export async function fetchProviderPage(mail, { folder = 'inbox', since, before, cursor } = {}) {
-  if (!(mail.provider === 'google' ? ['all', 'inbox', 'sent', 'drafts', 'starred'] : ['inbox', 'sent']).includes(folder)) throw new Error('Unsupported import folder.');
+  if (!(mail.provider === 'google' ? ['all', 'inbox', 'sent', 'drafts', 'starred'] : ['all', 'inbox', 'sent']).includes(folder)) throw new Error('Unsupported import folder.');
   if (mail.provider === 'google') {
     const query = new URLSearchParams({ maxResults: '50', includeSpamTrash: 'false' });
     if (folder !== 'all') query.set('labelIds', { inbox: 'INBOX', sent: 'SENT', drafts: 'DRAFT', starred: 'STARRED' }[folder]);
@@ -254,16 +255,35 @@ export async function fetchProviderPage(mail, { folder = 'inbox', since, before,
     return { messages, nextCursor: list.nextPageToken || null };
   }
   providerConfig(mail.provider);
-  const dateField = folder === 'sent' ? 'sentDateTime' : 'receivedDateTime';
-  const path = `/mailFolders/${folder === 'sent' ? 'sentitems' : 'inbox'}/messages`;
-  const query = new URLSearchParams({ '$top': '50', '$orderby': `${dateField} desc`, '$select': 'id,from,sender,toRecipients,ccRecipients,bccRecipients,subject,body,receivedDateTime,sentDateTime,isRead,flag,internetMessageId,internetMessageHeaders' });
+  const traversal = folder === 'all' ? await microsoftImportCursor(mail, cursor) : null;
+  if (traversal && !traversal.folders.length) return { messages: [], nextCursor: null };
+  const currentFolder = traversal?.folders[traversal.index];
+  if (currentFolder) { folder = currentFolder.kind; cursor = traversal.next; }
+  const dateField = folder === 'sent' ? 'sentDateTime' : folder === 'drafts' ? 'createdDateTime' : 'receivedDateTime';
+  const wellKnown = currentFolder?.id || (folder === 'sent' ? 'sentitems' : 'inbox');
+  const path = `/mailFolders/${encodeURIComponent(wellKnown)}/messages`;
+  const query = new URLSearchParams({ '$top': '50', '$orderby': `${dateField} desc`, '$select': 'id,from,sender,toRecipients,ccRecipients,bccRecipients,subject,body,receivedDateTime,sentDateTime,createdDateTime,isDraft,isRead,flag,internetMessageId,internetMessageHeaders' });
   if (since || before) query.set('$filter', [since && `${dateField} ge ${since}`, before && `${dateField} lt ${before}`].filter(Boolean).join(' and '));
   const target = cursor || `https://graph.microsoft.com/v1.0/me${path}?${query}`;
   const url = new URL(target);
-  if (url.origin !== 'https://graph.microsoft.com' || url.pathname !== `/v1.0/me${path}` || url.username || url.password || url.hash) throw new Error('Invalid mailbox pagination URL.');
+  if (typeof target !== 'string' || target.length > 8192 || url.origin !== 'https://graph.microsoft.com' || ![`/v1.0/me${path}`, `/v1.0/me/mailFolders('${encodeURIComponent(wellKnown)}')/messages`, `/v1.0/me/mailFolders('${wellKnown}')/messages`].includes(url.pathname) || url.username || url.password || url.hash) throw new Error('Invalid mailbox pagination URL.');
   const result = await providerRequest(url.href, { headers: { Authorization: `Bearer ${mail.accessToken}`, Prefer: 'outlook.body-content-type="html", IdType="ImmutableId"' } }, 'Microsoft');
-  return { messages: await Promise.all((result.value || []).map(async item => ({ ...await normalizeMicrosoftMessage(item), folder, date: dateString(item[dateField]), automated: (item.internetMessageHeaders || []).some(h => /^(auto-submitted|list-id|list-unsubscribe)$/i.test(h.name) && h.value !== 'no') }))), nextCursor: result['@odata.nextLink'] || null };
+  if (!Array.isArray(result.value) || result.value.length > 50 || (result['@odata.nextLink'] != null && (typeof result['@odata.nextLink'] !== 'string' || result['@odata.nextLink'].length > 8192))) throw new Error('The mailbox returned an invalid message page.');
+  let nextCursor = result['@odata.nextLink'] || null;
+  if (traversal) {
+    const index = nextCursor ? traversal.index : traversal.index + 1;
+    nextCursor = index < traversal.folders.length ? { ...traversal, index, next: nextCursor } : null;
+  }
+  return { messages: await Promise.all(result.value.map(async item => ({ ...await normalizeMicrosoftMessage(item), folder, date: dateString(item[dateField]), ...(currentFolder ? { providerFolderId: currentFolder.id, providerFolderName: currentFolder.name, providerSent: folder === 'sent', providerDraft: folder === 'drafts' || item.isDraft === true, ...(item.isDraft === true ? { folder: 'drafts' } : {}) } : {}), automated: (item.internetMessageHeaders || []).some(h => /^(auto-submitted|list-id|list-unsubscribe)$/i.test(h.name) && h.value !== 'no') }))), nextCursor };
 }
+
+// This cursor is persisted with the owner-scoped import job, never used as a URL directly.
+async function microsoftImportCursor(mail, cursor) {
+  if (cursor == null) return { version: 1, folders: await microsoftFolders(mail, true), index: 0, next: null };
+  if (!cursor || cursor.version !== 1 || !Array.isArray(cursor.folders) || !cursor.folders.length || cursor.folders.length > 300 || !Number.isInteger(cursor.index) || cursor.index < 0 || cursor.index >= cursor.folders.length || (cursor.next !== null && (typeof cursor.next !== 'string' || cursor.next.length > 8192)) || cursor.folders.some(folder => !validMicrosoftFolderId(folder?.id) || typeof folder.name !== 'string' || folder.name.length > 512 || !['inbox', 'sent', 'drafts', 'archive'].includes(folder.kind)) || new Set(cursor.folders.map(folder => folder.id)).size !== cursor.folders.length) throw new Error('Invalid mailbox import cursor.');
+  return cursor;
+}
+const validMicrosoftFolderId = id => typeof id === 'string' && /^[A-Za-z0-9_+=\/-]{1,2048}$/.test(id);
 
 export async function sendProviderMessage(mail, { to, cc = '', bcc = '', subject, body, footer, replyMessageId, fromName }) {
   providerConfig(mail.provider);
@@ -308,32 +328,49 @@ export async function listProviderFolders(mail) {
       ...labels.filter(label => label.type === 'system' && label.id === 'SPAM').map(label => ({ id: label.id, name: 'Spam', kind: 'spam' })),
       ...labels.filter(label => label.type === 'user').map(label => ({ id: label.id, name: label.name, kind: 'label' }))];
   }
-  const folders = [], pending = [{ path: '/mailFolders', prefix: '' }], seen = new Set();
+  return microsoftFolders(mail);
+}
+
+async function microsoftFolders(mail, importing = false) {
+  const known = new Map();
+  if (importing) {
+    for (const [alias, kind] of [['inbox', 'inbox'], ['sentitems', 'sent'], ['drafts', 'drafts'], ['junkemail', 'spam'], ['deleteditems', 'trash']]) {
+      const folder = await apiRequest(mail, `/mailFolders/${alias}?$select=id`);
+      if (!validMicrosoftFolderId(folder?.id) || known.has(folder.id)) throw new Error('The mailbox returned an invalid folder ID.');
+      known.set(folder.id, kind);
+    }
+  }
+  const folders = [], pending = [{ path: '/mailFolders', prefix: '', parent: null }], seen = new Set(), ids = new Set();
   // ponytail: bounded folder discovery; add search/paging if a mailbox exceeds 300 folders.
   while (pending.length) {
-    const { path, prefix } = pending.shift();
+    const { path, prefix, parent } = pending.shift();
     const original = new URL(providers.microsoft.api + path);
     let next = path + '?$top=100&$select=id,displayName,childFolderCount';
     for (let page = 0; next; page++) {
       if (page >= 10 || seen.has(next)) throw new Error('The mailbox returned too many or repeated folder pages.');
       seen.add(next);
       const result = await apiRequest(mail, next);
-      if (!Array.isArray(result?.value)) throw new Error('The mailbox returned invalid folders.');
+      if (!Array.isArray(result?.value) || result.value.length > 100) throw new Error('The mailbox returned invalid folders.');
       for (const folder of result.value) {
-        if (typeof folder.id !== 'string' || !folder.id) throw new Error('The mailbox returned an invalid folder ID.');
-        const name = prefix + String(folder.displayName || 'Untitled folder');
-        folders.push({ id: folder.id, name, kind: 'folder' });
+        if (!validMicrosoftFolderId(folder.id) || ids.has(folder.id)) throw new Error('The mailbox returned an invalid or repeated folder ID.');
+        ids.add(folder.id);
+        const kind = known.get(folder.id) || (importing ? 'archive' : 'folder');
+        if (importing && ['spam', 'trash'].includes(kind)) continue; // Also skip their entire subtrees.
+        const name = (prefix + String(folder.displayName || 'Untitled folder')).slice(0, 512);
+        folders.push({ id: folder.id, name, kind });
         if (folders.length > 300) throw new Error('This mailbox exceeds the 300 folder limit.');
-        if (folder.childFolderCount > 0) pending.push({ path: `/mailFolders/${encodeURIComponent(folder.id)}/childFolders`, prefix: name + ' / ' });
+        if (folder.childFolderCount > 0) pending.push({ path: `/mailFolders/${encodeURIComponent(folder.id)}/childFolders`, prefix: name + ' / ', parent: folder.id });
       }
       next = '';
       if (result['@odata.nextLink']) {
         const url = new URL(result['@odata.nextLink']);
-        if (url.origin !== original.origin || url.pathname !== original.pathname || url.username || url.password || url.hash) throw new Error('The mailbox returned an unsafe folder page.');
+        const paths = [original.pathname, ...(parent ? [`/v1.0/me/mailFolders('${encodeURIComponent(parent)}')/childFolders`, `/v1.0/me/mailFolders('${parent}')/childFolders`] : [])];
+        if (String(result['@odata.nextLink']).length > 8192 || url.origin !== original.origin || !paths.includes(url.pathname) || url.username || url.password || url.hash) throw new Error('The mailbox returned an unsafe folder page.');
         next = url.pathname.slice('/v1.0/me'.length) + url.search;
       }
     }
   }
+  if (importing) return folders;
   const inbox = await apiRequest(mail, '/mailFolders/inbox?$select=id');
   const junk = await apiRequest(mail, '/mailFolders/junkemail?$select=id');
   if ([inbox, junk].some(folder => typeof folder?.id !== 'string' || !folder.id)) throw new Error('The mailbox returned an invalid folder ID.');

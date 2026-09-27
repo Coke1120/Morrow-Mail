@@ -1,3 +1,7 @@
+import addressParser from 'nodemailer/lib/addressparser/index.js';
+import { createOutOfOffice, capability as outOfOfficeCapability } from './out-of-office.js';
+import { createReplySuggestions, registerReplySuggestionRoutes } from './reply-suggestions.js';
+import { createScheduled } from './scheduled.js';
 import { createHistory, importOptions } from './history.js';
 import { createLearning } from './learning.js';
 import { createActivity } from './activity.js';
@@ -56,6 +60,8 @@ function safeEqual(a, b) {
   return first.length === second.length && timingSafeEqual(first, second);
 }
 
+const fingerprint = message => createHash('sha256').update(JSON.stringify({ to: message.to, subject: message.subject, body: message.body, replyToId: message.replyToId || '', ...(message.cc ? { cc: message.cc } : {}), ...(message.bcc ? { bcc: message.bcc } : {}), ...(message.footer?.text || message.footer?.html ? { footer: message.footer } : {}) })).digest('hex');
+
 export function createApp({ store, port = 3001, appUrl = `http://localhost:${port}`, services = {}, nativeToken = '', googleOAuth = bundledGoogleOAuth(), updater = null, updateToken = '', searchEngine = nativeToken ? 'node' : process.env.MORROW_SEARCH_ENGINE || 'node' }) {
   let uiUrl;
   try { uiUrl = new URL(appUrl); } catch { throw new Error('APP_URL must be a localhost HTTP origin.'); }
@@ -100,14 +106,14 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
     if (select) { mail = { ...mail, connectionId: randomUUID() }; historyRevision++; }
     const config = settings();
     store.setSettings({ mailAccounts: { ...connections(config), [mail.email]: mail },
-      ...(select || config.mail?.email === mail.email ? { mail } : {}), ...(select ? { activeAccount: mail.email } : {}) });
+      ...(select || config.mail?.email === mail.email ? { mail } : {}), ...(select ? { activeAccount: mail.email, aiGeneration: (config.aiGeneration || 0) + 1 } : {}) });
   }
   function canonicalAddress(address) { return Object.keys(connections()).find(key => key.toLowerCase() === address.toLowerCase()) || address; }
   function ownedMessage(account, message) { return message && { ...message, accountId: account, viewId: JSON.stringify([account, message.id]) }; }
   app.use('/api', (req, res, next) => {
     const routePath = req.path.toLowerCase().replace(/\/+$/, '');
     const supplied = req.get('X-Genmail-Account');
-    const bound = ['POST', 'PATCH', 'DELETE'].includes(req.method) && /^\/(send|drafts|ai|sync|messages\/[^/]+(?:\/organize)?|workflows\/.*|imports\/.*|style\/.*|skills(?:\/.*)?|workspace\/.*|account\/disconnect)$/.test(routePath);
+    const bound = ['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method) && /^\/(send|drafts|ai|sync|messages\/[^/]+(?:\/organize)?|workflows\/.*|imports\/.*|style\/.*|skills(?:\/.*)?|workspace\/.*|scheduled(?:\/.*)?|reply-suggestions(?:\/.*)?|out-of-office(?:\/.*)?|account\/disconnect)$/.test(routePath);
     if (bound && !validAccount(supplied) && !(routePath === '/sync' && supplied === 'all')) {
       return res.status(409).json({ error: 'Choose a connected mailbox before continuing. This account may have been disconnected.' });
     }
@@ -203,7 +209,7 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
       const existing = imported.get(remoteKey(message)) || ((message.folder === 'sent' || (mail.provider === 'google' && message.providerSent === true)) && message.fromEmail?.toLowerCase() === mail.email.toLowerCase() && localSent.get(message.messageId));
       if (!existing && !store.getMessage(mail.email, message.id)) newIDs.push(message.id);
       // Keep the original delivery fingerprint on locally sent records when attaching the provider copy.
-      const saved = store.upsertMessage(mail.email, { ...(existing?.id?.startsWith('sent:') ? { ...message, ...existing } : message), ...(existing ? { id: existing.id, remoteId: existing.remoteId || message.remoteId || message.id, providerFolderId: existing.providerFolderId || message.providerFolderId, providerFolderName: existing.providerFolderName || message.providerFolderName, folder: existing.folder, read: existing.read, starred: existing.starred, labels: existing.labels } : {}), ...(mail.provider === 'google' ? googleImportState(message, existing) : {}) });
+      const saved = store.upsertMessage(mail.email, { ...(existing?.id?.startsWith('sent:') ? { ...message, ...existing } : message), ...(existing ? { id: existing.id, remoteId: existing.remoteId || message.remoteId || message.id, providerFolderId: existing.providerFolderId || message.providerFolderId, providerFolderName: existing.providerFolderName || message.providerFolderName, folder: existing.folder, read: existing.read, starred: existing.starred, pending: existing.pending, labels: existing.labels } : {}), ...(mail.provider === 'google' ? googleImportState(message, existing) : {}) });
       imported.set(remoteKey(message), saved);
       if (existing) localSent.delete(message.messageId);
     } });
@@ -259,6 +265,23 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
   const learning = createLearning({ store, connection: account => connections()[account], runModel: (...args) => api.runModel(...args), ...(services.now ? { now: services.now } : {}) });
   const smartSearch = registerSearchRoutes({ app, store, connections, apiBase, embed: services.embed, searchEngine });
   app.locals.smartSearch = smartSearch;
+  const scheduled = createScheduled({ store, connection: account => connections()[account], fingerprint, outgoing, send: sendMessage, lock: mailboxOperation,
+    prepare: (account, input) => ({ payload: { ...content(input, false), replyToId: input.replyToId || '' }, fromName: settings().preferences?.displayName || '', replyMessageId: input.replyToId ? getMessage(account, input.replyToId).messageId?.replace(/[\r\n]/g, '') || '' : '' }),
+    ensureDraftIdle: (account, id) => { if (sendingDrafts.has(`${account}:${id}`)) fail('This draft is being sent. Wait for sending to finish.', 409); },
+    ...(services.now ? { now: services.now } : {}),
+  });
+  scheduled.recover();
+  app.locals.scheduled = scheduled;
+  const suggestions = createReplySuggestions({ store, connections, contextFor, styleVoice: owner => learning.voice(owner), runModel: (...args) => api.runModel(...args), ...(services.now ? { now: services.now } : {}) });
+  app.locals.replySuggestions = suggestions;
+  registerReplySuggestionRoutes(app, suggestions);
+  const outOfOffice = createOutOfOffice({ connections, currentMail, lock: mailboxOperation, request: api.providerRequest });
+  app.get('/api/out-of-office', async (req, res) => res.json(await outOfOffice.get(req.get('X-Genmail-Account'))));
+  app.put('/api/out-of-office', async (req, res) => res.json(await outOfOffice.put(req.get('X-Genmail-Account'), req.body)));
+  const connectedOwner = req => { const account = req.get('X-Genmail-Account'); if (!connections()[account]) fail('Choose a connected mailbox.', 409); return account; };
+  app.get('/api/scheduled', (req, res) => res.json(scheduled.list(connectedOwner(req))));
+  app.post('/api/scheduled', async (req, res) => res.json(await mailboxOperation(() => scheduled.start(connectedOwner(req), req.body))));
+  app.post('/api/scheduled/:id/cancel', async (req, res) => res.json(await mailboxOperation(() => scheduled.cancel(connectedOwner(req), req.params.id))));
   app.post('/api/imports/:action', (req, res) => {
     if (!connections()[req.mailAccount]) fail('Choose a connected mailbox.', 409);
     if (req.params.action === 'start') history.start(req.mailAccount, req.body);
@@ -331,7 +354,7 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
     delete accounts[account];
     const fallback = Object.keys(accounts)[0] || 'demo';
     const selected = activeAccount() === account ? fallback : activeAccount();
-    store.setSettings({ mailAccounts: accounts, mail: accounts[settings().mail?.email] || accounts[fallback] || null, activeAccount: selected });
+    store.setSettings({ mailAccounts: accounts, mail: accounts[settings().mail?.email] || accounts[fallback] || null, activeAccount: selected, aiGeneration: (settings().aiGeneration || 0) + 1 });
     historyRevision++;
     for (const [id, preview] of previews) if (preview.account === account) previews.delete(id);
     res.json(state(selected, req));
@@ -345,9 +368,8 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
     const password = input.password || (sameDestination ? existing.password : '');
     const mail = { provider: 'imap', email: address, password: text(password, 'Mailbox password', 4096), ...hosts };
     const options = input.importOptions === undefined ? null : importOptions(input.importOptions);
-    if (options?.allMail) fail('All mail import is available only for Gmail.');
     let messages;
-    try { await api.verifySmtp(mail); messages = options ? (await fetchPage(mail, { folder: options.inbox ? 'inbox' : 'sent', since: new Date(Date.now() - 86400000).toISOString() })).messages : await fetchMessages(mail); }
+    try { await api.verifySmtp(mail); messages = options ? (await fetchPage(mail, { folder: options.allMail ? 'all' : options.inbox ? 'inbox' : 'sent', since: new Date(Date.now() - 86400000).toISOString() })).messages : await fetchMessages(mail); }
     catch { fail('Mailbox connection failed. Check the hosts, ports, and app password. IMAP requires TLS; SMTP requires TLS or STARTTLS.', 502); }
     store.transaction(() => { if (!options) importMessages(mail, messages); saveConnection(mail, true); if (options) history.start(address, options); });
     res.json(state(address, req));
@@ -366,7 +388,7 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
     return { baseUrl, model, apiKey, temperature, maxTokens };
   }
   app.post('/api/settings/ai', (req, res) => {
-    store.setSettings({ ai: modelSettings(req.body || {}) });
+    store.setSettings({ ai: modelSettings(req.body || {}), aiGeneration: (settings().aiGeneration || 0) + 1 });
     historyRevision++;
     res.json(state(req.mailAccount, req));
   });
@@ -379,7 +401,7 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
   });
   app.post('/api/settings/policy', (req, res) => {
     const before = resolvePolicy(settings().policy), policy = updatePolicy(settings().policy, req.body);
-    store.setSettings({ policy });
+    store.setSettings({ policy, aiGeneration: (settings().aiGeneration || 0) + 1 });
     historyRevision++;
     if (JSON.stringify(before.summarySchedule) !== JSON.stringify(policy.summarySchedule) || (!before.enabled && policy.enabled) || (!before.triggers.scheduledSummary && policy.triggers.scheduledSummary) || (!before.behaviors.briefing && policy.behaviors.briefing)) automation.resetSchedules();
     previews.clear();
@@ -387,7 +409,7 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
   });
   app.post('/api/signature/preview', (req, res) => res.json({ footer: preferencesFooter(req.body || {}) }));
   app.post('/api/settings/preferences', (req, res) => {
-    store.setSettings({ preferences: updatePreferences(settings().preferences, req.body) });
+    store.setSettings({ preferences: updatePreferences(settings().preferences, req.body), aiGeneration: (settings().aiGeneration || 0) + 1 });
     historyRevision++;
     res.json(state(req.mailAccount, req));
   });
@@ -423,16 +445,24 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
     const provider = req.params.provider;
     if (!['google', 'microsoft'].includes(provider)) fail('Unknown mail provider.');
     const options = req.body?.importOptions === undefined ? null : importOptions(req.body.importOptions);
-    if (options?.allMail && provider !== 'google') fail('All mail import is available only for Gmail.');
-    const credentials = oauthCredentials(provider, req.body, googleOAuth);
-    const config = { clientId: text(credentials.clientId, 'OAuth client ID', 1024).trim(), organize: req.body?.organize === true };
+    if (req.body?.outOfOffice !== undefined && typeof req.body.outOfOffice !== 'boolean') fail('Choose a valid automatic-reply permission.');
+    let upgrade = null;
+    if (req.body?.forAccount !== undefined) {
+      const owner = email(req.body.forAccount);
+      if (req.get('X-Genmail-Account') !== owner || req.body.outOfOffice !== true || Object.keys(req.body).some(key => !['forAccount', 'outOfOffice'].includes(key))) fail('Authorize automatic replies for this mailbox only.');
+      upgrade = connections()[owner];
+      if (!upgrade || upgrade.provider !== provider) fail('Choose a connected mailbox for this provider.', 409);
+    }
+    const credentials = upgrade || oauthCredentials(provider, req.body, googleOAuth);
+    const config = { clientId: text(credentials.clientId, 'OAuth client ID', 1024).trim(), organize: upgrade ? api.canOrganizeMail(upgrade) : req.body?.organize === true, outOfOffice: req.body?.outOfOffice === true };
     if (provider === 'google') config.clientSecret = text(credentials.clientSecret, 'Google client secret', 4096).trim();
+    else if (upgrade?.clientSecret) config.clientSecret = upgrade.clientSecret;
     const redirectUri = `http://localhost:${port}/api/oauth/${provider}/callback`;
     const pending = api.oauthStart(provider, config, redirectUri);
     const browserToken = randomBytes(32).toString('hex');
     for (const [key, value] of oauthPending) if (value.expiresAt < Date.now()) oauthPending.delete(key);
     if (oauthPending.size >= 20) fail('Too many pending connections. Wait a few minutes and try again.', 429);
-    oauthPending.set(pending.state, { ...pending, importOptions: options, provider, redirectUri, browserToken, expiresAt: Date.now() + 10 * 60 * 1000 });
+    oauthPending.set(pending.state, { ...pending, importOptions: options, upgrade, provider, redirectUri, browserToken, expiresAt: Date.now() + 10 * 60 * 1000 });
     res.json({ url: `http://localhost:${port}/api/oauth/${provider}/authorize?state=${encodeURIComponent(pending.state)}` });
   });
   app.get('/api/oauth/:provider/authorize', (req, res) => {
@@ -450,17 +480,26 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
     const cookie = req.headers.cookie?.split(';').map(value => value.trim()).find(value => value.startsWith('genmail_oauth='))?.slice('genmail_oauth='.length);
     res.clearCookie('genmail_oauth', { path: '/api/oauth' });
     try {
-      if (!pending || pending.expiresAt < Date.now() || pending.provider !== req.params.provider || !safeEqual(cookie, pending.browserToken)) fail('Connection expired or could not be verified. Start again from Settings.');
+      if (!pending || !pending.started || pending.expiresAt < Date.now() || pending.provider !== req.params.provider || !safeEqual(cookie, pending.browserToken)) fail('Connection expired or could not be verified. Start again from Settings.');
       if (req.query.error) fail('Mailbox access was not granted. Try again from Settings.');
       const code = text(req.query.code, 'Authorization code', 8192);
       await mailboxOperation(async () => {
         let mail, messages;
         try {
           mail = await api.oauthFinish(pending.provider, { code, verifier: pending.verifier, config: pending.config, redirectUri: pending.redirectUri });
-          messages = pending.importOptions ? [] : await refreshMessages(mail);
+          messages = pending.importOptions || pending.upgrade ? [] : await refreshMessages(mail);
         } catch { fail('The provider connection failed. Check your app registration and permissions, then try again.'); }
         mail.email = canonicalAddress(email(mail.email));
-        store.transaction(() => { importMessages(mail, messages); saveConnection(mail, true); if (pending.importOptions) history.start(mail.email, pending.importOptions); });
+        store.transaction(() => {
+          if (pending.upgrade) {
+            const previous = pending.upgrade, current = connections()[previous.email];
+            if (mail.email.toLowerCase() !== previous.email.toLowerCase() || !current || current.connectionId !== previous.connectionId || current.authorizationId !== previous.authorizationId || current.provider !== previous.provider || current.clientId !== previous.clientId) fail('The mailbox changed. Authorize automatic replies again for the original account.', 409);
+            if (!outOfOfficeCapability(mail, previous.email).canWrite || (api.canOrganizeMail(current) && !api.canOrganizeMail(mail))) fail('Automatic reply permissions were not fully granted. The existing mail connection was retained.', 403);
+            // Retain import checkpoints while invalidating older authorization windows.
+            saveConnection({ ...current, ...mail, authorizationId: randomUUID() }, false);
+            store.setSettings({ aiGeneration: (settings().aiGeneration || 0) + 1 }); historyRevision++;
+          } else { importMessages(mail, messages); saveConnection(mail, true); if (pending.importOptions) history.start(mail.email, pending.importOptions); }
+        });
       });
       redirect.searchParams.set('connected', pending.provider);
     } catch (error) { redirect.searchParams.set('connectionError', error.status ? error.message : 'Connection failed. Try again from Settings.'); }
@@ -503,7 +542,7 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
   }));
   app.patch('/api/messages/:id', (req, res) => {
     const patch = {};
-    for (const key of ['read', 'starred']) if (key in (req.body || {})) {
+    for (const key of ['read', 'starred', 'pending']) if (key in (req.body || {})) {
       if (typeof req.body[key] !== 'boolean') fail(`${key} must be true or false.`);
       patch[key] = req.body[key];
     }
@@ -515,8 +554,9 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
     const account = req.mailAccount;
     if (sendingDrafts.has(`${account}:${req.params.id}`)) fail('This draft is being sent. Wait for sending to finish.', 409);
     const original = getMessage(account, req.params.id);
+    scheduled.guardDraft(account, req.params.id);
     if (original.folder === 'drafts' && patch.folder && patch.folder !== 'trash') fail('Save or send this draft before moving it.');
-    if (Array.isArray(original.providerLabelIds)) patch.localOverrides = { ...original.localOverrides, ...Object.fromEntries(Object.keys(patch).map(key => [key, true])) };
+    if (Array.isArray(original.providerLabelIds)) patch.localOverrides = { ...original.localOverrides, ...Object.fromEntries(Object.keys(patch).filter(key => key !== 'pending').map(key => [key, true])) };
     res.json({ message: ownedMessage(account, store.updateMessage(account, req.params.id, patch)) });
   });
   function content(input, draft) {
@@ -535,6 +575,7 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
     const value = content(input, true);
     const account = req.mailAccount;
     if (input.id) {
+      scheduled.guardDraft(account, input.id);
       if (sendingDrafts.has(`${account}:${input.id}`)) fail('This draft is being sent. Wait for sending to finish.', 409);
       const existing = getMessage(account, input.id);
       if (existing.providerDraft === true) fail('This is a read-only provider draft. Copy it to a local draft before editing or sending.', 409);
@@ -546,25 +587,25 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
     const message = outgoing(account, value, { id: input.id || randomUUID(), folder: 'drafts', ...(input.replyToId ? { replyToId: input.replyToId } : {}) });
     res.json({ message: ownedMessage(account, store.upsertMessage(account, message)) });
   });
-  app.post('/api/send', async (req, res) => {
-    const input = req.body || {};
+  async function sendMessage(account, input, options = {}) {
     const value = content(input, false);
-    const account = req.mailAccount;
+    if (options.scheduledId && input.footer) value.footer = structuredClone(input.footer);
+    if (options.fromName !== undefined) value.fromName = options.fromName;
+    scheduled.guardSend(account, input, options.scheduledId);
     if (input.draftId && store.getMessage(account, input.draftId)?.providerDraft === true) fail('This is a read-only provider draft. Copy it to a local draft before editing or sending.', 409);
     const requestId = text(input.requestId, 'Send request ID', 100);
     if (!/^[a-zA-Z0-9-]{8,100}$/.test(requestId)) fail('Invalid send request ID.');
     if (input.retryUnconfirmed !== undefined && typeof input.retryUnconfirmed !== 'boolean') fail('Delivery review must be true or false.');
-    const fingerprint = message => createHash('sha256').update(JSON.stringify({ to: message.to, subject: message.subject, body: message.body, replyToId: message.replyToId || '', ...(message.cc ? { cc: message.cc } : {}), ...(message.bcc ? { bcc: message.bcc } : {}), ...(message.footer?.text || message.footer?.html ? { footer: message.footer } : {}) })).digest('hex');
     const payloadHash = fingerprint({ ...value, replyToId: input.replyToId });
     const sentId = `sent:${requestId}`;
     const sent = store.getMessage(account, sentId);
     if (sent) {
       if (fingerprint(sent) !== payloadHash) fail('This send request ID was already used for different text. Start a new draft.', 409);
-      return res.json({ message: ownedMessage(account, sent), simulated: account === 'demo' });
+      return { message: ownedMessage(account, sent), simulated: account === 'demo' };
     }
     const attempts = () => settings().deliveryAttempts || [];
     const previous = attempts().find(item => item.account === account && (item.requestId === requestId || (input.draftId && item.draftId === input.draftId)));
-    const reviewRequired = (attempt, status = 409) => res.status(status).json({ error: 'Delivery could not be confirmed. This draft is saved. Check your provider’s Sent folder before explicitly retrying; retrying may send a duplicate.', requiresSendReview: true, draftId: attempt.draftId, deliveryRequestId: attempt.requestId, message: ownedMessage(account, store.getMessage(account, attempt.draftId)) });
+    const reviewRequired = (attempt, status = 409) => { const body = { error: 'Delivery could not be confirmed. This draft is saved. Check your provider’s Sent folder before explicitly retrying; retrying may send a duplicate.', requiresSendReview: true, draftId: attempt.draftId, deliveryRequestId: attempt.requestId, message: ownedMessage(account, store.getMessage(account, attempt.draftId)) }; throw Object.assign(new Error(body.error), { status, body }); };
     if (previous && (!input.retryUnconfirmed || previous.requestId !== requestId)) return reviewRequired(previous);
     if (previous && previous.payloadHash !== payloadHash) fail('This draft has an unconfirmed delivery with different text. Check your provider’s Sent folder and reopen the saved draft before retrying.', 409);
     const draftId = input.draftId || previous?.draftId || (account !== 'demo' ? `outbox:${requestId}` : null);
@@ -576,7 +617,7 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
     sending.set(sendKey, true);
     if (draftKey) sendingDrafts.add(draftKey);
     try {
-      await mailboxOperation(async () => {
+      const operation = async () => {
         let messageId = '', attempt;
         if (account !== 'demo') {
           const mail = await currentMail(account);
@@ -587,7 +628,7 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
             store.upsertMessage(account, outgoing(account, value, { id: draftId, folder: 'drafts', deliveryStatus: 'unconfirmed', deliveryRequestId: requestId, ...(input.replyToId ? { replyToId: input.replyToId } : {}) }));
             if (!previous) store.setSettings({ deliveryAttempts: [...attempts(), attempt] });
           });
-          const message = { ...value, fromName: settings().preferences?.displayName || '', replyMessageId: original?.messageId?.replace(/[\r\n]/g, '') || undefined };
+          const message = { ...value, fromName: options.fromName ?? settings().preferences?.displayName ?? '', replyMessageId: options.replyMessageId ?? original?.messageId?.replace(/[\r\n]/g, '') ?? undefined };
           try {
             const result = mail.provider === 'imap' ? await api.sendSmtpMessage(mail, message) : await api.sendProviderMessage(mail, message);
             messageId = typeof result === 'string' ? result : result?.messageId || '';
@@ -604,10 +645,12 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
           if (attempt) return reviewRequired(attempt, 502);
           throw error;
         }
-        res.json({ message: ownedMessage(account, message), simulated: account === 'demo' });
-      });
+        return { message: ownedMessage(account, message), simulated: account === 'demo' };
+      };
+      return await (options.mailboxLocked ? operation() : mailboxOperation(operation));
     } finally { sending.delete(sendKey); if (draftKey) sendingDrafts.delete(draftKey); }
-  });
+  }
+  app.post('/api/send', async (req, res) => res.json(await sendMessage(req.mailAccount, req.body || {})));
   function includeReplyHistory(input) {
     if (input.includeHistory !== undefined && typeof input.includeHistory !== 'boolean') fail('includeHistory must be true or false.');
     if (input.includeHistory === true && (input.action !== 'reply' || input.trigger !== undefined || input.draftText !== undefined)) fail('Sender history is available only for an explicit reply to a selected email.');
@@ -619,13 +662,18 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
     const sender = email(target.fromEmail).replace(/[A-Z]/g, char => char.toLowerCase());
     const folders = Object.keys(policy.folders).filter(folder => policy.folders[folder] === true);
     const maxMessages = Math.max(1, Math.min(50, Number.isSafeInteger(policy.maxMessages) && policy.maxMessages >= 0 ? policy.maxMessages : 8));
-    // SQLite lower() folds ASCII only. Trim the same whitespace as JavaScript before exact matching.
-    const whitespace = '\u0009\u000a\u000b\u000c\u000d \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff';
-    const where = `account=? AND json_extract(data,'$.folder') IN (${folders.map(() => '?').join(',')}) AND lower(trim(json_extract(data,'$.fromEmail'),?))=? AND id<>?`;
-    const params = [account, ...folders, whitespace, sender, target.id];
-    const matchedMessages = 1 + store.search.query(`SELECT count(*) AS n FROM messages WHERE ${where}`, params)[0].n;
-    // ponytail: scan scoped metadata; add a sender index only if mailbox profiling warrants it.
-    const ids = store.search.query(`SELECT id FROM messages WHERE ${where} ORDER BY COALESCE(json_extract(data,'$.date'),'') DESC,id LIMIT ?`, [...params, maxMessages - 1]);
+    // ponytail: bounded metadata scan; index correspondents if measured mailbox size warrants it.
+    const rows = store.search.query(`SELECT id,json_extract(data,'$.fromEmail') AS sender,json_extract(data,'$.folder') AS folder,json_extract(data,'$.to') AS recipients,json_extract(data,'$.cc') AS cc FROM messages WHERE account=? AND id<>? AND json_extract(data,'$.folder') IN (${folders.map(() => '?').join(',')}) ORDER BY COALESCE(json_extract(data,'$.date'),'') DESC,id`, [account, target.id, ...folders]);
+    const fold = value => String(value || '').trim().replace(/[A-Z]/g, char => char.toLowerCase());
+    const matches = rows.filter(row => {
+      const from = fold(row.sender);
+      if (from === sender) return true;
+      if (row.folder !== 'sent' || from !== fold(account)) return false;
+      const header = [row.recipients, row.cc].filter(Boolean).join(', ');
+      if (header.length > 52000 || /[\r\n\0]/.test(header)) return false;
+      return addressParser(header, { flatten: true }).some(address => fold(address.address) === sender);
+    });
+    const matchedMessages = 1 + matches.length, ids = matches.slice(0, maxMessages - 1);
     const messages = [target, ...ids.map(({ id }) => getMessage(account, id))].map(message => redactMessage(message, policy));
     return { messages, history: { matchedMessages, usedMessages: messages.length, maxMessages, scope: 'downloaded' } };
   }
@@ -807,7 +855,7 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
   const automation = createAutomation({ store, accounts: () => Object.keys(connections()), connection: account => connections()[account],
     generate: (account, kind, ids) => assistance({ action: kind === 'arrival' ? 'summary' : 'briefing', messageId: ids[0] }, account, ids),
     sync: () => mailboxOperation(() => syncAccounts(Object.keys(connections()))),
-    maintenance: async isStopped => { await history.tick(); if (!isStopped()) await learning.tick(); },
+    maintenance: async isStopped => { if (!isStopped()) await scheduled.tick(); if (!isStopped()) await history.tick(); if (!isStopped()) await learning.tick(); if (!isStopped()) await suggestions.tick(); },
     ...(services.now ? { now: services.now } : {}),
   });
   app.locals.automation = automation;
@@ -837,6 +885,7 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
   app.use((error, req, res, next) => {
     if (res.headersSent) return next(error);
     const status = error.status || 500;
+    if (error.body?.requiresSendReview === true) return res.status(status).json(error.body);
     const oauth = ['oauth_reconnect_required', 'oauth_configuration', 'oauth_refresh_failed', 'mail_sync_failed'].includes(error.code);
     res.status(status).json({ error: status === 500 ? 'Something went wrong. Your saved messages are still on this device.' : (error.type === 'entity.parse.failed' ? 'Invalid JSON request.' : error.message), ...(oauth ? { code: error.code, recoveryAction: error.recoveryAction } : {}) });
   });

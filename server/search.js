@@ -5,7 +5,7 @@ import { createSmartSearch } from './smart-search.js';
 
 export const searchFail = (message, status = 400) => { throw Object.assign(new Error(message), { status }); };
 const fields = ['from', 'to', 'subject', 'after', 'before', 'is', 'label', 'in'];
-const folders = ['inbox', 'sent', 'drafts', 'archive', 'spam', 'trash', 'starred'];
+const folders = ['inbox', 'sent', 'drafts', 'archive', 'spam', 'trash', 'starred', 'pending'];
 export function parseSearch(input = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) searchFail('Enter valid search options.');
   const { query = '', scope = 'folder', folder = 'inbox', sort = 'relevance', page = 0, filters = {}, smart = false, cachedOnly = false } = input;
@@ -17,7 +17,7 @@ export function parseSearch(input = {}) {
     if (typeof value !== 'string' || value.length > 254) searchFail('Search filter values must be text of at most 254 characters.');
     if (!value.trim()) return;
     if (['after', 'before'].includes(key) && (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString().slice(0, 10) !== value)) searchFail('Use a valid date: YYYY-MM-DD.');
-    if (key === 'is' && !['read', 'unread', 'starred'].includes(value)) searchFail('Use is:read, is:unread or is:starred.');
+    if (key === 'is' && !['read', 'unread', 'starred', 'pending'].includes(value)) searchFail('Use is:read, is:unread, is:starred or is:pending.');
     if (key === 'in' && !folders.includes(value)) searchFail('Choose a valid mailbox folder.');
     conditions.push({ key, value: normalizeSearch(value) });
   };
@@ -44,13 +44,14 @@ export function searchWhere(options, accounts) {
   const clauses = [`d.account IN (${accounts.map(() => '?').join(',') || 'NULL'})`], params = [...accounts];
   const folder = value => {
     if (value === 'starred') clauses.push("d.starred=1 AND d.folder NOT IN ('trash','spam')");
+    else if (value === 'pending') clauses.push("json_extract(m.data,'$.pending')=1 AND d.folder NOT IN ('trash','spam')");
     else { clauses.push('d.folder=?'); params.push(value); }
   };
   if (options.scope === 'folder') folder(options.folder);
   else if (!options.conditions.some(item => item.key === 'in' && ['trash', 'spam'].includes(item.value))) clauses.push("d.folder NOT IN ('trash','spam')");
   for (const { key, value } of options.conditions) {
     if (key === 'in') folder(value);
-    else if (key === 'is') clauses.push(value === 'starred' ? 'd.starred=1' : `d.unread=${value === 'unread' ? 1 : 0}`);
+    else if (key === 'is') clauses.push(value === 'pending' ? "json_extract(m.data,'$.pending')=1" : value === 'starred' ? 'd.starred=1' : `d.unread=${value === 'unread' ? 1 : 0}`);
     else if (key === 'after' || key === 'before') { clauses.push(`d.date${key === 'after' ? '>=' : '<'}?`); params.push(value + 'T00:00:00.000Z'); }
     else if (key === 'label') { clauses.push("EXISTS(SELECT 1 FROM json_each(json_extract(m.data,'$.labels')) WHERE mail_normalize(value)=?)"); params.push(value); }
     else { clauses.push(`instr(d.${{ from: 'sender', to: 'recipients', subject: 'subject' }[key]},?)>0`); params.push(value); }

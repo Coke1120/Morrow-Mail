@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { oauthStart, oauthFinish, refreshMail } from './providers.js';
-import { listCalendars, listCalendarEvents, createCalendarEvent } from './calendar-providers.js';
+import { listCalendars, listCalendarEvents, createCalendarEvent, normalizeCalendarReminder, CALENDAR_READ_ERRORS } from './calendar-providers.js';
 import { oauthCredentials } from './oauth-client.js';
 
 const PROVIDERS = ['google', 'microsoft'];
@@ -169,18 +169,23 @@ export function registerCalendarRoutes(app, { store, port, appUrl, services = {}
     const calendarId = text(req.query.calendarId, 'Calendar', 2048), dates = range(req.query.start, req.query.end, true);
     const generation = generations.get(provider) || 0;
     const connection = await currentConnection(provider);
-    const events = await remote(() => api.listCalendarEvents(connection, { calendarId, ...dates }), 'Could not load events. Check your calendar access and try again.');
+    let events;
+    try { events = await api.listCalendarEvents(connection, { calendarId, ...dates }); }
+    catch (error) { fail(Object.hasOwn(CALENDAR_READ_ERRORS, error?.code) ? CALENDAR_READ_ERRORS[error.code] : 'Could not load events. Check your calendar access and try again.', 502); }
     checkGeneration(provider, generation);
     res.json({ events });
   });
   app.post('/api/calendars/:provider/events', async (req, res) => {
     const provider = providerName(req.params.provider), input = req.body || {};
-    const allowed = ['calendarId', 'title', 'description', 'location', 'start', 'end', 'requestId', 'connectionEmail'];
+    const allowed = ['calendarId', 'title', 'description', 'location', 'start', 'end', 'requestId', 'connectionEmail', 'reminder'];
     if (Object.keys(input).some(key => !allowed.includes(key))) fail('Only the displayed event details are supported. Attendees and invitations are not supported.');
     const connectionEmail = text(input.connectionEmail, 'Connected calendar email', 254);
     const requestId = text(input.requestId, 'Event request ID', 36).toLowerCase();
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(requestId)) fail('Use a valid unique event request ID.');
     const value = { calendarId: text(input.calendarId, 'Calendar', 2048), title: text(input.title, 'Event title', 300).trim(), description: text(input.description ?? '', 'Description', 10000, true), location: text(input.location ?? '', 'Location', 1000, true), ...range(input.start, input.end), requestId };
+    const reminder = normalizeCalendarReminder(input.reminder, provider);
+    // Append only when explicitly selected: old JSON order and fingerprints must remain exact.
+    if (reminder !== undefined) value.reminder = reminder;
     if (/[\r\n\t]/.test(value.title) || /[\r\n]/.test(value.location)) fail('Event title and location must be single lines.');
     connected(provider, connectionEmail);
     const payloadHash = createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -201,7 +206,7 @@ export function registerCalendarRoutes(app, { store, port, appUrl, services = {}
           if (completed < 0) fail('There are too many unconfirmed calendar requests. Resolve them before adding events.', 409);
           records.splice(completed, 1);
         }
-        record = { provider, email: connectionEmail, requestId, payloadHash, createdAt: new Date().toISOString() };
+        record = { provider, email: connectionEmail, requestId, payloadHash, payload: value, createdAt: new Date().toISOString() };
         store.setSettings({ calendarRequests: [...records, record] });
       }
       const event = await remote(() => api.createCalendarEvent(connection, value), 'Creating this event could not be confirmed. Check your calendar before retrying; retrying these same details reuses the event request ID.');

@@ -123,14 +123,14 @@ pub fn import_options(input: &Value) -> Result<Value> {
     );
     if !options["months"]
         .as_u64()
-        .is_some_and(|months| [1, 3, 6, 12].contains(&months))
+        .is_some_and(|months| [0, 1, 3, 6, 12].contains(&months))
         || !options["inbox"].is_boolean()
         || !options["sent"].is_boolean()
         || !options["allMail"].is_boolean()
         || (options["inbox"] != true && options["sent"] != true && options["allMail"] != true)
     {
         return Err(Error::invalid(
-            "Choose 1, 3, 6, or 12 months and at least one folder.",
+            "Choose all history or 1, 3, 6, or 12 months and at least one folder.",
         ));
     }
     Ok(options)
@@ -222,14 +222,14 @@ pub fn start_import(db: &Store, account: &str, input: &Value) -> Result<()> {
     let connection = live
         .get(account)
         .ok_or_else(|| Error::invalid("Choose a connected mailbox."))?;
-    if options["allMail"] == true && connection["provider"] != "google" {
-        return Err(Error::invalid(
-            "All mail import is available only for Gmail.",
-        ));
+    if options["allMail"] == true
+        && !["google", "microsoft", "imap", ""].contains(&string(connection, "provider"))
+    {
+        return Err(Error::invalid("Unsupported mailbox provider."));
     }
     let timestamp = Utc::now();
     let before = timestamp.to_rfc3339_opts(SecondsFormat::Millis, true);
-    let mut job = json!({"id":uuid::Uuid::new_v4().to_string(),"options":options,"since":months_ago(options["months"].as_u64().unwrap() as u32,timestamp.timestamp_millis())?,"before":before,"folderIndex":0,"cursor":null,"visited":[],"status":"running","imported":0,"pages":0,"processed":0,"updatedAt":before});
+    let mut job = json!({"id":uuid::Uuid::new_v4().to_string(),"options":options,"since":if options["months"] == 0 { String::new() } else { months_ago(options["months"].as_u64().unwrap() as u32,timestamp.timestamp_millis())? },"before":before,"folderIndex":0,"cursor":null,"visited":[],"status":"running","imported":0,"pages":0,"processed":0,"updatedAt":before});
     if let Some(identity) = connection.get("connectionId") {
         job["connectionId"] = identity.clone();
     }
@@ -288,6 +288,9 @@ pub fn import_status_from(config: &Value, account: &str) -> Value {
     } else {
         None
     };
+    let live = connections(config);
+    let provider = live.get(account).map(|mail| string(mail, "provider"));
+    let coverage = json!({"provider":provider,"folders":import_folders(job),"excludes":["spam","trash"],"folderLimit":if job["options"]["allMail"] == true && matches!(provider, Some("microsoft" | "imap" | "")){Some(300)}else{None}});
     merge(
         project(
             job,
@@ -301,7 +304,7 @@ pub fn import_status_from(config: &Value, account: &str) -> Value {
                 "error",
             ],
         ),
-        &json!({"currentFolder":import_folders(job).get(job["folderIndex"].as_u64().unwrap_or(0) as usize),"phase":if job["status"]=="running"{if string(job,"nextRetryAt").is_empty(){"queued"}else{"retrying"}}else{string(job,"status")},"pages":job["pages"],"processed":job["processed"],"lastPageChecked":job["lastPageChecked"],"lastPageAdded":job["lastPageAdded"],"nextRetryAt":job["nextRetryAt"],"retryCount":job["retryCount"].as_u64().unwrap_or(0),"error":import_error_message(code).unwrap_or_default(),"errorCode":if code.is_empty(){Value::Null}else{json!(code)},"recoveryAction":action}),
+        &json!({"coverage":coverage,"currentFolder":import_folders(job).get(job["folderIndex"].as_u64().unwrap_or(0) as usize),"phase":if job["status"]=="running"{if string(job,"nextRetryAt").is_empty(){"queued"}else{"retrying"}}else{string(job,"status")},"pages":job["pages"],"processed":job["processed"],"lastPageChecked":job["lastPageChecked"],"lastPageAdded":job["lastPageAdded"],"nextRetryAt":job["nextRetryAt"],"retryCount":job["retryCount"].as_u64().unwrap_or(0),"error":import_error_message(code).unwrap_or_default(),"errorCode":if code.is_empty(){Value::Null}else{json!(code)},"recoveryAction":action}),
     )
 }
 pub fn import_config(db: &Store, account: &str) -> Result<Value> {

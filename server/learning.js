@@ -4,8 +4,28 @@ import { monthsAgo } from './history.js';
 import { modelPayload } from './integrations.js';
 
 const defaults = { enabled: false, weekly: false, months: 3, maxSamples: 50, tokenBudget: 16000 };
+const emptyIdentity = () => ({ displayName: '', aliases: [], confirmed: false });
 const fail = (message, status = 409) => { throw Object.assign(new Error(message), { status }); };
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+function checkedIdentity(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 3 || Object.keys(value).some(key => !['displayName', 'aliases', 'confirmed'].includes(key)) || typeof value.confirmed !== 'boolean' || !Array.isArray(value.aliases) || value.aliases.length > 10) fail('Provide a display name, up to 10 aliases and explicit identity confirmation.', 400);
+  const name = (text, empty = false) => {
+    if (typeof text !== 'string' || !text.isWellFormed() || text.length > 100 || /[\p{Cc}\u2028\u2029]/u.test(text) || (!empty && !text.trim())) fail('Names must be single-line text of 1–100 characters.', 400);
+    return text.trim();
+  };
+  const displayName = name(value.displayName, !value.confirmed), aliases = [], seen = new Set([displayName.toLowerCase()]);
+  for (const input of value.aliases) { const alias = name(input); if (!seen.has(alias.toLowerCase())) { aliases.push(alias); seen.add(alias.toLowerCase()); } }
+  return { displayName, aliases, confirmed: value.confirmed };
+}
+function safeIdentity(value) {
+  try { return checkedIdentity(value); } catch { return emptyIdentity(); }
+}
+// Explicit account-owned context only. Callers must still enforce AI/content permissions.
+export function identity(settings, owner) {
+  const connected = !['all', 'demo'].includes(owner) && (settings.mailAccounts && typeof settings.mailAccounts === 'object' ? Object.hasOwn(settings.mailAccounts, owner) && !!settings.mailAccounts[owner] : settings.mail?.email === owner);
+  const value = safeIdentity(settings.styleLearning?.[owner]?.settings?.identity);
+  return connected && value.confirmed ? { displayName: value.displayName, aliases: value.aliases } : null;
+}
 // ponytail: deterministic quote/signature heuristics; review samples because mail formats vary.
 export function ownText(body = '') {
   return body.replace(/\r\n?/g, '\n').split('\n').filter(line => !/^\s*>/.test(line)).join('\n')
@@ -14,30 +34,39 @@ export function ownText(body = '') {
 export function createLearning({ store, connection, runModel, now = Date.now }) {
   const read = account => ({ settings: defaults, ...store.getSettings().styleLearning?.[account] });
   const write = (account, value) => store.setSettings({ styleLearning: { ...store.getSettings().styleLearning, [account]: value } });
-  const config = account => ({ ...defaults, ...read(account).settings });
+  const config = account => { const options = { ...defaults, ...read(account).settings }; return { ...options, identity: safeIdentity(options.identity) }; };
+  const styleOptions = account => { const options = config(account); return Object.fromEntries(Object.keys(defaults).map(key => [key, options[key]])); };
   function permitted(account) {
     const policy = resolvePolicy(store.getSettings().policy);
     return !!connection(account) && config(account).enabled && policy.enabled && policy.behaviors.memory && policy.folders.sent && policy.content.body;
   }
   function stamp(account) {
     const settings = store.getSettings();
-    return hash([connection(account)?.connectionId || connection(account)?.email, settings.ai, resolvePolicy(settings.policy), settings.preferences, config(account)]);
+    return hash([connection(account)?.connectionId || connection(account)?.email, settings.ai, resolvePolicy(settings.policy), settings.preferences, styleOptions(account)]);
   }
   function source(account, id) {
     const message = store.getMessage(account, id);
     return message && message.folder === 'sent' && message.fromEmail?.toLowerCase() === account.toLowerCase() && !message.automated ? ownText(message.body) : null;
   }
   function valid(account, preview) {
-    return permitted(account) && preview && preview.stamp === stamp(account) && preview.sources.every(item => hash(source(account, item.id)) === item.hash);
+    return permitted(account) && preview && preview.stamp === stamp(account) && (!Object.hasOwn(preview, 'generation') || preview.generation === (store.getSettings().aiGeneration || 0)) && preview.sources.every(item => hash(source(account, item.id)) === item.hash);
   }
   function updateSettings(account, input) {
     if (!connection(account)) fail('Choose a connected mailbox.');
-    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => !Object.hasOwn(defaults, key))) fail('Invalid style settings.', 400);
-    const next = { ...config(account), ...input };
+    if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some(key => key !== 'identity' && !Object.hasOwn(defaults, key))) fail('Invalid style settings.', 400);
+    const previous = config(account), next = { ...previous, ...input };
+    if (Object.hasOwn(input, 'identity')) next.identity = checkedIdentity(input.identity);
     if (typeof next.enabled !== 'boolean' || typeof next.weekly !== 'boolean' || ![1, 3, 6, 12].includes(next.months) || !Number.isInteger(next.maxSamples) || next.maxSamples < 1 || next.maxSamples > 50 || !Number.isInteger(next.tokenBudget) || next.tokenBudget < 4000 || next.tokenBudget > 64000) fail('Choose 1–50 samples and a 4,000–64,000 token budget.', 400);
     if (next.weekly && !next.enabled) fail('Enable style learning before weekly updates.', 400);
     const current = read(account);
-    write(account, { ...current, settings: next, preview: null, lastWeeklyAt: now(), weeklySince: next.weekly && !config(account).weekly ? new Date(now()).toISOString() : current.weeklySince });
+    const identityChanged = JSON.stringify(next.identity) !== JSON.stringify(previous.identity);
+    const updated = { ...current, settings: next };
+    if (identityChanged) updated.preview = null;
+    if (Object.keys(input).some(key => key !== 'identity')) Object.assign(updated, { preview: null, lastWeeklyAt: now(), weeklySince: next.weekly && !previous.weekly ? new Date(now()).toISOString() : current.weeklySince });
+    store.transaction(() => {
+      write(account, updated);
+      if (identityChanged) store.setSettings({ aiGeneration: (store.getSettings().aiGeneration || 0) + 1 });
+    });
   }
   const modelOptions = () => ({ preferences: store.getSettings().preferences || {}, includeUsage: true });
   const modelSettings = () => ({ ...store.getSettings().ai, maxTokens: Math.min(store.getSettings().ai?.maxTokens || 1200, 1200) });
@@ -75,7 +104,7 @@ export function createLearning({ store, connection, runModel, now = Date.now }) 
       messages.push(candidate); sources.push({ id: item.message.id, hash: hash(item.body), body: candidate.body });
     }
     if (!sources.length) fail('No useful Sent samples fit your dates, permissions and budget. Import Sent mail or increase the budget.');
-    const preview = { id: randomUUID(), status: 'prepared', createdAt: end, through: end, incremental, stamp: stamp(account), sources, eligible: unique.size, sampleCount: sources.length, effectiveCap: cap, estimatedTokens: estimate(messages), tokenBudget: options.tokenBudget };
+    const preview = { id: randomUUID(), status: 'prepared', createdAt: end, through: end, incremental, stamp: stamp(account), generation: settings.aiGeneration || 0, sources, eligible: unique.size, sampleCount: sources.length, effectiveCap: cap, estimatedTokens: estimate(messages), tokenBudget: options.tokenBudget };
     write(account, { ...current, preview });
     return preview;
   }

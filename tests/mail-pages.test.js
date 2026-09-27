@@ -122,3 +122,29 @@ test('text pagination follows locale collation for Chinese, accents, punctuation
     assert.deepEqual(actual, expected.map(value => value.id), `${locale}/${sort}`);
   }
 });
+
+test('pending is an independent owner-scoped marker in metadata, counts and search', async t => {
+  const { store, accounts } = fixture(t);
+  const app = createApp({ store, nativeToken: 'fixture-token' });
+  const server = createServer(app);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await app.locals.smartSearch.stop(); await new Promise(resolve => server.close(resolve)); });
+  const patch = async (account, pending) => fetch(`http://127.0.0.1:${server.address().port}/api/messages/same-1`, {
+    method: 'PATCH', headers: { Authorization: 'Bearer fixture-token', 'Content-Type': 'application/json', ...(account ? { 'X-Genmail-Account': account } : {}) }, body: JSON.stringify({ pending }),
+  });
+  assert.equal((await patch('', true)).status, 409);
+  assert.equal((await patch(accounts[0], 'true')).status, 400);
+  assert.equal((await patch(accounts[0], true)).status, 200);
+  assert.equal(store.getMessage(accounts[1], 'same-1').pending, undefined);
+  const page = store.messagePage(accounts, { folder: 'pending' });
+  assert.equal(page.total, 1); assert.equal(page.messages[0].accountId, accounts[0]);
+  assert.equal(page.messages[0].pending, true); assert.equal(page.messages[0].body, undefined);
+  assert.equal(store.messageStats(accounts)[accounts[0]].counts.pending, 1);
+  const { parseSearch, lexicalSearch } = await import('../server/search.js');
+  assert.equal(lexicalSearch(store, parseSearch({ query: 'is:pending', scope: 'all' }), accounts).total, 1);
+  assert.equal(lexicalSearch(store, parseSearch({ folder: 'pending' }), accounts).total, 1);
+  store.updateMessage(accounts[0], 'same-1', { folder: 'trash' });
+  assert.equal(store.messagePage(accounts, { folder: 'pending' }).total, 0);
+  assert.equal(store.messageStats(accounts)[accounts[0]].counts.pending, 0);
+  assert.equal((await patch(accounts[0], false)).status, 200);
+});

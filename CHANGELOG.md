@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.0-beta.14 — 2026-09-27
+
+- Add a month calendar with independently checked Google/Outlook calendars, cross-day/all-day display and date-click event creation. Review provider-native notification reminders, or Google email reminders, with the event; preserve exact retry identity and prior pending requests.
+- Offer complete historical imports without a date cutoff for Gmail, Outlook and selectable IMAP folders, excluding Spam/Trash and retaining bounded pages, checkpoints and safe retry status.
+- Add account-owned Pending lists, separate from stars and provider state.
+- Add confirmed names/aliases and reviewed background Reply Suggestions using permitted downloaded correspondence and approved style. Proposals remain drafts; no automatic replies.
+- Add reviewed Gmail vacation/Outlook automatic-reply settings with explicit additional OAuth consent bound to the original account. These provider settings continue while Morrow is closed.
+- Add immutable scheduled mail with explicit review, owner/draft locks, cancellation and durable uncertain-send recovery. Morrow must be open; jobs more than 15 minutes late need a new review.
+- Include sent To/Cc correspondence in Suggest with History when permitted. Retain account isolation and bounded context.
+- Accept the equivalent Outlook Inbox/Sent OData next-page spelling without weakening same-origin/path checks. Retain a manually resized native list when switching reader layout or expansion.
+- Keep ad-hoc macOS signing, unsigned Windows and prerelease acceptance limits explicit. Attachments, CID images, provider delta/deletion mirroring and undo sending remain unsupported.
+
 ## 0.6.0-beta.13 — 2026-09-27
 
 - Fix beta.10 sidebar sizing on cold launch: wait for the native split view to attach and lay out before setting its initial divider. Keep subsequent user resizing intact.

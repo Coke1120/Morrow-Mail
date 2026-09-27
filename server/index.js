@@ -23,8 +23,10 @@ function shutdown() {
   if (stopping) return;
   stopping = true;
   app.locals.automation.stop();
+  const scheduledStopped = app.locals.scheduled.stop();
+  const suggestionsStopped = app.locals.replySuggestions.stop();
   const searchStopped = app.locals.smartSearch.stop().catch(() => {});
-  server.close(async () => { await searchStopped; store.close(); process.exit(0); });
+  server.close(async () => { await Promise.all([searchStopped, scheduledStopped, suggestionsStopped]); store.close(); process.exit(0); });
   // Let in-flight provider requests finish; avoid hanging forever on an idle client.
   setTimeout(() => { server.closeAllConnections(); store.close(); process.exit(0); }, 65_000).unref();
 }
