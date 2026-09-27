@@ -165,6 +165,22 @@ mailbox and its restart, and verifies the saved records after the UI exits. Each
 UI run has a 180-second deadline and a checked completion result; timeout cleanup
 targets only the launched PID. The helper and workspaces are never packaged.
 
+The same three UI runs also write `test-results/windows-native-resource-N.json`.
+A separate, owned PowerShell observer samples the UI and verified descendants
+about once per second, with bounded output and explicit incomplete status. Reports
+bind the UI/service hashes and OS to the observations. Working-set sums can count
+shared pages more than once; private bytes are not private working set or macOS
+memory footprint. Sampling can miss early peaks and short-lived processes, and
+the observer adds overhead. Fixed page/HTML readiness markers record time from
+before process launch to stderr receipt, not compositor first paint. The fixture
+pauses for two seconds after the initial page; these are individual observations,
+not steady-idle measurements, a latency distribution or an Electron comparison.
+The focused observer/pipe check runs without launching the app:
+
+```powershell
+pwsh -File scripts/test-windows-native.ps1 -ObservationsSelfTest
+```
+
 The PowerShell AST, all nine official NuGet archive hashes, project XML and explicit
 package import paths were checked. Hosted `windows-2022` Rust checks, compilation,
 packaging, private service startup/authentication/EOF drain, fresh onboarding,

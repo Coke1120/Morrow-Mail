@@ -27,9 +27,29 @@ IAsyncAction Shell::smoke() {
         std::string value((std::istreambuf_iterator<char>(marker)), {});
         check(value == "Morrow native acceptance fixture", L"Native acceptance fixture marker is missing.");
         fixtureVerified = true;
+        bool seeded = array(state,L"accounts").Size() > 0;
+        enter("initial-page");
+        check(page.Content() && !loading && !closing && !dialogOpen && dirty.empty(), L"The normal initial page is not ready.");
+        if (seeded) {
+            check(section == L"mail" && connected(owner) && rows && rows.Items().Size() >= 1,
+                L"The initial owned mailbox has no ready mail rows.");
+            for (auto const& item : rows.Items())
+                check(text(item.as<controls::ListViewItem>().Tag().as<Json>(), L"accountId") == owner,
+                    L"The initial mail page contains another owner's rows.");
+        } else {
+            check(owner.empty() && section == L"settings", L"Fresh startup did not open Add account Settings.");
+        }
+        // Application readiness only, not a compositor/presentation timestamp.
+        std::fprintf(stderr, "Native milestone: first-page-ready\n"); std::fflush(stderr);
+        apartment_context ui;
+        co_await resume_after(std::chrono::seconds(2)); co_await ui;
+        if (seeded) {
+            // Measure the first HTML document before dialogs or the mailbox walkthrough.
+            enter("reader-isolation");
+            readerEvidence = co_await readerRuntimeChecks(lifetime);
+        }
         enter("interaction-guards");
         co_await nativeInteractionChecks(lifetime);
-        bool seeded = array(state,L"accounts").Size() > 0;
         if (!seeded) {
             enter("fresh-settings");
             check(owner.empty(), L"Fresh onboarding selected the internal Demo mailbox.");
@@ -40,7 +60,6 @@ IAsyncAction Shell::smoke() {
             check(array(state,L"accounts").Size() == 2, L"Expected two isolated fixture owners.");
             auto restoredSize = window.AppWindow().Size();
             auto resizeDeadline = GetTickCount64() + 1000;
-            apartment_context ui;
             while ((restoredSize.Width != 1040 || restoredSize.Height != 760) && GetTickCount64() < resizeDeadline) {
                 co_await resume_after(std::chrono::milliseconds(10));
                 co_await ui;
@@ -118,8 +137,6 @@ IAsyncAction Shell::smoke() {
                 check(dirty.empty(), L"Opening a Settings tab incorrectly created unsaved edits.");
             }
             check(text(service->clientState(),L"morrow.pendingCalendar")==pendingCalendar,L"Opening Calendar changed its immutable recovery record.");
-            enter("reader-isolation");
-            readerEvidence = co_await readerRuntimeChecks(lifetime);
         }
         enter("shutdown");
         auto draining = shutdown();

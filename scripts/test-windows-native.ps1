@@ -3,12 +3,14 @@
 param(
     [string] $PackageDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) 'build/windows-native/Morrow Mail-win32-x64'),
     [switch] $LayoutOnly,
-    [switch] $UiSmoke
+    [switch] $UiSmoke,
+    [switch] $ObservationsSelfTest
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-if (-not $IsWindows) { throw 'Run Windows native acceptance on Windows.' }
-$directory = (Resolve-Path -LiteralPath $PackageDirectory).Path
+if (-not $ObservationsSelfTest -and -not $IsWindows) { throw 'Run Windows native acceptance on Windows.' }
+$directory = if ($ObservationsSelfTest) { '' } else { (Resolve-Path -LiteralPath $PackageDirectory).Path }
+. (Join-Path $PSScriptRoot 'measure-native-processes.ps1')
 function Require([bool] $Value, [string] $Message) { if (-not $Value) { throw $Message } }
 function Require-X64([string] $Path, [bool] $DesktopHost = $false) {
     $stream = [IO.File]::OpenRead($Path)
@@ -253,8 +255,9 @@ function Isolate-NativeEnvironment([Diagnostics.ProcessStartInfo] $Start) {
     $allowed = @('SystemRoot', 'WINDIR', 'SystemDrive', 'ComSpec', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'ProgramData', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432', 'PATH', 'PATHEXT', 'PSModulePath', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'PROCESSOR_LEVEL', 'PROCESSOR_REVISION', 'OS', 'SESSIONNAME', 'USERNAME', 'USERDOMAIN', 'HOMEDRIVE', 'HOMEPATH')
     foreach ($name in @($Start.Environment.Keys)) { if ($allowed -notcontains $name) { [void] $Start.Environment.Remove($name) } }
 }
-function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMilliseconds = 180000) {
+function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMilliseconds = 180000, [long] $LaunchTimestamp = 0) {
     Require ($TimeoutMilliseconds -gt 0 -and $TimeoutMilliseconds -le 180000) 'Invalid native UI deadline.'
+    if ($LaunchTimestamp -eq 0) { $LaunchTimestamp = [Diagnostics.Stopwatch]::GetTimestamp() }
     $safeStartup = '^Native startup: [A-Za-z0-9 .(),:_-]{1,120}$|^Native (startup|XAML) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native startup (constructor|OnLaunched) \((installing unhandled exception handler|reading application resources|reading merged dictionaries|constructing control resources|appending control resources)\) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native smoke: [a-z-]{1,64}$|^Native reader: [a-z-]{1,64} \+[0-9]{1,6} ms$|^Native reader: csp-state fetchRejected=[01] imagePolicy=[01] framePolicy=[01] connectPolicy=[01] imageComplete=[01]$'
     $safeStartup += '|^Native reader: nav-start id=[0-9]{1,20} blank=[01] redirected=[01] user=[01] expected=[01] live=[01]$'
     $safeStartup += '|^Native reader: nav-decision id=[0-9]{1,20} cancelled=[01] expected=[01] tracked=[0-9]{1,20}$'
@@ -262,8 +265,18 @@ function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMillisecond
     $safeStartup += '|^Native reader: (render-request|render-returned|initial-document-state|initial-document-failed) active=[01] ready=[01] live=[01] expected=[01] core=[01] view=[01] loaded=[01] visible=[01] id=[0-9]{1,20} completed=[0-9]{1,20} epoch=[0-9]{1,20}$'
     $safeStartup += '|^Native reader: nav-uri empty=[01] dataHtml=[01] dataHtmlBase64=[01] aboutBlankPrefix=[01] other=[01] length=[0-9]{1,10}$'
     $safeLines = [Collections.Generic.Queue[string]]::new()
-    $state = @{ phase = ''; characters = 0 }
+    $state = @{ phase = ''; characters = 0; milestones = @{} }
     function Keep-Line([string] $Value) {
+        # Receipt time only, with the clock captured before Process.Start. The
+        # exact fixed markers survive diagnostic-tail trimming. No CIM or file
+        # work is added to this continuous stderr reader.
+        if ($Value -ceq 'Native milestone: first-page-ready' -or $Value -ceq 'Native milestone: html-ready') {
+            $key = $Value.Substring('Native milestone: '.Length)
+            if (-not $state.milestones.ContainsKey($key)) {
+                $state.milestones[$key] = ([Diagnostics.Stopwatch]::GetTimestamp() - $LaunchTimestamp) * 1000.0 / [Diagnostics.Stopwatch]::Frequency
+            }
+            return
+        }
         if ($Value -cnotmatch $safeStartup) { return }
         if ($Value -cmatch '^Native smoke: [a-z-]{1,64}$') { $state.phase = $Value }
         $safeLines.Enqueue($Value); $state.characters += $Value.Length + 1
@@ -316,7 +329,7 @@ function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMillisecond
         } catch { $readFailed = $true; $eof = $true }
     }
     if ($readFailed) { Write-Warning 'Fixture stderr collection was incomplete; only validated phases are retained.' }
-    return @{ Completed = $completed; Diagnostics = ($safeLines -join "`n"); LastSmokePhase = $state.phase }
+    return @{ Completed = $completed; Diagnostics = ($safeLines -join "`n"); LastSmokePhase = $state.phase; MilestonesMs = $state.milestones }
 }
 function Test-NativeUiDrain {
     # Real pipes, fixed fictional text only: no app, workspace or network access.
@@ -330,7 +343,11 @@ function Test-NativeUiDrain {
     }
     $child = $null
     try {
+        $launch = [Diagnostics.Stopwatch]::GetTimestamp()
         $child = Start-DrainCheck @'
+[Console]::Error.WriteLine('Native milestone: first-page-ready')
+[Console]::Error.WriteLine('Native milestone: html-ready secret-token')
+[Console]::Error.WriteLine('native milestone: html-ready')
 [Console]::Error.WriteLine('Native smoke: reader-isolation')
 for ($i = 0; $i -lt 4000; $i++) { [Console]::Error.WriteLine('Native reader: csp-settle +12345 ms') }
 [Console]::Error.WriteLine('secret-token-do-not-retain')
@@ -340,11 +357,17 @@ for ($i = 0; $i -lt 40; $i++) { [Console]::Error.WriteLine('Native reader: rende
 [Console]::Error.Flush()
 exit 0
 '@
-        $result = Wait-NativeUi $child 30000
+        $result = Wait-NativeUi $child 30000 $launch
         Require ($result.Completed -and $child.HasExited -and $child.ExitCode -eq 0) 'High-output drain self-check did not finish.'
         Require ($result.Diagnostics.Length -le 1024 -and @($result.Diagnostics -split "`n").Count -le 20) 'Drain self-check exceeded its retention limit.'
         Require ($result.Diagnostics -cnotmatch 'secret|xxx' -and $result.Diagnostics -cmatch 'render-returned') 'Drain self-check retained unsafe data or lost its tail.'
         Require ($result.LastSmokePhase -ceq 'Native smoke: reader-isolation') 'Drain self-check lost its last smoke phase.'
+        Require ($result.MilestonesMs.Count -eq 1 -and $result.MilestonesMs['first-page-ready'] -gt 0) 'Exact milestone collection failed.'
+        $child.Dispose(); $child = $null
+        $launch = [Diagnostics.Stopwatch]::GetTimestamp()
+        $child = Start-DrainCheck "[Console]::Error.WriteLine('Native milestone: first-page-ready'); [Console]::Error.Flush(); Start-Sleep -Milliseconds 200; [Console]::Error.WriteLine('Native milestone: first-page-ready'); [Console]::Error.WriteLine('Native milestone: html-ready')"
+        $result = Wait-NativeUi $child 30000 $launch
+        Require ($result.Completed -and $child.ExitCode -eq 0 -and $result.MilestonesMs.Count -eq 2 -and $result.MilestonesMs['html-ready'] - $result.MilestonesMs['first-page-ready'] -ge 100) 'Milestones did not preserve first receipt times.'
         $child.Dispose(); $child = $null
         $child = Start-DrainCheck "[Console]::Error.WriteLine('Native smoke: mail-reader'); [Console]::Error.Flush(); Start-Sleep -Seconds 20"
         $clock = [Diagnostics.Stopwatch]::StartNew()
@@ -358,6 +381,11 @@ exit 0
             finally { $child.Dispose() }
         }
     }
+}
+if ($ObservationsSelfTest) {
+    Test-NativeUiDrain
+    Test-NativeResourceObservation
+    return
 }
 $required = @('Morrow Mail.exe', 'Microsoft.UI.Xaml.dll', 'Microsoft.WindowsAppRuntime.dll',
     'resources/app/backend/package.json', 'resources/app/package.json', 'resources/app/runtime/morrow-service.exe',
@@ -442,7 +470,16 @@ try {
     Write-Host 'Private Rust startup/authentication/EOF drain passed in an isolated fresh workspace.'
     if ($UiSmoke) {
         Test-NativeUiDrain
+        Test-NativeResourceObservation
         $root = Split-Path $PSScriptRoot -Parent
+        # Fixed package identity outside launch timing and the stderr drain.
+        $resourceIdentity = [ordered]@{
+            version = $package.version
+            uiSha256 = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+            serviceSha256 = (Get-FileHash -LiteralPath $service -Algorithm SHA256).Hash.ToLowerInvariant()
+            osVersion = [Environment]::OSVersion.Version.ToString()
+            logicalCpuCount = [Environment]::ProcessorCount
+        }
         $savedIncremental = $env:CARGO_INCREMENTAL
         Push-Location $root
         try {
@@ -473,8 +510,36 @@ try {
                 Require (Test-Path -LiteralPath (Join-Path $case.path 'disposable-native-fixture')) 'Crash diagnostics require a marked disposable fixture.'
                 $crashCapture = New-CrashCapture
             }
+            $sampleFile = New-NativeSampleFile $case.path
+            $collector = $null; $completion = $null
+            $launch = [Diagnostics.Stopwatch]::GetTimestamp()
             $process = [Diagnostics.Process]::Start($ui)
-            $completion = Wait-NativeUi $process
+            try {
+                # Process.Start/StartTime only; all CIM runs in the owned child.
+                try { $collector = Start-NativeResourceCollector $process $sampleFile $launch }
+                catch { Write-Warning 'Native resource collector could not start; evidence will be incomplete.' }
+                $completion = Wait-NativeUi $process 180000 $launch
+            } finally {
+                # No sampler wait/read inside Wait-NativeUi. Separate evidence
+                # has a 2 MiB input cap, independent of the UI result's 16 KiB cap.
+                $collectorStop = Stop-NativeResourceCollector $collector
+                try {
+                    $milestones = if ($completion) { $completion.MilestonesMs } else { @{} }
+                    $resource = Read-NativeResourceReport $sampleFile $collectorStop $milestones
+                    $resource['candidate'] = $resourceIdentity
+                    $resource['run'] = $caseIndex; $resource['mode'] = $case.mode
+                    $resource['uiCompleted'] = [bool] ($completion -and $completion.Completed)
+                    $resource['missingMilestones'] = @(@('first-page-ready') + $(if ($case.mode -eq 'owned') { @('html-ready') } else { @() }) | Where-Object { -not $milestones.ContainsKey($_) })
+                    if ($resource.missingMilestones.Count) { $resource.incomplete = $true }
+                    $evidence = Join-Path $root 'test-results'
+                    [void] (New-Item -ItemType Directory -Force $evidence)
+                    [IO.File]::WriteAllText((Join-Path $evidence "windows-native-resource-$caseIndex.json"), ($resource | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+                    if ($resource.incomplete) { Write-Warning 'Native resource observation is incomplete; inspect its separate evidence report.' }
+                } catch {
+                    # Optional observation must not replace an original UI error.
+                    Write-Warning 'Native resource report is missing or incomplete; no complete measurement is claimed. The UI acceptance result is unchanged.'
+                }
+            }
             $completed = $completion.Completed
             $diagnostics = $completion.Diagnostics
             if ($diagnostics) { Write-Host $diagnostics }

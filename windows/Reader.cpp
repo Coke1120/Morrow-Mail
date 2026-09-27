@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cwctype>
 #include <fstream>
+#include <regex>
 
 #pragma comment(lib, "winhttp.lib")
 
@@ -628,6 +629,13 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
         phase("runtime-unavailable-fallback");
         co_return result;
     }
+    runtimeCheck(state->live() && documentReady(state), L"The initial fixture HTML document is not ready.");
+    std::fprintf(stderr, "Native milestone: html-ready\n"); std::fflush(stderr);
+    auto browserVersion = state->environment.BrowserVersionString();
+    runtimeCheck(browserVersion.size() <= 64 && std::regex_match(browserVersion.begin(), browserVersion.end(),
+        std::wregex(LR"([0-9]{1,10}(\.[0-9]{1,10}){3}( (beta|dev|canary))?)")),
+        L"The fixture WebView2 runtime returned an unsupported version format.");
+    put(result, L"browserVersionString", browserVersion);
     phase("isolation-settings");
     runtimeCheck(!state->expectingDocument && state->expectedDocumentBase64.empty(), L"The reader retained a consumed HTML navigation expectation.");
     auto core = state->core; cleanup.core = core;

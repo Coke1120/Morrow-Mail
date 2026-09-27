@@ -8,7 +8,7 @@
 
 - N1：共用草稿準備已移至 Rust；catalog／OpenCC 來源固定、5,343 筆正規化 golden 與授權內容比對通過。
 - N2／N3：CI 36357924382（`62f3913`）的雙平台 native gates 全部通過。Windows 包括 fresh／owned／restart、關窗排空、視窗還原、前景 guard、分頁／草稿／工作頁／Settings，以及 Reader 的 host 文件完全比對、native CSP、純文字／失敗 fallback、空 HTML、過時導覽與卸載關閉。TextBlock 生命週期修正及 harness 持續清空 stderr 均已實跑；瀏覽器安全設定與期限未放寬。這不代替整體 App 比較量測或人工 IME／Narrator／DPI 驗收。
-- N4：CI 36356066868 的雙平台 candidate 經固定 beta.16 舊 installer 實際升級／啟動及備份通過，包括 Scheduled、Pending、Learning、Reply Suggestions 與中斷 claim 不重播；七項 storage/search/service 相容契約亦通過。Windows reader walkthrough 仍是獨立未通過項目。
+- N4：CI 36357924382 的雙平台 candidate 經固定 beta.16 舊 installer 實際升級／啟動及備份通過，包括 Scheduled、Pending、Learning、Reply Suggestions 與中斷 claim 不重播；七項 storage/search/service 相容契約及獨立 Windows reader walkthrough 亦通過。
 - N6：macOS／Windows 的 Node-inaccessible Rust fmt／Clippy／tests 已通過；新版 macOS canonical ZIP／checksum、Models、HTML／network-zero、視窗與 Rust native integration 已在 macOS 15 通過。Rust resources／notices／macOS builder／native acceptance driver 已驗證無 Node 路徑；Rust benchmark 的 1k／10k／50k service checks 已在雙平台通過（非整體 App 效能驗收）。共用 assets 與 production 公鑰已解除對 React／Node 來源目錄的依賴。新 publisher 已補上同 run artifact 來源綁定，七項 focused checks 與真實 GitHub ZIP 唯讀解析通過；尚未接正式發佈。
 - N5 與所有乾淨最低 OS／IME／Narrator／DPI／真實 provider／正式簽章門檻保持未完成。既有 Electron／Node 相容路徑與發佈資產沒有刪除或替換。
 

@@ -212,8 +212,8 @@ IAsyncAction Shell::start() {
         if (savedLayout == L"right" || savedLayout == L"bottom" || savedLayout == L"focus") mailLayout = savedLayout;
         co_await refresh(true);
         setupKeyboardAccelerators(lifetime);
-        if (GetCommandLineW() && std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos) { co_await smoke(); co_return; }
         co_await navigate(connected(owner) || owner == L"all" ? L"mail" : L"settings");
+        if (GetCommandLineW() && std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos) { co_await smoke(); co_return; }
         checkUpdates();
         timer = DispatcherTimer(); timer.Interval(std::chrono::seconds(5));
         timer.Tick([weak](auto const&, auto const&) {
