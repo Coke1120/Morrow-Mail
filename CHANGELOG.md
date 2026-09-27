@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.6.0-beta.15 — 2026-09-27
+## 0.6.0-beta.16 — 2026-09-27
 
 - Reorganize Settings in SwiftUI and React: account connection first, grouped General preferences, persistent permission Save/Discard controls, collapsed calendar reconnect forms and clearer current/update history status.
 - Separate Chat/reply and Search embedding panels, retain their unsaved edits, and keep connection tests visible. Search uses one Review & Index action with explicit confirmation, supported batch controls and separate destructive clearing.

@@ -1,6 +1,8 @@
 # Verification — 27 September 2026
 
-## 0.6.0-beta.15 local preparation — Settings UI/UX and Yahoo HK
+The unpublished beta.15 tag was stopped by one stale UI assertion looking for the old import button label. Its Rust checks and macOS desktop/upgrade acceptance passed; the assertion now checks the enabled Start new import button while retaining all history-range and Spam/Trash exclusion checks. No product behavior was changed for this correction. After rebuilding the versioned local Rust worker, `npm run check` passed 232 checks with two conditional Rust-service checks skipped, plus the React production build. Those conditional checks remain required in the CI Rust contract step. Beta.16 reruns the complete paired release gates.
+
+## 0.6.0-beta.16 local preparation — Settings UI/UX and Yahoo HK
 
 Both clients now put account connection controls first, separate Chat/reply and Search embedding forms without dropping their unsaved drafts, group General preferences with visible autosave status, and keep explicit permission Save/Discard visible. Search has one reviewed indexing entry and separates supported Rust batch controls from destructive vector clearing; Learning leads with account/proposal/approved-style status and separates identity from opt-in configuration. Calendar explicitly supports one account per provider; About distinguishes current version from the previous installation record. No API/provider/authentication behavior changed.
 
@@ -10,7 +12,7 @@ Validation: focused Settings, Learning and Search UI/contract tests (23 checks);
 
 The earlier installed beta.14 read-only review is retained in [Settings UX review](docs/SETTINGS_UX_REVIEW.md), now annotated with implemented changes. Screenshots and generated fixture apps remain outside version control.
 
-## 0.6.0-beta.15 local preparation — hourly update checks
+## 0.6.0-beta.16 local preparation — hourly update checks
 
 Both clients now check at launch and once per hour while running, with a due check on return from sleep/background. Availability is retained outside Settings and shown as an accessible red ! badge linking to About. Manual and automatic checks share the same state; failed checks retain the last successful release, channel changes clear it, and no automatic download or installation is performed.
 

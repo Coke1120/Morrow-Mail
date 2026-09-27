@@ -120,7 +120,7 @@ test('Mail settings show All mail for every provider and disclose IMAP special-u
       assert.ok(elements(document, node => node.name === 'option' && node.attribs.value === '0').some(node => text(node) === 'All available history'));
       assert.doesNotMatch(text(document), /0 months/);
       assert.match(text(document), /All mail \(normal folders\)/);
-      assert.match(text(document), /Start all mail import/);
+      assert.ok(elements(document, node => node.name === 'button' && text(node) === 'Start new import…').some(node => !disabled(node)));
       assert.match(text(document), /Gmail \/ Outlook exclude Spam\/Junk and Trash\/Deleted Items/);
       assert.match(text(document), /special-use flags to exclude Junk and Trash; folders without those flags may be imported/);
       assert.match(text(document), /skips virtual All \/ Flagged views and folders that cannot be selected/);

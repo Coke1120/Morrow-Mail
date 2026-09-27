@@ -66,7 +66,7 @@ This beta switches both desktop packages to the shared Rust service, adds bounde
 
 **0.6.0-beta.13** fixes the beta.10 cold-start sidebar occasionally occupying half a restored window. Native panes remain freely adjustable.
 
-## 0.6.0-beta.15 additions
+## 0.6.0-beta.16 additions
 
 Settings now puts account connection first and separates Chat/reply from Search embedding panels with visible connection tests. Search uses one **Review & Index** entry; Learning shows the account and proposal/approved-style status before its detailed configuration. Yahoo / Yahoo HK has a secure IMAP/SMTP preset and app-password guidance. Updates are checked at launch and hourly while running; a red **!** on Settings opens About when an update is available. Download and installation still require your action. See [Settings navigation](#settings-navigation), the [changelog](CHANGELOG.md) and [verification](VERIFICATION.md).
 

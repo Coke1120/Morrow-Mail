@@ -2,7 +2,7 @@
 
 範圍：實際檢視已安裝的 macOS beta.14 八個設定分頁，並交叉閱讀目前 SwiftUI 與 React 原始碼。只切換分頁，沒有修改真實帳戶、權限、模型設定或學習提案，沒有觸發模型測試、匯入、寄信或日曆寫入。Windows 本輪為原始碼檢視，未作 Windows 執行驗收。
 
-## 實作更新（0.6.0-beta.15）
+## 實作更新（0.6.0-beta.16）
 
 以下 review 已落實到 SwiftUI 與 React：新增／重新連接帳戶入口置頂，匯入範圍可收合；Model 改為 Chat／Embedding 切換且保留各自草稿；General 按用途分組並顯示自動儲存狀態；AI Permissions 的 Save／Discard 固定可見，排程按需顯示，simulation 獨立收合。Search 統一 Review & Index，Rust 批次控制與 Clear index 分開；Learning 提案／已核准狀態置頂，身份和設定分開收合，加入前置設定連結。日曆明示每供應商一個連線；About 將目前版本和上次安裝紀錄分開。
 
@@ -26,7 +26,7 @@
 | Learning | 身份表單佔首屏大部分；學習設定、Ready 提案及套用操作在下面。Learn Now、Preview、Generate、Save Approved Style 容易混淆。 | 頁首先顯示目前帳戶、「尚未學習／有待審閱提案／已套用」與下一步。身份確認和寫作風格是兩件事，分成可收合區塊；明示產生提案不等於已套用。 |
 | AI Permissions | 長清單混合自動觸發、排程、真實 AI 能力與 simulation；排程即使未啟用也佔空間。 | 分為「自動觸發」「允許讀取的資料」「可用功能」。僅在排程啟用時展開排程欄位；simulation 放獨立可收合群組。改變權限仍需 Save，不能由 UI 自動擴大資料存取。 |
 | Calendar | 已連線時仍完整顯示登入說明和登入按鈕；沒有醒目說明與郵件帳戶数量限制不同。 | 已連線時先顯示帳戶與「重新授權／更換帳戶／斷線」，新增登入表單按需展開。清楚標明現在可同時連接一個 Google 和一個 Outlook 日曆帳戶，每個帳戶可顯示多個日曆。 |
-| About | 目前版本在底部；實際介面同時出現 beta.14 與「Updated to beta.13」舊安裝結果；「Nothing sends automatically」也容易與已授權的 Scheduled 功能衝突。 | 目前版本與更新狀態置頂；把歷史結果標為「上次安裝紀錄」。備份與支援資訊分組；寄信說明改為需要明確寄送或排程確認。本輪前已完成的每小時檢查／紅色 ! 徽章已納入 beta.15；發佈驗證見 VERIFICATION.md。 |
+| About | 目前版本在底部；實際介面同時出現 beta.14 與「Updated to beta.13」舊安裝結果；「Nothing sends automatically」也容易與已授權的 Scheduled 功能衝突。 | 目前版本與更新狀態置頂；把歷史結果標為「上次安裝紀錄」。備份與支援資訊分組；寄信說明改為需要明確寄送或排程確認。本輪前已完成的每小時檢查／紅色 ! 徽章已納入 beta.16；發佈驗證見 VERIFICATION.md。 |
 
 建議導覽順序：General → Mail → Calendar → Model → AI Permissions → Search → Learning → About。此順序已在兩個客戶端採用。
 
