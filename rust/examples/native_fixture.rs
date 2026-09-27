@@ -56,7 +56,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             )?;
             fs::write(
                 path.join("window.json"),
-                r#"{"width":1180,"height":780,"fixturePreserved":true}"#,
+                r#"{"width":1040,"height":760,"fixturePreserved":true}"#,
             )?;
         }
         Some("verify") => {
@@ -81,7 +81,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 serde_json::from_slice(&fs::read(path.join("window.json"))?)?;
             assert_eq!(
                 window,
-                json!({"width":1180,"height":780,"fixturePreserved":true})
+                json!({"width":1040,"height":760,"fixturePreserved":true})
             );
             let saved = db
                 .list(first)?

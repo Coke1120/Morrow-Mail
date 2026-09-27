@@ -16,6 +16,13 @@ jobs:
       CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Restore Rust build cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: native-rust-${{ runner.os }}-${{ runner.arch }}-1.98.0-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml') }}
       - name: Prepare Node-free tool path
         shell: bash
         run: |
@@ -53,6 +60,14 @@ jobs:
       CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Restore Rust build cache
+        id: rust-cache
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: native-rust-${{ runner.os }}-${{ runner.arch }}-1.98.0-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml') }}
       - name: Lock Rust toolchain
         run: |
           rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
@@ -61,11 +76,20 @@ jobs:
         shell: pwsh
         run: ./scripts/build-windows-native.ps1 -CompileOnly
       - name: Build and inspect native package without Node
+        id: package
         shell: pwsh
         run: ./scripts/build-windows-native.ps1 -Zip
       - name: Native fixture walkthrough
         shell: pwsh
         run: ./scripts/test-windows-native.ps1 -UiSmoke
+      - name: Cache completed Rust builds
+        if: ${{ !cancelled() && steps.package.outcome == 'success' && steps.rust-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Retain candidate evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
