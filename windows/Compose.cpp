@@ -114,7 +114,7 @@ struct Composer {
     std::vector<weak_ref<TextBox>> fields;
     weak_ref<ComboBox> from, aiAction;
     weak_ref<TextBox> aiPrompt;
-    weak_ref<TextBlock> notice, footer, aiResult;
+    TextBlock notice{nullptr}, footer{nullptr}, aiResult{nullptr};
     weak_ref<CheckBox> schedule, reviewed;
     weak_ref<DatePicker> date;
     weak_ref<TimePicker> time;
@@ -169,8 +169,8 @@ struct Composer {
         }
         dirty();
     }
-    void say(hstring const& value) { if (auto view = notice.get()) view.Text(value); }
-    void clearAI() { suggestion = {}; if (auto view = aiResult.get()) view.Text(L""); }
+    void say(hstring const& value) { if (auto view = notice) view.Text(value); }
+    void clearAI() { suggestion = {}; if (auto view = aiResult) view.Text(L""); }
     void edit(wchar_t const* name, hstring const& value) {
         if (initializing || frozen()) return;
         put(message, name, value); requestId = Service::uuid(); clearAI(); update();
@@ -181,7 +181,7 @@ struct Composer {
         size_t i = 0;
         for (auto name : { L"to", L"cc", L"bcc", L"subject", L"body" })
             if (auto view = fields[i++].get()) view.Text(text(message, name));
-        if (auto view = footer.get()) view.Text(text(object(message, L"footer"), L"text", text(object(message, L"footer"), L"html")));
+        if (auto view = footer) view.Text(text(object(message, L"footer"), L"text", text(object(message, L"footer"), L"html")));
         initializing = false;
     }
     void markUncertain(Json const& error = Json()) {
@@ -350,7 +350,7 @@ IAsyncAction writingAssistant(std::shared_ptr<Composer> state, bool use) {
             auto result = co_await shell->service->request(L"/ai", owner, L"POST", input);
             if (!state->live(shell) || state->owner != owner || !shell->connected(owner)) co_return;
             state->suggestion = text(result, L"text");
-            if (auto view = state->aiResult.get()) view.Text(state->suggestion);
+            if (auto view = state->aiResult) view.Text(state->suggestion);
             state->say(text(result, L"source") == L"demo" ? L"Illustrative result — review before using." : L"AI suggestion — review before using.");
         }
     } catch (hresult_error const& error) { if (state->live(shell)) state->say(error.message()); }
@@ -405,12 +405,13 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         }
         panel.Children().Append(label(L"Use plain addresses separated by commas or semicolons (100 recipients total). Bcc remains hidden from other recipients."));
         auto footerText = label(text(object(state->message, L"footer"), L"text", text(object(state->message, L"footer"), L"html")));
-        state->footer = make_weak(footerText);
+        state->footer = footerText;
         panel.Children().Append(label(L"Email footer")); panel.Children().Append(footerText);
         auto remove = button(L"Remove Footer", [state] {
             if (state->frozen()) return;
             Json empty; put(empty, L"text", L""); put(empty, L"html", L""); state->message.Insert(L"footer", empty);
-            state->footer.get().Text(L""); state->requestId = Service::uuid(); state->update();
+            if (auto view = state->footer) view.Text(L"");
+            state->requestId = Service::uuid(); state->update();
         }); state->removeFooter = make_weak(remove); panel.Children().Append(remove);
         auto ai = stack();
         ComboBox actions; actions.Header(box_value(L"Writing action"));
@@ -418,7 +419,7 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         actions.SelectedIndex(0); state->aiAction = make_weak(actions); ai.Children().Append(actions);
         auto prompt = field(L"Instructions / target language"); prompt.MaxLength(2000); state->aiPrompt = make_weak(prompt); ai.Children().Append(prompt);
         auto generate = button(L"Preview Suggestion", [state] { writingAssistant(state, false); }); state->generate = make_weak(generate); ai.Children().Append(generate);
-        auto suggestion = label(L""); suggestion.IsTextSelectionEnabled(true); state->aiResult = make_weak(suggestion); ai.Children().Append(suggestion);
+        auto suggestion = label(L""); suggestion.IsTextSelectionEnabled(true); state->aiResult = suggestion; ai.Children().Append(suggestion);
         auto use = button(L"Use in Draft", [state] { writingAssistant(state, true); }); state->useAI = make_weak(use); ai.Children().Append(use);
         Expander assistant; assistant.Header(box_value(L"Writing assistance")); assistant.Content(ai); panel.Children().Append(assistant);
         CheckBox scheduling; scheduling.Content(box_value(L"Schedule for later")); state->schedule = make_weak(scheduling);
@@ -432,7 +433,7 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         state->date = make_weak(date); state->time = make_weak(time); panel.Children().Append(date); panel.Children().Append(time);
         panel.Children().Append(label(L"Morrow must be open to send. Catch-up is limited to 15 minutes; later messages are marked missed. The confirmation also shows the exact UTC time, including at a daylight-saving clock change."));
         CheckBox review; review.Content(box_value(L"I checked Sent and want to retry this exact delivery, even if it creates a duplicate.")); state->reviewed = make_weak(review); panel.Children().Append(review);
-        auto notice = label(L""); notice.IsTextSelectionEnabled(true); state->notice = make_weak(notice); panel.Children().Append(notice);
+        auto notice = label(L""); notice.IsTextSelectionEnabled(true); state->notice = notice; panel.Children().Append(notice);
         auto buttons = stack(); buttons.Orientation(Orientation::Horizontal);
         auto close = button(L"Close", [state] { closeComposer(state); }); state->close = make_weak(close); buttons.Children().Append(close);
         auto save = button(L"Save Draft", [state] { submit(state, false); }); state->save = make_weak(save); buttons.Children().Append(save);
@@ -490,6 +491,8 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         state->baseline = state->payload().Stringify(); state->baselineOwner = state->owner;
         shell->dirty.clear();
         shell->section = L"compose"; state->generation = ++shell->generation; ++shell->selectionGeneration;
+        // Retain TextBlock peers for this page, including while the AI expander is collapsed.
+        panel.Unloaded([state](auto const&, auto const&) { state->notice = nullptr; state->footer = nullptr; state->aiResult = nullptr; });
         shell->show(scroll(panel));
         if (locked(draft)) state->say(L"This draft is scheduled or sending. Open Scheduled and cancel an awaiting schedule before editing or sending it. A delivery already sending cannot be cancelled.");
         else if (state->uncertain) state->say(L"Delivery was not confirmed. Check your provider’s Sent folder before retrying this exact message. Retrying may send a duplicate.");
@@ -538,14 +541,14 @@ struct Schedules {
     uint64_t loadGeneration = 0;
     std::vector<hstring> accounts;
     weak_ref<ComboBox> mailbox;
-    weak_ref<TextBlock> notice;
+    TextBlock notice{nullptr};
     weak_ref<StackPanel> list;
     weak_ref<Button> refresh;
     bool live(std::shared_ptr<Shell> const& host) const {
         return host && !host->closing && host->generation == generation
             && host->owner == screenOwner && host->section == L"scheduled";
     }
-    void say(hstring const& value) { if (auto view = notice.get()) view.Text(value); }
+    void say(hstring const& value) { if (auto view = notice) view.Text(value); }
     void enable(bool enabled) {
         if (auto view = mailbox.get()) view.IsEnabled(enabled);
         if (auto view = refresh.get()) view.IsEnabled(enabled);
@@ -652,7 +655,7 @@ IAsyncAction scheduledPage(std::shared_ptr<Shell> shell) {
     for (size_t i = 0; i < state->accounts.size(); ++i) if (state->accounts[i] == state->owner) mailbox.SelectedIndex(static_cast<int32_t>(i));
     panel.Children().Append(mailbox);
     auto refresh = button(L"Refresh", [state] { loadSchedules(state); }); state->refresh = make_weak(refresh); panel.Children().Append(refresh);
-    auto notice = label(L""); notice.IsTextSelectionEnabled(true); state->notice = make_weak(notice); panel.Children().Append(notice);
+    auto notice = label(L""); notice.IsTextSelectionEnabled(true); state->notice = notice; panel.Children().Append(notice);
     auto list = stack(24); state->list = make_weak(list); panel.Children().Append(list);
     mailbox.SelectionChanged([state](auto const& sender, auto const&) {
         if (state->busy) return;
@@ -667,7 +670,7 @@ IAsyncAction scheduledPage(std::shared_ptr<Shell> shell) {
         if (auto page = weak.lock()) if (auto host = page->shell.lock(); page->live(host) && !page->busy) loadSchedules(page);
     });
     panel.Loaded([timer](auto const&, auto const&) { timer.Start(); });
-    panel.Unloaded([timer](auto const&, auto const&) { timer.Stop(); });
+    panel.Unloaded([timer, state](auto const&, auto const&) { timer.Stop(); state->notice = nullptr; });
     shell->show(scroll(panel));
     co_await loadSchedules(state);
 }

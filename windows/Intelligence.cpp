@@ -107,7 +107,7 @@ struct Intelligence : std::enable_shared_from_this<Intelligence> {
     weak_ref<StackPanel> body, previewPanel, proposalPanel, candidatePanel, jobPanel, resultPanel, skillList, recordList;
     weak_ref<StackPanel> toolPanel;
     weak_ref<ContentControl> editorHost, suggestionOptions;
-    weak_ref<TextBlock> notice, mailStatus;
+    TextBlock notice{nullptr};
     weak_ref<ComboBox> messagePicker, featurePicker, skillPicker;
     weak_ref<DatePicker> date;
     weak_ref<TimePicker> time;
@@ -118,7 +118,7 @@ struct Intelligence : std::enable_shared_from_this<Intelligence> {
     xaml::DispatcherTimer timer{nullptr};
     std::wstring key() const { return L"intelligence:" + std::to_wstring(generation); }
     bool current() const { return live && shell->current(generation, owner) && shell->connected(owner); }
-    void tell(hstring const& value) { if (current()) if (auto control = notice.get()) control.Text(value); }
+    void tell(hstring const& value) { if (current()) if (auto control = notice) control.Text(value); }
     bool edited() const { for (auto const& [_, form] : forms) if (form.dirty()) return true; return false; }
     void dirty() {
         if (!live) return;
@@ -137,8 +137,8 @@ struct Intelligence : std::enable_shared_from_this<Intelligence> {
         if (!live) return; live = false; ++revision; ++learningRevision;
         if (timer) { timer.Stop(); timer = nullptr; }
         if (!busy && !cancelling) shell->dirty.erase(key());
-        // All control references are weak. Leaving the page releases entered text
-        // and callbacks; service-owned reviewed background jobs continue normally.
+        // TextBlock peers stay retained until root.Unloaded; other control references are weak.
+        // Service-owned reviewed background jobs continue normally.
     }
 };
 using Page = std::shared_ptr<Intelligence>;
@@ -1052,7 +1052,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
         if (kind == id) { known = true; control.IsEnabled(false); } tabs.Children().Append(control);
     }
     ScrollViewer tabScroll; tabScroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto); tabScroll.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled); tabScroll.Content(tabs); root.Children().Append(tabScroll);
-    auto notice = label(L"Loading this account’s saved context…"); root.Children().Append(notice); p->notice = make_weak(notice);
+    auto notice = label(L"Loading this account’s saved context…"); root.Children().Append(notice); p->notice = notice;
     xaml::Automation::AutomationProperties::SetLiveSetting(notice, xaml::Automation::Peers::AutomationLiveSetting::Polite);
     if (kind == L"learning") {
         auto cancel = button(L"Cancel current style analysis…", [weak] { if (auto page = weak.lock(); page && page->generatingStyle) revokeStyle(page); });
@@ -1060,7 +1060,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
     }
     ContentControl host; host.HorizontalContentAlignment(xaml::HorizontalAlignment::Stretch);
     auto body = stack(16); host.Content(body); root.Children().Append(host); p->body = make_weak(body); p->editorHost = make_weak(host);
-    root.Unloaded([p](auto const&, auto const&) { p->stop(); }); shell->show(scroll(root));
+    root.Unloaded([p](auto const&, auto const&) { p->stop(); p->notice = nullptr; }); shell->show(scroll(root));
     bool loaded = false;
     try {
         require(known, L"Unknown Intelligence page.");

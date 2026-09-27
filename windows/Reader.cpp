@@ -182,7 +182,9 @@ struct Reader {
     std::shared_ptr<ImageBudget> budget = std::make_shared<ImageBudget>();
     std::shared_ptr<std::atomic_bool> cancelled = std::make_shared<std::atomic_bool>(false);
     weak_ref<WebView2> view;
-    weak_ref<TextBlock> fallback, notice;
+    // Keep the label peers alive while mounted; the native visual tree alone
+    // does not preserve weak WinRT peers. These labels have no Reader callbacks.
+    TextBlock fallback{nullptr}, notice{nullptr};
     weak_ref<Button> imageButton;
     weak_ref<CheckBox> plainButton;
     CoreWebView2 core{nullptr};
@@ -207,7 +209,7 @@ struct Reader {
             std::fflush(stderr);
         } catch (...) { /* Diagnostics must not replace the original runtime failure. */ }
     }
-    void say(hstring const& value) { if (auto target = notice.get()) target.Text(value); }
+    void say(hstring const& value) { if (notice) notice.Text(value); }
     void close() {
         cancelled->store(true);
         active = false; images = false; ready = false; ++epoch;
@@ -215,8 +217,12 @@ struct Reader {
         if (auto target = view.get()) { try { target.Close(); } catch (hresult_error const&) {} }
         core = nullptr; environment = nullptr;
     }
+    void unload() {
+        close();
+        fallback = nullptr; notice = nullptr;
+    }
     void fail() {
-        if (auto target = fallback.get()) target.Visibility(xaml::Visibility::Visible);
+        if (fallback) fallback.Visibility(xaml::Visibility::Visible);
         if (auto target = view.get()) target.Visibility(xaml::Visibility::Collapsed);
         if (auto target = imageButton.get()) target.IsEnabled(false);
         if (auto target = plainButton.get()) target.IsEnabled(false);
@@ -230,7 +236,7 @@ struct Reader {
         ++epoch; expectingDocument = false; expectedDocumentBase64 = {};
         if (auto target = view.get()) {
             target.Visibility(plain ? xaml::Visibility::Collapsed : xaml::Visibility::Visible);
-            if (auto text = fallback.get()) text.Visibility(plain ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
+            if (fallback) fallback.Visibility(plain ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
             if (auto image = imageButton.get()) {
                 image.Visibility(plain || !hasImages ? xaml::Visibility::Collapsed : xaml::Visibility::Visible);
                 image.Content(box_value(images ? L"Hide External Images" : L"Load External Images…"));
@@ -430,7 +436,7 @@ std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel con
         state->html = html; state->serviceOrigin = shell->service->origin();
         state->hasImages = std::wstring_view(html).find(L"<img") != std::wstring_view::npos;
         state->profilePath = shell->service->directory() / L"reader-webview2";
-        state->fallback = make_weak(plain);
+        state->fallback = plain;
         auto reader = stack(8);
         auto toolbar = stack(); toolbar.Orientation(Orientation::Horizontal);
         CheckBox plainToggle; plainToggle.Content(box_value(L"Plain text")); state->plainButton = make_weak(plainToggle);
@@ -439,7 +445,7 @@ std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel con
         images.IsEnabled(false); state->imageButton = make_weak(images);
         if (!state->hasImages) images.Visibility(xaml::Visibility::Collapsed);
         toolbar.Children().Append(images); reader.Children().Append(toolbar);
-        auto notice = label(L"Loading formatted mail. External images are blocked.", 12); state->notice = make_weak(notice);
+        auto notice = label(L"Loading formatted mail. External images are blocked.", 12); state->notice = notice;
         reader.Children().Append(notice);
         // A bounded viewport lets the HTML surface itself scroll under the cursor.
         // No script bridge or injected measurement script is needed.
@@ -451,7 +457,7 @@ std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel con
         plainToggle.Checked([state](auto const&, auto const&) { state->plain = true; state->images = false; state->render(); });
         plainToggle.Unchecked([state](auto const&, auto const&) { state->plain = false; state->render(); });
         reader.Loaded([state](auto const&, auto const&) { initialize(state); });
-        reader.Unloaded([state](auto const&, auto const&) { state->close(); });
+        reader.Unloaded([state](auto const&, auto const&) { state->unload(); });
         panel.Children().Append(reader);
         return state;
     } catch (hresult_error const&) {
@@ -499,9 +505,10 @@ bool documentReady(std::shared_ptr<Reader> const& state) {
         && state->completedDocumentId == state->documentId;
 }
 void checkFallback(std::shared_ptr<Reader> const& state, hstring const& body) {
-    auto plain = state->fallback.get(); auto view = state->view.get();
+    auto plain = state->fallback; auto view = state->view.get();
     runtimeCheck(bool(plain), L"Reader fallback: textBlockMissing.");
     runtimeCheck(plain.Text() == body, L"Reader fallback: bodyMismatch.");
+    runtimeCheck(plain.IsLoaded(), L"Reader fallback: plainNotLoaded.");
     runtimeCheck(plain.Visibility() == xaml::Visibility::Visible, L"Reader fallback: plainNotVisible.");
     runtimeCheck(bool(view), L"Reader fallback: webViewMissing.");
     runtimeCheck(view.Visibility() == xaml::Visibility::Collapsed, L"Reader fallback: webViewNotCollapsed.");
@@ -528,7 +535,7 @@ struct RuntimeCleanup {
     bool observing = false;
     ~RuntimeCleanup() {
         // Keep the final deny installed until the browser has closed.
-        for (auto const& state : readers) state->close();
+        for (auto const& state : readers) state->unload();
         if (audits) { try { audits.DevToolsProtocolEventReceived(audit); } catch (...) {} }
         if (observing && core) {
             try { core.WebResourceRequested(resource); } catch (...) {}
@@ -785,6 +792,7 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     co_await runtimeWait([state] { return !state->active; }, deadline, L"unload-close");
     runtimeCheck(!state->ready && !state->core && !state->environment && state->cancelled->load()
         && !state->expectingDocument && state->expectedDocumentBase64.empty(), L"Unloading the reader did not close its browser and cancel work.");
+    runtimeCheck(!state->fallback && !state->notice, L"Unloading the reader retained its label peers.");
     bool closed = false;
     phase("closed-script");
     try { co_await runtimeScript(core, L"({ unexpectedClosedExecution: true })", deadline, L"closed-script"); }
@@ -799,6 +807,7 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     auto fallback = mountReader(shell, panel, fixture);
     runtimeCheck(fallback != nullptr, L"The fallback reader could not mount.");
     cleanup.readers.push_back(fallback); fallback->fail();
+    co_await runtimeWait([fallback] { return fallback->fallback && fallback->fallback.IsLoaded(); }, deadline, L"failure-fallback");
     checkFallback(fallback, text(fixture, L"body"));
     runtimeCheck(!fallback->active && !fallback->core && fallback->cancelled->load()
         && !fallback->imageButton.get().IsEnabled() && !fallback->plainButton.get().IsEnabled(),

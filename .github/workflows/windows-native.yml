@@ -54,6 +54,8 @@ jobs:
   native:
     runs-on: windows-2022
     timeout-minutes: 60
+    outputs:
+      packaged: ${{ steps.package.outcome }}
     env:
       CARGO_INCREMENTAL: '0'
     steps:
@@ -95,6 +97,7 @@ jobs:
         shell: pwsh
         run: ./scripts/test-windows-native.ps1 -UiSmoke
       - name: Measure native Windows service with fictional mail
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         shell: pwsh
         run: |
           if (Get-Command node,npm -ErrorAction SilentlyContinue) { throw 'Node/npm must not be available to native checks.' }
@@ -104,6 +107,7 @@ jobs:
           & $driver "--binary=$binary" "--output=$report" '--sizes=1000,10000,50000' '--idleSeconds=30'
           if ($LASTEXITCODE -ne 0) { throw 'Native service benchmark failed; inspect its report.' }
       - name: Retain paired Windows candidate
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: morrow-windows-x64
@@ -130,6 +134,9 @@ jobs:
           retention-days: 3
   historical-upgrade:
     needs: [native, macos-native]
+    # Preservation is independent of reader UI acceptance. A failed native job
+    # still fails this workflow and can never satisfy the publisher's all-job gate.
+    if: ${{ !cancelled() && needs.macos-native.result == 'success' && needs.native.outputs.packaged == 'success' }}
     strategy:
       fail-fast: false
       matrix:

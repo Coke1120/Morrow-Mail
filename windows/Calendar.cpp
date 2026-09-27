@@ -265,7 +265,7 @@ struct CalendarPage {
     weak_ref<StackPanel> filters, agenda, form, recovery, errors, monthControls;
     weak_ref<Grid> grid;
     weak_ref<ContentControl> filtersContainer, monthControlsContainer, gridContainer, formContainer, recoveryContainer;
-    weak_ref<TextBlock> notice, progress, monthLabel;
+    TextBlock notice{nullptr}, progress{nullptr}, monthLabel{nullptr};
     weak_ref<Button> refresh, newEvent, connections, reviewButton;
     weak_ref<ComboBox> destination, reminder;
     weak_ref<DatePicker> startDate, endDate;
@@ -274,7 +274,7 @@ struct CalendarPage {
     weak_ref<NumberBox> minutes;
     bool live(std::shared_ptr<Shell> const& host) const { return active && host && host->current(generation, owner) && host->section == L"calendar"; }
     bool current(uint64_t value) const { return value == revision && live(shell.lock()); }
-    void say(hstring const& message) { if (live(shell.lock())) if (auto view = notice.get()) view.Text(message); }
+    void say(hstring const& message) { if (live(shell.lock())) if (auto view = notice) view.Text(message); }
     std::vector<Source> checked() const {
         std::set<std::wstring> defaults;
         for (auto p : {L"google", L"microsoft"}) {
@@ -399,7 +399,7 @@ void renderAgenda(Page const& state) {
 void renderMonth(Page const& state) {
     auto grid = state->grid.get(); if (!grid) return; grid.Children().Clear();
     Windows::Globalization::DateTimeFormatting::DateTimeFormatter formatter(L"month.full year");
-    if (auto heading = state->monthLabel.get()) heading.Text(formatter.Format(DateTime{TimeSpan{localInstant(systemDay(state->month, 12))}}));
+    if (auto heading = state->monthLabel) heading.Text(formatter.Format(DateTime{TimeSpan{localInstant(systemDay(state->month, 12))}}));
     wchar_t const* weekdays[] = {L"Sun", L"Mon", L"Tue", L"Wed", L"Thu", L"Fri", L"Sat"};
     for (int i = 0; i < 7; ++i) { auto title = label(weekdays[i]); xaml::Controls::Grid::SetColumn(title, i); grid.Children().Append(title); }
     auto first = gridStart(state->month);
@@ -433,7 +433,7 @@ IAsyncAction loadMonth(Page state) {
         state->queued = false; auto revision = state->revision; auto month = state->month;
         try {
             if (state->catalogNeeded || !state->catalogReady) {
-                if (auto view = state->progress.get()) view.Text(L"Loading calendars…");
+                if (auto view = state->progress) view.Text(L"Loading calendars…");
                 restorePending(state); renderRecovery(state);
                 state->readRequest = host->service->request(L"/calendars"); auto catalog = co_await state->readRequest; state->readRequest = nullptr;
                 if (!state->current(revision) || cancellation()) continue;
@@ -448,7 +448,7 @@ IAsyncAction loadMonth(Page state) {
             size_t complete = 0;
             for (auto const& source : selected) {
                 if (!state->current(revision) || cancellation()) break;
-                if (auto view = state->progress.get()) view.Text(L"Loading calendars · " + to_hstring(complete) + L" / " + to_hstring(selected.size()));
+                if (auto view = state->progress) view.Text(L"Loading calendars · " + to_hstring(complete) + L" / " + to_hstring(selected.size()));
                 try {
                     auto path = L"/calendars/" + source.provider + L"/events?calendarId=" + escaped(source.id) + L"&start=" + escaped(utcText(beginning)) + L"&end=" + escaped(utcText(ending));
                     state->readRequest = host->service->request(path); auto result = co_await state->readRequest; state->readRequest = nullptr;
@@ -470,7 +470,7 @@ IAsyncAction loadMonth(Page state) {
         }
     }
     state->readRequest = nullptr; state->reading = false;
-    if (state->live(host)) { if (auto view = state->progress.get()) view.Text(L""); renderAgenda(state); updateControls(state); }
+    if (state->live(host)) { if (auto view = state->progress) view.Text(L""); renderAgenda(state); updateControls(state); }
 }
 
 IAsyncAction closeEvent(Page state) {
@@ -588,20 +588,24 @@ IAsyncAction calendarPage(std::shared_ptr<Shell> shell) {
         auto configure = button(L"Connections", [state] { connections(state); }); state->connections = make_weak(configure); actions.Children().Append(configure);
         auto refresh = button(L"Refresh calendars", [state] { queueRead(state, true); }); state->refresh = make_weak(refresh); actions.Children().Append(refresh); panel.Children().Append(actions);
         auto recovery = stack(); state->recovery = make_weak(recovery); appendContainer(recovery, state->recoveryContainer);
-        auto notice = label(L""); state->notice = make_weak(notice); panel.Children().Append(notice);
+        auto notice = label(L""); state->notice = notice; panel.Children().Append(notice);
         auto filters = stack(); state->filters = make_weak(filters); appendContainer(filters, state->filtersContainer);
         auto navigation = stack(); navigation.Orientation(Orientation::Horizontal); state->monthControls = make_weak(navigation);
         auto move = [state](int offset) { if (state->creating || state->formOpen) return; try { auto date = std::chrono::year_month_day{state->month} + std::chrono::months{offset}; require(int(date.year()) >= 1901 && int(date.year()) < 9999, L"Choose a displayed month from 1901 to 9998 so its padded range stays valid."); state->month = civil(int(date.year()), unsigned(date.month()), 1); state->day = state->month; queueRead(state); } catch (hresult_error const& error) { state->say(error.message()); } };
         navigation.Children().Append(button(L"Previous month", [move] { move(-1); })); navigation.Children().Append(button(L"Today", [state] { if (state->creating || state->formOpen) return; state->day = today(); state->month = firstOfMonth(state->day); queueRead(state); })); navigation.Children().Append(button(L"Next month", [move] { move(1); }));
-        auto month = label(L"", 22); state->monthLabel = make_weak(month); navigation.Children().Append(month); appendContainer(navigation, state->monthControlsContainer);
-        auto progress = label(L"Loading calendars…"); state->progress = make_weak(progress); panel.Children().Append(progress);
+        auto month = label(L"", 22); state->monthLabel = month; navigation.Children().Append(month); appendContainer(navigation, state->monthControlsContainer);
+        auto progress = label(L"Loading calendars…"); state->progress = progress; panel.Children().Append(progress);
         auto errors = stack(); state->errors = make_weak(errors); panel.Children().Append(errors);
         Grid grid; for (int i = 0; i < 7; ++i) { ColumnDefinition column; column.Width(xaml::GridLengthHelper::FromValueAndType(1, xaml::GridUnitType::Star)); grid.ColumnDefinitions().Append(column); RowDefinition row; row.Height(xaml::GridLengthHelper::Auto()); grid.RowDefinitions().Append(row); } state->grid = make_weak(grid); appendContainer(grid, state->gridContainer);
         auto create = button(L"New event", [state] { openEvent(state, state->day); }); state->newEvent = make_weak(create); panel.Children().Append(create);
         panel.Children().Append(label(L"Check a writable calendar to create events. Read-only calendars can be selected and viewed."));
         auto form = stack(); state->form = make_weak(form); appendContainer(form, state->formContainer);
         auto agenda = stack(16); state->agenda = make_weak(agenda); panel.Children().Append(agenda);
-        panel.Unloaded([state](auto const&, auto const&) { state->active = false; ++state->revision; state->queued = false; if (state->readRequest) state->readRequest.Cancel(); });
+        panel.Unloaded([state](auto const&, auto const&) {
+            state->active = false; ++state->revision; state->queued = false;
+            state->notice = nullptr; state->progress = nullptr; state->monthLabel = nullptr;
+            if (state->readRequest) state->readRequest.Cancel();
+        });
         shell->show(scroll(panel)); restoreChoices(state); restorePending(state); renderRecovery(state); renderMonth(state); renderAgenda(state); updateControls(state);
         state->queued = true; ++state->revision; co_await loadMonth(state);
     } catch (hresult_error const& error) { if (state->live(shell)) shell->error(error.message()); }
