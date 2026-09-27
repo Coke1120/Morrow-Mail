@@ -52,6 +52,22 @@ try checks.testCalendarRetrySurvivesRestartWithSamePayload()
 try checks.testPathAndTimezoneHandling()
 print("3 native model and recovery checks passed.")
 
+// Today follows the local calendar (including DST), and a completed job belongs
+// to its completion day rather than the day it was queued.
+var summaryCalendar = Calendar(identifier: .gregorian)
+summaryCalendar.timeZone = TimeZone(identifier: "America/New_York")!
+let summaryNow = try unwrap(parsedDate("2026-03-08T15:00:00Z"))
+let dayReports: [JSON] = [
+    .object(["id": .string("completed-today"), "status": .string("completed"), "createdAt": .string("2026-03-07T20:00:00Z"), "completedAt": .string("2026-03-08T05:00:00Z")]),
+    .object(["id": .string("yesterday"), "status": .string("completed"), "createdAt": .string("2026-03-08T05:00:00Z"), "completedAt": .string("2026-03-08T04:59:59Z")]),
+    .object(["id": .string("last-second"), "status": .string("running"), "createdAt": .string("2026-03-09T03:59:59Z")]),
+    .object(["id": .string("tomorrow"), "createdAt": .string("2026-03-09T04:00:00Z")]),
+    .object(["id": .string("invalid"), "createdAt": .string("not-a-date")]),
+]
+expectEqual(summariesForDay(dayReports, now: summaryNow, calendar: summaryCalendar).map(\.id), ["completed-today", "last-second"])
+expectEqual(summaryReportTimestamp(.object(["status": .string("completed"), "createdAt": .string("legacy-date")])), "legacy-date")
+print("Today summary local-day, DST and completion-date checks passed.")
+
 let copied = Draft(message: .object(["id": .string("draft"), "accountId": .string("first@example.com"), "to": .string("one@example.com, two@example.com"), "cc": .string("copy@example.com"), "bcc": .string("hidden@example.com")]))
 expectEqual(copied.payload["cc"].string, "copy@example.com")
 expectEqual(copied.payload["bcc"].string, "hidden@example.com")

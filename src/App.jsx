@@ -11,6 +11,7 @@ import MessageBody from './MessageBody';
 import MessageAI from './MessageAI';
 import Settings from './Settings';
 import ActivityStatus from './ActivityStatus';
+import Dashboard from './Dashboard';
 import Studio from './Studio';
 import Calendar from './Calendar';
 import { AI_BEHAVIORS, DEFAULT_POLICY, DEFAULT_PREFERENCES } from '../shared/features';
@@ -243,6 +244,7 @@ export default function App() {
   const [studioDirty, setStudioDirty] = useState(false);
   const [studioBusy, setStudioBusy] = useState(false);
   const [studioSelectedId, setStudioSelectedId] = useState(null);
+  const [studioInitialTab, setStudioInitialTab] = useState('tools');
   const settingsOpen = page === 'settings';
   const [compose, setCompose] = useState(null);
   const [organizing, setOrganizing] = useState(null);
@@ -344,7 +346,7 @@ export default function App() {
         if (key === 'r') { event.preventDefault(); if (event.shiftKey) { if (page === 'mail' && selected?.folder !== 'drafts') reply(); } else sync(); }
         if (['1', '2', '3'].includes(key)) { event.preventDefault(); if (key === '1') changeFolder('inbox'); else if (key === '2') openStudio(); else navigate('calendar'); }
       }
-      if (event.key === '/' && !editing && !settingsOpen && !compose) { event.preventDefault(); searchInput.current?.focus(); }
+      if (event.key === '/' && !editing && page === 'mail' && !compose) { event.preventDefault(); searchInput.current?.focus(); }
       if (event.key === 'Escape') { setSidebarOpen(false); if (!settingsOpen && !compose) setAssistantOpen(false); }
     }
     document.addEventListener('keydown', shortcut); return () => document.removeEventListener('keydown', shortcut);
@@ -352,7 +354,7 @@ export default function App() {
 
   const hasMailbox = !!state?.accounts.length && state.account.id !== 'demo';
   const messages = hasMailbox ? state.messages : [];
-  const mail = useMailPage(hasMailbox ? state.account.id : null, state?.revision, { folder, category, sort: preferences.sort });
+  const mail = useMailPage(hasMailbox && page !== 'today' ? state.account.id : null, state?.revision, { folder, category, sort: preferences.sort });
   const filtered = hasMailbox ? searchResult?.messages ?? mail.messages : [];
   const selectedRow = filtered.find(message => messageKey(message) === selectedId) ||
     (detail && (!selectedId || messageKey(detail) === selectedId) && !searchResult && (state?.account.id === detail.accountId || state?.account.id === 'all' && state.accounts.some(a => a.id === detail.accountId)) && (folder === 'starred' ? detail.starred && !['trash', 'spam'].includes(detail.folder) : detail.folder === folder) && (category === 'all' || detail.category === category) ? detail : filtered[0]) || null;
@@ -361,13 +363,13 @@ export default function App() {
   const unread = (state?.accounts || []).filter(item => state.account.id === 'all' || item.id === state.account.id).reduce((sum, item) => sum + item.unread, 0);
   useEffect(() => {
     setDetailError('');
-    if (!selectedRow) return;
+    if (page === 'today' || !selectedRow) return;
     const controller = new AbortController();
     api('/messages/' + encodeURIComponent(selectedRow.id), { account: selectedRow.accountId, signal: controller.signal })
       .then(result => { if (!controller.signal.aborted) { setDetail(result.message); if (draftToOpen === messageKey(result.message)) { setCompose(result.message); setDraftToOpen(null); } } })
       .catch(cause => { if (!controller.signal.aborted) { setDetail(null); setDetailError(cause.message); setDraftToOpen(null); } });
     return () => controller.abort();
-  }, [selectedRow?.viewId, state?.revision, draftToOpen, detailRetry]);
+  }, [selectedRow?.viewId, state?.revision, draftToOpen, detailRetry, page]);
   const currentFolder = folders.find(item => item.id === folder);
   const selectedIndex = filtered.findIndex(message => messageKey(message) === messageKey(selected));
   const localUpdate = useCallback(() => {
@@ -415,7 +417,7 @@ export default function App() {
     setPage(next); setSidebarOpen(false); return true;
   }
   function setSettingsOpen(open, tab = 'general') { if (open) setSettingsTab(tab === 'permissions' ? 'policy' : tab); navigate(open ? 'settings' : 'mail'); }
-  function openStudio() { if (navigate('studio')) setStudioSelectedId(selected ? messageKey(selected) : null); }
+  function openStudio(tab = 'tools') { if (navigate('studio')) { setStudioInitialTab(tab === 'summaries' ? 'summaries' : 'tools'); setStudioSelectedId(tab !== 'summaries' && selected ? messageKey(selected) : null); } }
   function allowed(action, message = null) { return (state?.account.id !== 'all' || !!message) && policy.enabled && policy.behaviors[action] && (!message || policy.folders[message.folder]) && (action === 'write' || (['subject', 'body', 'sender'].some(field => policy.content[field]) && (message || Object.values(policy.folders).some(Boolean)))); }
   function changeFolder(next) { if (!navigate('mail')) return; setDetail(null); setDraftToOpen(null); setFolder(next); setCategory('all'); setQuery(''); setSearchResult(null); setSelectedId(null); setMobileReading(false); setSidebarOpen(false); }
   function selectMessage(message) { setSelectedId(messageKey(message)); setMobileReading(true); if (message.folder === 'drafts') setDraftToOpen(messageKey(message)); }
@@ -445,13 +447,13 @@ export default function App() {
     try { const next = await api('/settings/preferences', { account: state.account, method: 'POST', body: JSON.stringify({ [key]: value }) }); if (version === accountVersion.current) setState(next); }
     catch (error) { notify(error.message, 'error'); }
   }
-  async function selectAccount(accountId, nextFolder = 'inbox') {
-    if (syncing || settingsBusy || pendingIds.size || compose || !navigate('mail')) return;
-    if (accountId === state.account.id) { changeFolder(nextFolder); return; }
-    setSyncing(true);
+  async function selectAccount(accountId, nextFolder = 'inbox', nextPage = 'mail') {
+    if (syncLock.current || syncing || settingsBusy || pendingIds.size || compose || !navigate(nextPage)) return;
+    if (accountId === state.account.id) { if (nextPage === 'mail') changeFolder(nextFolder); return; }
+    syncLock.current = true; setSyncing(true);
     try { applyState(await api('/account/select', { method: 'POST', body: JSON.stringify({ accountId }) })); setFolder(nextFolder); setSidebarOpen(false); }
     catch (cause) { notify(cause.message, 'error'); }
-    finally { setSyncing(false); }
+    finally { syncLock.current = false; setSyncing(false); }
   }
 
 
@@ -462,6 +464,11 @@ export default function App() {
     <aside className="sidebar" aria-label="Mailbox navigation">
       <a href="#" className="brand" onClick={event => { event.preventDefault(); changeFolder('inbox'); }}><img className="brand-image" src="/brand/morrow-icon.svg" alt="" /><span>morrow<span className="brand-dot">.</span></span><span className="open-tag">OPEN</span></a>
       <button className="compose-button" disabled={settingsBusy || !hasMailbox} onClick={() => { setCompose({}); setSidebarOpen(false); }}><Pencil size={18} />Compose<span><Plus size={16} /></span></button>
+      <div className="nav-label">WORKSPACE</div>
+      <button className={`nav-item today-nav ${page === 'today' ? 'active' : ''}`} onClick={() => navigate('today')} aria-current={page === 'today' ? 'page' : undefined}><CalendarDays size={19} /><span>Today</span></button>
+      <button className={`nav-item studio-nav ${page === 'studio' ? 'active' : ''}`} onClick={openStudio} aria-current={page === 'studio' ? 'page' : undefined}><Sparkles size={19} /><span>AI Studio</span><span className="tiny-tag">{AI_BEHAVIORS.length}</span></button>
+      <button className={`nav-item ${page === 'calendar' ? 'active' : ''}`} onClick={() => navigate('calendar')} aria-current={page === 'calendar' ? 'page' : undefined}><CalendarDays size={19} /><span>Calendar</span></button>
+      <button className={`nav-item assistant-nav ${assistantOpen ? 'selected' : ''}`} disabled={!hasMailbox} onClick={() => { if (navigate('mail')) setAssistantOpen(previous => !previous); }}><Sparkles size={19} /><span>AI assistant</span><span className="tiny-tag">AI</span></button>
       <div className="nav-label">ACCOUNTS</div>
       <nav aria-label="Account views" className="account-groups">
         {[...(state.accounts.length ? [{ id: 'all', email: 'All accounts', provider: 'Combined mail' }] : []), ...state.accounts].map(account => <AccountGroup key={account.id} account={account} active={state.account.id === account.id}>
@@ -475,10 +482,6 @@ export default function App() {
       </nav>
       <button className="nav-item" onClick={() => setSettingsOpen(true, 'mail')}><Plus size={18} /><span>Add account</span></button>
       <div className="sidebar-divider" />
-      <button className={`nav-item ${page === 'calendar' ? 'active' : ''}`} onClick={() => navigate('calendar')} aria-current={page === 'calendar' ? 'page' : undefined}><CalendarDays size={19} /><span>Calendar</span></button>
-      <div className="sidebar-divider" />
-      <button className={`nav-item assistant-nav ${assistantOpen ? 'selected' : ''}`} disabled={!hasMailbox} onClick={() => { if (navigate('mail')) setAssistantOpen(previous => !previous); }}><Sparkles size={19} /><span>AI assistant</span><span className="tiny-tag">AI</span></button>
-      <button className={`nav-item studio-nav ${page === 'studio' ? 'active' : ''}`} onClick={openStudio} aria-current={page === 'studio' ? 'page' : undefined}><Sparkles size={19} /><span>AI Studio</span><span className="tiny-tag">{AI_BEHAVIORS.length}</span></button>
       <div className="sidebar-bottom"><div className="local-card"><div className="local-card-icon"><Leaf size={18} /></div><strong>A calmer kind of email.</strong><p>Open source. Local first.<br />Always on your terms.</p><div className="local-status"><span />Your workspace, your device</div></div>
         <button className="sidebar-settings" onClick={() => { setSettingsOpen(true); setSidebarOpen(false); }}><SettingsIcon size={18} /><span>Settings & connections</span></button>
         <button className="account-button" onClick={() => { setSettingsOpen(true); setSidebarOpen(false); }}><Avatar name={preferences.displayName || (hasMailbox ? state.account.name || state.account.email : 'Morrow Mail')} /><span className="account-text"><strong>{preferences.displayName || (hasMailbox ? state.account.name || state.account.email.split('@')[0] : 'Morrow Mail')}</strong><small>{!hasMailbox ? 'Add an account' : state.account.id === 'all' ? `${state.accounts.length} connected accounts` : state.account.email}</small></span><ChevronDown size={15} /></button>
@@ -486,9 +489,9 @@ export default function App() {
     </aside>
 
     <main className="workspace">
-      <header className="topbar"><div className="breadcrumbs"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}><Menu size={20} /></button><span className="breadcrumb-home">Workspace</span><ChevronRight size={13} /><strong>{page === 'settings' ? 'Settings' : page === 'studio' ? 'AI Studio' : page === 'calendar' ? 'Calendar' : currentFolder.name}</strong></div><div className="topbar-right"><span className={`mode-badge ${state.account.mode}`}><span />{page === 'calendar' ? 'Live calendars' : !hasMailbox ? 'No mailbox selected' : 'Connected'}</span><button className="topbar-sync" aria-label="Sync mail" onClick={() => sync()} disabled={!hasMailbox || syncing || settingsBusy || pendingIds.size > 0}><RefreshCw size={14} className={syncing ? 'spinning' : ''} /><span>{syncing ? 'Syncing…' : 'Sync mail'}</span></button><span className="topbar-separator" /><IconButton icon={SettingsIcon} label="Settings and connections" onClick={() => setSettingsOpen(true)} /></div></header>
+      <header className="topbar"><div className="breadcrumbs"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}><Menu size={20} /></button><span className="breadcrumb-home">Workspace</span><ChevronRight size={13} /><strong>{page === 'today' ? 'Today' : page === 'settings' ? 'Settings' : page === 'studio' ? 'AI Studio' : page === 'calendar' ? 'Calendar' : currentFolder.name}</strong></div><div className="topbar-right"><span className={`mode-badge ${state.account.mode}`}><span />{page === 'calendar' ? 'Live calendars' : !hasMailbox ? 'No mailbox selected' : 'Connected'}</span><button className="topbar-sync" aria-label="Sync mail" onClick={() => sync()} disabled={!hasMailbox || syncing || settingsBusy || pendingIds.size > 0}><RefreshCw size={14} className={syncing ? 'spinning' : ''} /><span>{syncing ? 'Syncing…' : 'Sync mail'}</span></button><span className="topbar-separator" /><IconButton icon={SettingsIcon} label="Settings and connections" onClick={() => setSettingsOpen(true)} /></div></header>
       <div style={{ padding: '0 20px', borderBottom: '1px solid var(--border)' }}><ActivityStatus value={activity} error={activityError} onOpenSettings={() => setSettingsOpen(true, 'mail')} /></div>
-      {page === 'settings' ? <Settings page initialTab={settingsTab} state={state} onClose={() => { setSettingsDirty(false); setPage('mail'); setFolder('inbox'); setCategory('all'); setQuery(''); setSearchResult(null); setSelectedId(null); setMobileReading(false); }} onUpdate={applyState} notify={notify} onDirtyChange={setSettingsDirty} onBusyChange={setSettingsBusy} /> : page === 'calendar' ? <Calendar onNotify={notify} onOpenSettings={() => setSettingsOpen(true, 'calendar')} onDirtyChange={setCalendarDirty} onBusyChange={setCalendarBusy} /> : !hasMailbox ? <div className="reader-empty"><Mail size={42} /><h2>{state.accounts.length ? 'Choose a mailbox' : 'Add your first account'}</h2><p>Connect Gmail, Outlook, or an IMAP account to start reading your mail.</p><button className="button primary" onClick={() => setSettingsOpen(true, 'mail')}><Plus size={16} />Add account</button></div> : page === 'studio' ? state.account.id === 'all' ? <div className="page-heading"><div><h1>Choose an account.</h1><p>Select a mailbox in the sidebar to use its AI Studio. Each account has its own context, skills, and activity.</p></div></div> : <Studio key={state.account.id} onDirtyChange={setStudioDirty} onBusyChange={setStudioBusy} state={state} selectedMessage={selected && messageKey(selected) === studioSelectedId ? selected : messages.find(message => messageKey(message) === studioSelectedId) || null} onUpdate={applyState} onCompose={setCompose} onSettings={tab => setSettingsOpen(true, tab)} notify={notify} /> : <>
+      {page === 'settings' ? <Settings page initialTab={settingsTab} state={state} onClose={() => { setSettingsDirty(false); setPage('mail'); setFolder('inbox'); setCategory('all'); setQuery(''); setSearchResult(null); setSelectedId(null); setMobileReading(false); }} onUpdate={applyState} notify={notify} onDirtyChange={setSettingsDirty} onBusyChange={setSettingsBusy} /> : page === 'calendar' ? <Calendar onNotify={notify} onOpenSettings={() => setSettingsOpen(true, 'calendar')} onDirtyChange={setCalendarDirty} onBusyChange={setCalendarBusy} /> : page === 'today' ? <Dashboard state={state} busy={syncing || pendingIds.size > 0} onSelectAccount={accountId => selectAccount(accountId, 'inbox', 'today')} onSettings={tab => setSettingsOpen(true, tab)} onStudio={() => openStudio('summaries')} onInbox={unreadOnly => { changeFolder('inbox'); if (unreadOnly) { setQuery('is:unread'); setSearchResult({ messages: [], waiting: true }); } }} /> : !hasMailbox ? <div className="reader-empty"><Mail size={42} /><h2>{state.accounts.length ? 'Choose a mailbox' : 'Add your first account'}</h2><p>Connect Gmail, Outlook, or an IMAP account to start reading your mail.</p><button className="button primary" onClick={() => setSettingsOpen(true, 'mail')}><Plus size={16} />Add account</button></div> : page === 'studio' ? state.account.id === 'all' ? <div className="page-heading"><div><h1>Choose an account.</h1><p>Select a mailbox in the sidebar to use its AI Studio. Each account has its own context, skills, and activity.</p></div></div> : <Studio key={state.account.id} initialTab={studioInitialTab} onDirtyChange={setStudioDirty} onBusyChange={setStudioBusy} state={state} selectedMessage={selected && messageKey(selected) === studioSelectedId ? selected : messages.find(message => messageKey(message) === studioSelectedId) || null} onUpdate={applyState} onCompose={setCompose} onSettings={tab => setSettingsOpen(true, tab)} notify={notify} /> : <>
       <div className="page-heading"><div><div className="eyebrow"><span />A LITTLE MORE HEADSPACE</div><h1>{currentFolder.name}<span className="heading-period">.</span></h1><p>{folder === 'inbox' ? unread ? `You have ${unread} unread ${unread === 1 ? 'message' : 'messages'}. Let’s make room for what matters.` : 'You’re all caught up. Make room for what matters.' : folder === 'starred' ? 'The conversations you want to keep close.' : folder === 'drafts' ? 'Good things start with a few words.' : folder === 'sent' ? 'Thoughts shared. Conversations started.' : folder === 'archive' ? 'Out of the way. Always here when you need them.' : 'A little room to let things go.'}</p></div><button className={`button assistant-toggle ${assistantOpen ? 'is-active' : ''}`} aria-label="Ask your inbox" onClick={() => setAssistantOpen(previous => !previous)} aria-expanded={assistantOpen}><Sparkles size={17} /><span>Ask your inbox</span><span className="keyboard-hint">AI</span></button></div>
       <div className={`mail-workspace layout-${mailLayout} ${mobileReading ? 'show-reader' : ''} ${assistantOpen ? 'with-assistant' : ''}`}>
         <section className="message-pane" aria-label="Messages">

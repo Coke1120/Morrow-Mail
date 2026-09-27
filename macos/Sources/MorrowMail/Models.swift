@@ -156,6 +156,15 @@ func dateLabel(_ value: String) -> String {
     guard let date = parsedDate(value) else { return value }
     return date.formatted(date: .abbreviated, time: .shortened)
 }
+func summaryReportTimestamp(_ report: JSON) -> String {
+    report["status"].string == "completed" && report["completedAt"].nonempty ? report["completedAt"].string : report["createdAt"].string
+}
+func summariesForDay(_ reports: [JSON], now: Date = Date(), calendar: Calendar = .current) -> [JSON] {
+    reports.filter { report in
+        guard let date = parsedDate(summaryReportTimestamp(report)) else { return false }
+        return calendar.isDate(date, inSameDayAs: now)
+    }
+}
 func utcDate(_ date: Date) -> String { ISO8601DateFormatter().string(from: date) }
 func providerLabel(_ id: String) -> String { id == "google" ? "Google" : "Outlook" }
 

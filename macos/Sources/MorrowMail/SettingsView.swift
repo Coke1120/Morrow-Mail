@@ -14,7 +14,7 @@ struct NativeSettingsView: View {
     @State private var mailStatusVersion = 0
     @State private var importRefreshError = ""
     @State private var searchDirty = false
-    @State private var searchBusy = false
+    @State private var searchRequestBusy = false
     @State private var learningDirty = false
     @State private var importSettings: JSON = .object(["months": .number(3), "inbox": .bool(true), "sent": .bool(true), "allMail": .bool(true)])
     @State private var provider = "google"
@@ -32,7 +32,7 @@ struct NativeSettingsView: View {
     var dirty: Bool { searchDirty || learningDirty || values != baseline || mailOAuth.object.values.contains { $0.object.values.contains(where: \.nonempty) } || calendarOAuth.object.values.contains { $0.object.values.contains(where: \.nonempty) } }
     var body: some View {
         VStack(spacing: 0) {
-            HStack { Text("Your workspace").font(.title2.bold()); Spacer(); if dirty { Text("Unsaved changes").font(.caption).foregroundStyle(.secondary) }; Button("Done") { close() }.keyboardShortcut(.cancelAction).disabled(model.busy || searchBusy || preferenceSaving) }.padding(22)
+            HStack { Text("Your workspace").font(.title2.bold()); Spacer(); if dirty { Text("Unsaved changes").font(.caption).foregroundStyle(.secondary) }; Button("Done") { close() }.keyboardShortcut(.cancelAction).disabled(model.busy || searchRequestBusy || preferenceSaving) }.padding(22)
             Divider()
             HStack(spacing: 0) {
                 List(tabs, id: \.0, selection: Binding(get: { model.settingsTab }, set: { next in
@@ -43,11 +43,11 @@ struct NativeSettingsView: View {
                         switch model.settingsTab {
                         case "mail": mailPage
                         case "learning": StyleLearningView(dirty: $learningDirty)
-                        case "search": NativeSearchSettingsView(dirty: $searchDirty, operationBusy: $searchBusy, onConfigureModel: { selectTab("model") })
+                        case "search": NativeSearchSettingsView(dirty: $searchDirty, operationBusy: $searchRequestBusy, onConfigureModel: { selectTab("model") })
                         case "model":
-                            modelPage.disabled(searchBusy)
+                            modelPage.disabled(searchRequestBusy)
                             Divider()
-                            NativeSearchSettingsView(dirty: $searchDirty, operationBusy: $searchBusy, presentation: .model)
+                            NativeSearchSettingsView(dirty: $searchDirty, operationBusy: $searchRequestBusy, presentation: .model)
                         case "permissions": permissionsPage
                         case "calendar": calendarPage
                         case "about": aboutPage
@@ -64,19 +64,19 @@ struct NativeSettingsView: View {
             }.padding(14).frame(minHeight: 45)
         }.frame(width: 900, height: min(700, (NSScreen.main?.visibleFrame.height ?? 850) - 100))
         .textFieldStyle(.roundedBorder)
-        .interactiveDismissDisabled(dirty || model.busy || searchBusy || preferenceSaving)
+        .interactiveDismissDisabled(dirty || model.busy || searchRequestBusy || preferenceSaving)
         .onAppear { initialize(); visible = true }
         .onChange(of: searchDirty) { _ in model.dirty("settings", dirty) }
-        .onChange(of: searchBusy) { _ in model.dirty("search-index", searchBusy) }
+        .onChange(of: searchRequestBusy) { _ in model.dirty("search-request", searchRequestBusy) }
         .onChange(of: learningDirty) { _ in model.dirty("settings", dirty) }
         .onChange(of: values) { _ in model.dirty("settings", dirty) }
         .onChange(of: values["preferences"]) { _ in preferenceError = ""; schedulePreferences() }
         .onChange(of: model.busy) { _ in schedulePreferences() }
-        .onChange(of: searchBusy) { _ in schedulePreferences() }
+        .onChange(of: searchRequestBusy) { _ in schedulePreferences() }
         .onChange(of: model.state) { _ in mailStatusVersion += 1; mailSnapshot = .null }
         .onChange(of: mailOAuth) { _ in model.dirty("settings", dirty) }
         .onChange(of: calendarOAuth) { _ in model.dirty("settings", dirty) }
-        .onDisappear { visible = false; preferenceTask?.cancel(); model.dirty("settings", false); model.dirty("search-index", false) }
+        .onDisappear { visible = false; preferenceTask?.cancel(); model.dirty("settings", false); model.dirty("search-request", false) }
         .task(id: model.settingsTab) {
             let tab = model.settingsTab
             guard ["about", "mail"].contains(tab) else { return }
@@ -91,7 +91,7 @@ struct NativeSettingsView: View {
         }
     }
     private func selectTab(_ next: String) {
-        if searchBusy || model.busy || preferenceSaving { return }
+        if searchRequestBusy || model.busy || preferenceSaving { return }
         if (learningDirty || searchDirty) && !model.confirmDiscard("Discard unsaved learning, search or embedding settings?") { return }
         model.settingsTab = next
     }
@@ -493,7 +493,7 @@ struct NativeSettingsView: View {
     }
     func schedulePreferences() {
         preferenceTask?.cancel(); preferenceTask = nil
-        guard visible, !preferenceSaving, !model.busy, !searchBusy, preferenceError.isEmpty, !preferencePatch().object.isEmpty else { return }
+        guard visible, !preferenceSaving, !model.busy, !searchRequestBusy, preferenceError.isEmpty, !preferencePatch().object.isEmpty else { return }
         preferenceTask = Task { @MainActor in
             do { try await Task.sleep(nanoseconds: 600_000_000) } catch { return }
             guard !Task.isCancelled else { return }
@@ -503,7 +503,7 @@ struct NativeSettingsView: View {
     }
     @discardableResult
     func savePreferences() async -> Bool {
-        guard !preferenceSaving, !model.busy, !searchBusy else { return false }
+        guard !preferenceSaving, !model.busy, !searchRequestBusy else { return false }
         preferenceTask?.cancel(); preferenceTask = nil
         let sent = preferencePatch()
         guard !sent.object.isEmpty else { return true }
@@ -547,7 +547,7 @@ struct NativeSettingsView: View {
         model.perform { do { try await work() } catch { localError = error.localizedDescription } }
     }
     func close() {
-        guard !searchBusy, !model.busy, !preferenceSaving else { return }
+        guard !searchRequestBusy, !model.busy, !preferenceSaving else { return }
         Task { @MainActor in
             guard await savePreferences(), preferencePatch().object.isEmpty else { return }
             if !dirty || model.confirmDiscard() { dismiss() }

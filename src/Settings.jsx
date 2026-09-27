@@ -86,14 +86,14 @@ export default function Settings({ state, onClose, onUpdate, notify, page = fals
   const [importOptions, setImportOptions] = useState({ months: 3, inbox: true, sent: true, allMail: true });
   const canImport = id => !!(mailImportOptions(importOptions, id).allMail || importOptions.inbox || importOptions.sent);
   const [searchDirty, setSearchDirty] = useState(false);
-  const [searchBusy, setSearchBusy] = useState(false);
+  const [searchRequestBusy, setSearchRequestBusy] = useState(false);
   const [embeddingDirty, setEmbeddingDirty] = useState(false);
-  const [embeddingBusy, setEmbeddingBusy] = useState(false);
+  const [embeddingRequestBusy, setEmbeddingRequestBusy] = useState(false);
   const [learningDirty, setLearningDirty] = useState(false);
   const [learningBusy, setLearningBusy] = useState(false);
   const [calendarDirty, setCalendarDirty] = useState(false);
   const [calendarBusy, setCalendarBusy] = useState(false);
-  const otherOperationBusy = !!busy || calendarBusy || learningBusy || searchBusy || embeddingBusy;
+  const otherOperationBusy = !!busy || calendarBusy || learningBusy || searchRequestBusy || embeddingRequestBusy;
   const operationBusy = otherOperationBusy || preferencesSaving;
   const [error, setError] = useState('');
   const [mail, setMail] = useState(() => mailValues({}));
@@ -387,7 +387,7 @@ export default function Settings({ state, onClose, onUpdate, notify, page = fals
         </form>
       </section>
 
-      <div id="settings-panel-search" role="tabpanel" aria-labelledby="settings-tab-search" hidden={tab !== 'search'}><SearchSettings state={state} active={tab === 'search'} onDirtyChange={setSearchDirty} onBusyChange={setSearchBusy} onConfigureModel={() => changeTab('model')} disabled={!!busy || preferencesSaving || calendarBusy || learningBusy || embeddingBusy} /></div>
+      <div id="settings-panel-search" role="tabpanel" aria-labelledby="settings-tab-search" hidden={tab !== 'search'}><SearchSettings state={state} active={tab === 'search'} onDirtyChange={setSearchDirty} onBusyChange={setSearchRequestBusy} onConfigureModel={() => changeTab('model')} disabled={!!busy || preferencesSaving || calendarBusy || learningBusy || embeddingRequestBusy} /></div>
       <div id="settings-panel-learning" role="tabpanel" aria-labelledby="settings-tab-learning" hidden={tab !== 'learning'}><StyleLearning key={state.account.id} state={state} onUpdate={onUpdate} onDirtyChange={setLearningDirty} onBusyChange={setLearningBusy} disabled={!!busy || preferencesSaving || calendarBusy} /></div>
       <section id="settings-panel-mail" role="tabpanel" aria-labelledby="settings-tab-mail" hidden={tab !== 'mail'}>
         <fieldset className="settings-fields" disabled={operationBusy}>
@@ -570,7 +570,7 @@ export default function Settings({ state, onClose, onUpdate, notify, page = fals
             </div>
           </fieldset>
         </form>
-        <SearchSettings presentation="model" active={tab === 'model'} state={state} onDirtyChange={setEmbeddingDirty} onBusyChange={setEmbeddingBusy} disabled={!!busy || preferencesSaving || calendarBusy || learningBusy || searchBusy} />
+        <SearchSettings presentation="model" active={tab === 'model'} state={state} onDirtyChange={setEmbeddingDirty} onBusyChange={setEmbeddingRequestBusy} disabled={!!busy || preferencesSaving || calendarBusy || learningBusy || searchRequestBusy} />
       </section>
       <section id="settings-panel-policy" role="tabpanel" aria-labelledby="settings-tab-policy" hidden={tab !== 'policy'}>
         <form onSubmit={(event) => { event.preventDefault(); save('settings/policy', { ...policy, maxMessages: Number(policy.maxMessages) }, 'policy', 'AI permissions saved.'); }}>

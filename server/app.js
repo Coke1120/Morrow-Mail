@@ -213,11 +213,21 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
     const mail = connections()[account];
     if (!mail) fail('Connect a mailbox first.', 409);
     if (!mail.provider || mail.provider === 'imap') return mail;
+    let refreshed;
     try {
-      const refreshed = await api.refreshMail(mail);
-      saveConnection({ ...refreshed, email: account });
-      return refreshed;
-    } catch { fail('Your mailbox session expired. Reconnect this account in Settings.', 401); }
+      refreshed = await api.refreshMail(mail);
+    } catch (error) {
+      const code = ['oauth_reconnect_required', 'oauth_configuration'].includes(error.code) ? error.code : 'oauth_refresh_failed';
+      const [status, message, recoveryAction] = code === 'oauth_reconnect_required'
+        ? [401, 'Mailbox authorization is no longer valid. Reconnect this account in Settings; cached mail is retained.', 'reconnect']
+        : code === 'oauth_configuration' ? [502, "The provider rejected the OAuth app configuration. Check this account's OAuth client settings.", 'configure']
+          : [502, 'Could not refresh mailbox authorization. Saved account credentials are retained. Check your connection and try again shortly.', 'retry'];
+      throw Object.assign(new Error(message), { status, code, recoveryAction });
+    }
+    if (JSON.stringify(connections()[account]) !== JSON.stringify(mail)) fail('The mailbox connection changed. Try again.', 409);
+    // Keep storage failures outside the OAuth catch; never describe an unsaved rotation as expired consent.
+    if (JSON.stringify(refreshed) !== JSON.stringify(mail)) saveConnection({ ...refreshed, email: account });
+    return refreshed;
   }
   async function fetchMessages(mail) {
     const finish = activity.start(mail.email, 'sync', 'Fetching mail', 'Inbox · up to 50 messages');
@@ -381,6 +391,11 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
     historyRevision++;
     res.json(state(req.mailAccount, req));
   });
+  function syncFailure(accountId, error) {
+    if (['oauth_reconnect_required', 'oauth_configuration', 'oauth_refresh_failed'].includes(error.code)) return { accountId, code: error.code, error: error.message, recoveryAction: error.recoveryAction };
+    if (error.providerStatus === 401) return { accountId, code: 'oauth_reconnect_required', recoveryAction: 'reconnect', error: 'The provider rejected mailbox authorization. Reconnect this account in Settings; cached mail is retained.' };
+    return { accountId, code: 'mail_sync_failed', recoveryAction: 'retry', error: 'Sync could not finish. Saved mail and account credentials are retained. Check your connection and try again.' };
+  }
   async function syncAccounts(accounts) {
     const syncErrors = [];
     for (const account of accounts) {
@@ -389,8 +404,8 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
         const options = history.options(account);
         const messages = await refreshMessages(mail, options, options ? history.status(account).since : undefined);
         store.transaction(() => automation.arrivals(account, importMessages(mail, messages).filter(id => store.getMessage(account, id)?.folder === 'inbox' && (!history.status(account) || store.getMessage(account, id)?.date >= history.status(account).before))));
-      } catch {
-        syncErrors.push({ accountId: account, error: 'Sync failed. Check your connection or reconnect this account in Settings.' });
+      } catch (error) {
+        syncErrors.push(syncFailure(account, error));
       }
     }
     store.setSettings({ backgroundSyncErrors: [...(settings().backgroundSyncErrors || []).filter(item => !accounts.includes(item.accountId)), ...syncErrors] });
@@ -399,7 +414,7 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
   app.post('/api/sync', async (req, res) => mailboxOperation(async () => {
     const accounts = req.mailAccount === 'all' ? Object.keys(connections()) : req.mailAccount === 'demo' ? [] : [req.mailAccount];
     const syncErrors = await syncAccounts(accounts);
-    if (syncErrors.length && req.mailAccount !== 'all') fail('Mailbox sync failed. Check your connection or reconnect in Settings.', 502);
+    if (syncErrors.length && req.mailAccount !== 'all') throw Object.assign(new Error(syncErrors[0].error), { status: 502, code: syncErrors[0].code, recoveryAction: syncErrors[0].recoveryAction });
     res.json({ ...state(req.mailAccount, req), syncErrors });
     setImmediate(() => { void automation.tick().catch(() => {}); });
   }));
@@ -822,7 +837,8 @@ export function createApp({ store, port = 3001, appUrl = `http://localhost:${por
   app.use((error, req, res, next) => {
     if (res.headersSent) return next(error);
     const status = error.status || 500;
-    res.status(status).json({ error: status === 500 ? 'Something went wrong. Your saved messages are still on this device.' : (error.type === 'entity.parse.failed' ? 'Invalid JSON request.' : error.message) });
+    const oauth = ['oauth_reconnect_required', 'oauth_configuration', 'oauth_refresh_failed', 'mail_sync_failed'].includes(error.code);
+    res.status(status).json({ error: status === 500 ? 'Something went wrong. Your saved messages are still on this device.' : (error.type === 'entity.parse.failed' ? 'Invalid JSON request.' : error.message), ...(oauth ? { code: error.code, recoveryAction: error.recoveryAction } : {}) });
   });
   return app;
 }

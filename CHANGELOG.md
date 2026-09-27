@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0-beta.10 — 2026-09-27
+
+- Add Today above All accounts: local-day summary reports and downloaded mailbox totals, with account isolation and a direct Summary History link; opening it never starts AI.
+- Continue reviewed embedding batches when leaving Search/Model or closing Settings. Keep save/test/start and unsaved-edit guards; Activity retains progress.
+- Remove the native title/toolbar band; place actions beside the sidebar, mail list and reader. Allow wider sidebar/list panes and add reading layouts and sidebar visibility to the macOS View menu.
+- Forward scrolling over formatted mail to the containing native reader while retaining isolated HTML and reviewed links/images.
+- Distinguish temporary OAuth refresh failures, rejected client configuration and authorization requiring reconnect. Preserve credentials and rotated refresh tokens; reject stale refresh writes after account replacement.
+- Show safe embedding HTTP/response/dimension errors and retain completed entries. Add multi-message and multi-chunk OpenAI/Ollama regression checks. No automatic paid retry is added.
+
 ## 0.6.0-beta.9 — 2026-09-27
 
 - Open message Summarize, Suggest Reply and Translate in a local popup, retaining the reader and original reply owner.

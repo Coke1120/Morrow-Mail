@@ -30,6 +30,7 @@ final class AppModel: ObservableObject {
     @Published var showSettings = false
     @Published var settingsTab = "general"
     @Published var assistantAction = "summary"
+    @Published var studioTab = "tools"
     @Published var readerAssistant: JSON?
     @Published var unsavedForms = Set<String>()
     private(set) var restartingForUpdate = false

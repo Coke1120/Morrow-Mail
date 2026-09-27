@@ -555,24 +555,43 @@ pub fn control(db: &Store, action: &str, id: &str) -> Result<()> {
 fn transport_error() -> Error {
     Error::new(
         502,
-        "Embedding request failed or was cancelled. Check model settings; tokens may have been used. Retry explicitly.",
+        "Embedding request failed or was cancelled. Check the connection and model service.",
     )
 }
+fn http_error(status: u16) -> Error {
+    // Never return the model's error body: it may echo keys or private mail.
+    let reason = match status {
+        401 | 403 => "Check the API key and model access.",
+        404 => "Check the base URL, model name and protocol.",
+        413 => "The service rejected the input size. Check the embedding model input limits.",
+        400 | 422 => "Check the embedding model, protocol and input limits.",
+        429 => "The service reported a rate limit. Check its quota and retry explicitly later.",
+        500..=599 => "The embedding service failed. Check that the model service is available.",
+        _ => "Check the embedding endpoint and model settings.",
+    };
+    Error::new(
+        502,
+        &format!("Embedding request rejected (HTTP {status}). {reason}"),
+    )
+}
+fn response_error() -> Error {
+    Error::new(502, "Embedding response does not match its inputs.")
+}
 fn unit_vector(value: &Value) -> Result<Vec<f64>> {
+    let invalid = || Error::new(502, "The embedding model returned an invalid vector.");
     let vector = value
         .as_array()
         .filter(|v| !v.is_empty() && v.len() <= 4096)
-        .ok_or_else(transport_error)?
+        .ok_or_else(invalid)?
         .iter()
-        .map(|v| {
-            v.as_f64()
-                .filter(|v| v.is_finite())
-                .ok_or_else(transport_error)
-        })
+        .map(|v| v.as_f64().filter(|v| v.is_finite()).ok_or_else(invalid))
         .collect::<Result<Vec<_>>>()?;
     let norm = vector.iter().fold(0.0_f64, |norm, x| norm.hypot(*x));
     if norm == 0.0 || !norm.is_finite() {
-        return Err(transport_error());
+        return Err(Error::new(
+            502,
+            "The embedding model returned an empty vector.",
+        ));
     }
     Ok(vector.into_iter().map(|x| x / norm).collect())
 }
@@ -628,43 +647,44 @@ pub async fn fetch_embeddings(app: &App, value: &Value, input: &[String]) -> Res
     }
     let response = request.send().await.map_err(|_| transport_error())?;
     if !response.status().is_success() {
-        return Err(transport_error());
+        return Err(http_error(response.status().as_u16()));
     }
     if response
         .content_length()
         .is_some_and(|n| n > 8 * 1024 * 1024)
     {
-        return Err(transport_error());
+        return Err(Error::new(502, "Embedding response exceeds 8 MiB."));
     }
     let mut stream = response.bytes_stream();
     let mut bytes = Vec::new();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|_| transport_error())?;
         if bytes.len() + chunk.len() > 8 * 1024 * 1024 {
-            return Err(transport_error());
+            return Err(Error::new(502, "Embedding response exceeds 8 MiB."));
         }
         bytes.extend_from_slice(&chunk);
     }
-    let response: Value = serde_json::from_slice(&bytes).map_err(|_| transport_error())?;
+    let response: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| Error::new(502, "Embedding response is not valid JSON."))?;
     let vectors = if ollama {
         response["embeddings"]
             .as_array()
             .filter(|v| v.len() == input.len())
-            .ok_or_else(transport_error)?
+            .ok_or_else(response_error)?
             .clone()
     } else {
         let data = response["data"]
             .as_array()
             .filter(|v| v.len() == input.len())
-            .ok_or_else(transport_error)?;
+            .ok_or_else(response_error)?;
         let mut vectors = vec![Value::Null; input.len()];
         for item in data {
             let index = item["index"]
                 .as_f64()
                 .filter(|i| i.fract() == 0.0 && *i >= 0.0 && *i < input.len() as f64)
-                .ok_or_else(transport_error)? as usize;
+                .ok_or_else(response_error)? as usize;
             if !vectors[index].is_null() {
-                return Err(transport_error());
+                return Err(response_error());
             }
             vectors[index] = item["embedding"].clone();
         }

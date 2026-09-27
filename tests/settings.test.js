@@ -6,8 +6,10 @@ import { createServer } from 'vite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer as createHTTPServer } from 'node:http';
 import { DEFAULT_POLICY, DEFAULT_PREFERENCES } from '../shared/features.js';
 import { createStore } from '../server/store.js';
+import { createApp } from '../server/app.js';
 import { createSmartSearch } from '../server/smart-search.js';
 import { updatePreferences } from '../server/policy.js';
 
@@ -55,6 +57,13 @@ test('Search and Model save only their visible fields and preserve embedding key
   assert.deepEqual(Object.keys(search).sort(), ['accounts', 'content', 'enabled', 'folders', 'months', 'tokenBudget']);
   assert.deepEqual(Object.keys(model).sort(), ['apiKey', 'baseUrl', 'clearApiKey', 'model', 'protocol']);
   assert.equal(model.apiKey, ''); assert.equal(model.clearApiKey, false);
+
+  // Returning to a running/completed job must not turn progress into unsaved form edits.
+  for (const status of ['prepared', 'running', 'paused', 'complete']) {
+    const progress = { ...smart.state(), indexed: 3, pending: 5, job: { id: 'background-fixture', status, completed: 3, sampleCount: 8 } };
+    assert.equal(JSON.stringify(editableSearchSettings(progress)), JSON.stringify(search));
+    assert.equal(JSON.stringify(editableSearchSettings(progress, 'model')), JSON.stringify(model));
+  }
 
   smart.update({ ...model, model: 'updated', protocol: 'ollama', baseUrl: 'https://embedding.example', apiKey: 'new-fixture-key' });
   smart.update({ ...search, months: 6, tokenBudget: 32000, content: { ...search.content, sender: true } });
@@ -104,6 +113,64 @@ test('General autosave sends only changed preferences and retains concurrent sor
   const corrected = preferencePatch({ ...result.preferences, language: '繁體中文' }, result.preferences);
   store.setSettings({ preferences: updatePreferences(store.getSettings().preferences, corrected) });
   assert.equal(store.getSettings().preferences.language, '繁體中文');
+});
+
+test('A reviewed index batch outlives its start request and settings polling, then exposes progress without rerunning', { timeout: 5000 }, async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'morrow-background-index-')), store = createStore(directory);
+  const account = 'indexing@example.com', entered = [Promise.withResolvers(), Promise.withResolvers()], release = [Promise.withResolvers(), Promise.withResolvers()];
+  let calls = 0, settingsReads = 0;
+  store.setSettings({ mailAccounts: { [account]: { email: account, connectionId: 'fixture-connection' } }, activeAccount: account, policy: DEFAULT_POLICY });
+  for (const id of ['first', 'second']) store.upsertMessage(account, { id, date: new Date().toISOString(), folder: 'inbox', subject: id, body: `Fictional ${id} message for background indexing.` });
+  const server = createHTTPServer();
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port, origin = `http://127.0.0.1:${port}`;
+  const app = createApp({ store, port, appUrl: origin, nativeToken: 'background-index-fixture', services: {
+    embed: async (_config, input) => {
+      const index = calls++;
+      assert.ok(index < 2, 'Navigation/status reads must not start another model request.');
+      entered[index].resolve();
+      await release[index].promise;
+      return input.map(() => [1, 0]);
+    },
+  } });
+  server.on('request', (req, res) => { if (req.method === 'GET' && req.url === '/api/search/settings') settingsReads++; app(req, res); });
+  t.after(async () => {
+    release.forEach(gate => gate.resolve());
+    await app.locals.smartSearch.stop();
+    server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
+    store.close(); rmSync(directory, { recursive: true, force: true });
+  });
+  const request = async (path, body) => {
+    const response = await fetch(origin + '/api/search/' + path, {
+      method: body ? 'POST' : 'GET', headers: { Authorization: 'Bearer background-index-fixture', 'Content-Type': 'application/json', 'X-Genmail-Account': account },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    return { status: response.status, value: await response.json() };
+  };
+  assert.equal((await request('settings', { enabled: true, model: 'fixture-embedding', accounts: [account] })).status, 200);
+  const preview = await request('index/preview', {});
+  assert.equal(preview.status, 200); assert.equal(preview.value.job.sampleCount, 2); assert.equal(calls, 0);
+  const started = await request('index/run', { previewId: preview.value.job.id });
+  assert.equal(started.status, 202); assert.equal(started.value.job.status, 'running');
+  await entered[0].promise;
+  const opened = await request('settings');
+  assert.equal(opened.value.job.completed, 0); assert.equal(settingsReads, 1);
+  assert.equal((await request('index/run', { previewId: preview.value.job.id })).status, 409);
+
+  // No settings polling after leaving the panel. The worker still commits message one
+  // and starts message two; reopening only reads that persisted progress.
+  release[0].resolve(); await entered[1].promise;
+  assert.equal(settingsReads, 1); assert.equal(store.getSettings().searchIndex.completed, 1);
+  const reopened = await request('settings');
+  assert.equal(reopened.value.job.id, preview.value.job.id);
+  assert.equal(reopened.value.job.status, 'running'); assert.equal(reopened.value.job.completed, 1);
+  release[1].resolve();
+  const completed = await request('settings');
+  assert.equal(completed.value.job.status, 'complete'); assert.equal(completed.value.indexed, 2);
+  assert.equal(completed.value.job.completed, 2); assert.equal(completed.value.pending, 0);
+  assert.deepEqual((await request('settings')).value.job, completed.value.job);
+  assert.equal((await request('index/run', { previewId: preview.value.job.id })).status, 409);
+  assert.equal(calls, 2, 'Exactly the two approved message requests ran; no auto-retry or replay.');
 });
 
 test('Autosave acknowledgement retains later edits, reversions and the complete unsaved footer pair', async t => {

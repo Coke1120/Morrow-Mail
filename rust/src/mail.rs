@@ -42,11 +42,16 @@ pub async fn current_mail(app: &App, owner: &str) -> Result<Value> {
     }
     let mut refreshed = providers::refresh(&app.0.client, &original)
         .await
-        .map_err(|_| {
-            Error::new(
-                401,
-                "Your mailbox session expired. Reconnect this account in Settings.",
-            )
+        .map_err(|error| {
+            let (status, code, message, recovery) = match string(&error.body, "code") {
+                "oauth_reconnect_required" => (401, "oauth_reconnect_required", "Mailbox authorization is no longer valid. Reconnect this account in Settings; cached mail is retained.", "reconnect"),
+                "oauth_configuration" => (502, "oauth_configuration", "The provider rejected the OAuth app configuration. Check this account's OAuth client settings.", "configure"),
+                _ => (502, "oauth_refresh_failed", "Could not refresh mailbox authorization. Saved account credentials are retained. Check your connection and try again shortly.", "retry"),
+            };
+            let mut safe = Error::new(status, message);
+            safe.body["code"] = code.into();
+            safe.body["recoveryAction"] = recovery.into();
+            safe
         })?;
     refreshed["email"] = owner.into();
     let owner = owner.to_owned();
@@ -379,6 +384,21 @@ async fn remote_folders(app: &App, mail: &Value) -> Result<Vec<Value>> {
 pub async fn sync_accounts(app: &App, owners: &[String]) -> Result<Value> {
     sync(app, owners).await
 }
+fn sync_failure(owner: &str, error: &Error) -> Value {
+    if [
+        "oauth_reconnect_required",
+        "oauth_configuration",
+        "oauth_refresh_failed",
+    ]
+    .contains(&string(&error.body, "code"))
+    {
+        return merge(json!({"accountId":owner}), &error.body);
+    }
+    if error.provider_status == Some(401) {
+        return json!({"accountId":owner,"code":"oauth_reconnect_required","recoveryAction":"reconnect","error":"The provider rejected mailbox authorization. Reconnect this account in Settings; cached mail is retained."});
+    }
+    json!({"accountId":owner,"code":"mail_sync_failed","recoveryAction":"retry","error":"Sync could not finish. Saved mail and account credentials are retained. Check your connection and try again."})
+}
 fn sync_warning(page: &Value) -> Option<&'static str> {
     (page["nextCursor"].is_object()
         && page["messages"].as_array().is_some_and(|rows| rows.len() < 50))
@@ -445,9 +465,9 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
             .await
         };
         match work.await {
-            Ok(None) => {},
+            Ok(None) => {}
             Ok(Some(warning)) => errors.push(json!({"accountId":owner,"error":warning})),
-            Err(_) => errors.push(json!({"accountId":owner,"error":"Sync failed. Check your connection or reconnect this account in Settings."})),
+            Err(error) => errors.push(sync_failure(owner, &error)),
         }
     }
     let owners = owners.to_vec();
@@ -661,7 +681,9 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             };
             let errors = sync(app, &owners).await?;
             if owner != "all" && !errors.as_array().unwrap().is_empty() {
-                return Err(Error::new(502, string(&errors[0], "error")));
+                let mut error = Error::new(502, string(&errors[0], "error"));
+                error.body = errors[0].clone();
+                return Err(error);
             }
             let mut state = app.state(&owner, ctx.paged).await?;
             state["syncErrors"] = errors;

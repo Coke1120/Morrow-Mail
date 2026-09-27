@@ -6,10 +6,26 @@ import { lexicalSearch, searchWhere, searchFail } from './search.js';
 const defaults = { enabled: false, baseUrl: 'http://127.0.0.1:11434/v1', model: '', protocol: 'openai', accounts: [], months: 3, tokenBudget: 16000,
   folders: { inbox: true, sent: true, archive: true, drafts: false, trash: false }, content: { subject: true, body: true, sender: false } };
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+// Only locally constructed messages may reach persisted/public job errors.
+// A model response (or an injected transport error) can contain private mail.
+class EmbeddingError extends Error {
+  constructor(message) { super(message); this.status = 502; }
+}
+const embeddingFail = message => { throw new EmbeddingError(message); };
+function httpFailure(status) {
+  const reason = status === 401 || status === 403 ? 'Check the API key and model access.'
+    : status === 404 ? 'Check the base URL, model name and protocol.'
+    : status === 413 ? 'The service rejected the input size. Check the embedding model input limits.'
+    : status === 400 || status === 422 ? 'Check the embedding model, protocol and input limits.'
+    : status === 429 ? 'The service reported a rate limit. Check its quota and retry explicitly later.'
+    : status >= 500 ? 'The embedding service failed. Check that the model service is available.'
+    : 'Check the embedding endpoint and model settings.';
+  return `Embedding request rejected (HTTP ${status}). ${reason}`;
+}
 function unitVector(value) {
-  if (!Array.isArray(value) || !value.length || value.length > 4096 || value.some(x => typeof x !== 'number' || !Number.isFinite(x))) searchFail('The embedding model returned an invalid vector.', 502);
+  if (!Array.isArray(value) || !value.length || value.length > 4096 || value.some(x => typeof x !== 'number' || !Number.isFinite(x))) embeddingFail('The embedding model returned an invalid vector.');
   const norm = Math.hypot(...value);
-  if (!Number.isFinite(norm) || norm === 0) searchFail('The embedding model returned an empty vector.', 502);
+  if (!Number.isFinite(norm) || norm === 0) embeddingFail('The embedding model returned an empty vector.');
   return value.map(x => x / norm);
 }
 export async function fetchEmbeddings(config, input, signal) {
@@ -19,13 +35,13 @@ export async function fetchEmbeddings(config, input, signal) {
     headers: { 'Content-Type': 'application/json', ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}) },
     body: JSON.stringify({ model: config.model, input, ...(ollama ? { truncate: false } : { encoding_format: 'float' }) }),
   });
-  if (!response.ok) { await response.body?.cancel(); searchFail('Embedding request failed. Check the endpoint, model and API key; no automatic retry was made.', 502); }
+  if (!response.ok) { await response.body?.cancel(); embeddingFail(httpFailure(response.status)); }
   const chunks = []; let size = 0;
-  for await (const part of response.body) { size += part.length; if (size > 8 * 1024 * 1024) searchFail('Embedding response is too large.', 502); chunks.push(part); }
+  for await (const part of response.body) { size += part.length; if (size > 8 * 1024 * 1024) embeddingFail('Embedding response exceeds 8 MiB.'); chunks.push(part); }
   let result;
-  try { result = JSON.parse(Buffer.concat(chunks)); } catch { searchFail('Embedding response is not valid JSON.', 502); }
-  if (ollama) return result.embeddings;
-  if (!Array.isArray(result.data) || result.data.length !== input.length || new Set(result.data.map(item => item.index)).size !== input.length || result.data.some(item => !Number.isInteger(item.index) || item.index < 0 || item.index >= input.length)) searchFail('Embedding response does not match its inputs.', 502);
+  try { result = JSON.parse(Buffer.concat(chunks)); } catch { embeddingFail('Embedding response is not valid JSON.'); }
+  if (ollama) return result?.embeddings;
+  if (!Array.isArray(result?.data) || result.data.length !== input.length || new Set(result.data.map(item => item?.index)).size !== input.length || result.data.some(item => !Number.isInteger(item?.index) || item.index < 0 || item.index >= input.length)) embeddingFail('Embedding response does not match its inputs.');
   return result.data.sort((a, b) => a.index - b.index).map(item => item.embedding);
 }
 export function createSmartSearch({ store, connections, apiBase, embed = fetchEmbeddings, now = Date.now, lexical = (options, accounts, flags) => lexicalSearch(store, options, accounts, flags), cosine = null }) {
@@ -116,10 +132,13 @@ export function createSmartSearch({ store, connections, apiBase, embed = fetchEm
   }
   async function vectors(texts, value, signal) {
     let result;
-    try { result = await embed(value, texts, signal); } catch { searchFail('Embedding request failed or was cancelled. Check model settings; tokens may have been used. Retry explicitly.', 502); }
-    if (!Array.isArray(result) || result.length !== texts.length) searchFail('The model returned a different number of embeddings.', 502);
+    try { result = await embed(value, texts, signal); } catch (error) {
+      if (error instanceof EmbeddingError) throw error;
+      embeddingFail('Embedding request failed or was cancelled. Check the connection and model service.');
+    }
+    if (!Array.isArray(result) || result.length !== texts.length) embeddingFail('Embedding response does not match its inputs.');
     const normalized = result.map(unitVector);
-    if (normalized.some(vector => vector.length !== normalized[0].length)) searchFail('The model changed embedding dimensions.', 502);
+    if (normalized.some(vector => vector.length !== normalized[0].length)) embeddingFail('The model changed embedding dimensions.');
     return normalized;
   }
   async function index(id) {
@@ -138,12 +157,13 @@ export function createSmartSearch({ store, connections, apiBase, embed = fetchEm
         }
         if (signal.aborted || job.stamp !== stamp() || source(item.account, store.getMessage(item.account, item.id), value)?.hash !== item.hash) searchFail('Index scope or source changed.', 409);
         dimension ||= output[0].length;
-        if (output.some(vector => vector.length !== dimension)) searchFail('Embedding dimensions changed. Clear the index and rebuild.', 409);
+        if (output.some(vector => vector.length !== dimension)) embeddingFail('Embedding dimensions changed. Clear the index and rebuild.');
         store.transaction(() => { store.search.saveVectors(item.account, item.id, job.stamp, item.hash, output); job.completed++; store.setSettings({ searchIndex: { ...job, status: 'running' } }); });
       }
       store.setSettings({ searchIndex: { ...job, status: 'complete' } });
-    } catch {
-      if (store.getSettings().searchIndex?.id === id) store.setSettings({ searchIndex: { ...job, status: 'failed', error: 'Indexing stopped or its scope changed. Completed valid entries are retained. Tokens may have been used; preview a new batch to retry.' } });
+    } catch (error) {
+      const reason = error instanceof EmbeddingError ? error.message : 'Indexing stopped or its scope changed.';
+      if (store.getSettings().searchIndex?.id === id) store.setSettings({ searchIndex: { ...job, status: 'failed', error: `${reason} Completed valid entries are retained. Tokens may have been used; preview a new batch to retry.` } });
     } finally { controller = undefined; reconcile(); }
   }
   async function search(options, accounts) {

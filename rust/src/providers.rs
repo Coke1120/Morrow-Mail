@@ -59,7 +59,10 @@ fn network_error() -> Error {
     error
 }
 pub async fn request(request: RequestBuilder, limit: usize) -> Result<Value> {
-    let mut response = request.send().await.map_err(|_| network_error())?;
+    request_kind(request, limit, false).await
+}
+async fn request_kind(request: RequestBuilder, limit: usize, oauth: bool) -> Result<Value> {
+    let response = request.send().await.map_err(|_| network_error())?;
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let mut error = Error::new(
@@ -73,8 +76,23 @@ pub async fn request(request: RequestBuilder, limit: usize) -> Result<Value> {
             },
         );
         error.provider_status = Some(status);
+        // Token errors are a small, fixed vocabulary; never expose provider descriptions/tokens.
+        if oauth && [400, 401].contains(&status) {
+            let body = response_json(response, 32768).await.unwrap_or(Value::Null);
+            let code = match string(&body, "error") {
+                "invalid_grant" | "interaction_required" | "consent_required" => {
+                    "oauth_reconnect_required"
+                }
+                "invalid_client" | "unauthorized_client" | "invalid_scope" => "oauth_configuration",
+                _ => "oauth_refresh_failed",
+            };
+            error.body["code"] = code.into();
+        }
         return Err(error);
     }
+    response_json(response, limit).await
+}
+async fn response_json(mut response: reqwest::Response, limit: usize) -> Result<Value> {
     if response.content_length().is_some_and(|n| n > limit as u64) {
         return Err(Error::new(
             502,
@@ -210,12 +228,13 @@ async fn exchange(
             .into(),
         ));
     }
-    let result = request(
+    let result = request_kind(
         client
             .post(def.token)
             .form(&fields)
             .timeout(Duration::from_secs(30)),
         8 * 1024 * 1024,
+        true,
     )
     .await?;
     let expiry = result["expires_in"]
@@ -308,10 +327,9 @@ pub async fn refresh(client: &Client, mail: &Value) -> Result<Value> {
         return Ok(mail.clone());
     }
     if string(mail, "refreshToken").is_empty() {
-        return Err(Error::new(
-            401,
-            "Authorization expired. Reconnect this account.",
-        ));
+        let mut error = Error::new(401, "Authorization expired. Reconnect this account.");
+        error.body["code"] = "oauth_reconnect_required".into();
+        return Err(error);
     }
     Ok(merge(
         mail.clone(),

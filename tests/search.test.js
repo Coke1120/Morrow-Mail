@@ -154,6 +154,51 @@ test('semantic queries discard results when permissions, connections or mail cha
   }
 });
 
+test('a second-message model rejection preserves progress and a safe actionable reason without retries', async t => {
+  for (const protocol of ['openai', 'ollama']) for (const [status, reason] of [[429, /rate limit/], [413, /input/], [401, /API key/], [503, /service/]]) {
+    const f = fixture(t), [a] = f.accounts;
+    f.add(a, 'first'); f.add(a, 'second');
+    let calls = 0;
+    const server = createServer(async (req, res) => {
+      let bytes = ''; for await (const chunk of req) bytes += chunk;
+      const body = JSON.parse(bytes); calls++;
+      if (calls > 1) { res.writeHead(status); res.end('PRIVATE MODEL BODY fixture-key mail-content'); return; }
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify(protocol === 'ollama' ? { embeddings: body.input.map(() => [1, 0]) } : { data: body.input.map((_, index) => ({ index, embedding: [1, 0] })) }));
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const smart = createSmartSearch({ store: f.store, connections: f.connections, apiBase: value => value });
+      smart.update({ enabled: true, model: 'fixture', protocol, baseUrl: `http://127.0.0.1:${server.address().port}`, apiKey: 'fixture-key', accounts: [a] });
+      await smart.index(smart.preview().job.id);
+      const state = smart.state();
+      assert.equal(state.job.status, 'failed'); assert.equal(state.job.completed, 1); assert.equal(state.indexed, 1);
+      assert.match(state.job.error, new RegExp(`HTTP ${status}`)); assert.match(state.job.error, reason);
+      assert.doesNotMatch(JSON.stringify(state), /PRIVATE MODEL BODY|fixture-key|mail-content/);
+      assert.equal(smart.state().job.status, 'failed'); await smart.stop(); assert.equal(calls, 2);
+    } finally { await new Promise(resolve => server.close(resolve)); }
+  }
+});
+
+test('index failures retain locally validated vector reasons but redact arbitrary transport errors', async t => {
+  for (const [mode, reason] of [['empty', /empty vector/], ['dimension', /dimensions changed/], ['raw', /Check the connection and model service/]]) {
+    const f = fixture(t), [a] = f.accounts;
+    f.add(a, 'first'); f.add(a, 'second');
+    let calls = 0;
+    const smart = createSmartSearch({ store: f.store, connections: f.connections, apiBase: value => value, embed: async () => {
+      if (++calls === 1) return [[1, 0]];
+      if (mode === 'raw') throw Object.assign(new Error('PRIVATE MODEL BODY fixture-key mail-content'), { status: 502 });
+      return [mode === 'empty' ? [0, 0] : [1, 0, 0]];
+    } });
+    smart.update({ enabled: true, model: 'fixture', accounts: [a] });
+    await smart.index(smart.preview().job.id);
+    const state = smart.state();
+    assert.equal(state.job.status, 'failed'); assert.equal(state.job.completed, 1); assert.equal(state.indexed, 1);
+    assert.match(state.job.error, reason); assert.doesNotMatch(JSON.stringify(state), /PRIVATE MODEL BODY|fixture-key|mail-content/);
+    await smart.stop(); assert.equal(calls, 2);
+  }
+});
+
 test('embedding connection probe validates unsaved settings without mail, writes or credential forwarding', async t => {
   const f = fixture(t), seen = [];
   let invalid = false;

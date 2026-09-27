@@ -28,14 +28,16 @@ writeFileSync(join(directory, 'update-manifest.sig'), signature);
 expected.push('update-manifest.json', 'update-manifest.sig');
 const notes = `Morrow Mail ${version}
 
-A more compact mail reader, in-place AI assistance and optional sender-history replies. Both packages are built from this same Git tag and pass the paired checks before publication.
+A Today dashboard, background indexing navigation and a more flexible native mail workspace. Both packages are built from this same Git tag and pass the paired checks before publication.
 
-What changed since 0.6.0-beta.8:
-- Summarize, Suggest Reply and Translate open a message-bound popup without leaving your email for AI Studio. Review the result, then explicitly use a reply in an owned draft; nothing is sent automatically.
-- Add a separate Suggest with History action. It scans downloaded mail from the exact same sender in the same account, within permitted folders, and sends the selected message plus the newest matches up to the saved AI message limit. It shows matched/used counts; it cannot read mail that has not been downloaded. Sender access is required, unchecked fields are withheld, and changed sources or revoked permissions discard in-flight results.
-- Compact subject, sender and date/time presentation; recipient/mailbox details and full AI summaries remain expandable. Tighten native View/Sort controls, sidebar/list widths and reader spacing while retaining right/bottom/focused layouts.
-- Add Test Connection directly in Search for the saved embedding model, plus Edit in Model. Model still tests unsaved fields. Both probes send only a fixed sentence and leave settings/index unchanged; results/errors appear near the top.
-- Preserve the Rust desktop service, account-bound drafts, HTML isolation, reviewed provider operations, encrypted settings, backup and signed updater contracts.
+What changed since 0.6.0-beta.9:
+- Move Workspace above All accounts and add Today in both clients, showing downloaded mailbox totals and existing per-account summaries for your local day. Summary History opens AI Studio; opening the dashboard does not start AI.
+- Keep reviewed embedding batches running when leaving Search/Model or closing Settings. Progress remains in Activity; pending requests, unsaved edits and duplicate starts retain their guards.
+- Remove the native title/toolbar band. Place the sidebar toggle beside Morrow, Compose in the sidebar, Sync beside View/Sort and Expand/Restore in the reader. Allow wider sidebar/list panes and add layouts to the macOS View menu.
+- Fix native scrolling over formatted mail while preserving HTML isolation, external-image consent and link review.
+- Stop describing every OAuth refresh failure as expired consent. Distinguish temporary network/provider failures, app configuration errors and authorization requiring reconnect; preserve saved credentials and rotated refresh tokens.
+- Show safe embedding HTTP, input/response and vector errors without exposing provider response bodies. Completed valid entries remain. OpenAI-compatible and Ollama multi-message/chunk fixtures pass; model-specific limits, quota and availability still apply. No automatic paid retries are added.
+- Preserve the Rust desktop service, account-bound drafts, reviewed provider operations, encrypted settings, backup and signed updater contracts.
 
 CLI quick start:
 - macOS: '/Applications/Morrow Mail.app/Contents/Resources/morrow-service' cli --help

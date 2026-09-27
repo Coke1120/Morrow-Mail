@@ -1085,3 +1085,198 @@ async fn refresh_rotation_is_account_bound_and_changed_connection_discards_sync(
     assert_eq!(count.load(Ordering::SeqCst), 2);
     server.shutdown().await;
 }
+
+#[tokio::test]
+async fn oauth_refresh_failures_preserve_accounts_and_only_revoked_grants_require_reconnect() {
+    for provider in ["google", "microsoft"] {
+        let mode = Arc::new(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (kind, count) = (mode.clone(), calls.clone());
+        let fixture = Fixture::new(Arc::new(move |request| {
+            let (kind, count) = (kind.clone(), count.clone());
+            async move {
+                assert!(["oauth2.googleapis.com", "login.microsoftonline.com"].contains(&request.host()));
+                let form = url::form_urlencoded::parse(&request.body).collect::<std::collections::HashMap<_,_>>();
+                assert_eq!(form["grant_type"], "refresh_token");
+                assert_eq!(form["refresh_token"], format!("refresh-{A}"));
+                assert_eq!(form["client_id"], "fixture-client");
+                count.fetch_add(1, Ordering::SeqCst);
+                match kind.load(Ordering::SeqCst) {
+                    0 => Reply::Lost,
+                    1 => Reply::Json(503, json!({"error":"PRIVATE_PROVIDER_SECRET"})),
+                    2 => Reply::Json(429, json!({"error":"PRIVATE_PROVIDER_SECRET"})),
+                    3 => Reply::Json(400, json!({"error":"invalid_grant","error_description":"PRIVATE_PROVIDER_SECRET"})),
+                    4 => Reply::Json(401, json!({"error":"invalid_client","error_description":"PRIVATE_PROVIDER_SECRET"})),
+                    5 => Reply::Json(200, json!({"access_token":"","expires_in":3600})),
+                    _ => Reply::Json(400, json!({"error":"invalid_grant","error_description":"PRIVATE_PROVIDER_SECRET".repeat(4000)})),
+                }
+            }.boxed()
+        })).await;
+        let server = fixture.start().await;
+        let mut settings = config(&[(A, provider), (B, "microsoft")]);
+        settings["mailAccounts"][A]["expiresAt"] = 0.into();
+        set(&server.app, settings.clone()).await;
+        for (value, code, recovery) in [
+            (0, "oauth_refresh_failed", "retry"),
+            (1, "oauth_refresh_failed", "retry"),
+            (2, "oauth_refresh_failed", "retry"),
+            (3, "oauth_reconnect_required", "reconnect"),
+            (4, "oauth_configuration", "configure"),
+            (5, "oauth_refresh_failed", "retry"),
+            (6, "oauth_refresh_failed", "retry"),
+        ] {
+            mode.store(value, Ordering::SeqCst);
+            let before = calls.load(Ordering::SeqCst);
+            let result = server.call("POST", "/api/sync", A, json!({})).await;
+            assert_eq!(result.0, 502, "{}", result.1);
+            assert_eq!(result.1["code"], code);
+            assert_eq!(result.1["recoveryAction"], recovery);
+            assert_eq!(calls.load(Ordering::SeqCst), before + 1);
+            if recovery != "reconnect" {
+                assert!(
+                    !string(&result.1, "error")
+                        .to_lowercase()
+                        .contains("reconnect")
+                );
+                assert!(
+                    !string(&result.1, "error")
+                        .to_lowercase()
+                        .contains("expired")
+                );
+            }
+            let state = server.call("GET", "/api/state", A, json!({})).await;
+            assert_eq!(state.0, 200, "{}", state.1);
+            assert_eq!(state.1["settings"]["mail"]["configured"], true);
+            assert_eq!(state.1["syncErrors"][0]["code"], code);
+            for secret in ["PRIVATE_PROVIDER_SECRET", "refresh-", "fixture-secret"] {
+                assert!(!state.1.to_string().contains(secret));
+                assert!(!result.1.to_string().contains(secret));
+            }
+            assert_eq!(
+                server.app.settings().await.unwrap()["mailAccounts"],
+                settings["mailAccounts"]
+            );
+        }
+        let mut without_refresh = settings["mailAccounts"].clone();
+        without_refresh[A]
+            .as_object_mut()
+            .unwrap()
+            .remove("refreshToken");
+        set(&server.app, json!({"mailAccounts":without_refresh})).await;
+        let before = calls.load(Ordering::SeqCst);
+        let missing = server.call("GET", "/api/mail/folders", A, json!({})).await;
+        assert_eq!(missing.0, 401);
+        assert_eq!(missing.1["code"], "oauth_reconnect_required");
+        assert_eq!(calls.load(Ordering::SeqCst), before);
+        set(&server.app, settings.clone()).await;
+        server.shutdown().await;
+        let reopened = fixture.start().await;
+        assert_eq!(
+            reopened.app.settings().await.unwrap()["mailAccounts"],
+            settings["mailAccounts"]
+        );
+        reopened.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn oauth_refresh_after_restart_retains_rotation_omission_clients_scopes_and_owner() {
+    for provider in ["google", "microsoft"] {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let fixture = Fixture::new(Arc::new(move |request| {
+            let count = count.clone();
+            async move {
+                assert!(
+                    ["oauth2.googleapis.com", "login.microsoftonline.com"]
+                        .contains(&request.host())
+                );
+                let form = url::form_urlencoded::parse(&request.body)
+                    .collect::<std::collections::HashMap<_, _>>();
+                let n = count.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(form["grant_type"], "refresh_token");
+                assert_eq!(
+                    form["refresh_token"],
+                    if n > 1 {
+                        "rotated-refresh".to_owned()
+                    } else {
+                        format!("refresh-{A}")
+                    }
+                );
+                assert_eq!(form["client_secret"], "fixture-secret");
+                let mut tokens = json!({"access_token":"fresh-access","expires_in":"3600"});
+                if n == 1 {
+                    tokens["refresh_token"] = "rotated-refresh".into();
+                }
+                Reply::Json(200, tokens)
+            }
+            .boxed()
+        }))
+        .await;
+        let server = fixture.start().await;
+        let mut settings = config(&[(A, provider), (B, "microsoft")]);
+        settings["mailAccounts"][A]["expiresAt"] = 0.into();
+        settings["mailAccounts"][A]["mailScope"] = "custom-retained-scope".into();
+        set(&server.app, settings.clone()).await;
+        server.shutdown().await;
+        let server = fixture.start().await;
+        let before = chrono::Utc::now().timestamp_millis();
+        let refreshed = morrow_search::mail::current_mail(&server.app, A)
+            .await
+            .unwrap();
+        assert_eq!(
+            refreshed["refreshToken"],
+            settings["mailAccounts"][A]["refreshToken"]
+        );
+        assert!(refreshed["expiresAt"].as_i64().unwrap() >= before + 3_600_000);
+        assert!(
+            refreshed["expiresAt"].as_i64().unwrap()
+                <= chrono::Utc::now().timestamp_millis() + 3_600_000
+        );
+        for key in [
+            "clientId",
+            "clientSecret",
+            "grantedScopes",
+            "mailScope",
+            "connectionId",
+        ] {
+            assert_eq!(refreshed[key], settings["mailAccounts"][A][key]);
+        }
+        let saved = server.app.settings().await.unwrap();
+        assert_eq!(saved["mailAccounts"][B], settings["mailAccounts"][B]);
+        assert_eq!(saved["activeAccount"], settings["activeAccount"]);
+        assert_eq!(saved["mail"], refreshed);
+        server.shutdown().await;
+        let server = fixture.start().await;
+        assert_eq!(
+            morrow_search::mail::current_mail(&server.app, A)
+                .await
+                .unwrap(),
+            refreshed
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        server
+            .app
+            .db(|db| {
+                let mut accounts = connections(&db.settings()?);
+                accounts[A]["expiresAt"] = 0.into();
+                db.set_settings(&json!({"mailAccounts":accounts}))?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            morrow_search::mail::current_mail(&server.app, A)
+                .await
+                .unwrap()["refreshToken"],
+            "rotated-refresh"
+        );
+        server.shutdown().await;
+        let server = fixture.start().await;
+        assert_eq!(
+            connections(&server.app.settings().await.unwrap())[A]["refreshToken"],
+            "rotated-refresh"
+        );
+        server.shutdown().await;
+    }
+}

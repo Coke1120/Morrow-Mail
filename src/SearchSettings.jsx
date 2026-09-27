@@ -26,12 +26,12 @@ export default function SearchSettings({ state, onDirtyChange, onBusyChange, onC
   }, [active, presentation]);
   useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
   useEffect(() => { setTestResult(''); }, [JSON.stringify(options)]);
-  useEffect(() => { onBusyChange(busy || (presentation === 'search' && indexing)); }, [busy, indexing, presentation, onBusyChange]);
   useEffect(() => () => { onDirtyChange(false); onBusyChange(false); }, [onDirtyChange, onBusyChange]);
-  useEffect(() => { if (!indexing) return; let active = true; const timer = setInterval(() => { request('settings').then(next => { if (active) { setValue(next); setError(''); } }).catch(error => { if (active) setError(error.message); }); }, 1500); return () => { active = false; clearInterval(timer); }; }, [indexing]);
+  useEffect(() => { if (!indexing || !active) return; let current = true; const timer = setInterval(() => { request('settings').then(next => { if (current) { setValue(next); setError(''); } }).catch(error => { if (current) setError(error.message); }); }, 1500); return () => { current = false; clearInterval(timer); }; }, [indexing, active]);
   async function action(path, body = {}) {
     if (requestLock.current || disabled || (indexing && path !== 'index/clear')) return;
-    requestLock.current = true; setBusy(true); setError(''); setTestResult('');
+    // The service owns a running batch; only this request/confirmation blocks navigation.
+    requestLock.current = true; setBusy(true); onBusyChange(true); setError(''); setTestResult('');
     try {
       const next = await request(path === 'index/now' ? 'index/preview' : path, body);
       if (path === 'test') setTestResult(`Connection successful · ${next.dimensions} dimensions. Settings were not changed.`);
@@ -45,7 +45,7 @@ export default function SearchSettings({ state, onDirtyChange, onBusyChange, onC
           if (window.confirm(`Start this indexing batch?\nModel: ${settings.model}\nEndpoint: ${settings.baseUrl}\nAccounts: ${settings.accounts.join(', ')}\nFolders: ${fields('folders')} · Fields: ${fields('content')} · Last ${settings.months} months\n${job.sampleCount} messages · ${job.chunks} chunks · estimated tokens ≤ ${job.estimatedTokens}\nBudget: ${settings.tokenBudget} tokens. Remote models may charge.\n\nShort excerpts (cancel to review more on this page):\n${excerpts}`)) setValue(await request('index/run', { previewId: job.id }));
         }
       }
-    } catch (cause) { setError(cause.message); } finally { requestLock.current = false; setBusy(false); }
+    } catch (cause) { setError(cause.message); } finally { requestLock.current = false; setBusy(false); onBusyChange(false); }
   }
   if (!options) return <p role="status">{error || (presentation === 'model' ? 'Loading embedding settings…' : 'Loading search settings…')}</p>;
   const set = (key, value) => setOptions({ ...options, [key]: value });
@@ -57,7 +57,7 @@ export default function SearchSettings({ state, onDirtyChange, onBusyChange, onC
     {presentation === 'search' && <div className="settings-test-result">
       <strong>Embedding connection · {value.settings.model || 'No embedding model saved'}</strong>
       <p>{value.settings.baseUrl}</p>
-      <div className="settings-actions"><button className="button secondary" disabled={busy || indexing || disabled || !value.settings.model.trim()} onClick={() => action('test')}>Test connection</button>{onConfigureModel && <button className="button secondary" disabled={busy || indexing || disabled} onClick={onConfigureModel}>Edit in Model…</button>}</div>
+      <div className="settings-actions"><button className="button secondary" disabled={busy || indexing || disabled || !value.settings.model.trim()} onClick={() => action('test')}>Test connection</button>{onConfigureModel && <button className="button secondary" disabled={busy || disabled} onClick={onConfigureModel}>Edit in Model…</button>}</div>
       <p className="settings-help">Tests the saved connection with a fixed sentence, never your mail. Does not save settings or change the index; the provider may charge for this request.</p>
     </div>}
     <fieldset className="settings-fields" disabled={busy || indexing || disabled}>
@@ -81,6 +81,7 @@ export default function SearchSettings({ state, onDirtyChange, onBusyChange, onC
     </fieldset>
     <>
       <div className="settings-test-result" role="status"><strong>{value.indexed} / {value.eligible} eligible messages indexed · {value.pending} pending</strong><p>{value.local ? 'Local embedding endpoint' : 'Remote embedding endpoint — approved mail text leaves this device'}. The index covers downloaded mail only. New mail requires another reviewed batch; there is no automatic paid indexing.</p></div>
+      {indexing && <p role="status" className="settings-help">Indexing continues in the background while Morrow is open. You can leave Search, Model or Settings; check Activity or return here for progress.</p>}
       {value.job && <div className="settings-test-result semantic-samples"><strong>{value.job.status} · {value.job.completed} / {value.job.sampleCount} messages</strong><p>{value.job.chunks} chunks · estimated tokens ≤ {value.job.estimatedTokens} · {value.job.oversized} oversized messages excluded from this batch.</p>{value.job.error && <p role="alert">{value.job.error}</p>}
         {value.samples && <details><summary>Review excerpts (first three messages)</summary>{value.samples.map((sample, i) => <div key={i}><strong>{sample.account}</strong><pre>{sample.text}</pre></div>)}</details>}
         {value.job.status === 'prepared' && <button className="button primary" disabled={dirty || busy || disabled} onClick={() => action('index/run', { previewId: value.job.id })}>Index reviewed batch · uses embeddings</button>}

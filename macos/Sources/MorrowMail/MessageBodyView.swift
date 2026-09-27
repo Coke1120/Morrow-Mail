@@ -79,14 +79,15 @@ struct MessageHTMLView: NSViewRepresentable {
     }
     static func document(_ html: String, images: Bool) -> String {
         let policy = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src \(images ? "https:" : "'none'"); connect-src 'none'; frame-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
-        return "<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"\(policy)\"><meta name=\"referrer\" content=\"no-referrer\"><style>body{font:15px -apple-system,sans-serif;color:#202720;background:white;margin:8px;overflow-wrap:anywhere}img{max-width:100%;height:auto}table{max-width:100%}pre{white-space:pre-wrap}blockquote{margin-left:12px;padding-left:12px;border-left:2px solid #ddd}a{color:#236042}</style></head><body>\(html)</body></html>"
+        return "<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"\(policy)\"><meta name=\"referrer\" content=\"no-referrer\"><style>body{font:15px -apple-system,sans-serif;color:#202720;background:white;margin:8px;overflow-wrap:anywhere}img{max-width:100%;max-height:2048px;object-fit:contain;height:auto}table{max-width:100%}pre{white-space:pre-wrap}blockquote{margin-left:12px;padding-left:12px;border-left:2px solid #ddd}a{color:#236042}</style></head><body>\(html)</body></html>"
     }
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
-        let view = WKWebView(frame: .zero, configuration: configuration)
+        let view = MessageWebView(frame: .zero, configuration: configuration)
+        view.measureHeight = { [weak coordinator = context.coordinator] web in coordinator?.measureHeight(web) }
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
         view.allowsBackForwardNavigationGestures = false
@@ -117,11 +118,65 @@ struct MessageHTMLView: NSViewRepresentable {
             return nil
         }
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            measureHeight(webView)
+        }
+        func measureHeight(_ webView: WKWebView) {
+            let currentDocument = document, width = webView.bounds.width
             // App-owned measurement only; email JavaScript stays disabled.
-            webView.evaluateJavaScript("Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)") { [weak self] result, _ in
-                guard let self, let value = result as? Double, value.isFinite else { return }
+            webView.evaluateJavaScript("document.body.getBoundingClientRect().top + window.scrollY + Math.max(document.body.scrollHeight, document.body.offsetHeight)") { [weak self, weak webView] result, _ in
+                guard let self, let webView, !webView.isLoading, self.document == currentDocument,
+                      webView.bounds.width == width, let value = result as? Double, value.isFinite else { return }
+                (webView as? MessageWebView)?.hasVerticalOverflow = value + 16 > 20000
                 self.parent.height = max(180, min(20000, value + 16))
             }
         }
     }
+}
+
+final class MessageWebView: WKWebView {
+    var measureHeight: ((WKWebView) -> Void)?
+    var hasVerticalOverflow = false
+    private var forwardsVerticalScroll = true
+    private var scrollsHTML = false
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let widthChanged = frame.width != newSize.width
+        super.setFrameSize(newSize)
+        if widthChanged {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.isLoading else { return }
+                self.measureHeight?(self)
+            }
+        }
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        if event.scrollingDeltaY != 0 || event.scrollingDeltaX != 0 {
+            forwardsVerticalScroll = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX)
+        }
+        // Keep zero-delta gesture/momentum endings with the same recipient.
+        if forwardsVerticalScroll, let scroll = enclosingScrollView {
+            guard hasVerticalOverflow else { scroll.scrollWheel(with: event); return }
+            // Only app-owned geometry is queried; email scripts remain disabled.
+            // The capped WebKit viewport scrolls at the email's lower edge, then
+            // hands the original native event back to the reader at either end.
+            evaluateJavaScript("[window.scrollY,Math.max(0,document.documentElement.scrollHeight-window.innerHeight)]") { [weak self, weak scroll] result, _ in
+                guard let self, let scroll else { return }
+                if event.scrollingDeltaY != 0 {
+                    let geometry = result as? [Double] ?? [0, 0]
+                    let email = self.convert(self.bounds, to: scroll.documentView)
+                    let bottom = scroll.documentVisibleRect.maxY
+                    self.scrollsHTML = geometry.count == 2 && (event.scrollingDeltaY < 0
+                        ? bottom >= email.maxY - 1 && geometry[0] < geometry[1] - 1
+                        : bottom <= email.maxY + 1 && geometry[0] > 1)
+                }
+                if self.scrollsHTML { self.scrollHTML(with: event) }
+                else { scroll.scrollWheel(with: event) }
+            }
+        } else {
+            super.scrollWheel(with: event)
+        }
+    }
+
+    private func scrollHTML(with event: NSEvent) { super.scrollWheel(with: event) }
 }

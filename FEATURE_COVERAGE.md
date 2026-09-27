@@ -6,6 +6,8 @@ The app's authoritative behavior list is [`shared/features.js`](shared/features.
 
 0.6.0-beta.8: macOS retains its current inbox page and selection when reading marks mail read. Both clients show only connected accounts (empty Add account onboarding), and offer Reply All and plain-text Forward with the source account locked; neither copies original Bcc or forwards attachments. Versions through beta.4 retain the previous UI.
 
+0.6.0-beta.10 adds a **Today** dashboard in both clients using existing per-account reports (latest 20, local report day), allows reviewed embedding batches to continue after leaving Settings, and moves native toolbar actions into the sidebar/list/reader. Workspace appears first; native panes can expand with the window and the macOS View menu exposes reading layouts. OAuth and embedding failures show safe, specific diagnostics; temporary refresh errors do not imply credentials were deleted.
+
 ## Status definitions
 
 - **Implemented, manual:** runs against the configured model when requested. Internal demo fixtures have labeled illustrative output without a model; Demo is absent from the product interface. Generated text remains reviewable.

@@ -29,9 +29,9 @@ struct NativeSearchSettingsView: View {
                             Text(value["settings"]["model"].nonempty ? value["settings"]["model"].string : "No embedding model saved").font(.headline)
                             Text(value["settings"]["baseUrl"].string).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                             HStack {
-                                Button("Test Connection") { action("test") }.disabled(!value["settings"]["model"].nonempty).accessibilityIdentifier("search.testConnection")
+                                Button("Test Connection") { action("test") }.disabled(indexing || !value["settings"]["model"].nonempty).accessibilityIdentifier("search.testConnection")
                                 if let onConfigureModel { Button("Edit in Model…", action: onConfigureModel) }
-                            }.disabled(busy || indexing)
+                            }.disabled(busy)
                             Text("Tests the saved connection with a fixed sentence, never your mail. Does not save settings or change the index; the provider may charge for this request.").font(.caption).foregroundStyle(.secondary)
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
                     }
@@ -41,6 +41,7 @@ struct NativeSearchSettingsView: View {
                     Text("\(Int(value["indexed"].number)) / \(Int(value["eligible"].number)) eligible messages indexed · \(Int(value["pending"].number)) pending").font(.headline)
                     Text(value["local"].bool ? "Local embedding endpoint" : "Remote embedding endpoint — approved mail text leaves this device").font(.callout)
                     Text("Only downloaded mail is searchable. New or modified mail needs another reviewed batch; indexing never starts a paid request automatically.").font(.caption).foregroundStyle(.secondary)
+                    if indexing { Text("Indexing continues in the background while Morrow is open. You can leave Search, Model or Settings; check Activity or return here for progress.").font(.callout).foregroundStyle(.secondary) }
                     if !value["job"].isNull { jobPanel }
                     Button("Clear Semantic Index / Cancel Batch") {
                         if model.confirm("Delete semantic vectors and cancel indexing?", detail: "Your mail and keyword index stay available.") { action("index/clear") }
@@ -48,16 +49,14 @@ struct NativeSearchSettingsView: View {
                 }
             }
         }
-        .task { do { let next = try await model.request("/search/settings"); initialize(next) } catch { self.error = error.localizedDescription } }
+        .task { do { let next = try await model.request("/search/settings"); if !Task.isCancelled { initialize(next) } } catch { if !Task.isCancelled { self.error = error.localizedDescription } } }
         .task(id: indexing) {
             guard indexing else { return }
             while !Task.isCancelled {
-                do { try await Task.sleep(nanoseconds: 1_500_000_000); value = try await model.request("/search/settings"); error = "" } catch { if Task.isCancelled { return }; self.error = error.localizedDescription }
+                do { try await Task.sleep(nanoseconds: 1_500_000_000); let next = try await model.request("/search/settings"); guard !Task.isCancelled else { return }; value = next; error = "" } catch { if Task.isCancelled { return }; self.error = error.localizedDescription }
             }
         }
         .onChange(of: options) { _ in dirty = changed; testResult = "" }
-        .onChange(of: busy) { _ in operationBusy = busy || indexing }
-        .onChange(of: indexing) { _ in operationBusy = busy || indexing }
         .onDisappear { dirty = false; operationBusy = false }
     }
     var configuration: some View {
@@ -127,10 +126,11 @@ struct NativeSearchSettingsView: View {
         options = fields; baseline = fields; dirty = false
     }
     func action(_ path: String, body: JSON = .object([:])) {
-        guard !busy, !model.busy, !indexing || path == "index/clear" else { return }; busy = true; error = ""
+        guard !busy, !model.busy, !indexing || path == "index/clear" else { return }; busy = true; operationBusy = true; error = ""
         testResult = ""
         Task {
-            defer { busy = false }
+            // Only this request/confirmation blocks navigation; the service owns the batch.
+            defer { busy = false; operationBusy = false }
             do {
                 let next = try await model.request("/search/" + (path == "index/now" ? "index/preview" : path), method: "POST", body: body)
                 if path == "test" {

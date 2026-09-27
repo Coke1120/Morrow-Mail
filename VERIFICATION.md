@@ -1,5 +1,19 @@
 # Verification — 27 September 2026
 
+## 0.6.0-beta.10 local preparation
+
+Both clients permit navigation away from Search/Model and closing Settings after a reviewed indexing start request returns. The service continues the batch while Morrow runs; Activity and reopening Search show progress. Pending save/test/start requests, unsaved forms and conflicting starts retain their guards. The loopback HTTP regression verifies 202 acceptance, progress with no settings polling, completion of the same job and duplicate-start rejection without extra model calls.
+
+Workspace now precedes All accounts. Today displays downloaded mailbox totals and the existing latest 20 per-account summary jobs filtered to the local report day; opening it neither requests AI nor reads/marks message bodies. Native chrome puts controls in the sidebar/list/reader, exposes layouts in the macOS View menu and removes hard maximum sidebar/list dimensions. A compact initial divider avoids an oversized first-launch sidebar.
+
+OAuth fixtures for Google and Microsoft distinguish network/429/5xx failure, invalid authorization and rejected app configuration. Rotated/omitted refresh tokens, expiry units, scope/client preservation, restart and replaced/disconnected-owner races pass. Credentials are retained on failure. This fixes misleading expiration messages and stale Node refresh writes; it does not establish why a particular live provider revoked consent.
+
+Embedding fixtures complete three messages, including a 22-chunk message, over four OpenAI-compatible/Ollama requests. A later rejected request now exposes a safe HTTP/response/vector reason while preserving completed entries and making no automatic paid retry. No reproducible first-message indexing logic defect was found; the reported live-model failure remains unconfirmed without its actual model/error. Provider response text and keys are not returned in job errors.
+
+Passed locally: `CARGO_INCREMENTAL=0 npm run rust:test` (102 Rust tests, strict fmt/Clippy, debug/release builds and seven Node↔Rust contracts); `MORROW_TEST_RUST=1 npm run check` (173/173, no skips, React build); `npm run macos:test` (full SwiftUI compilation, model/date/WebKit/window checks and native API fixtures); `CARGO_INCREMENTAL=0 npm run macos:rust:test` (production Rust/native lifecycle, account isolation, paging, drafts and online backup). WebKit checks cover bidirectional wheel/trackpad handoff, the selectable end of capped long mail, million-point text and giant-image bounds, width reflow, blocked scripts/resources and reviewed link protocols.
+
+An isolated native walkthrough visually checked Workspace order, Today/history, removed toolbar, sidebar hide/show and reader expansion/restoration. Native divider controls accepted a 380-point sidebar and 600-point mail list; the system View menu changed to bottom reading with a 240-point starting list. The Settings computer-use bridge remained unreliable while the fixture app stayed alive, and browser automation was unavailable; a full settings click-through is not claimed. Background progress is covered by HTTP fixtures. Fixtures used no real mail/model operations. Paired CI, public package verification and signing limitations are recorded separately when publication completes.
+
 ## 0.6.0-beta.9 paired prerelease
 
 [0.6.0-beta.9](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.9) was published as a prerelease at 2026-09-26T20:35:06Z from tag commit `d9026841a93f07079440c6cf098cdaf315a21f54`. All five required platform jobs and the publisher in [tag CI 36267966420](https://github.com/Coke1120/Morrow-Mail/actions/runs/36267966420) passed. The redundant main run for the same commit was cancelled; the tag ran the complete unchanged gates.

@@ -3,7 +3,7 @@ import AppKit
 
 struct StudioView: View {
     @EnvironmentObject var model: AppModel
-    @State private var tab = "tools"
+    private var tab: String { model.studioTab }
     @State private var action = "summary"
     @State private var messageID = ""
     @State private var skillID = ""
@@ -38,7 +38,7 @@ struct StudioView: View {
             Picker("Studio section", selection: Binding(get: { tab }, set: { value in
                 guard !model.busy else { return }
                 if brainDirty && !model.confirmDiscard("Discard unsaved Brain notes?") { return }
-                voice = savedVoice; notes = savedNotes; tab = value
+                voice = savedVoice; notes = savedNotes; model.studioTab = value
             })) {
                 Text("All Tools").tag("tools"); Text("Summaries").tag("summaries"); Text("Email Brain").tag("brain"); Text("My Skills").tag("skills"); Text("Local Activity").tag("activity")
             }.pickerStyle(.segmented)
@@ -80,16 +80,7 @@ struct StudioView: View {
                 if workspace["summaryOverflow"].number > 0 { Text("\(Int(workspace["summaryOverflow"].number)) jobs exceeded the queue limit. Use a manual summary for those messages.").foregroundStyle(.orange) }
                 ForEach(model.state["syncErrors"].array) { item in Text(item["accountId"].string + ": " + item["error"].string).foregroundStyle(.orange) }
                 if workspace["summaries"].array.isEmpty { Text("No summaries yet. Enable a trigger and wait for a scheduled time or newly synced mail.").foregroundStyle(.secondary) }
-                ForEach(workspace["summaries"].array) { report in
-                    GroupBox {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text((report["kind"].string == "arrival" ? "New mail" : "Scheduled summary") + " · " + report["status"].string.capitalized).font(.headline)
-                            Text(dateLabel(report["createdAt"].string) + " · \(report["messageIds"].array.count) messages" + (report["source"].string == "demo" ? " · Illustrative demo" : "")).font(.caption).foregroundStyle(.secondary)
-                            if report["text"].nonempty { Text(report["text"].string).textSelection(.enabled).lineSpacing(5) }
-                            if report["error"].nonempty { Text(report["error"].string).foregroundStyle(.orange) }
-                        }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
+                ForEach(workspace["summaries"].array) { report in SummaryReportView(report: report) }
             }.padding(20)
         }
     }
@@ -206,7 +197,7 @@ struct StudioView: View {
                             Text(skill["instructions"].string).foregroundStyle(.secondary).textSelection(.enabled)
                             Text("Folders: " + permissionFolders.filter { skill["folders"][$0].bool }.joined(separator: ", ")).font(.caption)
                             HStack {
-                                Button("Use Skill") { skillID = skill.id; action = "skill"; tab = "tools" }.disabled(!skill["enabled"].bool)
+                                Button("Use Skill") { skillID = skill.id; action = "skill"; model.studioTab = "tools" }.disabled(!skill["enabled"].bool)
                                 Button("Edit") { skillEditor = SkillEdit(value: skill) }
                                 Button("Delete") {
                                     guard model.confirm("Delete “\(skill["name"].string)” ?", detail: "This removes the saved instructions.") else { return }

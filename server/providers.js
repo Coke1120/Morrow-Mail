@@ -31,7 +31,7 @@ function providerConfig(provider) {
   return providers[provider];
 }
 
-export async function providerRequest(url, options, name) {
+export async function providerRequest(url, options, name, oauth = false) {
   let response;
   try {
     response = await fetch(url, { ...options, redirect: 'error', signal: AbortSignal.timeout(30_000) });
@@ -39,13 +39,21 @@ export async function providerRequest(url, options, name) {
     throw Object.assign(new Error(`${name} could not be reached. Check your connection and try again.`), { code: 'provider_network' });
   }
   if (!response.ok) {
-    await response.body?.cancel();
     const message = response.status === 401 ? `${name} authorization expired. Reconnect your account.`
       : response.status === 429 ? `${name} is rate limiting requests. Try again shortly.`
         : `${name} rejected the request (HTTP ${response.status}). Check your account authorization and app configuration.`;
-    throw Object.assign(new Error(message), { providerStatus: response.status });
+    const error = Object.assign(new Error(message), { providerStatus: response.status });
+    if (oauth && [400, 401].includes(response.status)) {
+      const body = await responseJSON(response, name, 32768).catch(() => null);
+      error.code = ['invalid_grant', 'interaction_required', 'consent_required'].includes(body?.error) ? 'oauth_reconnect_required'
+        : ['invalid_client', 'unauthorized_client', 'invalid_scope'].includes(body?.error) ? 'oauth_configuration' : 'oauth_refresh_failed';
+    } else await response.body?.cancel();
+    throw error;
   }
-  const maximumBytes = 8 * 1024 * 1024;
+  return responseJSON(response, name);
+}
+
+async function responseJSON(response, name, maximumBytes = 8 * 1024 * 1024) {
   if (Number(response.headers.get('content-length')) > maximumBytes) {
     await response.body?.cancel();
     throw new Error(`${name} returned a response that is too large.`);
@@ -113,7 +121,7 @@ async function exchange(provider, config, fields) {
       ...(config.clientSecret ? { client_secret: config.clientSecret } : {}),
       ...(provider === 'microsoft' ? { scope: purpose === 'calendar' ? definition.calendarScope : config.mailScope || definition.scope } : {}),
     }),
-  }, definition.name);
+  }, definition.name, true);
   if (!result?.access_token || !Number.isFinite(Number(result.expires_in)) || Number(result.expires_in) <= 0) {
     throw new Error(`${definition.name} returned an invalid authorization token.`);
   }
@@ -142,7 +150,7 @@ export async function oauthFinish(provider, { code, verifier, config, redirectUr
 export async function refreshMail(mail) {
   providerConfig(mail.provider);
   if (mail.accessToken && Number(mail.expiresAt) > Date.now() + 60_000) return { ...mail };
-  if (!mail.refreshToken) throw new Error('Your mailbox authorization expired. Reconnect your mailbox.');
+  if (!mail.refreshToken) throw Object.assign(new Error('Your mailbox authorization expired. Reconnect your mailbox.'), { code: 'oauth_reconnect_required' });
   return { ...mail, ...await exchange(mail.provider, mail, { grant_type: 'refresh_token', refresh_token: mail.refreshToken }) };
 }
 

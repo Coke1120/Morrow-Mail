@@ -24,8 +24,10 @@ struct MorrowMailApp: App {
                 .task { delegate.model = model; await model.start() }
                 .onChange(of: scenePhase) { phase in if phase == .active { model.refreshWhenActive() } }
         }
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1220, height: 800)
         .commands {
+            ReadingLayoutCommands(model: model)
             CommandGroup(replacing: .newItem) {
                 Button("New Message") { model.newDraft() }.keyboardShortcut("n").disabled(model.starting || model.busy || model.showSettings)
             }
@@ -51,11 +53,30 @@ struct MorrowMailApp: App {
                 Button("Inbox") { model.section = "inbox" }.keyboardShortcut("1").disabled(!model.canNavigate)
                 Button("AI Studio") { model.section = "studio" }.keyboardShortcut("2").disabled(!model.canNavigate)
                 Button("Calendar") { model.section = "calendar" }.keyboardShortcut("3").disabled(!model.canNavigate)
+                Button("Today") { model.section = "today" }.keyboardShortcut("4").disabled(!model.canNavigate)
             }
         }
     }
 }
 #endif
+
+struct ReadingLayoutCommands: Commands {
+    @ObservedObject var model: AppModel
+    @AppStorage("mailReaderLayout") private var layout = "right"
+    @AppStorage("mailSidebarVisible") private var sidebarVisible = true
+    var body: some Commands {
+        CommandGroup(after: .sidebar) {
+            Toggle("Show Sidebar", isOn: $sidebarVisible)
+                .keyboardShortcut("s", modifiers: [.command, .control])
+                .disabled(model.starting)
+            Picker("Reading Layout", selection: $layout) {
+                Text("Reader on Right").tag("right")
+                Text("Reader Below").tag("bottom")
+                Text("Focus Reading").tag("focus")
+            }.disabled(!model.canNavigate || !model.hasMailbox)
+        }
+    }
+}
 
 @MainActor
 final class MorrowDelegate: NSObject, NSApplicationDelegate {

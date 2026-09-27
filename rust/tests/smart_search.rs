@@ -217,6 +217,13 @@ async fn model(State(model): State<Model>, request: Request) -> Response {
         model.release.acquire().await.unwrap().forget();
     }
     let mode = model.mode.lock().unwrap().clone();
+    if let Some(status) = mode.strip_prefix("http:") {
+        return (
+            StatusCode::from_u16(status.parse().unwrap()).unwrap(),
+            "PRIVATE MODEL BODY fixture-key mail-content",
+        )
+            .into_response();
+    }
     if mode == "redirect" {
         return (
             StatusCode::FOUND,
@@ -778,6 +785,117 @@ async fn queue_chunk_progress_pause_resume_cancel_restart_and_budget() {
     let _ = task.await;
 }
 #[tokio::test]
+async fn multi_message_chunk_progress_keeps_stamp_dimension_and_reviewed_budget() {
+    for protocol in ["openai", "ollama"] {
+        let fixture = Fixture::new().await;
+        let model = Model::default();
+        let (url, task) = server(model.clone()).await;
+        let date = chrono::Utc::now();
+        for (index, body) in [
+            "short first".to_owned(),
+            "x".repeat(20000),
+            "short last".to_owned(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            fixture.add(A, &format!("mail-{index}"), json!({"subject":"", "body":body, "date":(date-chrono::Duration::seconds(index as i64)).to_rfc3339()})).await;
+        }
+        fixture
+            .setup(&url, json!({"protocol":protocol,"tokenBudget":64000}))
+            .await;
+        let preview = fixture.preview_run().await;
+        assert_eq!(preview["job"]["sampleCount"], 3);
+        let stamp = fixture.app().settings().await.unwrap()["searchIndex"]["stamp"].clone();
+        for (completed, part) in [(1, 0), (1, 16), (2, 0), (3, 0)] {
+            smart_search::tick(fixture.app()).await.unwrap();
+            let state = fixture.request("settings", None, A).await.1;
+            assert_eq!(state["job"]["completed"], completed, "{protocol}: {state}");
+            assert_eq!(state["job"]["part"], part, "{protocol}: {state}");
+            assert_eq!(state["job"]["dimension"], 2);
+            assert_eq!(
+                fixture.app().settings().await.unwrap()["searchIndex"]["stamp"],
+                stamp
+            );
+        }
+        let state = fixture.request("settings", None, A).await.1;
+        assert_eq!(state["job"]["status"], "complete");
+        assert_eq!(
+            state["job"]["spentTokens"],
+            preview["job"]["estimatedTokens"]
+        );
+        assert_eq!(state["indexed"], 3);
+        assert_eq!(fixture.vectors().await, 24);
+        let seen = model.seen.lock().unwrap().clone();
+        assert_eq!(
+            seen.iter()
+                .map(|request| request["body"]["input"].as_array().unwrap().len())
+                .collect::<Vec<_>>(),
+            vec![1, 16, 6, 1]
+        );
+        smart_search::tick(fixture.app()).await.unwrap();
+        assert_eq!(
+            model.count(),
+            4,
+            "Completed jobs never automatically rerun."
+        );
+        task.abort();
+        let _ = task.await;
+    }
+}
+
+#[tokio::test]
+async fn second_message_http_failure_retains_progress_and_safe_reason_without_retry() {
+    for protocol in ["openai", "ollama"] {
+        for (status, reason) in [
+            (429, "rate limit"),
+            (413, "input"),
+            (401, "API key"),
+            (503, "service"),
+        ] {
+            let fixture = Fixture::new().await;
+            let model = Model::default();
+            let (url, task) = server(model.clone()).await;
+            fixture
+                .add(A, "first", json!({"body":"first permitted message"}))
+                .await;
+            fixture
+                .add(A, "second", json!({"body":"second permitted message"}))
+                .await;
+            fixture
+                .setup(&url, json!({"protocol":protocol,"apiKey":"fixture-key"}))
+                .await;
+            fixture.preview_run().await;
+            smart_search::tick(fixture.app()).await.unwrap();
+            assert_eq!(
+                fixture.request("settings", None, A).await.1["job"]["completed"],
+                1
+            );
+            *model.mode.lock().unwrap() = format!("http:{status}");
+            smart_search::tick(fixture.app()).await.unwrap();
+            let (_, state) = fixture.request("settings", None, A).await;
+            assert_eq!(state["job"]["status"], "failed");
+            assert_eq!(state["job"]["completed"], 1);
+            assert_eq!(state["indexed"], 1);
+            assert_eq!(fixture.vectors().await, 1);
+            let error = state["job"]["error"].as_str().unwrap();
+            assert!(
+                error.contains(&format!("HTTP {status}")),
+                "{protocol}: {error}"
+            );
+            assert!(error.contains(reason), "{protocol}: {error}");
+            for private in ["PRIVATE MODEL BODY", "fixture-key", "mail-content"] {
+                assert!(!state.to_string().contains(private));
+            }
+            smart_search::tick(fixture.app()).await.unwrap();
+            assert_eq!(model.count(), 2, "failed batches never retry themselves");
+            task.abort();
+            let _ = task.await;
+        }
+    }
+}
+
+#[tokio::test]
 async fn embedding_transport_is_bounded_validates_shape_and_never_follows_redirects() {
     let fixture = Fixture::new().await;
     let model = Model::default();
@@ -802,14 +920,20 @@ async fn embedding_transport_is_bounded_validates_shape_and_never_follows_redire
     assert_eq!(seen[1]["body"]["truncate"], false);
     assert_eq!(seen[0]["authorization"], "Bearer fixture-only-key");
     config["protocol"] = "openai".into();
-    for mode in ["redirect", "failure", "invalid", "duplicate", "oversized"] {
+    for (mode, reason) in [
+        ("redirect", "HTTP 302"),
+        ("failure", "HTTP 502"),
+        ("invalid", "does not match its inputs"),
+        ("duplicate", "does not match its inputs"),
+        ("oversized", "exceeds 8 MiB"),
+    ] {
         *model.mode.lock().unwrap() = mode.into();
-        assert!(
-            smart_search::fetch_embeddings(fixture.app(), &config, &input)
-                .await
-                .is_err(),
-            "{mode}"
-        );
+        let error = smart_search::fetch_embeddings(fixture.app(), &config, &input)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(reason), "{mode}: {error}");
+        assert!(!error.contains("private contents"));
     }
     let count = model.count();
     assert!(

@@ -23,7 +23,7 @@ const emptySkill = () => ({ name: '', instructions: '', enabled: true, folders: 
 const dateLabel = value => value && !Number.isNaN(new Date(value).getTime()) ? new Date(value).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'No date';
 const tomorrow = () => { const date = new Date(); date.setDate(date.getDate() + 1); date.setHours(9, 0, 0, 0); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}T09:00`; };
 
-export default function Studio({ state, selectedMessage, onUpdate, onCompose, onSettings, notify, onDirtyChange, onBusyChange }) {
+export default function Studio({ state, selectedMessage, onUpdate, onCompose, onSettings, notify, onDirtyChange, onBusyChange, initialTab = 'tools' }) {
   const savedPolicy = state.settings?.policy || {};
   const policy = { ...DEFAULT_POLICY, ...savedPolicy, behaviors: { ...DEFAULT_POLICY.behaviors, ...savedPolicy.behaviors }, folders: { ...DEFAULT_POLICY.folders, ...savedPolicy.folders }, content: { ...DEFAULT_POLICY.content, ...savedPolicy.content } };
   const workspace = state.workspace || {};
@@ -35,7 +35,7 @@ export default function Studio({ state, selectedMessage, onUpdate, onCompose, on
   currentContext.current = contextKey;
   const pending = useRef(null);
   const actionPanel = useRef(null);
-  const [tab, setTab] = useState('tools');
+  const [tab, setTab] = useState(initialTab === 'summaries' ? 'summaries' : 'tools');
   const [group, setGroup] = useState('All');
   const [action, setAction] = useState('briefing');
   const [messageId, setMessageId] = useState(selectedMessage?.id || '');
