@@ -50,7 +50,7 @@ struct WindowAssertions {
         // Attach after the restored-size window already exists, then perform no
         // model updates: initial sizing must not depend on a later mail refresh.
         if lateAttachment {
-            host.rootView = AnyView(Color.clear.background(InitialSplitPosition(position)))
+            host.rootView = AnyView(Color.clear.frame(minWidth: 200).background(InitialSplitPosition(position)))
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
             let bounds = host.bounds
             window.contentView = nil
@@ -59,6 +59,7 @@ struct WindowAssertions {
             split.addArrangedSubview(host)
             split.addArrangedSubview(NSView())
             window.contentView = split
+            assert(split.arrangedSubviews.count == 2 && split.arrangedSubviews.first === host && host.superview === split && host.window === window, "Late attachment lost its pane")
             split.setPosition(split.bounds.width / 2, ofDividerAt: 0)
         } else { host.rootView = vertical
             ? AnyView(HSplitView { Color.clear.frame(minWidth: 200).background(InitialSplitPosition(position)); Color.clear.frame(minWidth: 320) })
