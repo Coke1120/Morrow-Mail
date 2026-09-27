@@ -88,8 +88,10 @@ IAsyncAction Shell::smoke() {
         }
         auto draining = shutdown();
         check(closing && !closeReady, L"Shutdown did not wait for the private service.");
-        window.Close(); // A second close during the asynchronous service drain must be cancelled.
-        check(!closeReady && window.AppWindow().IsVisible(), L"A second close destroyed the window before the service drained.");
+        HWND handle{}; check_hresult(window.as<::IWindowNative>()->get_WindowHandle(&handle));
+        // Window.Close destroys directly; SC_CLOSE exercises the user's title-bar close request.
+        SendMessageW(handle, WM_SYSCOMMAND, SC_CLOSE, 0);
+        check(!closeReady && IsWindow(handle), L"A second close destroyed the window before the service drained.");
         Json result; result.Insert(L"ok", Value::CreateBooleanValue(true)); put(result, L"mode", seeded ? L"owned" : L"fresh");
         if (seeded) result.Insert(L"reader", readerEvidence);
         std::ofstream(service->directory()/L"native-smoke-result.json",std::ios::binary) << to_string(result.Stringify());
