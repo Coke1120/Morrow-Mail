@@ -821,7 +821,7 @@ IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
     auto version = self->generation; auto account = self->owner;
     auto content = stack(16); content.Padding(ThicknessHelper::FromUniformLength(24));
     content.Children().Append(label(kind == L"activity" ? L"Activity" : L"Today", 28));
-    content.Children().Append(label(account.empty() ? L"Your workspace" : account));
+    content.Children().Append(label(kind == L"today" ? L"All connected accounts" : account.empty() ? L"Your workspace" : account));
     try {
         if (kind == L"activity") {
             auto result = co_await self->service->request(L"/activity", account);
@@ -838,20 +838,23 @@ IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
         } else {
             content.Children().Append(label(L"Downloaded mailbox totals; these are not today's arrivals or complete provider coverage."));
             for (auto const& value : array(self->state, L"accounts")) {
-                auto mailbox = value.GetObject(); if (account != L"all" && text(mailbox, L"id") != account) continue;
+                auto mailbox = value.GetObject();
                 auto counts = object(mailbox, L"counts");
                 content.Children().Append(label(text(mailbox, L"email") + L" · Unread Inbox " + to_hstring(static_cast<unsigned>(mailbox.GetNamedNumber(L"unread", 0))) + L" · Drafts " + to_hstring(static_cast<unsigned>(counts.GetNamedNumber(L"drafts", 0))), 18));
             }
             content.Children().Append(label(L"Today's saved summaries", 20));
+            auto policy = object(object(self->state,L"settings"),L"policy"), triggers = object(policy,L"triggers"), schedule = object(policy,L"summarySchedule");
+            if (flag(triggers,L"scheduledSummary")) content.Children().Append(label(text(schedule,L"cadence") == L"daily" ? L"Scheduled daily at " + text(schedule,L"time") + L" (" + text(schedule,L"timeZone") + L"), while Morrow is open." : L"Scheduled every " + to_hstring(static_cast<unsigned>(schedule.GetNamedNumber(L"everyHours",4))) + L" hours, while Morrow is open."));
+            if (flag(triggers,L"onArrival")) content.Children().Append(label(L"New-mail summaries appear after newly synced mail is analyzed. Historical imports do not trigger them."));
             bool found = false;
-            for (auto const& value : array(object(self->state, L"workspace"), L"summaries")) {
+            for (auto const& value : array(object(self->state, L"today"), L"summaries")) {
                 auto report = value.GetObject();
                 auto date = text(report, L"status") == L"completed" ? text(report, L"completedAt", text(report, L"createdAt")) : text(report, L"createdAt");
                 if (!sameDay(date)) continue;
-                found = true; content.Children().Append(label(text(report, L"kind") + L" · " + text(report, L"status") + L" · " + date));
+                found = true; content.Children().Append(label(text(report, L"accountId"), 18)); content.Children().Append(label(text(report, L"kind") + L" · " + text(report, L"status") + L" · " + date));
                 content.Children().Append(label(text(report, L"text")));
             }
-            if (!found) content.Children().Append(label(account == L"all" ? L"Choose one mailbox to see its saved summaries." : L"No saved summaries for today. Viewing this page does not generate AI work."));
+            if (!found) content.Children().Append(label(L"No summaries today yet. Enable scheduled or new-mail summaries in AI Permissions. Each mailbox keeps its own AI context."));
         }
         if (self->current(version, account)) self->show(scroll(content));
     } catch (...) { self->error(errorText()); }

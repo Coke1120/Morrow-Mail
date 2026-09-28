@@ -169,6 +169,9 @@ fn valid(db: &Store, settings: &Value, owner: &str, preview: &Value) -> Result<b
         && preview
             .get("generation")
             .is_none_or(|v| *v == settings["aiGeneration"])
+        && (preview["baseProfile"].is_null()
+            || (preview["baseProfile"] == read(settings, owner)["profile"]
+                && sources_valid(db, owner, &preview["baseProfile"]["sources"])?))
         && sources_valid(db, owner, &preview["sources"])?)
 }
 pub fn voice(db: &Store, settings: &Value, owner: &str) -> Result<String> {
@@ -303,7 +306,11 @@ pub fn update_settings_at(
             current["weeklySince"] = time.to_rfc3339_opts(SecondsFormat::Millis, true).into();
         }
         current["preview"] = Value::Null;
-        current["lastWeeklyAt"] = time.timestamp_millis().into();
+        current["lastWeeklyAt"] = if next["weekly"] == true && previous["weekly"] != true {
+            time.timestamp_millis().saturating_sub(7 * 86400000).into()
+        } else {
+            time.timestamp_millis().into()
+        };
     }
     current["settings"] = next;
     db.transaction(|db| {
@@ -320,17 +327,17 @@ fn model_settings(settings: &Value) -> Value {
         &json!({"maxTokens":settings["ai"]["maxTokens"].as_u64().unwrap_or(1200).min(1200)}),
     )
 }
-fn model_options(settings: &Value) -> Value {
-    json!({"preferences":settings.get("preferences").cloned().unwrap_or(json!({})),"includeUsage":true})
+fn model_options(settings: &Value, baseline: &Value) -> Value {
+    json!({"preferences":settings.get("preferences").cloned().unwrap_or(json!({})),"includeUsage":true,"previousStyle":baseline.get("voice").cloned().unwrap_or(Value::Null)})
 }
-fn estimate(settings: &Value, messages: &[Value]) -> Result<usize> {
+fn estimate(settings: &Value, messages: &[Value], baseline: &Value) -> Result<usize> {
     let ai = model_settings(settings);
     Ok(serde_json::to_vec(&model_payload(
         &ai,
         "style",
         messages,
         "",
-        &model_options(settings),
+        &model_options(settings, baseline),
     )?)?
     .len()
         + 256
@@ -378,6 +385,16 @@ pub fn prepare_at(
     } else {
         &start
     };
+    let baseline = if incremental && !voice(db, &settings, owner)?.is_empty() {
+        current["profile"].clone()
+    } else {
+        Value::Null
+    };
+    if baseline["sources"].as_array().map_or(0, Vec::len) > 150 {
+        return Err(Error::conflict(
+            "Run a full style analysis to refresh the accumulated sample sources.",
+        ));
+    }
     let mut seen = HashSet::new();
     let mut buckets: Vec<VecDeque<(Value, String)>> = Vec::new();
     let mut positions = HashMap::<String, usize>::new();
@@ -434,7 +451,7 @@ pub fn prepare_at(
             }
             let candidate = json!({"body":truncate(&body,6000)});
             messages.push(candidate.clone());
-            if estimate(&settings, &messages)?
+            if estimate(&settings, &messages, &baseline)?
                 > options["tokenBudget"].as_u64().unwrap_or(16000) as usize
             {
                 messages.pop();
@@ -451,7 +468,7 @@ pub fn prepare_at(
             "No useful Sent samples fit your dates, permissions and budget. Import Sent mail or increase the budget.",
         ));
     }
-    let preview = json!({"id":uuid::Uuid::new_v4().to_string(),"status":"prepared","createdAt":end,"through":end,"incremental":incremental,"stamp":stamp(&settings,owner),"generation":settings["aiGeneration"],"sources":sources,"eligible":seen.len(),"sampleCount":sources.len(),"effectiveCap":cap,"estimatedTokens":estimate(&settings,&messages)?,"tokenBudget":options["tokenBudget"]});
+    let preview = json!({"id":uuid::Uuid::new_v4().to_string(),"status":"prepared","createdAt":end,"through":end,"incremental":incremental,"baseProfile":baseline,"stamp":stamp(&settings,owner),"generation":settings["aiGeneration"],"sources":sources,"eligible":seen.len(),"sampleCount":sources.len(),"effectiveCap":cap,"estimatedTokens":estimate(&settings,&messages,&baseline)?,"tokenBudget":options["tokenBudget"]});
     write(db, owner, merge(current, &json!({"preview":preview})))?;
     Ok(preview)
 }
@@ -496,7 +513,7 @@ pub async fn generate(app: &App, owner: &str, id: &str) -> Result<()> {
         "style",
         &messages,
         "",
-        &model_options(&settings),
+        &model_options(&settings, &preview["baseProfile"]),
     )
     .await;
     app.db(move|db|{
@@ -520,7 +537,15 @@ pub fn apply(db: &Store, owner: &str, input: &Value) -> Result<()> {
         ));
     }
     let voice = crate::validation::text(&input["voice"], "Style guide", 2000, false)?.trim();
-    let profile = json!({"voice":voice,"updatedAt":now(),"sources":preview["sources"].as_array().into_iter().flatten().map(|i|json!({"id":i["id"],"hash":i["hash"]})).collect::<Vec<_>>()});
+    let mut sources = preview["baseProfile"]["sources"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    for item in preview["sources"].as_array().into_iter().flatten() {
+        sources.retain(|old| old["id"] != item["id"]);
+        sources.push(json!({"id":item["id"],"hash":item["hash"]}));
+    }
+    let profile = json!({"voice":voice,"updatedAt":now(),"sources":sources});
     write(
         db,
         owner,
@@ -563,7 +588,8 @@ pub async fn scheduled_tick(app: &App) -> Result<()> {
                     owner,
                     merge(value, &json!({"lastWeeklyAt":time.timestamp_millis()})),
                 )?;
-                return Ok(prepare_at(db, owner, true, time)
+                let incremental = !voice(db, &settings, owner)?.is_empty();
+                return Ok(prepare_at(db, owner, incremental, time)
                     .ok()
                     .map(|p| (owner.clone(), string(&p, "id").to_owned())));
             }

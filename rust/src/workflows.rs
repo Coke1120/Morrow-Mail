@@ -372,6 +372,9 @@ pub fn create_plan(
 }
 
 pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
+    if let Some(response) = crate::brain::handle(app, ctx).await? {
+        return Ok(Some(response));
+    }
     let route: Vec<_> = ctx.path.iter().map(|s| s.to_ascii_lowercase()).collect();
     let route: Vec<_> = route.iter().map(String::as_str).collect();
     let owner = ctx.owner.clone();
@@ -383,7 +386,11 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             let action=string(&input,"action");let context=ai::context_for(db,action,&input,&owner)?;if context.feature["mock"]!=true{return Err(Error::invalid("This behavior uses the AI assistant, not a mock workflow."));}
             let time=Utc::now();if let Some(when)=input.get("when") && !when.as_str().and_then(|s|DateTime::parse_from_rfc3339(s).ok()).is_some_and(|date|date>time){return Err(Error::invalid("Choose a future date and time."));}
             let mut previews=runtime.workflows.lock().map_err(|_|Error::new(503,"Workflow previews are unavailable."))?;previews.retain(|_,p|p["expiresAt"].as_i64().unwrap_or(0)>=time.timestamp_millis());if previews.len()>=100{return Err(Error::new(429,"Too many pending previews. Apply a preview or wait ten minutes."));}
-            let plan=create_plan(action,&context.messages,input["when"].as_str(),time)?;let id=uuid::Uuid::new_v4().to_string();let preview=json!({"id":id,"action":action,"title":plan["title"],"summary":plan["summary"],"items":plan["items"],"createdAt":now()});
+            let mut plan=create_plan(action,&context.messages,input["when"].as_str(),time)?;
+            if action=="memory" && workspace(&context.config,&owner)["brain"].is_object() {
+                plan["summary"]="Sample observations only. Your existing Brain will be retained; use Email Brain to review AI memory suggestions.".into();
+                plan["records"].as_object_mut().unwrap().remove("brain");
+            }let id=uuid::Uuid::new_v4().to_string();let preview=json!({"id":id,"action":action,"title":plan["title"],"summary":plan["summary"],"items":plan["items"],"createdAt":now()});
             previews.insert(id,merge(preview.clone(),&json!({"account":owner,"policy":context.policy,"generation":ai::generation(&context.config,&owner),"messages":context.messages,"plan":plan,"expiresAt":time.timestamp_millis()+600000})));Ok(json!({"preview":preview,"simulated":true}))
         }).await?
         }
@@ -398,7 +405,12 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                 let current=workspace(&config,&owner);let mut next=json!({});let plan=&preview["plan"];
                 for change in plan["changes"].as_array().into_iter().flatten(){let mut patch=change["patch"].clone();if let Some(labels)=patch["labels"].as_array(){let current=get_message(db,&owner,string(change,"messageId"))?;let mut combined=current["labels"].as_array().cloned().unwrap_or_default();for label in labels{if !combined.contains(label){combined.push(label.clone());}}patch["labels"]=json!(combined);}db.update(&owner,string(change,"messageId"),&patch)?;}
                 let created=now();for collection in ["reminders","events","unsubscribed"]{if let Some(records)=plan["records"][collection].as_array(){let mut values:Vec<_>=records.iter().map(|r|merge(r.clone(),&json!({"id":uuid::Uuid::new_v4().to_string(),"createdAt":created,"done":false,"simulated":true}))).collect();values.extend(current[collection].as_array().cloned().unwrap_or_default());values.truncate(100);next[collection]=json!(values);}}
-                if plan["records"]["brain"].is_object(){next["brain"]=merge(plan["records"]["brain"].clone(),&json!({"updatedAt":created,"sourceMessageIds":preview["messages"].as_array().into_iter().flatten().map(|m|m["id"].clone()).collect::<Vec<_>>(),"simulated":true}));}
+                if plan["records"]["brain"].is_object(){let mut brain=merge(plan["records"]["brain"].clone(),&json!({"updatedAt":created,"sourceMessageIds":preview["messages"].as_array().into_iter().flatten().map(|m|m["id"].clone()).collect::<Vec<_>>(),"simulated":true}));
+                    if current["brain"].is_object() {
+                        // Existing reviewed/manual memory wins; simulation never replaces it.
+                        brain=merge(brain,&current["brain"]);
+                    }
+                    next["brain"]=brain;}
                 for(index,draft)in plan["records"]["drafts"].as_array().into_iter().flatten().enumerate(){let input=merge(draft.clone(),&json!({"footer":content::preferences_footer(&config["preferences"])?}));let value=content::content(&input,true)?;let outgoing=mail::outgoing(&config,&owner,&value,&json!({"id":format!("mock-draft:{id}:{index}"),"folder":"drafts","replyToId":draft["replyToId"]}));db.upsert(&owner,&outgoing)?;}
                 let mut activity=vec![json!({"id":id,"action":preview["action"],"title":preview["title"],"detail":preview["summary"],"createdAt":created,"simulated":true})];activity.extend(current["activity"].as_array().cloned().unwrap_or_default());activity.truncate(100);next["activity"]=json!(activity);save_workspace(db,&owner,&next)?;Ok(())
             })?;previews.remove(id);Ok(())

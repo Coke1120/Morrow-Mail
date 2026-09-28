@@ -16,6 +16,7 @@ use tokio::sync::{Mutex, watch};
 
 pub struct Runtime {
     gate: Mutex<()>,
+    scan: Mutex<String>,
     cancelled: watch::Sender<String>,
     stopped: AtomicBool,
 }
@@ -23,15 +24,16 @@ impl Default for Runtime {
     fn default() -> Self {
         Self {
             gate: Mutex::new(()),
+            scan: Mutex::new(String::new()),
             cancelled: watch::channel(String::new()).0,
             stopped: AtomicBool::new(false),
         }
     }
 }
-const FAILURE: &str = "Analysis failed or its approved context changed. No automatic retry was made; tokens may have been used. Review a new batch to retry.";
+const FAILURE: &str = "Analysis failed or its approved context changed. Tokens may have been used. Review settings and restart checks to retry.";
 const CONTEXT_CAP: usize = 10;
 fn defaults() -> Value {
-    json!({"enabled":false,"maxMessages":5,"tokenBudget":16000})
+    json!({"enabled":false,"automatic":false,"dailyTokenBudget":100000,"maxMessages":5,"tokenBudget":16000})
 }
 fn read(settings: &Value, owner: &str) -> Value {
     merge(
@@ -77,9 +79,9 @@ fn stamp(db: &Store, settings: &Value, owner: &str) -> Result<String> {
         connections(settings)[owner]
             .get("connectionId")
             .unwrap_or(&connections(settings)[owner]),
-        options(settings, owner),
         crate::learning::voice(db, settings, owner)?,
-        approved
+        approved,
+        crate::brain::context(db, settings, owner, &Value::Null)?
     ])))
 }
 fn model_settings(settings: &Value) -> Value {
@@ -93,7 +95,7 @@ fn model_settings(settings: &Value) -> Value {
 }
 fn model_options(db: &Store, settings: &Value, owner: &str) -> Result<Value> {
     Ok(
-        json!({"preferences":merge(catalog()["preferences"].clone(),&settings["preferences"]),"includeHistory":true,"includeUsage":true,"styleVoice":crate::learning::voice(db,settings,owner)?,"timeZone":policy::resolve(&settings["policy"])["summarySchedule"]["timeZone"]}),
+        json!({"preferences":merge(catalog()["preferences"].clone(),&settings["preferences"]),"includeHistory":true,"includeUsage":true,"brain":crate::brain::context(db,settings,owner,&Value::Null)?,"confirmedIdentity":identity(db,owner)?,"styleVoice":crate::learning::voice(db,settings,owner)?,"timeZone":policy::resolve(&settings["policy"])["summarySchedule"]["timeZone"]}),
     )
 }
 fn instructions(approved: &Value) -> String {
@@ -116,6 +118,14 @@ fn eligible(db: &Store, owner: &str, m: &Value) -> Result<bool> {
         return Ok(false);
     }
     Ok(!db.conn.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE account=? AND json_extract(data,'$.folder')='sent' AND json_extract(data,'$.replyToId')=?)", rusqlite::params![owner,string(m,"id")], |r| r.get::<_,bool>(0))?)
+}
+fn source_hash(message: &Value) -> String {
+    let mut message = message.clone();
+    message
+        .as_object_mut()
+        .unwrap()
+        .retain(|key, _| !matches!(key.as_str(), "read" | "starred" | "pending"));
+    ai::hash(&message)
 }
 struct Source {
     messages: Vec<Value>,
@@ -160,11 +170,14 @@ fn source(db: &Store, owner: &str, id: &str) -> Result<Source> {
         owner,
     )?;
     let mut messages: Vec<_> = context.messages.into_iter().take(CONTEXT_CAP).collect();
-    let digest = ai::hash(&json!([messages, context.history]));
+    let digest = ai::hash(&json!([
+        messages.iter().map(source_hash).collect::<Vec<_>>(),
+        context.history
+    ]));
     let sources = json!(
         messages
             .iter()
-            .map(|m| json!({"id":m["id"],"hash":ai::hash(m)}))
+            .map(|m| json!({"id":m["id"],"hash":source_hash(m)}))
             .collect::<Vec<_>>()
     );
     for (i, m) in messages.iter_mut().enumerate() {
@@ -182,7 +195,7 @@ fn source(db: &Store, owner: &str, id: &str) -> Result<Source> {
     let ai = model_settings(&settings);
     let payload = ai::model_payload(
         &ai,
-        "ask",
+        "replyAssessment",
         &messages,
         &instructions(&approved),
         &model_options(db, &settings, owner)?,
@@ -220,7 +233,7 @@ fn valid(db: &Store, owner: &str, item: &Value) -> Result<bool> {
             return Ok(false);
         };
         if policy["folders"][string(&current, "folder")] != true
-            || previous["hash"] != ai::hash(&policy::redact(&current, &policy))
+            || previous["hash"] != source_hash(&policy::redact(&current, &policy))
         {
             return Ok(false);
         }
@@ -245,14 +258,134 @@ fn candidates(db: &Store, owner: &str) -> Result<Vec<Value>> {
     }
     Ok(result)
 }
+fn automatic_scope(settings: &Value, owner: &str, options: &Value) -> String {
+    ai::hash(&json!([
+        connections(settings)[owner]
+            .get("connectionId")
+            .unwrap_or(&connections(settings)[owner]),
+        settings["ai"],
+        policy::resolve(&settings["policy"]),
+        crate::learning::identity(settings, owner),
+        options
+    ]))
+}
+fn daily_spent(value: &Value) -> u64 {
+    if value["usage"]["day"] == chrono::Utc::now().format("%Y-%m-%d").to_string() {
+        value["usage"]["tokens"].as_u64().unwrap_or(0)
+    } else {
+        0
+    }
+}
+fn automatic_ready(settings: &Value, owner: &str, value: &Value) -> bool {
+    permitted(settings, owner)
+        && value["settings"]["automatic"] == true
+        && value["automaticApproval"] == automatic_scope(settings, owner, &options(settings, owner))
+        && !crate::learning::identity(settings, owner).is_null()
+        && !string(&settings["ai"], "model").is_empty()
+        && !string(&settings["ai"], "baseUrl").is_empty()
+}
+fn schedule_automatic(db: &Store) -> Result<()> {
+    let settings = db.settings()?;
+    for owner in connections(&settings).as_object().unwrap().keys() {
+        let value = read(&settings, owner);
+        if !automatic_ready(&settings, owner, &value)
+            || (!value["job"].is_null() && value["job"]["status"] != "complete")
+        {
+            continue;
+        }
+        let budget = options(&settings, owner)["dailyTokenBudget"]
+            .as_u64()
+            .unwrap_or(100000)
+            .saturating_sub(daily_spent(&value));
+        if budget == 0 {
+            let status = "Daily budget reached. Checks resume after midnight UTC.";
+            if value["automaticStatus"] != status {
+                let mut value = value.clone();
+                value["automaticStatus"] = status.into();
+                write(db, owner, value)?;
+            }
+            continue;
+        }
+        let mut ids = Vec::new();
+        let mut estimate = 0;
+        let mut waiting_for_budget = false;
+        for message in candidates(db, owner)? {
+            let id = &message["id"];
+            if value["ignored"]
+                .as_array()
+                .is_some_and(|ids| ids.contains(id))
+            {
+                continue;
+            }
+            let mut already_assessed = false;
+            for proposal in value["proposals"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|p| p["messageId"] == *id)
+            {
+                if valid(db, owner, proposal)? {
+                    already_assessed = true;
+                    break;
+                }
+            }
+            if already_assessed {
+                continue;
+            }
+            let source = source(db, owner, id.as_str().unwrap_or(""))?;
+            if estimate + source.estimate
+                > budget.min(
+                    options(&settings, owner)["tokenBudget"]
+                        .as_u64()
+                        .unwrap_or(16000),
+                )
+            {
+                waiting_for_budget = true;
+                continue;
+            }
+            estimate += source.estimate;
+            ids.push(id.clone());
+            if ids.len()
+                >= options(&settings, owner)["maxMessages"]
+                    .as_u64()
+                    .unwrap_or(5) as usize
+            {
+                break;
+            }
+        }
+        if ids.is_empty() {
+            let status = if waiting_for_budget {
+                "Waiting for budget. Checks resume after midnight UTC. If a message still cannot fit, increase the daily budget or reduce AI context in Permissions."
+            } else {
+                "Downloaded Inbox is checked. New or changed mail will be checked automatically."
+            };
+            if value["automaticStatus"] != status {
+                let mut value = value.clone();
+                value["automaticStatus"] = status.into();
+                write(db, owner, value)?;
+            }
+            continue;
+        }
+        let preview = preview(db, owner, &json!({"messageIds":ids}))?;
+        run(db, owner, string(&preview["job"], "id"))?;
+        let mut value = read(&db.settings()?, owner);
+        value["job"]["automatic"] = true.into();
+        value["automaticStatus"] = "Checking downloaded Inbox mail.".into();
+        write(db, owner, value)?;
+    }
+    Ok(())
+}
 pub fn state(db: &Store, owner: &str) -> Result<Value> {
     let settings = db.settings()?;
     connected(&settings, owner)?;
     let current = read(&settings, owner);
     let p = policy::resolve(&settings["policy"]);
     let mut proposals = Vec::new();
+    let mut assessments = Vec::new();
     for item in current["proposals"].as_array().into_iter().flatten() {
-        if valid(db, owner, item)? && ["ready", "used"].contains(&string(item, "status")) {
+        if valid(db, owner, item)?
+            && ["ready", "used", "no_reply"].contains(&string(item, "status"))
+        {
             let mut item = item.clone();
             item.as_object_mut().unwrap().remove("stamp");
             item.as_object_mut().unwrap().remove("sourceHash");
@@ -262,7 +395,11 @@ pub fn state(db: &Store, owner: &str) -> Result<Value> {
                 owner,
                 &p,
             );
-            proposals.push(item);
+            if item["status"] == "no_reply" {
+                assessments.push(item);
+            } else {
+                proposals.push(item);
+            }
         }
     }
     let mut job = current["job"].clone();
@@ -292,8 +429,28 @@ pub fn state(db: &Store, owner: &str) -> Result<Value> {
     } else {
         Vec::<Value>::new()
     };
+    let model_ready = !string(&settings["ai"], "model").is_empty()
+        && !string(&settings["ai"], "baseUrl").is_empty();
+    let mut requirements = Vec::new();
+    if options(&settings, owner)["enabled"] != true {
+        requirements.push("Enable reply suggestions for this account.");
+    }
+    if p["enabled"] != true
+        || p["behaviors"]["reply"] != true
+        || p["folders"]["inbox"] != true
+        || p["content"]["sender"] != true
+        || p["content"]["body"] != true
+    {
+        requirements.push("Enable AI, Reply, Inbox, sender and body in AI Permissions.");
+    }
+    if identity(db, owner)?.is_null() {
+        requirements.push("Confirm your name in Learning → Identity.");
+    }
+    if !model_ready {
+        requirements.push("Configure a chat model in Model settings.");
+    }
     Ok(
-        json!({"owner":owner,"settings":options(&settings,owner),"permitted":can,"identity":identity(db,owner)?,"identityReady":!identity(db,owner)?.is_null(),"model":{"model":settings["ai"]["model"],"baseUrl":settings["ai"]["baseUrl"]},"job":job,"proposals":proposals,"candidates":candidates,"candidateLimit":200,"contextLimit":CONTEXT_CAP,"scope":"downloaded"}),
+        json!({"automaticStatus":current["automaticStatus"],"automaticReady":automatic_ready(&settings,owner,&current),"spentToday":daily_spent(&current),"requirements":requirements,"modelReady":model_ready,"assessments":assessments,"owner":owner,"settings":options(&settings,owner),"permitted":can,"identity":identity(db,owner)?,"identityReady":!identity(db,owner)?.is_null(),"model":{"model":settings["ai"]["model"],"baseUrl":settings["ai"]["baseUrl"]},"job":job,"proposals":proposals,"candidates":candidates,"candidateLimit":200,"contextLimit":CONTEXT_CAP,"scope":"downloaded"}),
     )
 }
 pub fn update_settings(db: &Store, owner: &str, input: &Value) -> Result<()> {
@@ -306,7 +463,11 @@ pub fn update_settings(db: &Store, owner: &str, input: &Value) -> Result<()> {
         return Err(Error::invalid("Invalid reply suggestion settings."));
     }
     let next = merge(options(&settings, owner), input);
-    if !next["enabled"].is_boolean()
+    if !next["automatic"].is_boolean()
+        || !next["dailyTokenBudget"]
+            .as_u64()
+            .is_some_and(|n| (4000..=2_000_000).contains(&n))
+        || !next["enabled"].is_boolean()
         || !next["maxMessages"]
             .as_u64()
             .is_some_and(|v| (1..=10).contains(&v))
@@ -320,8 +481,10 @@ pub fn update_settings(db: &Store, owner: &str, input: &Value) -> Result<()> {
     }
     let mut value = read(&settings, owner);
     value["settings"] = next;
+    if input["automatic"] == true {
+        value["automaticApproval"] = automatic_scope(&settings, owner, &value["settings"]).into();
+    }
     value["job"] = Value::Null;
-    value["proposals"] = json!([]);
     write(db, owner, value)
 }
 pub fn preview(db: &Store, owner: &str, input: &Value) -> Result<Value> {
@@ -369,12 +532,12 @@ pub fn preview(db: &Store, owner: &str, input: &Value) -> Result<Value> {
     let budget = options(&settings, owner)["tokenBudget"]
         .as_u64()
         .unwrap_or(16000);
-    if estimate > budget {
+    if estimate > budget || items.is_empty() {
         return Err(Error::conflict(
             "These messages and their history exceed the saved budget. Select fewer messages, reduce the AI context limit, or review a higher budget.",
         ));
     }
-    current["job"] = json!({"id":uuid::Uuid::new_v4().to_string(),"status":"prepared","stamp":stamp,"items":items,"samples":samples,"sampleCount":ids.len(),"completed":0,"estimatedTokens":estimate,"spentTokens":0,"tokenBudget":budget,"createdAt":now()});
+    current["job"] = json!({"id":uuid::Uuid::new_v4().to_string(),"status":"prepared","stamp":stamp,"items":items,"samples":samples,"sampleCount":items.len(),"completed":0,"estimatedTokens":estimate,"spentTokens":0,"tokenBudget":budget,"createdAt":now()});
     write(db, owner, current)?;
     state(db, owner)
 }
@@ -416,7 +579,11 @@ pub fn initialize(db: &Store) -> Result<()> {
         .into_iter()
         .flatten()
     {
-        if ["queued", "running"].contains(&string(&value["job"], "status")) {
+        if ["queued", "running"].contains(&string(&value["job"], "status"))
+            && !(value["job"]["automatic"] == true
+                && value["job"]["status"] == "queued"
+                && value["job"]["inflight"] != true)
+        {
             let mut value = value.clone();
             value["job"]["status"] = "interrupted".into();
             value["job"]["error"] = FAILURE.into();
@@ -466,6 +633,18 @@ fn claim(db: &Store) -> Result<Option<Work>> {
         })();
         match next {
             Ok(source) => {
+                if job["automatic"] == true {
+                    let saved = read(&settings, owner);
+                    let remaining = options(&settings, owner)["dailyTokenBudget"]
+                        .as_u64()
+                        .unwrap_or(100000)
+                        .saturating_sub(daily_spent(&saved));
+                    if !automatic_ready(&settings, owner, &saved) || source.estimate > remaining {
+                        return Ok(None);
+                    }
+                    value["usage"] = json!({"day":chrono::Utc::now().format("%Y-%m-%d").to_string(),"tokens":daily_spent(&saved)+source.estimate});
+                }
+                let job = &mut value["job"];
                 let work = Work {
                     owner: owner.clone(),
                     job_id: string(job, "id").into(),
@@ -539,7 +718,7 @@ fn finish(db: &Store, work: Work, response: Result<Value>) -> Result<()> {
             let mut proposals = value["proposals"].as_array().cloned().unwrap_or_default();
             proposals.retain(|p| p["messageId"] != proposal["messageId"]);
             proposals.push(proposal);
-            if proposals.len() > 50 {
+            if proposals.len() > 200 {
                 proposals.remove(0);
             }
             value["proposals"] = json!(proposals);
@@ -569,7 +748,31 @@ pub async fn tick(app: &App) -> Result<()> {
         return Ok(());
     };
     let mut cancel = runtime.cancelled.subscribe();
-    let Some(work) = app.db(claim).await? else {
+    let mut scan = runtime.scan.lock().await;
+    let previous = scan.clone();
+    let (work, revision) = app
+        .db(move |db| {
+            let key = format!(
+                "{}:{}",
+                db.revision()?,
+                chrono::Utc::now().format("%Y-%m-%d")
+            );
+            if key != previous {
+                schedule_automatic(db)?;
+            }
+            let work = claim(db)?;
+            Ok((
+                work,
+                format!(
+                    "{}:{}",
+                    db.revision()?,
+                    chrono::Utc::now().format("%Y-%m-%d")
+                ),
+            ))
+        })
+        .await?;
+    *scan = revision;
+    let Some(work) = work else {
         return Ok(());
     };
     if runtime.stopped.load(Ordering::Acquire) {
@@ -581,7 +784,7 @@ pub async fn tick(app: &App) -> Result<()> {
         let request = ai::run_model(
             &app.0.client,
             &work.ai,
-            "ask",
+            "replyAssessment",
             &work.source.messages,
             &work.prompt,
             &work.options,
@@ -638,6 +841,15 @@ pub fn dismiss(db: &Store, owner: &str, id: &str) -> Result<()> {
     else {
         return Err(Error::new(404, "Suggestion not found."));
     };
+    let message_id = value["proposals"][index]["messageId"].clone();
+    let mut ignored = value["ignored"].as_array().cloned().unwrap_or_default();
+    if !ignored.contains(&message_id) {
+        ignored.push(message_id);
+    }
+    if ignored.len() > 10000 {
+        return Err(Error::conflict("The ignored-mail list is full."));
+    }
+    value["ignored"] = json!(ignored);
     value["proposals"].as_array_mut().unwrap().remove(index);
     write(db, owner, value)
 }

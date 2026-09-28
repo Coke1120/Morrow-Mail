@@ -69,7 +69,10 @@ struct StyleLearningView: View {
                         } else {
                             Button("Learn Now · Uses AI") { action("preview", learnNow: true) }.buttonStyle(.borderedProminent).disabled(analysisBlocked)
                         }
-                        Button("Preview Samples · No AI Call") { action("preview") }.disabled(analysisBlocked)
+                        Menu("More") {
+                            Button("Preview Samples · No AI Call") { action("preview") }.disabled(analysisBlocked)
+                            if !preview.isNull { Button("Dismiss Proposal") { action("settings", body: options) } }
+                        }
                     }
                     analysisRequirements
                     Text("Uses saved learning settings. Generating a proposal does not apply it. Save Approved Style activates it under Email Brain permission without changing contacts, notes, or voice.").font(.callout).foregroundStyle(.secondary)
@@ -80,6 +83,9 @@ struct StyleLearningView: View {
                 }
                 if !error.isEmpty { Text(error).foregroundStyle(.red).textSelection(.enabled) }
                 configurationPanel
+                if savedOptions["weekly"].bool {
+                    Text(["prepared", "ready"].contains(preview["status"].string) ? "Automatic learning is waiting for you to save or dismiss this proposal." : "Automatic learning is enabled. The first eligible analysis starts after enabling; updates use new Sent mail at most weekly while Morrow is open.").font(.callout).foregroundStyle(.secondary)
+                }
                 identityPanel
                 if !value["profile"].isNull {
                     GroupBox("Saved writing style") {
@@ -89,10 +95,10 @@ struct StyleLearningView: View {
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
                     }
                 }
-                Button("Delete Learned Style & Stop Learning") {
+                DisclosureGroup("Manage saved style") { Button("Delete Learned Style & Stop Learning", role: .destructive) {
                     guard model.confirm("Delete this account’s learned style?", detail: "The style and sample preview will be deleted, and learning turned off. Mail and your confirmed identity are retained.") else { return }
                     action("profile", method: "DELETE")
-                }
+                } }
             }.disabled(model.busy || model.state["account"]["mode"].string != "live")
         }
         .onAppear { load() }
@@ -138,7 +144,7 @@ struct StyleLearningView: View {
                 Text("Also limited by AI Permissions → Maximum messages (currently \(Int(model.policy["maxMessages"].number))).").font(.caption).foregroundStyle(.secondary)
                 HStack { Text("Token budget per analysis"); TextField("16000", value: number("tokenBudget"), format: .number.grouping(.never)).frame(width: 120) }
                 Text("4,000–64,000 tokens. Conservative UTF-8 estimate including response allowance; custom model billing may differ. No currency estimate.").font(.caption).foregroundStyle(.secondary)
-                Button("Save Learning Settings") { action("settings", body: options) }.disabled(preview["status"].string == "running")
+                if options != savedOptions { Button("Save Learning Settings") { action("settings", body: options) }.disabled(preview["status"].string == "running") }
                 if preview["status"].string == "running" { Text("Wait for the current analysis before saving learning settings.").font(.caption).foregroundStyle(.secondary) }
             }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
         } label: {
@@ -208,6 +214,7 @@ struct StyleLearningView: View {
         let identityOnly = path == "settings" && body.object.keys.allSatisfy { $0 == "identity" }
         if identityOnly && !preview.isNull && !model.confirm("Save identity and discard this style preview?", detail: "Pending AI results will be invalidated. Your approved style will be retained.") { return }
         if (path == "preview" || (path == "settings" && !identityOnly)) && preview["status"].string == "ready" && !model.confirm("Replace the current style proposal?", detail: "Your approved style will be retained.") { return }
+        if path == "settings" && !identityOnly && body["weekly"].bool && !model.confirm("Enable automatic style analysis?", detail: "\(owner) · \(model.state["settings"]["ai"]["model"].string)\nUp to \(Int(body["tokenBudget"].number)) estimated tokens per analysis. The first eligible analysis starts after enabling, then at most weekly while Morrow is open. Provider charges may apply. Each proposal requires your review before application.") { return }
         guard model.account == owner else { return }
         let keepIdentityEdits = identityChanged
         error = ""

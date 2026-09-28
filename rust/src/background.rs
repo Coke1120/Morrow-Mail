@@ -3,7 +3,7 @@ use crate::{
     ai,
     error::{Error, Result},
     mail, policy, providers,
-    service::{App, Context, connections, workspace},
+    service::{App, Context, connections},
     store::{Store, catalog, merge, now, string},
 };
 use axum::{
@@ -557,22 +557,6 @@ fn source_digest(messages: &[Value], policy: &Value) -> Result<String> {
         .collect();
     digest(&json!(values))
 }
-fn brain_digest(db: &Store, account: &str, brain: &Value, policy: &Value) -> Result<String> {
-    let messages = sources(
-        db,
-        account,
-        brain["sourceMessageIds"]
-            .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or_default(),
-    )?;
-    digest(&json!(
-        messages
-            .iter()
-            .map(|message| policy::redact(message, policy))
-            .collect::<Vec<_>>()
-    ))
-}
 fn pending(job: &Value) -> bool {
     ["queued", "running"].contains(&string(job, "status"))
 }
@@ -798,7 +782,7 @@ pub fn schedule(db: &Store, timestamp: i64) -> Result<()> {
         return Ok(());
     }
     let sql = format!(
-        "SELECT id FROM messages WHERE account=? AND json_extract(data,'$.folder') IN ({}) {} ORDER BY json_extract(data,'$.date') DESC,id LIMIT ?",
+        "SELECT id FROM messages WHERE account=? AND json_extract(data,'$.folder') IN ({}) {} ORDER BY COALESCE(json_extract(data,'$.pending'),0) DESC,COALESCE(json_extract(data,'$.starred'),0) DESC,COALESCE(json_extract(data,'$.read'),0) ASC,json_extract(data,'$.date') DESC,id LIMIT ?",
         vec!["?"; folders.len()].join(","),
         if policy["triggers"]["starredOnly"] == true {
             "AND json_extract(data,'$.starred')=1"
@@ -863,15 +847,10 @@ fn claim(db: &Store, account: &str, job: &Value) -> Result<Option<Value>> {
         let policy = policy::resolve(&config["policy"]);
         // Authorize all sources before constructing any model context.
         let messages = job["messageIds"].as_array().unwrap().iter().map(|id|db.get(account,id.as_str().unwrap_or("")).map(|message|policy::redact(&message.unwrap_or(Value::Null),&policy))).collect::<Result<Vec<_>>>()?;
-        let brain = workspace(&config,account)["brain"].clone();
-        let mut use_brain = policy["behaviors"]["memory"]==true && ["contacts","sender","body","subject"].iter().all(|field|policy["content"][field]==true) && brain.is_object();
-        for id in brain["sourceMessageIds"].as_array().into_iter().flatten() {
-            if !db.get(account,id.as_str().unwrap_or(""))?.is_some_and(|message|policy["folders"][string(&message,"folder")]==true) { use_brain=false; }
-        }
-        let options = json!({"preferences":merge(catalog()["preferences"].clone(),&config["preferences"]),"brain":if use_brain {brain}else{Value::Null},"styleVoice":"","structuredSummary":true,"timeZone":policy["summarySchedule"]["timeZone"]});
+        let brain = crate::brain::context(db,&config,account,&Value::Null)?;
+        let options = json!({"preferences":merge(catalog()["preferences"].clone(),&config["preferences"]),"brain":brain,"styleVoice":"","structuredSummary":true,"timeZone":policy["summarySchedule"]["timeZone"]});
         update_job(db,account,string(job,"id"),&json!({"status":"running"}))?;
-        let brain_sources=if use_brain {brain_digest(db,account,&options["brain"],&policy)?}else{String::new()};
-        Ok(Some(json!({"ai":config["ai"],"messages":messages,"options":options,"generation":ai::generation(&config,account),"brain":options["brain"],"brainSources":brain_sources})))
+        Ok(Some(json!({"ai":config["ai"],"messages":messages,"options":options,"generation":ai::generation(&config,account),"brain":options["brain"]})))
     })
 }
 async fn generate(app: &App, account: &str, job: &Value, context: &Value) -> Result<Value> {
@@ -922,11 +901,7 @@ fn finish(
         let config = db.settings()?;
         let value = automation(&config,account);
         if !value["jobs"].as_array().into_iter().flatten().any(|current|current["id"]==job["id"]&&current["status"]=="running") { return Ok(()); }
-        let brain_changed=if !context["brain"].is_null() {
-            let policy=policy::resolve(&config["policy"]);
-            let brain=workspace(&config,account)["brain"].clone();
-            brain!=context["brain"] || brain_digest(db,account,&brain,&policy)?!=context["brainSources"]
-        }else{false};
+        let brain_changed=crate::brain::context(db,&config,account,&Value::Null)?!=context["brain"];
         let patch = if !valid_job(db,account,job,&config)? || ai::generation(&config,account)!=context["generation"] || brain_changed {
             json!({"status":"skipped","error":"Context changed; the result was discarded."})
         } else {
@@ -1008,6 +983,7 @@ pub async fn tick(app: &App) -> Result<()> {
             }
             history_tick(app).await?;
             crate::learning::scheduled_tick(app).await?;
+            crate::brain::scheduled_tick(app).await?;
             automation_tick(app).await
         } => result,
     }

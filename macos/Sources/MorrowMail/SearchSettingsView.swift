@@ -39,7 +39,7 @@ struct NativeSearchSettingsView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            SectionHeading(title: presentation == .model ? "Embedding model" : "Search & Semantic Indexing", detail: presentation == .model ? "Smart search (智慧搜尋) uses this separate embedding model. Choose indexing scope and review batches in Search." : "Keyword search stays local. Configure the embedding connection in Model. Smart search (智慧搜尋) is optional, stays within your approved scope, and each indexing batch needs review.")
+            SectionHeading(title: presentation == .model ? "Embedding model" : "Search & Semantic Indexing", detail: presentation == .model ? "Smart search (智慧搜尋) uses this separate embedding model. Choose indexing scope and review batches in Search." : "Keyword search stays local. Configure the embedding connection in Model. Smart search (智慧搜尋) is optional, stays within your approved scope, and can keep its index updated automatically within a daily budget.")
             if !testResult.isEmpty { Text(testResult).foregroundStyle(.secondary).textSelection(.enabled) }
             if busy { ProgressView().controlSize(.small) }
             if !error.isEmpty { Text(error).foregroundStyle(.red).textSelection(.enabled) }
@@ -53,22 +53,29 @@ struct NativeSearchSettingsView: View {
                             Text(value["local"].bool ? "Local embedding endpoint" : "Remote embedding endpoint — approved mail text leaves this device").font(.caption).foregroundStyle(.secondary)
                             if presentation == .search {
                             HStack {
-                                Button("Test Saved Embedding Connection") { action("test") }.disabled(indexing || !value["settings"]["model"].nonempty).accessibilityIdentifier("search.testConnection")
                                 if let onConfigureModel { Button("Edit in Model…", action: onConfigureModel) }
                             }.disabled(busy)
-                            Text("Tests the saved connection with a fixed sentence, never your mail. Does not save settings or change the index; the provider may charge for this request.").font(.caption).foregroundStyle(.secondary)
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
                     }
                 } else {
                     Text(value["local"].bool ? "Saved connection: local endpoint" : "Saved connection: remote endpoint").font(.caption).foregroundStyle(.secondary)
                 }
-                configuration.disabled(busy || indexing)
+                configuration.disabled(busy || (indexing && presentation == .model))
                 if presentation == .search {
-                    reviewPanel
+                    if value["settings"]["autoIndex"].bool {
+                        GroupBox("Automatic indexing") {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(value["automatic"]["approved"].bool ? "Keeps downloaded mail indexed while Morrow is open." : "Automatic indexing needs review. Save Search settings to resume.")
+                                Text("Today: \(Int(value["automatic"]["spentToday"].number)) / \(Int(value["settings"]["dailyTokenBudget"].number)) estimated tokens · resets at midnight UTC").font(.caption)
+                                Text("New and changed mail is picked up automatically. Turn off automatic indexing to pause. Failed or interrupted requests require review.").font(.caption).foregroundStyle(.secondary)
+                            }.padding(8)
+                        }
+                        DisclosureGroup("Run a manual batch") { reviewPanel }
+                    } else { reviewPanel }
                     Text("\(Int(value["indexed"].number)) / \(Int(value["eligible"].number)) eligible messages indexed · \(Int(value["pending"].number)) pending").font(.headline)
                     Text(value["local"].bool ? "Local embedding endpoint" : "Remote embedding endpoint — approved mail text leaves this device").font(.callout)
-                    Text("Only downloaded mail is searchable. New or modified mail needs another reviewed batch; indexing never starts a paid request automatically.").font(.caption).foregroundStyle(.secondary)
+                    Text("Only downloaded mail is searchable. Automatic mode handles new and changed mail within the saved scope and daily budget.").font(.caption).foregroundStyle(.secondary)
                     if indexing { Text("Indexing continues in the background while Morrow is open. You can leave Search, Model or Settings; check Activity or return here for progress.").font(.callout).foregroundStyle(.secondary) }
                     if !value["job"].isNull { jobPanel }
                     DisclosureGroup("Clear index…") {
@@ -93,8 +100,8 @@ struct NativeSearchSettingsView: View {
                 error = ""
             } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
         }
-        .task(id: indexing && active) {
-            guard indexing && active else { return }
+        .task(id: (indexing || value["settings"]["autoIndex"].bool) && active) {
+            guard (indexing || value["settings"]["autoIndex"].bool) && active else { return }
             while !Task.isCancelled {
                 do { try await Task.sleep(nanoseconds: 1_500_000_000); if busy { continue }; let version = revision; let next = try await model.request("/search/settings"); guard !Task.isCancelled else { return }; if version == revision { value = next; error = "" } } catch { if Task.isCancelled { return }; self.error = error.localizedDescription }
             }
@@ -115,6 +122,11 @@ struct NativeSearchSettingsView: View {
                 if value["settings"]["hasApiKey"].bool { Toggle("Remove saved key", isOn: flag("clearApiKey")).toggleStyle(.checkbox) }
             } else {
                 Toggle("Enable Smart Search", isOn: flag("enabled")).toggleStyle(.checkbox)
+                Toggle("Keep the index updated automatically", isOn: flag("autoIndex")).toggleStyle(.checkbox).disabled(!options["enabled"].bool)
+                if options["autoIndex"].bool {
+                    HStack { Text("Daily indexing budget"); TextField("100000", value: number("dailyTokenBudget"), format: .number.grouping(.never)).frame(width: 120); Text("estimated tokens").font(.caption) }
+                    Text("Saving authorizes background embedding requests for the scope below. 4,000–2,000,000 estimated tokens per UTC day. Provider charges may apply; the app pauses at the limit.").font(.caption).foregroundStyle(.secondary)
+                }
                 DisclosureGroup("Indexing scope · \(options["accounts"].array.count) account(s) · Last \(Int(options["months"].number)) month(s)") {
                 VStack(alignment: .leading, spacing: 14) {
                 GroupBox("Accounts to index") { VStack(alignment: .leading) { ForEach(model.accounts) { account in
@@ -131,9 +143,9 @@ struct NativeSearchSettingsView: View {
                 }
             }
             HStack {
-                if changed {
+                if changed || (presentation == .search && options["autoIndex"].bool && (!value["automatic"]["approved"].bool || resumable || value["job"]["status"].string == "cancelled")) {
                     Button(presentation == .model ? "Save Embedding Model" : "Save Search Settings") { action("settings", body: options) }.buttonStyle(.borderedProminent)
-                    Button("Discard Changes") { initialize(value) }
+                    if changed { Button("Discard Changes") { initialize(value) } }
                 }
                 if presentation == .model {
                     Button("Test Embedding Connection") { action("test", body: options) }.disabled(options["model"].string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -175,7 +187,7 @@ struct NativeSearchSettingsView: View {
                     HStack {
                         if indexing { Button("Pause Batch") { action("index/pause") } }
                         if resumable { Button("Resume Batch…") { action("index/resume") }.disabled(!prerequisites.isEmpty || budgetExhausted) }
-                        if ["prepared", "running", "paused", "interrupted", "failed"].contains(value["job"]["status"].string) {
+                        if ["prepared", "running", "paused", "interrupted", "failed", "budget_wait"].contains(value["job"]["status"].string) {
                             Button("Cancel Batch…") {
                                 if model.confirm("Cancel this batch?", detail: "Unfinished work is discarded; completed valid vectors and your mail are kept.") { action("index/cancel") }
                             }
@@ -194,17 +206,22 @@ struct NativeSearchSettingsView: View {
     }
     func initialize(_ next: JSON) {
         value = next
-        var fields = next["settings"].picking(presentation == .model ? ["baseUrl", "model", "protocol"] : ["enabled", "accounts", "months", "tokenBudget", "folders", "content"])
+        var fields = next["settings"].picking(presentation == .model ? ["baseUrl", "model", "protocol"] : ["enabled", "autoIndex", "dailyTokenBudget", "accounts", "months", "tokenBudget", "folders", "content"])
         if presentation == .model { fields["apiKey"] = .string(""); fields["clearApiKey"] = .bool(false) }
         options = fields; baseline = fields; dirty = false
     }
     func action(_ path: String, body: JSON = .object([:])) {
-        guard !busy, !model.busy, !indexing || ["index/pause", "index/cancel", "index/clear"].contains(path) else { return }
+        guard !busy, !model.busy, !indexing || ["settings", "index/pause", "index/cancel", "index/clear"].contains(path) else { return }
         if ["index/now", "index/resume"].contains(path) { guard presentation == .search, prerequisites.isEmpty, path != "index/now" || !resumable else { return } }
         var body = body
         if ["index/pause", "index/resume", "index/cancel"].contains(path) {
             guard batchControls, value["job"]["id"].nonempty, path != "index/resume" || (resumable && !budgetExhausted) else { return }
             body = .object(["previewId": .string(value["job"].id)])
+        }
+        if path == "settings" && body["autoIndex"].bool {
+            let saved = value["settings"]
+            let scope = body["accounts"].array.map(\.string).joined(separator: ", ")
+            guard model.confirm("Keep this scope indexed automatically?", detail: "Model: \(saved["model"].string)\nEndpoint: \(saved["baseUrl"].string)\nAccounts: \(scope)\nDaily budget: \(Int(body["dailyTokenBudget"].number)) estimated tokens, resets at midnight UTC.\nNew and changed mail in the saved folders and fields will be sent automatically while Morrow is open. Provider charges may apply.") else { return }
         }
         busy = true; operationBusy = true; revision += 1; error = ""
         testResult = ""

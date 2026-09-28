@@ -1295,3 +1295,105 @@ async fn connection_probe_uses_unsaved_model_without_mail_settings_or_index_chan
     task.abort();
     let _ = task.await;
 }
+
+#[tokio::test]
+async fn automatic_indexing_continues_across_batches_and_restart_with_daily_budget() {
+    let mut fixture = Fixture::new().await;
+    let model = Model::default();
+    let (url, task) = server(model.clone()).await;
+    for id in ["one", "two", "three", "four"] {
+        fixture.add(A, id, json!({"body":"x".repeat(1400)})).await;
+    }
+    fixture
+        .app()
+        .db(|db| {
+            db.set_settings(&json!({"policy":{"maxMessages":1}}))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    fixture
+        .setup(&url, json!({"autoIndex":true,"dailyTokenBudget":4000}))
+        .await;
+    for _ in 0..8 {
+        smart_search::tick(fixture.app()).await.unwrap();
+    }
+    let before = model.count();
+    assert!(
+        before > 1 && before < 4,
+        "successive batches stop at the daily cap: {before}"
+    );
+    let (_, status) = fixture.request("settings", None, A).await;
+    assert!(status["automatic"]["spentToday"].as_u64().unwrap() <= 4000);
+    assert_eq!(status["indexed"], before);
+    fixture.reopen();
+    smart_search::tick(fixture.app()).await.unwrap();
+    assert_eq!(
+        model.count(),
+        before,
+        "restarting cannot reset the daily allowance"
+    );
+    fixture
+        .app()
+        .db(|db| {
+            db.set_settings(&json!({"searchDailyUsage":{"day":"2000-01-01","tokens":4000}}))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    for _ in 0..8 {
+        smart_search::tick(fixture.app()).await.unwrap();
+    }
+    assert_eq!(model.count(), 4);
+    fixture
+        .add(A, "new", json!({"body":"New downloaded mail"}))
+        .await;
+    fixture
+        .app()
+        .db(|db| {
+            db.set_settings(&json!({"searchDailyUsage":{"day":"2000-01-01","tokens":4000}}))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    smart_search::tick(fixture.app()).await.unwrap();
+    assert_eq!(
+        model.count(),
+        5,
+        "new mail is picked up without another reviewed batch"
+    );
+    let (code, _) = fixture
+        .request("settings", Some(json!({"autoIndex":false})), A)
+        .await;
+    assert_eq!(code, 200);
+    let (_, status) = fixture.request("settings", None, A).await;
+    assert_eq!(
+        status["indexed"], 5,
+        "stopping automation preserves vectors"
+    );
+    fixture.add(A, "disabled", json!({})).await;
+    smart_search::tick(fixture.app()).await.unwrap();
+    assert_eq!(model.count(), 5);
+    assert_eq!(
+        fixture
+            .request("settings", Some(json!({"autoIndex":true})), A)
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        fixture.request("index/clear", Some(json!({})), A).await.0,
+        200
+    );
+    smart_search::tick(fixture.app()).await.unwrap();
+    assert_eq!(
+        model.count(),
+        5,
+        "clearing the index requires review before rebuilding"
+    );
+    assert_eq!(
+        fixture.request("settings", None, A).await.1["automatic"]["approved"],
+        false
+    );
+    task.abort();
+}

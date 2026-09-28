@@ -250,6 +250,8 @@ fn model_payload_keeps_untrusted_context_separate_and_languages_correct() {
             .contains("target translation language (日本語)")
     );
     assert!(ai::model_payload(&json!({}), "unknown", &[], "", &json!({})).is_err());
+    let style = ai::model_payload(&json!({}), "style", &[], "", &options).unwrap();
+    assert!(!string(&style["messages"][0], "content").contains("Default tone:"));
     assert_eq!(
         ai::search_context(
             &[
@@ -1119,6 +1121,341 @@ fn reply_history_includes_only_permitted_sent_correspondence() {
         ai::context_for(&db, "reply", &input, OWNER)
             .unwrap()
             .messages
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn chinese_retrieval_matches_normalized_topics_without_substring_false_positives() {
+    let mail = vec![
+        json!({"id":"invoice","subject":"九月发票","body":"付款限期為月底","date":"2026-09-01"}),
+        json!({"id":"party","subject":"Party invitation","body":"Friday lunch","date":"2026-09-20"}),
+    ];
+    assert_eq!(
+        ai::search_context(&mail, "請找九月發票的付款期限", 8)[0]["id"],
+        "invoice"
+    );
+    assert!(ai::search_context(&mail, "art", 8).is_empty());
+    assert_eq!(
+        ai::search_context(&mail, "ＦＲＩＤＡＹ", 8)[0]["id"],
+        "party"
+    );
+}
+
+#[tokio::test]
+async fn reviewed_memories_preserve_notes_bind_sources_and_require_owned_confirmation() {
+    let model = Model::new(
+        false,
+        r#"{"items":[{"text":"Northstar requires a timetable review.","messageIds":["same"]}]}"#,
+    );
+    let server = model_server(model.clone()).await;
+    let directory = Temporary::new();
+    let app = app_at(&directory, &server.url).await;
+    app.db(|db| {
+        morrow_search::service::save_workspace(
+            db,
+            OWNER,
+            &json!({"brain":{"voice":"Keep my voice","notes":"Keep my notes","contacts":[]}}),
+        )
+    })
+    .await
+    .unwrap();
+    let preview = workflow(&app, "POST", "workspace/brain/preview", OWNER, json!({}))
+        .await
+        .unwrap()["preview"]
+        .clone();
+    let payload = json!({"previewId":preview["id"],"itemIds":[preview["items"][0]["id"]]});
+    assert_eq!(preview["items"][0]["sourceLabels"][0]["id"], "same");
+    assert_eq!(
+        workflow(
+            &app,
+            "POST",
+            "workspace/brain/apply",
+            OTHER,
+            payload.clone()
+        )
+        .await
+        .unwrap_err()
+        .status,
+        409
+    );
+    assert_eq!(
+        workflow(
+            &app,
+            "POST",
+            "workspace/brain/apply",
+            OWNER,
+            json!({"previewId":preview["id"],"itemIds":["invented"]})
+        )
+        .await
+        .unwrap_err()
+        .status,
+        400
+    );
+    let state = workflow(
+        &app,
+        "POST",
+        "workspace/brain/apply",
+        OWNER,
+        payload.clone(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(state["workspace"]["brain"]["notes"], "Keep my notes");
+    assert_eq!(state["workspace"]["brain"]["voice"], "Keep my voice");
+    assert_eq!(
+        state["workspace"]["brain"]["facts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        workflow(&app, "POST", "workspace/brain/apply", OWNER, payload)
+            .await
+            .unwrap_err()
+            .status,
+        409
+    );
+    // The legacy simulation must also preserve both manual and reviewed memory.
+    let simulated = workflow(
+        &app,
+        "POST",
+        "workflows/preview",
+        OWNER,
+        json!({"action":"memory"}),
+    )
+    .await
+    .unwrap();
+    let after = workflow(
+        &app,
+        "POST",
+        "workflows/apply",
+        OWNER,
+        json!({"previewId":simulated["preview"]["id"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(after["workspace"]["brain"], state["workspace"]["brain"]);
+    app.db(|db| {
+        let config = db.settings()?;
+        assert_eq!(
+            morrow_search::brain::context(db, &config, OWNER, &Value::Null)?["facts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(morrow_search::brain::context(db, &config, OTHER, &Value::Null)?.is_null());
+        let policy = policy::update(&config["policy"], &json!({"content":{"body":false}}))?;
+        assert!(
+            morrow_search::brain::context(
+                db,
+                &merge(config, &json!({"policy":policy})),
+                OWNER,
+                &Value::Null
+            )?
+            .is_null()
+        );
+        db.update(
+            OWNER,
+            "same",
+            &json!({"body":"The source is now different."}),
+        )?;
+        assert!(
+            morrow_search::brain::context(db, &db.settings()?, OWNER, &Value::Null)?["facts"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let id = state["workspace"]["brain"]["facts"][0]["id"]
+        .as_str()
+        .unwrap();
+    let removed = workflow(
+        &app,
+        "DELETE",
+        &format!("workspace/brain/facts/{id}"),
+        OWNER,
+        json!({}),
+    )
+    .await
+    .unwrap();
+    assert!(
+        removed["workspace"]["brain"]["facts"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(removed["workspace"]["brain"]["notes"], "Keep my notes");
+    assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn memory_suggestions_reject_unknown_sources_and_inflight_changes() {
+    let bad = Model::new(
+        false,
+        r#"{"items":[{"text":"Invented fact","messageIds":["not-supplied"]}]}"#,
+    );
+    let server = model_server(bad).await;
+    let directory = Temporary::new();
+    let app = app_at(&directory, &server.url).await;
+    assert_eq!(
+        workflow(&app, "POST", "workspace/brain/preview", OWNER, json!({}))
+            .await
+            .unwrap_err()
+            .status,
+        502
+    );
+    let model = Model::new(
+        true,
+        r#"{"items":[{"text":"Review timetable","messageIds":["same"]}]}"#,
+    );
+    let server = model_server(model.clone()).await;
+    let directory = Temporary::new();
+    let app = app_at(&directory, &server.url).await;
+    let running = app.clone();
+    let task = tokio::spawn(async move {
+        workflow(
+            &running,
+            "POST",
+            "workspace/brain/preview",
+            OWNER,
+            json!({}),
+        )
+        .await
+    });
+    model.entered.acquire().await.unwrap().forget();
+    app.db(|db| {
+        db.update(
+            OWNER,
+            "same",
+            &json!({"body":"Changed during model request"}),
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    model.release.add_permits(1);
+    assert_eq!(task.await.unwrap().unwrap_err().status, 409);
+    assert!(app.0.workflows.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn incremental_style_keeps_reviewed_baseline_and_its_source_validation() {
+    let model = Model::new(false, "Keep concise paragraphs and add a brief greeting.");
+    let server = model_server(model.clone()).await;
+    let directory = Temporary::new();
+    let app = app_at(&directory, &server.url).await;
+    let preview=app.db(|db| {
+        learning::update_settings(db,OWNER,&json!({"enabled":true}))?;
+        db.upsert(OWNER,&merge(message("old-sent",OWNER),&json!({"folder":"sent","date":(Utc::now()-Duration::days(2)).to_rfc3339_opts(SecondsFormat::Millis,true)})))?;
+        learning::prepare(db,OWNER,false)
+    }).await.unwrap();
+    learning::generate(&app, OWNER, string(&preview, "id"))
+        .await
+        .unwrap();
+    let id = preview["id"].clone();
+    let incremental=app.db(move |db| {
+        learning::apply(db,OWNER,&json!({"previewId":id,"voice":"Keep concise paragraphs."}))?;
+        let future=Utc::now()+Duration::hours(1);
+        db.upsert(OWNER,&merge(message("new-sent",OWNER),&json!({"folder":"sent","date":(future-Duration::minutes(1)).to_rfc3339_opts(SecondsFormat::Millis,true),"body":"Hello, I am sharing the updated design for your review. Please let me know if you have questions."})))?;
+        learning::prepare_at(db,OWNER,true,future)
+    }).await.unwrap();
+    learning::generate(&app, OWNER, string(&incremental, "id"))
+        .await
+        .unwrap();
+    let requests = model.requests.lock().await;
+    let user: Value = serde_json::from_str(string(&requests[1]["messages"][1], "content")).unwrap();
+    assert_eq!(user["previousStyle"], "Keep concise paragraphs.");
+    drop(requests);
+    let id = incremental["id"].clone();
+    app.db(move |db| {
+        learning::apply(
+            db,
+            OWNER,
+            &json!({"previewId":id,"voice":"Concise paragraphs with a greeting."}),
+        )?;
+        assert_eq!(
+            db.settings()?["styleLearning"][OWNER]["profile"]["sources"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        db.update(OWNER, "old-sent", &json!({"body":"Old evidence changed"}))?;
+        assert!(learning::voice(db, &db.settings()?, OWNER)?.is_empty());
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn automatic_brain_proposals_survive_restart_and_wait_for_review_without_rebilling() {
+    let model = Model::new(
+        false,
+        r#"{"items":[{"text":"Review the agreed timetable.","messageIds":["same"]}]}"#,
+    );
+    let server = model_server(model.clone()).await;
+    let directory = Temporary::new();
+    let app = app_at(&directory, &server.url).await;
+    workflow(
+        &app,
+        "POST",
+        "workspace/brain/settings",
+        OWNER,
+        json!({"enabled":true,"tokenBudget":16000}),
+    )
+    .await
+    .unwrap();
+    morrow_search::brain::scheduled_tick(&app).await.unwrap();
+    morrow_search::brain::scheduled_tick(&app).await.unwrap();
+    assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+    let before = app.state(OWNER, true).await.unwrap();
+    let proposal = before["workspace"]["brainLearning"]["preview"].clone();
+    assert!(!proposal["id"].is_null());
+    assert!(
+        before["workspace"]["brain"]["facts"].is_null(),
+        "generation never applies memories"
+    );
+    drop(app);
+    let app = App::open(&directory.0, 3001, "fixture-bearer".into(), "".into()).unwrap();
+    assert_eq!(
+        app.state(OWNER, true).await.unwrap()["workspace"]["brainLearning"]["preview"],
+        proposal
+    );
+    workflow(
+        &app,
+        "POST",
+        "workspace/brain/apply",
+        OWNER,
+        json!({"previewId":proposal["id"],"itemIds":[proposal["items"][0]["id"]]}),
+    )
+    .await
+    .unwrap();
+    app.db(|db| {
+        let mut learning = db.settings()?["brainLearning"].clone();
+        learning[OWNER]["lastAt"] = 0.into();
+        db.set_settings(&json!({"brainLearning":learning}))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    morrow_search::brain::scheduled_tick(&app).await.unwrap();
+    assert_eq!(
+        model.calls.load(Ordering::SeqCst),
+        1,
+        "unchanged sources are not analyzed again"
+    );
+    assert_eq!(
+        app.state(OWNER, true).await.unwrap()["workspace"]["brain"]["facts"]
+            .as_array()
+            .unwrap()
             .len(),
         1
     );

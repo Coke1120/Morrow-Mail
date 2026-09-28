@@ -112,6 +112,7 @@ impl App {
         let store = Store::open(directory)?;
         crate::background::recover(&store)?;
         crate::learning::initialize(&store)?;
+        crate::brain::initialize(&store)?;
         crate::scheduled::recover(&store)?;
         crate::reply_suggestions::initialize(&store)?;
         crate::smart_search::reconcile(&store)?;
@@ -289,6 +290,20 @@ pub fn state(db: &Store, selected: &str, paged: bool, secret: &[u8; 32]) -> Resu
     let ai = &config["ai"];
     let preferences = merge(catalog()["preferences"].clone(), &config["preferences"]);
     let ids: Vec<String> = accounts.as_object().unwrap().keys().cloned().collect();
+    // Aggregate only validated reports; each model request still belongs to one mailbox.
+    let mut today_reports = Vec::new();
+    let mut today_overflow = 0;
+    for owner in &ids {
+        let reports = crate::background::reports(db, owner)?;
+        for report in reports.as_array().into_iter().flatten() {
+            let mut report = report.clone();
+            report["reportId"] = report["id"].clone();
+            report["id"] = json!([owner, report["id"]]).to_string().into();
+            report["accountId"] = owner.clone().into();
+            today_reports.push(report);
+        }
+        today_overflow += crate::background::overflow(db, owner)?;
+    }
     let mut counted = ids.clone();
     counted.push("demo".into());
     let stats = pages::stats(db, &counted)?;
@@ -339,8 +354,10 @@ pub fn state(db: &Store, selected: &str, paged: bool, secret: &[u8; 32]) -> Resu
     let mut result = json!({"features":catalog()["features"],"account":{"id":view,"email":if live {view.as_str()} else if view=="all" {""} else {"alex@genmail.example"},"name":if view=="all" {"All accounts"} else if !string(&preferences,"displayName").is_empty() {string(&preferences,"displayName")} else if live {view.split('@').next().unwrap_or("")} else {"Alex Morgan"},"mode":if view=="all" {"combined"} else if live {"live"} else {"demo"},"provider":if live {mail.get("provider").cloned().unwrap_or(json!("imap"))} else {json!(view)}},"accounts":metadata,"syncErrors":config.get("backgroundSyncErrors").cloned().unwrap_or(json!([])),"revision":db.revision()?,"demoStats":stats["demo"],"messages":messages,
         "settings":{"oauthClients":{"google":{"configured":false},"microsoft":{"configured":true}},"mail":safe_mail(mail),"ai":{"configured":!string(ai,"baseUrl").is_empty()&&!string(ai,"model").is_empty(),"baseUrl":ai.get("baseUrl").cloned().unwrap_or(json!("http://127.0.0.1:11434/v1")),"model":string(ai,"model"),"hasApiKey":!string(ai,"apiKey").is_empty(),"temperature":ai.get("temperature").cloned().unwrap_or(json!(0.3)),"maxTokens":ai.get("maxTokens").cloned().unwrap_or(json!(1200))},"policy":policy::resolve(&config["policy"]),"preferences":preferences,"footer":crate::content::preferences_footer(&preferences)?,"calendars":crate::calendar::state(&config)},"workspace":workspace(&config,&view)});
     result["workspace"]["styleLearning"] = style;
+    result["workspace"]["brainLearning"] = crate::brain::learning_state(db, &view)?;
     result["workspace"]["summaries"] = reports;
     result["workspace"]["summaryOverflow"] = overflow.into();
+    result["today"] = json!({"summaries":today_reports,"summaryOverflow":today_overflow});
     if paged {
         result["mailPage"] = page;
     }
@@ -545,7 +562,9 @@ async fn handle_inner(app: App, request: axum::http::Request<Body>) -> Result<Re
         owner,
         paged,
     };
-    let mut activity = (context.method == Method::POST && route == ["ai"]).then(|| {
+    let mut activity = (context.method == Method::POST
+        && (route == ["ai"] || route == ["workspace", "brain", "preview"]))
+    .then(|| {
         app.0.activity.start(
             &context.owner,
             "ai",

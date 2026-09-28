@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0-beta.22 — 2026-09-28
+
+- Replace Reply Suggestions' candidate picker with Needs a reply: explicitly enable bounded automatic assessments, hide no-reply results, retain Ignore across restart, and open suggestions in the owned native composer for review/edit/Send.
+- Continue embedding batches automatically after reviewed scope/model/daily-budget approval; pick up new mail, retain usage across restart, preserve valid vectors when stopped, and never replay uncertain failures automatically.
+- Add reviewed, source-linked Brain memory proposals, optional weekly generation and persistent pending proposals. Start style learning with the first eligible sample after opt-in; keep style and memory application explicit.
+- Share validated per-account Brain context across interactive, scheduled and reply AI. Improve Chinese retrieval, incremental style provenance, prompt precedence and briefing priority selection.
+- Combine all connected mailboxes in Today and display summary timing. Simplify AI Studio and Settings by collapsing advanced and manual maintenance controls.
+- Retain native SwiftUI/WinUI, Rust, account ownership, paid-operation consent and paired release gates. See [release notes](docs/releases/v0.6.0-beta.22.md) for limits.
+
 ## 0.6.0-beta.18 — 2026-09-28
 
 - Publish the native desktop cutover described below, with the same explicit owner waiver for additional tests.

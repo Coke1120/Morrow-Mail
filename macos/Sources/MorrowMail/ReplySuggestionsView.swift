@@ -4,7 +4,6 @@ struct ReplySuggestionsView: View {
     @EnvironmentObject var model: AppModel
     @State private var value: JSON = .null
     @State private var options: JSON = .null
-    @State private var selected: Set<String> = []
     @State private var busy = false
     @State private var revision = 0
     @State private var error = ""
@@ -13,115 +12,95 @@ struct ReplySuggestionsView: View {
     private var running: Bool { ["queued", "running"].contains(job["status"].string) }
     private var changed: Bool { !options.isNull && !value.isNull && options != value["settings"] }
     private var locked: Bool { busy || model.busy || model.preparingDraft }
-    private var previewBlocked: Bool { locked || changed || running || !value["permitted"].bool || !value["identityReady"].bool || selected.isEmpty || selected.count > Int(value["settings"]["maxMessages"].number) }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                SectionHeading(title: "Reply suggestions", detail: "Review mail that may need a reply, then open a draft in its original account. Suggestions are fallible; nothing is sent automatically.")
-                if owner.isEmpty { Text("Choose an individual connected mailbox to review its suggestions.") }
-                else if value.isNull || options.isNull { ProgressView("Loading reply suggestions…") }
+                SectionHeading(title: "Needs a reply", detail: "AI checks downloaded Inbox mail and leaves out messages that do not need a reply. Open a suggestion to edit or send it, or ignore the email.")
+                if owner.isEmpty { Text("Choose a connected mailbox for its reply suggestions.") }
+                else if value.isNull || options.isNull { ProgressView("Loading…") }
                 else { content }
-                if busy { ProgressView("Saving or preparing review…").controlSize(.small) }
+                if busy { ProgressView().controlSize(.small) }
                 if !error.isEmpty { Text(error).foregroundStyle(.red).textSelection(.enabled) }
             }.padding(24).frame(maxWidth: 920, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading)
         }
         .task(id: owner) {
             let account = owner
-            value = .null; options = .null; selected = []; error = ""
+            value = .null; options = .null; error = ""
             guard !account.isEmpty else { return }
             while !Task.isCancelled && model.account == account {
                 let version = revision
                 do {
                     let next = try await model.request("/reply-suggestions", mailbox: account)
                     guard !Task.isCancelled, model.account == account else { return }
-                    if version == revision { value = next; if options.isNull { options = next["settings"] } }
+                    if version == revision { value = next; if options.isNull { options = next["settings"] }; error = "" }
                 } catch { if Task.isCancelled { return }; self.error = error.localizedDescription }
                 do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
             }
         }
-        .onChange(of: changed) { dirty in if dirty { model.unsavedForms.insert("reply-suggestions") } else { model.unsavedForms.remove("reply-suggestions") } }
-        .onDisappear { model.unsavedForms.remove("reply-suggestions") }
+        .onChange(of: changed) { model.dirty("reply-suggestions", $0) }
+        .onDisappear { model.dirty("reply-suggestions", false) }
     }
     @ViewBuilder private var content: some View {
         Text(owner).font(.headline)
-        Text(value["identityReady"].bool ? "Confirmed identity: \(value["identity"]["displayName"].string)" : "Confirm your identity in Learning settings first.").foregroundStyle(.secondary)
-        Button("Review Identity in Learning…") { model.settings("learning") }.disabled(locked || changed)
-        GroupBox("Explicit batch permission") {
-            VStack(alignment: .leading, spacing: 12) {
-                Toggle("Enable reply suggestions for this account", isOn: Binding(get: { options["enabled"].bool }, set: { options["enabled"] = .bool($0) })).toggleStyle(.checkbox)
-                Stepper("Maximum messages per batch: \(Int(options["maxMessages"].number))", value: number("maxMessages"), in: 1...10)
-                HStack { Text("Token budget per batch"); TextField("16000", value: number("tokenBudget"), format: .number.grouping(.never)).frame(width: 120) }
-                Button("Save Suggestion Settings") { action("settings", body: options) }.disabled(!changed)
-            }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
-        }.disabled(locked || running)
-        Text("Enabling does not start AI. Each batch needs preview and confirmation. Approved writing style is used only while its Brain, Sent and body permissions remain enabled. Estimates include UTF-8 input bytes and response allowance; model billing may differ. Saving these settings clears older previews and proposals.").font(.caption).foregroundStyle(.secondary)
-        if !value["permitted"].bool { Text("Requires AI enabled, Reply, Inbox, sender and body access in AI permissions.").foregroundStyle(.secondary) }
-        if running { Text("Working in the background: \(Int(job["completed"].number)) / \(Int(job["sampleCount"].number)) assessed. You can leave this view while Morrow stays open. Cancel stops remaining work; an in-flight request may still use tokens.").foregroundStyle(.secondary) }
-        if !job.isNull { jobPanel }
-        Text("Suggestions to review").font(.title2)
-        if value["proposals"].array.isEmpty { Text("No current reply proposals. Completed assessments may find that no reply is needed.").foregroundStyle(.secondary) }
-        ForEach(value["proposals"].array) { proposal in proposalPanel(proposal) }
-        Text("Inbox candidates").font(.title2)
-        Text("Showing eligible candidates among the newest \(Int(value["candidateLimit"].number)) downloaded Inbox messages. This is not an unanswered-mail guarantee; locally recorded replies are excluded where available.").font(.caption).foregroundStyle(.secondary)
-        Button("Select Newest \(Int(value["settings"]["maxMessages"].number))") { selected = Set(value["candidates"].array.prefix(Int(value["settings"]["maxMessages"].number)).map(\.id)) }.disabled(locked || running || !value["permitted"].bool)
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 8) {
-                ForEach(value["candidates"].array) { message in
-                    Toggle(isOn: Binding(get: { selected.contains(message.id) }, set: { if $0 { selected.insert(message.id) } else { selected.remove(message.id) } })) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(message["subject"].nonempty ? message["subject"].string : "(Subject withheld)")
-                            Text("\(message["fromName"].nonempty ? message["fromName"].string : message["fromEmail"].string) · \(message["date"].string)").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }.toggleStyle(.checkbox).disabled(locked || running)
-                }
-            }
-        }.frame(maxHeight: 360)
-        Button("Preview Selected Mail · No AI Call") { action("preview", body: .object(["messageIds": .array(selected.sorted().map(JSON.string))])) }.disabled(previewBlocked)
-    }
-    private var jobPanel: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("\(job["status"].string.capitalized) · \(Int(job["completed"].number)) / \(Int(job["sampleCount"].number)) assessed").font(.headline)
-                Text("Estimated tokens ≤ \(Int(job["estimatedTokens"].number)) · budget \(Int(job["tokenBudget"].number)) · reserved \(Int(job["spentTokens"].number))").font(.caption)
-                if job["error"].nonempty { Text(job["error"].string).foregroundStyle(.orange) }
-                if job["status"].string == "prepared" {
-                    Text("\(value["model"]["model"].string) · \(value["model"]["baseUrl"].string)").font(.caption).textSelection(.enabled)
-                    Text("Only downloaded, permitted same-correspondent history (including your Sent replies when permitted) is considered. Per reply: at most \(Int(value["contextLimit"].number)) messages and the saved AI context cap; target body ≤ 5,000 characters, other bodies ≤ 2,000. The model does not read every matching message.").font(.caption).foregroundStyle(.secondary)
-                    DisclosureGroup("Review selected mail and context coverage") {
-                        ForEach(Array(job["samples"].array.enumerated()), id: \.offset) { _, sample in
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text(sample["message"]["subject"].nonempty ? sample["message"]["subject"].string : "(Subject withheld)").font(.headline)
-                                Text("\(Int(sample["history"]["usedMessages"].number)) used / \(Int(sample["history"]["matchedMessages"].number)) matching downloaded messages").font(.caption)
-                                Text(sample["excerpt"].string).textSelection(.enabled)
-                            }.padding(.vertical, 6)
-                        }
-                    }
-                    Button("Generate Reviewed Batch · Uses AI") { action("run", body: .object(["previewId": .string(job.id)])) }.buttonStyle(.borderedProminent).disabled(locked || changed || !value["identityReady"].bool || !job["reviewValid"].bool)
-                }
-                if ["prepared", "queued", "running"].contains(job["status"].string) { Button("Cancel Remaining Work") { action("cancel") }.disabled(locked) }
-            }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+        if !value["identityReady"].bool {
+            Text("Confirm the name to use in your replies first.").foregroundStyle(.secondary)
+            Button("Confirm My Identity") { model.settings("learning") }.disabled(locked || changed)
+        } else if !value["modelReady"].bool {
+            Button("Set Up a Chat Model") { model.settings("model") }.disabled(locked || changed)
+        } else if !model.allowed("reply") || !model.policy["folders"]["inbox"].bool || !model.policy["content"]["sender"].bool || !model.policy["content"]["body"].bool {
+            Text("Allow AI replies to use Inbox, sender and body in AI Permissions.").foregroundStyle(.secondary)
+            Button("Review AI Permissions") { model.settings("permissions") }.disabled(locked || changed)
+        } else if !value["automaticReady"].bool {
+            Text("Enable automatic checks once. Each suggested reply still requires your approval before sending.").foregroundStyle(.secondary)
+            Button("Enable Automatic Reply Suggestions") {
+                var next = options; next["enabled"] = .bool(true); next["automatic"] = .bool(true); next["tokenBudget"] = .number(64000)
+                action("settings", body: next)
+            }.buttonStyle(.borderedProminent).disabled(locked || changed)
+        } else {
+            Label(running ? "Checking mail in the background…" : "Automatic checks are on", systemImage: "checkmark.circle").foregroundStyle(.secondary)
         }
-    }
-    private func proposalPanel(_ proposal: JSON) -> some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 10) {
-                Text(proposal["message"]["subject"].nonempty ? proposal["message"]["subject"].string : "(Subject withheld)").font(.headline)
-                Text(proposal["message"]["fromEmail"].string).font(.caption).foregroundStyle(.secondary)
-                Text(proposal["reason"].string).foregroundStyle(.secondary)
-                Text(proposal["text"].string).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                Text("\(Int(proposal["history"]["usedMessages"].number)) / \(Int(proposal["history"]["matchedMessages"].number)) matching downloaded messages used. Review facts, recipients and commitments before sending.").font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button(proposal["status"].string == "used" ? "Open Another Draft" : "Use in Draft") { action("use", body: .object(["id": .string(proposal.id)])) }.buttonStyle(.borderedProminent).disabled(changed || model.compose != nil || model.readerAssistant != nil)
-                    Button("Dismiss") { action("dismiss", body: .object(["id": .string(proposal.id)])) }
-                }.disabled(locked)
-            }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+        if job["error"].nonempty { Text(job["error"].string).foregroundStyle(.orange) }
+        if ["failed", "interrupted", "cancelled"].contains(job["status"].string) {
+            Button("Review & Restart Checks") { action("settings", body: options) }.disabled(locked)
+        }
+        if value["automaticReady"].bool && value["automaticStatus"].nonempty { Text(value["automaticStatus"].string).font(.caption).foregroundStyle(.secondary) }
+        if value["proposals"].array.isEmpty {
+            Text(running ? "Suggestions will appear as messages are checked." : "No replies waiting for review. Unnecessary replies are filtered out; AI can still miss a request.").foregroundStyle(.secondary).padding(.vertical, 18)
+        }
+        ForEach(value["proposals"].array) { proposal in
+            GroupBox {
+                HStack(alignment: .top, spacing: 16) {
+                    Button { action("use", body: .object(["id": proposal["id"]])) } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(proposal["message"]["subject"].nonempty ? proposal["message"]["subject"].string : "(Subject withheld)").font(.headline)
+                            Text(proposal["message"]["fromEmail"].string).font(.caption).foregroundStyle(.secondary)
+                            Text(proposal["reason"].string).font(.callout).foregroundStyle(.secondary)
+                            Text("Review suggested reply…").foregroundStyle(morrowGreen)
+                        }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                    }.buttonStyle(.plain).disabled(locked || changed || model.compose != nil)
+                    Button("Ignore") { action("dismiss", body: .object(["id": proposal["id"]])) }.disabled(locked)
+                }.padding(10)
+            }
+        }
+        DisclosureGroup("Automatic checks & budget") {
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle("Check new Inbox mail automatically", isOn: Binding(get: { options["automatic"].bool }, set: { options["automatic"] = .bool($0); if $0 { options["enabled"] = .bool(true) } })).toggleStyle(.checkbox)
+                HStack { Text("Daily token budget"); TextField("100000", value: number("dailyTokenBudget"), format: .number.grouping(.never)).frame(width: 120) }
+                Text("Used today: \(Int(value["spentToday"].number)) estimated tokens. Resets at midnight UTC; provider billing may differ. Checks use at most the newest 200 downloaded Inbox messages and permitted correspondence. Mail is never sent automatically.").font(.caption).foregroundStyle(.secondary)
+                if changed {
+                    HStack {
+                        Button("Save") { action("settings", body: options) }.buttonStyle(.borderedProminent)
+                        Button("Discard") { options = value["settings"] }
+                    }
+                }
+            }.padding(8).disabled(locked)
         }
     }
     private func number(_ key: String) -> Binding<Int> { Binding(get: { Int(options[key].number) }, set: { options[key] = .number(Double($0)) }) }
     private func action(_ path: String, body: JSON = .object([:])) {
         guard !owner.isEmpty, !locked else { return }
         let account = owner, generation = model.draftGeneration
-        if path == "run" && !model.confirm("Generate reply suggestions?", detail: "\(account) · \(Int(job["sampleCount"].number)) messages · estimated tokens ≤ \(Int(job["estimatedTokens"].number)) · budget \(Int(job["tokenBudget"].number)).\nModel: \(value["model"]["model"].string)\nEndpoint: \(value["model"]["baseUrl"].string)\nUses the reviewed downloaded history and confirmed identity. No mail will be sent.") { return }
+        if path == "settings" && body["automatic"].bool && !model.confirm("Automatically find mail that needs a reply?", detail: "\(account) · \(value["model"]["model"].string)\nEndpoint: \(value["model"]["baseUrl"].string)\nUp to \(Int(body["dailyTokenBudget"].number)) estimated tokens per UTC day, while Morrow is open. Uses permitted Inbox and correspondence. Provider charges may apply. Open each suggestion to review, edit or send it; enabling never sends mail.") { return }
         revision += 1; busy = true; error = ""
         Task { @MainActor in
             defer { revision += 1; busy = false }

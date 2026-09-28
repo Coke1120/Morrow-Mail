@@ -4,7 +4,7 @@ import AppKit
 struct StudioView: View {
     @EnvironmentObject var model: AppModel
     private var tab: String { model.studioTab }
-    @State private var action = "summary"
+    @State private var action = "ask"
     @State private var messageID = ""
     @State private var skillID = ""
     @State private var prompt = ""
@@ -19,11 +19,18 @@ struct StudioView: View {
     @State private var savedVoice = ""
     @State private var savedNotes = ""
     @State private var skillEditor: SkillEdit?
+    @State private var memoryPreview: JSON = .null
+    @State private var memoryOptions: JSON = .null
+    @State private var findingMemories = false
+    @State private var selectedMemories: Set<String> = []
     var feature: JSON { model.features.first { $0.id == action } ?? .null }
     var workspace: JSON { model.state["workspace"] }
     var permitted: [JSON] { (model.listedMessages + (model.current.map { current in model.listedMessages.contains { $0.viewID == current.viewID } ? [] : [current] } ?? [])).filter { model.policy["folders"][$0["folder"].string].bool } }
     var chosen: JSON { permitted.first { $0.id == messageID } ?? .null }
-    var brainDirty: Bool { voice != savedVoice || notes != savedNotes }
+    var savedMemoryOptions: JSON { workspace["brainLearning"].picking(["enabled", "tokenBudget"]) }
+    var memoryOptionsDirty: Bool { !memoryOptions.isNull && memoryOptions != savedMemoryOptions }
+    var brainDirty: Bool { voice != savedVoice || notes != savedNotes || memoryOptionsDirty }
+    var visibleMemoryPreview: JSON { memoryPreview.isNull ? workspace["brainLearning"]["preview"] : memoryPreview }
     var blocked: Bool {
         !model.allowed(action) || (feature["context"].string == "selected" && chosen.isNull) ||
         (feature["context"].string == "draft" && draftText.isEmpty) ||
@@ -33,17 +40,30 @@ struct StudioView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                SectionHeading(title: "AI Studio", detail: "Thoughtful tools. You’re in control.")
-                Text(model.state["settings"]["ai"]["configured"].bool ? model.state["settings"]["ai"]["model"].string : "Demo responses").font(.caption).foregroundStyle(morrowGreen).padding(8).background(morrowGreen.opacity(0.08)).clipShape(Capsule())
+                SectionHeading(title: "AI Studio", detail: model.account + " · Choose a task, then review the result.")
+                Text(model.state["settings"]["ai"]["configured"].bool ? model.state["settings"]["ai"]["model"].string : "Choose an AI model").font(.caption).foregroundStyle(morrowGreen).padding(8).background(morrowGreen.opacity(0.08)).clipShape(Capsule())
                 Button("Permissions") { model.settings("permissions") }.disabled(model.busy)
             }
             Picker("Studio section", selection: Binding(get: { tab }, set: { value in
                 guard !model.busy else { return }
                 if brainDirty && !model.confirmDiscard("Discard unsaved Brain notes?") { return }
-                voice = savedVoice; notes = savedNotes; model.studioTab = value
+                loadBrain(); model.studioTab = value; if value == "tools" && feature["mock"].bool { action = "ask" }
             })) {
-                Text("All Tools").tag("tools"); Text("Summaries").tag("summaries"); Text("Email Brain").tag("brain"); Text("My Skills").tag("skills"); Text("Local Activity").tag("activity")
+                Text("Assistant").tag("tools"); Text("Summaries").tag("summaries"); Text("Email Brain").tag("brain")
             }.pickerStyle(.segmented)
+            HStack {
+                if !model.state["settings"]["ai"]["configured"].bool {
+                    Text("Set up a model to use the assistant.").foregroundStyle(.secondary)
+                    Button("Set Up Model") { model.settings("ai") }
+                }
+                Spacer()
+                Menu("More") {
+                    Button("Reusable Skills") { navigate("skills") }
+                    Button("Local Simulations") { navigate("simulations") }
+                    Button("Simulation History") { navigate("activity") }
+                    Button("Writing Style & Identity") { model.settings("learning") }
+                }.fixedSize().disabled(model.busy)
+            }
             if !model.policy["enabled"].bool { Label("AI is paused in your saved permissions. Manual mail and calendars still work.", systemImage: "pause.circle").foregroundStyle(.secondary) }
             switch tab {
             case "summaries": summariesPage
@@ -54,11 +74,12 @@ struct StudioView: View {
             }
         }.padding(26)
         .onAppear {
-            action = model.assistantAction
+            action = tab == "simulations" ? "triage" : model.assistantAction
             messageID = permitted.first(where: { $0.viewID == model.selectedMessage })?.id ?? permitted.first?.id ?? ""
             skillID = workspace["skills"].array.first(where: { $0["enabled"].bool })?.id ?? ""
             loadBrain()
         }
+        .onChange(of: model.draftGeneration) { _ in clearResult(); memoryPreview = .null; selectedMemories = [] }
         .onChange(of: action) { _ in clearResult() }
         .onChange(of: messageID) { _ in clearResult() }
         .onChange(of: model.mailPage) { _ in if !permitted.contains(where: { $0.id == messageID }) { messageID = permitted.first?.id ?? "" } }
@@ -68,6 +89,7 @@ struct StudioView: View {
         .onChange(of: when) { _ in clearResult() }
         .onChange(of: voice) { _ in model.dirty("brain", brainDirty) }
         .onChange(of: notes) { _ in model.dirty("brain", brainDirty) }
+        .onChange(of: memoryOptions) { _ in model.dirty("brain", brainDirty) }
         .onDisappear { model.dirty("brain", false) }
         .sheet(item: $skillEditor) { skill in SkillEditor(initial: skill.value).environmentObject(model) }
     }
@@ -87,13 +109,15 @@ struct StudioView: View {
         }
     }
     var toolsPage: some View {
-        HSplitView {
-            List(model.features, selection: $action) { item in
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(item["label"].string).font(.system(size: 13, weight: .medium))
-                    Text(model.allowed(item.id) ? (item["mock"].bool ? "Local simulation" : "On-demand AI") : "Disabled in permissions").font(.caption2).foregroundStyle(model.allowed(item.id) ? .secondary : .tertiary)
-                }.padding(.vertical, 6).tag(item.id)
-            }.listStyle(.inset).frame(minWidth: 200, idealWidth: 235, maxWidth: 300).disabled(model.busy)
+        VStack(alignment: .leading, spacing: 14) {
+            if tab == "simulations" {
+                SectionHeading(title: "Local simulations", detail: "Sample workflows for exploration. Results are labeled as simulations.")
+            }
+            Picker("What would you like to do?", selection: $action) {
+                ForEach(model.features.filter { $0.id != "memory" && $0["mock"].bool == (tab == "simulations") }) { item in
+                    Text(item["label"].string).tag(item.id)
+                }
+            }.disabled(model.busy)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     Text(feature["label"].string).font(.title2.bold())
@@ -124,11 +148,18 @@ struct StudioView: View {
                         }
                     }
                     if action == "rewrite" { TextArea(title: "Your draft", text: $draftText, height: 140) }
-                    if !feature["mock"].bool { TextArea(title: action == "ask" ? "Your question" : action == "write" ? "What would you like to say?" : action == "translate" ? "Language or translation instructions" : "Additional instructions (optional)", text: $prompt, height: 70) }
+                    if !feature["mock"].bool {
+                        if ["ask", "write"].contains(action) {
+                            TextArea(title: action == "ask" ? "What would you like to know about your mail?" : "What would you like to say?", text: $prompt, height: 90)
+                            if action == "ask" { Text("Include a person, project or topic to help find relevant downloaded mail.").font(.caption).foregroundStyle(.secondary) }
+                        } else {
+                            DisclosureGroup("Additional instructions (optional)") { TextArea(title: "Instructions", text: $prompt, height: 70) }
+                        }
+                    }
                     if ["followup", "schedule"].contains(action) { DatePicker("Proposed date & time", selection: $when, in: Date()...) }
                     if !model.allowed(action) { Text("Enable this behavior in Settings → AI Permissions to use it.").foregroundStyle(.orange) }
                     HStack {
-                        Button(feature["mock"].bool ? "Create Preview" : "Generate Response") { generate() }.buttonStyle(.borderedProminent).disabled(blocked || model.busy)
+                        Button(feature["mock"].bool ? "Preview Simulation" : action == "ask" ? "Ask My Mail" : action == "briefing" ? "Create Briefing" : "Generate") { generate() }.buttonStyle(.borderedProminent).disabled(blocked || model.busy || (!feature["mock"].bool && !model.state["settings"]["ai"]["configured"].bool))
                         if model.busy { ProgressView().controlSize(.small) }
                     }
                     if !result.isNull {
@@ -165,26 +196,58 @@ struct StudioView: View {
     var brainPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                SectionHeading(title: "Your Email Brain", detail: "Save the writing preferences and context you want your assistant to remember. Saved notes are used only when permitted.")
+                SectionHeading(title: "Email Brain", detail: "Keep useful context for this mailbox. You choose what is remembered.")
+                brainAutomation
+                GroupBox("Find memories in your mail") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Suggests up to 8 memories from your latest permitted mail (up to \(Int(model.policy["maxMessages"].number)) messages). Review the sources and select what to keep. Your saved notes are retained.").foregroundStyle(.secondary)
+                        Button("Suggest Memories · Uses AI") { suggestMemories() }.buttonStyle(.borderedProminent)
+                            .disabled(model.busy || brainDirty || !model.allowed("memory") || !model.state["settings"]["ai"]["configured"].bool)
+                        if brainDirty { Text("Save or discard your notes before requesting suggestions.").font(.caption).foregroundStyle(.secondary) }
+                        if !model.allowed("memory") { Button("Enable Memory Permissions") { model.settings("permissions") } }
+                        if findingMemories { ProgressView("Finding memory suggestions…") }
+                        memorySuggestions
+                    }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Text("Your instructions").font(.title3.bold())
                 TextArea(title: "Writing voice", text: $voice, height: 85)
                 TextArea(title: "Notes to remember", text: $notes, height: 130)
                 HStack {
-                    Button("Save Brain") {
+                    if voice != savedVoice || notes != savedNotes { Button("Save Notes") {
                         model.perform {
                             model.state = try await model.request("/workspace/brain", method: "POST", body: .object(["voice": .string(voice), "notes": .string(notes)]))
-                            loadBrain(); model.dirty("brain", false); model.notice = "Brain notes saved."
+                            savedVoice = voice; savedNotes = notes; memoryPreview = .null; model.dirty("brain", brainDirty); model.notice = "Brain notes saved."
                         }
-                    }.buttonStyle(.borderedProminent)
+                    }.buttonStyle(.borderedProminent) }
                     Button("Discard Changes") { loadBrain(); model.dirty("brain", false) }.disabled(!brainDirty)
                     Button("Clear Brain") {
-                        guard model.confirm("Clear your Email Brain?", detail: "Saved voice, notes, and contacts will be removed.") else { return }
+                        guard model.confirm("Clear your Email Brain?", detail: "Saved voice, notes, memories and contacts will be removed.") else { return }
                         model.perform { model.state = try await model.request("/workspace/brain", method: "DELETE", body: .object([:])); loadBrain(); model.dirty("brain", false) }
                     }
                 }
                 Divider()
-                Text("Saved contacts").font(.headline)
+                Text("Reviewed memories").font(.title3.bold())
+                if workspace["brain"]["facts"].array.isEmpty { Text("No reviewed memories yet. Start with Suggest Memories above.").foregroundStyle(.secondary) }
+                ForEach(workspace["brain"]["facts"].array) { fact in
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(fact["text"].string).textSelection(.enabled)
+                            memorySources(fact)
+                            Button("Remove Memory", role: .destructive) {
+                                model.perform { model.state = try await model.request("/workspace/brain/facts/" + encodedPath(fact.id), method: "DELETE", body: .object([:])) }
+                            }
+                        }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                Text("Memories are used only while their source mail and permissions still match.").font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup("Writing style & identity") {
+                    Text("Your manual writing voice takes priority over your approved learned style. Identity is confirmed separately.").foregroundStyle(.secondary)
+                    Button("Review Style & Identity") { model.settings("learning") }
+                }
+                DisclosureGroup("Saved contacts") {
                 ForEach(Array(workspace["brain"]["contacts"].array.enumerated()), id: \.offset) { _, item in Label("\(item["name"].string) · \(item["email"].string)", systemImage: "person.crop.circle") }
-                if workspace["brain"]["contacts"].array.isEmpty { Text("Preview Email Brain from All Tools to create local contact notes.").foregroundStyle(.secondary) }
+                if workspace["brain"]["contacts"].array.isEmpty { Text("No saved contacts.").foregroundStyle(.secondary) }
+                }
             }.padding(20).disabled(model.busy)
         }
     }
@@ -239,6 +302,56 @@ struct StudioView: View {
             }.padding(16)
         }
     }
+    func navigate(_ destination: String) {
+        guard !model.busy, !brainDirty || model.confirmDiscard("Discard unsaved Brain notes?") else { return }
+        loadBrain()
+        model.studioTab = destination
+        if destination == "simulations" { action = model.features.first { $0["mock"].bool }?.id ?? "memory" }
+    }
+    @ViewBuilder var memorySuggestions: some View {
+        if !visibleMemoryPreview.isNull {
+            if visibleMemoryPreview["items"].array.isEmpty { Text("No durable memories found in this selection.").foregroundStyle(.secondary) }
+            ForEach(visibleMemoryPreview["items"].array) { item in
+                Toggle(isOn: Binding(get: { selectedMemories.contains(item.id) }, set: { if $0 { selectedMemories.insert(item.id) } else { selectedMemories.remove(item.id) } })) {
+                    VStack(alignment: .leading, spacing: 5) { Text(item["text"].string); memorySources(item) }
+                }.toggleStyle(.checkbox)
+            }
+            HStack {
+                Button("Save Selected Memories") {
+                    let payload: JSON = .object(["previewId": visibleMemoryPreview["id"], "itemIds": .array(selectedMemories.sorted().map { .string($0) })])
+                    model.perform {
+                        model.state = try await model.request("/workspace/brain/apply", method: "POST", body: payload)
+                        memoryPreview = .null; selectedMemories = []; model.notice = "Selected memories saved. Your notes were retained."
+                    }
+                }.disabled(selectedMemories.isEmpty || brainDirty)
+                Button("Dismiss") {
+                    if memoryPreview.isNull {
+                        let id = visibleMemoryPreview["id"]
+                        model.perform { model.state = try await model.request("/workspace/brain/dismiss", method: "POST", body: .object(["previewId": id])) }
+                    } else { memoryPreview = .null }
+                    selectedMemories = []
+                }
+            }
+        }
+    }
+    func memorySources(_ item: JSON) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(item["sourceLabels"].array) { source in
+                Text("Source: " + source["subject"].string + " · " + dateLabel(source["date"].string)).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+    func suggestMemories() {
+        let owner = model.account, generation = model.draftGeneration
+        memoryPreview = .null; selectedMemories = []
+        model.perform {
+            findingMemories = true
+            defer { findingMemories = false }
+            let response = try await model.request("/workspace/brain/preview", method: "POST", body: .object([:]), mailbox: owner)
+            guard model.account == owner, model.draftGeneration == generation else { return }
+            memoryPreview = response["preview"]
+        }
+    }
     func generate() {
         var payload: JSON = .object(["action": .string(action), "prompt": .string(prompt)])
         if feature["context"].string == "selected" { payload["messageId"] = .string(messageID) }
@@ -276,7 +389,26 @@ struct StudioView: View {
         }
     }
     func clearResult() { resultID = UUID(); resultGeneration = nil; result = .null; preview = .null }
-    func loadBrain() { voice = workspace["brain"]["voice"].string; notes = workspace["brain"]["notes"].string; savedVoice = voice; savedNotes = notes }
+    var brainAutomation: some View {
+        GroupBox("Automatic learning") {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("Suggest new memories weekly", isOn: Binding(get: { memoryOptions["enabled"].bool }, set: { memoryOptions["enabled"] = .bool($0) })).toggleStyle(.checkbox)
+                Text("First analysis starts after enabling; later analyses run weekly when mail changes. Proposals wait here for review, including after restart. Saving a proposal is always your choice.").font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup("Budget and status") {
+                    HStack { Text("Estimated tokens per analysis"); TextField("16000", value: Binding(get: { Int(memoryOptions["tokenBudget"].number) }, set: { memoryOptions["tokenBudget"] = .number(Double($0)) }), format: .number.grouping(.never)).frame(width: 120) }
+                    Text("4,000–64,000 tokens · " + workspace["brainLearning"]["status"].string).font(.caption)
+                    if workspace["brainLearning"]["error"].nonempty { Text(workspace["brainLearning"]["error"].string).foregroundStyle(.orange) }
+                }
+                if memoryOptionsDirty {
+                    Button("Save Automatic Learning") {
+                        if memoryOptions["enabled"].bool && !model.confirm("Enable automatic memory suggestions?", detail: "\(model.account) · \(model.state["settings"]["ai"]["model"].string)\nWeekly budget: \(Int(memoryOptions["tokenBudget"].number)) estimated tokens. Uses permitted downloaded mail while Morrow is open. Provider charges may apply. Suggestions require your review before saving.") { return }
+                        model.perform { model.state = try await model.request("/workspace/brain/settings", method: "POST", body: memoryOptions); memoryOptions = savedMemoryOptions }
+                    }.buttonStyle(.borderedProminent)
+                }
+            }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+    func loadBrain() { memoryOptions = savedMemoryOptions; voice = workspace["brain"]["voice"].string; notes = workspace["brain"]["notes"].string; savedVoice = voice; savedNotes = notes }
 }
 
 struct SkillEdit: Identifiable { let id = UUID(); let value: JSON }

@@ -100,7 +100,9 @@ struct Intelligence : std::enable_shared_from_this<Intelligence> {
     hstring owner, kind, previewVoiceId, learningPaint, suggestionPaint, connection, context;
     uint64_t generation = 0, revision = 0, learningRevision = 0;
     bool live = true, busy = false, polling = false, cancelling = false, generatingStyle = false, selecting = false;
-    Json state, suggestions, workflow, output, outputMessage, outputSource;
+    Json state, suggestions, workflow, output, outputMessage, outputSource, memoryPreview;
+    std::set<std::wstring> selectedMemories;
+    weak_ref<StackPanel> memoryPanel;
     hstring outputAction, outputContext, workflowContext;
     std::map<std::wstring, Editor> forms;
     std::set<std::wstring> selectedCandidates;
@@ -125,7 +127,8 @@ struct Intelligence : std::enable_shared_from_this<Intelligence> {
         if (busy || cancelling || edited()) shell->dirty.insert(key()); else shell->dirty.erase(key());
     }
     void clearResult() {
-        workflow = Json(); output = Json(); outputMessage = Json(); outputSource = Json();
+        workflow = Json(); output = Json(); outputMessage = Json(); outputSource = Json(); memoryPreview = Json(); selectedMemories.clear();
+        if (auto panel = memoryPanel.get()) panel.Children().Clear();
         if (auto panel = resultPanel.get()) panel.Children().Clear();
     }
     void changed(std::wstring const& formName) {
@@ -383,16 +386,17 @@ void buildLearning(Page const& p, StackPanel const& body) {
     Json voice; put(voice, L"voice", L""); editor(p, L"voice", voice);
     auto preview = stack(10); body.Children().Append(preview); p->previewPanel = make_weak(preview);
     action(p, body, L"Learn Now — review before AI…", [](Page page) { return previewStyle(page, true); });
-    action(p, body, L"Preview Sent samples — no AI call", [](Page page) { return previewStyle(page, false); });
-    action(p, body, L"Discard preview (retain approved style)…", [](Page page) -> IAsyncAction {
+    Expander more; more.Header(box_value(L"More learning options")); auto extra=stack(10); more.Content(extra); body.Children().Append(more);
+    action(p, extra, L"Preview Sent samples — no AI call", [](Page page) { return previewStyle(page, false); });
+    action(p, extra, L"Discard preview (retain approved style)…", [](Page page) -> IAsyncAction {
         if (!(co_await page->shell->confirm(L"Discard the style preview?", L"The approved style and confirmed identity are retained. Pending results will be revoked.", L"Discard preview")) || !page->current()) co_return;
         auto result = co_await page->shell->service->request(L"/style/settings", page->owner, L"POST", learningFields(learning(page)));
         if (page->current()) { ++page->learningRevision; acceptState(page, result); renderLearning(page); page->tell(L"Preview discarded. Approved style retained."); }
     });
-    auto options = group(body, L"Learning configuration — explicit opt-in");
+    Expander configuration; configuration.Header(box_value(L"Learning configuration")); auto options=stack(12); configuration.Content(options); body.Children().Append(configuration);
     editCheck(p, options, L"learning", L"enabled", L"Enable writing-style learning for this account");
     editCheck(p, options, L"learning", L"weekly", L"Analyze newly sent mail weekly within the saved budget");
-    words(options, L"Weekly analysis runs from cached Sent mail while Morrow is open. Every proposal still needs review and Save. It pauses while a preview awaits review; no automatic retry of failed paid jobs.");
+    words(options, L"The first eligible analysis starts after enabling, then updates use new cached Sent mail at most weekly while Morrow is open. Every proposal still needs review and Save. It pauses while a preview awaits review; no automatic retry of failed paid jobs.");
     editChoice(p, options, L"learning", L"months", L"Sent history", {{L"1", L"Last month"}, {L"3", L"Last 3 months"}, {L"6", L"Last 6 months"}, {L"12", L"Last 12 months"}}, true);
     editNumber(p, options, L"learning", L"maxSamples", L"Maximum samples (also limited by AI Permissions)", 1, 50);
     editNumber(p, options, L"learning", L"tokenBudget", L"Estimated token budget per analysis", 4000, 64000, 1000);
@@ -432,13 +436,80 @@ Json brainFields(Json const& state) {
     auto brain = object(object(state, L"workspace"), L"brain"); Json value;
     put(value, L"voice", text(brain, L"voice")); put(value, L"notes", text(brain, L"notes")); return value;
 }
+void memorySources(StackPanel const& panel, Json const& item) {
+    for (auto const& entry : array(item, L"sourceLabels")) {
+        auto source = entry.GetObject(); words(panel, L"Source: " + text(source, L"subject") + L" · " + text(source, L"date"), 12);
+    }
+}
+void renderMemoryPreview(Page const& p) {
+    auto panel = p->memoryPanel.get(); if (!panel) return; panel.Children().Clear();
+    auto preview = p->memoryPreview;
+    if (!preview.Size()) return;
+    auto items = array(preview, L"items");
+    if (!items.Size()) words(panel, L"No durable memories found in this selection.");
+    for (auto const& entry : items) {
+        auto item = entry.GetObject(); CheckBox check;
+        auto content = stack(4); words(content, text(item, L"text")); memorySources(content, item); check.Content(content);
+        auto id = text(item, L"id"); std::weak_ptr<Intelligence> weak = p;
+        check.Checked([weak, id](auto const&, auto const&) { if (auto page = weak.lock()) page->selectedMemories.insert(std::wstring(id)); });
+        check.Unchecked([weak, id](auto const&, auto const&) { if (auto page = weak.lock()) page->selectedMemories.erase(std::wstring(id)); });
+        panel.Children().Append(check);
+    }
+    action(p, panel, L"Save selected memories", [](Page page) -> IAsyncAction {
+        require(!page->forms[L"brain"].dirty(), L"Save or discard your notes first.");
+        require(!page->selectedMemories.empty(), L"Select the memories you want to keep.");
+        Json input; put(input, L"previewId", text(page->memoryPreview, L"id")); Array ids;
+        for (auto const& id : page->selectedMemories) ids.Append(Value::CreateStringValue(hstring(id)));
+        input.Insert(L"itemIds", ids);
+        auto state = co_await page->shell->service->request(L"/workspace/brain/apply", page->owner, L"POST", input);
+        if (!page->current()) co_return; acceptState(page, state);
+        auto shell = page->shell; page->stop(); co_await intelligencePage(shell, L"brain");
+    });
+    action(p, panel, L"Dismiss suggestions", [](Page page) -> IAsyncAction {
+        auto saved=object(object(object(page->state,L"workspace"),L"brainLearning"),L"preview");
+        if (text(saved,L"id") == text(page->memoryPreview,L"id")) {
+            Json input; put(input,L"previewId",text(saved,L"id"));
+            auto state=co_await page->shell->service->request(L"/workspace/brain/dismiss",page->owner,L"POST",input);
+            if (!page->current()) co_return; acceptState(page,state);
+        }
+        page->clearResult();
+    });
+}
 void buildBrain(Page const& p, StackPanel const& body) {
     words(body, L"Email Brain", 24);
     auto policy = object(object(p->state, L"settings"), L"policy");
     words(body, flag(policy, L"enabled") && flag(object(policy, L"behaviors"), L"memory")
         ? L"Explicitly saved voice and notes may inform permitted AI requests. They remain local until included in an authorized model request."
         : L"Email Brain is disabled by your saved permissions. Saved notes will not inform AI requests.");
-    words(body, L"These notes are separate from your confirmed identity and approved learned style. Contacts are changed only by applying a new reviewed Email Brain simulation.");
+    words(body, L"Keep useful context for this mailbox. You choose what is remembered.");
+    auto automatic = object(object(p->state,L"workspace"),L"brainLearning");
+    editor(p,L"memoryOptions",subset(automatic,{L"enabled",L"tokenBudget"}));
+    auto automaticPanel = group(body,L"Automatic learning");
+    editCheck(p,automaticPanel,L"memoryOptions",L"enabled",L"Suggest new memories weekly");
+    editNumber(p,automaticPanel,L"memoryOptions",L"tokenBudget",L"Estimated tokens per analysis",4000,64000,1000);
+    words(automaticPanel,L"First analysis starts after enabling; later analyses run weekly when mail changes. Proposals survive restart and wait for your review. Status: " + text(automatic,L"status"),12);
+    if (!text(automatic,L"error").empty()) words(automaticPanel,text(automatic,L"error"));
+    action(p,automaticPanel,L"Save automatic learning",[](Page page) -> IAsyncAction {
+        auto options=clone(page->forms[L"memoryOptions"].value);
+        if (flag(options,L"enabled") && !(co_await page->shell->confirm(L"Enable automatic memory suggestions?",page->owner + L"\nWeekly budget: " + count(options,L"tokenBudget") + L" estimated tokens. Uses your configured model and permitted downloaded mail while Morrow is open. Provider charges may apply. Proposals require review before saving.",L"Enable"))) co_return;
+        auto state=co_await page->shell->service->request(L"/workspace/brain/settings",page->owner,L"POST",options);
+        if (!page->current()) co_return; acceptState(page,state); page->forms[L"memoryOptions"].accept(options); page->dirty();
+    });
+    auto suggestions = group(body, L"Find memories in your mail");
+    words(suggestions, L"Suggest up to 8 memories from your latest permitted mail. Review the sources and select what to keep. Your saved notes are retained.");
+    action(p, suggestions, L"Suggest memories — uses AI…", [](Page page) -> IAsyncAction {
+        require(!page->forms[L"brain"].dirty(), L"Save or discard your notes first.");
+        auto settings = object(page->state, L"settings"), model = object(settings, L"ai"), policy = object(settings, L"policy");
+        auto captured = page->context;
+        if (!(co_await page->shell->confirm(L"Suggest memories from mail?", page->owner + L"\nModel: " + text(model, L"model") + L"\nUp to " + count(policy, L"maxMessages") + L" permitted downloaded messages. Provider charges may apply. Suggestions are saved only after your review.", L"Suggest memories")) || !page->current()) co_return;
+        validateContext(page, captured); page->clearResult();
+        auto result = co_await page->shell->service->request(L"/workspace/brain/preview", page->owner, L"POST", Json());
+        if (!page->current()) co_return; validateContext(page, captured);
+        page->memoryPreview = object(result, L"preview"); renderMemoryPreview(page);
+    });
+    auto memoryPanel = stack(12); suggestions.Children().Append(memoryPanel); p->memoryPanel = make_weak(memoryPanel);
+    p->memoryPreview = object(automatic,L"preview"); renderMemoryPreview(p);
+    words(body, L"Your instructions", 20);
     editor(p, L"brain", brainFields(p->state));
     editText(p, body, L"brain", L"voice", L"Writing voice", 2000, true);
     editText(p, body, L"brain", L"notes", L"Notes to remember", 4000, true);
@@ -458,9 +529,24 @@ void buildBrain(Page const& p, StackPanel const& body) {
         acceptState(page, result); page->forms[L"brain"].accept(brainFields(result)); page->dirty();
         auto shell = page->shell; page->stop(); co_await intelligencePage(shell, L"brain");
     });
-    auto contacts = group(body, L"Saved contacts — reviewed local notes");
+    auto memories = group(body, L"Reviewed memories");
+    auto facts = array(object(object(p->state, L"workspace"), L"brain"), L"facts");
+    if (!facts.Size()) words(memories, L"No reviewed memories yet. Start with Suggest memories above.");
+    for (auto const& entry : facts) {
+        auto fact = entry.GetObject(); auto row = stack(6); words(row, text(fact, L"text")); memorySources(row, fact);
+        action(p, row, L"Remove memory", [id = text(fact, L"id")](Page page) -> IAsyncAction {
+            require(!page->forms[L"brain"].dirty(), L"Save or discard your notes first.");
+            auto state = co_await page->shell->service->request(L"/workspace/brain/facts/" + escaped(id), page->owner, L"DELETE", Json());
+            if (!page->current()) co_return; acceptState(page, state);
+            auto shell = page->shell; page->stop(); co_await intelligencePage(shell, L"brain");
+        }); memories.Children().Append(row);
+    }
+    words(memories, L"Memories are used only while their source mail and permissions still match.", 12);
+    std::weak_ptr<Intelligence> weak = p;
+    body.Children().Append(button(L"Writing style & identity…", [weak] { if (auto page = weak.lock()) changePage(page, L"learning"); }));
+    Expander savedContacts; savedContacts.Header(box_value(L"Saved contacts")); auto contacts = stack(8); savedContacts.Content(contacts); body.Children().Append(savedContacts);
     auto values = array(object(object(p->state, L"workspace"), L"brain"), L"contacts");
-    if (!values.Size()) words(contacts, L"No saved contacts. In AI Studio, choose Email Brain to prepare a local preview from permitted mail.");
+    if (!values.Size()) words(contacts, L"No saved contacts.");
     uint32_t displayed = 0;
     for (auto const& value : values) {
         if (displayed++ == 100) { words(contacts, L"Additional contacts are retained in the workspace."); break; }
@@ -482,9 +568,6 @@ void acceptSuggestions(Page const& p, Json const& next, bool saved = false) {
 }
 hstring messageCaption(Json const& value) {
     return text(value, L"fromName", text(value, L"fromEmail", L"Sender withheld")) + L" — " + text(value, L"subject", L"Subject withheld") + L"\n" + text(value, L"date");
-}
-hstring coverage(Json const& value) {
-    return count(value, L"usedMessages") + L" / " + count(value, L"matchedMessages") + L" matching downloaded messages used";
 }
 IAsyncAction useSuggestion(Page p, hstring id) {
     require(!p->edited(), L"Save or discard suggestion settings before opening a draft.");
@@ -510,123 +593,63 @@ IAsyncAction useSuggestion(Page p, hstring id) {
     require(valid, L"This suggestion was revoked or its sources changed. Review a fresh batch.");
     p->shell->dirty.erase(p->key()); auto shell = p->shell; p->stop(); co_await compose(shell, draft);
 }
+IAsyncAction saveAutomaticReplies(Page page, Json input) {
+    if (flag(input,L"automatic") && !(co_await page->shell->confirm(L"Automatically find mail that needs a reply?",page->owner + L"\nModel: " + text(object(page->suggestions,L"model"),L"model") + L"\nEndpoint: " + text(object(page->suggestions,L"model"),L"baseUrl") + L"\nDaily budget: " + count(input,L"dailyTokenBudget") + L" estimated tokens per UTC day. Uses permitted Inbox and correspondence while Morrow is open. Provider charges may apply. No mail is sent automatically.",L"Enable automatic checks"))) co_return;
+    if (!page->current()) co_return;
+    auto result=co_await page->shell->service->request(L"/reply-suggestions/settings",page->owner,L"POST",input);
+    if (page->current()) { acceptSuggestions(page,result,true); page->tell(L"Automatic reply settings saved."); }
+}
 void renderSuggestions(Page const& p) {
-    auto candidatePanel = p->candidatePanel.get(), jobs = p->jobPanel.get(), proposals = p->proposalPanel.get();
-    if (!candidatePanel || !jobs || !proposals) return;
-    auto value = p->suggestions, job = object(value, L"job"); auto signature = value.Stringify();
-    if (auto host = p->suggestionOptions.get()) host.IsEnabled(!suggestionsRunning(p));
-    if (p->suggestionPaint == signature) return;
-    p->suggestionPaint = signature; candidatePanel.Children().Clear(); jobs.Children().Clear(); proposals.Children().Clear();
-    words(jobs, flag(value, L"identityReady") ? L"Confirmed identity: " + text(object(value, L"identity"), L"displayName") : hstring(L"Confirm your identity in Learning before generating suggestions."));
-    if (!flag(value, L"permitted")) words(jobs, L"Requires AI enabled, Reply, Inbox, sender and body access in saved AI permissions.");
-    if (job.Size()) {
-        words(jobs, text(job, L"status") + L" · " + count(job, L"completed") + L" / " + count(job, L"sampleCount") + L" assessed", 18);
-        words(jobs, L"Estimated tokens ≤ " + count(job, L"estimatedTokens") + L" · budget " + count(job, L"tokenBudget") + L" · reserved " + count(job, L"spentTokens"));
-        if (!text(job, L"error").empty()) words(jobs, text(job, L"error"));
-        if (suggestionsRunning(p)) words(jobs, L"This reviewed batch runs in the background while Morrow is open. You can leave this page. No email is sent; failed/interrupted paid jobs are never automatically replayed.");
-        if (text(job, L"status") == L"prepared") {
-            words(jobs, L"Model: " + text(object(value, L"model"), L"model") + L"\nEndpoint: " + text(object(value, L"model"), L"baseUrl"));
-            auto samples = stack(); Expander review; review.Header(box_value(L"Review selected mail and bounded history coverage"));
-            for (auto const& entry : array(job, L"samples")) {
-                auto sample = entry.GetObject(); words(samples, messageCaption(object(sample, L"message")), 16);
-                words(samples, coverage(object(sample, L"history"))); words(samples, text(sample, L"excerpt"));
-            }
-            review.Content(scroll(samples)); jobs.Children().Append(review);
-            action(p, jobs, L"Generate reviewed batch — uses AI…", [](Page page) -> IAsyncAction {
-                require(!page->edited(), L"Save or discard settings first.");
-                auto job = object(page->suggestions, L"job"), model = object(page->suggestions, L"model");
-                require(text(job, L"status") == L"prepared" && flag(job, L"reviewValid") && flag(page->suggestions, L"identityReady"), L"The reviewed selection is no longer valid. Prepare a new preview.");
-                auto context = page->context; auto id = text(job, L"id");
-                auto detail = page->owner + L"\n" + count(job, L"sampleCount") + L" messages · estimated tokens ≤ " + count(job, L"estimatedTokens") + L" · budget " + count(job, L"tokenBudget") +
-                    L"\nModel: " + text(model, L"model") + L"\nEndpoint: " + text(model, L"baseUrl") + L"\nUses only the reviewed downloaded history, confirmed identity and permitted approved style. Provider charges may apply. No mail is sent.";
-                if (!(co_await page->shell->confirm(L"Generate reply suggestions?", detail, L"Generate reviewed batch")) || !page->current()) co_return;
-                validateContext(page, context); Json body; put(body, L"previewId", id);
-                auto result = co_await page->shell->service->request(L"/reply-suggestions/run", page->owner, L"POST", body);
-                if (page->current()) { acceptSuggestions(page, result); page->tell(L"Batch queued. You may leave this page while Morrow stays open."); }
-            });
-        }
-        auto status = text(job, L"status");
-        if (status == L"prepared" || status == L"queued" || status == L"running") action(p, jobs, L"Cancel remaining work…", [](Page page) -> IAsyncAction {
-            if (!(co_await page->shell->confirm(L"Cancel the remaining batch?", L"Valid completed suggestions remain. An in-flight model request may already have used tokens.", L"Cancel remaining work")) || !page->current()) co_return;
-            auto result = co_await page->shell->service->request(L"/reply-suggestions/cancel", page->owner, L"POST");
-            if (page->current()) { acceptSuggestions(page, result); page->tell(L"Remaining batch cancelled."); }
+    auto jobs=p->jobPanel.get(), proposals=p->proposalPanel.get();
+    if (!jobs || !proposals) return;
+    auto value=p->suggestions, job=object(value,L"job"); auto signature=value.Stringify();
+    if (p->suggestionPaint==signature) return;
+    p->suggestionPaint=signature; jobs.Children().Clear(); proposals.Children().Clear();
+    if (!flag(value,L"identityReady")) {
+        words(jobs,L"Confirm the name to use in your replies first.");
+        std::weak_ptr<Intelligence> weak=p;
+        jobs.Children().Append(button(L"Confirm my identity",[weak] { if (auto page=weak.lock()) changePage(page,L"learning"); }));
+    } else if (!flag(value,L"modelReady") || (!flag(value,L"permitted") && flag(object(value,L"settings"),L"enabled"))) {
+        for (auto const& requirement:array(value,L"requirements")) words(jobs,requirement.GetString());
+        words(jobs,L"Review Model and AI Permissions in Settings.");
+    } else if (!flag(value,L"automaticReady")) {
+        action(p,jobs,L"Enable automatic reply suggestions",[](Page page) -> IAsyncAction {
+            auto options=clone(page->forms[L"suggestions"].value); truth(options,L"enabled",true); truth(options,L"automatic",true); options.Insert(L"tokenBudget",Value::CreateNumberValue(64000));
+            co_await saveAutomaticReplies(page,options);
+        });
+    } else words(jobs,suggestionsRunning(p) ? L"Checking mail in the background…" : L"Automatic checks are on.");
+    if (flag(value,L"automaticReady")) words(jobs,text(value,L"automaticStatus"),12);
+    if (!text(job,L"error").empty()) words(jobs,text(job,L"error"));
+    if (text(job,L"status")==L"failed" || text(job,L"status")==L"interrupted" || text(job,L"status")==L"cancelled") {
+        action(p,jobs,L"Review & restart checks",[](Page page) { return saveAutomaticReplies(page,clone(page->forms[L"suggestions"].value)); });
+    }
+    if (!array(value,L"proposals").Size()) words(proposals,suggestionsRunning(p) ? L"Suggestions appear as messages are checked." : L"No replies waiting for review. Unnecessary replies are filtered out; AI can still miss a request.");
+    for (auto const& entry:array(value,L"proposals")) {
+        auto proposal=entry.GetObject(), message=object(proposal,L"message");
+        require(text(message,L"accountId")==p->owner,L"Suggestion belongs to another mailbox.");
+        auto row=group(proposals,messageCaption(message)); words(row,text(proposal,L"reason")); auto id=text(proposal,L"id");
+        action(p,row,L"Review suggested reply…",[id](Page page) { return useSuggestion(page,id); });
+        action(p,row,L"Ignore",[id](Page page) -> IAsyncAction {
+            Json input; put(input,L"id",id);
+            auto result=co_await page->shell->service->request(L"/reply-suggestions/dismiss",page->owner,L"POST",input);
+            if (page->current()) acceptSuggestions(page,result);
         });
     }
-    words(proposals, L"Suggestions to review", 20);
-    if (!array(value, L"proposals").Size()) words(proposals, L"No current proposals. An assessment may find that no reply is needed.");
-    for (auto const& entry : array(value, L"proposals")) {
-        auto proposal = entry.GetObject(), message = object(proposal, L"message");
-        require(text(message, L"accountId") == p->owner, L"Suggestion metadata belongs to another mailbox.");
-        auto item = group(proposals, messageCaption(message));
-        words(item, text(proposal, L"reason")); words(item, text(proposal, L"text")); words(item, coverage(object(proposal, L"history")));
-        words(item, L"Review recipients, facts and commitments before sending. Suggestions can be wrong.");
-        auto id = text(proposal, L"id");
-        action(p, item, text(proposal, L"status") == L"used" ? L"Open another draft" : L"Use in draft", [id](Page page) { return useSuggestion(page, id); });
-        action(p, item, L"Dismiss", [id](Page page) -> IAsyncAction {
-            Json input; put(input, L"id", id);
-            auto result = co_await page->shell->service->request(L"/reply-suggestions/dismiss", page->owner, L"POST", input);
-            if (page->current()) { acceptSuggestions(page, result); page->tell(L"Suggestion dismissed."); }
-        });
-    }
-    words(candidatePanel, L"Inbox candidates", 20);
-    words(candidatePanel, L"Eligible candidates among the newest " + count(value, L"candidateLimit") + L" downloaded Inbox messages. This is not a guarantee that every unanswered email is listed.");
-    action(p, candidatePanel, L"Select newest up to saved batch limit", [](Page page) -> IAsyncAction {
-        require(!suggestionsRunning(page), L"Wait for or cancel the current batch before selecting another.");
-        auto limit = object(page->suggestions, L"settings").GetNamedNumber(L"maxMessages", 1);
-        page->selectedCandidates.clear();
-        for (auto const& value : array(page->suggestions, L"candidates")) {
-            if (static_cast<double>(page->selectedCandidates.size()) >= limit) break;
-            page->selectedCandidates.insert(std::wstring(text(value.GetObject(), L"id")));
-        }
-        page->suggestionPaint = L""; renderSuggestions(page); page->tell(L"Selection updated. Preview does not call AI."); co_return;
-    });
-    auto candidates = stack(8); std::weak_ptr<Intelligence> weak = p;
-    for (auto const& entry : array(value, L"candidates")) {
-        auto message = entry.GetObject(); require(text(message, L"accountId") == p->owner, L"Candidate owner changed.");
-        auto id = std::wstring(text(message, L"id")); CheckBox check; check.Content(label(messageCaption(message)));
-        check.IsChecked(p->selectedCandidates.contains(id)); check.IsEnabled(!suggestionsRunning(p));
-        check.Click([weak, id](auto const& sender, auto const&) {
-            if (auto page = weak.lock(); page && page->current() && !page->busy && !suggestionsRunning(page)) {
-                if (checked(sender.template as<CheckBox>())) page->selectedCandidates.insert(id); else page->selectedCandidates.erase(id);
-                ++page->revision;
-            }
-        }); candidates.Children().Append(check);
-    }
-    auto list = scroll(candidates); list.MaxHeight(420); candidatePanel.Children().Append(list);
-    action(p, candidatePanel, L"Preview selected mail — no AI call", [](Page page) -> IAsyncAction {
-        require(!page->edited() && !suggestionsRunning(page), L"Save settings and finish or cancel the current batch first.");
-        require(flag(page->suggestions, L"permitted") && flag(page->suggestions, L"identityReady"), L"Enable the required permissions and confirm your identity first.");
-        auto settings = object(page->suggestions, L"settings");
-        require(flag(settings, L"enabled") && !page->selectedCandidates.empty() && static_cast<double>(page->selectedCandidates.size()) <= settings.GetNamedNumber(L"maxMessages", 1), L"Enable suggestions and select at most the saved batch limit.");
-        Json input; Array ids; for (auto const& id : page->selectedCandidates) ids.Append(Value::CreateStringValue(id)); input.Insert(L"messageIds", ids);
-        auto result = co_await page->shell->service->request(L"/reply-suggestions/preview", page->owner, L"POST", input);
-        if (page->current()) { acceptSuggestions(page, result); page->tell(L"Local preview prepared. Review the selection before generating."); }
-    });
 }
 void buildSuggestions(Page const& p, StackPanel const& body) {
-    words(body, L"Reply suggestions", 24);
-    words(body, L"Review mail that may need a reply, then create a draft in its original account. Nothing sends automatically.");
-    words(body, L"Only permitted downloaded correspondence is considered, including Sent replies when permitted. Each reply uses at most " + count(p->suggestions, L"contextLimit") + L" messages and your saved context limit: target body ≤ 5,000 characters, other bodies ≤ 2,000. It does not read all matching mail.");
-    editor(p, L"suggestions", object(p->suggestions, L"settings"));
-    ContentControl host; host.HorizontalContentAlignment(xaml::HorizontalAlignment::Stretch);
-    auto options = stack(10); host.Content(options); body.Children().Append(host); p->suggestionOptions = make_weak(host);
-    editCheck(p, options, L"suggestions", L"enabled", L"Enable reply suggestions for this account");
-    editNumber(p, options, L"suggestions", L"maxMessages", L"Maximum messages per batch", 1, 10);
-    editNumber(p, options, L"suggestions", L"tokenBudget", L"Estimated tokens per batch", 4000, 64000, 1000);
-    words(options, L"Saving opt-in does not start AI. Saving these settings clears earlier previews and proposals. Every batch requires review and confirmation.");
-    action(p, options, L"Save suggestion settings…", [](Page page) -> IAsyncAction {
-        require(!suggestionsRunning(page), L"Cancel the current batch before editing its settings.");
-        auto input = clone(page->forms[L"suggestions"].value);
-        if (!(co_await page->shell->confirm(L"Save batch settings?", page->owner + L"\nSuggestions: " + (flag(input, L"enabled") ? hstring(L"enabled") : hstring(L"disabled")) + L"\nUp to " + count(input, L"maxMessages") + L" messages · budget " + count(input, L"tokenBudget") + L"\nPrior previews and suggestions will be cleared. This does not start a paid batch.", L"Save settings")) || !page->current()) co_return;
-        auto result = co_await page->shell->service->request(L"/reply-suggestions/settings", page->owner, L"POST", input);
-        if (page->current()) { acceptSuggestions(page, result, true); page->tell(L"Suggestion settings saved."); }
+    words(body,L"Needs a reply",24);
+    words(body,L"AI checks downloaded Inbox mail and leaves out messages that do not need a reply. Open a suggestion to edit or send it, or ignore the email.");
+    editor(p,L"suggestions",object(p->suggestions,L"settings"));
+    auto jobs=stack(10), proposals=stack(14); body.Children().Append(jobs); body.Children().Append(proposals);
+    p->jobPanel=make_weak(jobs); p->proposalPanel=make_weak(proposals);
+    Expander details; details.Header(box_value(L"Automatic checks & budget")); auto options=stack(12); details.Content(options); body.Children().Append(details);
+    editCheck(p,options,L"suggestions",L"automatic",L"Check new Inbox mail automatically");
+    editNumber(p,options,L"suggestions",L"dailyTokenBudget",L"Daily token budget (UTC day)",4000,2000000,1000);
+    words(options,L"Used today: " + count(p->suggestions,L"spentToday") + L" estimated tokens. Checks cover the newest 200 downloaded Inbox messages and permitted correspondence. Provider billing may differ. Mail is never sent automatically.",12);
+    action(p,options,L"Save",[](Page page) -> IAsyncAction {
+        auto options=clone(page->forms[L"suggestions"].value); if (flag(options,L"automatic")) truth(options,L"enabled",true);
+        co_await saveAutomaticReplies(page,options);
     });
-    action(p, options, L"Discard settings edits", [](Page page) -> IAsyncAction {
-        page->forms[L"suggestions"].accept(object(page->suggestions, L"settings")); page->dirty(); page->tell(L"Saved options restored."); co_return;
-    });
-    auto jobs = stack(10), proposals = stack(14), candidates = stack(10);
-    body.Children().Append(jobs); body.Children().Append(proposals); body.Children().Append(candidates);
-    p->jobPanel = make_weak(jobs); p->proposalPanel = make_weak(proposals); p->candidatePanel = make_weak(candidates);
     renderSuggestions(p);
 }
 
@@ -930,7 +953,8 @@ void renderTool(Page const& p) {
     words(panel, text(feature, L"description"));
     words(panel, flag(feature, L"mock") ? simulationNote(name) : hstring(L"Calls your configured chat model only after confirmation. Every response needs human review."));
     auto policy = object(object(p->state, L"settings"), L"policy"), content = object(policy, L"content");
-    words(panel, L"Saved scope: " + selectedFlags(object(policy, L"folders")) + L"\nSaved fields: " + selectedFlags(content) + L"\nContext cap: " + count(policy, L"maxMessages") + L" downloaded messages. The server rechecks permissions and ownership.");
+    Expander scope; scope.Header(box_value(L"Mail and permissions used")); auto scopeDetails = stack(6); scope.Content(scopeDetails); panel.Children().Append(scope);
+    words(scopeDetails, L"Saved scope: " + selectedFlags(object(policy, L"folders")) + L"\nSaved fields: " + selectedFlags(content) + L"\nContext cap: " + count(policy, L"maxMessages") + L" downloaded messages. The server rechecks permissions and ownership.");
     if (text(feature, L"context") == L"selected") {
         if (name == L"translate") editChoice(p, panel, L"tool", L"translateSource", L"Translate source", {{L"message", L"Selected message"}, {L"draft", L"Draft text entered below"}});
         ComboBox picker; picker.Header(box_value(L"Message from permitted folders")); picker.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
@@ -971,7 +995,15 @@ void renderTool(Page const& p) {
             if (item) { put(page->forms[L"tool"].value, L"skillId", unbox_value<hstring>(item.Tag())); page->changed(L"tool"); }
         } }); panel.Children().Append(picker); p->skillPicker = make_weak(picker);
     }
-    if (!flag(feature, L"mock")) editText(p, panel, L"tool", L"prompt", name == L"translate" ? L"Target language and instructions" : L"Question / writing instructions (required for Ask and Write)", 2000, true);
+    if (!flag(feature, L"mock")) {
+        if (name == L"ask" || name == L"write") {
+            editText(p, panel, L"tool", L"prompt", name == L"ask" ? L"What would you like to know about your mail?" : L"What would you like to say?", 2000, true);
+            if (name == L"ask") words(panel, L"Include a person, project or topic to find relevant downloaded mail.", 12);
+        } else {
+            Expander extra; extra.Header(box_value(L"Additional instructions (optional)")); auto fields = stack(8);
+            editText(p, fields, L"tool", L"prompt", L"Instructions", 2000, true); extra.Content(fields); panel.Children().Append(extra);
+        }
+    }
     if (name == L"followup" || name == L"schedule") {
         DatePicker date; date.Header(box_value(L"Date for local record")); date.Date(winrt::clock::now() + std::chrono::hours(24));
         TimePicker time; time.Header(box_value(L"Time on this device")); time.Time(std::chrono::hours(9));
@@ -988,16 +1020,18 @@ void renderTool(Page const& p) {
     });
 }
 void buildTools(Page const& p, StackPanel const& body) {
-    words(body, L"AI Studio", 24); words(body, L"Real model responses and local simulations are labeled separately. Nothing runs simply because you open a tool; no tool sends mail.");
-    Json value; put(value, L"action", L"briefing"); put(value, L"prompt", L""); put(value, L"draftText", L""); put(value, L"messageId", L""); put(value, L"skillId", L""); put(value, L"translateSource", L"message"); truth(value, L"includeHistory", false);
+    words(body, p->kind == L"simulations" ? L"Local simulations" : L"Assistant", 24); words(body, L"Choose a task, then review the result.");
+    Json value; put(value, L"action", p->kind == L"simulations" ? L"triage" : L"ask"); put(value, L"prompt", L""); put(value, L"draftText", L""); put(value, L"messageId", L""); put(value, L"skillId", L""); put(value, L"translateSource", L"message"); truth(value, L"includeHistory", false);
     if (text(p->shell->selected, L"accountId") == p->owner) put(value, L"messageId", text(p->shell->selected, L"id"));
     for (auto const& entry : array(object(p->state, L"workspace"), L"skills")) if (flag(entry.GetObject(), L"enabled")) { put(value, L"skillId", text(entry.GetObject(), L"id")); break; }
     editor(p, L"tool", value);
-    ComboBox picker; picker.Header(box_value(L"Tool")); picker.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
+    ComboBox picker; picker.Header(box_value(L"What would you like to do?")); picker.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
     for (auto const& entry : array(p->state, L"features")) {
-        auto feature = entry.GetObject(); p->features.push_back(feature); ComboBoxItem item;
-        item.Content(box_value(text(feature, L"label") + (flag(feature, L"mock") ? L" — local simulation" : L" — model response"))); item.Tag(box_value(text(feature, L"id"))); picker.Items().Append(item);
-        if (text(feature, L"id") == L"briefing") picker.SelectedItem(item);
+        auto feature = entry.GetObject();
+        if (text(feature, L"id") == L"memory" || flag(feature, L"mock") != (p->kind == L"simulations")) continue;
+        p->features.push_back(feature); ComboBoxItem item;
+        item.Content(box_value(text(feature, L"label"))); item.Tag(box_value(text(feature, L"id"))); picker.Items().Append(item);
+        if (text(feature, L"id") == text(value, L"action")) picker.SelectedItem(item);
     }
     std::weak_ptr<Intelligence> weak = p;
     picker.SelectionChanged([weak](auto const& sender, auto const&) { if (auto page = weak.lock(); page && page->current() && !page->busy) {
@@ -1020,7 +1054,10 @@ fire_and_forget refreshIntelligence(Page p) {
             else if (p->kind == L"reply-suggestions") {
                 auto suggestions = co_await p->shell->service->request(L"/reply-suggestions", p->owner);
                 if (p->current() && !p->busy && !p->cancelling && p->revision == revision) acceptSuggestions(p, suggestions);
-            } else if (p->kind == L"studio" && oldContext != p->context) {
+            } else if (p->kind == L"brain") {
+                auto proposal = object(object(object(p->state,L"workspace"),L"brainLearning"),L"preview");
+                if (text(proposal,L"id") != text(p->memoryPreview,L"id") && proposal.Size()) { p->selectedMemories.clear(); p->memoryPreview=proposal; renderMemoryPreview(p); }
+            } else if ((p->kind == L"studio" || p->kind == L"simulations") && oldContext != p->context) {
                 auto folders = object(object(object(p->state, L"settings"), L"policy"), L"folders");
                 std::erase_if(p->messages, [&](Json const& message) { return !flag(folders, text(message, L"folder").c_str()); });
                 renderTool(p); p->tell(L"Saved context changed. Previous results were cleared; review permissions and inputs before running again.");
@@ -1040,17 +1077,28 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
     auto p = std::make_shared<Intelligence>(); p->shell = shell; p->owner = shell->owner; p->kind = kind; p->generation = ++shell->generation;
     shell->section = kind;
     auto root = stack(16); root.MaxWidth(1080); root.HorizontalAlignment(xaml::HorizontalAlignment::Left); root.Margin(xaml::Thickness{24, 20, 24, 32});
-    words(root, L"Intelligence", 28); words(root, p->owner);
+    words(root, L"AI Studio", 28); words(root, p->owner);
     if (!shell->connected(p->owner) || p->owner.empty() || p->owner == L"all" || p->owner == L"demo") {
         words(root, L"Choose an individual connected mailbox from the sidebar. AI context, identity, notes and suggestions are kept separate for each account.");
         shell->show(scroll(root)); co_return;
     }
     auto tabs = stack(6); tabs.Orientation(Orientation::Horizontal); std::weak_ptr<Intelligence> weak = p; bool known = false;
     for (auto const& [id, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{
-        {L"studio", L"AI Studio"}, {L"learning", L"Learning & identity"}, {L"brain", L"Email Brain"}, {L"reply-suggestions", L"Reply suggestions"}, {L"skills", L"My skills"}, {L"summaries", L"Saved summaries"}, {L"records", L"Local records"}}) {
+        {L"studio", L"Assistant"}, {L"summaries", L"Summaries"}, {L"brain", L"Email Brain"}}) {
         auto control = button(caption, [weak, target = hstring(id)] { if (auto page = weak.lock()) changePage(page, target); });
         if (kind == id) { known = true; control.IsEnabled(false); } tabs.Children().Append(control);
     }
+    ComboBox more; more.PlaceholderText(L"More");
+    xaml::Automation::AutomationProperties::SetName(more, L"More AI Studio pages");
+    for (auto const& [id, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{
+        {L"learning", L"Writing style & identity"}, {L"reply-suggestions", L"Reply suggestions"}, {L"skills", L"Reusable skills"}, {L"simulations", L"Local simulations"}, {L"records", L"Simulation history"}}) {
+        ComboBoxItem item; item.Content(box_value(caption)); item.Tag(box_value(hstring(id))); more.Items().Append(item);
+        if (kind == id) { known = true; more.SelectedItem(item); }
+    }
+    more.SelectionChanged([weak](auto const& sender, auto const&) { if (auto page = weak.lock(); page && page->current()) {
+        auto item = sender.template as<ComboBox>().SelectedItem().template try_as<ComboBoxItem>();
+        if (item) changePage(page, unbox_value<hstring>(item.Tag()));
+    } }); tabs.Children().Append(more);
     ScrollViewer tabScroll; tabScroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto); tabScroll.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled); tabScroll.Content(tabs); root.Children().Append(tabScroll);
     auto notice = label(L"Loading this account’s saved context…"); root.Children().Append(notice); p->notice = notice;
     xaml::Automation::AutomationProperties::SetLiveSetting(notice, xaml::Automation::Peers::AutomationLiveSetting::Polite);
@@ -1073,7 +1121,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
             auto result = co_await shell->service->request(L"/reply-suggestions", p->owner);
             if (!p->current()) co_return; require(text(result, L"owner") == p->owner, L"Suggestion mailbox changed.");
             p->suggestions = result; buildSuggestions(p, body);
-        } else if (kind == L"studio") {
+        } else if (kind == L"studio" || kind == L"simulations") {
             buildTools(p, body); co_await loadMessages(p); if (!p->current()) co_return;
             p->forms[L"tool"].accept(p->forms[L"tool"].value);
         } else {
@@ -1088,7 +1136,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
         if (!page->current()) co_return;
         page->shell->dirty.erase(page->key()); auto shell = page->shell; auto kind = page->kind; page->stop(); co_await intelligencePage(shell, kind);
     });
-    if (loaded && (kind == L"learning" || kind == L"reply-suggestions" || kind == L"studio")) {
+    if (loaded && (kind == L"learning" || kind == L"reply-suggestions" || kind == L"studio" || kind == L"simulations" || kind == L"brain")) {
         p->timer = xaml::DispatcherTimer(); p->timer.Interval(std::chrono::seconds(3));
         p->timer.Tick([weak](auto const&, auto const&) { if (auto page = weak.lock()) refreshIntelligence(page); }); p->timer.Start();
     }

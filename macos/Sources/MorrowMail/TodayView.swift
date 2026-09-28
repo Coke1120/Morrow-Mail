@@ -2,7 +2,7 @@ import SwiftUI
 
 struct TodayView: View {
     @EnvironmentObject var model: AppModel
-    private var accounts: [JSON] { model.accounts.filter { model.combined || $0.id == model.account } }
+    private var accounts: [JSON] { model.accounts }
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
             ScrollView {
@@ -11,7 +11,7 @@ struct TodayView: View {
                         SectionHeading(title: "Today", detail: context.date.formatted(date: .complete, time: .omitted) + " · " + TimeZone.current.identifier)
                         Button { model.perform { try await model.reload() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(!model.canNavigate)
                     }
-                    Text(model.combined ? "All connected accounts" : model.account).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                    Text("All connected accounts").font(.callout).foregroundStyle(.secondary)
                     HStack(spacing: 14) {
                         overview("Unread Inbox", symbol: "envelope.badge", count: accounts.reduce(0) { $0 + Int($1["unread"].number) }, folder: "inbox", unread: true)
                         overview("Inbox", symbol: "tray", count: accounts.reduce(0) { $0 + Int($1["counts"]["inbox"].number) }, folder: "inbox")
@@ -25,14 +25,7 @@ struct TodayView: View {
                             Button("Summary History") { model.studioTab = "summaries"; model.section = "studio" }.disabled(!model.canNavigate)
                         }
                     }
-                    if model.combined {
-                        Text("Choose a mailbox to see its summaries. Each account keeps its own AI context.").foregroundStyle(.secondary)
-                        ForEach(model.accounts) { account in
-                            Button(account["email"].string) { model.perform { try await model.selectAccount(account.id) } }.disabled(!model.canNavigate)
-                        }
-                    } else {
-                        summaryContent(now: context.date)
-                    }
+                    summaryContent(now: context.date)
                     Spacer(minLength: 0)
                 }.padding(28).frame(maxWidth: 1000, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -40,7 +33,10 @@ struct TodayView: View {
     }
     private func overview(_ title: String, symbol: String, count: Int, folder: String, unread: Bool = false) -> some View {
         Button {
-            model.unreadOnly = unread; model.searchResponse = .null; model.section = folder
+            model.perform {
+                try await model.selectAccount("all")
+                model.unreadOnly = unread; model.searchResponse = .null; model.section = folder
+            }
         } label: {
             VStack(alignment: .leading, spacing: 10) {
                 Label(title, systemImage: symbol).font(.callout)
@@ -50,9 +46,16 @@ struct TodayView: View {
         }.buttonStyle(.plain).disabled(!model.canNavigate).accessibilityLabel("\(title), \(count) downloaded messages")
     }
     @ViewBuilder private func summaryContent(now: Date) -> some View {
-        let reports = summariesForDay(model.state["workspace"]["summaries"].array, now: now)
+        let reports = summariesForDay(model.state["today"]["summaries"].array, now: now)
         if !model.policy["enabled"].bool {
             Label("AI is paused. Enable saved permissions to generate future summaries.", systemImage: "pause.circle").foregroundStyle(.secondary)
+        }
+        if model.policy["triggers"]["scheduledSummary"].bool {
+            let schedule = model.policy["summarySchedule"]
+            Text(schedule["cadence"].string == "daily" ? "Scheduled daily at \(schedule["time"].string) (\(schedule["timeZone"].string)), while Morrow is open." : "Scheduled every \(Int(schedule["everyHours"].number)) hours, while Morrow is open.").font(.callout).foregroundStyle(.secondary)
+        }
+        if model.policy["triggers"]["onArrival"].bool {
+            Text("New-mail summaries appear after newly synced mail is analyzed. Historical imports do not trigger them.").font(.callout).foregroundStyle(.secondary)
         }
         if reports.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
@@ -62,10 +65,10 @@ struct TodayView: View {
             }.padding(18).frame(maxWidth: .infinity, alignment: .leading).background(.quaternary.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: 10))
         }
         ForEach(reports) { report in SummaryReportView(report: report) }
-        if model.state["workspace"]["summaryOverflow"].number > 0 {
-            Text("\(Int(model.state["workspace"]["summaryOverflow"].number)) summary jobs exceeded the queue limit. Review remaining mail in AI Studio.").foregroundStyle(.orange)
+        if model.state["today"]["summaryOverflow"].number > 0 {
+            Text("\(Int(model.state["today"]["summaryOverflow"].number)) summary jobs exceeded the queue limit. Review remaining mail in AI Studio.").foregroundStyle(.orange)
         }
-        Text("From this account’s latest 20 jobs, dated in your local time. Completed summaries use their completion date. Results may be hidden when permissions, model or source mail change.").font(.caption).foregroundStyle(.secondary)
+        Text("Latest 20 jobs per mailbox, dated in your local time. Each summary uses only its own mailbox. Completed summaries use their completion date.").font(.caption).foregroundStyle(.secondary)
     }
 }
 
@@ -74,6 +77,7 @@ struct SummaryReportView: View {
     var body: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
+                if report["accountId"].nonempty { Text(report["accountId"].string).font(.caption.weight(.semibold)).foregroundStyle(morrowGreen) }
                 HStack {
                     Text(report["kind"].string == "arrival" ? "New mail" : "Scheduled summary").font(.headline)
                     Spacer()

@@ -49,7 +49,7 @@ final class AppModel: ObservableObject {
     }
     private(set) var lastUpdateCheckAttempt: Date?
     var updateAvailable: Bool { updateResult["updateAvailable"].bool }
-    @Published var assistantAction = "summary"
+    @Published var assistantAction = "ask"
     @Published var studioTab = "tools"
     @Published var readerAssistant: JSON?
     @Published var unsavedForms = Set<String>()

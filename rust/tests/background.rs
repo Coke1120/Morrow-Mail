@@ -304,6 +304,14 @@ fn scheduled_claims_survive_restart_and_never_replay() {
         jobs::reports(&db, B).unwrap()[0]["messageIds"],
         json!(["same"])
     );
+    for view in [A, B, "all"] {
+        let state = morrow_search::service::state(&db, view, true, &[0; 32]).unwrap();
+        let reports = state["today"]["summaries"].as_array().unwrap();
+        assert_eq!(reports.len(), 2);
+        assert!(reports.iter().any(|r| r["accountId"] == A));
+        assert!(reports.iter().any(|r| r["accountId"] == B));
+        assert_ne!(reports[0]["id"], reports[1]["id"]);
+    }
     assert_eq!(jobs::reports(&db, "all").unwrap(), json!([]));
     assert_eq!(jobs::reports(&db, "demo").unwrap(), json!([]));
     let mut state = db.settings().unwrap()["automation"].clone();
@@ -794,6 +802,37 @@ fn unlimited_history_preserves_old_mail_checkpoint_and_fixed_upper_bound() {
     assert_eq!(status["status"], "complete");
     assert_eq!(status["imported"], 1);
     assert!(status.get("cursor").is_none());
+    drop(db);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn briefing_includes_older_pending_and_starred_mail_before_recent_bulk() {
+    let root = directory();
+    let db = Store::open(&root).unwrap();
+    configure(&db);
+    let policy = policy::update(
+        &db.settings().unwrap()["policy"],
+        &json!({"maxMessages":2,"triggers":{"scheduledSummary":true}}),
+    )
+    .unwrap();
+    db.set_settings(&json!({"policy":policy})).unwrap();
+    db.upsert(A,&json!({"id":"older-pending","folder":"inbox","pending":true,"read":true,"date":"2026-08-01","body":"Review the request"})).unwrap();
+    db.upsert(A,&json!({"id":"recent-bulk","folder":"inbox","read":false,"date":"2026-10-01","body":"Weekly newsletter"})).unwrap();
+    jobs::schedule(&db, timestamp("2026-09-24T01:00:00Z")).unwrap();
+    assert_eq!(
+        jobs::reports(&db, A).unwrap()[0]["messageIds"],
+        json!(["older-pending", "same"])
+    );
+    let manual = ai::context_for(&db, "briefing", &json!({}), A).unwrap();
+    assert_eq!(
+        manual
+            .messages
+            .iter()
+            .map(|m| m["id"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!("older-pending"), json!("same")]
+    );
     drop(db);
     fs::remove_dir_all(root).unwrap();
 }

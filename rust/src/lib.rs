@@ -1,6 +1,7 @@
 pub mod activity;
 pub mod ai;
 pub mod background;
+pub mod brain;
 pub mod calendar;
 pub mod cli;
 pub mod content;

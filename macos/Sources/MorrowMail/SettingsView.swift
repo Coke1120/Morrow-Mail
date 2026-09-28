@@ -72,7 +72,7 @@ struct NativeSettingsView: View {
                 Text(localError.isEmpty ? status : localError).foregroundStyle(localError.isEmpty ? Color.secondary : Color.red).font(.callout).textSelection(.enabled)
                 Spacer()
                 if model.settingsTab == "general" { preferenceStatus }
-                if model.settingsTab == "permissions" {
+                if model.settingsTab == "permissions" && values["policy"] != baseline["policy"] {
                     Button("Discard Changes") { values["policy"] = baseline["policy"] }.disabled(values["policy"] == baseline["policy"] || model.busy || preferenceSaving)
                     Button("Save Permissions") { save("policy") }.buttonStyle(.borderedProminent).disabled(values["policy"] == baseline["policy"] || model.busy || preferenceSaving)
                 }
@@ -239,15 +239,15 @@ struct NativeSettingsView: View {
             }
             if values["policy"]["triggers"]["scheduledSummary"].bool { summarySchedule }
             DisclosureGroup("Available AI features") { VStack(alignment: .leading, spacing: 12) {
-            ForEach(model.features.filter { !$0["mock"].bool }) { feature in
+            ForEach(model.features.filter { !$0["mock"].bool || $0.id == "memory" }) { feature in
                 VStack(alignment: .leading, spacing: 4) {
-                    Toggle(feature["label"].string + (feature["mock"].bool ? " · Simulation" : ""), isOn: nestedBool("behaviors", feature.id)).toggleStyle(.checkbox)
-                    Text(feature["description"].string).font(.caption).foregroundStyle(.secondary).padding(.leading, 20)
+                    Toggle(feature["label"].string, isOn: nestedBool("behaviors", feature.id)).toggleStyle(.checkbox)
+                    Text(feature.id == "memory" ? "Suggest memories with source references, review what to save, and use permitted saved context." : feature["description"].string).font(.caption).foregroundStyle(.secondary).padding(.leading, 20)
                 }
             }
             }.padding(.top, 8) }
             DisclosureGroup("Local simulations") { VStack(alignment: .leading, spacing: 8) {
-                ForEach(model.features.filter { $0["mock"].bool }) { feature in
+                ForEach(model.features.filter { $0["mock"].bool && $0.id != "memory" }) { feature in
                     Toggle(feature["label"].string + " · Simulation", isOn: nestedBool("behaviors", feature.id)).toggleStyle(.checkbox)
                     Text(feature["description"].string).font(.caption).foregroundStyle(.secondary)
                 }

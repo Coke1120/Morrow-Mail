@@ -31,6 +31,7 @@ const INDEX_VERSION: u32 = 1;
 #[derive(Default)]
 pub struct SmartState {
     worker: Mutex<()>,
+    scan: Mutex<String>,
     query_gate: Mutex<()>,
     test_gate: Mutex<()>,
     cache: Mutex<VecDeque<CachedQuery>>,
@@ -53,7 +54,7 @@ struct CachedQuery {
     until: Instant,
 }
 fn defaults() -> Value {
-    json!({"enabled":false,"baseUrl":"http://127.0.0.1:11434/v1","model":"","protocol":"openai","accounts":[],"months":3,"tokenBudget":16000,"folders":{"inbox":true,"sent":true,"archive":true,"drafts":false,"trash":false},"content":{"subject":true,"body":true,"sender":false}})
+    json!({"enabled":false,"autoIndex":false,"dailyTokenBudget":100000,"baseUrl":"http://127.0.0.1:11434/v1","model":"","protocol":"openai","accounts":[],"months":3,"tokenBudget":16000,"folders":{"inbox":true,"sent":true,"archive":true,"drafts":false,"trash":false},"content":{"subject":true,"body":true,"sender":false}})
 }
 fn config(settings: &Value) -> Value {
     let defaults = defaults();
@@ -64,7 +65,11 @@ fn config(settings: &Value) -> Value {
     result
 }
 fn scope_stamp(settings: &Value) -> String {
-    let value = config(settings);
+    let mut value = config(settings);
+    value
+        .as_object_mut()
+        .unwrap()
+        .retain(|key, _| !matches!(key.as_str(), "autoIndex" | "dailyTokenBudget"));
     let live = connections(settings);
     let identities = value["accounts"]
         .as_array()
@@ -269,6 +274,9 @@ fn chunks(text: &str) -> Vec<String> {
     output
 }
 fn inventory(db: &Store, preview: bool) -> Result<Inventory> {
+    inventory_with_budget(db, preview, None)
+}
+fn inventory_with_budget(db: &Store, preview: bool, remaining: Option<u64>) -> Result<Inventory> {
     reconcile(db)?;
     let settings = db.settings()?;
     let value = config(&settings);
@@ -327,7 +335,10 @@ fn inventory(db: &Store, preview: bool) -> Result<Inventory> {
             }
             let parts = chunks(&text);
             let cost = parts.iter().map(|p| p.len() as u64 + 128).sum::<u64>();
-            let budget = value["tokenBudget"].as_u64().unwrap_or(16000);
+            let budget = value["tokenBudget"]
+                .as_u64()
+                .unwrap_or(16000)
+                .min(remaining.unwrap_or(u64::MAX));
             if cost > budget || parts.len() > 50 {
                 inventory.oversized += 1;
                 continue;
@@ -377,7 +388,7 @@ pub fn state(db: &Store) -> Result<Value> {
         object.insert("sampleCount".into(), count.into());
     }
     Ok(
-        json!({"settings":value,"eligible":inventory.eligible,"indexed":inventory.ready,"pending":inventory.eligible-inventory.ready,"job":job,"permitted":policy::resolve(&settings["policy"])["enabled"],"local":local,"indexVersion":INDEX_VERSION}),
+        json!({"settings":value,"eligible":inventory.eligible,"indexed":inventory.ready,"pending":inventory.eligible-inventory.ready,"job":job,"permitted":policy::resolve(&settings["policy"])["enabled"],"local":local,"automatic":{ "approved":automatic_approved(&settings), "spentToday":daily_spent(&settings), "remainingToday":daily_remaining(&settings)},"indexVersion":INDEX_VERSION}),
     )
 }
 fn settings_input(db: &Store, input: &Value) -> Result<Value> {
@@ -395,7 +406,11 @@ fn settings_input(db: &Store, input: &Value) -> Result<Value> {
     let mut next = merge(previous.clone(), input);
     next["baseUrl"] = validation::api_base(&next["baseUrl"])?.into();
     let live = connections(&settings);
-    if !next["enabled"].is_boolean()
+    if !next["autoIndex"].is_boolean()
+        || !next["dailyTokenBudget"]
+            .as_u64()
+            .is_some_and(|n| (4000..=2_000_000).contains(&n))
+        || !next["enabled"].is_boolean()
         || next["model"].as_str().is_none_or(|s| {
             s.encode_utf16().count() > 200 || (next["enabled"] == true && s.trim().is_empty())
         })
@@ -482,8 +497,35 @@ fn settings_input(db: &Store, input: &Value) -> Result<Value> {
     Ok(next)
 }
 pub fn update(db: &Store, input: &Value) -> Result<()> {
+    let previous = db.settings()?;
     let next = settings_input(db, input)?;
-    db.transaction(|db|{db.set_settings(&json!({"searchAI":next,"searchIndex":null,"searchGeneration":uuid::Uuid::new_v4().to_string()}))?;reconcile(db)})
+    db.transaction(|db| {
+        db.set_settings(&json!({"searchAI":next}))?;
+        let settings = db.settings()?;
+        if scope_stamp(&previous) != scope_stamp(&settings) {
+            db.set_settings(
+                &json!({"searchIndex":null,"searchGeneration":uuid::Uuid::new_v4().to_string()}),
+            )?;
+        }
+        if input["autoIndex"] == true {
+            db.set_settings(&json!({"searchAutomaticApproval":scope_stamp(&settings)}))?;
+            let job = db.settings()?["searchIndex"].clone();
+            if job["automatic"] == true && job["status"] != "running" {
+                db.set_settings(&json!({"searchIndex":null}))?;
+            }
+        } else if next["autoIndex"] != true {
+            let mut job = db.settings()?["searchIndex"].clone();
+            if job["automatic"] == true
+                && ["running", "budget_wait"].contains(&string(&job, "status"))
+            {
+                job["status"] = "paused".into();
+                job["runId"] = uuid::Uuid::new_v4().to_string().into();
+                job.as_object_mut().unwrap().remove("inflight");
+                db.set_settings(&json!({"searchIndex":job}))?;
+            }
+        }
+        reconcile(db)
+    })
 }
 pub fn preview(db: &Store) -> Result<Value> {
     let settings = db.settings()?;
@@ -509,6 +551,54 @@ pub fn preview(db: &Store) -> Result<Value> {
     result["samples"] = json!(inventory.samples);
     Ok(result)
 }
+fn daily_spent(settings: &Value) -> u64 {
+    if settings["searchDailyUsage"]["day"] == Utc::now().format("%Y-%m-%d").to_string() {
+        settings["searchDailyUsage"]["tokens"].as_u64().unwrap_or(0)
+    } else {
+        0
+    }
+}
+fn daily_remaining(settings: &Value) -> u64 {
+    config(settings)["dailyTokenBudget"]
+        .as_u64()
+        .unwrap_or(100000)
+        .saturating_sub(daily_spent(settings))
+}
+fn automatic_approved(settings: &Value) -> bool {
+    let value = config(settings);
+    value["enabled"] == true
+        && value["autoIndex"] == true
+        && policy::resolve(&settings["policy"])["enabled"] == true
+        && settings["searchAutomaticApproval"] == scope_stamp(settings)
+}
+fn schedule_automatic(db: &Store) -> Result<()> {
+    let settings = db.settings()?;
+    if !automatic_approved(&settings) {
+        return Ok(());
+    }
+    let job = &settings["searchIndex"];
+    if job["status"] == "budget_wait" && job["automatic"] == true && daily_remaining(&settings) > 0
+    {
+        let mut job = check_job(&settings, string(job, "id"), &["budget_wait"])?;
+        job["status"] = "running".into();
+        db.set_settings(&json!({"searchIndex":job}))?;
+        return Ok(());
+    }
+    if !job.is_null() && job["status"] != "complete" {
+        return Ok(());
+    }
+    let remaining = daily_remaining(&settings);
+    if remaining == 0 {
+        return Ok(());
+    }
+    let inventory = inventory_with_budget(db, true, Some(remaining))?;
+    if inventory.sources.is_empty() {
+        return Ok(());
+    }
+    let job = json!({"id":uuid::Uuid::new_v4().to_string(),"runId":uuid::Uuid::new_v4().to_string(),"stamp":stamp(&settings),"status":"running","automatic":true,"sources":inventory.sources,"estimatedTokens":inventory.tokens,"chunks":inventory.pieces,"completed":0,"part":0,"spentTokens":0,"budget":inventory.tokens,"oversized":inventory.oversized,"createdAt":now()});
+    db.set_settings(&json!({"searchIndex":job}))?;
+    Ok(())
+}
 fn check_job(settings: &Value, id: &str, status: &[&str]) -> Result<Value> {
     let job = &settings["searchIndex"];
     if string(job, "id") != id
@@ -525,9 +615,16 @@ pub fn control(db: &Store, action: &str, id: &str) -> Result<()> {
     let settings = db.settings()?;
     let statuses = match action {
         "run" => vec!["prepared"],
-        "pause" => vec!["running"],
+        "pause" => vec!["running", "budget_wait"],
         "resume" => vec!["paused", "interrupted", "failed"],
-        "cancel" => vec!["prepared", "running", "paused", "interrupted", "failed"],
+        "cancel" => vec![
+            "prepared",
+            "running",
+            "paused",
+            "interrupted",
+            "failed",
+            "budget_wait",
+        ],
         _ => return Err(Error::invalid("Unknown indexing action.")),
     };
     let mut job = check_job(&settings, id, &statuses)?;
@@ -708,7 +805,7 @@ async fn initialize(app: &App) -> Result<()> {
     if app.0.smart.initialized.load(Ordering::Acquire) {
         return Ok(());
     }
-    app.db(|db|{let settings=db.settings()?;let mut job=settings["searchIndex"].clone();if job["status"]=="running"{job["status"]="interrupted".into();job["error"]="Indexing was interrupted. No automatic retry was made; resume explicitly or preview another batch.".into();job["runId"]=uuid::Uuid::new_v4().to_string().into();job.as_object_mut().unwrap().remove("inflight");db.set_settings(&json!({"searchIndex":job}))?;}reconcile(db)}).await?;
+    app.db(|db|{let settings=db.settings()?;let mut job=settings["searchIndex"].clone();if job["status"]=="running" && (job["automatic"]!=true || !job["inflight"].is_null()){job["status"]="interrupted".into();job["error"]="Indexing was interrupted. No automatic retry was made; resume explicitly or preview another batch.".into();job["runId"]=uuid::Uuid::new_v4().to_string().into();job.as_object_mut().unwrap().remove("inflight");db.set_settings(&json!({"searchIndex":job}))?;}reconcile(db)}).await?;
     app.0.smart.initialized.store(true, Ordering::Release);
     Ok(())
 }
@@ -767,6 +864,19 @@ fn prepare_work(db: &Store) -> Result<Option<Work>> {
         return Err(Error::conflict(
             "This reviewed budget is exhausted. Preview another batch to authorize more tokens.",
         ));
+    }
+    if job["automatic"] == true {
+        if !automatic_approved(&settings) {
+            return Err(Error::conflict(
+                "Automatic indexing scope changed. Review and save Search settings again.",
+            ));
+        }
+        if cost > daily_remaining(&settings) {
+            job["status"] = "budget_wait".into();
+            db.set_settings(&json!({"searchIndex":job}))?;
+            return Ok(None);
+        }
+        db.set_settings(&json!({"searchDailyUsage":{"day":Utc::now().format("%Y-%m-%d").to_string(),"tokens":daily_spent(&settings)+cost}}))?;
     }
     job["spentTokens"] = (spent + cost).into();
     job["inflight"] = json!({"part":offset,"chunks":parts.len()});
@@ -876,12 +986,24 @@ pub async fn tick(app: &App) -> Result<()> {
         return Ok(());
     };
     let mut cancelled = app.0.smart.cancellation.subscribe();
-    let (expected, work) = app
-        .db(|db| {
+    let mut scan = app.0.smart.scan.lock().await;
+    let previous = scan.clone();
+    let (expected, work, revision) = app
+        .db(move |db| {
+            let key = format!("{}:{}", db.revision()?, Utc::now().format("%Y-%m-%d"));
+            if key != previous {
+                schedule_automatic(db)?;
+            }
             let job = db.settings()?["searchIndex"].clone();
-            Ok(((job["id"].clone(), job["runId"].clone()), prepare_work(db)))
+            let work = prepare_work(db);
+            Ok((
+                (job["id"].clone(), job["runId"].clone()),
+                work,
+                format!("{}:{}", db.revision()?, Utc::now().format("%Y-%m-%d")),
+            ))
         })
         .await?;
+    *scan = revision;
     let (work, result) = match work {
         Ok(Some(work)) => {
             let result = tokio::select! {biased; _=cancelled.changed()=>Err(transport_error()),result=fetch_embeddings(app,&work.value,&work.parts)=>result};
@@ -1330,7 +1452,7 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
         }
         ("POST", ["search", "index", "preview"]) => app.db(preview).await?,
         ("POST", ["search", "index", "clear"]) => {
-            let result=app.db(|db|{db.transaction(|db|{db.conn.execute("DELETE FROM search_vectors",[])?;db.set_settings(&json!({"searchIndex":null,"searchGeneration":uuid::Uuid::new_v4().to_string()}))?;Ok(())})?;state(db)}).await?;
+            let result=app.db(|db|{db.transaction(|db|{db.conn.execute("DELETE FROM search_vectors",[])?;db.set_settings(&json!({"searchIndex":null,"searchAutomaticApproval":null,"searchGeneration":uuid::Uuid::new_v4().to_string()}))?;Ok(())})?;state(db)}).await?;
             app.0
                 .smart
                 .cancellation

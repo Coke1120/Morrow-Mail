@@ -126,7 +126,9 @@ pub fn require(policy: &Value, action: &str) -> Result<Value> {
 }
 pub fn redact(message: &Value, policy: &Value) -> Value {
     let mut result = json!({});
-    for key in ["id", "date", "folder", "read", "starred", "category"] {
+    for key in [
+        "id", "date", "folder", "read", "starred", "pending", "category",
+    ] {
         if let Some(value) = message.get(key) {
             result[key] = value.clone();
         }

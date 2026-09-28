@@ -584,3 +584,108 @@ async fn ready_proposals_survive_restart_but_stale_preview_excerpts_and_drafts_a
         409
     );
 }
+
+#[tokio::test]
+async fn automatic_replies_only_surface_needed_mail_preserve_read_changes_and_remember_ignore() {
+    let model = Model::new(false, REPLY);
+    let server = serve(model.clone()).await;
+    let directory = Temporary::new();
+    let app = app_at(&directory, &server.url).await;
+    app.db(|db| {
+        enable(db);
+        suggestions::update_settings(
+            db,
+            OWNER,
+            &json!({"automatic":true,"dailyTokenBudget":64000,"maxMessages":1}),
+        )
+    })
+    .await
+    .unwrap();
+    for _ in 0..4 {
+        suggestions::tick(&app).await.unwrap();
+    }
+    assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+    let result = state(&app).await;
+    assert_eq!(result["proposals"].as_array().unwrap().len(), 2);
+    let first = result["proposals"][0]["id"].clone();
+    app.db(|db| {
+        db.update(
+            OWNER,
+            "target",
+            &json!({"read":true,"starred":true,"pending":true}),
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    suggestions::tick(&app).await.unwrap();
+    assert_eq!(state(&app).await["proposals"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        call(&app, "dismiss", OWNER, json!({"id":first})).await.0,
+        200
+    );
+    suggestions::tick(&app).await.unwrap();
+    assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+    drop(app);
+    let app = App::open(&directory.0, 3001, "fixture-bearer".into(), "".into()).unwrap();
+    suggestions::tick(&app).await.unwrap();
+    assert_eq!(
+        model.calls.load(Ordering::SeqCst),
+        2,
+        "ignore and assessments persist"
+    );
+    assert_eq!(state(&app).await["proposals"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn automatic_replies_hide_no_reply_results_and_do_not_repeat_or_exceed_daily_allowance() {
+    let model = Model::new(
+        false,
+        r#"{"needsReply":false,"reason":"An informational receipt.","reply":""}"#,
+    );
+    let server = serve(model.clone()).await;
+    let directory = Temporary::new();
+    let app = app_at(&directory, &server.url).await;
+    app.db(|db| {
+        enable(db);
+        suggestions::update_settings(
+            db,
+            OWNER,
+            &json!({"automatic":true,"dailyTokenBudget":64000,"maxMessages":1}),
+        )?;
+        let mut saved = db.settings()?["replySuggestions"].clone();
+        saved[OWNER]["usage"] =
+            json!({"day":chrono::Utc::now().format("%Y-%m-%d").to_string(),"tokens":64000});
+        db.set_settings(&json!({"replySuggestions":saved}))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    suggestions::tick(&app).await.unwrap();
+    assert_eq!(model.calls.load(Ordering::SeqCst), 0);
+    app.db(|db| {
+        let mut saved = db.settings()?["replySuggestions"].clone();
+        saved[OWNER]["usage"]["day"] = "2000-01-01".into();
+        db.set_settings(&json!({"replySuggestions":saved}))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    for _ in 0..5 {
+        suggestions::tick(&app).await.unwrap();
+    }
+    assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+    assert!(
+        state(&app).await["proposals"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        state(&app).await["assessments"].as_array().unwrap().len(),
+        2
+    );
+    app.db(|db| { let settings=db.settings()?; db.set_settings(&json!({"policy":policy::update(&settings["policy"],&json!({"content":{"body":false}}))?}))?; Ok(()) }).await.unwrap();
+    suggestions::tick(&app).await.unwrap();
+    assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+}
