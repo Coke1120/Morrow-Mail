@@ -27,6 +27,8 @@ AI Studio covers 19 behaviors through model-backed assistance and clearly labele
 
 This project is not affiliated with Genspark and does not claim complete parity. See [feature coverage](FEATURE_COVERAGE.md) for implementation status and simulation limits, and [verification](VERIFICATION.md) for completed checks and remaining release validation.
 
+**[0.6.0-beta.23](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.23)** adds Needs a reply review, automatic indexing within daily budgets, weekly reviewed memory proposals, combined Today summaries and simpler Studio/Settings controls. Both native platform gates passed; see [verification](VERIFICATION.md). Beta.22 was not published.
+
 ## Native desktop builds
 
 The [native migration plan](docs/RUST_NATIVE_MIGRATION_PLAN.md) retains SwiftUI and replaces the Windows Electron interface with WinUI 3/C++/WinRT. Beta.18 completed that prerelease cutover with a one-tag test waiver; subsequent release tags require the full paired checks. Earlier native and upgrade evidence, and the remaining clean-machine/accessibility/live-provider limits, are recorded in [verification](VERIFICATION.md). This is not a stable-production certification.
@@ -108,7 +110,7 @@ Learning still generates a proposal, not a new model or an automatically active 
 
 The reader keeps subject, sender and date/time close together. Expand message details for complete addresses, recipients, mailbox and other metadata; expand a summary to read the full result without another AI request.
 
-## AI Studio and reviewed memory (current source, unreleased)
+## AI Studio and reviewed memory (from beta.23)
 
 AI Studio has three primary pages: **Assistant**, **Summaries**, and **Email Brain**. Assistant opens on Ask My Mail and shows a task picker containing real model actions. Optional instructions, saved contacts and advanced settings are collapsed. **More** contains reusable skills, local simulations, simulation history, and writing style/identity. A missing model is shown as setup needed, not a demo response.
 
@@ -327,7 +329,7 @@ Create the app password in Yahoo Account Security, following [Yahoo’s app-pass
 
 ### Settings navigation
 
-The current Windows source uses the same Morrow light/dark green accent, workspace order and default sidebar/reader proportions as macOS. Compose lives in the sidebar; each account and All accounts expose the same eight mail folders. Search has its own row, with View, Sort, Sync and Unread only below it. Settings uses a fixed category sidebar and independently scrolling content, collapsed connection/import disclosures, and separate chat/embedding model views. WinUI retains its native controls and system high-contrast colours. This source update is not yet a published Windows package; Windows build and visual acceptance remain pending.
+The current Windows source uses the same Morrow light/dark green accent, workspace order and default sidebar/reader proportions as macOS. Compose lives in the sidebar; each account and All accounts expose the same eight mail folders. Search has its own row, with View, Sort, Sync and Unread only below it. Settings uses a fixed category sidebar and independently scrolling content, collapsed connection/import disclosures, and separate chat/embedding model views. WinUI retains its native controls and system high-contrast colours. Beta.23 includes this native interface and passes Windows packaging and automated UI smoke checks; full manual visual/accessibility acceptance remains pending.
 
 Settings groups Mail and Calendar connections before Model and AI Permissions. Mail starts with an Add or reconnect account disclosure and connected-account status; expand New import range to choose history for your next connection or import. Existing cached mail is retained.
 

@@ -1,6 +1,20 @@
 # Verification — 28 September 2026
 
-## 0.6.0-beta.23 preparation — AI context, automatic workflows and simpler review
+## 0.6.0-beta.23 — published AI workflow improvements
+
+[Beta.23](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.23) was published at 2026-09-28T09:46:26Z from `077a8a46334a5809bbbd897087777959f4c5c6de`. [Tagged CI 36403166805](https://github.com/Coke1120/Morrow-Mail/actions/runs/36403166805) passed all three jobs: both platforms completed Node-free Rust checks, native packaging and platform acceptance, Windows completed its fictional-mail benchmark, and the existing publisher verified same-run artifact provenance before signing and publishing both packages. No test waiver applied.
+
+All six public assets were downloaded. The Ed25519 manifest signature verified against the committed pinned public key; both ZIP sizes, SHA-256 values and checksum files matched. ZIP integrity/path checks and both bundled release versions passed. The public macOS app also passed deep/strict ad-hoc signature verification and its service returned `Morrow Mail 0.6.0-beta.23` with `--version`; the application was not opened and no real workspace was accessed. Windows execution evidence comes from CI.
+
+| Public archive | Bytes | SHA-256 |
+| --- | ---: | --- |
+| macos-arm64 | 12,226,053 | `35334e564ee3060c180dcdc6ada771240e79096823ab8129ecbf764fe113adfc` |
+| windows-x64 | 36,520,860 | `8af8e8cff731eff4af67f99e63803ab023da0d670e5dc4c91448106374c34019` |
+
+macOS remains ad-hoc signed without notarization and Windows remains unsigned. Clean-machine, complete manual accessibility/IME/DPI and live-account acceptance remain outstanding. Beta.22 was never public; its failed tag is retained.
+
+### Change details and local preparation
+
 
 The shared Rust Brain context validates per-account source content and permissions for interactive assistance, scheduled summaries and reply suggestions. Reviewed memory proposals cite supplied source IDs, retain manual notes and reject expired, replayed, cross-account or changed-source previews. Legacy simulated memory cannot replace an existing Brain. Incremental style proposals retain a valid approved baseline and source references. Ask uses existing Unicode/Chinese token normalization; briefings rank Pending, stars, unread status and recency before the saved cap.
 
@@ -12,7 +26,7 @@ Local strict all-target Clippy, rustfmt and the complete locked Rust suite passe
 
 macOS production packaging, plist lint and deep/strict ad-hoc signature verification passed. The complete native acceptance also passed against the final candidate: models, HTML reader isolation/zero unsolicited connections, window lifecycle, production Rust service, account routing, owned draft preparation, encrypted persistence and backup/restart. Fictional-data snapshots of Assistant, Brain, Today and Needs a reply were inspected using the production SwiftUI views; the generated harness substitutes an in-memory URL protocol and starts no service, provider or model traffic. This confirms the checked layouts, not complete accessibility or real-model quality acceptance.
 
-[Beta.22 CI 36402130033](https://github.com/Coke1120/Morrow-Mail/actions/runs/36402130033) passed macOS and both Rust suites, then stopped at Windows compilation because the shared `coverage` formatter had been removed while AI Studio still called it. No release was published. Beta.23 restores that existing helper and reruns both platform gates. Windows acceptance remains pending at preparation time. All runtime checks use isolated fictional data and local model fixtures; no real mailbox, paid model evaluation, provider write, installation into the owner's workspace or release publication was performed. AI relevance and complete unanswered-thread detection remain unverified; source citations do not independently establish factual correctness. Existing signing/notarization and live-account acceptance limits remain.
+[Beta.22 CI 36402130033](https://github.com/Coke1120/Morrow-Mail/actions/runs/36402130033) passed macOS and both Rust suites, then stopped at Windows compilation because the shared `coverage` formatter had been removed while AI Studio still called it. No release was published. Beta.23 restores that existing helper; its successful paired results are recorded above. All runtime checks use isolated fictional data and local model fixtures; no real mailbox, paid model evaluation, provider write or installation into the owner's workspace was involved in these checks. AI relevance and complete unanswered-thread detection remain unverified; source citations do not independently establish factual correctness. Existing signing/notarization and live-account acceptance limits remain.
 
 ## 0.6.0-beta.21 — published automatic history recovery
 
