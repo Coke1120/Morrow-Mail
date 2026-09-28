@@ -1,6 +1,6 @@
 //! Node-free Swift client acceptance with the unmodified production Rust service.
-//! This checks Rust→Rust persistence. The historical Node harness still checks
-//! Node↔Rust interoperability; this driver does not replace that evidence.
+//! This checks Rust→Rust persistence. Historical Node interoperability CI is
+//! retired; this driver does not establish old-client upgrade acceptance.
 use chrono::{DateTime, SecondsFormat};
 use morrow_search::{oauth::parse_google_oauth, store::Store};
 use regex::Regex;
@@ -629,7 +629,7 @@ fn run() -> Result<()> {
         "Native acceptance or backup replaced the original fixture encryption key.",
     )?;
     println!(
-        "Native acceptance passed: existing Models, HTML reader/network-zero and WindowAssertions checks; production Rust service, unchanged Swift client, Rust→Rust encrypted persistence and online backup, lifecycle and account isolation. Fictional data only; Node interoperability is covered separately by the historical harness."
+        "Native acceptance passed: existing Models, HTML reader/network-zero and WindowAssertions checks; production Rust service, unchanged Swift client, Rust→Rust encrypted persistence and online backup, lifecycle and account isolation. Fictional data only; Historical Node interoperability CI is retired; old-client upgrades are not exercised."
     );
     Ok(())
 }

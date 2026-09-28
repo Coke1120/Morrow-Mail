@@ -2,7 +2,8 @@
 
 This directory is the unpackaged x64 WinUI 3 / C++/WinRT host used by the native
 release workflow. The retired Electron builder is retained in Git history only;
-historical upgrade checks remain required. Clean-machine/manual acceptance limits
+historical Node upgrade CI is retired. Native updater/security checks remain
+required. Clean-machine/manual acceptance limits
 are recorded in VERIFICATION.md. These local build commands do not publish a release.
 
 ## Pinned build inputs

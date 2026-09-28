@@ -489,9 +489,9 @@ IAsyncAction runtimeWait(std::function<bool()> done, uint64_t deadline, wchar_t 
         co_await ui;
     }
 }
-IAsyncOperation<hstring> runtimeScript(CoreWebView2 core, hstring script, uint64_t deadline, wchar_t const* phase) {
-    // Privileged assertions exist only in this fixture; production never injects script.
-    auto operation = core.ExecuteScriptAsync(script);
+IAsyncOperation<Json> runtimeProtocol(CoreWebView2 core, hstring method, hstring parameters, uint64_t deadline, wchar_t const* phase) {
+    // Fixture-only native DOM/CSP inspection; never inject executable script.
+    auto operation = core.CallDevToolsProtocolMethodAsync(method, parameters);
     struct Cancel {
         IAsyncOperation<hstring> operation;
         ~Cancel() { try { if (operation.Status() == AsyncStatus::Started) operation.Cancel(); } catch (...) {} }
@@ -499,7 +499,27 @@ IAsyncOperation<hstring> runtimeScript(CoreWebView2 core, hstring script, uint64
     co_await runtimeWait([operation] { return operation.Status() != AsyncStatus::Started; }, deadline, phase);
     auto result = operation.GetResults();
     runtimeCheck(result.size() <= 32768, L"Reader runtime assertion returned oversized data.");
-    co_return result;
+    auto response = Json::Parse(result);
+    runtimeCheck(!response.HasKey(L"error"), L"The native reader inspection failed.");
+    co_return response;
+}
+IAsyncOperation<int32_t> runtimeNode(CoreWebView2 core, hstring selector, uint64_t deadline) {
+    auto document = co_await runtimeProtocol(core, L"DOM.getDocument", L"{\"depth\":1}", deadline, L"dom-document");
+    Json query; query.Insert(L"nodeId", document.GetNamedObject(L"root").GetNamedValue(L"nodeId")); put(query, L"selector", selector);
+    auto response = co_await runtimeProtocol(core, L"DOM.querySelector", query.Stringify(), deadline, L"dom-query");
+    auto id = response.GetNamedNumber(L"nodeId");
+    runtimeCheck(id > 0 && id <= INT32_MAX, L"Native reader fixture node was not found.");
+    co_return static_cast<int32_t>(id);
+}
+IAsyncOperation<Json> runtimeAttributes(CoreWebView2 core, hstring selector, uint64_t deadline) {
+    auto id = co_await runtimeNode(core, selector, deadline);
+    Json query; query.Insert(L"nodeId", Value::CreateNumberValue(id));
+    auto response = co_await runtimeProtocol(core, L"DOM.getAttributes", query.Stringify(), deadline, L"dom-attributes");
+    auto values = response.GetNamedArray(L"attributes");
+    runtimeCheck(values.Size() <= 128 && values.Size() % 2 == 0, L"Native reader attributes exceeded their fixture bound.");
+    Json attributes;
+    for (uint32_t i = 0; i < values.Size(); i += 2) put(attributes, values.GetStringAt(i), values.GetStringAt(i + 1));
+    co_return attributes;
 }
 bool documentReady(std::shared_ptr<Reader> const& state) {
     return state->ready && !state->expectingDocument && state->documentId
@@ -674,7 +694,8 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     state->html = L"<p id='reader-fixture-body'>Fictional formatted mail.</p>"
         L"<script>document.documentElement.dataset.readerInline='ran';window.chrome.webview.postMessage('forbidden-inline');</script>"
         L"<img id='reader-initial-image' src='https://127.0.0.1:65534/morrow-reader-fixture/initial.png' onerror=\"document.documentElement.dataset.readerHandler='ran'\">"
-        L"<iframe src='https://127.0.0.1:65534/morrow-reader-fixture/initial-frame'></iframe>";
+        L"<iframe src='https://127.0.0.1:65534/morrow-reader-fixture/initial-frame'></iframe>"
+        L"<img id='reader-probe-image' onerror=\"document.documentElement.dataset.readerHandler='ran'\"><iframe id='reader-probe-frame'></iframe>";
     phase("html-document");
     probe->expectedDocumentBase64 = documentBase64(document(state->html, false));
     state->render();
@@ -682,16 +703,17 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     runtimeCheck(state->live() && documentReady(state), L"The actual HTML reader failed to load its fixture document.");
     runtimeCheck(state->expectedDocumentBase64.empty() && probe->expectedDocumentBase64.empty(), L"The HTML navigation expectation was not consumed exactly once.");
     phase("script-sentinel");
-    auto initial = Json::Parse(co_await runtimeScript(core, LR"JS((() => ({
-        mounted: !!document.getElementById('reader-fixture-body'),
-        inlineRan: document.documentElement.dataset.readerInline === 'ran',
-        handlerRan: document.documentElement.dataset.readerHandler === 'ran'
-    }))())JS", deadline, L"script-sentinel"));
-    runtimeCheck(initial.GetNamedBoolean(L"mounted") && !initial.GetNamedBoolean(L"inlineRan")
-        && !initial.GetNamedBoolean(L"handlerRan"), L"Email script or an inline event handler executed in the live reader.");
-    // ExecuteScript can run with scripts disabled, but DOM event callbacks still
-    // require CanExecuteScripts. Observe enforced CSP issues in the native host
-    // instead; a failed fetch/broken image alone could just be our final 403.
+    co_await runtimeNode(core, L"#reader-fixture-body", deadline);
+    auto initial = co_await runtimeAttributes(core, L"html", deadline);
+    runtimeCheck(!initial.HasKey(L"data-reader-inline") && !initial.HasKey(L"data-reader-handler"),
+        L"Email script or an inline event handler executed in the live reader.");
+    auto policy = co_await runtimeAttributes(core, L"meta[http-equiv='Content-Security-Policy']", deadline);
+    auto policyText = std::wstring(text(policy, L"content"));
+    runtimeCheck(policyText.find(L"script-src 'none';") != std::wstring::npos
+        && policyText.find(L"connect-src 'none';") != std::wstring::npos,
+        L"The mounted reader does not deny scripts and connections.");
+    // Trigger image/frame policy checks through native DOM attributes. No host
+    // fetch probe remains: the script execution path itself has been removed.
     phase("csp-observer");
     cleanup.audits = core.GetDevToolsProtocolEventReceiver(L"Audits.issueAdded");
     cleanup.audit = cleanup.audits.DevToolsProtocolEventReceived([probe, weak](auto const&, CoreWebView2DevToolsProtocolEventReceivedEventArgs const& args) {
@@ -709,69 +731,28 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
                 || text(details, L"contentSecurityPolicyViolationType") != L"kURLViolation") return;
             auto directive = text(details, L"violatedDirective"), url = text(details, L"blockedURL");
             if (directive == L"img-src" && url == L"https://127.0.0.1:65534/morrow-reader-fixture/probe.png") probe->cspFlags |= 2u;
-            if (directive == L"connect-src" && url == L"https://127.0.0.1:65534/morrow-reader-fixture/connect") probe->cspFlags |= 8u;
             // Blink strips cross-origin frame-src report URLs to their origin.
             // This distinct probe origin cannot match a replayed initial-frame issue.
             if (directive == L"frame-src" && url == L"https://127.0.0.1:65533") probe->cspFlags |= 4u;
         } catch (...) { probe->callbackFailure = true; }
     });
-    {
-        auto enable = core.CallDevToolsProtocolMethodAsync(L"Audits.enable", L"{}");
-        struct Cancel {
-            IAsyncOperation<hstring> operation;
-            ~Cancel() { try { if (operation.Status() == AsyncStatus::Started) operation.Cancel(); } catch (...) {} }
-        } cancel{enable};
-        co_await runtimeWait([enable] { return enable.Status() != AsyncStatus::Started; }, deadline, L"csp-observer");
-        auto response = enable.GetResults();
-        runtimeCheck(response.size() <= 32768 && !Json::Parse(response).HasKey(L"error"), L"The native CSP observer could not start.");
-    }
+    co_await runtimeProtocol(core, L"Audits.enable", L"{}", deadline, L"csp-observer");
     runtimeCheck(!settings.IsScriptEnabled() && !settings.AreDevToolsEnabled(), L"The CSP observer changed reader script or DevTools settings.");
     probe->collectCsp = true;
     phase("csp-probe-start");
-    auto started = Json::Parse(co_await runtimeScript(core, LR"JS((() => {
-        const check = window.__morrowReaderCheck = { connect: 'pending' };
-        const image = document.createElement('img'); image.id = 'reader-probe-image';
-        image.setAttribute('onerror', "document.documentElement.dataset.readerHandler='ran'");
-        image.src = 'https://127.0.0.1:65534/morrow-reader-fixture/probe.png'; document.body.appendChild(image);
-        const frame = document.createElement('iframe'); frame.src = 'https://127.0.0.1:65533/morrow-reader-fixture/probe-frame'; document.body.appendChild(frame);
-        fetch('https://127.0.0.1:65534/morrow-reader-fixture/connect', { mode: 'no-cors', credentials: 'omit', cache: 'no-store' })
-            .then(() => { check.connect = 'allowed'; }, () => { check.connect = 'blocked'; });
-        try { window.chrome.webview.postMessage('forbidden-fixture-message'); } catch (_) {}
-        return { started: true };
-    })())JS", deadline, L"csp-probe-start"));
-    runtimeCheck(started.GetNamedBoolean(L"started"), L"Privileged reader assertions did not start.");
-    bool settled = false;
-    unsigned previousFlags = ~0u;
-    phase("csp-settle");
-    while (!settled) {
-        auto snapshot = Json::Parse(co_await runtimeScript(core, LR"JS((() => {
-            const check = window.__morrowReaderCheck;
-            const image = document.getElementById('reader-probe-image');
-            return { connect: check.connect,
-                imageComplete: image.complete, imageWidth: image.naturalWidth,
-                inlineRan: document.documentElement.dataset.readerInline === 'ran',
-                handlerRan: document.documentElement.dataset.readerHandler === 'ran' };
-        })())JS", deadline, L"csp-snapshot"));
-        runtimeCheck(!probe->callbackFailure, L"The native CSP observer failed or exceeded its bounded evidence limit.");
-        runtimeCheck(text(snapshot, L"connect") != L"allowed" && !snapshot.GetNamedBoolean(L"inlineRan")
-            && !snapshot.GetNamedBoolean(L"handlerRan") && snapshot.GetNamedNumber(L"imageWidth") == 0,
-            L"The live reader executed mail script or allowed an unconsented resource.");
-        settled = text(snapshot, L"connect") == L"blocked" && probe->cspFlags == 14u
-            && snapshot.GetNamedBoolean(L"imageComplete");
-        unsigned flags = (text(snapshot, L"connect") == L"blocked" ? 1u : 0u)
-            | probe->cspFlags
-            | (snapshot.GetNamedBoolean(L"imageComplete") ? 16u : 0u);
-        if (flags != previousFlags) {
-            previousFlags = flags;
-            std::fprintf(stderr, "Native reader: csp-state fetchRejected=%u imagePolicy=%u framePolicy=%u connectPolicy=%u imageComplete=%u\n",
-                flags & 1u, (flags >> 1) & 1u, (flags >> 2) & 1u, (flags >> 3) & 1u, (flags >> 4) & 1u);
-            std::fflush(stderr);
-        }
-        if (!settled) {
-            auto next = GetTickCount64() + 20;
-            co_await runtimeWait([next] { return GetTickCount64() >= next; }, deadline, L"csp-settle");
-        }
+    for (auto const& target : {std::pair{L"#reader-probe-image", L"https://127.0.0.1:65534/morrow-reader-fixture/probe.png"},
+            {L"#reader-probe-frame", L"https://127.0.0.1:65533/morrow-reader-fixture/probe-frame"}}) {
+        auto id = co_await runtimeNode(core, target.first, deadline);
+        Json attributes; attributes.Insert(L"nodeId", Value::CreateNumberValue(id));
+        put(attributes, L"name", L"src"); put(attributes, L"value", target.second);
+        co_await runtimeProtocol(core, L"DOM.setAttributeValue", attributes.Stringify(), deadline, L"csp-probe-start");
     }
+    phase("csp-settle");
+    co_await runtimeWait([probe] { return probe->callbackFailure || probe->cspFlags == 6u; }, deadline, L"csp-settle");
+    runtimeCheck(!probe->callbackFailure && probe->cspFlags == 6u, L"The native CSP observer did not establish both enforced resource blocks.");
+    auto finalAttributes = co_await runtimeAttributes(core, L"html", deadline);
+    runtimeCheck(!finalAttributes.HasKey(L"data-reader-inline") && !finalAttributes.HasKey(L"data-reader-handler"),
+        L"The live reader executed mail script or an image handler.");
     probe->collectCsp = false;
     runtimeCheck(!probe->resourceLeak && !probe->navigationLeak && !probe->callbackFailure && !probe->messages
         && !state->images && state->budget->requests == 0 && state->budget->bytes.load() == 0,
@@ -785,8 +766,10 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     runtimeCheck(state->expectedDocumentBase64.empty() && probe->expectedDocumentBase64.empty(), L"Plain text retained an HTML navigation expectation.");
     checkFallback(state, text(fixture, L"body"));
     phase("plain-empty-assertion");
-    auto empty = Json::Parse(co_await runtimeScript(core, L"({ empty: document.body.childElementCount === 0 && !document.getElementById('reader-fixture-body') })", deadline, L"plain-empty-assertion"));
-    runtimeCheck(empty.GetNamedBoolean(L"empty"), L"Switching to plain text left email HTML active in WebView2.");
+    auto body = co_await runtimeNode(core, L"body", deadline);
+    Json bodyQuery; bodyQuery.Insert(L"nodeId", Value::CreateNumberValue(body));
+    auto empty = co_await runtimeProtocol(core, L"DOM.getOuterHTML", bodyQuery.Stringify(), deadline, L"plain-empty-assertion");
+    runtimeCheck(text(empty, L"outerHTML") == L"<body></body>", L"Switching to plain text left email HTML active in WebView2.");
     ++shell->selectionGeneration;
     auto epoch = state->epoch;
     state->render();
@@ -802,13 +785,13 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
         && !state->expectingDocument && state->expectedDocumentBase64.empty(), L"Unloading the reader did not close its browser and cancel work.");
     runtimeCheck(!state->fallback && !state->notice, L"Unloading the reader retained its label peers.");
     bool closed = false;
-    phase("closed-script");
-    try { co_await runtimeScript(core, L"({ unexpectedClosedExecution: true })", deadline, L"closed-script"); }
+    phase("closed-protocol");
+    try { co_await runtimeProtocol(core, L"DOM.getDocument", L"{}", deadline, L"closed-protocol"); }
     catch (hresult_error const& error) {
         if (error.code() == HRESULT_FROM_WIN32(ERROR_TIMEOUT) || error.code() == E_ABORT) throw;
         closed = true;
     }
-    runtimeCheck(closed, L"The closed WebView2 still accepted script execution.");
+    runtimeCheck(closed, L"The closed WebView2 still accepted native DOM operations.");
     // Exercise the same explicit failure path while mounted, without changing
     // runtime configuration or starting another document/network operation.
     phase("failure-fallback");
@@ -826,8 +809,9 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     put(result, L"htmlRuntime", L"passed"); put(result, L"fallback", L"passed");
     put(result, L"staleClose", L"passed"); put(result, L"script", L"blocked");
     put(result, L"webMessages", L"blocked"); put(result, L"hostObjects", L"disabled");
-    put(result, L"images", L"blocked"); put(result, L"frames", L"blocked"); put(result, L"connect", L"blocked");
-    put(result, L"cspEvidence", L"native-audits");
+    put(result, L"images", L"blocked"); put(result, L"frames", L"blocked"); put(result, L"connect", L"policy-deny-script-disabled");
+    put(result, L"cspEvidence", L"native-audits-image-frame");
+    put(result, L"inspection", L"native-dom-no-script");
     result.Insert(L"interceptedRequests", Value::CreateNumberValue(probe->requests));
     result.Insert(L"nativeImageRequests", Value::CreateNumberValue(state->budget->requests));
     phase("passed");

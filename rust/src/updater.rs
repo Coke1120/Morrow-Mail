@@ -1599,17 +1599,13 @@ mod download_tests {
             let _ = fs::remove_dir_all(&self.root);
         }
     }
-    async fn fixture(node_compatibility: Option<&Path>) -> Fixture {
+    async fn fixture() -> Fixture {
         let platform = host_platform().unwrap();
         let root = std::env::temp_dir().join(format!(
             "morrow-rust-update-download-{}",
             uuid::Uuid::new_v4()
         ));
         fs::create_dir(&root).unwrap();
-        // Keep the ordinary absolute path for the unchanged Node-era validator.
-        // Windows canonicalize returns a verbatim path that Node's JS realpathSync
-        // root traversal cannot handle. Rust installation checks still use it.
-        let node_root = root.clone();
         let root = fs::canonicalize(root).unwrap();
         let archive_root = if platform == "macos-arm64" {
             "Morrow Mail.app"
@@ -1715,25 +1711,6 @@ mod download_tests {
         let manifest =
             serde_json::to_vec(&json!({"version":"99.0.0","platforms":platforms})).unwrap();
         let signature = STANDARD.encode(key.sign(&manifest).to_bytes()).into_bytes();
-        // Historical compatibility has an explicit, separately checked-out input.
-        // Normal updater acceptance needs neither Node nor the retired service.
-        if let Some(compatibility) = node_compatibility {
-            let node_incoming = node_root.join("incoming").join(archive_root);
-            assert!(node_incoming.is_absolute());
-            assert_eq!(fs::canonicalize(&node_incoming).unwrap(), incoming);
-            let script = "const {validatePackage}=await import('./server/update-installer.js');await validatePackage(process.argv[1],process.argv[2],'99.0.0');";
-            let mut node = clean_command(if cfg!(windows) { "node.exe" } else { "node" });
-            node.current_dir(compatibility)
-                .args(["--input-type=module", "-e", script])
-                .arg(&node_incoming)
-                .arg(platform);
-            fixture_command(
-                "validate fixture with the original Node updater",
-                &mut node,
-                60,
-            )
-            .await;
-        }
         let certificate = rcgen::generate_simple_self_signed(vec![
             "github.com".into(),
             "api.github.com".into(),
@@ -1906,7 +1883,7 @@ mod download_tests {
         if host_platform().is_none() {
             return;
         }
-        let fixture = fixture(None).await;
+        let fixture = fixture().await;
         let updater = &fixture.updater;
         assert_eq!(
             updater.check(&fixture.client, true).await.unwrap()["latestVersion"],
@@ -2088,16 +2065,6 @@ mod download_tests {
         updater.stop().await;
         assert!(config.backup.exists());
         assert!(updater.cancel().await.is_err());
-    }
-    #[tokio::test]
-    #[ignore = "Historical Node validator: set MORROW_NODE_COMPAT_ROOT to the fixed compatibility checkout"]
-    async fn historical_node_validator_accepts_native_layout() {
-        let root = PathBuf::from(
-            std::env::var_os("MORROW_NODE_COMPAT_ROOT")
-                .expect("Set the fixed Node compatibility checkout"),
-        );
-        assert!(root.is_absolute() && root.join("server/update-installer.js").is_file());
-        let _fixture = fixture(Some(&root)).await;
     }
     #[tokio::test]
     async fn installation_holds_calendar_change_gates_and_rejects_active_indexing() {

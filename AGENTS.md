@@ -9,21 +9,22 @@
 This repository is `~/Documents/Github/genmail`. The product name is Morrow Mail.
 It is a local, single-user app with native SwiftUI on macOS, WinUI 3/C++/WinRT
 on Windows and a Rust service. The owner authorized retiring the React/Electron,
-Node service and npm source/tools after beta.18. Preserve their Git history and
-fixed historical compatibility CI; source retirement does not waive outstanding
-clean-machine, accessibility, signing or live-account acceptance.
+Node service, npm source/tools and historical Node CI after beta.18. Preserve
+their Git history. Retirement does not waive native security/updater tests or
+outstanding clean-machine, accessibility, signing and live-account acceptance.
 
 - `macos/Sources/MorrowMail/`: SwiftUI views, native client and service lifecycle.
 - `windows/`: unpackaged WinUI host, isolated HTML reader and native smoke checks.
 - `rust/src/`: storage, authenticated API, providers/OAuth, AI, jobs, search and signed updater.
 - `rust/tests/`, `macos/Checks/`, `tests/fixtures/`: native contracts and shared fixture data.
-- `scripts/`: native builds/verification and archived compatibility-check preparation.
+- `scripts/`: native builds and verification.
 - `assets/`: branding/fonts; `shared/microsoft-client-id.txt`: public desktop registration.
 - `rust/resources/`: versioned catalog/OpenCC data, provenance/notices and pinned update public key. Never rotate that key during migration.
 - `package.json`: common product version/metadata only; no npm dependencies or scripts.
 
-See `docs/JAVASCRIPT_RETIREMENT.md` for remaining app-owned reader JavaScript,
-security probes and the isolated historical Node test lane. Do not reintroduce a
+Normal mail reading uses native bounded HTML scrolling without app-owned
+JavaScript. Native reader checks use platform APIs; hostile script markup remains
+inert security fixture data. See `docs/JAVASCRIPT_RETIREMENT.md`. Do not reintroduce a
 Node runtime or second database writer into native packages.
 
 ## Implementation rules
@@ -112,7 +113,7 @@ plutil -lint 'build/macos-native/Morrow Mail.app/Contents/Info.plist'
 
 Avoid parallel builds targeting the same output. Inspect free disk space before full builds; `CARGO_INCREMENTAL=0` reduces local accumulation. Generated build cleanup must never touch private workspaces.
 
-Native candidates use `/bin/sh scripts/build-macos-native.sh`, Rust `morrow-native-check --service <candidate-service>`, and Windows `scripts/build-windows-native.ps1 -Zip` / `test-windows-native.ps1 -UiSmoke`. Normal Rust/resource/notice/native checks must work without Node on PATH. Node differential tests are explicitly ignored by the normal Cargo suite and run separately with `MORROW_NODE_COMPAT_ROOT` pointing to fixed beta.16 (`7ab30cbb3e496118513a98f8211ec66481e282c4`). Preserve that CI gate instead of silently omitting historical compatibility. The archived harness is pinned separately in `scripts/prepare-historical-checks.py`; it must exercise current binaries/version/catalog, not archived binaries. See the retirement guide for local commands.
+Native candidates use `/bin/sh scripts/build-macos-native.sh`, Rust `morrow-native-check --service <candidate-service>`, and Windows `scripts/build-windows-native.ps1 -Zip` / `test-windows-native.ps1 -UiSmoke`. Rust/resource/notice/native checks must work without Node on PATH. The owner explicitly retired the historical Node CI, archived harness retrieval and Node oracle calls. Keep native sanitizer, persistence, signed updater, installer/rollback and reader isolation checks. Old-client interoperability is historical evidence only, not a current CI claim. See the retirement guide for scope.
 
 Account-routing changes need coverage for duplicate IDs, combined views,
 account-specific sending/AI, reconnect/migration, and disconnect isolation.
@@ -151,12 +152,13 @@ acceptance. Never publish runtime data, fixture workspaces, or secrets.
 
 ## Paired release policy
 
-The canonical GitHub repository is `Coke1120/Morrow-Mail`; the local checkout and persisted `genmail` data/API identifiers retain their names for compatibility. Update checks deliberately reject API redirects, so use the canonical repository URL in both runtimes and fixtures. Do not rename persisted files or protocol headers for branding.
+The canonical GitHub repository is `Coke1120/Morrow-Mail`; the local checkout and persisted `genmail` data/API identifiers retain their names for compatibility. Update checks deliberately reject API redirects, so use the canonical repository URL in the Rust runtime and fixtures. Do not rename persisted files or protocol headers for branding.
 
 Keep package.json as the common version source. Every tagged alpha or beta must build and pass
 checks on macOS and Windows before either download becomes public, except the explicit beta.18 test waiver recorded in VERIFICATION.md. Both platform builds and signed provenance remain mandatory. Use the existing
 workflow and publisher; never replace published binaries or ship only one platform.
-Preserve SwiftUI on macOS, WinUI on Windows and upgrade compatibility with the fixed historical clients. Desktop IPC
+Preserve SwiftUI on macOS, WinUI on Windows, persisted formats and update package layouts.
+Historical client interoperability is no longer rerun in CI. Desktop IPC
 must validate the main-frame sender, accept only narrow operations, and never expose
 Node, arbitrary filesystem access or private API tokens to the renderer. Calendar
 retry IDs and payloads must survive restart on both platforms.

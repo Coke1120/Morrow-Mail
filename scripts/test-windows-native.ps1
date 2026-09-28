@@ -258,7 +258,7 @@ function Isolate-NativeEnvironment([Diagnostics.ProcessStartInfo] $Start) {
 function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMilliseconds = 180000, [long] $LaunchTimestamp = 0) {
     Require ($TimeoutMilliseconds -gt 0 -and $TimeoutMilliseconds -le 180000) 'Invalid native UI deadline.'
     if ($LaunchTimestamp -eq 0) { $LaunchTimestamp = [Diagnostics.Stopwatch]::GetTimestamp() }
-    $safeStartup = '^Native startup: [A-Za-z0-9 .(),:_-]{1,120}$|^Native (startup|XAML) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native startup (constructor|OnLaunched) \((installing unhandled exception handler|reading application resources|reading merged dictionaries|constructing control resources|appending control resources)\) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native smoke: [a-z-]{1,64}$|^Native reader: [a-z-]{1,64} \+[0-9]{1,6} ms$|^Native reader: csp-state fetchRejected=[01] imagePolicy=[01] framePolicy=[01] connectPolicy=[01] imageComplete=[01]$'
+    $safeStartup = '^Native startup: [A-Za-z0-9 .(),:_-]{1,120}$|^Native (startup|XAML) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native startup (constructor|OnLaunched) \((installing unhandled exception handler|reading application resources|reading merged dictionaries|constructing control resources|appending control resources)\) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native smoke: [a-z-]{1,64}$|^Native reader: [a-z-]{1,64} \+[0-9]{1,6} ms$'
     $safeStartup += '|^Native reader: nav-start id=[0-9]{1,20} blank=[01] redirected=[01] user=[01] expected=[01] live=[01]$'
     $safeStartup += '|^Native reader: nav-decision id=[0-9]{1,20} cancelled=[01] expected=[01] tracked=[0-9]{1,20}$'
     $safeStartup += '|^Native reader: nav-completed id=[0-9]{1,20} success=[01] error=-?[0-9]{1,10} live=[01] tracked=[0-9]{1,20}$'
@@ -578,6 +578,7 @@ try {
             Restore-CrashCapture $crashCapture; $crashCapture = $null
             if ($case.mode -eq 'owned') {
                 Require ($result.reader.htmlRuntime -ceq 'passed' -and $result.reader.fallback -ceq 'passed' -and $result.reader.staleClose -ceq 'passed') 'Native HTML reader runtime, fallback and stale-close checks must all pass.'
+                Require ($result.reader.inspection -ceq 'native-dom-no-script' -and $result.reader.cspEvidence -ceq 'native-audits-image-frame') 'Reader checks must use native DOM inspection and enforced image/frame CSP evidence.'
                 & $helper verify $case.path
                 Require ($LASTEXITCODE -eq 0) 'Native UI fixture ownership or persisted records failed verification.'
             }

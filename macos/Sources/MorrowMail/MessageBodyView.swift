@@ -8,7 +8,6 @@ struct SecureMessageBody: View {
     @State private var showPlain = false
     @State private var loadImages = false
     @State private var reviewImages = false
-    @State private var height: CGFloat = 480
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -25,8 +24,8 @@ struct SecureMessageBody: View {
                 if !showPlain {
                     Text(loadImages ? "External images enabled for this message." : "External images blocked. Scripts and forms are disabled.")
                         .font(.caption).foregroundStyle(.secondary)
-                    MessageHTMLView(html: message["bodyHtml"].string, images: loadImages, height: $height)
-                        .frame(height: height).background(Color.white)
+                    MessageHTMLView(html: message["bodyHtml"].string, images: loadImages)
+                        .frame(height: MessageHTMLView.viewportHeight).background(Color.white)
                         .accessibilityLabel("Formatted email")
                 }
             }
@@ -40,7 +39,7 @@ struct SecureMessageBody: View {
             }
         }
         .onChange(of: message["viewId"].string + message["accountId"].string + message.id) { _ in
-            showPlain = false; loadImages = false; reviewImages = false; height = 480
+            showPlain = false; loadImages = false; reviewImages = false
         }
         .confirmationDialog("Load external images for this message?", isPresented: $reviewImages, titleVisibility: .visible) {
             Button("Load Images") { loadImages = true }
@@ -63,7 +62,8 @@ struct SecureMessageBody: View {
 struct MessageHTMLView: NSViewRepresentable {
     let html: String
     let images: Bool
-    @Binding var height: CGFloat
+    // ponytail: bounded viewport uses native scrolling; resize with native layout if needed.
+    static let viewportHeight: CGFloat = 480
 
     static func allowedLink(_ url: URL) -> Bool {
         ["https", "http", "mailto", "tel"].contains(url.scheme?.lowercased() ?? "") && url.user == nil && url.password == nil
@@ -86,25 +86,21 @@ struct MessageHTMLView: NSViewRepresentable {
         configuration.websiteDataStore = .nonPersistent()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
-        let view = MessageWebView(frame: .zero, configuration: configuration)
-        view.measureHeight = { [weak coordinator = context.coordinator] web in coordinator?.measureHeight(web) }
+        let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator
         view.allowsBackForwardNavigationGestures = false
         return view
     }
     func updateNSView(_ view: WKWebView, context: Context) {
-        context.coordinator.parent = self
         let next = Self.document(html, images: images)
         guard context.coordinator.document != next else { return }
         context.coordinator.document = next
         view.loadHTMLString(next, baseURL: nil)
     }
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeCoordinator() -> Coordinator { Coordinator() }
     @MainActor final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
-        var parent: MessageHTMLView
         var document = ""
-        init(_ parent: MessageHTMLView) { self.parent = parent }
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             if action.navigationType == .linkActivated, let url = action.request.url {
                 decisionHandler(.cancel)
@@ -117,66 +113,5 @@ struct MessageHTMLView: NSViewRepresentable {
             if action.navigationType == .linkActivated, let url = action.request.url { MessageHTMLView.openLink(url) }
             return nil
         }
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            measureHeight(webView)
-        }
-        func measureHeight(_ webView: WKWebView) {
-            let currentDocument = document, width = webView.bounds.width
-            // App-owned measurement only; email JavaScript stays disabled.
-            webView.evaluateJavaScript("document.body.getBoundingClientRect().top + window.scrollY + Math.max(document.body.scrollHeight, document.body.offsetHeight)") { [weak self, weak webView] result, _ in
-                guard let self, let webView, !webView.isLoading, self.document == currentDocument,
-                      webView.bounds.width == width, let value = result as? Double, value.isFinite else { return }
-                (webView as? MessageWebView)?.hasVerticalOverflow = value + 16 > 20000
-                self.parent.height = max(180, min(20000, value + 16))
-            }
-        }
     }
-}
-
-final class MessageWebView: WKWebView {
-    var measureHeight: ((WKWebView) -> Void)?
-    var hasVerticalOverflow = false
-    private var forwardsVerticalScroll = true
-    private var scrollsHTML = false
-
-    override func setFrameSize(_ newSize: NSSize) {
-        let widthChanged = frame.width != newSize.width
-        super.setFrameSize(newSize)
-        if widthChanged {
-            DispatchQueue.main.async { [weak self] in
-                guard let self, !self.isLoading else { return }
-                self.measureHeight?(self)
-            }
-        }
-    }
-
-    override func scrollWheel(with event: NSEvent) {
-        if event.scrollingDeltaY != 0 || event.scrollingDeltaX != 0 {
-            forwardsVerticalScroll = abs(event.scrollingDeltaY) >= abs(event.scrollingDeltaX)
-        }
-        // Keep zero-delta gesture/momentum endings with the same recipient.
-        if forwardsVerticalScroll, let scroll = enclosingScrollView {
-            guard hasVerticalOverflow else { scroll.scrollWheel(with: event); return }
-            // Only app-owned geometry is queried; email scripts remain disabled.
-            // The capped WebKit viewport scrolls at the email's lower edge, then
-            // hands the original native event back to the reader at either end.
-            evaluateJavaScript("[window.scrollY,Math.max(0,document.documentElement.scrollHeight-window.innerHeight)]") { [weak self, weak scroll] result, _ in
-                guard let self, let scroll else { return }
-                if event.scrollingDeltaY != 0 {
-                    let geometry = result as? [Double] ?? [0, 0]
-                    let email = self.convert(self.bounds, to: scroll.documentView)
-                    let bottom = scroll.documentVisibleRect.maxY
-                    self.scrollsHTML = geometry.count == 2 && (event.scrollingDeltaY < 0
-                        ? bottom >= email.maxY - 1 && geometry[0] < geometry[1] - 1
-                        : bottom <= email.maxY + 1 && geometry[0] > 1)
-                }
-                if self.scrollsHTML { self.scrollHTML(with: event) }
-                else { scroll.scrollWheel(with: event) }
-            }
-        } else {
-            super.scrollWheel(with: event)
-        }
-    }
-
-    private func scrollHTML(with event: NSEvent) { super.scrollWheel(with: event) }
 }

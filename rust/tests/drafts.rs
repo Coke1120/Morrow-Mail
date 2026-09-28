@@ -10,7 +10,7 @@ fn draft_builders_retain_the_existing_client_contract() {
     let db = Store::open(&directory).unwrap();
     db.set_settings(&json!({"mailAccounts":{OWNER:{"email":OWNER}},"activeAccount":"demo"}))
         .unwrap();
-    // Captured from the pre-migration client; shared with the Node compatibility checks.
+    // Captured from the pre-migration client; retained as a native migration contract.
     let cases: Vec<Value> =
         serde_json::from_str(include_str!("../../tests/fixtures/draft-prepare.json")).unwrap();
     for case in cases {

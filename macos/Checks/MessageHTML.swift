@@ -4,7 +4,6 @@ import WebKit
 
 @MainActor final class ReaderFixtureState: ObservableObject {
     @Published var html: String
-    @Published var height: CGFloat = 480
     init(_ html: String) { self.html = html }
 }
 
@@ -13,8 +12,8 @@ struct ReaderFixture: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                Color.clear.frame(height: 80)
-                MessageHTMLView(html: state.html, images: false, height: $state.height).frame(height: state.height)
+                Color.clear.frame(height: 20)
+                MessageHTMLView(html: state.html, images: false).frame(height: MessageHTMLView.viewportHeight)
                 Color.clear.frame(height: 800)
             }
         }
@@ -28,165 +27,116 @@ struct ReaderFixture: View {
             let elapsed = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
             FileHandle.standardError.write(Data("Native macOS reader: \(name) +\(elapsed) ms\n".utf8))
         }
-        phase("initial-load")
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
         let port = CommandLine.arguments[1]
-        let content = "<p>Formatted <b>mail</b></p><script>window.emailScriptRan=true;fetch('http://127.0.0.1:\(port)/script')</script><img src='http://127.0.0.1:\(port)/image'><iframe src='http://127.0.0.1:\(port)/frame'></iframe>"
+        // Deliberately hostile fixture text, never app-executed JavaScript.
+        let content = "<p>Formatted mail fixture</p><script>document.body.append('Forbidden email script ran');fetch('http://127.0.0.1:\(port)/script')</script><img src='http://127.0.0.1:\(port)/image'><iframe src='http://127.0.0.1:\(port)/frame'></iframe>"
         let state = ReaderFixtureState(content)
         let host = NSHostingView(rootView: ReaderFixture(state: state))
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 500), styleMask: [.titled], backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = host
         window.orderBack(nil)
         func findWeb(_ view: NSView) -> WKWebView? { (view as? WKWebView) ?? view.subviews.lazy.compactMap { findWeb($0) }.first }
         Task { @MainActor in
             do {
+                phase("initial-load")
                 var web: WKWebView?
                 for _ in 0..<200 {
                     web = findWeb(host)
-                    if let web, !web.isLoading, web.url != nil, state.height != 480 { break }
+                    if let web, !web.isLoading, web.url != nil { break }
                     try await Task.sleep(nanoseconds: 50_000_000)
                 }
                 guard let web, web.url != nil else { fatalError("Formatted reader did not load") }
                 assert(!web.configuration.defaultWebpagePreferences.allowsContentJavaScript)
-                let ran = try await web.evaluateJavaScript("window.emailScriptRan === true")
-                assert((ran as? Bool) == false, "Email JavaScript executed")
-                assert(state.height != 480, "Reader did not measure content height")
+                assert(!web.configuration.preferences.javaScriptCanOpenWindowsAutomatically)
+                assert(!web.configuration.websiteDataStore.isPersistent)
                 assert(MessageHTMLView.allowedLink(URL(string: "https://example.invalid")!))
                 assert(!MessageHTMLView.allowedLink(URL(string: "file:///tmp/secret")!))
                 assert(!MessageHTMLView.allowedLink(URL(string: "javascript:alert(1)")!))
                 assert(!MessageHTMLView.allowedLink(URL(string: "https://user:password@example.invalid")!))
-                guard let scroll = web.enclosingScrollView else { fatalError("Reader has no enclosing scroll view") }
-                @MainActor func wheel(_ delta: Int32, phase: CGScrollPhase? = nil) {
-                    let visible = web.visibleRect.intersection(web.bounds)
-                    let point = NSPoint(x: visible.midX, y: visible.midY)
-                    guard !visible.isEmpty, let target = web.hitTest(web.convert(point, to: web.superview)),
-                          let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0) else { fatalError("Could not create wheel fixture: delta=\(delta), HTML=\(web.frame), visible=\(web.visibleRect), parent=\(scroll.documentVisibleRect)") }
-                    cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: Int64(phase?.rawValue ?? 0))
+                @MainActor func find(_ text: String) async throws -> Bool {
+                    // WebKit selects and scrolls the match through its native API.
+                    try await web.find(text, configuration: WKFindConfiguration()).matchFound
+                }
+                @MainActor func loaded(_ marker: String) async throws {
+                    for _ in 0..<400 {
+                        if !web.isLoading, try await find(marker) { return }
+                        try await Task.sleep(nanoseconds: 50_000_000)
+                    }
+                    phase("fixture-marker-timeout")
+                    fatalError("Reader did not load its fixture marker: \(marker)")
+                }
+                @MainActor func snapshot() async throws -> Data {
+                    try await Task.sleep(nanoseconds: 100_000_000)
+                    let image = try await web.takeSnapshot(configuration: nil)
+                    guard let bytes = image.tiffRepresentation else { fatalError("Reader snapshot unavailable") }
+                    return bytes
+                }
+                @MainActor func wheel(_ delta: Int32) {
+                    let point = NSPoint(x: web.bounds.midX, y: web.bounds.midY)
+                    guard let target = web.hitTest(web.convert(point, to: web.superview)),
+                          let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: delta, wheel2: 0, wheel3: 0) else { fatalError("Could not create wheel fixture") }
                     let screenPoint = window.convertPoint(toScreen: web.convert(point, to: nil))
                     cg.location = CGPoint(x: screenPoint.x, y: CGDisplayBounds(CGMainDisplayID()).height - screenPoint.y)
                     cg.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(window.windowNumber))
                     cg.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(window.windowNumber))
                     guard let event = NSEvent(cgEvent: cg) else { fatalError("Could not create wheel event") }
-                    assert(target === web, "Wheel must hit the interactive HTML surface")
-                    assert(event.hasPreciseScrollingDeltas && event.scrollingDeltaY == CGFloat(delta), "Synthetic pixel wheel changed its delta: input=\(delta), actual=\(event.scrollingDeltaY), phase=\(event.phase.rawValue)")
                     target.scrollWheel(with: event)
                 }
-                @MainActor func waitForOuterY(_ expected: CGFloat, _ label: String) async throws {
-                    // AppKit applies pixel scrolling asynchronously. Establish a
-                    // completed downward baseline before reversing direction;
-                    // a fixed sleep can sample midway through the first scroll.
-                    for _ in 0..<100 {
-                        if abs(scroll.documentVisibleRect.minY - expected) < 1 { return }
-                        try await Task.sleep(nanoseconds: 20_000_000)
+                try await loaded("Formatted mail fixture")
+                let scriptRan = try await find("Forbidden email script ran")
+                assert(!scriptRan, "Email JavaScript executed")
+                assert(web.bounds.height == MessageHTMLView.viewportHeight)
+                guard let outer = web.enclosingScrollView else { fatalError("Reader has no enclosing scroll view") }
+
+                phase("long-scroll")
+                state.html = "<p>Long message start</p>" + (0..<1800).map { "<p>Formatted email line \($0), with enough text to wrap when the reader gets narrower.</p>" }.joined() + "<div style='background:#0000ff;height:180px'>Long message end</div>"
+                try await loaded("Long message start")
+                let before = try await snapshot(), outerY = outer.documentVisibleRect.minY
+                wheel(-170)
+                try await Task.sleep(nanoseconds: 250_000_000)
+                let afterDown = try await snapshot()
+                assert(before != afterDown, "Native wheel did not scroll long HTML")
+                assert(abs(outer.documentVisibleRect.minY - outerY) < 1, "HTML scrolling displaced the outer reader")
+                wheel(90)
+                try await Task.sleep(nanoseconds: 250_000_000)
+                let afterUp = try await snapshot()
+                assert(afterUp != afterDown, "Native wheel did not scroll back up")
+                let foundEnd = try await find("Long message end")
+                assert(foundEnd, "Native find could not select the long email tail")
+                let tail = try await snapshot()
+                guard let bitmap = NSBitmapImageRep(data: tail) else { fatalError("Tail snapshot could not be read") }
+                var bluePixels = 0
+                for y in stride(from: 0, to: bitmap.pixelsHigh, by: 8) {
+                    for x in stride(from: 0, to: bitmap.pixelsWide, by: 8) {
+                        if let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB), color.blueComponent > 0.8 && color.redComponent < 0.2 { bluePixels += 1 }
                     }
-                    assert(abs(scroll.documentVisibleRect.minY - expected) < 1, "\(label): expectedY=\(expected), actual=\(scroll.documentVisibleRect), HTML=\(web.frame), contentHeight=\(state.height), OS=\(ProcessInfo.processInfo.operatingSystemVersionString)")
                 }
-                phase("short-scroll")
-                let beforeShort = scroll.documentVisibleRect.minY
-                wheel(-100)
-                try await waitForOuterY(beforeShort + 100, "Downward wheel did not finish")
-                assert(scroll.documentVisibleRect.minY > beforeShort, "Wheel over short HTML did not scroll the reader")
-                let beforeUp = scroll.documentVisibleRect.minY
-                wheel(0, phase: .began)
-                try await Task.sleep(nanoseconds: 50_000_000)
-                wheel(30, phase: .changed)
-                try await Task.sleep(nanoseconds: 50_000_000)
-                wheel(0, phase: .ended)
-                try await waitForOuterY(beforeUp - 30, "Upward trackpad scrolling did not reach the reader")
-                assert(scroll.documentVisibleRect.minY < beforeUp, "Upward trackpad scrolling did not reach the reader")
+                assert(bluePixels > 10, "The selected tail was not revealed in the native viewport")
+                assert(web.bounds.height == MessageHTMLView.viewportHeight, "Long HTML expanded the native allocation")
 
-                phase("long-load")
-                state.html = "<p>Long message start</p>" + String(repeating: "<p>Formatted long email line, with enough text to wrap when this reader gets narrower.</p>", count: 1800) + "<p>Long message end</p>"
-                for _ in 0..<200 {
-                    if state.height == 20000 && !web.isLoading { break }
-                    try await Task.sleep(nanoseconds: 50_000_000)
-                }
-                assert(state.height == 20000, "Long content did not respect the native height cap")
-                phase("capped-scroll")
-                try await Task.sleep(nanoseconds: 250_000_000)
-                let beforeLong = scroll.documentVisibleRect.minY
-                wheel(-100)
-                try await Task.sleep(nanoseconds: 250_000_000)
-                assert(scroll.documentVisibleRect.minY > beforeLong, "Wheel over long HTML did not scroll the reader")
-                let contentHeight = try await web.evaluateJavaScript("document.body.scrollHeight") as! Double
-                assert(contentHeight > 20000 && web.bounds.height <= 20000, "Long HTML allocated an unbounded native view")
-                let email = web.convert(web.bounds, to: scroll.documentView)
-                scroll.contentView.scroll(to: NSPoint(x: 0, y: email.maxY - scroll.contentView.bounds.height))
-                scroll.reflectScrolledClipView(scroll.contentView)
-                try await Task.sleep(nanoseconds: 100_000_000)
-                let outerAtBoundary = scroll.documentVisibleRect.minY
-                wheel(-300)
-                try await Task.sleep(nanoseconds: 250_000_000)
-                let innerY = try await web.evaluateJavaScript("window.scrollY") as! Double
-                assert(innerY > 0, "Native wheel could not enter capped HTML")
-                assert(abs(scroll.documentVisibleRect.minY - outerAtBoundary) < 2, "Reader skipped capped content to the footer")
-                _ = try await web.evaluateJavaScript("window.scrollTo(0,document.documentElement.scrollHeight-window.innerHeight-120)")
-                try await Task.sleep(nanoseconds: 100_000_000)
-                wheel(-200)
-                try await Task.sleep(nanoseconds: 250_000_000)
-                let tail = try await web.evaluateJavaScript("document.body.lastElementChild.getBoundingClientRect().bottom") as! Double
-                assert(tail <= web.bounds.height && tail > web.bounds.height - scroll.contentView.bounds.height, "Native wheel could not reveal the end beyond 20k")
-                wheel(-100)
-                try await Task.sleep(nanoseconds: 250_000_000)
-                assert(scroll.documentVisibleRect.minY > outerAtBoundary, "Native wheel did not leave the HTML end for the footer")
-                let selected = try await web.evaluateJavaScript("const r=document.createRange();r.selectNodeContents(document.body.lastElementChild);const s=window.getSelection();s.removeAllRanges();s.addRange(r);s.toString()")
-                assert((selected as? String) == "Long message end", "Email text is no longer selectable")
-                wheel(100)
-                try await Task.sleep(nanoseconds: 250_000_000)
-                let innerAtEnd = try await web.evaluateJavaScript("window.scrollY") as! Double
-                wheel(100)
-                try await Task.sleep(nanoseconds: 250_000_000)
-                let innerAfterUp = try await web.evaluateJavaScript("window.scrollY") as! Double
-                assert(innerAfterUp < innerAtEnd, "Upward wheel did not return from the footer into capped HTML")
-                _ = try await web.evaluateJavaScript("window.scrollTo(0,100)")
-                try await Task.sleep(nanoseconds: 100_000_000)
-                wheel(200)
-                try await Task.sleep(nanoseconds: 250_000_000)
-                let outerBeforeUp = scroll.documentVisibleRect.minY
-                wheel(100)
-                try await Task.sleep(nanoseconds: 250_000_000)
-                assert(scroll.documentVisibleRect.minY < outerBeforeUp, "Upward wheel did not leave the HTML start for the reader")
-
-                // Valid bounded-size markup can still lay out millions of points
-                // tall. Keep the native viewport capped independently of bytes.
                 phase("adversarial-text")
-                state.html = "<div style='width:1px'>" + String(repeating: "x", count: 180000) + "</div>"
-                for _ in 0..<200 {
-                    try await Task.sleep(nanoseconds: 50_000_000)
-                    if !web.isLoading, (try await web.evaluateJavaScript("document.body.textContent.length") as? Int) == 180000 { break }
-                }
-                let adversarialHeight = try await web.evaluateJavaScript("document.body.scrollHeight") as! Double
-                assert(adversarialHeight > 1_000_000 && state.height == 20000 && web.bounds.height <= 20000, "Single-column HTML escaped the native height bound")
+                state.html = "<div style='width:1px'>" + String(repeating: "x", count: 180000) + "</div><p>Bounded adversarial tail</p>"
+                try await loaded("Bounded adversarial tail")
+                assert(web.bounds.height == MessageHTMLView.viewportHeight, "Narrow-column HTML escaped the viewport bound")
 
-                phase("replacement")
-                state.html = String(repeating: "<p>Formatted email text, with enough words to wrap when the reader gets narrower.</p>", count: 30) + "<img src='https://example.invalid/giant.png' alt='Giant image' width='2048' height='2048'>"
-                for _ in 0..<200 {
-                    if state.height < 20000 && !web.isLoading { break }
-                    try await Task.sleep(nanoseconds: 50_000_000)
-                }
-                assert(state.height < 20000, "Switching messages retained the capped viewport height")
-                // Simulate a huge intrinsic image layout without a remote fetch.
-                let imageHeight = try await web.evaluateJavaScript("const image=document.querySelector('img');image.style.height='1000000px';image.getBoundingClientRect().height") as! Double
-                assert(imageHeight == 2048, "Simulated giant HTTPS image layout did not respect its height bound")
-                _ = try await web.evaluateJavaScript("document.querySelector('img').style.height='auto'")
-                phase("reflow")
-                let wideHeight = state.height
-                window.setContentSize(NSSize(width: 360, height: 500))
-                for _ in 0..<100 {
-                    if state.height > wideHeight { break }
-                    try await Task.sleep(nanoseconds: 50_000_000)
-                }
-                assert(state.height > wideHeight, "Narrow reader did not remeasure wrapped email text")
-                window.setContentSize(NSSize(width: 720, height: 500))
-                for _ in 0..<100 {
-                    if abs(state.height - wideHeight) < 2 { break }
-                    try await Task.sleep(nanoseconds: 50_000_000)
-                }
-                assert(abs(state.height - wideHeight) < 2, "Reader height retained the larger viewport after widening")
+                phase("replacement-reflow")
+                state.html = "<p>Replacement message</p>" + String(repeating: "<p>Formatted text wraps to the available native width.</p>", count: 30) + "<img src='https://example.invalid/giant.png' style='height:1000000px' width='2048' height='2048'><p>Replacement tail</p>"
+                try await loaded("Replacement message")
+                let oldTail = try await find("Long message end")
+                assert(!oldTail, "Switching messages retained old content")
+                window.setContentSize(NSSize(width: 360, height: 540))
+                try await Task.sleep(nanoseconds: 100_000_000)
+                let narrowWidth = web.bounds.width
+                let narrowTail = try await find("Replacement tail")
+                assert(narrowTail && web.bounds.height == MessageHTMLView.viewportHeight)
+                window.setContentSize(NSSize(width: 720, height: 540))
+                try await Task.sleep(nanoseconds: 100_000_000)
+                assert(web.bounds.width > narrowWidth && web.bounds.height == MessageHTMLView.viewportHeight)
                 assert(!web.configuration.defaultWebpagePreferences.allowsContentJavaScript)
                 phase("done")
-                print("Native email reader: bidirectional short/capped HTML scrolling, selectable tail, bounded million-point text/image layout, width reflow, scripts/resources blocked and link protocols checked.")
+                print("Native email reader: bounded viewport, bidirectional native scrolling, selectable/revealed long tail, adversarial layout, replacement/reflow, scripts/resources blocked and link protocols checked without host script execution.")
                 window.orderOut(nil)
                 exit(0)
             } catch { fatalError("Reader check failed: \(error)") }

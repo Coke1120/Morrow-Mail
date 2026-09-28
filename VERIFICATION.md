@@ -1,6 +1,53 @@
 # Verification — 28 September 2026
 
-## JavaScript source retirement — current source, no new release
+## Native HTML scrolling without runtime scripts — current source
+
+The macOS reader's two app-owned JavaScript expressions and custom wheel/height
+class are removed. It uses a fixed 480-point viewport and WebKit's native
+scrolling, matching the existing Windows reader. This intentionally replaces
+macOS content-height expansion and custom outer/inner gesture handoff. Sanitized
+HTML/plain-text choices, per-message image consent, reviewed links, CSP and
+nonpersistent storage remain intact. Normal mail reading executes no host JS.
+Windows reader checks now use native DOM protocol operations instead of
+`ExecuteScriptAsync`. Enforced CSP audit events must block image/frame probes;
+the mounted connect-src policy is inspected, without claiming an executed fetch
+probe. Disabled scripts/host objects/web messages, resource denial, fallback and
+close/cancellation checks remain. Hostile JavaScript strings are inert fixtures.
+
+The macOS reader fixture itself no longer calls `evaluateJavaScript`. It uses
+native find/selection, snapshots and actual wheel events to check both scroll
+directions, unchanged outer position, visible/selectable long-message tails,
+180k-character narrow-column content, message replacement and width changes.
+It also requires disabled scripts/nonpersistent storage and zero unsolicited
+loopback connections. The initial 10-second per-document wait proved shorter
+than adversarial layout; it now permits 20 seconds within the **unchanged
+30-second total reader deadline**. The completed reader run took 12.865 seconds.
+The complete `morrow-native-check` passed, including model/window lifecycle,
+actual Rust client, account isolation, encrypted persistence and online backup.
+Full SwiftUI packaging passed locally. Current Rust checks and Windows CI status
+are recorded below; no real mailbox or provider action was used and no new release
+has been published.
+
+## Historical Node CI retirement — current source
+
+The owner explicitly requested removal of the historical Node lane as well. Both
+workflow jobs, archived harness preparation and the two Node oracle calls are
+removed. The sanitizer corpus now runs as active Rust contracts. Native updater
+signature/download/install/rollback tests remain. Paired native platform builds,
+checks, provenance and the existing Rust publisher still gate tagged releases.
+CI no longer reruns the original beta.16 installer or old/current differential
+checks; earlier results below are historical evidence, not continuing coverage.
+See [retirement scope](docs/JAVASCRIPT_RETIREMENT.md).
+
+Local validation passed: rustfmt, all-target Clippy with warnings denied, the
+complete locked Cargo suite (zero ignored tests), the full native macOS check,
+SwiftUI packaging, plist lint and strict ad-hoc signature verification. Source
+inventory confirms no tracked JS/TS files, npm scripts/dependencies or host JS
+execution API calls in app/check code. This host cannot compile or run WinUI;
+the current Windows build and native DOM/CSP smoke require Windows CI. These
+fixture results do not establish live-account or manual visual acceptance.
+
+## JavaScript source retirement — `d22990b`, no new release
 
 At the owner's request, 127 retired JavaScript source files were removed with
 the React CSS/web entry, Electron/Node tooling, npm lockfile/dependencies and old
@@ -9,13 +56,13 @@ files. `package.json` remains version/metadata only. The Swift host now starts
 and backs up through Rust only. Provider IDs, resource bytes, production update
 key, persisted formats and the shared draft fixture are unchanged.
 
-The two active macOS reader geometry expressions, native reader security probes
-and ignored Rust-to-Node oracle calls are retained. Historical checks materialize
+At that intermediate commit, the two macOS reader geometry expressions, native
+reader security probes and ignored Rust-to-Node oracle calls were retained.
+Historical checks materialized
 five unmodified files from `b5b69d4d276c086ba118583f464bac11341806a0` in an ignored
-directory and still compare **current** Rust binaries/version/catalog and native
-packages with the fixed beta.16 implementation. This is source retirement, not
-zero JavaScript execution or a waiver of compatibility/security gates. See
-[scope and reproduction](docs/JAVASCRIPT_RETIREMENT.md). Historical npm commands
+directory and compared that commit's Rust binaries/version/catalog and native
+packages with the fixed beta.16 implementation. This intermediate stage has since
+been superseded by the explicit Node CI retirement above. Historical npm commands
 and deleted source paths in earlier evidence below refer to their original commits.
 
 Local macOS validation after removal:

@@ -1,8 +1,5 @@
 use morrow_search::message_html::sanitize;
-use std::{
-    io::Write,
-    process::{Command, Stdio},
-};
+use std::process::Command;
 
 #[test]
 fn active_content_and_unsafe_attributes_are_removed() {
@@ -99,10 +96,8 @@ fn deep_input_returns_empty_without_process_abort() {
 }
 
 #[test]
-#[ignore = "Historical Node sanitizer parity: set MORROW_NODE_COMPAT_ROOT to the fixed compatibility checkout"]
-fn node_and_rust_share_safe_reader_semantics() {
-    // Compare parsed trees: serializer quoting/attribute order may differ, while
-    // the allowed content, CSS, URLs and security attributes must agree.
+fn safe_formatting_and_url_contracts() {
+    // Retain the sanitizer corpus as native contracts after the Node oracle retires.
     let mut samples = vec![
         "<h1>中文 &amp; team</h1><blockquote><pre><code>&lt;b&gt;</code></pre></blockquote><h2>Two</h2><h3>Three</h3><h4>Four</h4><h5>Five</h5><h6>Six</h6>".to_owned(),
         "<table width=600 style=\"border-collapse:collapse;width:100%;max-width:600px\"><thead><tr><th colspan=2>Title</th></tr></thead><tbody><tr><td rowspan=2 style=\"color:#225533;font-weight:bold;padding:8px;text-align:right\">Hello<br><b>B</b><strong>S</strong><em>E</em><i>I</i><u>U</u><s>S</s></td></tr></tbody><tfoot><tr><td>Footer</td></tr></tfoot></table><ul><li>One</li></ul><ol><li>Two</li></ol><hr>".to_owned(),
@@ -142,9 +137,23 @@ fn node_and_rust_share_safe_reader_semantics() {
         "tel:",
         "mailto://host",
     ] {
-        samples.push(format!(
+        let input = format!(
             "<a href=\"{href}\" target=_self rel=opener ping=\"https://evil.invalid\">Go</a>"
-        ));
+        );
+        let output = sanitize(&input);
+        let allowed = [
+            "https://example.test/?a=1&amp;b=2",
+            "http://example.test",
+            "mailto:person@example.test",
+            "tel:+85212345678",
+            // HTML5 decodes numeric C1 reference 0x85 to U+2026 (ellipsis).
+            "https://example.test/&#x85;",
+        ]
+        .contains(&href);
+        assert_eq!(output.contains("href="), allowed, "{input}: {output}");
+        assert!(output.contains("target=\"_blank\"") && output.contains("noreferrer noopener"));
+        assert!(!output.contains("ping="));
+        samples.push(input);
     }
     for src in [
         "http://example.test/a.png",
@@ -159,45 +168,54 @@ fn node_and_rust_share_safe_reader_semantics() {
         "https://example.test/a.%73vg",
         "https://example.test/%00.png",
     ] {
-        samples.push(format!(
-            "<img src=\"{src}\" alt=Fallback width=99999 height=-1>"
-        ));
+        let input = format!("<img src=\"{src}\" alt=Fallback width=99999 height=-1>");
+        let output = sanitize(&input);
+        assert!(
+            !output.contains("src=") && !output.contains("width=") && !output.contains("height="),
+            "{input}: {output}"
+        );
+        assert!(output.contains("Fallback"));
+        samples.push(input);
     }
-    let pairs: Vec<_> = samples
-        .iter()
-        .map(|input| serde_json::json!([input, sanitize(input)]))
-        .collect();
-    let compatibility = std::path::PathBuf::from(
-        std::env::var_os("MORROW_NODE_COMPAT_ROOT")
-            .expect("Set the fixed Node compatibility checkout"),
-    );
-    assert!(compatibility.is_absolute() && compatibility.join("server/message-html.js").is_file());
-    let mut child = Command::new("node")
-        .current_dir(compatibility)
-        .args(["--input-type=module", "-e", r#"
-import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { parseDocument } from 'htmlparser2';
-import { sanitizeMessageHTML } from './server/message-html.js';
-const tree = html => {
-  const visit = node => node.type === 'text' ? node.data : [node.name || 'root', Object.entries(node.attribs || {}).sort(), (node.children || []).map(visit)];
-  return visit(parseDocument(html));
-};
-for (const [input, rust] of JSON.parse(readFileSync(0, 'utf8'))) {
-  assert.deepEqual(tree(rust), tree(sanitizeMessageHTML(input)), input);
-}
-"#])
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().expect("Node parity runner");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(serde_json::to_string(&pairs).unwrap().as_bytes())
-        .unwrap();
-    let output = child.wait_with_output().unwrap();
+    assert_eq!(sanitize(&samples[0]), samples[0]);
+    let table = sanitize(&samples[1]);
+    for safe in [
+        "<table",
+        "<thead>",
+        "<tbody>",
+        "<tfoot>",
+        "<ul>",
+        "<ol>",
+        "colspan=\"2\"",
+        "rowspan=\"2\"",
+        "color:#225533",
+        "font-weight:bold",
+        "width:100%",
+    ] {
+        assert!(table.contains(safe), "{safe}: {table}");
+    }
+    let image = sanitize(&samples[7]);
     assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        image.contains("src=\"https://example.test/a.png\"")
+            && image.contains("width=\"640\"")
+            && image.contains("height=\"480\"")
     );
+    for input in samples {
+        let output = sanitize(&input);
+        for forbidden in [
+            "<script",
+            "<iframe",
+            "<svg",
+            "<math",
+            "<form",
+            "onclick=",
+            "onerror=",
+            "srcset=",
+            "position:",
+            "expression(",
+            "background:",
+        ] {
+            assert!(!output.contains(forbidden), "{input}: {output}");
+        }
+    }
 }

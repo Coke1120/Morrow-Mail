@@ -12,7 +12,7 @@
 
 [Download macOS / Windows beta](https://github.com/Coke1120/Morrow-Mail/releases) · [Feature coverage](FEATURE_COVERAGE.md) · [Verification](VERIFICATION.md) · [GitHub Sponsors](https://github.com/sponsors/Coke1120) · [Buy Me a Coffee](https://buymeacoffee.com/Coke1120)
 
-Morrow Mail is an independent, MIT-licensed alternative inspired by Genspark GenMail. From **0.6.0-beta.18**, it uses **SwiftUI on macOS** and **WinUI 3/C++/WinRT on Windows**, with the same Rust mail service and release version. Native packages do not bundle Node, React or Electron. The retired React/Electron and Node sources are retained in Git history only. Current builds use Rust, SwiftUI and WinUI; see [JavaScript retirement](docs/JAVASCRIPT_RETIREMENT.md) for the remaining reader helpers and historical test lane.
+Morrow Mail is an independent, MIT-licensed alternative inspired by Genspark GenMail. From **0.6.0-beta.18**, it uses **SwiftUI on macOS** and **WinUI 3/C++/WinRT on Windows**, with the same Rust mail service and release version. Native packages do not bundle Node, React or Electron. The retired React/Electron and Node sources are retained in Git history only. Current builds use Rust, SwiftUI and WinUI; see [JavaScript retirement](docs/JAVASCRIPT_RETIREMENT.md) for native HTML scrolling and historical CI retirement.
 
 - **Multiple mailboxes:** Gmail, Outlook / Microsoft 365, and IMAP / SMTP; combined or separate inboxes with collapsible account groups, sorting, and compact views.
 - **Indexed search:** local full-text search, Chinese traditional/simplified matching, filters, saved searches and optional reviewed semantic indexing in both clients.
@@ -44,7 +44,7 @@ pwsh -File scripts/build-windows-native.ps1 -Zip
 pwsh -File scripts/test-windows-native.ps1 -UiSmoke
 ```
 
-Resources and redistribution notices come from `morrow-resources` and `morrow-notices`; shared branding lives in `assets/`. `morrow-publish` defaults to local checks and requires explicit paired CI evidence before publication. Historical Node interoperability runs separately against the fixed beta.16 checkout. Current source has no npm build/development path; canonical releases use the native builders and Rust publisher. See [verification](VERIFICATION.md) for actual results and outstanding Windows, clean-machine and accessibility checks.
+Resources and redistribution notices come from `morrow-resources` and `morrow-notices`; shared branding lives in `assets/`. `morrow-publish` defaults to local checks and requires explicit paired CI evidence before publication. The owner also retired historical Node interoperability CI; native security, persistence and signed updater tests remain. Current source has no npm build/development path; canonical releases use the native builders and Rust publisher. See [verification](VERIFICATION.md) for actual results and outstanding Windows, clean-machine and accessibility checks.
 
 ## Screenshots
 
@@ -138,7 +138,7 @@ OAuth token refresh preserves saved credentials and distinguishes temporary netw
 
 ## Native macOS app
 
-The primary interface is **fully native SwiftUI**, including the mail reader, composer, all 19 AI Studio tools, skills, Email Brain, settings, permissions, and Google/Outlook calendars. The application interface remains native; formatted message bodies alone use an isolated, script-disabled WebKit reader. The app bundles the Rust mail service and needs no terminal, Node or Rust installation to run.
+The primary interface is **fully native SwiftUI**, including the mail reader, composer, all 19 AI Studio tools, skills, Email Brain, settings, permissions, and Google/Outlook calendars. The application interface remains native; formatted message bodies alone use an isolated, script-disabled WebKit reader. The app bundles the Rust mail service and needs no terminal, Node or Rust installation to run. Current source uses a 480-point HTML viewport with native scrolling, matching Windows; it executes no height/scroll measurement scripts. Long HTML scrolls within that viewport instead of expanding the entire macOS message pane.
 
 Build on a Mac with Apple's Swift command-line tools and Rust 1.98+ with rustfmt/clippy:
 
@@ -167,7 +167,7 @@ Builds are ad-hoc signed for local use. A stable public distribution requires yo
 
 ## Windows desktop app
 
-From beta.18, the Windows package uses native WinUI 3/C++/WinRT controls over the same Rust provider, account-routing, AI-permission and calendar service as macOS. The host starts a private authenticated loopback service; the isolated HTML reader receives no service token or script bridge. The Electron implementation is retained only in Git history for historical compatibility checks.
+From beta.18, the Windows package uses native WinUI 3/C++/WinRT controls over the same Rust provider, account-routing, AI-permission and calendar service as macOS. The host starts a private authenticated loopback service; the isolated HTML reader receives no service token or script bridge. The Electron implementation is retained only in Git history.
 
 Data lives in `%APPDATA%\Morrow Mail`. Sidebar disclosure and pending calendar requests persist across app restarts. Windows uses the current user's profile permissions; Unix file-mode checks do not represent Windows ACLs. Account data is local to each installation; paired releases do **not** synchronize mail caches, credentials or preferences between computers.
 
@@ -192,7 +192,7 @@ $workspace = Join-Path $env:APPDATA 'Morrow Mail'
 
 ## Keeping platform releases aligned
 
-`package.json` is the version source for both apps and archive names. Normal pushes and pull requests run native Rust/SwiftUI/WinUI and fixed-beta.16 compatibility checks. The beta.18 tag has an explicit one-release test waiver; both packages and signed provenance are still required. Tag and manually dispatched builds upload both packages as short-lived CI artifacts; published release downloads remain available.
+`package.json` is the version source for both apps and archive names. Normal pushes and pull requests run native Rust/SwiftUI/WinUI checks without Node. The beta.18 tag has an explicit one-release test waiver; both packages and signed provenance are still required. Tag and manually dispatched builds upload both packages as short-lived CI artifacts; published release downloads remain available.
 
 To publish a new alpha or beta, update the changelog, verification notes and `docs/releases/v<version>.md`, update the common version in package.json, commit, then push the matching `v<version>` tag. The workflow builds both platforms from that **same tag**. It verifies both archives and their checksums, signs a two-platform update manifest, uploads all six files to a draft release, and makes the release public only after every platform job succeeds. Failed builds publish no partial release; failed uploads leave a draft. Published assets are never overwritten.
 
@@ -210,7 +210,7 @@ cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-native-check -- 
 cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-benchmark -- --binary="$PWD/build/macos-native/Morrow Mail.app/Contents/Resources/morrow-service" --output=test-results/native-benchmark.json
 ```
 
-Desktop bundles contain `morrow-service` instead of a backend Node runtime. Rust fails closed if it cannot start; it never falls back to a second writer. From beta.18, Windows uses WinUI 3/C++/WinRT without Electron or its internal Node runtime. Remaining validation work is tracked in the [native migration plan](docs/RUST_NATIVE_MIGRATION_PLAN.md). Build selection is recorded in bundle metadata, not accepted from the renderer. `package.json` remains the version source. The locked Rust build requires Rust 1.98+, rustfmt/clippy and a C compiler; bundled third-party notices accompany the executable. Node is used only in the isolated historical compatibility test lane.
+Desktop bundles contain `morrow-service` instead of a backend Node runtime. Rust fails closed if it cannot start; it never falls back to a second writer. From beta.18, Windows uses WinUI 3/C++/WinRT without Electron or its internal Node runtime. Remaining validation work is tracked in the [native migration plan](docs/RUST_NATIVE_MIGRATION_PLAN.md). Build selection is recorded in bundle metadata, not accepted from the renderer. `package.json` remains the version source. The locked Rust build requires Rust 1.98+, rustfmt/clippy and a C compiler; bundled third-party notices accompany the executable. Historical Node CI and its oracle calls are retired; current checks do not invoke Node.
 
 Native clients delegate Reply, Reply All, Forward and provider-draft copying into the local service. Both clients request an unsaved draft using the original message ID and explicit mailbox owner; desktop builds use the Rust implementation. This does not contact a provider or model, save a draft or send mail. Saved drafts keep their existing editing and delivery-review paths.
 
@@ -229,7 +229,7 @@ See [the migration plan](docs/RUST_MIGRATION_PLAN.md) and [compatibility invento
 
 ## Retired web/Electron clients
 
-The standalone web UI, Electron host, Node service and npm tools were removed from current source at the owner's request. Their final source remains at commit `b5b69d4d276c086ba118583f464bac11341806a0`; beta.16 remains the fixed compatibility reference. [Historical checks](docs/JAVASCRIPT_RETIREMENT.md) continue testing current Rust binaries and native packages against the old application. No browser-hosted build is offered from current source.
+The standalone web UI, Electron host, Node service and npm tools were removed from current source at the owner's request. Their final source remains at commit `b5b69d4d276c086ba118583f464bac11341806a0`; the former beta.16 comparison and archived test harness are also retired. [Retirement scope](docs/JAVASCRIPT_RETIREMENT.md) records the remaining native checks and the loss of ongoing old-client comparison. No browser-hosted build is offered from current source.
 
 ## Connect a mailbox
 

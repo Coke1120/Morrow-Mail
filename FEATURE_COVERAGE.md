@@ -1,6 +1,6 @@
 # Morrow Mail feature coverage
 
-**Current source:** React/Electron/Node and npm tooling are retired; only native clients are supported. Historical compatibility checks and app-owned HTML reader helpers remain as documented in [JavaScript retirement](docs/JAVASCRIPT_RETIREMENT.md). This is not a claim of zero JavaScript execution.
+**Current source:** React/Electron/Node and npm tooling are retired; only native clients are supported. Normal mail reading has no app-owned JavaScript: both native HTML readers use a 480-point viewport with independent native scrolling. Native reader checks no longer execute host scripts, and historical Node CI is retired. Hostile script markup remains inert security test data; see [JavaScript retirement](docs/JAVASCRIPT_RETIREMENT.md).
 
 **Windows visual alignment (current, unpublished source):** WinUI uses macOS's light/dark Morrow green, workspace ordering, sidebar Compose, account/provider labels and eight combined/individual folders, with unread Inbox/Pending/Drafts badges. Default window/sidebar/reader dimensions, mail headings, a separate search row, unread-only filtering, compact previews and Settings category/model layouts now follow the native macOS presentation. System high-contrast resources remain native. This is not pixel-identical platform rendering or completed Windows visual/accessibility acceptance; see VERIFICATION.md. Publisher/custom-client permission changes are documented in the [繁體中文 OAuth setup guide](docs/OAUTH_SETUP.zh-TW.md).
 
