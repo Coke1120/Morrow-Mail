@@ -380,8 +380,10 @@ final class AppModel: ObservableObject {
     }
     func sync() async throws {
         state = try await request("/sync", method: "POST", body: .object([:]))
-        let failures = state["syncErrors"].array.map { $0["accountId"].string }
-        notice = failures.isEmpty ? "Recent mail refreshed. Older mail follows the import range in Settings; see Activity for progress." : "Some accounts could not sync: " + failures.joined(separator: ", ") + ". Reconnect them in Settings."
+        let failures = state["syncErrors"].array.map { item in
+            item["accountId"].string + ": " + item["error"].string + (item["nextRetryAt"].nonempty ? " Next retry: \(dateLabel(item["nextRetryAt"].string))." : "")
+        }
+        notice = failures.isEmpty ? "Recent mail refreshed. Older mail follows the import range in Settings; see Activity for progress." : "Some accounts could not sync: " + failures.joined(separator: "; ")
     }
     func preference(_ key: String, _ value: String) {
         perform { self.state = try await self.request("/settings/preferences", method: "POST", body: .object([key: .string(value)])) }

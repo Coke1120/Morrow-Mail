@@ -80,7 +80,7 @@ struct StudioView: View {
                 }
                 Text("Configure triggers in Settings → AI Permissions. Summaries use cached mail and saved permissions. Results are hidden if the model, language, permissions, connection or source scope changes.").font(.callout).foregroundStyle(.secondary)
                 if workspace["summaryOverflow"].number > 0 { Text("\(Int(workspace["summaryOverflow"].number)) jobs exceeded the queue limit. Use a manual summary for those messages.").foregroundStyle(.orange) }
-                ForEach(model.state["syncErrors"].array) { item in Text(item["accountId"].string + ": " + item["error"].string).foregroundStyle(.orange) }
+                ForEach(model.state["syncErrors"].array) { item in Text(item["accountId"].string + ": " + item["error"].string + (item["nextRetryAt"].nonempty ? " Next retry: \(dateLabel(item["nextRetryAt"].string))." : "")).foregroundStyle(.orange) }
                 if workspace["summaries"].array.isEmpty { Text("No summaries yet. Enable a trigger and wait for a scheduled time or newly synced mail.").foregroundStyle(.secondary) }
                 ForEach(workspace["summaries"].array) { report in SummaryReportView(report: report) }
             }.padding(20)

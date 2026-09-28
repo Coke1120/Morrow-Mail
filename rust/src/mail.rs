@@ -412,7 +412,13 @@ async fn remote_folders(app: &App, mail: &Value) -> Result<Vec<Value>> {
 pub async fn sync_accounts(app: &App, owners: &[String]) -> Result<Value> {
     sync(app, owners).await
 }
-fn sync_failure(owner: &str, error: &Error) -> Value {
+fn sync_failure(owner: &str, error: &Error, previous: &Value) -> Value {
+    let count = previous["retryCount"].as_u64().unwrap_or(0);
+    if let Some(delay) = providers::quota_retry_delay(error, count) {
+        let next = (chrono::Utc::now() + chrono::Duration::milliseconds(delay))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        return json!({"accountId":owner,"code":"rate_limited","recoveryAction":"retry","error":"The provider request limit was reached. Morrow will retry automatically while the app is open.","nextRetryAt":next,"retryCount":count.saturating_add(1)});
+    }
     if [
         "oauth_reconnect_required",
         "oauth_configuration",
@@ -435,6 +441,18 @@ fn sync_warning(page: &Value) -> Option<&'static str> {
 pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
     let mut errors = Vec::new();
     for owner in owners {
+        let previous = app.settings().await?["backgroundSyncErrors"]
+            .as_array()
+            .and_then(|errors| errors.iter().find(|error| error["accountId"] == *owner))
+            .cloned()
+            .unwrap_or(Value::Null);
+        if previous["code"] == "rate_limited"
+            && !string(&previous, "nextRetryAt").is_empty()
+            && string(&previous, "nextRetryAt") > now().as_str()
+        {
+            errors.push(previous);
+            continue;
+        }
         let work = async {
             let mail = current_mail(app, owner).await?;
             let config = app.settings().await?;
@@ -495,7 +513,7 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
         match work.await {
             Ok(None) => {}
             Ok(Some(warning)) => errors.push(json!({"accountId":owner,"error":warning})),
-            Err(error) => errors.push(sync_failure(owner, &error)),
+            Err(error) => errors.push(sync_failure(owner, &error, &previous)),
         }
     }
     let owners = owners.to_vec();
@@ -601,8 +619,12 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                             .or(accounts.get(&fallback))
                             .cloned()
                             .unwrap_or(Value::Null);
+                        let errors = config["backgroundSyncErrors"]
+                            .as_array()
+                            .map(|errors| errors.iter().filter(|error| error["accountId"] != owner).cloned().collect::<Vec<_>>())
+                            .unwrap_or_default();
                         db.set_settings(
-                            &json!({"mailAccounts":accounts,"mail":mail,"activeAccount":selected}),
+                            &json!({"mailAccounts":accounts,"mail":mail,"activeAccount":selected,"backgroundSyncErrors":errors}),
                         )?;
                         crate::ai::invalidate(db)?;
                         crate::smart_search::reconcile(db)?;
@@ -807,6 +829,22 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sync_quota_failure_schedules_retry_without_reconnecting() {
+        let mut quota = Error::new(502, "private provider detail");
+        quota.provider_status = Some(429);
+        let failure = sync_failure("one@example.com", &quota, &json!({"retryCount":2}));
+        assert_eq!(failure["code"], "rate_limited");
+        assert_eq!(failure["retryCount"], 3);
+        assert_eq!(failure["recoveryAction"], "retry");
+        assert!(failure["nextRetryAt"].as_str().is_some());
+        assert!(!failure.to_string().contains("private provider detail"));
+        quota.provider_status = Some(401);
+        assert_eq!(
+            sync_failure("one@example.com", &quota, &Value::Null)["recoveryAction"],
+            "reconnect"
+        );
+    }
     #[test]
     fn sparse_imap_scan_never_reports_complete_sync() {
         assert!(sync_warning(&json!({"messages":[],"nextCursor":{"uid":42}})).is_some());
