@@ -50,8 +50,17 @@ fixture results do not establish live-account or manual visual acceptance.
 CI run [36381065432](https://github.com/Coke1120/Morrow-Mail/actions/runs/36381065432)
 at `1357f69` passed the complete macOS job and Windows Node-free Rust checks.
 Windows compilation caught a fixture-only dynamic JSON key passed to the
-literal-key helper. It now uses native `JsonObject.Insert`; WinUI build and
-runtime evidence await the follow-up run. No production reader policy changed.
+literal-key helper. It now uses native `JsonObject.Insert`; no production reader
+policy changed.
+
+Follow-up [run 36381768689](https://github.com/Coke1120/Morrow-Mail/actions/runs/36381768689)
+at `172064a` passed the entire macOS job and Windows Node-free Rust checks,
+WinUI/Rust package build/inspection and the native fresh/owned/restart fixture
+walkthrough. The Windows reader gate required `native-dom-no-script` inspection
+and enforced `native-audits-image-frame` CSP evidence. This verifies the changed
+reader checks on Windows as well as macOS. At recording time the existing
+Windows fictional-mail benchmark was still running; the whole workflow is not
+claimed complete, and no benchmark result or public release is claimed here.
 
 ## JavaScript source retirement — `d22990b`, no new release
 
