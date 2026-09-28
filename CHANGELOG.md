@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0-beta.17 — 2026-09-28
+
+- Switch the Windows package to native WinUI 3/C++/WinRT with the existing Rust service; retain SwiftUI on macOS. Neither native package bundles Electron, React or Node.
+- Share Rust draft preparation and use Node-free native resource, notice, build and signed paired-publisher tooling. Retain historical compatibility sources and workspace/recovery identities.
+- Owner explicitly requested this tag without additional tests. Rebuild both platforms and verify artifact provenance, checksums and signed manifests; prior candidate evidence is recorded separately, not reported as tests of this tag.
+- Keep ad-hoc macOS/unsigned Windows, incomplete clean-machine/accessibility/live-provider and whole-app-performance acceptance visible. See [release notes](docs/releases/v0.6.0-beta.17.md).
+
 ## 0.6.0-beta.16 — 2026-09-27
 
 - Reorganize Settings in SwiftUI and React: account connection first, grouped General preferences, persistent permission Save/Discard controls, collapsed calendar reconnect forms and clearer current/update history status.

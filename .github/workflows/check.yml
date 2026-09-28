@@ -1,126 +1,296 @@
-name: Checks and desktop releases
+name: Native checks and paired releases
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     tags: ['v*']
   pull_request:
-  workflow_dispatch:
 permissions:
   contents: read
+# Explicit owner waiver for this prerelease only; future tags retain all tests.
+env:
+  SKIP_TESTS: ${{ github.ref == 'refs/tags/v0.6.0-beta.17' }}
 jobs:
-  check:
+  macos-native:
+    # A release preparation main push is built once, by its accompanying tag.
+    if: github.ref != 'refs/heads/main' || !contains(github.event.head_commit.message, '[release-on-tag]')
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Restore Rust build cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: native-rust-${{ runner.os }}-${{ runner.arch }}-1.98.0-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml') }}
+      - name: Prepare Node-free tool path
+        shell: bash
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.98.0
+          mkdir "$RUNNER_TEMP/native-tools"
+          for tool in cmake ninja zstd zstdmt unzstd; do
+            if command -v "$tool" >/dev/null; then ln -s "$(command -v "$tool")" "$RUNNER_TEMP/native-tools/$tool"; fi
+          done
+          echo "PATH=$HOME/.cargo/bin:$RUNNER_TEMP/native-tools:/usr/bin:/bin:/usr/sbin:/sbin" >> "$GITHUB_ENV"
+      - name: Rust checks without Node
+        if: env.SKIP_TESTS != 'true'
+        shell: bash
+        run: |
+          if command -v node || command -v npm; then exit 1; fi
+          cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+          cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets -- -D warnings
+          cargo test --manifest-path rust/Cargo.toml --locked
+      - name: Build SwiftUI and Rust release package
+        env:
+          MORROW_GOOGLE_OAUTH_JSON: ${{ secrets.GOOGLE_DESKTOP_OAUTH_JSON }}
+          MORROW_REQUIRE_GOOGLE_OAUTH: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
+        shell: bash
+        run: |
+          /bin/sh scripts/build-macos-native.sh --zip
+      - name: Native macOS acceptance
+        if: env.SKIP_TESTS != 'true'
+        shell: bash
+        run: cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-native-check -- --service "$PWD/build/macos-native/Morrow Mail.app/Contents/Resources/morrow-service"
+      - name: Retain macOS candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: morrow-macos-arm64
+          path: build/macos-native/release/*
+          retention-days: 14
+  native:
+    # A release preparation main push is built once, by its accompanying tag.
+    if: github.ref != 'refs/heads/main' || !contains(github.event.head_commit.message, '[release-on-tag]')
+    runs-on: windows-2022
+    timeout-minutes: 60
+    outputs:
+      packaged: ${{ steps.package.outcome }}
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Restore Rust build cache
+        id: rust-cache
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: native-rust-${{ runner.os }}-${{ runner.arch }}-1.98.0-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml') }}
+      - name: Lock Rust toolchain
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
+          rustup default 1.98.0
+      - name: Prepare Node-free Windows path
+        shell: pwsh
+        run: |
+          $env:PATH = (($env:PATH -split ';') | Where-Object {
+            $_ -and -not (Test-Path -LiteralPath (Join-Path $_ 'node.exe')) -and -not (Test-Path -LiteralPath (Join-Path $_ 'npm.cmd'))
+          }) -join ';'
+          if (Get-Command node,npm -ErrorAction SilentlyContinue) { throw 'Node/npm must not be available to native checks.' }
+          "PATH=$env:PATH" >> $env:GITHUB_ENV
+      - name: Rust checks without Node
+        if: env.SKIP_TESTS != 'true'
+        shell: pwsh
+        run: |
+          cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Rust formatting failed.' }
+          cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Rust Clippy failed.' }
+          cargo test --manifest-path rust/Cargo.toml --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Rust tests failed.' }
+      - name: Build and inspect WinUI and Rust release package
+        id: package
+        env:
+          MORROW_GOOGLE_OAUTH_JSON: ${{ secrets.GOOGLE_DESKTOP_OAUTH_JSON }}
+          MORROW_REQUIRE_GOOGLE_OAUTH: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
+        shell: pwsh
+        run: ./scripts/build-windows-native.ps1 -Zip
+      - name: Native fixture walkthrough
+        if: env.SKIP_TESTS != 'true'
+        shell: pwsh
+        run: ./scripts/test-windows-native.ps1 -UiSmoke
+      - name: Measure native Windows service with fictional mail
+        if: ${{ !cancelled() && env.SKIP_TESTS != 'true' && steps.package.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          if (Get-Command node,npm -ErrorAction SilentlyContinue) { throw 'Node/npm must not be available to native checks.' }
+          $driver = (Resolve-Path 'rust/target/debug/morrow-benchmark.exe').Path
+          $binary = (Resolve-Path 'build/windows-native/Morrow Mail-win32-x64/resources/app/runtime/morrow-service.exe').Path
+          $report = Join-Path $PWD "test-results/windows-native-benchmark-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT).json"
+          & $driver "--binary=$binary" "--output=$report" '--sizes=1000,10000,50000' '--idleSeconds=30'
+          if ($LASTEXITCODE -ne 0) { throw 'Native service benchmark failed; inspect its report.' }
+      - name: Retain paired Windows candidate
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: morrow-windows-x64
+          path: build/windows-native/artifacts/*
+          retention-days: 14
+      - name: Cache completed Rust builds
+        if: ${{ !cancelled() && steps.package.outcome == 'success' && steps.rust-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+      - name: Retain candidate evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: winui-candidate-${{ github.sha }}
+          path: |
+            build/windows-native/artifacts/*
+            build/windows-native/*evidence*.json
+            test-results/windows-native-*.json
+          if-no-files-found: ignore
+          retention-days: 14
+  historical-upgrade:
+    needs: [native, macos-native]
+    # Preservation is independent of reader UI acceptance. A failed native job
+    # still fails this workflow and can never satisfy the publisher's all-job gate.
+    if: ${{ !cancelled() && needs.macos-native.result == 'success' && needs.native.outputs.packaged == 'success' }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: windows-2022
+            artifact: morrow-windows-x64
           - os: macos-15
-            artifact: macos-arm64
-          - os: windows-latest
-            artifact: windows-x64
+            artifact: morrow-macos-arm64
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+      - name: Explicit beta.17 validation waiver
+        if: env.SKIP_TESTS == 'true'
+        shell: bash
+        run: echo 'Owner requested no new tests for beta.17. Historical contracts and upgrade walkthrough were NOT run for this tag.'
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        if: env.SKIP_TESTS != 'true'
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        if: env.SKIP_TESTS != 'true'
+        with:
+          ref: 7ab30cbb3e496118513a98f8211ec66481e282c4
+          path: .compatibility/beta16
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        if: env.SKIP_TESTS != 'true'
         with:
           node-version: '22'
-          cache: npm
       - run: npm ci --ignore-scripts
-      - run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
-      - run: rustup default 1.98.0
-      - run: npm run rust:test
-        env:
-          MACOSX_DEPLOYMENT_TARGET: '13.5'
-      - run: npm run check
-      - run: cargo install cargo-audit --version 0.22.2 --locked
-      - run: cargo audit --file rust/Cargo.lock
-      - run: npm run benchmark:mail -- --output=test-results/migration-node.json
-      - run: npm run benchmark:mail -- --engine=rust --output=test-results/migration-rust.json
-      - run: npm run benchmark:rust-service -- --output=test-results/migration-rust-service.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: env.SKIP_TESTS != 'true'
+        working-directory: .compatibility/beta16
+      - name: Restore Rust build cache
+        if: env.SKIP_TESTS != 'true'
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809
         with:
-          name: migration-benchmark-${{ matrix.os }}
-          path: test-results/migration-*.json
-          if-no-files-found: error
-      - if: runner.os == 'macOS'
-        run: npm run macos:test
-      - if: runner.os == 'macOS'
-        run: npm run macos:build
-        env:
-          MORROW_GOOGLE_OAUTH_JSON: ${{ secrets.GOOGLE_DESKTOP_OAUTH_JSON }}
-          MORROW_REQUIRE_GOOGLE_OAUTH: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
-      - if: runner.os == 'Windows'
-        run: npm run windows:build
-        env:
-          MORROW_GOOGLE_OAUTH_JSON: ${{ secrets.GOOGLE_DESKTOP_OAUTH_JSON }}
-          MORROW_REQUIRE_GOOGLE_OAUTH: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
-      - if: runner.os == 'Windows'
-        run: npm run desktop:test -- --packaged
-      - if: runner.os == 'macOS' || runner.os == 'Windows'
-        run: npm run updater:test
-      - if: matrix.artifact && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
-        run: node scripts/package-release.js
-      - if: matrix.artifact && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch')
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: native-rust-${{ runner.os }}-${{ runner.arch }}-1.98.0-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml') }}
+      - name: Fixed historical updater and sanitizer contracts
+        if: env.SKIP_TESTS != 'true'
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup default 1.98.0
+          $env:CARGO_INCREMENTAL = '0'
+          $env:MORROW_NODE_COMPAT_ROOT = (Resolve-Path .compatibility/beta16).Path
+          cargo test --manifest-path rust/Cargo.toml --locked --lib historical_node_validator_accepts_native_layout -- --ignored
+          if ($LASTEXITCODE -ne 0) { throw 'Historical updater validation failed.' }
+          cargo test --manifest-path rust/Cargo.toml --locked --test message_html node_and_rust_share_safe_reader_semantics -- --ignored
+          if ($LASTEXITCODE -ne 0) { throw 'Historical HTML semantics changed.' }
+      - name: Fixed historical storage, search and service contracts
+        if: env.SKIP_TESTS != 'true'
+        shell: pwsh
+        run: |
+          $env:CARGO_INCREMENTAL = '0'
+          $env:MORROW_NODE_COMPAT_ROOT = (Resolve-Path .compatibility/beta16).Path
+          $env:MORROW_TEST_RUST = '1'
+          cargo build --manifest-path rust/Cargo.toml --locked --example storage_contract --bin morrow-service
+          if ($LASTEXITCODE -ne 0) { throw 'Compatibility service/example build failed.' }
+          cargo build --manifest-path rust/Cargo.toml --locked --release --bin morrow-search
+          if ($LASTEXITCODE -ne 0) { throw 'Compatibility search worker build failed.' }
+          $extension = if ($IsWindows) { '.exe' } else { '' }
+          $destination = Join-Path $env:MORROW_NODE_COMPAT_ROOT 'rust/target/release'
+          New-Item -ItemType Directory -Force $destination | Out-Null
+          Copy-Item "rust/target/release/morrow-search$extension" $destination
+          node --test tests/rust-search.test.js tests/rust-storage.test.js tests/rust-service.test.js
+          if ($LASTEXITCODE -ne 0) { throw 'Historical differential contracts failed.' }
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        if: env.SKIP_TESTS != 'true'
         with:
-          name: morrow-${{ matrix.artifact }}
-          path: build/release/*
-          if-no-files-found: error
-          retention-days: 1
-  rust-desktop:
-    # Additional signed-upgrade acceptance for the Rust packages published above.
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-15, windows-latest]
-    runs-on: ${{ matrix.os }}
-    env:
-      MORROW_SERVICE_RUNTIME: rust
-      MACOSX_DEPLOYMENT_TARGET: '13.5'
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
-        with:
-          node-version: '22'
-          cache: npm
-      - run: npm ci --ignore-scripts
-      - run: rustup toolchain install 1.98.0 --profile minimal
-      - run: rustup default 1.98.0
-      - run: npm run build
-      - run: cargo test --manifest-path rust/Cargo.toml --locked --lib updater::download_tests
-      - run: cargo test --manifest-path rust/Cargo.toml --locked --test updater
-      - if: runner.os == 'macOS'
-        run: npm run macos:build
-        env:
-          MORROW_GOOGLE_OAUTH_JSON: ${{ secrets.GOOGLE_DESKTOP_OAUTH_JSON }}
-          MORROW_REQUIRE_GOOGLE_OAUTH: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
-      - if: runner.os == 'macOS'
-        run: npm run macos:rust:test
-      - if: runner.os == 'Windows'
-        run: npm run windows:build
-        env:
-          MORROW_GOOGLE_OAUTH_JSON: ${{ secrets.GOOGLE_DESKTOP_OAUTH_JSON }}
-          MORROW_REQUIRE_GOOGLE_OAUTH: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '0' }}
-      - if: runner.os == 'Windows'
-        run: npm run desktop:test -- --packaged
-      - run: npm run updater:rust-upgrade:test
+          name: ${{ matrix.artifact }}
+          path: candidate-artifacts
+      - name: Fixed historical installer to actual WinUI candidate
+        if: env.SKIP_TESTS != 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $archives = @(Get-ChildItem candidate-artifacts -Recurse -Filter '*-windows-x64.zip')
+          if ($archives.Count -ne 1) { throw 'Expected exactly one native candidate archive.' }
+          Expand-Archive -LiteralPath $archives[0].FullName -DestinationPath candidate
+          node scripts/test-rust-upgrade.js '--candidate=candidate/Morrow Mail-win32-x64' --compatibility-root=.compatibility/beta16
+      - name: Fixed historical installer to actual SwiftUI candidate
+        if: env.SKIP_TESTS != 'true' && runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir candidate
+          archives=(candidate-artifacts/Morrow-Mail-*-macos-arm64.zip)
+          test "${#archives[@]}" -eq 1 && test -f "${archives[0]}"
+          /usr/bin/ditto -x -k "${archives[0]}" candidate
+          node scripts/test-rust-upgrade.js '--candidate=candidate/Morrow Mail.app' --compatibility-root=.compatibility/beta16
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [check, rust-desktop]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [macos-native, native, historical-upgrade]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
+      actions: read
     concurrency:
       group: release-${{ github.ref }}
       cancel-in-progress: false
+    env:
+      CARGO_INCREMENTAL: '0'
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Build existing Rust publisher
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup default 1.98.0
+          cargo build --manifest-path rust/Cargo.toml --locked --release --bin morrow-publish
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
           pattern: morrow-*
-          path: release-artifacts
           merge-multiple: true
-      - run: node scripts/publish-release.js
+          path: release-artifacts
+      - name: Record actual same-attempt platform job identities
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" > release-jobs.json
+          python3 - <<'PYGATE'
+          import json, os
+          from pathlib import Path
+          result = json.loads(Path('release-jobs.json').read_text())
+          jobs = result['jobs']
+          assert result['total_count'] == len(jobs)
+          platforms = {}
+          for platform, prefix, label in [('macos-arm64', 'macos-', 'macOS'), ('windows-x64', 'windows-', 'Windows')]:
+              selected = [j for j in jobs if any(v.startswith(prefix) or v == label for v in j['labels'])]
+              assert selected and all(j['status'] == 'completed' and j['conclusion'] == 'success' for j in selected)
+              platforms[platform] = [j['id'] for j in selected]
+          gate = dict(repository=os.environ['GITHUB_REPOSITORY'], tag=os.environ['GITHUB_REF_NAME'],
+                      sha=os.environ['GITHUB_SHA'], runId=int(os.environ['GITHUB_RUN_ID']),
+                      runAttempt=int(os.environ['GITHUB_RUN_ATTEMPT']), platforms=platforms)
+          Path('release-gate.json').write_text(json.dumps(gate))
+          PYGATE
+      - name: Publish verified paired artifacts and signed update manifest
         env:
           GH_TOKEN: ${{ github.token }}
           MORROW_UPDATE_SIGNING_KEY: ${{ secrets.MORROW_UPDATE_SIGNING_KEY }}
+        run: rust/target/release/morrow-publish --publish --artifacts release-artifacts --gate-file release-gate.json --notes-file "docs/releases/$GITHUB_REF_NAME.md"

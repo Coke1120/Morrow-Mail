@@ -1,5 +1,11 @@
 # Verification — 28 September 2026
 
+## 0.6.0-beta.17 — explicit release validation waiver
+
+The owner explicitly requested merging to main and publishing without new tests. The canonical workflow now builds SwiftUI/Rust and WinUI/Rust packages, retaining same-run artifact provenance, exact checksums and pinned signed manifests. Only the exact beta.17 tag skips Rust checks, native walkthroughs, benchmarks and historical compatibility execution; its historical jobs record the waiver rather than claiming test success. Future tags retain those gates. The accompanying main preparation commit delegates packaging to the tag to avoid duplicate builds.
+
+Prior evidence below remains attributable to its original commit/run, including the four successful jobs at `2f39ade` in CI 36361496967. This exception does not complete N0, clean minimum-OS, IME/accessibility/DPI, live-provider or distribution-signing acceptance. No private workspace or real provider/model action is part of this release. Publication details will be recorded after the signed paired assets are available.
+
 ## Unreleased native migration candidate — Node-free macOS and N4 preservation
 
 `scripts/build-macos-native.sh` built the SwiftUI/Rust candidate with Node/npm absent from PATH. The Rust resource checker, target-specific notice collector, arm64 macOS 13.5 service/Swift compilation, Info.plist, system-library inspection and deep/strict ad-hoc signature checks passed. Output is isolated at `build/macos-native/Morrow Mail.app`; the installed application and user's workspace were untouched.

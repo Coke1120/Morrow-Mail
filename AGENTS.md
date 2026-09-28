@@ -8,10 +8,10 @@
 
 This repository is `~/Documents/Github/genmail`. The product name is Morrow Mail.
 It is a local, single-user app with a fully native SwiftUI macOS interface and
-a React / Electron Windows desktop interface and an optional browser development interface. Preserve both clients when changing
+a WinUI 3/C++/WinRT Windows interface from beta.17 and legacy React/Electron/browser compatibility clients. Preserve native and compatibility clients when changing
 shared API contracts.
 
-The approved native migration is in progress: `windows/` is the unpackaged WinUI 3/C++/WinRT candidate, with Rust-owned business logic. Published beta.16 still uses Electron on Windows. Keep the compatibility clients until the native plan's cutover gates pass; source/compile success alone is not native acceptance.
+The native prerelease cutover is authorized for beta.17: `windows/` is the unpackaged WinUI 3/C++/WinRT host, with Rust-owned business logic. Beta.16 remains the fixed Electron compatibility baseline. Keep compatibility sources until the remaining retirement gates pass. The owner explicitly waived new tests for beta.17 only; do not represent omitted tests as passed or weaken artifact provenance, signing or data protection.
 
 - `macos/Sources/MorrowMail/`: SwiftUI views, native client, and local service lifecycle.
 - `rust/src/`: production desktop service: storage, authenticated API, providers, OAuth, AI, background jobs, search and signed updater. Rust is the default; `server/` remains the browser/development and explicit Node compatibility service. Keep shared contracts compatible.
@@ -157,9 +157,9 @@ acceptance. Never publish runtime data, fixture workspaces, or secrets.
 The canonical GitHub repository is `Coke1120/Morrow-Mail`; the local checkout and persisted `genmail` data/API identifiers retain their names for compatibility. Update checks deliberately reject API redirects, so use the canonical repository URL in both runtimes and fixtures. Do not rename persisted files or protocol headers for branding.
 
 Keep package.json as the common version source. Every tagged alpha or beta must build and pass
-checks on macOS and Windows before either download becomes public. Use the existing
+checks on macOS and Windows before either download becomes public, except the explicit beta.17 test waiver recorded in VERIFICATION.md. Both platform builds and signed provenance remain mandatory. Use the existing
 workflow and publisher; never replace published binaries or ship only one platform.
-Preserve SwiftUI on macOS and the shared React Windows/browser client. Desktop IPC
+Preserve SwiftUI on macOS, WinUI on Windows and the historical React/browser compatibility client. Desktop IPC
 must validate the main-frame sender, accept only narrow operations, and never expose
 Node, arbitrary filesystem access or private API tokens to the renderer. Calendar
 retry IDs and payloads must survive restart on both platforms.
