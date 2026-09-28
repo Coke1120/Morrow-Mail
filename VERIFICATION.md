@@ -1,5 +1,20 @@
 # Verification — 28 September 2026
 
+## 0.6.0-beta.20 — published paired native release
+
+[Beta.20](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.20) was published at 2026-09-28T07:12:16Z from `f0bdbce660d162c884b4cd6fdbb3852261edec16`, after [PR #1](https://github.com/Coke1120/Morrow-Mail/pull/1) was reviewed, corrected and merged. The history-import fixes preserve a single three-retry budget across transient error types and require explicit Resume after exhaustion or daily quota errors. Recent-mail Sync retains separate per-account quota backoff.
+
+[Tagged CI 36388373723](https://github.com/Coke1120/Morrow-Mail/actions/runs/36388373723) passed on its first attempt: both platforms completed Node-free Rust formatting, strict Clippy and locked tests, native packaging and acceptance; Windows also completed its fictional-mail benchmark. The existing publisher verified the paired artifacts and signed provenance before publication. No test waiver applied. The final fixture source also passed ten macOS 15 window-check iterations plus Windows storage/mail-service checks in [focused CI 36388240387](https://github.com/Coke1120/Morrow-Mail/actions/runs/36388240387). The window fixture checks the currently displayed pane and awaits its geometry within the original three-second deadline; production window code is unchanged.
+
+All six public assets were downloaded. The Ed25519 manifest signature verified against the committed pinned public key, both archive sizes/SHA-256 values matched the manifest and checksum files, ZIP integrity passed, and both bundled backend versions were beta.20. No downloaded application was launched or real mailbox opened.
+
+| Public archive | Bytes | SHA-256 |
+| --- | ---: | --- |
+| macos-arm64 | 12,022,968 | `662f4421b12ae30a223cbec5661572588d260fdb2ad096b92b1c0feb16947172` |
+| windows-x64 | 36,302,660 | `f1c73c135ea93892a7cdb59f0b5e0784875b896f38148d192ab28d2a2c6dc1de` |
+
+Beta.19 was not published; its failed tag remains intact. macOS is ad-hoc signed without notarization, Windows is unsigned, and live-account, clean-machine and complete manual accessibility acceptance remain outstanding.
+
 ## Native HTML scrolling without runtime scripts — current source
 
 The macOS reader's two app-owned JavaScript expressions and custom wheel/height
