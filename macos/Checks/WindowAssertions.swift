@@ -166,6 +166,9 @@ struct WindowAssertions {
         var split: NSSplitView?
         repeat {
             RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            // Drain SwiftUI's pending layout before observing the initial size
+            // or simulating a user drag on the attached native split view.
+            window.contentView!.layoutSubtreeIfNeeded()
             split = findSplit(window.contentView!)
             if let first = split?.subviews.first,
                abs((vertical ? first.frame.width : first.frame.height) - position) < 2 { break }
