@@ -4,7 +4,14 @@
 
 The owner explicitly requested merging to main and publishing without new tests. The canonical workflow now builds SwiftUI/Rust and WinUI/Rust packages, retaining same-run artifact provenance, exact checksums and pinned signed manifests. Only the exact beta.18 tag skips Rust checks, native walkthroughs, benchmarks and historical compatibility execution; its historical jobs record the waiver rather than claiming test success. Future tags retain those gates. The accompanying main preparation commit delegates packaging to the tag to avoid duplicate builds.
 
-Prior evidence below remains attributable to its original commit/run, including the four successful jobs at `2f39ade` in CI 36361496967. This exception does not complete N0, clean minimum-OS, IME/accessibility/DPI, live-provider or distribution-signing acceptance. No private workspace or real provider/model action is part of this release. Publication details will be recorded after the signed paired assets are available.
+Prior evidence below remains attributable to its original commit/run, including the four successful jobs at `2f39ade` in CI 36361496967. This exception does not complete N0, clean minimum-OS, IME/accessibility/DPI, live-provider or distribution-signing acceptance. No private workspace or real provider/model action is part of this release. [Beta.18](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.18) was published at 2026-09-28T02:05:20Z from `d6ee967abce78dd32900912ef030b399b8f8928b` by [CI 36367684050](https://github.com/Coke1120/Morrow-Mail/actions/runs/36367684050). Both native builds and the Rust publisher succeeded; historical jobs only recorded the explicit waiver. No new test suites, walkthroughs or benchmarks ran for this tag.
+
+All six public assets were downloaded. The manifest verified with the pinned production Ed25519 key, and both archive sizes/SHA-256 values matched the signed manifest and checksum files. Both backend package versions are beta.18; Windows metadata identifies WinUI/Rust and macOS identifies Rust with its normal numeric `0.6.0` plist version. Neither archive bundles Node/Electron/React runtime files. No downloaded application was launched and no real workspace was opened.
+
+| Public archive | Bytes | SHA-256 |
+| --- | ---: | --- |
+| macos-arm64 | 12,011,008 | `b38deb061cef785632f2f961cbe120b5cc3f74f37d700818058c0c748f2ed08a` |
+| windows-x64 | 36,210,163 | `b5fdd4e7ef4040f0aac51c23f5ae272d798a1330c58b68f0c8a9edc7bc477f06` |
 
 The beta.17 attempt at `1b0418897d260fc0c910f1a249f335c3628bcdcf` ([CI 36366623326](https://github.com/Coke1120/Morrow-Mail/actions/runs/36366623326)) built both packages and explicitly omitted all tests. The publisher verified the same-run artifacts and signature, then stopped after creating an empty draft because the immediately reread releases listing did not include it. No assets were uploaded or made public. Beta.18 uses the validated draft ID from the create response and requests fresh API reads; the beta.17 tag is not moved.
 
