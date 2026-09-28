@@ -1,10 +1,21 @@
 # Verification — 28 September 2026
 
-## 0.6.0-beta.21 — automatic history recovery candidate
+## 0.6.0-beta.21 — published automatic history recovery
 
 The owner requested removing the three-failure stop introduced in beta.20. Read-only history fetches now keep retrying temporary network, 5xx and recognized quota failures with persistent backoff capped at hourly attempts; daily quotas wait 24 hours. The original checkpoint and attempt count survive restarts. Startup restores older recognized transient failures only when the original connection is still present; paused, disconnected, changed-connection, authorization, storage, malformed/cyclic and unknown failures are not automatically resumed. Old quota records conservatively wait a day from their recorded failure because they did not distinguish daily limits.
 
-Local rustfmt, strict all-target Clippy and the complete locked Rust suite passed with zero failed or ignored tests. The existing isolated TLS history fixture now alternates seven temporary failures through hourly/daily backoff and process restarts before completing without Resume. Upgrade recovery verifies retained import bounds/cursor/page counts, unchanged retry times on a second restart, no provider calls before the deadline and exclusions for manual/nontransient/connection changes. No real mailbox was used. The existing paired tagged workflow must pass both platforms and the signed publisher before publication; beta.18's waiver does not apply.
+Local rustfmt, strict all-target Clippy and the complete locked Rust suite passed: 159 tests, zero failed or ignored. The existing isolated TLS history fixture now alternates seven temporary failures through hourly/daily backoff and process restarts before completing without Resume. Upgrade recovery verifies retained import bounds/cursor/page counts, unchanged retry times on a second restart, no provider calls before the deadline and exclusions for manual/nontransient/connection changes. No real mailbox was used.
+
+[Beta.21](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.21) was published at 2026-09-28T07:47:03Z from `bc43559a3aba4839c4e6d77e7f0bfd19f85f454b`. [Tagged CI 36391416109](https://github.com/Coke1120/Morrow-Mail/actions/runs/36391416109) passed on its first attempt: both platforms completed Node-free Rust checks, native packaging and acceptance, Windows completed its fictional-mail benchmark, and the existing publisher verified both artifacts and signed provenance before publication. No test waiver applied.
+
+All six public assets were downloaded. The Ed25519 manifest signature verified against the committed pinned public key; archive sizes and SHA-256 values matched the signed manifest and checksum files; both ZIP integrity checks and bundled backend versions passed. No downloaded application was launched or real workspace opened.
+
+| Public archive | Bytes | SHA-256 |
+| --- | ---: | --- |
+| macos-arm64 | 12,055,170 | `06853a1be78f9e428aa081a02e102880e09deffe1dcbc27899062b1f9e0d4c04` |
+| windows-x64 | 36,294,768 | `08c8e71b742ebb3c21e86d0164ef2c4b383377e94e155ff2725456d5da9134db` |
+
+macOS remains ad-hoc signed without notarization, Windows is unsigned, and live-account, clean-machine and complete accessibility acceptance remain outstanding. Fixture success does not establish live-provider acceptance.
 
 ## 0.6.0-beta.20 — published paired native release
 
