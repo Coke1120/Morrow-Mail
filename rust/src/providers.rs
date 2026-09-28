@@ -87,10 +87,34 @@ async fn request_kind(request: RequestBuilder, limit: usize, oauth: bool) -> Res
                 _ => "oauth_refresh_failed",
             };
             error.body["code"] = code.into();
+        } else if status == 403 {
+            let body = response_json(response, 32768).await.unwrap_or(Value::Null);
+            if let Some(code) = provider_quota_code(&body) {
+                error.body["code"] = code.into();
+            }
         }
         return Err(error);
     }
     response_json(response, limit).await
+}
+fn provider_quota_code(body: &Value) -> Option<&'static str> {
+    body["error"]["errors"]
+        .as_array()?
+        .iter()
+        .find_map(|entry| match string(entry, "reason") {
+            "rateLimitExceeded" | "userRateLimitExceeded" => Some("provider_quota_exceeded"),
+            "dailyLimitExceeded" => Some("provider_daily_quota_exceeded"),
+            _ => None,
+        })
+}
+pub fn quota_retry_delay(error: &Error, count: u64) -> Option<i64> {
+    // ponytail: hourly cap keeps read-only retries quiet; honor Retry-After if provider pacing needs it.
+    let code = string(&error.body, "code");
+    if code == "provider_daily_quota_exceeded" {
+        return Some(24 * 60 * 60 * 1000);
+    }
+    (code == "provider_quota_exceeded" || error.provider_status == Some(429))
+        .then_some([60_000, 120_000, 300_000, 900_000, 3_600_000][count.min(4) as usize])
 }
 async fn response_json(mut response: reqwest::Response, limit: usize) -> Result<Value> {
     if response.content_length().is_some_and(|n| n > limit as u64) {
@@ -120,6 +144,7 @@ async fn response_json(mut response: reqwest::Response, limit: usize) -> Result<
         .map_err(|_| remote_error())?
     }
 }
+
 pub fn api(
     client: &Client,
     mail: &Value,
@@ -1245,4 +1270,37 @@ pub async fn organize(
     Ok(
         json!({"remoteId":format!("microsoft:{}",string(&moved,"id")),"providerFolderId":destination["id"],"providerFolderName":destination["name"],"folder":if destination["kind"]=="inbox"{"inbox"}else if destination["kind"]=="spam"{"spam"}else{"archive"}}),
     )
+}
+
+#[cfg(test)]
+mod quota_tests {
+    use super::*;
+
+    #[test]
+    fn only_known_quota_reasons_retry() {
+        for (reason, expected_code, delay) in [
+            ("rateLimitExceeded", "provider_quota_exceeded", 60_000),
+            ("userRateLimitExceeded", "provider_quota_exceeded", 60_000),
+            (
+                "dailyLimitExceeded",
+                "provider_daily_quota_exceeded",
+                86_400_000,
+            ),
+        ] {
+            let code = provider_quota_code(&json!({"error":{"errors":[{"reason":reason}]}}));
+            assert_eq!(code, Some(expected_code));
+            let mut error = Error::new(502, "private provider detail");
+            error.body["code"] = code.unwrap().into();
+            assert_eq!(quota_retry_delay(&error, 0), Some(delay));
+        }
+        assert_eq!(
+            provider_quota_code(
+                &json!({"error":{"errors":[{"reason":"insufficientPermissions"}]}})
+            ),
+            None
+        );
+        let mut rate = Error::new(502, "private provider detail");
+        rate.provider_status = Some(429);
+        assert_eq!(quota_retry_delay(&rate, 4), Some(3_600_000));
+    }
 }

@@ -2,7 +2,7 @@
 use crate::{
     ai,
     error::{Error, Result},
-    mail, policy,
+    mail, policy, providers,
     service::{App, Context, connections, workspace},
     store::{Store, catalog, merge, now, string},
 };
@@ -182,12 +182,14 @@ fn import_failure(error: &Error, stage: &str, job: &Value, timestamp: i64) -> Va
         ("invalid_page", "restart", false)
     } else if stage == "commit" {
         ("storage_error", "resume", false)
+    } else if stage == "fetch" && error.body["code"] == "provider_daily_quota_exceeded" {
+        ("rate_limited", "resume", false)
+    } else if stage == "fetch" && providers::quota_retry_delay(error, 0).is_some() {
+        ("rate_limited", "retry", true)
     } else if [401, 403].contains(&status) {
         ("authorization", "reconnect", false)
     } else if message.starts_with("This IMAP server does not identify a Sent folder.") {
         ("sent_unavailable", "restart", false)
-    } else if stage == "fetch" && status == 429 {
-        ("rate_limited", "retry", true)
     } else if stage == "fetch"
         && error
             .provider_status
@@ -213,7 +215,7 @@ fn import_failure(error: &Error, stage: &str, job: &Value, timestamp: i64) -> Va
     let retry_at = delay
         .and_then(|delay| DateTime::from_timestamp_millis(timestamp + delay))
         .map(|date| date.to_rfc3339_opts(SecondsFormat::Millis, true));
-    json!({"error":import_error_message(code).unwrap_or_default(),"errorCode":code,"status":if delay.is_some(){"running"}else{"failed"},"recoveryAction":if delay.is_none() && action=="retry"{"resume"}else{action},"nextRetryAt":retry_at,"retryCount":count+u64::from(delay.is_some()),"updatedAt":DateTime::from_timestamp_millis(timestamp).unwrap().to_rfc3339_opts(SecondsFormat::Millis,true)})
+    json!({"error":import_error_message(code).unwrap_or_default(),"errorCode":code,"status":if delay.is_some(){"running"}else{"failed"},"recoveryAction":if delay.is_none() && action=="retry"{"resume"}else{action},"nextRetryAt":retry_at,"retryCount":count.saturating_add(u64::from(delay.is_some())),"updatedAt":DateTime::from_timestamp_millis(timestamp).unwrap().to_rfc3339_opts(SecondsFormat::Millis,true)})
 }
 pub fn start_import(db: &Store, account: &str, input: &Value) -> Result<()> {
     let options = import_options(input)?;
@@ -972,19 +974,37 @@ pub async fn tick(app: &App) -> Result<()> {
             let config = app.settings().await?;
             let interval = config["preferences"]["syncInterval"].as_i64().unwrap_or(0);
             let timestamp = Utc::now().timestamp_millis();
-            if interval>0 && timestamp>=runtime.last_sync.load(Ordering::Acquire).saturating_add(interval.saturating_mul(60000)) {
-                // Claim before provider calls, including failures: no hidden retry loop.
+            let scheduled = due_sync_accounts(&config, &now());
+            let regular = interval>0 && timestamp>=runtime.last_sync.load(Ordering::Acquire).saturating_add(interval.saturating_mul(60000));
+            if regular {
+                // Claim regular polling before provider calls, including failures.
                 runtime.last_sync.store(timestamp,Ordering::Release);
-                if let Ok(_mailbox) = app.0.mailbox.try_lock() {
-                    let accounts: Vec<_> = connections(&config).as_object().unwrap().keys().cloned().collect();
-                    let _ = mail::sync_accounts(app,&accounts).await;
-                }
+            }
+            if (regular || !scheduled.is_empty()) && let Ok(_mailbox) = app.0.mailbox.try_lock() {
+                let accounts: Vec<_> = if regular { connections(&config).as_object().unwrap().keys().cloned().collect() } else { scheduled };
+                let _ = mail::sync_accounts(app,&accounts).await;
             }
             history_tick(app).await?;
             crate::learning::scheduled_tick(app).await?;
             automation_tick(app).await
         } => result,
     }
+}
+fn due_sync_accounts(config: &Value, timestamp: &str) -> Vec<String> {
+    let live = connections(config);
+    config["backgroundSyncErrors"]
+        .as_array()
+        .into_iter()
+        .flat_map(|errors| errors.iter())
+        .filter(|error| {
+            live.get(string(error, "accountId")).is_some()
+                && ((error["code"] == "rate_limited"
+                    && !string(error, "nextRetryAt").is_empty()
+                    && string(error, "nextRetryAt") <= timestamp)
+                    || error["code"] == "provider_quota_exceeded")
+        })
+        .map(|error| string(error, "accountId").to_owned())
+        .collect()
 }
 pub fn stop(app: &App) {
     app.0.background.stopped.store(true, Ordering::Release);
@@ -996,7 +1016,7 @@ mod history_retry_tests {
     use super::*;
 
     #[test]
-    fn only_transient_reads_retry_and_commit_errors_never_expose_details() {
+    fn quota_and_transient_reads_retry_without_exposing_details() {
         let mut network = Error::new(502, "private provider detail");
         network.body["code"] = "provider_network".into();
         let first = import_failure(&network, "fetch", &json!({}), 0);
@@ -1022,6 +1042,30 @@ mod history_retry_tests {
             assert_eq!(result["status"], "failed");
             assert_eq!(result["recoveryAction"], expected);
         }
+        let mut quota = Error::new(502, "private quota detail");
+        quota.provider_status = Some(403);
+        quota.body["code"] = "provider_quota_exceeded".into();
+        let result = import_failure(&quota, "fetch", &json!({}), 0);
+        assert_eq!(result["errorCode"], "rate_limited");
+        assert_eq!(result["status"], "running");
+        assert_eq!(result["recoveryAction"], "retry");
+        assert_eq!(result["nextRetryAt"], "1970-01-01T00:00:30.000Z");
+        assert!(!result.to_string().contains("private quota detail"));
+        let later = import_failure(
+            &quota,
+            "fetch",
+            &json!({"errorCode":"network_error","retryCount":3}),
+            0,
+        );
+        assert_eq!(later["status"], "failed");
+        assert_eq!(later["recoveryAction"], "resume");
+        assert!(later["nextRetryAt"].is_null());
+        quota.body["code"] = "provider_daily_quota_exceeded".into();
+        let daily = import_failure(&quota, "fetch", &json!({}), 0);
+        assert_eq!(daily["errorCode"], "rate_limited");
+        assert_eq!(daily["status"], "failed");
+        assert_eq!(daily["recoveryAction"], "resume");
+        assert!(daily["nextRetryAt"].is_null());
         for message in [
             "The provider returned an unreadable response.",
             "The provider response exceeds the size limit.",
@@ -1042,7 +1086,12 @@ mod history_retry_tests {
             "storage_error"
         );
         for (count, seconds) in [(0, 30), (1, 120), (2, 300)] {
-            let result = import_failure(&provider, "fetch", &json!({"retryCount":count}), 0);
+            let result = import_failure(
+                &provider,
+                "fetch",
+                &json!({"errorCode":"provider_unavailable","retryCount":count}),
+                0,
+            );
             assert_eq!(
                 DateTime::parse_from_rfc3339(string(&result, "nextRetryAt"))
                     .unwrap()
@@ -1051,9 +1100,29 @@ mod history_retry_tests {
             );
             assert_eq!(result["retryCount"], count + 1);
         }
-        let exhausted = import_failure(&provider, "fetch", &json!({"retryCount":3}), 0);
+        let exhausted = import_failure(
+            &provider,
+            "fetch",
+            &json!({"errorCode":"provider_unavailable","retryCount":3}),
+            0,
+        );
         assert_eq!(exhausted["status"], "failed");
         assert_eq!(exhausted["recoveryAction"], "resume");
         assert!(exhausted["nextRetryAt"].is_null());
+    }
+
+    #[test]
+    fn only_due_connected_quota_syncs_are_scheduled() {
+        let config = json!({"mailAccounts":{"due@example.com":{"email":"due@example.com"},"later@example.com":{"email":"later@example.com"},"legacy@example.com":{"email":"legacy@example.com"}},"backgroundSyncErrors":[
+            {"accountId":"due@example.com","code":"rate_limited","nextRetryAt":"2026-01-01T00:00:00.000Z"},
+            {"accountId":"later@example.com","code":"rate_limited","nextRetryAt":"2026-01-02T00:00:00.000Z"},
+            {"accountId":"gone@example.com","code":"rate_limited","nextRetryAt":"2026-01-01T00:00:00.000Z"},
+            {"accountId":"legacy@example.com","code":"provider_quota_exceeded"},
+            {"accountId":"due@example.com","code":"oauth_reconnect_required","nextRetryAt":"2026-01-01T00:00:00.000Z"}
+        ]});
+        assert_eq!(
+            due_sync_accounts(&config, "2026-01-01T00:00:00.000Z"),
+            vec!["due@example.com", "legacy@example.com"]
+        );
     }
 }

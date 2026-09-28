@@ -236,7 +236,18 @@ pub fn save_connection(db: &Store, connection: &Value, select: bool) -> Result<(
             patch["mail"] = connection;
         }
         if select {
-            patch["activeAccount"] = address.into();
+            patch["activeAccount"] = address.clone().into();
+            patch["backgroundSyncErrors"] = config["backgroundSyncErrors"]
+                .as_array()
+                .map(|errors| {
+                    errors
+                        .iter()
+                        .filter(|error| string(error, "accountId") != address)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+                .into();
         }
         db.set_settings(&patch)?;
         if select {

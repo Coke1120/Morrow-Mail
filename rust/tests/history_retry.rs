@@ -108,10 +108,12 @@ impl Fixture {
                     if status == 0 {
                         return;
                     } // A broken local transport, never a live provider.
-                    let body = if status == 200 {
-                        r#"{"messages":[]}"#
-                    } else {
-                        "private provider body"
+                    let body = match status {
+                        200 => r#"{"messages":[]}"#,
+                        403 => {
+                            r#"{"error":{"errors":[{"reason":"userRateLimitExceeded"}],"message":"private provider body"}}"#
+                        }
+                        _ => "private provider body",
                     };
                     stream.write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
                     let _ = stream.shutdown().await;
@@ -212,9 +214,11 @@ async fn actual_provider_reads_retry_durably_then_require_resume_and_keep_checkp
         assert_eq!(f.calls.load(Ordering::SeqCst), calls);
         f.due().await;
     }
+    f.status.store(403, Ordering::SeqCst);
     jobs::tick(f.app()).await.unwrap();
     let result = f.import().await;
     assert_eq!(result["status"], "failed");
+    assert_eq!(result["errorCode"], "rate_limited");
     assert_eq!(result["recoveryAction"], "resume");
     assert_eq!(result["retryCount"], 3);
     assert!(result["nextRetryAt"].is_null());
@@ -234,6 +238,31 @@ async fn actual_provider_reads_retry_durably_then_require_resume_and_keep_checkp
     assert!(result["errorCode"].is_null());
     assert_eq!(result["pages"], 2);
     assert_eq!(result["imported"], 1);
+}
+
+#[tokio::test]
+async fn quota_retries_survive_restart_and_complete_without_manual_resume() {
+    let mut f = Fixture::new().await;
+    for (attempt, status) in [429, 403, 429].into_iter().enumerate() {
+        f.status.store(status, Ordering::SeqCst);
+        jobs::tick(f.app()).await.unwrap();
+        let result = f.import().await;
+        assert_eq!(result["status"], "running");
+        assert_eq!(result["errorCode"], "rate_limited");
+        assert_eq!(result["retryCount"], attempt + 1);
+        assert!(result["nextRetryAt"].as_str().is_some());
+        assert!(!result.to_string().contains("private"));
+        if attempt == 0 {
+            f.restart();
+        }
+        jobs::tick(f.app()).await.unwrap();
+        assert_eq!(f.calls.load(Ordering::SeqCst), attempt + 1);
+        f.due().await;
+    }
+    f.status.store(200, Ordering::SeqCst);
+    jobs::tick(f.app()).await.unwrap();
+    assert_eq!(f.import().await["status"], "complete");
+    assert_eq!(f.calls.load(Ordering::SeqCst), 4);
 }
 
 #[tokio::test]

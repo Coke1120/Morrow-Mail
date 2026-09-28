@@ -1,6 +1,6 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use morrow_search::{
-    mail, providers,
+    background, mail, providers,
     service::App,
     store::{Store, merge, string},
 };
@@ -8,7 +8,10 @@ use serde_json::{Value, json};
 use std::{
     fs,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU16, Ordering},
+    },
     time::Duration,
 };
 use tokio::{
@@ -48,6 +51,7 @@ struct Fixture {
     client: reqwest::Client,
     rows: Arc<Mutex<Vec<Value>>>,
     hits: Arc<Mutex<Vec<(String, url::Url)>>>,
+    list_status: Arc<AtomicU16>,
     server: tokio::task::JoinHandle<()>,
     provider: tokio::task::JoinHandle<()>,
 }
@@ -65,6 +69,8 @@ impl Fixture {
         let hits = Arc::new(Mutex::new(Vec::new()));
         let remote_rows = rows.clone();
         let remote_hits = hits.clone();
+        let list_status = Arc::new(AtomicU16::new(200));
+        let remote_status = list_status.clone();
         let rcgen::CertifiedKey { cert, signing_key } =
             rcgen::generate_simple_self_signed(vec!["gmail.googleapis.com".into()]).unwrap();
         let tls = tokio_rustls::rustls::ServerConfig::builder_with_provider(Arc::new(
@@ -96,6 +102,7 @@ impl Fixture {
                 let tls = tls.clone();
                 let rows = remote_rows.clone();
                 let hits = remote_hits.clone();
+                let list_status = remote_status.clone();
                 tokio::spawn(async move {
                     let mut stream = tls.accept(socket).await.unwrap();
                     let mut bytes = Vec::new();
@@ -141,6 +148,17 @@ impl Fixture {
                         bytes.extend_from_slice(&buffer[..n]);
                     }
                     hits.lock().unwrap().push((method.clone(), url.clone()));
+                    let status = if url.path().ends_with("/messages") {
+                        list_status.load(Ordering::SeqCst)
+                    } else {
+                        200
+                    };
+                    if status != 200 {
+                        let body = b"private quota response";
+                        stream.write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await.unwrap();
+                        stream.write_all(body).await.unwrap();
+                        return;
+                    }
                     let result = if url.path().ends_with("/labels") {
                         json!({"labels":[{"id":"Label_1","name":"Old label","type":"user"},{"id":"Label_2","name":"New label","type":"user"}]})
                     } else if method == "POST" && url.path().ends_with("/messages/send") {
@@ -212,6 +230,7 @@ impl Fixture {
             client,
             rows,
             hits,
+            list_status,
             server,
             provider,
         }
@@ -237,6 +256,34 @@ impl Fixture {
             .await
             .unwrap()
     }
+}
+
+#[tokio::test]
+async fn quota_limited_sync_retries_in_background_without_another_click() {
+    let f = Fixture::new().await;
+    f.list_status.store(429, Ordering::SeqCst);
+    let (status, error) = f.call("POST", "/api/sync", A, json!({})).await;
+    assert_eq!(status, 502);
+    assert_eq!(error["code"], "rate_limited");
+    assert!(error["nextRetryAt"].as_str().is_some());
+    let calls = f.hits.lock().unwrap().len();
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 502);
+    assert_eq!(f.hits.lock().unwrap().len(), calls);
+    f.app
+        .db(|db| {
+            let mut errors = db.settings()?["backgroundSyncErrors"].clone();
+            errors[0]["nextRetryAt"] = "2000-01-01T00:00:00.000Z".into();
+            db.set_settings(&json!({"backgroundSyncErrors":errors}))
+        })
+        .await
+        .unwrap();
+    f.list_status.store(200, Ordering::SeqCst);
+    background::tick(&f.app).await.unwrap();
+    assert!(f.hits.lock().unwrap().len() > calls);
+    assert_eq!(
+        f.app.settings().await.unwrap()["backgroundSyncErrors"],
+        json!([])
+    );
 }
 
 #[tokio::test]

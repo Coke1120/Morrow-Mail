@@ -49,7 +49,10 @@ enum JSON: Codable, Equatable, Hashable, Sendable, Identifiable {
 
 struct APIError: LocalizedError {
     let payload: JSON
-    var errorDescription: String? { payload["error"].nonempty ? payload["error"].string : "Morrow could not complete this request." }
+    var errorDescription: String? {
+        let message = payload["error"].nonempty ? payload["error"].string : "Morrow could not complete this request."
+        return message + (payload["nextRetryAt"].nonempty ? " Next retry: \(dateLabel(payload["nextRetryAt"].string))." : "")
+    }
     init(_ message: String) { payload = .object(["error": .string(message)]) }
     init(payload: JSON) { self.payload = payload }
 }

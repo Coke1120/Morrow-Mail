@@ -860,6 +860,7 @@ async fn oauth_reconnect_canonicalizes_identity_revokes_generation_and_disconnec
             db.upsert(A, &cached("same", A, "inbox"))?;
             db.upsert(A, &cached("draft", A, "drafts"))?;
             db.upsert(B, &cached("same", B, "inbox"))?;
+            db.set_settings(&json!({"backgroundSyncErrors":[{"accountId":A,"code":"rate_limited","nextRetryAt":"2099-01-01T00:00:00.000Z"},{"accountId":B,"code":"rate_limited","nextRetryAt":"2099-01-01T00:00:00.000Z"}]}))?;
             Ok(())
         })
         .await
@@ -936,6 +937,8 @@ async fn oauth_reconnect_canonicalizes_identity_revokes_generation_and_disconnec
     assert_ne!(after["mailAccounts"][A]["connectionId"], old_connection);
     assert_ne!(ai::generation(&after, A), old_generation);
     assert_eq!(after["mailAccounts"][B], before["mailAccounts"][B]);
+    assert_eq!(after["backgroundSyncErrors"].as_array().unwrap().len(), 1);
+    assert_eq!(after["backgroundSyncErrors"][0]["accountId"], B);
     assert_eq!(
         after["mailAccounts"][A]["refreshToken"],
         "new-refresh-token"
@@ -961,6 +964,11 @@ async fn oauth_reconnect_canonicalizes_identity_revokes_generation_and_disconnec
             .contains("connectionError=")
     );
     assert_eq!(token_calls.load(Ordering::SeqCst), 1);
+    server.app.db(|db| {
+        let mut errors = db.settings()?["backgroundSyncErrors"].as_array().cloned().unwrap();
+        errors.push(json!({"accountId":A,"code":"rate_limited","nextRetryAt":"2099-01-01T00:00:00.000Z"}));
+        db.set_settings(&json!({"backgroundSyncErrors":errors}))
+    }).await.unwrap();
     let disconnected = server
         .call("POST", "/api/account/disconnect", A, json!({}))
         .await;
@@ -969,6 +977,14 @@ async fn oauth_reconnect_canonicalizes_identity_revokes_generation_and_disconnec
     let final_settings = server.app.settings().await.unwrap();
     assert!(final_settings["mailAccounts"].get(A).is_none());
     assert_eq!(final_settings["mailAccounts"][B], before["mailAccounts"][B]);
+    assert_eq!(
+        final_settings["backgroundSyncErrors"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(final_settings["backgroundSyncErrors"][0]["accountId"], B);
     assert_ne!(
         ai::generation(&final_settings, A),
         ai::generation(&after, A)
