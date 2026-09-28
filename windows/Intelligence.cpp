@@ -569,6 +569,9 @@ void acceptSuggestions(Page const& p, Json const& next, bool saved = false) {
 hstring messageCaption(Json const& value) {
     return text(value, L"fromName", text(value, L"fromEmail", L"Sender withheld")) + L" — " + text(value, L"subject", L"Subject withheld") + L"\n" + text(value, L"date");
 }
+hstring coverage(Json const& value) {
+    return count(value, L"usedMessages") + L" / " + count(value, L"matchedMessages") + L" matching downloaded messages used";
+}
 IAsyncAction useSuggestion(Page p, hstring id) {
     require(!p->edited(), L"Save or discard suggestion settings before opening a draft.");
     auto context = p->context; Json input; put(input, L"id", id);

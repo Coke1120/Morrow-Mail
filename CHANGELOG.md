@@ -1,6 +1,11 @@
 # Changelog
 
-## 0.6.0-beta.22 — 2026-09-28
+## 0.6.0-beta.23 — 2026-09-28
+
+- Publish the AI workflow improvements described below after restoring the shared Windows history-coverage formatter used by AI Studio.
+- Beta.22 stopped at Windows compilation and was never public. Preserve its tag and rerun both native build/test gates for beta.23; see [release notes](docs/releases/v0.6.0-beta.23.md).
+
+## 0.6.0-beta.22 — 2026-09-28 (unpublished)
 
 - Replace Reply Suggestions' candidate picker with Needs a reply: explicitly enable bounded automatic assessments, hide no-reply results, retain Ignore across restart, and open suggestions in the owned native composer for review/edit/Send.
 - Continue embedding batches automatically after reviewed scope/model/daily-budget approval; pick up new mail, retain usage across restart, preserve valid vectors when stopped, and never replay uncertain failures automatically.
