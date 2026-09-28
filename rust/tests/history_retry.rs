@@ -113,8 +113,12 @@ impl Fixture {
                         403 => {
                             r#"{"error":{"errors":[{"reason":"userRateLimitExceeded"}],"message":"private provider body"}}"#
                         }
+                        4031 => {
+                            r#"{"error":{"errors":[{"reason":"dailyLimitExceeded"}],"message":"private provider body"}}"#
+                        }
                         _ => "private provider body",
                     };
+                    let status = if status == 4031 { 403 } else { status };
                     stream.write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
                     let _ = stream.shutdown().await;
                 });
@@ -168,12 +172,16 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn actual_provider_reads_retry_durably_then_require_resume_and_keep_checkpoint() {
+async fn actual_provider_reads_keep_retrying_durably_and_complete_from_checkpoint() {
     let mut f = Fixture::new().await;
     for (count, (status, code, delay)) in [
-        (429, "rate_limited", 30),
+        (429, "rate_limited", 60),
         (503, "provider_unavailable", 120),
         (0, "network_error", 300),
+        (403, "rate_limited", 900),
+        (503, "provider_unavailable", 3600),
+        (0, "network_error", 3600),
+        (4031, "rate_limited", 86400),
     ]
     .into_iter()
     .enumerate()
@@ -214,30 +222,110 @@ async fn actual_provider_reads_retry_durably_then_require_resume_and_keep_checkp
         assert_eq!(f.calls.load(Ordering::SeqCst), calls);
         f.due().await;
     }
-    f.status.store(403, Ordering::SeqCst);
-    jobs::tick(f.app()).await.unwrap();
-    let result = f.import().await;
-    assert_eq!(result["status"], "failed");
-    assert_eq!(result["errorCode"], "rate_limited");
-    assert_eq!(result["recoveryAction"], "resume");
-    assert_eq!(result["retryCount"], 3);
-    assert!(result["nextRetryAt"].is_null());
-    let calls = f.calls.load(Ordering::SeqCst);
-    jobs::tick(f.app()).await.unwrap();
-    assert_eq!(f.calls.load(Ordering::SeqCst), calls);
-    f.app()
-        .db(|db| jobs::control_import(db, OWNER, "resume"))
-        .await
-        .unwrap();
-    assert_eq!(f.import().await["retryCount"], 0);
     f.status.store(200, Ordering::SeqCst);
     jobs::tick(f.app()).await.unwrap();
     let result = f.import().await;
     assert_eq!(result["status"], "complete");
     assert_eq!(result["error"], "");
     assert!(result["errorCode"].is_null());
+    assert_eq!(result["retryCount"], 0);
+    assert!(result["nextRetryAt"].is_null());
     assert_eq!(result["pages"], 2);
     assert_eq!(result["imported"], 1);
+}
+
+#[tokio::test]
+async fn upgrade_recovers_only_known_transient_failures_for_the_same_connection() {
+    let mut f = Fixture::new().await;
+    let original = f.app().settings().await.unwrap()["imports"][OWNER].clone();
+    for (status, code, connection, hours) in [
+        ("failed", "rate_limited", "original", 24),
+        ("failed", "network_error", "original", 1),
+        ("failed", "provider_unavailable", "original", 1),
+        ("paused", "rate_limited", "original", 0),
+        ("complete", "rate_limited", "original", 0),
+        ("failed", "authorization", "original", 0),
+        ("failed", "invalid_cursor", "original", 0),
+        ("failed", "invalid_page", "original", 0),
+        ("failed", "storage_error", "original", 0),
+        ("failed", "import_failed", "original", 0),
+        ("failed", "unknown", "original", 0),
+        ("failed", "network_error", "reconnected", 0),
+        ("failed", "network_error", "", 0),
+    ] {
+        let failed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let job = morrow_search::store::merge(
+            original.clone(),
+            &json!({"status":status,"errorCode":code,"retryCount":3,"nextRetryAt":null,"updatedAt":failed_at,"connectionId":connection}),
+        );
+        let stored = job.clone();
+        f.app()
+            .db(move |db| {
+                db.set_settings(&json!({"imports":{OWNER:stored}}))?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        f.restart();
+        let recovered = f.app().settings().await.unwrap()["imports"][OWNER].clone();
+        if hours == 0 {
+            assert_eq!(recovered, job);
+            continue;
+        }
+        assert_eq!(recovered["status"], "running");
+        assert_eq!(recovered["recoveryAction"], "retry");
+        assert_eq!(recovered["retryCount"], 3);
+        for key in [
+            "id",
+            "cursor",
+            "visited",
+            "folderIndex",
+            "before",
+            "since",
+            "options",
+            "pages",
+            "imported",
+            "connectionId",
+        ] {
+            assert_eq!(recovered[key], job[key], "{key}");
+        }
+        let retry_at =
+            chrono::DateTime::parse_from_rfc3339(recovered["nextRetryAt"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(
+            retry_at - chrono::DateTime::parse_from_rfc3339(&failed_at).unwrap(),
+            chrono::Duration::hours(hours)
+        );
+        f.restart();
+        assert_eq!(
+            f.app().settings().await.unwrap()["imports"][OWNER],
+            recovered
+        );
+        let calls = f.calls.load(Ordering::SeqCst);
+        jobs::tick(f.app()).await.unwrap();
+        assert_eq!(f.calls.load(Ordering::SeqCst), calls);
+        f.status.store(200, Ordering::SeqCst);
+        f.due().await;
+        jobs::tick(f.app()).await.unwrap();
+        assert_eq!(f.import().await["status"], "complete");
+    }
+    let disconnected = morrow_search::store::merge(
+        original,
+        &json!({"status":"failed","errorCode":"network_error","retryCount":3}),
+    );
+    let stored = disconnected.clone();
+    f.app()
+        .db(move |db| {
+            db.set_settings(&json!({"imports":{OWNER:stored},"mailAccounts":{}}))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    f.restart();
+    assert_eq!(
+        f.app().settings().await.unwrap()["imports"][OWNER],
+        disconnected
+    );
 }
 
 #[tokio::test]

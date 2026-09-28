@@ -174,6 +174,10 @@ fn import_error_message(code: &str) -> Option<&'static str> {
 fn import_failure(error: &Error, stage: &str, job: &Value, timestamp: i64) -> Value {
     let message = string(&error.body, "error");
     let status = error.provider_status.unwrap_or(error.status);
+    let count = job["retryCount"].as_u64().unwrap_or(0);
+    let quota_delay = (stage == "fetch")
+        .then(|| providers::quota_retry_delay(error, count))
+        .flatten();
     let (code, action, retry) = if message == "Repeated import page."
         || message == "The IMAP folder changed. Start the import again."
     {
@@ -182,9 +186,7 @@ fn import_failure(error: &Error, stage: &str, job: &Value, timestamp: i64) -> Va
         ("invalid_page", "restart", false)
     } else if stage == "commit" {
         ("storage_error", "resume", false)
-    } else if stage == "fetch" && error.body["code"] == "provider_daily_quota_exceeded" {
-        ("rate_limited", "resume", false)
-    } else if stage == "fetch" && providers::quota_retry_delay(error, 0).is_some() {
+    } else if quota_delay.is_some() {
         ("rate_limited", "retry", true)
     } else if [401, 403].contains(&status) {
         ("authorization", "reconnect", false)
@@ -201,21 +203,13 @@ fn import_failure(error: &Error, stage: &str, job: &Value, timestamp: i64) -> Va
     } else {
         ("import_failed", "resume", false)
     };
-    let count = job["retryCount"].as_u64().unwrap_or(0);
-    let delay = if retry {
-        match count {
-            0 => Some(30_000),
-            1 => Some(120_000),
-            2 => Some(300_000),
-            _ => None,
-        }
-    } else {
-        None
-    };
+    let delay = retry.then(|| {
+        quota_delay.unwrap_or([30_000, 120_000, 300_000, 900_000, 3_600_000][count.min(4) as usize])
+    });
     let retry_at = delay
         .and_then(|delay| DateTime::from_timestamp_millis(timestamp + delay))
         .map(|date| date.to_rfc3339_opts(SecondsFormat::Millis, true));
-    json!({"error":import_error_message(code).unwrap_or_default(),"errorCode":code,"status":if delay.is_some(){"running"}else{"failed"},"recoveryAction":if delay.is_none() && action=="retry"{"resume"}else{action},"nextRetryAt":retry_at,"retryCount":count.saturating_add(u64::from(delay.is_some())),"updatedAt":DateTime::from_timestamp_millis(timestamp).unwrap().to_rfc3339_opts(SecondsFormat::Millis,true)})
+    json!({"error":import_error_message(code).unwrap_or_default(),"errorCode":code,"status":if delay.is_some(){"running"}else{"failed"},"recoveryAction":action,"nextRetryAt":retry_at,"retryCount":count.saturating_add(u64::from(delay.is_some())),"updatedAt":DateTime::from_timestamp_millis(timestamp).unwrap().to_rfc3339_opts(SecondsFormat::Millis,true)})
 }
 pub fn start_import(db: &Store, account: &str, input: &Value) -> Result<()> {
     let options = import_options(input)?;
@@ -726,9 +720,37 @@ fn update_job(db: &Store, account: &str, id: &str, patch: &Value) -> Result<()> 
         .collect();
     write_owner(db, "automation", account, value)
 }
-/// Claimed work may already have spent tokens; a restart must not replay it.
+/// Restore interrupted read retries, but never replay claimed paid work.
 pub fn recover(db: &Store) -> Result<()> {
     let config = db.settings()?;
+    let live = connections(&config);
+    for (account, job) in config["imports"].as_object().into_iter().flatten() {
+        let code = string(job, "errorCode");
+        if job["status"] != "failed"
+            || !["rate_limited", "network_error", "provider_unavailable"].contains(&code)
+            || string(job, "connectionId").is_empty()
+            || live[account]["connectionId"] != job["connectionId"]
+        {
+            continue;
+        }
+        // Old rate_limited records do not distinguish daily quotas: wait a day from the failure.
+        let delay = chrono::Duration::hours(if code == "rate_limited" { 24 } else { 1 });
+        let retry_at = DateTime::parse_from_rfc3339(string(job, "updatedAt"))
+            .map(|date| date.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now())
+            .checked_add_signed(delay)
+            .unwrap_or_else(Utc::now)
+            .to_rfc3339_opts(SecondsFormat::Millis, true);
+        write_owner(
+            db,
+            "imports",
+            account,
+            merge(
+                job.clone(),
+                &json!({"status":"running","recoveryAction":"retry","nextRetryAt":retry_at,"updatedAt":now()}),
+            ),
+        )?;
+    }
     for (account, value) in config["automation"].as_object().into_iter().flatten() {
         for job in value["jobs"]
             .as_array()
@@ -1049,7 +1071,7 @@ mod history_retry_tests {
         assert_eq!(result["errorCode"], "rate_limited");
         assert_eq!(result["status"], "running");
         assert_eq!(result["recoveryAction"], "retry");
-        assert_eq!(result["nextRetryAt"], "1970-01-01T00:00:30.000Z");
+        assert_eq!(result["nextRetryAt"], "1970-01-01T00:01:00.000Z");
         assert!(!result.to_string().contains("private quota detail"));
         let later = import_failure(
             &quota,
@@ -1057,15 +1079,15 @@ mod history_retry_tests {
             &json!({"errorCode":"network_error","retryCount":3}),
             0,
         );
-        assert_eq!(later["status"], "failed");
-        assert_eq!(later["recoveryAction"], "resume");
-        assert!(later["nextRetryAt"].is_null());
+        assert_eq!(later["status"], "running");
+        assert_eq!(later["recoveryAction"], "retry");
+        assert_eq!(later["nextRetryAt"], "1970-01-01T00:15:00.000Z");
         quota.body["code"] = "provider_daily_quota_exceeded".into();
         let daily = import_failure(&quota, "fetch", &json!({}), 0);
         assert_eq!(daily["errorCode"], "rate_limited");
-        assert_eq!(daily["status"], "failed");
-        assert_eq!(daily["recoveryAction"], "resume");
-        assert!(daily["nextRetryAt"].is_null());
+        assert_eq!(daily["status"], "running");
+        assert_eq!(daily["recoveryAction"], "retry");
+        assert_eq!(daily["nextRetryAt"], "1970-01-02T00:00:00.000Z");
         for message in [
             "The provider returned an unreadable response.",
             "The provider response exceeds the size limit.",
@@ -1085,7 +1107,14 @@ mod history_retry_tests {
             import_failure(&provider, "commit", &json!({}), 0)["errorCode"],
             "storage_error"
         );
-        for (count, seconds) in [(0, 30), (1, 120), (2, 300)] {
+        for (count, seconds) in [
+            (0_u64, 30),
+            (1, 120),
+            (2, 300),
+            (3, 900),
+            (4, 3600),
+            (u64::MAX, 3600),
+        ] {
             let result = import_failure(
                 &provider,
                 "fetch",
@@ -1098,17 +1127,8 @@ mod history_retry_tests {
                     .timestamp(),
                 seconds
             );
-            assert_eq!(result["retryCount"], count + 1);
+            assert_eq!(result["retryCount"], count.saturating_add(1));
         }
-        let exhausted = import_failure(
-            &provider,
-            "fetch",
-            &json!({"errorCode":"provider_unavailable","retryCount":3}),
-            0,
-        );
-        assert_eq!(exhausted["status"], "failed");
-        assert_eq!(exhausted["recoveryAction"], "resume");
-        assert!(exhausted["nextRetryAt"].is_null());
     }
 
     #[test]

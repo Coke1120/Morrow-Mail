@@ -1,5 +1,11 @@
 # Verification — 28 September 2026
 
+## 0.6.0-beta.21 — automatic history recovery candidate
+
+The owner requested removing the three-failure stop introduced in beta.20. Read-only history fetches now keep retrying temporary network, 5xx and recognized quota failures with persistent backoff capped at hourly attempts; daily quotas wait 24 hours. The original checkpoint and attempt count survive restarts. Startup restores older recognized transient failures only when the original connection is still present; paused, disconnected, changed-connection, authorization, storage, malformed/cyclic and unknown failures are not automatically resumed. Old quota records conservatively wait a day from their recorded failure because they did not distinguish daily limits.
+
+Local rustfmt, strict all-target Clippy and the complete locked Rust suite passed with zero failed or ignored tests. The existing isolated TLS history fixture now alternates seven temporary failures through hourly/daily backoff and process restarts before completing without Resume. Upgrade recovery verifies retained import bounds/cursor/page counts, unchanged retry times on a second restart, no provider calls before the deadline and exclusions for manual/nontransient/connection changes. No real mailbox was used. The existing paired tagged workflow must pass both platforms and the signed publisher before publication; beta.18's waiver does not apply.
+
 ## 0.6.0-beta.20 — published paired native release
 
 [Beta.20](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.20) was published at 2026-09-28T07:12:16Z from `f0bdbce660d162c884b4cd6fdbb3852261edec16`, after [PR #1](https://github.com/Coke1120/Morrow-Mail/pull/1) was reviewed, corrected and merged. The history-import fixes preserve a single three-retry budget across transient error types and require explicit Resume after exhaustion or daily quota errors. Recent-mail Sync retains separate per-account quota backoff.

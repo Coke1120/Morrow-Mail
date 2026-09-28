@@ -68,8 +68,11 @@ override markers. Provider moves use actual resulting labels, preserve stable lo
 identity and clear only the applicable local folder override. Gmail refresh covers
 five bounded scopes; All Mail history excludes Spam/Trash and is not a complete mirror.
 
-History retry is only for transient read-fetch network/429/5xx failures, at most
-three delays (30/120/300 seconds) with the same checkpoint. Never auto-retry sending,
+History retry is only for transient read-fetch network/429/5xx failures and recognized
+quota responses. Retain the same checkpoint and keep retrying with persisted backoff,
+capped at hourly attempts; daily quota responses wait 24 hours. Never stop merely
+because three attempts failed. Restore legacy transient failures only for the same
+connection, preserving manually paused imports. Never auto-retry sending,
 calendar creation, authentication, malformed/cyclic cursors or database failures.
 Public import errors come from the fixed allowlist, not stored provider text;
 `nextRetryAt` and `retryCount` are safe status metadata. Activity is observational
