@@ -383,7 +383,7 @@ void Shell::mailPage() {
     RowDefinition bottom; bottom.Height(GridLengthHelper::Auto()); layout.RowDefinitions().Append(bottom);
     auto heading = stack(10);
     auto folderTitle = std::wstring(folder); if (!folderTitle.empty()) folderTitle[0] = towupper(folderTitle[0]);
-    auto mailboxTitle = label(to_hstring(folderTitle), 24); bold(mailboxTitle, true); heading.Children().Append(mailboxTitle);
+    auto mailboxTitle = label(hstring(folderTitle), 24); bold(mailboxTitle, true); heading.Children().Append(mailboxTitle);
     heading.Children().Append(label(owner == L"all" ? L"All accounts" : owner, 12));
     auto toolbar = actions();
     auto weak = weak_from_this();
