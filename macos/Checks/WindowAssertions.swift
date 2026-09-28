@@ -110,7 +110,7 @@ struct WindowAssertions {
         assert(initial.arrangedSubviews.count == 2 && remembered != nil, "Right list width was not captured")
         let manual = min(400, initial.bounds.width - 320 - initial.dividerThickness)
         assert(manual > 280, "Fixture has no room to resize: \(initial.bounds)")
-        initial.setPosition(manual, ofDividerAt: 0)
+        dragDivider(initial, to: manual)
         settle()
         assert(abs((remembered ?? 0) - manual) < 2, "Manual list width was not captured: \(String(describing: remembered))")
         for temporary in ["focus", "bottom"] {
@@ -126,7 +126,7 @@ struct WindowAssertions {
             assert(restored.arrangedSubviews.count == 2 && abs(actual - manual) < 2, "List width reset after \(temporary): expected=\(manual), actual=\(actual), bounds=\(restored.bounds)")
         }
         let resized = manual - 30
-        listSplit().setPosition(resized, ofDividerAt: 0)
+        dragDivider(listSplit(), to: resized)
         settle()
         assert(abs((listSplit().arrangedSubviews.first?.frame.width ?? 0) - resized) < 2 && abs((remembered ?? 0) - resized) < 2, "Restoration kept reapplying over the user's divider")
         print("Right list width survives Expand/Restore and Below/Right, and remains resizable.")
@@ -182,10 +182,28 @@ struct WindowAssertions {
         let minimumOther: CGFloat = lateAttachment ? 0 : (vertical ? 320 : 200)
         let manual = min(position + 100, extent - minimumOther - split.dividerThickness)
         assert(manual > position + 20, "Fixture has no room to resize: \(context)")
-        split.setPosition(manual, ofDividerAt: 0)
+        dragDivider(split, to: manual)
         host.layoutSubtreeIfNeeded()
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         assert(abs((vertical ? first.frame.width : first.frame.height) - manual) < 2, "Initial sizing reset the user's divider: \(context), requested=\(manual), pane=\(first.frame)")
         window.close()
+    }
+
+    @MainActor static func dragDivider(_ split: NSSplitView, to position: CGFloat) {
+        let pane = split.arrangedSubviews[0].frame
+        let start = split.isVertical
+            ? NSPoint(x: pane.maxX + split.dividerThickness / 2, y: split.bounds.midY)
+            : NSPoint(x: split.bounds.midX, y: pane.maxY + split.dividerThickness / 2)
+        let end = split.isVertical
+            ? NSPoint(x: position + split.dividerThickness / 2, y: start.y)
+            : NSPoint(x: start.x, y: position + split.dividerThickness / 2)
+        func event(_ type: NSEvent.EventType, _ point: NSPoint) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: split.convert(point, to: nil), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: split.window!.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        // Exercise AppKit's tracking path so SwiftUI observes a real divider drag.
+        // Events stay inside this fixture application, without global input access.
+        NSApp.postEvent(event(.leftMouseUp, end), atStart: true)
+        NSApp.postEvent(event(.leftMouseDragged, end), atStart: true)
+        split.mouseDown(with: event(.leftMouseDown, start))
     }
 }
