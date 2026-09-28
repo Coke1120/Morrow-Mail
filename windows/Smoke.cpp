@@ -28,6 +28,32 @@ IAsyncAction Shell::smoke() {
         check(value == "Morrow native acceptance fixture", L"Native acceptance fixture marker is missing.");
         fixtureVerified = true;
         bool seeded = array(state,L"accounts").Size() > 0;
+        enter("macos-layout-parity");
+        auto themes = xaml::Application::Current().Resources().ThemeDictionaries();
+        for (auto name : {L"Light", L"Default"}) {
+            auto palette = themes.Lookup(box_value(name)).as<xaml::ResourceDictionary>();
+            auto color = unbox_value<Windows::UI::Color>(palette.Lookup(box_value(L"SystemAccentColor")));
+            check(name == std::wstring_view(L"Light") ? color == Windows::UI::Color{255, 26, 74, 61} : color == Windows::UI::Color{255, 166, 212, 176}, L"Windows lost the shared Morrow light/dark accent.");
+        }
+        check(themes.Lookup(box_value(L"HighContrast")).as<xaml::ResourceDictionary>().Size() == 0, L"Brand colours override the system high-contrast palette.");
+        check(composeButton.IsEnabled() == seeded, L"Compose does not reflect connected-account onboarding.");
+        controls::NavigationViewItem combined{nullptr};
+        for (auto const& value : navigation.MenuItems()) if (auto item = value.try_as<controls::NavigationViewItem>(); item && item.Tag()) {
+            auto tag = item.Tag().as<Json>();
+            check(text(tag, L"owner") != L"demo", L"The internal Demo account is visible.");
+            if (text(tag, L"owner") == L"all") combined = item;
+        }
+        check(bool(combined) == seeded, L"Combined folders do not reflect the connected accounts.");
+        if (combined) {
+            check(combined.MenuItems().Size() == 8, L"Combined mail does not expose every mailbox folder.");
+            std::set<std::wstring> folders;
+            for (auto const& value : combined.MenuItems()) {
+                auto tag = value.as<controls::NavigationViewItem>().Tag().as<Json>();
+                check(text(tag, L"owner") == L"all" && text(tag, L"section") == L"mail", L"A combined folder is routed to an individual owner.");
+                folders.insert(std::wstring(text(tag, L"folder")));
+            }
+            check(folders == std::set<std::wstring>{L"inbox", L"starred", L"pending", L"sent", L"drafts", L"archive", L"spam", L"trash"}, L"Combined mail folder destinations are duplicated or missing.");
+        }
         enter("initial-page");
         check(page.Content() && !loading && !closing && !dialogOpen && dirty.empty(), L"The normal initial page is not ready.");
         if (seeded) {
@@ -105,6 +131,11 @@ IAsyncAction Shell::smoke() {
             auto cursorCount = cursors.size();
             Json unread; unread.Insert(L"read",Value::CreateBooleanValue(false)); co_await patch(selected,unread);
             check(!flag(selected,L"read") && cursors.size()==cursorCount, L"Manual unread reset selection or pagination.");
+            enter("mail-unread-filter");
+            unreadFilter.IsChecked(true); cursors = {L""}; co_await loadPage();
+            check(rows.Items().Size() > 0, L"Unread filter lost the unread fixture message.");
+            for (auto const& item : rows.Items()) check(!flag(item.as<controls::ListViewItem>().Tag().as<Json>(), L"read"), L"Unread-only view includes a read message.");
+            unreadFilter.IsChecked(false); cursors = {L""}; co_await loadPage();
             enter("mail-combined");
             co_await navigate(L"mail",L"all");
             check(pageLabel.Text().size() && rows.Items().Size()==50, L"Combined mail did not load.");
@@ -134,6 +165,8 @@ IAsyncAction Shell::smoke() {
                 auto previousPage = page.Content();
                 co_await settingsPage(lifetime, tab);
                 check(page.Content() && page.Content() != previousPage, L"A native Settings tab failed to open.");
+                auto layout = page.Content().try_as<controls::Grid>();
+                check(layout && layout.ColumnDefinitions().Size() == 2 && layout.RowDefinitions().Size() == 3, L"Settings lost its fixed category sidebar and independently scrolling content.");
                 check(dirty.empty(), L"Opening a Settings tab incorrectly created unsaved edits.");
             }
             check(text(service->clientState(),L"morrow.pendingCalendar")==pendingCalendar,L"Opening Calendar changed its immutable recovery record.");

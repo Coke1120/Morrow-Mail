@@ -1,5 +1,7 @@
 # Morrow Mail feature coverage
 
+**Windows visual alignment (current, unpublished source):** WinUI uses macOS's light/dark Morrow green, workspace ordering, sidebar Compose, account/provider labels and eight combined/individual folders, with unread Inbox/Pending/Drafts badges. Default window/sidebar/reader dimensions, mail headings, a separate search row, unread-only filtering, compact previews and Settings category/model layouts now follow the native macOS presentation. System high-contrast resources remain native. This is not pixel-identical platform rendering or completed Windows visual/accessibility acceptance; see VERIFICATION.md. Publisher/custom-client permission changes are documented in the [繁體中文 OAuth setup guide](docs/OAUTH_SETUP.zh-TW.md).
+
 Morrow is an independent implementation, not a complete GenMail clone. The reference features below come from Genspark's public product-video descriptions and chapter metadata. They verify advertised capabilities, not hands-on product behavior. No claim of exhaustive parity is made.
 
 The app's versioned behavior catalog is [`rust/resources/catalog.json`](rust/resources/catalog.json), also consumed by the legacy [`shared/features.js`](shared/features.js): **19 behaviors**, comprising **8 model-backed actions** and **11 local simulations**. Every behavior has a server-enforced permission checkbox.

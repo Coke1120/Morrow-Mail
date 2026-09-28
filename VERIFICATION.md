@@ -1,5 +1,13 @@
 # Verification — 28 September 2026
 
+## Windows visual alignment and OAuth setup guide — unpublished source
+
+Windows source now applies the SwiftUI Morrow light/dark green through WinUI theme resources, retaining the system HighContrast dictionary. It aligns workspace order, sidebar Compose, account labels/folder badges, combined-folder destinations, initial window and reading proportions, mail/search controls, compact previews, and Settings category/model layouts. No service API, provider credential, signing key, package version or published asset changed.
+
+Local macOS checks: `git diff --check`; `CARGO_INCREMENTAL=0 cargo test --manifest-path rust/Cargo.toml --locked --test mail --test out_of_office` (**7 passed**); the same Cargo command with `--test storage` (**3 passed**). These cover existing OAuth/Out of Office and owner/metadata contracts, not WinUI compilation or visual rendering. The existing Windows native smoke now also checks theme resources, fresh Compose availability, complete account-bound combined folders, actual unread-only results and the Settings grid. Those new Windows checks have **not run here**: this host has no Windows/WinUI toolchain. Run `scripts/build-windows-native.ps1 -Zip` and `scripts/test-windows-native.ps1 -UiSmoke` on Windows, and review light/dark/high-contrast layouts before distribution.
+
+The [繁體中文 OAuth setup guide](docs/OAUTH_SETUP.zh-TW.md) was checked against current runtime scopes/client selection and official Google/Microsoft documentation. No Cloud/Entra settings were inspected or changed, and no real-account consent, send, calendar write or automatic-reply update was performed.
+
 ## 0.6.0-beta.18 — explicit release validation waiver
 
 The owner explicitly requested merging to main and publishing without new tests. The canonical workflow now builds SwiftUI/Rust and WinUI/Rust packages, retaining same-run artifact provenance, exact checksums and pinned signed manifests. Only the exact beta.18 tag skips Rust checks, native walkthroughs, benchmarks and historical compatibility execution; its historical jobs record the waiver rather than claiming test success. Future tags retain those gates. The accompanying main preparation commit delegates packaging to the tag to avoid duplicate builds.

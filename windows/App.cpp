@@ -15,6 +15,7 @@
 #include <fstream>
 #include <cmath>
 #include <cstdio>
+#include <cwctype>
 
 #pragma comment(lib, "user32.lib")
 
@@ -32,8 +33,29 @@ using namespace Windows::Foundation;
 using namespace controls;
 using namespace xaml;
 using namespace Windows::Data::Json;
+void applyBrandResources(ResourceDictionary const& resources) {
+    // Same light/dark accent as morrowGreen in the SwiftUI app. Leave the
+    // HighContrast dictionary to WinUI's system-colour resources.
+    for (bool dark : {false, true}) {
+        ResourceDictionary palette;
+        auto green = dark ? Windows::UI::Color{255, 166, 212, 176} : Windows::UI::Color{255, 26, 74, 61};
+        for (auto key : {L"SystemAccentColor", L"SystemAccentColorDark1", L"SystemAccentColorDark2", L"SystemAccentColorDark3",
+            L"SystemAccentColorLight1", L"SystemAccentColorLight2", L"SystemAccentColorLight3"}) palette.Insert(box_value(key), box_value(green));
+        for (auto key : {L"AccentFillColorDefaultBrush", L"AccentFillColorSecondaryBrush", L"AccentFillColorTertiaryBrush",
+            L"AccentTextFillColorPrimaryBrush", L"AccentTextFillColorSecondaryBrush", L"AccentTextFillColorTertiaryBrush",
+            L"NavigationViewSelectionIndicatorForeground"}) {
+            Media::SolidColorBrush brush(green);
+            if (std::wstring_view(key).find(L"Secondary") != std::wstring_view::npos) brush.Opacity(0.9);
+            if (std::wstring_view(key).find(L"Tertiary") != std::wstring_view::npos) brush.Opacity(0.8);
+            palette.Insert(box_value(key), brush);
+        }
+        resources.ThemeDictionaries().Insert(box_value(dark ? L"Default" : L"Light"), palette);
+    }
+    resources.ThemeDictionaries().Insert(box_value(L"HighContrast"), ResourceDictionary());
+}
 TextBlock label(hstring const& value, double size) {
     TextBlock result; result.Text(value); result.FontSize(size);
+    if (size >= 20) result.FontWeight(Windows::UI::Text::FontWeight{600});
     result.TextWrapping(TextWrapping::Wrap); result.IsTextSelectionEnabled(true);
     return result;
 }
@@ -63,8 +85,9 @@ StackPanel actions() { auto result = stack(); result.Orientation(Orientation::Ho
 void bold(TextBlock const& text, bool active) {
     Windows::UI::Text::FontWeight weight{}; weight.Weight = active ? 600 : 400; text.FontWeight(weight);
 }
-NavigationViewItem navItem(hstring const& title, hstring const& section, hstring const& owner = {}, hstring const& folder = L"inbox") {
+NavigationViewItem navItem(hstring const& title, hstring const& section, hstring const& owner = {}, hstring const& folder = L"inbox", hstring const& glyph = L"\uE8A5") {
     NavigationViewItem item; item.Content(box_value(title));
+    FontIcon icon; icon.Glyph(glyph); item.Icon(icon);
     Json tag; put(tag, L"section", section); put(tag, L"owner", owner); put(tag, L"folder", folder);
     item.Tag(tag); return item;
 }
@@ -122,11 +145,12 @@ void setupKeyboardAccelerators(std::shared_ptr<Shell> const& shell) {
             else if (key == Key::Number1) co_await self->navigate(L"mail", captured, L"inbox");
             else if (key == Key::Number2) co_await self->navigate(L"studio", captured);
             else if (key == Key::Number3) co_await self->navigate(L"calendar", captured);
-            else if (key == static_cast<Key>(VK_OEM_COMMA)) co_await self->navigate(L"settings", captured);
+            else if (key == Key::Number4) co_await self->navigate(L"today", captured);
+            else if (key == static_cast<Key>(VK_OEM_COMMA)) co_await self->navigate(L"preferences", captured);
         } catch (...) { if (!self->closing) self->error(errorText()); }
     };
     // Native matching handles modifiers and IME; do not intercept ordinary typing with KeyDown.
-    for (auto key : {Key::N, Key::F, Key::R, static_cast<Key>(VK_OEM_COMMA), Key::Number1, Key::Number2, Key::Number3}) {
+    for (auto key : {Key::N, Key::F, Key::R, static_cast<Key>(VK_OEM_COMMA), Key::Number1, Key::Number2, Key::Number3, Key::Number4}) {
         Input::KeyboardAccelerator shortcut; shortcut.Key(key); shortcut.Modifiers(Modifiers::Control);
         shortcut.Invoked(invoked); shell->root.KeyboardAccelerators().Append(shortcut);
     }
@@ -169,7 +193,16 @@ IAsyncAction Shell::start() {
     RowDefinition statusRow; statusRow.Height(GridLengthHelper::Auto()); root.RowDefinitions().Append(statusRow);
     navigation = NavigationView(); navigation.PaneTitle(L"Morrow"); navigation.IsSettingsVisible(true);
     navigation.IsBackButtonVisible(NavigationViewBackButtonVisible::Collapsed);
-    navigation.OpenPaneLength(280); navigation.PaneDisplayMode(NavigationViewPaneDisplayMode::Left);
+    navigation.OpenPaneLength(230); navigation.PaneDisplayMode(NavigationViewPaneDisplayMode::Left);
+    auto brand = stack(10); brand.Margin(ThicknessHelper::FromLengths(12, 4, 12, 12));
+    brand.Children().Append(label(L"A calmer kind of inbox", 12));
+    composeButton = button(L"Compose", [weak = weak_from_this()] {
+        if (auto self = weak.lock(); self && self->service && !self->loading && !self->dialogOpen
+            && self->navigation.IsEnabled() && !self->closing) compose(self);
+    });
+    composeButton.HorizontalAlignment(HorizontalAlignment::Stretch); composeButton.IsEnabled(false);
+    composeButton.Style(Application::Current().Resources().Lookup(box_value(L"AccentButtonStyle")).as<Style>());
+    brand.Children().Append(composeButton); navigation.PaneHeader(brand);
     page = ContentControl(); page.HorizontalContentAlignment(HorizontalAlignment::Stretch); page.VerticalContentAlignment(VerticalAlignment::Stretch);
     navigation.Content(page); root.Children().Append(navigation);
     status = label(L"Opening your private workspace…"); status.Margin(ThicknessHelper::FromLengths(16, 6, 16, 8));
@@ -177,16 +210,16 @@ IAsyncAction Shell::start() {
     Grid::SetRow(status, 1); root.Children().Append(status);
     window.Content(root);
     startupTrace("window content assigned");
-    window.AppWindow().Resize({1280, 840});
+    window.AppWindow().Resize({1220, 800});
     auto weak = weak_from_this();
     window.AppWindow().Closing([weak](auto const&, Microsoft::UI::Windowing::AppWindowClosingEventArgs const& event) {
         if (auto self = weak.lock(); self && !self->closeReady) { event.Cancel(true); if (!self->closing) self->shutdown(); }
     });
     navigation.ItemInvoked([weak](auto const&, NavigationViewItemInvokedEventArgs const& event) {
         auto self = weak.lock(); if (!self || self->selectingNavigation || self->loading) return;
-        if (event.IsSettingsInvoked()) { self->navigate(flag(self->updateResult, L"updateAvailable") ? L"about" : L"settings"); return; }
+        if (event.IsSettingsInvoked()) { self->navigate(flag(self->updateResult, L"updateAvailable") ? L"about" : L"preferences"); return; }
         auto item = event.InvokedItemContainer().try_as<NavigationViewItem>();
-        if (!item || !item.Tag()) return;
+        if (!item || !item.Tag() || item.MenuItems().Size()) return;
         auto tag = item.Tag().as<Json>();
         self->navigate(text(tag, L"section"), text(tag, L"owner"), text(tag, L"folder"));
     });
@@ -205,7 +238,7 @@ IAsyncAction Shell::start() {
         if (closing) co_return;
         try {
             auto size = service->windowState();
-            auto width = size.GetNamedNumber(L"width", 1280), height = size.GetNamedNumber(L"height", 840);
+            auto width = size.GetNamedNumber(L"width", 1220), height = size.GetNamedNumber(L"height", 800);
             if (std::isfinite(width) && std::isfinite(height)) window.AppWindow().Resize({static_cast<int>(std::clamp(width, 1040.0, 2400.0)), static_cast<int>(std::clamp(height, 700.0, 1600.0))});
         } catch (...) { error(L"The previous window size could not be restored."); }
         auto savedLayout = text(service->clientState(), L"morrow.mail.layout");
@@ -252,12 +285,27 @@ void Shell::rebuildNavigation() {
     try { desktopState = service->clientState(); } catch (...) { error(errorText()); }
     navigation.MenuItems().Clear();
     NavigationViewItemHeader header; header.Content(box_value(L"Workspace")); navigation.MenuItems().Append(header);
-    for (auto const& item : {std::pair{L"Today",L"today"}, {L"Activity",L"activity"}, {L"Reply suggestions",L"reply-suggestions"}, {L"AI Studio",L"studio"}, {L"Scheduled",L"scheduled"}, {L"Calendar",L"calendar"}, {L"Out of Office",L"out-of-office"}})
-        navigation.MenuItems().Append(navItem(item.first, item.second));
-    if (array(state, L"accounts").Size()) navigation.MenuItems().Append(navItem(L"All accounts", L"mail", L"all"));
+    struct Destination { wchar_t const* title; wchar_t const* id; wchar_t const* glyph; };
+    for (auto const& entry : {Destination{L"Today", L"today", L"\uE706"}, {L"Reply Suggestions", L"reply-suggestions", L"\uE8F2"},
+        {L"Out of Office", L"out-of-office", L"\uE708"}, {L"AI Studio", L"studio", L"\uE734"},
+        {L"Calendar", L"calendar", L"\uE787"}, {L"Scheduled", L"scheduled", L"\uE823"}}) {
+        auto item = navItem(entry.title, entry.id, {}, L"inbox", entry.glyph);
+        item.IsSelected(section == entry.id); navigation.MenuItems().Append(item);
+    }
+    std::vector<Json> accounts;
     for (auto const& value : array(state, L"accounts")) {
-        auto account = value.GetObject(); auto id = text(account, L"id"); if (id == L"demo") continue;
-        auto item = navItem(id, L"mail", id);
+        auto account = value.GetObject(); auto id = text(account, L"id");
+        if (!id.empty() && id != L"demo" && id != L"all") accounts.push_back(account);
+    }
+    composeButton.IsEnabled(!accounts.empty());
+    auto accountGroup = [&](hstring const& id, hstring const& title, hstring const& subtitle) {
+        auto item = navItem(title, L"mail", id, L"inbox", id == L"all" ? L"\uE8F1" : L"\uE715");
+        item.SelectsOnInvoked(false);
+        auto caption = stack(2); auto name = label(title, 12); bold(name, true); name.IsTextSelectionEnabled(false);
+        name.MaxLines(2); name.TextTrimming(TextTrimming::CharacterEllipsis);
+        auto detail = label(subtitle, 11); detail.IsTextSelectionEnabled(false);
+        caption.Children().Append(name); caption.Children().Append(detail); item.Content(caption);
+        Automation::AutomationProperties::SetName(item, title + L", " + subtitle);
         auto collapseKey = L"morrow.account.collapsed." + id;
         item.IsExpanded(text(desktopState, collapseKey.c_str()) != L"true");
         item.RegisterPropertyChangedCallback(NavigationViewItem::IsExpandedProperty(), [weak = weak_from_this(), collapseKey](DependencyObject const& sender, DependencyProperty const&) {
@@ -266,16 +314,34 @@ void Shell::rebuildNavigation() {
                 catch (...) { self->error(errorText()); }
             }
         });
-        auto counts = object(account, L"counts");
-        for (auto const& mailbox : {std::pair{L"Inbox",L"inbox"}, {L"Starred",L"starred"}, {L"Pending",L"pending"}, {L"Sent",L"sent"}, {L"Drafts",L"drafts"}, {L"Archive",L"archive"}, {L"Spam / Junk",L"spam"}, {L"Trash",L"trash"}}) {
-            auto title = hstring(mailbox.first) + L"  " + to_hstring(static_cast<uint64_t>(counts.GetNamedNumber(mailbox.second, 0)));
-            auto child = navItem(title, L"mail", id, mailbox.second);
-            child.IsSelected(section == L"mail" && owner == id && folder == mailbox.second);
+        for (auto const& mailbox : {Destination{L"Inbox",L"inbox",L"\uE715"}, {L"Starred",L"starred",L"\uE734"},
+            {L"Pending",L"pending",L"\uE823"}, {L"Sent",L"sent",L"\uE724"}, {L"Drafts",L"drafts",L"\uE70F"},
+            {L"Archive",L"archive",L"\uE7B8"}, {L"Spam / Junk",L"spam",L"\uE7BA"}, {L"Trash",L"trash",L"\uE74D"}}) {
+            auto child = navItem(mailbox.title, L"mail", id, mailbox.id, mailbox.glyph);
+            uint64_t count = 0;
+            for (auto const& account : accounts) if (id == L"all" || text(account, L"id") == id)
+                count += static_cast<uint64_t>(mailbox.id == std::wstring_view(L"inbox") ? account.GetNamedNumber(L"unread", 0) : object(account, L"counts").GetNamedNumber(mailbox.id, 0));
+            if (count && (mailbox.id == std::wstring_view(L"inbox") || mailbox.id == std::wstring_view(L"pending") || mailbox.id == std::wstring_view(L"drafts"))) {
+                InfoBadge badge; badge.Value(static_cast<int32_t>(std::min<uint64_t>(count, INT32_MAX))); child.InfoBadge(badge);
+            }
+            child.IsSelected(section == L"mail" && owner == id && folder == mailbox.id);
             item.MenuItems().Append(child);
         }
         navigation.MenuItems().Append(item);
+    };
+    if (!accounts.empty()) accountGroup(L"all", L"All accounts", L"Combined mail");
+    for (auto const& account : accounts) {
+        auto provider = text(account, L"provider");
+        accountGroup(text(account, L"id"), text(account, L"email", text(account, L"id")), provider == L"google" ? L"Gmail" : provider == L"microsoft" ? L"Outlook" : L"IMAP");
     }
-    navigation.MenuItems().Append(navItem(L"Add account", L"settings"));
+    navigation.FooterMenuItems().Clear();
+    auto activity = navItem(L"Activity", L"activity", {}, L"inbox", L"\uE9D9"); activity.IsSelected(section == L"activity");
+    navigation.FooterMenuItems().Append(activity);
+    navigation.FooterMenuItems().Append(navItem(L"Add account", L"settings", {}, L"inbox", L"\uE710"));
+    if (auto settings = navigation.SettingsItem().try_as<NavigationViewItem>()) {
+        settings.Content(box_value(L"Settings & connections"));
+        settings.IsSelected(section == L"settings" || section == L"preferences" || section == L"about");
+    }
     updateBadge();
     selectingNavigation = false;
 }
@@ -290,6 +356,7 @@ IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder
     if (!account.empty()) owner = account;
     auto captured = owner;
     section = target; folder = mailFolder; cursors = {L""}; nextCursor = L"";
+    rebuildNavigation();
     error(L"");
     if (target == L"mail") {
         if (!connected(owner) && owner != L"all") { co_await settingsPage(lifetime, L"mail"); co_return; }
@@ -302,6 +369,7 @@ IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder
         } catch (...) { loading = false; error(errorText()); co_return; }
         loading = false; mailPage(); co_await loadPage();
     } else if (target == L"settings") co_await settingsPage(lifetime, L"mail");
+    else if (target == L"preferences") co_await settingsPage(lifetime, L"general");
     else if (target == L"about") co_await settingsPage(lifetime, L"about");
     else if (target == L"scheduled") co_await scheduledPage(lifetime);
     else if (target == L"out-of-office") co_await outOfOfficePage(lifetime);
@@ -313,10 +381,13 @@ void Shell::mailPage() {
     RowDefinition top; top.Height(GridLengthHelper::Auto()); layout.RowDefinitions().Append(top);
     layout.RowDefinitions().Append(RowDefinition());
     RowDefinition bottom; bottom.Height(GridLengthHelper::Auto()); layout.RowDefinitions().Append(bottom);
+    auto heading = stack(10);
+    auto folderTitle = std::wstring(folder); if (!folderTitle.empty()) folderTitle[0] = towupper(folderTitle[0]);
+    auto mailboxTitle = label(to_hstring(folderTitle), 24); bold(mailboxTitle, true); heading.Children().Append(mailboxTitle);
+    heading.Children().Append(label(owner == L"all" ? L"All accounts" : owner, 12));
     auto toolbar = actions();
     auto weak = weak_from_this();
-    toolbar.Children().Append(button(L"New message", [weak] { if (auto self = weak.lock()) compose(self); }));
-    toolbar.Children().Append(button(L"Sync", [weak] { if (auto self = weak.lock()) self->sync(); }));
+    toolbar.Children().Append(button(L"Sync Mail", [weak] { if (auto self = weak.lock()) self->sync(); }));
     DropDownButton view; view.Content(box_value(L"View")); MenuFlyout viewMenu;
     for (auto const& option : {std::pair{L"Reader on right",L"right"}, {L"Reader below",L"bottom"}, {L"Focused reading",L"focus"}}) {
         MenuFlyoutItem choice; choice.Text(option.first);
@@ -333,20 +404,26 @@ void Shell::mailPage() {
         viewMenu.Items().Append(choice);
     }
     view.Flyout(viewMenu); toolbar.Children().Append(view);
-    search = field(L"Search mail"); search.PlaceholderText(L"from:, after:, or a phrase"); search.MinWidth(260);
+    search = field(L"Search mail"); search.Header(nullptr); search.PlaceholderText(L"Search mail · from:, after:, or an exact phrase");
+    Grid searchBar; searchBar.ColumnSpacing(8); searchBar.ColumnDefinitions().Append(ColumnDefinition());
+    ColumnDefinition searchActions; searchActions.Width(GridLengthHelper::Auto()); searchBar.ColumnDefinitions().Append(searchActions);
+    searchBar.Children().Append(search);
+    auto submitSearch = [weak] { if (auto self = weak.lock(); self && !self->loading) { self->cursors = {L""}; self->loadPage(); } };
     search.KeyDown([weak](auto const&, Input::KeyRoutedEventArgs const& event) {
-        if (event.Key() == Windows::System::VirtualKey::Enter) if (auto self = weak.lock()) { self->cursors = {L""}; self->loadPage(); event.Handled(true); }
+        if (event.Key() == Windows::System::VirtualKey::Enter) if (auto self = weak.lock(); self && !self->loading) { self->cursors = {L""}; self->loadPage(); event.Handled(true); }
     });
-    toolbar.Children().Append(search);
-    sorting = ComboBox(); sorting.Header(box_value(L"Sort"));
+    auto searchButtons = actions(); searchButtons.Children().Append(button(L"Search", submitSearch));
+    searchButtons.Children().Append(button(L"Clear", [weak] { if (auto self = weak.lock(); self && !self->loading) { self->search.Text(L""); self->cursors = {L""}; self->loadPage(); } }));
+    Grid::SetColumn(searchButtons, 1); searchBar.Children().Append(searchButtons); heading.Children().Append(searchBar);
+    sorting = ComboBox(); Automation::AutomationProperties::SetName(sorting, L"Sort mail");
     for (auto sort : {L"Newest",L"Oldest",L"Sender",L"Subject",L"Unread first",L"Starred first"}) sorting.Items().Append(box_value(sort));
     sorting.SelectedIndex(0);
     sorting.SelectionChanged([weak](auto const&, auto const&) { if (auto self = weak.lock(); self && !self->loading) { self->cursors = {L""}; self->loadPage(); } });
-    toolbar.Children().Append(sorting); layout.Children().Append(toolbar);
+    toolbar.Children().Append(sorting);
+    unreadFilter = CheckBox(); unreadFilter.Content(box_value(L"Unread only"));
+    unreadFilter.Click([submitSearch](auto const&, auto const&) { submitSearch(); }); toolbar.Children().Append(unreadFilter);
+    heading.Children().Append(toolbar); layout.Children().Append(heading);
     Grid body; mailBody = body; body.Margin(ThicknessHelper::FromLengths(0, 12, 0, 12));
-    ColumnDefinition listColumn; listColumn.Width(GridLengthHelper::FromPixels(400)); listColumn.MinWidth(220); body.ColumnDefinitions().Append(listColumn);
-    ColumnDefinition divider; divider.Width(GridLengthHelper::FromPixels(8)); body.ColumnDefinitions().Append(divider);
-    ColumnDefinition detailColumn; detailColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); detailColumn.MinWidth(280); body.ColumnDefinitions().Append(detailColumn);
     rows = ListView(); rows.SelectionMode(ListViewSelectionMode::Single); rows.IsItemClickEnabled(true);
     Automation::AutomationProperties::SetName(rows, L"Mail list");
     rows.ItemClick([weak](auto const&, ItemClickEventArgs const& event) {
@@ -361,7 +438,7 @@ void Shell::mailPage() {
     auto adjust = [weak, body](double horizontal, double vertical) {
         if (auto self = weak.lock()) {
             if (self->mailLayout == L"bottom") self->listHeight = std::clamp(self->listHeight + vertical, 120.0, std::max(120.0, body.ActualHeight() - 208.0));
-            else self->listWidth = std::clamp(self->listWidth + horizontal, 220.0, std::max(220.0, body.ActualWidth() - 288.0));
+            else self->listWidth = std::clamp(self->listWidth + horizontal, 260.0, std::max(260.0, body.ActualWidth() - 328.0));
             self->applyMailLayout();
         }
     };
@@ -373,7 +450,10 @@ void Shell::mailPage() {
     });
     Grid::SetColumn(resize, 1); body.Children().Append(resize);
     reader = ContentControl(); reader.HorizontalContentAlignment(HorizontalAlignment::Stretch); reader.VerticalContentAlignment(VerticalAlignment::Stretch);
-    reader.Content(label(L"Choose a message to read.")); Grid::SetColumn(reader, 2); body.Children().Append(reader);
+    auto emptyReader = stack(12); emptyReader.HorizontalAlignment(HorizontalAlignment::Center); emptyReader.VerticalAlignment(VerticalAlignment::Center);
+    auto emptyTitle = label(L"A little room to think", 22); emptyTitle.TextAlignment(TextAlignment::Center); emptyReader.Children().Append(emptyTitle);
+    auto emptyDetail = label(L"Choose a message to read, or compose something new."); emptyDetail.MaxWidth(280); emptyDetail.TextAlignment(TextAlignment::Center); emptyReader.Children().Append(emptyDetail);
+    reader.Content(emptyReader); Grid::SetColumn(reader, 2); body.Children().Append(reader);
     applyMailLayout(); Grid::SetRow(body, 1); layout.Children().Append(body);
     auto footer = actions();
     previous = button(L"Previous", [weak] { if (auto self = weak.lock(); self && !self->loading && self->cursors.size() > 1) { self->cursors.pop_back(); self->loadPage(); } });
@@ -398,9 +478,9 @@ void Shell::applyMailLayout() {
         mailBody.RowDefinitions().Append(list); mailBody.RowDefinitions().Append(divider); mailBody.RowDefinitions().Append(detail);
         Grid::SetRow(mailDivider, 1); Grid::SetRow(reader, 2);
     } else {
-        ColumnDefinition list; list.Width(GridLengthHelper::FromPixels(listWidth)); list.MinWidth(220);
+        ColumnDefinition list; list.Width(GridLengthHelper::FromPixels(listWidth)); list.MinWidth(260);
         ColumnDefinition divider; divider.Width(GridLengthHelper::FromPixels(8));
-        ColumnDefinition detail; detail.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); detail.MinWidth(280);
+        ColumnDefinition detail; detail.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); detail.MinWidth(320);
         mailBody.ColumnDefinitions().Append(list); mailBody.ColumnDefinitions().Append(divider); mailBody.ColumnDefinitions().Append(detail);
         Grid::SetColumn(mailDivider, 1); Grid::SetColumn(reader, 2);
     }
@@ -410,15 +490,16 @@ IAsyncAction Shell::loadPage() {
     if (loading || section != L"mail" || !rows) co_return;
     loading = true; auto version = generation; auto captured = owner;
     previous.IsEnabled(false); next.IsEnabled(false);
-    search.IsEnabled(false); sorting.IsEnabled(false);
+    search.IsEnabled(false); sorting.IsEnabled(false); unreadFilter.IsEnabled(false);
     try {
         Json options; put(options, L"folder", folder); put(options, L"cursor", cursors.back());
         if (cursors.back().empty()) options.Insert(L"offset", Value::CreateNumberValue(static_cast<double>((cursors.size() - 1) * 50)));
         wchar_t const* sorts[] = {L"newest",L"oldest",L"sender",L"subject",L"unread",L"starred"};
         put(options, L"sort", sorts[std::clamp(sorting.SelectedIndex(), 0, 5)]);
+        auto unread = unreadFilter.IsChecked(); options.Insert(L"unreadOnly", Value::CreateBooleanValue(unread && unread.Value()));
         put(options, L"locale", L"en");
         hstring path = L"/mail/page";
-        if (!search.Text().empty()) { path = L"/search"; put(options, L"query", search.Text()); put(options, L"scope", L"folder"); put(options, L"sort", L"relevance"); options.Insert(L"page",Value::CreateNumberValue(static_cast<double>(cursors.size()-1))); }
+        if (!search.Text().empty()) { path = L"/search"; options.Remove(L"unreadOnly"); put(options, L"query", search.Text()); put(options, L"scope", L"folder"); put(options, L"sort", L"relevance"); options.Insert(L"page",Value::CreateNumberValue(static_cast<double>(cursors.size()-1))); }
         auto result = co_await service->request(path, captured, L"POST", options);
         if (!current(version, captured)) { loading = false; co_return; }
         auto selectedId = text(selected, L"viewId");
@@ -437,9 +518,15 @@ IAsyncAction Shell::loadPage() {
             Grid heading; ColumnDefinition nameColumn; nameColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); heading.ColumnDefinitions().Append(nameColumn);
             ColumnDefinition dotColumn; dotColumn.Width(GridLengthHelper::Auto()); heading.ColumnDefinitions().Append(dotColumn);
             bool unread = !flag(message, L"read");
-            auto sender = label(text(message, L"fromName", text(message, L"fromEmail"))); bold(sender, unread); heading.Children().Append(sender);
-            auto dot = label(unread ? L"●" : L""); Grid::SetColumn(dot, 1); heading.Children().Append(dot); row.Children().Append(heading);
-            for (auto key : {L"subject",L"preview",L"date"}) { auto content = label(text(message, key), key == std::wstring_view(L"date") ? 11 : 14); content.MaxLines(key == std::wstring_view(L"preview") && density == L"spacious" ? 3 : 1); content.TextTrimming(TextTrimming::CharacterEllipsis); bold(content, unread); row.Children().Append(content); }
+            auto from = text(message, L"folder") == L"sent" || text(message, L"folder") == L"drafts" ? L"To: " + text(message, L"to") : text(message, L"fromName", text(message, L"fromEmail"));
+            auto sender = label(from); sender.MaxLines(1); sender.TextTrimming(TextTrimming::CharacterEllipsis); bold(sender, unread); heading.Children().Append(sender);
+            auto markers = label((flag(message, L"starred") ? hstring(L"★  ") : hstring{}) + (unread ? L"●" : L"")); Grid::SetColumn(markers, 1); heading.Children().Append(markers); row.Children().Append(heading);
+            for (auto key : {L"subject",L"preview",L"date"}) {
+                if (key == std::wstring_view(L"preview") && density == L"compact") continue;
+                auto content = label(text(message, key, key == std::wstring_view(L"subject") ? L"(No subject)" : L""), key == std::wstring_view(L"date") ? 11 : 13);
+                content.MaxLines(key == std::wstring_view(L"preview") && density == L"spacious" ? 3 : 1); content.TextTrimming(TextTrimming::CharacterEllipsis);
+                bold(content, unread && key != std::wstring_view(L"date")); row.Children().Append(content);
+            }
             if (captured == L"all") row.Children().Append(label(text(message, L"accountId"), 11));
             if (flag(message, L"pending")) row.Children().Append(label(L"Pending", 11));
             auto entry = preserve ? rows.Items().GetAt(index).as<ListViewItem>() : ListViewItem();
@@ -454,7 +541,7 @@ IAsyncAction Shell::loadPage() {
         pageLabel.Text(L"Page " + to_hstring(cursors.size()) + L" · " + to_hstring(static_cast<uint64_t>(result.GetNamedNumber(L"total", 0))) + L" messages");
         error(text(result, L"warning"));
     } catch (...) { error(errorText()); }
-    search.IsEnabled(true); sorting.IsEnabled(true);
+    search.IsEnabled(true); sorting.IsEnabled(search.Text().empty()); unreadFilter.IsEnabled(search.Text().empty());
     loading = false;
 }
 IAsyncAction Shell::read(Json metadata) {
@@ -810,6 +897,7 @@ struct MorrowApplication : winrt::Microsoft::UI::Xaml::ApplicationT<MorrowApplic
             auto controls = winrt::Microsoft::UI::Xaml::Controls::XamlControlsResources(); startupTrace("controls constructed");
             phase = "appending control resources"; startupTrace(phase);
             dictionaries.Append(controls); startupTrace("control resources loaded");
+            morrow::applyBrandResources(resources);
         } catch (...) {
             if (std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos) {
                 std::fprintf(stderr, "Native startup OnLaunched (%s) HRESULT: 0x%08X\n", phase, static_cast<unsigned>(winrt::to_hresult())); std::fflush(stderr);

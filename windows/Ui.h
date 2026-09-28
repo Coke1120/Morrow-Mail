@@ -27,6 +27,8 @@ struct Shell : std::enable_shared_from_this<Shell> {
     xaml::FrameworkElement mailDivider{nullptr};
     controls::TextBox search{nullptr};
     controls::ComboBox sorting{nullptr};
+    controls::CheckBox unreadFilter{nullptr};
+    controls::Button composeButton{nullptr};
     controls::Button previous{nullptr}, next{nullptr};
     controls::TextBlock pageLabel{nullptr};
     xaml::DispatcherTimer timer{nullptr};
@@ -37,7 +39,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     winrt::hstring owner, folder = L"inbox", section = L"mail", nextCursor;
     winrt::hstring mailLayout = L"right";
     bool readerFocused = false;
-    double listWidth = 400, listHeight = 300;
+    double listWidth = 320, listHeight = 240;
     std::vector<winrt::hstring> cursors{L""};
     uint64_t generation = 0, selectionGeneration = 0;
     bool loading = false, closing = false, dialogOpen = false, selectingNavigation = false;

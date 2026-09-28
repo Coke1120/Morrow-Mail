@@ -306,6 +306,8 @@ The publisher must enable Gmail and Calendar APIs, configure the consent screen 
 
 ### Outlook / Microsoft 365
 
+For publisher/custom-client setup, including the additional Google and Microsoft Out of Office permissions and both calendar callbacks, follow the [繁體中文 OAuth setup guide](docs/OAUTH_SETUP.zh-TW.md). The WinUI/Rust migration uses the existing Microsoft Graph registration; it does not require a new client ID.
+
 From v0.6.0-beta.4, click **Sign in with Microsoft in browser** for mail or Outlook Calendar. No client ID, secret or JSON is required from users. Morrow’s public desktop registration is shared by both clients and both services through `shared/microsoft-client-id.txt`; it contains no secret. 0.6.0-beta.3 and earlier packages still use the manual setup.
 
 For a custom registration, select **Use my own Microsoft OAuth client** under Advanced and follow these steps:
@@ -332,6 +334,8 @@ Yahoo Mail, including `@yahoo.com.hk`, uses the existing IMAP/SMTP connection. I
 Create the app password in Yahoo Account Security, following [Yahoo’s app-password guide](https://hk.help.yahoo.com/kb/SLN15241.html); do not enter your ordinary Yahoo sign-in password. See [Yahoo Hong Kong’s IMAP settings](https://hk.help.yahoo.com/kb/SLN4075.html). App-password availability is controlled by Yahoo. Morrow currently uses password-based IMAP/SMTP for Yahoo, not Yahoo browser OAuth, calendar integration or server-managed Out of Office. The preset is covered by local checks; a real Yahoo HK account has not been verified.
 
 ### Settings navigation
+
+The current Windows source uses the same Morrow light/dark green accent, workspace order and default sidebar/reader proportions as macOS. Compose lives in the sidebar; each account and All accounts expose the same eight mail folders. Search has its own row, with View, Sort, Sync and Unread only below it. Settings uses a fixed category sidebar and independently scrolling content, collapsed connection/import disclosures, and separate chat/embedding model views. WinUI retains its native controls and system high-contrast colours. This source update is not yet a published Windows package; Windows build and visual acceptance remain pending.
 
 Settings groups Mail and Calendar connections before Model and AI Permissions. Mail starts with an Add or reconnect account disclosure and connected-account status; expand New import range to choose history for your next connection or import. Existing cached mail is retained.
 

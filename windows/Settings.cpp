@@ -59,6 +59,7 @@ struct Editor {
     std::map<std::wstring, CheckBox> checks;
     std::map<std::wstring, ComboBox> choices;
     std::map<std::wstring, NumberBox> numbers;
+    Expander disclosure{nullptr};
     bool changed() const { return value.Stringify() != saved.Stringify() || (secret && !secret.Password().empty()); }
     void edit();
     void update();
@@ -70,6 +71,7 @@ struct SettingsPage : std::enable_shared_from_this<SettingsPage> {
     uint64_t generation, revision = 0;
     bool live = true, busy = false, saving = false, polling = false, saveFailed = false;
     StackPanel body{nullptr};
+    Expander mailDisclosure{nullptr};
     TextBlock notice{nullptr};
     xaml::DispatcherTimer timer{nullptr}, autosave{nullptr};
     std::vector<Form> forms;
@@ -91,7 +93,7 @@ struct SettingsPage : std::enable_shared_from_this<SettingsPage> {
             if (form->panel) form->panel.Children().Clear();
         }
         // An in-flight request retains its own busy marker until it finishes.
-        forms.clear(); body = nullptr; notice = nullptr; timer = nullptr; autosave = nullptr;
+        forms.clear(); body = nullptr; mailDisclosure = nullptr; notice = nullptr; timer = nullptr; autosave = nullptr;
     }
 };
 
@@ -295,12 +297,15 @@ IAsyncAction changeTab(Page p, hstring next) {
     co_await settingsPage(shell, next);
 }
 void general(Page const& p) {
-    title(p->body, L"General"); help(p->body, L"Preferences save automatically. Credentials, permissions and model batches always require explicit review.");
+    title(p->body, L"Make yourself at home"); help(p->body, L"Choose how Morrow looks, writes, and keeps your inbox up to date. Preferences save automatically.");
     auto f = form(p, p->body, object(object(p->shell->state, L"settings"), L"preferences"), L"general", true);
+    title(f->panel, L"Appearance & reading");
     choice(f, L"theme", L"Theme", {{L"system", L"Match device"}, {L"light", L"Light"}, {L"dark", L"Dark"}});
     choice(f, L"density", L"Mail list density", {{L"comfortable", L"Comfortable"}, {L"compact", L"Compact"}, {L"spacious", L"Spacious"}});
     toggle(f, L"markReadOnOpen", L"Mark mail as read when opened (local to Morrow)");
-    title(f->panel, L"Writing identity");
+    title(f->panel, L"Mail sync");
+    choice(f, L"syncInterval", L"Sync all accounts while Morrow is open", {{L"0", L"Manually"}, {L"1", L"Every minute"}, {L"5", L"Every 5 minutes"}, {L"15", L"Every 15 minutes"}, {L"30", L"Every 30 minutes"}}, true);
+    title(f->panel, L"Writing & language");
     help(f->panel, L"Display name and footer apply across accounts. Confirmed Learning identity remains account-specific.");
     input(f, L"displayName", L"Display name", 100);
     choice(f, L"signatureFormat", L"Footer format", {{L"plain", L"Plain text"}, {L"html", L"HTML"}});
@@ -313,7 +318,6 @@ void general(Page const& p) {
     choice(f, L"replyTone", L"Default reply tone", {{L"friendly", L"Friendly"}, {L"professional", L"Professional"}, {L"concise", L"Concise"}, {L"warm", L"Warm"}});
     input(f, L"language", L"Preferred AI response language", 60);
     input(f, L"translationLanguage", L"Translation language (blank uses preferred language)", 60);
-    choice(f, L"syncInterval", L"Refresh connected mailboxes while Morrow is open", {{L"0", L"Manually"}, {L"1", L"Every minute"}, {L"5", L"Every 5 minutes"}, {L"15", L"Every 15 minutes"}, {L"30", L"Every 30 minutes"}}, true);
     std::weak_ptr<SettingsPage> weak = p;
     p->autosave = xaml::DispatcherTimer(); p->autosave.Interval(std::chrono::milliseconds(500));
     p->autosave.Tick([weak, f](auto const&, auto const&) { if (auto page = weak.lock()) savePreferences(page, f); });
@@ -334,23 +338,21 @@ IAsyncAction launchOAuth(Page p, Json result, hstring provider, bool calendar) {
     p->tell(L"Complete sign-in in your browser, keep Morrow open, then select Refresh connections.");
 }
 
-Form historyOptions(Page const& p) {
+Form historyOptions(Page const& p, StackPanel const& into) {
     Json options; options.Insert(L"months", Value::CreateNumberValue(3));
     boolean(options, L"allMail", true); boolean(options, L"inbox", true); boolean(options, L"sent", true);
-    title(p->body, L"Next connection / history import");
-    auto f = form(p, p->body, options, L"import-options");
+    auto f = form(p, into, options, L"import-options");
     choice(f, L"months", L"History range", {{L"0", L"All available history"}, {L"1", L"Last month"}, {L"3", L"Last 3 months"}, {L"6", L"Last 6 months"}, {L"12", L"Last 12 months"}}, true);
     toggle(f, L"allMail", L"All normal folders"); toggle(f, L"inbox", L"Inbox (when All normal folders is off)"); toggle(f, L"sent", L"Sent (when All normal folders is off)");
     help(f->panel, L"Gmail / Outlook exclude Spam/Junk and Trash. IMAP relies on special-use flags and skips virtual/non-selectable folders. Imported mail stays local; this does not call AI.");
     return f;
 }
 
-void mailEditor(Page const& p, Form const& history, Json const& existing = Json()) {
-    title(p->body, existing.Size() ? L"Edit IMAP connection" : L"Add or reconnect mail");
+void mailEditor(Page const& p, StackPanel const& into, Form const& history, Json const& existing = Json()) {
     auto clients = object(object(p->shell->state, L"settings"), L"oauthClients");
     for (auto provider : {L"google", L"microsoft"}) {
         Expander expander; expander.Header(box_value(provider == std::wstring_view(L"google") ? L"Gmail — browser sign-in" : L"Outlook / Microsoft 365 — browser sign-in"));
-        auto content = stack(12); expander.Content(content); p->body.Children().Append(expander);
+        auto content = stack(12); expander.Content(content); expander.HorizontalAlignment(xaml::HorizontalAlignment::Stretch); into.Children().Append(expander);
         Json initial; boolean(initial, L"useDefaultClient", flag(object(clients, provider), L"configured")); boolean(initial, L"organize", false); put(initial, L"clientId", L"");
         auto f = form(p, content, initial, provider);
         toggle(f, L"useDefaultClient", L"Use Morrow’s bundled OAuth client");
@@ -370,11 +372,12 @@ void mailEditor(Page const& p, Form const& history, Json const& existing = Json(
         });
     }
     Expander expander; expander.Header(box_value(L"Yahoo Mail / HK and other IMAP accounts")); expander.IsExpanded(existing.Size() != 0);
-    auto content = stack(12); expander.Content(content); p->body.Children().Append(expander);
+    auto content = stack(12); expander.Content(content); expander.HorizontalAlignment(xaml::HorizontalAlignment::Stretch); into.Children().Append(expander);
     Json initial; put(initial, L"email", text(existing, L"email")); put(initial, L"imapHost", text(existing, L"imapHost", L"imap.gmail.com")); put(initial, L"smtpHost", text(existing, L"smtpHost", L"smtp.gmail.com"));
     initial.Insert(L"imapPort", Value::CreateNumberValue(existing.GetNamedNumber(L"imapPort", 993)));
     initial.Insert(L"smtpPort", Value::CreateNumberValue(existing.GetNamedNumber(L"smtpPort", 465)));
     auto f = form(p, content, initial, L"imap");
+    f->disclosure = expander;
     input(f, L"email", L"Full email address", 254); password(f, L"App password");
     input(f, L"imapHost", L"IMAP server", 253); numeric(f, L"imapPort", L"IMAP TLS port", 1, 65535);
     input(f, L"smtpHost", L"SMTP server", 253); choice(f, L"smtpPort", L"SMTP port", {{L"465", L"465 — TLS"}, {L"587", L"587 — STARTTLS"}}, true);
@@ -431,6 +434,7 @@ void accounts(Page const& p, StackPanel const& panel, Json const& state, Form co
                 auto config = object(account, L"settings");
                 if (text(config, L"email").empty()) put(config, L"email", text(account, L"email"));
                 f->accept(pick(config, {L"email", L"imapHost", L"imapPort", L"smtpHost", L"smtpPort"}));
+                page->mailDisclosure.IsExpanded(true); f->disclosure.IsExpanded(true);
                 page->tell(L"IMAP server addresses loaded above. Blank password preserves it only if the address and servers remain unchanged.");
                 break;
             }
@@ -444,7 +448,14 @@ void accounts(Page const& p, StackPanel const& panel, Json const& state, Form co
 }
 void mail(Page const& p) {
     title(p->body, L"Mail accounts"); help(p->body, L"Connect multiple Gmail, Outlook and Yahoo / IMAP accounts. Reconnecting changes only that address.");
-    auto history = historyOptions(p); mailEditor(p, history);
+    Expander add; add.Header(box_value(L"Add or reconnect account")); add.IsExpanded(array(p->shell->state, L"accounts").Size() == 0);
+    p->mailDisclosure = add;
+    add.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
+    auto editor = stack(12); add.Content(editor); p->body.Children().Append(add);
+    Expander range; range.Header(box_value(L"New import range")); range.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
+    auto historyPanel = stack(12); range.Content(historyPanel); p->body.Children().Append(range);
+    auto history = historyOptions(p, historyPanel); mailEditor(p, editor, history);
+    title(p->body, L"Connected accounts");
     auto list = stack(12); p->body.Children().Append(list);
     accounts(p, list, p->shell->state, history);
     action(p, p->body, L"Refresh connections / progress", [list, history](Page page) -> IAsyncAction {
@@ -541,11 +552,15 @@ IAsyncAction modelAction(Page p, Form f, bool embedding, bool testing) {
     }
 }
 void models(Page const& p) {
-    title(p->body, L"Models"); help(p->body, L"Chat and embedding use separate connections and explicit Save controls. Tests use a fixed sentence, never mail, and may charge provider tokens.");
+    ComboBox purpose; purpose.Header(box_value(L"Model purpose")); purpose.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
+    purpose.Items().Append(box_value(L"Chat & replies")); purpose.Items().Append(box_value(L"Search embedding")); purpose.SelectedIndex(0); p->body.Children().Append(purpose);
+    help(p->body, L"Chat and embedding use separate connections and explicit Save controls. Tests use a fixed sentence, never mail, and may charge provider tokens.");
+    std::vector<ContentControl> editors;
     for (bool embedding : {false, true}) {
-        title(p->body, embedding ? L"Search embedding" : L"Chat and replies");
         auto config = embedding ? object(p->searchState, L"settings") : object(object(p->shell->state, L"settings"), L"ai");
         auto f = form(p, p->body, modelFields(config, embedding), embedding ? L"embedding" : L"chat");
+        title(f->panel, embedding ? L"Search embedding" : L"Chat & reply model");
+        f->container.Visibility(embedding ? xaml::Visibility::Collapsed : xaml::Visibility::Visible); editors.push_back(f->container);
         if (embedding) choice(f, L"protocol", L"Embedding protocol", {{L"openai", L"OpenAI-compatible /embeddings"}, {L"ollama", L"Ollama native /api/embed"}});
         input(f, L"baseUrl", L"API base URL", 2000); input(f, L"model", L"Model ID", 200); password(f, L"API key (optional for local endpoints)");
         auto clear = toggle(f, L"clearApiKey", L"Remove saved API key");
@@ -558,6 +573,10 @@ void models(Page const& p) {
         action(p, f->panel, L"Discard connection edits", [f](Page page) -> IAsyncAction { f->accept(f->saved); f->secret.IsEnabled(true); page->tell(L"Saved connection fields restored. Entered key discarded."); co_return; });
         if (embedding && text(object(p->searchState, L"job"), L"status") == L"running") { f->locked = true; f->container.IsEnabled(false); help(p->body, L"An indexing batch is running. Manage it in Search before editing its connection."); }
     }
+    purpose.SelectionChanged([editors](auto const& sender, auto const&) {
+        auto selected = sender.template as<ComboBox>().SelectedIndex();
+        for (size_t i = 0; i < editors.size(); ++i) editors[i].Visibility(static_cast<int32_t>(i) == selected ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
+    });
 }
 
 hstring selectedFields(Json const& value) {
@@ -779,21 +798,39 @@ IAsyncAction settingsPage(std::shared_ptr<Shell> shell, hstring tab) {
     if (tab == L"learning") { co_await workspacePage(shell, L"learning"); co_return; }
     auto p = std::make_shared<SettingsPage>(); p->shell = shell; p->owner = shell->owner; p->tab = tab;
     p->generation = ++shell->generation; p->busyKey = L"settings-request:" + std::to_wstring(p->generation);
-    auto root = stack(18); root.MaxWidth(920); root.HorizontalAlignment(xaml::HorizontalAlignment::Left); root.Margin(xaml::Thickness{24, 20, 24, 32});
-    title(root, L"Settings");
-    auto tabs = stack(6); tabs.Orientation(Orientation::Horizontal);
-    for (auto const& [id, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{{L"general", L"General"}, {L"mail", L"Mail"}, {L"calendar", L"Calendar"}, {L"model", L"Model"}, {L"search", L"Search"}, {L"policy", L"AI permissions"}, {L"learning", L"Learning"}, {L"about", L"About"}}) {
-        std::weak_ptr<SettingsPage> weak = p;
-        auto control = button(caption, [weak, target = hstring(id)] { if (auto page = weak.lock()) changeTab(page, target); });
-        if (tab == id) control.IsEnabled(false);
-        tabs.Children().Append(control);
+    Grid root; root.Margin(xaml::Thickness{24, 20, 24, 20}); root.ColumnSpacing(24); root.RowSpacing(16);
+    RowDefinition heading; heading.Height(xaml::GridLengthHelper::Auto()); root.RowDefinitions().Append(heading);
+    root.RowDefinitions().Append(RowDefinition());
+    RowDefinition footer; footer.Height(xaml::GridLengthHelper::Auto()); root.RowDefinitions().Append(footer);
+    ColumnDefinition sidebar; sidebar.Width(xaml::GridLengthHelper::FromPixels(165)); root.ColumnDefinitions().Append(sidebar);
+    root.ColumnDefinitions().Append(ColumnDefinition());
+    auto headingLabel = label(L"Settings", 26); Grid::SetColumnSpan(headingLabel, 2); root.Children().Append(headingLabel);
+    ListView tabs; tabs.SelectionMode(ListViewSelectionMode::Single); tabs.IsItemClickEnabled(true);
+    xaml::Automation::AutomationProperties::SetName(tabs, L"Settings categories");
+    for (auto const& [id, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{{L"general", L"General"}, {L"mail", L"Mail"}, {L"calendar", L"Calendar"}, {L"model", L"Model"}, {L"policy", L"AI Permissions"}, {L"search", L"Search"}, {L"learning", L"Learning"}, {L"about", L"About"}}) {
+        ListViewItem item; item.Content(box_value(caption)); item.Tag(box_value(id)); tabs.Items().Append(item);
+        if (tab == id) tabs.SelectedItem(item);
     }
-    ScrollViewer tabScroll; tabScroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto); tabScroll.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled); tabScroll.Content(tabs); root.Children().Append(tabScroll);
+    tabs.ItemClick([weak = std::weak_ptr<SettingsPage>(p)](auto const& sender, ItemClickEventArgs const& event) -> fire_and_forget {
+        auto tabs = sender.template as<ListView>();
+        auto page = weak.lock(); auto item = event.ClickedItem().try_as<ListViewItem>();
+        if (!page || !page->current() || !item) co_return;
+        auto previous = page->tab; auto next = unbox_value<hstring>(item.Tag());
+        if (previous != next) co_await changeTab(page, next);
+        // A cancelled discard or pending save keeps the current category selected.
+        if (page->current()) for (auto const& value : tabs.Items()) {
+            auto entry = value.as<ListViewItem>(); if (unbox_value<hstring>(entry.Tag()) == previous) tabs.SelectedItem(entry);
+        }
+    });
+    Grid::SetRow(tabs, 1); root.Children().Append(tabs);
     p->notice = label(L"Loading settings…");
     xaml::Automation::AutomationProperties::SetLiveSetting(p->notice, xaml::Automation::Peers::AutomationLiveSetting::Polite);
-    root.Children().Append(p->notice); p->body = stack(16); root.Children().Append(p->body);
+    Grid::SetRow(p->notice, 2); Grid::SetColumnSpan(p->notice, 2); root.Children().Append(p->notice);
+    p->body = stack(20); p->body.MaxWidth(760); p->body.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
+    auto content = scroll(p->body); content.HorizontalContentAlignment(xaml::HorizontalAlignment::Stretch);
+    Grid::SetRow(content, 1); Grid::SetColumn(content, 1); root.Children().Append(content);
     root.Unloaded([p](auto const&, auto const&) { p->dispose(); });
-    shell->show(scroll(root));
+    shell->show(root);
     try {
         if (tab == L"model" || tab == L"search") {
             auto response = co_await shell->service->request(L"/search/settings", p->owner);
