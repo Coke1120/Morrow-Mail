@@ -171,7 +171,8 @@ about once per second, with bounded output and explicit incomplete status. Repor
 bind the UI/service hashes and OS to the observations. Working-set sums can count
 shared pages more than once; private bytes are not private working set or macOS
 memory footprint. Sampling can miss early peaks and short-lived processes, and
-the observer adds overhead. Fixed page/HTML readiness markers record time from
+the observer adds overhead. Samples include the walkthrough's adversarial Reader
+cases, not just ordinary reading. Fixed page/HTML readiness markers record time from
 before process launch to stderr receipt, not compositor first paint. The fixture
 pauses for two seconds after the initial page; these are individual observations,
 not steady-idle measurements, a latency distribution or an Electron comparison.
@@ -185,7 +186,7 @@ The PowerShell AST, all nine official NuGet archive hashes, project XML and expl
 package import paths were checked. Hosted `windows-2022` Rust checks, compilation,
 packaging, private service startup/authentication/EOF drain, fresh onboarding,
 foreground interaction guards and owned mail/workspace/Settings checks passed in
-CI 36357924382 at `62f3913`. Application startup was fixed by initializing resources in
+CI 36361496967 at `2f39ade`. Application startup was fixed by initializing resources in
 `OnLaunched`. Exact-document matching fixed the reader's rejected Base64 HTML
 navigation; initial and adversarial documents now load and the inline-script
 sentinel passes. Native CSP observation now verifies blocked images, frames and
