@@ -170,14 +170,21 @@ impl Fixture {
 #[tokio::test]
 async fn actual_provider_reads_retry_durably_then_require_resume_and_keep_checkpoint() {
     let mut f = Fixture::new().await;
-    for (count, delay) in [30, 120, 300].into_iter().enumerate() {
-        f.status.store(503, Ordering::SeqCst);
+    for (count, (status, code, delay)) in [
+        (429, "rate_limited", 30),
+        (503, "provider_unavailable", 120),
+        (0, "network_error", 300),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        f.status.store(status, Ordering::SeqCst);
         let before = chrono::Utc::now();
         jobs::tick(f.app()).await.unwrap();
         let result = f.import().await;
         assert_eq!(result["status"], "running");
         assert_eq!(result["phase"], "retrying");
-        assert_eq!(result["errorCode"], "provider_unavailable");
+        assert_eq!(result["errorCode"], code);
         assert_eq!(result["retryCount"], count + 1);
         assert_eq!(result["recoveryAction"], "retry");
         let retry_at =
@@ -207,9 +214,11 @@ async fn actual_provider_reads_retry_durably_then_require_resume_and_keep_checkp
         assert_eq!(f.calls.load(Ordering::SeqCst), calls);
         f.due().await;
     }
+    f.status.store(403, Ordering::SeqCst);
     jobs::tick(f.app()).await.unwrap();
     let result = f.import().await;
     assert_eq!(result["status"], "failed");
+    assert_eq!(result["errorCode"], "rate_limited");
     assert_eq!(result["recoveryAction"], "resume");
     assert_eq!(result["retryCount"], 3);
     assert!(result["nextRetryAt"].is_null());
@@ -234,7 +243,7 @@ async fn actual_provider_reads_retry_durably_then_require_resume_and_keep_checkp
 #[tokio::test]
 async fn quota_retries_survive_restart_and_complete_without_manual_resume() {
     let mut f = Fixture::new().await;
-    for (attempt, status) in [429, 403, 429, 403].into_iter().enumerate() {
+    for (attempt, status) in [429, 403, 429].into_iter().enumerate() {
         f.status.store(status, Ordering::SeqCst);
         jobs::tick(f.app()).await.unwrap();
         let result = f.import().await;
@@ -253,7 +262,7 @@ async fn quota_retries_survive_restart_and_complete_without_manual_resume() {
     f.status.store(200, Ordering::SeqCst);
     jobs::tick(f.app()).await.unwrap();
     assert_eq!(f.import().await["status"], "complete");
-    assert_eq!(f.calls.load(Ordering::SeqCst), 5);
+    assert_eq!(f.calls.load(Ordering::SeqCst), 4);
 }
 
 #[tokio::test]
