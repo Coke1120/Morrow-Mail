@@ -7,25 +7,24 @@
 ## Scope and structure
 
 This repository is `~/Documents/Github/genmail`. The product name is Morrow Mail.
-It is a local, single-user app with a fully native SwiftUI macOS interface and
-a WinUI 3/C++/WinRT Windows interface from beta.18 and legacy React/Electron/browser compatibility clients. Preserve native and compatibility clients when changing
-shared API contracts.
+It is a local, single-user app with native SwiftUI on macOS, WinUI 3/C++/WinRT
+on Windows and a Rust service. The owner authorized retiring the React/Electron,
+Node service and npm source/tools after beta.18. Preserve their Git history and
+fixed historical compatibility CI; source retirement does not waive outstanding
+clean-machine, accessibility, signing or live-account acceptance.
 
-The native prerelease cutover is authorized for beta.18: `windows/` is the unpackaged WinUI 3/C++/WinRT host, with Rust-owned business logic. Beta.16 remains the fixed Electron compatibility baseline. Keep compatibility sources until the remaining retirement gates pass. The owner explicitly waived new tests for beta.18 only; do not represent omitted tests as passed or weaken artifact provenance, signing or data protection.
+- `macos/Sources/MorrowMail/`: SwiftUI views, native client and service lifecycle.
+- `windows/`: unpackaged WinUI host, isolated HTML reader and native smoke checks.
+- `rust/src/`: storage, authenticated API, providers/OAuth, AI, jobs, search and signed updater.
+- `rust/tests/`, `macos/Checks/`, `tests/fixtures/`: native contracts and shared fixture data.
+- `scripts/`: native builds/verification and archived compatibility-check preparation.
+- `assets/`: branding/fonts; `shared/microsoft-client-id.txt`: public desktop registration.
+- `rust/resources/`: versioned catalog/OpenCC data, provenance/notices and pinned update public key. Never rotate that key during migration.
+- `package.json`: common product version/metadata only; no npm dependencies or scripts.
 
-- `macos/Sources/MorrowMail/`: SwiftUI views, native client, and local service lifecycle.
-- `rust/src/`: production desktop service: storage, authenticated API, providers, OAuth, AI, background jobs, search and signed updater. Rust is the default; `server/` remains the browser/development and explicit Node compatibility service. Keep shared contracts compatible.
-- `server/app.js`: Node mail accounts, request routing, settings, sending, AI, and workflows.
-- `server/store.js`: SQLite messages and encrypted settings.
-- `server/providers.js`, `server/integrations.js`: provider integrations.
-- `server/calendar-*.js`: independent calendar connections and idempotent creation.
-- `server/policy.js`, `server/workflows.js`, `shared/features.js`: permissions and behavior catalog.
-- `src/`: shared Windows/browser React interface.
-- `desktop/`: isolated Electron Windows shell and restricted desktop bridge.
-- `rust/tests/`, `tests/`, `macos/Checks/`: Rust/Node contracts, isolated TLS fixtures and native client checks.
-- `scripts/`: development, backup, build, and test commands.
-- `assets/`: shared branding/fonts, independent of the legacy React/Electron directories.
-- `rust/resources/`: versioned catalog/OpenCC data, provenance/notices and the production pinned update public key. Never rotate that key during migration; the historical Node copy remains byte-identical.
+See `docs/JAVASCRIPT_RETIREMENT.md` for remaining app-owned reader JavaScript,
+security probes and the isolated historical Node test lane. Do not reintroduce a
+Node runtime or second database writer into native packages.
 
 ## Implementation rules
 
@@ -95,27 +94,25 @@ never connection secrets.
 
 ## Build and verify
 
-Use Node 22.13+, Rust 1.98+ with rustfmt/clippy, and Apple's Swift command-line tools on macOS. No new test framework
-is needed. Run checks appropriate to the change:
+Use Rust 1.98+ with rustfmt/clippy, Apple's Swift command-line tools on macOS,
+and the pinned Windows prerequisites in `windows/README.md`. Normal builds do
+not require Node/npm. Run checks appropriate to the change:
 
 ```sh
-npm ci                       # install pinned dependencies when needed
-npm run rust:test            # Rust fmt/clippy/tests/builds and Node↔Rust contracts
-npm run check                # backend tests and React production build
-npm run macos:test           # Swift model checks, UI compilation, native API integration
-npm run macos:rust:test      # actual native client with production Rust service
-npm run macos:build          # self-contained app in build/macos/Morrow Mail.app
-npm run windows:build        # Windows x64 host: self-contained Electron app
-npm run desktop:test -- --packaged  # fresh onboarding + owned fixture mailbox on Windows
-npm run updater:test               # isolated install/restart acceptance on macOS/Windows
-npm run updater:rust-upgrade:test   # original installer → actual Rust app, restart and backup
-codesign --verify --deep --strict 'build/macos/Morrow Mail.app'
-plutil -lint 'build/macos/Morrow Mail.app/Contents/Info.plist'
+cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets -- -D warnings
+cargo test --manifest-path rust/Cargo.toml --locked
+/bin/sh scripts/build-macos-native.sh
+cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-native-check -- --service "$PWD/build/macos-native/Morrow Mail.app/Contents/Resources/morrow-service"
+pwsh -File scripts/build-windows-native.ps1 -Zip
+pwsh -File scripts/test-windows-native.ps1 -UiSmoke
+codesign --verify --deep --strict 'build/macos-native/Morrow Mail.app'
+plutil -lint 'build/macos-native/Morrow Mail.app/Contents/Info.plist'
 ```
 
 Avoid parallel builds targeting the same output. Inspect free disk space before full builds; `CARGO_INCREMENTAL=0` reduces local accumulation. Generated build cleanup must never touch private workspaces.
 
-Native candidates use `/bin/sh scripts/build-macos-native.sh`, Rust `morrow-native-check --service <candidate-service>`, and Windows `scripts/build-windows-native.ps1 -Zip` / `test-windows-native.ps1 -UiSmoke`. Normal Rust/resource/notice/native checks must work without Node on PATH. Node differential tests are explicitly ignored by the normal Cargo suite and run separately with `MORROW_NODE_COMPAT_ROOT` pointing to fixed beta.16 (`7ab30cbb3e496118513a98f8211ec66481e282c4`). Preserve that CI gate instead of silently omitting historical compatibility.
+Native candidates use `/bin/sh scripts/build-macos-native.sh`, Rust `morrow-native-check --service <candidate-service>`, and Windows `scripts/build-windows-native.ps1 -Zip` / `test-windows-native.ps1 -UiSmoke`. Normal Rust/resource/notice/native checks must work without Node on PATH. Node differential tests are explicitly ignored by the normal Cargo suite and run separately with `MORROW_NODE_COMPAT_ROOT` pointing to fixed beta.16 (`7ab30cbb3e496118513a98f8211ec66481e282c4`). Preserve that CI gate instead of silently omitting historical compatibility. The archived harness is pinned separately in `scripts/prepare-historical-checks.py`; it must exercise current binaries/version/catalog, not archived binaries. See the retirement guide for local commands.
 
 Account-routing changes need coverage for duplicate IDs, combined views,
 account-specific sending/AI, reconnect/migration, and disconnect isolation.
@@ -159,7 +156,7 @@ The canonical GitHub repository is `Coke1120/Morrow-Mail`; the local checkout an
 Keep package.json as the common version source. Every tagged alpha or beta must build and pass
 checks on macOS and Windows before either download becomes public, except the explicit beta.18 test waiver recorded in VERIFICATION.md. Both platform builds and signed provenance remain mandatory. Use the existing
 workflow and publisher; never replace published binaries or ship only one platform.
-Preserve SwiftUI on macOS, WinUI on Windows and the historical React/browser compatibility client. Desktop IPC
+Preserve SwiftUI on macOS, WinUI on Windows and upgrade compatibility with the fixed historical clients. Desktop IPC
 must validate the main-frame sender, accept only narrow operations, and never expose
 Node, arbitrary filesystem access or private API tokens to the renderer. Calendar
 retry IDs and payloads must survive restart on both platforms.

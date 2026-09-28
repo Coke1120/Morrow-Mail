@@ -178,7 +178,7 @@ fn artifact(output: &str, name: &str) -> Result<PathBuf> {
     path.ok_or_else(|| format!("Cargo did not report the {name} executable.").into())
 }
 
-// Same loopback sentinel as scripts/test-email-reader.js. A TCP connection alone
+// Native loopback sentinel. A TCP connection alone
 // also fails this check, so an incomplete resource request cannot escape counting.
 struct ReaderNetwork {
     port: u16,

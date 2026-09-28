@@ -1,5 +1,7 @@
 # Morrow Mail — Rust 核心與原生平台封裝遷移計畫
 
+> Historical migration record. The owner subsequently authorized JavaScript source retirement; see [current source/tooling policy](JAVASCRIPT_RETIREMENT.md). Old JS paths and npm commands below refer to their recorded commits, not current build instructions. Outstanding acceptance gates are unchanged.
+
 日期：2026-09-28
 
 狀態：使用者於 2026-09-28 明確要求跳過新測試、合併 main 並發佈原生 prerelease（beta.17 發佈工具停止、未公開；修正版為 beta.18）；本次核准 WinUI／Rust prerelease 切換。此一次性豁免不把未執行測試或 N0／最低 OS／無障礙／真實 provider 驗收標成完成；雙平台打包、同 run artifact 來源與 pinned 簽章仍保留。正式 workflow 接 native builders 與 Rust publisher；舊相容來源暫不刪除。

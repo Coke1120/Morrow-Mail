@@ -136,21 +136,19 @@ final class AppModel: ObservableObject {
         let attempt = launchAttempt
         do {
             let resources = Bundle.main.resourceURL!
-            let runtime = Bundle.main.object(forInfoDictionaryKey: "MorrowServiceRuntime") as? String ?? "node"
-            guard ["node", "rust"].contains(runtime) else { throw APIError("The app has an invalid service configuration. Reinstall Morrow Mail.") }
-            let backend = resources.appendingPathComponent("backend/server/native.js")
-            let executable = resources.appendingPathComponent(runtime == "rust" ? "morrow-service" : "node")
-            guard FileManager.default.isExecutableFile(atPath: executable.path), runtime == "rust" || FileManager.default.fileExists(atPath: backend.path) else {
+            guard Bundle.main.object(forInfoDictionaryKey: "MorrowServiceRuntime") as? String == "rust" else { throw APIError("The app has an invalid service configuration. Reinstall Morrow Mail.") }
+            let executable = resources.appendingPathComponent("morrow-service")
+            guard FileManager.default.isExecutableFile(atPath: executable.path) else {
                 throw APIError("Open a complete Morrow Mail.app bundle. Its private runtime is missing; rebuild or reinstall the app.")
             }
             var random = [UInt8](repeating: 0, count: 32)
             guard SecRandomCopyBytes(kSecRandomDefault, random.count, &random) == errSecSuccess else { throw APIError("The system could not create a private session.") }
             token = random.map { String(format: "%02x", $0) }.joined()
             let child = Process(), input = Pipe(), output = Pipe()
-            child.executableURL = executable; child.arguments = runtime == "rust" ? [] : [backend.path]
+            child.executableURL = executable; child.arguments = []
             child.currentDirectoryURL = resources.appendingPathComponent("backend")
-            // Do not inherit NODE_OPTIONS, preload paths, or shell secrets.
-            child.environment = ["PATH": "/usr/bin:/bin", "HOME": FileManager.default.homeDirectoryForCurrentUser.path, "NODE_ENV": "production"]
+            // Do not inherit preload paths or shell secrets.
+            child.environment = ["PATH": "/usr/bin:/bin", "HOME": FileManager.default.homeDirectoryForCurrentUser.path]
             child.standardInput = input; child.standardOutput = output
             child.standardError = FileHandle.nullDevice
             child.terminationHandler = { [weak self] _ in
@@ -257,18 +255,7 @@ final class AppModel: ObservableObject {
         }
     }
     func backup(to destination: URL) async throws {
-        let resources = Bundle.main.resourceURL!
-        if Bundle.main.object(forInfoDictionaryKey: "MorrowServiceRuntime") as? String == "rust" {
-            _ = try await request("/backup", method: "POST", body: .object(["destination": .string(destination.path)]), authorizeUpdate: true)
-        } else {
-            let process = Process(); process.executableURL = resources.appendingPathComponent("node")
-            process.arguments = [resources.appendingPathComponent("backend/scripts/backup.js").path, destination.path]
-            process.environment = ["DATA_DIR": dataDirectory.path, "PATH": "/usr/bin:/bin"]
-            process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
-            try process.run()
-            await Task.detached { process.waitUntilExit() }.value
-            guard process.terminationStatus == 0 else { throw APIError("Backup failed. Choose a new destination that does not already exist.") }
-        }
+        _ = try await request("/backup", method: "POST", body: .object(["destination": .string(destination.path)]), authorizeUpdate: true)
     }
     func reload() async throws {
         guard !refreshing else { return }

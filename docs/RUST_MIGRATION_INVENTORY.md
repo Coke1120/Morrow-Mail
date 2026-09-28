@@ -1,5 +1,7 @@
 # Rust service compatibility inventory — 2026-09-28
 
+> Historical migration record. The owner subsequently authorized JavaScript source retirement; see [current source/tooling policy](JAVASCRIPT_RETIREMENT.md). Old JS paths and npm commands below refer to their recorded commits, not current build instructions. Outstanding acceptance gates are unchanged.
+
 Current behavior baseline: **v0.6.0-beta.16**, release commit `7ab30cbb3e496118513a98f8211ec66481e282c4`. Rust is the default desktop service; macOS uses SwiftUI and Windows uses React/Electron. The paired release and its acceptance evidence are recorded in [VERIFICATION.md](../VERIFICATION.md). The original M0–M5 inventory baseline, `585fe1d8bc53c04062911a97c4f1d46fa5ad0ed4`, remains historical evidence, not the current feature scope.
 
 The approved [native migration plan](RUST_NATIVE_MIGRATION_PLAN.md) replaces the unexecuted conditional Tauri direction with WinUI 3/C++/WinRT. The source inventory below is a starting point for N0/N1, not completed WinUI acceptance or new whole-app performance measurements. Stable signing, minimum-OS/accessibility and broader live-account acceptance remain separate gates.

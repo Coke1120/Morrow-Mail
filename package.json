@@ -42,48 +42,6 @@
       "url": "https://buymeacoffee.com/Coke1120"
     }
   ],
-  "scripts": {
-    "dev": "node scripts/dev.js",
-    "build": "vite build",
-    "start": "node --env-file-if-exists=.env server/index.js",
-    "test": "node --test tests/*.test.js",
-    "check": "npm test && npm run build",
-    "backup": "node --env-file-if-exists=.env scripts/backup.js",
-    "macos:build": "node scripts/build-macos.js",
-    "macos:test": "node scripts/test-macos.js",
-    "macos:open": "open \"build/macos/Morrow Mail.app\"",
-    "windows:build": "node scripts/build-windows.js",
-    "desktop:test": "node scripts/test-desktop.js",
-    "updater:test": "node scripts/test-updater.js",
-    "benchmark:mail": "node scripts/benchmark-mail.js",
-    "rust:test": "node scripts/test-rust.js",
-    "rust:build": "cargo build --manifest-path rust/Cargo.toml --release --locked",
-    "macos:rust:test": "node scripts/test-macos-rust.js",
-    "benchmark:rust-service": "node scripts/benchmark-rust-service.js",
-    "updater:rust-upgrade:test": "node scripts/test-rust-upgrade.js"
-  },
   "license": "MIT",
-  "type": "module",
-  "dependencies": {
-    "express": "^5.2.1",
-    "html-to-text": "10.0.1",
-    "htmlparser2": "10.1.0",
-    "imapflow": "^2.0.5",
-    "lucide-react": "^1.47.0",
-    "mailparser": "^3.9.28",
-    "nodemailer": "^10.0.10",
-    "opencc-js": "1.4.2",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0"
-  },
-  "devDependencies": {
-    "@electron/packager": "20.3.0",
-    "@vitejs/plugin-react": "^6.1.1",
-    "electron": "44.4.5",
-    "vite": "^8.3.0"
-  },
-  "private": true,
-  "engines": {
-    "node": ">=22.13.0"
-  }
+  "private": true
 }

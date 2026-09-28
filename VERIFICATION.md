@@ -1,5 +1,43 @@
 # Verification — 28 September 2026
 
+## JavaScript source retirement — current source, no new release
+
+At the owner's request, 127 retired JavaScript source files were removed with
+the React CSS/web entry, Electron/Node tooling, npm lockfile/dependencies and old
+Node-only Swift fixture. The current Git index contains no JS/JSX/CJS/MJS/TS/TSX
+files. `package.json` remains version/metadata only. The Swift host now starts
+and backs up through Rust only. Provider IDs, resource bytes, production update
+key, persisted formats and the shared draft fixture are unchanged.
+
+The two active macOS reader geometry expressions, native reader security probes
+and ignored Rust-to-Node oracle calls are retained. Historical checks materialize
+five unmodified files from `b5b69d4d276c086ba118583f464bac11341806a0` in an ignored
+directory and still compare **current** Rust binaries/version/catalog and native
+packages with the fixed beta.16 implementation. This is source retirement, not
+zero JavaScript execution or a waiver of compatibility/security gates. See
+[scope and reproduction](docs/JAVASCRIPT_RETIREMENT.md). Historical npm commands
+and deleted source paths in earlier evidence below refer to their original commits.
+
+Local macOS validation after removal:
+
+- `cargo fmt --all -- --check`, Clippy with `--all-targets -- -D warnings`, and
+  the full locked Cargo suite: **152 passed, 2 explicitly ignored Node contracts**.
+- All **7 archived storage/search/service differential tests passed**, with no
+  skips, against the current copied executables and fixed beta.16 modules.
+  Both separately invoked ignored contracts also passed: original Node updater
+  layout validation and Node/Rust sanitizer semantics.
+- Native SwiftUI/Rust build passed; plist and ad-hoc signature checks passed.
+  The full `morrow-native-check` passed Models, HTML bounded-height/scrolling/
+  zero-network checks, window lifecycle and actual Swift/Rust integration,
+  including encrypted persistence, account isolation and online backup.
+- Original beta.16 Node installer → rebuilt actual macOS native candidate,
+  restart, uncertain records, calendar recovery, scheduled/Pending/learning/
+  reply-suggestion preservation, no replay and bundled backup all passed.
+
+No real mailbox, provider write, paid model request, new tag or published binary
+was used. The Windows build and revised historical CI lane still require their
+current-commit run; local macOS evidence does not establish Windows acceptance.
+
 ## Windows visual alignment and OAuth setup guide — unpublished source
 
 Windows source now applies the SwiftUI Morrow light/dark green through WinUI theme resources, retaining the system HighContrast dictionary. It aligns workspace order, sidebar Compose, account labels/folder badges, combined-folder destinations, initial window and reading proportions, mail/search controls, compact previews, and Settings category/model layouts. No service API, provider credential, signing key, package version or published asset changed.
@@ -7,6 +45,8 @@ Windows source now applies the SwiftUI Morrow light/dark green through WinUI the
 Local macOS checks: `git diff --check`; `CARGO_INCREMENTAL=0 cargo test --manifest-path rust/Cargo.toml --locked --test mail --test out_of_office` (**7 passed**); the same Cargo command with `--test storage` (**3 passed**). These cover existing OAuth/Out of Office and owner/metadata contracts, not WinUI compilation or visual rendering. The existing Windows native smoke now also checks theme resources, fresh Compose availability, complete account-bound combined folders, actual unread-only results and the Settings grid. Those new Windows checks have **not run here**: this host has no Windows/WinUI toolchain. Run `scripts/build-windows-native.ps1 -Zip` and `scripts/test-windows-native.ps1 -UiSmoke` on Windows, and review light/dark/high-contrast layouts before distribution.
 
 The [繁體中文 OAuth setup guide](docs/OAUTH_SETUP.zh-TW.md) was checked against current runtime scopes/client selection and official Google/Microsoft documentation. No Cloud/Entra settings were inspected or changed, and no real-account consent, send, calendar write or automatic-reply update was performed.
+
+Main commit `b5b69d4` was pushed and [CI 36378387394](https://github.com/Coke1120/Morrow-Mail/actions/runs/36378387394) passed the full macOS job and Windows Rust checks, but Windows compilation rejected `to_hstring(std::wstring)` in the new mailbox heading. Follow-up `c77689e` uses the existing `hstring` constructor; its Windows CI recheck is pending. The failed compile is not recorded as a passed UI check.
 
 ## 0.6.0-beta.18 — explicit release validation waiver
 

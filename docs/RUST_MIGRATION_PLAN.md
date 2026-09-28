@@ -1,5 +1,7 @@
 # Morrow Mail — Rust 遷移計劃
 
+> Historical migration record. The owner subsequently authorized JavaScript source retirement; see [current source/tooling policy](JAVASCRIPT_RETIREMENT.md). Old JS paths and npm commands below refer to their recorded commits, not current build instructions. Outstanding acceptance gates are unchanged.
+
 日期：2026-09-24
 
 狀態：2026-09-25 已實作 M0 量測工具、M1 分頁介面、M2 唯讀試點及 M3–M5 完整 Rust service 候選版本。同一 commit 的 macOS／Windows Rust 桌面建置、實際升級與備份還原自動化驗收已通過；使用者已明確批准 0.6.0-beta.1 切換 Rust 預設並以 prerelease 發佈，仍須同 tag 雙平台檢查全部通過。穩定版簽署、最低 OS、完整人工 UI 與真實帳戶驗收尚未完成。M6 依本計劃的 M5 穩定條件另行評估。詳見 [相容性清單](RUST_MIGRATION_INVENTORY.md) 與 [實際驗證記錄](../VERIFICATION.md)。

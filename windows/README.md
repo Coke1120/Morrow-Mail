@@ -1,8 +1,9 @@
 # Native Windows candidate
 
-This directory is the unpackaged x64 WinUI 3 / C++/WinRT host. The production
-Electron builder and release workflow remain separate until native feature,
-upgrade and clean-machine acceptance pass. Nothing here publishes a release.
+This directory is the unpackaged x64 WinUI 3 / C++/WinRT host used by the native
+release workflow. The retired Electron builder is retained in Git history only;
+historical upgrade checks remain required. Clean-machine/manual acceptance limits
+are recorded in VERIFICATION.md. These local build commands do not publish a release.
 
 ## Pinned build inputs
 

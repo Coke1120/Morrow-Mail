@@ -7,7 +7,7 @@ Included in desktop packages from **v0.6.0-beta.3**. The CLI is part of the exis
 From a source checkout:
 
 ```sh
-npm run rust:build
+cargo build --manifest-path rust/Cargo.toml --release --locked --bin morrow-service
 rust/target/release/morrow-service cli --help
 ```
 

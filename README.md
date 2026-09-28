@@ -12,7 +12,7 @@
 
 [Download macOS / Windows beta](https://github.com/Coke1120/Morrow-Mail/releases) · [Feature coverage](FEATURE_COVERAGE.md) · [Verification](VERIFICATION.md) · [GitHub Sponsors](https://github.com/sponsors/Coke1120) · [Buy Me a Coffee](https://buymeacoffee.com/Coke1120)
 
-Morrow Mail is an independent, MIT-licensed alternative inspired by Genspark GenMail. From **0.6.0-beta.18**, it uses **SwiftUI on macOS** and **WinUI 3/C++/WinRT on Windows**, with the same Rust mail service and release version. Native packages do not bundle Node, React or Electron. The React/Electron and Node sources remain available for compatibility and browser development.
+Morrow Mail is an independent, MIT-licensed alternative inspired by Genspark GenMail. From **0.6.0-beta.18**, it uses **SwiftUI on macOS** and **WinUI 3/C++/WinRT on Windows**, with the same Rust mail service and release version. Native packages do not bundle Node, React or Electron. The retired React/Electron and Node sources are retained in Git history only. Current builds use Rust, SwiftUI and WinUI; see [JavaScript retirement](docs/JAVASCRIPT_RETIREMENT.md) for the remaining reader helpers and historical test lane.
 
 - **Multiple mailboxes:** Gmail, Outlook / Microsoft 365, and IMAP / SMTP; combined or separate inboxes with collapsible account groups, sorting, and compact views.
 - **Indexed search:** local full-text search, Chinese traditional/simplified matching, filters, saved searches and optional reviewed semantic indexing in both clients.
@@ -44,7 +44,7 @@ pwsh -File scripts/build-windows-native.ps1 -Zip
 pwsh -File scripts/test-windows-native.ps1 -UiSmoke
 ```
 
-Resources and redistribution notices come from `morrow-resources` and `morrow-notices`; shared branding lives in `assets/`. `morrow-publish` defaults to local checks and requires explicit paired CI evidence before publication. Historical Node interoperability runs separately against the fixed beta.16 checkout. The original npm commands below remain compatibility/development paths; canonical releases use the native builders and Rust publisher. See [verification](VERIFICATION.md) for actual results and outstanding Windows, clean-machine and accessibility checks.
+Resources and redistribution notices come from `morrow-resources` and `morrow-notices`; shared branding lives in `assets/`. `morrow-publish` defaults to local checks and requires explicit paired CI evidence before publication. Historical Node interoperability runs separately against the fixed beta.16 checkout. Current source has no npm build/development path; canonical releases use the native builders and Rust publisher. See [verification](VERIFICATION.md) for actual results and outstanding Windows, clean-machine and accessibility checks.
 
 ## Screenshots
 
@@ -116,7 +116,7 @@ From beta.10, Workspace appears above All accounts. The macOS app removes the to
 
 ## Search and optional smart search
 
-The native and Windows/browser clients share a SQLite FTS5 index covering downloaded subjects, sender/recipients, bodies and labels. Search supports single/two-character Chinese queries, traditional/simplified conversion, mixed English, quoted phrases, relevance/date sorting, 30-result pages, recent/saved searches and removable filters. Results show their owning account, matching text and folder. Replies retain that account.
+The SwiftUI and WinUI clients share a SQLite FTS5 index covering downloaded subjects, sender/recipients, bodies and labels. Search supports single/two-character Chinese queries, traditional/simplified conversion, mixed English, quoted phrases, relevance/date sorting, 30-result pages, recent/saved searches and removable filters. Results show their owning account, matching text and folder. Replies retain that account.
 
 Choose the current folder, current account view, or all connected accounts under **Filters & Scope**. The combined view excludes Demo and disconnected mail. **Downloaded Coverage** shows cached counts/date ranges; mail that has not been imported cannot appear. Trash and Spam require an explicit folder selection. Inboxes use bounded metadata pages and load bodies when opened; provider delta sync is not implemented.
 
@@ -126,7 +126,7 @@ Use `from:jane@example.com to:me@example.com subject:"project update" after:2026
 
 Enable **Smart Search (智慧搜尋)** in the search controls and press **Search**. The query goes to the embedding endpoint; local keyword and vector rankings are merged. Query vectors are cached briefly for pagination. Hybrid results include at most 200 keyword and 200 semantic candidates; use keyword mode for exhaustive results. The initial exact vector scan accepts up to 12,000 scoped chunks and asks for narrower filters above that limit. Retrieval quality depends on your embedding model; it does not generate an answer or establish factual accuracy.
 
-Mail text goes only to the selected embedding endpoint during approved batches; a remote endpoint requires HTTPS. Changed permissions/model/connection invalidate vectors and in-flight results. Vectors stay in the local SQLite database alongside plaintext mail; API keys and search history use the existing encrypted settings store. On Rust desktop, **Pause / Resume / Cancel batch** manage unfinished work while retaining completed valid vectors; resuming requires review. **Clear index** is separate, removes all semantic vectors and cancels the batch, while preserving mail and the keyword index. The Node compatibility service offers Clear index but not independent batch controls. Versions through beta.4 configure the embedding connection under Search; beta.8 moves it to Model.
+Mail text goes only to the selected embedding endpoint during approved batches; a remote endpoint requires HTTPS. Changed permissions/model/connection invalidate vectors and in-flight results. Vectors stay in the local SQLite database alongside plaintext mail; API keys and search history use the existing encrypted settings store. On Rust desktop, **Pause / Resume / Cancel batch** manage unfinished work while retaining completed valid vectors; resuming requires review. **Clear index** is separate, removes all semantic vectors and cancels the batch, while preserving mail and the keyword index. Versions through beta.4 configure the embedding connection under Search; beta.8 moves it to Model.
 
 **From beta.10:** After confirming an indexing batch, you can switch settings tabs, close Settings, and read mail while the service continues the batch. Progress remains in Activity and refreshes when you reopen Search. Morrow must remain running; leaving a page does not cancel the job. Unsaved edits and short save/test/start requests retain their navigation guards.
 
@@ -140,22 +140,22 @@ OAuth token refresh preserves saved credentials and distinguishes temporary netw
 
 The primary interface is **fully native SwiftUI**, including the mail reader, composer, all 19 AI Studio tools, skills, Email Brain, settings, permissions, and Google/Outlook calendars. The application interface remains native; formatted message bodies alone use an isolated, script-disabled WebKit reader. The app bundles the Rust mail service and needs no terminal, Node or Rust installation to run.
 
-Build on a Mac with Apple's Swift command-line tools, Rust 1.98+ with rustfmt/clippy, Node.js 22.13+, and npm:
+Build on a Mac with Apple's Swift command-line tools and Rust 1.98+ with rustfmt/clippy:
 
 ```sh
-npm ci
-npm run check
-npm run macos:test
-npm run macos:rust:test
-npm run macos:build
-npm run macos:open
+cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets -- -D warnings
+cargo test --manifest-path rust/Cargo.toml --locked
+/bin/sh scripts/build-macos-native.sh
+cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-native-check -- --service "$PWD/build/macos-native/Morrow Mail.app/Contents/Resources/morrow-service"
+open 'build/macos-native/Morrow Mail.app'
 ```
 
-The result is `build/macos/Morrow Mail.app`. You can move it to Applications. Rust desktop builds target Apple silicon and **macOS 13.5+**; packaging rejects non-system dynamic-library dependencies. An explicit `MORROW_SERVICE_RUNTIME=node` compatibility build still requires an official self-contained Node distribution with its license.
+The result is `build/macos-native/Morrow Mail.app`. You can move it to Applications. Rust desktop builds target Apple silicon and **macOS 13.5+**; packaging rejects non-system dynamic-library dependencies. The native host starts only the Rust service.
 
-Native data lives in `~/Library/Application Support/Morrow Mail`, separate from the web app's `./data`. Existing web data is not automatically moved. To reuse it, stop both apps, make a verified backup, and restore that backup's database and encryption key into the native data directory before opening the native app. `MORROW_DATA_DIR` can select a separate absolute data directory for development or acceptance testing. Do not run two apps against the same data directory.
+Native data lives in `~/Library/Application Support/Morrow Mail`, separate from the retired web app's `./data`. Existing legacy web data is not automatically moved. To reuse it, stop both apps, make a verified backup, and restore that backup's database and encryption key into the native data directory before opening the native app. `MORROW_DATA_DIR` can select a separate absolute data directory for development or acceptance testing. Do not run two apps against the same data directory.
 
-The app starts its own loopback service on a random free port and authenticates native API requests with a per-launch secret sent over a private pipe. OAuth browser handoffs use the same PKCE/state/cookie checks as the web app. When the build includes Morrow’s Google registration, click **Sign in with Google in browser** without entering a client ID or secret. **Use my own Google OAuth client** is available under advanced settings. Microsoft sign-in uses Morrow’s built-in public desktop client ID; an advanced custom-client option remains available. Keep Morrow open until sign-in finishes; returning to the app refreshes connections and selects the newly connected mailbox. **Do not open the callback URL manually**: it is only the return address after provider authorization. It is available under **Advanced: callback URL for app registration** in native Settings, with a copy button. The fixed `:3001` examples below describe the web app. Google desktop clients accept loopback ports. Microsoft [ignores the port when matching localhost redirect URIs](https://learn.microsoft.com/en-us/entra/identity-platform/reply-url#localhost-exceptions); register each mail/calendar callback path separately.
+The app starts its own loopback service on a random free port and authenticates native API requests with a per-launch secret sent over a private pipe. OAuth browser handoffs retain PKCE/state/browser-cookie checks. When the build includes Morrow’s Google registration, click **Sign in with Google in browser** without entering a client ID or secret. **Use my own Google OAuth client** is available under advanced settings. Microsoft sign-in uses Morrow’s built-in public desktop client ID; an advanced custom-client option remains available. Keep Morrow open until sign-in finishes; returning to the app refreshes connections and selects the newly connected mailbox. **Do not open the callback URL manually**: it is only the return address after provider authorization. It is available under **Advanced: callback URL for app registration** in native Settings, with a copy button. The fixed `:3001` examples below illustrate registration; native callback ports are assigned at launch. Google desktop clients accept loopback ports. Microsoft [ignores the port when matching localhost redirect URIs](https://learn.microsoft.com/en-us/entra/identity-platform/reply-url#localhost-exceptions); register each mail/calendar callback path separately.
 
 Keyboard shortcuts: **⌘N** compose, **⌘,** Settings, **⌘F** search, **⌘R** sync, **⌘⇧R** reply, **⌘⇧M** provider Move / Labels, **⌘⇧A** local archive, **⌘⇧U** local read/unread, and **⌘1/2/3** Inbox / AI Studio / Calendar. In the composer, **⌘S** saves a draft and **⌘⇧D** opens send review. **Esc** cancels. Standard macOS **⌘M**, **⌘W**, **⌃⌘F**, and the red/yellow/green title-bar controls minimize, close, resize, and enter full screen. **Window → Window Size** offers compact, standard, wide and Fill Available Screen sizes; the window also resizes by dragging its edges and restores its saved size.
 
@@ -167,7 +167,7 @@ Builds are ad-hoc signed for local use. A stable public distribution requires yo
 
 ## Windows desktop app
 
-From beta.18, the Windows package uses native WinUI 3/C++/WinRT controls over the same Rust provider, account-routing, AI-permission and calendar service as macOS. The host starts a private authenticated loopback service; the isolated HTML reader receives no service token or script bridge. React/Electron remains in source for historical compatibility, not in the native release package.
+From beta.18, the Windows package uses native WinUI 3/C++/WinRT controls over the same Rust provider, account-routing, AI-permission and calendar service as macOS. The host starts a private authenticated loopback service; the isolated HTML reader receives no service token or script bridge. The Electron implementation is retained only in Git history for historical compatibility checks.
 
 Data lives in `%APPDATA%\Morrow Mail`. Sidebar disclosure and pending calendar requests persist across app restarts. Windows uses the current user's profile permissions; Unix file-mode checks do not represent Windows ACLs. Account data is local to each installation; paired releases do **not** synchronize mail caches, credentials or preferences between computers.
 
@@ -181,7 +181,7 @@ Build on Windows x64 with PowerShell 7, Rust 1.98+ and the pinned VS 2022/Window
 ./scripts/test-windows-native.ps1 -UiSmoke
 ```
 
-The runnable folder is `build/windows-native/Morrow Mail-win32-x64`; its versioned ZIP and checksum are in `build/windows-native/artifacts`. Historical Electron builds remain available through `npm run windows:build`.
+The runnable folder is `build/windows-native/Morrow Mail-win32-x64`; its versioned ZIP and checksum are in `build/windows-native/artifacts`.
 
 For a Windows backup, quit Morrow Mail, open PowerShell inside the extracted app folder, and run:
 
@@ -194,29 +194,25 @@ $workspace = Join-Path $env:APPDATA 'Morrow Mail'
 
 `package.json` is the version source for both apps and archive names. Normal pushes and pull requests run native Rust/SwiftUI/WinUI and fixed-beta.16 compatibility checks. The beta.18 tag has an explicit one-release test waiver; both packages and signed provenance are still required. Tag and manually dispatched builds upload both packages as short-lived CI artifacts; published release downloads remain available.
 
-To publish a new alpha or beta, update the changelog, verification notes and `docs/releases/v<version>.md`, keep the version in package.json/package-lock.json aligned, commit, then push the matching `v<version>` tag. The workflow builds both platforms from that **same tag**. It verifies both archives and their checksums, signs a two-platform update manifest, uploads all six files to a draft release, and makes the release public only after every platform job succeeds. Failed builds publish no partial release; failed uploads leave a draft. Published assets are never overwritten.
+To publish a new alpha or beta, update the changelog, verification notes and `docs/releases/v<version>.md`, update the common version in package.json, commit, then push the matching `v<version>` tag. The workflow builds both platforms from that **same tag**. It verifies both archives and their checksums, signs a two-platform update manifest, uploads all six files to a draft release, and makes the release public only after every platform job succeeds. Failed builds publish no partial release; failed uploads leave a draft. Published assets are never overwritten.
 
-The release job requires `MORROW_UPDATE_SIGNING_KEY` in GitHub Actions secrets. Its Ed25519 public key is pinned in `rust/resources/update-public-key.pem`; the byte-identical `server/update-public-key.pem` remains for historical Node compatibility. Only the public key belongs in Git. The current private signing key is kept outside the repository at `~/.config/morrow-release/update-signing-key.pem`. Keep a secure backup: losing it prevents existing apps from accepting new update manifests. Do not rotate or replace the public key casually; a key change needs a transition release signed with the existing key. `npm run updater:test` uses generated fixture keys and temporary apps, never this release key or a real workspace.
+The release job requires `MORROW_UPDATE_SIGNING_KEY` in GitHub Actions secrets. Its Ed25519 public key is pinned in `rust/resources/update-public-key.pem`; its byte-identical historical Node copy is retained in the fixed beta.16 checkout. Only the public key belongs in Git. The current private signing key is kept outside the repository at `~/.config/morrow-release/update-signing-key.pem`. Keep a secure backup: losing it prevents existing apps from accepting new update manifests. Do not rotate or replace the public key casually; a key change needs a transition release signed with the existing key. Rust updater tests use generated fixture keys and temporary apps, never this release key or a real workspace.
 
 Normal changes retain the documented checks; beta.18 is the explicit test waiver above. Versioned tags publish paired downloads. Unsigned automation accepts numbered alpha and beta versions; stable and release-candidate tags are rejected. Native UI differences remain explicit in [feature coverage](FEATURE_COVERAGE.md); API changes must preserve both clients.
 
 ## Rust desktop service
 
-The Rust backend implements storage, the local API, Gmail/Outlook OAuth and mail, IMAP/SMTP, calendars, AI/workflows/learning, background imports/summaries, keyword/semantic search, and signed desktop updates. SwiftUI and React use bounded metadata pages, SQL counts, on-demand bodies and revision checks. Rust is the desktop default from 0.6.0-beta.1 following explicit prerelease cutover approval; remaining stable-release gates are recorded in [VERIFICATION.md](VERIFICATION.md).
+The Rust backend implements storage, the local API, Gmail/Outlook OAuth and mail, IMAP/SMTP, calendars, AI/workflows/learning, background imports/summaries, keyword/semantic search, and signed desktop updates. SwiftUI and WinUI use bounded metadata pages, SQL counts, on-demand bodies and revision checks. Rust is the desktop default from 0.6.0-beta.1 following explicit prerelease cutover approval; remaining stable-release gates are recorded in [VERIFICATION.md](VERIFICATION.md).
 
 ```sh
-npm run rust:test
-npm run macos:rust:test                  # macOS: actual native client + isolated Rust service
-MORROW_SERVICE_RUNTIME=rust npm run macos:build
-# Windows PowerShell:
-# $env:MORROW_SERVICE_RUNTIME = 'rust'; npm run windows:build
-# npm run desktop:test -- --packaged
-npm run benchmark:rust-service -- --output=test-results/migration-rust-service.json
+cargo test --manifest-path rust/Cargo.toml --locked
+cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-native-check -- --service "$PWD/build/macos-native/Morrow Mail.app/Contents/Resources/morrow-service"
+cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-benchmark -- --binary="$PWD/build/macos-native/Morrow Mail.app/Contents/Resources/morrow-service" --output=test-results/native-benchmark.json
 ```
 
-Desktop bundles contain `morrow-service` instead of a backend Node runtime. Rust fails closed if it cannot start; it never falls back to a second writer. From beta.18, Windows uses WinUI 3/C++/WinRT without Electron or its internal Node runtime. Remaining validation and source-retirement work is tracked in the [native migration plan](docs/RUST_NATIVE_MIGRATION_PLAN.md). Build selection is recorded in bundle metadata, not accepted from the renderer. `package.json` remains the version source. The locked Rust build requires Rust 1.98+, rustfmt/clippy and a C compiler; bundled third-party notices accompany the executable. Node remains available for browser development and explicit compatibility builds.
+Desktop bundles contain `morrow-service` instead of a backend Node runtime. Rust fails closed if it cannot start; it never falls back to a second writer. From beta.18, Windows uses WinUI 3/C++/WinRT without Electron or its internal Node runtime. Remaining validation work is tracked in the [native migration plan](docs/RUST_NATIVE_MIGRATION_PLAN.md). Build selection is recorded in bundle metadata, not accepted from the renderer. `package.json` remains the version source. The locked Rust build requires Rust 1.98+, rustfmt/clippy and a C compiler; bundled third-party notices accompany the executable. Node is used only in the isolated historical compatibility test lane.
 
-The first unreleased native-migration change moves Reply, Reply All, Forward and provider-draft copying into the local service. Both clients request an unsaved draft using the original message ID and explicit mailbox owner; desktop builds use the Rust implementation. This does not contact a provider or model, save a draft or send mail. Saved drafts keep their existing editing and delivery-review paths. Node browser/compatibility service retains the same API until its planned retirement.
+Native clients delegate Reply, Reply All, Forward and provider-draft copying into the local service. Both clients request an unsaved draft using the original message ID and explicit mailbox owner; desktop builds use the Rust implementation. This does not contact a provider or model, save a draft or send mail. Saved drafts keep their existing editing and delivery-review paths.
 
 On the first Rust open, the service locks the workspace against both Rust and legacy SQLite writers, verifies the existing key, and makes a consistent backup before migration. Mail, drafts, send-review records, calendar retry IDs and the AES-256-GCM settings format are preserved. It never restores an old database automatically during binary rollback. Interrupted paid jobs stop for review; legacy semantic vectors require a reviewed rebuild.
 
@@ -227,33 +223,13 @@ The macOS Back Up Workspace control creates a consistent snapshot while the serv
 # Windows: .\resources\app\runtime\morrow-service.exe --backup C:\absolute\workspace C:\absolute\new-backup
 ```
 
-The older development-only read worker remains available with `MORROW_SEARCH_ENGINE=rust`; Node owns its writes and falls back locally on worker failure. It is separate from the complete Rust service. Compare that pilot with `npm run benchmark:mail -- --engine=rust`; compare the full service with `benchmark:rust-service`. All benchmarks use fictional temporary data, without provider or model calls.
+The old read-only Rust search worker remains solely for the fixed beta.16 differential tests. Current application reads and writes use the complete Rust service. Benchmarks use fictional temporary data without provider or model calls.
 
 See [the migration plan](docs/RUST_MIGRATION_PLAN.md) and [compatibility inventory](docs/RUST_MIGRATION_INVENTORY.md) for limits and acceptance evidence. Fixture tests do not establish live-account acceptance or Developer ID notarization.
 
-## Web development interface
+## Retired web/Electron clients
 
-Requires **Node.js 22.13 or newer** and npm. SQLite is built into Node; no database service is needed.
-
-```sh
-cd ~/Documents/Github/genmail
-npm install
-npm run dev
-```
-
-Open <http://localhost:5173>. The API runs at <http://localhost:3001>. The app starts with an empty Add account screen; connect Gmail, Outlook, or IMAP to read your mail.
-
-For a checked production build served locally:
-
-```sh
-npm ci
-npm run check
-npm start
-```
-
-Open <http://localhost:3001>. The server binds to loopback (`127.0.0.1`). Check its health with `curl --fail http://localhost:3001/api/health`. Run tests separately with `npm test`; `npm run check` runs tests and the production build.
-
-This deployment is a local, single-user process. Public hosting and shared access are not supported; a production build does not add user authentication or establish production certification. Live provider acceptance testing still requires your own accounts.
+The standalone web UI, Electron host, Node service and npm tools were removed from current source at the owner's request. Their final source remains at commit `b5b69d4d276c086ba118583f464bac11341806a0`; beta.16 remains the fixed compatibility reference. [Historical checks](docs/JAVASCRIPT_RETIREMENT.md) continue testing current Rust binaries and native packages against the old application. No browser-hosted build is offered from current source.
 
 ## Connect a mailbox
 
@@ -295,7 +271,7 @@ Calendar reminders use the event-write scope already requested by Calendar; they
 Provide a downloaded **Desktop app** OAuth JSON file when packaging, for example:
 
 ```sh
-MORROW_GOOGLE_OAUTH_FILE=/absolute/path/google-desktop-client.json npm run macos:build
+MORROW_GOOGLE_OAUTH_FILE=/absolute/path/google-desktop-client.json /bin/sh scripts/build-macos-native.sh
 ```
 
 The Windows builder accepts the same environment variable. CI uses the repository Actions secret **`GOOGLE_DESKTOP_OAUTH_JSON`** for both platforms; tagged builds fail if it is missing. Local/fork builds without a build input keep the custom-client flow. The JSON must contain an `installed` client; web-client credentials are rejected.
@@ -421,7 +397,7 @@ Model settings, permissions, and general preferences are **global across connect
 
 General settings include your display name, plain-text or HTML signature, theme, density, mark-read-on-open behavior, reply tone, preferred AI response language, independent target translation language (blank follows the preferred language), and sync interval. General preferences save automatically after editing, with visible saving/error status and retry on failure; other credentials, permissions and reviewed actions retain their explicit controls. These language settings control AI output, not UI localization. Timed mail sync checks all connected accounts every 1, 5, 15 or 30 minutes while the service is running; it defaults to manual. Review generated text before inserting it into a draft.
 
-**Morrow checks for updates at launch and every hour while running**, including when Settings is closed. Returning after sleep checks again if the hour has elapsed. A red **!** badge on the Settings button indicates an available update; clicking it opens **About → App updates**. **Check for updates** also works manually. These checks use public releases in `Coke1120/Morrow-Mail` on GitHub. Prerelease builds initially include alpha/beta releases; uncheck that option to check stable releases only. The app compares semantic versions among the latest 100 published releases, shows the installed/latest version and check time, and opens the release downloads page. Checks share no mail or credentials, time out after 10 seconds, and cache successful results for one minute. Offline, rate-limit and empty-channel responses are shown as errors, not as “up to date.” A failed check keeps the last known release and badge; the next automatic attempt waits an hour. Changing release channels clears the previous channel’s result. Downloading and installation still require your action. Packaged desktop builds from **0.5.0-beta.2** offer **Download update → Install & Restart**. Install an updater-enabled build manually once; older apps cannot acquire this feature themselves. The browser development interface keeps manual downloads.
+**Morrow checks for updates at launch and every hour while running**, including when Settings is closed. Returning after sleep checks again if the hour has elapsed. A red **!** badge on the Settings button indicates an available update; clicking it opens **About → App updates**. **Check for updates** also works manually. These checks use public releases in `Coke1120/Morrow-Mail` on GitHub. Prerelease builds initially include alpha/beta releases; uncheck that option to check stable releases only. The app compares semantic versions among the latest 100 published releases, shows the installed/latest version and check time, and opens the release downloads page. Checks share no mail or credentials, time out after 10 seconds, and cache successful results for one minute. Offline, rate-limit and empty-channel responses are shown as errors, not as “up to date.” A failed check keeps the last known release and badge; the next automatic attempt waits an hour. Changing release channels clears the previous channel’s result. Downloading and installation still require your action. Packaged desktop builds from **0.5.0-beta.2** offer **Download update → Install & Restart**. Install an updater-enabled build manually once; older apps cannot acquire this feature themselves.
 
 Downloads use the project's GitHub release assets and verify a pinned Ed25519 signature, exact version/platform, size and SHA-256 before extraction. The app checks archive paths and macOS compatibility/signing, then offers installation. Save or discard edits first; active writes block closing. Installation waits for the UI and private service to stop, replaces only the application, and reopens it automatically. Mail, accounts, preferences and uncertain-operation records stay in the separate data folder. Updates are not installed silently on ordinary quit.
 
@@ -438,7 +414,7 @@ The installation's parent folder must be writable; Morrow never requests adminis
 
 Scheduled jobs use the **newest cached permitted messages, capped at Maximum messages per request (8 by default, 50 maximum)**. They are a bounded digest, not an exhaustive inbox audit. Each automatic report validates one P0–P4 classification per included message: **P0 explicit emergency; P1 explicit action due today; P2 normal action/follow-up or unclear urgency; P3 information; P4 bulk/promotional**. The selected time zone defines today. These are AI suggestions, never a guarantee of urgency. Models must return valid JSON with every source ID; incomplete output fails rather than showing a partial report. Increase response tokens or reduce the context limit if needed. Demo reports are clearly illustrative and do not perform real priority analysis.
 
-The local service checks schedules every 30 seconds, processing at most four queued model calls serially per tick. Both desktop clients use this same scheduler. The app must remain running; browser development uses the running server. After sleep/restart a daily schedule catches up once for the current day, not every missed day; intervals use persisted attempt times and do not replay missed intervals. Changing/enabling the schedule resets its timing. Daily jobs run at most once per local date, including DST repeated hours; a missing DST time runs after the gap. Failed or interrupted calls are not automatically retried, because they may already have spent tokens. Generate a manual briefing if needed.
+The local service checks schedules every 30 seconds, processing at most four queued model calls serially per tick. Both desktop clients use this same scheduler. The app must remain running. After sleep/restart a daily schedule catches up once for the current day, not every missed day; intervals use persisted attempt times and do not replay missed intervals. Changing/enabling the schedule resets its timing. Daily jobs run at most once per local date, including DST repeated hours; a missing DST time runs after the gap. Failed or interrupted calls are not automatically retried, because they may already have spent tokens. Generate a manual briefing if needed.
 
 The queue holds at most 100 pending jobs per account, retains up to 20 completed/failed/interrupted reports, and shows a counter for overflow requiring manual handling. Summaries displays the latest 20 jobs; it refreshes every 30 seconds when the client is idle and has a manual Refresh button. Results are hidden/discarded when model, AI language/tone, policy, owning connection or permitted source content changes. Turning off triggers keeps manual AI available. No OS notification or system background service is installed.
 
@@ -459,7 +435,7 @@ Current-source mailbox interfaces use 50-row metadata pages independently of his
 
 Recommended starting point: daily **09:00**, Inbox only, preferred language **繁體中文**; leave the translation target blank or set **English** independently. Enable new-mail summaries and one-minute sync only if the volume/cost suits you; starred-only further narrows eligibility. Email Brain contact/project notes remain manual or simulated. Separate, opt-in writing-style analysis is available in Settings → Learning and always requires review before applying a style. Genspark's [official GenMail introduction](https://www.youtube.com/watch?v=i9I4frhlD80) confirms morning briefings and learning voice/contacts, but does not document its precise memory-refresh cadence, per-message triggers, or P0–P4 rules. Morrow's rules above are its own implementation.
 
-The Windows/browser reader starts a summary only after you select a message (including previous/next navigation), not when it merely displays the default first-message preview at launch or after sync.
+The historical Windows/browser reader starts a summary only after you select a message (including previous/next navigation), not when it merely displays the default first-message preview at launch or after sync.
 
 In **Settings → General → Email footer**, choose Plain text or HTML, enter the signature, preview it, then save. One workspace signature applies to new messages, replies and AI-created drafts across your accounts. HTML allows bold/italic/underlined text, limited inline colors and font sizes, lists, tables, and HTTPS/mailto/tel links. Images, scripts, active content, remote resources and unsupported styling are removed. Each draft keeps its own footer snapshot, visible in the composer and removable before sending. Editing settings or replacing the body with an AI suggestion does not change that snapshot. Gmail, Outlook and SMTP send HTML footers as multipart mail with a generated plain-text alternative. Legacy saved drafts keep their original text without an extra footer.
 
@@ -474,32 +450,25 @@ Simulations do not browse the web, contact a calendar, send invitations or messa
 
 ## Data and configuration
 
-Messages and drafts are stored in SQLite under `./data`. Mail/calendar credentials and tokens are encrypted with AES-GCM using a key in the same directory. Protect and back up **both the database and key**. This is not OS-keychain storage, and someone with access to both can decrypt the secrets. Message contents are stored locally in plaintext.
+Messages and drafts are stored in SQLite under `~/Library/Application Support/Morrow Mail` on macOS and `%APPDATA%\Morrow Mail` on Windows. Mail/calendar credentials and tokens are encrypted with AES-GCM using a key in the same directory. Protect and back up **both the database and key**. This is not OS-keychain storage, and someone with access to both can decrypt the secrets. Message contents are stored locally in plaintext.
 
 If delivery becomes uncertain, Morrow retains the draft and its request ID. Check your provider’s Sent folder before explicitly retrying; a retry can send a duplicate. Morrow does not automatically retry sending.
 
 Sync communicates with the configured mail provider. Sending transmits your draft through that provider; AI requests transmit relevant emails to your chosen model endpoint. Calendar actions communicate with the selected calendar provider. Credentials are used for their configured provider. Use a local model to keep AI processing on your computer.
 
-| Environment variable | Default |
-| --- | --- |
-| `PORT` | `3001`, API and production server port |
-| `DATA_DIR` | `./data`, runtime database and encryption key |
-| `APP_URL` | `http://localhost:5173` in development; `http://localhost:3001` otherwise |
-| `NODE_ENV` | Unset; `production` also makes startup reject a missing frontend build |
-
-Set environment variables in your shell, or copy [`.env.example`](.env.example) to `.env` for `npm start` and `npm run backup`. The development launcher uses shell variables. If you change the API port, adjust the development proxy and OAuth callback registration to match; `APP_URL` must remain a loopback HTTP origin. Keep runtime data and credentials out of version control. This app is intended for local single-user use; do not expose it as a shared internet service.
+`MORROW_DATA_DIR` may select a separate **absolute** workspace for native development or isolated acceptance. The host supplies the Rust service's authenticated loopback configuration over a private pipe; it does not read the retired Node `.env` file. Keep runtime data and credentials out of version control. This app is intended for local single-user use; do not expose it as a shared internet service.
 
 ## Backup and recovery
 
+Use macOS **Settings → About → Back Up Workspace** for a consistent snapshot while the app runs. For the command line, quit Morrow and run the bundled service with absolute paths:
+
 ```sh
-npm run backup
-# Or choose a destination that does not already exist:
-npm run backup -- /path/to/new-backup-directory
+'/path/to/Morrow Mail.app/Contents/Resources/morrow-service' --backup '/absolute/workspace' '/absolute/new-backup-directory'
 ```
 
-The default destination is `./backups/morrow-<timestamp>`. `DATA_DIR` selects the source directory, just as it does for the server. The backup command can run while Morrow is open: it creates a consistent SQLite snapshot, copies the matching encryption key, and verifies the result. Backup directories/files use owner-only modes on macOS/Linux; on Windows, choose a destination protected by your user ACLs. Copy the resulting directory to your own protected backup storage.
+On Windows use `resources/app/runtime/morrow-service.exe` with the same arguments. The destination must not exist. The service snapshots SQLite, copies the matching encryption key and recovery files, and verifies the result. Backup directories/files use owner-only modes on macOS/Linux; on Windows choose a destination protected by your user ACLs. Copy the resulting directory to your protected backup storage.
 
-To restore, quit the native app, or stop the web server with Ctrl+C, and wait for shutdown. Preserve the current data directory, then copy **both** `genmail.sqlite` and `encryption.key` from the same backup into a new private directory. Also restore `pending-calendar.json` and `client-state.json` if the backup contains them. Point the web server’s `DATA_DIR` or native app’s `MORROW_DATA_DIR` at it and restart. Verify your saved mail and settings; the web server also exposes `/api/health`. Never replace a key by itself. If taking a manual filesystem copy instead of using the backup command, stop the app first.
+To restore, quit Morrow and wait for shutdown. Preserve the current workspace, then copy **both** `genmail.sqlite` and `encryption.key` from the same backup into a new private directory. Also restore `pending-calendar.json` and `client-state.json` if present. Point `MORROW_DATA_DIR` at it and restart. Verify saved mail/settings. Never replace a key by itself. Stop the app before taking a manual filesystem copy.
 
 Normal startup, health, and backup diagnostics do not include credentials. Keep API keys, tokens, and OAuth callback URLs out of shared issue reports.
 

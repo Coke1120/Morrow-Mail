@@ -15,12 +15,11 @@ cargo test --manifest-path rust/Cargo.toml --locked --bin morrow-resources
 cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-resources -- --output /tmp/morrow-static-v1
 ```
 
-The Rust service continues embedding these same JSON paths. The compatibility
-`shared/features.js` and `server/demo.js` read the catalog: preferences, feature
-flags, skills and fixture mail remain identical. Policy timezone is still resolved
-at runtime; the portable catalog retains `UTC`. Demo dates remain relative to the
-caller's clock, with fresh nested data for each call. `scripts/rust-resources.js`
-is only a temporary wrapper around the Rust command, not a second generator.
+The Rust service embeds these JSON paths. Their original JavaScript sources and
+generator are retained at the exact historical commits in `manifest.json`; those
+paths are provenance references, not dependencies on current source. Policy time
+zone is resolved at runtime; the portable catalog retains `UTC`. No JS generator
+or npm wrapper is needed to validate/export the current resources.
 
 The normalization test covers every unique key in the pinned OpenCC dictionaries
 plus the four existing Unicode/segmentation edge cases: 5,343 inputs in total. Its

@@ -1,6 +1,6 @@
 # Google / Outlook OAuth 設定
 
-核對日期：2026-09-28。以下依照 Morrow Mail 的 Rust 正式服務與 Node 相容服務目前實際要求的權限整理；不代表已登入驗證你的 Google Cloud／Entra 專案設定。
+核對日期：2026-09-28。以下依照 Morrow Mail 的 Rust 正式服務目前實際要求的權限整理；不代表已登入驗證你的 Google Cloud／Entra 專案設定。
 
 ## 先確認要修改哪個專案
 

@@ -24,7 +24,8 @@ pending-calendar.json
 *.p12
 *.p8
 *.pem
-!server/update-public-key.pem
 !rust/resources/update-public-key.pem
 google-oauth.json
 client_secret_*.json
+
+.compatibility/

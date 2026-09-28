@@ -15,11 +15,13 @@ jobs:
           "$RUNNER_TEMP/window-checks"
   settings:
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
-        with:
-          node-version: 22
-      - run: npm ci --ignore-scripts
-      - run: node --test tests/settings.test.js
+      - name: Check native settings and persistence
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup default 1.98.0
+          cargo test --manifest-path rust/Cargo.toml --locked --test storage --test mail_service
+          if ($LASTEXITCODE -ne 0) { throw 'Native settings/storage contracts failed.' }

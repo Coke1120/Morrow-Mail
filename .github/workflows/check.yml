@@ -204,6 +204,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Historical updater validation failed.' }
           cargo test --manifest-path rust/Cargo.toml --locked --test message_html node_and_rust_share_safe_reader_semantics -- --ignored
           if ($LASTEXITCODE -ne 0) { throw 'Historical HTML semantics changed.' }
+      - name: Fetch fixed legacy test harness
+        if: env.SKIP_TESTS != 'true'
+        shell: bash
+        run: git fetch --no-tags origin b5b69d4d276c086ba118583f464bac11341806a0
       - name: Fixed historical storage, search and service contracts
         if: env.SKIP_TESTS != 'true'
         shell: pwsh
@@ -215,12 +219,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Compatibility service/example build failed.' }
           cargo build --manifest-path rust/Cargo.toml --locked --release --bin morrow-search
           if ($LASTEXITCODE -ne 0) { throw 'Compatibility search worker build failed.' }
-          $extension = if ($IsWindows) { '.exe' } else { '' }
-          $destination = Join-Path $env:MORROW_NODE_COMPAT_ROOT 'rust/target/release'
-          New-Item -ItemType Directory -Force $destination | Out-Null
-          Copy-Item "rust/target/release/morrow-search$extension" $destination
-          node --test tests/rust-search.test.js tests/rust-storage.test.js tests/rust-service.test.js
-          if ($LASTEXITCODE -ne 0) { throw 'Historical differential contracts failed.' }
+          python3 scripts/prepare-historical-checks.py
+          if ($LASTEXITCODE -ne 0) { throw 'Historical harness preparation failed.' }
+          Push-Location .compatibility/harness
+          try {
+            node --test tests/rust-search.test.js tests/rust-storage.test.js tests/rust-service.test.js
+            if ($LASTEXITCODE -ne 0) { throw 'Historical differential contracts failed.' }
+          } finally { Pop-Location }
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         if: env.SKIP_TESTS != 'true'
         with:
@@ -233,7 +238,8 @@ jobs:
           $archives = @(Get-ChildItem candidate-artifacts -Recurse -Filter '*-windows-x64.zip')
           if ($archives.Count -ne 1) { throw 'Expected exactly one native candidate archive.' }
           Expand-Archive -LiteralPath $archives[0].FullName -DestinationPath candidate
-          node scripts/test-rust-upgrade.js '--candidate=candidate/Morrow Mail-win32-x64' --compatibility-root=.compatibility/beta16
+          node .compatibility/harness/scripts/test-rust-upgrade.js '--candidate=candidate/Morrow Mail-win32-x64' --compatibility-root=.compatibility/beta16
+          if ($LASTEXITCODE -ne 0) { throw 'Historical native upgrade failed.' }
       - name: Fixed historical installer to actual SwiftUI candidate
         if: env.SKIP_TESTS != 'true' && runner.os == 'macOS'
         shell: bash
@@ -242,7 +248,7 @@ jobs:
           archives=(candidate-artifacts/Morrow-Mail-*-macos-arm64.zip)
           test "${#archives[@]}" -eq 1 && test -f "${archives[0]}"
           /usr/bin/ditto -x -k "${archives[0]}" candidate
-          node scripts/test-rust-upgrade.js '--candidate=candidate/Morrow Mail.app' --compatibility-root=.compatibility/beta16
+          node .compatibility/harness/scripts/test-rust-upgrade.js '--candidate=candidate/Morrow Mail.app' --compatibility-root=.compatibility/beta16
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [macos-native, native, historical-upgrade]
