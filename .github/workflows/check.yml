@@ -9,7 +9,7 @@ permissions:
   contents: read
 # Explicit owner waiver for this prerelease only; future tags retain all tests.
 env:
-  SKIP_TESTS: ${{ github.ref == 'refs/tags/v0.6.0-beta.17' }}
+  SKIP_TESTS: ${{ github.ref == 'refs/tags/v0.6.0-beta.18' }}
 jobs:
   macos-native:
     # A release preparation main push is built once, by its accompanying tag.
@@ -166,10 +166,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
-      - name: Explicit beta.17 validation waiver
+      - name: Explicit beta.18 validation waiver
         if: env.SKIP_TESTS == 'true'
         shell: bash
-        run: echo 'Owner requested no new tests for beta.17. Historical contracts and upgrade walkthrough were NOT run for this tag.'
+        run: echo 'Owner requested no new tests for beta.18. Historical contracts and upgrade walkthrough were NOT run for this tag.'
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         if: env.SKIP_TESTS != 'true'
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09

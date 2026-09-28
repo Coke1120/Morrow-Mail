@@ -1,10 +1,12 @@
 # Verification — 28 September 2026
 
-## 0.6.0-beta.17 — explicit release validation waiver
+## 0.6.0-beta.18 — explicit release validation waiver
 
-The owner explicitly requested merging to main and publishing without new tests. The canonical workflow now builds SwiftUI/Rust and WinUI/Rust packages, retaining same-run artifact provenance, exact checksums and pinned signed manifests. Only the exact beta.17 tag skips Rust checks, native walkthroughs, benchmarks and historical compatibility execution; its historical jobs record the waiver rather than claiming test success. Future tags retain those gates. The accompanying main preparation commit delegates packaging to the tag to avoid duplicate builds.
+The owner explicitly requested merging to main and publishing without new tests. The canonical workflow now builds SwiftUI/Rust and WinUI/Rust packages, retaining same-run artifact provenance, exact checksums and pinned signed manifests. Only the exact beta.18 tag skips Rust checks, native walkthroughs, benchmarks and historical compatibility execution; its historical jobs record the waiver rather than claiming test success. Future tags retain those gates. The accompanying main preparation commit delegates packaging to the tag to avoid duplicate builds.
 
 Prior evidence below remains attributable to its original commit/run, including the four successful jobs at `2f39ade` in CI 36361496967. This exception does not complete N0, clean minimum-OS, IME/accessibility/DPI, live-provider or distribution-signing acceptance. No private workspace or real provider/model action is part of this release. Publication details will be recorded after the signed paired assets are available.
+
+The beta.17 attempt at `1b0418897d260fc0c910f1a249f335c3628bcdcf` ([CI 36366623326](https://github.com/Coke1120/Morrow-Mail/actions/runs/36366623326)) built both packages and explicitly omitted all tests. The publisher verified the same-run artifacts and signature, then stopped after creating an empty draft because the immediately reread releases listing did not include it. No assets were uploaded or made public. Beta.18 uses the validated draft ID from the create response and requests fresh API reads; the beta.17 tag is not moved.
 
 ## Unreleased native migration candidate — Node-free macOS and N4 preservation
 

@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.6.0-beta.17 — 2026-09-28
+## 0.6.0-beta.18 — 2026-09-28
+
+- Publish the native desktop cutover described below, with the same explicit owner waiver for additional tests.
+- Read the created draft directly from GitHub's creation response, avoiding the release-list read-after-write visibility failure that stopped beta.17 before any assets were uploaded. Retain all provenance, checksum, pinned-signature and no-overwrite protections.
+- Beta.17 was never public; its tag is retained. See [beta.18 release notes](docs/releases/v0.6.0-beta.18.md).
+
+## 0.6.0-beta.17 — 2026-09-28 (unpublished)
 
 - Switch the Windows package to native WinUI 3/C++/WinRT with the existing Rust service; retain SwiftUI on macOS. Neither native package bundles Electron, React or Node.
 - Share Rust draft preparation and use Node-free native resource, notice, build and signed paired-publisher tooling. Retain historical compatibility sources and workspace/recovery identities.

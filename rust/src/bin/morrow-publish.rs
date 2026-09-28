@@ -435,23 +435,26 @@ fn gh_output<W: Write + Send + 'static>(
     result
 }
 
-fn api_args(path: &str) -> Vec<OsString> {
+fn api_args(path: &str, method: &str) -> Vec<OsString> {
     vec![
         "api".into(),
         "--hostname".into(),
         "github.com".into(),
         "--method".into(),
-        "GET".into(),
+        method.into(),
         "-H".into(),
         "Accept: application/vnd.github+json".into(),
         "-H".into(),
         "X-GitHub-Api-Version: 2022-11-28".into(),
+        // Revalidate release/asset state instead of reusing pre-write responses.
+        "-H".into(),
+        "Cache-Control: no-cache".into(),
         format!("repos/{REPOSITORY}/{path}").into(),
     ]
 }
 
 fn api(path: &str) -> Result<Value> {
-    let bytes = gh(&api_args(path), 120)?;
+    let bytes = gh(&api_args(path, "GET"), 120)?;
     serde_json::from_slice(&bytes).map_err(|_| "Invalid GitHub API response.".into())
 }
 
@@ -737,7 +740,7 @@ fn verified_run_files(
     for (artifact, expected) in artifacts.iter().zip(files.as_chunks::<2>().0) {
         let path = staging.0.join(format!("{}.zip", artifact.id));
         let (output, _) = gh_output(
-            &api_args(&format!("actions/artifacts/{}/zip", artifact.id)),
+            &api_args(&format!("actions/artifacts/{}/zip", artifact.id), "GET"),
             900,
             File::create_new(&path)?,
             artifact.size,
@@ -867,21 +870,25 @@ fn publish(
     let id = if let Some(id) = existing {
         id
     } else {
-        let mut args = vec![
-            "release".into(),
-            "create".into(),
-            tag.into(),
-            "--verify-tag".into(),
-            "--draft".into(),
-            "--prerelease".into(),
-            "--title".into(),
-            format!("Morrow Mail {version}").into(),
-            "--notes-file".into(),
-            notes_file.clone().into_os_string(),
-        ];
-        args.extend(repo.clone());
-        gh(&args, 120)?;
-        self::existing(tag)?.ok_or("Created draft could not be verified.")?
+        // verify_gate already requires this tag to resolve to the reviewed SHA.
+        // Use the creation response, not an immediately repeated release listing.
+        let request_file = staging.0.join("create-release.json");
+        fs::write(
+            &request_file,
+            serde_json::to_vec(&serde_json::json!({
+                "tag_name": tag,
+                "target_commitish": gate.sha,
+                "name": format!("Morrow Mail {version}"),
+                "body": std::str::from_utf8(notes)?,
+                "draft": true,
+                "prerelease": true,
+            }))?,
+        )?;
+        let mut args = api_args("releases", "POST");
+        args.extend([OsString::from("--input"), request_file.into_os_string()]);
+        let created: Value = serde_json::from_slice(&gh(&args, 120)?)
+            .map_err(|_| "Invalid draft creation response.")?;
+        draft(&created, tag)?
     };
     for (asset, path) in &files {
         let release = api(&format!("releases/{id}"))?;

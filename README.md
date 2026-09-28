@@ -12,7 +12,7 @@
 
 [Download macOS / Windows beta](https://github.com/Coke1120/Morrow-Mail/releases) · [Feature coverage](FEATURE_COVERAGE.md) · [Verification](VERIFICATION.md) · [GitHub Sponsors](https://github.com/sponsors/Coke1120) · [Buy Me a Coffee](https://buymeacoffee.com/Coke1120)
 
-Morrow Mail is an independent, MIT-licensed alternative inspired by Genspark GenMail. From **0.6.0-beta.17**, it uses **SwiftUI on macOS** and **WinUI 3/C++/WinRT on Windows**, with the same Rust mail service and release version. Native packages do not bundle Node, React or Electron. The React/Electron and Node sources remain available for compatibility and browser development.
+Morrow Mail is an independent, MIT-licensed alternative inspired by Genspark GenMail. From **0.6.0-beta.18**, it uses **SwiftUI on macOS** and **WinUI 3/C++/WinRT on Windows**, with the same Rust mail service and release version. Native packages do not bundle Node, React or Electron. The React/Electron and Node sources remain available for compatibility and browser development.
 
 - **Multiple mailboxes:** Gmail, Outlook / Microsoft 365, and IMAP / SMTP; combined or separate inboxes with collapsible account groups, sorting, and compact views.
 - **Indexed search:** local full-text search, Chinese traditional/simplified matching, filters, saved searches and optional reviewed semantic indexing in both clients.
@@ -167,7 +167,7 @@ Builds are ad-hoc signed for local use. A stable public distribution requires yo
 
 ## Windows desktop app
 
-From beta.17, the Windows package uses native WinUI 3/C++/WinRT controls over the same Rust provider, account-routing, AI-permission and calendar service as macOS. The host starts a private authenticated loopback service; the isolated HTML reader receives no service token or script bridge. React/Electron remains in source for historical compatibility, not in the native release package.
+From beta.18, the Windows package uses native WinUI 3/C++/WinRT controls over the same Rust provider, account-routing, AI-permission and calendar service as macOS. The host starts a private authenticated loopback service; the isolated HTML reader receives no service token or script bridge. React/Electron remains in source for historical compatibility, not in the native release package.
 
 Data lives in `%APPDATA%\Morrow Mail`. Sidebar disclosure and pending calendar requests persist across app restarts. Windows uses the current user's profile permissions; Unix file-mode checks do not represent Windows ACLs. Account data is local to each installation; paired releases do **not** synchronize mail caches, credentials or preferences between computers.
 
@@ -192,13 +192,13 @@ $workspace = Join-Path $env:APPDATA 'Morrow Mail'
 
 ## Keeping platform releases aligned
 
-`package.json` is the version source for both apps and archive names. Normal pushes and pull requests run native Rust/SwiftUI/WinUI and fixed-beta.16 compatibility checks. The beta.17 tag has an explicit one-release test waiver; both packages and signed provenance are still required. Tag and manually dispatched builds upload both packages as short-lived CI artifacts; published release downloads remain available.
+`package.json` is the version source for both apps and archive names. Normal pushes and pull requests run native Rust/SwiftUI/WinUI and fixed-beta.16 compatibility checks. The beta.18 tag has an explicit one-release test waiver; both packages and signed provenance are still required. Tag and manually dispatched builds upload both packages as short-lived CI artifacts; published release downloads remain available.
 
 To publish a new alpha or beta, update the changelog, verification notes and `docs/releases/v<version>.md`, keep the version in package.json/package-lock.json aligned, commit, then push the matching `v<version>` tag. The workflow builds both platforms from that **same tag**. It verifies both archives and their checksums, signs a two-platform update manifest, uploads all six files to a draft release, and makes the release public only after every platform job succeeds. Failed builds publish no partial release; failed uploads leave a draft. Published assets are never overwritten.
 
 The release job requires `MORROW_UPDATE_SIGNING_KEY` in GitHub Actions secrets. Its Ed25519 public key is pinned in `rust/resources/update-public-key.pem`; the byte-identical `server/update-public-key.pem` remains for historical Node compatibility. Only the public key belongs in Git. The current private signing key is kept outside the repository at `~/.config/morrow-release/update-signing-key.pem`. Keep a secure backup: losing it prevents existing apps from accepting new update manifests. Do not rotate or replace the public key casually; a key change needs a transition release signed with the existing key. `npm run updater:test` uses generated fixture keys and temporary apps, never this release key or a real workspace.
 
-Normal changes retain the documented checks; beta.17 is the explicit test waiver above. Versioned tags publish paired downloads. Unsigned automation accepts numbered alpha and beta versions; stable and release-candidate tags are rejected. Native UI differences remain explicit in [feature coverage](FEATURE_COVERAGE.md); API changes must preserve both clients.
+Normal changes retain the documented checks; beta.18 is the explicit test waiver above. Versioned tags publish paired downloads. Unsigned automation accepts numbered alpha and beta versions; stable and release-candidate tags are rejected. Native UI differences remain explicit in [feature coverage](FEATURE_COVERAGE.md); API changes must preserve both clients.
 
 ## Rust desktop service
 
@@ -214,7 +214,7 @@ MORROW_SERVICE_RUNTIME=rust npm run macos:build
 npm run benchmark:rust-service -- --output=test-results/migration-rust-service.json
 ```
 
-Desktop bundles contain `morrow-service` instead of a backend Node runtime. Rust fails closed if it cannot start; it never falls back to a second writer. From beta.17, Windows uses WinUI 3/C++/WinRT without Electron or its internal Node runtime. Remaining validation and source-retirement work is tracked in the [native migration plan](docs/RUST_NATIVE_MIGRATION_PLAN.md). Build selection is recorded in bundle metadata, not accepted from the renderer. `package.json` remains the version source. The locked Rust build requires Rust 1.98+, rustfmt/clippy and a C compiler; bundled third-party notices accompany the executable. Node remains available for browser development and explicit compatibility builds.
+Desktop bundles contain `morrow-service` instead of a backend Node runtime. Rust fails closed if it cannot start; it never falls back to a second writer. From beta.18, Windows uses WinUI 3/C++/WinRT without Electron or its internal Node runtime. Remaining validation and source-retirement work is tracked in the [native migration plan](docs/RUST_NATIVE_MIGRATION_PLAN.md). Build selection is recorded in bundle metadata, not accepted from the renderer. `package.json` remains the version source. The locked Rust build requires Rust 1.98+, rustfmt/clippy and a C compiler; bundled third-party notices accompany the executable. Node remains available for browser development and explicit compatibility builds.
 
 The first unreleased native-migration change moves Reply, Reply All, Forward and provider-draft copying into the local service. Both clients request an unsaved draft using the original message ID and explicit mailbox owner; desktop builds use the Rust implementation. This does not contact a provider or model, save a draft or send mail. Saved drafts keep their existing editing and delivery-review paths. Node browser/compatibility service retains the same API until its planned retirement.
 
@@ -508,7 +508,7 @@ Normal startup, health, and backup diagnostics do not include credentials. Keep 
 - AI summaries can run on an opt-in schedule or newly synced mail while the service is running. Weekly incremental style analysis is a separate per-account opt-in; applying its result remains manual. Unattended sending, automatic reply insertion and autonomous contact/project memory updates are not implemented.
 - The Calendar page supports live event reading and explicit event creation without attendees. Editing/deleting existing events, invitations, and automatic scheduling are not implemented. AI Studio scheduling remains a local simulation.
 - Calendar reads are bounded to 500 calendars and 1,000 events per calendar request. The month view selects at most 12 calendars; it reports an error if a calendar exceeds the read cap. Event editing/deletion, attendees and Morrow-generated reminder emails are not implemented.
-- macOS uses SwiftUI; Windows uses WinUI 3 from beta.17. Core features share the same backend, while native controls and layouts differ. iOS and Android apps are not implemented. Windows manual UI acceptance remains pending.
+- macOS uses SwiftUI; Windows uses WinUI 3 from beta.18. Core features share the same backend, while native controls and layouts differ. iOS and Android apps are not implemented. Windows manual UI acceptance remains pending.
 - Provider and model integrations have automated checks with mocks. Authenticated mail, Google/Microsoft Calendar, and remote-model use still require your credentials and consent; they are not claimed as live-account verified or error-free.
 
 ## Support development
