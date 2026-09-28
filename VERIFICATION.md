@@ -47,6 +47,12 @@ execution API calls in app/check code. This host cannot compile or run WinUI;
 the current Windows build and native DOM/CSP smoke require Windows CI. These
 fixture results do not establish live-account or manual visual acceptance.
 
+CI run [36381065432](https://github.com/Coke1120/Morrow-Mail/actions/runs/36381065432)
+at `1357f69` passed the complete macOS job and Windows Node-free Rust checks.
+Windows compilation caught a fixture-only dynamic JSON key passed to the
+literal-key helper. It now uses native `JsonObject.Insert`; WinUI build and
+runtime evidence await the follow-up run. No production reader policy changed.
+
 ## JavaScript source retirement — `d22990b`, no new release
 
 At the owner's request, 127 retired JavaScript source files were removed with

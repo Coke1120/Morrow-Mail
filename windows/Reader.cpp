@@ -518,7 +518,7 @@ IAsyncOperation<Json> runtimeAttributes(CoreWebView2 core, hstring selector, uin
     auto values = response.GetNamedArray(L"attributes");
     runtimeCheck(values.Size() <= 128 && values.Size() % 2 == 0, L"Native reader attributes exceeded their fixture bound.");
     Json attributes;
-    for (uint32_t i = 0; i < values.Size(); i += 2) put(attributes, values.GetStringAt(i), values.GetStringAt(i + 1));
+    for (uint32_t i = 0; i < values.Size(); i += 2) attributes.Insert(values.GetStringAt(i), Value::CreateStringValue(values.GetStringAt(i + 1)));
     co_return attributes;
 }
 bool documentReady(std::shared_ptr<Reader> const& state) {
