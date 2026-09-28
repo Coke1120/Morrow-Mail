@@ -15,15 +15,17 @@ function New-NativeSampleFile([string] $Fixture) {
     if (($marker.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $marker.Length -gt 64 -or
         [IO.File]::ReadAllText($marker.FullName) -cne 'Morrow native acceptance fixture') { throw 'Invalid observation marker.' }
     $path = Join-Path $Fixture ('native-resources-' + [Guid]::NewGuid().ToString('N') + '.jsonl')
-    $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
-    try {
-        $acl = [Security.AccessControl.FileSecurity]::new()
-        $acl.SetAccessRuleProtection($true, $false)
-        foreach ($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User, [Security.Principal.SecurityIdentifier]::new('S-1-5-18'))) {
-            $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'Allow'))
-        }
-        [IO.FileSystemAclExtensions]::SetAccessControl($stream, $acl)
-    } finally { $stream.Dispose() }
+    $acl = [Security.AccessControl.FileSecurity]::new()
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User, [Security.Principal.SecurityIdentifier]::new('S-1-5-18'))) {
+        $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'Allow'))
+    }
+    # Apply the DACL atomically at creation. An ordinary FileAccess.Write handle
+    # lacks WRITE_DAC and cannot be passed to FileStream.SetAccessControl.
+    $rights = [Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::Synchronize
+    $stream = [IO.FileSystemAclExtensions]::Create([IO.FileInfo]::new($path), [IO.FileMode]::CreateNew,
+        $rights, [IO.FileShare]::Read, 4096, [IO.FileOptions]::None, $acl)
+    $stream.Dispose()
     return $path
 }
 

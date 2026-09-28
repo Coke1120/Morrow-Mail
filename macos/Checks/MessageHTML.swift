@@ -23,6 +23,12 @@ struct ReaderFixture: View {
 
 @main struct MessageHTMLChecks {
     @MainActor static func main() {
+        let started = ProcessInfo.processInfo.systemUptime
+        func phase(_ name: String) {
+            let elapsed = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
+            FileHandle.standardError.write(Data("Native macOS reader: \(name) +\(elapsed) ms\n".utf8))
+        }
+        phase("initial-load")
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
         let port = CommandLine.arguments[1]
@@ -76,6 +82,7 @@ struct ReaderFixture: View {
                     }
                     assert(abs(scroll.documentVisibleRect.minY - expected) < 1, "\(label): expectedY=\(expected), actual=\(scroll.documentVisibleRect), HTML=\(web.frame), contentHeight=\(state.height), OS=\(ProcessInfo.processInfo.operatingSystemVersionString)")
                 }
+                phase("short-scroll")
                 let beforeShort = scroll.documentVisibleRect.minY
                 wheel(-100)
                 try await waitForOuterY(beforeShort + 100, "Downward wheel did not finish")
@@ -89,12 +96,14 @@ struct ReaderFixture: View {
                 try await waitForOuterY(beforeUp - 30, "Upward trackpad scrolling did not reach the reader")
                 assert(scroll.documentVisibleRect.minY < beforeUp, "Upward trackpad scrolling did not reach the reader")
 
+                phase("long-load")
                 state.html = "<p>Long message start</p>" + String(repeating: "<p>Formatted long email line, with enough text to wrap when this reader gets narrower.</p>", count: 1800) + "<p>Long message end</p>"
                 for _ in 0..<200 {
                     if state.height == 20000 && !web.isLoading { break }
                     try await Task.sleep(nanoseconds: 50_000_000)
                 }
                 assert(state.height == 20000, "Long content did not respect the native height cap")
+                phase("capped-scroll")
                 try await Task.sleep(nanoseconds: 250_000_000)
                 let beforeLong = scroll.documentVisibleRect.minY
                 wheel(-100)
@@ -141,6 +150,7 @@ struct ReaderFixture: View {
 
                 // Valid bounded-size markup can still lay out millions of points
                 // tall. Keep the native viewport capped independently of bytes.
+                phase("adversarial-text")
                 state.html = "<div style='width:1px'>" + String(repeating: "x", count: 180000) + "</div>"
                 for _ in 0..<200 {
                     try await Task.sleep(nanoseconds: 50_000_000)
@@ -149,6 +159,7 @@ struct ReaderFixture: View {
                 let adversarialHeight = try await web.evaluateJavaScript("document.body.scrollHeight") as! Double
                 assert(adversarialHeight > 1_000_000 && state.height == 20000 && web.bounds.height <= 20000, "Single-column HTML escaped the native height bound")
 
+                phase("replacement")
                 state.html = String(repeating: "<p>Formatted email text, with enough words to wrap when the reader gets narrower.</p>", count: 30) + "<img src='https://example.invalid/giant.png' alt='Giant image' width='2048' height='2048'>"
                 for _ in 0..<200 {
                     if state.height < 20000 && !web.isLoading { break }
@@ -159,6 +170,7 @@ struct ReaderFixture: View {
                 let imageHeight = try await web.evaluateJavaScript("const image=document.querySelector('img');image.style.height='1000000px';image.getBoundingClientRect().height") as! Double
                 assert(imageHeight == 2048, "Simulated giant HTTPS image layout did not respect its height bound")
                 _ = try await web.evaluateJavaScript("document.querySelector('img').style.height='auto'")
+                phase("reflow")
                 let wideHeight = state.height
                 window.setContentSize(NSSize(width: 360, height: 500))
                 for _ in 0..<100 {
@@ -173,6 +185,7 @@ struct ReaderFixture: View {
                 }
                 assert(abs(state.height - wideHeight) < 2, "Reader height retained the larger viewport after widening")
                 assert(!web.configuration.defaultWebpagePreferences.allowsContentJavaScript)
+                phase("done")
                 print("Native email reader: bidirectional short/capped HTML scrolling, selectable tail, bounded million-point text/image layout, width reflow, scripts/resources blocked and link protocols checked.")
                 window.orderOut(nil)
                 exit(0)
