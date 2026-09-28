@@ -184,7 +184,12 @@ struct WindowAssertions {
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
         // SwiftUI can replace its native pane during layout; re-resolve the
         // displayed hierarchy instead of inspecting the retained, detached view.
-        guard let current = findSplit(window.contentView!)?.arrangedSubviews.first else { fatalError("Resized split fixture did not attach") }
+        var displayed = findSplit(window.contentView!)?.arrangedSubviews.first
+        while Date() < deadline && displayed.map({ abs((vertical ? $0.frame.width : $0.frame.height) - manual) >= 2 }) != false {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            displayed = findSplit(window.contentView!)?.arrangedSubviews.first
+        }
+        guard let current = displayed else { fatalError("Resized split fixture did not attach") }
         if current !== first { print("Split fixture re-resolved a replaced native pane after layout.") }
         assert(abs((vertical ? current.frame.width : current.frame.height) - manual) < 2, "Initial sizing reset the user's divider: \(context), requested=\(manual), pane=\(current.frame), previousAttached=\(first.superview === split)")
         window.close()
