@@ -1,5 +1,11 @@
 # Verification — 29 September 2026
 
+## AI Studio renovation — local candidate, unreleased
+
+Current source opens AI Studio from combined mail, offers a mailbox picker on both native platforms, and shows account-labeled saved summaries together. Email Brain brings reviewed Sent writing-style learning forward, with manual Learn Now and a new daily opt-in. Existing weekly consent retains its seven-day schedule. Approved styles still require explicit Save and remain account-owned; no mail is sent by analysis. A regression verifies daily scheduling, legacy weekly consent, and that dismissing an unchanged proposal does not repeat the paid batch.
+
+Local verification: `cargo fmt --all -- --check`, strict all-target Clippy, the complete locked Rust test suite, macOS native packaging, `morrow-native-check` against the packaged service in a private fictional workspace, plist lint, and deep/strict ad-hoc signature verification all passed. The Windows WinUI changes and combined-Studio smoke case require Windows CI; no live account or paid model request was used. This is an unreleased candidate and does not change beta.24's published evidence.
+
 ## 0.6.0-beta.24 — published paired native release
 
 [Beta.24](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.24) was published at 2026-09-29T08:16:34Z from `17641cb03104e247f93c0067b4428ef7a55430d5`. [Tagged CI 36539028633](https://github.com/Coke1120/Morrow-Mail/actions/runs/36539028633) passed all three jobs: both platforms completed Node-free Rust checks, native packaging and acceptance, Windows completed its fictional-mail benchmark, and the existing publisher verified same-run paired artifact provenance before signing and publishing both packages. No test waiver applied.

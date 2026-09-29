@@ -21,11 +21,13 @@ struct StudioView: View {
     @State private var resultID = UUID()
     @State private var resultGeneration: Int?
     @State private var preview: JSON = .null
+    @State private var previewOwner = ""
     @State private var when = Date().addingTimeInterval(86400)
     @State private var voice = ""
     @State private var notes = ""
     @State private var savedVoice = ""
     @State private var savedNotes = ""
+    @State private var learningDirty = false
     @State private var skillEditor: SkillEdit?
     @State private var memoryPreview: JSON = .null
     @State private var memoryOptions: JSON = .null
@@ -43,10 +45,11 @@ struct StudioView: View {
     var chosen: JSON { contextChoices.first { $0.viewID == messageID } ?? .null }
     var savedMemoryOptions: JSON { workspace["brainLearning"].picking(["enabled", "tokenBudget"]) }
     var memoryOptionsDirty: Bool { !memoryOptions.isNull && memoryOptions != savedMemoryOptions }
-    var brainDirty: Bool { voice != savedVoice || notes != savedNotes || memoryOptionsDirty }
+    var brainDirty: Bool { voice != savedVoice || notes != savedNotes || memoryOptionsDirty || learningDirty }
     var visibleMemoryPreview: JSON { memoryPreview.isNull ? workspace["brainLearning"]["preview"] : memoryPreview }
     var blocked: Bool {
         !model.allowed(action) || (feature["context"].string == "selected" && chosen.isNull) ||
+        (model.combined && feature["context"].string != "selected") ||
         (feature["context"].string == "draft" && draftText.isEmpty) ||
         (["ask", "write"].contains(action) && prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ||
         (action == "skill" && skillID.isEmpty)
@@ -54,13 +57,20 @@ struct StudioView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                SectionHeading(title: "AI Studio", detail: model.account + " · Choose a task, then review the result.")
+                SectionHeading(title: "AI Studio", detail: "Choose a mailbox here. Summaries can show every account together.")
                 Text(model.state["settings"]["ai"]["configured"].bool ? model.state["settings"]["ai"]["model"].string : "Choose an AI model").font(.caption).foregroundStyle(morrowGreen).padding(8).background(morrowGreen.opacity(0.08)).clipShape(Capsule())
                 Button("Permissions") { model.settings("permissions") }.disabled(model.busy)
             }
+            Picker("Mailbox", selection: Binding(get: { model.account }, set: { owner in
+                guard owner != model.account, !model.busy, !brainDirty || model.confirmDiscard("Discard unsaved Email Brain changes?") else { return }
+                model.perform { try await model.selectAccount(owner) }
+            })) {
+                Text("All accounts").tag("all")
+                ForEach(model.accounts) { account in Text(account["email"].string).tag(account.id) }
+            }.disabled(model.busy)
             Picker("Studio section", selection: Binding(get: { tab }, set: { value in
                 guard !model.busy else { return }
-                if brainDirty && !model.confirmDiscard("Discard unsaved Brain notes?") { return }
+                if brainDirty && !model.confirmDiscard("Discard unsaved Email Brain changes?") { return }
                 loadBrain(); model.studioTab = value; if value == "tools" && feature["mock"].bool { action = "ask" }
             })) {
                 Text("Assistant").tag("tools"); Text("Summaries").tag("summaries"); Text("Email Brain").tag("brain")
@@ -75,7 +85,6 @@ struct StudioView: View {
                     Button("Reusable Skills") { navigate("skills") }
                     Button("Local Simulations") { navigate("simulations") }
                     Button("Simulation History") { navigate("activity") }
-                    Button("Writing Style & Identity") { model.settings("learning") }
                 }.fixedSize().disabled(model.busy)
             }
             if !model.policy["enabled"].bool { Label("AI is paused in your saved permissions. Manual mail and calendars still work.", systemImage: "pause.circle").foregroundStyle(.secondary) }
@@ -105,6 +114,7 @@ struct StudioView: View {
         .onChange(of: voice) { _ in model.dirty("brain", brainDirty) }
         .onChange(of: notes) { _ in model.dirty("brain", brainDirty) }
         .onChange(of: memoryOptions) { _ in model.dirty("brain", brainDirty) }
+        .onChange(of: learningDirty) { _ in model.dirty("brain", brainDirty) }
         .onDisappear { contextOperation?.cancel(); contextTicket = UUID(); contextSearching = false; model.dirty("brain", false) }
         .sheet(item: $skillEditor) { skill in SkillEditor(initial: skill.value).environmentObject(model) }
     }
@@ -112,17 +122,23 @@ struct StudioView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 HStack {
-                    SectionHeading(title: "Scheduled & new-mail summaries", detail: "Latest 20 jobs for this account. P0 emergency · P1 due today · P2 action · P3 information · P4 bulk. Review AI priorities.")
+                    SectionHeading(title: "Saved summaries", detail: model.combined ? "All connected accounts · Each report keeps its mailbox label." : model.account)
                     Button("Refresh") { model.perform { try await model.reload() } }.disabled(model.busy)
                 }
-                Text("Configure triggers in Settings → AI Permissions. Summaries use cached mail and saved permissions. Results are hidden if the model, language, permissions, connection or source scope changes.").font(.callout).foregroundStyle(.secondary)
-                if workspace["summaryOverflow"].number > 0 { Text("\(Int(workspace["summaryOverflow"].number)) jobs exceeded the queue limit. Use a manual summary for those messages.").foregroundStyle(.orange) }
-                ForEach(model.state["syncErrors"].array) { item in Text(item["accountId"].string + ": " + item["error"].string + (item["nextRetryAt"].nonempty ? " Next retry: \(dateLabel(item["nextRetryAt"].string))." : "")).foregroundStyle(.orange) }
-                if workspace["summaries"].array.isEmpty {
-                    Text("No summaries yet. Enable a trigger and wait for a scheduled time or newly synced mail.").foregroundStyle(.secondary)
-                    Button("Configure Summary Triggers") { model.settings("permissions") }
+                Text("These are saved results from scheduled or newly synced mail. Opening this page does not run AI. Each report uses only mail from its own account.").font(.callout).foregroundStyle(.secondary)
+                HStack {
+                    Button("Summarize inbox now") { action = "briefing"; model.studioTab = "tools" }.disabled(model.combined)
+                    if model.combined { Text("Choose one mailbox above for a new briefing.").font(.caption).foregroundStyle(.secondary) }
+                    Button("Summary schedule") { model.settings("permissions") }
                 }
-                ForEach(workspace["summaries"].array) { report in SummaryReportView(report: report) }
+                let overflow = model.combined ? model.state["today"]["summaryOverflow"] : workspace["summaryOverflow"]
+                if overflow.number > 0 { Text("\(Int(overflow.number)) jobs exceeded the queue limit. Use a manual summary for those messages.").foregroundStyle(.orange) }
+                ForEach(model.state["syncErrors"].array) { item in Text(item["accountId"].string + ": " + item["error"].string + (item["nextRetryAt"].nonempty ? " Next retry: \(dateLabel(item["nextRetryAt"].string))." : "")).foregroundStyle(.orange) }
+                let reports = model.combined ? model.state["today"]["summaries"].array : workspace["summaries"].array
+                if reports.isEmpty {
+                    Text("No saved summaries yet. Set a schedule, wait for newly synced mail, or request a briefing above.").foregroundStyle(.secondary)
+                }
+                ForEach(reports) { report in SummaryReportView(report: report) }
             }.padding(20)
         }
     }
@@ -132,6 +148,7 @@ struct StudioView: View {
                 SectionHeading(title: "Local simulations", detail: "Sample workflows for exploration. Results are labeled as simulations.")
             } else {
                 Text("Start with a task").font(.headline)
+                if model.combined { Text("Choose one mailbox above for inbox-wide AI tasks. You can still select a specific email across accounts below.").font(.callout).foregroundStyle(.secondary) }
                 HStack {
                     Button("Ask my inbox") { action = "ask" }
                     Button("Draft a reply") { action = "reply" }
@@ -225,10 +242,11 @@ struct StudioView: View {
                         }
                         Text("Preview expires after ten minutes. Applying changes this local workspace only.").font(.caption).foregroundStyle(.secondary)
                         HStack {
-                            Button("Dismiss Preview") { preview = .null }
+                            Button("Dismiss Preview") { preview = .null; previewOwner = "" }
                             Button("Apply Local Simulation") {
+                                let owner = previewOwner, id = preview["id"]
                                 model.perform {
-                                    model.state = try await model.request("/workflows/apply", method: "POST", body: .object(["previewId": preview["id"]]))
+                                    model.state = try await model.request("/workflows/apply", method: "POST", body: .object(["previewId": id]), mailbox: owner)
                                     preview = .null; model.notice = "Simulation applied locally."; loadBrain()
                                 }
                             }.buttonStyle(.borderedProminent).disabled(model.busy || !model.allowed(action))
@@ -241,8 +259,15 @@ struct StudioView: View {
     var brainPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                SectionHeading(title: "Email Brain", detail: "Keep useful context for this mailbox. You choose what is remembered.")
-                Text("Writing voice is your instruction, for example ‘use short, friendly sentences.’ Notes are facts you type yourself. Suggested memories come from permitted mail and are saved only after you review their sources. Learning can suggest a writing style separately in Settings.").font(.callout).foregroundStyle(.secondary)
+                SectionHeading(title: "Email Brain", detail: "Learn your writing voice from this account’s downloaded Sent mail.")
+                if model.combined {
+                    Text("Choose a mailbox above to learn its writing voice. Approved styles stay separate and are used for new mail and replies from their own account.").foregroundStyle(.secondary)
+                } else {
+                    StyleLearningView(dirty: $learningDirty, onOpenSettings: { model.settings($0) })
+                }
+                DisclosureGroup("Notes and memory suggestions") {
+                    VStack(alignment: .leading, spacing: 18) {
+                        Text("Optional notes and reviewed memories provide extra context. Manual writing instructions override the approved Sent style.").font(.callout).foregroundStyle(.secondary)
                 brainAutomation
                 GroupBox("Find memories in your mail") {
                     VStack(alignment: .leading, spacing: 10) {
@@ -286,14 +311,12 @@ struct StudioView: View {
                     }
                 }
                 Text("Memories are used only while their source mail and permissions still match.").font(.caption).foregroundStyle(.secondary)
-                DisclosureGroup("Writing style & identity") {
-                    Text("Your manual writing voice takes priority over your approved learned style. Identity is confirmed separately.").foregroundStyle(.secondary)
-                    Button("Review Style & Identity") { model.settings("learning") }
-                }
                 DisclosureGroup("Saved contacts") {
                 ForEach(Array(workspace["brain"]["contacts"].array.enumerated()), id: \.offset) { _, item in Label("\(item["name"].string) · \(item["email"].string)", systemImage: "person.crop.circle") }
                 if workspace["brain"]["contacts"].array.isEmpty { Text("No saved contacts.").foregroundStyle(.secondary) }
                 }
+                    }
+                }.disabled(model.combined)
             }.padding(20).disabled(model.busy)
         }
     }
@@ -349,7 +372,7 @@ struct StudioView: View {
         }
     }
     func navigate(_ destination: String) {
-        guard !model.busy, !brainDirty || model.confirmDiscard("Discard unsaved Brain notes?") else { return }
+        guard !model.busy, !brainDirty || model.confirmDiscard("Discard unsaved Email Brain changes?") else { return }
         loadBrain()
         model.studioTab = destination
         if destination == "simulations" { action = model.features.first { $0["mock"].bool }?.id ?? "memory" }
@@ -412,7 +435,7 @@ struct StudioView: View {
         model.perform {
             let response = try await model.request(simulation ? "/workflows/preview" : "/ai", method: "POST", body: payload, mailbox: owner)
             guard !Task.isCancelled, run == resultID, generation == model.draftGeneration, model.section == "studio" else { return }
-            if simulation { preview = response["preview"] } else { result = response; resultGeneration = generation }
+            if simulation { previewOwner = owner; preview = response["preview"] } else { result = response; resultGeneration = generation }
         }
     }
     func record(_ collection: String, _ item: JSON, _ payload: JSON) { model.perform { model.state = try await model.request("/workspace/\(collection)/" + encodedPath(item.id), method: "PATCH", body: payload) } }
@@ -429,12 +452,12 @@ struct StudioView: View {
                 catch { if run == resultID { model.error = error.localizedDescription } }
             }
         } else {
-            var draft = Draft(); draft.accountID = model.account; draft.body = text
+            var draft = Draft(); draft.accountID = action == "translate" ? message["accountId"].string : model.account; draft.body = text
             if action == "translate" { draft.subject = message["subject"].string }
             model.newDraft(draft)
         }
     }
-    func clearResult() { resultID = UUID(); resultGeneration = nil; result = .null; preview = .null }
+    func clearResult() { resultID = UUID(); resultGeneration = nil; result = .null; preview = .null; previewOwner = "" }
     func clearContextSearch() {
         contextOperation?.cancel(); contextTicket = UUID(); contextSearching = false; contextSearch = .null; contextQuery = ""; contextError = ""; contextPage = 0
         messageID = permitted.first?.viewID ?? ""

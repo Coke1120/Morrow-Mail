@@ -155,6 +155,10 @@ IAsyncAction Shell::smoke() {
             enter("mail-combined");
             co_await navigate(L"mail",L"all");
             check(pageLabel.Text().size() && rows.Items().Size()==50, L"Combined mail did not load.");
+            enter("studio-combined");
+            co_await navigate(L"studio",L"all");
+            check(section==L"summaries" && owner==L"all" && page.Content(), L"Combined AI Studio did not show saved summaries.");
+            co_await navigate(L"mail",L"all");
             auto other = object(co_await service->request(L"/messages/mail-000",L"two@fixture.invalid"),L"message");
             check(text(other,L"viewId") != text(source,L"viewId") && !flag(other,L"pending"),L"Same provider ID crossed owners.");
             enter("draft-prepare");

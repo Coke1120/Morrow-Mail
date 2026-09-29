@@ -376,6 +376,7 @@ struct NativeRustChecks {
         try check(historyReply["history"]["scope"].string == "downloaded" && historyReply["history"]["usedMessages"].number >= 1 && historyReply["history"]["usedMessages"].number <= model.policy["maxMessages"].number, "history reply exceeded the saved context limit")
         let preview = try await model.request("/workflows/preview", method: "POST", body: .object(["action": .string("schedule"), "messageId": .string(demo.id), "when": .string(utcDate(Date().addingTimeInterval(86400)))]), mailbox: "demo")
         try check(preview["simulated"].bool && !preview["preview"].id.isEmpty, "workflow preview lost simulation label")
+        try await expectFailure(model, path: "/workflows/apply", body: .object(["previewId": preview["preview"]["id"]]), owner: "all")
         let applied = try await model.request("/workflows/apply", method: "POST", body: .object(["previewId": preview["preview"]["id"]]), mailbox: "demo")
         try check(applied["simulated"].bool && applied["workspace"]["events"].array.contains { $0["simulated"].bool }, "simulated schedule was not stored locally")
         try await expectFailure(model, path: "/workflows/apply", body: .object(["previewId": preview["preview"]["id"]]), owner: "demo")

@@ -17,8 +17,12 @@ use std::{
     sync::LazyLock,
 };
 
+// Existing weekly consent keeps its seven-day cadence; daily analysis needs a new opt-in.
+const DAY_MS: i64 = 86_400_000;
+const WEEK_MS: i64 = 7 * DAY_MS;
+
 fn defaults() -> Value {
-    json!({"enabled":false,"weekly":false,"months":3,"maxSamples":50,"tokenBudget":16000})
+    json!({"enabled":false,"weekly":false,"daily":false,"months":3,"maxSamples":50,"tokenBudget":16000})
 }
 fn empty_identity() -> Value {
     json!({"displayName":"","aliases":[],"confirmed":false})
@@ -272,6 +276,7 @@ pub fn update_settings_at(
     }
     if !next["enabled"].is_boolean()
         || !next["weekly"].is_boolean()
+        || !next["daily"].is_boolean()
         || !next["months"]
             .as_u64()
             .is_some_and(|n| [1, 3, 6, 12].contains(&n))
@@ -286,9 +291,14 @@ pub fn update_settings_at(
             "Choose 1–50 samples and a 4,000–64,000 token budget.",
         ));
     }
-    if next["weekly"] == true && next["enabled"] != true {
+    if (next["weekly"] == true || next["daily"] == true) && next["enabled"] != true {
         return Err(Error::invalid(
-            "Enable style learning before weekly updates.",
+            "Enable style learning before automatic updates.",
+        ));
+    }
+    if next["weekly"] == true && next["daily"] == true {
+        return Err(Error::invalid(
+            "Choose either weekly or daily style review.",
         ));
     }
     let mut current = read(&settings, owner);
@@ -302,12 +312,20 @@ pub fn update_settings_at(
         .keys()
         .any(|key| key != "identity")
     {
-        if next["weekly"] == true && previous["weekly"] != true {
+        let newly_scheduled = (next["weekly"] == true && previous["weekly"] != true)
+            || (next["daily"] == true && previous["daily"] != true);
+        if newly_scheduled {
             current["weeklySince"] = time.to_rfc3339_opts(SecondsFormat::Millis, true).into();
         }
         current["preview"] = Value::Null;
-        current["lastWeeklyAt"] = if next["weekly"] == true && previous["weekly"] != true {
-            time.timestamp_millis().saturating_sub(7 * 86400000).into()
+        current["lastWeeklyAt"] = if newly_scheduled {
+            time.timestamp_millis()
+                .saturating_sub(if next["daily"] == true {
+                    DAY_MS
+                } else {
+                    WEEK_MS
+                })
+                .into()
         } else {
             time.timestamp_millis().into()
         };
@@ -560,7 +578,7 @@ pub fn clear(db: &Store, owner: &str) -> Result<()> {
     write(
         db,
         owner,
-        json!({"settings":merge(config(&settings,owner),&json!({"enabled":false,"weekly":false}))}),
+        json!({"settings":merge(config(&settings,owner),&json!({"enabled":false,"weekly":false,"daily":false}))}),
     )
 }
 pub async fn scheduled_tick(app: &App) -> Result<()> {
@@ -570,25 +588,33 @@ pub async fn scheduled_tick(app: &App) -> Result<()> {
             let time = Utc::now();
             for (owner, _) in settings["styleLearning"].as_object().into_iter().flatten() {
                 let value = read(&settings, owner);
+                let options = config(&settings, owner);
+                let interval = if options["daily"] == true {
+                    DAY_MS
+                } else {
+                    WEEK_MS
+                };
                 if !permitted(&settings, owner)
-                    || config(&settings, owner)["weekly"] != true
+                    || (options["weekly"] != true && options["daily"] != true)
                     || time.timestamp_millis()
                         < value["lastWeeklyAt"]
                             .as_i64()
                             .unwrap_or(time.timestamp_millis())
-                            .saturating_add(7 * 86400000)
+                            .saturating_add(interval)
                     || (valid(db, &settings, owner, &value["preview"])?
                         && ["prepared", "running", "ready"]
                             .contains(&string(&value["preview"], "status")))
                 {
                     continue;
                 }
+                let incremental = !voice(db, &settings, owner)?.is_empty()
+                    || !string(&value, "analyzedThrough").is_empty();
                 write(
                     db,
                     owner,
                     merge(value, &json!({"lastWeeklyAt":time.timestamp_millis()})),
                 )?;
-                let incremental = !voice(db, &settings, owner)?.is_empty();
+                // A dismissed proposal waits for new Sent mail instead of billing for the same batch.
                 return Ok(prepare_at(db, owner, incremental, time)
                     .ok()
                     .map(|p| (owner.clone(), string(&p, "id").to_owned())));
