@@ -1234,6 +1234,90 @@ pub fn process_alive(pid: u32) -> bool {
         true
     }
 }
+#[cfg(windows)]
+fn launched_service_handles(parent_pid: u32) -> Result<Vec<std::os::windows::io::OwnedHandle>> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::{
+        Foundation::{
+            ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, GetLastError, INVALID_HANDLE_VALUE,
+        },
+        System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+                TH32CS_SNAPPROCESS,
+            },
+            Threading::{OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE},
+        },
+    };
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let snapshot = unsafe { OwnedHandle::from_raw_handle(snapshot) };
+    let mut entry = PROCESSENTRY32W::default();
+    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut handles = Vec::new();
+    let mut found = unsafe { Process32FirstW(snapshot.as_raw_handle(), &mut entry) };
+    while found != 0 {
+        let name_end = entry
+            .szExeFile
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(entry.szExeFile.len());
+        if entry.th32ParentProcessID == parent_pid
+            && String::from_utf16_lossy(&entry.szExeFile[..name_end])
+                .eq_ignore_ascii_case("morrow-service.exe")
+        {
+            let handle = unsafe {
+                OpenProcess(
+                    PROCESS_SYNCHRONIZE | PROCESS_TERMINATE,
+                    0,
+                    entry.th32ProcessID,
+                )
+            };
+            if handle.is_null() {
+                if unsafe { GetLastError() } != ERROR_INVALID_PARAMETER {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+            } else {
+                handles.push(unsafe { OwnedHandle::from_raw_handle(handle) });
+            }
+        }
+        found = unsafe { Process32NextW(snapshot.as_raw_handle(), &mut entry) };
+    }
+    if unsafe { GetLastError() } != ERROR_NO_MORE_FILES {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(handles)
+}
+#[cfg(windows)]
+async fn wait_for_launched_service(parent_pid: u32) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::{
+        Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT},
+        System::Threading::{TerminateProcess, WaitForSingleObject},
+    };
+    // Retry enumeration rather than roll back while a service may still hold app files or the workspace.
+    let handles = loop {
+        match launched_service_handles(parent_pid) {
+            Ok(handles) => break handles,
+            Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
+        }
+    };
+    for handle in handles {
+        let deadline = Instant::now() + Duration::from_secs(140);
+        loop {
+            let state = unsafe { WaitForSingleObject(handle.as_raw_handle(), 0) };
+            if state == WAIT_OBJECT_0 {
+                break;
+            }
+            if state != WAIT_TIMEOUT || Instant::now() >= deadline {
+                unsafe { TerminateProcess(handle.as_raw_handle(), 1) };
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+}
 fn launch_app(target: &Path, platform: &str, workspace: &Path) -> Result<Child> {
     let (_, executable) = package_paths(target, platform)?;
     let mut command = clean_command(executable);
@@ -1426,10 +1510,14 @@ where
                 let workspace = config.result_file.parent().unwrap().to_owned();
                 async move {
                     let mut child = launch_app(&target, &platform, &workspace)?;
+                    #[cfg(windows)]
+                    let child_pid = child.id().unwrap();
                     let result = wait_for_ready(&mut child, &workspace, probe).await;
                     if result.is_err() {
                         let _ = child.kill().await;
                         let _ = child.wait().await;
+                        #[cfg(windows)]
+                        wait_for_launched_service(child_pid).await;
                     }
                     result
                 }
@@ -1572,6 +1660,64 @@ mod download_tests {
                 String::from_utf8_lossy(&err)
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn failed_candidate_waits_for_its_service() {
+        let root =
+            std::env::temp_dir().join(format!("morrow-update-service-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let source = root.join("candidate.rs");
+        fs::write(
+            &source,
+            r#"fn main() {
+    let root = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+    if std::env::args().any(|arg| arg == "--service") {
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        return;
+    }
+    let child = std::process::Command::new(root.join("morrow-service.exe"))
+        .arg("--service").spawn().unwrap();
+    std::fs::write(root.join("service.pid"), child.id().to_string()).unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(30));
+}"#,
+        )
+        .unwrap();
+        let executable = root.join("candidate.exe");
+        fixture_command(
+            "compile child-service fixture",
+            clean_command(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+                .args(["--edition=2024", "--crate-name", "candidate_fixture"])
+                .arg(&source)
+                .arg("-o")
+                .arg(&executable),
+            60,
+        )
+        .await;
+        fs::copy(&executable, root.join("morrow-service.exe")).unwrap();
+        let mut candidate = clean_command(&executable)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let candidate_pid = candidate.id().unwrap();
+        let service_pid = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Ok(pid) = fs::read_to_string(root.join("service.pid")) {
+                    break pid.parse::<u32>().unwrap();
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        candidate.kill().await.unwrap();
+        candidate.wait().await.unwrap();
+        let started = Instant::now();
+        wait_for_launched_service(candidate_pid).await;
+        assert!(!process_alive(service_pid));
+        assert!(started.elapsed() >= Duration::from_secs(1));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(windows)]
