@@ -48,8 +48,8 @@ struct ReplySuggestionsView: View {
         } else if !value["modelReady"].bool {
             Button("Set Up a Chat Model") { model.settings("model") }.disabled(locked || changed)
         } else if !model.allowed("reply") || !model.policy["folders"]["inbox"].bool || !model.policy["content"]["sender"].bool || !model.policy["content"]["body"].bool {
-            Text("Allow AI replies to use Inbox, sender and body in AI Permissions.").foregroundStyle(.secondary)
-            Button("Review AI Permissions") { model.settings("permissions") }.disabled(locked || changed)
+            Text("Allow AI replies to use Inbox, sender and body in AI & privacy.").foregroundStyle(.secondary)
+            Button("Review AI & Privacy") { model.settings("permissions") }.disabled(locked || changed)
         } else if !value["automaticReady"].bool {
             Text("Enable automatic checks once. Each suggested reply still requires your approval before sending.").foregroundStyle(.secondary)
             Button("Enable Automatic Reply Suggestions") {

@@ -425,7 +425,7 @@ void buildLearning(Page const& p, StackPanel const& body) {
     if (flag(object(learning(p), L"settings"), L"weekly")) editCheck(p, options, L"learning", L"weekly", L"Keep legacy weekly review (turn off to pause)");
     words(options, L"The first eligible analysis starts after enabling, then updates use new cached Sent mail at most daily while Morrow is open. Every proposal still needs review and Save. It pauses while a preview awaits review; no automatic retry of failed paid jobs.");
     editChoice(p, options, L"learning", L"months", L"Sent history", {{L"1", L"Last month"}, {L"3", L"Last 3 months"}, {L"6", L"Last 6 months"}, {L"12", L"Last 12 months"}}, true);
-    editNumber(p, options, L"learning", L"maxSamples", L"Maximum samples (also limited by AI Permissions)", 1, 50);
+    editNumber(p, options, L"learning", L"maxSamples", L"Maximum samples (also limited by AI & privacy)", 1, 50);
     editNumber(p, options, L"learning", L"tokenBudget", L"Estimated token budget per analysis", 4000, 64000, 1000);
     action(p, options, L"Save Learning settings…", [](Page page) -> IAsyncAction {
         auto body = clone(page->forms[L"learning"].value);
@@ -642,7 +642,7 @@ void renderSuggestions(Page const& p) {
         jobs.Children().Append(button(L"Confirm my identity",[weak] { if (auto page=weak.lock()) changePage(page,L"learning"); }));
     } else if (!flag(value,L"modelReady") || (!flag(value,L"permitted") && flag(object(value,L"settings"),L"enabled"))) {
         for (auto const& requirement:array(value,L"requirements")) words(jobs,requirement.GetString());
-        words(jobs,L"Review Model and AI Permissions in Settings.");
+        words(jobs,L"Review AI & privacy and Advanced setup → AI connection in Settings.");
     } else if (!flag(value,L"automaticReady")) {
         action(p,jobs,L"Enable automatic reply suggestions",[](Page page) -> IAsyncAction {
             auto options=clone(page->forms[L"suggestions"].value); truth(options,L"enabled",true); truth(options,L"automatic",true); options.Insert(L"tokenBudget",Value::CreateNumberValue(64000));
@@ -749,7 +749,7 @@ void renderRecords(Page const& p) {
     if (p->kind == L"summaries") {
         words(panel, L"Saved priority summaries", 24);
         words(panel, p->owner == L"all" ? L"All connected accounts. Each report labels its own mailbox; AI context never crosses accounts." : L"Reports for this mailbox only. Choose All accounts above to see them together.");
-        words(panel, L"Scheduled and newly synced mail create these reports when enabled. Opening or refreshing this page does not run AI. Configure the schedule in AI Permissions.");
+        words(panel, L"Scheduled and newly synced mail create these reports when enabled. Opening or refreshing this page does not run AI. Configure the schedule in AI & privacy → Automatic assistance.");
         if (p->owner == L"all") words(panel, L"Choose one mailbox above to create an inbox briefing now.");
         else panel.Children().Append(button(L"Open Assistant for an inbox briefing", [weak = std::weak_ptr<Intelligence>(p)] { if (auto page = weak.lock()) changePage(page, L"studio"); }));
         auto source = p->owner == L"all" ? object(p->state, L"today") : workspace;
@@ -834,7 +834,7 @@ hstring blockedTool(Page const& p) {
     if (!feature.Size()) return L"Select a supported tool.";
     if (!flag(policy, L"enabled")) return L"AI is off in saved permissions.";
     if (!flag(object(policy, L"behaviors"), name.c_str())) return L"This behavior is disabled in saved AI permissions.";
-    if (!flag(feature, L"mock") && !flag(object(settings, L"ai"), L"configured")) return L"Configure a chat model in Settings → Model first.";
+    if (!flag(feature, L"mock") && !flag(object(settings, L"ai"), L"configured")) return L"Set up AI in Settings → Advanced setup → AI connection first.";
     if ((name == L"memory" || name == L"research") && !flag(content, L"contacts")) return L"This tool requires contact-context permission.";
     if ((name == L"meeting" || name == L"schedule") && !flag(content, L"calendar")) return L"This tool requires local calendar-context permission.";
     if (name == L"attachments" && !flag(content, L"attachments")) return L"Sample attachment-context permission is disabled.";

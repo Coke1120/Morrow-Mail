@@ -931,7 +931,7 @@ IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
                 found = true; content.Children().Append(label(text(report, L"accountId"), 18)); content.Children().Append(label(text(report, L"kind") + L" · " + text(report, L"status") + L" · " + date));
                 content.Children().Append(label(text(report, L"text")));
             }
-            if (!found) content.Children().Append(label(L"No summaries today yet. Enable scheduled or new-mail summaries in AI Permissions. Each mailbox keeps its own AI context."));
+            if (!found) content.Children().Append(label(L"No summaries today yet. Enable scheduled or new-mail summaries in AI & privacy → Automatic assistance. Each mailbox keeps its own AI context."));
         }
         if (self->current(version, account)) self->show(scroll(content));
     } catch (...) { self->error(errorText()); }
