@@ -751,7 +751,7 @@ void renderRecords(Page const& p) {
         words(panel, p->owner == L"all" ? L"All connected accounts. Each report labels its own mailbox; AI context never crosses accounts." : L"Reports for this mailbox only. Choose All accounts above to see them together.");
         words(panel, L"Scheduled and newly synced mail create these reports when enabled. Opening or refreshing this page does not run AI. Configure the schedule in AI Permissions.");
         if (p->owner == L"all") words(panel, L"Choose one mailbox above to create an inbox briefing now.");
-        else panel.Children().Append(button(L"Create an inbox briefing now", [weak = std::weak_ptr<Intelligence>(p)] { if (auto page = weak.lock()) changePage(page, L"studio"); }));
+        else panel.Children().Append(button(L"Open Assistant for an inbox briefing", [weak = std::weak_ptr<Intelligence>(p)] { if (auto page = weak.lock()) changePage(page, L"studio"); }));
         auto source = p->owner == L"all" ? object(p->state, L"today") : workspace;
         words(panel, L"Arrival queue overflow: " + count(source, L"summaryOverflow") + L". Saved summaries are retained within the service history limit.");
         auto values = array(source, L"summaries");

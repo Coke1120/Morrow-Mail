@@ -137,7 +137,7 @@ struct StyleLearningView: View {
             }
             if !model.policy["enabled"].bool || !model.policy["behaviors"]["memory"].bool || !model.policy["folders"]["sent"].bool || !model.policy["content"]["body"].bool {
                 HStack {
-                    Text("Requires saved learning opt-in plus AI Permissions: AI on, Email Brain, Sent, and email body access.")
+                    Text("Requires saved AI Permissions: AI on, Email Brain, Sent, and email body access.")
                     if let onOpenSettings { Button("Open AI Permissions") { onOpenSettings("permissions") } }
                 }
             }
