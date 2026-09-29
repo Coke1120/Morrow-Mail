@@ -82,6 +82,9 @@ ScrollViewer scroll(UIElement const& child) {
 }
 namespace {
 StackPanel actions() { auto result = stack(); result.Orientation(Orientation::Horizontal); return result; }
+double minimumMailListHeight(Grid const& list) {
+    return std::max(200.0, list.RowDefinitions().GetAt(0).ActualHeight() + list.RowDefinitions().GetAt(2).ActualHeight() + 80.0);
+}
 void bold(TextBlock const& text, bool active) {
     Windows::UI::Text::FontWeight weight{}; weight.Weight = active ? 600 : 400; text.FontWeight(weight);
 }
@@ -380,14 +383,36 @@ void Shell::mailPage() {
     Grid layout; layout.Margin(ThicknessHelper::FromUniformLength(16));
     RowDefinition top; top.Height(GridLengthHelper::Auto()); layout.RowDefinitions().Append(top);
     layout.RowDefinitions().Append(RowDefinition());
-    RowDefinition bottom; bottom.Height(GridLengthHelper::Auto()); layout.RowDefinitions().Append(bottom);
-    auto heading = stack(10);
-    auto folderTitle = std::wstring(folder); if (!folderTitle.empty()) folderTitle[0] = towupper(folderTitle[0]);
-    auto mailboxTitle = label(hstring(folderTitle), 24); bold(mailboxTitle, true); heading.Children().Append(mailboxTitle);
-    heading.Children().Append(label(owner == L"all" ? L"All accounts" : owner, 12));
-    auto toolbar = actions();
     auto weak = weak_from_this();
-    toolbar.Children().Append(button(L"Sync Mail", [weak] { if (auto self = weak.lock()) self->sync(); }));
+    search = field(L"Search mail"); search.Header(nullptr); search.PlaceholderText(L"Search mail · from:, after:, or an exact phrase");
+    Grid searchBar; searchBar.ColumnSpacing(8); searchBar.ColumnDefinitions().Append(ColumnDefinition());
+    ColumnDefinition searchActions; searchActions.Width(GridLengthHelper::Auto()); searchBar.ColumnDefinitions().Append(searchActions);
+    searchBar.Children().Append(search);
+    auto submitSearch = [weak] { if (auto self = weak.lock(); self && !self->loading) { self->cursors = {L""}; self->loadPage(); } };
+    search.KeyDown([weak](auto const&, Input::KeyRoutedEventArgs const& event) {
+        if (event.Key() == Windows::System::VirtualKey::Enter) if (auto self = weak.lock(); self && !self->loading) { self->cursors = {L""}; self->loadPage(); event.Handled(true); }
+    });
+    auto searchButtons = actions(); searchButtons.Spacing(8);
+    searchButtons.Children().Append(button(L"Search", submitSearch));
+    searchButtons.Children().Append(button(L"Clear", [weak] { if (auto self = weak.lock(); self && !self->loading) { self->search.Text(L""); self->cursors = {L""}; self->loadPage(); } }));
+    Grid::SetColumn(searchButtons, 1); searchBar.Children().Append(searchButtons); layout.Children().Append(searchBar);
+    Grid body; mailBody = body; body.Margin(ThicknessHelper::FromLengths(0, 12, 0, 0));
+    Grid list; mailList = list;
+    RowDefinition headerRow; headerRow.Height(GridLengthHelper::Auto()); list.RowDefinitions().Append(headerRow);
+    list.RowDefinitions().Append(RowDefinition());
+    RowDefinition footerRow; footerRow.Height(GridLengthHelper::Auto()); list.RowDefinitions().Append(footerRow);
+    auto heading = stack(8); heading.Margin(ThicknessHelper::FromLengths(8, 8, 8, 8));
+    auto folderTitle = std::wstring(folder); if (!folderTitle.empty()) folderTitle[0] = towupper(folderTitle[0]);
+    Grid listTitle; listTitle.ColumnDefinitions().Append(ColumnDefinition());
+    ColumnDefinition unreadColumn; unreadColumn.Width(GridLengthHelper::Auto()); listTitle.ColumnDefinitions().Append(unreadColumn);
+    auto titleText = stack(3); titleText.Children().Append(label(hstring(folderTitle), 17));
+    titleText.Children().Append(label(owner == L"all" ? L"All accounts" : owner, 12));
+    listTitle.Children().Append(titleText);
+    unreadFilter = CheckBox(); unreadFilter.Content(box_value(L"Unread"));
+    Automation::AutomationProperties::SetName(unreadFilter, L"Show unread only");
+    unreadFilter.Click([submitSearch](auto const&, auto const&) { submitSearch(); });
+    Grid::SetColumn(unreadFilter, 1); listTitle.Children().Append(unreadFilter); heading.Children().Append(listTitle);
+    auto toolbar = actions(); toolbar.Spacing(8);
     DropDownButton view; view.Content(box_value(L"View")); MenuFlyout viewMenu;
     for (auto const& option : {std::pair{L"Reader on right",L"right"}, {L"Reader below",L"bottom"}, {L"Focused reading",L"focus"}}) {
         MenuFlyoutItem choice; choice.Text(option.first);
@@ -404,26 +429,15 @@ void Shell::mailPage() {
         viewMenu.Items().Append(choice);
     }
     view.Flyout(viewMenu); toolbar.Children().Append(view);
-    search = field(L"Search mail"); search.Header(nullptr); search.PlaceholderText(L"Search mail · from:, after:, or an exact phrase");
-    Grid searchBar; searchBar.ColumnSpacing(8); searchBar.ColumnDefinitions().Append(ColumnDefinition());
-    ColumnDefinition searchActions; searchActions.Width(GridLengthHelper::Auto()); searchBar.ColumnDefinitions().Append(searchActions);
-    searchBar.Children().Append(search);
-    auto submitSearch = [weak] { if (auto self = weak.lock(); self && !self->loading) { self->cursors = {L""}; self->loadPage(); } };
-    search.KeyDown([weak](auto const&, Input::KeyRoutedEventArgs const& event) {
-        if (event.Key() == Windows::System::VirtualKey::Enter) if (auto self = weak.lock(); self && !self->loading) { self->cursors = {L""}; self->loadPage(); event.Handled(true); }
-    });
-    auto searchButtons = actions(); searchButtons.Children().Append(button(L"Search", submitSearch));
-    searchButtons.Children().Append(button(L"Clear", [weak] { if (auto self = weak.lock(); self && !self->loading) { self->search.Text(L""); self->cursors = {L""}; self->loadPage(); } }));
-    Grid::SetColumn(searchButtons, 1); searchBar.Children().Append(searchButtons); heading.Children().Append(searchBar);
     sorting = ComboBox(); Automation::AutomationProperties::SetName(sorting, L"Sort mail");
+    sorting.Width(100);
     for (auto sort : {L"Newest",L"Oldest",L"Sender",L"Subject",L"Unread first",L"Starred first"}) sorting.Items().Append(box_value(sort));
     sorting.SelectedIndex(0);
     sorting.SelectionChanged([weak](auto const&, auto const&) { if (auto self = weak.lock(); self && !self->loading) { self->cursors = {L""}; self->loadPage(); } });
     toolbar.Children().Append(sorting);
-    unreadFilter = CheckBox(); unreadFilter.Content(box_value(L"Unread only"));
-    unreadFilter.Click([submitSearch](auto const&, auto const&) { submitSearch(); }); toolbar.Children().Append(unreadFilter);
-    heading.Children().Append(toolbar); layout.Children().Append(heading);
-    Grid body; mailBody = body; body.Margin(ThicknessHelper::FromLengths(0, 12, 0, 12));
+    auto syncButton = button(L"Sync", [weak] { if (auto self = weak.lock()) self->sync(); });
+    Automation::AutomationProperties::SetName(syncButton, L"Sync Mail"); toolbar.Children().Append(syncButton);
+    heading.Children().Append(toolbar); list.Children().Append(heading);
     rows = ListView(); rows.SelectionMode(ListViewSelectionMode::Single); rows.IsItemClickEnabled(true);
     Automation::AutomationProperties::SetName(rows, L"Mail list");
     rows.ItemClick([weak](auto const&, ItemClickEventArgs const& event) {
@@ -432,12 +446,20 @@ void Shell::mailPage() {
             if (item) self->read(item.Tag().as<Json>());
         }
     });
-    body.Children().Append(rows);
+    Grid::SetRow(rows, 1); list.Children().Append(rows);
+    auto footer = actions(); footer.Spacing(8); footer.Margin(ThicknessHelper::FromLengths(8, 8, 8, 0));
+    previous = button(L"Previous", [weak] { if (auto self = weak.lock(); self && !self->loading && self->cursors.size() > 1) { self->cursors.pop_back(); self->loadPage(); } });
+    next = button(L"Next", [weak] { if (auto self = weak.lock(); self && !self->loading && !self->nextCursor.empty()) { self->cursors.push_back(self->nextCursor); self->loadPage(); } });
+    pageLabel = label(L"", 11); footer.Children().Append(previous); footer.Children().Append(pageLabel); footer.Children().Append(next);
+    Grid::SetRow(footer, 2); list.Children().Append(footer); body.Children().Append(list);
     Primitives::Thumb resize; mailDivider = resize; resize.IsTabStop(true);
     Automation::AutomationProperties::SetName(resize, L"Resize mail list");
     auto adjust = [weak, body](double horizontal, double vertical) {
         if (auto self = weak.lock()) {
-            if (self->mailLayout == L"bottom") self->listHeight = std::clamp(self->listHeight + vertical, 120.0, std::max(120.0, body.ActualHeight() - 208.0));
+            if (self->mailLayout == L"bottom") {
+                auto minimum = minimumMailListHeight(self->mailList);
+                self->listHeight = std::clamp(self->listHeight + vertical, minimum, std::max(minimum, body.ActualHeight() - 208.0));
+            }
             else self->listWidth = std::clamp(self->listWidth + horizontal, 260.0, std::max(260.0, body.ActualWidth() - 328.0));
             self->applyMailLayout();
         }
@@ -454,25 +476,22 @@ void Shell::mailPage() {
     auto emptyTitle = label(L"A little room to think", 22); emptyTitle.TextAlignment(TextAlignment::Center); emptyReader.Children().Append(emptyTitle);
     auto emptyDetail = label(L"Choose a message to read, or compose something new."); emptyDetail.MaxWidth(280); emptyDetail.TextAlignment(TextAlignment::Center); emptyReader.Children().Append(emptyDetail);
     reader.Content(emptyReader); Grid::SetColumn(reader, 2); body.Children().Append(reader);
-    applyMailLayout(); Grid::SetRow(body, 1); layout.Children().Append(body);
-    auto footer = actions();
-    previous = button(L"Previous", [weak] { if (auto self = weak.lock(); self && !self->loading && self->cursors.size() > 1) { self->cursors.pop_back(); self->loadPage(); } });
-    next = button(L"Next", [weak] { if (auto self = weak.lock(); self && !self->loading && !self->nextCursor.empty()) { self->cursors.push_back(self->nextCursor); self->loadPage(); } });
-    pageLabel = label(L""); footer.Children().Append(previous); footer.Children().Append(pageLabel); footer.Children().Append(next);
-    Grid::SetRow(footer, 2); layout.Children().Append(footer); show(layout);
+    applyMailLayout(); Grid::SetRow(body, 1); layout.Children().Append(body); show(layout);
 }
 void Shell::applyMailLayout() {
-    if (!mailBody || !rows || !reader || !mailDivider) return;
+    if (!mailBody || !mailList || !reader || !mailDivider) return;
     mailBody.RowDefinitions().Clear(); mailBody.ColumnDefinitions().Clear();
-    Grid::SetRow(rows, 0); Grid::SetColumn(rows, 0); Grid::SetRow(reader, 0); Grid::SetColumn(reader, 0);
+    Grid::SetRow(mailList, 0); Grid::SetColumn(mailList, 0); Grid::SetRow(reader, 0); Grid::SetColumn(reader, 0);
     Grid::SetRow(mailDivider, 0); Grid::SetColumn(mailDivider, 0);
     bool focus = mailLayout == L"focus", bottom = mailLayout == L"bottom";
-    rows.Visibility(focus && readerFocused ? Visibility::Collapsed : Visibility::Visible);
+    mailList.Visibility(focus && readerFocused ? Visibility::Collapsed : Visibility::Visible);
     reader.Visibility(focus && !readerFocused ? Visibility::Collapsed : Visibility::Visible);
     mailDivider.Visibility(focus ? Visibility::Collapsed : Visibility::Visible);
     if (focus) return;
     if (bottom) {
-        RowDefinition list; list.Height(GridLengthHelper::FromPixels(listHeight)); list.MinHeight(120);
+        auto minimum = minimumMailListHeight(mailList);
+        listHeight = std::max(listHeight, minimum);
+        RowDefinition list; list.Height(GridLengthHelper::FromPixels(listHeight)); list.MinHeight(minimum);
         RowDefinition divider; divider.Height(GridLengthHelper::FromPixels(8));
         RowDefinition detail; detail.Height(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); detail.MinHeight(200);
         mailBody.RowDefinitions().Append(list); mailBody.RowDefinitions().Append(divider); mailBody.RowDefinitions().Append(detail);
@@ -538,7 +557,10 @@ IAsyncAction Shell::loadPage() {
         }
         nextCursor = text(result, L"nextCursor");
         previous.IsEnabled(cursors.size() > 1); next.IsEnabled(!nextCursor.empty());
-        pageLabel.Text(L"Page " + to_hstring(cursors.size()) + L" · " + to_hstring(static_cast<uint64_t>(result.GetNamedNumber(L"total", 0))) + L" messages");
+        auto pageNumber = to_hstring(cursors.size());
+        auto messageCount = to_hstring(static_cast<uint64_t>(result.GetNamedNumber(L"total", 0)));
+        pageLabel.Text(L"Page " + pageNumber + L" · " + messageCount);
+        Automation::AutomationProperties::SetName(pageLabel, L"Page " + pageNumber + L", " + messageCount + L" messages");
         error(text(result, L"warning"));
     } catch (...) { error(errorText()); }
     search.IsEnabled(true); sorting.IsEnabled(search.Text().empty()); unreadFilter.IsEnabled(search.Text().empty());
@@ -567,16 +589,18 @@ IAsyncAction Shell::read(Json metadata) {
     } catch (...) { error(errorText()); }
 }
 void Shell::renderReader(Json const& message) {
+    Grid readerLayout;
+    RowDefinition actionRow; actionRow.Height(GridLengthHelper::Auto()); readerLayout.RowDefinitions().Append(actionRow);
+    readerLayout.RowDefinitions().Append(RowDefinition());
     auto content = stack(8); content.Padding(ThicknessHelper::FromLengths(20, 4, 8, 16));
     auto title = label(text(message, L"subject", L"(No subject)"), 22); content.Children().Append(title);
     content.Children().Append(label(text(message, L"fromName") + L" <" + text(message, L"fromEmail") + L"> · " + text(message, L"date"), 12));
     content.Children().Append(label(L"To: " + text(message, L"to") + (text(message, L"cc").empty() ? L"" : L" · Cc: " + text(message, L"cc")), 12));
-    auto weak = weak_from_this(); auto replies = actions();
+    auto weak = weak_from_this(); auto replies = actions(); replies.Spacing(8);
     replies.Children().Append(button(L"Back to list", [weak] { if (auto self = weak.lock()) { self->readerFocused = false; self->applyMailLayout(); self->rows.Focus(FocusState::Programmatic); } }));
     if (flag(message, L"providerDraft")) replies.Children().Append(button(L"Copy to local draft", [weak, message] { if (auto self = weak.lock()) self->prepare(message, L"copy"); }));
     else for (auto const& option : {std::pair{L"Reply", L"reply"}, {L"Reply all",L"replyAll"}, {L"Forward",L"forward"}})
         replies.Children().Append(button(option.first, [weak, message, mode = hstring(option.second)] { if (auto self = weak.lock()) self->prepare(message, mode); }));
-    content.Children().Append(replies);
     auto markers = actions();
     for (auto const& option : {std::pair{L"Read",L"read"}, {L"Starred",L"starred"}, {L"Pending",L"pending"}}) {
         Primitives::ToggleButton toggle; toggle.Content(box_value(option.first)); toggle.IsChecked(flag(message, option.second));
@@ -586,7 +610,7 @@ void Shell::renderReader(Json const& message) {
     content.Children().Append(markers);
     auto remote = text(message, L"remoteId", text(message, L"id"));
     if (std::wstring_view(remote).starts_with(L"google:") || std::wstring_view(remote).starts_with(L"microsoft:") || std::wstring_view(remote).starts_with(L"imap:"))
-        content.Children().Append(button(L"Move / Labels / Spam on provider…", [weak, message] { if (auto self = weak.lock()) self->organize(message); }));
+        replies.Children().Append(button(L"Move / Labels / Spam on provider…", [weak, message] { if (auto self = weak.lock()) self->organize(message); }));
     auto local = actions();
     if (text(message, L"folder") != L"drafts" && text(message, L"folder") != L"sent") {
         auto destination = text(message, L"folder") == L"archive" || text(message, L"folder") == L"trash" ? hstring(L"inbox") : hstring(L"archive");
@@ -602,7 +626,14 @@ void Shell::renderReader(Json const& message) {
     auto summary = object(message, L"aiSummary");
     if (!text(summary, L"text").empty()) { Expander expanded; expanded.Header(box_value(L"Saved AI summary")); expanded.Content(label(text(summary, L"text"))); content.Children().Append(expanded); }
     appendReader(shared_from_this(), content, message);
-    reader.Content(scroll(content));
+    ScrollViewer actionScroll; actionScroll.Content(replies);
+    actionScroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto);
+    actionScroll.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled);
+    actionScroll.Margin(ThicknessHelper::FromLengths(12, 8, 12, 8));
+    Automation::AutomationProperties::SetName(actionScroll, L"Message actions");
+    readerLayout.Children().Append(actionScroll);
+    auto body = scroll(content); Grid::SetRow(body, 1); readerLayout.Children().Append(body);
+    reader.Content(readerLayout);
 }
 IAsyncAction Shell::patch(Json message, Json changes) {
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner; auto sequence = ++selectionGeneration;

@@ -24,6 +24,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     controls::ListView rows{nullptr};
     controls::ContentControl reader{nullptr};
     controls::Grid mailBody{nullptr};
+    controls::Grid mailList{nullptr};
     xaml::FrameworkElement mailDivider{nullptr};
     controls::TextBox search{nullptr};
     controls::ComboBox sorting{nullptr};
