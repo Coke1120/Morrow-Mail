@@ -1051,8 +1051,14 @@ pub async fn folders(client: &Client, mail: &Value) -> Result<Vec<Value>> {
         folders.extend(
             labels
                 .iter()
-                .filter(|v| v["type"] == "system" && v["id"] == "SPAM")
-                .map(|v| json!({"id":v["id"],"name":"Spam","kind":"spam"})),
+                .filter(|v| v["type"] == "system" && ["SPAM", "TRASH"].contains(&string(v, "id")))
+                .map(|v| {
+                    if v["id"] == "TRASH" {
+                        json!({"id":v["id"],"name":"Trash","kind":"trash"})
+                    } else {
+                        json!({"id":v["id"],"name":"Spam","kind":"spam"})
+                    }
+                }),
         );
         folders.extend(
             labels
@@ -1168,7 +1174,15 @@ async fn microsoft_folders(client: &Client, mail: &Value, importing: bool) -> Re
     }
     let inbox = get(client, mail, "/mailFolders/inbox?$select=id").await?;
     let junk = get(client, mail, "/mailFolders/junkemail?$select=id").await?;
-    if string(&inbox, "id").is_empty() || string(&junk, "id").is_empty() {
+    let trash = get(client, mail, "/mailFolders/deleteditems?$select=id").await?;
+    let special = [
+        string(&inbox, "id"),
+        string(&junk, "id"),
+        string(&trash, "id"),
+    ];
+    if !special.iter().all(|id| valid_microsoft_folder_id(id))
+        || special.iter().collect::<HashSet<_>>().len() != special.len()
+    {
         return Err(remote_error());
     }
     for folder in &mut folders {
@@ -1176,6 +1190,8 @@ async fn microsoft_folders(client: &Client, mail: &Value, importing: bool) -> Re
             folder["kind"] = "inbox".into();
         } else if folder["id"] == junk["id"] {
             folder["kind"] = "spam".into();
+        } else if folder["id"] == trash["id"] {
+            folder["kind"] = "trash".into();
         }
     }
     Ok(folders)
@@ -1222,21 +1238,32 @@ pub async fn organize(
         } else {
             vec![]
         };
+        let builder = api(
+            client,
+            mail,
+            reqwest::Method::POST,
+            &format!(
+                "{path}/{}",
+                if destination["kind"] == "trash" {
+                    "trash"
+                } else {
+                    "modify"
+                }
+            ),
+        )?;
         let result = request(
-            api(
-                client,
-                mail,
-                reqwest::Method::POST,
-                &format!("{path}/modify"),
-            )?
-            .json(&json!({"addLabelIds":add,"removeLabelIds":remove})),
+            if destination["kind"] == "trash" {
+                builder
+            } else {
+                builder.json(&json!({"addLabelIds":add,"removeLabelIds":remove}))
+            },
             8 * 1024 * 1024,
         )
         .await?;
         let labels = result["labelIds"].as_array().ok_or_else(remote_error)?;
         let inbox = labels.contains(&json!("INBOX"));
         return Ok(
-            json!({"providerLabelIds":labels,"folder":google_folder(&result["labelIds"]),"providerSent":labels.contains(&json!("SENT")),"providerDraft":labels.contains(&json!("DRAFT")),"providerFolderName":if inbox{"Inbox"}else{"Gmail · outside Inbox"}}),
+            json!({"providerLabelIds":labels,"folder":google_folder(&result["labelIds"]),"providerSent":labels.contains(&json!("SENT")),"providerDraft":labels.contains(&json!("DRAFT")),"providerFolderName":if destination["kind"]=="trash"{"Trash"}else if destination["kind"]=="spam"{"Spam"}else if inbox{"Inbox"}else{"Gmail · outside Inbox"}}),
         );
     }
     if mode != "move" {
@@ -1268,7 +1295,7 @@ pub async fn organize(
         return Err(remote_error());
     }
     Ok(
-        json!({"remoteId":format!("microsoft:{}",string(&moved,"id")),"providerFolderId":destination["id"],"providerFolderName":destination["name"],"folder":if destination["kind"]=="inbox"{"inbox"}else if destination["kind"]=="spam"{"spam"}else{"archive"}}),
+        json!({"remoteId":format!("microsoft:{}",string(&moved,"id")),"providerFolderId":destination["id"],"providerFolderName":destination["name"],"folder":if destination["kind"]=="inbox"{"inbox"}else if destination["kind"]=="spam"{"spam"}else if destination["kind"]=="trash"{"trash"}else{"archive"}}),
     )
 }
 

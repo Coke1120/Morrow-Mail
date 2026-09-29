@@ -671,7 +671,18 @@ async fn imap_folder_limit_counts_unselectable_entries_and_rejects_zero_uidvalid
 
 #[tokio::test]
 async fn imap_move_validates_capabilities_validity_and_exact_copyuid_before_returning_patch() {
-    let fixture = ImapFixture::new(ImapScenario::default()).await;
+    let fixture = ImapFixture::new(ImapScenario {
+        extra_folders: "* LIST (\\Trash) \"/\" \"Deleted\"\r\n",
+        ..Default::default()
+    })
+    .await;
+    let trash = imap::folders_with_tls(&fixture.mail, &fixture.connector)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|folder| folder["kind"] == "trash")
+        .unwrap();
+    assert_eq!(trash["id"], "Deleted");
     let destination = json!({"id":"項目 & stuff","name":"項目 & stuff","kind":"folder"});
     let patch = fixture.organize(destination.clone()).await.unwrap();
     assert_eq!(patch["remoteId"], "imap:88:19");
@@ -683,6 +694,23 @@ async fn imap_move_validates_capabilities_validity_and_exact_copyuid_before_retu
             .commands()
             .iter()
             .any(|line| line == "UID MOVE 7 \"&mAV27g- &- stuff\"")
+    );
+    let trashed = imap::organize_with_tls(
+        &fixture.mail,
+        &json!({"id":"stable-local","remoteId":"imap:55:7","providerFolderId":SENT}),
+        &trash,
+        "move",
+        &fixture.connector,
+    )
+    .await
+    .unwrap();
+    assert_eq!(trashed["folder"], "trash");
+    assert_eq!(trashed["remoteId"], "imap:88:19");
+    assert!(
+        fixture
+            .commands()
+            .iter()
+            .any(|line| line == "UID MOVE 7 \"Deleted\"")
     );
     let before = fixture.commands().len();
     let same = imap::organize_with_tls(
