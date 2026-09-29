@@ -1254,8 +1254,10 @@ fn launched_service_handles(parent_pid: u32) -> Result<Vec<std::os::windows::io:
         return Err(std::io::Error::last_os_error().into());
     }
     let snapshot = unsafe { OwnedHandle::from_raw_handle(snapshot) };
-    let mut entry = PROCESSENTRY32W::default();
-    entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
     let mut handles = Vec::new();
     let mut found = unsafe { Process32FirstW(snapshot.as_raw_handle(), &mut entry) };
     while found != 0 {
