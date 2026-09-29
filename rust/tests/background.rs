@@ -286,6 +286,58 @@ fn history_checkpoints_atomic_pages_pause_resume_reconnect_and_cursor_loops() {
 }
 
 #[test]
+fn unlimited_import_tracks_many_cursors_outside_settings_and_cleans_up() {
+    let root = directory();
+    let db = Store::open(&root).unwrap();
+    configure(&db);
+    jobs::start_import(&db, A, &json!({"months":0,"inbox":true,"sent":false})).unwrap();
+    let initial_size = db.settings().unwrap().to_string().len();
+    for n in 0..256 {
+        let job = db.settings().unwrap()["imports"][A].clone();
+        jobs::apply_import_page(
+            &db,
+            A,
+            &job,
+            &json!({"messages":[],"nextCursor":format!("page-{n}")}),
+        )
+        .unwrap();
+        assert!(
+            db.settings().unwrap()["imports"][A]["visited"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    assert!(db.settings().unwrap().to_string().len() < initial_size + 1000);
+    let count: i64 = db
+        .conn
+        .query_row(
+            "SELECT count(*) FROM import_cursor_hashes WHERE account=?",
+            [A],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 256);
+    let job = db.settings().unwrap()["imports"][A].clone();
+    assert!(
+        jobs::apply_import_page(&db, A, &job, &json!({"messages":[],"nextCursor":"page-0"}))
+            .is_err()
+    );
+    jobs::apply_import_page(&db, A, &job, &json!({"messages":[],"nextCursor":null})).unwrap();
+    let count: i64 = db
+        .conn
+        .query_row(
+            "SELECT count(*) FROM import_cursor_hashes WHERE account=?",
+            [A],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+    drop(db);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn scheduled_claims_survive_restart_and_never_replay() {
     let root = directory();
     let db = Store::open(&root).unwrap();

@@ -435,6 +435,37 @@ async fn scheduled_delivery_reuses_mime_owner_and_uncertain_path_without_automat
 }
 
 #[tokio::test]
+async fn one_scheduler_tick_drains_a_due_burst() {
+    let f = Fixture::new().await;
+    f.app
+        .db(|db| {
+            for n in 0..12 {
+                let id = format!("burst-job-{n}");
+                scheduled::start(db, A, &input(&id))?;
+                due(db, &id, 0);
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    scheduled::tick(&f.app).await.unwrap();
+    assert_eq!(f.calls.lock().unwrap().len(), 12);
+    f.app
+        .db(|db| {
+            assert!(
+                scheduled::list(db, A)?["scheduled"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|job| job["status"] == "sent")
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn missed_or_changed_jobs_do_not_send_and_import_preserves_pending() {
     let path = root();
     let app = App::open(&path, 3011, String::new(), String::new()).unwrap();

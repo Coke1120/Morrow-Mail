@@ -33,6 +33,15 @@ struct Attempt {
     started: bool,
     import_options: Option<Value>,
     upgrade: Option<Value>,
+    mail_versions: HashMap<String, Value>,
+}
+fn mail_version(connection: &Value) -> Value {
+    json!([
+        connection["connectionId"],
+        connection["authorizationId"],
+        connection["provider"],
+        connection["clientId"]
+    ])
 }
 pub fn parse_google_oauth(source: &str) -> Result<Value> {
     let invalid = || Error::invalid("Use a valid Google Desktop app OAuth JSON file.");
@@ -230,6 +239,16 @@ async fn start(app: &App, ctx: &Context, provider: &str, calendar: bool) -> Resu
     } else {
         None
     };
+    let mail_versions = if calendar {
+        HashMap::new()
+    } else {
+        connections(&app.settings().await?)
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(owner, connection)| (owner.clone(), mail_version(connection)))
+            .collect()
+    };
     let prefix = if calendar { "calendar-oauth" } else { "oauth" };
     let redirect_uri = format!(
         "http://localhost:{}/api/{prefix}/{provider}/callback",
@@ -278,6 +297,7 @@ async fn start(app: &App, ctx: &Context, provider: &str, calendar: bool) -> Resu
             started: false,
             import_options: options,
             upgrade,
+            mail_versions,
         },
     );
     Ok(Json(json!({"url":format!("http://localhost:{}/api/{prefix}/{provider}/authorize?state={}",app.0.port,providers::component(&state))})).into_response())
@@ -311,9 +331,6 @@ async fn authorize(app: &App, ctx: &Context, provider: &str, calendar: bool) -> 
     )
 }
 async fn finish_mail(app: &App, attempt: &Attempt, code: &str) -> Result<()> {
-    let _mailbox = app.0.mailbox.try_lock().map_err(|_| {
-        Error::conflict("Another mailbox operation is running. Try again when it finishes.")
-    })?;
     let failed = || {
         Error::invalid(
             "The provider connection failed. Check your app registration and permissions, then try again.",
@@ -337,6 +354,7 @@ async fn finish_mail(app: &App, attempt: &Attempt, code: &str) -> Result<()> {
     };
     let options = attempt.import_options.clone();
     let upgrade = attempt.upgrade.clone();
+    let mail_versions = attempt.mail_versions.clone();
     app.db(move |db| {
         db.transaction(|db| {
             let email =
@@ -358,6 +376,10 @@ async fn finish_mail(app: &App, attempt: &Attempt, code: &str) -> Result<()> {
                 save_connection(db, &connection, false)?;
                 crate::ai::invalidate(db)?;
                 return Ok(());
+            }
+            let current = connections(&db.settings()?);
+            if mail_versions.get(&email) != current.get(&email).map(mail_version).as_ref() {
+                return Err(Error::conflict("This mailbox changed while sign-in was open. Reconnect again; the newer connection was retained."));
             }
             mail::import_messages(db, &connection, &messages)?;
             save_connection(db, &connection, true)?;
@@ -395,6 +417,14 @@ async fn finish_calendar(app: &App, attempt: &Attempt, code: &str) -> Result<()>
     Ok(())
 }
 async fn callback(app: &App, ctx: &Context, provider: &str, calendar: bool) -> Result<Response> {
+    // A busy mailbox leaves the one-use browser attempt and cookie intact for a retry.
+    let _mailbox = if calendar {
+        None
+    } else {
+        Some(app.0.mailbox.try_lock().map_err(|_| {
+            Error::conflict("Another mailbox operation is running. Retry this browser callback when it finishes.")
+        })?)
+    };
     // Remove before validation or awaiting the provider: all callbacks are one use.
     let attempt = app
         .0

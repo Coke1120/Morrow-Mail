@@ -88,6 +88,14 @@ Full SwiftUI packaging passed locally. Current Rust checks and Windows CI status
 are recorded below; no real mailbox or provider action was used and no new release
 has been published.
 
+## Unreleased review fixes for issue #4 — 29 September 2026
+
+The locked Rust suite, rustfmt and strict all-target Clippy passed locally. Focused fixtures exercise an out-of-order OAuth callback and busy callback retry, 256 historical-import pages with bounded settings, a 12-message scheduled-send burst, an Out of Office provider change during save, Gmail label response caching, quick service relaunch after a writer lock, and updater rollback after a launched fixture app fails readiness. The updater fixture uses a generated signing key, temporary app and private workspace; it never launches a release app or uses the owner's data.
+
+The macOS candidate built and passed `morrow-native-check` with its fictional workspace, including the corrected window termination guard, HTML reader isolation and native API/persistence checks. The maintained `.github/workflows/check.yml` runs that native check in its macOS job. Windows package/UI smoke remains a PR CI gate; local macOS results do not establish Windows or live-account acceptance.
+
+Out of Office now re-reads provider settings immediately before writing and reports a conflict when they changed. Without a provider conditional-write revision, a change after the final read remains a possible race. Reader acceptance checks block scripts/resources and reject unsafe link schemes, but automated consent-dialog and link-destination decisions, including cancellation and message switching on both platforms, remain outstanding.
+
 ## Historical Node CI retirement — current source
 
 The owner explicitly requested removal of the historical Node lane as well. Both

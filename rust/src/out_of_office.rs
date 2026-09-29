@@ -447,6 +447,13 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             }
         }
     }
+    // These settings endpoints do not expose a documented conditional-write revision.
+    // Re-read immediately before the provider write and require another review on a conflict.
+    if revision(&remote(app, &mail, Method::GET, None).await?) != revision(&current) {
+        return Err(Error::conflict(
+            "Provider settings changed while you were saving. Refresh and review them before trying again.",
+        ));
+    }
     let updated = remote(app,&mail,if google { Method::PUT } else { Method::PATCH },Some(&payload)).await
         .map_err(|_| Error::new(502,"The provider change could not be confirmed. Refresh provider settings before retrying; Morrow will not retry automatically."))?;
     if connected(&app.settings().await?, owner)? != mail {

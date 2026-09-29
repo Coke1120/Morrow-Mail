@@ -283,90 +283,94 @@ pub async fn tick(app: &App) -> Result<()> {
     let Ok(_gate) = app.0.mailbox.try_lock() else {
         return Ok(());
     };
-    let job = app
-        .db(|db| {
-            db.transaction(|db| {
-                recover(db)?;
-                let timestamp = Utc::now().timestamp_millis();
-                let job = jobs(db)?
-                    .into_iter()
-                    .filter(|j| {
-                        j["status"] == "scheduled"
-                            && DateTime::parse_from_rfc3339(string(j, "sendAt"))
-                                .is_ok_and(|t| t.timestamp_millis() <= timestamp)
-                    })
-                    .min_by(|a, b| string(a, "sendAt").cmp(string(b, "sendAt")));
-                let Some(job) = job else {
-                    return Ok(None);
-                };
-                let at = DateTime::parse_from_rfc3339(string(&job, "sendAt"))
-                    .map_err(|_| Error::invalid("Invalid scheduled time."))?;
-                if timestamp - at.timestamp_millis() > GRACE_MS {
-                    finish(db, &job, "missed", Some("missed"))?;
-                    return Ok(None);
-                }
-                let config = db.settings()?;
-                let owner = string(&job, "accountId");
-                let connections = connections(&config);
-                if connections
-                    .get(owner)
-                    .is_none_or(|mail| mail["connectionId"] != job["connectionId"])
-                {
-                    finish(db, &job, "blocked", Some("connection_changed"))?;
-                    return Ok(None);
-                }
-                let valid = db
-                    .get(owner, string(&job, "draftId"))?
-                    .is_some_and(|draft| {
-                        draft["folder"] == "drafts"
-                            && draft["providerDraft"] != true
-                            && mail::fingerprint(&draft)
-                                .is_ok_and(|hash| hash == string(&job, "payloadHash"))
-                    });
-                if !valid {
-                    finish(db, &job, "blocked", Some("draft_changed"))?;
-                    return Ok(None);
-                }
-                let claimed = merge(
-                    job.clone(),
-                    &json!({"status":"sending","claimedAt":now(),"updatedAt":now()}),
-                );
-                write(
-                    db,
-                    jobs(db)?
+    app.db(|db| db.transaction(recover)).await?;
+    loop {
+        let next = app
+            .db(|db| {
+                db.transaction(|db| {
+                    let timestamp = Utc::now().timestamp_millis();
+                    let job = jobs(db)?
                         .into_iter()
-                        .map(|j| {
-                            if j["accountId"] == job["accountId"] && j["id"] == job["id"] {
-                                claimed.clone()
-                            } else {
-                                j
-                            }
+                        .filter(|j| {
+                            j["status"] == "scheduled"
+                                && DateTime::parse_from_rfc3339(string(j, "sendAt"))
+                                    .is_ok_and(|t| t.timestamp_millis() <= timestamp)
                         })
-                        .collect(),
-                )?;
-                mark_draft(db, &job, "sending")?;
-                Ok(Some(claimed))
+                        .min_by(|a, b| string(a, "sendAt").cmp(string(b, "sendAt")));
+                    let Some(job) = job else {
+                        return Ok(None);
+                    };
+                    let at = DateTime::parse_from_rfc3339(string(&job, "sendAt"))
+                        .map_err(|_| Error::invalid("Invalid scheduled time."))?;
+                    if timestamp - at.timestamp_millis() > GRACE_MS {
+                        finish(db, &job, "missed", Some("missed"))?;
+                        return Ok(Some(None));
+                    }
+                    let config = db.settings()?;
+                    let owner = string(&job, "accountId");
+                    let connections = connections(&config);
+                    if connections
+                        .get(owner)
+                        .is_none_or(|mail| mail["connectionId"] != job["connectionId"])
+                    {
+                        finish(db, &job, "blocked", Some("connection_changed"))?;
+                        return Ok(Some(None));
+                    }
+                    let valid = db
+                        .get(owner, string(&job, "draftId"))?
+                        .is_some_and(|draft| {
+                            draft["folder"] == "drafts"
+                                && draft["providerDraft"] != true
+                                && mail::fingerprint(&draft)
+                                    .is_ok_and(|hash| hash == string(&job, "payloadHash"))
+                        });
+                    if !valid {
+                        finish(db, &job, "blocked", Some("draft_changed"))?;
+                        return Ok(Some(None));
+                    }
+                    let claimed = merge(
+                        job.clone(),
+                        &json!({"status":"sending","claimedAt":now(),"updatedAt":now()}),
+                    );
+                    write(
+                        db,
+                        jobs(db)?
+                            .into_iter()
+                            .map(|j| {
+                                if j["accountId"] == job["accountId"] && j["id"] == job["id"] {
+                                    claimed.clone()
+                                } else {
+                                    j
+                                }
+                            })
+                            .collect(),
+                    )?;
+                    mark_draft(db, &job, "sending")?;
+                    Ok(Some(Some(claimed)))
+                })
             })
-        })
-        .await?;
-    let Some(job) = job else {
-        return Ok(());
-    };
-    let context = Context {
-        method: Method::POST,
-        path: vec!["send".into()],
-        body: merge(
-            job["payload"].clone(),
-            &json!({"requestId":job["id"],"draftId":job["draftId"]}),
-        ),
-        query: json!({}),
-        headers: HeaderMap::new(),
-        owner: string(&job, "accountId").to_owned(),
-        paged: true,
-    };
-    let _ = mail::send_locked(app, &context, Some(job.clone())).await;
-    app.db(move |db| db.transaction(|db| reconcile(db, &job)))
-        .await
+            .await?;
+        let job = match next {
+            None => return Ok(()),
+            Some(None) => continue,
+            Some(Some(job)) => job,
+        };
+        let context = Context {
+            method: Method::POST,
+            path: vec!["send".into()],
+            body: merge(
+                job["payload"].clone(),
+                &json!({"requestId":job["id"],"draftId":job["draftId"]}),
+            ),
+            query: json!({}),
+            headers: HeaderMap::new(),
+            owner: string(&job, "accountId").to_owned(),
+            paged: true,
+        };
+        let _ = mail::send_locked(app, &context, Some(job.clone())).await;
+        app.db(move |db| db.transaction(|db| reconcile(db, &job)))
+            .await?;
+    }
 }
 pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
     if ctx.path.first().is_none_or(|p| p != "scheduled") {

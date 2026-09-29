@@ -229,7 +229,13 @@ pub fn start_import(db: &Store, account: &str, input: &Value) -> Result<()> {
     if let Some(identity) = connection.get("connectionId") {
         job["connectionId"] = identity.clone();
     }
-    write_owner(db, "imports", account, merge(job, &clear_import_failure()))
+    db.transaction(|db| {
+        db.conn.execute(
+            "DELETE FROM import_cursor_hashes WHERE account=?",
+            [account],
+        )?;
+        write_owner(db, "imports", account, merge(job, &clear_import_failure()))
+    })
 }
 pub fn control_import(db: &Store, account: &str, action: &str) -> Result<()> {
     let config = db.settings()?;
@@ -341,13 +347,23 @@ pub fn apply_import_page(db: &Store, account: &str, job: &Value, result: &Value)
         let checked = messages.len() as u64;
         let cursor = result.get("nextCursor").filter(|cursor| !cursor.is_null() && **cursor != false && **cursor != "");
         let hash = cursor.map(digest).transpose()?;
-        if cursor.is_some_and(|cursor| *cursor == job["cursor"]) || hash.as_ref().is_some_and(|hash| job["visited"].as_array().is_some_and(|visited| visited.contains(&json!(hash)))) { return Err(Error::new(502,"Repeated import page.")); }
+        let repeated = if let Some(hash) = &hash {
+            job["visited"].as_array().is_some_and(|visited| visited.contains(&json!(hash))) ||
+                db.conn.query_row("SELECT EXISTS(SELECT 1 FROM import_cursor_hashes WHERE account=? AND digest=?)", rusqlite::params![account, hash], |row| row.get::<_, bool>(0))?
+        } else { false };
+        if cursor.is_some_and(|cursor| *cursor == job["cursor"]) || repeated { return Err(Error::new(502,"Repeated import page.")); }
         let messages: Vec<_> = messages.iter().filter(|message| string(message,"date") >= string(job,"since") && string(message,"date") < string(job,"before")).cloned().collect();
         let imported = mail::import_messages(db,&connections(&config)[account],&messages)?.len();
         let folder_index = job["folderIndex"].as_u64().unwrap_or(0) + u64::from(cursor.is_none());
-        let mut visited = job["visited"].as_array().cloned().unwrap_or_default();
-        if let Some(hash) = hash { visited.push(hash.into()); } else { visited.clear(); }
-        write_owner(db,"imports",account,merge(merge(job.clone(),&clear_import_failure()), &json!({"imported":job["imported"].as_u64().unwrap_or(0)+imported as u64,"pages":job["pages"].as_u64().map(|pages|pages+1),"processed":job["processed"].as_u64().map(|processed|processed+checked),"lastPageChecked":checked,"lastPageAdded":imported,"cursor":cursor,"visited":visited,"folderIndex":folder_index,"status":if folder_index as usize>=import_folders(job).len(){"complete"}else{"running"},"updatedAt":now()})))
+        if cursor.is_some() {
+            for old in job["visited"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+                db.conn.execute("INSERT OR IGNORE INTO import_cursor_hashes VALUES(?,?)", rusqlite::params![account, old])?;
+            }
+            if let Some(hash) = hash { db.conn.execute("INSERT OR IGNORE INTO import_cursor_hashes VALUES(?,?)", rusqlite::params![account, hash])?; }
+        } else {
+            db.conn.execute("DELETE FROM import_cursor_hashes WHERE account=?", [account])?;
+        }
+        write_owner(db,"imports",account,merge(merge(job.clone(),&clear_import_failure()), &json!({"imported":job["imported"].as_u64().unwrap_or(0)+imported as u64,"pages":job["pages"].as_u64().map(|pages|pages+1),"processed":job["processed"].as_u64().map(|processed|processed+checked),"lastPageChecked":checked,"lastPageAdded":imported,"cursor":cursor,"visited":[],"folderIndex":folder_index,"status":if folder_index as usize>=import_folders(job).len(){"complete"}else{"running"},"updatedAt":now()})))
     })
 }
 
