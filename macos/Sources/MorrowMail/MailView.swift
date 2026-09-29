@@ -42,16 +42,9 @@ struct MailWorkspace: View {
                         } else if model.section == "today" {
                             TodayView()
                         } else if model.section == "studio" {
-                            if model.combined {
-                                VStack(spacing: 16) {
-                                    EmptyPane(title: "Choose an account for AI Studio", detail: "Each mailbox has its own AI context, skills, and activity.", symbol: "envelope.badge.shield.half.filled")
-                                    ForEach(model.accounts) { account in Button(account["email"].string) { model.perform { try await model.selectAccount(account.id) } } }
-                                }.padding(30)
-                            } else {
-                                GeometryReader { area in
-                                    StudioView().id(model.account)
-                                        .frame(width: area.size.width, height: area.size.height)
-                                }
+                            GeometryReader { area in
+                                StudioView().id(model.account)
+                                    .frame(width: area.size.width, height: area.size.height)
                             }
                         }
                         else if model.section == "calendar" { NativeCalendarView() }

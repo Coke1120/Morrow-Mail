@@ -21,9 +21,7 @@ struct TodayView: View {
                     HStack {
                         Text("Today’s summaries").font(.title2.weight(.semibold))
                         Spacer()
-                        if !model.combined {
-                            Button("Summary History") { model.studioTab = "summaries"; model.section = "studio" }.disabled(!model.canNavigate)
-                        }
+                        Button("Summary History") { model.studioTab = "summaries"; model.section = "studio" }.disabled(!model.canNavigate)
                     }
                     summaryContent(now: context.date)
                     Spacer(minLength: 0)

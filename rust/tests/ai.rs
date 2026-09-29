@@ -857,7 +857,7 @@ async fn learning_budget_source_revocation_apply_and_restart_recovery() {
     .unwrap();
 }
 #[tokio::test]
-async fn learning_inflight_changes_are_discarded_and_weekly_claim_does_not_replay() {
+async fn learning_inflight_changes_are_discarded_and_daily_claim_does_not_replay() {
     let directory = Temporary::new();
     let model = Model::new(true, "Do not approve automatically");
     let server = model_server(model.clone()).await;
@@ -904,11 +904,32 @@ async fn learning_inflight_changes_are_discarded_and_weekly_claim_does_not_repla
             db,
             OWNER,
             &json!({"enabled":true,"weekly":true}),
-            Utc::now() - Duration::days(8),
+            Utc::now() - Duration::hours(25),
         )?;
+        let mut settings = db.settings()?;
+        settings["styleLearning"][OWNER]["lastWeeklyAt"] =
+            (Utc::now() - Duration::hours(25)).timestamp_millis().into();
+        db.set_settings(&json!({"styleLearning":settings["styleLearning"]}))?;
         db.upsert(
             OWNER,
-            &merge(message("weekly", OWNER), &json!({"folder":"sent"})),
+            &merge(message("daily", OWNER), &json!({"folder":"sent"})),
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    learning::scheduled_tick(&app).await.unwrap();
+    assert_eq!(
+        model.calls.load(Ordering::SeqCst),
+        1,
+        "legacy weekly consent must stay weekly"
+    );
+    app.db(|db| {
+        learning::update_settings_at(
+            db,
+            OWNER,
+            &json!({"weekly":false,"daily":true}),
+            Utc::now() - Duration::hours(25),
         )?;
         Ok(())
     })
@@ -924,10 +945,18 @@ async fn learning_inflight_changes_are_discarded_and_weekly_claim_does_not_repla
             learning::state_with_store(db, &db.settings()?, OWNER)?["preview"]["status"],
             "ready"
         );
+        learning::update_settings(db, OWNER, &json!({"enabled":true,"daily":true}))?;
+        let mut settings = db.settings()?;
+        settings["styleLearning"][OWNER]["lastWeeklyAt"] =
+            (Utc::now() - Duration::hours(25)).timestamp_millis().into();
+        db.set_settings(&json!({"styleLearning":settings["styleLearning"]}))?;
         Ok(())
     })
     .await
     .unwrap();
+    model.release.add_permits(1);
+    learning::scheduled_tick(&app).await.unwrap();
+    assert_eq!(model.calls.load(Ordering::SeqCst), 2);
 }
 #[test]
 fn own_text_clips_quotes_signatures_and_months_clamp() {

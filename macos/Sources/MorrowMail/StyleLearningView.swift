@@ -13,12 +13,12 @@ struct StyleLearningView: View {
     @State private var identityConfirmed = false
     var value: JSON { model.state["workspace"]["styleLearning"] }
     var preview: JSON { value["preview"] }
-    var savedOptions: JSON { value["settings"].picking(["enabled", "weekly", "months", "maxSamples", "tokenBudget"]) }
+    var savedOptions: JSON { value["settings"].picking(["enabled", "weekly", "daily", "months", "maxSamples", "tokenBudget"]) }
     var savedIdentity: JSON { value["settings"]["identity"].isNull ? .object(["displayName": .string(""), "aliases": .array([]), "confirmed": .bool(false)]) : value["settings"]["identity"] }
     var identityValue: JSON { .object(["displayName": .string(identityName), "aliases": .array(identityAliases.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.map(JSON.string)), "confirmed": .bool(identityConfirmed)]) }
     var identityChanged: Bool { identityValue != savedIdentity }
     var changed: Bool { options != savedOptions || identityChanged || voice != preview["voice"].string }
-    var analysisBlocked: Bool { changed || !value["settings"]["enabled"].bool || !value["permitted"].bool || !model.state["settings"]["ai"]["configured"].bool || preview["status"].string == "running" }
+    var analysisBlocked: Bool { changed || !model.policy["enabled"].bool || !model.policy["behaviors"]["memory"].bool || !model.policy["folders"]["sent"].bool || !model.policy["content"]["body"].bool || !model.state["settings"]["ai"]["configured"].bool || preview["status"].string == "running" }
     var statusSummary: String {
         if preview["status"].string == "ready" { return "Proposal ready · Not applied" }
         if !value["profile"].isNull {
@@ -36,7 +36,7 @@ struct StyleLearningView: View {
         case "failed": return "Analysis failed · Tokens may have been used. Next: check the error and settings, then prepare fresh samples with Preview Samples or Learn Now. Any previous approved style is retained."
         default:
             if model.state["account"]["mode"].string != "live" { return "Next: choose an individual connected account in the sidebar." }
-            if !savedOptions["enabled"].bool { return "Next: open Learning configuration, enable learning, and choose Save Learning Settings." }
+            if !savedOptions["enabled"].bool { return "Choose Learn Now to review Sent samples and enable writing-style learning for this account." }
             if changed { return "Next: save or discard your unsaved changes before learning again." }
             if !model.state["settings"]["ai"]["configured"].bool || !value["permitted"].bool { return "Next: resolve the model and permission requirements listed beside the learning buttons below." }
             if !value["profile"].isNull && !value["profile"]["active"].bool { return "Next: review learning permissions and cached Sent source mail; use Learn Now if fresh samples are needed. Your approved style is saved but currently inactive." }
@@ -45,12 +45,12 @@ struct StyleLearningView: View {
         }
     }
     func flag(_ key: String) -> Binding<Bool> {
-        Binding(get: { options[key].bool }, set: { options[key] = .bool($0); if key == "enabled" && !$0 { options["weekly"] = .bool(false) } })
+        Binding(get: { options[key].bool }, set: { options[key] = .bool($0); if key == "enabled" && !$0 { options["weekly"] = .bool(false); options["daily"] = .bool(false) }; if key == "daily" && $0 { options["weekly"] = .bool(false) } })
     }
     func number(_ key: String) -> Binding<Int> { Binding(get: { Int(options[key].number) }, set: { options[key] = .number(Double($0)) }) }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            SectionHeading(title: "Learn my writing style", detail: "Optional, per account. Only your own Sent text is analyzed. Contact and project memory remain separate. Importing mail does not use AI tokens.")
+            SectionHeading(title: "Writing voice", detail: "Your own downloaded Sent text teaches a style for AI drafts and replies after you approve it.")
             Text(model.state["account"]["mode"].string == "live" ? model.state["account"].id : "Choose an individual connected account in the sidebar.").font(.headline)
             HStack(alignment: .firstTextBaseline) {
                 Text(statusSummary).font(.headline)
@@ -70,12 +70,23 @@ struct StyleLearningView: View {
                             Button("Learn Now · Uses AI") { action("preview", learnNow: true) }.buttonStyle(.borderedProminent).disabled(analysisBlocked)
                         }
                         Menu("More") {
-                            Button("Preview Samples · No AI Call") { action("preview") }.disabled(analysisBlocked)
+                            Button("Preview Samples · No AI Call") { action("preview") }.disabled(analysisBlocked || !savedOptions["enabled"].bool)
                             if !preview.isNull { Button("Dismiss Proposal") { action("settings", body: options) } }
                         }
                     }
                     analysisRequirements
-                    Text("Uses saved learning settings. Generating a proposal does not apply it. Save Approved Style activates it under Email Brain permission without changing contacts, notes, or voice.").font(.callout).foregroundStyle(.secondary)
+                    Text("AI reviews your Sent samples and proposes a style. Review and save the proposal before drafts or replies use it.").font(.callout).foregroundStyle(.secondary)
+                    Button(savedOptions["daily"].bool ? "Pause daily Sent review" : savedOptions["weekly"].bool ? "Switch weekly review to daily" : "Review new Sent mail daily") {
+                        var next = savedOptions
+                        next["enabled"] = .bool(true)
+                        next["weekly"] = .bool(false)
+                        next["daily"] = .bool(!savedOptions["daily"].bool)
+                        action("settings", body: next)
+                    }.disabled(changed)
+                    if savedOptions["weekly"].bool {
+                        Button("Pause legacy weekly review") { var next = savedOptions; next["weekly"] = .bool(false); action("settings", body: next) }.disabled(changed)
+                    }
+                    Text("Daily checks run only while Morrow is open. New proposals wait for your approval; paid analysis may use model tokens.").font(.caption).foregroundStyle(.secondary)
                     HStack {
                         Text("Learning needs cached Sent mail for this account. Import Sent mail in Mail settings.")
                         if let onOpenSettings { Button("Open Mail") { onOpenSettings("mail") } }
@@ -83,8 +94,8 @@ struct StyleLearningView: View {
                 }
                 if !error.isEmpty { Text(error).foregroundStyle(.red).textSelection(.enabled) }
                 configurationPanel
-                if savedOptions["weekly"].bool {
-                    Text(["prepared", "ready"].contains(preview["status"].string) ? "Automatic learning is waiting for you to save or dismiss this proposal." : "Automatic learning is enabled. The first eligible analysis starts after enabling; updates use new Sent mail at most weekly while Morrow is open.").font(.callout).foregroundStyle(.secondary)
+                if savedOptions["daily"].bool {
+                    Text(["prepared", "ready"].contains(preview["status"].string) ? "Daily review is waiting for you to save or dismiss this proposal." : "Daily review is enabled. It checks new downloaded Sent mail while Morrow is open.").font(.callout).foregroundStyle(.secondary)
                 }
                 identityPanel
                 if !value["profile"].isNull {
@@ -117,14 +128,14 @@ struct StyleLearningView: View {
             if model.busy { Text("An operation is in progress. Wait for it to finish before continuing.") }
             if preview["status"].string == "running" { Text("Style analysis is running. Wait for the proposal before starting another analysis.") }
             if changed { Text("Unsaved changes: save identity or learning settings and save or discard proposal edits before learning again.") }
-            if !savedOptions["enabled"].bool { Text("Learning opt-in is not saved. Enable learning in Learning configuration below, then choose Save Learning Settings.") }
+            if !savedOptions["enabled"].bool { Text("Learn Now will enable learning for this mailbox after confirmation.") }
             if !model.state["settings"]["ai"]["configured"].bool {
                 HStack {
                     Text("Configure and save an AI model in Model settings first.")
                     if let onOpenSettings { Button("Open Model") { onOpenSettings("model") } }
                 }
             }
-            if !value["permitted"].bool {
+            if !model.policy["enabled"].bool || !model.policy["behaviors"]["memory"].bool || !model.policy["folders"]["sent"].bool || !model.policy["content"]["body"].bool {
                 HStack {
                     Text("Requires saved learning opt-in plus AI Permissions: AI on, Email Brain, Sent, and email body access.")
                     if let onOpenSettings { Button("Open AI Permissions") { onOpenSettings("permissions") } }
@@ -137,8 +148,8 @@ struct StyleLearningView: View {
         DisclosureGroup {
             VStack(alignment: .leading, spacing: 16) {
                 Toggle("Enable writing-style learning for this account", isOn: flag("enabled")).toggleStyle(.checkbox)
-                Toggle("Analyze newly sent mail weekly", isOn: flag("weekly")).toggleStyle(.checkbox).disabled(!options["enabled"].bool)
-                Text("Weekly analysis uses cached Sent mail and this budget while Morrow is open. Enable mail refresh to capture mail sent elsewhere. Updates always require review and Save; a pending preview pauses the next analysis.").font(.caption).foregroundStyle(.secondary)
+                Toggle("Review new Sent mail daily", isOn: flag("daily")).toggleStyle(.checkbox).disabled(!options["enabled"].bool)
+                Text("Daily analysis uses cached Sent mail and this budget while Morrow is open. Enable mail refresh to capture mail sent elsewhere. Updates always require review and Save; a pending preview pauses the next analysis.").font(.caption).foregroundStyle(.secondary)
                 Picker("Sent history", selection: number("months")) { ForEach([1, 3, 6, 12], id: \.self) { Text("Last \($0) month(s)").tag($0) } }
                 Stepper("Maximum samples: \(Int(options["maxSamples"].number))", value: number("maxSamples"), in: 1...50)
                 Text("Also limited by AI Permissions → Maximum messages (currently \(Int(model.policy["maxMessages"].number))).").font(.caption).foregroundStyle(.secondary)
@@ -150,7 +161,7 @@ struct StyleLearningView: View {
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Learning configuration")
-                Text("Saved: \(savedOptions["enabled"].bool ? "Enabled" : "Off") · Weekly \(savedOptions["weekly"].bool ? "on" : "off") · \(Int(savedOptions["months"].number)) months · Up to \(Int(savedOptions["maxSamples"].number)) samples · \(Int(savedOptions["tokenBudget"].number)) tokens").font(.caption).foregroundStyle(.secondary)
+                Text("Saved: \(savedOptions["enabled"].bool ? "Enabled" : "Off") · \(savedOptions["daily"].bool ? "Daily" : savedOptions["weekly"].bool ? "Weekly" : "Manual") · \(Int(savedOptions["months"].number)) months · Up to \(Int(savedOptions["maxSamples"].number)) samples · \(Int(savedOptions["tokenBudget"].number)) tokens").font(.caption).foregroundStyle(.secondary)
                 if options != savedOptions { Text("Unsaved learning settings").font(.caption).foregroundStyle(.secondary) }
             }
         }
@@ -209,17 +220,25 @@ struct StyleLearningView: View {
     func load() { loadStyle(); loadIdentity(); dirty = false }
     func action(_ path: String, body: JSON = .object([:]), method: String = "POST", learnNow: Bool = false) {
         guard !model.busy, model.state["account"]["mode"].string == "live" else { return }
-        if ["preview", "generate"].contains(path) && analysisBlocked { return }
+        if ["preview", "generate"].contains(path) && (analysisBlocked || path == "generate" && !savedOptions["enabled"].bool) { return }
         let owner = model.state["account"].id
         let identityOnly = path == "settings" && body.object.keys.allSatisfy { $0 == "identity" }
         if identityOnly && !preview.isNull && !model.confirm("Save identity and discard this style preview?", detail: "Pending AI results will be invalidated. Your approved style will be retained.") { return }
         if (path == "preview" || (path == "settings" && !identityOnly)) && preview["status"].string == "ready" && !model.confirm("Replace the current style proposal?", detail: "Your approved style will be retained.") { return }
-        if path == "settings" && !identityOnly && body["weekly"].bool && !model.confirm("Enable automatic style analysis?", detail: "\(owner) · \(model.state["settings"]["ai"]["model"].string)\nUp to \(Int(body["tokenBudget"].number)) estimated tokens per analysis. The first eligible analysis starts after enabling, then at most weekly while Morrow is open. Provider charges may apply. Each proposal requires your review before application.") { return }
+        if path == "settings" && !identityOnly && body["daily"].bool && !model.confirm("Enable daily Sent review?", detail: "\(owner) · \(model.state["settings"]["ai"]["model"].string)\nUp to \(Int(body["tokenBudget"].number)) estimated tokens per analysis. The first eligible analysis starts after enabling, then at most daily while Morrow is open. Provider charges may apply. Each proposal requires your review before application.") { return }
+        if learnNow && !savedOptions["enabled"].bool && !model.confirm("Enable writing-style learning?", detail: "\(owner) · Only downloaded Sent bodies are used. Review samples before the AI call; approve the proposed style before it affects drafts or replies. Provider charges may apply.") { return }
         guard model.account == owner else { return }
         let keepIdentityEdits = identityChanged
         error = ""
         model.perform {
             do {
+                if learnNow && !savedOptions["enabled"].bool {
+                    var enabled = savedOptions
+                    enabled["enabled"] = .bool(true)
+                    let updated = try await model.request("/style/settings", method: "POST", body: enabled, mailbox: owner)
+                    guard model.account == owner else { return }
+                    model.state = updated; load()
+                }
                 let result = try await model.request("/style/\(path)", method: method, body: body, mailbox: owner)
                 guard model.account == owner else { return }
                 model.state = result
