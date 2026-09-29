@@ -427,7 +427,7 @@ void Shell::mailPage() {
     }
     view.Flyout(viewMenu); toolbar.Children().Append(view);
     sorting = ComboBox(); Automation::AutomationProperties::SetName(sorting, L"Sort mail");
-    sorting.Width(130);
+    sorting.Width(100);
     for (auto sort : {L"Newest",L"Oldest",L"Sender",L"Subject",L"Unread first",L"Starred first"}) sorting.Items().Append(box_value(sort));
     sorting.SelectedIndex(0);
     sorting.SelectionChanged([weak](auto const&, auto const&) { if (auto self = weak.lock(); self && !self->loading) { self->cursors = {L""}; self->loadPage(); } });
@@ -549,7 +549,10 @@ IAsyncAction Shell::loadPage() {
         }
         nextCursor = text(result, L"nextCursor");
         previous.IsEnabled(cursors.size() > 1); next.IsEnabled(!nextCursor.empty());
-        pageLabel.Text(L"Page " + to_hstring(cursors.size()) + L" · " + to_hstring(static_cast<uint64_t>(result.GetNamedNumber(L"total", 0))) + L" messages");
+        auto pageNumber = to_hstring(cursors.size());
+        auto messageCount = to_hstring(static_cast<uint64_t>(result.GetNamedNumber(L"total", 0)));
+        pageLabel.Text(L"Page " + pageNumber + L" · " + messageCount);
+        Automation::AutomationProperties::SetName(pageLabel, L"Page " + pageNumber + L", " + messageCount + L" messages");
         error(text(result, L"warning"));
     } catch (...) { error(errorText()); }
     search.IsEnabled(true); sorting.IsEnabled(search.Text().empty()); unreadFilter.IsEnabled(search.Text().empty());
