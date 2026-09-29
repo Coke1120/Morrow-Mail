@@ -36,7 +36,7 @@ struct StudioView: View {
     func canUse(_ message: JSON) -> Bool {
         let owner = message["accountId"].string, folder = message["folder"].string
         return model.accounts.contains { $0.id == owner } && (model.combined || model.account == owner) &&
-            !["drafts", "trash"].contains(folder) && model.policy["folders"][folder].bool
+            model.policy["folders"][folder].bool
     }
     var permitted: [JSON] { (model.listedMessages + (model.current.map { current in model.listedMessages.contains { $0.viewID == current.viewID } ? [] : [current] } ?? [])).filter(canUse) }
     var contextChoices: [JSON] { contextSearch.isNull ? permitted : contextSearch["messages"].array.filter(canUse) }
@@ -105,7 +105,7 @@ struct StudioView: View {
         .onChange(of: voice) { _ in model.dirty("brain", brainDirty) }
         .onChange(of: notes) { _ in model.dirty("brain", brainDirty) }
         .onChange(of: memoryOptions) { _ in model.dirty("brain", brainDirty) }
-        .onDisappear { contextOperation?.cancel(); contextTicket = UUID(); model.dirty("brain", false) }
+        .onDisappear { contextOperation?.cancel(); contextTicket = UUID(); contextSearching = false; model.dirty("brain", false) }
         .sheet(item: $skillEditor) { skill in SkillEditor(initial: skill.value).environmentObject(model) }
     }
     var summariesPage: some View {
@@ -436,7 +436,7 @@ struct StudioView: View {
     }
     func clearResult() { resultID = UUID(); resultGeneration = nil; result = .null; preview = .null }
     func clearContextSearch() {
-        contextOperation?.cancel(); contextTicket = UUID(); contextSearch = .null; contextQuery = ""; contextError = ""; contextPage = 0
+        contextOperation?.cancel(); contextTicket = UUID(); contextSearching = false; contextSearch = .null; contextQuery = ""; contextError = ""; contextPage = 0
         messageID = permitted.first?.viewID ?? ""
     }
     func searchContext(page: Int = 0) {
