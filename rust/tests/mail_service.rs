@@ -748,7 +748,8 @@ async fn sync_combined_owners_keep_local_patches_and_stable_ids_after_provider_m
         if path.path()=="/v1.0/me/mailFolders/deleteditems"{return Reply::Json(200,json!({"id":"trash-id"}));}
         if path.path().ends_with("/messages/same/move"){assert_eq!(request.method,"POST");assert_eq!(request.json()["destinationId"],"archive-id");assert_eq!(request.headers["prefer"],"IdType=\"ImmutableId\"");changed.store(1,Ordering::SeqCst);return Reply::Json(201,json!({"id":"moved-id","parentFolderId":"archive-id"}));}
         if path.path().ends_with("/messages/same"){return Reply::Json(200,json!({"id":"same","parentFolderId":"inbox-id"}));}
-        assert_eq!(path.path(),"/v1.0/me/mailFolders/inbox/messages");assert!(request.headers["prefer"].to_str().unwrap().contains("IdType=\"ImmutableId\""));Reply::Json(200,json!({"value":[microsoft_message(if changed.load(Ordering::SeqCst)>0{"moved-id"}else{"same"},&owner,&body)]}))
+        assert_eq!(path.path(),"/v1.0/me/mailFolders/inbox/messages");assert!(request.headers["prefer"].to_str().unwrap().contains("IdType=\"ImmutableId\""));
+        if path.query_pairs().any(|(key,_)|key=="$skip"){Reply::Json(200,json!({"value":[]}))}else{Reply::Json(200,json!({"value":[microsoft_message(if changed.load(Ordering::SeqCst)>0{"moved-id"}else{"same"},&owner,&body)],"@odata.nextLink":format!("https://graph.microsoft.com{}&$skip=50",request.path)}))}
     }.boxed()})).await;
     let server = fixture.start().await;
     set(
@@ -850,6 +851,11 @@ async fn sync_combined_owners_keep_local_patches_and_stable_ids_after_provider_m
         1,
         "only the explicitly confirmed fixture move writes"
     );
+    assert!(calls.lock().unwrap().iter().any(|request| {
+        request.host() == "graph.microsoft.com"
+            && request.path.contains("/mailFolders/inbox/messages?")
+            && request.path.contains("$skip=50")
+    }));
     server.shutdown().await;
 }
 

@@ -185,7 +185,11 @@ impl Fixture {
                         }
                         json!({"labelIds":labels})
                     } else if url.path().ends_with("/messages") {
-                        json!({"messages":rows.lock().unwrap().iter().map(|row| json!({"id":row["id"]})).collect::<Vec<_>>(),"nextPageToken":"historical-page"})
+                        if url.query_pairs().any(|(key, _)| key == "pageToken") {
+                            json!({"messages":[]})
+                        } else {
+                            json!({"messages":rows.lock().unwrap().iter().map(|row| json!({"id":row["id"]})).collect::<Vec<_>>(),"nextPageToken":"historical-page"})
+                        }
                     } else {
                         rows.lock()
                             .unwrap()
@@ -320,15 +324,26 @@ async fn sync_refreshes_remote_state_in_five_scopes_and_keeps_local_patches_and_
             .collect::<Vec<_>>(),
         vec![
             Some("INBOX"),
+            Some("INBOX"),
+            Some("SENT"),
             Some("SENT"),
             Some("DRAFT"),
+            Some("DRAFT"),
             Some("STARRED"),
+            Some("STARRED"),
+            None,
             None
         ]
     );
-    assert!(queries.iter().all(|q| q["q"].starts_with("after:")
-        && q["maxResults"] == "50"
-        && !q.contains_key("pageToken")));
+    assert!(
+        queries
+            .iter()
+            .all(|q| q["q"].starts_with("after:") && q["maxResults"] == "50")
+    );
+    assert!(queries.as_chunks::<2>().0.iter().all(|pages| {
+        !pages[0].contains_key("pageToken")
+            && pages[1].get("pageToken").map(String::as_str) == Some("historical-page")
+    }));
     f.app
         .db(|db| {
             assert_eq!(db.list(A)?.len(), 3);

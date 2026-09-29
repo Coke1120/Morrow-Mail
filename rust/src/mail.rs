@@ -438,6 +438,35 @@ fn sync_warning(page: &Value) -> Option<&'static str> {
         && page["messages"].as_array().is_some_and(|rows| rows.len() < 50))
     .then_some("This sparse IMAP mailbox exceeded the scan limit. Mail sync is incomplete; enable history import in Settings to continue from saved checkpoints.")
 }
+async fn commit_sync_page(app: &App, owner: &str, mail: &Value, page: &Value) -> Result<()> {
+    let messages = page["messages"]
+        .as_array()
+        .ok_or_else(providers::remote_error)?
+        .clone();
+    let owner = owner.to_owned();
+    let mail = mail.clone();
+    app.db(move |db| {
+        if connections(&db.settings()?).get(&owner) != Some(&mail) {
+            return Err(Error::conflict("This mailbox changed during sync."));
+        }
+        db.transaction(|db| {
+            let ids = import_messages(db, &mail, &messages)?;
+            let config = db.settings()?;
+            let job = &config["imports"][&owner];
+            let arrivals = ids
+                .into_iter()
+                .filter(|id| {
+                    db.get(&owner, id).ok().flatten().is_some_and(|message| {
+                        message["folder"] == "inbox"
+                            && (job.is_null() || string(&message, "date") >= string(job, "before"))
+                    })
+                })
+                .collect::<Vec<_>>();
+            crate::background::arrivals(db, &owner, &arrivals)
+        })
+    })
+    .await
+}
 pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
     let mut errors = Vec::new();
     for owner in owners {
@@ -468,47 +497,28 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
             } else {
                 vec!["inbox"]
             };
-            let mut messages = Vec::new();
             let mut warning = None;
             for folder in folders {
                 let mut input = json!({"folder":folder});
                 if !string(job, "since").is_empty() {
                     input["since"] = job["since"].clone();
                 }
-                let page = fetch_page(app, &mail, &input).await?;
-                warning = warning.or(sync_warning(&page));
-                messages.extend(
-                    page["messages"]
-                        .as_array()
-                        .ok_or_else(providers::remote_error)?
-                        .iter()
-                        .cloned(),
-                );
-            }
-            let owner = owner.clone();
-            app.db(move |db| {
-                if connections(&db.settings()?).get(&owner) != Some(&mail) {
-                    return Err(Error::conflict("This mailbox changed during sync."));
+                let mut cursors = std::collections::HashSet::new();
+                loop {
+                    let page = fetch_page(app, &mail, &input).await?;
+                    warning = warning.or(sync_warning(&page));
+                    commit_sync_page(app, owner, &mail, &page).await?;
+                    let cursor = string(&page, "nextCursor");
+                    if cursor.is_empty() || !page["nextCursor"].is_string() {
+                        break;
+                    }
+                    if !cursors.insert(cursor.to_owned()) {
+                        return Err(Error::new(502, "Repeated sync page."));
+                    }
+                    input["cursor"] = cursor.into();
                 }
-                db.transaction(|db| {
-                    let ids = import_messages(db, &mail, &messages)?;
-                    let config = db.settings()?;
-                    let job = &config["imports"][&owner];
-                    let arrivals = ids
-                        .into_iter()
-                        .filter(|id| {
-                            db.get(&owner, id).ok().flatten().is_some_and(|message| {
-                                message["folder"] == "inbox"
-                                    && (job.is_null()
-                                        || string(&message, "date") >= string(job, "before"))
-                            })
-                        })
-                        .collect::<Vec<_>>();
-                    crate::background::arrivals(db, &owner, &arrivals)?;
-                    Ok(warning)
-                })
-            })
-            .await
+            }
+            Ok(warning)
         };
         match work.await {
             Ok(None) => {}
@@ -869,6 +879,7 @@ mod tests {
         );
         assert!(sync_warning(&json!({"messages":[],"nextCursor":null})).is_none());
         assert!(sync_warning(&json!({"messages":[],"nextCursor":"google-page"})).is_none());
+        assert!(sync_warning(&json!({"messages":[],"nextCursor":""})).is_none());
         assert!(
             sync_warning(&json!({"messages":vec![json!({});50],"nextCursor":{"uid":42}})).is_none()
         );
