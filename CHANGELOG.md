@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0-beta.25 — 2026-09-29
+
+- Group Windows mailbox controls and paging with the message list, keep reader actions visible above its scrolling body, limit the composer width and keep its actions outside the form. Add the native three-step Start here Settings path.
+- Keep message rows visible when resizing the Windows Reader below the list.
+- Let both clients choose a mailbox within AI Studio and combine saved summaries with account labels. Apply local simulations to their reviewed mailbox, including when opened from All accounts.
+- Bring reviewed Sent writing-style learning to Email Brain with optional daily proposals, while preserving existing weekly consent. Keep the Windows analysis cancel control and account picker usable during review. See the [release notes](docs/releases/v0.6.0-beta.25.md) for verification and limits.
+
 ## 0.6.0-beta.24 — 2026-09-29
 
 - Guide macOS first use through account connection, optional model testing and AI permission review; add direct Assistant tasks and account-owned sender/subject context search.
