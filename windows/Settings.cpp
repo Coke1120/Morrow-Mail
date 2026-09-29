@@ -296,6 +296,31 @@ IAsyncAction changeTab(Page p, hstring next) {
     p->dispose();
     co_await settingsPage(shell, next);
 }
+void start(Page const& p) {
+    title(p->body, L"Start here");
+    help(p->body, L"Three steps to get mail and optional AI help ready. You can use mail without configuring AI.");
+    std::weak_ptr<SettingsPage> weak = p;
+    auto step = [&](hstring heading, hstring detail, hstring actionText, hstring tab) {
+        auto panel = stack(8); panel.Padding(xaml::ThicknessHelper::FromUniformLength(8));
+        title(panel, heading); help(panel, detail);
+        panel.Children().Append(button(actionText, [weak, tab] { if (auto page = weak.lock()) changeTab(page, tab); }));
+        p->body.Children().Append(panel);
+    };
+    uint32_t accounts = 0;
+    for (auto const& value : array(p->shell->state, L"accounts")) {
+        auto id = text(value.GetObject(), L"id");
+        if (!id.empty() && id != L"demo" && id != L"all") ++accounts;
+    }
+    hstring accountDetail = accounts ? to_hstring(accounts) + L" mail account(s) connected." :
+        hstring(L"Add a Gmail, Outlook or IMAP account to see your inbox.");
+    step(L"1 · Connect your mail", accountDetail, accounts ? L"Manage Accounts" : L"Add an Account", L"mail");
+    step(L"2 · Choose an AI model (optional)", flag(object(object(p->shell->state, L"settings"), L"ai"), L"configured") ?
+        L"Chat model configured. A hosted model may charge for requests." :
+        L"A local or hosted model needs a server address and its exact model name. Hosted models may charge for requests.",
+        L"Set Up and Test a Model", L"model");
+    step(L"3 · Decide what AI can use", L"Choose which downloaded mail folders and fields AI may read. Automatic summaries start only when you enable a trigger.",
+        L"Review AI Permissions", L"policy");
+}
 void general(Page const& p) {
     title(p->body, L"Make yourself at home"); help(p->body, L"Choose how Morrow looks, writes, and keeps your inbox up to date. Preferences save automatically.");
     auto f = form(p, p->body, object(object(p->shell->state, L"settings"), L"preferences"), L"general", true);
@@ -816,9 +841,17 @@ IAsyncAction settingsPage(std::shared_ptr<Shell> shell, hstring tab) {
     auto headingLabel = label(L"Settings", 26); Grid::SetColumnSpan(headingLabel, 2); root.Children().Append(headingLabel);
     ListView tabs; tabs.SelectionMode(ListViewSelectionMode::Single); tabs.IsItemClickEnabled(true);
     xaml::Automation::AutomationProperties::SetName(tabs, L"Settings categories");
-    for (auto const& [id, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{{L"general", L"General"}, {L"mail", L"Mail"}, {L"calendar", L"Calendar"}, {L"model", L"Model"}, {L"policy", L"AI Permissions"}, {L"search", L"Search"}, {L"learning", L"Learning"}, {L"about", L"About"}}) {
-        ListViewItem item; item.Content(box_value(caption)); item.Tag(box_value(id)); tabs.Items().Append(item);
-        if (tab == id) tabs.SelectedItem(item);
+    struct Category { wchar_t const* id; wchar_t const* caption; wchar_t const* glyph; };
+    for (auto const& entry : {Category{L"start", L"Start here", L"\uE734"}, {L"general", L"General", L"\uE713"},
+        {L"mail", L"Mail", L"\uE715"}, {L"calendar", L"Calendar", L"\uE787"}, {L"model", L"Model", L"\uE8F2"},
+        {L"policy", L"AI Permissions", L"\uE72E"}, {L"search", L"Search", L"\uE721"},
+        {L"learning", L"Learning", L"\uE734"}, {L"about", L"About", L"\uE946"}}) {
+        auto row = stack(8); row.Orientation(xaml::Orientation::Horizontal);
+        FontIcon icon; icon.Glyph(entry.glyph); icon.FontSize(16); row.Children().Append(icon);
+        auto caption = label(entry.caption); caption.IsTextSelectionEnabled(false); row.Children().Append(caption);
+        ListViewItem item; item.Content(row); item.Tag(box_value(entry.id));
+        xaml::Automation::AutomationProperties::SetName(item, entry.caption); tabs.Items().Append(item);
+        if (tab == entry.id) tabs.SelectedItem(item);
     }
     tabs.ItemClick([weak = std::weak_ptr<SettingsPage>(p)](auto const& sender, ItemClickEventArgs const& event) -> fire_and_forget {
         auto tabs = sender.template as<ListView>();
@@ -845,7 +878,8 @@ IAsyncAction settingsPage(std::shared_ptr<Shell> shell, hstring tab) {
             auto response = co_await shell->service->request(L"/search/settings", p->owner);
             if (!p->current()) co_return; p->searchState = response;
         }
-        if (tab == L"general") general(p);
+        if (tab == L"start") start(p);
+        else if (tab == L"general") general(p);
         else if (tab == L"mail") mail(p);
         else if (tab == L"policy") permissions(p);
         else if (tab == L"model") models(p);

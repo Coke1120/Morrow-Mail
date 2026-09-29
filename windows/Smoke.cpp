@@ -59,6 +59,13 @@ IAsyncAction Shell::smoke() {
         if (seeded) {
             check(section == L"mail" && connected(owner) && rows && rows.Items().Size() >= 1,
                 L"The initial owned mailbox has no ready mail rows.");
+            check(mailList && mailList.RowDefinitions().Size() == 3 && mailBody.Children().Size() == 3 &&
+                controls::Grid::GetRow(rows) == 1, L"Mail controls and paging are not grouped with the message list.");
+            auto savedLayout = mailLayout;
+            mailLayout = L"focus"; readerFocused = true; applyMailLayout();
+            check(mailList.Visibility() == xaml::Visibility::Collapsed && reader.Visibility() == xaml::Visibility::Visible,
+                L"Focused reading did not hide the complete mail list pane.");
+            readerFocused = false; mailLayout = savedLayout; applyMailLayout();
             for (auto const& item : rows.Items())
                 check(text(item.as<controls::ListViewItem>().Tag().as<Json>(), L"accountId") == owner,
                     L"The initial mail page contains another owner's rows.");
@@ -125,6 +132,9 @@ IAsyncAction Shell::smoke() {
             auto source = object(response,L"message");
             co_await read(source);
             check(text(selected,L"accountId") == owner && text(selected,L"body").size() > 20, L"The native reader did not load full owned text.");
+            auto readerLayout = reader.Content().try_as<controls::Grid>();
+            check(readerLayout && readerLayout.RowDefinitions().Size() == 2,
+                L"The message actions are not kept above the scrolling reader.");
             enter("mail-patches");
             Json pending; pending.Insert(L"pending",Value::CreateBooleanValue(true)); co_await patch(source,pending);
             check(flag(selected,L"pending"), L"Pending did not update the reader.");
@@ -160,7 +170,7 @@ IAsyncAction Shell::smoke() {
                 check(page.Content() && page.Content() != previousPage, L"A native workspace page failed to open.");
                 check(dirty.empty(), L"Opening a saved page incorrectly created unsaved edits.");
             }
-            for (auto const* tab : {L"general", L"mail", L"calendar", L"model", L"search", L"policy", L"about"}) {
+            for (auto const* tab : {L"start", L"general", L"mail", L"calendar", L"model", L"search", L"policy", L"about"}) {
                 enter("settings-" + to_string(tab));
                 auto previousPage = page.Content();
                 co_await settingsPage(lifetime, tab);
