@@ -305,6 +305,7 @@ async fn scoped_token_origin_input_limits_and_stale_endpoint() {
         .await
         .unwrap();
     assert_eq!(captured_health["proof"].as_str().unwrap().len(), 64);
+    assert!(cli::healthy(&fixture.0).await.unwrap());
     assert_eq!(
         client
             .get(format!("{base}/api/cli/health"))
@@ -322,6 +323,9 @@ async fn scoped_token_origin_input_limits_and_stale_endpoint() {
     )
     .unwrap();
     assert_eq!(fixture.cli(&["accounts"], None, 3)["status"], 409);
+    assert!(!cli::healthy(&fixture.0).await.unwrap());
+    fs::write(fixture.0.join("cli.json"), b"{").unwrap();
+    assert!(!cli::healthy(&fixture.0).await.unwrap());
     fs::write(
         fixture.0.join("cli.json"),
         serde_json::to_vec(&endpoint).unwrap(),

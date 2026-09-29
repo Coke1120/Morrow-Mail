@@ -464,6 +464,45 @@ fn read_endpoint(directory: &Path) -> Result<Option<Endpoint>> {
     }
     Ok(Some(endpoint))
 }
+/// Confirm that the newly launched service owns this workspace and answers a fresh challenge.
+pub async fn healthy(directory: &Path) -> Result<bool> {
+    // The service can be writing cli.json while the installer polls readiness.
+    let Some(endpoint) = read_endpoint(directory).ok().flatten() else {
+        return Ok(false);
+    };
+    if !crate::updater::process_alive(endpoint.pid) {
+        return Ok(false);
+    }
+    let nonce = service::hex_token()?;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .timeout(Duration::from_secs(2))
+        .build()
+        .map_err(|_| Error::new(500, "Could not check updated service readiness."))?;
+    let response = match client
+        .get(format!(
+            "http://127.0.0.1:{}/api/cli/health?nonce={nonce}",
+            endpoint.port
+        ))
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(_) => return Ok(false),
+    };
+    let health = match response_json(response).await {
+        Ok(value) => value,
+        Err(_) => return Ok(false),
+    };
+    let expected = proof(&endpoint.token, &endpoint.workspace, endpoint.pid, &nonce)?;
+    Ok(health["service"] == "morrow-cli"
+        && health["version"] == 1
+        && health["pid"] == endpoint.pid
+        && health["workspace"] == endpoint.workspace
+        && validation::same_secret(string(&health, "proof"), &expected))
+}
 fn read_limited(reader: impl Read, limit: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     reader.take(limit as u64 + 1).read_to_end(&mut bytes)?;

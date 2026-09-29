@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Configuration {
     token: String,
@@ -22,6 +22,30 @@ struct Configuration {
     update_token: String,
     #[serde(default)]
     asset_directory: Option<PathBuf>,
+}
+
+fn open_after_previous_writer(config: Configuration, port: u16) -> Result<App> {
+    // ponytail: wait up to the native client's 70s shutdown window; add handoff signaling if drains exceed it.
+    let deadline = std::time::Instant::now() + Duration::from_secs(70);
+    loop {
+        match App::open(
+            &config.data_directory,
+            port,
+            config.token.clone(),
+            config.update_token.clone(),
+        ) {
+            Ok(app) => return Ok(app),
+            Err(error)
+                if error.status == 409
+                    && error.body["error"]
+                        == "This workspace is already open in another Morrow Mail service."
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
@@ -113,12 +137,7 @@ async fn run() -> Result<()> {
     let parent_pid = config.parent_pid;
     let directory = config.data_directory.clone();
     let app = tokio::task::spawn_blocking(move || {
-        let mut app = App::open(
-            &config.data_directory,
-            port,
-            config.token,
-            config.update_token,
-        )?;
+        let mut app = open_after_previous_writer(config.clone(), port)?;
         if let Some(directory) = config.asset_directory {
             app.set_asset_directory(&directory)?;
         }
@@ -236,6 +255,28 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quick_relaunch_waits_for_the_previous_workspace_writer() {
+        let directory =
+            std::env::temp_dir().join(format!("morrow-service-relaunch-{}", uuid::Uuid::new_v4()));
+        let token = "a".repeat(64);
+        let first = App::open(&directory, 3001, token.clone(), String::new()).unwrap();
+        let config = Configuration {
+            token,
+            data_directory: directory.clone(),
+            port: 3002,
+            parent_pid: None,
+            update_token: String::new(),
+            asset_directory: None,
+        };
+        let next = std::thread::spawn(move || open_after_previous_writer(config, 3002));
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(!next.is_finished());
+        drop(first);
+        drop(next.join().unwrap().unwrap());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[tokio::test]
     async fn shutdown_drains_delivery_but_cancels_read_work_and_starts_no_new_tick() {

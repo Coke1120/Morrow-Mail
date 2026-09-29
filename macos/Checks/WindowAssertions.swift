@@ -32,6 +32,8 @@ struct WindowAssertions {
         assert(!guardDelegate.windowShouldClose(window))
         assert(!window.isVisible)
         assert(model.busy && model.unsavedForms.contains("fixture-draft"), "Closing must keep pending work and edits alive.")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { NSApp.stopModal(withCode: .alertFirstButtonReturn) }
+        assert(delegate.applicationShouldTerminate(app) == .terminateCancel, "An active write must block quitting.")
         assert(!delegate.applicationShouldHandleReopen(app, hasVisibleWindows: false))
         assert(window.isVisible, "Dock reopen must reveal the same window.")
         assert(delegate.mainWindow === window && model.unsavedForms.contains("fixture-draft"))
@@ -39,7 +41,10 @@ struct WindowAssertions {
         assert(!guardDelegate.windowShouldClose(window))
         assert(!delegate.applicationShouldHandleReopen(app, hasVisibleWindows: false))
         assert(window.isVisible && model.unsavedForms.contains("fixture-draft"))
-        assert(MorrowDelegate().applicationShouldTerminate(app) == .terminateNow)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { NSApp.stopModal(withCode: .alertFirstButtonReturn) }
+        assert(delegate.applicationShouldTerminate(app) == .terminateCancel, "Keeping unsaved edits must block quitting.")
+        model.unsavedForms.remove("fixture-draft")
+        assert(delegate.applicationShouldTerminate(app) == .terminateNow)
         print("Window close/reopen preserves pending work and unsaved forms.")
     }
 

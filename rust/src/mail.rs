@@ -768,10 +768,11 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             let id = ctx.path[1].clone();
             let message = app.db(move |db| get_message(db, &owner, &id)).await?;
             let mail = current_mail(app, &ctx.owner).await?;
-            let destination = remote_folders(app, &mail)
-                .await?
-                .into_iter()
+            let folders = remote_folders(app, &mail).await?;
+            let destination = folders
+                .iter()
                 .find(|f| f["id"] == body["destinationId"])
+                .cloned()
                 .ok_or_else(|| {
                     Error::invalid("Choose a current folder or label from this mailbox.")
                 })?;
@@ -792,6 +793,17 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                 if google {
                     let remote_folder =
                         providers::google_folder(&patch["providerLabelIds"]).to_owned();
+                    let labels: Vec<Value> = patch["providerLabelIds"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|id| {
+                            folders
+                                .iter()
+                                .find(|folder| folder["id"] == *id && folder["kind"] == "label")
+                        })
+                        .map(|folder| folder["name"].clone())
+                        .collect();
                     patch["providerSnapshot"] = Value::Object(
                         current["providerSnapshot"]
                             .as_object()
@@ -799,6 +811,10 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                             .unwrap_or_default(),
                     );
                     patch["providerSnapshot"]["folder"] = remote_folder.clone().into();
+                    patch["providerSnapshot"]["labels"] = json!(labels);
+                    if current["localOverrides"]["labels"] != true {
+                        patch["labels"] = json!(labels);
+                    }
                     if moving {
                         patch["localOverrides"] = Value::Object(
                             current["localOverrides"]

@@ -25,6 +25,7 @@ struct Fixture {
     calls: Arc<Mutex<Vec<Value>>>,
     raw: Arc<Mutex<Value>>,
     fail_write: Arc<Mutex<bool>>,
+    race_after_reads: Arc<Mutex<u8>>,
     client: reqwest::Client,
 }
 impl Drop for Fixture {
@@ -45,6 +46,7 @@ impl Fixture {
         }));
         let calls = Arc::new(Mutex::new(Vec::new()));
         let fail_write = Arc::new(Mutex::new(false));
+        let race_after_reads = Arc::new(Mutex::new(0));
         let hosts = ["gmail.googleapis.com", "graph.microsoft.com"];
         let rcgen::CertifiedKey { cert, signing_key } =
             rcgen::generate_simple_self_signed(hosts.map(str::to_owned).to_vec()).unwrap();
@@ -73,7 +75,12 @@ impl Fixture {
             client = client.resolve(host, address);
         }
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
-        let (saved, log, failing) = (raw.clone(), calls.clone(), fail_write.clone());
+        let (saved, log, failing, race) = (
+            raw.clone(),
+            calls.clone(),
+            fail_write.clone(),
+            race_after_reads.clone(),
+        );
         let google = provider == "google";
         let task = tokio::spawn(async move {
             while let Ok((socket, _)) = listener.accept().await {
@@ -135,6 +142,19 @@ impl Fixture {
                     .unwrap()
                     .push(json!({"method":method,"path":path,"body":body}));
                 let writing = method != "GET";
+                if !writing {
+                    let mut remaining = race.lock().unwrap();
+                    if *remaining > 0 {
+                        *remaining -= 1;
+                        if *remaining == 0 {
+                            saved.lock().unwrap()[if google {
+                                "responseSubject"
+                            } else {
+                                "internalReplyMessage"
+                            }] = "Changed on provider website".into();
+                        }
+                    }
+                }
                 let failed = writing && *failing.lock().unwrap();
                 if writing && !failed {
                     let mut raw = saved.lock().unwrap();
@@ -169,6 +189,7 @@ impl Fixture {
             calls,
             raw,
             fail_write,
+            race_after_reads,
             client: client.build().unwrap(),
         }
     }
@@ -386,5 +407,34 @@ async fn outlook_separate_messages_timezone_warning_and_failed_write_is_never_re
     assert_eq!(error.status, 502);
     assert!(!error.to_string().contains("PRIVATE-"));
     assert!(error.to_string().contains("Refresh"));
-    assert_eq!(f.calls.lock().unwrap().len() - count, 2);
+    assert_eq!(f.calls.lock().unwrap().len() - count, 3);
+}
+
+#[tokio::test]
+async fn provider_change_during_save_is_reported_before_writing() {
+    for (provider, scope) in [
+        ("google", out_of_office::GOOGLE_SCOPE),
+        ("microsoft", out_of_office::MICROSOFT_SCOPE),
+    ] {
+        let f = Fixture::new(provider).await;
+        let app = f.app(provider, scope).await;
+        let loaded = call(&app, OWNER, Method::GET, Value::Null).await.unwrap();
+        let mut body = input();
+        body["revision"] = loaded["revision"].clone();
+        *f.race_after_reads.lock().unwrap() = 2;
+        assert_eq!(
+            call(&app, OWNER, Method::PUT, body)
+                .await
+                .unwrap_err()
+                .status,
+            409
+        );
+        assert!(
+            !f.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|call| call["method"] == "PUT" || call["method"] == "PATCH")
+        );
+    }
 }

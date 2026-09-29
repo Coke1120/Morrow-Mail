@@ -433,6 +433,7 @@ async fn label_organization_retains_remote_sent_draft_snapshots_and_explicit_loc
     assert_eq!(result["message"]["providerDraft"], true);
     assert_eq!(result["message"]["providerSnapshot"]["folder"], "drafts");
     let labels_before = result["message"]["providerSnapshot"]["labels"].clone();
+    assert_eq!(labels_before, json!(["New label"]));
     assert_eq!(
         f.call(
             "PATCH",
@@ -457,7 +458,11 @@ async fn label_organization_retains_remote_sent_draft_snapshots_and_explicit_loc
     assert_eq!(result["message"]["providerSnapshot"]["folder"], "drafts");
     assert_eq!(
         result["message"]["providerSnapshot"]["labels"],
-        labels_before
+        json!(["New label", "Old label"])
+    );
+    assert_eq!(
+        result["message"]["labels"],
+        json!(["New label", "Old label"])
     );
     assert_eq!(result["message"]["localOverrides"]["folder"], true);
     assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);

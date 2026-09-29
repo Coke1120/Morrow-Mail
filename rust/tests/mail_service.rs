@@ -1017,6 +1017,120 @@ async fn oauth_reconnect_canonicalizes_identity_revokes_generation_and_disconnec
 }
 
 #[tokio::test]
+async fn stale_oauth_and_busy_callback_keep_the_newer_connection() {
+    let fixture = Fixture::new(Arc::new(|request| async move {
+        if request.host() == "oauth2.googleapis.com" {
+            return Reply::Json(200, json!({"access_token":"fixture-new","refresh_token":"fixture-refresh","expires_in":3600}));
+        }
+        if request.path.ends_with("/profile") { return Reply::Json(200, json!({"emailAddress":A})); }
+        if request.path.contains("/messages?") { return Reply::Json(200, json!({"messages":[]})); }
+        panic!("Unexpected OAuth fixture endpoint: {}", request.path);
+    }.boxed())).await;
+    let server = fixture.start().await;
+    set(&server.app, config(&[(A, "google"), (B, "microsoft")])).await;
+    let original_b = server.app.settings().await.unwrap()["mailAccounts"][B].clone();
+    async fn attempt(server: &Running) -> (String, String) {
+        let started = server
+            .call(
+                "POST",
+                "/api/oauth/google/start",
+                A,
+                json!({"clientId":"fixture-client","clientSecret":"fixture-secret"}),
+            )
+            .await;
+        assert_eq!(started.0, 200);
+        let url = url::Url::parse(string(&started.1, "url")).unwrap();
+        let auth = server
+            .client
+            .get(format!(
+                "{}{}?{}",
+                server.base,
+                url.path(),
+                url.query().unwrap()
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(auth.status(), 302);
+        let cookie = auth.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let state = url.query_pairs().find(|(key, _)| key == "state").unwrap().1;
+        (
+            format!(
+                "{}/api/oauth/google/callback?state={state}&code=fixture-code",
+                server.base
+            ),
+            cookie,
+        )
+    }
+    let (stale_url, stale_cookie) = attempt(&server).await;
+    server
+        .app
+        .db(|db| {
+            let mut accounts = connections(&db.settings()?);
+            accounts[A]["connectionId"] = "newer-connection".into();
+            accounts[A]["refreshToken"] = "newer-refresh".into();
+            db.set_settings(&json!({"mailAccounts":accounts}))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let stale = server
+        .client
+        .get(&stale_url)
+        .header("cookie", stale_cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stale.status(), 302);
+    assert!(
+        stale.headers()["location"]
+            .to_str()
+            .unwrap()
+            .contains("connectionError=")
+    );
+    let current = server.app.settings().await.unwrap();
+    assert_eq!(
+        current["mailAccounts"][A]["connectionId"],
+        "newer-connection"
+    );
+    assert_eq!(current["mailAccounts"][A]["refreshToken"], "newer-refresh");
+    assert_eq!(current["mailAccounts"][B], original_b);
+
+    let (retry_url, retry_cookie) = attempt(&server).await;
+    let guard = server.app.0.mailbox.lock().await;
+    let busy = server
+        .client
+        .get(&retry_url)
+        .header("cookie", &retry_cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(busy.status(), 409);
+    drop(guard);
+    let retry = server
+        .client
+        .get(&retry_url)
+        .header("cookie", retry_cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(retry.status(), 302);
+    assert!(
+        retry.headers()["location"]
+            .to_str()
+            .unwrap()
+            .contains("connected=google")
+    );
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn refresh_rotation_is_account_bound_and_changed_connection_discards_sync() {
     let entered = Arc::new(Semaphore::new(0));
     let started = entered.clone();

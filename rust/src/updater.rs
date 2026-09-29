@@ -1,6 +1,7 @@
 //! Signed, host-owned desktop updates. The helper is a copy of this executable;
 //! neither a renderer nor downloaded content supplies commands or destinations.
 use crate::{
+    cli,
     error::{Error, Result},
     service::{App, Context},
     store::{now, string},
@@ -30,7 +31,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    process::Command,
+    process::{Child, Command},
     sync::{Mutex, watch},
     task::JoinHandle,
 };
@@ -1047,6 +1048,10 @@ impl Updater {
             ],
             result_file: self.0.data.join("update-result.json"),
         };
+        save_private(
+            &directory.join("update-target.json"),
+            &serde_json::to_vec(&config.target)?,
+        )?;
         let mut command = clean_command(&helper);
         command
             .arg("--update-installer")
@@ -1229,36 +1234,131 @@ pub fn process_alive(pid: u32) -> bool {
         true
     }
 }
-async fn launch_app(target: &Path, platform: &str, workspace: &Path) -> Result<()> {
-    if platform == "macos-arm64" {
-        // LaunchServices need not inherit the helper's environment. The host's
-        // validated workspace must survive an update, including custom locations.
-        let mut environment = std::ffi::OsString::from("MORROW_DATA_DIR=");
-        environment.push(workspace);
-        command_output(
-            clean_command("/usr/bin/open")
-                .arg("-n")
-                .arg("--env")
-                .arg(environment)
-                .arg(target),
-            20,
-        )
-        .await?;
-    } else {
-        let (_, executable) = package_paths(target, platform)?;
-        let mut command = clean_command(executable);
-        command
-            .current_dir(target)
-            .env("MORROW_DATA_DIR", workspace)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(false);
-        #[cfg(windows)]
-        command.creation_flags(0x00000008 | 0x00000200);
-        command.spawn()?;
+#[cfg(windows)]
+fn launched_service_handles(parent_pid: u32) -> Result<Vec<std::os::windows::io::OwnedHandle>> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::{
+        Foundation::{
+            ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, GetLastError, INVALID_HANDLE_VALUE,
+        },
+        System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+                TH32CS_SNAPPROCESS,
+            },
+            Threading::{OpenProcess, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE},
+        },
+    };
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error().into());
     }
-    Ok(())
+    let snapshot = unsafe { OwnedHandle::from_raw_handle(snapshot) };
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut handles = Vec::new();
+    let mut found = unsafe { Process32FirstW(snapshot.as_raw_handle(), &mut entry) };
+    while found != 0 {
+        let name_end = entry
+            .szExeFile
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(entry.szExeFile.len());
+        if entry.th32ParentProcessID == parent_pid
+            && String::from_utf16_lossy(&entry.szExeFile[..name_end])
+                .eq_ignore_ascii_case("morrow-service.exe")
+        {
+            let handle = unsafe {
+                OpenProcess(
+                    PROCESS_SYNCHRONIZE | PROCESS_TERMINATE,
+                    0,
+                    entry.th32ProcessID,
+                )
+            };
+            if handle.is_null() {
+                if unsafe { GetLastError() } != ERROR_INVALID_PARAMETER {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+            } else {
+                handles.push(unsafe { OwnedHandle::from_raw_handle(handle) });
+            }
+        }
+        found = unsafe { Process32NextW(snapshot.as_raw_handle(), &mut entry) };
+    }
+    if unsafe { GetLastError() } != ERROR_NO_MORE_FILES {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(handles)
+}
+#[cfg(windows)]
+async fn wait_for_launched_service(parent_pid: u32) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::{
+        Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT},
+        System::Threading::{TerminateProcess, WaitForSingleObject},
+    };
+    // Retry enumeration rather than roll back while a service may still hold app files or the workspace.
+    let handles = loop {
+        match launched_service_handles(parent_pid) {
+            Ok(handles) => break handles,
+            Err(_) => tokio::time::sleep(Duration::from_millis(250)).await,
+        }
+    };
+    for handle in handles {
+        let deadline = Instant::now() + Duration::from_secs(140);
+        loop {
+            let state = unsafe { WaitForSingleObject(handle.as_raw_handle(), 0) };
+            if state == WAIT_OBJECT_0 {
+                break;
+            }
+            if state != WAIT_TIMEOUT || Instant::now() >= deadline {
+                unsafe { TerminateProcess(handle.as_raw_handle(), 1) };
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+}
+fn launch_app(target: &Path, platform: &str, workspace: &Path) -> Result<Child> {
+    let (_, executable) = package_paths(target, platform)?;
+    let mut command = clean_command(executable);
+    command
+        .current_dir(target)
+        .env("MORROW_DATA_DIR", workspace)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(false);
+    #[cfg(windows)]
+    command.creation_flags(0x00000008 | 0x00000200);
+    Ok(command.spawn()?)
+}
+async fn wait_for_ready<F, Fut>(child: &mut Child, workspace: &Path, probe: F) -> Result<()>
+where
+    F: Fn(PathBuf) -> Fut,
+    Fut: std::future::Future<Output = Result<bool>>,
+{
+    let deadline = Instant::now() + Duration::from_secs(45);
+    let mut healthy_since = None;
+    loop {
+        if child.try_wait()?.is_some() {
+            return Err(fail(
+                "The updated app exited before its service became ready.",
+            ));
+        }
+        if probe(workspace.to_owned()).await? {
+            if healthy_since.get_or_insert_with(Instant::now).elapsed() >= Duration::from_secs(2) {
+                return Ok(());
+            }
+        } else {
+            healthy_since = None;
+        }
+        if Instant::now() >= deadline {
+            return Err(fail("The updated app did not become ready in time."));
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
 }
 async fn verify_staging(config: &InstallConfig, key: &str) -> Result<()> {
     validate_install_paths(config)?;
@@ -1279,6 +1379,47 @@ async fn verify_staging(config: &InstallConfig, key: &str) -> Result<()> {
     })
     .await
     .map_err(|_| fail(DOWNLOAD_ERROR))?
+}
+fn cleanup_completed_updates(config: &InstallConfig) {
+    let _ = fs::remove_file(config.directory.join("update.zip"));
+    let _ = fs::remove_dir_all(config.directory.join("extracted"));
+    let Some(parent) = config.directory.parent() else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let Some(id) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix(".morrow-update-"))
+        else {
+            continue;
+        };
+        if path == config.directory
+            || uuid::Uuid::parse_str(id).is_err()
+            || !fs::symlink_metadata(&path)
+                .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+            || !fs::symlink_metadata(path.join("previous"))
+                .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+        {
+            continue;
+        }
+        let marker_path = path.join("update-target.json");
+        if !fs::symlink_metadata(&marker_path).is_ok_and(|metadata| {
+            metadata.is_file() && !metadata.file_type().is_symlink() && metadata.len() <= 4096
+        }) {
+            continue;
+        }
+        let Ok(marker) = fs::read(marker_path) else {
+            continue;
+        };
+        if serde_json::from_slice::<PathBuf>(&marker).ok().as_ref() == Some(&config.target) {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
 }
 /// Private entry point used only by a host-prepared, copied helper over stdin.
 pub async fn installer_main() -> i32 {
@@ -1323,6 +1464,21 @@ pub async fn install_package(
     key: &str,
     ready: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
+    install_package_with_probe(config, key, ready, |workspace| async move {
+        cli::healthy(&workspace).await
+    })
+    .await
+}
+async fn install_package_with_probe<F, Fut>(
+    config: &InstallConfig,
+    key: &str,
+    ready: impl FnOnce() -> Result<()>,
+    probe: F,
+) -> Result<()>
+where
+    F: Fn(PathBuf) -> Fut,
+    Fut: std::future::Future<Output = Result<bool>>,
+{
     verify_staging(config, key).await?;
     ready()?;
     let mut parents_exited = false;
@@ -1354,11 +1510,26 @@ pub async fn install_package(
             replace_and_launch(config, |target| {
                 let platform = config.platform.clone();
                 let workspace = config.result_file.parent().unwrap().to_owned();
-                async move { launch_app(&target, &platform, &workspace).await }
+                async move {
+                    let mut child = launch_app(&target, &platform, &workspace)?;
+                    #[cfg(windows)]
+                    let child_pid = child.id().unwrap();
+                    let result = wait_for_ready(&mut child, &workspace, probe).await;
+                    if result.is_err() {
+                        let _ = child.kill().await;
+                        let _ = child.wait().await;
+                        #[cfg(windows)]
+                        wait_for_launched_service(child_pid).await;
+                    }
+                    result
+                }
             })
             .await
         }
         .await;
+    if outcome.is_ok() {
+        cleanup_completed_updates(config);
+    }
     let value = if outcome.is_ok() {
         json!({"status":"installed","version":config.version})
     } else {
@@ -1380,8 +1551,7 @@ pub async fn install_package(
             &config.target,
             &config.platform,
             config.result_file.parent().unwrap(),
-        )
-        .await;
+        );
     }
     outcome
 }
@@ -1492,6 +1662,64 @@ mod download_tests {
                 String::from_utf8_lossy(&err)
             );
         }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn failed_candidate_waits_for_its_service() {
+        let root =
+            std::env::temp_dir().join(format!("morrow-update-service-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let source = root.join("candidate.rs");
+        fs::write(
+            &source,
+            r#"fn main() {
+    let root = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+    if std::env::args().any(|arg| arg == "--service") {
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        return;
+    }
+    let child = std::process::Command::new(root.join("morrow-service.exe"))
+        .arg("--service").spawn().unwrap();
+    std::fs::write(root.join("service.pid"), child.id().to_string()).unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(30));
+}"#,
+        )
+        .unwrap();
+        let executable = root.join("candidate.exe");
+        fixture_command(
+            "compile child-service fixture",
+            clean_command(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+                .args(["--edition=2024", "--crate-name", "candidate_fixture"])
+                .arg(&source)
+                .arg("-o")
+                .arg(&executable),
+            60,
+        )
+        .await;
+        fs::copy(&executable, root.join("morrow-service.exe")).unwrap();
+        let mut candidate = clean_command(&executable)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let candidate_pid = candidate.id().unwrap();
+        let service_pid = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Ok(pid) = fs::read_to_string(root.join("service.pid")) {
+                    break pid.parse::<u32>().unwrap();
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .unwrap();
+        candidate.kill().await.unwrap();
+        candidate.wait().await.unwrap();
+        let started = Instant::now();
+        wait_for_launched_service(candidate_pid).await;
+        assert!(!process_alive(service_pid));
+        assert!(started.elapsed() >= Duration::from_secs(1));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(windows)]
@@ -1638,7 +1866,7 @@ mod download_tests {
         let marker = root.join("restarted.txt");
         if platform == "macos-arm64" {
             let source = root.join("fixture.swift");
-            fs::write(&source,format!("import Foundation\ntry! (ProcessInfo.processInfo.environment[\"MORROW_DATA_DIR\"] ?? \"missing workspace\").write(toFile: {}, atomically: true, encoding: .utf8)\n",serde_json::to_string(&marker.to_string_lossy()).unwrap())).unwrap();
+            fs::write(&source,format!("import Foundation\ntry! (ProcessInfo.processInfo.environment[\"MORROW_DATA_DIR\"] ?? \"missing workspace\").write(toFile: {}, atomically: true, encoding: .utf8)\nThread.sleep(forTimeInterval: 10)\n",serde_json::to_string(&marker.to_string_lossy()).unwrap())).unwrap();
             fixture_command(
                 "compile macOS restart fixture",
                 clean_command("/usr/bin/swiftc")
@@ -1663,7 +1891,7 @@ mod download_tests {
             fs::write(
                 &source,
                 format!(
-                    "#![windows_subsystem = \"windows\"]\nfn main() {{ std::fs::write({:?}, std::env::var(\"MORROW_DATA_DIR\").expect(\"missing fixture workspace\")).unwrap(); }}\n",
+                    "#![windows_subsystem = \"windows\"]\nfn main() {{ std::fs::write({:?}, std::env::var(\"MORROW_DATA_DIR\").expect(\"missing fixture workspace\")).unwrap(); std::thread::sleep(std::time::Duration::from_secs(10)); }}\n",
                     marker.to_string_lossy()
                 ),
             )
@@ -1879,7 +2107,7 @@ mod download_tests {
         .unwrap()
     }
     #[tokio::test]
-    async fn signed_download_cancellation_corruption_and_install_waiting_for_both_processes() {
+    async fn signed_download_install_waits_for_both_processes_and_rolls_back_failed_start() {
         if host_platform().is_none() {
             return;
         }
@@ -2000,14 +2228,30 @@ mod download_tests {
             pids: [ui.id().unwrap(), service.id().unwrap()],
             result_file: updater.0.data.join("update-result.json"),
         };
+        let obsolete = config
+            .target
+            .parent()
+            .unwrap()
+            .join(format!(".morrow-update-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(obsolete.join("previous")).unwrap();
+        fs::write(
+            obsolete.join("update-target.json"),
+            serde_json::to_vec(&config.target).unwrap(),
+        )
+        .unwrap();
         let (ready, waiting) = tokio::sync::oneshot::channel();
         let install = config.clone();
         let key = fixture.key.clone();
         let task = tokio::spawn(async move {
-            install_package(&install, &key, || {
-                let _ = ready.send(());
-                Ok(())
-            })
+            install_package_with_probe(
+                &install,
+                &key,
+                || {
+                    let _ = ready.send(());
+                    Ok(())
+                },
+                |_| async { Ok(false) },
+            )
             .await
         });
         waiting.await.unwrap();
@@ -2025,12 +2269,38 @@ mod download_tests {
         assert!(!config.backup.exists());
         assert!(!task.is_finished());
         service.kill().await.unwrap();
-        task.await.unwrap().unwrap();
+        assert!(task.await.unwrap().is_err());
+        assert!(!config.backup.exists());
+        assert_eq!(
+            serde_json::from_slice::<Value>(
+                &fs::read(
+                    package_paths(&config.target, platform)
+                        .unwrap()
+                        .0
+                        .join("package.json")
+                )
+                .unwrap()
+            )
+            .unwrap()["version"],
+            VERSION
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&fs::read(&config.result_file).unwrap()).unwrap()["status"],
+            "error"
+        );
+        fs::remove_file(&fixture.marker).unwrap();
+        install_package_with_probe(&config, &fixture.key, || Ok(()), |workspace| async move {
+            Ok(workspace.parent().unwrap().join("restarted.txt").exists())
+        })
+        .await
+        .unwrap();
         assert_eq!(
             serde_json::from_slice::<Value>(&fs::read(&config.result_file).unwrap()).unwrap()["status"],
             "installed"
         );
         assert!(config.backup.exists());
+        assert!(!directory.join("update.zip").exists());
+        assert!(!obsolete.exists());
         tokio::time::timeout(Duration::from_secs(10), async {
             while !fixture.marker.exists() {
                 tokio::time::sleep(Duration::from_millis(50)).await;
