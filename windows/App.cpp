@@ -82,6 +82,9 @@ ScrollViewer scroll(UIElement const& child) {
 }
 namespace {
 StackPanel actions() { auto result = stack(); result.Orientation(Orientation::Horizontal); return result; }
+double minimumMailListHeight(Grid const& list) {
+    return std::max(200.0, list.RowDefinitions().GetAt(0).ActualHeight() + list.RowDefinitions().GetAt(2).ActualHeight() + 80.0);
+}
 void bold(TextBlock const& text, bool active) {
     Windows::UI::Text::FontWeight weight{}; weight.Weight = active ? 600 : 400; text.FontWeight(weight);
 }
@@ -453,7 +456,10 @@ void Shell::mailPage() {
     Automation::AutomationProperties::SetName(resize, L"Resize mail list");
     auto adjust = [weak, body](double horizontal, double vertical) {
         if (auto self = weak.lock()) {
-            if (self->mailLayout == L"bottom") self->listHeight = std::clamp(self->listHeight + vertical, 120.0, std::max(120.0, body.ActualHeight() - 208.0));
+            if (self->mailLayout == L"bottom") {
+                auto minimum = minimumMailListHeight(self->mailList);
+                self->listHeight = std::clamp(self->listHeight + vertical, minimum, std::max(minimum, body.ActualHeight() - 208.0));
+            }
             else self->listWidth = std::clamp(self->listWidth + horizontal, 260.0, std::max(260.0, body.ActualWidth() - 328.0));
             self->applyMailLayout();
         }
@@ -483,7 +489,9 @@ void Shell::applyMailLayout() {
     mailDivider.Visibility(focus ? Visibility::Collapsed : Visibility::Visible);
     if (focus) return;
     if (bottom) {
-        RowDefinition list; list.Height(GridLengthHelper::FromPixels(listHeight)); list.MinHeight(120);
+        auto minimum = minimumMailListHeight(mailList);
+        listHeight = std::max(listHeight, minimum);
+        RowDefinition list; list.Height(GridLengthHelper::FromPixels(listHeight)); list.MinHeight(minimum);
         RowDefinition divider; divider.Height(GridLengthHelper::FromPixels(8));
         RowDefinition detail; detail.Height(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); detail.MinHeight(200);
         mailBody.RowDefinitions().Append(list); mailBody.RowDefinitions().Append(divider); mailBody.RowDefinitions().Append(detail);

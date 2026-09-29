@@ -66,6 +66,10 @@ IAsyncAction Shell::smoke() {
             check(mailList.Visibility() == xaml::Visibility::Collapsed && reader.Visibility() == xaml::Visibility::Visible,
                 L"Focused reading did not hide the complete mail list pane.");
             readerFocused = false; mailLayout = savedLayout; applyMailLayout();
+            auto savedHeight = listHeight;
+            mailLayout = L"bottom"; listHeight = 120; applyMailLayout(); mailBody.UpdateLayout();
+            check(rows.ActualHeight() >= 80, L"Resizing Reader below hid the message rows behind fixed mailbox controls.");
+            listHeight = savedHeight; mailLayout = savedLayout; applyMailLayout();
             for (auto const& item : rows.Items())
                 check(text(item.as<controls::ListViewItem>().Tag().as<Json>(), L"accountId") == owner,
                     L"The initial mail page contains another owner's rows.");
