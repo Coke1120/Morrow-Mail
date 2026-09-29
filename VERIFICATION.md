@@ -1,10 +1,21 @@
 # Verification — 30 September 2026
 
-## 0.6.0-beta.26 — native mail-row actions
+## 0.6.0-beta.26 — published native mail-row actions
 
 The macOS and Windows mail lists now reveal local read/unread, an owner-bound Reply All draft, and a reviewed move to the owning provider's Trash on row hover or focus. Gmail uses its Trash endpoint; Outlook uses Deleted Items; IMAP requires a selectable `\\Trash` folder plus MOVE, UIDPLUS and matching UIDVALIDITY. The new provider fixtures check Trash classification, resulting local folder and stable message identity. Windows smoke also checks all three row controls and that patching another row does not replace the open reader.
 
-Local Rust formatting, strict all-target Clippy and the full locked test suite passed with fictional provider fixtures. The macOS native app built and passed native acceptance in a separate fictional workspace. Windows compilation and UI smoke run in [PR #10](https://github.com/Coke1120/Morrow-Mail/pull/10). No real mailbox was changed. The tagged release must independently pass both native jobs before paired publication; its public assets and signing evidence are recorded after publication.
+Local Rust formatting, strict all-target Clippy and the full locked test suite passed with fictional provider fixtures. The macOS native app built and passed native acceptance in a separate fictional workspace. [PR #10](https://github.com/Coke1120/Morrow-Mail/pull/10) passed both native jobs in [PR CI 36603447410](https://github.com/Coke1120/Morrow-Mail/actions/runs/36603447410), including Windows compilation, UI smoke and the fictional-mail benchmark, before merging into `main`.
+
+[Beta.26](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.26) was published at 2026-09-29T18:38:09Z from `e9552d9373ee3fec95b5e27c51198d8bd6d73ada`. [Tagged CI 36610619956](https://github.com/Coke1120/Morrow-Mail/actions/runs/36610619956) passed all three jobs: both platforms completed Node-free Rust checks, native packaging and acceptance, Windows completed its fictional-mail benchmark, and the existing publisher verified same-run paired artifact provenance before signing and publishing both packages. No test waiver applied.
+
+All six public assets were downloaded. The Ed25519 update-manifest signature verified against the committed pinned public key; both ZIP sizes, SHA-256 values and checksum files matched. ZIP integrity/path checks and bundled package metadata versions passed. The public macOS app passed deep/strict ad-hoc signature verification and plist lint; its service returned `Morrow Mail 0.6.0-beta.26` with `--version`. The application was not opened and no real workspace was accessed. Windows execution evidence comes from CI.
+
+| Public archive | Bytes | SHA-256 |
+| --- | ---: | --- |
+| macos-arm64 | 12,330,062 | `d7a4045343ea7da9c2fb5079ab1de1959db3be4a55ab833f4d5ea09676894ec0` |
+| windows-x64 | 36,599,455 | `e50dda8300b70bdf917668200be30cc4a616d3cc5ba5ddabc5e78519faccc9e2` |
+
+All automated checks used fictional workspaces and isolated provider/model fixtures; no real mailbox or provider write was used. Manual Windows visual/accessibility, clean-machine and live-account acceptance remain outstanding. macOS is ad-hoc signed without notarization; Windows is unsigned. See the [beta.26 release notes](docs/releases/v0.6.0-beta.26.md).
 
 ## 0.6.0-beta.25 — published paired native release
 
