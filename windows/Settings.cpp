@@ -314,12 +314,12 @@ void start(Page const& p) {
     hstring accountDetail = accounts ? to_hstring(accounts) + L" mail account(s) connected." :
         hstring(L"Add a Gmail, Outlook or IMAP account to see your inbox.");
     step(L"1 · Connect your mail", accountDetail, accounts ? L"Manage Accounts" : L"Add an Account", L"mail");
-    step(L"2 · Choose an AI model (optional)", flag(object(object(p->shell->state, L"settings"), L"ai"), L"configured") ?
-        L"Chat model configured. A hosted model may charge for requests." :
-        L"A local or hosted model needs a server address and its exact model name. Hosted models may charge for requests.",
-        L"Set Up and Test a Model", L"model");
+    step(L"2 · Set up AI help (optional)", flag(object(object(p->shell->state, L"settings"), L"ai"), L"configured") ?
+        L"AI connection saved. Online AI receives only the mail you permit and may charge for requests." :
+        L"AI can help write replies and summarize mail. Ask your IT support or AI provider for the connection details. You can still use mail without AI.",
+        L"Set Up AI", L"model");
     step(L"3 · Decide what AI can use", L"Choose which downloaded mail folders and fields AI may read. Automatic summaries start only when you enable a trigger.",
-        L"Review AI Permissions", L"policy");
+        L"Review AI & Privacy", L"policy");
 }
 void general(Page const& p) {
     title(p->body, L"Make yourself at home"); help(p->body, L"Choose how Morrow looks, writes, and keeps your inbox up to date. Preferences save automatically.");
@@ -523,35 +523,64 @@ void calendar(Page const& p, Json const& response) {
 }
 
 void permissions(Page const& p) {
-    title(p->body, L"AI permissions"); help(p->body, L"These permissions apply across accounts. Context stays account-specific. Changes become active only after Save permissions.");
+    title(p->body, L"AI & privacy"); help(p->body, L"Choose what AI may read. These permissions apply across your accounts; each account’s mail stays separate. Changes take effect after Save permissions.");
     auto f = form(p, p->body, object(object(p->shell->state, L"settings"), L"policy"), L"policy");
+    auto main = f->panel;
+    auto section = [&](StackPanel const& parent, hstring caption) {
+        Expander disclosure; disclosure.Header(box_value(caption)); disclosure.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
+        auto panel = stack(12); disclosure.Content(panel); parent.Children().Append(disclosure); f->panel = panel;
+        return disclosure;
+    };
     toggle(f, L"enabled", L"Enable AI assistance");
-    title(f->panel, L"When assistance starts");
-    help(f->panel, L"Automatic triggers may charge model tokens. Drafts / Trash are excluded from automatic triggers. Suggestions never send mail or create provider events automatically.");
+    title(f->panel, L"What AI may read");
+    title(f->panel, L"Mail folders");
+    for (auto const& [key, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{
+        {L"inbox", L"Inbox"}, {L"sent", L"Sent"}, {L"drafts", L"Drafts"}, {L"archive", L"Archive"}, {L"trash", L"Trash"}})
+        toggle(f, (L"folders." + std::wstring(key)).c_str(), caption);
+    title(f->panel, L"Information in your mail");
+    for (auto const& [key, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{
+        {L"subject", L"Subject lines"}, {L"body", L"Message bodies"}, {L"sender", L"Senders and recipients"}, {L"contacts", L"Saved contact notes"}})
+        toggle(f, (L"content." + std::wstring(key)).c_str(), caption);
+    auto triggers = object(f->saved, L"triggers");
+    bool automatic = flag(triggers, L"onOpen") || flag(triggers, L"onReply") || flag(triggers, L"onArrival") || flag(triggers, L"scheduledSummary");
+    hstring status = !flag(f->saved, L"enabled") ? L"Paused in saved settings" : automatic ? L"On in saved settings" : L"Off in saved settings";
+    auto automaticSection = section(main, L"Automatic assistance · " + status);
+    help(f->panel, L"Off by default. Automatic requests may cost money. Checked filters must all match. Drafts and Trash are excluded; each account is handled separately. Suggestions never send mail, create events or replace drafts automatically.");
     for (auto const& [key, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{{L"onOpen", L"Summarize when opening a message"}, {L"onReply", L"Suggest text when starting a reply"}, {L"onArrival", L"Summarize newly synced messages"}, {L"scheduledSummary", L"Generate scheduled inbox summaries"}, {L"inboxOnly", L"Only messages in Inbox"}, {L"starredOnly", L"Only starred messages"}})
         toggle(f, (L"triggers." + std::wstring(key)).c_str(), caption);
-    choice(f, L"summarySchedule.cadence", L"Summary schedule", {{L"daily", L"Daily at a set time"}, {L"interval", L"Every few hours"}});
+    help(f->panel, L"New-mail summaries run after sync finds a new message, excluding initial imports. Set automatic mail sync in General for regular checks.");
+    section(f->panel, L"Summary schedule (optional)");
+    choice(f, L"summarySchedule.cadence", L"Repeat", {{L"daily", L"Daily at a set time"}, {L"interval", L"Every few hours"}});
     input(f, L"summarySchedule.time", L"Daily time (24-hour HH:mm)", 5);
-    input(f, L"summarySchedule.timeZone", L"IANA time zone, e.g. Asia/Hong_Kong", 100);
+    input(f, L"summarySchedule.timeZone", L"Time zone, e.g. Asia/Hong_Kong", 100);
     numeric(f, L"summarySchedule.everyHours", L"Interval in hours", 1, 168);
-    help(f->panel, L"Runs while Morrow is open. Daily schedules catch up once; interval timing starts when enabled. Failed model jobs never replay automatically. Results are available in Today / AI Studio.");
-    title(f->panel, L"Available AI features");
+    help(f->panel, L"Used only when scheduled inbox summaries are enabled. Runs while Morrow is open. Daily schedules catch up once; interval timing starts when enabled. Failed model jobs never replay automatically. Results appear in AI Studio → Summaries.");
+    section(main, L"Choose available AI tasks");
     for (auto const& entry : array(p->shell->state, L"features")) {
         auto feature = entry.GetObject(); auto id = text(feature, L"id");
-        if (!object(f->value, L"behaviors").HasKey(id)) continue;
-        toggle(f, (L"behaviors." + std::wstring(id)).c_str(), text(feature, L"label") + (flag(feature, L"mock") && id != L"memory" ? L" — Local simulation" : L""));
+        if (!object(f->value, L"behaviors").HasKey(id) || (flag(feature, L"mock") && id != L"memory")) continue;
+        toggle(f, (L"behaviors." + std::wstring(id)).c_str(), id == L"memory" ? hstring(L"Writing style & notes") : text(feature, L"label"));
         help(f->panel, id == L"memory" ? hstring(L"Suggest memories with source references, review what to save, and use permitted saved context.") : text(feature, L"description"));
     }
-    for (auto group : {L"folders", L"content"}) {
-        title(f->panel, group == std::wstring_view(L"folders") ? L"Permitted folders" : L"Permitted information");
-        for (auto const& entry : object(f->value, group)) toggle(f, (std::wstring(group) + L"." + std::wstring(entry.Key())).c_str(), entry.Key());
-    }
-    help(f->panel, L"Contacts refer to local Email Brain notes. Calendar and attachment permissions cover simulations only, not live calendars or attachment files.");
+    section(main, L"Advanced limits & local simulations");
     numeric(f, L"maxMessages", L"Maximum messages per request", 1, 50);
-    action(p, f->panel, L"Save permissions", [f](Page page) -> IAsyncAction {
+    help(f->panel, L"Simulations use sample data. Calendar and attachment permissions below do not grant access to your live calendar or attachment files.");
+    toggle(f, L"content.calendar", L"Simulated calendar context"); toggle(f, L"content.attachments", L"Sample attachment fixtures");
+    for (auto const& entry : array(p->shell->state, L"features")) {
+        auto feature = entry.GetObject(); auto id = text(feature, L"id");
+        if (!object(f->value, L"behaviors").HasKey(id) || !flag(feature, L"mock") || id == L"memory") continue;
+        toggle(f, (L"behaviors." + std::wstring(id)).c_str(), text(feature, L"label") + L" · Simulation");
+        help(f->panel, text(feature, L"description"));
+    }
+    f->panel = main;
+    action(p, f->panel, L"Save permissions", [f, automaticSection](Page page) -> IAsyncAction {
         auto result = co_await page->shell->service->request(L"/settings/policy", page->owner, L"POST", copy(f->value));
         if (!page->current()) co_return;
         auto policy = object(object(result, L"settings"), L"policy"); f->accept(policy);
+        auto triggers = object(policy, L"triggers");
+        bool automatic = flag(triggers, L"onOpen") || flag(triggers, L"onReply") || flag(triggers, L"onArrival") || flag(triggers, L"scheduledSummary");
+        hstring status = !flag(policy, L"enabled") ? L"Paused in saved settings" : automatic ? L"On in saved settings" : L"Off in saved settings";
+        automaticSection.Header(box_value(L"Automatic assistance · " + status));
         object(page->shell->state, L"settings").Insert(L"policy", policy); page->tell(L"AI permissions saved.");
     });
     action(p, f->panel, L"Discard permission changes", [f](Page page) -> IAsyncAction { f->accept(f->saved); page->tell(L"Saved permissions restored."); co_return; });
@@ -587,12 +616,17 @@ void models(Page const& p) {
         title(f->panel, embedding ? L"Search embedding" : L"Chat & reply model");
         f->container.Visibility(embedding ? xaml::Visibility::Collapsed : xaml::Visibility::Visible); editors.push_back(f->container);
         if (embedding) choice(f, L"protocol", L"Embedding protocol", {{L"openai", L"OpenAI-compatible /embeddings"}, {L"ollama", L"Ollama native /api/embed"}});
-        input(f, L"baseUrl", L"API base URL", 2000); input(f, L"model", L"Model ID", 200); password(f, L"API key (optional for local endpoints)");
+        input(f, L"baseUrl", L"Server address (API base URL)", 2000); input(f, L"model", L"Model name", 200); password(f, L"Access key (API key, optional for local models)");
         auto clear = toggle(f, L"clearApiKey", L"Remove saved API key");
         std::weak_ptr<Editor> weak = f;
         clear.Click([weak](auto const& sender, auto const&) { if (auto item = weak.lock()) { bool remove = checked(sender.template as<CheckBox>()); if (remove) item->secret.Password(L""); item->secret.IsEnabled(!remove); } });
         help(f->panel, flag(config, L"hasApiKey") ? L"A key is saved. Blank keeps it only at the same base URL; enter it again when changing endpoint. Saved keys are never displayed." : L"No saved API key. Remote endpoints require HTTPS; HTTP is supported only on loopback.");
-        if (!embedding) { numeric(f, L"temperature", L"Temperature", 0, 2, 0.1); numeric(f, L"maxTokens", L"Maximum response tokens", 128, 4096); }
+        if (!embedding) {
+            Expander advanced; advanced.Header(box_value(L"Advanced response settings")); auto fields = stack(12); auto main = f->panel;
+            advanced.Content(fields); main.Children().Append(advanced); f->panel = fields;
+            numeric(f, L"temperature", L"Temperature", 0, 2, 0.1); numeric(f, L"maxTokens", L"Maximum response tokens", 128, 4096);
+            f->panel = main;
+        }
         action(p, f->panel, embedding ? L"Test embedding connection" : L"Test chat connection", [f, embedding](Page page) { return modelAction(page, f, embedding, true); });
         action(p, f->panel, embedding ? L"Save embedding model" : L"Save chat model", [f, embedding](Page page) { return modelAction(page, f, embedding, false); });
         action(p, f->panel, L"Discard connection edits", [f](Page page) -> IAsyncAction { f->accept(f->saved); f->secret.IsEnabled(true); page->tell(L"Saved connection fields restored. Entered key discarded."); co_return; });
@@ -687,7 +721,7 @@ fire_and_forget pollSearch(Page p, StackPanel status) {
     p->polling = false;
 }
 void search(Page const& p) {
-    title(p->body, L"Search and semantic indexing"); help(p->body, L"Keyword search stays local. Embedding can keep downloaded, permitted mail indexed automatically within a daily budget. Configure its connection in Model.");
+    title(p->body, L"Search and semantic indexing"); help(p->body, L"Keyword search stays local. Embedding can keep downloaded, permitted mail indexed automatically within a daily budget. Configure its connection in Advanced setup → AI connection.");
     auto status = stack(8); p->body.Children().Append(status); searchStatus(p, status);
     action(p, p->body, L"Test saved embedding connection", [](Page page) -> IAsyncAction {
         auto result = co_await page->shell->service->request(L"/search/test", page->owner, L"POST");
@@ -836,35 +870,43 @@ IAsyncAction settingsPage(std::shared_ptr<Shell> shell, hstring tab) {
     RowDefinition heading; heading.Height(xaml::GridLengthHelper::Auto()); root.RowDefinitions().Append(heading);
     root.RowDefinitions().Append(RowDefinition());
     RowDefinition footer; footer.Height(xaml::GridLengthHelper::Auto()); root.RowDefinitions().Append(footer);
-    ColumnDefinition sidebar; sidebar.Width(xaml::GridLengthHelper::FromPixels(165)); root.ColumnDefinitions().Append(sidebar);
+    ColumnDefinition sidebar; sidebar.Width(xaml::GridLengthHelper::FromPixels(195)); root.ColumnDefinitions().Append(sidebar);
     root.ColumnDefinitions().Append(ColumnDefinition());
     auto headingLabel = label(L"Settings", 26); Grid::SetColumnSpan(headingLabel, 2); root.Children().Append(headingLabel);
-    ListView tabs; tabs.SelectionMode(ListViewSelectionMode::Single); tabs.IsItemClickEnabled(true);
+    ListView tabs, advancedTabs;
+    for (auto const& list : {tabs, advancedTabs}) { list.SelectionMode(ListViewSelectionMode::Single); list.IsItemClickEnabled(true); }
     xaml::Automation::AutomationProperties::SetName(tabs, L"Settings categories");
+    xaml::Automation::AutomationProperties::SetName(advancedTabs, L"Advanced settings categories");
     struct Category { wchar_t const* id; wchar_t const* caption; wchar_t const* glyph; };
     for (auto const& entry : {Category{L"start", L"Start here", L"\uE734"}, {L"general", L"General", L"\uE713"},
-        {L"mail", L"Mail", L"\uE715"}, {L"calendar", L"Calendar", L"\uE787"}, {L"model", L"Model", L"\uE8F2"},
-        {L"policy", L"AI Permissions", L"\uE72E"}, {L"search", L"Search", L"\uE721"},
-        {L"learning", L"Learning", L"\uE734"}, {L"about", L"About", L"\uE946"}}) {
+        {L"mail", L"Mail accounts", L"\uE715"}, {L"calendar", L"Calendar", L"\uE787"},
+        {L"policy", L"AI & privacy", L"\uE72E"}, {L"about", L"About", L"\uE946"},
+        {L"model", L"AI connection", L"\uE8F2"}, {L"search", L"Search index", L"\uE721"}, {L"learning", L"Writing style", L"\uE734"}}) {
         auto row = stack(8); row.Orientation(Orientation::Horizontal);
         FontIcon icon; icon.Glyph(entry.glyph); icon.FontSize(16); row.Children().Append(icon);
         auto caption = label(entry.caption); caption.IsTextSelectionEnabled(false); row.Children().Append(caption);
         ListViewItem item; item.Content(row); item.Tag(box_value(entry.id));
-        xaml::Automation::AutomationProperties::SetName(item, entry.caption); tabs.Items().Append(item);
-        if (tab == entry.id) tabs.SelectedItem(item);
+        auto list = std::wstring_view(entry.id) == L"model" || std::wstring_view(entry.id) == L"search" || std::wstring_view(entry.id) == L"learning" ? advancedTabs : tabs;
+        xaml::Automation::AutomationProperties::SetName(item, entry.caption); list.Items().Append(item);
+        if (tab == entry.id) list.SelectedItem(item);
     }
-    tabs.ItemClick([weak = std::weak_ptr<SettingsPage>(p)](auto const& sender, ItemClickEventArgs const& event) -> fire_and_forget {
-        auto tabs = sender.template as<ListView>();
+    for (auto const& list : {tabs, advancedTabs}) list.ItemClick([weak = std::weak_ptr<SettingsPage>(p), tabs, advancedTabs](auto const&, ItemClickEventArgs const& event) -> fire_and_forget {
         auto page = weak.lock(); auto item = event.ClickedItem().try_as<ListViewItem>();
         if (!page || !page->current() || !item) co_return;
         auto previous = page->tab; auto next = unbox_value<hstring>(item.Tag());
         if (previous != next) co_await changeTab(page, next);
         // A cancelled discard or pending save keeps the current category selected.
-        if (page->current()) for (auto const& value : tabs.Items()) {
-            auto entry = value.as<ListViewItem>(); if (unbox_value<hstring>(entry.Tag()) == previous) tabs.SelectedItem(entry);
+        if (page->current()) for (auto const& list : {tabs, advancedTabs}) {
+            list.SelectedItem(nullptr);
+            for (auto const& value : list.Items()) {
+                auto entry = value.as<ListViewItem>(); if (unbox_value<hstring>(entry.Tag()) == previous) list.SelectedItem(entry);
+            }
         }
     });
-    Grid::SetRow(tabs, 1); root.Children().Append(tabs);
+    auto categories = stack(8); categories.Children().Append(tabs);
+    Expander advanced; advanced.Header(box_value(L"Advanced setup")); advanced.Content(advancedTabs);
+    advanced.IsExpanded(tab == L"model" || tab == L"search"); categories.Children().Append(advanced);
+    auto categoryScroll = scroll(categories); Grid::SetRow(categoryScroll, 1); root.Children().Append(categoryScroll);
     p->notice = label(L"Loading settings…");
     xaml::Automation::AutomationProperties::SetLiveSetting(p->notice, xaml::Automation::Peers::AutomationLiveSetting::Polite);
     Grid::SetRow(p->notice, 2); Grid::SetColumnSpan(p->notice, 2); root.Children().Append(p->notice);
