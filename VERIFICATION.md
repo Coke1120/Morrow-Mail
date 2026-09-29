@@ -1,5 +1,9 @@
 # Verification — 28 September 2026
 
+## Issue #3 local verification — 29 September 2026
+
+Current macOS source adds a Start here settings path, visible save guidance, direct AI Studio task choices and a sender/subject search for permitted selected-email context. Search uses the existing local indexed API; selected results keep their account-qualified UI identity and original provider ID for the owned AI request. `scripts/build-macos-native.sh` and `morrow-native-check` passed with a separate fictional workspace, including native reader/window checks and Rust account routing. This was a build and fixture check, not a complete first-time-user walkthrough or Windows UI acceptance. No real mailbox, model request or provider write was used.
+
 ## 0.6.0-beta.23 — published AI workflow improvements
 
 [Beta.23](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.23) was published at 2026-09-28T09:46:26Z from `077a8a46334a5809bbbd897087777959f4c5c6de`. [Tagged CI 36403166805](https://github.com/Coke1120/Morrow-Mail/actions/runs/36403166805) passed all three jobs: both platforms completed Node-free Rust checks, native packaging and platform acceptance, Windows completed its fictional-mail benchmark, and the existing publisher verified same-run artifact provenance before signing and publishing both packages. No test waiver applied.

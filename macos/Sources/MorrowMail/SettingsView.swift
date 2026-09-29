@@ -26,7 +26,7 @@ struct NativeSettingsView: View {
     @State private var downloadState: JSON = .null
     @State private var modelSection = "chat"
     @State private var mailEditor = false
-    private let tabs = [("general", "General", "slider.horizontal.3"), ("mail", "Mail", "envelope"), ("calendar", "Calendar", "calendar"), ("model", "Model", "cpu"), ("permissions", "AI Permissions", "checkmark.shield"), ("search", "Search", "magnifyingglass"), ("learning", "Learning", "text.badge.star"), ("about", "About", "info.circle")]
+    private let tabs = [("start", "Start here", "sparkles"), ("general", "General", "slider.horizontal.3"), ("mail", "Mail", "envelope"), ("calendar", "Calendar", "calendar"), ("model", "Model", "cpu"), ("permissions", "AI Permissions", "checkmark.shield"), ("search", "Search", "magnifyingglass"), ("learning", "Learning", "text.badge.star"), ("about", "About", "info.circle")]
     private let generalKeys = ["displayName", "signature", "signatureFormat", "theme", "density", "replyTone", "language", "translationLanguage", "syncInterval", "markReadOnOpen"]
     private var displayedAccounts: [JSON] { mailSnapshot.isNull ? model.accounts : mailSnapshot.array }
     var dirty: Bool { searchDirty || learningDirty || values != baseline || mailOAuth.object.values.contains { $0.object.values.contains(where: \.nonempty) } || calendarOAuth.object.values.contains { $0.object.values.contains(where: \.nonempty) } }
@@ -43,6 +43,7 @@ struct NativeSettingsView: View {
                     VStack(alignment: .leading, spacing: 20) {
                         Color.clear.frame(height: 0).id("settings-top")
                         switch model.settingsTab {
+                        case "start": startPage
                         case "mail": mailPage
                         case "learning": StyleLearningView(dirty: $learningDirty, onOpenSettings: { next in if next == "model" { modelSection = "chat" }; selectTab(next) })
                         case "search": NativeSearchSettingsView(dirty: $searchDirty, operationBusy: $searchRequestBusy, onConfigureModel: { modelSection = "embedding"; selectTab("model") }, onConfigurePermissions: { selectTab("permissions") })
@@ -71,6 +72,7 @@ struct NativeSettingsView: View {
                 if model.busy { ProgressView().controlSize(.small) }
                 Text(localError.isEmpty ? status : localError).foregroundStyle(localError.isEmpty ? Color.secondary : Color.red).font(.callout).textSelection(.enabled)
                 Spacer()
+                if model.settingsTab != "general" { Text(saveHint).font(.caption).foregroundStyle(.secondary) }
                 if model.settingsTab == "general" { preferenceStatus }
                 if model.settingsTab == "permissions" && values["policy"] != baseline["policy"] {
                     Button("Discard Changes") { values["policy"] = baseline["policy"] }.disabled(values["policy"] == baseline["policy"] || model.busy || preferenceSaving)
@@ -141,6 +143,35 @@ struct NativeSettingsView: View {
             if secure { SecureField(title, text: string(group, key)) } else { TextField(title, text: string(group, key)) }
         }
     }
+    var saveHint: String {
+        switch model.settingsTab {
+        case "start", "about": return "Use each section’s Save button for changes. General saves automatically."
+        case "model": return "Model changes need Save Chat Model or Save Embedding Model."
+        case "permissions": return values["policy"] == baseline["policy"] ? "Permissions saved." : "Permissions not saved yet."
+        case "search", "learning": return "Use the Save button in this section."
+        default: return "Account and calendar changes need their own confirmation."
+        }
+    }
+    var startPage: some View {
+        Group {
+            SectionHeading(title: "Start here", detail: "Three steps to get mail and optional AI help ready. You can use mail without configuring AI.")
+            GroupBox("1 · Connect your mail") { VStack(alignment: .leading, spacing: 8) {
+                Text(model.accounts.isEmpty ? "Add a Gmail, Outlook or IMAP account to see your inbox." : "\(model.accounts.count) mail account(s) connected.")
+                Button(model.accounts.isEmpty ? "Add an Account" : "Manage Accounts") { selectTab("mail") }
+                Text("Google or Microsoft sign-in opens in your browser. If your provider requires your own app registration, Mail explains the extra steps.").font(.caption).foregroundStyle(.secondary)
+            }.padding(8).frame(maxWidth: .infinity, alignment: .leading) }
+            GroupBox("2 · Choose an AI model (optional)") { VStack(alignment: .leading, spacing: 8) {
+                Text("A local model runs on your computer. A hosted model uses a provider and may charge for requests. Both need a server address and its exact model name; hosted models usually need an API key.")
+                Text(model.state["settings"]["ai"]["configured"].bool ? "Chat model configured." : "No chat model configured yet.").font(.caption).foregroundStyle(.secondary)
+                Button("Set Up and Test a Model") { modelSection = "chat"; selectTab("model") }
+            }.padding(8).frame(maxWidth: .infinity, alignment: .leading) }
+            GroupBox("3 · Decide what AI can use") { VStack(alignment: .leading, spacing: 8) {
+                Text("Choose which actions AI may take and which downloaded mail folders and fields it may read. Automatic summaries start only when you enable a trigger.")
+                Button("Review AI Permissions") { selectTab("permissions") }
+                Text("Save permissions before returning to AI Studio. AI results are reviewed before they become draft mail.").font(.caption).foregroundStyle(.secondary)
+            }.padding(8).frame(maxWidth: .infinity, alignment: .leading) }
+        }
+    }
     var generalPage: some View {
         Group {
             SectionHeading(title: "Make yourself at home", detail: "Choose how Morrow looks, writes, and keeps your inbox up to date.")
@@ -195,6 +226,7 @@ struct NativeSettingsView: View {
     var modelPage: some View {
         Group {
             SectionHeading(title: "Chat & reply model", detail: "Used for summaries, replies, translation and learning. Search embedding has its own connection.")
+            Text("Choose a local server on this computer or a hosted provider. Copy its OpenAI-compatible address and exact model name from its setup page. For example, an address looks like http://localhost:PORT/v1 for a local server or https://provider.example/v1 for a hosted service; a model name looks like my-model-id. These are examples, not working credentials.").font(.callout).foregroundStyle(.secondary)
             field("API base URL", "ai", "baseUrl")
             Text("Include /v1 when your provider requires it. Remote endpoints require HTTPS.").font(.caption).foregroundStyle(.secondary)
             field("Model ID", "ai", "model")

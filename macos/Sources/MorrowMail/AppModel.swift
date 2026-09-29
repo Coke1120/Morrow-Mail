@@ -37,7 +37,7 @@ final class AppModel: ObservableObject {
     private var mailPageKey = ""
     private var openedMessage: String?
     @Published var showSettings = false { didSet { if showSettings != oldValue { draftGeneration += 1 } } }
-    @Published var settingsTab = "general"
+    @Published var settingsTab = "start"
     @Published private(set) var updateResult: JSON = .null
     @Published private(set) var updateCheckError = ""
     @Published private(set) var checkingUpdates = false
@@ -452,7 +452,7 @@ final class AppModel: ObservableObject {
         if draft.savedID.isEmpty, draft.footer.isNull { draft.footer = state["settings"]["footer"] }
         compose = draft
     }
-    func settings(_ tab: String = "general") {
+    func settings(_ tab: String = "start") {
         guard compose == nil, readerAssistant == nil, unsavedForms.subtracting(["settings"]).isEmpty else { notice = "Close AI assistance or save your current changes before opening Settings."; return }
         settingsTab = tab; showSettings = true
     }
