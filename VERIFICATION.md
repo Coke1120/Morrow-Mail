@@ -1,10 +1,19 @@
 # Verification — 29 September 2026
 
-## 0.6.0-beta.25 — paired release candidate
+## 0.6.0-beta.25 — published paired native release
 
-PR #8 and #9 were merged into `main` after each passed both native CI jobs: [PR #8 CI 36561615709](https://github.com/Coke1120/Morrow-Mail/actions/runs/36561615709) and [PR #9 CI 36559233943](https://github.com/Coke1120/Morrow-Mail/actions/runs/36559233943). Those checks cover Node-free Rust formatting, strict Clippy, locked tests, native packaging and acceptance on both platforms, plus the Windows fictional-mail benchmark. The Windows fixture checks the resized bottom mail list after its first layout. The macOS integration check rejects a combined-account simulation apply, then accepts its captured owner. Separate Rust regressions cover daily Sent analysis, existing weekly consent and dismissed unchanged proposals. PR #9's local macOS package, native acceptance, plist lint and deep/strict ad-hoc signature verification also passed.
+[Beta.25](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.25) was published at 2026-09-29T12:37:16Z from `566fade70857dff23202e6708af55b5e77f2f9a4`. [Tagged CI 36566686505](https://github.com/Coke1120/Morrow-Mail/actions/runs/36566686505) passed all three jobs: both platforms completed Node-free Rust checks, native packaging and acceptance, Windows completed its fictional-mail benchmark, and the existing publisher verified same-run paired artifact provenance before signing and publishing both packages. No test waiver applied.
 
-The combined source at `bee39090eb46d2316348f8e3621db444ed1a9c1f` passed both native jobs in [main CI 36564056318](https://github.com/Coke1120/Morrow-Mail/actions/runs/36564056318), including macOS acceptance, the Windows UI fixture and fictional-mail benchmark. The tagged release still requires its own paired CI results. The publisher must verify both same-run packages and sign the update manifest before publication. No waiver applies. These are fictional workspaces and isolated model/provider fixtures; there was no real mailbox, paid inference or provider write. Manual Windows visual/accessibility, clean-machine and live-account acceptance remain outstanding. macOS is ad-hoc signed without notarization; Windows is unsigned. See the [beta.25 release notes](docs/releases/v0.6.0-beta.25.md).
+All six public assets were downloaded. The Ed25519 update-manifest signature verified against the committed pinned public key; both ZIP sizes, SHA-256 values and checksum files matched. ZIP integrity/path checks and bundled package versions passed. The public macOS app passed deep/strict ad-hoc signature verification and plist lint; its service returned `Morrow Mail 0.6.0-beta.25` with `--version`. The application was not opened and no real workspace was accessed. Windows execution evidence comes from CI.
+
+| Public archive | Bytes | SHA-256 |
+| --- | ---: | --- |
+| macos-arm64 | 12,337,605 | `c6f83f02aa0121131ae60f38935d90967f632de6578cc2ffdaf1d8c95d408104` |
+| windows-x64 | 36,584,649 | `88e1e738840c90faec694507c4cd759440c9b5fba841180b90b9bbe20db924b5` |
+
+PR #8 and #9 were merged into `main` after each passed both native CI jobs: [PR #8 CI 36561615709](https://github.com/Coke1120/Morrow-Mail/actions/runs/36561615709) and [PR #9 CI 36559233943](https://github.com/Coke1120/Morrow-Mail/actions/runs/36559233943). The combined source at `bee39090eb46d2316348f8e3621db444ed1a9c1f` also passed both native jobs in [main CI 36564056318](https://github.com/Coke1120/Morrow-Mail/actions/runs/36564056318). The Windows fixture checks the resized bottom mail list after its first layout. The macOS integration check rejects a combined-account simulation apply, then accepts its captured owner. Rust regressions cover daily Sent analysis, existing weekly consent and dismissed unchanged proposals.
+
+All automated checks used fictional workspaces and isolated model/provider fixtures; no real mailbox, paid inference or provider write was used. Manual Windows visual/accessibility, clean-machine and live-account acceptance remain outstanding. macOS is ad-hoc signed without notarization; Windows is unsigned. See the [beta.25 release notes](docs/releases/v0.6.0-beta.25.md).
 
 ## 0.6.0-beta.24 — published paired native release
 

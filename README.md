@@ -27,7 +27,7 @@ AI Studio covers 19 behaviors through model-backed assistance and clearly labele
 
 This project is not affiliated with Genspark and does not claim complete parity. See [feature coverage](FEATURE_COVERAGE.md) for implementation status and simulation limits, and [verification](VERIFICATION.md) for completed checks and remaining release validation.
 
-**0.6.0-beta.25** aligns the Windows mail, compose and Settings layouts with macOS, and improves AI Studio account selection, combined summaries and reviewed Sent writing-style learning. See the [release notes](docs/releases/v0.6.0-beta.25.md) and [verification](VERIFICATION.md) for checks and remaining limits.
+**[0.6.0-beta.25](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.25)** aligns the Windows mail, compose and Settings layouts with macOS, and improves AI Studio account selection, combined summaries and reviewed Sent writing-style learning. Both native platform gates passed; see the [release notes](docs/releases/v0.6.0-beta.25.md) and [verification](VERIFICATION.md) for checks and remaining limits.
 
 ## Native desktop builds
 
