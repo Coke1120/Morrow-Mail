@@ -59,6 +59,9 @@ IAsyncAction Shell::smoke() {
         if (seeded) {
             check(section == L"mail" && connected(owner) && rows && rows.Items().Size() >= 1,
                 L"The initial owned mailbox has no ready mail rows.");
+            auto firstRow = rows.Items().GetAt(0).as<controls::ListViewItem>().Content().try_as<controls::StackPanel>();
+            auto quick = firstRow ? firstRow.Tag().try_as<controls::StackPanel>() : controls::StackPanel{nullptr};
+            check(quick && quick.Children().Size() == 3, L"Mail rows lost read, Reply all, or provider Trash actions.");
             check(mailList && mailList.RowDefinitions().Size() == 3 && mailBody.Children().Size() == 3 &&
                 controls::Grid::GetRow(rows) == 1, L"Mail controls and paging are not grouped with the message list.");
             auto savedLayout = mailLayout;
@@ -147,6 +150,11 @@ IAsyncAction Shell::smoke() {
             auto cursorCount = cursors.size();
             Json unread; unread.Insert(L"read",Value::CreateBooleanValue(false)); co_await patch(selected,unread);
             check(!flag(selected,L"read") && cursors.size()==cursorCount, L"Manual unread reset selection or pagination.");
+            auto otherRow = rows.Items().GetAt(1).as<controls::ListViewItem>().Tag().as<Json>();
+            auto selectedID = text(selected,L"viewId");
+            check(text(otherRow,L"viewId") != selectedID, L"Fixture rows did not have separate identities.");
+            Json otherRead; otherRead.Insert(L"read",Value::CreateBooleanValue(!flag(otherRow,L"read"))); co_await patch(otherRow,otherRead);
+            check(text(selected,L"viewId") == selectedID, L"A quick action on another row replaced the open reader.");
             enter("mail-unread-filter");
             unreadFilter.IsChecked(true); cursors = {L""}; co_await loadPage();
             check(rows.Items().Size() > 0, L"Unread filter lost the unread fixture message.");

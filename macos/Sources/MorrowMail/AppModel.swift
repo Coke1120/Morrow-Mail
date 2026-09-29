@@ -392,6 +392,10 @@ final class AppModel: ObservableObject {
         let provider = accounts.first { $0.id == message["accountId"].string }?["provider"].string ?? ""
         return !provider.isEmpty && (message["remoteId"].nonempty ? message["remoteId"].string : message.id).hasPrefix(provider + ":")
     }
+    func beginOrganize(_ message: JSON?, preferredKind: String = "") {
+        guard let message, canNavigate, canOrganize(message) else { return }
+        organizing = .object(["id": .string(UUID().uuidString), "message": message, "preferredKind": .string(preferredKind)])
+    }
     func patch(_ message: JSON, _ values: JSON) {
         perform {
             _ = try await self.request("/messages/" + encodedPath(message.id), method: "PATCH", body: values, mailbox: message["accountId"].string)

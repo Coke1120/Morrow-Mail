@@ -1,4 +1,10 @@
-# Verification — 29 September 2026
+# Verification — 30 September 2026
+
+## Unreleased — native mail-row actions
+
+The macOS and Windows mail lists now reveal local read/unread, an owner-bound Reply All draft, and a reviewed move to the owning provider's Trash on row hover or focus. Gmail uses its Trash endpoint; Outlook uses Deleted Items; IMAP requires a selectable `\\Trash` folder plus MOVE, UIDPLUS and matching UIDVALIDITY. The new provider fixtures check Trash classification, resulting local folder and stable message identity. Windows smoke also checks all three row controls and that patching another row does not replace the open reader.
+
+Local Rust formatting, strict all-target Clippy and the full locked test suite passed with fictional provider fixtures. The macOS native app built and passed native acceptance in a separate fictional workspace. Windows compilation and UI smoke require the PR's Windows CI. No real mailbox was changed; this feature has not been published.
 
 ## 0.6.0-beta.25 — published paired native release
 

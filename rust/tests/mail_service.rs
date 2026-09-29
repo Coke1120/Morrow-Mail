@@ -315,6 +315,10 @@ async fn provider_spam_folders_moves_and_restore() {
                     );
                 }
                 assert_eq!(request.method, "POST");
+                if url.path().ends_with("/trash") {
+                    assert!(request.body.is_empty());
+                    return Reply::Json(200, json!({"labelIds":["TRASH","Label_1"]}));
+                }
                 assert_eq!(url.path(), "/gmail/v1/users/me/messages/remote/modify");
                 let body = request.json();
                 let target = if body["addLabelIds"] == json!(["SPAM"]) {
@@ -339,7 +343,8 @@ async fn provider_spam_folders_moves_and_restore() {
                     json!({"value":[
                         {"id":"inbox-id","displayName":"Inbox"},
                         {"id":"custom-id","displayName":"Junk Email"},
-                        {"id":"junk-id","displayName":"垃圾郵件"}
+                        {"id":"junk-id","displayName":"垃圾郵件"},
+                        {"id":"deleted-id","displayName":"Deleted Items"}
                     ]}),
                 ),
                 "/v1.0/me/mailFolders/inbox" => Reply::Json(200, json!({"id":"inbox-id"})),
@@ -351,6 +356,7 @@ async fn provider_spam_folders_moves_and_restore() {
                         json!({"id":null})
                     },
                 ),
+                "/v1.0/me/mailFolders/deleteditems" => Reply::Json(200, json!({"id":"deleted-id"})),
                 "/v1.0/me/messages/remote" => {
                     assert_eq!(request.headers["prefer"], "IdType=\"ImmutableId\"");
                     Reply::Json(200, json!({"id":"remote","parentFolderId":"inbox-id"}))
@@ -358,8 +364,9 @@ async fn provider_spam_folders_moves_and_restore() {
                 "/v1.0/me/messages/remote/move" => {
                     assert_eq!(request.method, "POST");
                     assert_eq!(request.headers["prefer"], "IdType=\"ImmutableId\"");
-                    assert_eq!(request.json(), json!({"destinationId":"junk-id"}));
-                    Reply::Json(201, json!({"id":"remote","parentFolderId":"junk-id"}))
+                    let destination = request.json()["destinationId"].as_str().unwrap().to_owned();
+                    assert!(["junk-id", "deleted-id"].contains(&destination.as_str()));
+                    Reply::Json(201, json!({"id":"remote","parentFolderId":destination}))
                 }
                 _ => panic!("Unexpected fixture request: {}", request.path),
             }
@@ -375,6 +382,7 @@ async fn provider_spam_folders_moves_and_restore() {
             json!({"id":"INBOX","name":"Inbox","kind":"inbox"}),
             json!({"id":"__archive","name":"Archive (remove Inbox)","kind":"archive"}),
             json!({"id":"SPAM","name":"Spam","kind":"spam"}),
+            json!({"id":"TRASH","name":"Trash","kind":"trash"}),
             json!({"id":"Label_1","name":"Spam","kind":"label"}),
         ]
     );
@@ -414,6 +422,11 @@ async fn provider_spam_folders_moves_and_restore() {
         restored["providerLabelIds"],
         json!(["UNREAD", "STARRED", "SENT", "Label_1", "INBOX"])
     );
+    let trashed = providers::organize(&fixture.client, &google, &message, &folders[3], "move")
+        .await
+        .unwrap();
+    assert_eq!(trashed["folder"], "trash");
+    assert_eq!(trashed["providerLabelIds"], json!(["TRASH", "Label_1"]));
     assert_eq!(message["id"], "google:local");
 
     let microsoft = connection("microsoft", B);
@@ -425,6 +438,7 @@ async fn provider_spam_folders_moves_and_restore() {
         folders[2],
         json!({"id":"junk-id","name":"垃圾郵件","kind":"spam"})
     );
+    assert_eq!(folders[3]["kind"], "trash");
     let moved = providers::organize(
         &fixture.client,
         &microsoft,
@@ -437,6 +451,17 @@ async fn provider_spam_folders_moves_and_restore() {
     assert_eq!(moved["folder"], "spam");
     assert_eq!(moved["remoteId"], "microsoft:remote");
     assert_eq!(moved["providerFolderId"], "junk-id");
+    let trashed = providers::organize(
+        &fixture.client,
+        &microsoft,
+        &json!({"id":"microsoft:local","remoteId":"microsoft:remote"}),
+        &folders[3],
+        "move",
+    )
+    .await
+    .unwrap();
+    assert_eq!(trashed["folder"], "trash");
+    assert_eq!(trashed["providerFolderId"], "deleted-id");
     invalid_junk.store(1, Ordering::SeqCst);
     assert!(
         providers::folders(&fixture.client, &microsoft)
@@ -450,7 +475,7 @@ async fn provider_spam_folders_moves_and_restore() {
             .iter()
             .filter(|r| r.method == "POST")
             .count(),
-        3
+        5
     );
 }
 
@@ -720,6 +745,7 @@ async fn sync_combined_owners_keep_local_patches_and_stable_ids_after_provider_m
         if path.path()=="/v1.0/me/mailFolders"{return Reply::Json(200,json!({"value":[{"id":"inbox-id","displayName":"Inbox","childFolderCount":0},{"id":"archive-id","displayName":"Archive","childFolderCount":0}]}));}
         if path.path()=="/v1.0/me/mailFolders/inbox"{return Reply::Json(200,json!({"id":"inbox-id"}));}
         if path.path()=="/v1.0/me/mailFolders/junkemail"{return Reply::Json(200,json!({"id":"junk-id"}));}
+        if path.path()=="/v1.0/me/mailFolders/deleteditems"{return Reply::Json(200,json!({"id":"trash-id"}));}
         if path.path().ends_with("/messages/same/move"){assert_eq!(request.method,"POST");assert_eq!(request.json()["destinationId"],"archive-id");assert_eq!(request.headers["prefer"],"IdType=\"ImmutableId\"");changed.store(1,Ordering::SeqCst);return Reply::Json(201,json!({"id":"moved-id","parentFolderId":"archive-id"}));}
         if path.path().ends_with("/messages/same"){return Reply::Json(200,json!({"id":"same","parentFolderId":"inbox-id"}));}
         assert_eq!(path.path(),"/v1.0/me/mailFolders/inbox/messages");assert!(request.headers["prefer"].to_str().unwrap().contains("IdType=\"ImmutableId\""));Reply::Json(200,json!({"value":[microsoft_message(if changed.load(Ordering::SeqCst)>0{"moved-id"}else{"same"},&owner,&body)]}))

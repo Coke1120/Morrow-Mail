@@ -389,7 +389,7 @@ pub async fn folders_with_tls(
     mail: &Value,
     connector: &native_tls::TlsConnector,
 ) -> Result<Vec<Value>> {
-    tokio::time::timeout(Duration::from_secs(45),async{let mut session=connect(mail,connector).await?;move_capabilities(&mut session).await?;let folders=names(&mut session).await?.into_iter().map(|(path,_)|json!({"id":path,"name":path,"kind":if path.eq_ignore_ascii_case("INBOX"){"inbox"}else{"folder"}})).collect();let _=session.logout().await;Ok(folders)}).await.map_err(|_|providers::remote_error())?
+    tokio::time::timeout(Duration::from_secs(45),async{let mut session=connect(mail,connector).await?;move_capabilities(&mut session).await?;let folders=list_names(&mut session).await?.into_iter().filter(|folder|folder.selectable).map(|folder|json!({"id":folder.path,"name":folder.path,"kind":if folder.kind=="trash"{"trash"}else if folder.kind=="inbox"{"inbox"}else{"folder"}})).collect();let _=session.logout().await;Ok(folders)}).await.map_err(|_|providers::remote_error())?
 }
 pub async fn fetch_page(mail: &Value, options: &Value) -> Result<Value> {
     fetch_page_with_tls(mail, options, &connector()?).await
@@ -900,6 +900,6 @@ pub async fn organize_with_tls(
             remote = format!("imap:{validity}:{uid}");
         }
         let _ = session.logout().await;
-        Ok(json!({"remoteId":remote,"providerFolderId":destination["id"],"providerFolderName":destination["name"],"folder":if destination["kind"]=="inbox"{"inbox"}else{"archive"}}))
+        Ok(json!({"remoteId":remote,"providerFolderId":destination["id"],"providerFolderName":destination["name"],"folder":if destination["kind"]=="inbox"{"inbox"}else if destination["kind"]=="trash"{"trash"}else{"archive"}}))
     }).await.map_err(|_| providers::remote_error())?
 }

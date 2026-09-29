@@ -56,7 +56,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     winrt::Windows::Foundation::IAsyncAction patch(Json message, Json changes);
     winrt::Windows::Foundation::IAsyncAction prepare(Json message, winrt::hstring mode, winrt::hstring body = {});
     winrt::Windows::Foundation::IAsyncAction messageAI(Json message, winrt::hstring action, bool history = false);
-    winrt::Windows::Foundation::IAsyncAction organize(Json message);
+    winrt::Windows::Foundation::IAsyncAction organize(Json message, winrt::hstring preferredKind = {});
     winrt::Windows::Foundation::IAsyncAction sync();
     winrt::Windows::Foundation::IAsyncAction checkUpdates(bool force = false);
     void updateBadge();

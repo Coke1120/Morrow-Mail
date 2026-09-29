@@ -82,6 +82,18 @@ ScrollViewer scroll(UIElement const& child) {
 }
 namespace {
 StackPanel actions() { auto result = stack(); result.Orientation(Orientation::Horizontal); return result; }
+Button iconButton(hstring const& glyph, hstring const& name, std::function<void()> action) {
+    auto result = button(name, std::move(action));
+    FontIcon icon; icon.Glyph(glyph); icon.FontSize(14); result.Content(icon);
+    result.Width(30); result.Height(28); result.Padding(ThicknessHelper::FromUniformLength(0));
+    ToolTipService::SetToolTip(result, box_value(name));
+    return result;
+}
+void showRowActions(ListViewItem const& entry, bool visible) {
+    auto row = entry.Content().try_as<StackPanel>();
+    if (!row) return;
+    if (auto quick = row.Tag().try_as<StackPanel>()) quick.Visibility(visible ? Visibility::Visible : Visibility::Collapsed);
+}
 double minimumMailListHeight(Grid const& list) {
     return std::max(200.0, list.RowDefinitions().GetAt(0).ActualHeight() + list.RowDefinitions().GetAt(2).ActualHeight() + 80.0);
 }
@@ -536,10 +548,22 @@ IAsyncAction Shell::loadPage() {
             row.Padding(ThicknessHelper::FromUniformLength(density == L"compact" ? 4 : density == L"spacious" ? 12 : 8));
             Grid heading; ColumnDefinition nameColumn; nameColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); heading.ColumnDefinitions().Append(nameColumn);
             ColumnDefinition dotColumn; dotColumn.Width(GridLengthHelper::Auto()); heading.ColumnDefinitions().Append(dotColumn);
+            ColumnDefinition actionsColumn; actionsColumn.Width(GridLengthHelper::Auto()); heading.ColumnDefinitions().Append(actionsColumn);
             bool unread = !flag(message, L"read");
             auto from = text(message, L"folder") == L"sent" || text(message, L"folder") == L"drafts" ? L"To: " + text(message, L"to") : text(message, L"fromName", text(message, L"fromEmail"));
             auto sender = label(from); sender.MaxLines(1); sender.TextTrimming(TextTrimming::CharacterEllipsis); bold(sender, unread); heading.Children().Append(sender);
-            auto markers = label((flag(message, L"starred") ? hstring(L"★  ") : hstring{}) + (unread ? L"●" : L"")); Grid::SetColumn(markers, 1); heading.Children().Append(markers); row.Children().Append(heading);
+            auto markers = label((flag(message, L"starred") ? hstring(L"★  ") : hstring{}) + (unread ? L"●" : L"")); Grid::SetColumn(markers, 1); heading.Children().Append(markers);
+            auto quick = actions(); quick.Spacing(2); quick.Visibility(Visibility::Collapsed);
+            quick.Children().Append(iconButton(unread ? L"\uE8C3" : L"\uE715", unread ? L"Mark read locally" : L"Mark unread locally", [weak, message, unread] {
+                if (auto self = weak.lock()) { Json changes; changes.Insert(L"read", Value::CreateBooleanValue(unread)); self->patch(message, changes); }
+            }));
+            auto replyAll = iconButton(L"\uE8A6", L"Reply all", [weak, message] { if (auto self = weak.lock()) self->prepare(message, L"replyAll"); });
+            replyAll.IsEnabled(text(message, L"folder") != L"drafts"); quick.Children().Append(replyAll);
+            auto remote = text(message, L"remoteId", text(message, L"id"));
+            auto trash = iconButton(L"\uE74D", L"Move to provider Trash", [weak, message] { if (auto self = weak.lock()) self->organize(message, L"trash"); });
+            trash.IsEnabled(std::wstring_view(remote).starts_with(L"google:") || std::wstring_view(remote).starts_with(L"microsoft:") || std::wstring_view(remote).starts_with(L"imap:"));
+            quick.Children().Append(trash); Grid::SetColumn(quick, 2); heading.Children().Append(quick); row.Children().Append(heading);
+            row.Tag(quick);
             for (auto key : {L"subject",L"preview",L"date"}) {
                 if (key == std::wstring_view(L"preview") && density == L"compact") continue;
                 auto content = label(text(message, key, key == std::wstring_view(L"subject") ? L"(No subject)" : L""), key == std::wstring_view(L"date") ? 11 : 13);
@@ -550,6 +574,19 @@ IAsyncAction Shell::loadPage() {
             if (flag(message, L"pending")) row.Children().Append(label(L"Pending", 11));
             auto entry = preserve ? rows.Items().GetAt(index).as<ListViewItem>() : ListViewItem();
             entry.Content(row); entry.Tag(message); entry.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+            if (!preserve) {
+                auto weakEntry = make_weak(entry);
+                auto hovered = std::make_shared<bool>(false), focused = std::make_shared<bool>(false);
+                auto update = [weakEntry, hovered, focused] { if (auto item = weakEntry.get()) showRowActions(item, *hovered || *focused); };
+                entry.PointerEntered([hovered, update](auto const&, auto const&) { *hovered = true; update(); });
+                entry.PointerExited([hovered, update](auto const&, auto const&) { *hovered = false; update(); });
+                entry.GotFocus([focused, update](auto const&, auto const&) { *focused = true; update(); });
+                entry.LostFocus([weakEntry, focused, update](auto const&, auto const&) {
+                    *focused = false;
+                    if (auto item = weakEntry.get()) item.DispatcherQueue().TryEnqueue([update] { update(); });
+                });
+            }
+            quick.Visibility(entry.FocusState() == FocusState::Unfocused ? Visibility::Collapsed : Visibility::Visible);
             Automation::AutomationProperties::SetName(entry, text(message, L"fromName") + L", " + text(message, L"subject") + (unread ? L", unread" : L", read"));
             if (!preserve) rows.Items().Append(entry);
             if (text(message, L"viewId") == selectedId) rows.SelectedItem(entry);
@@ -642,12 +679,14 @@ IAsyncAction Shell::patch(Json message, Json changes) {
     try {
         auto result = co_await service->request(L"/messages/" + escaped(id), account, L"PATCH", changes);
         if (!current(version, captured) || sequence != selectionGeneration) co_return;
-        selected = object(result, L"message"); renderReader(selected);
+        auto updated = object(result, L"message");
+        if (text(updated, L"accountId") != account || text(updated, L"id") != id) throw hresult_error(E_FAIL, L"The message owner changed. Open it again.");
+        if (text(selected, L"accountId") == account && text(selected, L"id") == id) { selected = updated; renderReader(selected); }
         for (auto& cursor : cursors) cursor = L"";
         co_await loadPage();
     } catch (...) { error(errorText()); }
 }
-IAsyncAction Shell::organize(Json message) {
+IAsyncAction Shell::organize(Json message, hstring preferredKind) {
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
     auto sequence = selectionGeneration; auto account = text(message, L"accountId");
     if (dialogOpen || loading || !connected(account) || !dirty.empty()) co_return;
@@ -660,24 +699,28 @@ IAsyncAction Shell::organize(Json message) {
         ComboBox mode; mode.Header(box_value(L"Action"));
         mode.Items().Append(box_value(L"Move"));
         if (text(result, L"provider") == L"google") { mode.Items().Append(box_value(L"Add label")); mode.Items().Append(box_value(L"Remove label")); }
-        mode.SelectedIndex(0); content.Children().Append(mode);
+        mode.SelectedIndex(0); if (preferredKind != L"trash") content.Children().Append(mode);
         ComboBox destination; destination.Header(box_value(L"Folder / label")); destination.HorizontalAlignment(HorizontalAlignment::Stretch);
-        auto populate = [destination, mode, result] {
+        auto populate = [destination, mode, result, preferredKind] {
             destination.Items().Clear();
+            int32_t preferred = -1;
             for (auto const& value : array(result, L"folders")) {
                 auto folder = value.GetObject();
                 if (mode.SelectedIndex() != 0 && text(folder, L"kind") != L"label") continue;
+                if (mode.SelectedIndex() == 0 && text(folder, L"kind") == preferredKind) preferred = static_cast<int32_t>(destination.Items().Size());
                 ComboBoxItem item; item.Content(box_value(text(folder, L"name"))); item.Tag(folder); destination.Items().Append(item);
             }
-            destination.SelectedIndex(-1);
+            destination.SelectedIndex(preferred);
         };
         populate(); mode.SelectionChanged([populate](auto const&, auto const&) { populate(); });
-        content.Children().Append(destination);
-        content.Children().Append(label(L"Provider changes affect this mailbox on the remote server. Gmail Move removes Inbox while retaining other labels. Spam / Junk is a provider move. Phishing reports and sender blocking remain provider-site actions."));
+        if (preferredKind == L"trash" && destination.SelectedIndex() < 0) throw hresult_error(E_FAIL, L"This mailbox did not expose a provider Trash folder. Check its permissions or use your provider.");
+        if (preferredKind == L"trash") content.Children().Append(label(L"Destination: " + text(destination.SelectedItem().as<ComboBoxItem>().Tag().as<Json>(), L"name")));
+        else content.Children().Append(destination);
+        content.Children().Append(label(preferredKind == L"trash" ? L"This moves the message to Trash on the account shown above. It does not permanently delete the message." : L"Provider changes affect this mailbox on the remote server. Gmail Move removes Inbox while retaining other labels. Spam / Junk is a provider move. Phishing reports and sender blocking remain provider-site actions."));
         auto provider = text(result, L"provider");
-        if (provider == L"google" || provider == L"microsoft") content.Children().Append(button(L"Open provider for reporting / blocking", [provider] { Windows::System::Launcher::LaunchUriAsync(Uri(provider == L"google" ? L"https://mail.google.com/" : L"https://outlook.live.com/mail/")); }));
-        ContentDialog dialog; dialog.XamlRoot(root.XamlRoot()); dialog.Title(box_value(L"Organize on provider")); dialog.Content(scroll(content));
-        dialog.PrimaryButtonText(L"Review change"); dialog.CloseButtonText(L"Cancel"); dialog.IsPrimaryButtonEnabled(false);
+        if (preferredKind != L"trash" && (provider == L"google" || provider == L"microsoft")) content.Children().Append(button(L"Open provider for reporting / blocking", [provider] { Windows::System::Launcher::LaunchUriAsync(Uri(provider == L"google" ? L"https://mail.google.com/" : L"https://outlook.live.com/mail/")); }));
+        ContentDialog dialog; dialog.XamlRoot(root.XamlRoot()); dialog.Title(box_value(preferredKind == L"trash" ? L"Move to provider Trash" : L"Organize on provider")); dialog.Content(scroll(content));
+        dialog.PrimaryButtonText(preferredKind == L"trash" ? L"Review Trash Move" : L"Review change"); dialog.CloseButtonText(L"Cancel"); dialog.IsPrimaryButtonEnabled(destination.SelectedIndex() >= 0);
         destination.SelectionChanged([dialog, destination](auto const&, auto const&) { dialog.IsPrimaryButtonEnabled(destination.SelectedIndex() >= 0); });
         dialogOpen = true;
         ContentDialogResult decision;
@@ -687,11 +730,13 @@ IAsyncAction Shell::organize(Json message) {
         auto target = destination.SelectedItem().as<ComboBoxItem>().Tag().as<Json>();
         wchar_t const* modes[] = {L"move", L"addLabel", L"removeLabel"};
         auto action = hstring(modes[std::clamp(mode.SelectedIndex(), 0, 2)]);
-        if (!(co_await confirm(L"Apply this provider change?", account + L"\n" + text(message, L"subject") + L"\n" + action + L" → " + text(target, L"name"), L"Apply provider change")) || !current(version, captured) || sequence != selectionGeneration) co_return;
+        if (!(co_await confirm(preferredKind == L"trash" ? L"Move to provider Trash?" : L"Apply this provider change?", account + L"\n" + text(message, L"subject") + L"\n" + action + L" → " + text(target, L"name"), preferredKind == L"trash" ? L"Move to Trash" : L"Apply provider change")) || !current(version, captured) || sequence != selectionGeneration) co_return;
         Json body; put(body, L"destinationId", text(target, L"id")); put(body, L"mode", action); body.Insert(L"confirmed", Value::CreateBooleanValue(true));
         auto updated = co_await service->request(L"/messages/" + escaped(text(message, L"id")) + L"/organize", account, L"POST", body);
         if (!current(version, captured) || sequence != selectionGeneration) co_return;
-        selected = object(updated, L"message"); renderReader(selected);
+        auto moved = object(updated, L"message");
+        if (text(moved, L"accountId") != account || text(moved, L"id") != text(message, L"id")) throw hresult_error(E_FAIL, L"The message owner changed. Refresh your mailbox.");
+        if (text(selected, L"accountId") == account && text(selected, L"id") == text(message, L"id")) { selected = moved; renderReader(selected); }
         for (auto& cursor : cursors) cursor = L"";
         co_await loadPage();
     } catch (...) { loading = false; error(errorText()); }

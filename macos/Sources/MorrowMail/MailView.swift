@@ -10,6 +10,7 @@ struct MailWorkspace: View {
     @State private var rightListWidth: CGFloat?
     @State private var outOfOfficeDirty = false
     @State private var assistantDraft: (draft: Draft, generation: Int)?
+    @State private var hoveredMessage: String?
     @EnvironmentObject var model: AppModel
     private var layout: String { expandedReader ? "focus" : ["right", "bottom", "focus"].contains(readerLayout) ? readerLayout : "right" }
     var filtered: [JSON] {
@@ -75,7 +76,7 @@ struct MailWorkspace: View {
         .onChange(of: outOfOfficeDirty) { model.dirty("out-of-office", $0) }
         .onChange(of: model.selectedMessage) { selection in if selection == nil { leaveExpandedReader() } }
         .sheet(item: $model.compose) { draft in ComposeView(initial: draft).environmentObject(model) }
-        .sheet(item: $model.organizing) { message in OrganizeMailView(message: message).environmentObject(model) }
+        .sheet(item: $model.organizing) { request in OrganizeMailView(message: request["message"], preferredKind: request["preferredKind"].string).environmentObject(model) }
         .sheet(item: $model.readerAssistant, onDismiss: {
             if let pending = assistantDraft {
                 assistantDraft = nil
@@ -251,6 +252,7 @@ struct MailWorkspace: View {
                             if message["starred"].bool { Image(systemName: "star.fill").foregroundStyle(.orange).font(.caption) }
                             if message["pending"].bool { Image(systemName: "clock.fill").foregroundStyle(morrowGreen).font(.caption).accessibilityLabel("Pending") }
                             Circle().fill(message["read"].bool ? .clear : morrowGreen).frame(width: 6, height: 6).accessibilityLabel(message["read"].bool ? "Read" : "Unread")
+                            if hoveredMessage == message.viewID || model.selectedMessage == message.viewID { rowActions(message) }
                         }
                         searchHighlighted(message["searchSubject"], fallback: message["subject"].nonempty ? message["subject"].string : "(No subject)").font(.system(size: 13)).fontWeight(message["read"].bool ? .regular : .bold).lineLimit(1)
                         if model.preferences["density"].string != "compact" { searchHighlighted(message["searchSnippet"], fallback: message["preview"].string).fontWeight(message["read"].bool ? .regular : .bold).foregroundStyle(.secondary).font(.caption).lineLimit(model.preferences["density"].string == "spacious" ? 4 : 2) }
@@ -261,8 +263,9 @@ struct MailWorkspace: View {
                         if message["scheduledSend"]["status"].string == "scheduled" { Label("Scheduled: " + dateLabel(message["scheduledSend"]["sendAt"].string), systemImage: "clock").font(.caption).foregroundStyle(.secondary) }
                         if message["scheduledSend"]["status"].string == "sending" { Label("Sending", systemImage: "paperplane").font(.caption).foregroundStyle(.secondary) }
                     }.fontWeight(message["read"].bool ? .regular : .bold).padding(.vertical, model.preferences["density"].string == "compact" ? 3 : model.preferences["density"].string == "spacious" ? 14 : 8).tag(message.viewID)
+                    .onHover { inside in if inside { hoveredMessage = message.viewID } else if hoveredMessage == message.viewID { hoveredMessage = nil } }
                     .contextMenu {
-                        if model.canOrganize(message) { Button("Move / Labels / Spam on Provider…") { model.organizing = message } }
+                        if model.canOrganize(message) { Button("Move / Labels / Spam on Provider…") { model.beginOrganize(message) } }
                         Button(message["starred"].bool ? "Unstar" : "Star") { model.patch(message, .object(["starred": .bool(!message["starred"].bool)])) }
                         Button(message["pending"].bool ? "Clear Pending" : "Mark Pending") { model.patch(message, .object(["pending": .bool(!message["pending"].bool)])) }
                         Button(message["read"].bool ? "Mark Unread" : "Mark Read") { model.patch(message, .object(["read": .bool(!message["read"].bool)])) }
@@ -284,6 +287,20 @@ struct MailWorkspace: View {
                 }.padding(10)
             }
         }
+    }
+    private func rowActions(_ message: JSON) -> some View {
+        HStack(spacing: 4) {
+            Button { model.patch(message, .object(["read": .bool(!message["read"].bool)])) } label: {
+                Label(message["read"].bool ? "Mark Unread" : "Mark Read", systemImage: message["read"].bool ? "envelope.badge" : "envelope.open")
+            }.help(message["read"].bool ? "Mark Unread locally" : "Mark Read locally")
+            Button { Task { await model.openDraft(message: message, mode: "replyAll") } } label: {
+                Label("Reply All", systemImage: "arrowshape.turn.up.left.2")
+            }.help("Reply All").disabled(message["folder"].string == "drafts" || !model.canNavigate || model.preparingDraft)
+            Button { model.beginOrganize(message, preferredKind: "trash") } label: {
+                Label("Move to Provider Trash", systemImage: "trash")
+            }.help(model.canOrganize(message) ? "Move to this account’s provider Trash after review" : "Provider Trash is available for imported mail with move permission")
+                .disabled(!model.canOrganize(message) || !model.canNavigate)
+        }.labelStyle(.iconOnly).buttonStyle(.borderless).controlSize(.small)
     }
     func statusBar(_ text: String, error: Bool) -> some View {
         HStack(alignment: .top) {
@@ -320,7 +337,7 @@ struct MessageReader: View {
                     Button { Task { await model.openDraft(message: message, mode: "forward") } } label: { Label("Forward", systemImage: "arrowshape.turn.up.right") }.labelStyle(.iconOnly).help("Forward")
                 }
                 Spacer()
-                if model.canOrganize(message) { Button { model.organizing = message } label: { Label("Move / Labels / Spam", systemImage: "folder") }.labelStyle(.iconOnly).help("Move, label, or move to Spam on this mailbox’s provider") }
+                if model.canOrganize(message) { Button { model.beginOrganize(message) } label: { Label("Move / Labels / Spam", systemImage: "folder") }.labelStyle(.iconOnly).help("Move, label, or move to Spam on this mailbox’s provider") }
                 Button { model.patch(message, .object(["starred": .bool(!message["starred"].bool)])) } label: { Image(systemName: message["starred"].bool ? "star.fill" : "star") }.help("Toggle star").accessibilityLabel("Toggle star")
                 Button { model.patch(message, .object(["pending": .bool(!message["pending"].bool)])) } label: { Image(systemName: message["pending"].bool ? "clock.fill" : "clock") }.help(message["pending"].bool ? "Clear Pending" : "Mark Pending locally").accessibilityLabel(message["pending"].bool ? "Clear Pending" : "Mark Pending")
                 if message["folder"].string != "drafts" {
@@ -577,6 +594,7 @@ struct OrganizeMailView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) var dismiss
     let message: JSON
+    let preferredKind: String
     @State private var folders: [JSON] = []
     @State private var destination = ""
     @State private var mode = "move"
@@ -587,39 +605,51 @@ struct OrganizeMailView: View {
     var choices: [JSON] { folders.filter { mode == "move" || $0["kind"].string == "label" } }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("Move / Labels / Spam on Provider").font(.title2.bold())
+            Text(preferredKind == "trash" ? "Move to Provider Trash" : "Move / Labels / Spam on Provider").font(.title2.bold())
             Text(message["subject"].string).lineLimit(2)
             Text(message["accountId"].string).foregroundStyle(.secondary)
             if loading { ProgressView("Loading folders…") }
             else {
-                if provider == "google" {
-                    Picker("Action", selection: $mode) {
-                        Text("Move out of Inbox").tag("move")
-                        Text("Add label").tag("addLabel")
-                        Text("Remove label").tag("removeLabel")
-                    }.onChange(of: mode) { _ in destination = choices.first?.id ?? "" }
+                if preferredKind == "trash" {
+                    if let folder = folders.first(where: { $0.id == destination }) {
+                        Text("Destination: \(folder["name"].string)")
+                    }
+                } else {
+                    if provider == "google" {
+                        Picker("Action", selection: $mode) {
+                            Text("Move out of Inbox").tag("move")
+                            Text("Add label").tag("addLabel")
+                            Text("Remove label").tag("removeLabel")
+                        }.onChange(of: mode) { _ in destination = choices.first?.id ?? "" }
+                    }
+                    Picker(provider == "google" ? "Label / location" : "Folder", selection: $destination) {
+                        Text("Choose a destination").tag("")
+                        ForEach(choices) { folder in Text(folder["name"].string).tag(folder.id) }
+                    }
                 }
-                Picker(provider == "google" ? "Label / location" : "Folder", selection: $destination) {
-                    Text("Choose a destination").tag("")
-                    ForEach(choices) { folder in Text(folder["name"].string).tag(folder.id) }
+                Text(preferredKind == "trash" ? "This moves the message to Trash on the account shown above. It does not permanently delete the message." : "This changes the message on your mail provider. Moves stay within this account. Gmail labels are shown on downloaded mail. Archive contains mail without Inbox, Sent, Draft, Spam or Trash labels.").font(.callout).foregroundStyle(.secondary)
+                if preferredKind != "trash" {
+                    if provider == "google" { Text("Move adds the selected label and removes Inbox; other labels remain. Add / Remove label keeps the current Inbox status.").font(.caption).foregroundStyle(.secondary) }
+                    Text("Choose Spam / Junk in the destination list, then Review Change to move the message. Morrow does not directly report abuse or block senders; use the same account on your provider for those actions.").font(.caption).foregroundStyle(.secondary)
+                    if provider == "google" { Link("Open Gmail to report or block", destination: URL(string: "https://mail.google.com/")!) }
+                    else if provider == "microsoft" { Link("Open Outlook to report or block", destination: URL(string: "https://outlook.live.com/mail/")!) }
                 }
-                Text("This changes the message on your mail provider. Moves stay within this account. Gmail labels are shown on downloaded mail. Archive contains mail without Inbox, Sent, Draft, Spam or Trash labels.").font(.callout).foregroundStyle(.secondary)
-                if provider == "google" { Text("Move adds the selected label and removes Inbox; other labels remain. Add / Remove label keeps the current Inbox status.").font(.caption).foregroundStyle(.secondary) }
-                Text("Choose Spam / Junk in the destination list, then Review Change to move the message. Morrow does not directly report abuse or block senders; use the same account on your provider for those actions.").font(.caption).foregroundStyle(.secondary)
-                if provider == "google" { Link("Open Gmail to report or block", destination: URL(string: "https://mail.google.com/")!) }
-                else if provider == "microsoft" { Link("Open Outlook to report or block", destination: URL(string: "https://outlook.live.com/mail/")!) }
             }
             if !localError.isEmpty { Text(localError).foregroundStyle(.red).textSelection(.enabled) }
             HStack {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).disabled(model.busy)
                 Spacer()
-                Button("Review Change") { review = true }.buttonStyle(.borderedProminent).disabled(loading || model.busy || destination.isEmpty)
+                Button(preferredKind == "trash" ? "Review Trash Move" : "Review Change") { review = true }.buttonStyle(.borderedProminent).disabled(loading || model.busy || destination.isEmpty)
             }
         }.padding(26).frame(width: 530).interactiveDismissDisabled(model.busy)
         .task {
             do {
                 let result = try await model.request("/mail/folders", mailbox: message["accountId"].string)
                 folders = result["folders"].array; provider = result["provider"].string
+                if preferredKind == "trash" {
+                    destination = folders.first { $0["kind"].string == "trash" }?.id ?? ""
+                    if destination.isEmpty { localError = "This mailbox did not expose a provider Trash folder. Check its permissions or use your provider." }
+                }
             } catch { localError = error.localizedDescription }
             loading = false
         }

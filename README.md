@@ -343,13 +343,15 @@ To, Cc and Bcc accept up to **100 plain email addresses total**, separated by co
 
 Select an imported message and choose **Move / Labels** (or its context menu). The app loads destinations from that message's account, then requires review before writing:
 
-- **Gmail:** move to a custom label (add it and remove Inbox), return to Inbox, archive, or add/remove a custom label while retaining Inbox status. Other labels remain intact. Reconnect with the organization permission enabled.
-- **Outlook:** move to existing folders and nested folders within the same mailbox. Requires delegated `Mail.ReadWrite` permission.
-- **IMAP:** move to an existing selectable folder. The server must support **MOVE and UIDPLUS**; Morrow validates UID validity and retains the destination UID to avoid acting on a different message.
+In the native mail list, hovering over a row or focusing it reveals **Mark Read/Unread**, **Reply All**, and **Move to Provider Trash** at the right. Read/unread remains local; Reply All opens an owned draft. The Trash action preselects the account's provider Trash and requires confirmation. It moves the message; it does not permanently delete it. Messages without an imported provider identity cannot use that action.
 
-The destination limits are 1,000 Gmail labels and 300 Outlook/IMAP folders. Creating/deleting folders or labels, cross-account transfers, bulk moves, and full destination-folder synchronization are not included. Moved cached messages outside Inbox appear under local Archive, with their provider location in the reader. These manual provider writes are separate from local read/star/archive/trash shortcuts and AI Studio simulations. A failed or lost response requires checking the provider before trying again; there is no automatic move retry.
+- **Gmail:** move to a custom label (add it and remove Inbox), return to Inbox, archive, move to Trash, or add/remove a custom label while retaining Inbox status. Other labels remain intact. Reconnect with the organization permission enabled.
+- **Outlook:** move to existing folders and nested folders, including Deleted Items, within the same mailbox. Requires delegated `Mail.ReadWrite` permission.
+- **IMAP:** move to an existing selectable folder. The Trash shortcut requires a folder advertised with the `\Trash` special-use flag. The server must support **MOVE and UIDPLUS**; Morrow validates UID validity and retains the destination UID to avoid acting on a different message.
 
-Provider semantics: [Gmail modify](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/modify), [Outlook move](https://learn.microsoft.com/en-us/graph/api/message-move?view=graph-rest-1.0), and [Outlook immutable IDs](https://learn.microsoft.com/en-us/graph/outlook-immutable-id).
+The destination limits are 1,000 Gmail labels and 300 Outlook/IMAP folders. Creating/deleting folders or labels, cross-account transfers, bulk moves, and full destination-folder synchronization are not included. Moved cached messages outside Inbox appear under local Archive, or local Trash when moved to provider Trash, with their provider location in the reader. These manual provider writes are separate from local read/star/archive/trash shortcuts and AI Studio simulations. A failed or lost response requires checking the provider before trying again; there is no automatic move retry.
+
+Provider semantics: [Gmail modify](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/modify), [Gmail Trash](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/trash), [Outlook move](https://learn.microsoft.com/en-us/graph/api/message-move?view=graph-rest-1.0), and [Outlook immutable IDs](https://learn.microsoft.com/en-us/graph/outlook-immutable-id).
 
 ## Connect calendars
 
@@ -495,7 +497,7 @@ Normal startup, health, and backup diagnostics do not include credentials. Keep 
 ## Current limits
 
 - Current source offers **All history / 1 / 3 / 6 / 12 months** (default 3) and All Mail for Gmail, Outlook and IMAP, excluding Spam/Trash. IMAP relies on server special-use flags for exclusions. Historical pages contain at most 50 messages and continue while the app is open. Existing history jobs retain their saved scope; start a new All Mail import to expand it. Gmail refresh checks five bounded scopes, while other providers retain their chosen Inbox/Sent scopes; continuous provider delta synchronization is not implemented.
-- Read/unread, star, archive, and trash shortcuts are local. The explicit Move / Labels dialog writes to the provider after review; full provider folder synchronization is not implemented.
+- Read/unread, star, archive, and the reader/context-menu trash shortcuts are local. The mail-row Trash action and Move / Labels dialog write to the provider after review; full provider folder synchronization and permanent deletion are not implemented.
 - Formatted incoming mail uses an isolated sanitized HTML reader with plain-text fallback and blocked external images until consent. Outgoing HTML footers have a plain-text alternative; full HTML editing, CID images and real attachments are unsupported. Studio attachment examples are simulated.
 - Connected accounts send through their configured provider only after you review and confirm Send.
 - AI summaries can run on an opt-in schedule or newly synced mail while the service is running. Weekly incremental style analysis is a separate per-account opt-in; applying its result remains manual. Unattended sending, automatic reply insertion and autonomous contact/project memory updates are not implemented.
