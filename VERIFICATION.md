@@ -1,4 +1,10 @@
-# Verification — 28 September 2026
+# Verification — 29 September 2026
+
+## 0.6.0-beta.24 — paired release candidate
+
+PR #5, #6 and #7 were merged into `main` after each passed both native CI jobs. The combined source passed local Rust formatting, strict all-target Clippy and the complete locked test suite. The macOS SwiftUI/Rust package built, passed full native acceptance with isolated fictional workspaces, plist lint and deep/strict ad-hoc signature verification. No real mailbox, provider write or owner's workspace was used.
+
+The tagged macOS and Windows CI jobs and signed paired publisher remain the publication gate. Native reader fixtures do not complete the consent-dialog/link-review interactions, Out of Office cannot rule out a provider change after its final read without a conditional revision, and unmarked pre-existing update directories are retained. Manual first-use, clean-machine, full accessibility/IME/DPI and live-account acceptance remain outstanding. See the [beta.24 release notes](docs/releases/v0.6.0-beta.24.md).
 
 ## Issue #3 local verification — 29 September 2026
 

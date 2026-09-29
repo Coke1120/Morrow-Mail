@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0-beta.24 — 2026-09-29
+
+- Guide macOS first use through account connection, optional model testing and AI permission review; add direct Assistant tasks and account-owned sender/subject context search.
+- Keep newer OAuth connections when callbacks arrive out of order, improve historical import and scheduled-send processing, refresh Gmail labels after provider moves, and check Out of Office state before writing.
+- Wait for authenticated service readiness during updates, restore the previous app after failed startup, and keep rapid relaunches from racing a previous workspace writer.
+- Keep AI Studio within the available macOS window height after account selection. See the [release notes](docs/releases/v0.6.0-beta.24.md) for verification and limits.
+
 ## 0.6.0-beta.23 — 2026-09-28
 
 - Publish the AI workflow improvements described below after restoring the shared Windows history-coverage formatter used by AI Studio.
