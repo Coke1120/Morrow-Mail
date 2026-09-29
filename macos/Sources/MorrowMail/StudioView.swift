@@ -6,6 +6,14 @@ struct StudioView: View {
     private var tab: String { model.studioTab }
     @State private var action = "ask"
     @State private var messageID = ""
+    @State private var contextField = "subject"
+    @State private var contextQuery = ""
+    @State private var contextSearch: JSON = .null
+    @State private var contextPage = 0
+    @State private var contextSearching = false
+    @State private var contextError = ""
+    @State private var contextTicket = UUID()
+    @State private var contextOperation: Task<Void, Never>?
     @State private var skillID = ""
     @State private var prompt = ""
     @State private var draftText = ""
@@ -25,8 +33,14 @@ struct StudioView: View {
     @State private var selectedMemories: Set<String> = []
     var feature: JSON { model.features.first { $0.id == action } ?? .null }
     var workspace: JSON { model.state["workspace"] }
-    var permitted: [JSON] { (model.listedMessages + (model.current.map { current in model.listedMessages.contains { $0.viewID == current.viewID } ? [] : [current] } ?? [])).filter { model.policy["folders"][$0["folder"].string].bool } }
-    var chosen: JSON { permitted.first { $0.id == messageID } ?? .null }
+    func canUse(_ message: JSON) -> Bool {
+        let owner = message["accountId"].string, folder = message["folder"].string
+        return model.accounts.contains { $0.id == owner } && (model.combined || model.account == owner) &&
+            model.policy["folders"][folder].bool
+    }
+    var permitted: [JSON] { (model.listedMessages + (model.current.map { current in model.listedMessages.contains { $0.viewID == current.viewID } ? [] : [current] } ?? [])).filter(canUse) }
+    var contextChoices: [JSON] { contextSearch.isNull ? permitted : contextSearch["messages"].array.filter(canUse) }
+    var chosen: JSON { contextChoices.first { $0.viewID == messageID } ?? .null }
     var savedMemoryOptions: JSON { workspace["brainLearning"].picking(["enabled", "tokenBudget"]) }
     var memoryOptionsDirty: Bool { !memoryOptions.isNull && memoryOptions != savedMemoryOptions }
     var brainDirty: Bool { voice != savedVoice || notes != savedNotes || memoryOptionsDirty }
@@ -54,7 +68,7 @@ struct StudioView: View {
             HStack {
                 if !model.state["settings"]["ai"]["configured"].bool {
                     Text("Set up a model to use the assistant.").foregroundStyle(.secondary)
-                    Button("Set Up Model") { model.settings("ai") }
+                    Button("Set Up Model") { model.settings("model") }
                 }
                 Spacer()
                 Menu("More") {
@@ -75,14 +89,15 @@ struct StudioView: View {
         }.padding(26)
         .onAppear {
             action = tab == "simulations" ? "triage" : model.assistantAction
-            messageID = permitted.first(where: { $0.viewID == model.selectedMessage })?.id ?? permitted.first?.id ?? ""
+            messageID = permitted.first(where: { $0.viewID == model.selectedMessage })?.viewID ?? permitted.first?.viewID ?? ""
             skillID = workspace["skills"].array.first(where: { $0["enabled"].bool })?.id ?? ""
             loadBrain()
         }
         .onChange(of: model.draftGeneration) { _ in clearResult(); memoryPreview = .null; selectedMemories = [] }
         .onChange(of: action) { _ in clearResult() }
         .onChange(of: messageID) { _ in clearResult() }
-        .onChange(of: model.mailPage) { _ in if !permitted.contains(where: { $0.id == messageID }) { messageID = permitted.first?.id ?? "" } }
+        .onChange(of: model.mailPage) { _ in if contextSearch.isNull && !permitted.contains(where: { $0.viewID == messageID }) { messageID = permitted.first?.viewID ?? "" } }
+        .onChange(of: model.account) { _ in clearContextSearch() }
         .onChange(of: skillID) { _ in clearResult() }
         .onChange(of: prompt) { _ in clearResult() }
         .onChange(of: draftText) { _ in clearResult() }
@@ -90,7 +105,7 @@ struct StudioView: View {
         .onChange(of: voice) { _ in model.dirty("brain", brainDirty) }
         .onChange(of: notes) { _ in model.dirty("brain", brainDirty) }
         .onChange(of: memoryOptions) { _ in model.dirty("brain", brainDirty) }
-        .onDisappear { model.dirty("brain", false) }
+        .onDisappear { contextOperation?.cancel(); contextTicket = UUID(); contextSearching = false; model.dirty("brain", false) }
         .sheet(item: $skillEditor) { skill in SkillEditor(initial: skill.value).environmentObject(model) }
     }
     var summariesPage: some View {
@@ -103,7 +118,10 @@ struct StudioView: View {
                 Text("Configure triggers in Settings → AI Permissions. Summaries use cached mail and saved permissions. Results are hidden if the model, language, permissions, connection or source scope changes.").font(.callout).foregroundStyle(.secondary)
                 if workspace["summaryOverflow"].number > 0 { Text("\(Int(workspace["summaryOverflow"].number)) jobs exceeded the queue limit. Use a manual summary for those messages.").foregroundStyle(.orange) }
                 ForEach(model.state["syncErrors"].array) { item in Text(item["accountId"].string + ": " + item["error"].string + (item["nextRetryAt"].nonempty ? " Next retry: \(dateLabel(item["nextRetryAt"].string))." : "")).foregroundStyle(.orange) }
-                if workspace["summaries"].array.isEmpty { Text("No summaries yet. Enable a trigger and wait for a scheduled time or newly synced mail.").foregroundStyle(.secondary) }
+                if workspace["summaries"].array.isEmpty {
+                    Text("No summaries yet. Enable a trigger and wait for a scheduled time or newly synced mail.").foregroundStyle(.secondary)
+                    Button("Configure Summary Triggers") { model.settings("permissions") }
+                }
                 ForEach(workspace["summaries"].array) { report in SummaryReportView(report: report) }
             }.padding(20)
         }
@@ -112,6 +130,14 @@ struct StudioView: View {
         VStack(alignment: .leading, spacing: 14) {
             if tab == "simulations" {
                 SectionHeading(title: "Local simulations", detail: "Sample workflows for exploration. Results are labeled as simulations.")
+            } else {
+                Text("Start with a task").font(.headline)
+                HStack {
+                    Button("Ask my inbox") { action = "ask" }
+                    Button("Draft a reply") { action = "reply" }
+                    Button("Summarize an email") { action = "summary" }
+                    Button("Summarize my inbox") { action = "briefing" }
+                }.disabled(model.busy)
             }
             Picker("What would you like to do?", selection: $action) {
                 ForEach(model.features.filter { $0.id != "memory" && $0["mock"].bool == (tab == "simulations") }) { item in
@@ -126,16 +152,30 @@ struct StudioView: View {
                         Label("Local simulation. Preview and apply inside Morrow. No external research, attachments, invitations, unsubscribe, or automatic sending.", systemImage: "checkmark.shield").font(.callout).foregroundStyle(.secondary)
                     }
                     if feature["context"].string == "selected" {
+                        HStack {
+                            Picker("Find by", selection: $contextField) { Text("Subject").tag("subject"); Text("Sender").tag("from") }.frame(width: 170)
+                            TextField("Search downloaded mail", text: $contextQuery).onSubmit { searchContext() }
+                            Button("Find Email") { searchContext() }.disabled(contextSearching || contextQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            if !contextSearch.isNull { Button("Clear Search") { clearContextSearch() } }
+                        }
+                        if contextSearching { ProgressView("Finding email…").controlSize(.small) }
+                        if !contextError.isEmpty { Text(contextError).foregroundStyle(.red).font(.caption) }
+                        if !contextSearch.isNull { Text("Page \(contextPage + 1) · \(contextChoices.count) permitted email(s) here").font(.caption).foregroundStyle(.secondary) }
                         Picker("Email context", selection: $messageID) {
-                            if permitted.isEmpty { Text("No permitted messages").tag("") }
-                            ForEach(permitted) { item in Text(model.policy["content"]["subject"].bool ? item["subject"].string : "Subject withheld · " + dateLabel(item["date"].string)).tag(item.id) }
+                            if contextChoices.isEmpty { Text("No permitted messages").tag("") }
+                            ForEach(contextChoices) { item in Text(model.policy["content"]["subject"].bool ? item["subject"].string : "Subject withheld · " + dateLabel(item["date"].string)).tag(item.viewID) }
                         }
                     }
                     if feature["context"].string == "selected" {
                         HStack {
-                            Button("Previous messages") { Task { await model.turnMailPage(next: false) } }.disabled(model.mailCursors.count < 2 || model.mailLoading)
-                            Text("Page \(model.mailCursors.count)").font(.caption)
-                            Button("Next messages") { Task { await model.turnMailPage(next: true) } }.disabled(!model.mailPage["nextCursor"].nonempty || model.mailLoading)
+                            if contextSearch.isNull {
+                                Button("Previous messages") { Task { await model.turnMailPage(next: false) } }.disabled(model.mailCursors.count < 2 || model.mailLoading)
+                                Text("Page \(model.mailCursors.count)").font(.caption)
+                                Button("Next messages") { Task { await model.turnMailPage(next: true) } }.disabled(!model.mailPage["nextCursor"].nonempty || model.mailLoading)
+                            } else {
+                                Button("Previous results") { searchContext(page: contextPage - 1) }.disabled(contextSearching || contextPage == 0)
+                                Button("Next results") { searchContext(page: contextPage + 1) }.disabled(contextSearching || (contextPage + 1) * 30 >= Int(contextSearch["total"].number))
+                            }
                         }
                     }
                     if feature["context"].string == "mailbox" {
@@ -157,7 +197,12 @@ struct StudioView: View {
                         }
                     }
                     if ["followup", "schedule"].contains(action) { DatePicker("Proposed date & time", selection: $when, in: Date()...) }
-                    if !model.allowed(action) { Text("Enable this behavior in Settings → AI Permissions to use it.").foregroundStyle(.orange) }
+                    if !model.allowed(action) {
+                        Text("This action is off in your saved AI permissions.").foregroundStyle(.orange)
+                        Button("Enable This Action") { model.settings("permissions") }
+                    }
+                    if feature["context"].string == "selected" && chosen.isNull { Text("Choose a permitted email to continue.").foregroundStyle(.secondary) }
+                    if !feature["mock"].bool && !model.state["settings"]["ai"]["configured"].bool { Button("Set Up a Model") { model.settings("model") } }
                     HStack {
                         Button(feature["mock"].bool ? "Preview Simulation" : action == "ask" ? "Ask My Mail" : action == "briefing" ? "Create Briefing" : "Generate") { generate() }.buttonStyle(.borderedProminent).disabled(blocked || model.busy || (!feature["mock"].bool && !model.state["settings"]["ai"]["configured"].bool))
                         if model.busy { ProgressView().controlSize(.small) }
@@ -197,6 +242,7 @@ struct StudioView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 SectionHeading(title: "Email Brain", detail: "Keep useful context for this mailbox. You choose what is remembered.")
+                Text("Writing voice is your instruction, for example ‘use short, friendly sentences.’ Notes are facts you type yourself. Suggested memories come from permitted mail and are saved only after you review their sources. Learning can suggest a writing style separately in Settings.").font(.callout).foregroundStyle(.secondary)
                 brainAutomation
                 GroupBox("Find memories in your mail") {
                     VStack(alignment: .leading, spacing: 10) {
@@ -354,7 +400,7 @@ struct StudioView: View {
     }
     func generate() {
         var payload: JSON = .object(["action": .string(action), "prompt": .string(prompt)])
-        if feature["context"].string == "selected" { payload["messageId"] = .string(messageID) }
+        if feature["context"].string == "selected" { payload["messageId"] = .string(chosen.id) }
         if action == "rewrite" { payload["draftText"] = .string(draftText) }
         if action == "skill" { payload["skillId"] = .string(skillID) }
         if ["followup", "schedule"].contains(action) { payload["when"] = .string(utcDate(when)) }
@@ -389,6 +435,26 @@ struct StudioView: View {
         }
     }
     func clearResult() { resultID = UUID(); resultGeneration = nil; result = .null; preview = .null }
+    func clearContextSearch() {
+        contextOperation?.cancel(); contextTicket = UUID(); contextSearching = false; contextSearch = .null; contextQuery = ""; contextError = ""; contextPage = 0
+        messageID = permitted.first?.viewID ?? ""
+    }
+    func searchContext(page: Int = 0) {
+        let query = contextQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, page >= 0 else { return }
+        contextOperation?.cancel()
+        let ticket = UUID(), owner = model.account, field = contextField
+        contextTicket = ticket; contextSearching = true; contextError = ""
+        let body: JSON = .object(["query": .string(""), "scope": .string(owner == "all" ? "all" : "account"), "folder": .string("inbox"), "sort": .string("newest"), "page": .number(Double(page)), "filters": .object([field: .string(query)]), "smart": .bool(false)])
+        contextOperation = Task {
+            defer { if contextTicket == ticket { contextSearching = false } }
+            do {
+                let response = try await model.request("/search", method: "POST", body: body, mailbox: owner)
+                guard !Task.isCancelled, contextTicket == ticket, model.account == owner else { return }
+                contextSearch = response; contextPage = page; messageID = contextChoices.first?.viewID ?? ""
+            } catch { if !Task.isCancelled && contextTicket == ticket { contextError = error.localizedDescription } }
+        }
+    }
     var brainAutomation: some View {
         GroupBox("Automatic learning") {
             VStack(alignment: .leading, spacing: 10) {
