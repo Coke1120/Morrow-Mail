@@ -518,6 +518,7 @@ void Shell::applyMailLayout() {
 }
 IAsyncAction Shell::loadPage() {
     auto lifetime = shared_from_this();
+    auto weak = weak_from_this();
     if (loading || section != L"mail" || !rows) co_return;
     loading = true; auto version = generation; auto captured = owner;
     previous.IsEnabled(false); next.IsEnabled(false);
