@@ -116,6 +116,7 @@ struct Composer {
     weak_ref<TextBox> aiPrompt;
     TextBlock notice{nullptr}, footer{nullptr}, aiResult{nullptr};
     weak_ref<CheckBox> schedule, reviewed;
+    weak_ref<StackPanel> scheduleDetails;
     weak_ref<DatePicker> date;
     weak_ref<TimePicker> time;
     weak_ref<Button> save, send, removeFooter, generate, useAI, close;
@@ -144,6 +145,7 @@ struct Composer {
         for (auto const& reference : fields) if (auto view = reference.get()) view.IsReadOnly(isFrozen);
         if (auto view = from.get()) view.IsEnabled(!isFrozen && !bound && text(message, L"id").empty());
         if (auto view = schedule.get()) view.IsEnabled(!isFrozen);
+        if (auto view = scheduleDetails.get()) view.Visibility(scheduleOn() ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
         if (auto view = date.get()) view.IsEnabled(!isFrozen && scheduleOn());
         if (auto view = time.get()) view.IsEnabled(!isFrozen && scheduleOn());
         if (auto view = reviewed.get()) {
@@ -374,7 +376,10 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         state->bound = !text(draft, L"id").empty() || !text(draft, L"replyToId").empty()
             || flag(draft, L"forwarding") || flag(draft, L"sourceDraft") || text(draft, L"deliveryStatus") == L"unconfirmed";
         require(!state->bound || !state->owner.empty(), L"This draft has no mailbox owner. Reopen it from its original mailbox.");
-        auto panel = stack(12);
+        Grid editor; editor.MaxWidth(690); editor.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
+        editor.RowDefinitions().Append(RowDefinition());
+        RowDefinition footerRow; footerRow.Height(xaml::GridLengthHelper::Auto()); editor.RowDefinitions().Append(footerRow);
+        auto panel = stack(12); panel.Padding(xaml::ThicknessHelper::FromUniformLength(24));
         panel.Children().Append(label(!text(draft, L"id").empty() ? L"Your draft" : flag(draft, L"forwarding") ? L"Forward message"
             : !text(draft, L"replyToId").empty() ? L"Reply" : L"New message", 26));
         ComboBox from; from.Header(box_value(L"From")); from.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
@@ -430,19 +435,26 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         date.Date(calendar.GetDateTime());
         SYSTEMTIME local{}; GetLocalTime(&local);
         time.Time(std::chrono::minutes(((local.wHour + 1) % 24) * 60 + local.wMinute));
-        state->date = make_weak(date); state->time = make_weak(time); panel.Children().Append(date); panel.Children().Append(time);
-        panel.Children().Append(label(L"Morrow must be open to send. Catch-up is limited to 15 minutes; later messages are marked missed. The confirmation also shows the exact UTC time, including at a daylight-saving clock change."));
+        auto scheduleDetails = stack(8); state->scheduleDetails = make_weak(scheduleDetails);
+        state->date = make_weak(date); state->time = make_weak(time);
+        scheduleDetails.Children().Append(date); scheduleDetails.Children().Append(time);
+        scheduleDetails.Children().Append(label(L"Morrow must be open to send. Catch-up is limited to 15 minutes; later messages are marked missed. The confirmation also shows the exact UTC time, including at a daylight-saving clock change."));
+        panel.Children().Append(scheduleDetails);
         CheckBox review; review.Content(box_value(L"I checked Sent and want to retry this exact delivery, even if it creates a duplicate.")); state->reviewed = make_weak(review); panel.Children().Append(review);
         auto notice = label(L""); notice.IsTextSelectionEnabled(true); state->notice = notice; panel.Children().Append(notice);
-        auto buttons = stack(); buttons.Orientation(Orientation::Horizontal);
+        Grid buttons; buttons.ColumnSpacing(12); buttons.Margin(xaml::Thickness{24, 12, 24, 20});
+        ColumnDefinition left; left.Width(xaml::GridLengthHelper::Auto()); buttons.ColumnDefinitions().Append(left);
+        buttons.ColumnDefinitions().Append(ColumnDefinition());
+        ColumnDefinition right; right.Width(xaml::GridLengthHelper::Auto()); buttons.ColumnDefinitions().Append(right);
+        ColumnDefinition last; last.Width(xaml::GridLengthHelper::Auto()); buttons.ColumnDefinitions().Append(last);
         auto close = button(L"Close", [state] { closeComposer(state); }); state->close = make_weak(close); buttons.Children().Append(close);
-        auto save = button(L"Save Draft", [state] { submit(state, false); }); state->save = make_weak(save); buttons.Children().Append(save);
-        auto send = button(L"Review & Send", [state] { if (state->scheduleOn()) scheduleSend(state); else submit(state, true); }); state->send = make_weak(send); buttons.Children().Append(send);
+        auto save = button(L"Save Draft", [state] { submit(state, false); }); state->save = make_weak(save); Grid::SetColumn(save, 2); buttons.Children().Append(save);
+        auto send = button(L"Review & Send", [state] { if (state->scheduleOn()) scheduleSend(state); else submit(state, true); }); state->send = make_weak(send); Grid::SetColumn(send, 3); buttons.Children().Append(send);
         // Scope shortcuts to this composer and preserve each button's enabled/review guards.
         xaml::Input::KeyboardAccelerator saveShortcut;
         saveShortcut.Key(Windows::System::VirtualKey::S);
         saveShortcut.Modifiers(Windows::System::VirtualKeyModifiers::Control);
-        saveShortcut.ScopeOwner(panel);
+        saveShortcut.ScopeOwner(editor);
         saveShortcut.Invoked([state](auto const&, auto const& args) {
             auto host = state->shell.lock(); auto view = state->save.get();
             if (!state->live(host) || host->dialogOpen) return;
@@ -453,7 +465,7 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         xaml::Input::KeyboardAccelerator sendShortcut;
         sendShortcut.Key(Windows::System::VirtualKey::D);
         sendShortcut.Modifiers(Windows::System::VirtualKeyModifiers::Control | Windows::System::VirtualKeyModifiers::Shift);
-        sendShortcut.ScopeOwner(panel);
+        sendShortcut.ScopeOwner(editor);
         sendShortcut.Invoked([state](auto const&, auto const& args) {
             auto host = state->shell.lock(); auto view = state->send.get();
             if (!state->live(host) || host->dialogOpen) return;
@@ -463,7 +475,7 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         send.KeyboardAccelerators().Append(sendShortcut);
         xaml::Input::KeyboardAccelerator closeShortcut;
         closeShortcut.Key(Windows::System::VirtualKey::Escape);
-        closeShortcut.ScopeOwner(panel);
+        closeShortcut.ScopeOwner(editor);
         closeShortcut.Invoked([state](auto const&, auto const& args) {
             auto host = state->shell.lock(); auto view = state->close.get();
             if (!state->live(host) || host->dialogOpen) return;
@@ -471,7 +483,7 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
             if (view && view.IsEnabled()) closeComposer(state);
         });
         close.KeyboardAccelerators().Append(closeShortcut);
-        panel.Children().Append(buttons);
+        Grid::SetRow(buttons, 1); editor.Children().Append(buttons);
         from.SelectionChanged([state](auto const& sender, auto const&) {
             if (state->frozen() || state->bound) return;
             auto index = sender.template as<ComboBox>().SelectedIndex();
@@ -493,7 +505,7 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         shell->section = L"compose"; state->generation = ++shell->generation; ++shell->selectionGeneration;
         // Retain TextBlock peers for this page, including while the AI expander is collapsed.
         panel.Unloaded([state](auto const&, auto const&) { state->notice = nullptr; state->footer = nullptr; state->aiResult = nullptr; });
-        shell->show(scroll(panel));
+        editor.Children().Append(scroll(panel)); shell->show(editor);
         if (locked(draft)) state->say(L"This draft is scheduled or sending. Open Scheduled and cancel an awaiting schedule before editing or sending it. A delivery already sending cannot be cancelled.");
         else if (state->uncertain) state->say(L"Delivery was not confirmed. Check your provider’s Sent folder before retrying this exact message. Retrying may send a duplicate.");
         state->update();

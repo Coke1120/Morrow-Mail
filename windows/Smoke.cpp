@@ -179,6 +179,12 @@ IAsyncAction Shell::smoke() {
                 check(layout && layout.ColumnDefinitions().Size() == 2 && layout.RowDefinitions().Size() == 3, L"Settings lost its fixed category sidebar and independently scrolling content.");
                 check(dirty.empty(), L"Opening a Settings tab incorrectly created unsaved edits.");
             }
+            enter("composer-layout");
+            co_await compose(lifetime);
+            auto editor = page.Content().try_as<controls::Grid>();
+            check(section == L"compose" && editor && editor.RowDefinitions().Size() == 2 && dirty.empty(),
+                L"The composer did not keep its actions outside the scrolling form.");
+            co_await navigate(L"mail", L"one@fixture.invalid");
             check(text(service->clientState(),L"morrow.pendingCalendar")==pendingCalendar,L"Opening Calendar changed its immutable recovery record.");
         }
         enter("shutdown");

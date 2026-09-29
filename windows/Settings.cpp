@@ -846,7 +846,7 @@ IAsyncAction settingsPage(std::shared_ptr<Shell> shell, hstring tab) {
         {L"mail", L"Mail", L"\uE715"}, {L"calendar", L"Calendar", L"\uE787"}, {L"model", L"Model", L"\uE8F2"},
         {L"policy", L"AI Permissions", L"\uE72E"}, {L"search", L"Search", L"\uE721"},
         {L"learning", L"Learning", L"\uE734"}, {L"about", L"About", L"\uE946"}}) {
-        auto row = stack(8); row.Orientation(xaml::Orientation::Horizontal);
+        auto row = stack(8); row.Orientation(Orientation::Horizontal);
         FontIcon icon; icon.Glyph(entry.glyph); icon.FontSize(16); row.Children().Append(icon);
         auto caption = label(entry.caption); caption.IsTextSelectionEnabled(false); row.Children().Append(caption);
         ListViewItem item; item.Content(row); item.Tag(box_value(entry.id));
