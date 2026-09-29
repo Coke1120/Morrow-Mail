@@ -21,6 +21,7 @@ struct StudioView: View {
     @State private var resultID = UUID()
     @State private var resultGeneration: Int?
     @State private var preview: JSON = .null
+    @State private var previewOwner = ""
     @State private var when = Date().addingTimeInterval(86400)
     @State private var voice = ""
     @State private var notes = ""
@@ -241,10 +242,11 @@ struct StudioView: View {
                         }
                         Text("Preview expires after ten minutes. Applying changes this local workspace only.").font(.caption).foregroundStyle(.secondary)
                         HStack {
-                            Button("Dismiss Preview") { preview = .null }
+                            Button("Dismiss Preview") { preview = .null; previewOwner = "" }
                             Button("Apply Local Simulation") {
+                                let owner = previewOwner, id = preview["id"]
                                 model.perform {
-                                    model.state = try await model.request("/workflows/apply", method: "POST", body: .object(["previewId": preview["id"]]))
+                                    model.state = try await model.request("/workflows/apply", method: "POST", body: .object(["previewId": id]), mailbox: owner)
                                     preview = .null; model.notice = "Simulation applied locally."; loadBrain()
                                 }
                             }.buttonStyle(.borderedProminent).disabled(model.busy || !model.allowed(action))
@@ -433,7 +435,7 @@ struct StudioView: View {
         model.perform {
             let response = try await model.request(simulation ? "/workflows/preview" : "/ai", method: "POST", body: payload, mailbox: owner)
             guard !Task.isCancelled, run == resultID, generation == model.draftGeneration, model.section == "studio" else { return }
-            if simulation { preview = response["preview"] } else { result = response; resultGeneration = generation }
+            if simulation { previewOwner = owner; preview = response["preview"] } else { result = response; resultGeneration = generation }
         }
     }
     func record(_ collection: String, _ item: JSON, _ payload: JSON) { model.perform { model.state = try await model.request("/workspace/\(collection)/" + encodedPath(item.id), method: "PATCH", body: payload) } }
@@ -455,7 +457,7 @@ struct StudioView: View {
             model.newDraft(draft)
         }
     }
-    func clearResult() { resultID = UUID(); resultGeneration = nil; result = .null; preview = .null }
+    func clearResult() { resultID = UUID(); resultGeneration = nil; result = .null; preview = .null; previewOwner = "" }
     func clearContextSearch() {
         contextOperation?.cancel(); contextTicket = UUID(); contextSearching = false; contextSearch = .null; contextQuery = ""; contextError = ""; contextPage = 0
         messageID = permitted.first?.viewID ?? ""

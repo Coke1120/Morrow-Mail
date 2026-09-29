@@ -1127,12 +1127,16 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
         auto account = entry.GetObject(); addMailbox(text(account, L"id"), text(account, L"email"));
     }
     std::weak_ptr<Intelligence> scope = p;
-    mailbox.SelectionChanged([scope, requested](auto const& sender, auto const&) {
+    auto selectedIndex = mailbox.SelectedIndex();
+    mailbox.SelectionChanged([scope, requested, selectedIndex](auto const& sender, auto const&) {
         if (auto page = scope.lock(); page && page->current()) {
             auto item = sender.template as<ComboBox>().SelectedItem().template try_as<ComboBoxItem>();
             if (item) {
                 auto owner = unbox_value<hstring>(item.Tag());
-                if (owner != page->owner) page->shell->navigate(requested, owner);
+                if (owner != page->owner) {
+                    sender.template as<ComboBox>().SelectedIndex(selectedIndex);
+                    page->shell->navigate(requested, owner);
+                }
             }
         }
     }); root.Children().Append(mailbox);
@@ -1160,7 +1164,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
     ScrollViewer tabScroll; tabScroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto); tabScroll.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled); tabScroll.Content(tabs); root.Children().Append(tabScroll);
     auto notice = label(L"Loading this account’s saved context…"); root.Children().Append(notice); p->notice = notice;
     xaml::Automation::AutomationProperties::SetLiveSetting(notice, xaml::Automation::Peers::AutomationLiveSetting::Polite);
-    if (kind == L"learning") {
+    if (kind == L"learning" || kind == L"brain") {
         auto cancel = button(L"Cancel current style analysis…", [weak] { if (auto page = weak.lock(); page && page->generatingStyle) revokeStyle(page); });
         cancel.IsEnabled(false); root.Children().Append(cancel); p->cancelStyle = make_weak(cancel);
     }
