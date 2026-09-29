@@ -890,16 +890,20 @@ IAsyncAction settingsPage(std::shared_ptr<Shell> shell, hstring tab) {
         xaml::Automation::AutomationProperties::SetName(item, entry.caption); list.Items().Append(item);
         if (tab == entry.id) list.SelectedItem(item);
     }
-    for (auto const& list : {tabs, advancedTabs}) list.ItemClick([weak = std::weak_ptr<SettingsPage>(p), tabs, advancedTabs](auto const&, ItemClickEventArgs const& event) -> fire_and_forget {
+    for (auto const& list : {tabs, advancedTabs}) list.ItemClick([weak = std::weak_ptr<SettingsPage>(p), primary = make_weak(tabs), optional = make_weak(advancedTabs)](auto const&, ItemClickEventArgs const& event) -> fire_and_forget {
         auto page = weak.lock(); auto item = event.ClickedItem().try_as<ListViewItem>();
         if (!page || !page->current() || !item) co_return;
         auto previous = page->tab; auto next = unbox_value<hstring>(item.Tag());
         if (previous != next) co_await changeTab(page, next);
         // A cancelled discard or pending save keeps the current category selected.
-        if (page->current()) for (auto const& list : {tabs, advancedTabs}) {
-            list.SelectedItem(nullptr);
-            for (auto const& value : list.Items()) {
-                auto entry = value.as<ListViewItem>(); if (unbox_value<hstring>(entry.Tag()) == previous) list.SelectedItem(entry);
+        if (page->current()) {
+            auto tabs = primary.get(), advancedTabs = optional.get();
+            if (!tabs || !advancedTabs) co_return;
+            for (auto const& list : {tabs, advancedTabs}) {
+                list.SelectedItem(nullptr);
+                for (auto const& value : list.Items()) {
+                    auto entry = value.as<ListViewItem>(); if (unbox_value<hstring>(entry.Tag()) == previous) list.SelectedItem(entry);
+                }
             }
         }
     });
