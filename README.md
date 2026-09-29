@@ -27,7 +27,7 @@ AI Studio covers 19 behaviors through model-backed assistance and clearly labele
 
 This project is not affiliated with Genspark and does not claim complete parity. See [feature coverage](FEATURE_COVERAGE.md) for implementation status and simulation limits, and [verification](VERIFICATION.md) for completed checks and remaining release validation.
 
-**0.6.0-beta.24** adds a guided macOS start path and searchable AI Studio context, strengthens account and update safety, and fixes AI Studio layout after account selection. See the [release notes](docs/releases/v0.6.0-beta.24.md) and [verification](VERIFICATION.md) for checks and remaining limits.
+**[0.6.0-beta.24](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.24)** adds a guided macOS start path and searchable AI Studio context, strengthens account and update safety, and fixes AI Studio layout after account selection. Both native platform gates passed; see the [release notes](docs/releases/v0.6.0-beta.24.md) and [verification](VERIFICATION.md) for checks and remaining limits.
 
 ## Native desktop builds
 

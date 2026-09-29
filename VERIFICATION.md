@@ -1,10 +1,19 @@
 # Verification — 29 September 2026
 
-## 0.6.0-beta.24 — paired release candidate
+## 0.6.0-beta.24 — published paired native release
 
-PR #5, #6 and #7 were merged into `main` after each passed both native CI jobs. The combined source passed local Rust formatting, strict all-target Clippy and the complete locked test suite. The macOS SwiftUI/Rust package built, passed full native acceptance with isolated fictional workspaces, plist lint and deep/strict ad-hoc signature verification. No real mailbox, provider write or owner's workspace was used.
+[Beta.24](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.24) was published at 2026-09-29T08:16:34Z from `17641cb03104e247f93c0067b4428ef7a55430d5`. [Tagged CI 36539028633](https://github.com/Coke1120/Morrow-Mail/actions/runs/36539028633) passed all three jobs: both platforms completed Node-free Rust checks, native packaging and acceptance, Windows completed its fictional-mail benchmark, and the existing publisher verified same-run paired artifact provenance before signing and publishing both packages. No test waiver applied.
 
-The tagged macOS and Windows CI jobs and signed paired publisher remain the publication gate. Native reader fixtures do not complete the consent-dialog/link-review interactions, Out of Office cannot rule out a provider change after its final read without a conditional revision, and unmarked pre-existing update directories are retained. Manual first-use, clean-machine, full accessibility/IME/DPI and live-account acceptance remain outstanding. See the [beta.24 release notes](docs/releases/v0.6.0-beta.24.md).
+All six public assets were downloaded. The Ed25519 manifest signature verified against the committed pinned public key; ZIP sizes, SHA-256 values and checksum files matched. ZIP integrity/path checks and both bundled backend versions passed. The public macOS app also passed deep/strict ad-hoc signature verification and plist lint; its service returned `Morrow Mail 0.6.0-beta.24` with `--version`. The application was not opened and no real workspace was accessed. Windows execution evidence comes from CI.
+
+| Public archive | Bytes | SHA-256 |
+| --- | ---: | --- |
+| macos-arm64 | 12,321,645 | `4edb73c8f4d7546b088c7a6654800f596867b26435a7613c78593eabdf838e3b` |
+| windows-x64 | 36,564,675 | `7592ada328b20ed0cf0c25a99aa9320009d3bfaa152b2a43a4bf3b4eeaf4b7d9` |
+
+PR #5, #6 and #7 were merged into `main` after each passed both native CI jobs. Before tagging, the combined source also passed local Rust formatting, strict all-target Clippy and the complete locked test suite. The macOS SwiftUI/Rust package built, passed full native acceptance with isolated fictional workspaces, plist lint and deep/strict ad-hoc signature verification. No real mailbox or provider write was used.
+
+Native reader fixtures do not complete the consent-dialog/link-review interactions, Out of Office cannot rule out a provider change after its final read without a conditional revision, and unmarked pre-existing update directories are retained. macOS remains ad-hoc signed without notarization and Windows remains unsigned. Manual first-use, clean-machine, full accessibility/IME/DPI and live-account acceptance remain outstanding. See the [beta.24 release notes](docs/releases/v0.6.0-beta.24.md).
 
 ## Issue #3 local verification — 29 September 2026
 
