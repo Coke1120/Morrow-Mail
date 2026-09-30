@@ -64,10 +64,10 @@ void applyBrandResources(ResourceDictionary const& resources) {
     }
     resources.ThemeDictionaries().Insert(box_value(L"HighContrast"), ResourceDictionary());
 }
-TextBlock label(hstring const& value, double size) {
+TextBlock label(hstring const& value, double size, bool selectable) {
     TextBlock result; result.Text(value); result.FontSize(size);
     if (size >= 20) result.FontWeight(Windows::UI::Text::FontWeight{600});
-    result.TextWrapping(TextWrapping::Wrap); result.IsTextSelectionEnabled(true);
+    result.TextWrapping(TextWrapping::Wrap); result.IsTextSelectionEnabled(selectable);
     return result;
 }
 Button button(hstring const& value, std::function<void()> action) {
@@ -588,8 +588,8 @@ IAsyncAction Shell::loadPage() {
             ColumnDefinition actionsColumn; actionsColumn.Width(GridLengthHelper::Auto()); heading.ColumnDefinitions().Append(actionsColumn);
             bool unread = !flag(message, L"read");
             auto from = text(message, L"folder") == L"sent" || text(message, L"folder") == L"drafts" ? L"To: " + text(message, L"to") : text(message, L"fromName", text(message, L"fromEmail"));
-            auto sender = label(from); sender.MaxLines(1); sender.TextTrimming(TextTrimming::CharacterEllipsis); bold(sender, unread); heading.Children().Append(sender);
-            auto markers = label((flag(message, L"starred") ? hstring(L"★  ") : hstring{}) + (unread ? L"●" : L"")); Grid::SetColumn(markers, 1); heading.Children().Append(markers);
+            auto sender = label(from, 14, false); sender.MaxLines(1); sender.TextTrimming(TextTrimming::CharacterEllipsis); bold(sender, unread); heading.Children().Append(sender);
+            auto markers = label((flag(message, L"starred") ? hstring(L"★  ") : hstring{}) + (unread ? L"●" : L""), 14, false); Grid::SetColumn(markers, 1); heading.Children().Append(markers);
             auto quick = actions(); quick.Spacing(2); quick.Visibility(Visibility::Collapsed);
             quick.Children().Append(iconButton(unread ? L"\uE8C3" : L"\uE715", unread ? L"Mark read locally" : L"Mark unread locally", [weak, message, unread] {
                 if (auto self = weak.lock()) { Json changes; changes.Insert(L"read", Value::CreateBooleanValue(unread)); self->patch(message, changes); }
@@ -604,12 +604,12 @@ IAsyncAction Shell::loadPage() {
             for (auto key : {L"subject",L"preview",L"date"}) {
                 if (key == std::wstring_view(L"preview") && density == L"compact") continue;
                 auto value = text(message, key, key == std::wstring_view(L"subject") ? L"(No subject)" : L"");
-                auto content = label(key == std::wstring_view(L"date") ? mailDateLabel(value) : value, key == std::wstring_view(L"date") ? 11 : 13);
+                auto content = label(key == std::wstring_view(L"date") ? mailDateLabel(value) : value, key == std::wstring_view(L"date") ? 11 : 13, false);
                 content.MaxLines(key == std::wstring_view(L"preview") && density == L"spacious" ? 3 : 1); content.TextTrimming(TextTrimming::CharacterEllipsis);
                 bold(content, unread && key != std::wstring_view(L"date")); row.Children().Append(content);
             }
-            if (captured == L"all") row.Children().Append(label(text(message, L"accountId"), 11));
-            if (flag(message, L"pending")) row.Children().Append(label(L"Pending", 11));
+            if (captured == L"all") row.Children().Append(label(text(message, L"accountId"), 11, false));
+            if (flag(message, L"pending")) row.Children().Append(label(L"Pending", 11, false));
             auto entry = preserve ? rows.Items().GetAt(index).as<ListViewItem>() : ListViewItem();
             entry.Content(row); entry.Tag(message); entry.HorizontalContentAlignment(HorizontalAlignment::Stretch);
             if (!preserve) {
