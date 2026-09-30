@@ -268,11 +268,19 @@ IAsyncAction Shell::start() {
     });
     navigation.ItemInvoked([weak](auto const&, NavigationViewItemInvokedEventArgs const& event) {
         auto self = weak.lock(); if (!self || self->selectingNavigation || self->loading) return;
-        if (event.IsSettingsInvoked()) { self->navigate(flag(self->updateResult, L"updateAvailable") ? L"about" : L"preferences"); return; }
-        auto item = event.InvokedItemContainer().try_as<NavigationViewItem>();
-        if (!item || !item.Tag() || item.MenuItems().Size()) return;
-        auto tag = item.Tag().as<Json>();
-        self->navigate(text(tag, L"section"), text(tag, L"owner"), text(tag, L"folder"));
+        hstring target, account, folder = L"inbox";
+        if (event.IsSettingsInvoked()) target = flag(self->updateResult, L"updateAvailable") ? L"about" : L"preferences";
+        else {
+            auto item = event.InvokedItemContainer().try_as<NavigationViewItem>();
+            if (!item || !item.Tag() || item.MenuItems().Size()) return;
+            auto tag = item.Tag().as<Json>();
+            target = text(tag, L"section"); account = text(tag, L"owner"); folder = text(tag, L"folder");
+        }
+        // Rebuilding MenuItems during ItemInvoked invalidates WinUI's active item.
+        auto version = self->generation; auto captured = self->owner;
+        self->root.DispatcherQueue().TryEnqueue([weak, version, captured, target, account, folder] {
+            if (auto self = weak.lock(); self && self->current(version, captured)) self->navigate(target, account, folder);
+        });
     });
     window.Activate();
     startupTrace("window activated");

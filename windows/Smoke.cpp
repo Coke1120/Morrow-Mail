@@ -97,6 +97,18 @@ IAsyncAction Shell::smoke() {
         }
         enter("interaction-guards");
         co_await nativeInteractionChecks(lifetime);
+        enter("sidebar-settings-click");
+        root.UpdateLayout();
+        auto settingsItem = navigation.SettingsItem().as<controls::NavigationViewItem>();
+        auto settingsPeer = xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(settingsItem);
+        auto settingsSelect = settingsPeer.GetPattern(xaml::Automation::Peers::PatternInterface::SelectionItem).try_as<xaml::Automation::Provider::ISelectionItemProvider>();
+        check(bool(settingsSelect), L"The native Settings navigation item does not expose its selection action.");
+        settingsSelect.Select();
+        auto navigationDeadline = GetTickCount64() + 5000;
+        while (section != L"preferences" && GetTickCount64() < navigationDeadline) {
+            co_await resume_after(std::chrono::milliseconds(10)); co_await ui;
+        }
+        check(section == L"preferences" && page.Content() && !closing, L"Clicking the native Settings item did not safely open preferences.");
         if (!seeded) {
             enter("fresh-settings");
             check(owner.empty(), L"Fresh onboarding selected the internal Demo mailbox.");
