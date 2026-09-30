@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0-beta.27 — 2026-09-30
+
+- Commit each bounded provider refresh page as it arrives, retaining earlier pages if a later scope fails and checking the captured mailbox connection before each commit. Complete history remains a separate resumable import.
+- Show Assistant and Summaries as the primary AI Studio pages, move Writing style & notes under More, and use one task picker with a task-specific action.
+- Keep six everyday Settings categories, move optional connection/index/style setup under Advanced setup, and show permitted mail before collapsed AI automation and limits. Preserve explicit saves, paid-request reviews and account ownership. See the [release notes](docs/releases/v0.6.0-beta.27.md) for validation and limits.
+
 ## 0.6.0-beta.25 — 2026-09-29
 
 - Group Windows mailbox controls and paging with the message list, keep reader actions visible above its scrolling body, limit the composer width and keep its actions outside the form. Add the native three-step Start here Settings path.

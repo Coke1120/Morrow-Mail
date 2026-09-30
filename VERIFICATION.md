@@ -1,5 +1,11 @@
 # Verification — 30 September 2026
 
+## 0.6.0-beta.27 — paired release preparation
+
+[PR #13](https://github.com/Coke1120/Morrow-Mail/pull/13) and [PR #11](https://github.com/Coke1120/Morrow-Mail/pull/11) were merged into `main` after both native jobs passed in [PR #13 CI 36664623922](https://github.com/Coke1120/Morrow-Mail/actions/runs/36664623922) and [PR #11 CI 36616429429](https://github.com/Coke1120/Morrow-Mail/actions/runs/36616429429). Their source branches were deleted after merging. Refresh now commits each bounded provider page independently and validates the captured connection before each commit. AI Studio and Settings use fewer primary choices while retaining account ownership, permissions and explicit review/save controls.
+
+The beta.27 tag must repeat Node-free Rust formatting, Clippy and tests, both native builds and acceptance suites, and the Windows fictional-mail benchmark before the existing publisher makes either download public. No test waiver applies. This preparation record does not establish successful tag CI or publication. Manual Windows visual/accessibility, clean-machine and live-account acceptance remain outstanding; macOS is ad-hoc signed without notarization and Windows is unsigned. See the [release notes](docs/releases/v0.6.0-beta.27.md).
+
 ## Current source — simpler AI Studio and Settings
 
 Both native clients now show Assistant and Summaries as the primary AI Studio pages, with Writing style & notes under More. Settings has six everyday categories and three entries under Advanced setup. AI & privacy shows permitted mail first; optional controls start collapsed, with automatic assistance's saved On/Off/Paused status visible. Explicit permission saves, connection tests, paid-request review and account ownership are unchanged.
