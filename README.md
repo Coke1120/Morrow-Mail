@@ -27,7 +27,7 @@ AI Studio covers 19 behaviors through model-backed assistance and clearly labele
 
 This project is not affiliated with Genspark and does not claim complete parity. See [feature coverage](FEATURE_COVERAGE.md) for implementation status and simulation limits, and [verification](VERIFICATION.md) for completed checks and remaining release validation.
 
-The **0.6.0-beta.29 candidate** fixes Windows dark-theme contrast and aligns Inbox/Outbox with the macOS design. It includes a global 1–6-hour send delay, server labels/folders and one-minute provider Trash undo. Paired source CI and the isolated Parallels walkthrough passed; tagged validation and publication are pending; see the [release notes](docs/releases/v0.6.0-beta.29.md) and [verification](VERIFICATION.md). The latest published release is [beta.28](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.28).
+The latest experimental prerelease is [**0.6.0-beta.29**](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.29), with paired macOS arm64 / Windows x64 downloads. It fixes Windows dark-theme contrast and aligns Inbox/Outbox with the macOS design, and includes a global 1–6-hour send delay, server labels/folders and one-minute provider Trash undo. Tagged paired CI, the isolated Parallels walkthrough and public asset/manifest verification passed; see the [release notes](docs/releases/v0.6.0-beta.29.md) and [verification](VERIFICATION.md). macOS is ad-hoc signed without notarization; Windows is unsigned, and complete live-account acceptance remains outstanding.
 
 ## Native desktop builds
 

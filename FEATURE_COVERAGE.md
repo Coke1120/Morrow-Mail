@@ -131,6 +131,6 @@ From 0.4.0-alpha.1, macOS arm64 and Windows x64 are built from one tag and publi
 - Rust is the default desktop service from 0.6.0-beta.1, following explicit prerelease cutover approval. SwiftUI stays native; Windows used React/Electron through beta.16 and switches to WinUI in beta.18. Both platforms must pass the tagged release gates before publication; Rust never falls back to Node.
 - Isolated TLS provider/model tests and the actual native Rust client harness exercise the Rust service. See [verification](VERIFICATION.md) for current platform results, live-account/signing limits and benchmarks. The approved Windows host is WinUI 3; remaining native gates are tracked in the native migration plan.
 
-## Windows visual parity — beta.29 candidate
+## Windows visual parity — beta.29
 
-An opaque live theme surface preserves Light/Dark contrast under native navigation, with system high-contrast resources retained. Inbox branding, search order, Sync/paging alignment, empty-reader icon and Outbox heading/mailbox controls follow the macOS design. Native controls, fonts and window chrome remain platform-specific. This is a focused alignment, not whole-app pixel parity; paired native checks and the candidate visual walkthrough are recorded in VERIFICATION.md.
+An opaque live theme surface preserves Light/Dark contrast under native navigation, with system high-contrast resources retained. Inbox branding, search order, Sync/paging alignment, empty-reader icon and Outbox heading/mailbox controls follow the macOS design. Native controls, fonts and window chrome remain platform-specific. This is a focused alignment, not whole-app pixel parity; tagged paired native checks and the isolated Parallels visual walkthrough are recorded in VERIFICATION.md.
