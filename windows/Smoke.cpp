@@ -73,7 +73,7 @@ IAsyncAction Shell::smoke() {
                 check(text(item.as<controls::ListViewItem>().Tag().as<Json>(), L"accountId") == owner,
                     L"The initial mail page contains another owner's rows.");
         } else {
-            check(owner.empty() && section == L"settings", L"Fresh startup did not open Add account Settings.");
+            check(owner.empty() && section == L"mail" && page.Content() != nullptr, L"Fresh startup did not open Add account onboarding.");
         }
         // Application readiness only, not a compositor/presentation timestamp.
         std::fprintf(stderr, "Native milestone: first-page-ready\n"); std::fflush(stderr);
@@ -101,14 +101,15 @@ IAsyncAction Shell::smoke() {
             enter("window-size");
             check(array(state,L"accounts").Size() == 2, L"Expected two isolated fixture owners.");
             auto restoredSize = window.AppWindow().Size();
+            auto expectedSize = mailWindowSize(window, 1040, 760);
             auto resizeDeadline = GetTickCount64() + 1000;
-            while ((restoredSize.Width != 1040 || restoredSize.Height != 760) && GetTickCount64() < resizeDeadline) {
+            while ((restoredSize.Width != expectedSize.Width || restoredSize.Height != expectedSize.Height) && GetTickCount64() < resizeDeadline) {
                 co_await resume_after(std::chrono::milliseconds(10));
                 co_await ui;
                 restoredSize = window.AppWindow().Size();
             }
-            if (restoredSize.Width != 1040 || restoredSize.Height != 760) {
-                auto detail = L"The previous host window size was not restored: expected 1040x760, got " + to_hstring(restoredSize.Width) + L"x" + to_hstring(restoredSize.Height)
+            if (restoredSize.Width != expectedSize.Width || restoredSize.Height != expectedSize.Height) {
+                auto detail = L"The previous host window size was not restored: expected " + to_hstring(expectedSize.Width) + L"x" + to_hstring(expectedSize.Height) + L", got " + to_hstring(restoredSize.Width) + L"x" + to_hstring(restoredSize.Height)
                     + L"; maximum track size " + to_hstring(GetSystemMetrics(SM_CXMAXTRACK)) + L"x" + to_hstring(GetSystemMetrics(SM_CYMAXTRACK)) + L".";
                 throw hresult_error(E_FAIL, detail);
             }

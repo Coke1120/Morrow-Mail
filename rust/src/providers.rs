@@ -1198,6 +1198,58 @@ async fn microsoft_folders(client: &Client, mail: &Value, importing: bool) -> Re
     }
     Ok(folders)
 }
+pub async fn trash_origin(client: &Client, mail: &Value, message: &Value) -> Result<Value> {
+    if !can_organize(mail) {
+        return Err(Error::new(
+            403,
+            "Mailbox organization permission is required.",
+        ));
+    }
+    let provider = string(mail, "provider");
+    let remote = message["remoteId"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(string(message, "id"));
+    let remote = remote
+        .strip_prefix(&format!("{provider}:"))
+        .ok_or_else(|| Error::invalid("Only imported messages can be organized."))?;
+    let current = request(
+        api(
+            client,
+            mail,
+            reqwest::Method::GET,
+            &format!(
+                "/messages/{}?{}",
+                component(remote),
+                if provider == "google" {
+                    "format=minimal"
+                } else {
+                    "$select=id,parentFolderId"
+                }
+            ),
+        )?
+        .header("Prefer", "IdType=\"ImmutableId\""),
+        8 * 1024 * 1024,
+    )
+    .await?;
+    if provider == "google" {
+        let labels = current["labelIds"].as_array().ok_or_else(remote_error)?;
+        if labels.contains(&json!("TRASH")) {
+            return Err(Error::conflict(
+                "This message is already in provider Trash.",
+            ));
+        }
+        Ok(
+            json!({"id":"restore-trash","kind":"restoreTrash","inbox":labels.contains(&json!("INBOX")),"spam":labels.contains(&json!("SPAM"))}),
+        )
+    } else {
+        let id = string(&current, "parentFolderId");
+        if !valid_microsoft_folder_id(id) {
+            return Err(remote_error());
+        }
+        Ok(json!({"id":id}))
+    }
+}
 pub async fn organize(
     client: &Client,
     mail: &Value,
@@ -1221,6 +1273,53 @@ pub async fn organize(
         .ok_or_else(|| Error::invalid("Only imported messages can be organized."))?;
     let path = format!("/messages/{}", component(remote));
     if provider == "google" {
+        if mode == "restoreTrash" {
+            let current = request(
+                api(
+                    client,
+                    mail,
+                    reqwest::Method::GET,
+                    &format!("{path}?format=minimal"),
+                )?,
+                8 * 1024 * 1024,
+            )
+            .await?;
+            if !current["labelIds"]
+                .as_array()
+                .is_some_and(|labels| labels.contains(&json!("TRASH")))
+            {
+                return Err(Error::conflict(
+                    "This message is no longer in provider Trash.",
+                ));
+            }
+            let mut add = Vec::new();
+            let mut remove = vec![json!("TRASH")];
+            for (key, label) in [("inbox", "INBOX"), ("spam", "SPAM")] {
+                if destination[key] == true {
+                    add.push(json!(label));
+                } else {
+                    remove.push(json!(label));
+                }
+            }
+            let result = request(
+                api(
+                    client,
+                    mail,
+                    reqwest::Method::POST,
+                    &format!("{path}/modify"),
+                )?
+                .json(&json!({"addLabelIds":add,"removeLabelIds":remove})),
+                8 * 1024 * 1024,
+            )
+            .await?;
+            let labels = result["labelIds"].as_array().ok_or_else(remote_error)?;
+            if labels.contains(&json!("TRASH")) {
+                return Err(remote_error());
+            }
+            return Ok(
+                json!({"providerLabelIds":labels,"folder":google_folder(&result["labelIds"]),"providerFolderName":"Gmail · restored","providerSent":labels.contains(&json!("SENT")),"providerDraft":labels.contains(&json!("DRAFT"))}),
+            );
+        }
         if mode != "move" && destination["kind"] != "label" {
             return Err(Error::invalid("Choose a custom Gmail label."));
         }
@@ -1268,7 +1367,7 @@ pub async fn organize(
             json!({"providerLabelIds":labels,"folder":google_folder(&result["labelIds"]),"providerSent":labels.contains(&json!("SENT")),"providerDraft":labels.contains(&json!("DRAFT")),"providerFolderName":if destination["kind"]=="trash"{"Trash"}else if destination["kind"]=="spam"{"Spam"}else if inbox{"Inbox"}else{"Gmail · outside Inbox"}}),
         );
     }
-    if mode != "move" {
+    if !["move", "restoreTrash"].contains(&mode) {
         return Err(Error::invalid("Outlook supports folder moves."));
     }
     let current = request(
@@ -1282,6 +1381,11 @@ pub async fn organize(
         8 * 1024 * 1024,
     )
     .await?;
+    if mode == "restoreTrash" && current["parentFolderId"] != destination["undoFrom"] {
+        return Err(Error::conflict(
+            "This message is no longer in provider Trash.",
+        ));
+    }
     let moved = if current["parentFolderId"] == destination["id"] {
         current
     } else {

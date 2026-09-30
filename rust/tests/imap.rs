@@ -706,6 +706,27 @@ async fn imap_move_validates_capabilities_validity_and_exact_copyuid_before_retu
     .unwrap();
     assert_eq!(trashed["folder"], "trash");
     assert_eq!(trashed["remoteId"], "imap:88:19");
+    {
+        let mut scenario = fixture.state.lock().unwrap();
+        scenario.validity = 88;
+        scenario.mapping = Some("55 19 29");
+    }
+    let restored = imap::organize_with_tls(
+        &fixture.mail,
+        &json!({"id":"stable-local","remoteId":"imap:88:19","providerFolderId":"Deleted"}),
+        &json!({"id":SENT,"name":SENT,"kind":"folder"}),
+        "restoreTrash",
+        &fixture.connector,
+    )
+    .await
+    .unwrap();
+    assert_eq!(restored["remoteId"], "imap:55:29");
+    assert_eq!(restored["providerFolderId"], SENT);
+    {
+        let mut scenario = fixture.state.lock().unwrap();
+        scenario.validity = 55;
+        scenario.mapping = Some("88 7 19");
+    }
     assert!(
         fixture
             .commands()

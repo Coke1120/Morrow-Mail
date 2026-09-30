@@ -827,7 +827,7 @@ pub async fn organize_with_tls(
     connector: &native_tls::TlsConnector,
 ) -> Result<Value> {
     let target = encode_folder(string(destination, "id"))?;
-    if mode != "move" {
+    if !["move", "restoreTrash"].contains(&mode) {
         return Err(Error::invalid("IMAP supports folder moves."));
     }
     let remote = message["remoteId"]

@@ -63,6 +63,13 @@ struct MailWorkspace: View {
                     }
                 }
                     ActivityStatusView(value: model.activity, error: model.activityError, onOpenSettings: { model.settings("mail") }).padding(.horizontal, 12).padding(.vertical, 5).background(.bar)
+                    if !model.trashUndos.isEmpty {
+                        HStack {
+                            Text("Moved to provider Trash · Undo within one minute").font(.callout)
+                            Spacer()
+                            Button("Undo (⌘Z)") { model.undoTrash() }.disabled(!model.canUndoTrash)
+                        }.padding(12).background(.bar)
+                    }
                     if !model.error.isEmpty { statusBar(model.error, error: true) }
                     else if !model.notice.isEmpty { statusBar(model.notice, error: false) }
                     else if model.busy || model.preparingDraft { HStack { ProgressView().controlSize(.small); Text(model.preparingDraft ? "Preparing draft…" : "Working…").foregroundStyle(.secondary); Spacer() }.padding(9).background(.bar) }
@@ -298,8 +305,8 @@ struct MailWorkspace: View {
             }.help("Reply All").disabled(message["folder"].string == "drafts" || !model.canNavigate || model.preparingDraft)
             Button { model.beginOrganize(message, preferredKind: "trash") } label: {
                 Label("Move to Provider Trash", systemImage: "trash")
-            }.help(model.canOrganize(message) ? "Move to this account’s provider Trash after review" : "Provider Trash is available for imported mail with move permission")
-                .disabled(!model.canOrganize(message) || !model.canNavigate)
+            }.help(model.canOrganize(message) ? "Move to provider Trash · Undo within one minute (⌘Z)" : "Provider Trash is available for imported mail with move permission")
+                .disabled(!model.canOrganize(message) || !model.canNavigate || message["folder"].string == "trash")
         }.labelStyle(.iconOnly).buttonStyle(.borderless).controlSize(.small)
     }
     func statusBar(_ text: String, error: Bool) -> some View {

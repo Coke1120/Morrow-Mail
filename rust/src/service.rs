@@ -38,6 +38,7 @@ pub struct Runtime {
     db_slots: Arc<Semaphore>,
     requests: Semaphore,
     pub mailbox: tokio::sync::Mutex<()>,
+    pub trash_undo: Mutex<std::collections::HashMap<String, crate::mail::TrashUndo>>,
     pub sending: Mutex<std::collections::HashSet<(String, String)>>,
     pub client: reqwest::Client,
     pub port: u16,
@@ -133,6 +134,7 @@ impl App {
             db_slots: Arc::new(Semaphore::new(1)),
             requests: Semaphore::new(32),
             mailbox: tokio::sync::Mutex::new(()),
+            trash_undo: Default::default(),
             sending: Mutex::new(std::collections::HashSet::new()),
             client,
             port,
@@ -494,7 +496,7 @@ async fn handle_inner(app: App, request: axum::http::Request<Body>) -> Result<Re
             ["send" | "drafts" | "ai" | "sync" | "skills"]
                 | ["drafts", "prepare"]
                 | ["messages", _]
-                | ["messages", _, "organize"]
+                | ["messages", _, "organize" | "trash" | "undo-trash"]
                 | [
                     "workflows"
                         | "imports"

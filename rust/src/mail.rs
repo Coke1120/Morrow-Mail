@@ -16,6 +16,15 @@ use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+pub struct TrashUndo {
+    pub expires: std::time::Instant,
+    owner: String,
+    original: Value,
+    connection: Value,
+    destination: Value,
+    moved: Value,
+}
+
 pub fn ensure_draft_idle(app: &App, owner: &str, id: &str) -> Result<()> {
     if app
         .0
@@ -755,29 +764,118 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             let mail = current_mail(app, &owner).await?;
             json!({"folders":remote_folders(app,&mail).await?,"provider":mail.get("provider").cloned().unwrap_or(json!("imap")),"accountId":owner})
         }
-        ("POST", ["messages", _, "organize"]) => {
+        (
+            "POST",
+            [
+                "messages",
+                _,
+                action @ ("organize" | "trash" | "undo-trash"),
+            ],
+        ) => {
             let _gate = app
                 .0
                 .mailbox
                 .try_lock()
                 .map_err(|_| Error::conflict("Another mailbox operation is running."))?;
-            let mode = string(&body, "mode");
-            if !["move", "addLabel", "removeLabel"].contains(&mode) || body["confirmed"] != true {
+            let undoing = *action == "undo-trash";
+            let trashing = *action == "trash";
+            let mode = if undoing {
+                "restoreTrash"
+            } else if trashing {
+                "move"
+            } else {
+                string(&body, "mode")
+            };
+            if *action == "organize"
+                && (!["move", "addLabel", "removeLabel"].contains(&mode)
+                    || body["confirmed"] != true)
+            {
                 return Err(Error::invalid(
                     "Review and confirm this provider change first.",
                 ));
             }
             let id = ctx.path[1].clone();
             let message = app.db(move |db| get_message(db, &owner, &id)).await?;
+            let undo = if undoing {
+                let mut entries = app
+                    .0
+                    .trash_undo
+                    .lock()
+                    .map_err(|_| Error::new(503, "Restart the workspace."))?;
+                entries.retain(|_, entry| entry.expires > std::time::Instant::now());
+                let token = string(&body, "undoToken");
+                let entry = entries.get(token).ok_or_else(|| {
+                    Error::conflict("The one-minute Trash undo has expired or was already used.")
+                })?;
+                if entry.owner != ctx.owner || entry.original["id"] != message["id"] {
+                    return Err(Error::conflict("Choose the message's owning mailbox."));
+                }
+                Some(entries.remove(token).unwrap())
+            } else {
+                None
+            };
+            if let Some(undo) = &undo {
+                if connections(&app.settings().await?).get(&ctx.owner) != Some(&undo.connection) {
+                    return Err(Error::conflict(
+                        "This mailbox connection changed. Restore the message in your provider.",
+                    ));
+                }
+                for key in ["remoteId", "providerFolderId", "folder"] {
+                    if message[key] != undo.moved[key] {
+                        return Err(Error::conflict(
+                            "This message moved again. Restore it in your provider.",
+                        ));
+                    }
+                }
+            }
             let mail = current_mail(app, &ctx.owner).await?;
             let folders = remote_folders(app, &mail).await?;
-            let destination = folders
-                .iter()
-                .find(|f| f["id"] == body["destinationId"])
-                .cloned()
-                .ok_or_else(|| {
-                    Error::invalid("Choose a current folder or label from this mailbox.")
-                })?;
+            let mut destination = if undo.as_ref().is_some_and(|entry| {
+                mail["provider"] == "google" && entry.destination["kind"] == "restoreTrash"
+            }) {
+                undo.as_ref().unwrap().destination.clone()
+            } else {
+                folders
+                    .iter()
+                    .find(|f| {
+                        if trashing {
+                            f["kind"] == "trash"
+                        } else if let Some(undo) = &undo {
+                            f["id"] == undo.destination["id"]
+                        } else {
+                            f["id"] == body["destinationId"]
+                        }
+                    })
+                    .cloned()
+                    .ok_or_else(|| {
+                        Error::invalid("Choose a current folder or label from this mailbox.")
+                    })?
+            };
+            if let Some(undo) = &undo {
+                destination["undoFrom"] = undo.moved["providerFolderId"].clone();
+            }
+            let origin = if trashing {
+                if mail["provider"] == "google" || mail["provider"] == "microsoft" {
+                    providers::trash_origin(&app.0.client, &mail, &message).await?
+                } else {
+                    json!({"id": message["providerFolderId"].as_str().filter(|s| !s.is_empty()).unwrap_or("INBOX")})
+                }
+            } else {
+                Value::Null
+            };
+            if trashing && origin["id"] == destination["id"] {
+                return Err(Error::conflict(
+                    "This message is already in provider Trash.",
+                ));
+            }
+            if trashing
+                && mail["provider"] != "google"
+                && !folders.iter().any(|folder| folder["id"] == origin["id"])
+            {
+                return Err(Error::conflict(
+                    "The original provider folder could not be verified. Refresh before moving this message.",
+                ));
+            }
             let mut patch = if ["", "imap"].contains(&string(&mail, "provider")) {
                 imap::organize(&mail, &message, &destination, mode).await
             } else {
@@ -807,65 +905,118 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                 }
                 safe
             })?;
+            if trashing && patch["folder"] != "trash" {
+                return Err(Error::new(
+                    502,
+                    "The provider Trash move could not be confirmed. Your cached copy is retained.",
+                ));
+            }
             let google = mail["provider"] == "google";
-            let moving = mode == "move";
+            let moving = mode == "move" || undoing;
             let owner = ctx.owner.clone();
-            app.db(move |db| {
-                if connections(&db.settings()?).get(&owner) != Some(&mail) {
-                    return Err(Error::conflict("This mailbox changed during organization."));
-                }
-                let current = get_message(db, &owner, string(&message, "id"))?;
-                if current.get("remoteId") != message.get("remoteId") {
-                    return Err(Error::conflict(
-                        "This message changed during organization. Refresh your mailbox.",
-                    ));
-                }
-                if google {
-                    let remote_folder =
-                        providers::google_folder(&patch["providerLabelIds"]).to_owned();
-                    let labels: Vec<Value> = patch["providerLabelIds"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|id| {
-                            folders
-                                .iter()
-                                .find(|folder| folder["id"] == *id && folder["kind"] == "label")
-                        })
-                        .map(|folder| folder["name"].clone())
-                        .collect();
-                    patch["providerSnapshot"] = Value::Object(
-                        current["providerSnapshot"]
-                            .as_object()
-                            .cloned()
-                            .unwrap_or_default(),
-                    );
-                    patch["providerSnapshot"]["folder"] = remote_folder.clone().into();
-                    patch["providerSnapshot"]["labels"] = json!(labels);
-                    if current["localOverrides"]["labels"] != true {
-                        patch["labels"] = json!(labels);
+            let original = json!({"id":message["id"],"folder":message["folder"],"localOverrides":{"folder":message["localOverrides"]["folder"]}});
+            let connection = mail.clone();
+            let restore = undo.map(|entry| entry.original);
+            let mut result = app
+                .db(move |db| {
+                    if connections(&db.settings()?).get(&owner) != Some(&mail) {
+                        return Err(Error::conflict("This mailbox changed during organization."));
                     }
-                    if moving {
-                        patch["localOverrides"] = Value::Object(
-                            current["localOverrides"]
+                    let current = get_message(db, &owner, string(&message, "id"))?;
+                    if current.get("remoteId") != message.get("remoteId") {
+                        return Err(Error::conflict(
+                            "This message changed during organization. Refresh your mailbox.",
+                        ));
+                    }
+                    if google {
+                        let remote_folder =
+                            providers::google_folder(&patch["providerLabelIds"]).to_owned();
+                        let labels: Vec<Value> = patch["providerLabelIds"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|id| {
+                                folders
+                                    .iter()
+                                    .find(|folder| folder["id"] == *id && folder["kind"] == "label")
+                            })
+                            .map(|folder| folder["name"].clone())
+                            .collect();
+                        patch["providerSnapshot"] = Value::Object(
+                            current["providerSnapshot"]
                                 .as_object()
                                 .cloned()
                                 .unwrap_or_default(),
                         );
-                        patch["localOverrides"]["folder"] = false.into();
+                        patch["providerSnapshot"]["folder"] = remote_folder.clone().into();
+                        patch["providerSnapshot"]["labels"] = json!(labels);
+                        if current["localOverrides"]["labels"] != true {
+                            patch["labels"] = json!(labels);
+                        }
+                        if moving {
+                            patch["localOverrides"] = Value::Object(
+                                current["localOverrides"]
+                                    .as_object()
+                                    .cloned()
+                                    .unwrap_or_default(),
+                            );
+                            patch["localOverrides"]["folder"] = false.into();
+                        }
+                        patch["folder"] = if !moving && current["localOverrides"]["folder"] == true
+                        {
+                            current["folder"].clone()
+                        } else {
+                            remote_folder.into()
+                        };
                     }
-                    patch["folder"] = if !moving && current["localOverrides"]["folder"] == true {
-                        current["folder"].clone()
-                    } else {
-                        remote_folder.into()
-                    };
+                    if let Some(original) = restore {
+                        patch["folder"] = original["folder"].clone();
+                        if google {
+                            patch["localOverrides"]["folder"] =
+                                original["localOverrides"]["folder"]
+                                    .as_bool()
+                                    .unwrap_or(false)
+                                    .into();
+                        }
+                    }
+                    let changed = db
+                        .update(&owner, string(&message, "id"), &patch)?
+                        .ok_or_else(|| Error::new(404, "Message not found."))?;
+                    Ok(json!({"message":pages::owned(&owner,changed)}))
+                })
+                .await?;
+            if trashing {
+                let token = crate::service::hex_token()?;
+                let mut entries = app
+                    .0
+                    .trash_undo
+                    .lock()
+                    .map_err(|_| Error::new(503, "Restart the workspace."))?;
+                entries.retain(|_, entry| entry.expires > std::time::Instant::now());
+                // ponytail: retain the latest 100 deletes for this one-minute desktop undo window.
+                if entries.len() >= 100
+                    && let Some(oldest) = entries
+                        .iter()
+                        .min_by_key(|(_, entry)| entry.expires)
+                        .map(|(key, _)| key.clone())
+                {
+                    entries.remove(&oldest);
                 }
-                let changed = db
-                    .update(&owner, string(&message, "id"), &patch)?
-                    .ok_or_else(|| Error::new(404, "Message not found."))?;
-                Ok(json!({"message":pages::owned(&owner,changed)}))
-            })
-            .await?
+                entries.insert(
+                    token.clone(),
+                    TrashUndo {
+                        expires: std::time::Instant::now() + std::time::Duration::from_secs(60),
+                        owner: ctx.owner.clone(),
+                        original,
+                        connection,
+                        destination: origin,
+                        moved: json!({"remoteId":result["message"]["remoteId"],"providerFolderId":result["message"]["providerFolderId"],"folder":result["message"]["folder"]}),
+                    },
+                );
+                result["undoToken"] = token.into();
+                result["undoSeconds"] = 60.into();
+            }
+            result
         }
         _ => return Ok(None),
     };

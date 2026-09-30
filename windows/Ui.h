@@ -3,6 +3,7 @@
 #include <winrt/Microsoft.UI.Xaml.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Media.h>
+#include <winrt/Windows.Graphics.h>
 #include <functional>
 #include <set>
 
@@ -14,6 +15,8 @@ controls::Button button(winrt::hstring const& value, std::function<void()> actio
 controls::StackPanel stack(double gap = 8);
 controls::TextBox field(winrt::hstring const& title, winrt::hstring const& value = {}, bool multiline = false);
 controls::ScrollViewer scroll(xaml::UIElement const& child);
+double windowScale(xaml::Window const& window);
+winrt::Windows::Graphics::SizeInt32 mailWindowSize(xaml::Window const& window, double width, double height);
 
 struct Shell : std::enable_shared_from_this<Shell> {
     xaml::Window window{nullptr};
@@ -21,6 +24,9 @@ struct Shell : std::enable_shared_from_this<Shell> {
     controls::NavigationView navigation{nullptr};
     controls::ContentControl page{nullptr};
     controls::TextBlock status{nullptr};
+    controls::Button trashUndoButton{nullptr};
+    struct TrashUndo { Json message; winrt::hstring token; uint64_t expires; };
+    std::vector<TrashUndo> trashUndos;
     controls::ListView rows{nullptr};
     controls::ContentControl reader{nullptr};
     controls::Grid mailBody{nullptr};
@@ -57,6 +63,9 @@ struct Shell : std::enable_shared_from_this<Shell> {
     winrt::Windows::Foundation::IAsyncAction prepare(Json message, winrt::hstring mode, winrt::hstring body = {});
     winrt::Windows::Foundation::IAsyncAction messageAI(Json message, winrt::hstring action, bool history = false);
     winrt::Windows::Foundation::IAsyncAction organize(Json message, winrt::hstring preferredKind = {});
+    winrt::Windows::Foundation::IAsyncAction trash(Json message);
+    winrt::Windows::Foundation::IAsyncAction undoTrash();
+    void updateTrashUndo();
     winrt::Windows::Foundation::IAsyncAction sync();
     winrt::Windows::Foundation::IAsyncAction checkUpdates(bool force = false);
     void updateBadge();

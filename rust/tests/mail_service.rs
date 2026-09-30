@@ -280,6 +280,232 @@ async fn wait_for(gate: &Semaphore) {
 }
 
 #[tokio::test]
+async fn trash_undo_is_one_minute_owned_single_use_and_restores_provider_location() {
+    let writes = Arc::new(AtomicUsize::new(0));
+    let counted = writes.clone();
+    let labels = Arc::new(Mutex::new(json!(["INBOX", "UNREAD", "Label_1"])));
+    let remote_labels = labels.clone();
+    let parent = Arc::new(Mutex::new("custom-id".to_owned()));
+    let remote_parent = parent.clone();
+    let lose_undo = Arc::new(AtomicUsize::new(0));
+    let lose = lose_undo.clone();
+    let fixture = Fixture::new(Arc::new(move |request| {
+        let counted = counted.clone(); let labels = remote_labels.clone(); let parent = remote_parent.clone(); let lose = lose.clone();
+        async move {
+            let path = url::Url::parse(&format!("https://{}{}", request.host(), request.path)).unwrap();
+            if request.host() == "gmail.googleapis.com" {
+                assert_eq!(request.owner(), A);
+                if path.path().ends_with("/labels") { return Reply::Json(200, json!({"labels":[{"id":"TRASH","name":"Bin","type":"system"},{"id":"Label_1","name":"Keep me","type":"user"}]})); }
+                if request.method == "GET" { return Reply::Json(200, json!({"id":"same","labelIds":labels.lock().unwrap().clone()})); }
+                counted.fetch_add(1, Ordering::SeqCst);
+                if path.path().ends_with("/trash") {
+                    assert_eq!(request.headers["content-length"], "0");
+                    *labels.lock().unwrap() = json!(["TRASH","UNREAD","Label_1"]);
+                } else {
+                    assert_eq!(path.path(), "/gmail/v1/users/me/messages/same/modify");
+                    assert_eq!(request.json(), json!({"addLabelIds":["INBOX"],"removeLabelIds":["TRASH","SPAM"]}));
+                    if lose.load(Ordering::SeqCst) != 0 { return Reply::Lost; }
+                    *labels.lock().unwrap() = json!(["INBOX","UNREAD","Label_1"]);
+                }
+                return Reply::Json(200, json!({"labelIds":labels.lock().unwrap().clone()}));
+            }
+            assert_eq!(request.owner(), C);
+            match path.path() {
+                "/v1.0/me/mailFolders" => Reply::Json(200, json!({"value":[{"id":"custom-id","displayName":"Projects"},{"id":"deleted-id","displayName":"Deleted Items"},{"id":"inbox-id","displayName":"Inbox"},{"id":"junk-id","displayName":"Junk"}]})),
+                "/v1.0/me/mailFolders/inbox" => Reply::Json(200, json!({"id":"inbox-id"})),
+                "/v1.0/me/mailFolders/junkemail" => Reply::Json(200, json!({"id":"junk-id"})),
+                "/v1.0/me/mailFolders/deleteditems" => Reply::Json(200, json!({"id":"deleted-id"})),
+                "/v1.0/me/messages/same" | "/v1.0/me/messages/moved" => Reply::Json(200, json!({"id":"same","parentFolderId":parent.lock().unwrap().clone()})),
+                "/v1.0/me/messages/same/move" | "/v1.0/me/messages/moved/move" => {
+                    assert_eq!(request.headers["prefer"], "IdType=\"ImmutableId\"");
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    *parent.lock().unwrap() = string(&request.json(), "destinationId").to_owned();
+                    Reply::Json(201, json!({"id":"moved","parentFolderId":parent.lock().unwrap().clone()}))
+                }
+                _ => panic!("Unexpected fixture path {}", path.path()),
+            }
+        }.boxed()
+    })).await;
+    let server = fixture.start().await;
+    set(
+        &server.app,
+        config(&[(A, "google"), (B, "google"), (C, "microsoft")]),
+    )
+    .await;
+    server.app.db(|db| {
+        for owner in [A,B] { db.upsert(owner, &merge(cached("google:same",owner,"archive"), &json!({"localOverrides":{"folder":true},"pending":true,"labels":["Local label"]})))?; }
+        db.upsert(C, &merge(cached("microsoft:same",C,"archive"), &json!({"providerFolderId":"custom-id"})))?;
+        Ok(())
+    }).await.unwrap();
+    for (account, id) in [(A, "google%3Asame"), (C, "microsoft%3Asame")] {
+        let path = format!("/api/messages/{id}");
+        for invalid in ["", "all", "disconnected@example.invalid"] {
+            assert_eq!(
+                server
+                    .call("POST", &(path.clone() + "/trash"), invalid, json!({}))
+                    .await
+                    .0,
+                409
+            );
+        }
+        let moved = server
+            .call(
+                "POST",
+                &(path.clone() + "/trash"),
+                account,
+                json!({"destinationId":"forged"}),
+            )
+            .await;
+        assert_eq!(moved.0, 200, "{}", moved.1);
+        assert_eq!(moved.1["message"]["folder"], "trash");
+        assert_eq!(moved.1["undoSeconds"], 60);
+        let undo = json!({"undoToken":moved.1["undoToken"],"destinationId":"forged","original":{"folder":"sent"}});
+        assert_ne!(
+            server
+                .call("POST", &(path.clone() + "/undo-trash"), "all", undo.clone())
+                .await
+                .0,
+            200
+        );
+        if account == A {
+            assert_eq!(
+                server
+                    .call("POST", &(path.clone() + "/undo-trash"), B, undo.clone())
+                    .await
+                    .0,
+                409
+            );
+        }
+        let restored = server
+            .call(
+                "POST",
+                &(path.clone() + "/undo-trash"),
+                account,
+                undo.clone(),
+            )
+            .await;
+        assert_eq!(restored.0, 200, "{}", restored.1);
+        assert_eq!(restored.1["message"]["folder"], "archive");
+        assert_eq!(
+            restored.1["message"]["id"],
+            if account == A {
+                "google:same"
+            } else {
+                "microsoft:same"
+            }
+        );
+        if account == A {
+            assert_eq!(restored.1["message"]["pending"], true);
+            assert_eq!(restored.1["message"]["localOverrides"]["folder"], true);
+            assert_eq!(
+                restored.1["message"]["providerLabelIds"],
+                json!(["INBOX", "UNREAD", "Label_1"])
+            );
+        } else {
+            assert_eq!(restored.1["message"]["providerFolderId"], "custom-id");
+        }
+        assert_eq!(
+            server
+                .call("POST", &(path + "/undo-trash"), account, undo)
+                .await
+                .0,
+            409
+        );
+    }
+    assert_eq!(writes.load(Ordering::SeqCst), 4);
+    let move_again = || server.call("POST", "/api/messages/google%3Asame/trash", A, json!({}));
+    let expired = move_again().await;
+    assert_eq!(expired.0, 200);
+    server
+        .app
+        .0
+        .trash_undo
+        .lock()
+        .unwrap()
+        .get_mut(string(&expired.1, "undoToken"))
+        .unwrap()
+        .expires = std::time::Instant::now() - Duration::from_secs(1);
+    assert_eq!(
+        server
+            .call(
+                "POST",
+                "/api/messages/google%3Asame/undo-trash",
+                A,
+                json!({"undoToken":expired.1["undoToken"]})
+            )
+            .await
+            .0,
+        409
+    );
+    *labels.lock().unwrap() = json!(["INBOX", "UNREAD", "Label_1"]);
+    let disconnected = move_again().await;
+    assert_eq!(disconnected.0, 200);
+    server
+        .app
+        .db(|db| {
+            let mut settings = db.settings()?;
+            settings["mailAccounts"][A]["accessToken"] = "changed".into();
+            db.set_settings(&settings)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        server
+            .call(
+                "POST",
+                "/api/messages/google%3Asame/undo-trash",
+                A,
+                json!({"undoToken":disconnected.1["undoToken"]})
+            )
+            .await
+            .0,
+        409
+    );
+    set(
+        &server.app,
+        config(&[(A, "google"), (B, "google"), (C, "microsoft")]),
+    )
+    .await;
+    *labels.lock().unwrap() = json!(["INBOX", "UNREAD", "Label_1"]);
+    let uncertain = move_again().await;
+    assert_eq!(uncertain.0, 200);
+    lose_undo.store(1, Ordering::SeqCst);
+    let body = json!({"undoToken":uncertain.1["undoToken"]});
+    assert_eq!(
+        server
+            .call(
+                "POST",
+                "/api/messages/google%3Asame/undo-trash",
+                A,
+                body.clone()
+            )
+            .await
+            .0,
+        502
+    );
+    let before = writes.load(Ordering::SeqCst);
+    assert_eq!(
+        server
+            .call("POST", "/api/messages/google%3Asame/undo-trash", A, body)
+            .await
+            .0,
+        409
+    );
+    assert_eq!(writes.load(Ordering::SeqCst), before);
+    server
+        .app
+        .db(|db| {
+            assert_eq!(db.get(A, "google:same")?.unwrap()["folder"], "trash");
+            assert_eq!(db.get(B, "google:same")?.unwrap()["folder"], "archive");
+            Ok(())
+        })
+        .await
+        .unwrap();
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn gmail_trash_failures_keep_safe_diagnostics_and_owned_cache() {
     let outcome = Arc::new(AtomicUsize::new(0));
     let current = outcome.clone();

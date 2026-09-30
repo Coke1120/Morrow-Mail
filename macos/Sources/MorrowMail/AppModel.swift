@@ -15,6 +15,9 @@ final class AppModel: ObservableObject {
     @Published var starting = true
     @Published var error = ""
     @Published var notice = ""
+    @Published var trashUndos: [(message: JSON, token: String, expires: TimeInterval)] = []
+    private var trashUndoKeyMonitor: Any?
+    var canUndoTrash: Bool { canNavigate && trashUndos.contains { $0.expires > ProcessInfo.processInfo.systemUptime } }
     @Published var activity: JSON = .null
     @Published var activityError = ""
     @Published var section = "inbox" { didSet { if section != oldValue { draftGeneration += 1 } } }
@@ -133,6 +136,13 @@ final class AppModel: ObservableObject {
             starting = false; return
         }
         starting = true; error = ""; shuttingDown = false; launchAttempt += 1
+        if trashUndoKeyMonitor == nil {
+            trashUndoKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard event.charactersIgnoringModifiers == "z", event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+                      let self, self.canUndoTrash, NSApp.keyWindow?.firstResponder is NSTextView == false else { return event }
+                self.undoTrash(); return nil
+            }
+        }
         let attempt = launchAttempt
         do {
             let resources = Bundle.main.resourceURL!
@@ -215,6 +225,8 @@ final class AppModel: ObservableObject {
         }
     }
     func stop() {
+        if let trashUndoKeyMonitor { NSEvent.removeMonitor(trashUndoKeyMonitor); self.trashUndoKeyMonitor = nil }
+        trashUndos = []
         shuttingDown = true; periodic?.cancel(); activityPolling?.cancel()
         try? input?.fileHandleForWriting.close()
         if process?.isRunning == true { process?.terminate() }
@@ -394,7 +406,33 @@ final class AppModel: ObservableObject {
     }
     func beginOrganize(_ message: JSON?, preferredKind: String = "") {
         guard let message, canNavigate, canOrganize(message) else { return }
+        if preferredKind == "trash" {
+            guard message["folder"].string != "trash" else { return }
+            perform {
+                let result = try await self.request("/messages/" + encodedPath(message.id) + "/trash", method: "POST", body: .object([:]), mailbox: message["accountId"].string)
+                guard result["message"].id == message.id, result["message"]["accountId"] == message["accountId"], result["undoToken"].nonempty else { throw APIError("The Trash move could not be verified. Refresh your mailbox.") }
+                self.trashUndos.append((message, result["undoToken"].string, ProcessInfo.processInfo.systemUptime + 60))
+                Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: 60_000_000_000)
+                    self?.trashUndos.removeAll { $0.expires <= ProcessInfo.processInfo.systemUptime }
+                }
+                self.selectedMessage = nil; self.messageDetail = .null
+                self.notice = "Moved to provider Trash. Undo is available for one minute (⌘Z)."
+                try await self.reload()
+            }
+            return
+        }
         organizing = .object(["id": .string(UUID().uuidString), "message": message, "preferredKind": .string(preferredKind)])
+    }
+    func undoTrash() {
+        guard canUndoTrash else { return }
+        trashUndos.removeAll { $0.expires <= ProcessInfo.processInfo.systemUptime }
+        guard let entry = trashUndos.popLast() else { return }
+        perform {
+            _ = try await self.request("/messages/" + encodedPath(entry.message.id) + "/undo-trash", method: "POST", body: .object(["undoToken": .string(entry.token)]), mailbox: entry.message["accountId"].string)
+            self.notice = "Trash move undone. The message was restored."
+            try await self.reload()
+        }
     }
     func patch(_ message: JSON, _ values: JSON) {
         perform {

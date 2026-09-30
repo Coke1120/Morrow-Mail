@@ -1,5 +1,13 @@
 # Verification — 30 September 2026
 
+## One-minute Trash undo and Windows alignment — current source, unreleased
+
+The row Trash button now writes directly to the owning provider without the two modal reviews. The native Undo button and ⌘Z / Ctrl+Z restore the latest confirmed move within 60 seconds, with older moves available newest-first until their own expiry. Text fields retain text undo. Rust keeps the original destination, connection and a single-use token privately; caller-supplied destinations are ignored. Expiry, reconnect, another move or a consumed/uncertain undo cannot replay a write. App shutdown ends the shortcut window; normal provider Trash recovery remains available. Gmail restore changes only Trash/Inbox/Spam placement and retains other labels; Outlook and IMAP restore the original selectable folder while keeping the local message ID stable.
+
+Local locked Rust tests, strict Clippy and the macOS native build passed. Isolated TLS checks cover account collisions, combined/missing mailbox headers, forged destinations, local folder overrides, Gmail labels/Bin, Outlook destination IDs, expiry, reconnect, lost responses and single use; the IMAP check covers return MOVE with destination UIDVALIDITY/UID mapping. This does not establish live-account Undo acceptance.
+
+Parallels Windows 11 ARM64 (build 26200) runs the existing x64 beta.28 under emulation in a separate fictional workspace. The initial walkthrough identified undersized high-DPI windows and clipped settings text. Current source converts saved logical sizes to physical pixels, bounds them to the monitor work area and shows first-account onboarding before Settings. Candidate CI and the completed manual walkthrough are recorded below when available.
+
 ## 0.6.0-beta.28 — published paired native release
 
 [Beta.28](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.28) was published at 2026-09-30T09:07:21Z from `14d01070aeb1a414e14aac40ec092797567ef7ba`, containing the Gmail zero-length Trash fix, safe organization diagnostics and default mail permissions in both native clients. [Tagged CI 36691497562](https://github.com/Coke1120/Morrow-Mail/actions/runs/36691497562) passed all three jobs: both platforms completed Node-free Rust formatting, strict Clippy and tests, native packaging and acceptance; Windows completed its fictional-mail benchmark; and the existing publisher verified same-run paired provenance before signing and publishing both packages. No test waiver applied.

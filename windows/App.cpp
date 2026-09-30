@@ -33,6 +33,16 @@ using namespace Windows::Foundation;
 using namespace controls;
 using namespace xaml;
 using namespace Windows::Data::Json;
+double windowScale(Window const& window) {
+    HWND handle{}; check_hresult(window.as<::IWindowNative>()->get_WindowHandle(&handle));
+    return static_cast<double>(GetDpiForWindow(handle)) / 96.0;
+}
+Windows::Graphics::SizeInt32 mailWindowSize(Window const& window, double width, double height) {
+    auto scale = windowScale(window);
+    auto work = Microsoft::UI::Windowing::DisplayArea::GetFromWindowId(window.AppWindow().Id(), Microsoft::UI::Windowing::DisplayAreaFallback::Nearest).WorkArea();
+    return {std::min(work.Width, static_cast<int>(std::lround(std::clamp(width, 1040.0, 2400.0) * scale))),
+        std::min(work.Height, static_cast<int>(std::lround(std::clamp(height, 700.0, 1600.0) * scale)))};
+}
 void applyBrandResources(ResourceDictionary const& resources) {
     // Same light/dark accent as morrowGreen in the SwiftUI app. Leave the
     // HighContrast dictionary to WinUI's system-colour resources.
@@ -171,6 +181,16 @@ void setupKeyboardAccelerators(std::shared_ptr<Shell> const& shell) {
     }
     Input::KeyboardAccelerator reply; reply.Key(Key::R); reply.Modifiers(Modifiers::Control | Modifiers::Shift);
     reply.Invoked(invoked); shell->root.KeyboardAccelerators().Append(reply);
+    Input::KeyboardAccelerator undo; undo.Key(Key::Z); undo.Modifiers(Modifiers::Control);
+    undo.Invoked([weak = std::weak_ptr<Shell>(shell)](auto const&, auto const& event) {
+        auto self = weak.lock();
+        if (!self || self->section != L"mail" || self->dialogOpen || self->loading || !self->dirty.empty() || self->closing || self->service->writing()) return;
+        auto focus = Input::FocusManager::GetFocusedElement(self->root.XamlRoot());
+        if (focus && (focus.try_as<TextBox>() || focus.try_as<RichEditBox>() || focus.try_as<PasswordBox>())) return;
+        self->updateTrashUndo();
+        if (!self->trashUndos.empty()) { event.Handled(true); self->undoTrash(); }
+    });
+    shell->root.KeyboardAccelerators().Append(undo);
 }
 }
 void Shell::error(hstring const& message) { if (status) status.Text(message); }
@@ -222,10 +242,16 @@ IAsyncAction Shell::start() {
     navigation.Content(page); root.Children().Append(navigation);
     status = label(L"Opening your private workspace…"); status.Margin(ThicknessHelper::FromLengths(16, 6, 16, 8));
     Automation::AutomationProperties::SetLiveSetting(status, Automation::Peers::AutomationLiveSetting::Polite);
-    Grid::SetRow(status, 1); root.Children().Append(status);
+    Grid footer; footer.ColumnDefinitions().Append(ColumnDefinition());
+    ColumnDefinition undoColumn; undoColumn.Width(GridLengthHelper::Auto()); footer.ColumnDefinitions().Append(undoColumn);
+    footer.Children().Append(status);
+    trashUndoButton = button(L"Undo Trash (Ctrl+Z) · 1 minute", [weak = weak_from_this()] { if (auto self = weak.lock()) self->undoTrash(); });
+    trashUndoButton.Margin(ThicknessHelper::FromLengths(8, 4, 16, 4)); trashUndoButton.Visibility(Visibility::Collapsed);
+    Grid::SetColumn(trashUndoButton, 1); footer.Children().Append(trashUndoButton);
+    Grid::SetRow(footer, 1); root.Children().Append(footer);
     window.Content(root);
     startupTrace("window content assigned");
-    window.AppWindow().Resize({1220, 800});
+    window.AppWindow().Resize(mailWindowSize(window, 1220, 800));
     auto weak = weak_from_this();
     window.AppWindow().Closing([weak](auto const&, Microsoft::UI::Windowing::AppWindowClosingEventArgs const& event) {
         if (auto self = weak.lock(); self && !self->closeReady) { event.Cancel(true); if (!self->closing) self->shutdown(); }
@@ -254,18 +280,19 @@ IAsyncAction Shell::start() {
         try {
             auto size = service->windowState();
             auto width = size.GetNamedNumber(L"width", 1220), height = size.GetNamedNumber(L"height", 800);
-            if (std::isfinite(width) && std::isfinite(height)) window.AppWindow().Resize({static_cast<int>(std::clamp(width, 1040.0, 2400.0)), static_cast<int>(std::clamp(height, 700.0, 1600.0))});
+            if (std::isfinite(width) && std::isfinite(height)) window.AppWindow().Resize(mailWindowSize(window, width, height));
         } catch (...) { error(L"The previous window size could not be restored."); }
         auto savedLayout = text(service->clientState(), L"morrow.mail.layout");
         if (savedLayout == L"right" || savedLayout == L"bottom" || savedLayout == L"focus") mailLayout = savedLayout;
         co_await refresh(true);
         setupKeyboardAccelerators(lifetime);
-        co_await navigate(connected(owner) || owner == L"all" ? L"mail" : L"settings");
+        co_await navigate(L"mail");
         if (GetCommandLineW() && std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos) { co_await smoke(); co_return; }
         checkUpdates();
         timer = DispatcherTimer(); timer.Interval(std::chrono::seconds(5));
         timer.Tick([weak](auto const&, auto const&) {
             if (auto self = weak.lock(); self && !self->closing) {
+                self->updateTrashUndo();
                 if (!self->service->alive()) { self->error(L"The private service stopped. Close and reopen Morrow Mail; saved data is retained."); return; }
                 if (!self->loading && self->dirty.empty() && !self->dialogOpen) self->refresh(false);
                 self->checkUpdates();
@@ -374,7 +401,15 @@ IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder
     rebuildNavigation();
     error(L"");
     if (target == L"mail") {
-        if (!connected(owner) && owner != L"all") { co_await settingsPage(lifetime, L"mail"); co_return; }
+        if (!connected(owner) && owner != L"all") {
+            auto onboarding = stack(16); onboarding.HorizontalAlignment(HorizontalAlignment::Center); onboarding.VerticalAlignment(VerticalAlignment::Center);
+            onboarding.MaxWidth(560); onboarding.Margin(ThicknessHelper::FromUniformLength(30));
+            onboarding.Children().Append(label(L"Add your first account", 24));
+            onboarding.Children().Append(label(L"Connect Gmail, Outlook, or an IMAP account to start reading your mail."));
+            auto add = button(L"Add account", [weak = weak_from_this()] { if (auto self = weak.lock()) self->navigate(L"settings"); });
+            add.Style(Application::Current().Resources().Lookup(box_value(L"AccentButtonStyle")).as<Style>());
+            onboarding.Children().Append(add); show(onboarding); co_return;
+        }
         loading = true;
         try {
             Json body; put(body, L"accountId", owner);
@@ -562,7 +597,7 @@ IAsyncAction Shell::loadPage() {
             replyAll.IsEnabled(text(message, L"folder") != L"drafts"); quick.Children().Append(replyAll);
             auto remote = text(message, L"remoteId", text(message, L"id"));
             auto trash = iconButton(L"\uE74D", L"Move to provider Trash", [weak, message] { if (auto self = weak.lock()) self->organize(message, L"trash"); });
-            trash.IsEnabled(std::wstring_view(remote).starts_with(L"google:") || std::wstring_view(remote).starts_with(L"microsoft:") || std::wstring_view(remote).starts_with(L"imap:"));
+            trash.IsEnabled(text(message, L"folder") != L"trash" && (std::wstring_view(remote).starts_with(L"google:") || std::wstring_view(remote).starts_with(L"microsoft:") || std::wstring_view(remote).starts_with(L"imap:")));
             quick.Children().Append(trash); Grid::SetColumn(quick, 2); heading.Children().Append(quick); row.Children().Append(heading);
             row.Tag(quick);
             for (auto key : {L"subject",L"preview",L"date"}) {
@@ -688,6 +723,7 @@ IAsyncAction Shell::patch(Json message, Json changes) {
     } catch (...) { error(errorText()); }
 }
 IAsyncAction Shell::organize(Json message, hstring preferredKind) {
+    if (preferredKind == L"trash") { co_await trash(message); co_return; }
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
     auto sequence = selectionGeneration; auto account = text(message, L"accountId");
     if (dialogOpen || loading || !connected(account) || !dirty.empty()) co_return;
@@ -741,6 +777,42 @@ IAsyncAction Shell::organize(Json message, hstring preferredKind) {
         for (auto& cursor : cursors) cursor = L"";
         co_await loadPage();
     } catch (...) { loading = false; error(errorText()); }
+}
+void Shell::updateTrashUndo() {
+    std::erase_if(trashUndos, [](auto const& entry) { return entry.expires <= GetTickCount64(); });
+    trashUndoButton.Visibility(trashUndos.empty() ? Visibility::Collapsed : Visibility::Visible);
+    trashUndoButton.IsEnabled(!loading && !dialogOpen && dirty.empty() && !closing && service && !service->writing());
+}
+IAsyncAction Shell::trash(Json message) {
+    auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
+    auto account = text(message, L"accountId");
+    if (dialogOpen || loading || closing || !connected(account) || !dirty.empty() || service->writing() || text(message, L"folder") == L"trash") co_return;
+    loading = true;
+    try {
+        auto result = co_await service->request(L"/messages/" + escaped(text(message, L"id")) + L"/trash", account, L"POST", Json());
+        auto moved = object(result, L"message");
+        if (text(moved, L"accountId") != account || text(moved, L"id") != text(message, L"id") || text(result, L"undoToken").empty()) throw hresult_error(E_FAIL, L"The Trash move could not be verified. Refresh your mailbox.");
+        trashUndos.push_back({message, text(result, L"undoToken"), GetTickCount64() + 60000});
+        loading = false; updateTrashUndo();
+        if (!current(version, captured)) co_return;
+        selected = Json(); renderReader(selected); cursors = {L""}; co_await loadPage();
+        status.Text(L"Moved to provider Trash. Undo is available for one minute.");
+    } catch (...) { loading = false; error(errorText()); }
+}
+IAsyncAction Shell::undoTrash() {
+    auto lifetime = shared_from_this();
+    if (dialogOpen || loading || closing || !dirty.empty() || service->writing()) co_return;
+    updateTrashUndo(); if (trashUndos.empty()) co_return;
+    auto entry = trashUndos.back(); trashUndos.pop_back(); loading = true; updateTrashUndo();
+    auto version = generation; auto captured = owner;
+    try {
+        Json body; put(body, L"undoToken", entry.token);
+        co_await service->request(L"/messages/" + escaped(text(entry.message, L"id")) + L"/undo-trash", text(entry.message, L"accountId"), L"POST", body);
+        loading = false; updateTrashUndo();
+        if (!current(version, captured)) co_return;
+        if (section == L"mail") { cursors = {L""}; co_await loadPage(); }
+        status.Text(L"Trash move undone. The message was restored.");
+    } catch (...) { loading = false; updateTrashUndo(); error(errorText()); }
 }
 IAsyncAction Shell::prepare(Json message, hstring mode, hstring body) {
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner; auto sequence = selectionGeneration;
@@ -832,7 +904,8 @@ IAsyncAction Shell::shutdown() {
     try {
         auto presenter = window.AppWindow().Presenter().try_as<Microsoft::UI::Windowing::OverlappedPresenter>();
         if (service && presenter && presenter.State() == Microsoft::UI::Windowing::OverlappedPresenterState::Restored) {
-            auto size = window.AppWindow().Size(); service->saveWindowSize(std::clamp(size.Width, 1040, 2400), std::clamp(size.Height, 700, 1600));
+            auto size = window.AppWindow().Size(); auto scale = windowScale(window);
+            service->saveWindowSize(std::clamp(static_cast<int>(std::lround(size.Width / scale)), 1040, 2400), std::clamp(static_cast<int>(std::lround(size.Height / scale)), 700, 1600));
         }
     } catch (...) { error(L"The window size could not be saved. Mail and settings are retained."); }
     closing = true; ++generation; if (timer) timer.Stop(); navigation.IsEnabled(false); error(L"Closing the private service…");
