@@ -15,8 +15,9 @@ controls::Button button(winrt::hstring const& value, std::function<void()> actio
 controls::StackPanel stack(double gap = 8);
 controls::TextBox field(winrt::hstring const& title, winrt::hstring const& value = {}, bool multiline = false);
 controls::ScrollViewer scroll(xaml::UIElement const& child);
+winrt::hstring mailDateLabel(winrt::hstring const& value);
 double windowScale(xaml::Window const& window);
-winrt::Windows::Graphics::SizeInt32 mailWindowSize(xaml::Window const& window, double width, double height);
+winrt::Windows::Graphics::RectInt32 mailWindowBounds(xaml::Window const& window, double width, double height);
 
 struct Shell : std::enable_shared_from_this<Shell> {
     xaml::Window window{nullptr};

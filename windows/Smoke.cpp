@@ -21,6 +21,9 @@ IAsyncAction Shell::smoke() {
     Json readerEvidence;
     try {
         readerSecurityChecks();
+        check(mailDateLabel(L"2026-09-28T12:00:00.000Z") == mailDateLabel(L"2026-09-28T20:00:00+08:00")
+            && std::wstring_view(mailDateLabel(L"2026-09-28T12:00:00.000Z")).find(L"T12:") == std::wstring_view::npos
+            && mailDateLabel(L"invalid") == L"invalid", L"Mail dates did not preserve the instant while formatting local time.");
         auto directory = service->directory();
         check(std::filesystem::canonical(directory.parent_path()) == std::filesystem::canonical(std::filesystem::temp_directory_path()) && directory.filename().wstring().starts_with(L"morrow-native-check-"), L"Native acceptance requires an isolated temporary workspace.");
         std::ifstream marker(directory / L"disposable-native-fixture");
@@ -101,7 +104,7 @@ IAsyncAction Shell::smoke() {
             enter("window-size");
             check(array(state,L"accounts").Size() == 2, L"Expected two isolated fixture owners.");
             auto restoredSize = window.AppWindow().Size();
-            auto expectedSize = mailWindowSize(window, 1040, 760);
+            auto expectedSize = mailWindowBounds(window, 1040, 760);
             auto resizeDeadline = GetTickCount64() + 1000;
             while ((restoredSize.Width != expectedSize.Width || restoredSize.Height != expectedSize.Height) && GetTickCount64() < resizeDeadline) {
                 co_await resume_after(std::chrono::milliseconds(10));

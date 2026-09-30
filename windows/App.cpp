@@ -37,11 +37,12 @@ double windowScale(Window const& window) {
     HWND handle{}; check_hresult(window.as<::IWindowNative>()->get_WindowHandle(&handle));
     return static_cast<double>(GetDpiForWindow(handle)) / 96.0;
 }
-Windows::Graphics::SizeInt32 mailWindowSize(Window const& window, double width, double height) {
+Windows::Graphics::RectInt32 mailWindowBounds(Window const& window, double width, double height) {
     auto scale = windowScale(window);
     auto work = Microsoft::UI::Windowing::DisplayArea::GetFromWindowId(window.AppWindow().Id(), Microsoft::UI::Windowing::DisplayAreaFallback::Nearest).WorkArea();
-    return {std::min(work.Width, static_cast<int>(std::lround(std::clamp(width, 1040.0, 2400.0) * scale))),
-        std::min(work.Height, static_cast<int>(std::lround(std::clamp(height, 700.0, 1600.0) * scale)))};
+    auto w = std::min(work.Width, static_cast<int>(std::lround(std::clamp(width, 1040.0, 2400.0) * scale)));
+    auto h = std::min(work.Height, static_cast<int>(std::lround(std::clamp(height, 700.0, 1600.0) * scale)));
+    return {work.X + (work.Width - w) / 2, work.Y + (work.Height - h) / 2, w, h};
 }
 void applyBrandResources(ResourceDictionary const& resources) {
     // Same light/dark accent as morrowGreen in the SwiftUI app. Leave the
@@ -251,7 +252,7 @@ IAsyncAction Shell::start() {
     Grid::SetRow(footer, 1); root.Children().Append(footer);
     window.Content(root);
     startupTrace("window content assigned");
-    window.AppWindow().Resize(mailWindowSize(window, 1220, 800));
+    window.AppWindow().MoveAndResize(mailWindowBounds(window, 1220, 800));
     auto weak = weak_from_this();
     window.AppWindow().Closing([weak](auto const&, Microsoft::UI::Windowing::AppWindowClosingEventArgs const& event) {
         if (auto self = weak.lock(); self && !self->closeReady) { event.Cancel(true); if (!self->closing) self->shutdown(); }
@@ -280,7 +281,7 @@ IAsyncAction Shell::start() {
         try {
             auto size = service->windowState();
             auto width = size.GetNamedNumber(L"width", 1220), height = size.GetNamedNumber(L"height", 800);
-            if (std::isfinite(width) && std::isfinite(height)) window.AppWindow().Resize(mailWindowSize(window, width, height));
+            if (std::isfinite(width) && std::isfinite(height)) window.AppWindow().MoveAndResize(mailWindowBounds(window, width, height));
         } catch (...) { error(L"The previous window size could not be restored."); }
         auto savedLayout = text(service->clientState(), L"morrow.mail.layout");
         if (savedLayout == L"right" || savedLayout == L"bottom" || savedLayout == L"focus") mailLayout = savedLayout;
@@ -602,7 +603,8 @@ IAsyncAction Shell::loadPage() {
             row.Tag(quick);
             for (auto key : {L"subject",L"preview",L"date"}) {
                 if (key == std::wstring_view(L"preview") && density == L"compact") continue;
-                auto content = label(text(message, key, key == std::wstring_view(L"subject") ? L"(No subject)" : L""), key == std::wstring_view(L"date") ? 11 : 13);
+                auto value = text(message, key, key == std::wstring_view(L"subject") ? L"(No subject)" : L"");
+                auto content = label(key == std::wstring_view(L"date") ? mailDateLabel(value) : value, key == std::wstring_view(L"date") ? 11 : 13);
                 content.MaxLines(key == std::wstring_view(L"preview") && density == L"spacious" ? 3 : 1); content.TextTrimming(TextTrimming::CharacterEllipsis);
                 bold(content, unread && key != std::wstring_view(L"date")); row.Children().Append(content);
             }
@@ -667,7 +669,7 @@ void Shell::renderReader(Json const& message) {
     readerLayout.RowDefinitions().Append(RowDefinition());
     auto content = stack(8); content.Padding(ThicknessHelper::FromLengths(20, 4, 8, 16));
     auto title = label(text(message, L"subject", L"(No subject)"), 22); content.Children().Append(title);
-    content.Children().Append(label(text(message, L"fromName") + L" <" + text(message, L"fromEmail") + L"> · " + text(message, L"date"), 12));
+    content.Children().Append(label(text(message, L"fromName") + L" <" + text(message, L"fromEmail") + L"> · " + mailDateLabel(text(message, L"date")), 12));
     content.Children().Append(label(L"To: " + text(message, L"to") + (text(message, L"cc").empty() ? L"" : L" · Cc: " + text(message, L"cc")), 12));
     auto weak = weak_from_this(); auto replies = actions(); replies.Spacing(8);
     replies.Children().Append(button(L"Back to list", [weak] { if (auto self = weak.lock()) { self->readerFocused = false; self->applyMailLayout(); self->rows.Focus(FocusState::Programmatic); } }));

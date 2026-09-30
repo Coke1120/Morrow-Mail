@@ -574,6 +574,13 @@ IAsyncAction connections(Page state) {
 }
 }
 
+hstring mailDateLabel(hstring const& value) {
+    try {
+        Windows::Globalization::DateTimeFormatting::DateTimeFormatter formatter(L"shortdate shorttime");
+        return formatter.Format(DateTime{TimeSpan{parseInstant(value)}});
+    } catch (...) { return value; }
+}
+
 IAsyncAction calendarPage(std::shared_ptr<Shell> shell) {
     auto state = std::make_shared<CalendarPage>(); state->shell = shell; state->owner = shell->owner; state->generation = shell->generation;
     try {

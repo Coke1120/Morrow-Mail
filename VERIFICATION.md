@@ -6,7 +6,7 @@ The row Trash button now writes directly to the owning provider without the two 
 
 Local locked Rust tests, strict Clippy and the macOS native build passed. Isolated TLS checks cover account collisions, combined/missing mailbox headers, forged destinations, local folder overrides, Gmail labels/Bin, Outlook destination IDs, expiry, reconnect, lost responses and single use; the IMAP check covers return MOVE with destination UIDVALIDITY/UID mapping. This does not establish live-account Undo acceptance.
 
-Parallels Windows 11 ARM64 (build 26200) runs the existing x64 beta.28 under emulation in a separate fictional workspace. The initial walkthrough identified undersized high-DPI windows and clipped settings text. Current source converts saved logical sizes to physical pixels, bounds them to the monitor work area and shows first-account onboarding before Settings. Candidate CI and the completed manual walkthrough are recorded below when available.
+Parallels Windows 11 ARM64 (build 26200) runs the existing x64 beta.28 under emulation in a separate fictional workspace. The initial walkthrough identified undersized high-DPI windows and clipped settings text. Current source converts saved logical sizes to physical pixels, centers and bounds them to the monitor work area, formats mail timestamps in local time using the existing calendar parser, and shows first-account onboarding before Settings. Candidate CI and the completed manual walkthrough are recorded below when available.
 
 ## 0.6.0-beta.28 — published paired native release
 
