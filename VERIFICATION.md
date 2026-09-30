@@ -1,4 +1,10 @@
-# Verification — 30 September 2026
+# Verification — 1 October 2026
+
+## Windows theme and layout — beta.29 candidate
+
+The macOS/Parallels comparison of the same fictional mailbox found an unpainted Windows root under transparent/translucent NavigationView surfaces. Dark changed foregrounds while leaving a white pane and light-grey content. The root now binds an opaque built-in theme brush; high-contrast resources remain untouched. Native smoke switches Light/Dark and checks the actual root brush alpha/colour. Inbox branding, search order, right-aligned Sync, centred paging and the shared empty-reader envelope follow the macOS design. The same empty view is used when provider Trash clears selection. Outbox uses the macOS heading, horizontal mailbox/Refresh row and empty copy; its scheduling guidance remains visible.
+
+Local Rust formatting, strict all-target Clippy and the complete locked Rust suite passed. The macOS beta.29 candidate built and passed production-service native acceptance, deep/strict ad-hoc signature verification and plist lint. Paired CI, the new Windows candidate walkthrough and publication remain pending. This is not complete visual/accessibility, clean-machine or live-account acceptance. The prior macOS Settings computer-use failure was a crash in the automation helper; the app remained alive. Test stores and captures remain private generated files.
 
 ## Global delay and server folder browsing — current source, unreleased
 

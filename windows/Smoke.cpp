@@ -41,6 +41,20 @@ IAsyncAction Shell::smoke() {
             check(name == std::wstring_view(L"Light") ? color == Windows::UI::Color{255, 26, 74, 61} : color == Windows::UI::Color{255, 166, 212, 176}, L"Windows lost the shared Morrow light/dark accent.");
         }
         check(themes.Lookup(box_value(L"HighContrast")).as<xaml::ResourceDictionary>().Size() == 0, L"Brand colours override the system high-contrast palette.");
+        enter("theme-background");
+        auto requestedTheme = root.RequestedTheme();
+        apartment_context themeUi;
+        for (bool dark : {false, true}) {
+            root.RequestedTheme(dark ? xaml::ElementTheme::Dark : xaml::ElementTheme::Light);
+            co_await resume_after(std::chrono::milliseconds(50)); co_await themeUi;
+            root.UpdateLayout();
+            auto background = root.Background().try_as<xaml::Media::SolidColorBrush>();
+            check(bool(background), L"The native shell has no opaque theme background.");
+            auto color = background.Color();
+            check(color.A == 255 && (dark ? std::max({color.R, color.G, color.B}) < 80
+                : std::min({color.R, color.G, color.B}) > 220), L"Switching Light/Dark did not repaint the native shell background.");
+        }
+        root.RequestedTheme(requestedTheme);
         check(composeButton.IsEnabled() == seeded, L"Compose does not reflect connected-account onboarding.");
         controls::NavigationViewItem combined{nullptr};
         for (auto const& value : navigation.MenuItems()) if (auto item = value.try_as<controls::NavigationViewItem>(); item && item.Tag()) {

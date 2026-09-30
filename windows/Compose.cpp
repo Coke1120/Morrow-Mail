@@ -674,7 +674,7 @@ IAsyncAction loadSchedules(std::shared_ptr<Schedules> state) {
             row.Children().Append(actions);
             list.Children().Append(row);
         }
-        state->say(awaiting ? L"" : L"No delayed or scheduled messages waiting in this mailbox.");
+        state->say(awaiting ? L"" : L"No scheduled messages in this mailbox.");
     } catch (hresult_error const& error) {
         if (state->live(shell) && state->owner == owner && generation == state->loadGeneration) state->say(error.message());
     }
@@ -685,16 +685,27 @@ IAsyncAction loadSchedules(std::shared_ptr<Schedules> state) {
 IAsyncAction scheduledPage(std::shared_ptr<Shell> shell) {
     auto state = std::make_shared<Schedules>(); state->shell = shell;
     state->screenOwner = shell->owner; state->generation = shell->generation;
-    auto panel = stack(16); panel.Children().Append(label(L"Outbox", 26));
-    panel.Children().Append(label(L"Morrow must remain open to send. Catch-up is limited to 15 minutes; later messages are marked missed and need a new review. Scheduled and sending drafts are locked. Cancel an awaiting schedule before editing; sending and uncertain deliveries cannot be cancelled."));
-    ComboBox mailbox; mailbox.Header(box_value(L"Mailbox")); state->mailbox = make_weak(mailbox);
+    auto panel = stack(16); panel.Margin(ThicknessHelper::FromUniformLength(28));
+    auto heading = stack(7); heading.Margin(ThicknessHelper::FromLengths(0, 0, 0, 12));
+    heading.Children().Append(label(L"Outbox", 30));
+    auto detail = label(L"Delayed and scheduled mail waiting to be sent. Morrow must be open to send; catch-up is limited to 15 minutes."); detail.Opacity(0.7); heading.Children().Append(detail);
+    panel.Children().Append(heading);
+    Grid controls; controls.ColumnSpacing(12);
+    ColumnDefinition captionColumn; captionColumn.Width(GridLengthHelper::Auto()); controls.ColumnDefinitions().Append(captionColumn);
+    controls.ColumnDefinitions().Append(ColumnDefinition());
+    ColumnDefinition refreshColumn; refreshColumn.Width(GridLengthHelper::Auto()); controls.ColumnDefinitions().Append(refreshColumn);
+    auto caption = label(L"Mailbox"); caption.VerticalAlignment(VerticalAlignment::Center); controls.Children().Append(caption);
+    ComboBox mailbox; mailbox.HorizontalAlignment(HorizontalAlignment::Stretch);
+    xaml::Automation::AutomationProperties::SetName(mailbox, L"Mailbox"); state->mailbox = make_weak(mailbox);
     state->accounts = mailboxChoices(shell, mailbox);
     state->owner = shell->connected(shell->owner) ? shell->owner : state->accounts.empty() ? hstring{} : state->accounts.front();
     for (size_t i = 0; i < state->accounts.size(); ++i) if (state->accounts[i] == state->owner) mailbox.SelectedIndex(static_cast<int32_t>(i));
-    panel.Children().Append(mailbox);
-    auto refresh = button(L"Refresh", [state] { loadSchedules(state); }); state->refresh = make_weak(refresh); panel.Children().Append(refresh);
+    Grid::SetColumn(mailbox, 1); controls.Children().Append(mailbox);
+    auto refresh = button(L"Refresh", [state] { loadSchedules(state); }); state->refresh = make_weak(refresh);
+    Grid::SetColumn(refresh, 2); controls.Children().Append(refresh); panel.Children().Append(controls);
     auto notice = label(L""); notice.IsTextSelectionEnabled(true); state->notice = notice; panel.Children().Append(notice);
     auto list = stack(24); state->list = make_weak(list); panel.Children().Append(list);
+    auto guidance = label(L"Scheduled and sending drafts are locked. Cancel an awaiting schedule before editing; sending and uncertain deliveries cannot be cancelled. Missed messages need a new review.", 12); guidance.Opacity(0.7); panel.Children().Append(guidance);
     mailbox.SelectionChanged([state](auto const& sender, auto const&) {
         if (state->busy) return;
         auto index = sender.template as<ComboBox>().SelectedIndex();

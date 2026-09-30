@@ -109,6 +109,17 @@ Button iconButton(hstring const& glyph, hstring const& name, std::function<void(
     ToolTipService::SetToolTip(result, box_value(name));
     return result;
 }
+StackPanel emptyMailReader() {
+    auto emptyReader = stack(14); emptyReader.HorizontalAlignment(HorizontalAlignment::Center); emptyReader.VerticalAlignment(VerticalAlignment::Center);
+    emptyReader.Margin(ThicknessHelper::FromUniformLength(36));
+    auto emptyIcon = Markup::XamlReader::Load(L"<FontIcon xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' Glyph='&#xE8C3;' FontSize='42' Foreground='{ThemeResource AccentTextFillColorPrimaryBrush}'/>").as<FontIcon>();
+    emptyIcon.HorizontalAlignment(HorizontalAlignment::Center);
+    Automation::AutomationProperties::SetAccessibilityView(emptyIcon, Automation::Peers::AccessibilityView::Raw);
+    emptyReader.Children().Append(emptyIcon);
+    auto emptyTitle = label(L"A little room to think", 22); emptyTitle.TextAlignment(TextAlignment::Center); emptyReader.Children().Append(emptyTitle);
+    auto emptyDetail = label(L"Choose a message to read, or compose something new."); emptyDetail.MaxWidth(380); emptyDetail.Opacity(0.7); emptyDetail.TextAlignment(TextAlignment::Center); emptyReader.Children().Append(emptyDetail);
+    return emptyReader;
+}
 void showRowActions(ListViewItem const& entry, bool visible) {
     auto row = entry.Content().try_as<StackPanel>();
     if (!row) return;
@@ -234,12 +245,16 @@ IAsyncAction Shell::start() {
     startupTrace("creating window");
     window = Window(); window.Title(L"Morrow Mail");
     startupTrace("creating navigation");
-    root = Grid(); root.RowDefinitions().Append(RowDefinition());
+    // NavigationView uses translucent/transparent surfaces; paint an opaque,
+    // live theme resource underneath them, including system high contrast.
+    root = Markup::XamlReader::Load(L"<Grid xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' Background='{ThemeResource SolidBackgroundFillColorBaseBrush}'/>").as<Grid>();
+    root.RowDefinitions().Append(RowDefinition());
     RowDefinition statusRow; statusRow.Height(GridLengthHelper::Auto()); root.RowDefinitions().Append(statusRow);
-    navigation = NavigationView(); navigation.PaneTitle(L"Morrow"); navigation.IsSettingsVisible(true);
+    navigation = NavigationView(); navigation.IsSettingsVisible(true);
     navigation.IsBackButtonVisible(NavigationViewBackButtonVisible::Collapsed);
     navigation.OpenPaneLength(230); navigation.PaneDisplayMode(NavigationViewPaneDisplayMode::Left);
     auto brand = stack(10); brand.Margin(ThicknessHelper::FromLengths(12, 4, 12, 12));
+    brand.Children().Append(label(L"Morrow", 22));
     brand.Children().Append(label(L"A calmer kind of inbox", 12));
     composeButton = button(L"Compose", [weak = weak_from_this()] {
         if (auto self = weak.lock(); self && self->service && !self->loading && !self->dialogOpen
@@ -497,8 +512,8 @@ void Shell::mailPage() {
         if (event.Key() == Windows::System::VirtualKey::Enter) if (auto self = weak.lock(); self && !self->loading) { self->cursors = {L""}; self->loadPage(); event.Handled(true); }
     });
     auto searchButtons = actions(); searchButtons.Spacing(8);
-    searchButtons.Children().Append(button(L"Search", submitSearch));
     searchButtons.Children().Append(button(L"Clear", [weak] { if (auto self = weak.lock(); self && !self->loading) { self->search.Text(L""); self->cursors = {L""}; self->loadPage(); } }));
+    searchButtons.Children().Append(button(L"Search", submitSearch));
     Grid::SetColumn(searchButtons, 1); searchBar.Children().Append(searchButtons); layout.Children().Append(searchBar);
     Grid body; mailBody = body; body.Margin(ThicknessHelper::FromLengths(0, 12, 0, 0));
     Grid list; mailList = list;
@@ -512,8 +527,9 @@ void Shell::mailPage() {
     }
     Grid listTitle; listTitle.ColumnDefinitions().Append(ColumnDefinition());
     ColumnDefinition unreadColumn; unreadColumn.Width(GridLengthHelper::Auto()); listTitle.ColumnDefinitions().Append(unreadColumn);
-    auto titleText = stack(3); titleText.Children().Append(label(hstring(folderTitle), 17));
-    titleText.Children().Append(label(owner == L"all" ? L"All accounts" : owner, 12));
+    auto titleText = stack(3); titleText.Children().Append(label(hstring(folderTitle), 20));
+    auto accountCaption = label(owner == L"all" ? L"All accounts" : owner, 12); accountCaption.Opacity(0.7);
+    titleText.Children().Append(accountCaption);
     listTitle.Children().Append(titleText);
     if (std::wstring_view(folder).starts_with(L"provider:")) {
         auto coverage = label(L"Downloaded mail only. Sync or import history to add more messages.", 11); coverage.MaxLines(2); heading.Children().Append(coverage);
@@ -545,9 +561,12 @@ void Shell::mailPage() {
     sorting.SelectedIndex(0);
     sorting.SelectionChanged([weak](auto const&, auto const&) { if (auto self = weak.lock(); self && !self->loading) { self->cursors = {L""}; self->loadPage(); } });
     toolbar.Children().Append(sorting);
-    auto syncButton = button(L"Sync", [weak] { if (auto self = weak.lock()) self->sync(); });
-    Automation::AutomationProperties::SetName(syncButton, L"Sync Mail"); toolbar.Children().Append(syncButton);
-    heading.Children().Append(toolbar); list.Children().Append(heading);
+    Grid toolbarRow; toolbarRow.ColumnDefinitions().Append(ColumnDefinition());
+    ColumnDefinition syncColumn; syncColumn.Width(GridLengthHelper::Auto()); toolbarRow.ColumnDefinitions().Append(syncColumn);
+    toolbarRow.Children().Append(toolbar);
+    auto syncButton = iconButton(L"\uE72C", L"Sync Mail", [weak] { if (auto self = weak.lock()) self->sync(); });
+    Grid::SetColumn(syncButton, 1); toolbarRow.Children().Append(syncButton);
+    heading.Children().Append(toolbarRow); list.Children().Append(heading);
     rows = ListView(); rows.SelectionMode(ListViewSelectionMode::Single); rows.IsItemClickEnabled(true);
     Automation::AutomationProperties::SetName(rows, L"Mail list");
     rows.ItemClick([weak](auto const&, ItemClickEventArgs const& event) {
@@ -557,10 +576,15 @@ void Shell::mailPage() {
         }
     });
     Grid::SetRow(rows, 1); list.Children().Append(rows);
-    auto footer = actions(); footer.Spacing(8); footer.Margin(ThicknessHelper::FromLengths(8, 8, 8, 0));
+    Grid footer; footer.ColumnSpacing(8); footer.Margin(ThicknessHelper::FromLengths(8, 8, 8, 0));
+    ColumnDefinition previousColumn; previousColumn.Width(GridLengthHelper::Auto()); footer.ColumnDefinitions().Append(previousColumn);
+    footer.ColumnDefinitions().Append(ColumnDefinition());
+    ColumnDefinition nextColumn; nextColumn.Width(GridLengthHelper::Auto()); footer.ColumnDefinitions().Append(nextColumn);
     previous = button(L"Previous", [weak] { if (auto self = weak.lock(); self && !self->loading && self->cursors.size() > 1) { self->cursors.pop_back(); self->loadPage(); } });
     next = button(L"Next", [weak] { if (auto self = weak.lock(); self && !self->loading && !self->nextCursor.empty()) { self->cursors.push_back(self->nextCursor); self->loadPage(); } });
-    pageLabel = label(L"", 11); footer.Children().Append(previous); footer.Children().Append(pageLabel); footer.Children().Append(next);
+    pageLabel = label(L"", 11); pageLabel.HorizontalAlignment(HorizontalAlignment::Center); pageLabel.VerticalAlignment(VerticalAlignment::Center);
+    Grid::SetColumn(pageLabel, 1); Grid::SetColumn(next, 2);
+    footer.Children().Append(previous); footer.Children().Append(pageLabel); footer.Children().Append(next);
     Grid::SetRow(footer, 2); list.Children().Append(footer); body.Children().Append(list);
     Primitives::Thumb resize; mailDivider = resize; resize.IsTabStop(true);
     Automation::AutomationProperties::SetName(resize, L"Resize mail list");
@@ -582,10 +606,7 @@ void Shell::mailPage() {
     });
     Grid::SetColumn(resize, 1); body.Children().Append(resize);
     reader = ContentControl(); reader.HorizontalContentAlignment(HorizontalAlignment::Stretch); reader.VerticalContentAlignment(VerticalAlignment::Stretch);
-    auto emptyReader = stack(12); emptyReader.HorizontalAlignment(HorizontalAlignment::Center); emptyReader.VerticalAlignment(VerticalAlignment::Center);
-    auto emptyTitle = label(L"A little room to think", 22); emptyTitle.TextAlignment(TextAlignment::Center); emptyReader.Children().Append(emptyTitle);
-    auto emptyDetail = label(L"Choose a message to read, or compose something new."); emptyDetail.MaxWidth(280); emptyDetail.TextAlignment(TextAlignment::Center); emptyReader.Children().Append(emptyDetail);
-    reader.Content(emptyReader); Grid::SetColumn(reader, 2); body.Children().Append(reader);
+    reader.Content(emptyMailReader()); Grid::SetColumn(reader, 2); body.Children().Append(reader);
     applyMailLayout(); Grid::SetRow(body, 1); layout.Children().Append(body); show(layout);
 }
 void Shell::applyMailLayout() {
@@ -696,7 +717,7 @@ IAsyncAction Shell::loadPage() {
         previous.IsEnabled(cursors.size() > 1); next.IsEnabled(!nextCursor.empty());
         auto pageNumber = to_hstring(cursors.size());
         auto messageCount = to_hstring(static_cast<uint64_t>(result.GetNamedNumber(L"total", 0)));
-        pageLabel.Text(L"Page " + pageNumber + L" · " + messageCount);
+        pageLabel.Text(L"Page " + pageNumber + L" · " + messageCount + L" messages");
         Automation::AutomationProperties::SetName(pageLabel, L"Page " + pageNumber + L", " + messageCount + L" messages");
         error(text(result, L"warning"));
     } catch (...) { error(errorText()); }
@@ -726,6 +747,9 @@ IAsyncAction Shell::read(Json metadata) {
     } catch (...) { error(errorText()); }
 }
 void Shell::renderReader(Json const& message) {
+    if (text(message, L"id").empty()) {
+        readerFocused = false; applyMailLayout(); reader.Content(emptyMailReader()); return;
+    }
     Grid readerLayout;
     RowDefinition actionRow; actionRow.Height(GridLengthHelper::Auto()); readerLayout.RowDefinitions().Append(actionRow);
     readerLayout.RowDefinitions().Append(RowDefinition());
