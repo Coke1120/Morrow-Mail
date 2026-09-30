@@ -57,35 +57,33 @@ struct StudioView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                SectionHeading(title: "AI Studio", detail: "Choose a mailbox here. Summaries can show every account together.")
-                Text(model.state["settings"]["ai"]["configured"].bool ? model.state["settings"]["ai"]["model"].string : "Choose an AI model").font(.caption).foregroundStyle(morrowGreen).padding(8).background(morrowGreen.opacity(0.08)).clipShape(Capsule())
-                Button("Permissions") { model.settings("permissions") }.disabled(model.busy)
+                SectionHeading(title: "AI Studio", detail: "Ask about your mail, draft replies or read summaries.")
+                Text(model.state["settings"]["ai"]["configured"].bool ? "AI connected" : "AI not set up").font(.caption).foregroundStyle(morrowGreen).padding(8).background(morrowGreen.opacity(0.08)).clipShape(Capsule())
+                Button("AI & Privacy") { model.settings("permissions") }.disabled(model.busy)
             }
             Picker("Mailbox", selection: Binding(get: { model.account }, set: { owner in
-                guard owner != model.account, !model.busy, !brainDirty || model.confirmDiscard("Discard unsaved Email Brain changes?") else { return }
+                guard owner != model.account, !model.busy, !brainDirty || model.confirmDiscard("Discard unsaved writing style and notes changes?") else { return }
                 model.perform { try await model.selectAccount(owner) }
             })) {
                 Text("All accounts").tag("all")
                 ForEach(model.accounts) { account in Text(account["email"].string).tag(account.id) }
             }.disabled(model.busy)
-            Picker("Studio section", selection: Binding(get: { tab }, set: { value in
-                guard !model.busy else { return }
-                if brainDirty && !model.confirmDiscard("Discard unsaved Email Brain changes?") { return }
-                loadBrain(); model.studioTab = value; if value == "tools" && feature["mock"].bool { action = "ask" }
-            })) {
-                Text("Assistant").tag("tools"); Text("Summaries").tag("summaries"); Text("Email Brain").tag("brain")
-            }.pickerStyle(.segmented)
             HStack {
-                if !model.state["settings"]["ai"]["configured"].bool {
-                    Text("Set up a model to use the assistant.").foregroundStyle(.secondary)
-                    Button("Set Up Model") { model.settings("model") }
-                }
+                Button("Assistant") { navigate("tools") }.disabled(model.busy || tab == "tools")
+                Button("Summaries") { navigate("summaries") }.disabled(model.busy || tab == "summaries")
                 Spacer()
                 Menu("More") {
+                    Button("Writing Style & Notes") { navigate("brain") }
                     Button("Reusable Skills") { navigate("skills") }
                     Button("Local Simulations") { navigate("simulations") }
                     Button("Simulation History") { navigate("activity") }
                 }.fixedSize().disabled(model.busy)
+            }
+            if !model.state["settings"]["ai"]["configured"].bool {
+                HStack {
+                    Text("Set up AI to use the assistant. Your IT support can help.").foregroundStyle(.secondary)
+                    Button("Set Up AI") { model.settings("model") }.disabled(model.busy)
+                }
             }
             if !model.policy["enabled"].bool { Label("AI is paused in your saved permissions. Manual mail and calendars still work.", systemImage: "pause.circle").foregroundStyle(.secondary) }
             switch tab {
@@ -149,12 +147,6 @@ struct StudioView: View {
             } else {
                 Text("Start with a task").font(.headline)
                 if model.combined { Text("Choose one mailbox above for inbox-wide AI tasks. You can still select a specific email across accounts below.").font(.callout).foregroundStyle(.secondary) }
-                HStack {
-                    Button("Ask my inbox") { action = "ask" }
-                    Button("Draft a reply") { action = "reply" }
-                    Button("Summarize an email") { action = "summary" }
-                    Button("Summarize my inbox") { action = "briefing" }
-                }.disabled(model.busy)
             }
             Picker("What would you like to do?", selection: $action) {
                 ForEach(model.features.filter { $0.id != "memory" && $0["mock"].bool == (tab == "simulations") }) { item in
@@ -219,9 +211,8 @@ struct StudioView: View {
                         Button("Enable This Action") { model.settings("permissions") }
                     }
                     if feature["context"].string == "selected" && chosen.isNull { Text("Choose a permitted email to continue.").foregroundStyle(.secondary) }
-                    if !feature["mock"].bool && !model.state["settings"]["ai"]["configured"].bool { Button("Set Up a Model") { model.settings("model") } }
                     HStack {
-                        Button(feature["mock"].bool ? "Preview Simulation" : action == "ask" ? "Ask My Mail" : action == "briefing" ? "Create Briefing" : "Generate") { generate() }.buttonStyle(.borderedProminent).disabled(blocked || model.busy || (!feature["mock"].bool && !model.state["settings"]["ai"]["configured"].bool))
+                        Button(feature["mock"].bool ? "Preview Simulation" : action == "ask" ? "Ask My Mail" : action == "reply" ? "Draft Reply" : ["summary", "briefing"].contains(action) ? "Create Summary" : "Create Text") { generate() }.buttonStyle(.borderedProminent).disabled(blocked || model.busy || (!feature["mock"].bool && !model.state["settings"]["ai"]["configured"].bool))
                         if model.busy { ProgressView().controlSize(.small) }
                     }
                     if !result.isNull {
@@ -259,7 +250,7 @@ struct StudioView: View {
     var brainPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                SectionHeading(title: "Email Brain", detail: "Learn your writing voice from this account’s downloaded Sent mail.")
+                SectionHeading(title: "Writing style & notes", detail: "Learn your writing voice from this account’s downloaded Sent mail.")
                 if model.combined {
                     Text("Choose a mailbox above to learn its writing voice. Approved styles stay separate and are used for new mail and replies from their own account.").foregroundStyle(.secondary)
                 } else {
@@ -287,12 +278,12 @@ struct StudioView: View {
                     if voice != savedVoice || notes != savedNotes { Button("Save Notes") {
                         model.perform {
                             model.state = try await model.request("/workspace/brain", method: "POST", body: .object(["voice": .string(voice), "notes": .string(notes)]))
-                            savedVoice = voice; savedNotes = notes; memoryPreview = .null; model.dirty("brain", brainDirty); model.notice = "Brain notes saved."
+                            savedVoice = voice; savedNotes = notes; memoryPreview = .null; model.dirty("brain", brainDirty); model.notice = "Notes saved."
                         }
                     }.buttonStyle(.borderedProminent) }
                     Button("Discard Changes") { loadBrain(); model.dirty("brain", false) }.disabled(!brainDirty)
-                    Button("Clear Brain") {
-                        guard model.confirm("Clear your Email Brain?", detail: "Saved voice, notes, memories and contacts will be removed.") else { return }
+                    Button("Clear Notes & Memories") {
+                        guard model.confirm("Clear saved notes and memories?", detail: "Saved voice, notes, memories and contacts will be removed.") else { return }
                         model.perform { model.state = try await model.request("/workspace/brain", method: "DELETE", body: .object([:])); loadBrain(); model.dirty("brain", false) }
                     }
                 }
@@ -372,10 +363,11 @@ struct StudioView: View {
         }
     }
     func navigate(_ destination: String) {
-        guard !model.busy, !brainDirty || model.confirmDiscard("Discard unsaved Email Brain changes?") else { return }
+        guard !model.busy, !brainDirty || model.confirmDiscard("Discard unsaved writing style and notes changes?") else { return }
         loadBrain()
         model.studioTab = destination
         if destination == "simulations" { action = model.features.first { $0["mock"].bool }?.id ?? "memory" }
+        if destination == "tools" && feature["mock"].bool { action = "ask" }
     }
     @ViewBuilder var memorySuggestions: some View {
         if !visibleMemoryPreview.isNull {

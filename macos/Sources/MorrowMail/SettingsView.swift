@@ -26,7 +26,9 @@ struct NativeSettingsView: View {
     @State private var downloadState: JSON = .null
     @State private var modelSection = "chat"
     @State private var mailEditor = false
-    private let tabs = [("start", "Start here", "sparkles"), ("general", "General", "slider.horizontal.3"), ("mail", "Mail", "envelope"), ("calendar", "Calendar", "calendar"), ("model", "Model", "cpu"), ("permissions", "AI Permissions", "checkmark.shield"), ("search", "Search", "magnifyingglass"), ("learning", "Learning", "text.badge.star"), ("about", "About", "info.circle")]
+    @State private var advancedSettings = false
+    private let tabs = [("start", "Start here", "sparkles"), ("general", "General", "slider.horizontal.3"), ("mail", "Mail accounts", "envelope"), ("calendar", "Calendar", "calendar"), ("permissions", "AI & privacy", "checkmark.shield"), ("about", "About", "info.circle")]
+    private let advancedTabs = [("model", "AI connection", "cpu"), ("search", "Search index", "magnifyingglass"), ("learning", "Writing style", "text.badge.star")]
     private let generalKeys = ["displayName", "signature", "signatureFormat", "theme", "density", "replyTone", "language", "translationLanguage", "syncInterval", "markReadOnOpen"]
     private var displayedAccounts: [JSON] { mailSnapshot.isNull ? model.accounts : mailSnapshot.array }
     var dirty: Bool { searchDirty || learningDirty || values != baseline || mailOAuth.object.values.contains { $0.object.values.contains(where: \.nonempty) } || calendarOAuth.object.values.contains { $0.object.values.contains(where: \.nonempty) } }
@@ -35,9 +37,14 @@ struct NativeSettingsView: View {
             HStack { Text("Settings").font(.title2.bold()); Spacer(); if dirty { Text("Unsaved changes").font(.caption).foregroundStyle(.secondary) }; Button("Done") { close() }.keyboardShortcut(.cancelAction).disabled(model.busy || searchRequestBusy || preferenceSaving) }.padding(22)
             Divider()
             HStack(spacing: 0) {
-                List(tabs, id: \.0, selection: Binding(get: { model.settingsTab }, set: { next in
+                List(selection: Binding(get: { model.settingsTab }, set: { next in
                     selectTab(next)
-                })) { tab in Label(tab.1, systemImage: tab.2).tag(tab.0) }.listStyle(.sidebar).frame(width: 165)
+                })) {
+                    ForEach(tabs, id: \.0) { tab in Label(tab.1, systemImage: tab.2).tag(tab.0) }
+                    DisclosureGroup("Advanced setup", isExpanded: $advancedSettings) {
+                        ForEach(advancedTabs, id: \.0) { tab in Label(tab.1, systemImage: tab.2).tag(tab.0) }
+                    }
+                }.listStyle(.sidebar).frame(width: 195)
                 ScrollViewReader { scroll in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
@@ -85,7 +92,8 @@ struct NativeSettingsView: View {
                 maxHeight: (NSScreen.main?.visibleFrame.height ?? 850) - 100)
         .textFieldStyle(.roundedBorder)
         .interactiveDismissDisabled(dirty || model.busy || searchRequestBusy || preferenceSaving)
-        .onAppear { initialize(); visible = true }
+        .onAppear { initialize(); visible = true; advancedSettings = advancedTabs.contains { $0.0 == model.settingsTab } }
+        .onChange(of: model.settingsTab) { tab in if advancedTabs.contains(where: { $0.0 == tab }) { advancedSettings = true } }
         .onChange(of: searchDirty) { _ in model.dirty("settings", dirty) }
         .onChange(of: searchRequestBusy) { _ in model.dirty("search-request", searchRequestBusy) }
         .onChange(of: learningDirty) { _ in model.dirty("settings", dirty) }
@@ -160,14 +168,14 @@ struct NativeSettingsView: View {
                 Button(model.accounts.isEmpty ? "Add an Account" : "Manage Accounts") { selectTab("mail") }
                 Text("Google or Microsoft sign-in opens in your browser. If your provider requires your own app registration, Mail explains the extra steps.").font(.caption).foregroundStyle(.secondary)
             }.padding(8).frame(maxWidth: .infinity, alignment: .leading) }
-            GroupBox("2 · Choose an AI model (optional)") { VStack(alignment: .leading, spacing: 8) {
-                Text("A local model runs on your computer. A hosted model uses a provider and may charge for requests. Both need a server address and its exact model name; hosted models usually need an API key.")
-                Text(model.state["settings"]["ai"]["configured"].bool ? "Chat model configured." : "No chat model configured yet.").font(.caption).foregroundStyle(.secondary)
-                Button("Set Up and Test a Model") { modelSection = "chat"; selectTab("model") }
+            GroupBox("2 · Set up AI help (optional)") { VStack(alignment: .leading, spacing: 8) {
+                Text("AI can help write replies and summarize mail. Ask your IT support or AI provider for the connection details. Online AI receives only the mail you permit and may charge for requests.")
+                Text(model.state["settings"]["ai"]["configured"].bool ? "AI connection saved." : "AI has not been set up yet. You can still use mail.").font(.caption).foregroundStyle(.secondary)
+                Button("Set Up AI") { modelSection = "chat"; selectTab("model") }
             }.padding(8).frame(maxWidth: .infinity, alignment: .leading) }
             GroupBox("3 · Decide what AI can use") { VStack(alignment: .leading, spacing: 8) {
                 Text("Choose which actions AI may take and which downloaded mail folders and fields it may read. Automatic summaries start only when you enable a trigger.")
-                Button("Review AI Permissions") { selectTab("permissions") }
+                Button("Review AI & Privacy") { selectTab("permissions") }
                 Text("Save permissions before returning to AI Studio. AI results are reviewed before they become draft mail.").font(.caption).foregroundStyle(.secondary)
             }.padding(8).frame(maxWidth: .infinity, alignment: .leading) }
         }
@@ -184,7 +192,7 @@ struct NativeSettingsView: View {
             }.padding(8) }
             GroupBox("Mail sync") { VStack(alignment: .leading, spacing: 8) {
             Picker("Sync all accounts while Morrow is open", selection: number("preferences", "syncInterval")) { Text("Manually").tag(0); ForEach([1, 5, 15, 30], id: \.self) { Text("Every \($0) minutes").tag($0) } }
-                Text("Runs while Morrow is open. Automatic AI actions are controlled separately in AI Permissions.").font(.caption).foregroundStyle(.secondary)
+                Text("Runs while Morrow is open. Automatic AI actions are controlled separately in AI & privacy.").font(.caption).foregroundStyle(.secondary)
             }.padding(8) }
             Text("Writing & language").font(.title3.bold())
             Text("Display name and footer apply across all connected accounts. Learning identity remains account-specific.").font(.caption).foregroundStyle(.secondary)
@@ -225,12 +233,12 @@ struct NativeSettingsView: View {
     }
     var modelPage: some View {
         Group {
-            SectionHeading(title: "Chat & reply model", detail: "Used for summaries, replies, translation and learning. Search embedding has its own connection.")
-            Text("Choose a local server on this computer or a hosted provider. Copy its OpenAI-compatible address and exact model name from its setup page. For example, an address looks like http://localhost:PORT/v1 for a local server or https://provider.example/v1 for a hosted service; a model name looks like my-model-id. These are examples, not working credentials.").font(.callout).foregroundStyle(.secondary)
-            field("API base URL", "ai", "baseUrl")
+            SectionHeading(title: "AI connection", detail: "Used for writing, replies and summaries. Your IT support or AI provider can supply these details.")
+            Text("Copy the OpenAI-compatible server address, model name and access key from your provider. Online services may charge for requests. Search embedding has a separate connection.").font(.callout).foregroundStyle(.secondary)
+            field("Server address (API base URL)", "ai", "baseUrl")
             Text("Include /v1 when your provider requires it. Remote endpoints require HTTPS.").font(.caption).foregroundStyle(.secondary)
-            field("Model ID", "ai", "model")
-            field("API key (optional for local models)", "ai", "apiKey", secure: true)
+            field("Model name", "ai", "model")
+            field("Access key (API key, optional for local models)", "ai", "apiKey", secure: true)
             Text(model.state["settings"]["ai"]["hasApiKey"].bool ? "Leave blank to keep the saved key at the same base URL." : "No key is stored.").font(.caption).foregroundStyle(.secondary)
             Toggle("Remove saved API key", isOn: boolean("ai", "clearApiKey")).toggleStyle(.checkbox)
             DisclosureGroup("Advanced: response settings") { VStack(alignment: .leading, spacing: 12) {
@@ -255,9 +263,17 @@ struct NativeSettingsView: View {
     }
     var permissionsPage: some View {
         Group {
-            SectionHeading(title: "Your assistant. Your boundaries.", detail: "These controls are enforced for every AI action and simulation. Manual mail and live calendar actions remain available.")
+            SectionHeading(title: "AI & privacy", detail: "Choose what AI may read. These permissions apply across your accounts; each account’s mail stays separate.")
             Toggle("Enable AI assistance", isOn: boolean("policy", "enabled")).font(.headline).toggleStyle(.checkbox)
-            GroupBox("When assistance starts") {
+            Text("AI uses only the downloaded mail you allow below. Changes take effect after Save Permissions.").font(.callout).foregroundStyle(.secondary)
+            GroupBox("What AI may read") { VStack(alignment: .leading, spacing: 12) {
+                Text("Mail folders").font(.headline)
+                ForEach(permissionFolders, id: \.self) { folder in Toggle(folder.capitalized, isOn: nestedBool("folders", folder)).toggleStyle(.checkbox) }
+                Divider()
+                Text("Information in your mail").font(.headline)
+                ForEach([("subject", "Subject lines"), ("body", "Message bodies"), ("sender", "Senders and recipients"), ("contacts", "Saved contact notes")], id: \.0) { item in Toggle(item.1, isOn: nestedBool("content", item.0)).toggleStyle(.checkbox) }
+            }.padding(8) }
+            DisclosureGroup("Automatic assistance · \(automaticAssistanceStatus)") {
                 VStack(alignment: .leading, spacing: 12) {
                     Toggle("Summarize when I open a message", isOn: nestedBool("triggers", "onOpen")).toggleStyle(.checkbox)
                     Toggle("Suggest text when I start a reply", isOn: nestedBool("triggers", "onReply")).toggleStyle(.checkbox)
@@ -265,39 +281,37 @@ struct NativeSettingsView: View {
                     Toggle("Generate scheduled inbox summaries", isOn: nestedBool("triggers", "scheduledSummary")).toggleStyle(.checkbox)
                     Toggle("Only messages in Inbox", isOn: nestedBool("triggers", "inboxOnly")).toggleStyle(.checkbox)
                     Toggle("Only starred messages", isOn: nestedBool("triggers", "starredOnly")).toggleStyle(.checkbox)
-                    Text("All triggers default to off. Checked filters must all match, for each connected account separately. Drafts and Trash are excluded. Your model may charge per request. Suggestions never send, create events or replace drafts automatically.").font(.caption).foregroundStyle(.secondary)
-                    Text("New-mail summaries start after sync discovers a new message; initial account imports are excluded. Enable automatic sync in General for regular checks. This is polling, not instant provider push.").font(.caption).foregroundStyle(.secondary)
-                }.padding(8)
+                    Text("Off by default. Automatic requests may cost money. Checked filters must all match. Drafts and Trash are excluded; each account is handled separately. Suggestions never send mail, create events or replace drafts automatically.").font(.caption).foregroundStyle(.secondary)
+                    Text("New-mail summaries run after sync finds a new message, excluding initial imports. Set automatic mail sync in General for regular checks.").font(.caption).foregroundStyle(.secondary)
+                    if values["policy"]["triggers"]["scheduledSummary"].bool { summarySchedule }
+                }.padding(.top, 8)
             }
-            if values["policy"]["triggers"]["scheduledSummary"].bool { summarySchedule }
-            DisclosureGroup("Available AI features") { VStack(alignment: .leading, spacing: 12) {
-            ForEach(model.features.filter { !$0["mock"].bool || $0.id == "memory" }) { feature in
-                VStack(alignment: .leading, spacing: 4) {
-                    Toggle(feature["label"].string, isOn: nestedBool("behaviors", feature.id)).toggleStyle(.checkbox)
-                    Text(feature.id == "memory" ? "Suggest memories with source references, review what to save, and use permitted saved context." : feature["description"].string).font(.caption).foregroundStyle(.secondary).padding(.leading, 20)
+            DisclosureGroup("Choose available AI tasks") { VStack(alignment: .leading, spacing: 12) {
+                ForEach(model.features.filter { !$0["mock"].bool || $0.id == "memory" }) { feature in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle(feature.id == "memory" ? "Writing style & notes" : feature["label"].string, isOn: nestedBool("behaviors", feature.id)).toggleStyle(.checkbox)
+                        Text(feature.id == "memory" ? "Suggest memories with source references, review what to save, and use permitted saved context." : feature["description"].string).font(.caption).foregroundStyle(.secondary).padding(.leading, 20)
+                    }
                 }
-            }
             }.padding(.top, 8) }
-            DisclosureGroup("Local simulations") { VStack(alignment: .leading, spacing: 8) {
+            DisclosureGroup("Advanced limits & local simulations") { VStack(alignment: .leading, spacing: 8) {
+                Stepper("Maximum messages per request: \(Int(values["policy"]["maxMessages"].number))", value: number("policy", "maxMessages"), in: 1...50)
+                Text("Simulations use sample data. Calendar and attachment permissions below do not grant access to your live calendar or attachment files.").font(.caption).foregroundStyle(.secondary)
+                Toggle("Simulated calendar context", isOn: nestedBool("content", "calendar")).toggleStyle(.checkbox)
+                Toggle("Sample attachment fixtures", isOn: nestedBool("content", "attachments")).toggleStyle(.checkbox)
                 ForEach(model.features.filter { $0["mock"].bool && $0.id != "memory" }) { feature in
                     Toggle(feature["label"].string + " · Simulation", isOn: nestedBool("behaviors", feature.id)).toggleStyle(.checkbox)
                     Text(feature["description"].string).font(.caption).foregroundStyle(.secondary)
                 }
             }.padding(.top, 8) }
-            GroupBox("Allowed data") { VStack(alignment: .leading, spacing: 12) {
-            Text("Which folders it can use").font(.headline)
-            ForEach(permissionFolders, id: \.self) { folder in Toggle(folder.capitalized, isOn: nestedBool("folders", folder)).toggleStyle(.checkbox) }
-            Divider()
-            Text("Which information it can see").font(.title3.bold())
-            ForEach([("subject", "Subject lines"), ("body", "Message bodies"), ("sender", "Senders and recipients"), ("contacts", "Local contact notes"), ("calendar", "Simulated calendar context"), ("attachments", "Sample attachment fixtures")], id: \.0) { item in Toggle(item.1, isOn: nestedBool("content", item.0)).toggleStyle(.checkbox) }
-            Stepper("Maximum messages per request: \(Int(values["policy"]["maxMessages"].number))", value: number("policy", "maxMessages"), in: 1...50)
-            Text("Calendar and attachment scopes here control simulations. AI never reads your connected Google or Outlook calendar.").font(.caption).foregroundStyle(.secondary)
-            }.padding(8) }
-            Text("Changes take effect only after Save Permissions. These settings apply across your accounts; message context stays account-specific.").font(.caption).foregroundStyle(.secondary)
         }
     }
+    var automaticAssistanceStatus: String {
+        guard model.policy["enabled"].bool else { return "Paused in saved settings" }
+        return ["onOpen", "onReply", "onArrival", "scheduledSummary"].contains { model.policy["triggers"][$0].bool } ? "On in saved settings" : "Off in saved settings"
+    }
     var summarySchedule: some View {
-        GroupBox("Summary schedule · P0–P4") {
+        GroupBox("Summary schedule") {
             VStack(alignment: .leading, spacing: 12) {
                 Picker("Repeat", selection: Binding(get: { values["policy"]["summarySchedule"]["cadence"].string }, set: { values["policy"]["summarySchedule"]["cadence"] = .string($0) })) {
                     Text("Daily at a set time").tag("daily"); Text("Every few hours").tag("interval")
@@ -309,7 +323,7 @@ struct NativeSettingsView: View {
                     Stepper("Every \(Int(values["policy"]["summarySchedule"]["everyHours"].number)) hours", value: Binding(get: { Int(values["policy"]["summarySchedule"]["everyHours"].number) }, set: { values["policy"]["summarySchedule"]["everyHours"] = .number(Double($0)) }), in: 1...168)
                 }
                 Text("Runs while Morrow is open, using up to your maximum permitted messages from the cached inbox. Results appear in AI Studio → Summaries. Missed daily runs catch up once when reopened; interval timing starts when enabled. Failed or interrupted jobs are not retried automatically.").font(.caption).foregroundStyle(.secondary)
-                Text("P0 emergency · P1 due today · P2 action/follow-up · P3 information · P4 bulk/promotional. AI priorities need your review. Email Brain and writing style still require explicit review and saving.").font(.caption).foregroundStyle(.secondary)
+                Text("P0 emergency · P1 due today · P2 action/follow-up · P3 information · P4 bulk/promotional. AI priorities need your review. Writing style and saved notes still require explicit review and saving.").font(.caption).foregroundStyle(.secondary)
             }.padding(8)
         }
     }

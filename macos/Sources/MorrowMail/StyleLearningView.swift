@@ -131,17 +131,17 @@ struct StyleLearningView: View {
             if !savedOptions["enabled"].bool { Text("Learn Now will enable learning for this mailbox after confirmation.") }
             if !model.state["settings"]["ai"]["configured"].bool {
                 HStack {
-                    Text("Configure and save an AI model in Model settings first.")
-                    if let onOpenSettings { Button("Open Model") { onOpenSettings("model") } }
+                    Text("Configure and save an AI model in Advanced setup → AI connection first.")
+                    if let onOpenSettings { Button("Open AI Connection") { onOpenSettings("model") } }
                 }
             }
             if !model.policy["enabled"].bool || !model.policy["behaviors"]["memory"].bool || !model.policy["folders"]["sent"].bool || !model.policy["content"]["body"].bool {
                 HStack {
-                    Text("Requires saved AI Permissions: AI on, Email Brain, Sent, and email body access.")
-                    if let onOpenSettings { Button("Open AI Permissions") { onOpenSettings("permissions") } }
+                    Text("Requires saved AI & privacy: AI on, writing style and notes, Sent, and email body access.")
+                    if let onOpenSettings { Button("Open AI & privacy") { onOpenSettings("permissions") } }
                 }
             }
-            if model.policy["folders"]["sent"] == .bool(false) { Text("Sent access is off. Enable and save Sent in AI Permissions. Your confirmed identity can remain saved without Sent access.") }
+            if model.policy["folders"]["sent"] == .bool(false) { Text("Sent access is off. Enable and save Sent in AI & privacy. Your confirmed identity can remain saved without Sent access.") }
         }.font(.caption).foregroundStyle(.secondary)
     }
     var configurationPanel: some View {
@@ -152,7 +152,7 @@ struct StyleLearningView: View {
                 Text("Daily analysis uses cached Sent mail and this budget while Morrow is open. Enable mail refresh to capture mail sent elsewhere. Updates always require review and Save; a pending preview pauses the next analysis.").font(.caption).foregroundStyle(.secondary)
                 Picker("Sent history", selection: number("months")) { ForEach([1, 3, 6, 12], id: \.self) { Text("Last \($0) month(s)").tag($0) } }
                 Stepper("Maximum samples: \(Int(options["maxSamples"].number))", value: number("maxSamples"), in: 1...50)
-                Text("Also limited by AI Permissions → Maximum messages (currently \(Int(model.policy["maxMessages"].number))).").font(.caption).foregroundStyle(.secondary)
+                Text("Also limited by AI & privacy → Advanced limits → Maximum messages (currently \(Int(model.policy["maxMessages"].number))).").font(.caption).foregroundStyle(.secondary)
                 HStack { Text("Token budget per analysis"); TextField("16000", value: number("tokenBudget"), format: .number.grouping(.never)).frame(width: 120) }
                 Text("4,000–64,000 tokens. Conservative UTF-8 estimate including response allowance; custom model billing may differ. No currency estimate.").font(.caption).foregroundStyle(.secondary)
                 if options != savedOptions { Button("Save Learning Settings") { action("settings", body: options) }.disabled(preview["status"].string == "running") }
@@ -169,7 +169,7 @@ struct StyleLearningView: View {
     var identityPanel: some View {
         DisclosureGroup {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Confirm the names people use when addressing you, including in group mail. AI can use only your saved, confirmed identity under its existing permissions. Names inferred from signatures or messages are not automatically verified. This does not change your From address or Email Brain notes.").font(.callout).foregroundStyle(.secondary)
+                Text("Confirm the names people use when addressing you, including in group mail. AI can use only your saved, confirmed identity under its existing permissions. Names inferred from signatures or messages are not automatically verified. This does not change your From address or writing style and notes notes.").font(.callout).foregroundStyle(.secondary)
                 TextField("Your display name", text: Binding(get: { identityName }, set: { identityName = $0; identityConfirmed = false }))
                 TextArea(title: "Other names or nicknames — one per line", text: Binding(get: { identityAliases }, set: { identityAliases = $0; identityConfirmed = false }), height: 75)
                 Text("Up to 10 aliases, 100 characters each. Include only names that refer to you.").font(.caption).foregroundStyle(.secondary)

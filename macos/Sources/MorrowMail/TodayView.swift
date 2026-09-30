@@ -58,8 +58,8 @@ struct TodayView: View {
         if reports.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 Text("No summaries today yet").font(.headline)
-                Text("Enable scheduled or new-mail summaries in AI Permissions. Opening Today does not run AI or send mail.").foregroundStyle(.secondary)
-                Button("AI Permissions") { model.settings("permissions") }.disabled(model.busy)
+                Text("Enable scheduled or new-mail summaries in AI & privacy → Automatic assistance. Opening Today does not run AI or send mail.").foregroundStyle(.secondary)
+                Button("AI & Privacy") { model.settings("permissions") }.disabled(model.busy)
             }.padding(18).frame(maxWidth: .infinity, alignment: .leading).background(.quaternary.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: 10))
         }
         ForEach(reports) { report in SummaryReportView(report: report) }

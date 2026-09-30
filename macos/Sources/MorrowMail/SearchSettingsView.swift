@@ -27,19 +27,19 @@ struct NativeSearchSettingsView: View {
         var reasons: [String] = []
         if changed { reasons.append("Save your changes before indexing.") }
         if !options["enabled"].bool { reasons.append("Enable Smart Search and save the search settings.") }
-        if !value["settings"]["model"].nonempty { reasons.append("Save an embedding model in Model → Search Embedding.") }
-        if !value["permitted"].bool { reasons.append("Enable AI access in AI Permissions and save permissions.") }
+        if !value["settings"]["model"].nonempty { reasons.append("Save an embedding model in Advanced setup → AI connection → Search embedding.") }
+        if !value["permitted"].bool { reasons.append("Enable AI access in AI & privacy and save permissions.") }
         if !options["accounts"].array.contains(where: { selected in model.accounts.contains(where: { $0.id == selected.string }) }) { reasons.append("Choose at least one connected account in Indexing scope. Add an account in Mail if needed.") }
         for group in ["folders", "content"] {
             let label = group == "folders" ? "folder" : "content field"
             if !options[group].object.values.contains(where: \.bool) { reasons.append("Choose at least one \(label) in Indexing scope.") }
-            else if !options[group].object.contains(where: { $0.value.bool && model.policy[group][$0.key] != .bool(false) }) { reasons.append("Allow at least one selected \(label) in AI Permissions and save permissions.") }
+            else if !options[group].object.contains(where: { $0.value.bool && model.policy[group][$0.key] != .bool(false) }) { reasons.append("Allow at least one selected \(label) in AI & privacy and save permissions.") }
         }
         return reasons
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            SectionHeading(title: presentation == .model ? "Embedding model" : "Search & Semantic Indexing", detail: presentation == .model ? "Smart search (智慧搜尋) uses this separate embedding model. Choose indexing scope and review batches in Search." : "Keyword search stays local. Configure the embedding connection in Model. Smart search (智慧搜尋) is optional, stays within your approved scope, and can keep its index updated automatically within a daily budget.")
+            SectionHeading(title: presentation == .model ? "Embedding model" : "Search & Semantic Indexing", detail: presentation == .model ? "Smart search (智慧搜尋) uses this separate embedding model. Choose indexing scope and review batches in Search index." : "Keyword search stays local. Configure the embedding connection in AI connection. Smart search (智慧搜尋) is optional, stays within your approved scope, and can keep its index updated automatically within a daily budget.")
             if !testResult.isEmpty { Text(testResult).foregroundStyle(.secondary).textSelection(.enabled) }
             if busy { ProgressView().controlSize(.small) }
             if !error.isEmpty { Text(error).foregroundStyle(.red).textSelection(.enabled) }
@@ -53,7 +53,7 @@ struct NativeSearchSettingsView: View {
                             Text(value["local"].bool ? "Local embedding endpoint" : "Remote embedding endpoint — approved mail text leaves this device").font(.caption).foregroundStyle(.secondary)
                             if presentation == .search {
                             HStack {
-                                if let onConfigureModel { Button("Edit in Model…", action: onConfigureModel) }
+                                if let onConfigureModel { Button("Edit AI Connection…", action: onConfigureModel) }
                             }.disabled(busy)
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(6)
@@ -159,9 +159,9 @@ struct NativeSearchSettingsView: View {
         GroupBox("Check scope → Review & Index") {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(prerequisites, id: \.self) { Text($0).font(.callout) }
-                if let onConfigurePermissions { Button("Open AI Permissions…", action: onConfigurePermissions).disabled(busy) }
+                if let onConfigurePermissions { Button("Open AI & privacy…", action: onConfigurePermissions).disabled(busy) }
                 if resumable { Text("Resume or cancel the current batch before reviewing another.").font(.callout) }
-                if !changed && prerequisites.isEmpty && !indexing && !resumable && value["pending"].number == 0 { Text("No new permitted downloaded mail needs indexing. Check Indexing scope and AI Permissions, or download mail in Mail.").font(.callout) }
+                if !changed && prerequisites.isEmpty && !indexing && !resumable && value["pending"].number == 0 { Text("No new permitted downloaded mail needs indexing. Check Indexing scope and AI & privacy, or download mail in Mail.").font(.callout) }
                 Button("Review & Index…") { action("index/now") }.buttonStyle(.borderedProminent).disabled(busy || indexing || resumable || !prerequisites.isEmpty || value["pending"].number == 0)
                 Text("Review the saved accounts, folders, content and batch budget first. No AI call is made until you confirm the reviewed batch. Model or scope changes invalidate existing vectors.").font(.caption).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(6)

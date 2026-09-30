@@ -187,6 +187,14 @@ IAsyncAction Shell::smoke() {
                 co_await navigate(target);
                 check(page.Content() && page.Content() != previousPage, L"A native workspace page failed to open.");
                 check(dirty.empty(), L"Opening a saved page incorrectly created unsaved edits.");
+                if (std::wstring_view(target) == L"studio") {
+                    auto studio = page.Content().as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
+                    auto tabs = studio.Children().GetAt(3).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
+                    check(tabs.Children().Size() == 3, L"AI Studio must show Assistant, Summaries and More.");
+                    auto more = tabs.Children().GetAt(2).as<controls::ComboBox>();
+                    check(unbox_value<hstring>(more.Items().GetAt(0).as<controls::ComboBoxItem>().Tag()) == L"brain",
+                        L"Writing style and notes is no longer reachable through More.");
+                }
             }
             for (auto const* tab : {L"start", L"general", L"mail", L"calendar", L"model", L"search", L"policy", L"about"}) {
                 enter("settings-" + to_string(tab));
@@ -195,6 +203,24 @@ IAsyncAction Shell::smoke() {
                 check(page.Content() && page.Content() != previousPage, L"A native Settings tab failed to open.");
                 auto layout = page.Content().try_as<controls::Grid>();
                 check(layout && layout.ColumnDefinitions().Size() == 2 && layout.RowDefinitions().Size() == 3, L"Settings lost its fixed category sidebar and independently scrolling content.");
+                auto categories = layout.Children().GetAt(1).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
+                check(categories.Children().GetAt(0).as<controls::ListView>().Items().Size() == 6, L"Everyday Settings must keep six primary categories.");
+                auto advanced = categories.Children().GetAt(1).as<controls::Expander>();
+                check(advanced.Content().as<controls::ListView>().Items().Size() == 3 &&
+                    advanced.IsExpanded() == (std::wstring_view(tab) == L"model" || std::wstring_view(tab) == L"search"),
+                    L"Advanced settings must open for direct setup links and stay collapsed on everyday pages.");
+                if (std::wstring_view(tab) == L"policy") {
+                    auto saved = object(object(state, L"settings"), L"policy").Stringify();
+                    auto body = layout.Children().GetAt(3).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
+                    auto form = body.Children().GetAt(2).as<controls::ContentControl>().Content().as<controls::StackPanel>();
+                    uint32_t optionalSections = 0;
+                    for (auto const& child : form.Children()) if (auto section = child.try_as<controls::Expander>()) {
+                        check(!section.IsExpanded(), L"Optional AI permission controls must start collapsed.");
+                        section.IsExpanded(true); section.IsExpanded(false); ++optionalSections;
+                    }
+                    check(optionalSections == 3 && object(object(state, L"settings"), L"policy").Stringify() == saved,
+                        L"Showing optional permission controls changed saved permissions.");
+                }
                 check(dirty.empty(), L"Opening a Settings tab incorrectly created unsaved edits.");
             }
             enter("composer-layout");

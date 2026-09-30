@@ -2,6 +2,21 @@
 
 範圍：實際檢視已安裝的 macOS beta.14 八個設定分頁，並交叉閱讀目前 SwiftUI 與 React 原始碼。只切換分頁，沒有修改真實帳戶、權限、模型設定或學習提案，沒有觸發模型測試、匯入、寄信或日曆寫入。Windows 本輪為原始碼檢視，未作 Windows 執行驗收。
 
+## 本輪：一般文職使用者的 AI Studio／設定簡化
+
+從不熟悉 IT 的初級文職人員角度，原介面偏難：要先理解 Model、Embedding、Email Brain 等術語；九個設定入口看起來同樣重要；AI Studio 同時有快捷按鈕與任務選單。使用者容易把「開始使用」誤解為必須完成所有進階設定。這是原生程式碼與畫面檢視的判斷，並非真實目標使用者測試。
+
+| 困難 | 本輪實作 |
+| --- | --- |
+| 不知道先做甚麼 | Studio 主入口只保留 Assistant／Summaries；一個任務選單，一個按任務命名的主要操作。 |
+| 技術設定佔據日常導覽 | 設定保留六個日常分類；AI connection、Search index、Writing style 放入 Advanced setup，直接設定連結會展開它。 |
+| Email Brain 意義不明 | 使用 Writing style & notes，放到 More；技術連線欄位改用 Server address、Model name、Access key 並保留必要的 API 提示。 |
+| 權限頁太長、怕誤開自動 AI | 先顯示啟用開關與可讀資料；自動操作、任務權限、限制與模擬收合。收合標題仍顯示已儲存的 On／Off／Paused 狀態；付費提示及 Save／Discard 保留。 |
+
+日常流程是「選帳戶 → 選任務 → 輸入問題或選郵件 → 產生並審閱」。寫作風格、記憶及進階搜尋均可略過。AI 初次連線仍需要 IT 支援或供應商提供資料，不能把尚未設定的模型顯示成已可用。
+
+SwiftUI 與 WinUI 共用同一個簡化方向，沿用原生收合控制；沒有刪除既有選擇、改動 API／預設權限或增加自動供應商寫入。WinUI smoke 檢查主要分類數目、進階直接入口及收合權限不修改已儲存資料。實際驗證結果與平台限制記錄於 VERIFICATION.md。
+
 ## 實作更新（0.6.0-beta.16）
 
 以下 review 已落實到 SwiftUI 與 React：新增／重新連接帳戶入口置頂，匯入範圍可收合；Model 改為 Chat／Embedding 切換且保留各自草稿；General 按用途分組並顯示自動儲存狀態；AI Permissions 的 Save／Discard 固定可見，排程按需顯示，simulation 獨立收合。Search 統一 Review & Index，Rust 批次控制與 Clear index 分開；Learning 提案／已核准狀態置頂，身份和設定分開收合，加入前置設定連結。日曆明示每供應商一個連線；About 將目前版本和上次安裝紀錄分開。

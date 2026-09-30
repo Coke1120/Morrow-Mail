@@ -1,5 +1,13 @@
 # Verification — 30 September 2026
 
+## Current source — simpler AI Studio and Settings
+
+Both native clients now show Assistant and Summaries as the primary AI Studio pages, with Writing style & notes under More. Settings has six everyday categories and three entries under Advanced setup. AI & privacy shows permitted mail first; optional controls start collapsed, with automatic assistance's saved On/Off/Paused status visible. Explicit permission saves, connection tests, paid-request review and account ownership are unchanged.
+
+The macOS production package built successfully and passed `morrow-native-check`, plist lint, deep/strict ad-hoc signature verification and Rust formatting. A temporary in-memory SwiftUI harness opened the changed Assistant, privacy and connection pages without starting a service, changing saved state or creating unsaved edits. Its accessibility enumeration returned no entries, so it does not establish label reachability or accessibility acceptance. No real workspace, paid model or provider write was used.
+
+Windows smoke now checks primary navigation, direct advanced setup links and that opening optional permission sections leaves saved policy unchanged; Windows compilation and execution use the existing PR CI, not this macOS host. This review is based on native source and fixture checks, not a usability study with office staff. Manual visual/accessibility, clean-machine and live-account acceptance remain outstanding. No release or version change is included.
+
 ## 0.6.0-beta.26 — published native mail-row actions
 
 The macOS and Windows mail lists now reveal local read/unread, an owner-bound Reply All draft, and a reviewed move to the owning provider's Trash on row hover or focus. Gmail uses its Trash endpoint; Outlook uses Deleted Items; IMAP requires a selectable `\\Trash` folder plus MOVE, UIDPLUS and matching UIDVALIDITY. The new provider fixtures check Trash classification, resulting local folder and stable message identity. Windows smoke also checks all three row controls and that patching another row does not replace the open reader.

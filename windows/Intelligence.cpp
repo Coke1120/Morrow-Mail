@@ -363,7 +363,7 @@ void renderLearning(Page const& p) {
     }
     p->learningPaint = signature; panel.Children().Clear();
     words(panel, flag(object(value, L"settings"), L"daily") ? L"Sent review: Daily" : flag(object(value, L"settings"), L"weekly") ? L"Sent review: Legacy weekly" : L"Sent review: Manual", 12);
-    words(panel, flag(value, L"permitted") ? L"Saved opt-in and source permissions are ready." : L"Requires saved Learning opt-in, AI enabled, Email Brain, Sent and body access. Import Sent mail in Mail settings if needed.");
+    words(panel, flag(value, L"permitted") ? L"Saved opt-in and source permissions are ready." : L"Requires saved Learning opt-in, AI enabled, writing style and notes, Sent and body access. Import Sent mail in Mail settings if needed.");
     if (profile.Size()) { words(panel, flag(profile, L"active") ? L"Approved style — active for writing / replies" : L"Approved style — inactive under current permissions or changed source scope", 18); words(panel, text(profile, L"voice")); }
     else words(panel, L"No approved learned style.");
     if (!preview.Size()) { words(panel, L"No valid preview. Prepare samples to review them without making an AI call."); p->dirty(); return; }
@@ -383,7 +383,7 @@ void renderLearning(Page const& p) {
         action(p, panel, L"Save approved style…", [id](Page page) -> IAsyncAction {
             require(!page->forms[L"learning"].dirty() && !page->forms[L"identity"].dirty(), L"Save or discard Learning settings and identity edits first.");
             auto voice = trim(text(page->forms[L"voice"].value, L"voice")); require(!voice.empty() && voice.size() <= 2000, L"Approved style must contain 1–2,000 characters.");
-            if (!(co_await page->shell->confirm(L"Activate this approved writing style?", page->owner + L"\n\n" + voice + L"\n\nThis informs writing/replies under Email Brain permissions. Brain contacts, notes and voice remain unchanged.", L"Save approved style")) || !page->current()) co_return;
+            if (!(co_await page->shell->confirm(L"Activate this approved writing style?", page->owner + L"\n\n" + voice + L"\n\nThis informs writing/replies under writing style and notes permissions. Saved contacts, notes and manual voice remain unchanged.", L"Save approved style")) || !page->current()) co_return;
             Json body; put(body, L"previewId", id); put(body, L"voice", voice);
             auto result = co_await page->shell->service->request(L"/style/apply", page->owner, L"POST", body);
             if (page->current()) { acceptState(page, result); renderLearning(page); page->tell(L"Approved writing style saved."); }
@@ -425,7 +425,7 @@ void buildLearning(Page const& p, StackPanel const& body) {
     if (flag(object(learning(p), L"settings"), L"weekly")) editCheck(p, options, L"learning", L"weekly", L"Keep legacy weekly review (turn off to pause)");
     words(options, L"The first eligible analysis starts after enabling, then updates use new cached Sent mail at most daily while Morrow is open. Every proposal still needs review and Save. It pauses while a preview awaits review; no automatic retry of failed paid jobs.");
     editChoice(p, options, L"learning", L"months", L"Sent history", {{L"1", L"Last month"}, {L"3", L"Last 3 months"}, {L"6", L"Last 6 months"}, {L"12", L"Last 12 months"}}, true);
-    editNumber(p, options, L"learning", L"maxSamples", L"Maximum samples (also limited by AI Permissions)", 1, 50);
+    editNumber(p, options, L"learning", L"maxSamples", L"Maximum samples (also limited by AI & privacy)", 1, 50);
     editNumber(p, options, L"learning", L"tokenBudget", L"Estimated token budget per analysis", 4000, 64000, 1000);
     action(p, options, L"Save Learning settings…", [](Page page) -> IAsyncAction {
         auto body = clone(page->forms[L"learning"].value);
@@ -449,7 +449,7 @@ void buildLearning(Page const& p, StackPanel const& body) {
         if (page->current()) { acceptState(page, result); updateLearningForms(page, false, true); page->tell(L"Identity saved for this account only."); }
     });
     action(p, extra, L"Delete learned style & stop learning…", [](Page page) -> IAsyncAction {
-        if (!(co_await page->shell->confirm(L"Delete learned style and stop learning?", L"This account’s approved style and preview are removed, and Learning is disabled. Confirmed identity and separate Email Brain notes/contacts remain.", L"Delete learned style")) || !page->current()) co_return;
+        if (!(co_await page->shell->confirm(L"Delete learned style and stop learning?", L"This account’s approved style and preview are removed, and Learning is disabled. Confirmed identity and separate saved notes and contacts remain.", L"Delete learned style")) || !page->current()) co_return;
         auto result = co_await page->shell->service->request(L"/style/profile", page->owner, L"DELETE");
         if (page->current()) { acceptState(page, result); updateLearningForms(page, true); page->tell(L"Learned style removed; Learning stopped."); }
     });
@@ -504,13 +504,13 @@ void renderMemoryPreview(Page const& p) {
     });
 }
 void buildBrain(Page const& p, StackPanel const& body) {
-    words(body, L"Email Brain", 24);
+    words(body, L"Writing style & notes", 24);
     buildLearning(p, body);
     Expander details; details.Header(box_value(L"Notes and memory suggestions")); auto memory = stack(12); details.Content(memory); body.Children().Append(details);
     auto policy = object(object(p->state, L"settings"), L"policy");
     words(memory, flag(policy, L"enabled") && flag(object(policy, L"behaviors"), L"memory")
         ? L"Explicitly saved voice and notes may inform permitted AI requests. They remain local until included in an authorized model request."
-        : L"Email Brain is disabled by your saved permissions. Saved notes will not inform AI requests.");
+        : L"Writing style and notes are disabled by your saved permissions. Saved notes will not inform AI requests.");
     words(memory, L"Optional notes and memories provide extra context. Manual writing instructions override the approved Sent style.");
     auto automatic = object(object(p->state,L"workspace"),L"brainLearning");
     editor(p,L"memoryOptions",subset(automatic,{L"enabled",L"tokenBudget"}));
@@ -543,17 +543,17 @@ void buildBrain(Page const& p, StackPanel const& body) {
     editor(p, L"brain", brainFields(p->state));
     editText(p, memory, L"brain", L"voice", L"Manual writing instructions", 2000, true);
     editText(p, memory, L"brain", L"notes", L"Notes to remember", 4000, true);
-    action(p, memory, L"Save Brain notes", [](Page page) -> IAsyncAction {
+    action(p, memory, L"Save notes", [](Page page) -> IAsyncAction {
         auto input = clone(page->forms[L"brain"].value);
         auto result = co_await page->shell->service->request(L"/workspace/brain", page->owner, L"POST", input);
         if (!page->current()) co_return;
-        acceptState(page, result); page->forms[L"brain"].accept(brainFields(result)); page->dirty(); page->tell(L"Brain notes saved for this account. Contacts and learned style were retained.");
+        acceptState(page, result); page->forms[L"brain"].accept(brainFields(result)); page->dirty(); page->tell(L"Notes saved for this account. Contacts and learned style were retained.");
     });
-    action(p, memory, L"Discard unsaved Brain edits", [](Page page) -> IAsyncAction {
+    action(p, memory, L"Discard unsaved notes", [](Page page) -> IAsyncAction {
         page->forms[L"brain"].accept(brainFields(page->state)); page->dirty(); page->tell(L"Saved notes restored."); co_return;
     });
-    action(p, memory, L"Clear Brain…", [](Page page) -> IAsyncAction {
-        if (!(co_await page->shell->confirm(L"Clear Email Brain?", page->owner + L"\nSaved Brain voice, notes and contacts will be removed. Confirmed identity and the separate learned style remain.", L"Clear Brain")) || !page->current()) co_return;
+    action(p, memory, L"Clear notes & memories…", [](Page page) -> IAsyncAction {
+        if (!(co_await page->shell->confirm(L"Clear saved notes and memories?", page->owner + L"\nSaved manual voice, notes, memories and contacts will be removed. Confirmed identity and the separate learned style remain.", L"Clear notes & memories")) || !page->current()) co_return;
         auto result = co_await page->shell->service->request(L"/workspace/brain", page->owner, L"DELETE");
         if (!page->current()) co_return;
         acceptState(page, result); page->forms[L"brain"].accept(brainFields(result)); page->dirty();
@@ -642,7 +642,7 @@ void renderSuggestions(Page const& p) {
         jobs.Children().Append(button(L"Confirm my identity",[weak] { if (auto page=weak.lock()) changePage(page,L"learning"); }));
     } else if (!flag(value,L"modelReady") || (!flag(value,L"permitted") && flag(object(value,L"settings"),L"enabled"))) {
         for (auto const& requirement:array(value,L"requirements")) words(jobs,requirement.GetString());
-        words(jobs,L"Review Model and AI Permissions in Settings.");
+        words(jobs,L"Review AI & privacy and Advanced setup → AI connection in Settings.");
     } else if (!flag(value,L"automaticReady")) {
         action(p,jobs,L"Enable automatic reply suggestions",[](Page page) -> IAsyncAction {
             auto options=clone(page->forms[L"suggestions"].value); truth(options,L"enabled",true); truth(options,L"automatic",true); options.Insert(L"tokenBudget",Value::CreateNumberValue(64000));
@@ -749,7 +749,7 @@ void renderRecords(Page const& p) {
     if (p->kind == L"summaries") {
         words(panel, L"Saved priority summaries", 24);
         words(panel, p->owner == L"all" ? L"All connected accounts. Each report labels its own mailbox; AI context never crosses accounts." : L"Reports for this mailbox only. Choose All accounts above to see them together.");
-        words(panel, L"Scheduled and newly synced mail create these reports when enabled. Opening or refreshing this page does not run AI. Configure the schedule in AI Permissions.");
+        words(panel, L"Scheduled and newly synced mail create these reports when enabled. Opening or refreshing this page does not run AI. Configure the schedule in AI & privacy → Automatic assistance.");
         if (p->owner == L"all") words(panel, L"Choose one mailbox above to create an inbox briefing now.");
         else panel.Children().Append(button(L"Open Assistant for an inbox briefing", [weak = std::weak_ptr<Intelligence>(p)] { if (auto page = weak.lock()) changePage(page, L"studio"); }));
         auto source = p->owner == L"all" ? object(p->state, L"today") : workspace;
@@ -834,7 +834,7 @@ hstring blockedTool(Page const& p) {
     if (!feature.Size()) return L"Select a supported tool.";
     if (!flag(policy, L"enabled")) return L"AI is off in saved permissions.";
     if (!flag(object(policy, L"behaviors"), name.c_str())) return L"This behavior is disabled in saved AI permissions.";
-    if (!flag(feature, L"mock") && !flag(object(settings, L"ai"), L"configured")) return L"Configure a chat model in Settings → Model first.";
+    if (!flag(feature, L"mock") && !flag(object(settings, L"ai"), L"configured")) return L"Set up AI in Settings → Advanced setup → AI connection first.";
     if ((name == L"memory" || name == L"research") && !flag(content, L"contacts")) return L"This tool requires contact-context permission.";
     if ((name == L"meeting" || name == L"schedule") && !flag(content, L"calendar")) return L"This tool requires local calendar-context permission.";
     if (name == L"attachments" && !flag(content, L"attachments")) return L"Sample attachment-context permission is disabled.";
@@ -1049,7 +1049,7 @@ void renderTool(Page const& p) {
         panel.Children().Append(date); panel.Children().Append(time); p->date = make_weak(date); p->time = make_weak(time);
         words(panel, L"Uses this device’s local time zone and verifies daylight-saving gaps. This is a local record, not a scheduled notification or real event.");
     }
-    action(p, panel, flag(feature, L"mock") ? L"Create local preview — no AI call" : L"Generate response — review model request…", runTool);
+    action(p, panel, flag(feature, L"mock") ? L"Create local preview — no AI call" : name == L"ask" ? L"Ask my mail…" : name == L"reply" ? L"Draft reply…" : (name == L"summary" || name == L"briefing") ? L"Create summary…" : L"Create text…", runTool);
     action(p, panel, L"Discard tool inputs and result…", [](Page page) -> IAsyncAction {
         if (!(co_await page->shell->confirm(L"Discard tool inputs?", L"Clear entered instructions, draft text and the unsaved result. Saved messages remain.", L"Discard inputs")) || !page->current()) co_return;
         auto& form = page->forms[L"tool"]; put(form.value, L"prompt", L""); put(form.value, L"draftText", L""); form.accept(form.value); page->clearResult(); page->dirty(); renderTool(page);
@@ -1141,19 +1141,19 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
         }
     }); root.Children().Append(mailbox);
     if ((!shell->connected(p->owner) && p->owner != L"all") || p->owner.empty() || p->owner == L"demo" || (p->owner == L"all" && kind != L"summaries")) {
-        words(root, L"Choose one connected mailbox above for writing, replies and Email Brain. All accounts combines saved summaries while keeping each account’s AI context separate.");
+        words(root, L"Choose one connected mailbox above for writing, replies and style learning. All accounts combines saved summaries while keeping each account’s AI context separate.");
         shell->show(scroll(root)); co_return;
     }
     auto tabs = stack(6); tabs.Orientation(Orientation::Horizontal); std::weak_ptr<Intelligence> weak = p; bool known = kind == L"learning";
     for (auto const& [id, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{
-        {L"studio", L"Assistant"}, {L"summaries", L"Summaries"}, {L"brain", L"Email Brain"}}) {
+        {L"studio", L"Assistant"}, {L"summaries", L"Summaries"}}) {
         auto control = button(caption, [weak, target = hstring(id)] { if (auto page = weak.lock()) changePage(page, target); });
         if (kind == id) { known = true; control.IsEnabled(false); } tabs.Children().Append(control);
     }
     ComboBox more; more.PlaceholderText(L"More");
     xaml::Automation::AutomationProperties::SetName(more, L"More AI Studio pages");
     for (auto const& [id, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{
-        {L"reply-suggestions", L"Reply suggestions"}, {L"skills", L"Reusable skills"}, {L"simulations", L"Local simulations"}, {L"records", L"Simulation history"}}) {
+        {L"brain", L"Writing style & notes"}, {L"reply-suggestions", L"Reply suggestions"}, {L"skills", L"Reusable skills"}, {L"simulations", L"Local simulations"}, {L"records", L"Simulation history"}}) {
         ComboBoxItem item; item.Content(box_value(caption)); item.Tag(box_value(hstring(id))); more.Items().Append(item);
         if (kind == id) { known = true; more.SelectedItem(item); }
     }
