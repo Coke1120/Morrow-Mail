@@ -76,6 +76,17 @@ hstring localTime(hstring const& value) {
     Windows::Globalization::DateTimeFormatting::DateTimeFormatter formatter(L"shortdate shorttime");
     return formatter.Format(date) + L" (local time; " + value + L")";
 }
+hstring delayedTime(int hours) {
+    require(hours >= 1 && hours <= 6, L"Choose a send delay from 1 to 6 hours.");
+    FILETIME file{}; GetSystemTimeAsFileTime(&file);
+    auto at = ticks(file) + uint64_t(hours) * 60 * 60 * 10000000;
+    file.dwLowDateTime = DWORD(at); file.dwHighDateTime = DWORD(at >> 32);
+    SYSTEMTIME utc{};
+    require(FileTimeToSystemTime(&file, &utc), L"The delayed send time could not be calculated.");
+    wchar_t result[32]{};
+    swprintf_s(result, L"%04u-%02u-%02uT%02u:%02u:%02u.%03uZ", unsigned(utc.wYear), unsigned(utc.wMonth), unsigned(utc.wDay), unsigned(utc.wHour), unsigned(utc.wMinute), unsigned(utc.wSecond), unsigned(utc.wMilliseconds));
+    return hstring(result);
+}
 Json content(Json const& message) {
     Json value;
     for (auto name : { L"to", L"cc", L"bcc", L"subject", L"body" }) put(value, name, text(message, name));
@@ -128,6 +139,8 @@ struct Composer {
     bool frozen() const { return busy || uncertain || locked(message) || scheduleAttempt.Size() != 0; }
     Json payload() const { return content(message); }
     bool scheduleOn() const { auto view = schedule.get(); return view && checked(view); }
+    int delayHours() const { auto host = shell.lock(); return host ? static_cast<int>(object(object(host->state, L"settings"), L"preferences").GetNamedNumber(L"sendDelayHours", 0)) : 0; }
+    bool scheduleNeeded() const { return !uncertain && (scheduleOn() || delayHours() > 0 || scheduleAttempt.Size()); }
     void dirty() {
         auto host = shell.lock();
         if (!live(host)) return;
@@ -156,7 +169,7 @@ struct Composer {
         if (auto view = save.get()) view.IsEnabled(!isFrozen && !scheduleOn() && connected);
         if (auto view = send.get()) {
             auto review = reviewed.get();
-            view.Content(box_value(scheduleOn() ? (scheduleAttempt.Size() ? L"Retry Same Schedule" : L"Review Schedule")
+            view.Content(box_value(scheduleNeeded() ? (scheduleAttempt.Size() ? L"Retry Same Schedule" : L"Review & Send Later")
                 : uncertain ? L"Review Retry" : L"Review & Send"));
             view.IsEnabled(!busy && !locked(message) && connected && (!uncertain || (review && checked(review))));
         }
@@ -167,7 +180,7 @@ struct Composer {
         if (auto view = aiPrompt.get()) view.IsReadOnly(isFrozen);
         if (auto view = close.get()) {
             view.IsEnabled(!busy);
-            view.Content(box_value(locked(message) || scheduleAttempt.Size() ? L"View Scheduled" : L"Close"));
+            view.Content(box_value(locked(message) || scheduleAttempt.Size() ? L"View Outbox" : L"Close"));
         }
         dirty();
     }
@@ -282,7 +295,7 @@ IAsyncAction scheduleSend(std::shared_ptr<Composer> state) {
         auto value = previousAttempt ? copy(state->scheduleAttempt) : copy(state->payload());
         if (!previousAttempt) {
             put(value, L"requestId", Service::uuid());
-            put(value, L"sendAt", scheduledTime(state->date.get(), state->time.get()));
+            put(value, L"sendAt", state->scheduleOn() ? scheduledTime(state->date.get(), state->time.get()) : delayedTime(state->delayHours()));
             if (!text(state->message, L"id").empty()) put(value, L"draftId", text(state->message, L"id"));
         }
         bool approved = co_await shell->confirm(L"Schedule this message?", reviewText(owner, value)
@@ -303,10 +316,10 @@ IAsyncAction scheduleSend(std::shared_ptr<Composer> state) {
     } catch (ApiError const& error) {
         if (!previousAttempt && error.status < 500) state->scheduleAttempt = Json();
         if (state->live(shell)) state->say(state->scheduleAttempt.Size()
-            ? L"Scheduling could not be confirmed. Retry the same request or view Scheduled before creating another schedule or sending. " + error.message() : error.message());
+            ? L"Scheduling could not be confirmed. Retry the same request or view Outbox before creating another schedule or sending. " + error.message() : error.message());
     } catch (hresult_error const& error) {
         if (state->live(shell)) state->say(state->scheduleAttempt.Size()
-            ? L"Scheduling could not be confirmed. Retry the same request or view Scheduled before sending another copy. " + error.message() : error.message());
+            ? L"Scheduling could not be confirmed. Retry the same request or view Outbox before sending another copy. " + error.message() : error.message());
     }
 }
 
@@ -316,8 +329,8 @@ IAsyncAction closeComposer(std::shared_ptr<Composer> state) {
     try {
         bool scheduled = state->scheduleAttempt.Size() || locked(state->message);
         if (shell->dirty.contains(L"compose")) {
-            bool approved = co_await shell->confirm(scheduled ? L"Check Scheduled?" : L"Close this draft?",
-                scheduled ? L"Check Scheduled before sending or scheduling another copy. A submitted schedule may already exist."
+            bool approved = co_await shell->confirm(scheduled ? L"Check Outbox?" : L"Close this draft?",
+                scheduled ? L"Check Outbox before sending or scheduling another copy. A submitted schedule may already exist."
                     : L"Unsaved changes will be discarded. Save Draft first to keep them.", L"Close");
             if (!approved || !state->live(shell)) co_return;
         }
@@ -428,6 +441,7 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         auto use = button(L"Use in Draft", [state] { writingAssistant(state, true); }); state->useAI = make_weak(use); ai.Children().Append(use);
         Expander assistant; assistant.Header(box_value(L"Writing assistance")); assistant.Content(ai); panel.Children().Append(assistant);
         CheckBox scheduling; scheduling.Content(box_value(L"Schedule for later")); state->schedule = make_weak(scheduling);
+        if (state->delayHours() > 0 && !state->uncertain) panel.Children().Append(label(L"Default send delay: " + to_hstring(state->delayHours()) + L" hours. Review the send time before adding this message to Outbox. A custom schedule overrides the default."));
         scheduling.IsChecked(flag(draft, L"scheduleForLater") && text(draft, L"deliveryStatus") != L"unconfirmed"); panel.Children().Append(scheduling);
         DatePicker date; date.Header(box_value(L"Send date (local time)")); date.CalendarIdentifier(L"GregorianCalendar");
         TimePicker time; time.Header(box_value(L"Send time (local time)")); time.MinuteIncrement(1);
@@ -449,7 +463,7 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         ColumnDefinition last; last.Width(xaml::GridLengthHelper::Auto()); buttons.ColumnDefinitions().Append(last);
         auto close = button(L"Close", [state] { closeComposer(state); }); state->close = make_weak(close); buttons.Children().Append(close);
         auto save = button(L"Save Draft", [state] { submit(state, false); }); state->save = make_weak(save); Grid::SetColumn(save, 2); buttons.Children().Append(save);
-        auto send = button(L"Review & Send", [state] { if (state->scheduleOn()) scheduleSend(state); else submit(state, true); }); state->send = make_weak(send); Grid::SetColumn(send, 3); buttons.Children().Append(send);
+        auto send = button(L"Review & Send", [state] { if (state->scheduleNeeded()) scheduleSend(state); else submit(state, true); }); state->send = make_weak(send); Grid::SetColumn(send, 3); buttons.Children().Append(send);
         // Scope shortcuts to this composer and preserve each button's enabled/review guards.
         xaml::Input::KeyboardAccelerator saveShortcut;
         saveShortcut.Key(Windows::System::VirtualKey::S);
@@ -470,7 +484,7 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
             auto host = state->shell.lock(); auto view = state->send.get();
             if (!state->live(host) || host->dialogOpen) return;
             args.Handled(true);
-            if (view && view.IsEnabled()) { if (state->scheduleOn()) scheduleSend(state); else submit(state, true); }
+            if (view && view.IsEnabled()) { if (state->scheduleNeeded()) scheduleSend(state); else submit(state, true); }
         });
         send.KeyboardAccelerators().Append(sendShortcut);
         xaml::Input::KeyboardAccelerator closeShortcut;
@@ -506,7 +520,7 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         // Retain TextBlock peers for this page, including while the AI expander is collapsed.
         panel.Unloaded([state](auto const&, auto const&) { state->notice = nullptr; state->footer = nullptr; state->aiResult = nullptr; });
         editor.Children().Append(scroll(panel)); shell->show(editor);
-        if (locked(draft)) state->say(L"This draft is scheduled or sending. Open Scheduled and cancel an awaiting schedule before editing or sending it. A delivery already sending cannot be cancelled.");
+        if (locked(draft)) state->say(L"This draft is scheduled or sending. Open Outbox and cancel an awaiting schedule before editing or sending it. A delivery already sending cannot be cancelled.");
         else if (state->uncertain) state->say(L"Delivery was not confirmed. Check your provider’s Sent folder before retrying this exact message. Retrying may send a duplicate.");
         state->update();
     } catch (hresult_error const& error) { shell->error(error.message()); }
@@ -523,6 +537,15 @@ IAsyncAction composerWriteGuardChecks(std::shared_ptr<Shell> shell) {
     shell->section = L"compose";
     auto previousPage = shell->page.Content();
     apartment_context ui;
+    auto originalState = copy(shell->state);
+    auto settings = object(shell->state, L"settings"), preferences = object(settings, L"preferences");
+    preferences.Insert(L"sendDelayHours", Value::CreateNumberValue(6)); settings.Insert(L"preferences", preferences); shell->state.Insert(L"settings", settings);
+    Button sendReview; state->send = make_weak(sendReview); state->update();
+    require(state->scheduleNeeded() && unbox_value<hstring>(sendReview.Content()) == L"Review & Send Later"
+        && localTime(delayedTime(6)) != delayedTime(6), L"The global delay did not route ordinary mail to reviewed scheduling.");
+    state->uncertain = true; state->update();
+    require(!state->scheduleNeeded() && unbox_value<hstring>(sendReview.Content()) == L"Review Retry", L"Global delay bypassed uncertain-delivery review.");
+    state->uncertain = false; state->send = {}; shell->state = originalState;
     {
         ComposerWrite write(state);
         co_await resume_after(std::chrono::milliseconds(20)); co_await ui;
@@ -627,8 +650,11 @@ IAsyncAction loadSchedules(std::shared_ptr<Schedules> state) {
         auto list = state->list.get();
         if (!list) co_return;
         list.Children().Clear();
+        uint32_t awaiting = 0;
         for (auto const& value : jobs) {
             auto job = value.GetObject(); auto payload = object(job, L"payload");
+            if (text(job, L"status") == L"sent" || text(job, L"status") == L"cancelled") continue;
+            ++awaiting;
             auto row = stack();
             row.Children().Append(label(text(payload, L"subject", L"(No subject)"), 20));
             auto status = text(job, L"status");
@@ -648,7 +674,7 @@ IAsyncAction loadSchedules(std::shared_ptr<Schedules> state) {
             row.Children().Append(actions);
             list.Children().Append(row);
         }
-        state->say(jobs.Size() ? L"" : L"No scheduled messages in this mailbox.");
+        state->say(awaiting ? L"" : L"No delayed or scheduled messages waiting in this mailbox.");
     } catch (hresult_error const& error) {
         if (state->live(shell) && state->owner == owner && generation == state->loadGeneration) state->say(error.message());
     }
@@ -659,7 +685,7 @@ IAsyncAction loadSchedules(std::shared_ptr<Schedules> state) {
 IAsyncAction scheduledPage(std::shared_ptr<Shell> shell) {
     auto state = std::make_shared<Schedules>(); state->shell = shell;
     state->screenOwner = shell->owner; state->generation = shell->generation;
-    auto panel = stack(16); panel.Children().Append(label(L"Scheduled", 26));
+    auto panel = stack(16); panel.Children().Append(label(L"Outbox", 26));
     panel.Children().Append(label(L"Morrow must remain open to send. Catch-up is limited to 15 minutes; later messages are marked missed and need a new review. Scheduled and sending drafts are locked. Cancel an awaiting schedule before editing; sending and uncertain deliveries cannot be cancelled."));
     ComboBox mailbox; mailbox.Header(box_value(L"Mailbox")); state->mailbox = make_weak(mailbox);
     state->accounts = mailboxChoices(shell, mailbox);

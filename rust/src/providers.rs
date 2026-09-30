@@ -1038,12 +1038,6 @@ async fn google_labels(client: &Client, mail: &Value) -> Result<Vec<Value>> {
 }
 
 pub async fn folders(client: &Client, mail: &Value) -> Result<Vec<Value>> {
-    if !can_organize(mail) {
-        return Err(Error::new(
-            403,
-            "Reconnect with permission to move mail and manage labels.",
-        ));
-    }
     if mail["provider"] == "google" {
         let labels = google_labels(client, mail).await?;
         let mut folders = vec![

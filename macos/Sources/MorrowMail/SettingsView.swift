@@ -194,6 +194,13 @@ struct NativeSettingsView: View {
             Picker("Sync all accounts while Morrow is open", selection: number("preferences", "syncInterval")) { Text("Manually").tag(0); ForEach([1, 5, 15, 30], id: \.self) { Text("Every \($0) minutes").tag($0) } }
                 Text("Runs while Morrow is open. Automatic AI actions are controlled separately in AI & privacy.").font(.caption).foregroundStyle(.secondary)
             }.padding(8) }
+            GroupBox("Sending") { VStack(alignment: .leading, spacing: 8) {
+                Picker("Default send delay · all accounts", selection: number("preferences", "sendDelayHours")) {
+                    Text("Immediately").tag(0)
+                    ForEach(1...6, id: \.self) { Text("\($0) hour\($0 == 1 ? "" : "s")").tag($0) }
+                }
+                Text("Delayed messages appear in Outbox. Keep Morrow open at the send time. A custom schedule overrides this default; changing it does not alter mail already queued.").font(.caption).foregroundStyle(.secondary)
+            }.padding(8) }
             Text("Writing & language").font(.title3.bold())
             Text("Display name and footer apply across all connected accounts. Learning identity remains account-specific.").font(.caption).foregroundStyle(.secondary)
             field("Display name", "preferences", "displayName")

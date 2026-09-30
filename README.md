@@ -339,6 +339,12 @@ Model separates **Chat & replies** from **Search embedding**, with independent t
 
 ## Compose and organize
 
+**Settings → General → Sending** sets a default send delay across all accounts: **Immediately** (default), or **1–6 hours**. Native Compose reviews the actual send time, recipients and frozen message before adding delayed mail to **Outbox**. A custom Schedule for later time takes precedence. Changing the default leaves already queued messages unchanged. Each mailbox has an Outbox sidebar entry; the Workspace Outbox also has a mailbox picker. Sent and cancelled jobs leave that list. Cancel an awaiting job to unlock its retained local draft; uncertain deliveries still require the existing explicit retry review.
+
+Delayed and custom scheduled mail use the same persisted local queue. **Morrow must remain open at the chosen time**; catch-up is limited to 15 minutes. A later missed time requires review and rescheduling. This default applies to native Compose, including replies and forwards; explicit `/send` API and CLI delivery keep their immediate-send semantics.
+
+Expand **Gmail labels** beneath a mailbox in the macOS sidebar, or choose **Gmail labels / Server folders** on Windows, to read Gmail custom label names or Outlook/IMAP folders from that account. Windows also lists loaded entries in the sidebar. **Refresh server list** rereads names. Browsing uses the provider's exact label/folder ID and shows **downloaded messages only**, including search within that selection. Gmail messages can appear under several labels; local labels and folder overrides do not replace provider membership. Reading the catalog does not require move permission or IMAP MOVE/UIDPLUS support; provider writes retain those checks. Folder discovery does not download every message or establish a complete server mirror. The existing Sync and history-import limits still apply.
+
 To, Cc and Bcc accept up to **100 plain email addresses total**, separated by commas or semicolons. At least one address is required across the three fields; Bcc-only sends are supported. Display-name/group syntax is not accepted. Duplicate addresses are delivered once. Cc/Bcc survive saving and uncertain-send recovery. Review shows all recipients; SMTP Bcc stays in the delivery envelope, and Gmail/Outlook receive it in the API MIME submission for provider delivery.
 
 Select an imported message and choose **Move / Labels** (or its context menu). The app loads destinations from that message's account, then requires review before writing:

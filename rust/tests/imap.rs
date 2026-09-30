@@ -764,6 +764,12 @@ async fn imap_move_validates_capabilities_validity_and_exact_copyuid_before_retu
     fixture.update(|state| state.extra_mapping = None);
     for capabilities in ["IMAP4rev1 MOVE", "IMAP4rev1 UIDPLUS"] {
         fixture.update(|state| state.capabilities = capabilities);
+        assert!(
+            !imap::folders_with_tls(&fixture.mail, &fixture.connector)
+                .await
+                .unwrap()
+                .is_empty()
+        );
         let before = fixture.commands().len();
         assert_eq!(
             fixture

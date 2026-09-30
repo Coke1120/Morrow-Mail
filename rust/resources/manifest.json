@@ -10,7 +10,21 @@
       ],
       "demoEpochMilliseconds": 0,
       "summaryScheduleTimeZone": "UTC",
-      "license": "MIT"
+      "license": "MIT",
+      "nativePreferences": {
+        "sendDelayHours": {
+          "default": 0,
+          "allowed": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        }
+      }
     },
     "opencc": {
       "preset": "hk2s",
@@ -38,8 +52,8 @@
   "files": [
     {
       "name": "catalog.json",
-      "bytes": 19482,
-      "sha256": "b3cfda7f77f84981860cd5c0e7af1bb027e3a0a9125f7337f2b177d327e6fc54"
+      "bytes": 19501,
+      "sha256": "ac209d12260b48c02ac82d1005ffbc753e022c59f95d7429f7923062dac307a5"
     },
     {
       "name": "opencc.json",

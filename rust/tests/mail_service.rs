@@ -1772,7 +1772,7 @@ async fn full_history_microsoft_traverses_folders_with_private_checkpoints_and_e
             };
             let value=if let Some(id)=known {json!({"id":id})} else if url.path()=="/v1.0/me/mailFolders" {
                 json!({"value":[{"id":"i=","displayName":"Inbox"},{"id":"s=","displayName":"Sent"},{"id":"d=","displayName":"Drafts"},{"id":"p=","displayName":"Projects","childFolderCount":1},{"id":"j=","displayName":"Junk","childFolderCount":2},{"id":"t=","displayName":"Trash","childFolderCount":3}]})
-            } else if url.path()=="/v1.0/me/mailFolders/p%3D/childFolders" { json!({"value":[{"id":"c=","displayName":"Child"}]}) } else {
+            } else if url.path()=="/v1.0/me/mailFolders/p%3D/childFolders" { json!({"value":[{"id":"c=","displayName":"Child"}]}) } else if ["/v1.0/me/mailFolders/j%3D/childFolders","/v1.0/me/mailFolders/t%3D/childFolders"].contains(&url.path()) { json!({"value":[]}) } else {
                 let id = if url.path().contains("('i=')") { "i=" } else { match url.path().split('/').nth(4).unwrap() {"i%3D"=>"i=","s%3D"=>"s=","d%3D"=>"d=","p%3D"=>"p=","c%3D"=>"c=", _=>panic!("Excluded or unknown folder was fetched")}};
                 let query=url.query_pairs().collect::<std::collections::HashMap<_,_>>(); assert_eq!(query["$top"],"50"); assert!(!query["$filter"].contains(" ge ")); assert!(query["$filter"].contains(" lt 2026-")); assert!(request.headers["prefer"].to_str().unwrap().contains("ImmutableId"));
                 let mut row=microsoft_message(id,A,"Fixture only"); row["receivedDateTime"]="2000-01-01T00:00:00Z".into(); row["sentDateTime"]="2000-01-02T00:00:00Z".into(); row["createdDateTime"]="2000-01-03T00:00:00Z".into(); row["isDraft"]=(id=="d=").into();
@@ -1842,11 +1842,16 @@ async fn full_history_microsoft_traverses_folders_with_private_checkpoints_and_e
             .count(),
         1
     );
-    assert_eq!(
-        providers::folders(&fixture.client, &mail)
-            .await
-            .unwrap_err()
-            .status,
-        403
+    let folders = providers::folders(&fixture.client, &mail).await.unwrap();
+    assert!(
+        folders
+            .iter()
+            .any(|folder| folder["id"] == "t=" && folder["kind"] == "trash")
     );
+    assert!(
+        folders
+            .iter()
+            .any(|folder| folder["id"] == "c=" && folder["name"] == "Projects / Child")
+    );
+    assert!(!providers::can_organize(&mail));
 }

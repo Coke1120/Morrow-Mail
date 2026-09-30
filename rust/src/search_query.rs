@@ -103,7 +103,7 @@ pub fn parse(input: &Value) -> Result<Query> {
         .ok_or_else(invalid)?;
     let folder = get("folder")
         .as_str()
-        .filter(|s| FOLDERS.contains(s))
+        .filter(|s| FOLDERS.contains(s) || crate::pages::provider_folder(s).is_some())
         .ok_or_else(invalid)?;
     let sort = get("sort")
         .as_str()
@@ -232,6 +232,14 @@ pub fn where_clause(
     let mut clauses = vec![format!("d.account IN ({})", placeholders(accounts.len()))];
     let mut params: Vec<Sql> = accounts.iter().cloned().map(Sql::Text).collect();
     fn folder_clause(value: &str, clauses: &mut Vec<String>, params: &mut Vec<Sql>) -> Result<()> {
+        if let Some(id) = crate::pages::provider_folder(value) {
+            clauses.push(format!(
+                "m.rowid IN ({})",
+                crate::pages::PROVIDER_FOLDER_ROWS
+            ));
+            params.extend([Sql::Text(id.into()), Sql::Text(id.into())]);
+            return Ok(());
+        }
         if !FOLDERS.contains(&value) {
             return Err(Error::invalid("Choose a valid mailbox folder."));
         }
@@ -248,6 +256,11 @@ pub fn where_clause(
         Ok(())
     }
     if let Some(folder) = folder {
+        if crate::pages::provider_folder(folder).is_some() && accounts.len() != 1 {
+            return Err(Error::invalid(
+                "Choose one mailbox for a server folder or label.",
+            ));
+        }
         folder_clause(folder, &mut clauses, &mut params)?;
     } else if !conditions
         .iter()

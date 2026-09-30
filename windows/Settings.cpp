@@ -330,6 +330,9 @@ void general(Page const& p) {
     toggle(f, L"markReadOnOpen", L"Mark mail as read when opened (local to Morrow)");
     title(f->panel, L"Mail sync");
     choice(f, L"syncInterval", L"Sync all accounts while Morrow is open", {{L"0", L"Manually"}, {L"1", L"Every minute"}, {L"5", L"Every 5 minutes"}, {L"15", L"Every 15 minutes"}, {L"30", L"Every 30 minutes"}}, true);
+    title(f->panel, L"Sending");
+    choice(f, L"sendDelayHours", L"Default send delay · all accounts", {{L"0", L"Immediately"}, {L"1", L"1 hour"}, {L"2", L"2 hours"}, {L"3", L"3 hours"}, {L"4", L"4 hours"}, {L"5", L"5 hours"}, {L"6", L"6 hours"}}, true);
+    help(f->panel, L"Delayed messages appear in Outbox. Keep Morrow open at the send time. A custom schedule overrides this default; changing it does not alter mail already queued.");
     title(f->panel, L"Writing & language");
     help(f->panel, L"Display name and footer apply across accounts. Confirmed Learning identity remains account-specific.");
     input(f, L"displayName", L"Display name", 100);

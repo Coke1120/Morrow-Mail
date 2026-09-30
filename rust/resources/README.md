@@ -1,7 +1,9 @@
 # Canonical static resources, version 1
 
 `catalog.json` and `opencc.json` are the checked-in source data, not build outputs.
-Their bytes are unchanged from the previous Node generator. `manifest.json` fixes
+OpenCC bytes are unchanged from the previous Node generator. The catalog adds
+the native `sendDelayHours` preference (default 0; allowed 0–6), recorded under
+`provenance.catalog.nativePreferences`. `manifest.json` fixes
 the resource/schema versions, exact sizes and SHA-256 hashes, original source
 commit, package versions, redistribution terms and source archive URLs. No Node,
 npm package, network request or local timezone is needed to validate or export them.

@@ -43,6 +43,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     xaml::DispatcherTimer timer{nullptr};
     std::shared_ptr<Service> service;
     Json state;
+    Json serverFolders;
     Json selected;
     Json updateResult;
     winrt::hstring owner, folder = L"inbox", section = L"mail", nextCursor;

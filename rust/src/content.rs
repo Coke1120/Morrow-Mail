@@ -210,7 +210,7 @@ pub fn preferences(current: &Value, patch: &Value) -> Result<Value> {
         .ok_or_else(|| Error::invalid("Preferences must be an object."))?;
     let defaults = &catalog()["preferences"];
     let mut next = merge(defaults.clone(), current);
-    let choices = json!({"signatureFormat":["plain","html"],"theme":["system","light","dark"],"density":["comfortable","compact","spacious"],"sort":["newest","oldest","sender","subject","unread","starred"],"replyTone":["friendly","professional","concise","warm"],"syncInterval":[0,1,5,15,30]});
+    let choices = json!({"signatureFormat":["plain","html"],"theme":["system","light","dark"],"density":["comfortable","compact","spacious"],"sort":["newest","oldest","sender","subject","unread","starred"],"replyTone":["friendly","professional","concise","warm"],"syncInterval":[0,1,5,15,30],"sendDelayHours":[0,1,2,3,4,5,6]});
     for (key, value) in patch {
         if defaults.get(key).is_none() {
             return Err(Error::invalid("Unknown preference."));

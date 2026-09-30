@@ -30,6 +30,13 @@ const FIELDS: &[(&str, usize)] = &[
 const FOLDERS: &[&str] = &[
     "inbox", "starred", "pending", "sent", "drafts", "archive", "spam", "trash",
 ];
+pub fn provider_folder(folder: &str) -> Option<&str> {
+    folder
+        .strip_prefix("provider:")
+        .filter(|id| !id.is_empty() && id.len() <= 4096 && !id.chars().any(char::is_control))
+}
+// ponytail: scan cached JSON membership; add an index if large label views become slow.
+pub const PROVIDER_FOLDER_ROWS: &str = "SELECT rowid FROM messages WHERE json_extract(data,'$.providerFolderId')=? OR EXISTS (SELECT 1 FROM json_each(data,'$.providerLabelIds') WHERE value=?)";
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub struct Options {
@@ -181,7 +188,11 @@ pub(crate) fn page_at(
     }
     let options: Options =
         serde_json::from_value(input.clone()).map_err(|_| Error::invalid("Invalid mail page."))?;
-    if (!options.folder.is_empty() && !FOLDERS.contains(&options.folder.as_str()))
+    let provider = provider_folder(&options.folder);
+    if (!options.folder.is_empty()
+        && !FOLDERS.contains(&options.folder.as_str())
+        && provider.is_none())
+        || (provider.is_some() && accounts.len() != 1)
         || !["all", "primary", "updates", "newsletters"].contains(&options.category.as_str())
         || !["newest", "oldest", "sender", "subject", "unread", "starred"]
             .contains(&options.sort.as_str())
@@ -208,7 +219,10 @@ pub(crate) fn page_at(
     );
     let mut conditions = vec![format!("d.account IN ({})", placeholders(accounts.len()))];
     let mut params: Vec<Sql> = accounts.iter().cloned().map(Sql::Text).collect();
-    if options.folder == "starred" {
+    if let Some(id) = provider {
+        conditions.push(format!("d.rowid IN ({PROVIDER_FOLDER_ROWS})"));
+        params.extend([Sql::Text(id.into()), Sql::Text(id.into())]);
+    } else if options.folder == "starred" {
         conditions.push("d.starred=1 AND d.folder NOT IN ('trash','spam')".into());
     } else if options.folder == "pending" {
         conditions.push("d.rowid IN (SELECT rowid FROM messages WHERE json_extract(data,'$.pending')=1) AND d.folder NOT IN ('trash','spam')".into());

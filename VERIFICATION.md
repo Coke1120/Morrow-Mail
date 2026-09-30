@@ -1,5 +1,13 @@
 # Verification — 30 September 2026
 
+## Global delay and server folder browsing — current source, unreleased
+
+Native Settings accepts an auto-saved default send delay of 0–6 hours (0 means immediate). Compose captures a reviewed future time and submits through the existing idempotent scheduled-send API; custom schedules override the default. Both clients expose per-mailbox Outbox entries and exclude completed/cancelled jobs from that list. The shared queue retains frozen recipients/Bcc/footer, draft locks, connection checks, 15-minute late grace and uncertain-send recovery. Native Compose uses the preference; explicit immediate API/CLI sends are unchanged.
+
+The existing provider folder API is now reachable from native navigation. Gmail user labels and Outlook/IMAP server folders filter local pages and search by actual provider IDs, preserving multi-label membership and account isolation. Read-only label/folder discovery no longer requires provider-write permissions or IMAP MOVE/UIDPLUS; organization still enforces them. These views show downloaded mail, not a full server mirror. Resource size/hash and catalog provenance were updated only for the new preference; the pinned update key and OpenCC data are unchanged.
+
+Local locked Rust tests, strict all-target Clippy and rustfmt passed. The new owned regression covers delay bounds/default, unchanged reviewed times and Bcc/footer across preference edits, cancellation/unlocking, provider-ID pages/search, duplicate IDs, multi-label membership and rejection of combined-account provider views. Existing TLS provider checks now verify read-only Gmail/Outlook folder catalogs and IMAP listing without move capabilities while retaining write rejection. The macOS build, resource validation, deep codesign/plist checks and full native fixture acceptance passed. Windows packaging/native checks are pending CI; fixture checks do not establish live-account acceptance.
+
 ## One-minute Trash undo and Windows alignment — current source, unreleased
 
 The row Trash button now writes directly to the owning provider without the two modal reviews. The native Undo button and ⌘Z / Ctrl+Z restore the latest confirmed move within 60 seconds, with older moves available newest-first until their own expiry. Text fields retain text undo. Rust keeps the original destination, connection and a single-use token privately; caller-supplied destinations are ignored. Expiry, reconnect, another move or a consumed/uncertain undo cannot replay a write. App shutdown ends the shortcut window; normal provider Trash recovery remains available. Gmail restore changes only Trash/Inbox/Spam placement and retains other labels; Outlook and IMAP restore the original selectable folder while keeping the local message ID stable.

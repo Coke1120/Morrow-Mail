@@ -56,6 +56,105 @@ fn context(path: &[&str], body: Value) -> Context {
 }
 
 #[test]
+fn global_delay_preserves_reviewed_jobs_and_server_folder_browsing_is_owned() {
+    use morrow_search::{content, pages, search_query};
+    let path = root();
+    let db = Store::open(&path).unwrap();
+    configure(&db);
+    assert_eq!(
+        content::preferences(&json!({}), &json!({})).unwrap()["sendDelayHours"],
+        0
+    );
+    for invalid in [json!(-1), json!(7), json!(1.5), json!("1"), json!(true)] {
+        assert!(content::preferences(&json!({}), &json!({"sendDelayHours":invalid})).is_err());
+    }
+    for hours in 1..=6 {
+        let preferences = content::preferences(
+            &db.settings().unwrap()["preferences"],
+            &json!({"sendDelayHours":hours}),
+        )
+        .unwrap();
+        db.set_settings(&json!({"preferences":preferences}))
+            .unwrap();
+        let mut reviewed = input(&format!("delay-job-{hours}"));
+        reviewed["sendAt"] = (chrono::Utc::now() + chrono::Duration::hours(hours))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+            .into();
+        let job = scheduled::start(&db, A, &reviewed).unwrap()["job"].clone();
+        db.set_settings(&json!({"preferences":{"sendDelayHours":0,"displayName":"Changed"}}))
+            .unwrap();
+        assert_eq!(scheduled::start(&db, A, &reviewed).unwrap()["job"], job);
+        assert_eq!(job["payload"]["bcc"], reviewed["bcc"]);
+        assert_eq!(job["payload"]["footer"]["text"], "Reviewed footer");
+        assert!(scheduled::guard_draft(&db, A, string(&job, "draftId"), None).is_err());
+        scheduled::cancel(&db, A, string(&job, "id")).unwrap();
+        scheduled::guard_draft(&db, A, string(&job, "draftId"), None).unwrap();
+    }
+    for (owner, message) in [
+        (
+            A,
+            json!({"id":"same","folder":"archive","providerLabelIds":["Label_1","Label_2"],"body":"downloaded"}),
+        ),
+        (
+            B,
+            json!({"id":"same","folder":"inbox","providerLabelIds":["Label_1"]}),
+        ),
+        (
+            A,
+            json!({"id":"outlook","folder":"archive","providerFolderId":"folder / 中文","body":"downloaded"}),
+        ),
+        (
+            A,
+            json!({"id":"imap","folder":"archive","providerFolderId":"INBOX/Projects","body":"downloaded"}),
+        ),
+    ] {
+        db.upsert(owner, &message).unwrap();
+    }
+    let secret = [7; 32];
+    for (folder, expected) in [
+        ("provider:Label_1", "same"),
+        ("provider:Label_2", "same"),
+        ("provider:folder / 中文", "outlook"),
+        ("provider:INBOX/Projects", "imap"),
+    ] {
+        let page = pages::page(&db, &[A.into()], &json!({"folder":folder}), &secret).unwrap();
+        assert_eq!(page["total"], 1);
+        assert_eq!(page["messages"][0]["id"], expected);
+        assert_eq!(page["messages"][0]["accountId"], A);
+        let query = search_query::parse(&json!({"folder":folder,"query":"downloaded"})).unwrap();
+        let search = search_query::lexical(&db, &query, &[A.into()], false).unwrap();
+        assert_eq!(search["total"], 1);
+        assert_eq!(search["rows"][0]["id"], expected);
+        assert!(
+            pages::page(
+                &db,
+                &[A.into(), B.into()],
+                &json!({"folder":folder}),
+                &secret
+            )
+            .is_err()
+        );
+        assert!(search_query::lexical(&db, &query, &[A.into(), B.into()], false).is_err());
+    }
+    assert_eq!(
+        pages::page(
+            &db,
+            &[A.into()],
+            &json!({"folder":"provider:' OR 1=1 --"}),
+            &secret
+        )
+        .unwrap()["total"],
+        0
+    );
+    for invalid in ["provider:", "provider:unsafe\nfolder"] {
+        assert!(pages::page(&db, &[A.into()], &json!({"folder":invalid}), &secret).is_err());
+        assert!(search_query::parse(&json!({"folder":invalid})).is_err());
+    }
+    drop(db);
+    fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
 fn schedule_creation_is_owned_idempotent_bounded_and_cancel_unlocks_the_saved_draft() {
     let path = root();
     let db = Store::open(&path).unwrap();

@@ -348,7 +348,7 @@ void Shell::rebuildNavigation() {
     struct Destination { wchar_t const* title; wchar_t const* id; wchar_t const* glyph; };
     for (auto const& entry : {Destination{L"Today", L"today", L"\uE706"}, {L"Reply Suggestions", L"reply-suggestions", L"\uE8F2"},
         {L"Out of Office", L"out-of-office", L"\uE708"}, {L"AI Studio", L"studio", L"\uE734"},
-        {L"Calendar", L"calendar", L"\uE787"}, {L"Scheduled", L"scheduled", L"\uE823"}}) {
+        {L"Calendar", L"calendar", L"\uE787"}, {L"Outbox", L"scheduled", L"\uE823"}}) {
         auto item = navItem(entry.title, entry.id, {}, L"inbox", entry.glyph);
         item.IsSelected(section == entry.id); navigation.MenuItems().Append(item);
     }
@@ -386,6 +386,25 @@ void Shell::rebuildNavigation() {
             }
             child.IsSelected(section == L"mail" && owner == id && folder == mailbox.id);
             item.MenuItems().Append(child);
+        }
+        if (id != L"all") {
+            auto outbox = navItem(L"Outbox", L"scheduled", id, L"inbox", L"\uE823");
+            outbox.IsSelected(section == L"scheduled" && owner == id); item.MenuItems().Append(outbox);
+            auto provider = text(object(serverFolders, id.c_str()), L"provider");
+            if (provider.empty()) for (auto const& account : accounts) if (text(account, L"id") == id) provider = text(account, L"provider");
+            auto remote = navItem(provider == L"google" ? L"Gmail labels" : L"Server folders", L"server-folders", id, L"inbox", L"\uE8B7");
+            auto catalog = object(serverFolders, id.c_str());
+            if (catalog.Size()) {
+                remote.SelectsOnInvoked(false);
+                remote.MenuItems().Append(navItem(L"Refresh server list", L"server-folders", id, L"inbox", L"\uE72C"));
+                for (auto const& value : array(catalog, L"folders")) {
+                    auto entry = value.GetObject(); auto key = L"provider:" + text(entry, L"id");
+                    auto child = navItem(text(entry, L"name"), L"mail", id, key, L"\uE8B7");
+                    child.IsSelected(section == L"mail" && owner == id && folder == key); remote.MenuItems().Append(child);
+                }
+                remote.IsExpanded(section == L"mail" && owner == id && std::wstring_view(folder).starts_with(L"provider:"));
+            }
+            item.MenuItems().Append(remote);
         }
         navigation.MenuItems().Append(item);
     };
@@ -436,6 +455,26 @@ IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder
             state = result;
         } catch (...) { loading = false; error(errorText()); co_return; }
         loading = false; mailPage(); co_await loadPage();
+    } else if (target == L"server-folders") {
+        auto panel = stack(12); panel.Children().Append(label(L"Server labels / folders", 26));
+        panel.Children().Append(label(L"Choose a server label or folder to browse downloaded mail. Sync or import history to add more messages; refreshing this list only reads folder names."));
+        show(scroll(panel)); loading = true;
+        try {
+            auto result = co_await service->request(L"/mail/folders", captured);
+            if (!current(version, captured) || !connected(captured)) { loading = false; co_return; }
+            if (text(result, L"accountId") != captured) throw hresult_error(E_FAIL, L"The server folder list could not be confirmed.");
+            Json catalog; JsonArray entries;
+            for (auto const& value : array(result, L"folders")) {
+                auto entry = value.GetObject(); auto key = text(entry, L"id");
+                if (key.empty() || key == L"__archive") continue;
+                entries.Append(value);
+                auto destination = L"provider:" + key;
+                panel.Children().Append(button(text(entry, L"name"), [weak = weak_from_this(), captured, destination] { if (auto self = weak.lock()) self->navigate(L"mail", captured, destination); }));
+            }
+            catalog.Insert(L"folders", entries); put(catalog, L"provider", text(result, L"provider"));
+            serverFolders.Insert(captured, catalog); rebuildNavigation();
+        } catch (...) { error(errorText()); }
+        loading = false;
     } else if (target == L"settings") co_await settingsPage(lifetime, L"mail");
     else if (target == L"preferences") co_await settingsPage(lifetime, L"general");
     else if (target == L"about") co_await settingsPage(lifetime, L"about");
@@ -468,11 +507,17 @@ void Shell::mailPage() {
     RowDefinition footerRow; footerRow.Height(GridLengthHelper::Auto()); list.RowDefinitions().Append(footerRow);
     auto heading = stack(8); heading.Margin(ThicknessHelper::FromLengths(8, 8, 8, 8));
     auto folderTitle = std::wstring(folder); if (!folderTitle.empty()) folderTitle[0] = towupper(folderTitle[0]);
+    if (std::wstring_view(folder).starts_with(L"provider:")) for (auto const& value : array(object(serverFolders, owner.c_str()), L"folders")) {
+        auto entry = value.GetObject(); if (folder == L"provider:" + text(entry, L"id")) folderTitle = text(entry, L"name");
+    }
     Grid listTitle; listTitle.ColumnDefinitions().Append(ColumnDefinition());
     ColumnDefinition unreadColumn; unreadColumn.Width(GridLengthHelper::Auto()); listTitle.ColumnDefinitions().Append(unreadColumn);
     auto titleText = stack(3); titleText.Children().Append(label(hstring(folderTitle), 17));
     titleText.Children().Append(label(owner == L"all" ? L"All accounts" : owner, 12));
     listTitle.Children().Append(titleText);
+    if (std::wstring_view(folder).starts_with(L"provider:")) {
+        auto coverage = label(L"Downloaded mail only. Sync or import history to add more messages.", 11); coverage.MaxLines(2); heading.Children().Append(coverage);
+    }
     unreadFilter = CheckBox(); unreadFilter.Content(box_value(L"Unread"));
     Automation::AutomationProperties::SetName(unreadFilter, L"Show unread only");
     unreadFilter.Click([submitSearch](auto const&, auto const&) { submitSearch(); });

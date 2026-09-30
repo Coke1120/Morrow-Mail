@@ -219,13 +219,13 @@ async fn google_pages_cover_five_scopes_with_readonly_label_names_and_stable_ids
         5
     );
     assert_eq!(calls.lock().unwrap().len(), 20); // Five lists, five label lookups, ten details.
-    assert_eq!(
-        providers::folders(&fixture.client, &mail())
-            .await
-            .unwrap_err()
-            .status,
-        403
+    let folders = providers::folders(&fixture.client, &mail()).await.unwrap();
+    assert!(
+        folders
+            .iter()
+            .any(|folder| folder["id"] == "Label_1" && folder["name"] == "工作 / 專案")
     );
+    assert!(!providers::can_organize(&mail())); // Browsing labels needs only read permission.
     for folder in ["all", "drafts", "starred"] {
         assert!(
             providers::fetch_page(
@@ -237,7 +237,7 @@ async fn google_pages_cover_five_scopes_with_readonly_label_names_and_stable_ids
             .is_err()
         );
     }
-    assert_eq!(calls.lock().unwrap().len(), 20);
+    assert_eq!(calls.lock().unwrap().len(), 21);
 }
 
 #[tokio::test]

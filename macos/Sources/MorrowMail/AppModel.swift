@@ -22,6 +22,7 @@ final class AppModel: ObservableObject {
     @Published var activityError = ""
     @Published var section = "inbox" { didSet { if section != oldValue { draftGeneration += 1 } } }
     @Published var scheduledAccount = ""
+    @Published var serverFolders: [String: [JSON]] = [:]
     @Published var selectedMessage: String? {
         didSet { if selectedMessage != oldValue { openedMessage = nil; draftGeneration += 1 } }
     }
@@ -94,8 +95,10 @@ final class AppModel: ObservableObject {
     var policy: JSON { state["settings"]["policy"] }
     var mailScopeKey: String { [account, section, preferences["sort"].string, String(unreadOnly)].joined(separator: "\n") }
     var mailQueryKey: String { mailScopeKey + "\n" + state["revision"].string }
+    var isMailSection: Bool { mailFolders.contains(section) || section.hasPrefix("provider:") }
+    var mailSectionTitle: String { serverFolders[account]?.first { "provider:" + $0.id == section }?["name"].string ?? section.capitalized }
     var listedMessages: [JSON] {
-        if mailPage.isNull { return messages.filter { section == "studio" || messageMatchesFolder($0, folder: section) } }
+        if mailPage.isNull { return section.hasPrefix("provider:") ? [] : messages.filter { section == "studio" || messageMatchesFolder($0, folder: section) } }
         return mailPageKey == mailScopeKey ? mailPage["messages"].array : []
     }
     var current: JSON? {
@@ -284,7 +287,7 @@ final class AppModel: ObservableObject {
     }
     @discardableResult
     func loadMailPage(cursor: String = "", reset: Bool = true, offset: Int? = nil) async -> Bool {
-        guard (mailFolders.contains(section) || section == "studio"), baseURL != nil else { return false }
+        guard (isMailSection || section == "studio"), baseURL != nil else { return false }
         mailGeneration += 1
         let ticket = mailGeneration, query = mailQueryKey
         mailLoading = true; error = ""
@@ -368,6 +371,13 @@ final class AppModel: ObservableObject {
         state = try await request("/account/select", method: "POST", body: .object(["accountId": .string(id)]))
         selectedMessage = nil
         if let folder { section = folder }
+    }
+    func loadServerFolders(_ owner: String) async throws {
+        guard accounts.contains(where: { $0.id == owner }) else { return }
+        let result = try await request("/mail/folders", mailbox: owner)
+        guard accounts.contains(where: { $0.id == owner }), result["accountId"].string == owner,
+              case .array = result["folders"] else { throw APIError("The server folder list could not be confirmed.") }
+        serverFolders[owner] = result["folders"].array.filter { $0.id != "__archive" && !$0.id.isEmpty && !$0.id.contains(where: { $0.isNewline }) }
     }
     func openAssistant(_ action: String, message: JSON, includeHistory: Bool = false) {
         guard canNavigate, ["summary", "reply", "translate"].contains(action), allowed(action),

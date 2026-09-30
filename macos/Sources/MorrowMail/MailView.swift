@@ -11,6 +11,7 @@ struct MailWorkspace: View {
     @State private var outOfOfficeDirty = false
     @State private var assistantDraft: (draft: Draft, generation: Int)?
     @State private var hoveredMessage: String?
+    @State private var expandedServerAccounts: Set<String> = []
     @EnvironmentObject var model: AppModel
     private var layout: String { expandedReader ? "focus" : ["right", "bottom", "focus"].contains(readerLayout) ? readerLayout : "right" }
     var filtered: [JSON] {
@@ -145,10 +146,11 @@ struct MailWorkspace: View {
                 Button { sidebarVisible = false } label: { Label("Hide Sidebar", systemImage: "sidebar.left") }.labelStyle(.iconOnly).buttonStyle(.borderless).help("Hide Sidebar")
             }.padding(.horizontal, 14).padding(.vertical, 12)
             composeButton.buttonStyle(.borderedProminent).frame(maxWidth: .infinity).padding(.horizontal, 14).padding(.bottom, 10)
-            List(selection: Binding(get: { mailFolders.contains(model.section) ? model.account + "\n" + model.section : model.section }, set: { value in
+            List(selection: Binding(get: { model.isMailSection ? model.account + "\n" + model.section : model.section == "scheduled" && !model.scheduledAccount.isEmpty ? model.scheduledAccount + "\n" + model.section : model.section }, set: { value in
                 guard model.canNavigate else { return }
                 let parts = value.components(separatedBy: "\n")
                 if parts.count == 2 {
+                    if parts[1] == "scheduled" { model.scheduledAccount = parts[0] }
                     if parts[0] == model.account { model.section = parts[1] }
                     else { model.perform { try await model.selectAccount(parts[0], folder: parts[1]) } }
                 } else { model.section = value }
@@ -159,7 +161,7 @@ struct MailWorkspace: View {
                     Label("Out of Office", systemImage: "moon").tag("out-of-office").accessibilityIdentifier("workspace.out-of-office")
                     Label("AI Studio", systemImage: "sparkles").tag("studio")
                     Label("Calendar", systemImage: "calendar").tag("calendar")
-                    Label("Scheduled", systemImage: "clock.arrow.circlepath").tag("scheduled").accessibilityIdentifier("workspace.scheduled")
+                    Label("Outbox", systemImage: "clock.arrow.circlepath").tag("scheduled").accessibilityIdentifier("workspace.scheduled")
                 }
                 if !model.accounts.isEmpty {
                     accountGroup("all", title: "All accounts", subtitle: "Combined mail", symbol: "tray.2")
@@ -207,7 +209,7 @@ struct MailWorkspace: View {
             }.padding(.vertical, 5).help(title)
         }.accessibilityIdentifier("accountGroup.\(account)")
     }
-    func folderRows(_ account: String) -> some View {
+    @ViewBuilder func folderRows(_ account: String) -> some View {
         ForEach(mailFolders, id: \.self) { folder in
             HStack {
                 Label(folder.capitalized, systemImage: ["inbox": "tray", "starred": "star", "pending": "clock", "sent": "paperplane", "drafts": "doc", "archive": "archivebox", "spam": "exclamationmark.shield", "trash": "trash"][folder] ?? "folder")
@@ -216,13 +218,29 @@ struct MailWorkspace: View {
                 if count > 0 && ["inbox", "pending", "drafts"].contains(folder) { Text("\(count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
             }.tag(account + "\n" + folder).accessibilityIdentifier("mailbox.\(account).\(folder)")
         }
+        if account != "all" {
+            Label("Outbox", systemImage: "clock.arrow.circlepath").tag(account + "\nscheduled").accessibilityIdentifier("mailbox.\(account).outbox")
+            DisclosureGroup(isExpanded: Binding(get: { expandedServerAccounts.contains(account) }, set: { expanded in
+                if expanded {
+                    expandedServerAccounts.insert(account)
+                    if model.serverFolders[account] == nil { model.perform { try await model.loadServerFolders(account) } }
+                } else { expandedServerAccounts.remove(account) }
+            })) {
+                ForEach(model.serverFolders[account] ?? []) { folder in
+                    Label(folder["name"].string, systemImage: folder["kind"].string == "label" ? "tag" : "folder")
+                        .tag(account + "\nprovider:" + folder.id).help(folder["name"].string)
+                }
+                Button("Refresh server list") { model.perform { try await model.loadServerFolders(account) } }.disabled(model.busy)
+            } label: { Text(model.accounts.first { $0.id == account }?["provider"].string == "google" ? "Gmail labels" : "Server folders") }
+        }
     }
     func folderCount(_ account: String, _ folder: String) -> Int {
         return model.accounts.filter { account == "all" || $0.id == account }.reduce(0) { $0 + Int(folder == "inbox" ? $1["unread"].number : $1["counts"][folder].number) }
     }
     var messageList: some View {
         VStack(spacing: 0) {
-            HStack { VStack(alignment: .leading, spacing: 3) { Text(model.section.capitalized).font(.headline); Text(model.combined ? "All accounts" : model.account).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }; Spacer(); Toggle(isOn: $model.unreadOnly) { Image(systemName: "line.3.horizontal.decrease.circle") }.toggleStyle(.button).controlSize(.small).help("Show unread only").accessibilityLabel("Show unread only").disabled(!model.searchResponse.isNull) }.padding(.horizontal, 14).padding(.vertical, 10)
+            HStack { VStack(alignment: .leading, spacing: 3) { Text(model.mailSectionTitle).font(.headline); Text(model.combined ? "All accounts" : model.account).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }; Spacer(); Toggle(isOn: $model.unreadOnly) { Image(systemName: "line.3.horizontal.decrease.circle") }.toggleStyle(.button).controlSize(.small).help("Show unread only").accessibilityLabel("Show unread only").disabled(!model.searchResponse.isNull) }.padding(.horizontal, 14).padding(.vertical, 10)
+            if model.section.hasPrefix("provider:") { Text("Downloaded mail only. Sync or import history to add more messages; refreshing the server list reads folder names.").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.bottom, 8) }
             HStack(spacing: 12) {
                 Menu {
                     Picker("Reading layout", selection: $readerLayout) {
@@ -687,7 +705,7 @@ struct ScheduledMailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                SectionHeading(title: "Scheduled", detail: "Morrow must be open to send. Delivery can catch up within 15 minutes of the chosen time; later messages wait for a new review.")
+                SectionHeading(title: "Outbox", detail: "Delayed and scheduled mail waiting to be sent. Morrow must be open to send; catch-up is limited to 15 minutes.")
                 HStack {
                     Picker("Mailbox", selection: Binding(get: { account }, set: { model.scheduledAccount = $0 })) {
                         ForEach(model.accounts) { Text($0["email"].string).tag($0.id) }
@@ -748,7 +766,7 @@ struct ScheduledMailView: View {
             let result = try await model.request("/scheduled", mailbox: owner)
             guard !Task.isCancelled, account == owner, generation == loadGeneration else { return }
             guard case .array = result["scheduled"] else { throw APIError("Morrow received an incomplete schedule list.") }
-            jobs = result["scheduled"].array.filter { $0["accountId"].string == owner }
+            jobs = result["scheduled"].array.filter { $0["accountId"].string == owner && !["sent", "cancelled"].contains($0["status"].string) }
         } catch { if !Task.isCancelled, account == owner, generation == loadGeneration { localError = error.localizedDescription } }
     }
     private func cancel(_ job: JSON, reschedule: Bool) {
@@ -814,6 +832,7 @@ struct ComposeView: View {
     var dirty: Bool { scheduleEnabled || scheduleAttempt != nil || draft.payload != saved || (draft.savedID.isEmpty && (!draft.to.isEmpty || !draft.cc.isEmpty || !draft.bcc.isEmpty || !draft.subject.isEmpty || !draft.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)) }
     private var frozen: Bool { model.busy || draft.unconfirmed || draft.scheduleLocked || scheduleAttempt != nil }
     private var reviewedSendAt: Date { scheduleAttempt.flatMap { parsedDate($0["sendAt"].string) } ?? sendAt }
+    private var defaultDelay: Int { max(0, min(6, Int(model.preferences["sendDelayHours"].number))) }
     var body: some View {
         VStack(spacing: 0) {
           ScrollView {
@@ -834,7 +853,7 @@ struct ComposeView: View {
             if draft.sourceDraft { Text("Editing a local copy without attachments. The original Gmail draft stays in Gmail; changes here are not uploaded to it.").font(.caption).foregroundStyle(.secondary) }
             if draft.forwarding { Text("Forwarding the message text. Attachments are not included.").font(.caption).foregroundStyle(.secondary) }
             if draft.scheduleLocked {
-                Label("This draft is scheduled for \(dateLabel(draft.scheduledSend["sendAt"].string)). Open Scheduled and cancel its schedule before editing or sending it.", systemImage: "lock.fill").font(.callout).foregroundStyle(.orange)
+                Label("This draft is scheduled for \(dateLabel(draft.scheduledSend["sendAt"].string)). Open Outbox and cancel its schedule before editing or sending it.", systemImage: "lock.fill").font(.callout).foregroundStyle(.orange)
             }
             if !draft.replyToID.isEmpty { Label("Replying from the mailbox that owns this conversation", systemImage: "lock.fill").font(.caption).foregroundStyle(.secondary) }
             if !initial.replyToID.isEmpty && initial.savedID.isEmpty && initial.body.isEmpty && !draft.unconfirmed {
@@ -883,6 +902,7 @@ struct ComposeView: View {
                 }
             }
             if !draft.unconfirmed {
+                if defaultDelay > 0 && !scheduleEnabled { Text("Default send delay: \(defaultDelay) hour\(defaultDelay == 1 ? "" : "s"). Review the send time before adding this message to Outbox.").font(.caption).foregroundStyle(.secondary) }
                 Toggle("Schedule for later", isOn: $scheduleEnabled).toggleStyle(.checkbox).disabled(frozen)
                 if scheduleEnabled {
                     DatePicker("Send at", selection: $sendAt, displayedComponents: [.date, .hourAndMinute]).disabled(frozen)
@@ -890,20 +910,23 @@ struct ComposeView: View {
                 }
             }
             if scheduleAttempt != nil {
-                Text("The scheduling request has been submitted. If confirmation was lost, retry the same request or check Scheduled before sending another copy.").font(.callout).foregroundStyle(.orange)
+                Text("The scheduling request has been submitted. If confirmation was lost, retry the same request or check Outbox before sending another copy.").font(.callout).foregroundStyle(.orange)
             }
             if !localError.isEmpty { Text(localError).foregroundStyle(.red).font(.callout).textSelection(.enabled) }
            }.padding(24)
           }
           Divider()
             HStack {
-                Button(scheduleAttempt != nil || draft.scheduleLocked ? "View Scheduled" : draft.unconfirmed ? "Close" : "Cancel") { close() }.keyboardShortcut(.cancelAction).disabled(model.busy)
+                Button(scheduleAttempt != nil || draft.scheduleLocked ? "View Outbox" : draft.unconfirmed ? "Close" : "Cancel") { close() }.keyboardShortcut(.cancelAction).disabled(model.busy)
                 Spacer()
                 if model.busy { ProgressView().controlSize(.small) }
                 Button("Save Draft") { save() }.keyboardShortcut("s").disabled(frozen)
-                if scheduleEnabled && !draft.unconfirmed {
-                    Button(scheduleAttempt == nil ? "Review Schedule" : "Retry Same Schedule") { confirmSchedule = true }
-                        .buttonStyle(.borderedProminent).disabled(model.busy || draft.scheduleLocked || [draft.to, draft.cc, draft.bcc].allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } || draft.body.isEmpty || (scheduleAttempt == nil && sendAt <= Date()))
+                if (scheduleEnabled || defaultDelay > 0 || scheduleAttempt != nil) && !draft.unconfirmed {
+                    Button(scheduleAttempt == nil ? "Review & Send Later" : "Retry Same Schedule") {
+                        if !scheduleEnabled && scheduleAttempt == nil { sendAt = Date().addingTimeInterval(Double(defaultDelay) * 3600) }
+                        confirmSchedule = true
+                    }
+                        .keyboardShortcut("d", modifiers: [.command, .shift]).buttonStyle(.borderedProminent).disabled(model.busy || draft.scheduleLocked || [draft.to, draft.cc, draft.bcc].allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } || draft.body.isEmpty || (scheduleEnabled && scheduleAttempt == nil && sendAt <= Date()))
                 } else {
                   Button(draft.unconfirmed ? "Review Retry" : "Review & Send") { confirmSend = true }
                     .keyboardShortcut("d", modifiers: [.command, .shift]).buttonStyle(.borderedProminent).disabled(model.busy || draft.scheduleLocked || [draft.to, draft.cc, draft.bcc].allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } || draft.body.isEmpty || (draft.unconfirmed && !reviewed))
