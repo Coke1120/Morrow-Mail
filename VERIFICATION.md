@@ -1,8 +1,17 @@
 # Verification — 30 September 2026
 
-## 0.6.0-beta.28 — paired release preparation
+## 0.6.0-beta.28 — published paired native release
 
-The common version and release notes are prepared for beta.28, containing the Gmail zero-length Trash fix, safe organization diagnostics and default mail permissions in both native clients. Local Rust formatting, strict all-target Clippy, the complete locked Rust test suite and macOS native acceptance passed; the single approved live Gmail Trash check is recorded below. Tagged macOS/Windows CI and paired publication are pending. The existing workflow and publisher remain unchanged; no test waiver applies. See the [release notes](docs/releases/v0.6.0-beta.28.md).
+[Beta.28](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.28) was published at 2026-09-30T09:07:21Z from `14d01070aeb1a414e14aac40ec092797567ef7ba`, containing the Gmail zero-length Trash fix, safe organization diagnostics and default mail permissions in both native clients. [Tagged CI 36691497562](https://github.com/Coke1120/Morrow-Mail/actions/runs/36691497562) passed all three jobs: both platforms completed Node-free Rust formatting, strict Clippy and tests, native packaging and acceptance; Windows completed its fictional-mail benchmark; and the existing publisher verified same-run paired provenance before signing and publishing both packages. No test waiver applied.
+
+All six public assets were downloaded and their sizes and GitHub SHA-256 digests matched. The Ed25519 manifest signature verified against the committed pinned public key; both ZIP sizes, hashes and checksum files matched the signed manifest and the inspected same-run CI candidates. ZIP integrity/path checks and bundled package versions passed. The identical macOS app passed deep/strict ad-hoc signature verification and plist lint; its service returned `Morrow Mail 0.6.0-beta.28` with `--version` in an isolated environment. Windows execution evidence comes from CI.
+
+| Public archive | Bytes | SHA-256 |
+| --- | ---: | --- |
+| macos-arm64 | 12,379,813 | `1f8083f30873d4eba018ce57ff9dd61eeab4271a80efc58a9985875e5d2506cd` |
+| windows-x64 | 36,620,401 | `2fbb1cdb8275c4536745f0c41d0062e802b9977fb7c4c9650b5bf75029bf0092` |
+
+Automated acceptance used isolated fictional workspaces and provider/model fixtures. The single approved live Gmail Trash check is recorded below and does not establish complete live-account acceptance. Manual Windows visual/accessibility and clean-machine acceptance remain outstanding; macOS is ad-hoc signed without notarization and Windows is unsigned. The installed app was not replaced. See the [release notes](docs/releases/v0.6.0-beta.28.md).
 
 ## Gmail Trash HTTP 411 — local fix and one live-account check
 

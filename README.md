@@ -27,7 +27,7 @@ AI Studio covers 19 behaviors through model-backed assistance and clearly labele
 
 This project is not affiliated with Genspark and does not claim complete parity. See [feature coverage](FEATURE_COVERAGE.md) for implementation status and simulation limits, and [verification](VERIFICATION.md) for completed checks and remaining release validation.
 
-**[0.6.0-beta.28](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.28)** fixes Gmail Trash HTTP 411 and includes basic read/send/organization permissions in both native sign-in forms. Downloads are published only after both native platform jobs pass. See the [release notes](docs/releases/v0.6.0-beta.28.md) and [verification](VERIFICATION.md) for checks and remaining limits.
+**[0.6.0-beta.28](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.28)** fixes Gmail Trash HTTP 411 and includes basic read/send/organization permissions in both native sign-in forms. Both native release jobs and the paired publisher passed. See the [release notes](docs/releases/v0.6.0-beta.28.md) and [verification](VERIFICATION.md) for checks and remaining limits.
 
 ## Native desktop builds
 
