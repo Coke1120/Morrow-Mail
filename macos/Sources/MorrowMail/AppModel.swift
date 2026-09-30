@@ -416,7 +416,7 @@ final class AppModel: ObservableObject {
                     try? await Task.sleep(nanoseconds: 60_000_000_000)
                     self?.trashUndos.removeAll { $0.expires <= ProcessInfo.processInfo.systemUptime }
                 }
-                self.selectedMessage = nil; self.messageDetail = .null
+                if self.selectedMessage == message.viewID { self.selectedMessage = nil; self.messageDetail = .null }
                 self.notice = "Moved to provider Trash. Undo is available for one minute (⌘Z)."
                 try await self.reload()
             }

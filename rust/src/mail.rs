@@ -863,6 +863,9 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             } else {
                 Value::Null
             };
+            if trashing && mail["provider"] == "microsoft" {
+                destination["sourceBeforeTrash"] = origin["id"].clone();
+            }
             if trashing && origin["id"] == destination["id"] {
                 return Err(Error::conflict(
                     "This message is already in provider Trash.",

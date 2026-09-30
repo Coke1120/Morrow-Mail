@@ -797,7 +797,8 @@ IAsyncAction Shell::trash(Json message) {
         trashUndos.push_back({message, text(result, L"undoToken"), GetTickCount64() + 60000});
         loading = false; updateTrashUndo();
         if (!current(version, captured)) co_return;
-        selected = Json(); renderReader(selected); cursors = {L""}; co_await loadPage();
+        if (text(selected, L"accountId") == account && text(selected, L"id") == text(message, L"id")) { selected = Json(); renderReader(selected); }
+        cursors = {L""}; co_await loadPage();
         status.Text(L"Moved to provider Trash. Undo is available for one minute.");
     } catch (...) { loading = false; error(errorText()); }
 }
@@ -907,7 +908,10 @@ IAsyncAction Shell::shutdown() {
         auto presenter = window.AppWindow().Presenter().try_as<Microsoft::UI::Windowing::OverlappedPresenter>();
         if (service && presenter && presenter.State() == Microsoft::UI::Windowing::OverlappedPresenterState::Restored) {
             auto size = window.AppWindow().Size(); auto scale = windowScale(window);
-            service->saveWindowSize(std::clamp(static_cast<int>(std::lround(size.Width / scale)), 1040, 2400), std::clamp(static_cast<int>(std::lround(size.Height / scale)), 700, 1600));
+            auto saved = service->windowState();
+            auto fitted = mailWindowBounds(window, saved.GetNamedNumber(L"width", 1220), saved.GetNamedNumber(L"height", 800));
+            if (size.Width != fitted.Width || size.Height != fitted.Height)
+                service->saveWindowSize(std::clamp(static_cast<int>(std::lround(size.Width / scale)), 1040, 2400), std::clamp(static_cast<int>(std::lround(size.Height / scale)), 700, 1600));
         }
     } catch (...) { error(L"The window size could not be saved. Mail and settings are retained."); }
     closing = true; ++generation; if (timer) timer.Stop(); navigation.IsEnabled(false); error(L"Closing the private service…");

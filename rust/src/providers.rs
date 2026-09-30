@@ -1313,7 +1313,10 @@ pub async fn organize(
             )
             .await?;
             let labels = result["labelIds"].as_array().ok_or_else(remote_error)?;
-            if labels.contains(&json!("TRASH")) {
+            if labels.contains(&json!("TRASH"))
+                || labels.contains(&json!("INBOX")) != (destination["inbox"] == true)
+                || labels.contains(&json!("SPAM")) != (destination["spam"] == true)
+            {
                 return Err(remote_error());
             }
             return Ok(
@@ -1386,6 +1389,13 @@ pub async fn organize(
             "This message is no longer in provider Trash.",
         ));
     }
+    if destination.get("sourceBeforeTrash").is_some()
+        && current["parentFolderId"] != destination["sourceBeforeTrash"]
+    {
+        return Err(Error::conflict(
+            "This message moved again. Refresh before moving it to Trash.",
+        ));
+    }
     let moved = if current["parentFolderId"] == destination["id"] {
         current
     } else {
@@ -1397,7 +1407,7 @@ pub async fn organize(
         )
         .await?
     };
-    if string(&moved, "id").is_empty() {
+    if string(&moved, "id").is_empty() || moved["parentFolderId"] != destination["id"] {
         return Err(remote_error());
     }
     Ok(
