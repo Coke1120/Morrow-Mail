@@ -1,18 +1,27 @@
 # Verification — 30 September 2026
 
-## 0.6.0-beta.27 — paired release preparation
+## 0.6.0-beta.27 — published paired native release
 
 [PR #13](https://github.com/Coke1120/Morrow-Mail/pull/13) and [PR #11](https://github.com/Coke1120/Morrow-Mail/pull/11) were merged into `main` after both native jobs passed in [PR #13 CI 36664623922](https://github.com/Coke1120/Morrow-Mail/actions/runs/36664623922) and [PR #11 CI 36616429429](https://github.com/Coke1120/Morrow-Mail/actions/runs/36616429429). Their source branches were deleted after merging. Refresh now commits each bounded provider page independently and validates the captured connection before each commit. AI Studio and Settings use fewer primary choices while retaining account ownership, permissions and explicit review/save controls.
 
-The beta.27 tag must repeat Node-free Rust formatting, Clippy and tests, both native builds and acceptance suites, and the Windows fictional-mail benchmark before the existing publisher makes either download public. No test waiver applies. This preparation record does not establish successful tag CI or publication. Manual Windows visual/accessibility, clean-machine and live-account acceptance remain outstanding; macOS is ad-hoc signed without notarization and Windows is unsigned. See the [release notes](docs/releases/v0.6.0-beta.27.md).
+[Beta.27](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.27) was published at 2026-09-30T04:26:49Z from `e5135c88c6e49162d5412c5a24abe58cf4530cd2`. [Tagged CI 36667072161](https://github.com/Coke1120/Morrow-Mail/actions/runs/36667072161) passed all three jobs: both platforms completed Node-free Rust formatting, strict Clippy and tests, native packaging and acceptance; Windows completed its fictional-mail benchmark; and the existing publisher verified same-run paired provenance before signing and publishing both packages. No test waiver applied.
 
-## Current source — simpler AI Studio and Settings
+All six public assets were downloaded and their sizes and GitHub SHA-256 digests matched. The Ed25519 update-manifest signature verified against the committed pinned public key; both ZIP sizes, hashes and checksum files matched the signed manifest. ZIP integrity/path checks and bundled package versions passed. The public macOS app passed deep/strict ad-hoc signature verification and plist lint; `MorrowReleaseVersion` matched beta.27 while the numeric bundle versions remained `0.6.0`. Its service returned `Morrow Mail 0.6.0-beta.27` with `--version` in an isolated environment. The application was not opened and no real workspace was accessed. Windows execution evidence comes from CI.
+
+| Public archive | Bytes | SHA-256 |
+| --- | ---: | --- |
+| macos-arm64 | 12,335,067 | `24790d35bdfb91c5cc990ecd3f91fb14ad742f4589e4d494ad071ffbd81b2fd7` |
+| windows-x64 | 36,605,827 | `1555ddecff9e3ce7b8bb3a414d88058151f2e6e4c9d26edff3dc9e24ed70be2a` |
+
+Automated checks used isolated fictional workspaces and provider/model fixtures. No real mailbox, paid model or provider write was used. Manual Windows visual/accessibility, clean-machine and live-account acceptance remain outstanding; macOS is ad-hoc signed without notarization and Windows is unsigned. See the [release notes](docs/releases/v0.6.0-beta.27.md).
+
+## PR #11 local review — simpler AI Studio and Settings
 
 Both native clients now show Assistant and Summaries as the primary AI Studio pages, with Writing style & notes under More. Settings has six everyday categories and three entries under Advanced setup. AI & privacy shows permitted mail first; optional controls start collapsed, with automatic assistance's saved On/Off/Paused status visible. Explicit permission saves, connection tests, paid-request review and account ownership are unchanged.
 
 The macOS production package built successfully and passed `morrow-native-check`, plist lint, deep/strict ad-hoc signature verification and Rust formatting. A temporary in-memory SwiftUI harness opened the changed Assistant, privacy and connection pages without starting a service, changing saved state or creating unsaved edits. Its accessibility enumeration returned no entries, so it does not establish label reachability or accessibility acceptance. No real workspace, paid model or provider write was used.
 
-Windows smoke now checks primary navigation, direct advanced setup links and that opening optional permission sections leaves saved policy unchanged; Windows compilation and execution use the existing PR CI, not this macOS host. This review is based on native source and fixture checks, not a usability study with office staff. Manual visual/accessibility, clean-machine and live-account acceptance remain outstanding. No release or version change is included.
+Windows smoke now checks primary navigation, direct advanced setup links and that opening optional permission sections leaves saved policy unchanged; Windows compilation and execution use the existing PR CI, not this macOS host. This review is based on native source and fixture checks, not a usability study with office staff. Manual visual/accessibility, clean-machine and live-account acceptance remain outstanding. The PR did not change the version; subsequent beta.27 publication is recorded above.
 
 ## 0.6.0-beta.26 — published native mail-row actions
 

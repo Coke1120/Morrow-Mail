@@ -27,7 +27,7 @@ AI Studio covers 19 behaviors through model-backed assistance and clearly labele
 
 This project is not affiliated with Genspark and does not claim complete parity. See [feature coverage](FEATURE_COVERAGE.md) for implementation status and simulation limits, and [verification](VERIFICATION.md) for completed checks and remaining release validation.
 
-**0.6.0-beta.27 release preparation** simplifies AI Studio and Settings in both native clients and saves each bounded provider refresh page as it arrives. Publication requires the complete paired tag checks. See the [release notes](docs/releases/v0.6.0-beta.27.md) and [verification](VERIFICATION.md) for checks and remaining limits.
+**[0.6.0-beta.27](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.27)** simplifies AI Studio and Settings in both native clients and saves each bounded provider refresh page as it arrives. Both native release jobs and the paired publisher passed. See the [release notes](docs/releases/v0.6.0-beta.27.md) and [verification](VERIFICATION.md) for checks and remaining limits.
 
 ## Native desktop builds
 
