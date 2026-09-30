@@ -778,7 +778,35 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                 .ok_or_else(|| {
                     Error::invalid("Choose a current folder or label from this mailbox.")
                 })?;
-            let mut patch=if ["","imap"].contains(&string(&mail,"provider")){imap::organize(&mail,&message,&destination,mode).await}else{providers::organize(&app.0.client,&mail,&message,&destination,mode).await}.map_err(|_|Error::new(502,"The provider change could not be confirmed. Check your provider before retrying. Your cached copy is retained."))?;
+            let mut patch = if ["", "imap"].contains(&string(&mail, "provider")) {
+                imap::organize(&mail, &message, &destination, mode).await
+            } else {
+                providers::organize(&app.0.client, &mail, &message, &destination, mode).await
+            }
+            .map_err(|error| {
+                let code = string(&error.body, "code");
+                let reason = match code {
+                    "provider_permission_denied" if mail["provider"] == "google" =>
+                        "Gmail denied this change because the required permission was not granted. Sign in again with this account and approve mail access in your browser.".to_owned(),
+                    "provider_quota_exceeded" | "provider_daily_quota_exceeded" =>
+                        "The provider is limiting requests. Wait before reviewing another attempt.".to_owned(),
+                    _ if error.provider_status.is_some_and(|status| status < 500) => error.to_string(),
+                    _ => "The provider change could not be confirmed.".to_owned(),
+                };
+                let status = error.provider_status.map(|status| format!(" Provider HTTP status: {status}.")).unwrap_or_default();
+                let mut safe = Error::new(502, &format!("{reason}{status} Your cached copy is retained. Check your provider before retrying."));
+                safe.provider_status = error.provider_status;
+                if let Some(status) = error.provider_status {
+                    safe.body["providerStatus"] = status.into();
+                }
+                if !code.is_empty() {
+                    safe.body["code"] = code.into();
+                }
+                if code == "provider_permission_denied" || error.provider_status == Some(401) {
+                    safe.body["recoveryAction"] = "reconnect".into();
+                }
+                safe
+            })?;
             let google = mail["provider"] == "google";
             let moving = mode == "move";
             let owner = ctx.owner.clone();

@@ -1,5 +1,35 @@
 # Verification — 30 September 2026
 
+## 0.6.0-beta.28 — paired release preparation
+
+The common version and release notes are prepared for beta.28, containing the Gmail zero-length Trash fix, safe organization diagnostics and default mail permissions in both native clients. Local Rust formatting, strict all-target Clippy, the complete locked Rust test suite and macOS native acceptance passed; the single approved live Gmail Trash check is recorded below. Tagged macOS/Windows CI and paired publication are pending. The existing workflow and publisher remain unchanged; no test waiver applies. See the [release notes](docs/releases/v0.6.0-beta.28.md).
+
+## Gmail Trash HTTP 411 — local fix and one live-account check
+
+Authorized interactive debugging observed provider HTTP 411 for a reviewed Gmail Trash operation. The shared Rust organization path now sends `Content-Length: 0` on its empty-body Trash POST. System `TRASH` identity remains independent of the displayed name; the existing isolated TLS move fixture now uses Bin and asserts the zero-length header. That regression failed before the fix and passed afterward.
+
+Rust formatting, strict all-target Clippy and all 11 locked `mail_service` tests passed. The macOS candidate rebuilt with the existing bundled Google Desktop registration and passed `morrow-native-check`, plist lint and deep/strict ad-hoc signature verification. Fixture acceptance used separate fictional workspaces; Windows compilation/execution was not run on this host.
+
+With explicit user approval, the updated candidate moved one identified test message on the existing Gmail connection. The native UI showed `Provider change confirmed`, removed the message from Inbox and displayed it in Trash. No OAuth reauthorization was performed for that successful check. This is narrow live Gmail Trash evidence, not complete live-account acceptance. The candidate is running locally; the installed `/Applications` app and public release assets were not replaced.
+
+## Default mail permissions — local source verification
+
+Both native sign-in forms now request basic read, send and organization access without a separate organization checkbox: Gmail uses `gmail.modify`; Microsoft uses `Mail.ReadWrite` and `Mail.Send`. Calendar and Out of Office consent remain explicit. Previously issued connections retain their recorded scopes until browser reauthorization; incomplete new consent is rejected before fetching mail or replacing connections.
+
+Rust formatting, strict all-target Clippy and the complete locked Rust test suite passed. Isolated OAuth fixtures cover default scopes, legacy `organize: false` requests, partial Gmail/Microsoft grants and preservation of other accounts, cached messages and drafts after rejected reauthorization.
+
+The updated macOS candidate built with the existing bundled Google Desktop registration and passed `morrow-native-check`, including assertions for default mail scopes, plist lint and deep/strict ad-hoc signature verification. Native acceptance used separate fictional workspaces. Windows compilation/execution was not run on this macOS host. No real mailbox/provider write, public release or installed-app replacement is included.
+
+## Gmail Trash diagnostics — local source verification
+
+Current source preserves safe provider HTTP status for reviewed organization failures instead of replacing every failure with the same uncertain-result message. Recognized Gmail `insufficientPermissions` responses provide same-account browser-reconnect guidance; quota errors retain their safe codes without starting write retries. Provider descriptions remain private, and failed or lost writes retain the cached messages.
+
+Rust formatting, strict all-target Clippy and the complete locked Rust test suite passed. The added isolated TLS regression covers Gmail Trash HTTP 401/403/404/429/503 and a lost response, verifies one write per explicit attempt, preserves colliding message IDs in both accounts while the other account is selected, and rejects provider-detail/credential leaks. Existing provider move/Trash success fixtures also passed.
+
+The macOS candidate built with the existing bundled Google Desktop registration and passed `morrow-native-check`, plist lint and deep/strict ad-hoc signature verification. Native acceptance used separate fictional workspaces. Windows compilation/execution was not run on this macOS host.
+
+These fixture checks establish error diagnostics and cache retention, not the cause of the reported live Gmail failure or live-account deletion acceptance. No real mailbox/provider write, public release or installed-app replacement is included in this source change.
+
 ## 0.6.0-beta.27 — published paired native release
 
 [PR #13](https://github.com/Coke1120/Morrow-Mail/pull/13) and [PR #11](https://github.com/Coke1120/Morrow-Mail/pull/11) were merged into `main` after both native jobs passed in [PR #13 CI 36664623922](https://github.com/Coke1120/Morrow-Mail/actions/runs/36664623922) and [PR #11 CI 36616429429](https://github.com/Coke1120/Morrow-Mail/actions/runs/36616429429). Their source branches were deleted after merging. Refresh now commits each bounded provider page independently and validates the captured connection before each commit. AI Studio and Settings use fewer primary choices while retaining account ownership, permissions and explicit review/save controls.

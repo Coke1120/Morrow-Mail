@@ -280,6 +280,100 @@ async fn wait_for(gate: &Semaphore) {
 }
 
 #[tokio::test]
+async fn gmail_trash_failures_keep_safe_diagnostics_and_owned_cache() {
+    let outcome = Arc::new(AtomicUsize::new(0));
+    let current = outcome.clone();
+    let writes = Arc::new(AtomicUsize::new(0));
+    let counted = writes.clone();
+    let fixture = Fixture::new(Arc::new(move |request| {
+        let current = current.clone();
+        let counted = counted.clone();
+        async move {
+            assert_eq!(request.owner(), A);
+            if request.path.ends_with("/labels") {
+                assert_eq!(request.method, "GET");
+                return Reply::Json(200, json!({"labels":[{"id":"TRASH","name":"TRASH","type":"system"}]}));
+            }
+            assert_eq!(request.method, "POST");
+            assert_eq!(request.path, "/gmail/v1/users/me/messages/same/trash");
+            assert!(request.body.is_empty());
+            counted.fetch_add(1, Ordering::SeqCst);
+            let (status, reason) = match current.load(Ordering::SeqCst) {
+                0 => (403, "insufficientPermissions"),
+                1 => (403, "userRateLimitExceeded"),
+                2 => (401, "authError"),
+                3 => (429, "rateLimitExceeded"),
+                4 => (404, "notFound"),
+                5 => (503, "backendError"),
+                _ => return Reply::Lost,
+            };
+            Reply::Json(status, json!({"error":{"message":"private-provider-detail fixture-secret","errors":[{"reason":reason}]}}))
+        }
+        .boxed()
+    }))
+    .await;
+    let server = fixture.start().await;
+    set(&server.app, config(&[(A, "google"), (B, "google")])).await;
+    server
+        .app
+        .db(|db| {
+            for owner in [A, B] {
+                db.upsert(owner, &cached("google:same", owner, "inbox"))?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    for (index, status, expected) in [
+        (0, Some(403), "approve mail access"),
+        (1, Some(403), "limiting requests"),
+        (2, Some(401), "Reconnect this account"),
+        (3, Some(429), "rate limiting"),
+        (4, Some(404), "provider rejected"),
+        (5, Some(503), "could not be confirmed"),
+        (6, None, "could not be confirmed"),
+    ] {
+        outcome.store(index, Ordering::SeqCst);
+        let (api_status, result) = server
+            .call(
+                "POST",
+                "/api/messages/google%3Asame/organize",
+                A,
+                json!({"mode":"move","destinationId":"TRASH","confirmed":true}),
+            )
+            .await;
+        assert_eq!(api_status, 502, "{result}");
+        assert!(string(&result, "error").contains(expected), "{result}");
+        assert!(string(&result, "error").contains("cached copy is retained"));
+        assert_eq!(result["providerStatus"].as_u64(), status);
+        assert!(!result.to_string().contains("private-provider-detail"));
+        assert!(!result.to_string().contains("fixture-secret"));
+        if index == 0 {
+            assert_eq!(result["code"], "provider_permission_denied");
+            assert_eq!(result["recoveryAction"], "reconnect");
+        } else if index == 1 {
+            assert_eq!(result["code"], "provider_quota_exceeded");
+            assert!(result.get("recoveryAction").is_none());
+        }
+        assert_eq!(writes.load(Ordering::SeqCst), index + 1);
+        server
+            .app
+            .db(|db| {
+                for owner in [A, B] {
+                    assert_eq!(
+                        db.get(owner, "google:same")?.unwrap(),
+                        cached("google:same", owner, "inbox")
+                    );
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn provider_spam_folders_moves_and_restore() {
     for (labels, folder) in [
         (json!(["TRASH", "SPAM", "DRAFT"]), "trash"),
@@ -309,7 +403,7 @@ async fn provider_spam_folders_moves_and_restore() {
                         200,
                         json!({"labels":[
                             {"id":"SPAM","name":"SPAM","type":"system"},
-                            {"id":"TRASH","name":"TRASH","type":"system"},
+                            {"id":"TRASH","name":"Bin","type":"system"},
                             {"id":"Label_1","name":"Spam","type":"user"}
                         ]}),
                     );
@@ -317,6 +411,7 @@ async fn provider_spam_folders_moves_and_restore() {
                 assert_eq!(request.method, "POST");
                 if url.path().ends_with("/trash") {
                     assert!(request.body.is_empty());
+                    assert_eq!(request.headers["content-length"], "0");
                     return Reply::Json(200, json!({"labelIds":["TRASH","Label_1"]}));
                 }
                 assert_eq!(url.path(), "/gmail/v1/users/me/messages/remote/modify");
@@ -937,7 +1032,7 @@ async fn oauth_reconnect_canonicalizes_identity_revokes_generation_and_disconnec
         .query_pairs()
         .collect::<std::collections::HashMap<_, _>>();
     assert_eq!(query["code_challenge_method"], "S256");
-    assert!(query["scope"].contains("gmail.send"));
+    assert!(query["scope"].contains("gmail.modify"));
     let callback = format!(
         "{}/api/oauth/google/callback?state={}&code=fixture-code",
         server.base, query["state"]

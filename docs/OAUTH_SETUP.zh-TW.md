@@ -1,6 +1,6 @@
 # Google / Outlook OAuth 設定
 
-核對日期：2026-09-28。以下依照 Morrow Mail 的 Rust 正式服務目前實際要求的權限整理；不代表已登入驗證你的 Google Cloud／Entra 專案設定。
+核對日期：2026-09-30。以下依照 Morrow Mail 的 Rust 正式服務目前實際要求的權限整理；不代表已登入驗證你的 Google Cloud／Entra 專案設定。
 
 ## 先確認要修改哪個專案
 
@@ -16,12 +16,13 @@
 
 | 功能 | Morrow 要求的 scopes |
 | --- | --- |
-| 基本郵件登入、讀取、寄送 | `openid`、`email`、`https://www.googleapis.com/auth/gmail.readonly`、`https://www.googleapis.com/auth/gmail.send` |
-| 移動郵件／管理 labels | `openid`、`email`、`https://www.googleapis.com/auth/gmail.modify`；勾選移動權限時，Morrow 以此取代上述 readonly/send 組合 |
+| 郵件登入、讀取、寄送、移至垃圾桶／管理 labels | `openid`、`email`、`https://www.googleapis.com/auth/gmail.modify`；目前登入預設一起要求，不需額外勾選 |
 | **Out of Office 額外權限** | **`https://www.googleapis.com/auth/gmail.settings.basic`** |
 | Calendar 的獨立授權 | `openid`、`email`、`https://www.googleapis.com/auth/calendar.calendarlist.readonly`、`https://www.googleapis.com/auth/calendar.events` |
 
 `gmail.modify` 本身不足以設定自動回覆；Gmail 的 `users.settings.updateVacation` 明確要求 `gmail.settings.basic`。不需要為這項功能加入 `gmail.settings.sharing` 或建立 service account。[Google vacation API](https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.settings/updateVacation)、[Calendar scopes](https://developers.google.com/workspace/calendar/api/auth)
+
+較早版本只授予 readonly/send 的帳號，需要在新版 Morrow 重新登入同一帳號一次並完成瀏覽器同意。更新 app 或勾選匯入資料夾不會擴大已發出的 token 權限；重新授權保留既有快取、草稿及其他帳號，不完整授權會保留原連線。
 
 4. 在 **Audience** 確認：外部 app 若仍在 **Testing**，將要登入的帳號加入 **Test users**。這些非基本 scopes 的測試 refresh token 通常會在 **7 天**到期，屆時需要重新連線。公開提供其他人使用時，依 Google 要求完成敏感／受限制 scopes 驗證；切換 In production 並不等於通過驗證。[Google token 到期規則](https://developers.google.com/identity/protocols/oauth2#expiration)、[OAuth verification](https://developers.google.com/identity/protocols/oauth2/production-readiness/sensitive-scope-verification)
 5. 在 **Clients** 保留 **Desktop app** 類型。Morrow 使用本機 loopback callback；不要改成 Web application，也不用設定 Web client 的 Authorized redirect URIs。Google Desktop loopback 適用於 macOS／Windows。[Desktop OAuth](https://developers.google.com/identity/protocols/oauth2/native-app)
@@ -49,15 +50,14 @@
 
    | 功能 | Delegated permissions |
    | --- | --- |
-   | 基本讀信／寄信 | `User.Read`、`Mail.Read`、`Mail.Send`、`offline_access` |
-   | 移動郵件、Junk 等操作 | `Mail.ReadWrite`，保留 `User.Read`、`Mail.Send`、`offline_access` |
+   | 郵件登入、讀信／寄信、移動郵件及 Junk／Trash 操作 | `User.Read`、`Mail.ReadWrite`、`Mail.Send`、`offline_access`；目前登入預設一起要求 |
    | **Out of Office** | **`MailboxSettings.ReadWrite`** |
    | Calendar | `Calendars.ReadWrite`，以及 `User.Read`、`offline_access` |
 
    請選 **Microsoft Graph／Delegated**，不是 Office 365 Exchange Online 的舊權限，也不是 Application permissions。`Mail.ReadWrite` 不包含寄信或修改自動回覆所需權限。`MailboxSettings.ReadWrite` 支援工作／學校及個人 Microsoft 帳號。[Graph permissions](https://learn.microsoft.com/en-us/graph/permissions-reference)、[Mailbox settings API](https://learn.microsoft.com/en-us/graph/api/user-update-mailboxsettings?view=graph-rest-1.0)
 
 6. 儲存。若組織限制使用者 consent，請該租戶管理員批准實際要求的權限；是否需要 admin consent 取決於租戶政策。
-7. 回到 Morrow：需要移動郵件時，在 **Settings → Mail** 勾選 provider moves 權限並重新登入；需要 Out of Office 時，選取原 Outlook 帳號 → **Out of Office → Allow Out of Office settings…**，完成額外同意後重新整理。Calendar 仍從 **Settings → Calendar → Outlook Calendar** 單獨登入。
+7. 回到 Morrow：在 **Settings → Mail** 登入，基本郵件權限會一起要求，不需額外勾選。較早的唯讀／寄送授權需要重新登入同一帳號一次。需要 Out of Office 時，選取原 Outlook 帳號 → **Out of Office → Allow Out of Office settings…**，完成額外同意後重新整理。Calendar 仍從 **Settings → Calendar → Outlook Calendar** 單獨登入。
 
 ## 設好後怎樣確認
 

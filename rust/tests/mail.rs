@@ -82,7 +82,7 @@ fn mime_delivery_preserves_bcc_in_provider_api_and_hides_it_from_smtp_headers() 
 fn oauth_pkce_and_cursor_boundaries() {
     let google = providers::oauth_start(
         "google",
-        &json!({"clientId":"fixture","clientSecret":"public-installed-secret","organize":true}),
+        &json!({"clientId":"fixture","clientSecret":"public-installed-secret"}),
         "http://localhost:12345/api/oauth/google/callback",
         "mail",
     )
@@ -182,6 +182,18 @@ fn out_of_office_scope_is_explicit_and_preserves_organize_and_calendar() {
                 "mail",
             )
             .unwrap();
+            let url = url::Url::parse(base["url"].as_str().unwrap()).unwrap();
+            let query = url
+                .query_pairs()
+                .collect::<std::collections::HashMap<_, _>>();
+            assert!(query["scope"].contains(if provider == "google" {
+                "https://www.googleapis.com/auth/gmail.modify"
+            } else {
+                "Mail.ReadWrite"
+            }));
+            if provider == "microsoft" {
+                assert!(query["scope"].contains("Mail.Send"));
+            }
             let opted = providers::oauth_start(
                 provider,
                 &json!({"clientId":"fixture","organize":organize,"outOfOffice":true}),

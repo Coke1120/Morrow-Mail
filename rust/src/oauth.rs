@@ -193,7 +193,8 @@ async fn start(app: &App, ctx: &Context, provider: &str, calendar: bool) -> Resu
     if id.contains(['\r', '\n', '\t']) {
         return Err(Error::invalid("OAuth client ID must be a single line."));
     }
-    let mut config = json!({"clientId":id,"organize":upgrade.as_ref().map(providers::can_organize).unwrap_or(ctx.body["organize"]==true),"outOfOffice":!calendar && ctx.body["outOfOffice"]==true});
+    let mut config =
+        json!({"clientId":id,"outOfOffice":!calendar && ctx.body["outOfOffice"]==true});
     if calendar {
         let settings = app.settings().await?;
         let existing = &settings["calendars"][provider];
@@ -340,6 +341,16 @@ async fn finish_mail(app: &App, attempt: &Attempt, code: &str) -> Result<()> {
         providers::oauth_finish(&app.0.client, &attempt.provider, &attempt.value, code)
             .await
             .map_err(|_| failed())?;
+    let can_send = attempt.provider != "microsoft"
+        || string(&connection, "grantedScopes")
+            .split_whitespace()
+            .any(|scope| scope == "Mail.Send");
+    if !providers::can_organize(&connection) || !can_send {
+        return Err(Error::new(
+            403,
+            "Mail permissions were not fully granted. Sign in again and allow reading, sending and moving mail. Existing connections and cached mail were retained.",
+        ));
+    }
     let messages = if attempt.import_options.is_none() && attempt.upgrade.is_none() {
         let result = providers::fetch_page(&app.0.client, &connection, &json!({}))
             .await
@@ -366,8 +377,7 @@ async fn finish_mail(app: &App, attempt: &Attempt, code: &str) -> Result<()> {
                 if !email.eq_ignore_ascii_case(owner) || current.get(owner).is_none_or(|v| v["connectionId"] != previous["connectionId"] || v["authorizationId"] != previous["authorizationId"] || v["provider"] != previous["provider"] || v["clientId"] != previous["clientId"]) {
                     return Err(Error::conflict("The mailbox changed. Authorize automatic replies again for the original account."));
                 }
-                if crate::out_of_office::capability(&connection, owner)["canWrite"] != true
-                    || (providers::can_organize(&current[owner]) && !providers::can_organize(&connection)) {
+                if crate::out_of_office::capability(&connection, owner)["canWrite"] != true {
                     return Err(Error::new(403, "Automatic reply permissions were not fully granted. The existing mail connection was retained."));
                 }
                 connection = merge(current[owner].clone(), &connection);

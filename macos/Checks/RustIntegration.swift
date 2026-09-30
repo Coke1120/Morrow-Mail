@@ -405,6 +405,9 @@ struct NativeRustChecks {
                 try check(!items.contains { $0.name == "client_secret" }, "OAuth secret leaked into authorization URL")
                 let scope = items.first { $0.name == "scope" }?.value ?? ""
                 try check(calendar ? !scope.contains("gmail") && !scope.contains("Mail.Read") : !scope.contains("calendar") && !scope.contains("Calendars"), "mail and calendar OAuth scopes mixed")
+                if !calendar {
+                    try check(scope.contains(provider == "google" ? "gmail.modify" : "Mail.ReadWrite") && (provider == "google" || scope.contains("Mail.Send")), "mail sign-in omitted default read/send/move permissions")
+                }
                 // Exercise a denied callback locally; never exchange an authorization code.
                 var callback = URLComponents(string: items.first { $0.name == "redirect_uri" }!.value!)!
                 callback.queryItems = [URLQueryItem(name: "state", value: items.first { $0.name == "state" }!.value), URLQueryItem(name: "error", value: "access_denied")]

@@ -378,15 +378,15 @@ void mailEditor(Page const& p, StackPanel const& into, Form const& history, Json
     for (auto provider : {L"google", L"microsoft"}) {
         Expander expander; expander.Header(box_value(provider == std::wstring_view(L"google") ? L"Gmail — browser sign-in" : L"Outlook / Microsoft 365 — browser sign-in"));
         auto content = stack(12); expander.Content(content); expander.HorizontalAlignment(xaml::HorizontalAlignment::Stretch); into.Children().Append(expander);
-        Json initial; boolean(initial, L"useDefaultClient", flag(object(clients, provider), L"configured")); boolean(initial, L"organize", false); put(initial, L"clientId", L"");
+        Json initial; boolean(initial, L"useDefaultClient", flag(object(clients, provider), L"configured")); put(initial, L"clientId", L"");
         auto f = form(p, content, initial, provider);
         toggle(f, L"useDefaultClient", L"Use Morrow’s bundled OAuth client");
         input(f, L"clientId", L"Own desktop application client ID (only when bundled client is off)", 1000);
         if (provider == std::wstring_view(L"google")) password(f, L"Own Google desktop client secret");
-        toggle(f, L"organize", L"Allow reviewed provider moves / label changes (additional permission)");
+        help(content, L"Sign-in includes reading, sending and organizing mail, including moving to Trash. Sign in again to update access for older connections.");
         help(content, L"Microsoft desktop clients need no secret. For Google custom clients, use Desktop app credentials. Keep Morrow open for the browser callback; reconnecting preserves other accounts.");
         action(p, content, L"Sign in through browser", [f, history, provider = hstring(provider)](Page page) -> IAsyncAction {
-            auto body = pick(f->value, {L"useDefaultClient", L"organize"});
+            auto body = pick(f->value, {L"useDefaultClient"});
             if (!flag(body, L"useDefaultClient")) { put(body, L"clientId", text(f->value, L"clientId")); if (f->secret) put(body, L"clientSecret", f->secret.Password()); }
             body.Insert(L"importOptions", copy(history->value));
             struct Clear { Form f; Json body; ~Clear() { if (f->secret) f->secret.Password(L""); remove(body, L"clientSecret"); } } clear{f, body};

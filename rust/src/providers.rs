@@ -22,6 +22,7 @@ pub struct Definition {
     pub authorize: &'static str,
     pub token: &'static str,
     pub api: &'static str,
+    // Read/send fallback for older connections without recorded OAuth scopes.
     pub scope: &'static str,
     pub organize: &'static str,
     pub calendar: &'static str,
@@ -91,6 +92,12 @@ async fn request_kind(request: RequestBuilder, limit: usize, oauth: bool) -> Res
             let body = response_json(response, 32768).await.unwrap_or(Value::Null);
             if let Some(code) = provider_quota_code(&body) {
                 error.body["code"] = code.into();
+            } else if body["error"]["errors"].as_array().is_some_and(|errors| {
+                errors
+                    .iter()
+                    .any(|entry| entry["reason"] == "insufficientPermissions")
+            }) {
+                error.body["code"] = "provider_permission_denied".into();
             }
         }
         return Err(error);
@@ -178,12 +185,7 @@ pub fn oauth_start(provider: &str, config: &Value, redirect: &str, purpose: &str
     if purpose == "calendar" {
         saved["purpose"] = purpose.into();
     } else {
-        saved["mailScope"] = if config["organize"] == true {
-            def.organize
-        } else {
-            def.scope
-        }
-        .into();
+        saved["mailScope"] = def.organize.into();
         if config["outOfOffice"] == true {
             saved["mailScope"] = format!(
                 "{} {}",
@@ -1253,7 +1255,7 @@ pub async fn organize(
         )?;
         let result = request(
             if destination["kind"] == "trash" {
-                builder
+                builder.header(reqwest::header::CONTENT_LENGTH, "0")
             } else {
                 builder.json(&json!({"addLabelIds":add,"removeLabelIds":remove}))
             },

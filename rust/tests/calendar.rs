@@ -927,6 +927,69 @@ fn callback_context(local: &url::Url, cookie: &str, code: &str) -> Context {
     ctx
 }
 #[tokio::test]
+async fn mail_partial_consent_keeps_existing_connections_and_cached_mail() {
+    for (provider, scope) in [
+        (
+            "google",
+            "openid email https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send",
+        ),
+        ("microsoft", "User.Read Mail.Read Mail.Send"),
+        ("microsoft", "User.Read Mail.ReadWrite"),
+    ] {
+        let fixture = Fixture::new(Arc::new(move |method, target, _, _| async move {
+            if method == "POST" {
+                return (200, json!({"access_token":"fixture-partial","refresh_token":"fixture-new-refresh","expires_in":3600,"scope":scope}));
+            }
+            assert!(!target.contains("/messages"), "partial consent must not fetch mail");
+            (200, json!({"email":"person@example.invalid","emailAddress":"person@example.invalid","mail":"person@example.invalid"}))
+        }.boxed())).await;
+        let app = fixture.app();
+        set(&app, json!({"mailAccounts":{
+            "person@example.invalid":{"provider":provider,"email":"person@example.invalid","connectionId":"original","refreshToken":"fixture-original-refresh","grantedScopes":scope},
+            "other@example.invalid":{"provider":"imap","email":"other@example.invalid","password":"fixture-other-password"}
+        },"activeAccount":"other@example.invalid"})).await;
+        app.db(|db| {
+            for owner in ["person@example.invalid", "other@example.invalid"] {
+                db.upsert(
+                    owner,
+                    &json!({"id":"same","folder":"inbox","body":"Keep cached mail"}),
+                )?;
+            }
+            db.upsert(
+                "person@example.invalid",
+                &json!({"id":"draft","folder":"drafts","body":"Keep draft"}),
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let before = app.settings().await.unwrap();
+        let (local, cookie, _) = begin(&app, false, provider).await;
+        let completed = call(&app, callback_context(&local, &cookie, "partial-mail")).await;
+        assert_eq!(completed.0, 302);
+        assert!(
+            location(&completed.1)
+                .query_pairs()
+                .any(|(key, value)| key == "connectionError"
+                    && value.contains("permissions were not fully granted"))
+        );
+        assert_eq!(app.settings().await.unwrap(), before);
+        app.db(|db| {
+            for owner in ["person@example.invalid", "other@example.invalid"] {
+                assert_eq!(db.get(owner, "same")?.unwrap()["body"], "Keep cached mail");
+            }
+            assert_eq!(
+                db.get("person@example.invalid", "draft")?.unwrap()["body"],
+                "Keep draft"
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+}
+
+#[tokio::test]
 async fn oauth_separate_purposes_browser_binding_canonical_mail_and_import() {
     let calls = Arc::new(AtomicUsize::new(0));
     let count = calls.clone();
@@ -978,7 +1041,7 @@ async fn oauth_separate_purposes_browser_binding_canonical_mail_and_import() {
     assert!(
         remote
             .query_pairs()
-            .any(|(k, v)| k == "scope" && v.contains("gmail.readonly"))
+            .any(|(k, v)| k == "scope" && v.contains("gmail.modify"))
     );
     let completed = call(&app, callback_context(&local, &cookie, "mail")).await;
     assert!(

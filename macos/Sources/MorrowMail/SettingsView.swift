@@ -474,14 +474,13 @@ GroupBox("History for your next connection or import") {
                 if id == "google" { SecureField("Desktop client secret", text: secret) }
             }
             if !calendar {
-                Toggle("Allow moving mail and managing labels", isOn: Binding(get: { credentials.wrappedValue["organize"].bool }, set: { credentials.wrappedValue["organize"] = .bool($0) })).toggleStyle(.checkbox)
-                Text("Adds Gmail modify or Outlook Mail.ReadWrite permission. Reconnect an existing account to enable provider moves.").font(.caption).foregroundStyle(.secondary)
+                Text("Sign-in includes reading, sending and organizing mail, including moving to Trash. Sign in again to update access for older connections.").font(.caption).foregroundStyle(.secondary)
             }
             HStack {
                 Button {
                     run {
                         let path = calendar ? "/calendars/\(id)/connect" : "/oauth/\(id)/start"
-                        var body = credentials.wrappedValue.picking(useDefault ? ["organize"] : ["clientId", "clientSecret", "organize"])
+                        var body = credentials.wrappedValue.picking(useDefault ? [] : ["clientId", "clientSecret"])
                         if useDefault { body["useDefaultClient"] = .bool(true) }
                         if !calendar { body["importOptions"] = importOptions(for: id) }
                         let result = try await model.request(path, method: "POST", body: body)
