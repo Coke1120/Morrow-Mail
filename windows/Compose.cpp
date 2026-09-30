@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "Ui.h"
+#include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Windows.Globalization.h>
 #include <winrt/Windows.Globalization.DateTimeFormatting.h>
 #include <winrt/Windows.System.h>
@@ -685,17 +686,17 @@ IAsyncAction loadSchedules(std::shared_ptr<Schedules> state) {
 IAsyncAction scheduledPage(std::shared_ptr<Shell> shell) {
     auto state = std::make_shared<Schedules>(); state->shell = shell;
     state->screenOwner = shell->owner; state->generation = shell->generation;
-    auto panel = stack(16); panel.Margin(ThicknessHelper::FromUniformLength(28));
-    auto heading = stack(7); heading.Margin(ThicknessHelper::FromLengths(0, 0, 0, 12));
+    auto panel = stack(16); panel.Margin(xaml::ThicknessHelper::FromUniformLength(28));
+    auto heading = stack(7); heading.Margin(xaml::ThicknessHelper::FromLengths(0, 0, 0, 12));
     heading.Children().Append(label(L"Outbox", 30));
     auto detail = label(L"Delayed and scheduled mail waiting to be sent. Morrow must be open to send; catch-up is limited to 15 minutes."); detail.Opacity(0.7); heading.Children().Append(detail);
     panel.Children().Append(heading);
     Grid controls; controls.ColumnSpacing(12);
-    ColumnDefinition captionColumn; captionColumn.Width(GridLengthHelper::Auto()); controls.ColumnDefinitions().Append(captionColumn);
+    ColumnDefinition captionColumn; captionColumn.Width(xaml::GridLengthHelper::Auto()); controls.ColumnDefinitions().Append(captionColumn);
     controls.ColumnDefinitions().Append(ColumnDefinition());
-    ColumnDefinition refreshColumn; refreshColumn.Width(GridLengthHelper::Auto()); controls.ColumnDefinitions().Append(refreshColumn);
-    auto caption = label(L"Mailbox"); caption.VerticalAlignment(VerticalAlignment::Center); controls.Children().Append(caption);
-    ComboBox mailbox; mailbox.HorizontalAlignment(HorizontalAlignment::Stretch);
+    ColumnDefinition refreshColumn; refreshColumn.Width(xaml::GridLengthHelper::Auto()); controls.ColumnDefinitions().Append(refreshColumn);
+    auto caption = label(L"Mailbox"); caption.VerticalAlignment(xaml::VerticalAlignment::Center); controls.Children().Append(caption);
+    ComboBox mailbox; mailbox.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
     xaml::Automation::AutomationProperties::SetName(mailbox, L"Mailbox"); state->mailbox = make_weak(mailbox);
     state->accounts = mailboxChoices(shell, mailbox);
     state->owner = shell->connected(shell->owner) ? shell->owner : state->accounts.empty() ? hstring{} : state->accounts.front();
