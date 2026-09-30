@@ -147,7 +147,7 @@ IAsyncAction Shell::smoke() {
             auto source = object(response,L"message");
             auto row = rows.Items().GetAt(0).as<controls::ListViewItem>();
             auto clicked = row.Tag().as<Json>();
-            auto peer = xaml::Automation::Peers::UIElementAutomationPeer::CreatePeerForElement(row);
+            auto peer = xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(row);
             auto invoke = peer.GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).try_as<xaml::Automation::Provider::IInvokeProvider>();
             check(bool(invoke), L"The native mail row does not expose its click action.");
             invoke.Invoke();
