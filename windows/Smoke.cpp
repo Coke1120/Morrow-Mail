@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "Ui.h"
+#include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
 #include <fstream>
 #include <cstdio>
 #include <set>
@@ -143,6 +145,17 @@ IAsyncAction Shell::smoke() {
             enter("mail-reader");
             auto response = co_await service->request(L"/messages/mail-000", owner);
             auto source = object(response,L"message");
+            auto row = rows.Items().GetAt(0).as<controls::ListViewItem>();
+            auto clicked = row.Tag().as<Json>();
+            auto peer = xaml::Automation::Peers::UIElementAutomationPeer::CreatePeerForElement(row);
+            auto invoke = peer.GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).try_as<xaml::Automation::Provider::IInvokeProvider>();
+            check(bool(invoke), L"The native mail row does not expose its click action.");
+            invoke.Invoke();
+            auto clickDeadline = GetTickCount64() + 5000;
+            while ((text(selected,L"viewId") != text(clicked,L"viewId") || text(selected,L"body").size() <= 20 || loading) && GetTickCount64() < clickDeadline) {
+                co_await resume_after(std::chrono::milliseconds(10)); co_await ui;
+            }
+            check(text(selected,L"viewId") == text(clicked,L"viewId"), L"Clicking a native mail row did not open its owned message.");
             co_await read(source);
             check(text(selected,L"accountId") == owner && text(selected,L"body").size() > 20, L"The native reader did not load full owned text.");
             auto readerLayout = reader.Content().try_as<controls::Grid>();

@@ -890,8 +890,8 @@ IAsyncAction settingsPage(std::shared_ptr<Shell> shell, hstring tab) {
         xaml::Automation::AutomationProperties::SetName(item, entry.caption); list.Items().Append(item);
         if (tab == entry.id) list.SelectedItem(item);
     }
-    for (auto const& list : {tabs, advancedTabs}) list.ItemClick([weak = std::weak_ptr<SettingsPage>(p), primary = make_weak(tabs), optional = make_weak(advancedTabs)](auto const&, ItemClickEventArgs const& event) -> fire_and_forget {
-        auto page = weak.lock(); auto item = event.ClickedItem().try_as<ListViewItem>();
+    for (auto const& list : {tabs, advancedTabs}) list.ItemClick([weak = std::weak_ptr<SettingsPage>(p), primary = make_weak(tabs), optional = make_weak(advancedTabs)](auto const& sender, ItemClickEventArgs const& event) -> fire_and_forget {
+        auto page = weak.lock(); auto item = clickedListItem(sender.template as<ListView>(), event.ClickedItem());
         if (!page || !page->current() || !item) co_return;
         auto previous = page->tab; auto next = unbox_value<hstring>(item.Tag());
         if (previous != next) co_await changeTab(page, next);

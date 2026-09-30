@@ -13,6 +13,7 @@ namespace controls = winrt::Microsoft::UI::Xaml::Controls;
 controls::TextBlock label(winrt::hstring const& value, double size = 14, bool selectable = true);
 controls::Button button(winrt::hstring const& value, std::function<void()> action);
 controls::StackPanel stack(double gap = 8);
+controls::ListViewItem clickedListItem(controls::ListView const& list, winrt::Windows::Foundation::IInspectable const& clicked);
 controls::TextBox field(winrt::hstring const& title, winrt::hstring const& value = {}, bool multiline = false);
 controls::ScrollViewer scroll(xaml::UIElement const& child);
 winrt::hstring mailDateLabel(winrt::hstring const& value);

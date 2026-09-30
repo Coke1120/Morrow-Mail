@@ -77,6 +77,15 @@ Button button(hstring const& value, std::function<void()> action) {
     return result;
 }
 StackPanel stack(double gap) { StackPanel result; result.Spacing(gap); return result; }
+ListViewItem clickedListItem(ListView const& list, IInspectable const& clicked) {
+    // WinUI returns Content when an item is its own container.
+    // ponytail: native lists are bounded to 50 items; index content if they become unbounded.
+    for (auto const& value : list.Items()) {
+        auto item = value.try_as<ListViewItem>();
+        if (item && (item == clicked || item.Content() == clicked)) return item;
+    }
+    return nullptr;
+}
 TextBox field(hstring const& title, hstring const& value, bool multiline) {
     TextBox result; result.Header(box_value(title)); result.Text(value);
     result.AcceptsReturn(multiline); result.TextWrapping(multiline ? TextWrapping::Wrap : TextWrapping::NoWrap);
@@ -490,7 +499,7 @@ void Shell::mailPage() {
     Automation::AutomationProperties::SetName(rows, L"Mail list");
     rows.ItemClick([weak](auto const&, ItemClickEventArgs const& event) {
         if (auto self = weak.lock()) {
-            auto item = event.ClickedItem().try_as<ListViewItem>();
+            auto item = clickedListItem(self->rows, event.ClickedItem());
             if (item) self->read(item.Tag().as<Json>());
         }
     });
