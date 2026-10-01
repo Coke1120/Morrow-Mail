@@ -27,7 +27,7 @@ AI Studio covers 19 behaviors through model-backed assistance and clearly labele
 
 This project is not affiliated with Genspark and does not claim complete parity. See [feature coverage](FEATURE_COVERAGE.md) for implementation status and simulation limits, and [verification](VERIFICATION.md) for completed checks and remaining release validation.
 
-The **0.6.0-beta.30** experimental candidate adds reviewed Gmail/Outlook/IMAP hierarchy management, local sidebar filtering, persisted Windows sidebar resizing, immediate Today summaries, automatic connection-status refresh and the macOS update-quit fix. Its paired macOS arm64 / Windows x64 downloads become public only after the tagged native checks and signed publisher gate pass. See the [release notes](docs/releases/v0.6.0-beta.30.md) and [verification](VERIFICATION.md) for evidence and limits. macOS is ad-hoc signed without notarization; Windows is unsigned, and complete live-account acceptance remains outstanding.
+The published **[0.6.0-beta.30](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.30)** experimental release adds reviewed Gmail/Outlook/IMAP hierarchy management, local sidebar filtering, persisted Windows sidebar resizing, immediate Today summaries, automatic connection-status refresh and the macOS update-quit fix. Both tagged native jobs and the signed paired publisher passed; public downloads match the same-run candidates and the manifest verifies against the pinned public key. See the [release notes](docs/releases/v0.6.0-beta.30.md) and [verification](VERIFICATION.md) for evidence and limits. macOS is ad-hoc signed without notarization; Windows is unsigned, and complete live-account acceptance remains outstanding.
 
 ## Native desktop builds
 
