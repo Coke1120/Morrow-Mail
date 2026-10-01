@@ -1468,12 +1468,22 @@ pub async fn organize(
         if mode != "move" && destination["kind"] != "label" {
             return Err(Error::invalid("Choose a custom Gmail label."));
         }
-        let add = if mode == "removeLabel" || destination["kind"] == "archive" {
+        let add = if mode == "labels" {
+            destination["addLabelIds"]
+                .as_array()
+                .cloned()
+                .ok_or_else(|| Error::invalid("Invalid label changes."))?
+        } else if mode == "removeLabel" || destination["kind"] == "archive" {
             vec![]
         } else {
             vec![destination["id"].clone()]
         };
-        let remove = if mode == "removeLabel" {
+        let remove = if mode == "labels" {
+            destination["removeLabelIds"]
+                .as_array()
+                .cloned()
+                .ok_or_else(|| Error::invalid("Invalid label changes."))?
+        } else if mode == "removeLabel" {
             vec![destination["id"].clone()]
         } else if mode == "move" {
             vec![json!(if destination["id"] == "INBOX" {
@@ -1507,6 +1517,12 @@ pub async fn organize(
         )
         .await?;
         let labels = result["labelIds"].as_array().ok_or_else(remote_error)?;
+        if mode == "labels"
+            && (add.iter().any(|id| !labels.contains(id))
+                || remove.iter().any(|id| labels.contains(id)))
+        {
+            return Err(remote_error());
+        }
         let inbox = labels.contains(&json!("INBOX"));
         return Ok(
             json!({"providerLabelIds":labels,"folder":google_folder(&result["labelIds"]),"providerSent":labels.contains(&json!("SENT")),"providerDraft":labels.contains(&json!("DRAFT")),"providerFolderName":if destination["kind"]=="trash"{"Trash"}else if destination["kind"]=="spam"{"Spam"}else if inbox{"Inbox"}else{"Gmail · outside Inbox"}}),

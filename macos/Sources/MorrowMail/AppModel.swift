@@ -118,7 +118,7 @@ final class AppModel: ObservableObject {
     var colorScheme: ColorScheme? {
         switch preferences["theme"].string { case "light": return .light; case "dark": return .dark; default: return nil }
     }
-    var canNavigate: Bool { !busy && unsavedForms.isEmpty && compose == nil && organizing == nil && readerAssistant == nil && !showSettings }
+    var canNavigate: Bool { !busy && unsavedForms.isEmpty && compose == nil && organizing == nil && managingFolders == nil && readerAssistant == nil && !showSettings }
 
     func start() async {
         guard !launching else { return }

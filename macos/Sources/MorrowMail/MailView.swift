@@ -305,7 +305,7 @@ struct MailWorkspace: View {
                     }.fontWeight(message["read"].bool ? .regular : .bold).padding(.vertical, model.preferences["density"].string == "compact" ? 3 : model.preferences["density"].string == "spacious" ? 14 : 8).tag(message.viewID)
                     .onHover { inside in if inside { hoveredMessage = message.viewID } else if hoveredMessage == message.viewID { hoveredMessage = nil } }
                     .contextMenu {
-                        if model.canOrganize(message) { Button("Move / Labels / Spam on Provider…") { model.beginOrganize(message) } }
+                        if model.canOrganize(message) { MessageOrganizationActions(message: message) }
                         Button(message["starred"].bool ? "Unstar" : "Star") { model.patch(message, .object(["starred": .bool(!message["starred"].bool)])) }
                         Button(message["pending"].bool ? "Clear Pending" : "Mark Pending") { model.patch(message, .object(["pending": .bool(!message["pending"].bool)])) }
                         Button(message["read"].bool ? "Mark Unread" : "Mark Read") { model.patch(message, .object(["read": .bool(!message["read"].bool)])) }
@@ -377,7 +377,7 @@ struct MessageReader: View {
                     Button { Task { await model.openDraft(message: message, mode: "forward") } } label: { Label("Forward", systemImage: "arrowshape.turn.up.right") }.labelStyle(.iconOnly).help("Forward")
                 }
                 Spacer()
-                if model.canOrganize(message) { Button { model.beginOrganize(message) } label: { Label("Move / Labels / Spam", systemImage: "folder") }.labelStyle(.iconOnly).help("Move, label, or move to Spam on this mailbox’s provider") }
+                if model.canOrganize(message) { Menu { MessageOrganizationActions(message: message) } label: { Label("Organize email", systemImage: "folder") }.labelStyle(.iconOnly).help("Move or label this email") }
                 Button { model.patch(message, .object(["starred": .bool(!message["starred"].bool)])) } label: { Image(systemName: message["starred"].bool ? "star.fill" : "star") }.help("Toggle star").accessibilityLabel("Toggle star")
                 Button { model.patch(message, .object(["pending": .bool(!message["pending"].bool)])) } label: { Image(systemName: message["pending"].bool ? "clock.fill" : "clock") }.help(message["pending"].bool ? "Clear Pending" : "Mark Pending locally").accessibilityLabel(message["pending"].bool ? "Clear Pending" : "Mark Pending")
                 if message["folder"].string != "drafts" {
@@ -630,6 +630,19 @@ struct AutomaticAssistance: View {
     }
 }
 
+struct MessageOrganizationActions: View {
+    @EnvironmentObject var model: AppModel
+    let message: JSON
+    private var gmail: Bool { model.accounts.first { $0.id == message["accountId"].string }?["provider"].string == "google" }
+    var body: some View {
+        Button("Move to…") { model.beginOrganize(message) }
+        if gmail { Button("Labels…") { model.beginOrganize(message, preferredKind: "labels") } }
+        Button(gmail ? "Create new label…" : "Create new folder…") { model.beginOrganize(message, preferredKind: "create") }
+        Divider()
+        Button(gmail ? "Manage labels…" : "Manage folders…") { model.managingFolders = .object(["id": message["accountId"]]) }
+    }
+}
+
 struct OrganizeMailView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) var dismiss
@@ -641,71 +654,103 @@ struct OrganizeMailView: View {
     @State private var mode = "move"
     @State private var provider = ""
     @State private var loading = true
+    @State private var baseline = Set<String>()
+    @State private var selected = Set<String>()
+    @State private var query = ""
     @State private var localError = ""
     @State private var review = false
-    var choices: [JSON] { folders.filter { mode == "move" || $0["kind"].string == "label" } }
+    @State private var showManager = false
+    @State private var creating = false
+    private var owner: String { message["accountId"].string }
+    private var added: [String] { selected.subtracting(baseline).sorted() }
+    private var removed: [String] { baseline.subtracting(selected).sorted() }
+    private var choices: [JSON] { folders.filter { $0["selectable"] != .bool(false) && $0["hidden"] != .bool(true) } }
+    private var canReview: Bool { mode == "labels" ? !added.isEmpty || !removed.isEmpty : choices.contains { $0.id == destination } }
+    private func names(_ ids: [String]) -> String { ids.map { id in folders.first { $0.id == id }?["name"].string ?? id }.joined(separator: ", ") }
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text(preferredKind == "trash" ? "Move to Provider Trash" : "Move / Labels / Spam on Provider").font(.title2.bold())
+        VStack(alignment: .leading, spacing: 16) {
+            Text(mode == "labels" ? "Labels on this email" : "Move email on provider").font(.title2.bold())
             Text(message["subject"].string).lineLimit(2)
-            Text(message["accountId"].string).foregroundStyle(.secondary)
-            if loading { ProgressView("Loading folders…") }
-            else {
-                if preferredKind == "trash" {
-                    if let folder = folders.first(where: { $0.id == destination }) {
-                        Text("Destination: \(folder["name"].string)")
-                    }
-                } else {
-                    if provider == "google" {
-                        Picker("Action", selection: $mode) {
-                            Text("Move out of Inbox").tag("move")
-                            Text("Add label").tag("addLabel")
-                            Text("Remove label").tag("removeLabel")
-                        }.onChange(of: mode) { _ in destination = choices.first?.id ?? "" }
-                    }
-                    Picker(provider == "google" ? "Label / location" : "Folder", selection: $destination) {
-                        Text("Choose a destination").tag("")
-                        ForEach(choices) { folder in Text(folder["name"].string).tag(folder.id) }
-                    }
-                }
-                Text(preferredKind == "trash" ? "This moves the message to Trash on the account shown above. It does not permanently delete the message." : "This changes the message on your mail provider. Moves stay within this account. Gmail labels are shown on downloaded mail. Archive contains mail without Inbox, Sent, Draft, Spam or Trash labels.").font(.callout).foregroundStyle(.secondary)
-                if preferredKind != "trash" {
-                    if provider == "google" { Text("Move adds the selected label and removes Inbox; other labels remain. Add / Remove label keeps the current Inbox status.").font(.caption).foregroundStyle(.secondary) }
-                    Text("Choose Spam / Junk in the destination list, then Review Change to move the message. Morrow does not directly report abuse or block senders; use the same account on your provider for those actions.").font(.caption).foregroundStyle(.secondary)
-                    if provider == "google" { Link("Open Gmail to report or block", destination: URL(string: "https://mail.google.com/")!) }
-                    else if provider == "microsoft" { Link("Open Outlook to report or block", destination: URL(string: "https://outlook.live.com/mail/")!) }
-                }
+            Text(owner).foregroundStyle(.secondary).textSelection(.enabled)
+            if provider == "google" {
+                Picker("Action", selection: $mode) { Text("Move to").tag("move"); Text("Labels").tag("labels") }.pickerStyle(.segmented)
             }
+            if mode == "labels" {
+                TextField("Search label names or paths…", text: $query).textFieldStyle(.roundedBorder).accessibilityLabel("Search email labels")
+                List {
+                    ForEach(choices.filter { $0["kind"].string == "label" && (query.isEmpty || $0["name"].string.localizedCaseInsensitiveContains(query)) }) { folder in
+                        Toggle(folder["name"].string, isOn: Binding(get: { selected.contains(folder.id) }, set: { if $0 { selected.insert(folder.id) } else { selected.remove(folder.id) } })).help(folder["name"].string)
+                    }
+                }.frame(height: 230).disabled(loading)
+                Text("Selected: \(selected.intersection(Set(choices.filter { $0["kind"].string == "label" }.map(\.id))).count)").font(.caption).foregroundStyle(.secondary)
+                Text("Checked labels stay on this email. Unchecking removes a label from this email only; Inbox and other messages are unchanged.").font(.caption).foregroundStyle(.secondary)
+            } else {
+                FolderPicker(title: provider == "google" ? "Label / location" : "Folder", folders: choices, selection: $destination, onCreate: { creating = true; showManager = true })
+                Text(provider == "google" ? "Move adds the chosen label and removes Inbox; other labels remain. Spam and Trash are provider moves." : "Move this email to the selected folder within the account shown above.").font(.callout).foregroundStyle(.secondary)
+            }
+            HStack {
+                Button(provider == "google" ? "Create new label…" : "Create new folder…") { creating = true; showManager = true }.disabled(model.busy)
+                Button(provider == "google" ? "Manage labels…" : "Manage folders…") { creating = false; showManager = true }.disabled(model.busy)
+            }
+            if provider == "google" { Link("Open Gmail to report or block", destination: URL(string: "https://mail.google.com/")!) }
+            else if provider == "microsoft" { Link("Open Outlook to report or block", destination: URL(string: "https://outlook.live.com/mail/")!) }
+            if loading { HStack { ProgressView().controlSize(.small); Text("Refreshing saved labels / folders…").font(.caption).foregroundStyle(.secondary) } }
             if !localError.isEmpty { Text(localError).foregroundStyle(.red).textSelection(.enabled) }
             HStack {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).disabled(model.busy)
                 Spacer()
-                Button(preferredKind == "trash" ? "Review Trash Move" : "Review Change") { review = true }.buttonStyle(.borderedProminent).disabled(loading || model.busy || destination.isEmpty)
+                Button("Review change…") { review = true }.buttonStyle(.borderedProminent).disabled(model.busy || !canReview)
             }
-        }.padding(26).frame(width: 530).interactiveDismissDisabled(model.busy)
+        }.padding(26).frame(width: 590).interactiveDismissDisabled(model.busy)
         .task {
+            let cache = model.state["serverFolders"][owner]
+            provider = cache["provider"].nonempty ? cache["provider"].string : model.accounts.first { $0.id == owner }?["provider"].string ?? ""
+            folders = model.serverFolders[owner] ?? []
+            if provider == "google" { folders.append(.object(["id": .string("__archive"), "name": .string("Archive (remove Inbox)"), "kind": .string("archive")])) }
+            mode = preferredKind == "labels" ? "labels" : "move"
+            destination = preferredDestination
+            var detail = message
+            if provider == "google" && message["providerLabelIds"].isNull {
+                do {
+                    detail = try await model.request("/messages/" + encodedPath(message.id), mailbox: owner)["message"]
+                    guard detail["accountId"].string == owner, detail.id == message.id else { throw APIError("The email owner could not be confirmed.") }
+                } catch { localError = error.localizedDescription; return }
+            }
+            baseline = Set(detail["providerLabelIds"].array.map(\.string)); selected = baseline
+            loading = false
+            if preferredKind == "create" { creating = true; showManager = true }
             do {
-                let result = try await model.request("/mail/folders", mailbox: message["accountId"].string)
+                let result = try await model.request("/mail/folders", mailbox: owner)
+                guard result["accountId"].string == owner, case .array = result["folders"] else { throw APIError("The owning folder list could not be confirmed.") }
                 folders = result["folders"].array; provider = result["provider"].string
-                if folders.contains(where: { $0.id == preferredDestination }) { destination = preferredDestination }
-                if preferredKind == "trash" {
-                    destination = folders.first { $0["kind"].string == "trash" }?.id ?? ""
-                    if destination.isEmpty { localError = "This mailbox did not expose a provider Trash folder. Check its permissions or use your provider." }
-                }
+                model.serverFolders[owner] = folders.filter { $0.id != "__archive" }
             } catch { localError = error.localizedDescription }
             loading = false
         }
+        .sheet(isPresented: $showManager, onDismiss: {
+            folders = model.serverFolders[owner] ?? folders
+            if provider == "google" { folders.append(.object(["id": .string("__archive"), "name": .string("Archive (remove Inbox)"), "kind": .string("archive")])) }
+        }) {
+            FolderManagementView(owner: owner, initialFolder: "", creationOnly: creating, onCreate: { folder, use in
+                if !folders.contains(where: { $0.id == folder.id }) { folders.append(folder) }
+                if use { if provider == "google" { mode = "labels"; selected.insert(folder.id) } else { mode = "move"; destination = folder.id } }
+            }).environmentObject(model)
+        }
         .confirmationDialog("Apply this change on your mail provider?", isPresented: $review, titleVisibility: .visible) {
-            Button("Apply Provider Change") {
+            Button("Apply provider change") {
+                let payload: JSON = mode == "labels" ? .object(["mode": .string("labels"), "addLabelIds": .array(added.map(JSON.string)), "removeLabelIds": .array(removed.map(JSON.string)), "confirmed": .bool(true)]) : .object(["destinationId": .string(destination), "mode": .string("move"), "confirmed": .bool(true)])
                 model.perform {
                     do {
-                        _ = try await model.request("/messages/" + encodedPath(message.id) + "/organize", method: "POST", body: .object(["destinationId": .string(destination), "mode": .string(mode), "confirmed": .bool(true)]), mailbox: message["accountId"].string)
+                        let result = try await model.request("/messages/" + encodedPath(message.id) + "/organize", method: "POST", body: payload, mailbox: owner)
+                        guard result["message"].id == message.id, result["message"]["accountId"].string == owner else { throw APIError("The provider change could not be confirmed. Refresh this mailbox.") }
                         try await model.reload(); model.notice = "Provider change confirmed."; dismiss()
                     } catch { localError = error.localizedDescription }
                 }
             }
             Button("Cancel", role: .cancel) {}
-        } message: { Text("Account: \(message["accountId"].string)\nAction: \(mode == "move" ? "Move" : mode == "addLabel" ? "Add label" : "Remove label")\nDestination: \(choices.first { $0.id == destination }?["name"].string ?? destination)") }
+        } message: {
+            Text(mode == "labels" ? "Account: \(owner)\nAdd: \(names(added))\nRemove from this email: \(names(removed))" : "Account: \(owner)\nMove to: \(names([destination]))")
+        }
     }
 }
 

@@ -8,6 +8,18 @@ assert(yahooMail["smtpHost"].string == "smtp.mail.yahoo.com" && yahooMail["smtpP
 assert(previousMail["password"].string == "do-not-carry-this-secret" && yahooMailSettings(.null)["email"].string.isEmpty)
 print("Yahoo HK preset keeps the complete address, uses TLS ports and clears the entered password.")
 
+let parentFolder: JSON = .object(["id": .string("parent"), "name": .string("Work"), "parentId": .string(""), "delimiter": .string("/")])
+let childFolder: JSON = .object(["id": .string("child"), "name": .string("Work/中文"), "parentId": .string("parent")])
+let orphanFolder: JSON = .object(["id": .string("orphan"), "name": .string("Other/Leaf"), "parentId": .string("missing")])
+let folderNodes = folderTree([childFolder, orphanFolder, parentFolder])
+assert(folderNodes.count == 2 && folderNodes.first { $0.id == "parent" }?.children?.first?.id == "child")
+assert(folderIsWithin(childFolder, source: parentFolder, folders: [parentFolder, childFolder]))
+assert(!folderIsWithin(parentFolder, source: childFolder, folders: [parentFolder, childFolder]))
+var cycleParent = parentFolder; cycleParent["parentId"] = .string("child")
+assert(folderTree([cycleParent, childFolder]).count == 1)
+assert(folderIsWithin(cycleParent, source: childFolder, folders: [cycleParent, childFolder]))
+print("Folder hierarchy preserves orphan paths and terminates cycles; parent selection excludes descendants.")
+
 struct WorkspaceTests {
     func testSchemaRoundTripAndUnconfirmedDraft() throws {
         let value = try JSONDecoder().decode(JSON.self, from: Data(#"{"id":"outbox:request","accountId":"owner@example.com","viewId":"unique-owned-message","to":"someone@example.com","subject":"Hello","body":"Text","deliveryStatus":"unconfirmed","deliveryRequestId":"original-request","policy":{"enabled":false},"count":8}"#.utf8))

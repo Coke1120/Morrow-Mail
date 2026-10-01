@@ -655,3 +655,83 @@ async fn malformed_all_mail_is_rejected_before_oauth_or_mailbox_connections() {
     }
     assert!(f.hits.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn label_checklist_uses_one_validated_delta_without_changing_inbox_or_other_owners() {
+    let f = Fixture::new().await;
+    *f.rows.lock().unwrap() = vec![raw("same", json!(["INBOX", "SENT", "Label_1"]))];
+    f.app
+        .db(|db| {
+            db.upsert(A, &remote("same", json!(["INBOX", "SENT", "Label_1"])))?;
+            db.upsert(B, &remote("same", json!(["INBOX", "Label_1"])))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let original_other = f
+        .call("GET", "/api/messages/google:same", B, json!({}))
+        .await
+        .1;
+    assert_eq!(
+        f.call(
+            "PATCH",
+            "/api/messages/google:same",
+            A,
+            json!({"folder":"trash","pending":true})
+        )
+        .await
+        .0,
+        200
+    );
+    for payload in [
+        json!({"mode":"labels","addLabelIds":["Label_2"],"removeLabelIds":["Label_1"]}),
+        json!({"mode":"labels","addLabelIds":["INBOX"],"removeLabelIds":[],"confirmed":true}),
+        json!({"mode":"labels","addLabelIds":["unknown"],"removeLabelIds":[],"confirmed":true}),
+        json!({"mode":"labels","addLabelIds":["Label_2","Label_2"],"removeLabelIds":[],"confirmed":true}),
+        json!({"mode":"labels","addLabelIds":["Label_1"],"removeLabelIds":["Label_1"],"confirmed":true}),
+        json!({"mode":"labels","addLabelIds":[],"removeLabelIds":[],"confirmed":true}),
+        json!({"mode":"labels","addLabelIds":"Label_2","removeLabelIds":[],"confirmed":true}),
+        json!({"mode":"labels","addLabelIds":vec!["Label_2";101],"removeLabelIds":[],"confirmed":true}),
+    ] {
+        assert_eq!(
+            f.call("POST", "/api/messages/google:same/organize", A, payload)
+                .await
+                .0,
+            400
+        );
+    }
+    assert!(
+        !f.hits
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(method, _)| method == "POST")
+    );
+    let (status, result) = f.call("POST", "/api/messages/google:same/organize", A, json!({"mode":"labels","addLabelIds":["Label_2"],"removeLabelIds":["Label_1"],"confirmed":true})).await;
+    assert_eq!(status, 200);
+    assert_eq!(result["message"]["accountId"], A);
+    assert_eq!(result["message"]["id"], "google:same");
+    assert_eq!(
+        result["message"]["providerLabelIds"],
+        json!(["INBOX", "SENT", "Label_2"])
+    );
+    assert_eq!(result["message"]["labels"], json!(["New label"]));
+    assert_eq!(result["message"]["folder"], "trash");
+    assert_eq!(result["message"]["pending"], true);
+    assert_eq!(result["message"]["localOverrides"]["folder"], true);
+    assert_eq!(
+        f.call("GET", "/api/messages/google:same", B, json!({}))
+            .await
+            .1,
+        original_other
+    );
+    assert_eq!(
+        f.hits
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(method, url)| method == "POST" && url.path().ends_with("/modify"))
+            .count(),
+        1
+    );
+}

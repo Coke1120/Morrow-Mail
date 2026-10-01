@@ -69,7 +69,8 @@ struct Shell : std::enable_shared_from_this<Shell> {
     winrt::Windows::Foundation::IAsyncAction prepare(Json message, winrt::hstring mode, winrt::hstring body = {});
     winrt::Windows::Foundation::IAsyncAction messageAI(Json message, winrt::hstring action, bool history = false);
     winrt::Windows::Foundation::IAsyncAction organize(Json message, winrt::hstring preferredKind = {}, winrt::hstring preferredDestination = {});
-    winrt::Windows::Foundation::IAsyncAction manageFolders(winrt::hstring account, winrt::hstring initialFolder = {});
+    winrt::Windows::Foundation::IAsyncOperation<Json> manageFolders(winrt::hstring account, winrt::hstring initialFolder = {}, bool creationOnly = false);
+    controls::MenuFlyout organizationMenu(Json message);
     void resizeSidebar(double width, bool save = true);
     winrt::Windows::Foundation::IAsyncAction trash(Json message);
     winrt::Windows::Foundation::IAsyncAction undoTrash();
@@ -98,6 +99,7 @@ winrt::Windows::Foundation::IAsyncAction intelligencePage(std::shared_ptr<Shell>
 winrt::Windows::Foundation::IAsyncAction outOfOfficePage(std::shared_ptr<Shell> shell);
 winrt::Windows::Foundation::IAsyncAction calendarPage(std::shared_ptr<Shell> shell);
 void appendReader(std::shared_ptr<Shell> shell, controls::StackPanel const& container, Json message);
+void folderPickerChecks();
 void readerSecurityChecks();
 winrt::Windows::Foundation::IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell);
 }

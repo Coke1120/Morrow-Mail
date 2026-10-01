@@ -62,6 +62,11 @@ async fn automatic_folder_catalogs_are_owned_durable_and_keep_offline_names() {
                 "/v1.0/me/mailFolders/inbox" => json!({"id":"inbox"}),
                 "/v1.0/me/mailFolders/junkemail" => json!({"id":"junk"}),
                 "/v1.0/me/mailFolders/deleteditems" => json!({"id":"trash"}),
+                "/v1.0/me/mailFolders/sentitems" => json!({"id":"sent"}),
+                "/v1.0/me/mailFolders/drafts" => json!({"id":"drafts"}),
+                "/v1.0/me/mailFolders/outbox" => json!({"id":"outbox"}),
+                "/v1.0/me/mailFolders/archive" => json!({"id":"archive"}),
+                path if ["clutter", "conflicts", "conversationhistory", "localfailures", "msgfolderroot", "recoverableitemsdeletions", "scheduled", "searchfolders", "serverfailures", "syncissues"].iter().any(|alias| path == format!("/v1.0/me/mailFolders/{alias}")) => return Reply::Json(404, json!({})),
                 other => panic!("Unexpected folder request: {other}"),
             })
         }.boxed()
@@ -103,6 +108,21 @@ async fn automatic_folder_catalogs_are_owned_durable_and_keep_offline_names() {
             .unwrap()
             .iter()
             .any(|f| f["id"] == "child" && f["name"] == "Projects / 中文")
+    );
+    assert_eq!(state["serverFolders"][A]["canManage"], true);
+    assert!(
+        state["serverFolders"][A]["managementFolders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["id"] == "same" && f["editable"] == true && f["leafName"] == A)
+    );
+    assert!(
+        state["serverFolders"][C]["managementFolders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["id"] == "child" && f["parentId"] == "project" && f["editable"] == true)
     );
     for secret in ["fixture-secret", "refresh-", "accessToken", "connection-"] {
         assert!(!state["serverFolders"].to_string().contains(secret));

@@ -751,6 +751,7 @@ IAsyncAction Shell::loadPage() {
             if (flag(message, L"pending")) row.Children().Append(label(L"Pending", 11, false));
             auto entry = preserve ? rows.Items().GetAt(index).as<ListViewItem>() : ListViewItem();
             entry.Content(row); entry.Tag(message); entry.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+            entry.ContextFlyout(organizationMenu(message));
             if (!preserve) {
                 auto weakEntry = make_weak(entry);
                 auto hovered = std::make_shared<bool>(false), focused = std::make_shared<bool>(false);
@@ -826,8 +827,9 @@ void Shell::renderReader(Json const& message) {
     }
     content.Children().Append(markers);
     auto remote = text(message, L"remoteId", text(message, L"id"));
-    if (std::wstring_view(remote).starts_with(L"google:") || std::wstring_view(remote).starts_with(L"microsoft:") || std::wstring_view(remote).starts_with(L"imap:"))
-        replies.Children().Append(button(L"Move / Labels / Spam on provider…", [weak, message] { if (auto self = weak.lock()) self->organize(message); }));
+    if (std::wstring_view(remote).starts_with(L"google:") || std::wstring_view(remote).starts_with(L"microsoft:") || std::wstring_view(remote).starts_with(L"imap:")) {
+        DropDownButton organizeButton; organizeButton.Content(box_value(L"Organize email")); organizeButton.Flyout(organizationMenu(message)); replies.Children().Append(organizeButton);
+    }
     auto local = actions();
     if (text(message, L"folder") != L"drafts" && text(message, L"folder") != L"sent") {
         auto destination = text(message, L"folder") == L"archive" || text(message, L"folder") == L"trash" ? hstring(L"inbox") : hstring(L"archive");
@@ -876,138 +878,6 @@ void Shell::resizeSidebar(double width, bool save) {
         sidebarDivider.Visibility(navigation.IsPaneOpen() && navigation.DisplayMode() == NavigationViewDisplayMode::Expanded ? Visibility::Visible : Visibility::Collapsed);
     }
     if (save && service && !closing) try { service->saveClientState(L"morrow.sidebar.width", to_hstring(width)); } catch (...) { error(errorText()); }
-}
-IAsyncAction Shell::manageFolders(hstring account, hstring initialFolder) {
-    auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
-    if (closing || dialogOpen || loading || !service || service->writing() || !connected(account) || !dirty.empty()) co_return;
-    try {
-        loading = true;
-        auto result = co_await service->request(L"/mail/folders/manage", account);
-        loading = false;
-        if (!current(version, captured) || !connected(account)) co_return;
-        if (text(result, L"accountId") != account) throw hresult_error(E_FAIL, L"The folder owner could not be confirmed.");
-        if (!flag(result, L"canManage")) throw hresult_error(E_ACCESSDENIED, L"Reconnect in Settings → Mail accounts and approve mail write permission to manage labels/folders.");
-        auto provider = text(result, L"provider");
-        auto content = stack(12); content.Children().Append(label(account));
-        content.Children().Append(label(L"Changes apply to this mailbox on its provider. System folders are protected; review every change before applying."));
-        ComboBox operation; operation.Header(box_value(L"Action"));
-        for (auto title : {L"Create", L"Rename", L"Move to another parent", L"Delete"}) operation.Items().Append(box_value(title));
-        operation.SelectedIndex(initialFolder.empty() ? 0 : 1); content.Children().Append(operation);
-        ComboBox source; source.Header(box_value(provider == L"google" ? L"Label" : L"Folder")); source.HorizontalAlignment(HorizontalAlignment::Stretch);
-        for (auto const& value : array(result, L"folders")) {
-            auto folder = value.GetObject(); if (!flag(folder, L"editable")) continue;
-            ComboBoxItem item; item.Content(box_value(text(folder, L"name"))); item.Tag(folder); source.Items().Append(item);
-            if (text(folder, L"id") == initialFolder) source.SelectedItem(item);
-        }
-        content.Children().Append(source);
-        auto name = field(L"Name"); name.MaxLength(255); content.Children().Append(name);
-        ComboBox parent; parent.Header(box_value(L"Parent")); parent.HorizontalAlignment(HorizontalAlignment::Stretch); content.Children().Append(parent);
-        ContentDialog editor; editor.XamlRoot(root.XamlRoot()); editor.Title(box_value(provider == L"google" ? L"Manage Gmail labels" : L"Manage server folders"));
-        editor.Content(scroll(content)); editor.PrimaryButtonText(L"Review change"); editor.CloseButtonText(L"Cancel"); editor.DefaultButton(ContentDialogButton::Close);
-        auto configure = [operation, source, name, parent, result, provider, editor] {
-            auto action = operation.SelectedIndex();
-            auto item = source.SelectedItem().try_as<ComboBoxItem>(); auto selected = item ? item.Tag().as<Json>() : Json();
-            source.Visibility(action == 0 ? Visibility::Collapsed : Visibility::Visible);
-            name.Visibility(action <= 1 ? Visibility::Visible : Visibility::Collapsed);
-            name.Text(action == 0 ? L"" : text(selected, L"leafName"));
-            parent.Visibility(action == 0 || action == 2 ? Visibility::Visible : Visibility::Collapsed);
-            parent.Items().Clear(); ComboBoxItem rootItem; rootItem.Content(box_value(L"Mailbox root")); rootItem.Tag(Json()); parent.Items().Append(rootItem); parent.SelectedIndex(0);
-            for (auto const& value : array(result, L"folders")) {
-                auto folder = value.GetObject(); auto kind = text(folder, L"kind");
-                if (action != 0 && text(folder, L"id") == text(selected, L"id") || flag(folder, L"hidden") || kind == L"spam" || kind == L"trash" || kind == L"virtual" || provider == L"google" && !flag(folder, L"editable")) continue;
-                ComboBoxItem parentItem; parentItem.Content(box_value(text(folder, L"name"))); parentItem.Tag(folder); parent.Items().Append(parentItem);
-                if (action != 0 && text(folder, L"id") == text(selected, L"parentId")) parent.SelectedItem(parentItem);
-            }
-            editor.IsPrimaryButtonEnabled(action == 0 ? !name.Text().empty() : source.SelectedIndex() >= 0 && (action != 1 || !name.Text().empty()));
-        };
-        operation.SelectionChanged([configure](auto const&, auto const&) { configure(); });
-        source.SelectionChanged([configure](auto const&, auto const&) { configure(); });
-        name.TextChanged([operation, source, name, editor](auto const&, auto const&) { auto action = operation.SelectedIndex(); editor.IsPrimaryButtonEnabled(action == 0 ? !name.Text().empty() : source.SelectedIndex() >= 0 && (action != 1 || !name.Text().empty())); });
-        configure();
-        dialogOpen = true; ContentDialogResult decision;
-        try { decision = co_await editor.ShowAsync(); } catch (...) { dialogOpen = false; throw; }
-        dialogOpen = false;
-        if (decision != ContentDialogResult::Primary || !current(version, captured) || !connected(account)) co_return;
-        wchar_t const* actions[] = {L"create", L"rename", L"move", L"delete"};
-        auto action = hstring(actions[std::clamp(operation.SelectedIndex(), 0, 3)]);
-        auto item = source.SelectedItem().try_as<ComboBoxItem>(); auto selectedFolder = item ? item.Tag().as<Json>() : Json();
-        auto parentFolder = parent.SelectedItem().as<ComboBoxItem>().Tag().as<Json>();
-        Json body; put(body, L"operation", action); put(body, L"id", text(selectedFolder, L"id")); put(body, L"name", name.Text()); put(body, L"parentId", text(parentFolder, L"id"));
-        loading = true; auto preview = co_await service->request(L"/mail/folders/preview", account, L"POST", body); loading = false;
-        if (!current(version, captured)) co_return;
-        if (text(preview, L"accountId") != account || text(preview, L"previewId").empty()) throw hresult_error(E_FAIL, L"The folder review could not be confirmed.");
-        auto plan = object(preview, L"plan");
-        auto detail = account + L"\n" + text(plan, L"sourceName") + L" → " + text(plan, L"name") + L"\nAffected labels/folders: " + to_hstring(plan.GetNamedNumber(L"affectedCount", 1)) + L"\n" + text(plan, L"impact");
-        if (plan.HasKey(L"messageCount") && plan.GetNamedValue(L"messageCount").ValueType() == JsonValueType::Number) detail = detail + L"\nMessages in selected folder: " + to_hstring(plan.GetNamedNumber(L"messageCount"));
-        if (!(co_await confirm(L"Apply this provider change?", detail, action == L"delete" ? L"Delete on provider" : L"Apply change")) || !current(version, captured)) co_return;
-        Json apply; put(apply, L"previewId", text(preview, L"previewId")); apply.Insert(L"confirmed", Value::CreateBooleanValue(true));
-        loading = true; auto changed = co_await service->request(L"/mail/folders/apply", account, L"POST", apply); loading = false;
-        if (text(changed, L"accountId") != account) throw hresult_error(E_FAIL, L"The changed folder owner could not be confirmed. Refresh before another review.");
-        JsonArray folders;
-        for (auto const& value : array(changed, L"folders")) { auto folder = value.GetObject(); if (!flag(folder, L"hidden") && (!folder.HasKey(L"selectable") || flag(folder, L"selectable"))) folders.Append(value); }
-        changed.Insert(L"folders", folders); serverFolders.Insert(account, changed);
-        if (!current(version, captured)) co_return;
-        if (owner == account) for (auto const& value : array(changed, L"changes")) { auto change=value.GetObject(); if (folder == L"provider:" + text(change,L"oldId")) { folder = text(change,L"newId").empty() ? L"inbox" : L"provider:" + text(change,L"newId"); break; } }
-        rebuildNavigation(); for (auto& cursor : cursors) cursor = L"";
-        if (section == L"mail") co_await loadPage();
-        error(L"Provider label/folder change confirmed.");
-    } catch (...) { loading = false; error(errorText()); }
-}
-IAsyncAction Shell::organize(Json message, hstring preferredKind, hstring preferredDestination) {
-    if (preferredKind == L"trash") { co_await trash(message); co_return; }
-    auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
-    auto sequence = selectionGeneration; auto account = text(message, L"accountId");
-    if (dialogOpen || loading || !connected(account) || !dirty.empty() || flag(message, L"providerFolderMissing")) co_return;
-    try {
-        loading = true;
-        auto result = co_await service->request(L"/mail/folders", account);
-        loading = false;
-        if (!current(version, captured) || sequence != selectionGeneration || dialogOpen) co_return;
-        auto content = stack(12); content.Children().Append(label(account + L"\n" + text(message, L"subject")));
-        ComboBox mode; mode.Header(box_value(L"Action"));
-        mode.Items().Append(box_value(L"Move"));
-        if (text(result, L"provider") == L"google") { mode.Items().Append(box_value(L"Add label")); mode.Items().Append(box_value(L"Remove label")); }
-        mode.SelectedIndex(0); if (preferredKind != L"trash") content.Children().Append(mode);
-        ComboBox destination; destination.Header(box_value(L"Folder / label")); destination.HorizontalAlignment(HorizontalAlignment::Stretch);
-        auto populate = [destination, mode, result, preferredKind, preferredDestination] {
-            destination.Items().Clear();
-            int32_t preferred = -1;
-            for (auto const& value : array(result, L"folders")) {
-                auto folder = value.GetObject();
-                if (mode.SelectedIndex() != 0 && text(folder, L"kind") != L"label") continue;
-                if (text(folder,L"id") == preferredDestination || mode.SelectedIndex() == 0 && text(folder, L"kind") == preferredKind) preferred = static_cast<int32_t>(destination.Items().Size());
-                ComboBoxItem item; item.Content(box_value(text(folder, L"name"))); item.Tag(folder); destination.Items().Append(item);
-            }
-            destination.SelectedIndex(preferred);
-        };
-        populate(); mode.SelectionChanged([populate](auto const&, auto const&) { populate(); });
-        if (preferredKind == L"trash" && destination.SelectedIndex() < 0) throw hresult_error(E_FAIL, L"This mailbox did not expose a provider Trash folder. Check its permissions or use your provider.");
-        if (preferredKind == L"trash") content.Children().Append(label(L"Destination: " + text(destination.SelectedItem().as<ComboBoxItem>().Tag().as<Json>(), L"name")));
-        else content.Children().Append(destination);
-        content.Children().Append(label(preferredKind == L"trash" ? L"This moves the message to Trash on the account shown above. It does not permanently delete the message." : L"Provider changes affect this mailbox on the remote server. Gmail Move removes Inbox while retaining other labels. Spam / Junk is a provider move. Phishing reports and sender blocking remain provider-site actions."));
-        auto provider = text(result, L"provider");
-        if (preferredKind != L"trash" && (provider == L"google" || provider == L"microsoft")) content.Children().Append(button(L"Open provider for reporting / blocking", [provider] { Windows::System::Launcher::LaunchUriAsync(Uri(provider == L"google" ? L"https://mail.google.com/" : L"https://outlook.live.com/mail/")); }));
-        ContentDialog dialog; dialog.XamlRoot(root.XamlRoot()); dialog.Title(box_value(preferredKind == L"trash" ? L"Move to provider Trash" : L"Organize on provider")); dialog.Content(scroll(content));
-        dialog.PrimaryButtonText(preferredKind == L"trash" ? L"Review Trash Move" : L"Review change"); dialog.CloseButtonText(L"Cancel"); dialog.IsPrimaryButtonEnabled(destination.SelectedIndex() >= 0);
-        destination.SelectionChanged([dialog, destination](auto const&, auto const&) { dialog.IsPrimaryButtonEnabled(destination.SelectedIndex() >= 0); });
-        dialogOpen = true;
-        ContentDialogResult decision;
-        try { decision = co_await dialog.ShowAsync(); } catch (...) { dialogOpen = false; throw; }
-        dialogOpen = false;
-        if (decision != ContentDialogResult::Primary || !current(version, captured) || sequence != selectionGeneration || destination.SelectedIndex() < 0) co_return;
-        auto target = destination.SelectedItem().as<ComboBoxItem>().Tag().as<Json>();
-        wchar_t const* modes[] = {L"move", L"addLabel", L"removeLabel"};
-        auto action = hstring(modes[std::clamp(mode.SelectedIndex(), 0, 2)]);
-        if (!(co_await confirm(preferredKind == L"trash" ? L"Move to provider Trash?" : L"Apply this provider change?", account + L"\n" + text(message, L"subject") + L"\n" + action + L" → " + text(target, L"name"), preferredKind == L"trash" ? L"Move to Trash" : L"Apply provider change")) || !current(version, captured) || sequence != selectionGeneration) co_return;
-        Json body; put(body, L"destinationId", text(target, L"id")); put(body, L"mode", action); body.Insert(L"confirmed", Value::CreateBooleanValue(true));
-        auto updated = co_await service->request(L"/messages/" + escaped(text(message, L"id")) + L"/organize", account, L"POST", body);
-        if (!current(version, captured) || sequence != selectionGeneration) co_return;
-        auto moved = object(updated, L"message");
-        if (text(moved, L"accountId") != account || text(moved, L"id") != text(message, L"id")) throw hresult_error(E_FAIL, L"The message owner changed. Refresh your mailbox.");
-        if (text(selected, L"accountId") == account && text(selected, L"id") == text(message, L"id")) { selected = moved; renderReader(selected); }
-        for (auto& cursor : cursors) cursor = L"";
-        co_await loadPage();
-    } catch (...) { loading = false; error(errorText()); }
 }
 void Shell::updateTrashUndo() {
     std::erase_if(trashUndos, [](auto const& entry) { return entry.expires <= GetTickCount64(); });

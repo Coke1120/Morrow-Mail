@@ -23,6 +23,7 @@ IAsyncAction Shell::smoke() {
     Json readerEvidence;
     try {
         readerSecurityChecks();
+        folderPickerChecks();
         check(mailDateLabel(L"2026-09-28T12:00:00.000Z") == mailDateLabel(L"2026-09-28T20:00:00+08:00")
             && std::wstring_view(mailDateLabel(L"2026-09-28T12:00:00.000Z")).find(L"T12:") == std::wstring_view::npos
             && mailDateLabel(L"invalid") == L"invalid", L"Mail dates did not preserve the instant while formatting local time.");

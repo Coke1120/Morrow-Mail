@@ -1,5 +1,12 @@
 # Verification — 1 October 2026
 
+## Current source — searchable label/folder management
+
+Both native clients now use account-scoped cached catalogs for hierarchy management and searchable destination/parent pickers. The Gmail message checklist applies only explicit add/remove deltas in one provider request; Outlook/IMAP retain single-folder moves. Create-from-email separately reviews creation and subsequent message assignment. Provider catalog validation, single-use folder reviews, protected folders, write permissions and uncertain-write handling remain enforced. Safe manager metadata is projected separately from selectable sidebar destinations; connection secrets remain private.
+
+Validation is in progress: focused Rust provider/planner checks and the macOS candidate build passed. The new Gmail fixture checks single-write deltas, custom-label validation, Inbox/system-label preservation, duplicate-ID account isolation, Pending and local folder overrides. Native hierarchy checks cover missing parents and cycles; WinUI smoke includes searchable-picker selection retention and label-delta construction. Full Rust/native acceptance and Windows CI results will be recorded after completion. No real-account writes or installed-app replacement are used. This change is not included in the beta.31 public packages.
+
+
 ## 0.6.0-beta.31 — published paired native release
 
 [Beta.31](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.31) was published at 2026-10-01T08:58:51Z from `7ae973385ba09ed5f3735fe799d100d9fddc25c7`. [Tagged CI 36837100716](https://github.com/Coke1120/Morrow-Mail/actions/runs/36837100716) passed all three jobs: Node-free Rust formatting, strict all-target Clippy and locked tests on both platforms; macOS native packaging/acceptance; Windows packaging, fresh/owned/restart UI, reader/persistence checks and fictional-mail benchmark; and the existing paired publisher's same-run/same-attempt provenance and signing gate. Both native startup and Settings-refresh folder-cache regressions passed. No test waiver applied.

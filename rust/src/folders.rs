@@ -65,6 +65,17 @@ pub fn cached_catalogs(config: &Value) -> Value {
         if !value["folders"].is_array() {
             value["folders"] = json!([]);
         }
+        value["managementFolders"] = value["folders"].clone();
+        value["folders"] = json!(
+            value["folders"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|f| f["hidden"] != true && f["selectable"] != false)
+                .cloned()
+                .collect::<Vec<_>>()
+        );
+        value["canManage"] = providers::can_organize(mail).into();
         value["provider"] = provider(mail).into();
         value["accountId"] = owner.clone().into();
         let stale = cache["connection"] != connection_version(mail);
@@ -95,10 +106,32 @@ pub(crate) fn remember(db: &Store, mail: &Value, folders: &[Value]) -> Result<()
             !string(f, "id").is_empty()
                 && string(f, "id") != "__archive"
                 && !string(f, "id").chars().any(char::is_control)
-                && f["hidden"] != true
-                && f["selectable"] != false
         })
-        .map(|f| project(f, &["id", "name", "kind", "parentId"]))
+        .map(|f| {
+            let previous = config["mailFolderCatalogs"][owner]["folders"]
+                .as_array()
+                .and_then(|folders| {
+                    folders
+                        .iter()
+                        .find(|old| old["id"] == f["id"] && old["name"] == f["name"])
+                })
+                .cloned()
+                .unwrap_or(json!({}));
+            project(
+                &merge(previous, f),
+                &[
+                    "id",
+                    "name",
+                    "kind",
+                    "parentId",
+                    "leafName",
+                    "delimiter",
+                    "editable",
+                    "selectable",
+                    "hidden",
+                ],
+            )
+        })
         .collect::<Vec<_>>();
     let next = (chrono::Utc::now() + chrono::Duration::minutes(15))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -113,7 +146,12 @@ pub(crate) fn remember(db: &Store, mail: &Value, folders: &[Value]) -> Result<()
 fn due(config: &Value, owner: &str, mail: &Value) -> bool {
     let cache = &config["mailFolderCatalogs"][owner];
     cache["connection"] != connection_version(mail)
-        || cache["blocked"] != true && string(cache, "nextRetryAt") <= now().as_str()
+        || cache["blocked"] != true
+            && (string(cache, "nextRetryAt") <= now().as_str()
+                || cache["errorCode"].is_null()
+                    && cache["folders"]
+                        .as_array()
+                        .is_some_and(|folders| folders.iter().any(|f| !f["editable"].is_boolean())))
 }
 /// Read-only metadata refresh, independent of the user's mail-download schedule.
 pub async fn tick(app: &App) -> Result<()> {
@@ -134,7 +172,7 @@ pub async fn tick(app: &App) -> Result<()> {
     for (owner, original) in owners {
         let work = async {
             let mail = mail::current_mail(app, &owner).await?;
-            mail::remote_folders(app, &mail).await?;
+            catalog(app, &mail).await?;
             Ok::<_, Error>(())
         }
         .await;

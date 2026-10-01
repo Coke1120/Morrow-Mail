@@ -793,7 +793,7 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                 string(&body, "mode")
             };
             if *action == "organize"
-                && (!["move", "addLabel", "removeLabel"].contains(&mode)
+                && (!["move", "addLabel", "removeLabel", "labels"].contains(&mode)
                     || body["confirmed"] != true)
             {
                 return Err(Error::invalid(
@@ -841,7 +841,38 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             }
             let mail = current_mail(app, &ctx.owner).await?;
             let folders = remote_folders(app, &mail).await?;
-            let mut destination = if undo.as_ref().is_some_and(|entry| {
+            let mut destination = if mode == "labels" {
+                if mail["provider"] != "google" {
+                    return Err(Error::invalid("Only Gmail supports message labels."));
+                }
+                let mut seen = std::collections::HashSet::new();
+                for key in ["addLabelIds", "removeLabelIds"] {
+                    let ids = body[key]
+                        .as_array()
+                        .filter(|ids| ids.len() <= 100)
+                        .ok_or_else(|| {
+                            Error::invalid("Choose up to 100 labels to add or remove.")
+                        })?;
+                    for id in ids {
+                        let id = id.as_str().filter(|id| !id.is_empty()).ok_or_else(|| {
+                            Error::invalid("Choose a current custom Gmail label.")
+                        })?;
+                        if !seen.insert(id)
+                            || !folders
+                                .iter()
+                                .any(|f| f["id"] == id && f["kind"] == "label")
+                        {
+                            return Err(Error::invalid(
+                                "Choose distinct current custom Gmail labels from this mailbox.",
+                            ));
+                        }
+                    }
+                }
+                if seen.is_empty() {
+                    return Err(Error::invalid("Select a label change first."));
+                }
+                json!({"kind":"label","addLabelIds":body["addLabelIds"],"removeLabelIds":body["removeLabelIds"]})
+            } else if undo.as_ref().is_some_and(|entry| {
                 mail["provider"] == "google" && entry.destination["kind"] == "restoreTrash"
             }) {
                 undo.as_ref().unwrap().destination.clone()

@@ -270,6 +270,7 @@ fn existing_native_checks(root: &Path, fixture: &Path) -> Result<()> {
         "models-checks",
         &[
             "macos/Sources/MorrowMail/Models.swift",
+            "macos/Sources/MorrowMail/FolderPicker.swift",
             "macos/Checks/main.swift",
         ],
     )?;
