@@ -547,7 +547,12 @@ IAsyncAction refreshConnections(Page p, bool automatic) {
             auto accountsNow = next.GetNamedArray(L"accounts");
             auto calendarsNow = object(next, L"settings").GetNamedArray(L"calendars");
             bool changedAccounts = accountsNow.Stringify() != array(p->shell->state, L"accounts").Stringify();
+            bool changedFolders = object(next, L"serverFolders").Stringify() != object(p->shell->state, L"serverFolders").Stringify();
             p->shell->state.Insert(L"accounts", accountsNow);
+            if (next.HasKey(L"serverFolders")) {
+                p->shell->state.Insert(L"serverFolders", object(next, L"serverFolders"));
+                p->shell->serverFolders = object(next, L"serverFolders");
+            }
             object(p->shell->state, L"settings").Insert(L"calendars", calendarsNow);
             if (p->tab == L"mail" && accountsNow.Stringify() != array(p->connections, L"accounts").Stringify())
                 accounts(p, p->connectionsPanel, next, p->importOptions);
@@ -558,7 +563,7 @@ IAsyncAction refreshConnections(Page p, bool automatic) {
                 }
             }
             p->connections = next;
-            if (changedAccounts) p->shell->rebuildNavigation();
+            if (changedAccounts || changedFolders) p->shell->rebuildNavigation();
             if (!automatic) p->tell(L"Connection and history status refreshed.");
             else if (p->notice.Text() == refreshError) p->tell(L"");
         }

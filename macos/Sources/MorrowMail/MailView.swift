@@ -228,7 +228,6 @@ struct MailWorkspace: View {
             DisclosureGroup(isExpanded: Binding(get: { expandedServerAccounts.contains(account) || !folderFilter.isEmpty && model.serverFolders[account] != nil }, set: { expanded in
                 if expanded {
                     expandedServerAccounts.insert(account)
-                    if model.serverFolders[account] == nil { model.perform { try await model.loadServerFolders(account) } }
                 } else { expandedServerAccounts.remove(account) }
             })) {
                 ForEach((model.serverFolders[account] ?? []).filter { folderFilter.isEmpty || $0["name"].string.localizedCaseInsensitiveContains(folderFilter) }) { folder in
@@ -240,7 +239,12 @@ struct MailWorkspace: View {
                                 .disabled(!model.canNavigate || model.current?["accountId"].string != account || !(model.current.map(model.canOrganize) ?? false))
                         }
                 }
-                Button("Refresh server list") { model.perform { try await model.loadServerFolders(account) } }.disabled(model.busy)
+                if !model.state["serverFolders"][account]["errorCode"].isNull {
+                    Text("Folder list could not refresh. Saved names are retained.").font(.caption).foregroundStyle(.secondary)
+                } else if model.state["serverFolders"][account]["updatedAt"].isNull {
+                    Text("Loading labels / folders…").font(.caption).foregroundStyle(.secondary)
+                }
+                Button("Refresh labels / folders") { model.perform { try await model.loadServerFolders(account) } }.disabled(model.busy)
             } label: { Text(model.accounts.first { $0.id == account }?["provider"].string == "google" ? "Gmail labels" : "Server folders") }
             Button("Manage labels / folders…") { model.managingFolders = .object(["id": .string(account)]) }.disabled(!model.canNavigate)
         }
@@ -251,7 +255,7 @@ struct MailWorkspace: View {
     var messageList: some View {
         VStack(spacing: 0) {
             HStack { VStack(alignment: .leading, spacing: 3) { Text(model.mailSectionTitle).font(.headline); Text(model.combined ? "All accounts" : model.account).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }; Spacer(); Toggle(isOn: $model.unreadOnly) { Image(systemName: "line.3.horizontal.decrease.circle") }.toggleStyle(.button).controlSize(.small).help("Show unread only").accessibilityLabel("Show unread only").disabled(!model.searchResponse.isNull) }.padding(.horizontal, 14).padding(.vertical, 10)
-            if model.section.hasPrefix("provider:") { Text("Downloaded mail only. Sync or import history to add more messages; refreshing the server list reads folder names.").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.bottom, 8) }
+            if model.section.hasPrefix("provider:") { Text("Labels and folders refresh automatically. Messages shown here are downloaded mail; import history to add older messages.").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.bottom, 8) }
             HStack(spacing: 12) {
                 Menu {
                     Picker("Reading layout", selection: $readerLayout) {

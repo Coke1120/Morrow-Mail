@@ -232,6 +232,9 @@ struct NativeRustChecks {
         let publicState = String(decoding: try JSONEncoder().encode(model.state), as: UTF8.self)
         try check(!publicState.contains("fixture-native-rust-"), "connection secrets appeared in public state")
         try check(model.messages.count == 50 && model.messages.allSatisfy { $0["body"].isNull }, "startup state was not paged")
+        for owner in [first, second] {
+            try check(model.serverFolders[owner]?.contains(where: { $0.id == "native-label" && $0["name"].string == "Projects/中文/" + owner }) == true, "startup did not restore the owning folder catalog without Browse/Refresh")
+        }
         let health = try await model.request("/health")
         try check(health["service"].string == "morrow-mail", "private service health contract changed")
         let calendars = try await model.request("/calendars")
@@ -241,6 +244,7 @@ struct NativeRustChecks {
         let connectionRevision = try await model.request("/state/revision", mailbox: "")
         model.state["accounts"] = .array([]) // Simulate the pre-connect settings snapshot.
         model.state["settings"]["calendars"] = .array([])
+        model.state["serverFolders"] = .object([:])
         model.state["settings"]["preferences"]["language"] = .string("Unsaved fixture edit")
         model.unsavedForms.insert("settings")
         model.selectedMessage = "fixture-selection"
@@ -248,6 +252,7 @@ struct NativeRustChecks {
         let retained = model.state.picking(["account", "messages", "revision", "workspace"])
         try await model.refreshConnections()
         try check(model.state["accounts"] == connected["accounts"] && model.state["settings"]["calendars"] == connected["settings"]["calendars"], "settings did not refresh saved mail/calendar metadata")
+        try check(model.state["serverFolders"] == connected["serverFolders"] && model.serverFolders[first]?.first?.id == "native-label", "settings refresh omitted cached folder names")
         try check(model.state.picking(["account", "messages", "revision", "workspace"]) == retained && model.preferences["language"].string == "Unsaved fixture edit" && model.unsavedForms == ["settings"], "connection refresh replaced the selected view or unsaved settings")
         try check(model.selectedMessage == "fixture-selection" && model.mailPage["fixture"].bool && model.mailCursors == ["", "fixture-cursor"], "connection refresh reset mail rows, selection or paging")
         try check(try await model.request("/state/revision", mailbox: "") == connectionRevision, "connection refresh mutated persisted state")

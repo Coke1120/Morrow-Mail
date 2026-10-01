@@ -382,8 +382,15 @@ fn seed(directory: &Path) -> Result<()> {
         );
     }
     let baseline = DateTime::parse_from_rfc3339("2026-09-25T00:00:00.000Z")?;
+    let catalogs = ACCOUNTS.iter().map(|owner| {
+        let mail = &connections[*owner];
+        ((*owner).to_owned(), json!({"connection":[mail["connectionId"],mail["authorizationId"],mail["provider"],mail["email"],mail["clientId"],mail["imapHost"],mail["imapPort"]],
+            "provider":"google","folders":[{"id":"native-label","name":format!("Projects/中文/{owner}"),"kind":"label"}],
+            "updatedAt":"2026-09-25T00:00:00.000Z","nextRetryAt":"2099-01-01T00:00:00.000Z","blocked":false}))
+    }).collect::<serde_json::Map<_, _>>();
     store.transaction(|db| {
         db.set_settings(&json!({"mailAccounts":connections, "mail":connections[ACCOUNTS[0]],
+            "mailFolderCatalogs":catalogs,
             "activeAccount":"demo", "preferences":{"syncInterval":0,"markReadOnOpen":true,"sort":"newest"},
             "ai":null, "policy":{"enabled":false}, "calendars":{}, "imports":{}, "smartSearch":{"enabled":false}}))?;
         for email in ACCOUNTS {

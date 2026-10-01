@@ -1,6 +1,10 @@
 # Verification — 1 October 2026
 
+## Automatic local folder catalogs — current source, unreleased
 
+Both native clients restore each connected account's Gmail labels or Outlook/IMAP folders from encrypted local settings without mandatory Browse/Refresh. The service discovers new/reconnected accounts with a five-second metadata worker and refreshes successful catalogs every 15 minutes, independently of the mail-download schedule. Offline failures retain saved names; transient reads and recognized quota responses use persisted backoff, while authorization/malformed responses stop automatic retries. Fresh provider catalogs, permission checks and confirmation remain required for mutations. This change does not add a complete historical mail or attachment mirror.
+
+Local Rust formatting, strict all-target Clippy and the full locked suite passed. The isolated TLS metadata check covers automatic read-only fetch, duplicate folder IDs across owners, nested Outlook names, encrypted persistence/restart, observational state/Activity reads, retained offline names, daily-quota pacing, authorization/malformed blocking, fresh retry state after reconnect and disconnect isolation. The Node-free macOS candidate passed production-service native acceptance, deep/strict ad-hoc signature verification and plist lint. Native startup restores both fictional owner catalogs; Settings status refresh restores catalogs while preserving unsaved edits, rows, page and selection. Windows startup/Settings smoke assertions are added; source CI is pending. The published beta.30 binaries and their Parallels walkthrough below predate this change. No owner workspace or real provider/model write was used.
 
 ## 0.6.0-beta.30 — published paired native release
 

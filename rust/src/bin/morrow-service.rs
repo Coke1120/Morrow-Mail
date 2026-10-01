@@ -165,7 +165,7 @@ async fn run() -> Result<()> {
         }
     });
     let mut jobs = Vec::new();
-    for kind in 0..4 {
+    for kind in 0..5 {
         let worker = app.clone();
         let mut stop = shutdown_rx.clone();
         jobs.push(tokio::spawn(async move {
@@ -178,7 +178,8 @@ async fn run() -> Result<()> {
                             0 => { let _ = morrow_search::background::tick(&worker).await; }
                             1 => { let _ = morrow_search::smart_search::tick(&worker).await; }
                             2 => { let _ = morrow_search::scheduled::tick(&worker).await; }
-                            _ => { let _ = morrow_search::reply_suggestions::tick(&worker).await; }
+                            3 => { let _ = morrow_search::reply_suggestions::tick(&worker).await; }
+                            _ => { let _ = morrow_search::folders::tick(&worker).await; }
                         }
                     }, &mut stop, kind == 2).await { break; }
             }

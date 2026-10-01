@@ -411,12 +411,16 @@ if previous["payloadHash"]!=hash{return Err(Error::conflict("This draft has an u
         }
     }
 }
-async fn remote_folders(app: &App, mail: &Value) -> Result<Vec<Value>> {
-    if ["", "imap"].contains(&string(mail, "provider")) {
+pub(crate) async fn remote_folders(app: &App, mail: &Value) -> Result<Vec<Value>> {
+    let folders = if ["", "imap"].contains(&string(mail, "provider")) {
         imap::folders(mail).await
     } else {
         providers::folders(&app.0.client, mail).await
-    }
+    }?;
+    let (connection, saved) = (mail.clone(), folders.clone());
+    app.db(move |db| crate::folders::remember(db, &connection, &saved))
+        .await?;
+    Ok(folders)
 }
 pub async fn sync_accounts(app: &App, owners: &[String]) -> Result<Value> {
     sync(app, owners).await
@@ -762,7 +766,9 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                 return Err(Error::conflict("Choose a connected mailbox."));
             }
             let mail = current_mail(app, &owner).await?;
-            json!({"folders":remote_folders(app,&mail).await?,"provider":mail.get("provider").cloned().unwrap_or(json!("imap")),"accountId":owner})
+            let folders = remote_folders(app, &mail).await?;
+            let updated = app.settings().await?["mailFolderCatalogs"][&owner]["updatedAt"].clone();
+            json!({"folders":folders,"provider":mail.get("provider").cloned().unwrap_or(json!("imap")),"accountId":owner,"updatedAt":updated})
         }
         (
             "POST",

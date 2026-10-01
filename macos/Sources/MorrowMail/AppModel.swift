@@ -6,6 +6,9 @@ import Security
 final class AppModel: ObservableObject {
     @Published var state: JSON = .null {
         didSet {
+            if case .object(let catalogs) = state["serverFolders"] {
+                serverFolders = catalogs.mapValues { $0["folders"].array }
+            }
             if state["account"]["id"] != oldValue["account"]["id"] || state["settings"] != oldValue["settings"] ||
                 accounts.map({ $0.picking(["id", "settings"]) }) != oldValue["accounts"].array.map({ $0.picking(["id", "settings"]) }) ||
                 state["workspace"].picking(["brain", "styleLearning"]) != oldValue["workspace"].picking(["brain", "styleLearning"]) { draftGeneration += 1 }
@@ -301,6 +304,7 @@ final class AppModel: ObservableObject {
         guard !Task.isCancelled, state == before else { return }
         var next = state
         next["accounts"] = result["accounts"]
+        next["serverFolders"] = result["serverFolders"]
         next["settings"]["calendars"] = result["settings"]["calendars"]
         if next != state { state = next }
     }
@@ -397,6 +401,8 @@ final class AppModel: ObservableObject {
         guard accounts.contains(where: { $0.id == owner }), result["accountId"].string == owner,
               case .array = result["folders"] else { throw APIError("The server folder list could not be confirmed.") }
         serverFolders[owner] = result["folders"].array.filter { $0.id != "__archive" && !$0.id.isEmpty && !$0.id.contains(where: { $0.isNewline }) }
+        var catalog = result; catalog["folders"] = .array(serverFolders[owner] ?? []); catalog["errorCode"] = .null
+        state["serverFolders"][owner] = catalog
     }
     func openAssistant(_ action: String, message: JSON, includeHistory: Bool = false) {
         guard canNavigate, ["summary", "reply", "translate"].contains(action), allowed(action),

@@ -41,6 +41,8 @@ IAsyncAction Shell::smoke() {
         resizeSidebar(0, false); check(navigation.OpenPaneLength() == 180, L"The sidebar can shrink below its accessible minimum.");
         resizeSidebar(sidebarWidth, false);
         if (seeded) {
+            check(array(object(serverFolders, owner.c_str()), L"folders").Size() > 0,
+                L"Startup did not restore the owning folder catalog without Browse/Refresh.");
             auto savedFolders = Json::Parse(serverFolders.Stringify()); auto savedOwner = owner; auto savedFolder = folder; auto savedGeneration = generation; auto savedSelected = selected.Stringify();
             Json catalog; JsonArray entries;
             for (auto name : {L"Projects / A very long folder name 中文", L"Other"}) { Json entry; put(entry, L"id", name); put(entry, L"name", name); entries.Append(entry); }
@@ -283,7 +285,10 @@ IAsyncAction Shell::smoke() {
             for (auto const* tab : {L"start", L"general", L"mail", L"calendar", L"model", L"search", L"policy", L"about"}) {
                 enter("settings-" + to_string(tab));
                 auto previousPage = page.Content();
-                if (std::wstring_view(tab) == L"mail") state.Insert(L"accounts", Windows::Data::Json::JsonArray());
+                if (std::wstring_view(tab) == L"mail") {
+                    state.Insert(L"accounts", Windows::Data::Json::JsonArray());
+                    state.Insert(L"serverFolders", Json()); serverFolders = Json();
+                }
                 co_await settingsPage(lifetime, tab);
                 check(page.Content() && page.Content() != previousPage, L"A native Settings tab failed to open.");
                 auto layout = page.Content().try_as<controls::Grid>();
@@ -316,6 +321,8 @@ IAsyncAction Shell::smoke() {
                         : status.Children().GetAt(0).as<controls::TextBlock>().Text() == L"Not connected", L"Settings did not automatically refresh local connection metadata.");
                     check(page.Content() == layout && generation == version && input.Text() == L"unsaved@fixture.invalid" && secret.Password() == L"fictional-unsaved-secret" && dirty == edits,
                         L"Automatic connection refresh replaced the page or unsaved credentials.");
+                    if (mail) check(serverFolders.Size() == 2 && object(state, L"serverFolders").Size() == 2,
+                        L"Settings polling omitted the saved folder catalogs.");
                     owner = capturedOwner; input.Text(original); secret.Password(L"");
                 }
                 if (std::wstring_view(tab) == L"policy") {

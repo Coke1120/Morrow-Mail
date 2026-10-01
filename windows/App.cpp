@@ -369,7 +369,9 @@ IAsyncAction Shell::refresh(bool rebuild) {
         auto result = co_await service->request(L"/state", captured);
         if (!current(version, captured)) co_return;
         bool changedAccounts = array(result, L"accounts").Stringify() != array(state, L"accounts").Stringify();
+        bool changedFolders = object(result, L"serverFolders").Stringify() != object(state, L"serverFolders").Stringify();
         state = result;
+        if (state.HasKey(L"serverFolders")) serverFolders = object(state, L"serverFolders");
         auto theme = text(object(object(state, L"settings"), L"preferences"), L"theme");
         root.RequestedTheme(theme == L"dark" ? ElementTheme::Dark : theme == L"light" ? ElementTheme::Light : ElementTheme::Default);
         if (owner.empty() || (!connected(owner) && owner != L"all")) {
@@ -377,7 +379,7 @@ IAsyncAction Shell::refresh(bool rebuild) {
             owner = connected(active) || active == L"all" ? active : L"";
             if (owner.empty() && array(state, L"accounts").Size()) owner = text(array(state, L"accounts").GetAt(0).GetObject(), L"id");
         }
-        if (rebuild || changedAccounts) rebuildNavigation();
+        if (rebuild || changedAccounts || changedFolders) rebuildNavigation();
         if (!connected(owner) && owner != L"all") selected = Json();
         if (section == L"activity" || section == L"today") co_await workspacePage(lifetime, section);
         error(L"");
@@ -455,8 +457,6 @@ void Shell::rebuildNavigation() {
             folderActions(remote, id);
             auto catalog = object(serverFolders, id.c_str());
             remote.SelectsOnInvoked(false);
-            remote.MenuItems().Append(navItem(L"Browse / refresh server list", L"server-folders", id, L"inbox", L"\uE72C"));
-            remote.MenuItems().Append(navItem(L"Manage labels / folders…", L"manage-folders", id, L"inbox", L"\uE70F"));
             if (catalog.Size()) {
                 for (auto const& value : array(catalog, L"folders")) {
                     auto entry = value.GetObject(); auto key = L"provider:" + text(entry, L"id");
@@ -467,6 +467,12 @@ void Shell::rebuildNavigation() {
                 }
                 remote.IsExpanded((folderFilter && !folderFilter.Text().empty()) || section == L"mail" && owner == id && std::wstring_view(folder).starts_with(L"provider:"));
             }
+            if (!text(catalog, L"errorCode").empty() || text(catalog, L"updatedAt").empty()) {
+                auto pending = navItem(text(catalog, L"errorCode").empty() ? L"Loading labels / folders…" : L"Folder list could not refresh. Saved names are retained.", L"", id);
+                pending.IsEnabled(false); remote.MenuItems().Append(pending);
+            }
+            remote.MenuItems().Append(navItem(L"Refresh labels / folders", L"server-folders", id, L"inbox", L"\uE72C"));
+            remote.MenuItems().Append(navItem(L"Manage labels / folders…", L"manage-folders", id, L"inbox", L"\uE70F"));
             item.MenuItems().Append(remote);
         }
         navigation.MenuItems().Append(item);
@@ -516,11 +522,12 @@ IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder
             auto result = co_await service->request(L"/account/select", owner, L"POST", body);
             if (!current(version, captured)) { loading = false; co_return; }
             state = result;
+            if (state.HasKey(L"serverFolders")) serverFolders = object(state, L"serverFolders");
         } catch (...) { loading = false; error(errorText()); co_return; }
         loading = false; mailPage(); co_await loadPage();
     } else if (target == L"server-folders") {
         auto panel = stack(12); panel.Children().Append(label(L"Server labels / folders", 26));
-        panel.Children().Append(label(L"Choose a server label or folder to browse downloaded mail. Sync or import history to add more messages; refreshing this list only reads folder names."));
+        panel.Children().Append(label(L"Labels and folders are saved locally and refresh automatically. Choose one to browse downloaded mail; import history to add older messages."));
         show(scroll(panel)); loading = true;
         try {
             auto result = co_await service->request(L"/mail/folders", captured);
@@ -534,7 +541,7 @@ IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder
                 auto destination = L"provider:" + key;
                 panel.Children().Append(button(text(entry, L"name"), [weak = weak_from_this(), captured, destination] { if (auto self = weak.lock()) self->navigate(L"mail", captured, destination); }));
             }
-            catalog.Insert(L"folders", entries); put(catalog, L"provider", text(result, L"provider"));
+            catalog.Insert(L"folders", entries); put(catalog, L"provider", text(result, L"provider")); put(catalog, L"updatedAt", text(result, L"updatedAt"));
             serverFolders.Insert(captured, catalog); rebuildNavigation();
         } catch (...) { error(errorText()); }
         loading = false;

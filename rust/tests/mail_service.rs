@@ -34,6 +34,176 @@ const C: &str = "c@example.invalid";
 const NATIVE: &str = "fixture-native-token";
 
 #[tokio::test]
+async fn automatic_folder_catalogs_are_owned_durable_and_keep_offline_names() {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let mode = Arc::new(AtomicUsize::new(0));
+    let (counted, response_mode) = (reads.clone(), mode.clone());
+    let fixture = Fixture::new(Arc::new(move |request| {
+        let (reads, mode) = (counted.clone(), response_mode.clone());
+        async move {
+            assert_eq!(request.method, "GET", "Metadata refresh must never write to a provider");
+            reads.fetch_add(1, Ordering::SeqCst);
+            match mode.load(Ordering::SeqCst) {
+                1 => return Reply::Lost,
+                2 => return Reply::Json(401, json!({"error":"private authorization detail"})),
+                3 => return Reply::Json(403, json!({"error":{"errors":[{"reason":"dailyLimitExceeded","message":"private quota detail"}]}})),
+                4 => return Reply::Json(200, json!({"labels":"malformed"})),
+                _ => {}
+            }
+            if request.host() == "gmail.googleapis.com" {
+                assert_eq!(request.path, "/gmail/v1/users/me/labels");
+                return Reply::Json(200, json!({"labels":[{"id":"INBOX","name":"Inbox","type":"system"},{"id":"same","name":format!("Projects/中文/{}",request.owner()),"type":"user"}]}));
+            }
+            assert_eq!(request.owner(), C);
+            let url = url::Url::parse(&format!("https://{}{}", request.host(), request.path)).unwrap();
+            Reply::Json(200, match url.path() {
+                "/v1.0/me/mailFolders" => json!({"value":[{"id":"inbox","displayName":"Inbox","childFolderCount":0},{"id":"junk","displayName":"Junk","childFolderCount":0},{"id":"trash","displayName":"Deleted","childFolderCount":0},{"id":"project","displayName":"Projects","childFolderCount":1}]}),
+                "/v1.0/me/mailFolders/project/childFolders" => json!({"value":[{"id":"child","displayName":"中文","childFolderCount":0}]}),
+                "/v1.0/me/mailFolders/inbox" => json!({"id":"inbox"}),
+                "/v1.0/me/mailFolders/junkemail" => json!({"id":"junk"}),
+                "/v1.0/me/mailFolders/deleteditems" => json!({"id":"trash"}),
+                other => panic!("Unexpected folder request: {other}"),
+            })
+        }.boxed()
+    })).await;
+    let server = fixture.start().await;
+    set(
+        &server.app,
+        config(&[(A, "google"), (B, "google"), (C, "microsoft")]),
+    )
+    .await;
+    let (_, initial) = server.call("GET", "/api/state", "all", json!({})).await;
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        0,
+        "Reading local state cannot start provider work"
+    );
+    assert_eq!(initial["serverFolders"][A]["folders"], json!([]));
+    morrow_search::folders::tick(&server.app).await.unwrap();
+    let count = reads.load(Ordering::SeqCst);
+    assert!(count > 0);
+    let (_, state) = server.call("GET", "/api/state", "all", json!({})).await;
+    assert!(
+        state["serverFolders"][A]["folders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["id"] == "same" && f["name"] == format!("Projects/中文/{A}"))
+    );
+    assert!(
+        state["serverFolders"][B]["folders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["id"] == "same" && f["name"] == format!("Projects/中文/{B}"))
+    );
+    assert!(
+        state["serverFolders"][C]["folders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["id"] == "child" && f["name"] == "Projects / 中文")
+    );
+    for secret in ["fixture-secret", "refresh-", "accessToken", "connection-"] {
+        assert!(!state["serverFolders"].to_string().contains(secret));
+    }
+    morrow_search::folders::tick(&server.app).await.unwrap();
+    server.call("GET", "/api/activity", "all", json!({})).await;
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        count,
+        "Fresh metadata must not be downloaded again"
+    );
+    server.shutdown().await;
+    let server = fixture.start().await;
+    let (_, restored) = server.call("GET", "/api/state", A, json!({})).await;
+    assert_eq!(restored["serverFolders"], state["serverFolders"]);
+    assert_eq!(reads.load(Ordering::SeqCst), count);
+    assert!(
+        !fs::read(fixture.root.join("workspace/genmail.sqlite"))
+            .unwrap()
+            .windows("Projects/中文".len())
+            .any(|v| v == "Projects/中文".as_bytes())
+    );
+    for failure_mode in [1, 2, 3, 4] {
+        mode.store(failure_mode, Ordering::SeqCst);
+        // A new authorization must refresh even if the previous catalog is fresh/blocked.
+        server
+            .app
+            .db(move |db| {
+                let mut config = db.settings()?;
+                config["mailAccounts"][A]["connectionId"] =
+                    format!("generation-{failure_mode}").into();
+                db.set_settings(&config)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let (_, stale) = server.call("GET", "/api/state", A, json!({})).await;
+        assert_eq!(stale["serverFolders"][A]["stale"], true);
+        assert!(stale["serverFolders"][A]["errorCode"].is_null());
+        assert!(stale["serverFolders"][A]["nextRetryAt"].is_null());
+        assert_eq!(
+            stale["serverFolders"][A]["folders"],
+            state["serverFolders"][A]["folders"]
+        );
+        let before = reads.load(Ordering::SeqCst);
+        morrow_search::folders::tick(&server.app).await.unwrap();
+        assert_eq!(reads.load(Ordering::SeqCst), before + 1);
+        let (_, offline) = server.call("GET", "/api/state", A, json!({})).await;
+        assert_eq!(
+            offline["serverFolders"][A]["folders"],
+            state["serverFolders"][A]["folders"]
+        );
+        assert!(!offline["serverFolders"].to_string().contains("private"));
+        let expected_retry = u64::from([1, 3].contains(&failure_mode));
+        assert_eq!(
+            server.app.settings().await.unwrap()["mailFolderCatalogs"][A]["retryCount"],
+            expected_retry,
+            "New connections must not inherit a previous connection's retry count"
+        );
+        if failure_mode == 3 {
+            let due = chrono::DateTime::parse_from_rfc3339(string(
+                &offline["serverFolders"][A],
+                "nextRetryAt",
+            ))
+            .unwrap();
+            assert!(due.timestamp() - chrono::Utc::now().timestamp() >= 86_399);
+        }
+        morrow_search::folders::tick(&server.app).await.unwrap();
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            before + 1,
+            "Respect retry pacing and block auth/malformed response retries"
+        );
+    }
+    mode.store(0, Ordering::SeqCst);
+    server
+        .app
+        .db(|db| {
+            let mut config = db.settings()?;
+            config["mailAccounts"][A]["connectionId"] = "reconnected".into();
+            db.set_settings(&config)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    morrow_search::folders::tick(&server.app).await.unwrap();
+    let (_, recovered) = server.call("GET", "/api/state", A, json!({})).await;
+    assert!(recovered["serverFolders"][A]["errorCode"].is_null());
+    assert_eq!(
+        server
+            .call("POST", "/api/account/disconnect", A, json!({}))
+            .await
+            .0,
+        200
+    );
+    let (_, disconnected) = server.call("GET", "/api/state", B, json!({})).await;
+    assert!(disconnected["serverFolders"].get(A).is_none());
+    assert_eq!(disconnected["serverFolders"][B], state["serverFolders"][B]);
+}
+
+#[tokio::test]
 async fn reviewed_folder_management_is_owned_single_use_and_preserves_cached_mail() {
     let labels = Arc::new(Mutex::new(vec![
         json!({"id":"INBOX","name":"Inbox","type":"system"}),

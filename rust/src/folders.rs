@@ -1,9 +1,10 @@
-//! Reviewed, account-bound provider folder/label management. No write retries.
+//! Account-bound folder/label metadata cache and reviewed management. No write retries.
 use crate::{
+    background::{project, write_owner},
     error::{Error, Result},
     imap, mail, providers,
     service::{App, Context, connections},
-    store::{Store, merge, string},
+    store::{Store, merge, now, string},
 };
 use axum::{
     Json,
@@ -25,12 +26,171 @@ pub struct Review {
 fn imap_mail(mail: &Value) -> bool {
     ["", "imap"].contains(&string(mail, "provider"))
 }
-async fn catalog(app: &App, mail: &Value) -> Result<Vec<Value>> {
+fn connection_version(mail: &Value) -> Value {
+    json!([
+        mail["connectionId"],
+        mail["authorizationId"],
+        mail["provider"],
+        mail["email"],
+        mail["clientId"],
+        mail["imapHost"],
+        mail["imapPort"]
+    ])
+}
+fn provider(mail: &Value) -> &str {
     if imap_mail(mail) {
+        "imap"
+    } else {
+        string(mail, "provider")
+    }
+}
+pub fn cached_catalogs(config: &Value) -> Value {
+    let mut result = serde_json::Map::new();
+    for (owner, mail) in connections(config).as_object().unwrap() {
+        let cache = &config["mailFolderCatalogs"][owner];
+        let mut value = if cache["provider"] == provider(mail) {
+            project(
+                cache,
+                &[
+                    "folders",
+                    "updatedAt",
+                    "errorCode",
+                    "nextRetryAt",
+                    "recoveryAction",
+                ],
+            )
+        } else {
+            json!({})
+        };
+        if !value["folders"].is_array() {
+            value["folders"] = json!([]);
+        }
+        value["provider"] = provider(mail).into();
+        value["accountId"] = owner.clone().into();
+        let stale = cache["connection"] != connection_version(mail);
+        value["stale"] = stale.into();
+        if stale {
+            value["errorCode"] = Value::Null;
+            value["nextRetryAt"] = Value::Null;
+            value["recoveryAction"] = Value::Null;
+        }
+        result.insert(owner.clone(), value);
+    }
+    Value::Object(result)
+}
+pub(crate) fn remember(db: &Store, mail: &Value, folders: &[Value]) -> Result<()> {
+    let config = db.settings()?;
+    let owner = string(mail, "email");
+    if connections(&config)
+        .get(owner)
+        .is_none_or(|current| connection_version(current) != connection_version(mail))
+    {
+        return Err(Error::conflict(
+            "This mailbox connection changed. Refresh its folder list again.",
+        ));
+    }
+    let folders = folders
+        .iter()
+        .filter(|f| {
+            !string(f, "id").is_empty()
+                && string(f, "id") != "__archive"
+                && !string(f, "id").chars().any(char::is_control)
+                && f["hidden"] != true
+                && f["selectable"] != false
+        })
+        .map(|f| project(f, &["id", "name", "kind", "parentId"]))
+        .collect::<Vec<_>>();
+    let next = (chrono::Utc::now() + chrono::Duration::minutes(15))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    write_owner(
+        db,
+        "mailFolderCatalogs",
+        owner,
+        json!({"connection":connection_version(mail),"provider":provider(mail),"folders":folders,"updatedAt":now(),"nextRetryAt":next,"retryCount":0,"errorCode":null,"recoveryAction":null,"blocked":false}),
+    )?;
+    Ok(())
+}
+fn due(config: &Value, owner: &str, mail: &Value) -> bool {
+    let cache = &config["mailFolderCatalogs"][owner];
+    cache["connection"] != connection_version(mail)
+        || cache["blocked"] != true && string(cache, "nextRetryAt") <= now().as_str()
+}
+/// Read-only metadata refresh, independent of the user's mail-download schedule.
+pub async fn tick(app: &App) -> Result<()> {
+    let config = app.settings().await?;
+    let owners = connections(&config)
+        .as_object()
+        .unwrap()
+        .iter()
+        .filter(|(owner, mail)| due(&config, owner, mail))
+        .map(|(owner, mail)| (owner.clone(), mail.clone()))
+        .collect::<Vec<_>>();
+    if owners.is_empty() {
+        return Ok(());
+    }
+    let Ok(_gate) = app.0.mailbox.try_lock() else {
+        return Ok(());
+    };
+    for (owner, original) in owners {
+        let work = async {
+            let mail = mail::current_mail(app, &owner).await?;
+            mail::remote_folders(app, &mail).await?;
+            Ok::<_, Error>(())
+        }
+        .await;
+        if let Err(error) = work {
+            app.db(move |db| {
+                let config = db.settings()?;
+                if connections(&config).get(&owner).is_none_or(|current| {
+                    connection_version(current) != connection_version(&original)
+                }) {
+                    return Ok(());
+                }
+                let previous = &config["mailFolderCatalogs"][&owner];
+                let retry = if previous["connection"] == connection_version(&original) {
+                    previous.clone()
+                } else {
+                    json!({})
+                };
+                let failure = crate::background::import_failure(
+                    &error,
+                    "fetch",
+                    &retry,
+                    chrono::Utc::now().timestamp_millis(),
+                );
+                let mut patch = project(
+                    &failure,
+                    &["errorCode", "nextRetryAt", "retryCount", "recoveryAction"],
+                );
+                patch["connection"] = connection_version(&original);
+                patch["provider"] = provider(&original).into();
+                patch["blocked"] = (failure["status"] != "running").into();
+                if previous["provider"] != provider(&original) {
+                    patch["folders"] = json!([]);
+                    patch["updatedAt"] = Value::Null;
+                }
+                write_owner(
+                    db,
+                    "mailFolderCatalogs",
+                    &owner,
+                    merge(previous.clone(), &patch),
+                )?;
+                Ok(())
+            })
+            .await?;
+        }
+    }
+    Ok(())
+}
+async fn catalog(app: &App, mail: &Value) -> Result<Vec<Value>> {
+    let folders = if imap_mail(mail) {
         imap::management_folders(mail).await
     } else {
         providers::management_folders(&app.0.client, mail).await
-    }
+    }?;
+    let (connection, saved) = (mail.clone(), folders.clone());
+    app.db(move |db| remember(db, &connection, &saved)).await?;
+    Ok(folders)
 }
 fn descendant(catalog: &[Value], child: &Value, source: &Value, provider: &str) -> bool {
     if child["id"] == source["id"] {

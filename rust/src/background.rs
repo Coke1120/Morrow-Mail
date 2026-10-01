@@ -100,7 +100,7 @@ pub fn priority_summary(raw: &str, messages: &[Value]) -> Result<Value> {
 fn digest(value: &Value) -> Result<String> {
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
 }
-fn write_owner(db: &Store, group: &str, account: &str, value: Value) -> Result<()> {
+pub(crate) fn write_owner(db: &Store, group: &str, account: &str, value: Value) -> Result<()> {
     let mut entries = merge(json!({}), &db.settings()?[group]);
     entries[account] = value;
     db.set_settings(&json!({group:entries}))?;
@@ -171,7 +171,7 @@ fn import_error_message(code: &str) -> Option<&'static str> {
         _ => None,
     }
 }
-fn import_failure(error: &Error, stage: &str, job: &Value, timestamp: i64) -> Value {
+pub(crate) fn import_failure(error: &Error, stage: &str, job: &Value, timestamp: i64) -> Value {
     let message = string(&error.body, "error");
     let status = error.provider_status.unwrap_or(error.status);
     let count = job["retryCount"].as_u64().unwrap_or(0);
@@ -312,7 +312,7 @@ pub fn import_status_from(config: &Value, account: &str) -> Value {
 pub fn import_config(db: &Store, account: &str) -> Result<Value> {
     Ok(db.settings()?["imports"][account]["options"].clone())
 }
-fn project(value: &Value, keys: &[&str]) -> Value {
+pub(crate) fn project(value: &Value, keys: &[&str]) -> Value {
     let mut result = json!({});
     for key in keys {
         if let Some(value) = value.get(*key) {
