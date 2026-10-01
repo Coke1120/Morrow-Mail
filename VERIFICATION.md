@@ -9,6 +9,11 @@ Native checks cover combined views with duplicate provider IDs, external/random 
 A separate macOS fictional-mail workspace opened with the candidate, read mail, filtered sidebar paths and restored cached offline folder names. Three CUA pointer drag attempts did not visibly open the review; no successful end-to-end physical drag is claimed and its input/control cause remains unverified. The fixture was closed without provider writes or installed-app replacement.
 
 
+
+**Gesture follow-up / withdrawn beta.33:** a separate instrumented SwiftUI package/bundle (outside Git and production packaging) confirmed that the original row received no drag callback. Adding an explicit rectangular hit area received `drag-start` with navigation/source/owner guards valid. The shipping row now has that hit area. A minimal standard-text SwiftUI fixture received drag-start but the desktop tool did not finish its drop, leaving a drag session requiring Escape before Quit. Full physical drop acceptance remains unverified; no provider writes occurred. The fixture processes were closed.
+
+Tagged beta.33 [CI 36919999915](https://github.com/Coke1120/Morrow-Mail/actions/runs/36919999915) was cancelled before publication so the row fix could be included in beta.34. Its macOS job passed completely and its Windows job reached native walkthrough; it is not paired release acceptance. The release job did not publish and the tag is preserved. Source CI 36918113157 completed successfully on both platforms, including the Windows benchmark. Beta.34 reruns all tagged paired gates with the fix and expanded native guards.
+
 ## All-downloaded automatic indexing — current source after beta.32
 
 Both native Search pages make explicitly reviewed automatic indexing the main action, expose approved account/folder/content/history choices, and collapse daily/batch limits and manual maintenance. New configurations default to All downloaded mail; older explicit ranges and implicit three-month scopes remain unchanged until reviewed expansion. Progress separates size/per-message-budget/individual-chunk daily-limit exclusions from temporary daily-budget waits. Pause preserves valid vectors, chunk checkpoints and unsaved scope edits. Bounded automatic requests can finish a message across UTC daily resets without resending completed chunks; failed or uncertain requests still require review.

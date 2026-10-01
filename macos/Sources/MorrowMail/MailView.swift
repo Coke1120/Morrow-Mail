@@ -309,6 +309,7 @@ struct MailWorkspace: View {
                         if message["scheduledSend"]["status"].string == "scheduled" { Label("Scheduled: " + dateLabel(message["scheduledSend"]["sendAt"].string), systemImage: "clock").font(.caption).foregroundStyle(.secondary) }
                         if message["scheduledSend"]["status"].string == "sending" { Label("Sending", systemImage: "paperplane").font(.caption).foregroundStyle(.secondary) }
                     }.fontWeight(message["read"].bool ? .regular : .bold).padding(.vertical, model.preferences["density"].string == "compact" ? 3 : model.preferences["density"].string == "spacious" ? 14 : 8).tag(message.viewID)
+                    .contentShape(Rectangle())
                     .onHover { inside in if inside { hoveredMessage = message.viewID } else if hoveredMessage == message.viewID { hoveredMessage = nil } }
                     .onDrag {
                         let provider = NSItemProvider()
