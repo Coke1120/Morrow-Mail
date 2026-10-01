@@ -931,7 +931,7 @@ IAsyncAction Shell::manageFolders(hstring account, hstring initialFolder) {
         if (text(preview, L"accountId") != account || text(preview, L"previewId").empty()) throw hresult_error(E_FAIL, L"The folder review could not be confirmed.");
         auto plan = object(preview, L"plan");
         auto detail = account + L"\n" + text(plan, L"sourceName") + L" → " + text(plan, L"name") + L"\nAffected labels/folders: " + to_hstring(plan.GetNamedNumber(L"affectedCount", 1)) + L"\n" + text(plan, L"impact");
-        if (plan.HasKey(L"messageCount") && plan.GetNamedValue(L"messageCount").ValueType() == JsonValueType::Number) detail += L"\nMessages in selected folder: " + to_hstring(plan.GetNamedNumber(L"messageCount"));
+        if (plan.HasKey(L"messageCount") && plan.GetNamedValue(L"messageCount").ValueType() == JsonValueType::Number) detail = detail + L"\nMessages in selected folder: " + to_hstring(plan.GetNamedNumber(L"messageCount"));
         if (!(co_await confirm(L"Apply this provider change?", detail, action == L"delete" ? L"Delete on provider" : L"Apply change")) || !current(version, captured)) co_return;
         Json apply; put(apply, L"previewId", text(preview, L"previewId")); apply.Insert(L"confirmed", Value::CreateBooleanValue(true));
         loading = true; auto changed = co_await service->request(L"/mail/folders/apply", account, L"POST", apply); loading = false;
