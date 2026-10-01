@@ -84,7 +84,7 @@ std::shared_ptr<FolderChoice> folderChoice(hstring const& title, JsonArray const
                 state->choose(state->list.SelectedItem().try_as<ListViewItem>()); e.Handled(true);
             } else if(e.Key()==Key::Down || e.Key()==Key::Up) {
                 auto count=static_cast<int32_t>(state->list.Items().Size());
-                if(count) state->list.SelectedIndex(std::clamp(state->list.SelectedIndex()+(e.Key()==Key::Down?1:-1),0,count-1));
+                if(count) { state->list.SelectedIndex(std::clamp(state->list.SelectedIndex()+(e.Key()==Key::Down?1:-1),0,count-1)); state->list.ScrollIntoView(state->list.SelectedItem()); }
                 e.Handled(true);
             }
         }
@@ -143,7 +143,10 @@ struct FolderManager {
         std::vector<Json> folders;
         for(auto const& value:array(catalog,L"folders")) { auto folder=value.GetObject(); if(matches(text(folder,L"name"),search.Text())) folders.push_back(folder); }
         std::sort(folders.begin(),folders.end(),[](Json const& a,Json const& b) { return CompareStringOrdinal(text(a,L"name").c_str(),-1,text(b,L"name").c_str(),-1,TRUE)==CSTR_LESS_THAN; });
-        for(auto const& folder:folders) { TreeViewNode node; node.Content(box_value(search.Text().empty()?text(folder,L"leafName",text(folder,L"name")):text(folder,L"name"))); node.IsExpanded(true); nodes.emplace_back(node,folder); }
+        for(auto const& folder:folders) {
+            bool hasParent=!text(folder,L"parentId").empty() && std::any_of(folders.begin(),folders.end(),[&](auto const& other) { return text(other,L"id")==text(folder,L"parentId"); });
+            TreeViewNode node; node.Content(box_value(search.Text().empty()&&hasParent?text(folder,L"leafName",text(folder,L"name")):text(folder,L"name"))); node.IsExpanded(true); nodes.emplace_back(node,folder);
+        }
         // ponytail: at most 1,000 provider labels; index nodes if that bound grows.
         for(auto const& pair:nodes) {
             auto parent=std::find_if(nodes.begin(),nodes.end(),[&](auto const& candidate) { return !text(pair.second,L"parentId").empty() && text(candidate.second,L"id")==text(pair.second,L"parentId") && !within(candidate.second,pair.second,array(catalog,L"folders")); });
@@ -361,13 +364,17 @@ IAsyncAction Shell::organize(Json message, hstring preferredKind, hstring prefer
 }
 void folderPickerChecks() {
     auto check=[](bool condition,wchar_t const* message) { if(!condition) throw hresult_error(E_FAIL,message); };
-    Json root,child; put(root,L"id",L"root"); put(root,L"name",L"Work"); put(root,L"editable",L"unused");
-    put(child,L"id",L"child"); put(child,L"name",L"Work / Customer"); put(child,L"parentId",L"root");
+    Json root,child; put(root,L"id",L"root"); put(root,L"name",L"Work"); root.Insert(L"editable",Value::CreateBooleanValue(true)); put(root,L"kind",L"label");
+    put(child,L"id",L"child"); put(child,L"name",L"Work / Customer"); put(child,L"parentId",L"root"); put(child,L"leafName",L"Customer"); child.Insert(L"editable",Value::CreateBooleanValue(true)); put(child,L"kind",L"label");
     JsonArray folders; folders.Append(root); folders.Append(child);
     auto picker=folderChoice(L"Test destination",folders,L"child");
     picker->search.Text(L"CUSTOMER"); check(picker->list.Items().Size()==1&&picker->id==L"child",L"Folder search lost case-insensitive path matching or selection.");
     picker->search.Text(L"no match"); check(!picker->list.Items().Size()&&picker->id==L"child",L"Filtering cleared the chosen folder.");
     picker->search.Text(L""); check(picker->list.Items().Size()==2&&within(child,root,folders)&&!within(root,child,folders),L"Folder hierarchy or filter restoration failed.");
+    Json orphan; put(orphan,L"id",L"orphan"); put(orphan,L"name",L"Other/Leaf"); put(orphan,L"leafName",L"Leaf"); put(orphan,L"parentId",L"missing"); folders.Append(orphan);
+    auto manager=std::make_shared<FolderManager>(); manager->catalog.Insert(L"folders",folders); manager->catalog.Insert(L"canManage",Value::CreateBooleanValue(true)); manager->provider=L"google"; manager->source=root; manager->action=2; manager->parent=folderChoice(L"Test parent",JsonArray()); manager->rebuild(); manager->configure();
+    check(manager->tree.RootNodes().Size()==2 && unbox_value<hstring>(manager->tree.RootNodes().GetAt(0).Content())==L"Other/Leaf" && manager->tree.RootNodes().GetAt(1).Children().Size()==1,L"Folder tree lost hierarchy or implicit-parent full paths.");
+    for(auto const& value:manager->parent->folders) check(text(value.GetObject(),L"id")!=L"root"&&text(value.GetObject(),L"id")!=L"child",L"Parent picker offered the selected folder or a descendant.");
     auto state=std::make_shared<MailFolders>(); state->folders=folders; state->baseline={L"INBOX",L"old"}; state->selected={L"INBOX",L"new"}; state->mode.Items().Append(box_value(L"Move")); state->mode.Items().Append(box_value(L"Labels")); state->mode.SelectedIndex(1);
     auto payload=state->payload(); check(array(payload,L"addLabelIds").Size()==1&&array(payload,L"removeLabelIds").Size()==1&&array(payload,L"addLabelIds").GetAt(0).GetString()==L"new"&&array(payload,L"removeLabelIds").GetAt(0).GetString()==L"old",L"Email labels were not submitted as deltas preserving Inbox.");
 }

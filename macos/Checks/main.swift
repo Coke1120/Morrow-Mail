@@ -12,6 +12,7 @@ let parentFolder: JSON = .object(["id": .string("parent"), "name": .string("Work
 let childFolder: JSON = .object(["id": .string("child"), "name": .string("Work/中文"), "parentId": .string("parent")])
 let orphanFolder: JSON = .object(["id": .string("orphan"), "name": .string("Other/Leaf"), "parentId": .string("missing")])
 let folderNodes = folderTree([childFolder, orphanFolder, parentFolder])
+assert(folderDisplayName(orphanFolder, folders: [parentFolder, childFolder, orphanFolder]) == "Other/Leaf")
 assert(folderNodes.count == 2 && folderNodes.first { $0.id == "parent" }?.children?.first?.id == "child")
 assert(folderIsWithin(childFolder, source: parentFolder, folders: [parentFolder, childFolder]))
 assert(!folderIsWithin(parentFolder, source: childFolder, folders: [parentFolder, childFolder]))

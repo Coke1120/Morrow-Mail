@@ -21,6 +21,10 @@ func folderTree(_ folders: [JSON]) -> [FolderNode] {
     return roots
 }
 
+func folderDisplayName(_ folder: JSON, folders: [JSON]) -> String {
+    folder["leafName"].nonempty && folders.contains(where: { $0.id == folder["parentId"].string }) ? folder["leafName"].string : folder["name"].string
+}
+
 func folderIsWithin(_ folder: JSON, source: JSON, folders: [JSON]) -> Bool {
     guard !source.id.isEmpty else { return false }
     var id = folder.id
@@ -73,13 +77,16 @@ struct FolderPicker: View {
                             if direction == .down { highlighted = rows[min(current + 1, rows.count - 1)].id }
                             if direction == .up { highlighted = rows[max(current - 1, 0)].id }
                         }
-                    List(selection: $highlighted) {
+                    ScrollViewReader { proxy in
+                      List(selection: $highlighted) {
                         ForEach(choices) { folder in
                             Button { highlighted = folder.id; choose() } label: {
                                 HStack { Text(folder["name"].string); Spacer(); if selection == folder.id { Image(systemName: "checkmark") } }.contentShape(Rectangle())
-                            }.buttonStyle(.plain).tag(folder.id).help(folder["name"].string)
+                            }.buttonStyle(.plain).tag(folder.id).id(folder.id).help(folder["name"].string)
                         }
-                    }.frame(height: 250)
+                      }.frame(height: 250)
+                      .onChange(of: highlighted) { id in if let id { proxy.scrollTo(id, anchor: .center) } }
+                    }
                     if choices.isEmpty { Text("No matching labels or folders.").foregroundStyle(.secondary) }
                     if let onCreate { Button("Create new label / folder…") { showing = false; onCreate() } }
                 }.padding(14).frame(width: 390)

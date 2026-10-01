@@ -89,7 +89,7 @@ struct FolderManagementView: View {
         }
     }
     private func folderRow(_ folder: JSON, hierarchical: Bool) -> some View {
-        Label(hierarchical && folder["leafName"].nonempty ? folder["leafName"].string : folder["name"].string, systemImage: provider == "google" ? "tag" : "folder")
+        Label(hierarchical ? folderDisplayName(folder, folders: folders) : folder["name"].string, systemImage: provider == "google" ? "tag" : "folder")
             .tag(folder.id).help(folder["name"].string)
             .contextMenu {
                 Button("Rename…") { select(folder, action: "rename") }.disabled(!folder["editable"].bool || !canManage)
