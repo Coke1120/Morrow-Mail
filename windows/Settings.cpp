@@ -71,6 +71,10 @@ struct SettingsPage : std::enable_shared_from_this<SettingsPage> {
     uint64_t generation, revision = 0;
     bool live = true, busy = false, saving = false, polling = false, saveFailed = false;
     StackPanel body{nullptr};
+    StackPanel connectionsPanel{nullptr};
+    Form importOptions;
+    Json connections;
+    std::map<std::wstring, StackPanel> calendarStatus;
     Expander mailDisclosure{nullptr};
     TextBlock notice{nullptr};
     xaml::DispatcherTimer timer{nullptr}, autosave{nullptr};
@@ -78,7 +82,9 @@ struct SettingsPage : std::enable_shared_from_this<SettingsPage> {
     Json searchState, updateState, release;
     bool prereleases = true;
     std::wstring busyKey;
-    bool current() const { return live && shell->current(generation, owner); }
+    // Navigation changes generation. OAuth/background owner changes must keep
+    // this page and its edits alive; requests retain the captured owner.
+    bool current() const { return live && !shell->closing && shell->generation == generation; }
     void tell(hstring const& value) { if (current() && notice) notice.Text(value); }
     void dispose() {
         if (!live) return;
@@ -93,9 +99,11 @@ struct SettingsPage : std::enable_shared_from_this<SettingsPage> {
             if (form->panel) form->panel.Children().Clear();
         }
         // An in-flight request retains its own busy marker until it finishes.
-        forms.clear(); body = nullptr; mailDisclosure = nullptr; notice = nullptr; timer = nullptr; autosave = nullptr;
+        forms.clear(); importOptions.reset(); calendarStatus.clear(); connectionsPanel = nullptr;
+        body = nullptr; mailDisclosure = nullptr; notice = nullptr; timer = nullptr; autosave = nullptr;
     }
 };
+IAsyncAction refreshConnections(Page p, bool automatic = false);
 
 void Editor::edit() {
     auto p = page.lock();
@@ -363,7 +371,7 @@ IAsyncAction launchOAuth(Page p, Json result, hstring provider, bool calendar) {
         query.Size() != 1 || query.GetAt(0).Name() != L"state" || query.GetAt(0).Value().empty() || query.GetAt(0).Value().size() > 200)
         throw hresult_error(E_INVALIDARG, L"The sign-in URL is invalid. Start sign-in again.");
     if (!(co_await Windows::System::Launcher::LaunchUriAsync(url))) throw hresult_error(E_FAIL, L"Windows could not open your browser.");
-    p->tell(L"Complete sign-in in your browser, keep Morrow open, then select Refresh connections.");
+    p->tell(L"Complete sign-in in your browser and keep Morrow open. Connections refresh automatically.");
 }
 
 Form historyOptions(Page const& p, StackPanel const& into) {
@@ -425,9 +433,10 @@ void mailEditor(Page const& p, StackPanel const& into, Form const& history, Json
         auto result = co_await page->shell->service->request(L"/settings/mail", page->owner, L"POST", body);
         if (!page->current()) co_return;
         f->accept(f->value); history->accept(history->value);
-        page->tell(L"Connected. History imports while Morrow is open. Refresh connections to see progress.");
         // Do not replace the selected owner with the newly connected account.
         page->shell->state.Insert(L"accounts", array(result, L"accounts")); page->shell->rebuildNavigation();
+        co_await refreshConnections(page);
+        page->tell(L"Connected. History imports while Morrow is open; progress refreshes automatically.");
     });
 }
 
@@ -470,7 +479,7 @@ void accounts(Page const& p, StackPanel const& panel, Json const& state, Form co
         action(p, panel, L"Disconnect this account…", [owner](Page page) -> IAsyncAction {
             if (!(co_await page->shell->confirm(L"Disconnect mailbox?", owner + L"\nOnly its credentials are removed. Cached mail, drafts and other connections remain.", L"Disconnect")) || !page->current()) co_return;
             co_await page->shell->service->request(L"/account/disconnect", owner, L"POST");
-            if (page->current()) { page->tell(L"Disconnected. Cached mail and drafts remain. Refresh connections."); co_await page->shell->refresh(true); }
+            if (page->current()) { co_await refreshConnections(page); page->tell(L"Disconnected. Cached mail and drafts remain."); }
         });
     }
 }
@@ -482,18 +491,25 @@ void mail(Page const& p) {
     auto editor = stack(12); add.Content(editor); p->body.Children().Append(add);
     Expander range; range.Header(box_value(L"New import range")); range.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
     auto historyPanel = stack(12); range.Content(historyPanel); p->body.Children().Append(range);
-    auto history = historyOptions(p, historyPanel); mailEditor(p, editor, history);
+    auto history = historyOptions(p, historyPanel); p->importOptions = history; mailEditor(p, editor, history);
     title(p->body, L"Connected accounts");
-    auto list = stack(12); p->body.Children().Append(list);
+    auto list = stack(12); p->connectionsPanel = list; p->body.Children().Append(list);
+    p->connections = copy(p->shell->state);
     accounts(p, list, p->shell->state, history);
-    action(p, p->body, L"Refresh connections / progress", [list, history](Page page) -> IAsyncAction {
-        auto next = co_await page->shell->service->request(L"/state", page->owner);
-        if (!page->current()) co_return;
-        page->shell->state.Insert(L"accounts", array(next, L"accounts"));
-        accounts(page, list, next, history); page->shell->rebuildNavigation(); page->tell(L"Connection and history status refreshed.");
-    });
+    action(p, p->body, L"Refresh connections / progress", [](Page page) { return refreshConnections(page); });
 }
 
+void calendarConnection(Page const& p, StackPanel const& status, Json const& connection) {
+    status.Children().Clear();
+    auto provider = text(connection, L"provider");
+    help(status, flag(connection, L"connected") ? text(connection, L"email") : L"Not connected");
+    if (flag(connection, L"connected")) action(p, status, L"Disconnect calendar…", [provider, email = text(connection, L"email")](Page page) -> IAsyncAction {
+        if (!(co_await page->shell->confirm(L"Disconnect calendar?", email + L"\nProvider events and the independent mailbox connection remain unchanged.", L"Disconnect")) || !page->current()) co_return;
+        Json body; put(body, L"connectionEmail", email);
+        co_await page->shell->service->request(L"/calendars/" + provider + L"/disconnect", {}, L"POST", body);
+        co_await refreshConnections(page); page->tell(L"Calendar disconnected.");
+    });
+}
 void calendar(Page const& p, Json const& response) {
     title(p->body, L"Calendar connections");
     help(p->body, L"One Google and one Outlook calendar account can be connected independently of mail. Multiple calendars can be selected in Calendar. Calendar data is never shared with AI.");
@@ -501,7 +517,8 @@ void calendar(Page const& p, Json const& response) {
         auto connection = item.GetObject(); auto provider = text(connection, L"provider");
         if (provider != L"google" && provider != L"microsoft") continue;
         title(p->body, provider == L"google" ? L"Google Calendar" : L"Outlook Calendar");
-        help(p->body, flag(connection, L"connected") ? text(connection, L"email") : L"Not connected");
+        auto status = stack(8); p->body.Children().Append(status);
+        p->calendarStatus[std::wstring(provider)] = status; calendarConnection(p, status, connection);
         Json initial; boolean(initial, L"useDefaultClient", flag(connection, L"hasDefaultClient")); put(initial, L"clientId", text(connection, L"clientId"));
         auto f = form(p, p->body, initial, (L"calendar-" + std::wstring(provider)).c_str());
         toggle(f, L"useDefaultClient", L"Use Morrow’s bundled OAuth client");
@@ -516,13 +533,39 @@ void calendar(Page const& p, Json const& response) {
             if (!page->current()) co_return;
             f->accept(f->value); co_await launchOAuth(page, result, provider, true);
         });
-        if (flag(connection, L"connected")) action(p, f->panel, L"Disconnect calendar…", [provider, email = text(connection, L"email")](Page page) -> IAsyncAction {
-            if (!(co_await page->shell->confirm(L"Disconnect calendar?", email + L"\nProvider events and the independent mailbox connection remain unchanged.", L"Disconnect")) || !page->current()) co_return;
-            Json body; put(body, L"connectionEmail", email);
-            co_await page->shell->service->request(L"/calendars/" + provider + L"/disconnect", {}, L"POST", body);
-            page->tell(L"Calendar disconnected. Refresh connections to update this page.");
-        });
     }
+}
+
+IAsyncAction refreshConnections(Page p, bool automatic) {
+    if (!p->current() || p->polling || (automatic && (p->busy || p->saving || p->shell->dialogOpen))) co_return;
+    p->polling = true; auto revision = p->revision;
+    hstring refreshError = L"Connection status could not refresh. Last known status is shown; retrying automatically.";
+    try {
+        // /calendars fetches provider events; status polling reads only local state.
+        auto next = co_await p->shell->service->request(L"/state", p->owner);
+        if (p->current() && revision == p->revision && (!automatic || !p->busy)) {
+            auto accountsNow = next.GetNamedArray(L"accounts");
+            auto calendarsNow = object(next, L"settings").GetNamedArray(L"calendars");
+            bool changedAccounts = accountsNow.Stringify() != array(p->shell->state, L"accounts").Stringify();
+            p->shell->state.Insert(L"accounts", accountsNow);
+            object(p->shell->state, L"settings").Insert(L"calendars", calendarsNow);
+            if (p->tab == L"mail" && accountsNow.Stringify() != array(p->connections, L"accounts").Stringify())
+                accounts(p, p->connectionsPanel, next, p->importOptions);
+            if (p->tab == L"calendar" && calendarsNow.Stringify() != array(object(p->connections, L"settings"), L"calendars").Stringify()) {
+                for (auto const& value : calendarsNow) {
+                    auto connection = value.GetObject(); auto found = p->calendarStatus.find(std::wstring(text(connection, L"provider")));
+                    if (found != p->calendarStatus.end()) calendarConnection(p, found->second, connection);
+                }
+            }
+            p->connections = next;
+            if (changedAccounts) p->shell->rebuildNavigation();
+            if (!automatic) p->tell(L"Connection and history status refreshed.");
+            else if (p->notice.Text() == refreshError) p->tell(L"");
+        }
+    } catch (...) {
+        if (p->current() && revision == p->revision) p->tell(refreshError);
+    }
+    p->polling = false;
 }
 
 void permissions(Page const& p) {
@@ -939,14 +982,16 @@ IAsyncAction settingsPage(std::shared_ptr<Shell> shell, hstring tab) {
         } else if (tab == L"calendar") {
             auto response = co_await shell->service->request(L"/calendars");
             if (!p->current()) co_return; calendar(p, response);
-            action(p, p->body, L"Refresh calendar connections", [](Page page) -> IAsyncAction {
-                bool dirty = std::any_of(page->forms.begin(), page->forms.end(), [](auto const& f) { return f->changed(); });
-                if (dirty && !(co_await page->shell->confirm(L"Discard calendar edits?", L"Refresh saved calendar connections and discard entered credentials.", L"Refresh"))) co_return;
-                if (!page->current()) co_return;
-                auto owner = page->shell; page->dispose(); co_await settingsPage(owner, L"calendar");
-            });
+            action(p, p->body, L"Refresh calendar connections", [](Page page) { return refreshConnections(page); });
         } else throw hresult_error(E_INVALIDARG, L"Unknown Settings page.");
         if (p->current() && tab != L"general") p->tell(L"");
+        if (p->current() && (tab == L"mail" || tab == L"calendar")) {
+            p->timer = xaml::DispatcherTimer(); p->timer.Interval(std::chrono::seconds(3));
+            p->timer.Tick([weak = std::weak_ptr<SettingsPage>(p)](auto const&, auto const&) {
+                if (auto page = weak.lock()) refreshConnections(page, true);
+            });
+            p->timer.Start();
+        }
     } catch (hresult_error const& error) {
         p->tell(error.message());
         if (p->current()) action(p, p->body, L"Retry loading settings", [tab](Page page) -> IAsyncAction { auto owner = page->shell; page->dispose(); co_await settingsPage(owner, tab); });

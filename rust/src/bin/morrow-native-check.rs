@@ -587,6 +587,61 @@ fn run() -> Result<()> {
 </dict></plist>"#
         ),
     )?;
+    // Exercise the actual SwiftUI sheet/window/delegate quit path. Only the
+    // install-ready response is fictional; never prepare an owner's update.
+    let model_source = fs::read_to_string(root.join("macos/Sources/MorrowMail/AppModel.swift"))?;
+    let injection = "config.timeoutIntervalForRequest = 65";
+    check(
+        model_source.matches(injection).count() == 1,
+        "Update quit fixture transport injection changed.",
+    )?;
+    let fixture_model = fixture.0.join("UpdateRestartAppModel.swift");
+    fs::write(
+        &fixture_model,
+        model_source.replacen(
+            injection,
+            &format!(
+                "config.protocolClasses = [PreparedInstallerProtocol.self]\n        {injection}"
+            ),
+            1,
+        ),
+    )?;
+    let quit_client = compile_check(
+        root,
+        &fixture.0,
+        "Checks.app/Contents/MacOS/checks",
+        &[
+            "-D",
+            "MORROW_WINDOW_CHECKS",
+            "-parse-as-library",
+            "macos/Sources/MorrowMail/Models.swift",
+            fixture_model
+                .to_str()
+                .ok_or("Invalid fixture model path.")?,
+            "macos/Sources/MorrowMail/MorrowMailApp.swift",
+            "macos/Sources/MorrowMail/CalendarView.swift",
+            "macos/Checks/UpdateRestartAssertions.swift",
+        ],
+    )?;
+    let quit_result = fixture.0.join("quit-result.txt");
+    print!(
+        "{}",
+        capture(
+            command(root, quit_client)
+                .current_dir(&fixture.0)
+                .env("MORROW_DATA_DIR", fixture.0.join("update-quit-data"))
+                .env("MORROW_QUIT_RESULT", &quit_result),
+            30,
+            1024 * 1024,
+        )?
+    );
+    check(
+        fs::read_to_string(quit_result)? == "Automatic update quit passed",
+        "Update restart did not close its sheet/window and stop the service.",
+    )?;
+    println!(
+        "Native update: prepared installer automatically quits with Settings open; no real installation."
+    );
     let directory = fixture.0.join("data");
     seed(&directory)?;
     let key = fs::read(directory.join("encryption.key"))?;

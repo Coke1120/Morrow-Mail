@@ -331,6 +331,7 @@ struct ImportFolder {
     kind: &'static str,
     delimiter: Option<String>,
     selectable: bool,
+    editable: bool,
 }
 async fn list_names(session: &mut Mailbox) -> Result<Vec<ImportFolder>> {
     let mut stream = session.list(None, Some("*")).await.map_err(imap_error)?;
@@ -368,6 +369,7 @@ async fn list_names(session: &mut Mailbox) -> Result<Vec<ImportFolder>> {
             kind,
             delimiter: name.delimiter().map(str::to_owned),
             selectable: !name.attributes().contains(&NameAttribute::NoSelect),
+            editable: kind == "archive" && !has(NameAttribute::Archive,"\\Archive") && !name.attributes().iter().any(|a| matches!(a, NameAttribute::Extension(v) if v.eq_ignore_ascii_case("\\Important"))),
         });
     }
     Ok(names)
@@ -390,6 +392,96 @@ pub async fn folders_with_tls(
     connector: &native_tls::TlsConnector,
 ) -> Result<Vec<Value>> {
     tokio::time::timeout(Duration::from_secs(45),async{let mut session=connect(mail,connector).await?;let folders=list_names(&mut session).await?.into_iter().filter(|folder|folder.selectable).map(|folder|json!({"id":folder.path,"name":folder.path,"kind":if folder.kind=="trash"{"trash"}else if folder.kind=="inbox"{"inbox"}else{"folder"}})).collect();let _=session.logout().await;Ok(folders)}).await.map_err(|_|providers::remote_error())?
+}
+pub async fn management_folders(mail: &Value) -> Result<Vec<Value>> {
+    management_folders_with_tls(mail, &connector()?).await
+}
+pub async fn management_folders_with_tls(
+    mail: &Value,
+    connector: &native_tls::TlsConnector,
+) -> Result<Vec<Value>> {
+    tokio::time::timeout(Duration::from_secs(45), async {
+        let mut session = connect(mail, connector).await?;
+        let names = list_names(&mut session).await?;
+        let result = names.iter().map(|folder| {
+            let delimiter = folder.delimiter.as_deref().unwrap_or("");
+            let (parent, leaf) = if delimiter.is_empty() { ("",folder.path.as_str()) } else { folder.path.rsplit_once(delimiter).unwrap_or(("",&folder.path)) };
+            json!({"id":folder.path,"name":folder.path,"kind":folder.kind,"leafName":leaf,"parentId":parent,"delimiter":delimiter,
+                "editable":folder.editable,"selectable":folder.selectable})
+        }).collect();
+        let _ = session.logout().await;
+        Ok(result)
+    }).await.map_err(|_|providers::remote_error())?
+}
+pub async fn folder_status(mail: &Value, id: &str) -> Result<Value> {
+    folder_status_with_tls(mail, id, &connector()?).await
+}
+pub async fn folder_status_with_tls(
+    mail: &Value,
+    id: &str,
+    connector: &native_tls::TlsConnector,
+) -> Result<Value> {
+    tokio::time::timeout(Duration::from_secs(45), async {
+        let mut session = connect(mail, connector).await?;
+        let status = session
+            .status(encode_folder(id)?, "(MESSAGES UIDVALIDITY)")
+            .await
+            .map_err(imap_error)?;
+        let _ = session.logout().await;
+        Ok(json!({"totalItemCount":status.exists,"uidValidity":status.uid_validity}))
+    })
+    .await
+    .map_err(|_| providers::remote_error())?
+}
+pub async fn manage_folder(
+    mail: &Value,
+    operation: &str,
+    id: &str,
+    target: &str,
+    changes: &[Value],
+) -> Result<Vec<Value>> {
+    manage_folder_with_tls(mail, operation, id, target, changes, &connector()?).await
+}
+pub async fn manage_folder_with_tls(
+    mail: &Value,
+    operation: &str,
+    id: &str,
+    target: &str,
+    changes: &[Value],
+    connector: &native_tls::TlsConnector,
+) -> Result<Vec<Value>> {
+    tokio::time::timeout(Duration::from_secs(45), async {
+        let mut session = connect(mail,connector).await?;
+        let names = list_names(&mut session).await?;
+        if operation != "create" && !names.iter().any(|f|f.path==id && f.editable) {
+            return Err(Error::conflict("Choose a custom IMAP folder. System folders are protected."));
+        }
+        let mut result = changes.to_vec();
+        if ["rename","move"].contains(&operation) {
+            for change in &mut result {
+                if names.iter().any(|f|f.path==string(change,"oldId") && f.selectable) {
+                    let status = session.status(encode_folder(string(change,"oldId"))?, "(UIDVALIDITY)").await.map_err(imap_error)?;
+                    change["uidValidity"] = status.uid_validity.filter(|v|*v>0).ok_or_else(providers::remote_error)?.into();
+                }
+            }
+        }
+        match operation {
+            "create" => session.create(encode_folder(target)?).await.map_err(imap_error)?,
+            "rename" | "move" => session.rename(encode_folder(id)?,encode_folder(target)?).await.map_err(imap_error)?,
+            "delete" => session.delete(encode_folder(id)?).await.map_err(imap_error)?,
+            _ => return Err(Error::invalid("Invalid folder operation.")),
+        }
+        for change in &result {
+            if let Some(validity) = change["uidValidity"].as_u64() {
+                let status = session.status(encode_folder(string(change,"newName"))?, "(UIDVALIDITY)").await.map_err(imap_error)?;
+                if status.uid_validity.map(u64::from) != Some(validity) {
+                    return Err(Error::conflict("The renamed folder changed UIDVALIDITY. Check your provider and sync before another reviewed change."));
+                }
+            }
+        }
+        let _ = session.logout().await;
+        Ok(result)
+    }).await.map_err(|_|providers::remote_error())?
 }
 pub async fn fetch_page(mail: &Value, options: &Value) -> Result<Value> {
     fetch_page_with_tls(mail, options, &connector()?).await

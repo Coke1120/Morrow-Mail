@@ -10,9 +10,7 @@ struct NativeSettingsView: View {
     @State private var preferenceSaving = false
     @State private var preferenceError = ""
     @State private var visible = false
-    @State private var mailSnapshot: JSON = .null
-    @State private var mailStatusVersion = 0
-    @State private var importRefreshError = ""
+    @State private var connectionRefreshError = ""
     @State private var searchDirty = false
     @State private var searchRequestBusy = false
     @State private var learningDirty = false
@@ -30,7 +28,7 @@ struct NativeSettingsView: View {
     private let tabs = [("start", "Start here", "sparkles"), ("general", "General", "slider.horizontal.3"), ("mail", "Mail accounts", "envelope"), ("calendar", "Calendar", "calendar"), ("permissions", "AI & privacy", "checkmark.shield"), ("about", "About", "info.circle")]
     private let advancedTabs = [("model", "AI connection", "cpu"), ("search", "Search index", "magnifyingglass"), ("learning", "Writing style", "text.badge.star")]
     private let generalKeys = ["displayName", "signature", "signatureFormat", "theme", "density", "replyTone", "language", "translationLanguage", "syncInterval", "markReadOnOpen"]
-    private var displayedAccounts: [JSON] { mailSnapshot.isNull ? model.accounts : mailSnapshot.array }
+    private var displayedAccounts: [JSON] { model.accounts }
     var dirty: Bool { searchDirty || learningDirty || values != baseline || mailOAuth.object.values.contains { $0.object.values.contains(where: \.nonempty) } || calendarOAuth.object.values.contains { $0.object.values.contains(where: \.nonempty) } }
     var body: some View {
         VStack(spacing: 0) {
@@ -77,7 +75,7 @@ struct NativeSettingsView: View {
             Divider()
             HStack {
                 if model.busy { ProgressView().controlSize(.small) }
-                Text(localError.isEmpty ? status : localError).foregroundStyle(localError.isEmpty ? Color.secondary : Color.red).font(.callout).textSelection(.enabled)
+                Text(localError.isEmpty ? (connectionRefreshError.isEmpty ? status : connectionRefreshError) : localError).foregroundStyle(localError.isEmpty ? Color.secondary : Color.red).font(.callout).textSelection(.enabled)
                 Spacer()
                 if model.settingsTab != "general" { Text(saveHint).font(.caption).foregroundStyle(.secondary) }
                 if model.settingsTab == "general" { preferenceStatus }
@@ -101,20 +99,20 @@ struct NativeSettingsView: View {
         .onChange(of: values["preferences"]) { _ in preferenceError = ""; schedulePreferences() }
         .onChange(of: model.busy) { _ in schedulePreferences() }
         .onChange(of: searchRequestBusy) { _ in schedulePreferences() }
-        .onChange(of: model.state) { _ in mailStatusVersion += 1; mailSnapshot = .null }
         .onChange(of: mailOAuth) { _ in model.dirty("settings", dirty) }
         .onChange(of: calendarOAuth) { _ in model.dirty("settings", dirty) }
         .onDisappear { visible = false; preferenceTask?.cancel(); model.dirty("settings", false); model.dirty("search-request", false) }
         .task(id: model.settingsTab) {
             let tab = model.settingsTab
-            guard ["about", "mail"].contains(tab) else { return }
+            connectionRefreshError = ""
+            guard ["about", "start", "mail", "calendar"].contains(tab) else { return }
             while !Task.isCancelled {
                 if tab == "about" {
                     if let result = try? await model.request("/updates/status") { downloadState = result }
                 } else if NSApp?.isActive == true && !model.busy && !preferenceSaving {
-                    await refreshImportProgress()
+                    await refreshConnectionStatus()
                 }
-                do { try await Task.sleep(nanoseconds: tab == "mail" ? 3_000_000_000 : 1_500_000_000) } catch { return }
+                do { try await Task.sleep(nanoseconds: tab == "about" ? 1_500_000_000 : 3_000_000_000) } catch { return }
             }
         }
     }
@@ -430,8 +428,7 @@ GroupBox("History for your next connection or import") {
                         ForEach(["inbox", "sent"], id: \.self) { folder in Toggle(folder.capitalized, isOn: Binding(get: { importSettings[folder].bool }, set: { importSettings[folder] = .bool($0) })).toggleStyle(.checkbox) }
                     }
                     Text("Choose All normal folders or at least one folder. All history removes the date limit; choosing a shorter range keeps cached mail. Gmail and Outlook exclude Spam/Trash. IMAP skips folders identified by the provider as Junk or Trash, plus virtual and non-selectable folders. Style learning is a separate opt-in in Learning.").font(.caption).foregroundStyle(.secondary)
-                    Button("Refresh Import Progress") { run { await refreshImportProgress() } }
-                    if !importRefreshError.isEmpty { Text(importRefreshError).font(.caption).foregroundStyle(.orange) }
+                    Button("Refresh Import Progress") { run { await refreshConnectionStatus() } }
                 }.padding(8)
             }
     }
@@ -492,12 +489,12 @@ GroupBox("History for your next connection or import") {
                         if !calendar { body["importOptions"] = importOptions(for: id) }
                         let result = try await model.request(path, method: "POST", body: body)
                         try model.openOAuth(result, provider: id, calendar: calendar)
-                        credentials.wrappedValue = .object([:]); status = "Browser opened. Complete sign-in, then return to Morrow to refresh your connections."
+                        credentials.wrappedValue = .object([:]); status = "Complete sign-in in your browser. Connections refresh automatically when you return to Morrow."
                     }
                 } label: {
                     Label("Sign in with \(id == "google" ? "Google" : "Microsoft") in browser", systemImage: "arrow.up.right.square")
                 }.buttonStyle(.borderedProminent).disabled((!calendar && !canImport(id)) || (!useDefault && (clientID.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty || (id == "google" && secret.wrappedValue.isEmpty))))
-                Button("Refresh Status") { run { try await model.reload(); status = "Connection status refreshed." } }
+                Button("Refresh Status") { run { await refreshConnectionStatus() } }
             }
             Text(useDefault ? (id == "google" ? "If Google says access is restricted to test users, the publisher must add your account or complete app verification." : "Your organization may require administrator approval to connect.") : "The sign-in button becomes available after the required credentials are entered.").font(.caption).foregroundStyle(.secondary)
             DisclosureGroup("Advanced: callback URL for app registration") {
@@ -592,15 +589,13 @@ GroupBox("History for your next connection or import") {
         if ["reconnect", "restart"].contains(job["recoveryAction"].string) { return nil }
         return ["paused", "failed", "interrupted", "stopped"].contains(job["status"].string) ? "resume" : nil
     }
-    func refreshImportProgress() async {
-        let version = mailStatusVersion
+    func refreshConnectionStatus() async {
         do {
-            let result = try await model.request("/state", mailbox: model.account)
-            guard case .array = result["accounts"] else { throw APIError("Incomplete import status.") }
-            guard !Task.isCancelled, visible, version == mailStatusVersion else { return }
-            mailSnapshot = result["accounts"]; importRefreshError = ""
+            try await model.refreshConnections()
+            guard !Task.isCancelled, visible else { return }
+            connectionRefreshError = ""
         } catch {
-            if !Task.isCancelled, visible, version == mailStatusVersion { importRefreshError = "Import status could not be refreshed. Showing last known status." }
+            if !Task.isCancelled, visible { connectionRefreshError = "Connection status could not be refreshed. Showing last known status; retrying automatically." }
         }
     }
     func preferencePatch() -> JSON {

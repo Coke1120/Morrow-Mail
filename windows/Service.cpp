@@ -276,10 +276,11 @@ Json Service::clientState() const {
     return readJson(directory_ / L"client-state.json", 262144);
 }
 void Service::saveClientState(hstring const& key, hstring const& value) {
-    require(key == L"morrow.mail.layout" || key == L"morrow.pendingCalendar" || key == L"morrow.calendar.checked" ||
+    require(key == L"morrow.mail.layout" || key == L"morrow.sidebar.width" || key == L"morrow.pendingCalendar" || key == L"morrow.calendar.checked" ||
         (std::wstring_view(key).starts_with(L"morrow.account.collapsed.") && key.size() <= 300), L"Unsupported desktop state key.");
     require(value.size() <= 32768, L"Saved desktop state exceeds its limit.");
     require(key != L"morrow.mail.layout" || value == L"right" || value == L"bottom" || value == L"focus", L"Invalid reading layout.");
+    if (key == L"morrow.sidebar.width") { size_t used; auto width = std::stod(std::wstring(value), &used); require(used == value.size() && width >= 180 && width <= 600, L"Invalid sidebar width."); }
     std::lock_guard lock(stateMutex_);
     auto destination = directory_ / L"client-state.json";
     auto state = readJson(destination, 262144);

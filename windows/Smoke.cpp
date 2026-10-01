@@ -33,6 +33,28 @@ IAsyncAction Shell::smoke() {
         check(value == "Morrow native acceptance fixture", L"Native acceptance fixture marker is missing.");
         fixtureVerified = true;
         bool seeded = array(state,L"accounts").Size() > 0;
+        enter("sidebar-resize-and-filter");
+        check(folderFilter && sidebarDivider, L"The sidebar has no native folder filter or resize handle.");
+        auto sidebarWidth = navigation.OpenPaneLength();
+        resizeSidebar(sidebarWidth + 40);
+        check(navigation.OpenPaneLength() > sidebarWidth && !text(service->clientState(), L"morrow.sidebar.width").empty(), L"Sidebar enlargement was not persisted.");
+        resizeSidebar(0, false); check(navigation.OpenPaneLength() == 180, L"The sidebar can shrink below its accessible minimum.");
+        resizeSidebar(sidebarWidth, false);
+        if (seeded) {
+            auto savedFolders = Json::Parse(serverFolders.Stringify()); auto savedOwner = owner; auto savedFolder = folder; auto savedGeneration = generation; auto savedSelected = selected.Stringify();
+            Json catalog; JsonArray entries;
+            for (auto name : {L"Projects / A very long folder name 中文", L"Other"}) { Json entry; put(entry, L"id", name); put(entry, L"name", name); entries.Append(entry); }
+            catalog.Insert(L"folders", entries); serverFolders.Insert(owner, catalog);
+            folderFilter.Text(L"PROJECTS"); rebuildNavigation();
+            int matches = 0, managers = 0;
+            for (auto const& value : navigation.MenuItems()) if (auto group=value.try_as<controls::NavigationViewItem>();group&&group.Tag()&&text(group.Tag().as<Json>(),L"owner")==owner) {
+                for (auto const& child:group.MenuItems()) if(auto remote=child.try_as<controls::NavigationViewItem>();remote&&remote.MenuItems().Size()) {
+                    for(auto const& entry:remote.MenuItems()) {auto item=entry.as<controls::NavigationViewItem>();auto tag=item.Tag().as<Json>();if(text(tag,L"section")==L"manage-folders")++managers;else if(text(tag,L"section")==L"mail"){++matches;check(text(tag,L"folder")==L"provider:Projects / A very long folder name 中文"&&item.ContextFlyout(),L"The case-insensitive folder filter or folder context actions failed.");}}
+                }
+            }
+            check(matches==1&&managers==1&&owner==savedOwner&&folder==savedFolder&&generation==savedGeneration&&selected.Stringify()==savedSelected,L"Filtering folders changed the current mailbox or selection.");
+            folderFilter.Text(L""); serverFolders=savedFolders; rebuildNavigation();
+        }
         enter("macos-layout-parity");
         auto themes = xaml::Application::Current().Resources().ThemeDictionaries();
         for (auto name : {L"Light", L"Default"}) {
@@ -236,6 +258,19 @@ IAsyncAction Shell::smoke() {
                 co_await navigate(target);
                 check(page.Content() && page.Content() != previousPage, L"A native workspace page failed to open.");
                 check(dirty.empty(), L"Opening a saved page incorrectly created unsaved edits.");
+                if (std::wstring_view(target) == L"today") {
+                    auto today = page.Content().as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
+                    controls::Button generate{nullptr}; controls::ComboBox mailbox{nullptr};
+                    for (auto const& child : today.Children()) if (auto actions = child.try_as<controls::StackPanel>()) {
+                        for (auto const& control : actions.Children()) {
+                            if (auto choice = control.try_as<controls::ComboBox>()) mailbox = choice;
+                            if (auto action = control.try_as<controls::Button>(); action && unbox_value<hstring>(action.Content()) == L"Summarize now") generate = action;
+                        }
+                    }
+                    check(generate && generate.IsEnabled() && mailbox && mailbox.Items().Size() == array(state, L"accounts").Size(), L"Today lost its explicit summary action or mailbox scope.");
+                    for (auto const& value : mailbox.Items()) check(connected(unbox_value<hstring>(value.as<controls::ComboBoxItem>().Tag())), L"Today offers a combined or internal Demo AI identity.");
+                    check(connected(todaySummaryOwner), L"Today did not retain an individual summary mailbox.");
+                }
                 if (std::wstring_view(target) == L"studio") {
                     auto studio = page.Content().as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
                     auto tabs = studio.Children().GetAt(3).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
@@ -248,6 +283,7 @@ IAsyncAction Shell::smoke() {
             for (auto const* tab : {L"start", L"general", L"mail", L"calendar", L"model", L"search", L"policy", L"about"}) {
                 enter("settings-" + to_string(tab));
                 auto previousPage = page.Content();
+                if (std::wstring_view(tab) == L"mail") state.Insert(L"accounts", Windows::Data::Json::JsonArray());
                 co_await settingsPage(lifetime, tab);
                 check(page.Content() && page.Content() != previousPage, L"A native Settings tab failed to open.");
                 auto layout = page.Content().try_as<controls::Grid>();
@@ -258,6 +294,30 @@ IAsyncAction Shell::smoke() {
                 check(advanced.Content().as<controls::ListView>().Items().Size() == 3 &&
                     advanced.IsExpanded() == (std::wstring_view(tab) == L"model" || std::wstring_view(tab) == L"search"),
                     L"Advanced settings must open for direct setup links and stay collapsed on everyday pages.");
+                if (std::wstring_view(tab) == L"mail" || std::wstring_view(tab) == L"calendar") {
+                    auto body = layout.Children().GetAt(3).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
+                    bool mail = std::wstring_view(tab) == L"mail";
+                    auto panel = mail ? body.Children().GetAt(2).as<controls::Expander>().Content().as<controls::StackPanel>()
+                        .Children().GetAt(2).as<controls::Expander>().Content().as<controls::StackPanel>()
+                        .Children().GetAt(0).as<controls::ContentControl>().Content().as<controls::StackPanel>()
+                        : body.Children().GetAt(4).as<controls::ContentControl>().Content().as<controls::StackPanel>();
+                    auto input = panel.Children().GetAt(mail ? 0 : 1).as<controls::TextBox>();
+                    auto secret = panel.Children().GetAt(mail ? 1 : 2).as<controls::PasswordBox>();
+                    auto original = input.Text(); input.Text(L"unsaved@fixture.invalid"); secret.Password(L"fictional-unsaved-secret");
+                    auto edits = dirty; auto capturedOwner = owner; auto version = generation;
+                    owner = L""; // Background/OAuth selection changes must keep the form current.
+                    auto status = body.Children().GetAt(mail ? 5 : 3).as<controls::StackPanel>();
+                    if (!mail) status.Children().GetAt(0).as<controls::TextBlock>().Text(L"Stale connection status");
+                    auto deadline = GetTickCount64() + 8000;
+                    while ((mail ? status.Children().Size() == 0 : status.Children().GetAt(0).as<controls::TextBlock>().Text() != L"Not connected") && GetTickCount64() < deadline) {
+                        co_await resume_after(std::chrono::milliseconds(20)); co_await ui;
+                    }
+                    check(mail ? status.Children().Size() > 0 && array(state, L"accounts").Size() == 2
+                        : status.Children().GetAt(0).as<controls::TextBlock>().Text() == L"Not connected", L"Settings did not automatically refresh local connection metadata.");
+                    check(page.Content() == layout && generation == version && input.Text() == L"unsaved@fixture.invalid" && secret.Password() == L"fictional-unsaved-secret" && dirty == edits,
+                        L"Automatic connection refresh replaced the page or unsaved credentials.");
+                    owner = capturedOwner; input.Text(original); secret.Password(L"");
+                }
                 if (std::wstring_view(tab) == L"policy") {
                     auto saved = object(object(state, L"settings"), L"policy").Stringify();
                     auto body = layout.Children().GetAt(3).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();

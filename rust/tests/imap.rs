@@ -27,6 +27,101 @@ const OWNER: &str = "owner@example.invalid";
 const SENT: &str = "已寄件";
 const SENT_WIRE: &str = "&XfJbxE72-";
 const HEADER: &str = "From: Fixture <owner@example.invalid>\r\nTo: visible@example.invalid\r\nSubject: Fixture message\r\nDate: Wed, 23 Sep 2026 12:00:00 +0000\r\nMessage-ID: <fixture@example.invalid>\r\n";
+
+#[tokio::test]
+async fn custom_folder_writes_encode_names_protect_special_use_and_check_uidvalidity() {
+    let fixture = ImapFixture::new(ImapScenario {
+        extra_folders: "* LIST (\\Archive) \"/\" \"Protected archive\"\r\n",
+        ..Default::default()
+    })
+    .await;
+    let catalog = imap::management_folders_with_tls(&fixture.mail, &fixture.connector)
+        .await
+        .unwrap();
+    assert!(
+        catalog
+            .iter()
+            .any(|v| v["id"] == "Protected archive" && v["editable"] == false)
+    );
+    for id in ["INBOX", SENT, "Protected archive"] {
+        assert!(
+            imap::manage_folder_with_tls(&fixture.mail, "delete", id, "", &[], &fixture.connector)
+                .await
+                .is_err()
+        );
+    }
+    assert!(!fixture.commands().iter().any(|v| v.starts_with("DELETE ")));
+    let old = "項目 & stuff";
+    let target = "已寄件/New";
+    let changes = vec![json!({"oldId":old,"newName":target})];
+    let applied = imap::manage_folder_with_tls(
+        &fixture.mail,
+        "rename",
+        old,
+        target,
+        &changes,
+        &fixture.connector,
+    )
+    .await
+    .unwrap();
+    assert_eq!(applied[0]["uidValidity"], 55);
+    assert!(
+        fixture
+            .commands()
+            .iter()
+            .any(|v| v == "RENAME \"&mAV27g- &- stuff\" \"&XfJbxE72-/New\"")
+    );
+    imap::manage_folder_with_tls(&fixture.mail, "create", "", target, &[], &fixture.connector)
+        .await
+        .unwrap();
+    imap::manage_folder_with_tls(&fixture.mail, "delete", old, "", &[], &fixture.connector)
+        .await
+        .unwrap();
+    assert!(
+        imap::manage_folder_with_tls(
+            &fixture.mail,
+            "create",
+            "",
+            "bad\r\nDELETE INBOX",
+            &[],
+            &fixture.connector
+        )
+        .await
+        .is_err()
+    );
+    fixture.update(|v| v.renamed_validity = Some(66));
+    assert!(
+        imap::manage_folder_with_tls(
+            &fixture.mail,
+            "move",
+            old,
+            target,
+            &changes,
+            &fixture.connector
+        )
+        .await
+        .is_err()
+    );
+    fixture.update(|v| v.folder_write_failure = true);
+    let before = fixture
+        .commands()
+        .iter()
+        .filter(|v| v.starts_with("DELETE "))
+        .count();
+    assert!(
+        imap::manage_folder_with_tls(&fixture.mail, "delete", old, "", &[], &fixture.connector)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        fixture
+            .commands()
+            .iter()
+            .filter(|v| v.starts_with("DELETE "))
+            .count(),
+        before + 1
+    );
+}
 type Log = Arc<Mutex<Vec<String>>>;
 
 async fn checked_session(future: impl Future<Output = io::Result<()>>, failures: Log) {
@@ -114,6 +209,8 @@ struct ImapScenario {
     extra_folders: &'static str,
     mapping: Option<&'static str>,
     extra_mapping: Option<&'static str>,
+    renamed_validity: Option<u32>,
+    folder_write_failure: bool,
 }
 impl Default for ImapScenario {
     fn default() -> Self {
@@ -139,6 +236,8 @@ impl Default for ImapScenario {
             extra_folders: "",
             mapping: Some("88 7 19"),
             extra_mapping: None,
+            renamed_validity: None,
+            folder_write_failure: false,
         }
     }
 }
@@ -257,6 +356,35 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                 .map(|index| format!("* LIST (\\Noselect) \"/\" \"Hidden{index}\"\r\n"))
                 .collect::<String>();
             write(&mut stream,&format!("* LIST () \"/\" \"INBOX\"\r\n{sent}* LIST () \"/\" \"&mAV27g- &- stuff\"\r\n{hidden}{}{tag} OK list\r\n",scenario.extra_folders)).await?;
+        } else if upper.starts_with("STATUS ") {
+            let mailbox = command
+                .strip_prefix("STATUS ")
+                .unwrap()
+                .split(" (")
+                .next()
+                .unwrap();
+            let validity = if mailbox.contains("/New") {
+                scenario.renamed_validity.unwrap_or(scenario.validity)
+            } else {
+                scenario.validity
+            };
+            write(&mut stream,&format!("* STATUS {mailbox} (MESSAGES {} UIDVALIDITY {validity})\r\n{tag} OK status\r\n",scenario.count)).await?;
+        } else if upper.starts_with("CREATE ")
+            || upper.starts_with("RENAME ")
+            || upper.starts_with("DELETE ")
+        {
+            write(
+                &mut stream,
+                &format!(
+                    "{tag} {} folder operation\r\n",
+                    if scenario.folder_write_failure {
+                        "NO"
+                    } else {
+                        "OK"
+                    }
+                ),
+            )
+            .await?;
         } else if upper.starts_with("EXAMINE ") || upper.starts_with("SELECT ") {
             let next = if scenario.omit_uidnext {
                 String::new()

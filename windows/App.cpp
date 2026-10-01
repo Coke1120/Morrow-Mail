@@ -133,6 +133,7 @@ void bold(TextBlock const& text, bool active) {
 }
 NavigationViewItem navItem(hstring const& title, hstring const& section, hstring const& owner = {}, hstring const& folder = L"inbox", hstring const& glyph = L"\uE8A5") {
     NavigationViewItem item; item.Content(box_value(title));
+    ToolTipService::SetToolTip(item, box_value(title));
     FontIcon icon; icon.Glyph(glyph); item.Icon(icon);
     Json tag; put(tag, L"section", section); put(tag, L"owner", owner); put(tag, L"folder", folder);
     item.Tag(tag); return item;
@@ -263,8 +264,31 @@ IAsyncAction Shell::start() {
     composeButton.HorizontalAlignment(HorizontalAlignment::Stretch); composeButton.IsEnabled(false);
     composeButton.Style(Application::Current().Resources().Lookup(box_value(L"AccentButtonStyle")).as<Style>());
     brand.Children().Append(composeButton); navigation.PaneHeader(brand);
+    folderFilter = field(L"Filter labels / folders"); folderFilter.Header(nullptr); folderFilter.PlaceholderText(L"Filter labels / folders");
+    folderFilter.HorizontalAlignment(HorizontalAlignment::Stretch); brand.Children().Append(folderFilter);
+    folderFilter.TextChanged([weak = weak_from_this()](auto const&, auto const&) {
+        if (auto self = weak.lock()) self->root.DispatcherQueue().TryEnqueue([weak] {
+            if (auto self = weak.lock(); self && self->service && !self->closing) self->rebuildNavigation();
+        });
+    });
     page = ContentControl(); page.HorizontalContentAlignment(HorizontalAlignment::Stretch); page.VerticalContentAlignment(VerticalAlignment::Stretch);
     navigation.Content(page); root.Children().Append(navigation);
+    Primitives::Thumb sidebarResize; sidebarDivider = sidebarResize;
+    sidebarResize.Width(6); sidebarResize.HorizontalAlignment(HorizontalAlignment::Left); sidebarResize.VerticalAlignment(VerticalAlignment::Stretch); sidebarResize.IsTabStop(true);
+    sidebarResize.Template(Markup::XamlReader::Load(L"<ControlTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' TargetType='Thumb'><Border Background='{ThemeResource DividerStrokeColorDefaultBrush}'/></ControlTemplate>").as<ControlTemplate>());
+    Automation::AutomationProperties::SetName(sidebarResize, L"Resize sidebar"); ToolTipService::SetToolTip(sidebarResize, box_value(L"Drag to resize sidebar; arrow keys adjust width"));
+    sidebarResize.DragDelta([weak = weak_from_this()](auto const&, Primitives::DragDeltaEventArgs const& event) { if (auto self = weak.lock()) self->resizeSidebar(self->navigation.OpenPaneLength() + event.HorizontalChange(), false); });
+    sidebarResize.DragCompleted([weak = weak_from_this()](auto const&, auto const&) { if (auto self = weak.lock()) self->resizeSidebar(self->navigation.OpenPaneLength()); });
+    sidebarResize.KeyDown([weak = weak_from_this()](auto const&, Input::KeyRoutedEventArgs const& event) {
+        using Key = Windows::System::VirtualKey;
+        if (event.Key() == Key::Left || event.Key() == Key::Right) if (auto self = weak.lock()) {
+            self->resizeSidebar(self->navigation.OpenPaneLength() + (event.Key() == Key::Left ? -20 : 20)); event.Handled(true);
+        }
+    });
+    root.Children().Append(sidebarResize);
+    auto updateSidebar = [weak = weak_from_this()](auto const&, auto const&) { if (auto self = weak.lock()) self->resizeSidebar(self->navigation.OpenPaneLength(), false); };
+    root.SizeChanged(updateSidebar); navigation.PaneOpened(updateSidebar); navigation.PaneClosed(updateSidebar); navigation.DisplayModeChanged(updateSidebar);
+    resizeSidebar(230, false);
     status = label(L"Opening your private workspace…"); status.Margin(ThicknessHelper::FromLengths(16, 6, 16, 8));
     Automation::AutomationProperties::SetLiveSetting(status, Automation::Peers::AutomationLiveSetting::Polite);
     Grid footer; footer.ColumnDefinitions().Append(ColumnDefinition());
@@ -294,7 +318,10 @@ IAsyncAction Shell::start() {
         // Rebuilding MenuItems during ItemInvoked invalidates WinUI's active item.
         auto version = self->generation; auto captured = self->owner;
         self->root.DispatcherQueue().TryEnqueue([weak, version, captured, target, account, folder] {
-            if (auto self = weak.lock(); self && self->current(version, captured)) self->navigate(target, account, folder);
+            if (auto self = weak.lock(); self && self->current(version, captured)) {
+                if (target == L"manage-folders") self->manageFolders(account);
+                else self->navigate(target, account, folder);
+            }
         });
     });
     window.Activate();
@@ -317,6 +344,8 @@ IAsyncAction Shell::start() {
         } catch (...) { error(L"The previous window size could not be restored."); }
         auto savedLayout = text(service->clientState(), L"morrow.mail.layout");
         if (savedLayout == L"right" || savedLayout == L"bottom" || savedLayout == L"focus") mailLayout = savedLayout;
+        auto savedSidebar = text(service->clientState(), L"morrow.sidebar.width");
+        if (!savedSidebar.empty()) try { size_t used; auto width = std::stod(std::wstring(savedSidebar), &used); if (used == savedSidebar.size()) resizeSidebar(width, false); } catch (...) { error(L"The previous sidebar width could not be restored."); }
         co_await refresh(true);
         setupKeyboardAccelerators(lifetime);
         co_await navigate(L"mail");
@@ -359,6 +388,20 @@ void Shell::rebuildNavigation() {
     Json desktopState;
     try { desktopState = service->clientState(); } catch (...) { error(errorText()); }
     navigation.MenuItems().Clear();
+    auto matches = [&](hstring const& name) {
+        auto query = folderFilter ? folderFilter.Text() : hstring{};
+        return query.empty() || FindStringOrdinal(FIND_FROMSTART, name.c_str(), static_cast<int>(name.size()), query.c_str(), static_cast<int>(query.size()), TRUE) >= 0;
+    };
+    auto folderActions = [&](NavigationViewItem const& item, hstring account, hstring id = {}) {
+        MenuFlyout menu; MenuFlyoutItem manage; manage.Text(L"Manage labels / folders…");
+        manage.Click([weak = weak_from_this(), account, id](auto const&, auto const&) { if (auto self = weak.lock()) self->manageFolders(account, id); }); menu.Items().Append(manage);
+        if (!id.empty()) {
+            MenuFlyoutItem move; move.Text(L"Move selected message here…");
+            menu.Opening([weak = weak_from_this(), move, account](auto const&, auto const&) { if (auto self = weak.lock()) move.IsEnabled(!self->loading && !self->dialogOpen && self->dirty.empty() && text(self->selected,L"accountId") == account && !text(self->selected,L"id").empty() && !flag(self->selected,L"providerFolderMissing")); });
+            move.Click([weak = weak_from_this(), account, id](auto const&, auto const&) { if (auto self = weak.lock(); self && text(self->selected,L"accountId") == account) self->organize(self->selected, {}, id); }); menu.Items().Append(move);
+        }
+        item.ContextFlyout(menu);
+    };
     NavigationViewItemHeader header; header.Content(box_value(L"Workspace")); navigation.MenuItems().Append(header);
     struct Destination { wchar_t const* title; wchar_t const* id; wchar_t const* glyph; };
     for (auto const& entry : {Destination{L"Today", L"today", L"\uE706"}, {L"Reply Suggestions", L"reply-suggestions", L"\uE8F2"},
@@ -382,9 +425,9 @@ void Shell::rebuildNavigation() {
         caption.Children().Append(name); caption.Children().Append(detail); item.Content(caption);
         Automation::AutomationProperties::SetName(item, title + L", " + subtitle);
         auto collapseKey = L"morrow.account.collapsed." + id;
-        item.IsExpanded(text(desktopState, collapseKey.c_str()) != L"true");
+        item.IsExpanded((folderFilter && !folderFilter.Text().empty()) || text(desktopState, collapseKey.c_str()) != L"true");
         item.RegisterPropertyChangedCallback(NavigationViewItem::IsExpandedProperty(), [weak = weak_from_this(), collapseKey](DependencyObject const& sender, DependencyProperty const&) {
-            if (auto self = weak.lock(); self && !self->selectingNavigation && !self->closing) {
+            if (auto self = weak.lock(); self && !self->selectingNavigation && !self->closing && (!self->folderFilter || self->folderFilter.Text().empty())) {
                 try { self->service->saveClientState(collapseKey, sender.as<NavigationViewItem>().IsExpanded() ? L"false" : L"true"); }
                 catch (...) { self->error(errorText()); }
             }
@@ -392,6 +435,7 @@ void Shell::rebuildNavigation() {
         for (auto const& mailbox : {Destination{L"Inbox",L"inbox",L"\uE715"}, {L"Starred",L"starred",L"\uE734"},
             {L"Pending",L"pending",L"\uE823"}, {L"Sent",L"sent",L"\uE724"}, {L"Drafts",L"drafts",L"\uE70F"},
             {L"Archive",L"archive",L"\uE7B8"}, {L"Spam / Junk",L"spam",L"\uE7BA"}, {L"Trash",L"trash",L"\uE74D"}}) {
+            if (!matches(mailbox.title)) continue;
             auto child = navItem(mailbox.title, L"mail", id, mailbox.id, mailbox.glyph);
             uint64_t count = 0;
             for (auto const& account : accounts) if (id == L"all" || text(account, L"id") == id)
@@ -408,16 +452,20 @@ void Shell::rebuildNavigation() {
             auto provider = text(object(serverFolders, id.c_str()), L"provider");
             if (provider.empty()) for (auto const& account : accounts) if (text(account, L"id") == id) provider = text(account, L"provider");
             auto remote = navItem(provider == L"google" ? L"Gmail labels" : L"Server folders", L"server-folders", id, L"inbox", L"\uE8B7");
+            folderActions(remote, id);
             auto catalog = object(serverFolders, id.c_str());
+            remote.SelectsOnInvoked(false);
+            remote.MenuItems().Append(navItem(L"Browse / refresh server list", L"server-folders", id, L"inbox", L"\uE72C"));
+            remote.MenuItems().Append(navItem(L"Manage labels / folders…", L"manage-folders", id, L"inbox", L"\uE70F"));
             if (catalog.Size()) {
-                remote.SelectsOnInvoked(false);
-                remote.MenuItems().Append(navItem(L"Refresh server list", L"server-folders", id, L"inbox", L"\uE72C"));
                 for (auto const& value : array(catalog, L"folders")) {
                     auto entry = value.GetObject(); auto key = L"provider:" + text(entry, L"id");
+                    if (!matches(text(entry, L"name"))) continue;
                     auto child = navItem(text(entry, L"name"), L"mail", id, key, L"\uE8B7");
+                    folderActions(child, id, text(entry,L"id"));
                     child.IsSelected(section == L"mail" && owner == id && folder == key); remote.MenuItems().Append(child);
                 }
-                remote.IsExpanded(section == L"mail" && owner == id && std::wstring_view(folder).starts_with(L"provider:"));
+                remote.IsExpanded((folderFilter && !folderFilter.Text().empty()) || section == L"mail" && owner == id && std::wstring_view(folder).starts_with(L"provider:"));
             }
             item.MenuItems().Append(remote);
         }
@@ -434,7 +482,7 @@ void Shell::rebuildNavigation() {
     navigation.FooterMenuItems().Append(navItem(L"Add account", L"settings", {}, L"inbox", L"\uE710"));
     if (auto settings = navigation.SettingsItem().try_as<NavigationViewItem>()) {
         settings.Content(box_value(L"Settings & connections"));
-        settings.IsSelected(section == L"settings" || section == L"preferences" || section == L"about");
+        settings.IsSelected(section == L"settings" || section == L"preferences" || section == L"policy" || section == L"about");
     }
     updateBadge();
     selectingNavigation = false;
@@ -492,6 +540,7 @@ IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder
         loading = false;
     } else if (target == L"settings") co_await settingsPage(lifetime, L"mail");
     else if (target == L"preferences") co_await settingsPage(lifetime, L"general");
+    else if (target == L"policy") co_await settingsPage(lifetime, L"policy");
     else if (target == L"about") co_await settingsPage(lifetime, L"about");
     else if (target == L"scheduled") co_await scheduledPage(lifetime);
     else if (target == L"out-of-office") co_await outOfOfficePage(lifetime);
@@ -551,7 +600,7 @@ void Shell::mailPage() {
     }
     for (auto const& option : {std::pair{L"Wider sidebar",60.0}, {L"Narrower sidebar",-60.0}}) {
         MenuFlyoutItem choice; choice.Text(option.first);
-        choice.Click([weak, delta = option.second](auto const&, auto const&) { if (auto self = weak.lock()) self->navigation.OpenPaneLength(std::clamp(self->navigation.OpenPaneLength() + delta, 180.0, 600.0)); });
+        choice.Click([weak, delta = option.second](auto const&, auto const&) { if (auto self = weak.lock()) self->resizeSidebar(self->navigation.OpenPaneLength() + delta); });
         viewMenu.Items().Append(choice);
     }
     view.Flyout(viewMenu); toolbar.Children().Append(view);
@@ -810,11 +859,98 @@ IAsyncAction Shell::patch(Json message, Json changes) {
         co_await loadPage();
     } catch (...) { error(errorText()); }
 }
-IAsyncAction Shell::organize(Json message, hstring preferredKind) {
+void Shell::resizeSidebar(double width, bool save) {
+    if (!navigation || !std::isfinite(width)) return;
+    auto maximum = root && root.ActualWidth() > 0 ? std::clamp(root.ActualWidth() - 640.0, 180.0, 600.0) : 600.0;
+    width = std::clamp(width, 180.0, maximum);
+    navigation.OpenPaneLength(width);
+    if (sidebarDivider) {
+        sidebarDivider.Margin(ThicknessHelper::FromLengths(width - 3, 0, 0, 0));
+        sidebarDivider.Visibility(navigation.IsPaneOpen() && navigation.DisplayMode() == NavigationViewDisplayMode::Expanded ? Visibility::Visible : Visibility::Collapsed);
+    }
+    if (save && service && !closing) try { service->saveClientState(L"morrow.sidebar.width", to_hstring(width)); } catch (...) { error(errorText()); }
+}
+IAsyncAction Shell::manageFolders(hstring account, hstring initialFolder) {
+    auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
+    if (closing || dialogOpen || loading || !service || service->writing() || !connected(account) || !dirty.empty()) co_return;
+    try {
+        loading = true;
+        auto result = co_await service->request(L"/mail/folders/manage", account);
+        loading = false;
+        if (!current(version, captured) || !connected(account)) co_return;
+        if (text(result, L"accountId") != account) throw hresult_error(E_FAIL, L"The folder owner could not be confirmed.");
+        if (!flag(result, L"canManage")) throw hresult_error(E_ACCESSDENIED, L"Reconnect in Settings → Mail accounts and approve mail write permission to manage labels/folders.");
+        auto provider = text(result, L"provider");
+        auto content = stack(12); content.Children().Append(label(account));
+        content.Children().Append(label(L"Changes apply to this mailbox on its provider. System folders are protected; review every change before applying."));
+        ComboBox operation; operation.Header(box_value(L"Action"));
+        for (auto title : {L"Create", L"Rename", L"Move to another parent", L"Delete"}) operation.Items().Append(box_value(title));
+        operation.SelectedIndex(initialFolder.empty() ? 0 : 1); content.Children().Append(operation);
+        ComboBox source; source.Header(box_value(provider == L"google" ? L"Label" : L"Folder")); source.HorizontalAlignment(HorizontalAlignment::Stretch);
+        for (auto const& value : array(result, L"folders")) {
+            auto folder = value.GetObject(); if (!flag(folder, L"editable")) continue;
+            ComboBoxItem item; item.Content(box_value(text(folder, L"name"))); item.Tag(folder); source.Items().Append(item);
+            if (text(folder, L"id") == initialFolder) source.SelectedItem(item);
+        }
+        content.Children().Append(source);
+        auto name = field(L"Name"); name.MaxLength(255); content.Children().Append(name);
+        ComboBox parent; parent.Header(box_value(L"Parent")); parent.HorizontalAlignment(HorizontalAlignment::Stretch); content.Children().Append(parent);
+        ContentDialog editor; editor.XamlRoot(root.XamlRoot()); editor.Title(box_value(provider == L"google" ? L"Manage Gmail labels" : L"Manage server folders"));
+        editor.Content(scroll(content)); editor.PrimaryButtonText(L"Review change"); editor.CloseButtonText(L"Cancel"); editor.DefaultButton(ContentDialogButton::Close);
+        auto configure = [operation, source, name, parent, result, provider, editor] {
+            auto action = operation.SelectedIndex();
+            auto item = source.SelectedItem().try_as<ComboBoxItem>(); auto selected = item ? item.Tag().as<Json>() : Json();
+            source.Visibility(action == 0 ? Visibility::Collapsed : Visibility::Visible);
+            name.Visibility(action <= 1 ? Visibility::Visible : Visibility::Collapsed);
+            name.Text(action == 0 ? L"" : text(selected, L"leafName"));
+            parent.Visibility(action == 0 || action == 2 ? Visibility::Visible : Visibility::Collapsed);
+            parent.Items().Clear(); ComboBoxItem rootItem; rootItem.Content(box_value(L"Mailbox root")); rootItem.Tag(Json()); parent.Items().Append(rootItem); parent.SelectedIndex(0);
+            for (auto const& value : array(result, L"folders")) {
+                auto folder = value.GetObject(); auto kind = text(folder, L"kind");
+                if (action != 0 && text(folder, L"id") == text(selected, L"id") || flag(folder, L"hidden") || kind == L"spam" || kind == L"trash" || kind == L"virtual" || provider == L"google" && !flag(folder, L"editable")) continue;
+                ComboBoxItem parentItem; parentItem.Content(box_value(text(folder, L"name"))); parentItem.Tag(folder); parent.Items().Append(parentItem);
+                if (action != 0 && text(folder, L"id") == text(selected, L"parentId")) parent.SelectedItem(parentItem);
+            }
+            editor.IsPrimaryButtonEnabled(action == 0 ? !name.Text().empty() : source.SelectedIndex() >= 0 && (action != 1 || !name.Text().empty()));
+        };
+        operation.SelectionChanged([configure](auto const&, auto const&) { configure(); });
+        source.SelectionChanged([configure](auto const&, auto const&) { configure(); });
+        name.TextChanged([operation, source, name, editor](auto const&, auto const&) { auto action = operation.SelectedIndex(); editor.IsPrimaryButtonEnabled(action == 0 ? !name.Text().empty() : source.SelectedIndex() >= 0 && (action != 1 || !name.Text().empty())); });
+        configure();
+        dialogOpen = true; ContentDialogResult decision;
+        try { decision = co_await editor.ShowAsync(); } catch (...) { dialogOpen = false; throw; }
+        dialogOpen = false;
+        if (decision != ContentDialogResult::Primary || !current(version, captured) || !connected(account)) co_return;
+        wchar_t const* actions[] = {L"create", L"rename", L"move", L"delete"};
+        auto action = hstring(actions[std::clamp(operation.SelectedIndex(), 0, 3)]);
+        auto item = source.SelectedItem().try_as<ComboBoxItem>(); auto selectedFolder = item ? item.Tag().as<Json>() : Json();
+        auto parentFolder = parent.SelectedItem().as<ComboBoxItem>().Tag().as<Json>();
+        Json body; put(body, L"operation", action); put(body, L"id", text(selectedFolder, L"id")); put(body, L"name", name.Text()); put(body, L"parentId", text(parentFolder, L"id"));
+        loading = true; auto preview = co_await service->request(L"/mail/folders/preview", account, L"POST", body); loading = false;
+        if (!current(version, captured)) co_return;
+        if (text(preview, L"accountId") != account || text(preview, L"previewId").empty()) throw hresult_error(E_FAIL, L"The folder review could not be confirmed.");
+        auto plan = object(preview, L"plan");
+        auto detail = account + L"\n" + text(plan, L"sourceName") + L" → " + text(plan, L"name") + L"\nAffected labels/folders: " + to_hstring(plan.GetNamedNumber(L"affectedCount", 1)) + L"\n" + text(plan, L"impact");
+        if (plan.HasKey(L"messageCount") && plan.GetNamedValue(L"messageCount").ValueType() == JsonValueType::Number) detail += L"\nMessages in selected folder: " + to_hstring(plan.GetNamedNumber(L"messageCount"));
+        if (!(co_await confirm(L"Apply this provider change?", detail, action == L"delete" ? L"Delete on provider" : L"Apply change")) || !current(version, captured)) co_return;
+        Json apply; put(apply, L"previewId", text(preview, L"previewId")); apply.Insert(L"confirmed", Value::CreateBooleanValue(true));
+        loading = true; auto changed = co_await service->request(L"/mail/folders/apply", account, L"POST", apply); loading = false;
+        if (text(changed, L"accountId") != account) throw hresult_error(E_FAIL, L"The changed folder owner could not be confirmed. Refresh before another review.");
+        JsonArray folders;
+        for (auto const& value : array(changed, L"folders")) { auto folder = value.GetObject(); if (!flag(folder, L"hidden") && (!folder.HasKey(L"selectable") || flag(folder, L"selectable"))) folders.Append(value); }
+        changed.Insert(L"folders", folders); serverFolders.Insert(account, changed);
+        if (!current(version, captured)) co_return;
+        if (owner == account) for (auto const& value : array(changed, L"changes")) { auto change=value.GetObject(); if (folder == L"provider:" + text(change,L"oldId")) { folder = text(change,L"newId").empty() ? L"inbox" : L"provider:" + text(change,L"newId"); break; } }
+        rebuildNavigation(); for (auto& cursor : cursors) cursor = L"";
+        if (section == L"mail") co_await loadPage();
+        error(L"Provider label/folder change confirmed.");
+    } catch (...) { loading = false; error(errorText()); }
+}
+IAsyncAction Shell::organize(Json message, hstring preferredKind, hstring preferredDestination) {
     if (preferredKind == L"trash") { co_await trash(message); co_return; }
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
     auto sequence = selectionGeneration; auto account = text(message, L"accountId");
-    if (dialogOpen || loading || !connected(account) || !dirty.empty()) co_return;
+    if (dialogOpen || loading || !connected(account) || !dirty.empty() || flag(message, L"providerFolderMissing")) co_return;
     try {
         loading = true;
         auto result = co_await service->request(L"/mail/folders", account);
@@ -826,13 +962,13 @@ IAsyncAction Shell::organize(Json message, hstring preferredKind) {
         if (text(result, L"provider") == L"google") { mode.Items().Append(box_value(L"Add label")); mode.Items().Append(box_value(L"Remove label")); }
         mode.SelectedIndex(0); if (preferredKind != L"trash") content.Children().Append(mode);
         ComboBox destination; destination.Header(box_value(L"Folder / label")); destination.HorizontalAlignment(HorizontalAlignment::Stretch);
-        auto populate = [destination, mode, result, preferredKind] {
+        auto populate = [destination, mode, result, preferredKind, preferredDestination] {
             destination.Items().Clear();
             int32_t preferred = -1;
             for (auto const& value : array(result, L"folders")) {
                 auto folder = value.GetObject();
                 if (mode.SelectedIndex() != 0 && text(folder, L"kind") != L"label") continue;
-                if (mode.SelectedIndex() == 0 && text(folder, L"kind") == preferredKind) preferred = static_cast<int32_t>(destination.Items().Size());
+                if (text(folder,L"id") == preferredDestination || mode.SelectedIndex() == 0 && text(folder, L"kind") == preferredKind) preferred = static_cast<int32_t>(destination.Items().Size());
                 ComboBoxItem item; item.Content(box_value(text(folder, L"name"))); item.Tag(folder); destination.Items().Append(item);
             }
             destination.SelectedIndex(preferred);
@@ -1056,6 +1192,42 @@ IAsyncAction nativeInteractionChecks(std::shared_ptr<Shell> shell) {
     check(rejected && !guardAfterFailure, L"A synchronous popup failure retained its dialog guard.");
     co_await composerWriteGuardChecks(shell);
 }
+IAsyncAction openTodayMailbox(std::shared_ptr<Shell> self, hstring folder, bool unreadOnly) {
+    if (self->loading || self->dialogOpen || self->closing || !self->dirty.empty()) co_return;
+    co_await self->navigate(L"mail", L"all", folder);
+    if (unreadOnly && self->section == L"mail" && self->owner == L"all" && self->folder == folder && self->unreadFilter) {
+        self->unreadFilter.IsChecked(true); co_await self->loadPage();
+    }
+}
+IAsyncAction summarizeNow(std::shared_ptr<Shell> self, hstring mailbox) {
+    if (self->loading || self->dialogOpen || self->closing || !self->dirty.empty() || !self->connected(mailbox)) co_return;
+    auto version = self->generation; auto viewOwner = self->owner;
+    self->loading = true;
+    struct Done { std::shared_ptr<Shell> shell; ~Done() { shell->loading = false; } } done{self};
+    try {
+        self->error(L"Reviewing downloaded mail…");
+        auto preview = co_await self->service->request(L"/summaries/preview", mailbox, L"POST", Json());
+        if (!self->current(version, viewOwner)) co_return;
+        if (text(preview, L"accountId") != mailbox) throw hresult_error(E_FAIL, L"The preview belongs to a different mailbox.");
+        auto model = object(preview, L"model");
+        auto detail = mailbox + L"\n" + text(model, L"model") + L" · " + text(model, L"baseUrl") + L"\n\n";
+        for (auto const& value : array(preview, L"messages")) {
+            auto message = value.GetObject();
+            auto subject = text(message, L"subject");
+            detail = detail + (subject.empty() ? L"(Subject withheld)" : subject) + L"\n" + text(message, L"fromEmail") + L" · " + text(message, L"folder") + L" · " + mailDateLabel(text(message, L"date")) + L"\n\n";
+        }
+        detail = detail + to_hstring(array(preview, L"messages").Size()) + L" downloaded messages. Uses saved folder, Inbox-only and starred-only filters across all dates, up to your context limit. Only permitted fields reach the model. Provider charges may apply.";
+        self->error(L"");
+        if (!co_await self->confirm(L"Generate a saved P0–P4 summary?", detail, L"Generate summary") || !self->current(version, viewOwner)) co_return;
+        Json body; put(body, L"previewId", text(preview, L"previewId"));
+        self->error(L"Generating summary…");
+        auto result = co_await self->service->request(L"/summaries/generate", mailbox, L"POST", body);
+        if (self->current(version, viewOwner)) {
+            co_await self->refresh();
+            if (text(result, L"status") != L"completed") self->error(text(result, L"error", L"Summary was interrupted. Review before generating again."));
+        }
+    } catch (...) { self->error(errorText()); }
+}
 IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
     if (kind == L"studio" || kind == L"learning" || kind == L"brain" || kind == L"reply-suggestions" || kind == L"skills" || kind == L"summaries" || kind == L"records") {
         co_await intelligencePage(self, kind); co_return;
@@ -1078,13 +1250,46 @@ IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
             }
             if (!array(result, L"tasks").Size()) content.Children().Append(label(L"No recent activity."));
         } else {
-            content.Children().Append(label(L"Downloaded mailbox totals; these are not today's arrivals or complete provider coverage."));
+            auto totals = Grid();
+            uint64_t unread = 0, inbox = 0, drafts = 0;
             for (auto const& value : array(self->state, L"accounts")) {
                 auto mailbox = value.GetObject();
                 auto counts = object(mailbox, L"counts");
-                content.Children().Append(label(text(mailbox, L"email") + L" · Unread Inbox " + to_hstring(static_cast<unsigned>(mailbox.GetNamedNumber(L"unread", 0))) + L" · Drafts " + to_hstring(static_cast<unsigned>(counts.GetNamedNumber(L"drafts", 0))), 18));
+                unread += static_cast<uint64_t>(mailbox.GetNamedNumber(L"unread", 0));
+                inbox += static_cast<uint64_t>(counts.GetNamedNumber(L"inbox", 0));
+                drafts += static_cast<uint64_t>(counts.GetNamedNumber(L"drafts", 0));
             }
-            content.Children().Append(label(L"Today's saved summaries", 20));
+            auto overview = [&](hstring title, uint64_t count, hstring folder, bool unreadOnly) {
+                auto column = static_cast<int>(totals.ColumnDefinitions().Size());
+                ColumnDefinition definition; definition.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); totals.ColumnDefinitions().Append(definition);
+                auto card = button(title, [weak = self->weak_from_this(), folder, unreadOnly] { if (auto shell = weak.lock()) openTodayMailbox(shell, folder, unreadOnly); });
+                auto body = stack(10); auto caption = label(title); caption.Opacity(0.7); body.Children().Append(caption); body.Children().Append(label(to_hstring(count), 28));
+                card.Content(body); card.HorizontalAlignment(HorizontalAlignment::Stretch); card.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+                card.Padding(ThicknessHelper::FromUniformLength(18)); card.Margin({0, 0, column < 2 ? 14.0 : 0.0, 0});
+                Automation::AutomationProperties::SetName(card, title + L", " + to_hstring(count) + L" downloaded messages");
+                Grid::SetColumn(card, column); totals.Children().Append(card);
+            };
+            overview(L"Unread Inbox", unread, L"inbox", true); overview(L"Inbox", inbox, L"inbox", false); overview(L"Drafts", drafts, L"drafts", false);
+            content.Children().Append(totals);
+            auto scope = label(L"Downloaded mail, across all dates. Sync and AI progress appear in Activity.", 12); scope.Opacity(0.7); content.Children().Append(scope);
+            content.Children().Append(label(L"Today's summaries", 22));
+            auto subtitle = label(L"A clearer view of what needs your attention."); subtitle.Opacity(0.7); content.Children().Append(subtitle);
+            auto summaryActions = actions();
+            ComboBox mailboxPicker; mailboxPicker.PlaceholderText(L"Summary mailbox"); mailboxPicker.MinWidth(220);
+            Automation::AutomationProperties::SetName(mailboxPicker, L"Summary mailbox");
+            for (auto const& value : array(self->state, L"accounts")) {
+                auto mailbox = value.GetObject(); ComboBoxItem item; item.Content(box_value(text(mailbox, L"email"))); item.Tag(box_value(text(mailbox, L"id"))); mailboxPicker.Items().Append(item);
+                if (text(mailbox, L"id") == (self->todaySummaryOwner.empty() ? self->owner : self->todaySummaryOwner)) mailboxPicker.SelectedItem(item);
+            }
+            if (!mailboxPicker.SelectedItem() && mailboxPicker.Items().Size()) mailboxPicker.SelectedIndex(0);
+            if (auto selected = mailboxPicker.SelectedItem()) self->todaySummaryOwner = unbox_value<hstring>(selected.as<ComboBoxItem>().Tag());
+            mailboxPicker.SelectionChanged([weak = self->weak_from_this()](auto const& sender, auto const&) { auto picker = sender.template as<ComboBox>(); if (auto shell = weak.lock(); shell && picker.SelectedItem()) shell->todaySummaryOwner = unbox_value<hstring>(picker.SelectedItem().as<ComboBoxItem>().Tag()); });
+            summaryActions.Children().Append(mailboxPicker);
+            auto generate = button(L"Summarize now", [weak = self->weak_from_this()] { if (auto shell = weak.lock()) summarizeNow(shell, shell->todaySummaryOwner); });
+            generate.Style(Application::Current().Resources().Lookup(box_value(L"AccentButtonStyle")).as<Style>());
+            generate.IsEnabled(mailboxPicker.Items().Size() > 0); summaryActions.Children().Append(generate);
+            summaryActions.Children().Append(button(L"Summary History", [weak = self->weak_from_this()] { if (auto shell = weak.lock()) shell->navigate(L"summaries", L"all"); }));
+            content.Children().Append(summaryActions);
             auto policy = object(object(self->state,L"settings"),L"policy"), triggers = object(policy,L"triggers"), schedule = object(policy,L"summarySchedule");
             if (flag(triggers,L"scheduledSummary")) content.Children().Append(label(text(schedule,L"cadence") == L"daily" ? L"Scheduled daily at " + text(schedule,L"time") + L" (" + text(schedule,L"timeZone") + L"), while Morrow is open." : L"Scheduled every " + to_hstring(static_cast<unsigned>(schedule.GetNamedNumber(L"everyHours",4))) + L" hours, while Morrow is open."));
             if (flag(triggers,L"onArrival")) content.Children().Append(label(L"New-mail summaries appear after newly synced mail is analyzed. Historical imports do not trigger them."));
@@ -1093,10 +1298,23 @@ IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
                 auto report = value.GetObject();
                 auto date = text(report, L"status") == L"completed" ? text(report, L"completedAt", text(report, L"createdAt")) : text(report, L"createdAt");
                 if (!sameDay(date)) continue;
-                found = true; content.Children().Append(label(text(report, L"accountId"), 18)); content.Children().Append(label(text(report, L"kind") + L" · " + text(report, L"status") + L" · " + date));
-                content.Children().Append(label(text(report, L"text")));
+                found = true;
+                auto item = stack(10); item.Padding(ThicknessHelper::FromUniformLength(18));
+                auto title = text(report, L"kind") == L"arrival" ? L"New mail" : text(report, L"kind") == L"manual" ? L"On-demand summary" : L"Scheduled summary";
+                item.Children().Append(label(text(report, L"accountId"), 12)); item.Children().Append(label(title, 20));
+                item.Children().Append(label(text(report, L"status") + L" · " + mailDateLabel(date) + L" · " + to_hstring(array(report, L"messageIds").Size()) + L" messages", 12));
+                if (!text(report, L"text").empty()) item.Children().Append(label(text(report, L"text")));
+                if (!text(report, L"error").empty()) item.Children().Append(label(text(report, L"error")));
+                auto card = Markup::XamlReader::Load(L"<Border xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' Background='{ThemeResource CardBackgroundFillColorDefaultBrush}' BorderBrush='{ThemeResource CardStrokeColorDefaultBrush}' BorderThickness='1' CornerRadius='12'/>").as<Border>();
+                card.Child(item); content.Children().Append(card);
             }
-            if (!found) content.Children().Append(label(L"No summaries today yet. Enable scheduled or new-mail summaries in AI & privacy → Automatic assistance. Each mailbox keeps its own AI context."));
+            if (!found) {
+                content.Children().Append(label(L"A fresh start for today", 20));
+                content.Children().Append(label(mailboxPicker.Items().Size() ? L"Choose Summarize now to review downloaded mail from one mailbox. You can also enable scheduled or new-mail summaries in AI & privacy." : L"Connect a mailbox to see your mail and summaries here."));
+            }
+            if (!flag(policy, L"enabled")) content.Children().Append(label(L"AI is paused in your saved permissions."));
+            content.Children().Append(button(mailboxPicker.Items().Size() ? L"AI & Privacy" : L"Add account", [weak = self->weak_from_this(), hasAccounts = mailboxPicker.Items().Size() > 0] { if (auto shell = weak.lock()) shell->navigate(hasAccounts ? L"policy" : L"settings"); }));
+            content.Children().Append(label(L"Latest 20 jobs per mailbox, dated in your local time. Each summary uses only its own mailbox.", 12));
         }
         if (self->current(version, account)) self->show(scroll(content));
     } catch (...) { self->error(errorText()); }

@@ -483,6 +483,218 @@ fn run_tick(app: &App) -> tokio::task::JoinHandle<()> {
 }
 
 #[tokio::test]
+async fn manual_summary_reviews_are_single_use_owner_bound_and_do_not_change_schedules() {
+    async fn request(
+        app: &App,
+        owner: &str,
+        action: &str,
+        body: Value,
+    ) -> morrow_search::error::Result<Value> {
+        let mut context = Context {
+            method: axum::http::Method::POST,
+            path: vec!["summaries".into(), action.into()],
+            body,
+            query: json!({}),
+            headers: Default::default(),
+            owner: B.into(), // The global view must never route the model request.
+            paged: true,
+        };
+        if !owner.is_empty() {
+            context
+                .headers
+                .insert("x-genmail-account", owner.parse().unwrap());
+        }
+        let response = jobs::handle(app, &context).await?.unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), 256 * 1024)
+            .await
+            .unwrap();
+        Ok(serde_json::from_slice(&bytes).unwrap())
+    }
+    let (url, mut calls, server) = fake_model().await;
+    let (app, root) = app_fixture(url).await;
+    app.db(|db| {
+        let p = policy::update(&db.settings()?["policy"], &json!({"triggers":{"onArrival":false,"scheduledSummary":false}}))?;
+        db.set_settings(&json!({"activeAccount":B,"policy":p,"automation":{A:{"schedule":{"day":"2026-09-30","lastAt":123}}}}))?;
+        Ok(())
+    }).await.unwrap();
+    let schedule = app.settings().await.unwrap()["automation"][A]["schedule"].clone();
+    for owner in ["", "all", "demo", "disconnected@example.invalid"] {
+        assert_eq!(
+            request(&app, owner, "preview", json!({}))
+                .await
+                .unwrap_err()
+                .status,
+            409
+        );
+    }
+    assert_eq!(
+        request(&app, A, "generate", json!({}))
+            .await
+            .unwrap_err()
+            .status,
+        400
+    );
+    assert_eq!(
+        request(&app, A, "preview", json!({"messageIds":["same"]}))
+            .await
+            .unwrap_err()
+            .status,
+        400
+    );
+    let preview = request(&app, A, "preview", json!({})).await.unwrap();
+    assert_eq!(preview["accountId"], A);
+    assert_eq!(preview["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(preview["messages"][0]["subject"], "");
+    assert_eq!(preview["messages"][0]["fromEmail"], "");
+    assert!(preview["messages"][0].get("body").is_none());
+    assert!(!preview.to_string().contains("Private"));
+    assert!(preview["model"].get("apiKey").is_none());
+    assert!(calls.try_recv().is_err()); // Preview never calls the model or provider.
+    let reviewed = json!({"previewId":preview["previewId"]});
+    assert_eq!(
+        request(&app, B, "generate", reviewed.clone())
+            .await
+            .unwrap_err()
+            .status,
+        409
+    );
+    let running_app = app.clone();
+    let approved = reviewed.clone();
+    let run = tokio::spawn(async move {
+        request(&running_app, A, "generate", approved)
+            .await
+            .unwrap()
+    });
+    let (payload, finish) = next_call(&mut calls).await;
+    let encoded = payload.to_string();
+    assert!(
+        encoded.contains(A)
+            && !encoded.contains(B)
+            && !encoded.contains("Private subject")
+            && !encoded.contains("Private sender")
+    );
+    assert_eq!(
+        app.settings().await.unwrap()["automation"][A]["jobs"][0]["status"],
+        "running"
+    );
+    assert_eq!(
+        request(&app, A, "generate", reviewed.clone())
+            .await
+            .unwrap_err()
+            .status,
+        409
+    );
+    finish.send(response(&payload)).unwrap();
+    let result = run.await.unwrap();
+    assert_eq!(result["status"], "completed");
+    assert_eq!(result["summaries"][0]["kind"], "manual");
+    assert_eq!(result["summaries"][0]["status"], "completed");
+    assert_eq!(
+        app.settings().await.unwrap()["automation"][A]["schedule"],
+        schedule
+    );
+    assert_eq!(
+        request(&app, A, "generate", reviewed)
+            .await
+            .unwrap_err()
+            .status,
+        409
+    );
+    assert!(
+        app.db(|db| jobs::reports(db, B))
+            .await
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let today = app.state("all", true).await.unwrap();
+    assert_eq!(today["today"]["summaries"][0]["accountId"], A);
+    assert_eq!(today["account"]["id"], "all");
+
+    // A changed source, connection or saved permission invalidates the approved preview.
+    for change in ["source", "connection", "permissions"] {
+        let preview = request(&app, A, "preview", json!({})).await.unwrap();
+        app.db(move |db| {
+            match change {
+                "source" => {
+                    let mut message = db.get(A, "same")?.unwrap();
+                    message["body"] = "Changed after review".into();
+                    db.upsert(A, &message)?;
+                }
+                "connection" => {
+                    let mut accounts = db.settings()?["mailAccounts"].clone();
+                    accounts[A]["connectionId"] = "reconnected".into();
+                    db.set_settings(&json!({"mailAccounts":accounts}))?;
+                }
+                _ => {
+                    let p = policy::update(
+                        &db.settings()?["policy"],
+                        &json!({"behaviors":{"briefing":false}}),
+                    )?;
+                    db.set_settings(&json!({"policy":p}))?;
+                }
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!(
+            request(
+                &app,
+                A,
+                "generate",
+                json!({"previewId":preview["previewId"]})
+            )
+            .await
+            .is_err()
+        );
+        assert!(calls.try_recv().is_err());
+    }
+    app.db(|db| {
+        let p = policy::update(
+            &db.settings()?["policy"],
+            &json!({"behaviors":{"briefing":true}}),
+        )?;
+        db.set_settings(&json!({"policy":p}))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let preview = request(&app, A, "preview", json!({})).await.unwrap();
+    let running_app = app.clone();
+    let run = tokio::spawn(async move {
+        request(
+            &running_app,
+            A,
+            "generate",
+            json!({"previewId":preview["previewId"]}),
+        )
+        .await
+        .unwrap()
+    });
+    let (_, finish) = next_call(&mut calls).await;
+    finish
+        .send(json!({"error":"private model failure"}))
+        .unwrap();
+    let failed = run.await.unwrap();
+    assert_eq!(failed["status"], "failed");
+    assert_eq!(failed["summaries"][0]["status"], "failed");
+    assert!(!failed.to_string().contains("private model failure"));
+    jobs::tick(&app).await.unwrap();
+    assert!(calls.try_recv().is_err()); // Failed paid work is never automatically retried.
+    drop(app);
+    let restarted = App::open(&root, 3011, String::new(), String::new()).unwrap();
+    assert_eq!(
+        restarted.db(|db| jobs::reports(db, A)).await.unwrap()[0]["status"],
+        "failed"
+    );
+    drop(restarted);
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
 async fn paid_calls_are_serial_bounded_owner_redacted_and_claimed_before_network() {
     let (url, mut calls, server) = fake_model().await;
     let (app, root) = app_fixture(url).await;

@@ -39,6 +39,7 @@ pub struct Runtime {
     requests: Semaphore,
     pub mailbox: tokio::sync::Mutex<()>,
     pub trash_undo: Mutex<std::collections::HashMap<String, crate::mail::TrashUndo>>,
+    pub folder_reviews: Mutex<std::collections::HashMap<String, crate::folders::Review>>,
     pub sending: Mutex<std::collections::HashSet<(String, String)>>,
     pub client: reqwest::Client,
     pub port: u16,
@@ -135,6 +136,7 @@ impl App {
             requests: Semaphore::new(32),
             mailbox: tokio::sync::Mutex::new(()),
             trash_undo: Default::default(),
+            folder_reviews: Default::default(),
             sending: Mutex::new(std::collections::HashSet::new()),
             client,
             port,
@@ -509,6 +511,7 @@ async fn handle_inner(app: App, request: axum::http::Request<Body>) -> Result<Re
                     ..
                 ]
                 | ["account", "disconnect"]
+                | ["mail", "folders", ..]
         );
     let bytes = tokio::time::timeout(Duration::from_secs(15), to_bytes(body, 256 * 1024))
         .await
@@ -581,6 +584,9 @@ async fn handle_inner(app: App, request: axum::http::Request<Body>) -> Result<Re
     result
 }
 pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
+    if let Some(response) = crate::folders::handle(app, &context).await? {
+        return Ok(response);
+    }
     if let Some(response) = crate::calendar::handle(app, &context).await? {
         return Ok(response);
     }

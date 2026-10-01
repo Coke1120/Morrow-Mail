@@ -428,6 +428,12 @@ async fn history_tick(app: &App) -> Result<()> {
 }
 
 pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
+    if ctx.method == axum::http::Method::POST
+        && ctx.path.len() == 2
+        && ctx.path[0].eq_ignore_ascii_case("summaries")
+    {
+        return manual_summary(app, ctx).await.map(Some);
+    }
     if ctx.method != axum::http::Method::POST
         || ctx.path.len() != 2
         || !ctx.path[0].eq_ignore_ascii_case("imports")
@@ -524,10 +530,11 @@ fn enabled(policy: &Value, kind: &str) -> bool {
     let (trigger, behavior) = match kind {
         "arrival" => ("onArrival", "summary"),
         "scheduled" => ("scheduledSummary", "briefing"),
+        "manual" => ("", "briefing"),
         _ => return false,
     };
     policy["enabled"] == true
-        && policy["triggers"][trigger] == true
+        && (trigger.is_empty() || policy["triggers"][trigger] == true)
         && policy["behaviors"][behavior] == true
         && ["subject", "body", "sender"]
             .iter()
@@ -576,6 +583,12 @@ fn source_digest(messages: &[Value], policy: &Value) -> Result<String> {
 fn pending(job: &Value) -> bool {
     ["queued", "running"].contains(&string(job, "status"))
 }
+fn summary_job(db: &Store, account: &str, kind: &str, ids: &[Value]) -> Result<Value> {
+    let config = db.settings()?;
+    Ok(
+        json!({"id":uuid::Uuid::new_v4().to_string(),"kind":kind,"messageIds":ids,"signature":signature(&config,account)?,"generation":config["aiGeneration"].as_u64().unwrap_or(0),"sourceDigest":source_digest(&sources(db,account,ids)?,&policy::resolve(&config["policy"]))?,"createdAt":now(),"status":"queued"}),
+    )
+}
 fn append(db: &Store, account: &str, kind: &str, ids: &[Value]) -> Result<()> {
     let config = db.settings()?;
     let mut value = automation(&config, account);
@@ -594,7 +607,7 @@ fn append(db: &Store, account: &str, kind: &str, ids: &[Value]) -> Result<()> {
             .collect();
         history.reverse();
         history.extend(current);
-        history.push(json!({"id":uuid::Uuid::new_v4().to_string(),"kind":kind,"messageIds":ids,"signature":signature(&config,account)?,"generation":config["aiGeneration"].as_u64().unwrap_or(0),"sourceDigest":source_digest(&sources(db,account,ids)?,&policy::resolve(&config["policy"]))?,"createdAt":now(),"status":"queued"}));
+        history.push(summary_job(db, account, kind, ids)?);
         value["jobs"] = history.into();
     }
     write_owner(db, "automation", account, value)
@@ -787,47 +800,8 @@ pub fn schedule(db: &Store, timestamp: i64) -> Result<()> {
     if !enabled(&policy, "scheduled") {
         return Ok(());
     }
-    let folders: Vec<_> = ["inbox", "sent", "archive"]
-        .into_iter()
-        .filter(|folder| {
-            policy["folders"][folder] == true
-                && (policy["triggers"]["inboxOnly"] != true || *folder == "inbox")
-        })
-        .collect();
-    if folders.is_empty() {
-        return Ok(());
-    }
-    let sql = format!(
-        "SELECT id FROM messages WHERE account=? AND json_extract(data,'$.folder') IN ({}) {} ORDER BY COALESCE(json_extract(data,'$.pending'),0) DESC,COALESCE(json_extract(data,'$.starred'),0) DESC,COALESCE(json_extract(data,'$.read'),0) ASC,json_extract(data,'$.date') DESC,id LIMIT ?",
-        vec!["?"; folders.len()].join(","),
-        if policy["triggers"]["starredOnly"] == true {
-            "AND json_extract(data,'$.starred')=1"
-        } else {
-            ""
-        }
-    );
     for account in owners(&config) {
-        let mut params: Vec<rusqlite::types::Value> = vec![account.clone().into()];
-        params.extend(
-            folders
-                .iter()
-                .map(|folder| rusqlite::types::Value::Text((*folder).into())),
-        );
-        params.push(
-            policy["maxMessages"]
-                .as_i64()
-                .unwrap_or(8)
-                .clamp(1, 50)
-                .into(),
-        );
-        let ids = db
-            .conn
-            .prepare(&sql)?
-            .query_map(rusqlite::params_from_iter(params), |row| {
-                row.get::<_, String>(0)
-            })?
-            .map(|row| row.map(Value::String))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let ids = summary_ids(db, &account, &policy)?;
         if ids.is_empty() {
             continue;
         }
@@ -849,6 +823,154 @@ pub fn schedule(db: &Store, timestamp: i64) -> Result<()> {
         }
     }
     Ok(())
+}
+fn summary_ids(db: &Store, account: &str, policy: &Value) -> Result<Vec<Value>> {
+    let folders: Vec<_> = ["inbox", "sent", "archive"]
+        .into_iter()
+        .filter(|folder| {
+            policy["folders"][folder] == true
+                && (policy["triggers"]["inboxOnly"] != true || *folder == "inbox")
+        })
+        .collect();
+    if folders.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sql = format!(
+        "SELECT id FROM messages WHERE account=? AND json_extract(data,'$.folder') IN ({}) {} ORDER BY COALESCE(json_extract(data,'$.pending'),0) DESC,COALESCE(json_extract(data,'$.starred'),0) DESC,COALESCE(json_extract(data,'$.read'),0) ASC,json_extract(data,'$.date') DESC,id LIMIT ?",
+        vec!["?"; folders.len()].join(","),
+        if policy["triggers"]["starredOnly"] == true {
+            "AND json_extract(data,'$.starred')=1"
+        } else {
+            ""
+        }
+    );
+    let mut params: Vec<rusqlite::types::Value> = vec![account.to_owned().into()];
+    params.extend(
+        folders
+            .iter()
+            .map(|folder| rusqlite::types::Value::Text((*folder).into())),
+    );
+    params.push(
+        policy["maxMessages"]
+            .as_i64()
+            .unwrap_or(8)
+            .clamp(1, 50)
+            .into(),
+    );
+    Ok(db
+        .conn
+        .prepare(&sql)?
+        .query_map(rusqlite::params_from_iter(params), |row| {
+            row.get::<_, String>(0)
+        })?
+        .map(|row| row.map(Value::String))
+        .collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+async fn manual_summary(app: &App, ctx: &Context) -> Result<Response> {
+    let action = ctx.path[1].to_ascii_lowercase();
+    let fields = ctx
+        .body
+        .as_object()
+        .ok_or_else(|| Error::invalid("Invalid summary request."))?;
+    if !matches!(action.as_str(), "preview" | "generate")
+        || (action == "preview" && !fields.is_empty())
+        || (action == "generate"
+            && (fields.len() != 1 || string(&ctx.body, "previewId").is_empty()))
+    {
+        return Err(Error::invalid(
+            "Review a summary preview before generating.",
+        ));
+    }
+    let _guard = if action == "generate" {
+        Some(app.0.background.gate.try_lock().map_err(|_| {
+            Error::conflict("Automatic assistance is busy. Try again when it finishes.")
+        })?)
+    } else {
+        None
+    };
+    let shutdown = app.0.background.shutdown.notified();
+    tokio::pin!(shutdown);
+    shutdown.as_mut().enable();
+    if app.0.background.stopped.load(Ordering::Acquire) {
+        return Err(Error::conflict("The service is shutting down."));
+    }
+    let context = ctx.clone();
+    let generating = action == "generate";
+    let (account, job, model_context) = app.db(move |db| db.transaction(|db| {
+        let config = db.settings()?;
+        let account = context.read_owner(&config, false)?;
+        if connections(&config).get(&account).is_none() {
+            return Err(Error::conflict("Choose an individual connected mailbox."));
+        }
+        let policy = policy::resolve(&config["policy"]);
+        policy::require(&policy, "briefing")?;
+        if !enabled(&policy, "manual") {
+            return Err(Error::new(403, "Allow subject, body or sender access in AI & privacy first."));
+        }
+        if string(&config["ai"], "baseUrl").is_empty() || string(&config["ai"], "model").is_empty() {
+            return Err(Error::conflict("Save an AI model in Settings first."));
+        }
+        let mut value = automation(&config, &account);
+        if value["jobs"].as_array().into_iter().flatten().any(|job| job["kind"] == "manual" && pending(job)) {
+            return Err(Error::conflict("A manual summary is already in progress for this mailbox."));
+        }
+        if generating {
+            let job = value["manualPreview"].clone();
+            if job["id"] != context.body["previewId"] || job["kind"] != "manual" || !valid_job(db, &account, &job, &config)? {
+                return Err(Error::conflict("The summary preview changed or expired. Review it again."));
+            }
+            let mut jobs = value["jobs"].as_array().cloned().unwrap_or_default();
+            if jobs.iter().filter(|job| pending(job)).count() >= 100 {
+                return Err(Error::conflict("The summary queue is full. Wait for current jobs to finish."));
+            }
+            jobs.push(job.clone());
+            value["jobs"] = jobs.into(); value["manualPreview"] = Value::Null;
+            write_owner(db, "automation", &account, value)?;
+            let model_context = claim(db, &account, &job)?.ok_or_else(|| Error::conflict("The summary context changed. Review it again."))?;
+            Ok((account, job, model_context))
+        } else {
+            let ids = summary_ids(db, &account, &policy)?;
+            if ids.is_empty() {
+                return Err(Error::conflict("No downloaded messages match the saved summary permissions and filters."));
+            }
+            let job = summary_job(db, &account, "manual", &ids)?;
+            value["manualPreview"] = job.clone();
+            write_owner(db, "automation", &account, value)?;
+            let messages: Vec<_> = sources(db, &account, &ids)?.iter().map(|m| project(&policy::redact(m, &policy), &["id", "subject", "fromEmail", "folder", "date"])).collect();
+            Ok((account.clone(), job.clone(), json!({"accountId":account,"previewId":job["id"],"messages":messages,"model":project(&config["ai"], &["baseUrl", "model"]),"content":policy["content"]})))
+        }
+    })).await?;
+    if !generating {
+        return Ok(Json(model_context).into_response());
+    }
+    let report_id = string(&job, "id").to_owned();
+    tokio::select! {
+        _ = &mut shutdown => return Err(Error::conflict("Summary interrupted by shutdown. Review before generating again.")),
+        result = generate(app, &account, &job, &model_context) => {
+            let owner = account.clone();
+            app.db(move |db| finish(db, &owner, &job, &model_context, result)).await?;
+        }
+    }
+    Ok(Json(
+        app.db(move |db| {
+            let config = db.settings()?;
+            let value = automation(&config, &account);
+            let report = value["jobs"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|job| job["id"] == report_id)
+                .cloned()
+                .unwrap_or(Value::Null);
+            Ok(merge(
+                state(db, &account)?,
+                &project(&report, &["status", "error"]),
+            ))
+        })
+        .await?,
+    )
+    .into_response())
 }
 
 fn claim(db: &Store, account: &str, job: &Value) -> Result<Option<Value>> {

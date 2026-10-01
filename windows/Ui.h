@@ -35,6 +35,8 @@ struct Shell : std::enable_shared_from_this<Shell> {
     controls::Grid mailList{nullptr};
     xaml::FrameworkElement mailDivider{nullptr};
     controls::TextBox search{nullptr};
+    controls::TextBox folderFilter{nullptr};
+    xaml::FrameworkElement sidebarDivider{nullptr};
     controls::ComboBox sorting{nullptr};
     controls::CheckBox unreadFilter{nullptr};
     controls::Button composeButton{nullptr};
@@ -47,6 +49,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     Json selected;
     Json updateResult;
     winrt::hstring owner, folder = L"inbox", section = L"mail", nextCursor;
+    winrt::hstring todaySummaryOwner;
     winrt::hstring mailLayout = L"right";
     bool readerFocused = false;
     double listWidth = 320, listHeight = 240;
@@ -65,7 +68,9 @@ struct Shell : std::enable_shared_from_this<Shell> {
     winrt::Windows::Foundation::IAsyncAction patch(Json message, Json changes);
     winrt::Windows::Foundation::IAsyncAction prepare(Json message, winrt::hstring mode, winrt::hstring body = {});
     winrt::Windows::Foundation::IAsyncAction messageAI(Json message, winrt::hstring action, bool history = false);
-    winrt::Windows::Foundation::IAsyncAction organize(Json message, winrt::hstring preferredKind = {});
+    winrt::Windows::Foundation::IAsyncAction organize(Json message, winrt::hstring preferredKind = {}, winrt::hstring preferredDestination = {});
+    winrt::Windows::Foundation::IAsyncAction manageFolders(winrt::hstring account, winrt::hstring initialFolder = {});
+    void resizeSidebar(double width, bool save = true);
     winrt::Windows::Foundation::IAsyncAction trash(Json message);
     winrt::Windows::Foundation::IAsyncAction undoTrash();
     void updateTrashUndo();

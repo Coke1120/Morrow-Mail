@@ -12,6 +12,7 @@ struct MailWorkspace: View {
     @State private var assistantDraft: (draft: Draft, generation: Int)?
     @State private var hoveredMessage: String?
     @State private var expandedServerAccounts: Set<String> = []
+    @State private var folderFilter = ""
     @EnvironmentObject var model: AppModel
     private var layout: String { expandedReader ? "focus" : ["right", "bottom", "focus"].contains(readerLayout) ? readerLayout : "right" }
     var filtered: [JSON] {
@@ -84,7 +85,8 @@ struct MailWorkspace: View {
         .onChange(of: outOfOfficeDirty) { model.dirty("out-of-office", $0) }
         .onChange(of: model.selectedMessage) { selection in if selection == nil { leaveExpandedReader() } }
         .sheet(item: $model.compose) { draft in ComposeView(initial: draft).environmentObject(model) }
-        .sheet(item: $model.organizing) { request in OrganizeMailView(message: request["message"], preferredKind: request["preferredKind"].string).environmentObject(model) }
+        .sheet(item: $model.organizing) { request in OrganizeMailView(message: request["message"], preferredKind: request["preferredKind"].string, preferredDestination: request["destinationId"].string).environmentObject(model) }
+        .sheet(item: $model.managingFolders) { request in FolderManagementView(owner: request.id, initialFolder: request["folderId"].string).environmentObject(model) }
         .sheet(item: $model.readerAssistant, onDismiss: {
             if let pending = assistantDraft {
                 assistantDraft = nil
@@ -93,7 +95,7 @@ struct MailWorkspace: View {
         }) { request in
             ReaderAssistanceView(request: request) { draft in assistantDraft = (draft, model.draftGeneration) }.environmentObject(model)
         }
-        .sheet(isPresented: $model.showSettings) { NativeSettingsView().environmentObject(model) }
+        .sheet(isPresented: $model.showSettings, onDismiss: model.finishUpdateRestart) { NativeSettingsView().environmentObject(model) }
     }
     private var readingPanes: some View {
         // Keep the reader in the same container when layouts change, including its AI task state.
@@ -146,6 +148,8 @@ struct MailWorkspace: View {
                 Button { sidebarVisible = false } label: { Label("Hide Sidebar", systemImage: "sidebar.left") }.labelStyle(.iconOnly).buttonStyle(.borderless).help("Hide Sidebar")
             }.padding(.horizontal, 14).padding(.vertical, 12)
             composeButton.buttonStyle(.borderedProminent).frame(maxWidth: .infinity).padding(.horizontal, 14).padding(.bottom, 10)
+            TextField("Filter labels / folders", text: $folderFilter).textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Filter sidebar labels and folders").padding(.horizontal, 14).padding(.bottom, 10)
             List(selection: Binding(get: { model.isMailSection ? model.account + "\n" + model.section : model.section == "scheduled" && !model.scheduledAccount.isEmpty ? model.scheduledAccount + "\n" + model.section : model.section }, set: { value in
                 guard model.canNavigate else { return }
                 let parts = value.components(separatedBy: "\n")
@@ -192,7 +196,8 @@ struct MailWorkspace: View {
     }
     func accountGroup(_ account: String, title: String, subtitle: String, symbol: String) -> some View {
         let collapsed = Set((try? JSONDecoder().decode([String].self, from: Data(collapsedAccounts.utf8))) ?? [])
-        return DisclosureGroup(isExpanded: Binding(get: { !collapsed.contains(account) }, set: { expanded in
+        return DisclosureGroup(isExpanded: Binding(get: { !folderFilter.isEmpty || !collapsed.contains(account) }, set: { expanded in
+            guard folderFilter.isEmpty else { return }
             var next = collapsed
             if expanded { next.remove(account) } else { next.insert(account) }
             if let data = try? JSONEncoder().encode(next.sorted()), let value = String(data: data, encoding: .utf8) { collapsedAccounts = value }
@@ -210,7 +215,7 @@ struct MailWorkspace: View {
         }.accessibilityIdentifier("accountGroup.\(account)")
     }
     @ViewBuilder func folderRows(_ account: String) -> some View {
-        ForEach(mailFolders, id: \.self) { folder in
+        ForEach(mailFolders.filter { folderFilter.isEmpty || $0.localizedCaseInsensitiveContains(folderFilter) }, id: \.self) { folder in
             HStack {
                 Label(folder.capitalized, systemImage: ["inbox": "tray", "starred": "star", "pending": "clock", "sent": "paperplane", "drafts": "doc", "archive": "archivebox", "spam": "exclamationmark.shield", "trash": "trash"][folder] ?? "folder")
                 Spacer()
@@ -220,18 +225,24 @@ struct MailWorkspace: View {
         }
         if account != "all" {
             Label("Outbox", systemImage: "clock.arrow.circlepath").tag(account + "\nscheduled").accessibilityIdentifier("mailbox.\(account).outbox")
-            DisclosureGroup(isExpanded: Binding(get: { expandedServerAccounts.contains(account) }, set: { expanded in
+            DisclosureGroup(isExpanded: Binding(get: { expandedServerAccounts.contains(account) || !folderFilter.isEmpty && model.serverFolders[account] != nil }, set: { expanded in
                 if expanded {
                     expandedServerAccounts.insert(account)
                     if model.serverFolders[account] == nil { model.perform { try await model.loadServerFolders(account) } }
                 } else { expandedServerAccounts.remove(account) }
             })) {
-                ForEach(model.serverFolders[account] ?? []) { folder in
+                ForEach((model.serverFolders[account] ?? []).filter { folderFilter.isEmpty || $0["name"].string.localizedCaseInsensitiveContains(folderFilter) }) { folder in
                     Label(folder["name"].string, systemImage: folder["kind"].string == "label" ? "tag" : "folder")
                         .tag(account + "\nprovider:" + folder.id).help(folder["name"].string)
+                        .contextMenu {
+                            Button("Manage label / folder…") { model.managingFolders = .object(["id": .string(account), "folderId": .string(folder.id)]) }.disabled(!model.canNavigate)
+                            Button("Move selected message here…") { model.beginOrganize(model.current, destinationId: folder.id) }
+                                .disabled(!model.canNavigate || model.current?["accountId"].string != account || !(model.current.map(model.canOrganize) ?? false))
+                        }
                 }
                 Button("Refresh server list") { model.perform { try await model.loadServerFolders(account) } }.disabled(model.busy)
             } label: { Text(model.accounts.first { $0.id == account }?["provider"].string == "google" ? "Gmail labels" : "Server folders") }
+            Button("Manage labels / folders…") { model.managingFolders = .object(["id": .string(account)]) }.disabled(!model.canNavigate)
         }
     }
     func folderCount(_ account: String, _ folder: String) -> Int {
@@ -620,6 +631,7 @@ struct OrganizeMailView: View {
     @Environment(\.dismiss) var dismiss
     let message: JSON
     let preferredKind: String
+    var preferredDestination: String = ""
     @State private var folders: [JSON] = []
     @State private var destination = ""
     @State private var mode = "move"
@@ -671,6 +683,7 @@ struct OrganizeMailView: View {
             do {
                 let result = try await model.request("/mail/folders", mailbox: message["accountId"].string)
                 folders = result["folders"].array; provider = result["provider"].string
+                if folders.contains(where: { $0.id == preferredDestination }) { destination = preferredDestination }
                 if preferredKind == "trash" {
                     destination = folders.first { $0["kind"].string == "trash" }?.id ?? ""
                     if destination.isEmpty { localError = "This mailbox did not expose a provider Trash folder. Check its permissions or use your provider." }

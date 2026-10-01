@@ -32,6 +32,297 @@ const A: &str = "a@example.invalid";
 const B: &str = "b@example.invalid";
 const C: &str = "c@example.invalid";
 const NATIVE: &str = "fixture-native-token";
+
+#[tokio::test]
+async fn reviewed_folder_management_is_owned_single_use_and_preserves_cached_mail() {
+    let labels = Arc::new(Mutex::new(vec![
+        json!({"id":"INBOX","name":"Inbox","type":"system"}),
+        json!({"id":"p","name":"Projects","type":"user"}),
+        json!({"id":"c","name":"Projects/Child","type":"user"}),
+        json!({"id":"d","name":"Done","type":"user"}),
+    ]));
+    let graph = Arc::new(Mutex::new(vec![
+        json!({"id":"inbox-id","displayName":"Inbox","parent":""}),
+        json!({"id":"junk-id","displayName":"Junk","parent":""}),
+        json!({"id":"trash-id","displayName":"Deleted","parent":""}),
+        json!({"id":"draft-id","displayName":"草稿","parent":""}),
+        json!({"id":"p","displayName":"Projects","parent":""}),
+        json!({"id":"c","displayName":"Child","parent":"p"}),
+        json!({"id":"d","displayName":"Done","parent":""}),
+    ]));
+    let writes = Arc::new(AtomicUsize::new(0));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let lost = Arc::new(AtomicUsize::new(0));
+    let (remote_labels, remote_graph, counted, read_count, lose) = (
+        labels.clone(),
+        graph.clone(),
+        writes.clone(),
+        reads.clone(),
+        lost.clone(),
+    );
+    let fixture=Fixture::new(Arc::new(move |request| {
+        let (labels,graph,writes,reads,lost)=(remote_labels.clone(),remote_graph.clone(),counted.clone(),read_count.clone(),lose.clone());
+        async move {
+            let url=url::Url::parse(&format!("https://{}{}",request.host(),request.path)).unwrap();let path=url.path();
+            if request.method=="GET" { reads.fetch_add(1,Ordering::SeqCst); }
+            if request.host()=="gmail.googleapis.com" {
+                assert!([A,B].contains(&request.owner()));
+                let mut labels=labels.lock().unwrap();
+                if request.method=="GET" { assert_eq!(path,"/gmail/v1/users/me/labels");return Reply::Json(200,json!({"labels":*labels})); }
+                assert_eq!(request.owner(),A);writes.fetch_add(1,Ordering::SeqCst);
+                let response=match request.method.as_str() {
+                    "POST"=>{let v=json!({"id":"created","name":request.json()["name"],"type":"user"});labels.push(v.clone());Reply::Json(200,v)},
+                    "PATCH"=>{let id=path.rsplit('/').next().unwrap();let item=labels.iter_mut().find(|l|l["id"]==id).unwrap();item["name"]=request.json()["name"].clone();Reply::Json(200,item.clone())},
+                    "DELETE"=>{let id=path.rsplit('/').next().unwrap();labels.retain(|l|l["id"]!=id);Reply::Empty(204)},
+                    _=>panic!("Unexpected label request"),
+                };
+                return if lost.load(Ordering::SeqCst)>0{Reply::Lost}else{response};
+            }
+            assert_eq!(request.owner(),C);
+            let mut graph=graph.lock().unwrap();
+            let suffix=path.strip_prefix("/v1.0/me/mailFolders").unwrap();
+            if request.method=="GET" {
+                if !suffix.is_empty() && !suffix.ends_with("/childFolders") {
+                    return match suffix { "/inbox"=>Reply::Json(200,json!({"id":"inbox-id"})),"/junkemail"=>Reply::Json(200,json!({"id":"junk-id"})),"/deleteditems"=>Reply::Json(200,json!({"id":"trash-id"})),"/drafts"=>Reply::Json(200,json!({"id":"draft-id"})),_=>Reply::Json(404,json!({"error":{"code":"ErrorItemNotFound"}})) };
+                }
+                let parent=suffix.strip_suffix("/childFolders").unwrap_or("").trim_start_matches('/');
+                let values=graph.iter().filter(|v|v["parent"]==parent).map(|v|merge(v.clone(),&json!({"childFolderCount":graph.iter().filter(|c|c["parent"]==v["id"]).count(),"totalItemCount":2,"isHidden":false}))).collect::<Vec<_>>();
+                return Reply::Json(200,json!({"value":values}));
+            }
+            writes.fetch_add(1,Ordering::SeqCst);let body=if request.body.is_empty(){json!({})}else{request.json()};
+            let id=suffix.trim_start_matches('/').split('/').next().unwrap();
+            match request.method.as_str() {
+                "POST" if suffix.ends_with("/move")=>{let item=graph.iter_mut().find(|v|v["id"]==id).unwrap();item["parent"]=if body["destinationId"]=="msgfolderroot"{json!("")}else{body["destinationId"].clone()};Reply::Json(200,item.clone())},
+                "POST"=>{let v=json!({"id":"created-graph","displayName":body["displayName"],"parent":if suffix.ends_with("/childFolders"){id}else{""}});graph.push(v.clone());Reply::Json(201,v)},
+                "PATCH"=>{let item=graph.iter_mut().find(|v|v["id"]==id).unwrap();item["displayName"]=body["displayName"].clone();Reply::Json(200,item.clone())},
+                "DELETE"=>{let mut removed=vec![id.to_owned()];loop {let next=graph.iter().filter(|v|removed.contains(&string(v,"parent").to_owned())&&!removed.contains(&string(v,"id").to_owned())).map(|v|string(v,"id").to_owned()).collect::<Vec<_>>();if next.is_empty(){break;}removed.extend(next);}graph.retain(|v|!removed.contains(&string(v,"id").to_owned()));Reply::Empty(204)},
+                _=>panic!("Unexpected folder request"),
+            }
+        }.boxed()
+    })).await;
+    let server = fixture.start().await;
+    set(
+        &server.app,
+        config(&[(A, "google"), (B, "google"), (C, "microsoft")]),
+    )
+    .await;
+    server.app.db(|db|{for owner in [A,B]{db.upsert(owner,&merge(cached("google:same",owner,"archive"),&json!({"providerLabelIds":["p","c"],"labels":["Projects","Projects/Child"],"providerSnapshot":{"labels":["Projects","Projects/Child"]},"pending":true})))?;}db.upsert(C,&merge(cached("microsoft:same",C,"archive"),&json!({"providerFolderId":"c","pending":true})))?;Ok(())}).await.unwrap();
+    assert_eq!(
+        server
+            .call(
+                "POST",
+                "/api/mail/folders/preview",
+                "all",
+                json!({"operation":"delete","id":"p"})
+            )
+            .await
+            .0,
+        409
+    );
+    let missing = server
+        .client
+        .post(format!("{}/api/mail/folders/preview", server.base))
+        .bearer_auth(NATIVE)
+        .json(&json!({"operation":"delete","id":"p"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 409);
+    for owner in [A, C] {
+        let (status, catalog) = server
+            .call("GET", "/api/mail/folders/manage", owner, json!({}))
+            .await;
+        assert_eq!(status, 200);
+        assert_eq!(catalog["accountId"], owner);
+        if owner == C {
+            assert!(
+                catalog["folders"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|v| v["id"] == "draft-id" && v["editable"] == false)
+            );
+        }
+        for input in [
+            json!({"operation":"create","name":"New","parentId":"d"}),
+            json!({"operation":"rename","id":"p","name":"Renamed"}),
+            json!({"operation":"move","id":"p","parentId":"d"}),
+            json!({"operation":"delete","id":"p"}),
+        ] {
+            let before = writes.load(Ordering::SeqCst);
+            let (status, preview) = server
+                .call("POST", "/api/mail/folders/preview", owner, input)
+                .await;
+            assert_eq!(status, 200, "{preview}");
+            assert_eq!(writes.load(Ordering::SeqCst), before);
+            let apply = json!({"previewId":preview["previewId"],"confirmed":true});
+            if owner == A {
+                assert_eq!(
+                    server
+                        .call("POST", "/api/mail/folders/apply", B, apply.clone())
+                        .await
+                        .0,
+                    409
+                );
+            }
+            assert_eq!(
+                server
+                    .call(
+                        "POST",
+                        "/api/mail/folders/apply",
+                        owner,
+                        json!({"previewId":preview["previewId"]})
+                    )
+                    .await
+                    .0,
+                400
+            );
+            let (status, changed) = server
+                .call("POST", "/api/mail/folders/apply", owner, apply.clone())
+                .await;
+            assert_eq!(status, 200, "{changed}");
+            assert_eq!(
+                server
+                    .call("POST", "/api/mail/folders/apply", owner, apply)
+                    .await
+                    .0,
+                409
+            );
+            assert!(writes.load(Ordering::SeqCst) > before);
+        }
+    }
+    server
+        .app
+        .db(|db| {
+            assert_eq!(
+                db.get(A, "google:same")?.unwrap()["providerLabelIds"],
+                json!(["c"])
+            );
+            assert_eq!(
+                db.get(A, "google:same")?.unwrap()["labels"],
+                json!(["Done/Renamed/Child"])
+            );
+            assert_eq!(
+                db.get(B, "google:same")?.unwrap()["labels"],
+                json!(["Projects", "Projects/Child"])
+            );
+            let m = db.get(C, "microsoft:same")?.unwrap();
+            assert_eq!(m["providerFolderMissing"], true);
+            assert_eq!(m["pending"], true);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let (_, stale) = server
+        .call(
+            "POST",
+            "/api/mail/folders/preview",
+            A,
+            json!({"operation":"rename","id":"d","name":"Another"}),
+        )
+        .await;
+    labels
+        .lock()
+        .unwrap()
+        .iter_mut()
+        .find(|v| v["id"] == "d")
+        .unwrap()["name"] = "External change".into();
+    let before = writes.load(Ordering::SeqCst);
+    assert_eq!(
+        server
+            .call(
+                "POST",
+                "/api/mail/folders/apply",
+                A,
+                json!({"previewId":stale["previewId"],"confirmed":true})
+            )
+            .await
+            .0,
+        409
+    );
+    assert_eq!(writes.load(Ordering::SeqCst), before);
+    let (_, preview) = server
+        .call(
+            "POST",
+            "/api/mail/folders/preview",
+            A,
+            json!({"operation":"rename","id":"d","name":"Lost response"}),
+        )
+        .await;
+    lost.store(1, Ordering::SeqCst);
+    let apply = json!({"previewId":preview["previewId"],"confirmed":true});
+    assert_eq!(
+        server
+            .call("POST", "/api/mail/folders/apply", A, apply.clone())
+            .await
+            .0,
+        502
+    );
+    assert_eq!(
+        server
+            .call("POST", "/api/mail/folders/apply", A, apply)
+            .await
+            .0,
+        409
+    );
+    assert_eq!(writes.load(Ordering::SeqCst), before + 1);
+    lost.store(0, Ordering::SeqCst);
+    let (_, preview) = server
+        .call(
+            "POST",
+            "/api/mail/folders/preview",
+            A,
+            json!({"operation":"rename","id":"d","name":"Reconnect guard"}),
+        )
+        .await;
+    let mut reconnected = connection("google", A);
+    reconnected["connectionId"] = "replaced-connection".into();
+    set(&server.app, json!({"mailAccounts":{A:reconnected}})).await;
+    let before = writes.load(Ordering::SeqCst);
+    assert_eq!(
+        server
+            .call(
+                "POST",
+                "/api/mail/folders/apply",
+                A,
+                json!({"previewId":preview["previewId"],"confirmed":true})
+            )
+            .await
+            .0,
+        409
+    );
+    assert_eq!(writes.load(Ordering::SeqCst), before);
+    let read_before = reads.load(Ordering::SeqCst);
+    let mut readonly = connection("google", B);
+    readonly["grantedScopes"] = "https://www.googleapis.com/auth/gmail.readonly".into();
+    set(&server.app, json!({"mailAccounts":{B:readonly}})).await;
+    assert_eq!(
+        server
+            .call(
+                "POST",
+                "/api/mail/folders/preview",
+                B,
+                json!({"operation":"create","name":"Forbidden"})
+            )
+            .await
+            .0,
+        403
+    );
+    assert_eq!(reads.load(Ordering::SeqCst), read_before);
+    assert_eq!(
+        server
+            .call(
+                "POST",
+                "/api/messages/microsoft%3Asame/organize",
+                C,
+                json!({"destinationId":"inbox-id","mode":"move","confirmed":true})
+            )
+            .await
+            .0,
+        409
+    );
+    server.shutdown().await;
+}
 const HOSTS: &[&str] = &[
     "gmail.googleapis.com",
     "graph.microsoft.com",

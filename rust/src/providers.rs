@@ -858,7 +858,7 @@ fn valid_microsoft_folder_id(id: &str) -> bool {
 async fn microsoft_import_cursor(client: &Client, mail: &Value, cursor: &Value) -> Result<Value> {
     if cursor.is_null() {
         return Ok(
-            json!({"version":1,"folders":microsoft_folders(client,mail,true).await?,"index":0,"next":null}),
+            json!({"version":1,"folders":microsoft_folders(client,mail,true,false).await?,"index":0,"next":null}),
         );
     }
     let folders = cursor["folders"].as_array().ok_or_else(remote_error)?;
@@ -1064,9 +1064,26 @@ pub async fn folders(client: &Client, mail: &Value) -> Result<Vec<Value>> {
         );
         return Ok(folders);
     }
-    microsoft_folders(client, mail, false).await
+    microsoft_folders(client, mail, false, false).await
 }
-async fn microsoft_folders(client: &Client, mail: &Value, importing: bool) -> Result<Vec<Value>> {
+pub async fn management_folders(client: &Client, mail: &Value) -> Result<Vec<Value>> {
+    if mail["provider"] == "google" {
+        let folders = folders(client, mail).await?;
+        return Ok(folders.iter().filter(|f| f["id"] != "__archive").map(|f| {
+            let name = string(f, "name");
+            let (parent, leaf) = name.rsplit_once('/').unwrap_or(("", name));
+            merge(f.clone(), &json!({"editable":f["kind"]=="label","leafName":leaf,"delimiter":"/",
+                "parentId":folders.iter().find(|p|p["kind"]=="label"&&p["name"]==parent).map(|p|p["id"].clone()).unwrap_or(json!(""))}))
+        }).collect());
+    }
+    microsoft_folders(client, mail, false, true).await
+}
+async fn microsoft_folders(
+    client: &Client,
+    mail: &Value,
+    importing: bool,
+    management: bool,
+) -> Result<Vec<Value>> {
     let mut known = HashMap::new();
     if importing {
         for (alias, kind) in [
@@ -1089,7 +1106,14 @@ async fn microsoft_folders(client: &Client, mail: &Value, importing: bool) -> Re
     let mut ids = HashSet::new();
     while let Some((path, prefix, parent)) = pending.pop_front() {
         let original = url::Url::parse(&format!("{}{path}", definition("microsoft")?.api)).unwrap();
-        let mut next = format!("{path}?$top=100&$select=id,displayName,childFolderCount");
+        let mut next = format!(
+            "{path}?$top=100&$select=id,displayName,childFolderCount{}",
+            if management {
+                ",totalItemCount,isHidden&includeHiddenFolders=true"
+            } else {
+                ""
+            }
+        );
         let mut pages = 0;
         while !next.is_empty() {
             pages += 1;
@@ -1121,6 +1145,13 @@ async fn microsoft_folders(client: &Client, mail: &Value, importing: bool) -> Re
                         .filter(|s| !s.is_empty())
                         .unwrap_or("Untitled folder")
                 );
+                if management
+                    && (name.encode_utf16().count() > 512
+                        || name.chars().any(char::is_control)
+                        || string(folder, "displayName").is_empty())
+                {
+                    return Err(remote_error());
+                }
                 let name = name
                     .chars()
                     .scan(0, |count, c| {
@@ -1128,7 +1159,15 @@ async fn microsoft_folders(client: &Client, mail: &Value, importing: bool) -> Re
                         (*count <= 512).then_some(c)
                     })
                     .collect::<String>();
-                folders.push(json!({"id":id,"name":name,"kind":kind}));
+                let mut entry = json!({"id":id,"name":name,"kind":kind});
+                if management {
+                    entry = merge(
+                        entry,
+                        &json!({"leafName":folder["displayName"],"parentId":parent,"hidden":folder["isHidden"]==true,"editable":folder["isHidden"]!=true,
+                        "totalItemCount":folder["totalItemCount"],"childFolderCount":folder["childFolderCount"]}),
+                    );
+                }
+                folders.push(entry);
                 if folders.len() > 300 {
                     return Err(Error::new(
                         502,
@@ -1190,7 +1229,116 @@ async fn microsoft_folders(client: &Client, mail: &Value, importing: bool) -> Re
             folder["kind"] = "trash".into();
         }
     }
+    if management {
+        // Resolve well-known IDs, never localized display names, before exposing writes.
+        let mut protected = special
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<HashSet<_>>();
+        for alias in [
+            "archive",
+            "clutter",
+            "conflicts",
+            "conversationhistory",
+            "drafts",
+            "localfailures",
+            "msgfolderroot",
+            "outbox",
+            "recoverableitemsdeletions",
+            "scheduled",
+            "searchfolders",
+            "sentitems",
+            "serverfailures",
+            "syncissues",
+        ] {
+            match get(client, mail, &format!("/mailFolders/{alias}?$select=id")).await {
+                Ok(folder) if valid_microsoft_folder_id(string(&folder, "id")) => {
+                    protected.insert(string(&folder, "id").to_owned());
+                }
+                Err(error) if error.provider_status == Some(404) => {}
+                _ => return Err(remote_error()),
+            }
+        }
+        for folder in &mut folders {
+            if protected.contains(string(folder, "id")) {
+                folder["editable"] = false.into();
+            }
+        }
+    }
     Ok(folders)
+}
+pub async fn manage_folder(
+    client: &Client,
+    mail: &Value,
+    operation: &str,
+    id: &str,
+    name: &str,
+    parent: &str,
+) -> Result<Value> {
+    if !can_organize(mail) {
+        return Err(Error::new(
+            403,
+            "Reconnect this mailbox and approve mail write permission before managing folders.",
+        ));
+    }
+    let google = mail["provider"] == "google";
+    let (method, path, body) = if google {
+        match operation {
+            "create" => (
+                reqwest::Method::POST,
+                "/labels".to_owned(),
+                Some(json!({"name":name})),
+            ),
+            "rename" | "move" => (
+                reqwest::Method::PATCH,
+                format!("/labels/{}", component(id)),
+                Some(json!({"name":name})),
+            ),
+            "delete" => (
+                reqwest::Method::DELETE,
+                format!("/labels/{}", component(id)),
+                None,
+            ),
+            _ => return Err(Error::invalid("Invalid folder operation.")),
+        }
+    } else {
+        let path = format!("/mailFolders/{}", component(id));
+        match operation {
+            "create" => (
+                reqwest::Method::POST,
+                if parent.is_empty() {
+                    "/mailFolders".to_owned()
+                } else {
+                    format!("/mailFolders/{}/childFolders", component(parent))
+                },
+                Some(json!({"displayName":name})),
+            ),
+            "rename" => (
+                reqwest::Method::PATCH,
+                path,
+                Some(json!({"displayName":name})),
+            ),
+            "move" => (
+                reqwest::Method::POST,
+                format!("{path}/move"),
+                Some(json!({"destinationId":if parent.is_empty(){"msgfolderroot"}else{parent}})),
+            ),
+            "delete" => (reqwest::Method::DELETE, path, None),
+            _ => return Err(Error::invalid("Invalid folder operation.")),
+        }
+    };
+    let mut outgoing = api(client, mail, method, &path)?;
+    if let Some(body) = body {
+        outgoing = outgoing.json(&body);
+    }
+    let result = request(outgoing, 1024 * 1024).await?;
+    if operation != "delete"
+        && (string(&result, "id").is_empty()
+            || result[if google { "name" } else { "displayName" }] != name)
+    {
+        return Err(remote_error());
+    }
+    Ok(result)
 }
 pub async fn trash_origin(client: &Client, mail: &Value, message: &Value) -> Result<Value> {
     if !can_organize(mail) {

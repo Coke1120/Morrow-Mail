@@ -105,7 +105,7 @@ pub async fn fetch_page(app: &App, mail: &Value, options: &Value) -> Result<Valu
     );
     result
 }
-fn google_import_state(message: &Value, existing: Option<&Value>) -> Value {
+pub(crate) fn google_import_state(message: &Value, existing: Option<&Value>) -> Value {
     let fields = ["folder", "read", "starred", "labels"];
     let mut snapshot = json!({});
     for key in fields {
@@ -796,6 +796,11 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             }
             let id = ctx.path[1].clone();
             let message = app.db(move |db| get_message(db, &owner, &id)).await?;
+            if message["providerFolderMissing"] == true {
+                return Err(Error::conflict(
+                    "This cached message's provider folder is unavailable. Check the provider and sync before another move.",
+                ));
+            }
             let undo = if undoing {
                 let mut entries = app
                     .0

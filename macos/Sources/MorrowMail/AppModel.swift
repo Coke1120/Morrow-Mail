@@ -30,6 +30,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var preparingDraft = false
     private(set) var draftGeneration = 0
     @Published var organizing: JSON? { didSet { if organizing != oldValue { draftGeneration += 1 } } }
+    @Published var managingFolders: JSON?
     @Published var searchFocus = 0
     @Published var searchResponse: JSON = .null
     @Published var mailPage: JSON = .null
@@ -265,9 +266,14 @@ final class AppModel: ObservableObject {
             do {
                 _ = try await self.request("/updates/install", method: "POST", body: .object([:]), authorizeUpdate: true)
                 self.restartingForUpdate = true
-                NSApp.terminate(nil)
+                // Wait for the Settings sheet's dismissal before asking AppKit to quit.
+                if self.showSettings { self.showSettings = false }
+                else { self.finishUpdateRestart() }
             } catch { onError(error.localizedDescription) }
         }
+    }
+    func finishUpdateRestart() {
+        if restartingForUpdate { NSApp.terminate(nil) }
     }
     func backup(to destination: URL) async throws {
         _ = try await request("/backup", method: "POST", body: .object(["destination": .string(destination.path)]), authorizeUpdate: true)
@@ -284,6 +290,19 @@ final class AppModel: ObservableObject {
         guard !next["account"].isNull, !next["messages"].isNull else { throw APIError("Morrow received an incomplete workspace.") }
         if next["account"]["id"].string != account { mailPage = .null; messageDetail = .null; selectedMessage = nil; searchResponse = .null }
         state = next
+    }
+    func refreshConnections() async throws {
+        let before = state
+        let result = try await request("/state", mailbox: account)
+        guard case .array = result["accounts"], case .array = result["settings"]["calendars"] else {
+            throw APIError("Incomplete connection status.")
+        }
+        // A save, disconnect or view change during this read takes precedence.
+        guard !Task.isCancelled, state == before else { return }
+        var next = state
+        next["accounts"] = result["accounts"]
+        next["settings"]["calendars"] = result["settings"]["calendars"]
+        if next != state { state = next }
     }
     @discardableResult
     func loadMailPage(cursor: String = "", reset: Bool = true, offset: Int? = nil) async -> Bool {
@@ -412,9 +431,9 @@ final class AppModel: ObservableObject {
     }
     func canOrganize(_ message: JSON) -> Bool {
         let provider = accounts.first { $0.id == message["accountId"].string }?["provider"].string ?? ""
-        return !provider.isEmpty && (message["remoteId"].nonempty ? message["remoteId"].string : message.id).hasPrefix(provider + ":")
+        return !message["providerFolderMissing"].bool && !provider.isEmpty && (message["remoteId"].nonempty ? message["remoteId"].string : message.id).hasPrefix(provider + ":")
     }
-    func beginOrganize(_ message: JSON?, preferredKind: String = "") {
+    func beginOrganize(_ message: JSON?, preferredKind: String = "", destinationId: String = "") {
         guard let message, canNavigate, canOrganize(message) else { return }
         if preferredKind == "trash" {
             guard message["folder"].string != "trash" else { return }
@@ -432,7 +451,7 @@ final class AppModel: ObservableObject {
             }
             return
         }
-        organizing = .object(["id": .string(UUID().uuidString), "message": message, "preferredKind": .string(preferredKind)])
+        organizing = .object(["id": .string(UUID().uuidString), "message": message, "preferredKind": .string(preferredKind), "destinationId": .string(destinationId)])
     }
     func undoTrash() {
         guard canUndoTrash else { return }

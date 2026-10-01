@@ -237,6 +237,24 @@ struct NativeRustChecks {
         let calendars = try await model.request("/calendars")
         try check(calendars["calendars"].array.isEmpty && calendars["connections"].array.allSatisfy { !$0["connected"].bool }, "fixture unexpectedly connected a calendar")
 
+        let connected = model.state
+        let connectionRevision = try await model.request("/state/revision", mailbox: "")
+        model.state["accounts"] = .array([]) // Simulate the pre-connect settings snapshot.
+        model.state["settings"]["calendars"] = .array([])
+        model.state["settings"]["preferences"]["language"] = .string("Unsaved fixture edit")
+        model.unsavedForms.insert("settings")
+        model.selectedMessage = "fixture-selection"
+        model.mailPage = .object(["fixture": .bool(true)]); model.mailCursors = ["", "fixture-cursor"]
+        let retained = model.state.picking(["account", "messages", "revision", "workspace"])
+        try await model.refreshConnections()
+        try check(model.state["accounts"] == connected["accounts"] && model.state["settings"]["calendars"] == connected["settings"]["calendars"], "settings did not refresh saved mail/calendar metadata")
+        try check(model.state.picking(["account", "messages", "revision", "workspace"]) == retained && model.preferences["language"].string == "Unsaved fixture edit" && model.unsavedForms == ["settings"], "connection refresh replaced the selected view or unsaved settings")
+        try check(model.selectedMessage == "fixture-selection" && model.mailPage["fixture"].bool && model.mailCursors == ["", "fixture-cursor"], "connection refresh reset mail rows, selection or paging")
+        try check(try await model.request("/state/revision", mailbox: "") == connectionRevision, "connection refresh mutated persisted state")
+        model.state = connected; model.unsavedForms.remove("settings"); model.selectedMessage = nil
+        model.mailPage = .null; model.mailCursors = [""]
+        print("Native Rust: local connection refresh preserves settings edits, owner, mail paging and persisted state.")
+
         for owner in [first, "all"] {
             try await model.selectAccount(owner, folder: "inbox")
             for (sort, _) in mailSortOptions {

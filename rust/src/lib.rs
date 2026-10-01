@@ -7,6 +7,7 @@ pub mod cli;
 pub mod content;
 pub mod drafts;
 pub mod error;
+pub mod folders;
 pub mod imap;
 pub mod learning;
 pub mod mail;
