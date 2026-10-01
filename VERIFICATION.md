@@ -1,10 +1,19 @@
 # Verification — 1 October 2026
 
-## 0.6.0-beta.31 — release candidate
+## 0.6.0-beta.31 — published paired native release
 
-The version is prepared for the automatic local folder catalog change below. Tagged paired native builds/tests and the existing signed publisher must pass before publication; no test waiver applies. Public-asset verification is pending. See the [release notes](docs/releases/v0.6.0-beta.31.md) for signing and live-account limits.
+[Beta.31](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.31) was published at 2026-10-01T08:58:51Z from `7ae973385ba09ed5f3735fe799d100d9fddc25c7`. [Tagged CI 36837100716](https://github.com/Coke1120/Morrow-Mail/actions/runs/36837100716) passed all three jobs: Node-free Rust formatting, strict all-target Clippy and locked tests on both platforms; macOS native packaging/acceptance; Windows packaging, fresh/owned/restart UI, reader/persistence checks and fictional-mail benchmark; and the existing paired publisher's same-run/same-attempt provenance and signing gate. Both native startup and Settings-refresh folder-cache regressions passed. No test waiver applied.
 
-## Automatic local folder catalogs — current source, unreleased
+All six public assets were downloaded and matched their GitHub sizes and SHA-256 digests. Both public ZIPs are byte-identical to this tag run's candidates. Bundled package versions, ZIP integrity/path checks and checksum files passed; the manifest's Ed25519 signature verified against the existing pinned public key. The identical macOS app passed deep/strict ad-hoc signature verification, plist lint, its `MorrowReleaseVersion` check and an isolated `Morrow Mail 0.6.0-beta.31` service-version check.
+
+| Public archive | Bytes | SHA-256 |
+| --- | ---: | --- |
+| macos-arm64 | 12,835,214 | `711331a58644c5301e94670db01e4bdcdf7ee76bdff0993816e96decf0f9e74d` |
+| windows-x64 | 37,130,736 | `a5ea8337c9fb2e9dc5549a5afbc4e667ed692f3fcdfa60b5741da1f286b3d700` |
+
+No owner workspace or real provider/model write was used, and installed apps were not replaced. macOS remains ad-hoc signed without notarization; Windows remains unsigned. Full live-account, clean-machine/accessibility and installed-update walkthrough acceptance remain outstanding. The earlier Parallels walkthrough below covers the unchanged public beta.30 only. See the [release notes](docs/releases/v0.6.0-beta.31.md).
+
+## Automatic local folder catalogs — included in beta.31
 
 Both native clients restore each connected account's Gmail labels or Outlook/IMAP folders from encrypted local settings without mandatory Browse/Refresh. The service discovers new/reconnected accounts with a five-second metadata worker and refreshes successful catalogs every 15 minutes, independently of the mail-download schedule. Offline failures retain saved names; transient reads and recognized quota responses use persisted backoff, while authorization/malformed responses stop automatic retries. Fresh provider catalogs, permission checks and confirmation remain required for mutations. This change does not add a complete historical mail or attachment mirror.
 
