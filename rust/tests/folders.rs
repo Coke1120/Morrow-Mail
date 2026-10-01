@@ -83,6 +83,19 @@ fn hierarchy_validation_and_owned_cache_reconciliation() {
     let implicit = vec![
         json!({"id":"Implicit/Child","name":"Implicit/Child","leafName":"Child","parentId":"Implicit","delimiter":"/","editable":true}),
     ];
+    let namespaces = vec![
+        json!({"id":"INBOX","kind":"inbox","name":"INBOX","delimiter":"/","editable":false}),
+        json!({"id":"Shared","name":"Shared","delimiter":".","editable":true}),
+    ];
+    assert_eq!(
+        plan(
+            "imap",
+            &namespaces,
+            &json!({"operation":"create","name":"Child","parentId":"Shared"})
+        )
+        .unwrap()["name"],
+        "Shared.Child"
+    );
     assert_eq!(
         plan(
             "imap",

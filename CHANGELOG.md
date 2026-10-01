@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0-beta.30 — 2026-10-01
+
+- Add reviewed custom Gmail label and Outlook/IMAP folder creation, rename, deletion and moves to another parent, with protected system folders, account/connection-bound single-use reviews and no automatic provider-write replay. Preserve cached mail, local changes, Pending, drafts and import traversal progress.
+- Add local sidebar name filtering and folder context actions for reviewed message moves in both clients. Make the Windows sidebar width persist and support dragging, arrow keys and wider/narrower actions, with full-name tooltips.
+- Polish Today and add Summarize now for a reviewed immediate account-owned report without changing the automatic schedule. Automatically refresh Mail/Calendar connection metadata while preserving unsaved forms.
+- Wait for actual macOS Settings-sheet dismissal before the update quit so Install and Restart proceeds automatically. See the [release notes](docs/releases/v0.6.0-beta.30.md) for provider-specific deletion impact, Gmail's 50-label subtree limit, signing and validation limits.
+
 ## 0.6.0-beta.27 — 2026-09-30
 
 - Commit each bounded provider refresh page as it arrives, retaining earlier pages if a later scope fails and checking the captured mailbox connection before each commit. Complete history remains a separate resumable import.

@@ -119,6 +119,8 @@ pub fn plan(provider: &str, catalog: &[Value], input: &Value) -> Result<Value> {
         " / "
     } else if operation != "create" {
         string(&source, "delimiter")
+    } else if !parent_id.is_empty() {
+        string(&parent, "delimiter")
     } else {
         catalog
             .iter()
