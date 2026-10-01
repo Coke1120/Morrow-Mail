@@ -1,8 +1,17 @@
 # Verification — 2 October 2026
 
-## 0.6.0-beta.32 — release preparation
+## 0.6.0-beta.32 — published paired native release
 
-The next paired tag includes searchable native label/folder management, message organization actions, independent destination/Parent search and the IMAP provider-error correction. The pre-tag walkthrough below is source validation, not acceptance of beta.32 binaries. Tagged macOS/Windows checks, same-attempt provenance, the signed publisher and public-asset verification remain required before claiming publication. No waiver applies. The intermittent Windows reader controller-ready timeout and remaining manual/live-account/installed-updater checks remain disclosed in the [release notes](docs/releases/v0.6.0-beta.32.md).
+[Beta.32](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.32) was published at 2026-10-01T17:36:31Z from `5697f5ee092cb70aaafdb843497af2baa2d12b9a`. [Tagged CI 36897221096, attempt 1](https://github.com/Coke1120/Morrow-Mail/actions/runs/36897221096/attempts/1) passed all three jobs: Node-free Rust formatting, strict all-target Clippy and locked tests on both platforms; macOS packaging and native production-service acceptance; Windows packaging, complete fresh/owned/restart walkthrough including reader and searchable picker checks, and the 1,000/10,000/50,000-message fictional-mail benchmark; and the existing paired publisher's same-run/same-attempt provenance and signing gate. No waiver applied.
+
+All six public assets were downloaded and matched their GitHub sizes and SHA-256 digests. Both public ZIPs and checksum files are byte-identical to this tag run's candidates. Bundled versions, ZIP integrity/path checks and exact checksum files passed; the manifest's Ed25519 signature verified against the unchanged pinned public key. The identical macOS app passed deep/strict ad-hoc signature verification, plist lint, its `MorrowReleaseVersion` check and an isolated `Morrow Mail 0.6.0-beta.32` service-version check. The published release body matches the committed release notes.
+
+| Public archive | Bytes | SHA-256 |
+| --- | ---: | --- |
+| macos-arm64 | 12,932,766 | `10897fe100f3a39f8569068cf3ea2b3f0552e34968d794bc5f8bf83249ff9114` |
+| windows-x64 | 37,197,971 | `384f83a62b7e6df00c26a7c7dca42f29b518f39c6323a230cd45a078c8a45b5c` |
+
+The pre-tag walkthrough below is source validation, not a complete manual walkthrough of these tagged binaries. This first-attempt tagged run passed the Windows reader gate; the earlier intermittent controller-ready timeout's cause remains unresolved. No owner workspace or real provider/model write was used, and installed apps were not replaced. macOS remains ad-hoc signed without notarization; Windows remains unsigned. Full live-account, clean-machine/accessibility and installed-updater restart/rollback acceptance remain outstanding. See the [release notes](docs/releases/v0.6.0-beta.32.md).
 
 ## Whole-app scenario walkthrough
 
@@ -14,7 +23,7 @@ The walkthrough also found IMAP TCP failures incorrectly using the workspace I/O
 
 Both fixes passed complete paired source CI ([picker 36882998703](https://github.com/Coke1120/Morrow-Mail/actions/runs/36882998703), [IMAP 36885865259](https://github.com/Coke1120/Morrow-Mail/actions/runs/36885865259)). Final source `bfd42f3` passed macOS and both platforms' Rust checks, but [36889386605 attempt 1](https://github.com/Coke1120/Morrow-Mail/actions/runs/36889386605/attempts/1) failed Windows owned reader isolation at the unchanged 25-second controller-ready gate; its fresh smoke and service benchmark passed. Owned/restart acceptance did not. [The same-source Windows rerun, attempt 2](https://github.com/Coke1120/Morrow-Mail/actions/runs/36889386605/attempts/2), passed Rust checks, packaging, complete fresh/owned/restart walkthrough including reader/picker checks, and the 1,000/10,000/50,000-message benchmark. The overall source run passed with the retained macOS result; no waiver or publication applied. The original failure remains recorded and the intermittent reader initialization cause is unresolved despite that successful rerun.
 
-## Current source — searchable label/folder management
+## Searchable label/folder management — included in beta.32
 
 Both native clients now use account-scoped cached catalogs for hierarchy management and searchable destination/parent pickers. The Gmail message checklist applies only explicit add/remove deltas in one provider request; Outlook/IMAP retain single-folder moves. Create-from-email separately reviews creation and subsequent message assignment. Provider catalog validation, single-use folder reviews, protected folders, write permissions and uncertain-write handling remain enforced. Safe manager metadata is projected separately from selectable sidebar destinations; connection secrets remain private.
 
@@ -24,7 +33,7 @@ Initial Windows compilation caught the shared error formatter's anonymous namesp
 
 [Corrected source CI 36876489218](https://github.com/Coke1120/Morrow-Mail/actions/runs/36876489218) at `4930d1d259bc79d8881de8c3dc7bc207656b8440` passed both platform jobs completely: Node-free Rust formatting, strict all-target Clippy and locked tests; macOS packaging and production-service acceptance; Windows packaging and the complete fresh/owned/restart native walkthrough, including reader isolation and the new picker/hierarchy checks; and the 1,000/10,000/50,000 fictional-mail benchmark. No test waiver or new publication applied.
 
-No real-account writes or installed-app replacement are used. This change is not included in the beta.31 public packages. The earlier complete Parallels walkthrough covers beta.30; the current source candidate's partial VM attempt and failure are recorded in the walkthrough matrix above.
+No real-account writes or installed-app replacement are used. These changes first ship in the beta.32 public packages, with paired tagged evidence above. The earlier complete Parallels walkthrough covers beta.30; the pre-tag source candidate's partial VM attempt and failure are recorded in the walkthrough matrix above.
 
 ## 0.6.0-beta.31 — published paired native release
 
