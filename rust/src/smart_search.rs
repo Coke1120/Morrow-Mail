@@ -545,8 +545,13 @@ pub fn update(db: &Store, input: &Value) -> Result<()> {
         if input["autoIndex"] == true {
             db.set_settings(&json!({"searchAutomaticApproval":scope_stamp(&settings)}))?;
             let job = db.settings()?["searchIndex"].clone();
+            // A reduced daily allowance needs a fresh queue within its new limit.
             if job["automatic"] == true
-                && job["status"] == "paused"
+                && ["paused", "budget_wait"].contains(&string(&job, "status"))
+                && next["dailyTokenBudget"].as_u64().unwrap_or(100000)
+                    >= config(&previous)["dailyTokenBudget"]
+                        .as_u64()
+                        .unwrap_or(100000)
                 && job["spentTokens"].as_u64().unwrap_or(0) < job["budget"].as_u64().unwrap_or(0)
             {
                 control(db, "resume", string(&job, "id"))?;
@@ -662,7 +667,7 @@ pub fn control(db: &Store, action: &str, id: &str) -> Result<()> {
     let statuses = match action {
         "run" => vec!["prepared"],
         "pause" => vec!["running", "budget_wait"],
-        "resume" => vec!["paused", "interrupted", "failed"],
+        "resume" => vec!["paused", "interrupted", "failed", "budget_wait"],
         "cancel" => vec![
             "prepared",
             "running",

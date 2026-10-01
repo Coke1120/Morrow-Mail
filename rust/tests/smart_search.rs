@@ -1637,6 +1637,25 @@ async fn automatic_chunks_finish_across_daily_limits_without_replaying_completed
         fixture.request("settings", None, A).await.1["job"]["part"],
         completed
     );
+    assert_eq!(
+        fixture
+            .request(
+                "settings",
+                Some(json!({"autoIndex":true,"dailyTokenBudget":4001})),
+                A
+            )
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        fixture.request("settings", None, A).await.1["job"]["part"],
+        completed,
+        "raising the daily allowance keeps a waiting chunk checkpoint"
+    );
+    for _ in 0..5 {
+        smart_search::tick(fixture.app()).await.unwrap();
+    }
     for _ in 0..3 {
         fixture
             .app()
@@ -1650,7 +1669,7 @@ async fn automatic_chunks_finish_across_daily_limits_without_replaying_completed
             smart_search::tick(fixture.app()).await.unwrap();
         }
         let (_, status) = fixture.request("settings", None, A).await;
-        assert!(status["automatic"]["spentToday"].as_u64().unwrap() <= 4000);
+        assert!(status["automatic"]["spentToday"].as_u64().unwrap() <= 4001);
         if status["indexed"] == 1 {
             break;
         }
