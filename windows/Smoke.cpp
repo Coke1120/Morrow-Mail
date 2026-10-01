@@ -56,6 +56,14 @@ void mailDragChecks(std::shared_ptr<Service> const& service) {
     shell->mailDragToken = {}; check(!valid(), L"A completed drag token can be replayed.");
     Json local; put(local, L"id", L"local"); put(local, L"accountId", L"drag@example.invalid"); put(local, L"viewId", L"local");
     check(shell->startMailDrag(local).empty(), L"A local-only message can start a provider drag.");
+    for (auto provider : {L"microsoft", L"imap"}) {
+        auto account = array(shell->state, L"accounts").GetAt(0).GetObject(); put(account, L"provider", provider);
+        auto message = Json::Parse(source.Stringify()); put(message, L"id", hstring(provider) + L":duplicate");
+        shell->rows.Items().GetAt(0).as<controls::ListViewItem>().Tag(message);
+        auto token = shell->startMailDrag(message);
+        check(!token.empty() && shell->mailDropMessage(token, L"drag@example.invalid", L"label").Size()
+            && shell->mailDropDestination(L"drag@example.invalid", L"archive").empty(), L"Outlook/IMAP drop routing or unavailable Archive failed.");
+    }
 }
 IAsyncAction Shell::smoke() {
     auto lifetime = shared_from_this();
@@ -98,7 +106,7 @@ IAsyncAction Shell::smoke() {
             int matches = 0, managers = 0;
             for (auto const& value : navigation.MenuItems()) if (auto group=value.try_as<controls::NavigationViewItem>();group&&group.Tag()&&text(group.Tag().as<Json>(),L"owner")==owner) {
                 for (auto const& child:group.MenuItems()) if(auto remote=child.try_as<controls::NavigationViewItem>();remote&&remote.MenuItems().Size()) {
-                    for(auto const& entry:remote.MenuItems()) {auto item=entry.as<controls::NavigationViewItem>();auto tag=item.Tag().as<Json>();if(text(tag,L"section")==L"manage-folders")++managers;else if(text(tag,L"section")==L"mail"){++matches;check(text(tag,L"folder")==L"provider:Projects / A very long folder name 中文"&&item.ContextFlyout(),L"The case-insensitive folder filter or folder context actions failed.");}}
+                    for(auto const& entry:remote.MenuItems()) {auto item=entry.as<controls::NavigationViewItem>();auto tag=item.Tag().as<Json>();if(text(tag,L"section")==L"manage-folders")++managers;else if(text(tag,L"section")==L"mail"){++matches;check(text(tag,L"folder")==L"provider:Projects / A very long folder name 中文"&&item.ContextFlyout()&&item.AllowDrop(),L"The folder filter, context actions or native drop target failed.");}}
                 }
             }
             check(matches==1&&managers==1&&owner==savedOwner&&folder==savedFolder&&generation==savedGeneration&&selected.Stringify()==savedSelected,L"Filtering folders changed the current mailbox or selection.");

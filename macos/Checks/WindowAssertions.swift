@@ -86,6 +86,14 @@ struct WindowAssertions {
         model.organizing = nil
         assert(!model.finishMailDrop(token, owner: owner, destination: "label"), "Drop tokens must be single use.")
         assert(model.startMailDrag(.object(["id": .string("local"), "accountId": .string(owner)])) == nil)
+        for provider in ["microsoft", "imap"] {
+            var account = accounts[0]; account["provider"] = .string(provider)
+            var message = messages[0]; message["id"] = .string(provider + ":duplicate")
+            model.state["accounts"] = .array([account]); model.searchResponse["messages"] = .array([message])
+            let token = model.startMailDrag(message)!
+            assert(model.mailDropMessage(token, owner: owner, destination: "label") == message)
+            assert(model.mailDropDestination(owner, folder: "archive").isEmpty, "Only Gmail may synthesize Archive.")
+        }
         print("Mail drag/drop guards cover combined duplicate IDs, stale connections, unavailable targets and review-only single-use routing.")
     }
 

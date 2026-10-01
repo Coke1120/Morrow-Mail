@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0-beta.33 — 2026-10-02
 
 - Drag one imported message from the native mail list to its owning sidebar label/server folder or provider-backed Inbox/Archive/Spam/Trash. Open the existing reviewed Move flow with that destination; reject external, cross-account, stale and unavailable drops. Keep keyboard/context-menu organization.
 
