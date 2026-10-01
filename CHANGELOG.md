@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0-beta.32 — 2026-10-02
+
+- Add searchable native Label / Folder Managers with hierarchy trees, create/rename/delete/parent-move actions and protected-folder guidance. Reuse account-scoped cached names and metadata.
+- Add message context/reader actions for Move, Gmail Labels, Create and Manage. Search destination and parent menus independently of the sidebar; retain selections when filtering. Gmail checklists submit one reviewed custom-label delta while preserving Inbox and other owners.
+- Create a label/folder from an email, optionally select it, then separately review the message assignment. Retain form inputs after failed reviews and never replay uncertain provider writes.
+- Show a safe provider error for IMAP TCP connection failures instead of a workspace-storage error. Improve native picker and CLI fixture synchronization without weakening production guards. See the [release notes](docs/releases/v0.6.0-beta.32.md) for the recorded intermittent Windows reader timeout and remaining acceptance limits.
+
 ## 0.6.0-beta.31 — 2026-10-01
 
 - Automatically download Gmail labels and Outlook/IMAP folder catalogs for connected mailboxes, save names in encrypted local settings and restore them on launch. New/reconnected accounts refresh automatically; successful catalogs refresh every 15 minutes, including when mail downloads are manual.

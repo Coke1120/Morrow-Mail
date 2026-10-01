@@ -1,5 +1,9 @@
 # Verification — 2 October 2026
 
+## 0.6.0-beta.32 — release preparation
+
+The next paired tag includes searchable native label/folder management, message organization actions, independent destination/Parent search and the IMAP provider-error correction. The pre-tag walkthrough below is source validation, not acceptance of beta.32 binaries. Tagged macOS/Windows checks, same-attempt provenance, the signed publisher and public-asset verification remain required before claiming publication. No waiver applies. The intermittent Windows reader controller-ready timeout and remaining manual/live-account/installed-updater checks remain disclosed in the [release notes](docs/releases/v0.6.0-beta.32.md).
+
 ## Whole-app scenario walkthrough
 
 See the [walkthrough matrix](docs/WALKTHROUGH-2026-10-01.md) for separate manual, native automated, provider-fixture and outstanding checks. macOS manual checks covered owned/combined reading, Pending, paging/search, owner-bound Reply All, Bcc/Chinese draft persistence, cached offline folder manager/search/Parent popup, failed review retention, Today review/cancel and Calendar's disconnected state. Actual Parallels fresh smoke passed; its owned picker check failed. The fixed 50 ms test sleeps now wait for the expected native list state within a bounded deadline. The original assertions remain; a corrected VM retest is still outstanding.
