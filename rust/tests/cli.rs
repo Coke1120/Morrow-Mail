@@ -25,6 +25,31 @@ impl Fixture {
                 db.upsert(account,&json!({"id":format!("same-{i}"),"folder":"inbox","subject":"invoice fixture","body":format!("Private body {account}"),"date":"2026-09-25T00:00:00.000Z","read":false})).unwrap();
             }
         }
+        drop(db);
+        // Parallel process launches can briefly inherit a seed's flock until exec.
+        // Confirm that the closed fixture can hand off its writer before testing it.
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.join("writer.lock"))
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match lock.try_lock() {
+                Ok(()) => {
+                    lock.unlock().unwrap();
+                    break;
+                }
+                Err(fs::TryLockError::WouldBlock) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "Closed fixture still holds its writer lock"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(error) => panic!("Fixture writer handoff failed: {error}"),
+            }
+        }
         Self(path)
     }
     fn cli(&self, args: &[&str], input: Option<&Value>, code: i32) -> Value {
