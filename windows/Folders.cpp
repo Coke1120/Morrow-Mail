@@ -362,15 +362,24 @@ IAsyncAction Shell::organize(Json message, hstring preferredKind, hstring prefer
         }
     } catch(...) { loading=false; dialogOpen=false; error(errorText()); }
 }
-void folderPickerChecks() {
+IAsyncAction folderPickerChecks(Grid host) {
+    apartment_context ui;
     auto check=[](bool condition,wchar_t const* message) { if(!condition) throw hresult_error(E_FAIL,message); };
     Json root,child; put(root,L"id",L"root"); put(root,L"name",L"Work"); root.Insert(L"editable",Value::CreateBooleanValue(true)); put(root,L"kind",L"label");
     put(child,L"id",L"child"); put(child,L"name",L"Work / Customer"); put(child,L"parentId",L"root"); put(child,L"leafName",L"Customer"); child.Insert(L"editable",Value::CreateBooleanValue(true)); put(child,L"kind",L"label");
     JsonArray folders; folders.Append(root); folders.Append(child);
     auto picker=folderChoice(L"Test destination",folders,L"child");
-    picker->search.Text(L"CUSTOMER"); check(picker->list.Items().Size()==1&&picker->id==L"child",L"Folder search lost case-insensitive path matching or selection.");
-    picker->search.Text(L"no match"); check(!picker->list.Items().Size()&&picker->id==L"child",L"Filtering cleared the chosen folder.");
-    picker->search.Text(L""); check(picker->list.Items().Size()==2&&within(child,root,folders)&&!within(root,child,folders),L"Folder hierarchy or filter restoration failed.");
+    picker->control.HorizontalAlignment(HorizontalAlignment::Left); picker->control.VerticalAlignment(VerticalAlignment::Top);
+    host.Children().Append(picker->control); host.UpdateLayout(); picker->popup.ShowAt(picker->control);
+    co_await resume_after(std::chrono::milliseconds(100)); co_await ui;
+    // TextChanged is asynchronous; allow the native event to update the list.
+    picker->search.Text(L"CUSTOMER"); co_await resume_after(std::chrono::milliseconds(50)); co_await ui;
+    check(picker->list.Items().Size()==1&&picker->id==L"child",L"Folder search lost case-insensitive path matching or selection.");
+    picker->search.Text(L"no match"); co_await resume_after(std::chrono::milliseconds(50)); co_await ui;
+    check(!picker->list.Items().Size()&&picker->id==L"child",L"Filtering cleared the chosen folder.");
+    picker->search.Text(L""); co_await resume_after(std::chrono::milliseconds(50)); co_await ui;
+    check(picker->list.Items().Size()==2&&within(child,root,folders)&&!within(root,child,folders),L"Folder hierarchy or filter restoration failed.");
+    picker->popup.Hide(); uint32_t index; if(host.Children().IndexOf(picker->control,index)) host.Children().RemoveAt(index);
     Json orphan; put(orphan,L"id",L"orphan"); put(orphan,L"name",L"Other/Leaf"); put(orphan,L"leafName",L"Leaf"); put(orphan,L"parentId",L"missing"); folders.Append(orphan);
     auto manager=std::make_shared<FolderManager>(); manager->catalog.Insert(L"folders",folders); manager->catalog.Insert(L"canManage",Value::CreateBooleanValue(true)); manager->provider=L"google"; manager->source=root; manager->action=2; manager->parent=folderChoice(L"Test parent",JsonArray()); manager->rebuild(); manager->configure();
     check(manager->tree.RootNodes().Size()==2 && unbox_value<hstring>(manager->tree.RootNodes().GetAt(0).Content())==L"Other/Leaf" && manager->tree.RootNodes().GetAt(1).Children().Size()==1,L"Folder tree lost hierarchy or implicit-parent full paths.");
