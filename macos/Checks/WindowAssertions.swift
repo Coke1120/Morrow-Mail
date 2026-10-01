@@ -11,6 +11,7 @@ struct WindowAssertions {
         app.setActivationPolicy(.regular)
         checkRestoredListWidth()
         if CommandLine.arguments.contains("--list-width-only") { return }
+        checkMailDrop()
         checkFolderLayouts()
         checkCalendarLayout()
         for width in [1040.0, 1877.0] { checkInitialSplit(width: width, vertical: true) }
@@ -47,6 +48,45 @@ struct WindowAssertions {
         model.unsavedForms.remove("fixture-draft")
         assert(delegate.applicationShouldTerminate(app) == .terminateNow)
         print("Window close/reopen preserves pending work and unsaved forms.")
+    }
+
+    @MainActor static func checkMailDrop() {
+        let model = AppModel(), owner = "drag@example.invalid", other = "other@example.invalid"
+        let accounts: [JSON] = [owner, other].map { .object(["id": .string($0), "provider": .string("google"), "settings": .object(["connection": .string("original")])]) }
+        let folder: JSON = .object(["id": .string("label"), "kind": .string("label"), "name": .string("Work / 中文")])
+        let messages: [JSON] = [owner, other].map { .object(["id": .string("google:duplicate"), "viewId": .string($0 + ":duplicate"), "accountId": .string($0), "folder": .string("inbox")]) }
+        model.state = .object(["account": .object(["id": .string("all")]), "accounts": .array(accounts)])
+        model.serverFolders = [owner: [folder], other: [folder]]
+        model.searchResponse = .object(["messages": .array(messages)])
+        let token = model.startMailDrag(messages[0])!
+        assert(model.mailDropMessage(token, owner: owner, destination: "label") == messages[0])
+        assert(model.mailDropMessage(token, owner: other, destination: "label") == nil, "Duplicate IDs must not cross owners.")
+        assert(model.mailDropMessage("external", owner: owner, destination: "label") == nil)
+        assert(model.mailDropMessage(token, owner: owner, destination: "missing") == nil)
+        assert(model.mailDropDestination("all", folder: "archive").isEmpty)
+        assert(model.mailDropDestination(owner, folder: "archive") == "__archive")
+        for field in ["busy", "loading", "dirty", "scope", "connection", "disconnected", "row", "hidden", "selectable", "providerFolderMissing"] {
+            let savedState = model.state, savedPage = model.searchResponse
+            if field == "busy" { model.busy = true }
+            if field == "loading" { model.mailLoading = true }
+            if field == "dirty" { model.unsavedForms.insert("fixture") }
+            if field == "scope" { model.section = "sent" }
+            if field == "connection" { var changed = accounts; changed[0]["settings"] = .object(["connection": .string("replacement")]); model.state["accounts"] = .array(changed) }
+            if field == "disconnected" { model.state["accounts"] = .array([accounts[1]]) }
+            if field == "row" { model.searchResponse["messages"] = .array([messages[1]]) }
+            if field == "hidden" { var hidden = folder; hidden["hidden"] = .bool(true); model.serverFolders[owner] = [hidden] }
+            if field == "selectable" { var unavailable = folder; unavailable["selectable"] = .bool(false); model.serverFolders[owner] = [unavailable] }
+            if field == "providerFolderMissing" { var missing = messages[0]; missing["providerFolderMissing"] = .bool(true); model.searchResponse["messages"] = .array([missing]) }
+            assert(model.mailDropMessage(token, owner: owner, destination: "label") == nil, "Drop guard failed: \(field)")
+            model.busy = false; model.mailLoading = false; model.unsavedForms = []; model.section = "inbox"
+            model.state = savedState; model.searchResponse = savedPage; model.serverFolders[owner] = [folder]
+        }
+        assert(model.finishMailDrop(token, owner: owner, destination: "label"))
+        assert(model.organizing?["message"] == messages[0] && model.organizing?["destinationId"].string == "label", "Drop must open review for the captured owner and destination.")
+        model.organizing = nil
+        assert(!model.finishMailDrop(token, owner: owner, destination: "label"), "Drop tokens must be single use.")
+        assert(model.startMailDrag(.object(["id": .string("local"), "accountId": .string(owner)])) == nil)
+        print("Mail drag/drop guards cover combined duplicate IDs, stale connections, unavailable targets and review-only single-use routing.")
     }
 
     @MainActor static func checkFolderLayouts() {

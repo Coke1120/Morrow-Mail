@@ -13,6 +13,7 @@ struct MailWorkspace: View {
     @State private var hoveredMessage: String?
     @State private var expandedServerAccounts: Set<String> = []
     @State private var folderFilter = ""
+    @State private var dropTarget = ""
     @EnvironmentObject var model: AppModel
     private var layout: String { expandedReader ? "focus" : ["right", "bottom", "focus"].contains(readerLayout) ? readerLayout : "right" }
     var filtered: [JSON] {
@@ -222,6 +223,8 @@ struct MailWorkspace: View {
                 let count = folderCount(account, folder)
                 if count > 0 && ["inbox", "pending", "drafts"].contains(folder) { Text("\(count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
             }.tag(account + "\n" + folder).accessibilityIdentifier("mailbox.\(account).\(folder)")
+                .background(dropTarget == account + "\n" + folder ? morrowGreen.opacity(0.18) : .clear)
+                .onDrop(of: [MailFolderDrop.type], delegate: MailFolderDrop(model: model, owner: account, destination: model.mailDropDestination(account, folder: folder), target: account + "\n" + folder, highlighted: $dropTarget))
         }
         if account != "all" {
             Label("Outbox", systemImage: "clock.arrow.circlepath").tag(account + "\nscheduled").accessibilityIdentifier("mailbox.\(account).outbox")
@@ -233,6 +236,9 @@ struct MailWorkspace: View {
                 ForEach((model.serverFolders[account] ?? []).filter { folderFilter.isEmpty || $0["name"].string.localizedCaseInsensitiveContains(folderFilter) }) { folder in
                     Label(folder["name"].string, systemImage: folder["kind"].string == "label" ? "tag" : "folder")
                         .tag(account + "\nprovider:" + folder.id).help(folder["name"].string)
+                        .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                        .background(dropTarget == account + "\nprovider:" + folder.id ? morrowGreen.opacity(0.18) : .clear)
+                        .onDrop(of: [MailFolderDrop.type], delegate: MailFolderDrop(model: model, owner: account, destination: folder.id, target: account + "\nprovider:" + folder.id, highlighted: $dropTarget))
                         .contextMenu {
                             Button("Manage label / folder…") { model.managingFolders = .object(["id": .string(account), "folderId": .string(folder.id)]) }.disabled(!model.canNavigate)
                             Button("Move selected message here…") { model.beginOrganize(model.current, destinationId: folder.id) }
@@ -304,6 +310,15 @@ struct MailWorkspace: View {
                         if message["scheduledSend"]["status"].string == "sending" { Label("Sending", systemImage: "paperplane").font(.caption).foregroundStyle(.secondary) }
                     }.fontWeight(message["read"].bool ? .regular : .bold).padding(.vertical, model.preferences["density"].string == "compact" ? 3 : model.preferences["density"].string == "spacious" ? 14 : 8).tag(message.viewID)
                     .onHover { inside in if inside { hoveredMessage = message.viewID } else if hoveredMessage == message.viewID { hoveredMessage = nil } }
+                    .onDrag {
+                        let provider = NSItemProvider()
+                        if let token = model.startMailDrag(message) {
+                            provider.registerDataRepresentation(forTypeIdentifier: MailFolderDrop.type, visibility: .ownProcess) { completion in
+                                completion(Data(token.utf8), nil); return nil
+                            }
+                        }
+                        return provider
+                    }
                     .contextMenu {
                         if model.canOrganize(message) { MessageOrganizationActions(message: message) }
                         Button(message["starred"].bool ? "Unstar" : "Star") { model.patch(message, .object(["starred": .bool(!message["starred"].bool)])) }
@@ -349,6 +364,32 @@ struct MailWorkspace: View {
             Spacer()
             Button { if error { model.error = "" } else { model.notice = "" } } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("Dismiss status")
         }.padding(12).background(.bar)
+    }
+}
+
+@MainActor
+private struct MailFolderDrop: DropDelegate {
+    static let type = "com.morrowmail.mail-row"
+    let model: AppModel
+    let owner: String
+    let destination: String
+    let target: String
+    @Binding var highlighted: String
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [Self.type]) && model.mailDropMessage(model.mailDragToken, owner: owner, destination: destination) != nil
+    }
+    func dropEntered(info: DropInfo) { if validateDrop(info: info) { highlighted = target } }
+    func dropExited(info: DropInfo) { if highlighted == target { highlighted = "" } }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: validateDrop(info: info) ? .move : .forbidden) }
+    func performDrop(info: DropInfo) -> Bool {
+        highlighted = ""
+        guard validateDrop(info: info), let provider = info.itemProviders(for: [Self.type]).first else { return false }
+        let token = model.mailDragToken
+        provider.loadDataRepresentation(forTypeIdentifier: Self.type) { data, _ in
+            guard let data, data.count < 128, String(data: data, encoding: .utf8) == token else { return }
+            Task { @MainActor in _ = model.finishMailDrop(token, owner: owner, destination: destination) }
+        }
+        return true
     }
 }
 

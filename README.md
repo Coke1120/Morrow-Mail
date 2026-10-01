@@ -16,6 +16,7 @@ Morrow Mail is an independent, MIT-licensed alternative inspired by Genspark Gen
 
 - **Multiple mailboxes:** Gmail, Outlook / Microsoft 365, and IMAP / SMTP; combined or separate inboxes with collapsible account groups, sorting, and compact views.
 - **Indexed search:** local full-text search, Chinese traditional/simplified matching, filters, saved searches and optional reviewed semantic indexing in both clients.
+- **Drag to organize:** move one imported email onto a sidebar label or server folder, then review the captured account and destination before applying the provider change. Cross-account transfers and bulk moves are unsupported.
 - **Mail and calendars together:** read, search, compose, reply / reply all / forward, manage provider folders / Gmail labels, and connect Google Calendar and Outlook Calendar.
 - **Bring your own AI:** configure a custom base URL, model ID, and API key for an OpenAI-compatible endpoint or use Ollama. Enable individual AI behaviors and choose what context they can access.
 - **Controlled AI automation:** GitHub update checks, daily/interval P0–P4 summaries, opt-in arrival/open/reply triggers, separate response/translation languages, and reviewed writing-style learning.

@@ -2,6 +2,7 @@
 #include "Ui.h"
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
+#include <winrt/Windows.ApplicationModel.DataTransfer.h>
 #include <fstream>
 #include <cstdio>
 #include <set>
@@ -11,6 +12,51 @@ using namespace winrt;
 using namespace Windows::Foundation;
 using namespace Windows::Data::Json;
 IAsyncAction nativeInteractionChecks(std::shared_ptr<Shell> shell);
+void mailDragChecks(std::shared_ptr<Service> const& service) {
+    auto check = [](bool condition, wchar_t const* message) { if (!condition) throw hresult_error(E_FAIL, message); };
+    auto shell = std::make_shared<Shell>(); shell->service = service; shell->owner = L"all"; shell->rows = controls::ListView();
+    JsonArray accounts;
+    for (auto owner : {L"drag@example.invalid", L"other@example.invalid"}) {
+        Json account, connection; put(account, L"id", owner); put(account, L"provider", L"google"); put(connection, L"connection", L"original"); account.Insert(L"settings", connection); accounts.Append(account);
+        Json folder, catalog; JsonArray folders; put(folder, L"id", L"label"); put(folder, L"name", L"Work / 中文"); put(folder, L"kind", L"label"); folders.Append(folder); catalog.Insert(L"folders", folders); shell->serverFolders.Insert(owner, catalog);
+        Json message; put(message, L"id", L"google:duplicate"); put(message, L"viewId", hstring(owner) + L":duplicate"); put(message, L"accountId", owner);
+        controls::ListViewItem row; row.Tag(message); shell->rows.Items().Append(row);
+    }
+    shell->state.Insert(L"accounts", accounts);
+    auto source = shell->rows.Items().GetAt(0).as<controls::ListViewItem>().Tag().as<Json>();
+    auto token = shell->startMailDrag(source);
+    auto valid = [&] { return shell->mailDropMessage(token, L"drag@example.invalid", L"label").Size() != 0; };
+    check(!token.empty() && valid(), L"An owned message in All accounts cannot be dragged to its label.");
+    check(!shell->mailDropMessage(token, L"other@example.invalid", L"label").Size() && !shell->mailDropMessage(L"external", L"drag@example.invalid", L"label").Size()
+        && !shell->mailDropMessage(token, L"drag@example.invalid", L"missing").Size(), L"External, cross-owner duplicate ID or missing destination accepted.");
+    check(shell->mailDropDestination(L"all", L"archive").empty() && shell->mailDropDestination(L"drag@example.invalid", L"archive") == L"__archive", L"Combined or Gmail Archive drop destination is incorrect.");
+    Windows::ApplicationModel::DataTransfer::DataPackage data;
+    data.SetData(L"com.morrowmail.mail-row", box_value(token)); data.Properties().Insert(L"com.morrowmail.mail-row", box_value(token));
+    check(data.GetView().Contains(L"com.morrowmail.mail-row") && unbox_value<hstring>(data.GetView().Properties().Lookup(L"com.morrowmail.mail-row")) == token,
+        L"The native drag DataPackage lost its opaque token.");
+    for (auto field : {L"loading", L"dialog", L"dirty", L"generation", L"owner", L"connection", L"disconnected", L"hidden", L"selectable", L"row"}) {
+        auto savedState = Json::Parse(shell->state.Stringify()), savedFolders = Json::Parse(shell->serverFolders.Stringify());
+        if (field == std::wstring_view(L"loading")) shell->loading = true;
+        if (field == std::wstring_view(L"dialog")) shell->dialogOpen = true;
+        if (field == std::wstring_view(L"dirty")) shell->dirty.insert(L"fixture");
+        if (field == std::wstring_view(L"generation")) ++shell->generation;
+        if (field == std::wstring_view(L"owner")) shell->owner = L"other@example.invalid";
+        if (field == std::wstring_view(L"connection")) put(object(accounts.GetAt(0).GetObject(), L"settings"), L"connection", L"replacement");
+        if (field == std::wstring_view(L"disconnected")) shell->state.Insert(L"accounts", JsonArray());
+        if (field == std::wstring_view(L"hidden") || field == std::wstring_view(L"selectable")) {
+            auto folder = array(object(shell->serverFolders, L"drag@example.invalid"), L"folders").GetAt(0).GetObject();
+            folder.Insert(field, Value::CreateBooleanValue(field == std::wstring_view(L"hidden")));
+        }
+        if (field == std::wstring_view(L"row")) shell->rows.Items().RemoveAt(0);
+        check(!valid(), L"A stale or unavailable mail drop passed validation.");
+        shell->loading = false; shell->dialogOpen = false; shell->dirty.clear(); shell->generation = 0; shell->owner = L"all";
+        shell->state = savedState; accounts = array(shell->state, L"accounts"); shell->serverFolders = savedFolders;
+        if (field == std::wstring_view(L"row")) { controls::ListViewItem row; row.Tag(source); shell->rows.Items().InsertAt(0, row); }
+    }
+    shell->mailDragToken = {}; check(!valid(), L"A completed drag token can be replayed.");
+    Json local; put(local, L"id", L"local"); put(local, L"accountId", L"drag@example.invalid"); put(local, L"viewId", L"local");
+    check(shell->startMailDrag(local).empty(), L"A local-only message can start a provider drag.");
+}
 IAsyncAction Shell::smoke() {
     auto lifetime = shared_from_this();
     auto check = [](bool condition, wchar_t const* message) { if (!condition) throw hresult_error(E_FAIL, message); };
@@ -32,6 +78,7 @@ IAsyncAction Shell::smoke() {
         std::string value((std::istreambuf_iterator<char>(marker)), {});
         check(value == "Morrow native acceptance fixture", L"Native acceptance fixture marker is missing.");
         fixtureVerified = true;
+        enter("mail-drag-drop-guards"); mailDragChecks(service);
         bool seeded = array(state,L"accounts").Size() > 0;
         enter("sidebar-resize-and-filter");
         check(folderFilter && sidebarDivider, L"The sidebar has no native folder filter or resize handle.");
@@ -55,6 +102,7 @@ IAsyncAction Shell::smoke() {
                 }
             }
             check(matches==1&&managers==1&&owner==savedOwner&&folder==savedFolder&&generation==savedGeneration&&selected.Stringify()==savedSelected,L"Filtering folders changed the current mailbox or selection.");
+            for (auto const& row : rows.Items()) check(row.as<controls::ListViewItem>().CanDrag(), L"A mail list row has no native drag gesture.");
             folderFilter.Text(L""); serverFolders=savedFolders; rebuildNavigation();
         }
         enter("macos-layout-parity");

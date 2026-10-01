@@ -1,5 +1,12 @@
 # Verification — 2 October 2026
 
+## Native mail-list to sidebar drag/drop — release candidate
+
+SwiftUI uses an own-process NSItemProvider and DropDelegate; WinUI uses native DragStarting/DragOver/Drop/DropCompleted and an opaque DataPackage token. One imported message opens the existing account-owned Move review with a preselected server destination. Provider validation/permissions and confirmed writes stay on the existing server path. Gmail Move removes Inbox while preserving other labels; reviewed Spam/Trash moves are retained. Virtual/combined folders are not provider targets. Keyboard/context-menu alternatives remain available.
+
+Native checks cover combined views with duplicate provider IDs, external/random tokens, deleted/unavailable destinations, view changes, dirty/busy/dialog guards, disconnected or replaced connections, vanished source rows and single-use review routing. Windows also checks its real DataPackage token roundtrip and row drag registration. These are native automated checks, not an end-to-end physical pointer drag or live-provider acceptance. Paired CI and release evidence will be recorded below when complete.
+
+
 ## All-downloaded automatic indexing — current source after beta.32
 
 Both native Search pages make explicitly reviewed automatic indexing the main action, expose approved account/folder/content/history choices, and collapse daily/batch limits and manual maintenance. New configurations default to All downloaded mail; older explicit ranges and implicit three-month scopes remain unchanged until reviewed expansion. Progress separates size/per-message-budget/individual-chunk daily-limit exclusions from temporary daily-budget waits. Pause preserves valid vectors, chunk checkpoints and unsaved scope edits. Bounded automatic requests can finish a message across UTC daily resets without resending completed chunks; failed or uncertain requests still require review.

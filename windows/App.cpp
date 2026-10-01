@@ -10,6 +10,7 @@
 #include <winrt/Windows.System.h>
 #include <winrt/Windows.UI.Text.h>
 #include <winrt/Windows.Globalization.h>
+#include <winrt/Windows.ApplicationModel.DataTransfer.h>
 #include <winrt/Windows.UI.Xaml.Interop.h>
 #include <winrt/Microsoft.UI.Xaml.XamlTypeInfo.h>
 #include <fstream>
@@ -222,6 +223,57 @@ bool Shell::connected(hstring const& account) const {
 }
 bool Shell::current(uint64_t value, hstring const& account) const { return !closing && value == generation && owner == account; }
 void Shell::show(UIElement const& content) { page.Content(content); }
+hstring Shell::startMailDrag(Json message) {
+    mailDragToken = {}; mailDrag = Json();
+    auto account = text(message, L"accountId"); auto remote = text(message, L"remoteId", text(message, L"id"));
+    if (closing || loading || dialogOpen || !dirty.empty() || !service || service->writing() || !connected(account)
+        || section != L"mail" || (owner != L"all" && owner != account) || flag(message, L"providerFolderMissing")
+        || text(message, L"viewId").empty() || text(message, L"id").empty()) return {};
+    Json connection;
+    for (auto const& value : array(state, L"accounts")) {
+        auto entry = value.GetObject(); if (text(entry, L"id") != account) continue;
+        auto provider = text(entry, L"provider");
+        if (provider.empty() || !std::wstring_view(remote).starts_with(std::wstring(provider + L":"))) return {};
+        connection = object(entry, L"settings");
+    }
+    GUID token{}; check_hresult(CoCreateGuid(&token)); mailDragToken = to_hstring(token);
+    mailDrag = Json::Parse(message.Stringify()); mailDrag.Insert(L"dragConnection", Json::Parse(connection.Stringify()));
+    mailDragOwner = owner; mailDragGeneration = generation;
+    return mailDragToken;
+}
+hstring Shell::mailDropDestination(hstring const& account, hstring const& target) const {
+    if (account == L"all" || (target != L"inbox" && target != L"archive" && target != L"spam" && target != L"trash")) return {};
+    if (target == L"archive") for (auto const& value : array(state, L"accounts"))
+        if (text(value.GetObject(), L"id") == account && text(value.GetObject(), L"provider") == L"google") return L"__archive";
+    for (auto const& value : array(object(serverFolders, account.c_str()), L"folders")) {
+        auto entry = value.GetObject();
+        if (text(entry, L"kind") == target && !flag(entry, L"hidden") && (!entry.HasKey(L"selectable") || flag(entry, L"selectable"))) return text(entry, L"id");
+    }
+    return {};
+}
+Json Shell::mailDropMessage(hstring const& token, hstring const& account, hstring const& destination) const {
+    if (token.empty() || token != mailDragToken || destination.empty() || text(mailDrag, L"accountId") != account
+        || !current(mailDragGeneration, mailDragOwner) || section != L"mail" || closing || loading || dialogOpen || !dirty.empty()
+        || !service || service->writing() || !connected(account) || !rows) return Json();
+    hstring provider;
+    for (auto const& value : array(state, L"accounts")) if (auto entry = value.GetObject(); text(entry, L"id") == account) {
+        if (object(entry, L"settings").Stringify() != object(mailDrag, L"dragConnection").Stringify()) return Json();
+        provider = text(entry, L"provider");
+    }
+    bool valid = destination == L"__archive" && provider == L"google";
+    for (auto const& value : array(object(serverFolders, account.c_str()), L"folders")) {
+        auto entry = value.GetObject();
+        if (text(entry, L"id") == destination && !flag(entry, L"hidden") && (!entry.HasKey(L"selectable") || flag(entry, L"selectable"))) valid = true;
+    }
+    if (!valid) return Json();
+    for (auto const& value : rows.Items()) {
+        auto message = value.as<ListViewItem>().Tag().as<Json>();
+        if (text(message, L"viewId") == text(mailDrag, L"viewId") && text(message, L"id") == text(mailDrag, L"id") && text(message, L"accountId") == account
+            && !flag(message, L"providerFolderMissing") && !provider.empty()
+            && std::wstring_view(text(message, L"remoteId", text(message, L"id"))).starts_with(std::wstring(provider + L":"))) return message;
+    }
+    return Json();
+}
 IAsyncOperation<bool> Shell::confirm(hstring title, hstring detail, hstring accept) {
     auto lifetime = shared_from_this();
     if (dialogOpen || closing) co_return false;
@@ -394,6 +446,28 @@ void Shell::rebuildNavigation() {
         auto query = folderFilter ? folderFilter.Text() : hstring{};
         return query.empty() || FindStringOrdinal(FIND_FROMSTART, name.c_str(), static_cast<int>(name.size()), query.c_str(), static_cast<int>(query.size()), TRUE) >= 0;
     };
+    auto folderDrop = [weak = weak_from_this()](NavigationViewItem const& item, hstring account, hstring destination) {
+        if (destination.empty() || account == L"all") return;
+        using Windows::ApplicationModel::DataTransfer::DataPackageOperation;
+        item.AllowDrop(true);
+        auto messageFor = [weak, account, destination](DragEventArgs const& event) {
+            auto data = event.DataView();
+            if (auto self = weak.lock(); self && data.Contains(L"com.morrowmail.mail-row") && data.Properties().HasKey(L"com.morrowmail.mail-row"))
+                return self->mailDropMessage(unbox_value_or<hstring>(data.Properties().Lookup(L"com.morrowmail.mail-row"), {}), account, destination);
+            return Json();
+        };
+        item.DragOver([messageFor](auto const&, DragEventArgs const& event) {
+            bool valid = messageFor(event).Size() != 0;
+            event.AcceptedOperation(valid ? DataPackageOperation::Move : DataPackageOperation::None);
+            if (valid) { event.DragUIOverride().Caption(L"Review move here"); event.DragUIOverride().IsCaptionVisible(true); }
+            event.Handled(true);
+        });
+        item.Drop([weak, messageFor, destination](auto const&, DragEventArgs const& event) {
+            auto message = messageFor(event); event.Handled(true);
+            event.AcceptedOperation(message.Size() ? DataPackageOperation::Move : DataPackageOperation::None);
+            if (auto self = weak.lock(); self && message.Size()) { self->mailDragToken = {}; self->mailDrag = Json(); self->organize(message, {}, destination); }
+        });
+    };
     auto folderActions = [&](NavigationViewItem const& item, hstring account, hstring id = {}) {
         MenuFlyout menu; MenuFlyoutItem manage; manage.Text(L"Manage labels / folders…");
         manage.Click([weak = weak_from_this(), account, id](auto const&, auto const&) { if (auto self = weak.lock()) self->manageFolders(account, id); }); menu.Items().Append(manage);
@@ -446,6 +520,7 @@ void Shell::rebuildNavigation() {
                 InfoBadge badge; badge.Value(static_cast<int32_t>(std::min<uint64_t>(count, INT32_MAX))); child.InfoBadge(badge);
             }
             child.IsSelected(section == L"mail" && owner == id && folder == mailbox.id);
+            folderDrop(child, id, mailDropDestination(id, mailbox.id));
             item.MenuItems().Append(child);
         }
         if (id != L"all") {
@@ -463,6 +538,7 @@ void Shell::rebuildNavigation() {
                     if (!matches(text(entry, L"name"))) continue;
                     auto child = navItem(text(entry, L"name"), L"mail", id, key, L"\uE8B7");
                     folderActions(child, id, text(entry,L"id"));
+                    folderDrop(child, id, text(entry,L"id"));
                     child.IsSelected(section == L"mail" && owner == id && folder == key); remote.MenuItems().Append(child);
                 }
                 remote.IsExpanded((folderFilter && !folderFilter.Text().empty()) || section == L"mail" && owner == id && std::wstring_view(folder).starts_with(L"provider:"));
@@ -752,7 +828,21 @@ IAsyncAction Shell::loadPage() {
             auto entry = preserve ? rows.Items().GetAt(index).as<ListViewItem>() : ListViewItem();
             entry.Content(row); entry.Tag(message); entry.HorizontalContentAlignment(HorizontalAlignment::Stretch);
             entry.ContextFlyout(organizationMenu(message));
+            entry.CanDrag(true);
             if (!preserve) {
+                entry.DragStarting([weak](UIElement const& sender, DragStartingEventArgs const& event) {
+                    using Windows::ApplicationModel::DataTransfer::DataPackageOperation;
+                    if (auto self = weak.lock()) {
+                        auto token = self->startMailDrag(sender.as<ListViewItem>().Tag().as<Json>());
+                        if (!token.empty()) {
+                            event.Data().SetData(L"com.morrowmail.mail-row", box_value(token));
+                            event.Data().Properties().Insert(L"com.morrowmail.mail-row", box_value(token));
+                            event.Data().RequestedOperation(DataPackageOperation::Move); event.AllowedOperations(DataPackageOperation::Move); return;
+                        }
+                    }
+                    event.Cancel(true);
+                });
+                entry.DropCompleted([weak](auto const&, auto const&) { if (auto self = weak.lock()) { self->mailDragToken = {}; self->mailDrag = Json(); } });
                 auto weakEntry = make_weak(entry);
                 auto hovered = std::make_shared<bool>(false), focused = std::make_shared<bool>(false);
                 auto update = [weakEntry, hovered, focused] { if (auto item = weakEntry.get()) showRowActions(item, *hovered || *focused); };

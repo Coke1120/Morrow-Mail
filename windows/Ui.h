@@ -48,10 +48,13 @@ struct Shell : std::enable_shared_from_this<Shell> {
     Json state;
     Json serverFolders;
     Json selected;
+    Json mailDrag;
     Json updateResult;
     winrt::hstring owner, folder = L"inbox", section = L"mail", nextCursor;
     winrt::hstring todaySummaryOwner;
     winrt::hstring mailLayout = L"right";
+    winrt::hstring mailDragToken, mailDragOwner;
+    uint64_t mailDragGeneration = 0;
     bool readerFocused = false;
     double listWidth = 320, listHeight = 240;
     std::vector<winrt::hstring> cursors{L""};
@@ -72,6 +75,9 @@ struct Shell : std::enable_shared_from_this<Shell> {
     winrt::Windows::Foundation::IAsyncAction organize(Json message, winrt::hstring preferredKind = {}, winrt::hstring preferredDestination = {});
     winrt::Windows::Foundation::IAsyncOperation<Json> manageFolders(winrt::hstring account, winrt::hstring initialFolder = {}, bool creationOnly = false);
     controls::MenuFlyout organizationMenu(Json message);
+    winrt::hstring startMailDrag(Json message);
+    Json mailDropMessage(winrt::hstring const& token, winrt::hstring const& account, winrt::hstring const& destination) const;
+    winrt::hstring mailDropDestination(winrt::hstring const& account, winrt::hstring const& folder) const;
     void resizeSidebar(double width, bool save = true);
     winrt::Windows::Foundation::IAsyncAction trash(Json message);
     winrt::Windows::Foundation::IAsyncAction undoTrash();

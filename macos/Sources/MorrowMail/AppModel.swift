@@ -34,6 +34,7 @@ final class AppModel: ObservableObject {
     private(set) var draftGeneration = 0
     @Published var organizing: JSON? { didSet { if organizing != oldValue { draftGeneration += 1 } } }
     @Published var managingFolders: JSON?
+    private var mailDrag: JSON = .null
     @Published var searchFocus = 0
     @Published var searchResponse: JSON = .null
     @Published var mailPage: JSON = .null
@@ -439,6 +440,34 @@ final class AppModel: ObservableObject {
         let provider = accounts.first { $0.id == message["accountId"].string }?["provider"].string ?? ""
         return !message["providerFolderMissing"].bool && !provider.isEmpty && (message["remoteId"].nonempty ? message["remoteId"].string : message.id).hasPrefix(provider + ":")
     }
+    func startMailDrag(_ message: JSON) -> String? {
+        mailDrag = .null
+        guard canNavigate, !mailLoading, canOrganize(message), combined || account == message["accountId"].string, !message.id.isEmpty, message["viewId"].nonempty else { return nil }
+        let token = UUID().uuidString
+        mailDrag = .object(["id": .string(token), "message": message, "scope": .string(mailScopeKey), "connection": accounts.first { $0.id == message["accountId"].string }?["settings"] ?? .null])
+        return token
+    }
+    func mailDropDestination(_ owner: String, folder: String) -> String {
+        guard owner != "all", ["inbox", "archive", "spam", "trash"].contains(folder) else { return "" }
+        if folder == "archive", accounts.first(where: { $0.id == owner })?["provider"].string == "google" { return "__archive" }
+        return serverFolders[owner]?.first { $0["kind"].string == folder && $0["selectable"] != .bool(false) && !$0["hidden"].bool }?.id ?? ""
+    }
+    func mailDropMessage(_ token: String, owner: String, destination: String) -> JSON? {
+        guard !token.isEmpty, !destination.isEmpty, token == mailDrag.id, canNavigate, !mailLoading, mailDrag["scope"].string == mailScopeKey,
+              mailDrag["message"]["accountId"].string == owner,
+              let account = accounts.first(where: { $0.id == owner }), account["settings"] == mailDrag["connection"],
+              (destination == "__archive" && account["provider"].string == "google" || serverFolders[owner]?.contains(where: { $0.id == destination && $0["selectable"] != .bool(false) && !$0["hidden"].bool }) == true),
+              let message = (searchResponse.isNull ? listedMessages : searchResponse["messages"].array).first(where: { $0.viewID == mailDrag["message"].viewID && $0.id == mailDrag["message"].id && $0["accountId"].string == owner }),
+              canOrganize(message) else { return nil }
+        return message
+    }
+    func finishMailDrop(_ token: String, owner: String, destination: String) -> Bool {
+        guard let message = mailDropMessage(token, owner: owner, destination: destination) else { return false }
+        mailDrag = .null
+        beginOrganize(message, destinationId: destination)
+        return true
+    }
+    var mailDragToken: String { mailDrag.id }
     func beginOrganize(_ message: JSON?, preferredKind: String = "", destinationId: String = "") {
         guard let message, canNavigate, canOrganize(message) else { return }
         if preferredKind == "trash" {
