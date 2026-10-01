@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0-beta.31 — 2026-10-01
+
+- Automatically download Gmail labels and Outlook/IMAP folder catalogs for connected mailboxes, save names in encrypted local settings and restore them on launch. New/reconnected accounts refresh automatically; successful catalogs refresh every 15 minutes, including when mail downloads are manual.
+- Show cached names directly in both native sidebars and refresh Settings status without replacing unsaved edits or mail selection/paging. Browse/Refresh is no longer required; immediate refresh remains available.
+- Retain offline names with persisted transient-read/quota backoff, stop automatic retries on authorization or malformed responses, and reset retry state on reconnect. Provider writes keep fresh validation and explicit review. See the [release notes](docs/releases/v0.6.0-beta.31.md) for mail-download, signing and acceptance limits.
+
 ## 0.6.0-beta.30 — 2026-10-01
 
 - Add reviewed custom Gmail label and Outlook/IMAP folder creation, rename, deletion and moves to another parent, with protected system folders, account/connection-bound single-use reviews and no automatic provider-write replay. Preserve cached mail, local changes, Pending, drafts and import traversal progress.

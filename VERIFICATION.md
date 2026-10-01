@@ -1,5 +1,9 @@
 # Verification — 1 October 2026
 
+## 0.6.0-beta.31 — release candidate
+
+The version is prepared for the automatic local folder catalog change below. Tagged paired native builds/tests and the existing signed publisher must pass before publication; no test waiver applies. Public-asset verification is pending. See the [release notes](docs/releases/v0.6.0-beta.31.md) for signing and live-account limits.
+
 ## Automatic local folder catalogs — current source, unreleased
 
 Both native clients restore each connected account's Gmail labels or Outlook/IMAP folders from encrypted local settings without mandatory Browse/Refresh. The service discovers new/reconnected accounts with a five-second metadata worker and refreshes successful catalogs every 15 minutes, independently of the mail-download schedule. Offline failures retain saved names; transient reads and recognized quota responses use persisted backoff, while authorization/malformed responses stop automatic retries. Fresh provider catalogs, permission checks and confirmation remain required for mutations. This change does not add a complete historical mail or attachment mirror.
