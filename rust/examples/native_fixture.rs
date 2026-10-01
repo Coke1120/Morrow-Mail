@@ -32,11 +32,18 @@ fn main() -> Result<(), Box<dyn Error>> {
                 return Err("Refusing to overwrite an existing fixture.".into());
             }
             let db = Store::open(&path)?;
+            let connections = json!({
+                first:{"provider":"imap","email":first,"password":"fictional-only","imapHost":"fixture.invalid","smtpHost":"fixture.invalid","imapPort":993,"smtpPort":465},
+                second:{"provider":"imap","email":second,"password":"fictional-only","imapHost":"fixture.invalid","smtpHost":"fixture.invalid","imapPort":993,"smtpPort":465}
+            });
+            let catalogs = [first, second].iter().map(|owner| {
+                let mail = &connections[*owner];
+                ((*owner).to_owned(), json!({"connection":[mail["connectionId"],mail["authorizationId"],mail["provider"],mail["email"],mail["clientId"],mail["imapHost"],mail["imapPort"]],
+                    "provider":"imap","folders":[{"id":"native-folder","name":format!("Projects/中文/{owner}"),"kind":"folder"}],
+                    "updatedAt":"2026-09-25T00:00:00.000Z","nextRetryAt":"2099-01-01T00:00:00.000Z","blocked":false}))
+            }).collect::<serde_json::Map<_, _>>();
             db.set_settings(&json!({
-                "mailAccounts": {
-                    first:{"provider":"imap","email":first,"password":"fictional-only","imapHost":"fixture.invalid","smtpHost":"fixture.invalid","imapPort":993,"smtpPort":465},
-                    second:{"provider":"imap","email":second,"password":"fictional-only","imapHost":"fixture.invalid","smtpHost":"fixture.invalid","imapPort":993,"smtpPort":465}
-                },
+                "mailAccounts":connections,"mailFolderCatalogs":catalogs,
                 "activeAccount":first,"preferences":{"syncInterval":0,"markReadOnOpen":false},
                 "policy":{"enabled":false},"fixtureVersion":1
             }))?;
@@ -64,6 +71,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             let config = db.settings()?;
             assert_eq!(config["fixtureVersion"], 1);
             assert_eq!(config["mailAccounts"].as_object().unwrap().len(), 2);
+            let catalogs = morrow_search::folders::cached_catalogs(&config);
+            for owner in [first, second] {
+                assert_eq!(
+                    catalogs[owner]["folders"][0]["name"],
+                    format!("Projects/中文/{owner}")
+                );
+                assert_eq!(catalogs[owner]["stale"], false);
+                assert!(catalogs[owner]["errorCode"].is_null());
+            }
             assert_eq!(db.list(second)?.len(), 65);
             assert_eq!(db.get(second, "mail-000")?.unwrap()["pending"], false);
             assert_eq!(db.get(first, "mail-000")?.unwrap()["pending"], true);
