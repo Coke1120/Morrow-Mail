@@ -376,12 +376,17 @@ IAsyncAction folderPickerChecks(Grid host) {
     auto deadline=GetTickCount64()+1000;
     while(!opened&&GetTickCount64()<deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
     picker->popup.Opened(openedToken); check(opened,L"The native folder picker did not open.");
-    // TextChanged is asynchronous; allow the native event to update the list.
-    picker->search.Text(L"CUSTOMER"); co_await resume_after(std::chrono::milliseconds(50)); co_await ui;
+    // TextChanged and popup focus settle asynchronously, especially under emulation.
+    // Observe the resulting list rather than assuming a fixed 50 ms is enough.
+    auto waitForList=[ui](std::function<bool()> ready)->IAsyncAction {
+        auto deadline=GetTickCount64()+2000;
+        while(!ready()&&GetTickCount64()<deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+    };
+    picker->search.Text(L"CUSTOMER"); co_await waitForList([picker] { return picker->list.Items().Size()==1; });
     check(picker->list.Items().Size()==1&&picker->id==L"child",L"Folder search lost case-insensitive path matching or selection.");
-    picker->search.Text(L"no match"); co_await resume_after(std::chrono::milliseconds(50)); co_await ui;
+    picker->search.Text(L"no match"); co_await waitForList([picker] { return !picker->list.Items().Size(); });
     check(!picker->list.Items().Size()&&picker->id==L"child",L"Filtering cleared the chosen folder.");
-    picker->search.Text(L""); co_await resume_after(std::chrono::milliseconds(50)); co_await ui;
+    picker->search.Text(L""); co_await waitForList([picker] { return picker->list.Items().Size()==2; });
     check(picker->list.Items().Size()==2&&within(child,root,folders)&&!within(root,child,folders),L"Folder hierarchy or filter restoration failed.");
     bool closed=false; auto closedToken=picker->popup.Closed([&closed](auto const&,auto const&) { closed=true; });
     picker->popup.Hide(); deadline=GetTickCount64()+1000;
