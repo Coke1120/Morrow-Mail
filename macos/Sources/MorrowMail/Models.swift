@@ -1,5 +1,9 @@
 import Foundation
 
+func indexHistoryLabel(_ value: JSON) -> String {
+    value["months"].number == 0 ? "All downloaded mail" : "Last \(Int(value["months"].number)) month(s)"
+}
+
 func yahooMailSettings(_ mail: JSON) -> JSON {
     .object(["email": .string(mail["email"].string), "password": .string(""),
              "imapHost": .string("imap.mail.yahoo.com"), "imapPort": .number(993),

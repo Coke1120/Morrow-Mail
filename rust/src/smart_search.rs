@@ -54,11 +54,15 @@ struct CachedQuery {
     until: Instant,
 }
 fn defaults() -> Value {
-    json!({"enabled":false,"autoIndex":false,"dailyTokenBudget":100000,"baseUrl":"http://127.0.0.1:11434/v1","model":"","protocol":"openai","accounts":[],"months":3,"tokenBudget":16000,"folders":{"inbox":true,"sent":true,"archive":true,"drafts":false,"trash":false},"content":{"subject":true,"body":true,"sender":false}})
+    json!({"enabled":false,"autoIndex":false,"dailyTokenBudget":100000,"baseUrl":"http://127.0.0.1:11434/v1","model":"","protocol":"openai","accounts":[],"months":0,"tokenBudget":16000,"folders":{"inbox":true,"sent":true,"archive":true,"drafts":false,"trash":false},"content":{"subject":true,"body":true,"sender":false}})
 }
 fn config(settings: &Value) -> Value {
     let defaults = defaults();
     let mut result = merge(defaults.clone(), &settings["searchAI"]);
+    // Keep an older implicit three-month scope until its owner reviews expansion.
+    if settings["searchAI"].is_object() && settings["searchAI"]["months"].is_null() {
+        result["months"] = 3.into();
+    }
     for group in ["folders", "content"] {
         result[group] = merge(defaults[group].clone(), &settings["searchAI"][group]);
     }
@@ -100,6 +104,9 @@ fn stamp(settings: &Value) -> String {
     ]))
 }
 fn since(value: &Value) -> String {
+    if value["months"] == 0 {
+        return String::new();
+    }
     Utc::now()
         .checked_sub_months(Months::new(value["months"].as_u64().unwrap_or(3) as u32))
         .unwrap_or_else(Utc::now)
@@ -260,6 +267,9 @@ struct Inventory {
     tokens: u64,
     pieces: usize,
     oversized: u64,
+    over_budget: u64,
+    daily_limit: u64,
+    budget_blocked: u64,
 }
 fn chunks(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
@@ -291,6 +301,9 @@ fn inventory_with_budget(db: &Store, preview: bool, remaining: Option<u64>) -> R
         tokens: 0,
         pieces: 0,
         oversized: 0,
+        over_budget: 0,
+        daily_limit: 0,
+        budget_blocked: 0,
     };
     if value["enabled"] != true || policy["enabled"] != true {
         return Ok(inventory);
@@ -325,9 +338,6 @@ fn inventory_with_budget(db: &Store, preview: bool, remaining: Option<u64>) -> R
                 inventory.ready += 1;
                 continue;
             }
-            if !preview {
-                continue;
-            }
             // At most 50 chunks can ever be sent for one reviewed source.
             if text.chars().count() > 46_080 {
                 inventory.oversized += 1;
@@ -335,12 +345,29 @@ fn inventory_with_budget(db: &Store, preview: bool, remaining: Option<u64>) -> R
             }
             let parts = chunks(&text);
             let cost = parts.iter().map(|p| p.len() as u64 + 128).sum::<u64>();
-            let budget = value["tokenBudget"]
-                .as_u64()
-                .unwrap_or(16000)
-                .min(remaining.unwrap_or(u64::MAX));
-            if cost > budget || parts.len() > 50 {
+            let budget = value["tokenBudget"].as_u64().unwrap_or(16000);
+            if parts.len() > 50 {
                 inventory.oversized += 1;
+                continue;
+            }
+            if cost > budget {
+                inventory.over_budget += 1;
+                continue;
+            }
+            if remaining.is_some()
+                && value["autoIndex"] == true
+                && parts.iter().any(|p| {
+                    p.len() as u64 + 128 > value["dailyTokenBudget"].as_u64().unwrap_or(100000)
+                })
+            {
+                inventory.daily_limit += 1;
+                continue;
+            }
+            if parts[0].len() as u64 + 128 > remaining.unwrap_or(u64::MAX) {
+                inventory.budget_blocked += 1;
+                continue;
+            }
+            if !preview {
                 continue;
             }
             if inventory.sources.len()
@@ -365,7 +392,8 @@ fn inventory_with_budget(db: &Store, preview: bool, remaining: Option<u64>) -> R
     Ok(inventory)
 }
 pub fn state(db: &Store) -> Result<Value> {
-    let inventory = inventory(db, false)?;
+    let remaining = daily_remaining(&db.settings()?);
+    let inventory = inventory_with_budget(db, false, Some(remaining))?;
     let settings = db.settings()?;
     let mut value = config(&settings);
     let local = url::Url::parse(string(&value, "baseUrl")).is_ok_and(|url| {
@@ -387,8 +415,15 @@ pub fn state(db: &Store) -> Result<Value> {
         }
         object.insert("sampleCount".into(), count.into());
     }
+    let pending = inventory.eligible - inventory.ready;
+    let skipped = inventory.oversized + inventory.over_budget + inventory.daily_limit;
+    let waiting = automatic_approved(&settings)
+        && !["paused", "failed", "interrupted", "cancelled", "prepared"]
+            .contains(&string(&job, "status"))
+        && pending > skipped
+        && (job["status"] == "budget_wait" || inventory.budget_blocked == pending - skipped);
     Ok(
-        json!({"settings":value,"eligible":inventory.eligible,"indexed":inventory.ready,"pending":inventory.eligible-inventory.ready,"job":job,"permitted":policy::resolve(&settings["policy"])["enabled"],"local":local,"automatic":{ "approved":automatic_approved(&settings), "spentToday":daily_spent(&settings), "remainingToday":daily_remaining(&settings)},"indexVersion":INDEX_VERSION}),
+        json!({"settings":value,"eligible":inventory.eligible,"indexed":inventory.ready,"pending":pending,"skipped":{"oversized":inventory.oversized,"batchBudget":inventory.over_budget,"dailyLimit":inventory.daily_limit},"job":job,"permitted":policy::resolve(&settings["policy"])["enabled"],"local":local,"automatic":{ "approved":automatic_approved(&settings), "spentToday":daily_spent(&settings), "remainingToday":daily_remaining(&settings),"waitingForBudget":waiting},"indexVersion":INDEX_VERSION}),
     )
 }
 fn settings_input(db: &Store, input: &Value) -> Result<Value> {
@@ -417,13 +452,13 @@ fn settings_input(db: &Store, input: &Value) -> Result<Value> {
         || !["openai", "ollama"].contains(&string(&next, "protocol"))
         || !next["months"]
             .as_f64()
-            .is_some_and(|n| [1.0, 3.0, 6.0, 12.0].contains(&n))
+            .is_some_and(|n| [0.0, 1.0, 3.0, 6.0, 12.0].contains(&n))
         || !next["tokenBudget"]
             .as_f64()
             .is_some_and(|n| n.fract() == 0.0 && (4000.0..=64000.0).contains(&n))
     {
         return Err(Error::invalid(
-            "Choose a model, a 1/3/6/12-month range and a 4,000–64,000 token budget.",
+            "Choose a model, all downloaded mail or a 1/3/6/12-month range, and a 4,000–64,000 token budget.",
         ));
     }
     next["months"] = (next["months"].as_f64().unwrap() as u64).into();
@@ -510,7 +545,12 @@ pub fn update(db: &Store, input: &Value) -> Result<()> {
         if input["autoIndex"] == true {
             db.set_settings(&json!({"searchAutomaticApproval":scope_stamp(&settings)}))?;
             let job = db.settings()?["searchIndex"].clone();
-            if job["automatic"] == true && job["status"] != "running" {
+            if job["automatic"] == true
+                && job["status"] == "paused"
+                && job["spentTokens"].as_u64().unwrap_or(0) < job["budget"].as_u64().unwrap_or(0)
+            {
+                control(db, "resume", string(&job, "id"))?;
+            } else if job["status"] != "running" {
                 db.set_settings(&json!({"searchIndex":null}))?;
             }
         } else if next["autoIndex"] != true {
@@ -538,13 +578,15 @@ pub fn preview(db: &Store) -> Result<Value> {
     }
     let inventory = inventory(db, true)?;
     if inventory.sources.is_empty() {
-        return Err(Error::conflict(if inventory.oversized > 0 {
-            "Remaining messages exceed this batch budget or 50 chunks per message. Keyword search still covers them; increase the budget where possible."
-        } else {
-            "No new permitted mail needs indexing. Check the selected scope and global AI permissions."
-        }));
+        return Err(Error::conflict(
+            if inventory.oversized + inventory.over_budget > 0 {
+                "Remaining messages exceed this batch budget or 50 chunks per message. Keyword search still covers them; increase the budget where possible."
+            } else {
+                "No new permitted mail needs indexing. Check the selected scope and global AI permissions."
+            },
+        ));
     }
-    let job = json!({"id":uuid::Uuid::new_v4().to_string(),"stamp":stamp(&db.settings()?),"status":"prepared","sources":inventory.sources,"estimatedTokens":inventory.tokens,"chunks":inventory.pieces,"completed":0,"part":0,"spentTokens":0,"budget":value["tokenBudget"],"eligible":inventory.eligible,"indexed":inventory.ready,"oversized":inventory.oversized,"createdAt":now()});
+    let job = json!({"id":uuid::Uuid::new_v4().to_string(),"stamp":stamp(&db.settings()?),"status":"prepared","sources":inventory.sources,"estimatedTokens":inventory.tokens,"chunks":inventory.pieces,"completed":0,"part":0,"spentTokens":0,"budget":value["tokenBudget"],"eligible":inventory.eligible,"indexed":inventory.ready,"oversized":inventory.oversized + inventory.over_budget,"createdAt":now()});
     db.set_settings(&json!({"searchIndex":job}))?;
     reconcile(db)?;
     let mut result = state(db)?;
@@ -577,7 +619,11 @@ fn schedule_automatic(db: &Store) -> Result<()> {
         return Ok(());
     }
     let job = &settings["searchIndex"];
-    if job["status"] == "budget_wait" && job["automatic"] == true && daily_remaining(&settings) > 0
+    let day = Utc::now().format("%Y-%m-%d").to_string();
+    if job["status"] == "budget_wait"
+        && job["automatic"] == true
+        && daily_remaining(&settings) > 0
+        && (string(job, "budgetDay") != day || string(&settings["searchDailyUsage"], "day") != day)
     {
         let mut job = check_job(&settings, string(job, "id"), &["budget_wait"])?;
         job["status"] = "running".into();
@@ -857,7 +903,24 @@ fn prepare_work(db: &Store) -> Result<Option<Work>> {
         ));
     }
     let total = parts.len();
-    let parts = parts.into_iter().skip(offset).take(16).collect::<Vec<_>>();
+    let mut remaining = if job["automatic"] == true {
+        daily_remaining(&settings)
+    } else {
+        u64::MAX
+    };
+    let parts = parts
+        .into_iter()
+        .skip(offset)
+        .take(16)
+        .take_while(|p| {
+            let cost = p.len() as u64 + 128;
+            if cost > remaining {
+                return false;
+            }
+            remaining -= cost;
+            true
+        })
+        .collect::<Vec<_>>();
     let cost = parts.iter().map(|p| p.len() as u64 + 128).sum::<u64>();
     let spent = job["spentTokens"].as_u64().unwrap_or(0);
     if spent + cost > job["budget"].as_u64().unwrap_or(0) {
@@ -871,8 +934,9 @@ fn prepare_work(db: &Store) -> Result<Option<Work>> {
                 "Automatic indexing scope changed. Review and save Search settings again.",
             ));
         }
-        if cost > daily_remaining(&settings) {
+        if parts.is_empty() {
             job["status"] = "budget_wait".into();
+            job["budgetDay"] = Utc::now().format("%Y-%m-%d").to_string().into();
             db.set_settings(&json!({"searchIndex":job}))?;
             return Ok(None);
         }

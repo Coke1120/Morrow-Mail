@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Make reviewed automatic semantic indexing the main native Search action. Add All downloaded mail as the new-configuration default while retaining existing explicit and legacy three-month scopes until reviewed expansion.
+- Move daily/batch limits and manual maintenance into collapsed advanced sections. Show indexed/eligible progress, a prominent pause action, daily-limit automatic continuation and separate size-limit exclusions without hiding keyword search. Finish messages across daily resets using existing chunk checkpoints; pause/restart retains completed chunks.
+- Review accounts, folders, content, history, embedding connection and estimated daily cost before starting. Preserve unsaved scope edits when pausing or polling; never replay uncertain model requests automatically. Existing semantic search size limits remain.
+
 ## 0.6.0-beta.32 — 2026-10-02
 
 - Add searchable native Label / Folder Managers with hierarchy trees, create/rename/delete/parent-move actions and protected-folder guidance. Reuse account-scoped cached names and metadata.

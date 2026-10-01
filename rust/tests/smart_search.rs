@@ -1397,3 +1397,283 @@ async fn automatic_indexing_continues_across_batches_and_restart_with_daily_budg
     );
     task.abort();
 }
+
+#[tokio::test]
+async fn all_downloaded_history_requires_review_and_distinguishes_skipped_from_daily_wait() {
+    let mut fixture = Fixture::new().await;
+    let model = Model::default();
+    let (url, task) = server(model.clone()).await;
+    assert_eq!(
+        fixture.request("settings", None, A).await.1["settings"]["months"],
+        0
+    );
+    fixture
+        .app()
+        .db(|db| {
+            db.set_settings(&json!({"searchAI":{"enabled":false}}))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture.request("settings", None, A).await.1["settings"]["months"],
+        3,
+        "an older implicit scope stays unchanged"
+    );
+    fixture
+        .add(A, "old", json!({"date":"2020-01-01T00:00:00.000Z"}))
+        .await;
+    fixture
+        .add(
+            B,
+            "old",
+            json!({"date":"2020-01-01T00:00:00.000Z","body":"OTHER OWNER SECRET"}),
+        )
+        .await;
+    fixture.add(A, "recent", json!({})).await;
+    fixture
+        .add(A, "oversized", json!({"body":"x".repeat(50_000)}))
+        .await;
+    fixture
+        .add(A, "batch-limit", json!({"body":"x".repeat(5_000)}))
+        .await;
+    fixture
+        .setup(
+            &url,
+            json!({"months":12,"autoIndex":true,"dailyTokenBudget":4000,"tokenBudget":4000}),
+        )
+        .await;
+    fixture.reopen();
+    assert_eq!(
+        fixture.request("settings", None, A).await.1["settings"]["months"],
+        12
+    );
+    assert_eq!(fixture.request("settings", None, A).await.1["eligible"], 3);
+    assert_eq!(
+        fixture
+            .request("settings", Some(json!({"months":0})), A)
+            .await
+            .0,
+        200
+    );
+    let (_, expanded) = fixture.request("settings", None, A).await;
+    assert_eq!(expanded["eligible"], 4);
+    assert_eq!(expanded["automatic"]["approved"], false);
+    smart_search::tick(fixture.app()).await.unwrap();
+    assert_eq!(
+        model.count(),
+        0,
+        "scope expansion cannot use an old approval"
+    );
+    for invalid in [json!(-1), json!(0.5), json!(13)] {
+        assert_eq!(
+            fixture
+                .request("settings", Some(json!({"months":invalid})), A)
+                .await
+                .0,
+            400
+        );
+    }
+    // Starting automatic mode also supersedes an unfinished manual preview.
+    assert_eq!(
+        fixture.request("index/preview", Some(json!({})), A).await.0,
+        200
+    );
+    assert_eq!(
+        fixture
+            .request("settings", Some(json!({"autoIndex":true})), A)
+            .await
+            .0,
+        200
+    );
+    for _ in 0..10 {
+        smart_search::tick(fixture.app()).await.unwrap();
+    }
+    let (_, indexed) = fixture.request("settings", None, A).await;
+    assert_eq!(indexed["indexed"], 2);
+    assert_eq!(indexed["skipped"]["oversized"], 1);
+    assert_eq!(indexed["skipped"]["batchBudget"], 1);
+    assert_eq!(indexed["automatic"]["waitingForBudget"], false);
+    assert_eq!(model.count(), 2);
+    assert!(
+        !json!(model.seen.lock().unwrap().clone())
+            .to_string()
+            .contains("OTHER OWNER")
+    );
+    fixture
+        .add(
+            A,
+            "old",
+            json!({"date":"2020-01-01T00:00:00.000Z","body":"Changed permitted text"}),
+        )
+        .await;
+    for _ in 0..5 {
+        smart_search::tick(fixture.app()).await.unwrap();
+    }
+    assert_eq!(model.count(), 3, "only changed text is sent again");
+    fixture.app().db(|db| { db.set_settings(&json!({"searchDailyUsage":{"day":chrono::Utc::now().format("%Y-%m-%d").to_string(),"tokens":3999}}))?; Ok(()) }).await.unwrap();
+    fixture.add(A, "new", json!({})).await;
+    let (_, waiting) = fixture.request("settings", None, A).await;
+    assert_eq!(waiting["automatic"]["remainingToday"], 1);
+    assert_eq!(
+        waiting["automatic"]["waitingForBudget"], true,
+        "a positive allowance can still be too small for the next request"
+    );
+    assert_eq!(
+        waiting["skipped"], indexed["skipped"],
+        "daily limits are not permanent exclusions"
+    );
+    fixture.reopen();
+    smart_search::tick(fixture.app()).await.unwrap();
+    assert_eq!(model.count(), 3);
+    fixture
+        .app()
+        .db(|db| {
+            db.set_settings(&json!({"searchDailyUsage":{"day":"2000-01-01","tokens":3999}}))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    for _ in 0..5 {
+        smart_search::tick(fixture.app()).await.unwrap();
+    }
+    assert_eq!(model.count(), 4);
+    assert_eq!(
+        fixture
+            .request("settings", Some(json!({"autoIndex":false})), A)
+            .await
+            .0,
+        200
+    );
+    fixture.add(A, "paused", json!({})).await;
+    smart_search::tick(fixture.app()).await.unwrap();
+    assert_eq!(model.count(), 4);
+    assert_eq!(
+        fixture.request("settings", None, A).await.1["indexed"],
+        3,
+        "pausing keeps completed valid indexes"
+    );
+    assert_eq!(
+        fixture
+            .request("settings", Some(json!({"autoIndex":true})), A)
+            .await
+            .0,
+        200
+    );
+    for _ in 0..5 {
+        smart_search::tick(fixture.app()).await.unwrap();
+    }
+    assert_eq!(model.count(), 5);
+    let (status, found) = fixture
+        .request(
+            "",
+            Some(json!({"query":"INV-1042","scope":"all","smart":true})),
+            A,
+        )
+        .await;
+    assert_eq!(status, 200, "{found}");
+    assert!(
+        found["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["id"] == "old"),
+        "all-history vectors remain searchable"
+    );
+    task.abort();
+}
+
+#[tokio::test]
+async fn automatic_chunks_finish_across_daily_limits_without_replaying_completed_parts() {
+    let mut fixture = Fixture::new().await;
+    let model = Model::default();
+    let (url, task) = server(model.clone()).await;
+    let body = (0..7000)
+        .map(|i| char::from(b'a' + (i % 26) as u8))
+        .collect::<String>();
+    fixture.add(A, "long", json!({"body":body})).await;
+    fixture
+        .add(A, "chunk-too-large", json!({"body":"🐈".repeat(2500)}))
+        .await;
+    fixture
+        .setup(&url, json!({"autoIndex":true,"dailyTokenBudget":4000}))
+        .await;
+    smart_search::tick(fixture.app()).await.unwrap();
+    let (_, partial) = fixture.request("settings", None, A).await;
+    let completed = partial["job"]["part"].as_u64().unwrap();
+    assert!(completed > 0 && partial["indexed"] == 0);
+    assert_eq!(partial["skipped"]["dailyLimit"], 1);
+    assert!(partial["automatic"]["spentToday"].as_u64().unwrap() <= 4000);
+    let calls = model.count();
+    assert_eq!(
+        fixture
+            .request("settings", Some(json!({"autoIndex":false})), A)
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        fixture
+            .request("settings", Some(json!({"autoIndex":true})), A)
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        fixture.request("settings", None, A).await.1["job"]["part"],
+        completed,
+        "pause/continue preserves the chunk checkpoint"
+    );
+    fixture.reopen();
+    for _ in 0..3 {
+        smart_search::tick(fixture.app()).await.unwrap();
+    }
+    assert_eq!(
+        model.count(),
+        calls,
+        "a same-day restart must not resend completed chunks"
+    );
+    assert_eq!(
+        fixture.request("settings", None, A).await.1["job"]["part"],
+        completed
+    );
+    for _ in 0..3 {
+        fixture
+            .app()
+            .db(|db| {
+                db.set_settings(&json!({"searchDailyUsage":{"day":"2000-01-01","tokens":4000}}))?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        for _ in 0..5 {
+            smart_search::tick(fixture.app()).await.unwrap();
+        }
+        let (_, status) = fixture.request("settings", None, A).await;
+        assert!(status["automatic"]["spentToday"].as_u64().unwrap() <= 4000);
+        if status["indexed"] == 1 {
+            break;
+        }
+    }
+    let (_, final_state) = fixture.request("settings", None, A).await;
+    assert_eq!(final_state["indexed"], 1);
+    assert_eq!(final_state["skipped"]["dailyLimit"], 1);
+    assert_eq!(final_state["automatic"]["waitingForBudget"], false);
+    let seen = model.seen.lock().unwrap();
+    let text = seen
+        .iter()
+        .flat_map(|request| request["body"]["input"].as_array().unwrap())
+        .map(|part| part.as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        text.len() > completed as usize,
+        "later days finish the remaining chunks"
+    );
+    assert_eq!(
+        text.len(),
+        text.iter().collect::<std::collections::HashSet<_>>().len(),
+        "completed overlapping chunks are never sent twice"
+    );
+    drop(seen);
+    task.abort();
+}

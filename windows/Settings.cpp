@@ -694,13 +694,16 @@ hstring selectedFields(Json const& value) {
     for (auto const& entry : value) if (entry.Value().ValueType() == JsonValueType::Boolean && entry.Value().GetBoolean()) result = result + (result.empty() ? L"" : L", ") + entry.Key();
     return result;
 }
+hstring indexHistoryLabel(Json const& settings) {
+    return settings.GetNamedNumber(L"months", 3) == 0 ? hstring(L"All downloaded mail") : L"Last " + number(settings, L"months") + L" months";
+}
 hstring indexReview(Json const& value) {
     auto settings = object(value, L"settings"), job = object(value, L"job");
     hstring owners;
     for (auto const& owner : array(settings, L"accounts")) owners = owners + (owners.empty() ? L"" : L", ") + owner.GetString();
     auto result = L"Model: " + text(settings, L"model") + L"\nEndpoint: " + text(settings, L"baseUrl") + L"\nAccounts: " + owners +
         L"\nFolders: " + selectedFields(object(settings, L"folders")) + L"\nFields: " + selectedFields(object(settings, L"content")) +
-        L"\nLast " + number(settings, L"months") + L" months · " + number(job, L"sampleCount") + L" messages / " + number(job, L"chunks") + L" chunks" +
+        L"\n" + indexHistoryLabel(settings) + L" · " + number(job, L"sampleCount") + L" messages / " + number(job, L"chunks") + L" chunks" +
         L"\nEstimated tokens ≤ " + number(job, L"estimatedTokens") + L" · budget " + number(settings, L"tokenBudget") +
         L"\nOnly permitted downloaded text is sent. Remote models may charge. In-flight requests may already have used tokens.";
     uint32_t count = 0;
@@ -713,18 +716,27 @@ hstring indexReview(Json const& value) {
     }
     return result;
 }
+IAsyncAction saveSearchScope(Page p, Form f, StackPanel status, Json input);
 void searchStatus(Page const& p, StackPanel const& status) {
     status.Children().Clear();
     auto value = p->searchState, job = object(value, L"job"), settings = object(value, L"settings");
     help(status, text(settings, L"model", L"No embedding model saved") + L" · " + text(settings, L"baseUrl"));
-    help(status, number(value, L"indexed") + L" / " + number(value, L"eligible") + L" eligible messages indexed · " + number(value, L"pending") + L" pending");
+    auto skipped = object(value, L"skipped");
+    auto skippedCount = static_cast<uint64_t>(skipped.GetNamedNumber(L"oversized", 0) + skipped.GetNamedNumber(L"batchBudget", 0) + skipped.GetNamedNumber(L"dailyLimit",0));
+    auto pending = static_cast<uint64_t>(value.GetNamedNumber(L"pending",0));
+    help(status, number(value, L"indexed") + L" / " + number(value, L"eligible") + L" eligible messages indexed · " + hstring(std::to_wstring(pending - skippedCount)) + L" pending");
+    if (skippedCount) help(status, hstring(std::to_wstring(skippedCount)) + L" messages skipped by size limits. Keyword search still covers them; see Advanced indexing options.");
     if (flag(settings,L"autoIndex")) {
         auto automatic=object(value,L"automatic");
-        help(status,flag(automatic,L"approved") ? L"Automatic indexing enabled; new mail is picked up while Morrow is open." : L"Automatic indexing needs review. Save Search settings to resume.");
+        if (!flag(automatic,L"approved")) help(status,L"Model, permissions or scope changed. Review before continuing.");
+        else if (text(job,L"status") == L"failed" || text(job,L"status") == L"interrupted") help(status,L"Indexing stopped. Review before retrying; the last request may already have used tokens.");
+        else if (flag(automatic,L"waitingForBudget")) help(status,L"Daily limit reached — resumes automatically at midnight UTC while Morrow is open.");
+        else if (text(job,L"status") == L"paused" || text(job,L"status") == L"cancelled") help(status,L"Indexing is paused. Review before continuing.");
+        else help(status, pending == 0 ? L"Up to date — new and changed mail will be indexed automatically." : pending == skippedCount ? L"Supported messages are indexed. Remaining messages are skipped by size limits." : L"Automatic indexing enabled; downloaded mail is processed while Morrow is open.");
         help(status,L"Today: " + number(automatic,L"spentToday") + L" / " + number(settings,L"dailyTokenBudget") + L" estimated tokens; resets at midnight UTC.");
-    }
+    } else if (flag(settings,L"enabled")) help(status,L"Automatic indexing is paused. Completed indexes remain searchable.");
     if (job.Size()) {
-        help(status, text(job, L"status") + L" · " + number(job, L"completed") + L" / " + number(job, L"sampleCount") + L" messages · tokens " + number(job, L"spentTokens") + L" / " + number(job, L"budget"));
+        if (!flag(job,L"automatic")) help(status, L"Manual batch: " + text(job, L"status") + L" · " + number(job, L"completed") + L" / " + number(job, L"sampleCount") + L" messages");
         if (!text(job, L"error").empty()) help(status, text(job, L"error"));
     }
     if (text(job, L"status") == L"running") help(status, L"Indexing continues in the background while Morrow is open. You may leave this page. Return here or open Activity for progress.");
@@ -732,7 +744,27 @@ void searchStatus(Page const& p, StackPanel const& status) {
     for (auto const& f : p->forms) if (f->key.ends_with(L":search")) {
         f->locked = false; // Search scope can be saved to stop automatic work; model editing remains separate.
         f->container.IsEnabled(!p->busy && !f->locked);
+        if (flag(settings,L"autoIndex")) {
+            auto weakStatus = make_weak(status);
+            action(p,status,L"Pause automatic indexing",[f,weakStatus](Page page) -> IAsyncAction {
+                if (auto panel = weakStatus.get()) { Json input; boolean(input,L"autoIndex",false); co_await saveSearchScope(page,f,panel,input); }
+            });
+        }
     }
+}
+IAsyncAction saveSearchScope(Page p, Form f, StackPanel status, Json input) {
+    if (flag(input,L"autoIndex")) {
+        auto settings = object(p->searchState,L"settings");
+        hstring owners;
+        for (auto const& owner : array(input,L"accounts")) owners = owners + (owners.empty() ? L"" : L", ") + owner.GetString();
+        if (!(co_await p->shell->confirm(L"Index this scope and keep it updated?", L"Model: " + text(settings,L"model") + L"\nEndpoint: " + text(settings,L"baseUrl") + L"\nAccounts: " + owners + L"\nFolders: " + selectedFields(object(input,L"folders")) + L"\nContent: " + selectedFields(object(input,L"content")) + L"\nHistory: " + indexHistoryLabel(input) + L"\nDaily limit: " + number(input,L"dailyTokenBudget") + L" estimated tokens, resets at midnight UTC. Downloaded, new and changed mail in this scope will be sent automatically while Morrow is open. Provider charges may apply. Retrying after an interrupted request may charge again.",L"Start automatic indexing")) || !p->current()) co_return;
+    }
+    auto result = co_await p->shell->service->request(L"/search/settings",p->owner,L"POST",input);
+    if (!p->current()) co_return;
+    if (input.Size() == 1 && !flag(input,L"autoIndex")) {
+        boolean(f->value,L"autoIndex",false); boolean(f->saved,L"autoIndex",false); f->edit();
+    } else f->accept(pick(object(result,L"settings"),{L"enabled",L"autoIndex",L"dailyTokenBudget",L"accounts",L"months",L"tokenBudget",L"folders",L"content"}));
+    p->searchState=result; searchStatus(p,status); p->tell(flag(input,L"autoIndex") ? L"Automatic indexing approved. You can leave Settings while it runs." : L"Search settings saved. Completed indexes remain available.");
 }
 IAsyncAction indexAction(Page p, Form f, StackPanel status, hstring operation) {
     if ((operation == L"preview" || operation == L"resume") && f->changed()) throw hresult_error(E_FAIL, L"Save search scope before reviewing or resuming a batch.");
@@ -772,16 +804,13 @@ fire_and_forget pollSearch(Page p, StackPanel status) {
     p->polling = false;
 }
 void search(Page const& p) {
-    title(p->body, L"Search and semantic indexing"); help(p->body, L"Keyword search stays local. Embedding can keep downloaded, permitted mail indexed automatically within a daily budget. Configure its connection in Advanced setup → AI connection.");
+    title(p->body, L"Search and semantic indexing"); help(p->body, L"Index downloaded mail once and keep it updated while Morrow is open. Keyword search stays local and remains available during indexing. Configure the embedding connection in Advanced setup → AI connection.");
     auto status = stack(8); p->body.Children().Append(status); searchStatus(p, status);
     action(p, p->body, L"Test saved embedding connection", [](Page page) -> IAsyncAction {
         auto result = co_await page->shell->service->request(L"/search/test", page->owner, L"POST");
         page->tell(L"Connection succeeded · " + number(result, L"dimensions") + L" dimensions. No mail shared and no settings changed.");
     });
     auto f = form(p, p->body, pick(object(p->searchState, L"settings"), {L"enabled", L"autoIndex", L"dailyTokenBudget", L"accounts", L"months", L"tokenBudget", L"folders", L"content"}), L"search");
-    toggle(f, L"enabled", L"Enable Smart Search");
-    toggle(f, L"autoIndex", L"Keep the index updated automatically");
-    numeric(f, L"dailyTokenBudget", L"Daily indexing budget (estimated tokens, UTC day)", 4000, 2000000, 1000);
     title(f->panel, L"Accounts to index");
     for (auto const& item : array(p->shell->state, L"accounts")) {
         auto account = item.GetObject(); auto id = text(account, L"id"); if (id.empty() || id == L"demo" || id == L"all") continue;
@@ -800,16 +829,19 @@ void search(Page const& p) {
         title(f->panel, group);
         for (auto const& entry : object(f->value, group)) toggle(f, (std::wstring(group) + L"." + std::wstring(entry.Key())).c_str(), entry.Key() == L"sender" ? L"Sender / recipients, including Cc and Bcc" : entry.Key());
     }
-    choice(f, L"months", L"Index history", {{L"1", L"Last month"}, {L"3", L"Last 3 months"}, {L"6", L"Last 6 months"}, {L"12", L"Last 12 months"}}, true);
+    choice(f, L"months", L"Index history", {{L"0", L"All downloaded mail"}, {L"1", L"Last month"}, {L"3", L"Last 3 months"}, {L"6", L"Last 6 months"}, {L"12", L"Last 12 months"}}, true);
+    action(p,f->panel,L"Index downloaded mail & keep updated…",[f,status](Page page) -> IAsyncAction {
+        auto input=copy(f->value); boolean(input,L"enabled",true); boolean(input,L"autoIndex",true); co_await saveSearchScope(page,f,status,input);
+    });
+    help(f->panel,L"Only downloaded mail in approved accounts, folders and content fields is indexed. Remote indexing and semantic queries may incur charges; the daily limit covers indexing, not queries.");
+    Expander advanced; advanced.Header(box_value(L"Advanced indexing options")); auto limits=stack(10); advanced.Content(limits); f->panel.Children().Append(advanced); auto main=f->panel; f->panel=limits;
+    toggle(f, L"enabled", L"Enable Smart Search");
+    numeric(f, L"dailyTokenBudget", L"Daily indexing limit (estimated tokens, UTC day)", 4000, 2000000, 1000);
     numeric(f, L"tokenBudget", L"Estimated token budget per reviewed batch", 4000, 64000, 1000);
     help(f->panel, L"Global AI permissions still apply. Conservative UTF-8 estimates are not billing guarantees. Automatic mode processes successive bounded batches and picks up new mail. It pauses at the daily budget; failed or interrupted requests require review.");
-    action(p, f->panel, L"Save search scope", [f, status](Page page) -> IAsyncAction {
-        if (flag(f->value, L"autoIndex") && !(co_await page->shell->confirm(L"Keep this scope indexed automatically?", L"Model: " + text(object(page->searchState,L"settings"),L"model") + L"\nEndpoint: " + text(object(page->searchState,L"settings"),L"baseUrl") + L"\nDaily budget: " + number(f->value,L"dailyTokenBudget") + L" estimated tokens, resets at midnight UTC. New and changed mail in the selected scope will be sent automatically while Morrow is open. Provider charges may apply.", L"Enable automatic indexing"))) co_return;
-        auto result = co_await page->shell->service->request(L"/search/settings", page->owner, L"POST", copy(f->value));
-        if (!page->current()) co_return;
-        f->accept(pick(object(result, L"settings"), {L"enabled", L"autoIndex", L"dailyTokenBudget", L"accounts", L"months", L"tokenBudget", L"folders", L"content"}));
-        page->searchState = result; searchStatus(page, status); page->tell(L"Search scope saved.");
-    });
+    help(f->panel,L"Messages above 50 chunks or the per-message batch budget are skipped. A chunk larger than the entire daily allowance needs a higher daily limit. Semantic searches require narrower filters above 12,000 chunks or 4 million vector values.");
+    action(p,f->panel,L"Save search settings",[f,status](Page page) { return saveSearchScope(page,f,status,copy(f->value)); });
+    f->panel=main;
     Expander maintenance; maintenance.Header(box_value(L"Manual indexing & maintenance")); auto maintenancePanel=stack(10); maintenance.Content(maintenancePanel); p->body.Children().Append(maintenance);
     for (auto const& [operation, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{{L"preview", L"Review & Index…"}, {L"pause", L"Pause batch"}, {L"resume", L"Resume batch…"}, {L"cancel", L"Cancel batch…"}, {L"clear", L"Clear semantic index…"}})
         action(p, maintenancePanel, caption, [f, status, operation = hstring(operation)](Page page) { return indexAction(page, f, status, operation); });

@@ -1,5 +1,8 @@
 import Foundation
 
+assert(indexHistoryLabel(.object(["months": .number(0)])) == "All downloaded mail")
+assert(indexHistoryLabel(.object(["months": .number(12)])) == "Last 12 month(s)")
+
 let previousMail: JSON = .object(["email": .string("Owner@yahoo.com.hk"), "password": .string("do-not-carry-this-secret"), "imapHost": .string("old.example")])
 let yahooMail = yahooMailSettings(previousMail)
 assert(yahooMail["email"].string == "Owner@yahoo.com.hk" && yahooMail["password"].string.isEmpty)

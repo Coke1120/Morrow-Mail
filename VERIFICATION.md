@@ -1,5 +1,13 @@
 # Verification — 2 October 2026
 
+## All-downloaded automatic indexing — current source after beta.32
+
+Both native Search pages make explicitly reviewed automatic indexing the main action, expose approved account/folder/content/history choices, and collapse daily/batch limits and manual maintenance. New configurations default to All downloaded mail; older explicit ranges and implicit three-month scopes remain unchanged until reviewed expansion. Progress separates size/per-message-budget/individual-chunk daily-limit exclusions from temporary daily-budget waits. Pause preserves valid vectors, chunk checkpoints and unsaved scope edits. Bounded automatic requests can finish a message across UTC daily resets without resending completed chunks; failed or uncertain requests still require review.
+
+Local formatting, strict all-target Clippy and the complete 186-test locked Rust suite passed. The 16 semantic-search tests include all-history retrieval, old-scope preservation, expansion invalidating approval, cross-account duplicate-ID isolation, changed-text reuse, positive but insufficient remaining allowance, durable daily usage, pause/continue checkpoints and cross-day completion without duplicate chunk requests. New native checks cover history labels; Windows smoke checks assert the all-downloaded value, primary automatic action, collapsed technical limits and unsaved history edits surviving polling. Final native builds and acceptance are pending; their results will be recorded here.
+
+These source changes are not in the published beta.32 binaries and do not remove semantic retrieval's 12,000-chunk/four-million-vector-scalar bound. Tests use isolated fictional mail and loopback model fixtures, not owner data or real paid models; no new release or installed-app replacement is claimed.
+
 ## 0.6.0-beta.32 — published paired native release
 
 [Beta.32](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.32) was published at 2026-10-01T17:36:31Z from `5697f5ee092cb70aaafdb843497af2baa2d12b9a`. [Tagged CI 36897221096, attempt 1](https://github.com/Coke1120/Morrow-Mail/actions/runs/36897221096/attempts/1) passed all three jobs: Node-free Rust formatting, strict all-target Clippy and locked tests on both platforms; macOS packaging and native production-service acceptance; Windows packaging, complete fresh/owned/restart walkthrough including reader and searchable picker checks, and the 1,000/10,000/50,000-message fictional-mail benchmark; and the existing paired publisher's same-run/same-attempt provenance and signing gate. No waiver applied.

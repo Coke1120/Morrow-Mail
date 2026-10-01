@@ -301,6 +301,25 @@ IAsyncAction Shell::smoke() {
                 check(advanced.Content().as<controls::ListView>().Items().Size() == 3 &&
                     advanced.IsExpanded() == (std::wstring_view(tab) == L"model" || std::wstring_view(tab) == L"search"),
                     L"Advanced settings must open for direct setup links and stay collapsed on everyday pages.");
+                if (std::wstring_view(tab) == L"search") {
+                    auto body = layout.Children().GetAt(3).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
+                    controls::ComboBox history{nullptr}; controls::Expander limits{nullptr}; bool primary = false;
+                    for (auto const& child : body.Children()) if (auto container = child.try_as<controls::ContentControl>()) {
+                        if (auto panel = container.Content().try_as<controls::StackPanel>()) for (auto const& control : panel.Children()) {
+                            if (auto choice = control.try_as<controls::ComboBox>(); choice && unbox_value<hstring>(choice.Header()) == L"Index history") history = choice;
+                            if (auto disclosure = control.try_as<controls::Expander>(); disclosure && unbox_value<hstring>(disclosure.Header()) == L"Advanced indexing options") limits = disclosure;
+                            if (auto entry = control.try_as<controls::Button>(); entry && unbox_value<hstring>(entry.Content()) == L"Index downloaded mail & keep updated…") primary = true;
+                            check(!control.try_as<controls::NumberBox>(), L"Technical batch limits remain in the primary indexing form.");
+                        }
+                    }
+                    check(history && limits && !limits.IsExpanded() && primary && history.Items().Size() == 5,
+                        L"Search needs an all-downloaded option, primary automatic action and collapsed advanced limits.");
+                    check(unbox_value<hstring>(history.Items().GetAt(0).as<controls::ComboBoxItem>().Tag()) == L"0", L"All downloaded history has the wrong service value.");
+                    auto previous = history.SelectedIndex(); history.SelectedIndex(4);
+                    co_await resume_after(std::chrono::milliseconds(2300)); co_await ui;
+                    check(history.SelectedIndex() == 4, L"Search status polling discarded an unsaved history-range edit.");
+                    history.SelectedIndex(previous);
+                }
                 if (std::wstring_view(tab) == L"mail" || std::wstring_view(tab) == L"calendar") {
                     auto body = layout.Children().GetAt(3).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
                     bool mail = std::wstring_view(tab) == L"mail";
