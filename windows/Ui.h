@@ -100,7 +100,7 @@ winrt::Windows::Foundation::IAsyncAction intelligencePage(std::shared_ptr<Shell>
 winrt::Windows::Foundation::IAsyncAction outOfOfficePage(std::shared_ptr<Shell> shell);
 winrt::Windows::Foundation::IAsyncAction calendarPage(std::shared_ptr<Shell> shell);
 void appendReader(std::shared_ptr<Shell> shell, controls::StackPanel const& container, Json message);
-winrt::Windows::Foundation::IAsyncAction folderPickerChecks(xaml::Grid root);
+winrt::Windows::Foundation::IAsyncAction folderPickerChecks(controls::Grid root);
 void readerSecurityChecks();
 winrt::Windows::Foundation::IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell);
 }

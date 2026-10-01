@@ -370,8 +370,11 @@ IAsyncAction folderPickerChecks(Grid host) {
     JsonArray folders; folders.Append(root); folders.Append(child);
     auto picker=folderChoice(L"Test destination",folders,L"child");
     picker->control.HorizontalAlignment(HorizontalAlignment::Left); picker->control.VerticalAlignment(VerticalAlignment::Top);
+    bool opened=false; auto openedToken=picker->popup.Opened([&opened](auto const&,auto const&) { opened=true; });
     host.Children().Append(picker->control); host.UpdateLayout(); picker->popup.ShowAt(picker->control);
-    co_await resume_after(std::chrono::milliseconds(100)); co_await ui;
+    auto deadline=GetTickCount64()+1000;
+    while(!opened&&GetTickCount64()<deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+    picker->popup.Opened(openedToken); check(opened,L"The native folder picker did not open.");
     // TextChanged is asynchronous; allow the native event to update the list.
     picker->search.Text(L"CUSTOMER"); co_await resume_after(std::chrono::milliseconds(50)); co_await ui;
     check(picker->list.Items().Size()==1&&picker->id==L"child",L"Folder search lost case-insensitive path matching or selection.");
