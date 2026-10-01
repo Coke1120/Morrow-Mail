@@ -369,6 +369,7 @@ IAsyncAction folderPickerChecks(Grid host) {
     put(child,L"id",L"child"); put(child,L"name",L"Work / Customer"); put(child,L"parentId",L"root"); put(child,L"leafName",L"Customer"); child.Insert(L"editable",Value::CreateBooleanValue(true)); put(child,L"kind",L"label");
     JsonArray folders; folders.Append(root); folders.Append(child);
     auto picker=folderChoice(L"Test destination",folders,L"child");
+    auto originalFocus=Input::FocusManager::GetFocusedElement(host.XamlRoot()).try_as<Control>();
     picker->control.HorizontalAlignment(HorizontalAlignment::Left); picker->control.VerticalAlignment(VerticalAlignment::Top);
     bool opened=false; auto openedToken=picker->popup.Opened([&opened](auto const&,auto const&) { opened=true; });
     host.Children().Append(picker->control); host.UpdateLayout(); picker->popup.ShowAt(picker->control);
@@ -382,7 +383,12 @@ IAsyncAction folderPickerChecks(Grid host) {
     check(!picker->list.Items().Size()&&picker->id==L"child",L"Filtering cleared the chosen folder.");
     picker->search.Text(L""); co_await resume_after(std::chrono::milliseconds(50)); co_await ui;
     check(picker->list.Items().Size()==2&&within(child,root,folders)&&!within(root,child,folders),L"Folder hierarchy or filter restoration failed.");
-    picker->popup.Hide(); uint32_t index; if(host.Children().IndexOf(picker->control,index)) host.Children().RemoveAt(index);
+    bool closed=false; auto closedToken=picker->popup.Closed([&closed](auto const&,auto const&) { closed=true; });
+    picker->popup.Hide(); deadline=GetTickCount64()+1000;
+    while(!closed&&GetTickCount64()<deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+    picker->popup.Closed(closedToken); check(closed,L"The native folder picker did not close.");
+    if(originalFocus&&originalFocus.IsLoaded()) originalFocus.Focus(FocusState::Programmatic);
+    uint32_t index; if(host.Children().IndexOf(picker->control,index)) host.Children().RemoveAt(index);
     Json orphan; put(orphan,L"id",L"orphan"); put(orphan,L"name",L"Other/Leaf"); put(orphan,L"leafName",L"Leaf"); put(orphan,L"parentId",L"missing"); folders.Append(orphan);
     auto manager=std::make_shared<FolderManager>(); manager->catalog.Insert(L"folders",folders); manager->catalog.Insert(L"canManage",Value::CreateBooleanValue(true)); manager->provider=L"google"; manager->source=root; manager->action=2; manager->parent=folderChoice(L"Test parent",JsonArray()); manager->rebuild(); manager->configure();
     check(manager->tree.RootNodes().Size()==2 && unbox_value<hstring>(manager->tree.RootNodes().GetAt(0).Content())==L"Other/Leaf" && manager->tree.RootNodes().GetAt(1).Children().Size()==1,L"Folder tree lost hierarchy or implicit-parent full paths.");
