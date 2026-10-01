@@ -541,17 +541,20 @@ pub fn update(db: &Store, input: &Value) -> Result<()> {
             db.set_settings(
                 &json!({"searchIndex":null,"searchGeneration":uuid::Uuid::new_v4().to_string()}),
             )?;
+        } else if settings["searchIndex"]["automatic"] == true
+            && next["dailyTokenBudget"].as_u64().unwrap_or(100000)
+                < config(&previous)["dailyTokenBudget"]
+                    .as_u64()
+                    .unwrap_or(100000)
+        {
+            // Requeue within the lower limit; renewed approval covers uncertain work.
+            db.set_settings(&json!({"searchIndex":null,"searchAutomaticApproval":null}))?;
         }
         if input["autoIndex"] == true {
             db.set_settings(&json!({"searchAutomaticApproval":scope_stamp(&settings)}))?;
             let job = db.settings()?["searchIndex"].clone();
-            // A reduced daily allowance needs a fresh queue within its new limit.
             if job["automatic"] == true
                 && ["paused", "budget_wait"].contains(&string(&job, "status"))
-                && next["dailyTokenBudget"].as_u64().unwrap_or(100000)
-                    >= config(&previous)["dailyTokenBudget"]
-                        .as_u64()
-                        .unwrap_or(100000)
                 && job["spentTokens"].as_u64().unwrap_or(0) < job["budget"].as_u64().unwrap_or(0)
             {
                 control(db, "resume", string(&job, "id"))?;

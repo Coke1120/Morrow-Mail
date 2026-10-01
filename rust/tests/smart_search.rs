@@ -1678,21 +1678,99 @@ async fn automatic_chunks_finish_across_daily_limits_without_replaying_completed
     assert_eq!(final_state["indexed"], 1);
     assert_eq!(final_state["skipped"]["dailyLimit"], 1);
     assert_eq!(final_state["automatic"]["waitingForBudget"], false);
-    let seen = model.seen.lock().unwrap();
-    let text = seen
-        .iter()
-        .flat_map(|request| request["body"]["input"].as_array().unwrap())
-        .map(|part| part.as_str().unwrap())
-        .collect::<Vec<_>>();
-    assert!(
-        text.len() > completed as usize,
-        "later days finish the remaining chunks"
-    );
-    assert_eq!(
-        text.len(),
-        text.iter().collect::<std::collections::HashSet<_>>().len(),
-        "completed overlapping chunks are never sent twice"
-    );
-    drop(seen);
+    {
+        let seen = model.seen.lock().unwrap();
+        let text = seen
+            .iter()
+            .flat_map(|request| request["body"]["input"].as_array().unwrap())
+            .map(|part| part.as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            text.len() > completed as usize,
+            "later days finish the remaining chunks"
+        );
+        assert_eq!(
+            text.len(),
+            text.iter().collect::<std::collections::HashSet<_>>().len(),
+            "completed overlapping chunks are never sent twice"
+        );
+    }
+    for paused in [false, true] {
+        fixture
+            .app()
+            .db(|db| {
+                db.set_settings(&json!({"searchDailyUsage":{"day":"2000-01-01","tokens":0}}))?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture
+                .request(
+                    "settings",
+                    Some(json!({"autoIndex":true,"dailyTokenBudget":8000})),
+                    A
+                )
+                .await
+                .0,
+            200
+        );
+        smart_search::tick(fixture.app()).await.unwrap();
+        assert_eq!(
+            fixture.request("settings", None, A).await.1["job"]["status"],
+            "running"
+        );
+        if paused {
+            assert_eq!(
+                fixture
+                    .request("settings", Some(json!({"autoIndex":false})), A)
+                    .await
+                    .0,
+                200
+            );
+        }
+        let calls = model.count();
+        assert_eq!(
+            fixture
+                .request("settings", Some(json!({"dailyTokenBudget":4000})), A)
+                .await
+                .0,
+            200
+        );
+        let (_, reduced) = fixture.request("settings", None, A).await;
+        assert!(
+            reduced["job"].is_null(),
+            "a lower limit requeues automatic work even while running or paused"
+        );
+        assert_eq!(
+            reduced["indexed"], 1,
+            "completed mail vectors survive a lower limit"
+        );
+        assert_eq!(
+            reduced["automatic"]["approved"], false,
+            "requeued work needs explicit approval before possible paid replay"
+        );
+        if paused {
+            assert_eq!(
+                fixture
+                    .request("settings", Some(json!({"autoIndex":true})), A)
+                    .await
+                    .0,
+                200
+            );
+        }
+        for _ in 0..3 {
+            smart_search::tick(fixture.app()).await.unwrap();
+        }
+        assert_eq!(
+            model.count(),
+            calls,
+            "a chunk above the new daily limit must not block the queue or call the model"
+        );
+        assert_eq!(
+            fixture.request("settings", None, A).await.1["automatic"]["waitingForBudget"],
+            false
+        );
+    }
     task.abort();
 }
