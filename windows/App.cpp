@@ -100,6 +100,10 @@ ScrollViewer scroll(UIElement const& child) {
     result.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
     return result;
 }
+hstring errorText() {
+    try { throw; } catch (hresult_error const& error) { return error.message(); }
+    catch (...) { return L"The operation could not be completed. Your saved workspace has been retained."; }
+}
 namespace {
 StackPanel actions() { auto result = stack(); result.Orientation(Orientation::Horizontal); return result; }
 Button iconButton(hstring const& glyph, hstring const& name, std::function<void()> action) {
@@ -137,10 +141,6 @@ NavigationViewItem navItem(hstring const& title, hstring const& section, hstring
     FontIcon icon; icon.Glyph(glyph); item.Icon(icon);
     Json tag; put(tag, L"section", section); put(tag, L"owner", owner); put(tag, L"folder", folder);
     item.Tag(tag); return item;
-}
-hstring errorText() {
-    try { throw; } catch (hresult_error const& error) { return error.message(); }
-    catch (...) { return L"The operation could not be completed. Your saved workspace has been retained."; }
 }
 IAsyncOperation<ContentDialogResult> showReaderPopup(std::shared_ptr<Shell> const& shell,
     ContentDialog const& dialog, std::function<void()>& release) {
