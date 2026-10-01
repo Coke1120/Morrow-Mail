@@ -10,6 +10,7 @@
 namespace morrow {
 namespace xaml = winrt::Microsoft::UI::Xaml;
 namespace controls = winrt::Microsoft::UI::Xaml::Controls;
+winrt::hstring errorText();
 controls::TextBlock label(winrt::hstring const& value, double size = 14, bool selectable = true);
 controls::Button button(winrt::hstring const& value, std::function<void()> action);
 controls::StackPanel stack(double gap = 8);

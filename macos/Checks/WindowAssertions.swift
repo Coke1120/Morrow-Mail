@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 // Standalone fixture, without starting the service or opening any workspace:
-// swiftc -D MORROW_WINDOW_CHECKS -parse-as-library macos/Sources/MorrowMail/{Models,AppModel,MorrowMailApp,CalendarView}.swift macos/Checks/WindowAssertions.swift -o /tmp/morrow-window-checks
+// swiftc -D MORROW_WINDOW_CHECKS -parse-as-library macos/Sources/MorrowMail/{Models,AppModel,MorrowMailApp,CalendarView,FolderPicker,FolderManagementView}.swift macos/Checks/WindowAssertions.swift -o /tmp/morrow-window-checks
 // /tmp/morrow-window-checks
 @main
 struct WindowAssertions {
@@ -11,6 +11,7 @@ struct WindowAssertions {
         app.setActivationPolicy(.regular)
         checkRestoredListWidth()
         if CommandLine.arguments.contains("--list-width-only") { return }
+        checkFolderLayouts()
         checkCalendarLayout()
         for width in [1040.0, 1877.0] { checkInitialSplit(width: width, vertical: true) }
         checkInitialSplit(width: 1040, vertical: false)
@@ -46,6 +47,34 @@ struct WindowAssertions {
         model.unsavedForms.remove("fixture-draft")
         assert(delegate.applicationShouldTerminate(app) == .terminateNow)
         print("Window close/reopen preserves pending work and unsaved forms.")
+    }
+
+    @MainActor static func checkFolderLayouts() {
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("morrow-folder-layout-\(UUID())")
+        let previous = getenv("MORROW_DATA_DIR").map { String(cString: $0) }
+        setenv("MORROW_DATA_DIR", temporary.path, 1)
+        let model = AppModel()
+        if let previous { setenv("MORROW_DATA_DIR", previous, 1) } else { unsetenv("MORROW_DATA_DIR") }
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let owner = "folder-layout@example.invalid"
+        let folders: [JSON] = [
+            .object(["id": .string("work"), "name": .string("Work"), "leafName": .string("Work"), "kind": .string("label"), "editable": .bool(true)]),
+            .object(["id": .string("client"), "name": .string("Work/Long customer folder 中文"), "leafName": .string("Long customer folder 中文"), "parentId": .string("work"), "kind": .string("label"), "editable": .bool(true)])
+        ]
+        model.state = .object(["accounts": .array([.object(["id": .string(owner), "provider": .string("google")])]), "serverFolders": .object([owner: .object(["provider": .string("google"), "canManage": .bool(true), "folders": .array(folders), "managementFolders": .array(folders)])])])
+        let message: JSON = .object(["id": .string("google:fixture"), "accountId": .string(owner), "subject": .string("Fictional message"), "providerLabelIds": .array([.string("INBOX"), .string("work")])])
+        let views = [AnyView(FolderManagementView(owner: owner, initialFolder: "client")), AnyView(FolderManagementView(owner: owner, initialFolder: "", creationOnly: true)), AnyView(OrganizeMailView(message: message, preferredKind: "labels"))]
+        for view in views {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 700), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            let host = NSHostingView(rootView: view.environmentObject(model)); window.contentView = host; window.orderBack(nil)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3)); host.layoutSubtreeIfNeeded()
+            let settled = host.frame
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2)); host.layoutSubtreeIfNeeded()
+            assert(host.frame == settled && host.fittingSize.height <= 700, "Folder manager/create/checklist must fit and settle without a constraint loop.")
+            window.close()
+        }
+        print("Cached folder hierarchy, create form and Gmail checklist fit native sheets without provider/service requests.")
     }
 
     @MainActor static func checkCalendarLayout() {

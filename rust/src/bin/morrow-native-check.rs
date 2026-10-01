@@ -320,6 +320,8 @@ fn existing_native_checks(root: &Path, fixture: &Path) -> Result<()> {
             "macos/Sources/MorrowMail/AppModel.swift",
             "macos/Sources/MorrowMail/MorrowMailApp.swift",
             "macos/Sources/MorrowMail/CalendarView.swift",
+            "macos/Sources/MorrowMail/FolderPicker.swift",
+            "macos/Sources/MorrowMail/FolderManagementView.swift",
             "macos/Checks/WindowAssertions.swift",
         ],
     )?;

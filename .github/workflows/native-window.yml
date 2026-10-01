@@ -11,7 +11,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
       - name: Compile and run isolated native window checks
         run: |
-          swiftc -D MORROW_WINDOW_CHECKS -parse-as-library macos/Sources/MorrowMail/Models.swift macos/Sources/MorrowMail/AppModel.swift macos/Sources/MorrowMail/MorrowMailApp.swift macos/Sources/MorrowMail/CalendarView.swift macos/Checks/WindowAssertions.swift -o "$RUNNER_TEMP/window-checks"
+          swiftc -D MORROW_WINDOW_CHECKS -parse-as-library macos/Sources/MorrowMail/Models.swift macos/Sources/MorrowMail/AppModel.swift macos/Sources/MorrowMail/MorrowMailApp.swift macos/Sources/MorrowMail/CalendarView.swift macos/Sources/MorrowMail/FolderPicker.swift macos/Sources/MorrowMail/FolderManagementView.swift macos/Checks/WindowAssertions.swift -o "$RUNNER_TEMP/window-checks"
           for attempt in {1..10}; do "$RUNNER_TEMP/window-checks"; done
   settings:
     runs-on: windows-latest
