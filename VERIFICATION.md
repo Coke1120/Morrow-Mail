@@ -1,5 +1,11 @@
 # Verification — 1 October 2026
 
+## Whole-app scenario walkthrough
+
+See the [walkthrough matrix](docs/WALKTHROUGH-2026-10-01.md) for separate manual, native automated, provider-fixture and outstanding checks. macOS manual checks covered owned/combined reading, Pending, paging/search, owner-bound Reply All, Bcc/Chinese draft persistence, cached offline folder manager/search/Parent popup, failed review retention, Today review/cancel and Calendar's disconnected state. Actual Parallels fresh smoke passed; its owned picker check failed. The fixed 50 ms test sleeps now wait for the expected native list state within a bounded deadline. The original assertions remain; a corrected VM retest is still outstanding.
+
+The walkthrough also found IMAP TCP failures incorrectly using the workspace I/O message. The shared connection path now returns a safe provider failure, with a loopback refusal regression for normal/management catalogs. Local rustfmt, strict all-target Clippy, all 14 IMAP tests, the complete 184-test serial Rust suite and production-service macOS native acceptance passed. One initial parallel CLI fixture writer-lock failure passed on isolated rerun; its cause remains unestablished and the writer guard is unchanged. Desktop tooling later lost guest input and then reported a closed native pipe despite reset; remaining manual paths are explicitly unverified. No live mail/calendar/model write, installed-app replacement or release publication occurred.
+
 ## Current source — searchable label/folder management
 
 Both native clients now use account-scoped cached catalogs for hierarchy management and searchable destination/parent pickers. The Gmail message checklist applies only explicit add/remove deltas in one provider request; Outlook/IMAP retain single-folder moves. Create-from-email separately reviews creation and subsequent message assignment. Provider catalog validation, single-use folder reviews, protected folders, write permissions and uncertain-write handling remain enforced. Safe manager metadata is projected separately from selectable sidebar destinations; connection secrets remain private.
@@ -10,7 +16,7 @@ Initial Windows compilation caught the shared error formatter's anonymous namesp
 
 [Corrected source CI 36876489218](https://github.com/Coke1120/Morrow-Mail/actions/runs/36876489218) at `4930d1d259bc79d8881de8c3dc7bc207656b8440` passed both platform jobs completely: Node-free Rust formatting, strict all-target Clippy and locked tests; macOS packaging and production-service acceptance; Windows packaging and the complete fresh/owned/restart native walkthrough, including reader isolation and the new picker/hierarchy checks; and the 1,000/10,000/50,000 fictional-mail benchmark. No test waiver or new publication applied.
 
-No real-account writes or installed-app replacement are used. This change is not included in the beta.31 public packages. The earlier Parallels walkthrough covers beta.30; this new candidate has not been walked through in Parallels.
+No real-account writes or installed-app replacement are used. This change is not included in the beta.31 public packages. The earlier complete Parallels walkthrough covers beta.30; the current source candidate's partial VM attempt and failure are recorded in the walkthrough matrix above.
 
 ## 0.6.0-beta.31 — published paired native release
 

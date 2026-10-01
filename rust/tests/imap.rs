@@ -29,6 +29,23 @@ const SENT_WIRE: &str = "&XfJbxE72-";
 const HEADER: &str = "From: Fixture <owner@example.invalid>\r\nTo: visible@example.invalid\r\nSubject: Fixture message\r\nDate: Wed, 23 Sep 2026 12:00:00 +0000\r\nMessage-ID: <fixture@example.invalid>\r\n";
 
 #[tokio::test]
+async fn refused_imap_connection_is_a_provider_failure_not_a_workspace_error() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let mail = json!({"provider":"imap","email":OWNER,"imapHost":"127.0.0.1","imapPort":port,"password":"fictional-only"});
+    let connector = native_tls::TlsConnector::new().unwrap();
+    for result in [
+        imap::folders_with_tls(&mail, &connector).await,
+        imap::management_folders_with_tls(&mail, &connector).await,
+    ] {
+        let error = result.unwrap_err();
+        assert_eq!(error.status, 502);
+        assert_eq!(error.body, morrow_search::providers::remote_error().body);
+    }
+}
+
+#[tokio::test]
 async fn custom_folder_writes_encode_names_protect_special_use_and_check_uidvalidity() {
     let fixture = ImapFixture::new(ImapScenario {
         extra_folders: "* LIST (\\Archive) \"/\" \"Protected archive\"\r\n",

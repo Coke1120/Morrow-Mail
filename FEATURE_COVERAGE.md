@@ -2,6 +2,8 @@
 
 **Current source, after beta.31:** Both native clients have a searchable hierarchy manager, searchable destination/parent popups and distinct email context/reader actions for Move, Gmail Labels, Create and Manage. Gmail's checklist preserves selection while filtering and submits one reviewed custom-label delta, retaining Inbox and other owners. Create-from-email uses folder review first, optional destination selection, and a separate message review. Protected folders and descendants are excluded from applicable changes; failed requests retain form inputs and do not replay writes. Full safe hierarchy metadata is cached alongside selectable sidebar names. These changes are not in the published beta.31 binaries.
 
+Current-source IMAP TCP connection failures use the safe provider error instead of the local workspace I/O error. The [October walkthrough report](docs/WALKTHROUGH-2026-10-01.md) separates manual desktop checks, automated fixtures and outstanding acceptance.
+
 
 **Current source:** React/Electron/Node and npm tooling are retired; only native clients are supported. Normal mail reading has no app-owned JavaScript: both native HTML readers use a 480-point viewport with independent native scrolling. Native reader checks no longer execute host scripts, and historical Node CI is retired. Hostile script markup remains inert security test data; see [JavaScript retirement](docs/JAVASCRIPT_RETIREMENT.md).
 

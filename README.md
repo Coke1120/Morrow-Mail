@@ -327,6 +327,8 @@ Enter your email address, mailbox password or provider-issued app password, and 
 
 IMAP retrieves mail; SMTP sends it. Use your provider's documented hostnames instead of guessing them.
 
+Current source reports failed IMAP TCP connections as provider failures, preserving cached mail and folder names; they no longer appear as local file-storage errors.
+
 ### Yahoo Mail / Hong Kong
 
 Yahoo Mail, including `@yahoo.com.hk`, uses the existing IMAP/SMTP connection. In **Settings → Mail accounts → Yahoo / IMAP**, choose **Use Yahoo Mail / HK Settings**, enter the full email address and a Yahoo **app password**, then choose **Connect & Sync**. The preset keeps the address, fills `imap.mail.yahoo.com:993` and `smtp.mail.yahoo.com:465` (TLS), and clears any password typed for the previous servers. Custom IMAP and SMTP port 587/STARTTLS remain available.

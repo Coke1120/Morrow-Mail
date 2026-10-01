@@ -295,7 +295,8 @@ async fn connect(mail: &Value, connector: &native_tls::TlsConnector) -> Result<M
         tokio::net::TcpStream::connect((host.as_str(), port(mail, "imapPort", 993)?)),
     )
     .await
-    .map_err(|_| providers::remote_error())??;
+    .map_err(|_| providers::remote_error())?
+    .map_err(|_| providers::remote_error())?;
     let stream = tokio::time::timeout(
         Duration::from_secs(15),
         tokio_native_tls::TlsConnector::from(connector.clone()).connect(&host, stream),
