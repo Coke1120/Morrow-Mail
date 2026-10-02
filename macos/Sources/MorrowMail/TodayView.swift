@@ -3,6 +3,7 @@ import SwiftUI
 struct TodayView: View {
     @EnvironmentObject var model: AppModel
     @State private var showSummaryReview = false
+    @State private var reviewing = false
     private var accounts: [JSON] { model.accounts }
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -30,6 +31,32 @@ struct TodayView: View {
                             .buttonStyle(.borderedProminent).disabled(!model.canNavigate || accounts.isEmpty)
                     }
                     summaryContent(now: context.date)
+                    Text("Replies to review").font(.title2.weight(.semibold))
+                    Text("Up to five current suggestions per mailbox. Drafts wait for your review and are never sent here.").font(.caption).foregroundStyle(.secondary)
+                    ForEach(model.state["today"]["replySuggestions"].array) { proposal in
+                        GroupBox {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(proposal["accountId"].string).font(.caption).foregroundStyle(morrowGreen)
+                                Text(proposal["message"]["subject"].nonempty ? proposal["message"]["subject"].string : "(Subject withheld)").font(.headline)
+                                Text(proposal["reason"].string).foregroundStyle(.secondary)
+                                Text(proposal["text"].string).lineLimit(4)
+                                SourceLinksView(sources: proposal["sourceMessages"].array)
+                                Button("Review suggested reply") {
+                                    reviewing = true
+                                    Task { @MainActor in
+                                        defer { reviewing = false }
+                                        do { try await model.reviewReplySuggestion(owner: proposal["accountId"].string, id: proposal["proposalId"].string) }
+                                        catch is CancellationError { }
+                                        catch { model.error = error.localizedDescription }
+                                    }
+                                }.disabled(reviewing || !model.canNavigate)
+                            }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                        }
+                    }
+                    if model.state["today"]["replySuggestions"].array.isEmpty {
+                        Text("No current suggestions. Review reply suggestions for one mailbox to get started.").foregroundStyle(.secondary)
+                        Button("Review Reply Suggestions") { model.section = "reply-suggestions" }.disabled(!model.canNavigate)
+                    }
                     Spacer(minLength: 0)
                 }.padding(28).frame(maxWidth: 1000, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -79,6 +106,7 @@ struct TodayView: View {
 }
 
 struct SummaryReportView: View {
+    @EnvironmentObject var model: AppModel
     let report: JSON
     var body: some View {
         GroupBox {
@@ -93,6 +121,9 @@ struct SummaryReportView: View {
                 }
                 Text(dateLabel(summaryReportTimestamp(report)) + " · \(report["messageIds"].array.count) messages" + (report["source"].string == "demo" ? " · Illustrative demo" : "")).font(.caption).foregroundStyle(.secondary)
                 if report["text"].nonempty { Text(report["text"].string).textSelection(.enabled).lineSpacing(5) }
+                ForEach(Array(report["items"].array.enumerated()), id: \.offset) { _, item in
+                    Button("Open source · " + item["priority"].string + " · " + item["summary"].string) { model.perform { try await model.openSource(.object(["id": item["messageId"], "accountId": report["accountId"].nonempty ? report["accountId"] : .string(model.account)])) } }.disabled(!model.canNavigate)
+                }
                 if report["error"].nonempty { Text(report["error"].string).foregroundStyle(.orange) }
             }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
         }

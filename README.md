@@ -494,6 +494,14 @@ In **Settings → General → Email footer**, choose Plain text or HTML, enter t
 Replies, including AI replies and the native Reply shortcut, keep the account that owns the original message even in combined views or when the To address is an alias. Their From identity is locked; replying to a sent message uses its original recipients.
 
 
+## Reviewed attention workflows (current source, unpublished)
+
+Today links P0–P4 summaries to their source mail and shows up to five current reply suggestions per mailbox. Reply cards show a draft preview, reason and permitted correspondence; open the account’s queue to review, edit or ignore. Opening Today starts no AI job.
+
+Ask defaults to keyword context and offers an explicit **Use my approved Smart Search index** checkbox. It retrieves only permitted mail from that account; query embedding may incur charges and never starts indexing. Answers use numbered, server-derived source links; unavailable reference numbers are rejected. Sources identify supplied context, not a guarantee that a model’s interpretation is correct. Writing Style & Notes separates business facts, writing voice and reviewed writing guardrails.
+
+AI Studio → More → **Local Inbox Rules** previews exact sender/domain or subject-text matches among the newest 500 downloaded Inbox messages. Apply saves the rule and sets a local Star, Pending or Read later marker. Saved rules run only after another preview/apply; each account keeps up to 30. Reviews expire after ten minutes and reject changed source mail or connections. **Later** shows locally marked Inbox/Archive mail; return from Later manually to correct it. These markers survive imports/restarts, keep provider folders and never delete mail or report spam. See the [AI Emaily UI review](docs/AI_EMAILY_REVIEW-2026-10-03.md) for the six recommendations and their implementation limits.
+
 ## AI Studio simulations
 
 Priority previews, smart labels, legacy Brain simulations, person/company research, meeting preparation, follow-ups, meeting scheduling, cleanup, unsubscribe, attachment comparisons, and the legacy Batch Replies tool are **local simulations**, even with a model configured. Preview a plan, then apply it to create local changes or records. Custom skills save editable instructions and run through the configured model or labeled demo mode.

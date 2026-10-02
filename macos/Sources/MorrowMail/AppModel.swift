@@ -536,6 +536,26 @@ final class AppModel: ObservableObject {
             throw error
         }
     }
+    func openSource(_ source: JSON) async throws {
+        let owner = source["accountId"].string
+        guard accounts.contains(where: { $0.id == owner }), !source.id.isEmpty else { throw APIError("The source mailbox is unavailable.") }
+        let result = try await request("/messages/" + encodedPath(source.id), mailbox: owner)
+        let message = result["message"]
+        guard message["accountId"].string == owner, message.id == source.id else { throw APIError("The source owner could not be verified.") }
+        try await selectAccount(owner, folder: message["folder"].string)
+        messageDetail = message; selectedMessage = message.viewID
+    }
+    func reviewReplySuggestion(owner: String, id: String) async throws {
+        guard canNavigate, accounts.contains(where: { $0.id == owner }) else { return }
+        let generation = draftGeneration
+        let result = try await request("/reply-suggestions/use", method: "POST", body: .object(["id": .string(id)]), mailbox: owner)
+        guard generation == draftGeneration, result["message"]["accountId"].string == owner else { throw CancellationError() }
+        let draft = try await prepareDraft(message: result["message"], mode: "reply", body: result["text"].string)
+        let latest = try await request("/reply-suggestions", mailbox: owner)
+        guard generation == draftGeneration else { throw CancellationError() }
+        guard latest["owner"].string == owner, latest["proposals"].array.contains(where: { $0.id == id && $0["text"] == result["text"] && $0["messageId"] == result["message"]["id"] && $0["message"]["accountId"].string == owner }) else { throw APIError("This suggestion or its sources changed. Review a fresh suggestion.") }
+        newDraft(draft)
+    }
     func openDraft(message: JSON, mode: String, body: String? = nil) async {
         guard readerAssistant == nil else { return }
         do { newDraft(try await prepareDraft(message: message, mode: mode, body: body)) }

@@ -218,10 +218,10 @@ struct MailWorkspace: View {
     @ViewBuilder func folderRows(_ account: String) -> some View {
         ForEach(mailFolders.filter { folderFilter.isEmpty || $0.localizedCaseInsensitiveContains(folderFilter) }, id: \.self) { folder in
             HStack {
-                Label(folder.capitalized, systemImage: ["inbox": "tray", "starred": "star", "pending": "clock", "sent": "paperplane", "drafts": "doc", "archive": "archivebox", "spam": "exclamationmark.shield", "trash": "trash"][folder] ?? "folder")
+                Label(folder.capitalized, systemImage: ["inbox": "tray", "starred": "star", "pending": "clock", "later": "tray.2", "sent": "paperplane", "drafts": "doc", "archive": "archivebox", "spam": "exclamationmark.shield", "trash": "trash"][folder] ?? "folder")
                 Spacer()
                 let count = folderCount(account, folder)
-                if count > 0 && ["inbox", "pending", "drafts"].contains(folder) { Text("\(count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+                if count > 0 && ["inbox", "pending", "later", "drafts"].contains(folder) { Text("\(count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
             }.tag(account + "\n" + folder).accessibilityIdentifier("mailbox.\(account).\(folder)")
                 .background(dropTarget == account + "\n" + folder ? morrowGreen.opacity(0.18) : .clear)
                 .onDrop(of: [MailFolderDrop.type], delegate: MailFolderDrop(model: model, owner: account, destination: model.mailDropDestination(account, folder: folder), target: account + "\n" + folder, highlighted: $dropTarget))
@@ -324,6 +324,7 @@ struct MailWorkspace: View {
                     .contextMenu {
                         if model.canOrganize(message) { MessageOrganizationActions(message: message) }
                         Button(message["starred"].bool ? "Unstar" : "Star") { model.patch(message, .object(["starred": .bool(!message["starred"].bool)])) }
+                        Button(message["lowPriority"].bool ? "Return from Later" : "Read Later") { model.patch(message, .object(["lowPriority": .bool(!message["lowPriority"].bool)])) }.disabled(!["inbox", "archive"].contains(message["folder"].string))
                         Button(message["pending"].bool ? "Clear Pending" : "Mark Pending") { model.patch(message, .object(["pending": .bool(!message["pending"].bool)])) }
                         Button(message["read"].bool ? "Mark Unread" : "Mark Read") { model.patch(message, .object(["read": .bool(!message["read"].bool)])) }
                         if message["folder"].string != "drafts" { Button("Archive Locally") { model.patch(message, .object(["folder": .string("archive")])) } }

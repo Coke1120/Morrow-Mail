@@ -75,11 +75,14 @@ struct ReplySuggestionsView: View {
                             Text(proposal["message"]["subject"].nonempty ? proposal["message"]["subject"].string : "(Subject withheld)").font(.headline)
                             Text(proposal["message"]["fromEmail"].string).font(.caption).foregroundStyle(.secondary)
                             Text(proposal["reason"].string).font(.callout).foregroundStyle(.secondary)
+                            Text(proposal["text"].string).lineLimit(4).font(.body)
+                            Text("\(proposal["sourceMessages"].array.count) permitted source(s)" + (proposal["approvedStyleUsed"].bool ? " · Approved writing style" : "")).font(.caption).foregroundStyle(.secondary)
                             Text("Review suggested reply…").foregroundStyle(morrowGreen)
                         }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                     }.buttonStyle(.plain).disabled(locked || changed || model.compose != nil)
                     Button("Ignore") { action("dismiss", body: .object(["id": proposal["id"]])) }.disabled(locked)
                 }.padding(10)
+                SourceLinksView(sources: proposal["sourceMessages"].array)
             }
         }
         DisclosureGroup("Automatic checks & budget") {
@@ -99,21 +102,25 @@ struct ReplySuggestionsView: View {
     private func number(_ key: String) -> Binding<Int> { Binding(get: { Int(options[key].number) }, set: { options[key] = .number(Double($0)) }) }
     private func action(_ path: String, body: JSON = .object([:])) {
         guard !owner.isEmpty, !locked else { return }
-        let account = owner, generation = model.draftGeneration
+        let account = owner
         if path == "settings" && body["automatic"].bool && !model.confirm("Automatically find mail that needs a reply?", detail: "\(account) · \(value["model"]["model"].string)\nEndpoint: \(value["model"]["baseUrl"].string)\nUp to \(Int(body["dailyTokenBudget"].number)) estimated tokens per UTC day, while Morrow is open. Uses permitted Inbox and correspondence. Provider charges may apply. Open each suggestion to review, edit or send it; enabling never sends mail.") { return }
+        if path == "use" {
+            busy = true
+            Task { @MainActor in
+                defer { busy = false; revision += 1 }
+                do { try await model.reviewReplySuggestion(owner: account, id: body["id"].string) }
+                catch is CancellationError { }
+                catch { self.error = error.localizedDescription }
+            }
+            return
+        }
         revision += 1; busy = true; error = ""
         Task { @MainActor in
             defer { revision += 1; busy = false }
             do {
                 let next = try await model.request("/reply-suggestions/\(path)", method: "POST", body: body, mailbox: account)
                 guard model.account == account else { return }
-                if path == "use" {
-                    guard next["message"]["accountId"].string == account else { throw APIError("The suggestion belongs to a different mailbox.") }
-                    guard generation == model.draftGeneration else { return }
-                    let draft = try await model.prepareDraft(message: next["message"], mode: "reply", body: next["text"].string)
-                    guard generation == model.draftGeneration, owner == account else { return }
-                    model.newDraft(draft)
-                } else { value = next; if path == "settings" { options = next["settings"] } }
+                value = next; if path == "settings" { options = next["settings"] }
             } catch is CancellationError { }
             catch { if model.account == account { self.error = error.localizedDescription } }
         }

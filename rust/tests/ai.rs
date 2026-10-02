@@ -1497,3 +1497,84 @@ async fn automatic_brain_proposals_survive_restart_and_wait_for_review_without_r
         1
     );
 }
+
+#[tokio::test]
+async fn ask_returns_owned_redacted_numbered_sources_and_rejects_missing_evidence() {
+    let directory = Temporary::new();
+    let model = Model::new(false, "The timetable needs review [1].");
+    let server = model_server(model.clone()).await;
+    let app = app_at(&directory, &server.url).await;
+    app.db(|db| {
+        db.set_settings(&json!({"policy":{"content":{"subject":false}}}))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let result = ai_request(&app, json!({"action":"ask","prompt":"timetable"}))
+        .await
+        .unwrap();
+    assert_eq!(result["sources"][0]["accountId"], OWNER);
+    assert_eq!(result["sources"][0]["id"], "same");
+    assert_eq!(result["sources"][0]["reference"], 1);
+    assert_eq!(result["sources"][0]["subject"], "");
+    let payload = model.requests.lock().await[0].to_string();
+    assert!(!payload.contains("OTHER ACCOUNT PRIVATE") && !payload.contains("Review Northstar"));
+    assert_eq!(
+        ai_request(&app, json!({"action":"ask","prompt":"unmatchedxyz"}))
+            .await
+            .unwrap_err()
+            .status,
+        409
+    );
+    assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+    assert!(ai::ask_sources("unsupported [2]", &[message("same", OWNER)], OWNER).is_err());
+    assert!(ai::ask_sources("unsupported [0]", &[message("same", OWNER)], OWNER).is_err());
+}
+
+#[tokio::test]
+async fn manual_guardrails_are_separate_preserved_and_permission_gated() {
+    let directory = Temporary::new();
+    let app = app_at(&directory, "http://127.0.0.1:9").await;
+    workflow(&app,"POST","workspace/brain",OWNER,json!({"voice":"Concise","notes":"Reviewed fact","guardrails":"Never invent a price or delivery date."})).await.unwrap();
+    workflow(
+        &app,
+        "POST",
+        "workspace/brain",
+        OWNER,
+        json!({"voice":"Friendly","notes":"Updated fact"}),
+    )
+    .await
+    .unwrap();
+    app.db(|db| {
+        let config = db.settings()?;
+        assert_eq!(
+            morrow_search::service::workspace(&config, OWNER)["brain"]["guardrails"],
+            "Never invent a price or delivery date."
+        );
+        let brain = morrow_search::brain::context(db, &config, OWNER, &Value::Null)?;
+        let payload = ai::model_payload(
+            &config["ai"],
+            "reply",
+            &[message("same", OWNER)],
+            "",
+            &json!({"brain":brain}),
+        )?;
+        let user: Value =
+            serde_json::from_str(payload["messages"][1]["content"].as_str().unwrap())?;
+        assert_eq!(user["writingContext"]["voice"], "Friendly");
+        assert_eq!(user["writingContext"]["notes"], "Updated fact");
+        assert!(user["writingContext"]["guardrails"].is_string());
+        assert_eq!(
+            morrow_search::brain::context(db, &config, OTHER, &Value::Null)?,
+            Value::Null
+        );
+        db.set_settings(&json!({"policy":{"content":{"body":false}}}))?;
+        assert_eq!(
+            morrow_search::brain::context(db, &db.settings()?, OWNER, &Value::Null)?,
+            Value::Null
+        );
+        Ok(())
+    })
+    .await
+    .unwrap();
+}

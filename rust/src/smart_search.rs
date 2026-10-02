@@ -97,6 +97,28 @@ fn scope_stamp(settings: &Value) -> String {
         identities
     ]))
 }
+pub(crate) fn ask_stamp(settings: &Value) -> String {
+    stamp(settings)
+}
+pub(crate) async fn ask(app: &App, owner: &str, prompt: &str) -> Result<Value> {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        "x-genmail-account",
+        owner
+            .parse()
+            .map_err(|_| Error::invalid("Invalid mailbox."))?,
+    );
+    let context = Context {
+        method: axum::http::Method::POST,
+        path: vec!["search".into()],
+        body: json!({"query":prompt,"scope":"account","smart":true}),
+        query: json!({}),
+        headers,
+        owner: owner.into(),
+        paged: true,
+    };
+    search(app, &context).await
+}
 fn stamp(settings: &Value) -> String {
     query::digest(&json!([
         scope_stamp(settings),

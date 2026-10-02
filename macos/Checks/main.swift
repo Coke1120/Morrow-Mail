@@ -214,3 +214,8 @@ for malformed in [JSON.null, .object(["accountId": .string("owner@example.com")]
 let savedFooter: JSON = .object(["text": .string("Saved signature")])
 expectEqual(Draft(message: .object(["id": .string("local-draft"), "footer": savedFooter])).footer, savedFooter)
 print("Native prepared draft decoding preserves service recipients, reply/copy/forward flags and text; saved draft recovery stays synchronous.")
+
+expectEqual(messageMatchesFolder(.object(["folder": .string("inbox"), "lowPriority": .bool(true)]), folder: "later"), true)
+expectEqual(messageMatchesFolder(.object(["folder": .string("trash"), "lowPriority": .bool(true)]), folder: "later"), false)
+expectEqual(messageMatchesFolder(.object(["folder": .string("inbox")]), folder: "later"), false)
+print("Native Later marker filtering checks passed.")

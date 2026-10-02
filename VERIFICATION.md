@@ -1,4 +1,12 @@
-# Verification — 2 October 2026
+# Verification — 3 October 2026
+
+## Reviewed attention workflows — local source, unpublished
+
+The [AI Emaily review](docs/AI_EMAILY_REVIEW-2026-10-03.md) records public website interaction, documentation and App Store screenshots; it does not claim authenticated competitor testing. This source adds actionable Today reply previews, Ask with opt-in approved semantic retrieval and numbered context sources, reply-queue evidence, separate Brain guardrails, reviewed manual local rules, a persistent Later view and a Today onboarding entry. Both clients remain native; no provider organization, automatic rule execution, sending or new indexing starts from these views.
+
+All 191 locked Rust tests, formatting and strict all-target Clippy passed. New fixtures cover duplicate provider IDs across accounts, permission-redacted Ask sources and invalid reference rejection, opt-in retrieval without indexing, no paid query without a configured chat model, in-flight search revocation, Brain guardrail compatibility, valid Today proposals, atomic single-use local-rule previews and reconnect invalidation, and Later import/restart persistence. Checks use fictional mail, isolated temporary stores and loopback model fixtures; they do not establish live-account acceptance.
+
+Final macOS release packaging, production-service native acceptance, signature verification and plist lint are pending. Windows compilation and native smoke execution are unavailable on this macOS host; the existing PR workflow runs both platform gates. No release or installed-app replacement occurred, and the owner's working tree and mailbox were not used.
 
 ## Saved model API keys — local source, unpublished
 

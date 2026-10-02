@@ -10,6 +10,7 @@ pub mod error;
 pub mod folders;
 pub mod imap;
 pub mod learning;
+pub mod local_rules;
 pub mod mail;
 pub mod message_html;
 pub mod normalize;

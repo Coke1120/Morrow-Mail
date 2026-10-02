@@ -151,7 +151,7 @@ IAsyncAction Shell::smoke() {
                 check(text(tag, L"owner") == L"all" && text(tag, L"section") == L"mail", L"A combined folder is routed to an individual owner.");
                 folders.insert(std::wstring(text(tag, L"folder")));
             }
-            check(folders == std::set<std::wstring>{L"inbox", L"starred", L"pending", L"sent", L"drafts", L"archive", L"spam", L"trash"}, L"Combined mail folder destinations are duplicated or missing.");
+            check(folders == std::set<std::wstring>{L"inbox", L"starred", L"pending", L"later", L"sent", L"drafts", L"archive", L"spam", L"trash"}, L"Combined mail folder destinations are duplicated or missing.");
         }
         enter("initial-page");
         check(page.Content() && !loading && !closing && !dialogOpen && dirty.empty(), L"The normal initial page is not ready.");
@@ -278,6 +278,10 @@ IAsyncAction Shell::smoke() {
             enter("mail-patches");
             Json pending; pending.Insert(L"pending",Value::CreateBooleanValue(true)); co_await patch(source,pending);
             check(flag(selected,L"pending"), L"Pending did not update the reader.");
+            Json later; later.Insert(L"lowPriority",Value::CreateBooleanValue(true)); co_await patch(selected,later);
+            check(flag(selected,L"lowPriority") && flag(selected,L"pending"),L"Later should be independent from Pending in the native reader.");
+            later.Insert(L"lowPriority",Value::CreateBooleanValue(false)); co_await patch(selected,later);
+            check(!flag(selected,L"lowPriority") && flag(selected,L"pending"),L"Returning from Later cleared the Pending marker.");
             auto cursorCount = cursors.size();
             Json unread; unread.Insert(L"read",Value::CreateBooleanValue(false)); co_await patch(selected,unread);
             check(!flag(selected,L"read") && cursors.size()==cursorCount, L"Manual unread reset selection or pagination.");

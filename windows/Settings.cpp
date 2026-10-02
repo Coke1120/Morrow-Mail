@@ -306,7 +306,7 @@ IAsyncAction changeTab(Page p, hstring next) {
 }
 void start(Page const& p) {
     title(p->body, L"Start here");
-    help(p->body, L"Three steps to get mail and optional AI help ready. You can use mail without configuring AI.");
+    help(p->body, L"Connect your mailbox, see what needs attention in Today, then review your first suggested reply. AI setup is optional.");
     std::weak_ptr<SettingsPage> weak = p;
     auto step = [&](hstring heading, hstring detail, hstring actionText, hstring tab) {
         auto panel = stack(8); panel.Padding(xaml::ThicknessHelper::FromUniformLength(8));
@@ -322,6 +322,7 @@ void start(Page const& p) {
     hstring accountDetail = accounts ? to_hstring(accounts) + L" mail account(s) connected." :
         hstring(L"Add a Gmail, Outlook or IMAP account to see your inbox.");
     step(L"1 · Connect your mail", accountDetail, accounts ? L"Manage Accounts" : L"Add an Account", L"mail");
+    p->body.Children().Append(button(L"Open Today",[weak]{ if (auto page=weak.lock()) page->shell->navigate(L"today"); }));
     step(L"2 · Set up AI help (optional)", flag(object(object(p->shell->state, L"settings"), L"ai"), L"configured") ?
         L"AI connection saved. Online AI receives only the mail you permit and may charge for requests." :
         L"AI can help write replies and summarize mail. Ask your IT support or AI provider for the connection details. You can still use mail without AI.",

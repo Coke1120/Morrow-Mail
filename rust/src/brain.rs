@@ -74,7 +74,7 @@ pub fn context(db: &Store, config: &Value, owner: &str, skill: &Value) -> Result
         &policy,
         skill,
     )? {
-        for key in ["voice", "notes", "contacts"] {
+        for key in ["voice", "notes", "guardrails", "contacts"] {
             if let Some(value) = brain.get(key) {
                 result[key] = value.clone();
             }

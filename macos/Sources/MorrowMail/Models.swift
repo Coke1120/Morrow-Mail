@@ -104,13 +104,14 @@ struct Draft: Identifiable, Equatable {
     }
 }
 
-let mailFolders = ["inbox", "starred", "pending", "sent", "drafts", "archive", "spam", "trash"]
-let permissionFolders = mailFolders.filter { !["starred", "pending", "spam"].contains($0) }
+let mailFolders = ["inbox", "starred", "pending", "later", "sent", "drafts", "archive", "spam", "trash"]
+let permissionFolders = mailFolders.filter { !["starred", "pending", "later", "spam"].contains($0) }
 func messageMatchesFolder(_ message: JSON, folder: String) -> Bool {
     if folder.hasPrefix("provider:") {
         let id = String(folder.dropFirst("provider:".count))
         return message["providerFolderId"].string == id || message["providerLabelIds"].array.contains { $0.string == id }
     }
+    if folder == "later" { return message["lowPriority"].bool && ["inbox", "archive"].contains(message["folder"].string) }
     if folder == "starred" || folder == "pending" {
         // Missing flags on older cached messages decode as false.
         return message[folder].bool && !["trash", "spam"].contains(message["folder"].string)
