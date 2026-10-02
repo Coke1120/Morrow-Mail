@@ -644,7 +644,7 @@ Json modelFields(Json const& source, bool embedding) {
 IAsyncAction modelAction(Page p, Form f, bool embedding, bool testing) {
     auto body = copy(f->value);
     if (!f->secret.Password().empty()) put(body, L"apiKey", f->secret.Password());
-    struct Clear { Form f; Json body; ~Clear() { f->secret.Password(L""); remove(body, L"apiKey"); } } clear{f, body};
+    struct Clear { Json body; ~Clear() { remove(body, L"apiKey"); } } clear{body};
     auto path = embedding ? (testing ? L"/search/test" : L"/search/settings") : (testing ? L"/settings/ai/test" : L"/settings/ai");
     auto result = co_await p->shell->service->request(path, p->owner, L"POST", body);
     if (!p->current()) co_return;
@@ -652,6 +652,8 @@ IAsyncAction modelAction(Page p, Form f, bool embedding, bool testing) {
     else {
         auto config = embedding ? object(result, L"settings") : object(object(result, L"settings"), L"ai");
         f->accept(modelFields(config, embedding));
+        f->disclosure.Header(box_value(flag(config, L"hasApiKey") ? L"API key saved — replace…" : L"API key"));
+        f->disclosure.IsExpanded(!flag(config, L"hasApiKey"));
         if (embedding) p->searchState = result; else object(p->shell->state, L"settings").Insert(L"ai", config);
         p->tell(embedding ? L"Embedding connection saved. Review scope and batches in Search." : L"Chat model saved.");
     }
@@ -667,11 +669,16 @@ void models(Page const& p) {
         title(f->panel, embedding ? L"Search embedding" : L"Chat & reply model");
         f->container.Visibility(embedding ? xaml::Visibility::Collapsed : xaml::Visibility::Visible); editors.push_back(f->container);
         if (embedding) choice(f, L"protocol", L"Embedding protocol", {{L"openai", L"OpenAI-compatible /embeddings"}, {L"ollama", L"Ollama native /api/embed"}});
-        input(f, L"baseUrl", L"Server address (API base URL)", 2000); input(f, L"model", L"Model name", 200); password(f, L"Access key (API key, optional for local models)");
+        input(f, L"baseUrl", L"Server address (API base URL)", 2000); input(f, L"model", L"Model name", 200);
+        auto main = f->panel;
+        f->disclosure = Expander(); f->disclosure.Header(box_value(flag(config, L"hasApiKey") ? L"API key saved — replace…" : L"API key"));
+        f->disclosure.IsExpanded(!flag(config, L"hasApiKey"));
+        f->panel = stack(12); f->disclosure.Content(f->panel); main.Children().Append(f->disclosure);
+        password(f, L"Access key (API key, optional for local models)"); f->panel = main;
         auto clear = toggle(f, L"clearApiKey", L"Remove saved API key");
         std::weak_ptr<Editor> weak = f;
         clear.Click([weak](auto const& sender, auto const&) { if (auto item = weak.lock()) { bool remove = checked(sender.template as<CheckBox>()); if (remove) item->secret.Password(L""); item->secret.IsEnabled(!remove); } });
-        help(f->panel, flag(config, L"hasApiKey") ? L"A key is saved. Blank keeps it only at the same base URL; enter it again when changing endpoint. Saved keys are never displayed." : L"No saved API key. Remote endpoints require HTTPS; HTTP is supported only on loopback.");
+        help(f->panel, L"Changing models on the same endpoint reuses your saved API key. Enter a key only to replace it or use a different base URL. Saved keys are never displayed; local endpoints may not require a key.");
         if (!embedding) {
             Expander advanced; advanced.Header(box_value(L"Advanced response settings")); auto fields = stack(12); auto main = f->panel;
             advanced.Content(fields); main.Children().Append(advanced); f->panel = fields;

@@ -523,7 +523,8 @@ fn settings_input(db: &Store, input: &Value) -> Result<Value> {
         json!("")
     } else if !string(input, "apiKey").is_empty() {
         input["apiKey"].clone()
-    } else if previous["baseUrl"] == next["baseUrl"] {
+    } else if validation::api_base(&previous["baseUrl"]).is_ok_and(|saved| saved == next["baseUrl"])
+    {
         json!(string(&previous, "apiKey"))
     } else {
         json!("")

@@ -122,8 +122,15 @@ struct NativeSearchSettingsView: View {
                 Text("Local OpenAI-compatible: http://127.0.0.1:11434/v1. Ollama native: http://127.0.0.1:11434. Remote endpoints require HTTPS.").font(.caption).foregroundStyle(.secondary)
                 field("Embedding model ID", "model")
                 Text("Use an embedding model, not a chat-only model. A change of model or scope invalidates existing vectors.").font(.caption).foregroundStyle(.secondary)
-                VStack(alignment: .leading) { Text("Embedding API key").font(.caption); SecureField("Optional for local models", text: text("apiKey")) }
-                Text(value["settings"]["hasApiKey"].bool ? "Leave blank to keep the saved key at the same base URL. Changing the base URL requires entering the key again." : "No embedding API key saved.").font(.caption).foregroundStyle(.secondary)
+                if value["settings"]["hasApiKey"].bool {
+                    Text("API key saved. Changing models on the same endpoint reuses it.").font(.caption).foregroundStyle(.secondary)
+                    DisclosureGroup("Replace saved API key") {
+                        SecureField("New API key", text: text("apiKey")).disabled(options["clearApiKey"].bool)
+                    }
+                } else {
+                    VStack(alignment: .leading) { Text("Embedding API key").font(.caption); SecureField("Optional for local models", text: text("apiKey")) }
+                }
+                Text("Changing the base URL requires a key for that endpoint. Leave the key blank to reuse it at the same endpoint.").font(.caption).foregroundStyle(.secondary)
                 if value["settings"]["hasApiKey"].bool { Toggle("Remove saved key", isOn: flag("clearApiKey")).toggleStyle(.checkbox) }
             } else {
                 VStack(alignment: .leading, spacing: 14) {

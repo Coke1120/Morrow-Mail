@@ -411,7 +411,7 @@ An organization may require administrator approval. Microsoft's [event creation 
 
 In **Settings → Advanced setup → AI connection**, enter your own OpenAI-compatible **base URL**, **model ID**, and **API key**. The key is optional for endpoints that do not require one. Response token limits and temperature are under Advanced response settings; ask your IT support or AI provider if you need help with the connection details.
 
-**Test connection** sends a fixed test prompt with no email content and does not save your changes. Save separately. Blank API-key input retains the saved key only when the base URL is unchanged; changing the endpoint requires its own key. Use the remove-key control to clear it.
+**Test connection** sends a fixed test prompt with no email content and does not save your changes. Save separately. Chat and embedding show saved-key status and collapse the replacement field; changing only the model ID reuses the saved key. Blank API-key input retains that key at the same normalized base URL, including equivalent trailing-slash/default-port spellings. Changing the endpoint requires its own key. Tests and failed saves keep an entered replacement key available for Save or retry; saved keys remain hidden. Use the remove-key control to clear a saved key.
 
 For a local [Ollama](https://ollama.com/) model:
 

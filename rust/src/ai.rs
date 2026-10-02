@@ -770,7 +770,7 @@ pub fn model_settings(previous: &Value, input: &Value) -> Result<Value> {
         ""
     } else if !string(input, "apiKey").is_empty() {
         string(input, "apiKey")
-    } else if previous["baseUrl"] == base {
+    } else if validation::api_base(&previous["baseUrl"]).is_ok_and(|saved| saved == base) {
         string(previous, "apiKey")
     } else {
         ""

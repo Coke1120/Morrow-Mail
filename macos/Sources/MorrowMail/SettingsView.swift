@@ -243,8 +243,15 @@ struct NativeSettingsView: View {
             field("Server address (API base URL)", "ai", "baseUrl")
             Text("Include /v1 when your provider requires it. Remote endpoints require HTTPS.").font(.caption).foregroundStyle(.secondary)
             field("Model name", "ai", "model")
-            field("Access key (API key, optional for local models)", "ai", "apiKey", secure: true)
-            Text(model.state["settings"]["ai"]["hasApiKey"].bool ? "Leave blank to keep the saved key at the same base URL." : "No key is stored.").font(.caption).foregroundStyle(.secondary)
+            if model.state["settings"]["ai"]["hasApiKey"].bool {
+                Text("API key saved. Changing models on the same endpoint reuses it.").font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup("Replace saved API key") {
+                    field("New API key", "ai", "apiKey", secure: true).disabled(values["ai"]["clearApiKey"].bool)
+                }
+            } else {
+                field("Access key (API key, optional for local models)", "ai", "apiKey", secure: true).disabled(values["ai"]["clearApiKey"].bool)
+            }
+            Text("Changing the base URL requires a key for that endpoint. Leave the key blank to reuse it at the same endpoint.").font(.caption).foregroundStyle(.secondary)
             Toggle("Remove saved API key", isOn: boolean("ai", "clearApiKey")).toggleStyle(.checkbox)
             DisclosureGroup("Advanced: response settings") { VStack(alignment: .leading, spacing: 12) {
             HStack {

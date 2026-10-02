@@ -1,5 +1,13 @@
 # Verification — 2 October 2026
 
+## Saved model API keys — local source, unpublished
+
+Chat and embedding now compare both saved and edited base URLs through the existing URL validator before reusing a key. Equivalent legacy trailing-slash, hostname-case and default-port spellings keep the key when changing models; changed endpoints and explicit removal retain their credential isolation. Both native clients show saved-key status and collapse replacement controls. Windows connection tests and failed saves retain an entered replacement key in the password control; successful Save, discard and page disposal still clear it, and request-body cleanup remains.
+
+The two legacy-URL regression cases failed before the fix and passed afterward. All 36 locked AI/smart-search fixture tests, Rust formatting, strict all-target Clippy, Swift release compilation, macOS candidate packaging, deep/strict ad-hoc signature verification, plist lint and full production-service native acceptance passed. Tests used fictional keys and isolated temporary workspaces; no real account, mail, calendar or model request was used. Native window checks emitted the existing AppKit reentrant-table-delegate warning while passing.
+
+A Windows smoke check was added for collapsed saved-key controls and retaining an entered key after an invalid-endpoint test, rejected before model work. Windows compilation and smoke execution remain unverified on this macOS host. No release was published and no installed app was replaced.
+
 ## 0.6.0-beta.37 — published paired native release
 
 [Beta.37](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.37) was published at 2026-10-02T06:53:27Z from `87289b1a41891f691b04cfff18cd70902eea1560`. [Tagged CI 36973708743, attempt 1](https://github.com/Coke1120/Morrow-Mail/actions/runs/36973708743/attempts/1) passed all three jobs: Node-free Rust formatting, strict all-target Clippy and locked tests on both platforms; macOS packaging and production-service native acceptance; Windows packaging, complete fresh/owned/restart native walkthrough (including Reply, Reply All, reopened reply drafts, independent scroll panes, wide/narrow positioning and unchanged persistence assertions) and the 1,000/10,000/50,000-message fictional-mail benchmark; and the existing paired publisher's same-run/same-attempt provenance and signing gate. No waiver applied.

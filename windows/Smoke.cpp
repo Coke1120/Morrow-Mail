@@ -357,6 +357,29 @@ IAsyncAction Shell::smoke() {
                 check(advanced.Content().as<controls::ListView>().Items().Size() == 3 &&
                     advanced.IsExpanded() == (std::wstring_view(tab) == L"model" || std::wstring_view(tab) == L"search"),
                     L"Advanced settings must open for direct setup links and stay collapsed on everyday pages.");
+                if (std::wstring_view(tab) == L"model") {
+                    auto body = layout.Children().GetAt(3).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
+                    auto panel = body.Children().GetAt(2).as<controls::ContentControl>().Content().as<controls::StackPanel>();
+                    auto keys = panel.Children().GetAt(3).as<controls::Expander>();
+                    check(keys.IsExpanded() != flag(object(object(state, L"settings"), L"ai"), L"hasApiKey"), L"Saved model keys must keep the replacement field collapsed.");
+                    auto input = panel.Children().GetAt(1).as<controls::TextBox>();
+                    auto secret = keys.Content().as<controls::StackPanel>().Children().GetAt(0).as<controls::PasswordBox>();
+                    auto original = input.Text(); input.Text(L"http://remote.invalid/v1"); secret.Password(L"fictional-unsaved-model-key");
+                    auto test = panel.Children().GetAt(7).as<controls::Button>();
+                    root.UpdateLayout();
+                    auto peer = xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(test);
+                    auto invoke = peer.GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).try_as<xaml::Automation::Provider::IInvokeProvider>();
+                    check(bool(invoke), L"The model connection test must expose its native action.");
+                    invoke.Invoke();
+                    auto notice = layout.Children().GetAt(2).as<controls::TextBlock>();
+                    auto deadline = GetTickCount64() + 5000;
+                    while ((!navigation.IsEnabled() || std::wstring_view(notice.Text()).find(L"Remote AI providers") == std::wstring_view::npos) && GetTickCount64() < deadline) {
+                        co_await resume_after(std::chrono::milliseconds(10)); co_await ui;
+                    }
+                    check(navigation.IsEnabled() && std::wstring_view(notice.Text()).find(L"Remote AI providers") != std::wstring_view::npos, L"The invalid endpoint probe did not finish without model work.");
+                    check(secret.Password() == L"fictional-unsaved-model-key", L"Testing a model discarded the entered key before it could be saved or retried.");
+                    input.Text(original); secret.Password(L"");
+                }
                 if (std::wstring_view(tab) == L"search") {
                     auto body = layout.Children().GetAt(3).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
                     controls::ComboBox history{nullptr}; controls::Expander limits{nullptr}; bool primary = false;

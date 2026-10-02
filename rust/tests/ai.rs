@@ -281,6 +281,14 @@ fn model_payload_keeps_untrusted_context_separate_and_languages_correct() {
         .unwrap()["apiKey"]
             == ""
     );
+    assert_eq!(
+        ai::model_settings(
+            &json!({"baseUrl":"https://OLD.example:443/v1/","model":"old-model","apiKey":"fixture-key"}),
+            &json!({"baseUrl":"https://old.example/v1","model":"new-model","apiKey":"","clearApiKey":false})
+        )
+        .unwrap()["apiKey"],
+        "fixture-key"
+    );
     assert!(
         ai::model_settings(
             &json!({}),

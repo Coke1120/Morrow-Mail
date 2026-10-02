@@ -1224,6 +1224,17 @@ async fn connection_probe_uses_unsaved_model_without_mail_settings_or_index_chan
     fixture
         .setup(&url, json!({"apiKey":"saved-fixture-key"}))
         .await;
+    let legacy_base = format!("{url}/");
+    fixture
+        .app()
+        .db(move |db| {
+            let mut config = db.settings()?["searchAI"].clone();
+            config["baseUrl"] = legacy_base.into();
+            db.set_settings(&json!({"searchAI":config}))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
     fixture.preview_run().await;
     smart_search::tick(fixture.app()).await.unwrap();
     let before = fixture.app().db(|db| db.settings()).await.unwrap();
@@ -1289,9 +1300,13 @@ async fn connection_probe_uses_unsaved_model_without_mail_settings_or_index_chan
     let first_input = input.clone();
     let pending = tokio::spawn(async move { request(&app, "test", Some(first_input), A).await });
     model.wait().await;
-    assert_eq!(fixture.request("test", Some(input), A).await.0, 409);
+    assert_eq!(fixture.request("test", Some(input.clone()), A).await.0, 409);
     model.finish();
     assert_eq!(pending.await.unwrap().0, 200);
+    let (status, saved) = fixture.request("settings", Some(input), A).await;
+    assert_eq!(status, 200, "{saved}");
+    assert_eq!(saved["settings"]["hasApiKey"], true);
+    assert!(saved["settings"].get("apiKey").is_none());
     task.abort();
     let _ = task.await;
 }
