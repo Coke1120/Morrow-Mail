@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 // Standalone fixture, without starting the service or opening any workspace:
-// swiftc -D MORROW_WINDOW_CHECKS -parse-as-library macos/Sources/MorrowMail/{Models,AppModel,MorrowMailApp,CalendarView,FolderPicker,FolderManagementView}.swift macos/Checks/WindowAssertions.swift -o /tmp/morrow-window-checks
+// swiftc -D MORROW_WINDOW_CHECKS -parse-as-library macos/Sources/MorrowMail/*.swift macos/Checks/WindowAssertions.swift -o /tmp/morrow-window-checks
 // /tmp/morrow-window-checks
 @main
 struct WindowAssertions {
@@ -55,8 +55,10 @@ struct WindowAssertions {
         let accounts: [JSON] = [owner, other].map { .object(["id": .string($0), "provider": .string("google"), "settings": .object(["connection": .string("original")])]) }
         let folder: JSON = .object(["id": .string("label"), "kind": .string("label"), "name": .string("Work / 中文")])
         let messages: [JSON] = [owner, other].map { .object(["id": .string("google:duplicate"), "viewId": .string($0 + ":duplicate"), "accountId": .string($0), "folder": .string("inbox")]) }
-        model.state = .object(["account": .object(["id": .string("all")]), "accounts": .array(accounts)])
+        model.state = .object(["account": .object(["id": .string("all")]), "accounts": .array(accounts), "messages": .array(messages)])
         model.serverFolders = [owner: [folder], other: [folder]]
+        model.searchResponse = .object(["messages": .array(messages)])
+        checkMailClicks(model, messages: messages)
         model.searchResponse = .object(["messages": .array(messages)])
         let token = model.startMailDrag(messages[0])!
         assert(model.mailDropMessage(token, owner: owner, destination: "label") == messages[0])
@@ -95,6 +97,37 @@ struct WindowAssertions {
             assert(model.mailDropDestination(owner, folder: "archive").isEmpty, "Only Gmail may synthesize Archive.")
         }
         print("Mail drag/drop guards cover combined duplicate IDs, stale connections, unavailable targets and review-only single-use routing.")
+    }
+
+    @MainActor static func checkMailClicks(_ model: AppModel, messages: [JSON]) {
+        model.starting = false
+        let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 1220, height: 780), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: MailWorkspace().environmentObject(model))
+        window.contentView = host; window.makeKeyAndOrderFront(nil)
+        defer { window.close(); window.contentView = nil; model.selectedMessage = nil; model.error = "" }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.5)); host.layoutSubtreeIfNeeded()
+        func lists(_ view: NSView) -> [NSTableView] {
+            if let list = view as? NSTableView { return [list] }
+            return view.subviews.flatMap(lists)
+        }
+        guard let list = lists(host).first(where: { $0.numberOfRows == messages.count && $0.frame.width > 250 }) else {
+            assertionFailure("The production mail list is missing."); return
+        }
+        for (row, message) in messages.enumerated() {
+            let rect = list.rect(ofRow: row), point = list.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                              windowNumber: window.windowNumber, context: nil, eventNumber: row, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!
+                NSApp.postEvent(event, atStart: false)
+            }
+            let deadline = Date().addingTimeInterval(0.3)
+            while Date() < deadline {
+                if let event = NSApp.nextEvent(matching: .any, until: Date().addingTimeInterval(0.02), inMode: .default, dequeue: true) { NSApp.sendEvent(event) }
+            }
+            assert(model.selectedMessage == message.viewID && model.current?["accountId"] == message["accountId"], "Clicking a draggable row must select its owned message.")
+        }
+        print("Native clicks on the production draggable mail list select each duplicate-ID message's own reader identity.")
     }
 
     @MainActor static func checkFolderLayouts() {

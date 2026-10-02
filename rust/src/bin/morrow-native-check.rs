@@ -308,22 +308,30 @@ fn existing_native_checks(root: &Path, fixture: &Path) -> Result<()> {
     network.finish()?;
     println!("Native reader: zero unsolicited loopback connections.");
 
+    let mut sources: Vec<_> = fs::read_dir(root.join("macos/Sources/MorrowMail"))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<_>>()?;
+    sources.retain(|path| {
+        path.extension()
+            .is_some_and(|extension| extension == "swift")
+    });
+    sources.sort();
+    let mut arguments = vec![
+        "-D".to_string(),
+        "MORROW_WINDOW_CHECKS".to_string(),
+        "-parse-as-library".to_string(),
+    ];
+    arguments.extend(
+        sources
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned()),
+    );
+    arguments.push("macos/Checks/WindowAssertions.swift".to_string());
     let window = compile_check(
         root,
         fixture,
         "window-checks",
-        &[
-            "-D",
-            "MORROW_WINDOW_CHECKS",
-            "-parse-as-library",
-            "macos/Sources/MorrowMail/Models.swift",
-            "macos/Sources/MorrowMail/AppModel.swift",
-            "macos/Sources/MorrowMail/MorrowMailApp.swift",
-            "macos/Sources/MorrowMail/CalendarView.swift",
-            "macos/Sources/MorrowMail/FolderPicker.swift",
-            "macos/Sources/MorrowMail/FolderManagementView.swift",
-            "macos/Checks/WindowAssertions.swift",
-        ],
+        &arguments.iter().map(String::as_str).collect::<Vec<_>>(),
     )?;
     print!(
         "{}",

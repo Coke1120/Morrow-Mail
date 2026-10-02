@@ -308,7 +308,7 @@ struct MailWorkspace: View {
                         if message["deliveryStatus"].string == "unconfirmed" { Label("Check delivery", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange) }
                         if message["scheduledSend"]["status"].string == "scheduled" { Label("Scheduled: " + dateLabel(message["scheduledSend"]["sendAt"].string), systemImage: "clock").font(.caption).foregroundStyle(.secondary) }
                         if message["scheduledSend"]["status"].string == "sending" { Label("Sending", systemImage: "paperplane").font(.caption).foregroundStyle(.secondary) }
-                    }.fontWeight(message["read"].bool ? .regular : .bold).padding(.vertical, model.preferences["density"].string == "compact" ? 3 : model.preferences["density"].string == "spacious" ? 14 : 8).tag(message.viewID)
+                    }.fontWeight(message["read"].bool ? .regular : .bold).padding(.vertical, model.preferences["density"].string == "compact" ? 3 : model.preferences["density"].string == "spacious" ? 14 : 8)
                     .contentShape(Rectangle())
                     .onHover { inside in if inside { hoveredMessage = message.viewID } else if hoveredMessage == message.viewID { hoveredMessage = nil } }
                     .onDrag {
@@ -320,6 +320,7 @@ struct MailWorkspace: View {
                         }
                         return provider
                     }
+                    .onTapGesture { if model.canNavigate { model.selectedMessage = message.viewID } }
                     .contextMenu {
                         if model.canOrganize(message) { MessageOrganizationActions(message: message) }
                         Button(message["starred"].bool ? "Unstar" : "Star") { model.patch(message, .object(["starred": .bool(!message["starred"].bool)])) }
@@ -327,7 +328,7 @@ struct MailWorkspace: View {
                         Button(message["read"].bool ? "Mark Unread" : "Mark Read") { model.patch(message, .object(["read": .bool(!message["read"].bool)])) }
                         if message["folder"].string != "drafts" { Button("Archive Locally") { model.patch(message, .object(["folder": .string("archive")])) } }
                         Button("Move to Local Trash") { model.patch(message, .object(["folder": .string("trash")])) }
-                    }
+                    }.tag(message.viewID)
                 }.listStyle(.inset).disabled(model.busy)
 
             }

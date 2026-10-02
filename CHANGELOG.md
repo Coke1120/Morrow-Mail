@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0-beta.35 — 2026-10-02
+
+- Restore explicit click selection on draggable macOS mail rows and keep their List identity on the complete row. Preserve keyboard and message organization actions.
+- Declare the private mail drag type as exported `public.data`, so native sidebar drop targets receive its opaque token and open the existing Move review. Keep account, destination, connection and provider-write guards.
+- Exercise native clicks on the production mail list with duplicate IDs across fictional accounts, and check the packaged type declaration.
+
 ## 0.6.0-beta.34 — 2026-10-02
 
 - Drag one imported message from the native mail list to its owning sidebar label/server folder or provider-backed Inbox/Archive/Spam/Trash. Use the entire macOS row as a drag hit area. Open the existing reviewed Move flow with that destination; reject external, cross-account, stale and unavailable drops. Keep keyboard/context-menu organization.

@@ -160,6 +160,11 @@ fn plist(version: &str) -> String {
 <key>LSMinimumSystemVersion</key><string>{MINIMUM}</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>LSMultipleInstancesProhibited</key><true/>
+<key>UTExportedTypeDeclarations</key><array><dict>
+<key>UTTypeIdentifier</key><string>com.morrowmail.mail-row</string>
+<key>UTTypeDescription</key><string>Morrow Mail message drag token</string>
+<key>UTTypeConformsTo</key><array><string>public.data</string></array>
+</dict></array>
 <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
 <key>NSHumanReadableCopyright</key><string>© 2026 Morrow Mail contributors. MIT License.</string>
 </dict></plist>
@@ -485,6 +490,13 @@ mod tests {
         let info = plist("0.6.0-beta.16");
         assert!(info.contains("<key>MorrowServiceRuntime</key><string>rust</string>"));
         assert!(info.contains("<key>LSMinimumSystemVersion</key><string>13.5</string>"));
+        assert!(info.contains("<key>UTExportedTypeDeclarations</key><array><dict>"));
+        assert!(
+            info.contains("<key>UTTypeIdentifier</key><string>com.morrowmail.mail-row</string>")
+        );
+        assert!(
+            info.contains("<key>UTTypeConformsTo</key><array><string>public.data</string></array>")
+        );
         assert!(!info.contains("allow-jit"));
     }
 }
