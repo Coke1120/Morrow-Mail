@@ -39,7 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             let catalogs = [first, second].iter().map(|owner| {
                 let mail = &connections[*owner];
                 ((*owner).to_owned(), json!({"connection":[mail["connectionId"],mail["authorizationId"],mail["provider"],mail["email"],mail["clientId"],mail["imapHost"],mail["imapPort"]],
-                    "provider":"imap","folders":[{"id":"native-folder","name":format!("Projects/中文/{owner}"),"kind":"folder"}],
+                    "provider":"imap","folders":[{"id":"native-folder","name":format!("Projects/中文/{owner}"),"kind":"folder","editable":true}],
                     "updatedAt":"2026-09-25T00:00:00.000Z","nextRetryAt":"2099-01-01T00:00:00.000Z","blocked":false}))
             }).collect::<serde_json::Map<_, _>>();
             db.set_settings(&json!({

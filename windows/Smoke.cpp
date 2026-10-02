@@ -423,7 +423,7 @@ IAsyncAction Shell::smoke() {
                 L"The composer did not keep its actions outside the scrolling form.");
             co_await navigate(L"mail", L"one@fixture.invalid");
             for (auto mode : {L"reply", L"replyAll", L"savedReply"}) {
-                enter("reply-history-" + to_string(mode));
+                enter(std::wstring_view(mode) == L"replyAll" ? "reply-history-reply-all" : std::wstring_view(mode) == L"savedReply" ? "reply-history-saved-reply" : "reply-history-reply");
                 Json input; put(input, L"messageId", text(source, L"id")); put(input, L"mode", std::wstring_view(mode) == L"reply" ? L"reply" : L"replyAll");
                 auto reply = object(co_await service->request(L"/drafts/prepare", L"one@fixture.invalid", L"POST", input), L"draft");
                 if (std::wstring_view(mode) == L"savedReply") reply = object(co_await service->request(L"/drafts", L"one@fixture.invalid", L"POST", reply), L"message");

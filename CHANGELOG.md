@@ -1,7 +1,13 @@
 # Changelog
 
-## 0.6.0-beta.36 — 2026-10-02
+## 0.6.0-beta.37 — 2026-10-02
 
+- Supply current folder/label management metadata in existing native fixtures and verify their schema, retaining production background refresh and persistence checks. Keep safe reply-mode diagnostics visible.
+- Carry the wider two-column reply/history composer and macOS click/drag-type fixes from unpublished beta.35/.36; rerun both platform gates before publication.
+
+## 0.6.0-beta.36 — 2026-10-02 (unpublished)
+
+- Preserve the failed tag: Windows UI assertions passed, but persistence verification rejected legacy fixture folder metadata. No downloads were published; beta.37 supersedes it.
 - Fix the Windows layout namespace and rerun the paired release gates. Carry the wider native reply/history and macOS click/drag-type changes from the unpublished beta.35 candidate.
 
 ## 0.6.0-beta.35 — 2026-10-02 (unpublished)

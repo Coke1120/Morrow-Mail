@@ -396,7 +396,7 @@ fn seed(directory: &Path) -> Result<()> {
     let catalogs = ACCOUNTS.iter().map(|owner| {
         let mail = &connections[*owner];
         ((*owner).to_owned(), json!({"connection":[mail["connectionId"],mail["authorizationId"],mail["provider"],mail["email"],mail["clientId"],mail["imapHost"],mail["imapPort"]],
-            "provider":"google","folders":[{"id":"native-label","name":format!("Projects/中文/{owner}"),"kind":"label"}],
+            "provider":"google","folders":[{"id":"native-label","name":format!("Projects/中文/{owner}"),"kind":"label","editable":true}],
             "updatedAt":"2026-09-25T00:00:00.000Z","nextRetryAt":"2099-01-01T00:00:00.000Z","blocked":false}))
     }).collect::<serde_json::Map<_, _>>();
     store.transaction(|db| {
@@ -755,6 +755,14 @@ mod tests {
         assert!(settings["ai"].is_null());
         for owner in ACCOUNTS {
             assert_eq!(settings["mailAccounts"][owner]["accessToken"], ACCESS);
+            assert!(
+                settings["mailFolderCatalogs"][owner]["folders"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|folder| folder["editable"].is_boolean()),
+                "Fixture catalogs must already include management metadata to avoid provider refresh."
+            );
             assert_eq!(
                 store
                     .list(owner)
