@@ -2,6 +2,8 @@
 
 ## 0.6.0-beta.35 — 2026-10-02
 
+- Widen the native reply composer and show previous messages beside the editable draft, with independent scrolling and fixed save/send actions. Include Reply All and reopened reply drafts; Windows stacks the panes in narrow windows.
+- Read the owned downloaded original and up to 20 explicit local reply ancestors, retaining quoted history as plain text. Show missing/limited history and retry failures without losing draft edits; do not infer provider threads or fetch missing mail.
 - Restore explicit click selection on draggable macOS mail rows and keep their List identity on the complete row. Preserve keyboard and message organization actions.
 - Declare the private mail drag type as exported `public.data`, so native sidebar drop targets receive its opaque token and open the existing Move review. Keep account, destination, connection and provider-write guards.
 - Exercise native clicks on the production mail list with duplicate IDs across fictional accounts, and check the packaged type declaration.

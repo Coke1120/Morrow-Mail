@@ -95,6 +95,49 @@ fn unique(message: &Value, fields: &[&str], seen: &mut HashSet<String>) -> Strin
         .join(", ")
 }
 
+/// Read only the original and its explicit local reply ancestors; never infer a
+/// conversation from subjects/senders or fetch more mail from a provider.
+pub fn history(db: &Store, owner: &str, id: &str) -> Result<Value> {
+    if !valid_account(&db.settings()?, owner) || owner == "all" {
+        return Err(Error::conflict(
+            "Reconnect the original mailbox to view reply history.",
+        ));
+    }
+    validation::text(&json!(id), "Message ID", 8192, false)?;
+    let mut message = get_message(db, owner, id)?;
+    let mut messages = Vec::new();
+    let mut seen = HashSet::new();
+    let limited = loop {
+        let current = string(&message, "id");
+        if messages.len() == 20 || !seen.insert(current.to_owned()) {
+            break true;
+        }
+        let mut plain = json!({});
+        for field in [
+            "id",
+            "subject",
+            "fromName",
+            "fromEmail",
+            "to",
+            "cc",
+            "date",
+            "body",
+        ] {
+            plain[field] = message[field].clone();
+        }
+        messages.push(crate::pages::owned(owner, plain));
+        let parent = string(&message, "replyToId");
+        if parent.is_empty() {
+            break false;
+        }
+        let Some(previous) = db.get(owner, parent)? else {
+            break true;
+        };
+        message = previous;
+    };
+    Ok(json!({"accountId":owner,"messageId":id,"messages":messages,"limited":limited}))
+}
+
 /// Build an unsaved draft from the current owned source, without provider/model work.
 pub fn prepare(db: &Store, owner: &str, input: &Value) -> Result<Value> {
     if !valid_account(&db.settings()?, owner) {

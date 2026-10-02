@@ -5,6 +5,64 @@ const OWNER: &str = "Owner@example.com";
 const OTHER: &str = "other@example.com";
 
 #[test]
+fn reply_history_is_bounded_owned_plain_text_and_read_only() {
+    let directory =
+        std::env::temp_dir().join(format!("morrow-reply-history-{}", uuid::Uuid::new_v4()));
+    let db = Store::open(&directory).unwrap();
+    db.set_settings(&json!({"mailAccounts":{OWNER:{"email":OWNER},OTHER:{"email":OTHER}}}))
+        .unwrap();
+    for i in 0..22 {
+        db.upsert(OWNER, &json!({"id":format!("mail-{i}"),"accountId":OTHER,"body":format!("Owned {i}\n> Quoted history"),"bodyHtml":"<script>hostile</script>","bcc":"private@example.com","replyToId":if i == 21 { String::new() } else { format!("mail-{}",i+1) }})).unwrap();
+    }
+    db.upsert(
+        OTHER,
+        &json!({"id":"mail-0","body":"Other owner's private text"}),
+    )
+    .unwrap();
+    let result = drafts::history(&db, OWNER, "mail-0").unwrap();
+    assert_eq!(result["messages"].as_array().unwrap().len(), 20);
+    assert_eq!(result["limited"], true);
+    for (i, message) in result["messages"].as_array().unwrap().iter().enumerate() {
+        assert_eq!(message["accountId"], OWNER);
+        assert_eq!(message["id"], format!("mail-{i}"));
+        assert_eq!(message["body"], format!("Owned {i}\n> Quoted history"));
+        assert!(message.get("bodyHtml").is_none() && message.get("bcc").is_none());
+    }
+    assert_eq!(
+        drafts::history(&db, OWNER, "mail-21").unwrap()["limited"],
+        false
+    );
+    db.upsert(
+        OWNER,
+        &json!({"id":"cycle","replyToId":"cycle","body":"Cycle"}),
+    )
+    .unwrap();
+    let cycle = drafts::history(&db, OWNER, "cycle").unwrap();
+    assert_eq!(cycle["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(cycle["limited"], true);
+    db.upsert(
+        OWNER,
+        &json!({"id":"missing-parent","replyToId":"other-only","body":"Retained original"}),
+    )
+    .unwrap();
+    db.upsert(OTHER, &json!({"id":"other-only","body":"Do not disclose"}))
+        .unwrap();
+    let partial = drafts::history(&db, OWNER, "missing-parent").unwrap();
+    assert_eq!(partial["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(partial["limited"], true);
+    for owner in ["", "all", "disconnected@example.com"] {
+        assert!(drafts::history(&db, owner, "mail-0").is_err());
+    }
+    assert_eq!(
+        drafts::history(&db, OWNER, "missing").unwrap_err().status,
+        404
+    );
+    assert!(db.get(OWNER, "mail-0").unwrap().unwrap()["read"].is_null());
+    drop(db);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn draft_builders_retain_the_existing_client_contract() {
     let directory = std::env::temp_dir().join(format!("morrow-drafts-{}", uuid::Uuid::new_v4()));
     let db = Store::open(&directory).unwrap();
@@ -56,6 +114,39 @@ async fn preparing_a_draft_requires_the_explicit_owner_and_does_not_write_or_sen
         axum::serve(listener, router).await.unwrap();
     });
     let client = reqwest::Client::new();
+    let history_endpoint = endpoint.replace("/drafts/prepare", "/messages/same/history");
+    for (owner, status) in [
+        ("", 409),
+        ("all", 409),
+        ("disconnected@example.com", 409),
+        (OWNER, 200),
+        (OTHER, 200),
+    ] {
+        let response = client
+            .get(&history_endpoint)
+            .bearer_auth("fixture-bearer")
+            .header("x-genmail-account", owner)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status);
+        if status == 200 {
+            let history: Value = response.json().await.unwrap();
+            assert_eq!(history["messages"][0]["accountId"], owner);
+            assert_eq!(
+                history["messages"][0]["body"],
+                if owner == OWNER {
+                    "Owned body"
+                } else {
+                    "Other private body"
+                }
+            );
+        }
+    }
+    assert_eq!(
+        client.get(&history_endpoint).send().await.unwrap().status(),
+        401
+    );
     let input = json!({"messageId":"same","mode":"forward"});
     let request = || {
         client

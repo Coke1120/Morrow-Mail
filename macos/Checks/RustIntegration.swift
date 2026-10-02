@@ -56,6 +56,9 @@ struct NativeRustChecks {
             try check(forward.accountID == owner && forward.forwarding && forward.replyToID.isEmpty && forward.to.isEmpty && forward.cc.isEmpty && forward.bcc.isEmpty, "prepared forward retained threading or recipients")
             try check(forward.body.contains("Owned by " + owner) && !forward.body.contains("Never use this client") && !forward.body.contains("Fixture footer"), "prepare used client content, another owner or the source footer")
             try check(reply.savedID.isEmpty && all.savedID.isEmpty && forward.savedID.isEmpty && reply.footer.isNull && forward.footer.isNull, "prepare persisted a draft or supplied a footer")
+            let history = try await model.request("/messages/" + encodedPath(reply.replyToID) + "/history", mailbox: reply.accountID)
+            try check(history["accountId"].string == owner && history["messageId"].string == source.id && history["messages"].array.first?["accountId"].string == owner, "Reply history lost its captured owner or original ID")
+            try check(history["messages"].array.first?["body"].string.contains("Owned by " + owner) == true && history["messages"].array.allSatisfy({ $0["bodyHtml"].isNull && $0["bcc"].isNull }), "Reply history disclosed another owner or active HTML/Bcc")
         }
         let providerPath = "/messages/" + encodedPath("google:provider-draft")
         let originalProvider = try await model.request(providerPath, mailbox: first)

@@ -122,6 +122,8 @@ struct Composer {
     hstring screenOwner, owner, requestId, baseline, baselineOwner;
     Json message, scheduleAttempt;
     bool busy = false, uncertain = false, bound = false, initializing = false;
+    bool historyLoading = false;
+    weak_ref<StackPanel> history;
     std::vector<hstring> accounts;
     std::vector<weak_ref<TextBox>> fields;
     weak_ref<ComboBox> from, aiAction;
@@ -213,6 +215,40 @@ struct Composer {
         say(L"Delivery could not be confirmed. The draft is retained. Check your provider’s Sent folder before retrying this exact message; a retry may send a duplicate.");
     }
 };
+
+IAsyncAction replyHistory(std::shared_ptr<Composer> state) {
+    auto shell = state->shell.lock(); auto panel = state->history.get();
+    if (!state->live(shell) || !panel || state->historyLoading) co_return;
+    auto owner = state->owner, id = text(state->message, L"replyToId");
+    state->historyLoading = true;
+    panel.Children().Clear(); panel.Children().Append(label(L"Loading downloaded messages…"));
+    try {
+        auto result = co_await shell->service->request(L"/messages/" + escaped(id) + L"/history", owner);
+        if (!state->live(shell) || !shell->connected(owner)) { state->historyLoading = false; co_return; }
+        require(text(result, L"accountId") == owner && text(result, L"messageId") == id
+            && array(result, L"messages").Size() > 0 && array(result, L"messages").Size() <= 20
+            && text(array(result, L"messages").GetAt(0).GetObject(), L"id") == id,
+            L"Reply history could not be verified for this mailbox.");
+        for (auto const& value : array(result, L"messages")) ownedMessage(value.GetObject(), owner);
+        panel.Children().Clear();
+        for (auto const& value : array(result, L"messages")) {
+            auto message = value.GetObject(); auto entry = stack(8);
+            entry.Children().Append(label(text(message, L"subject"), 18));
+            entry.Children().Append(label(text(message, L"fromName") + L" <" + text(message, L"fromEmail") + L"> · " + mailDateLabel(text(message, L"date")), 12));
+            entry.Children().Append(label(L"To: " + text(message, L"to") + (text(message, L"cc").empty() ? L"" : L" · Cc: " + text(message, L"cc")), 12));
+            entry.Children().Append(label(text(message, L"body")));
+            panel.Children().Append(entry);
+        }
+        if (flag(result, L"limited")) panel.Children().Append(label(L"Some earlier messages are unavailable, or the 20-message limit was reached.", 12));
+    } catch (...) {
+        if (state->live(shell)) {
+            panel.Children().Clear();
+            panel.Children().Append(label(L"Previous messages could not be loaded. Your draft is retained. " + errorText()));
+            panel.Children().Append(button(L"Retry", [state] { replyHistory(state); }));
+        }
+    }
+    state->historyLoading = false;
+}
 
 // Only the foreground composer write holds this lock; background jobs do not.
 struct ComposerWrite {
@@ -390,7 +426,8 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         state->bound = !text(draft, L"id").empty() || !text(draft, L"replyToId").empty()
             || flag(draft, L"forwarding") || flag(draft, L"sourceDraft") || text(draft, L"deliveryStatus") == L"unconfirmed";
         require(!state->bound || !state->owner.empty(), L"This draft has no mailbox owner. Reopen it from its original mailbox.");
-        Grid editor; editor.MaxWidth(690); editor.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
+        bool replying = !text(draft, L"replyToId").empty();
+        Grid editor; editor.MaxWidth(replying ? 1180 : 740); editor.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
         editor.RowDefinitions().Append(RowDefinition());
         RowDefinition footerRow; footerRow.Height(xaml::GridLengthHelper::Auto()); editor.RowDefinitions().Append(footerRow);
         auto panel = stack(12); panel.Padding(xaml::ThicknessHelper::FromUniformLength(24));
@@ -520,10 +557,35 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         shell->section = L"compose"; state->generation = ++shell->generation; ++shell->selectionGeneration;
         // Retain TextBlock peers for this page, including while the AI expander is collapsed.
         panel.Unloaded([state](auto const&, auto const&) { state->notice = nullptr; state->footer = nullptr; state->aiResult = nullptr; });
-        editor.Children().Append(scroll(panel)); shell->show(editor);
+        Grid columns; columns.ColumnDefinitions().Append(ColumnDefinition());
+        columns.Children().Append(scroll(panel));
+        if (replying) {
+            columns.ColumnSpacing(1);
+            columns.ColumnDefinitions().Append(ColumnDefinition());
+            auto context = stack(12); context.Padding(xaml::ThicknessHelper::FromUniformLength(24));
+            context.Children().Append(label(L"Previous messages", 26));
+            context.Children().Append(label(L"Original message and linked local replies. Quoted history stays in the message text.", 12));
+            auto history = stack(24); state->history = make_weak(history);
+            context.Children().Append(history);
+            auto historyScroll = scroll(context); Grid::SetColumn(historyScroll, 1); columns.Children().Append(historyScroll);
+        }
+        // Keep both panes readable when the main window becomes narrow.
+        auto arrange = [replying](auto const& sender, auto const&) {
+            if (!replying) return;
+            auto grid = sender.template as<Grid>(); bool narrow = grid.ActualWidth() < 900;
+            if (grid.RowDefinitions().Size() == (narrow ? 2u : 1u)) return;
+            grid.RowDefinitions().Clear(); grid.RowDefinitions().Append(RowDefinition());
+            if (narrow) grid.RowDefinitions().Append(RowDefinition());
+            grid.ColumnDefinitions().GetAt(1).Width(xaml::GridLengthHelper::FromValueAndType(narrow ? 0 : 1, GridUnitType::Star));
+            auto context = grid.Children().GetAt(1).as<xaml::FrameworkElement>();
+            Grid::SetColumn(context, narrow ? 0 : 1); Grid::SetRow(context, narrow ? 1 : 0);
+        };
+        columns.SizeChanged(arrange);
+        editor.Children().Append(columns); shell->show(editor);
         if (locked(draft)) state->say(L"This draft is scheduled or sending. Open Outbox and cancel an awaiting schedule before editing or sending it. A delivery already sending cannot be cancelled.");
         else if (state->uncertain) state->say(L"Delivery was not confirmed. Check your provider’s Sent folder before retrying this exact message. Retrying may send a duplicate.");
         state->update();
+        if (replying) co_await replyHistory(state);
     } catch (hresult_error const& error) { shell->error(error.message()); }
 }
 

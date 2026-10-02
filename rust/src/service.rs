@@ -698,6 +698,14 @@ pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
             })
             .await?
         }
+        ("GET", ["messages", _, "history"]) => {
+            let context = context.clone();
+            app.db(move |db| {
+                let owner = context.read_owner(&db.settings()?, false)?;
+                crate::drafts::history(db, &owner, &context.path[1])
+            })
+            .await?
+        }
         ("GET", ["messages", _]) => {
             let context = context.clone();
             app.db(move |db| {

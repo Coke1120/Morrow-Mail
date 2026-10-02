@@ -422,6 +422,31 @@ IAsyncAction Shell::smoke() {
             check(section == L"compose" && editor && editor.RowDefinitions().Size() == 2 && dirty.empty(),
                 L"The composer did not keep its actions outside the scrolling form.");
             co_await navigate(L"mail", L"one@fixture.invalid");
+            for (auto mode : {L"reply", L"replyAll", L"savedReply"}) {
+                enter("reply-history-" + to_string(mode));
+                Json input; put(input, L"messageId", text(source, L"id")); put(input, L"mode", std::wstring_view(mode) == L"reply" ? L"reply" : L"replyAll");
+                auto reply = object(co_await service->request(L"/drafts/prepare", L"one@fixture.invalid", L"POST", input), L"draft");
+                if (std::wstring_view(mode) == L"savedReply") reply = object(co_await service->request(L"/drafts", L"one@fixture.invalid", L"POST", reply), L"message");
+                co_await compose(lifetime, reply);
+                auto layout = page.Content().as<controls::Grid>();
+                auto panes = layout.Children().GetAt(layout.Children().Size() - 1).as<controls::Grid>();
+                check(layout.MaxWidth() == 1180 && panes.Children().Size() == 2
+                    && panes.Children().GetAt(0).try_as<controls::ScrollViewer>() && panes.Children().GetAt(1).try_as<controls::ScrollViewer>(),
+                    L"Reply and saved-reply panes must scroll independently.");
+                auto context = panes.Children().GetAt(1).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
+                auto messages = context.Children().GetAt(2).as<controls::StackPanel>();
+                check(messages.Children().Size() > 0 && messages.Children().GetAt(0).try_as<controls::StackPanel>(), L"Owned original reply history did not load.");
+                auto original = messages.Children().GetAt(0).as<controls::StackPanel>();
+                check(original.Children().GetAt(3).as<controls::TextBlock>().Text() == text(source, L"body"), L"Reply history displayed another mailbox's duplicate-ID body.");
+                panes.Width(1100); panes.UpdateLayout();
+                co_await resume_after(std::chrono::milliseconds(50)); co_await ui; panes.UpdateLayout();
+                check(panes.RowDefinitions().Size() == 1 && controls::Grid::GetColumn(panes.Children().GetAt(1).as<xaml::FrameworkElement>()) == 1, L"Wide reply history must be on the right.");
+                panes.Width(780); panes.UpdateLayout();
+                co_await resume_after(std::chrono::milliseconds(50)); co_await ui; panes.UpdateLayout();
+                check(panes.RowDefinitions().Size() == 2 && controls::Grid::GetRow(panes.Children().GetAt(1).as<xaml::FrameworkElement>()) == 1, L"Narrow reply panes must remain readable.");
+                dirty.clear(); // Discard this known fictional, never-saved reply without a dialog.
+                co_await navigate(L"mail", L"one@fixture.invalid");
+            }
             check(text(service->clientState(),L"morrow.pendingCalendar")==pendingCalendar,L"Opening Calendar changed its immutable recovery record.");
         }
         enter("shutdown");

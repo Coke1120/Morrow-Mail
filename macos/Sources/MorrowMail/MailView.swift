@@ -805,6 +805,9 @@ struct ComposeView: View {
     @State private var confirmSchedule = false
     @State private var scheduleRequestID = UUID().uuidString
     @State private var scheduleAttempt: JSON?
+    @State private var history: JSON = .null
+    @State private var historyError = ""
+    @State private var historyLoading = false
     init(initial: Draft) {
         self.initial = initial; _draft = State(initialValue: initial); _saved = State(initialValue: initial.payload)
         _sendAt = State(initialValue: initial.scheduleDate ?? Date().addingTimeInterval(3600))
@@ -816,7 +819,8 @@ struct ComposeView: View {
     private var defaultDelay: Int { max(0, min(6, Int(model.preferences["sendDelayHours"].number))) }
     var body: some View {
         VStack(spacing: 0) {
-          ScrollView {
+          HStack(spacing: 0) {
+           ScrollView {
            VStack(alignment: .leading, spacing: 16) {
             HStack { Text(draft.savedID.isEmpty ? (draft.forwarding ? "Forward" : draft.replyToID.isEmpty ? "New message" : "Reply") : "Your draft").font(.title2.bold()); Spacer(); Text(draft.accountID == "demo" ? "Simulated send" : draft.accountID).foregroundStyle(.secondary).font(.caption) }
             if !draft.savedID.isEmpty || !draft.replyToID.isEmpty || draft.forwarding || draft.sourceDraft || draft.unconfirmed {
@@ -895,6 +899,11 @@ struct ComposeView: View {
             }
             if !localError.isEmpty { Text(localError).foregroundStyle(.red).font(.callout).textSelection(.enabled) }
            }.padding(24)
+           }.frame(maxWidth: .infinity)
+           if !initial.replyToID.isEmpty {
+               Divider()
+               replyHistory.frame(maxWidth: .infinity)
+           }
           }
           Divider()
             HStack {
@@ -913,7 +922,8 @@ struct ComposeView: View {
                     .keyboardShortcut("d", modifiers: [.command, .shift]).buttonStyle(.borderedProminent).disabled(model.busy || draft.scheduleLocked || [draft.to, draft.cc, draft.bcc].allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } || draft.body.isEmpty || (draft.unconfirmed && !reviewed))
                 }
             }.padding(20)
-        }.frame(width: 690, height: min(780, (NSScreen.main?.visibleFrame.height ?? 900) - 100))
+        }.frame(width: min(initial.replyToID.isEmpty ? 740 : 1180, (NSScreen.main?.visibleFrame.width ?? 1280) - 80), height: min(820, (NSScreen.main?.visibleFrame.height ?? 900) - 100))
+        .task { if !initial.replyToID.isEmpty { await loadHistory() } }
         .interactiveDismissDisabled(dirty || model.busy)
         .onAppear { model.dirty("compose", dirty) }
         .onChange(of: draft) { _ in model.dirty("compose", dirty) }
@@ -929,6 +939,48 @@ struct ComposeView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("From: \(draft.accountID)\nTo: \(draft.to)\nCc: \(draft.cc)\nBcc: \(draft.bcc)\nSubject: \(draft.subject.isEmpty ? "(No subject)" : draft.subject)\nSend at: \(reviewedSendAt.formatted(date: .abbreviated, time: .shortened)) (\(TimeZone.current.identifier))\nMorrow must be open. Catch-up is limited to 15 minutes; later delivery requires a new review. The reviewed message and displayed footer will be locked until this schedule is cancelled.")
+        }
+    }
+    private var replyHistory: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Previous messages").font(.title2.bold())
+            Text("Original message and linked local replies. Quoted history stays in the message text.").font(.caption).foregroundStyle(.secondary)
+            if historyLoading { ProgressView("Loading downloaded messages…") }
+            if !historyError.isEmpty {
+                Text(historyError).font(.callout).foregroundStyle(.secondary)
+                Button("Retry") { Task { await loadHistory() } }.disabled(historyLoading)
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    ForEach(history["messages"].array, id: \.viewID) { message in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(message["subject"].string).font(.headline)
+                            Text("\(message["fromName"].string) <\(message["fromEmail"].string)> · \(dateLabel(message["date"].string))").font(.caption).foregroundStyle(.secondary)
+                            Text("To: \(message["to"].string)\(message["cc"].nonempty ? " · Cc: " + message["cc"].string : "")").font(.caption).foregroundStyle(.secondary)
+                            SecureMessageBody(message: message)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        Divider()
+                    }
+                    if history["limited"].bool { Text("Some earlier messages are unavailable, or the 20-message limit was reached.").font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+        }.padding(24).frame(maxHeight: .infinity, alignment: .top)
+    }
+    private func loadHistory() async {
+        guard !historyLoading else { return }
+        let owner = initial.accountID, id = initial.replyToID
+        historyLoading = true; historyError = ""
+        defer { historyLoading = false }
+        do {
+            let result = try await model.request("/messages/" + encodedPath(id) + "/history", mailbox: owner)
+            guard !Task.isCancelled else { return }
+            guard result["accountId"].string == owner, result["messageId"].string == id,
+                  result["messages"].array.first?.id == id, result["messages"].array.count <= 20,
+                  model.senderAccounts.contains(where: { $0.id == owner }),
+                  result["messages"].array.allSatisfy({ $0["accountId"].string == owner }) else { throw APIError("Reply history could not be verified for this mailbox.") }
+            history = result
+        } catch {
+            if !Task.isCancelled { historyError = "Previous messages could not be loaded. Your draft is retained. " + error.localizedDescription }
         }
     }
     func recipientField(_ label: String, text: Binding<String>, placeholder: String) -> some View {

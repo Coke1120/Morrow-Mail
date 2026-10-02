@@ -13,6 +13,7 @@ struct WindowAssertions {
         if CommandLine.arguments.contains("--list-width-only") { return }
         checkMailDrop()
         checkFolderLayouts()
+        checkComposeLayout()
         checkCalendarLayout()
         for width in [1040.0, 1877.0] { checkInitialSplit(width: width, vertical: true) }
         checkInitialSplit(width: 1040, vertical: false)
@@ -156,6 +157,35 @@ struct WindowAssertions {
             window.close()
         }
         print("Cached folder hierarchy, create form and Gmail checklist fit native sheets without provider/service requests.")
+    }
+
+    @MainActor static func checkComposeLayout() {
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("morrow-compose-layout-\(UUID())")
+        let previous = getenv("MORROW_DATA_DIR").map { String(cString: $0) }
+        setenv("MORROW_DATA_DIR", temporary.path, 1)
+        let model = AppModel()
+        if let previous { setenv("MORROW_DATA_DIR", previous, 1) } else { unsetenv("MORROW_DATA_DIR") }
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let owner = "reply-layout@example.invalid"
+        let account: JSON = .object(["id": .string(owner), "settings": .object(["configured": .bool(true)])])
+        model.state = .object(["accounts": .array([account])])
+        for mode in ["new", "reply", "savedReply", "forward"] {
+            var draft = Draft(); draft.accountID = owner
+            if mode == "reply" || mode == "savedReply" { draft.replyToID = "owned-original" }
+            if mode == "savedReply" { draft.savedID = "saved-reply" }
+            draft.forwarding = mode == "forward"
+            let host = NSHostingView(rootView: ComposeView(initial: draft).environmentObject(model))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.contentView = host; window.orderBack(nil)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3)); host.layoutSubtreeIfNeeded()
+            let settled = host.fittingSize
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2)); host.layoutSubtreeIfNeeded()
+            assert(host.fittingSize == settled && settled.height <= 820, "Composer layout must settle and keep its actions visible.")
+            let expected = min(draft.replyToID.isEmpty ? 740 : 1180, (NSScreen.main?.visibleFrame.width ?? 1280) - 80)
+            assert(abs(settled.width - expected) < 2, "Replies must use the wider two-column sheet, including saved replies.")
+            window.close(); window.contentView = nil
+        }
+        print("New/forward and wider reply/saved-reply composers settle without starting provider work.")
     }
 
     @MainActor static func checkCalendarLayout() {
