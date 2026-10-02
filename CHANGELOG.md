@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.6.0-beta.35 — 2026-10-02
+## 0.6.0-beta.36 — 2026-10-02
+
+- Fix the Windows layout namespace and rerun the paired release gates. Carry the wider native reply/history and macOS click/drag-type changes from the unpublished beta.35 candidate.
+
+## 0.6.0-beta.35 — 2026-10-02 (unpublished)
+
+- Preserve the failed tag: macOS passed, but Windows compilation rejected an unqualified grid-unit enum. No downloads were published; beta.36 supersedes it.
 
 - Widen the native reply composer and show previous messages beside the editable draft, with independent scrolling and fixed save/send actions. Include Reply All and reopened reply drafts; Windows stacks the panes in narrow windows.
 - Read the owned downloaded original and up to 20 explicit local reply ancestors, retaining quoted history as plain text. Show missing/limited history and retry failures without losing draft edits; do not infer provider threads or fetch missing mail.

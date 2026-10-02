@@ -576,7 +576,7 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
             if (grid.RowDefinitions().Size() == (narrow ? 2u : 1u)) return;
             grid.RowDefinitions().Clear(); grid.RowDefinitions().Append(RowDefinition());
             if (narrow) grid.RowDefinitions().Append(RowDefinition());
-            grid.ColumnDefinitions().GetAt(1).Width(xaml::GridLengthHelper::FromValueAndType(narrow ? 0 : 1, GridUnitType::Star));
+            grid.ColumnDefinitions().GetAt(1).Width(xaml::GridLengthHelper::FromValueAndType(narrow ? 0 : 1, xaml::GridUnitType::Star));
             auto context = grid.Children().GetAt(1).as<xaml::FrameworkElement>();
             Grid::SetColumn(context, narrow ? 0 : 1); Grid::SetRow(context, narrow ? 1 : 0);
         };

@@ -1,6 +1,10 @@
 # Verification — 2 October 2026
 
-## Two-column native replies — beta.35 candidate
+## Unpublished beta.35 Windows compile failure
+
+[Tagged run 36969161321, attempt 1](https://github.com/Coke1120/Morrow-Mail/actions/runs/36969161321/attempts/1) completed macOS checks/build/acceptance successfully but Windows compilation failed at Compose.cpp with C3861/C2065: `GridUnitType` was not qualified in the new pane layout. Both Rust gates passed. The publisher was skipped and no release/downloads were created. Beta.36 qualifies it as `xaml::GridUnitType::Star`, matching the existing Calendar implementation, and reruns both platform gates. The original tag and failure log are retained.
+
+## Two-column native replies — beta.36 candidate
 
 Reply/Reply All and reopened reply drafts now show an editable left pane and independently scrolling previous messages on the right. macOS sheets widen to 1,180 points, bounded by the screen; new/forward sheets widen to 740. Windows widens the composer page to the same sizes and stacks reply panes below 900 points of available width. Existing owner binding, draft/save/send review, Bcc and uncertain/scheduled delivery guards remain in their original paths.
 
@@ -8,7 +12,7 @@ The shared read-only history endpoint uses the explicit connected mailbox and or
 
 Local formatting, strict all-target Clippy, all 187 locked Rust tests, macOS packaging, deep/strict ad-hoc signature/plist verification and full production-service native acceptance passed. In a separate hardcoded fictional workspace, CUA opened a production-service message, opened Reply, edited its text while reading the right pane, saved locally and reopened Edit Draft. The wider split layout, retained edited body, original-account history and fixed action bar were visible. The test app was quit and its process exited; the owner's original installed process remained running. No real mail/calendar/model request or installed-app replacement was performed. Windows checks remain a required tagged paired-workflow gate before publication. This new walkthrough does not establish complete pointer-drop or live-provider acceptance.
 
-## macOS draggable-row click and data type — beta.35 candidate
+## macOS draggable-row click and data type — beta.36 candidate
 
 The owner reported that macOS rows could start dragging but clicks did not open mail and sidebar drops did not move it. Native inspection found `UTType("com.morrowmail.mail-row")` returned nil and SwiftUI's actual `_PlatformDraggingDestinationView` registered only `public.data`/`public.item`. The macOS package now exports the custom type with data conformance. Mail rows explicitly select on tap and carry their List identity outside the drag/context modifiers. The existing provider Move review, opaque own-process payload and account/connection/destination guards remain unchanged.
 
