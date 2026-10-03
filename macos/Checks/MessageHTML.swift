@@ -117,25 +117,30 @@ struct ReaderFixture: View {
                     let frame = buttons.dropFirst().reduce(first) { $0.intersection($1) }
                     guard frame.width > 0 && frame.height > 0 else { fatalError("The image control's native bounds did not overlap") }
                     let location = host.convert(NSPoint(x: frame.midX, y: frame.midY), to: nil)
+                    // Queue the complete click before AppKit handles mouseDown:
+                    // some macOS versions track synchronously until mouseUp.
                     for kind in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
                         guard let event = NSEvent.mouseEvent(with: kind, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1) else { fatalError("Could not create the image-control click") }
-                        window.sendEvent(event)
+                        app.postEvent(event, atStart: false)
                     }
                 }
                 phase("image-preference")
                 try await imagePolicy(false)
                 state.autoLoadExternalImages = true
                 try await imagePolicy(true)
+                phase("image-opt-in")
                 assert(!web.configuration.defaultWebpagePreferences.allowsContentJavaScript)
                 let enabledScriptRan = try await find("Forbidden email script ran")
                 assert(!enabledScriptRan, "Automatic images enabled email scripts")
                 try await hideImages()
                 try await imagePolicy(false)
+                phase("image-hidden")
                 state.html = content + "<p>Another owned message</p>"; state.messageID = "reader-fixture-2"
                 try await loaded("Another owned message")
                 try await imagePolicy(true)
                 state.autoLoadExternalImages = false
                 try await imagePolicy(false)
+                phase("image-revoked")
                 state.messageID = "reader-fixture-3"
                 try await imagePolicy(false)
 
