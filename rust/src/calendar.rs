@@ -164,6 +164,7 @@ async fn current_connection(app: &App, provider: &str) -> Result<Value> {
         status: e.status,
         body: e.body.clone(),
         provider_status: e.provider_status,
+        retry_after: e.retry_after,
     })
 }
 pub(crate) fn text<'a>(

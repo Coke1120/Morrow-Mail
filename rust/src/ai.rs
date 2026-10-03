@@ -997,6 +997,7 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                                     status: error.status,
                                     body: error.body.clone(),
                                     provider_status: error.provider_status,
+                                    retry_after: error.retry_after,
                                 });
                             }
                         };

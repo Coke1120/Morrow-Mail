@@ -15,6 +15,7 @@ use axum::{
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 
 pub struct TrashUndo {
     pub expires: std::time::Instant,
@@ -79,7 +80,106 @@ pub async fn current_mail(app: &App, owner: &str) -> Result<Value> {
     .await?;
     Ok(result)
 }
+pub(crate) fn read_backoff(config: &Value, mail: &Value) -> Option<Error> {
+    let owner = string(mail, "email");
+    let version = crate::folders::connection_version(mail);
+    if connections(config)
+        .get(owner)
+        .is_none_or(|current| crate::folders::connection_version(current) != version)
+    {
+        return None;
+    }
+    let shared = &config["mailReadBackoffs"][owner];
+    let job = &config["imports"][owner];
+    let folders = &config["mailFolderCatalogs"][owner];
+    let sync = config["backgroundSyncErrors"]
+        .as_array()
+        .and_then(|errors| {
+            errors
+                .iter()
+                .find(|error| error["accountId"] == owner && error["code"] == "rate_limited")
+        });
+    // Respect persisted pre-upgrade cooldowns as well as the shared read deadline.
+    let (backoff, retry) = [
+        (shared["connection"] == version).then_some(shared),
+        (job["connectionId"] == mail["connectionId"] && job["errorCode"] == "rate_limited")
+            .then_some(job),
+        (folders["connection"] == version && folders["errorCode"] == "rate_limited")
+            .then_some(folders),
+        sync,
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|value| {
+        let retry = chrono::DateTime::parse_from_rfc3339(string(value, "nextRetryAt"))
+            .ok()?
+            .timestamp_millis();
+        (retry > chrono::Utc::now().timestamp_millis()).then_some((value, retry))
+    })
+    .max_by_key(|(_, retry)| *retry)?;
+    let mut error = Error::new(
+        502,
+        "The provider request limit was reached. Morrow will retry automatically while the app is open.",
+    );
+    error.provider_status = Some(429);
+    error.retry_after = Some(retry);
+    error.body = merge(
+        error.body,
+        &json!({"accountId":owner,"code":"rate_limited","recoveryAction":"retry","nextRetryAt":backoff["nextRetryAt"],"retryCount":backoff["retryCount"]}),
+    );
+    Some(error)
+}
+
+pub(crate) async fn finish_read<T: Send + 'static>(
+    app: &App,
+    mail: &Value,
+    result: Result<T>,
+) -> Result<T> {
+    let mail = mail.clone();
+    app.db(move |db| {
+        let config = db.settings()?;
+        let owner = string(&mail, "email");
+        let version = crate::folders::connection_version(&mail);
+        if connections(&config).get(owner).is_none_or(|current| crate::folders::connection_version(current) != version) {
+            return Err(Error::conflict("This mailbox changed during the provider read."));
+        }
+        let previous = &config["mailReadBackoffs"][owner];
+        let mut result = result;
+        if let Err(error) = &mut result {
+            let job = &config["imports"][owner];
+            let folders = &config["mailFolderCatalogs"][owner];
+            let sync = config["backgroundSyncErrors"].as_array().and_then(|errors| errors.iter().find(|error| error["accountId"] == owner));
+            let count = [
+                (previous["connection"] == version).then_some(previous),
+                (job["connectionId"] == mail["connectionId"]).then_some(job),
+                (folders["connection"] == version).then_some(folders),
+                sync,
+            ].into_iter().flatten().filter_map(|value| value["retryCount"].as_u64()).max().unwrap_or(0);
+            let timestamp = chrono::Utc::now();
+            if let Some(delay) = providers::quota_retry_delay(error, count, timestamp.timestamp_millis()) {
+                let retry = timestamp + chrono::Duration::milliseconds(delay);
+                error.retry_after = Some(retry.timestamp_millis());
+                crate::background::write_owner(db, "mailReadBackoffs", owner, json!({"connection":version,"nextRetryAt":retry.to_rfc3339_opts(chrono::SecondsFormat::Millis,true),"retryCount":count.saturating_add(1)}))?;
+            }
+        } else if previous.is_object() {
+            crate::background::write_owner(db, "mailReadBackoffs", owner, Value::Null)?;
+        }
+        Ok(result)
+    }).await?
+}
+
 pub async fn fetch_page(app: &App, mail: &Value, options: &Value) -> Result<Value> {
+    fetch_page_cached(app, mail, options, &mut HashMap::new()).await
+}
+async fn fetch_page_cached(
+    app: &App,
+    mail: &Value,
+    options: &Value,
+    fetched: &mut HashMap<String, Value>,
+) -> Result<Value> {
+    if let Some(error) = read_backoff(&app.settings().await?, mail) {
+        return Err(error);
+    }
     let folder = options["folder"].as_str().unwrap_or("inbox");
     let mut work = app.0.activity.start(
         string(mail, "email"),
@@ -91,10 +191,39 @@ pub async fn fetch_page(app: &App, mail: &Value, options: &Value) -> Result<Valu
         "Fetching mail",
         &format!("{folder} · up to 50 messages in this page"),
     );
-    let result = if ["", "imap"].contains(&string(mail, "provider")) {
-        imap::fetch_page(mail, options).await
+    let result = async {
+        if mail["provider"] == "google" {
+            let list = providers::google_list(&app.0.client, mail, options).await?;
+            let ids = list["messages"].as_array().into_iter().flatten()
+                .map(|entry| string(entry, "id").to_owned())
+                .filter(|id| !fetched.contains_key(id)).collect::<Vec<_>>();
+            let owner = string(mail, "email").to_owned();
+            let cached = app.db(move |db| {
+                let mut cached = HashMap::new();
+                for id in ids {
+                    let raw: Option<String> = db.conn.query_row("SELECT data FROM messages WHERE account=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id)=? LIMIT 1", params![owner, format!("google:{id}")], |row| row.get(0)).optional()?;
+                    if let Some(raw) = raw {
+                        let value: Value = serde_json::from_str(&raw)?;
+                        if value["providerSnapshot"].is_object() && value["body"].is_string() && value["bodyHtml"].is_string() && value["providerDraft"] != true {
+                            cached.insert(id, value);
+                        }
+                    }
+                }
+                Ok(cached)
+            }).await?;
+            let page = providers::google_fetch_page(&app.0.client, mail, &list, &cached, fetched).await?;
+            Ok(page)
+        } else if ["", "imap"].contains(&string(mail, "provider")) {
+            imap::fetch_page(mail, options).await
+        } else {
+            providers::fetch_page(&app.0.client, mail, options).await
+        }
+    }.await;
+    // Initial IMAP connection checks are not yet a saved account.
+    let result = if connections(&app.settings().await?).get(string(mail, "email")) == Some(mail) {
+        finish_read(app, mail, result).await
     } else {
-        providers::fetch_page(&app.0.client, mail, options).await
+        result
     };
     work.finish(
         result.is_ok(),
@@ -412,11 +541,15 @@ if previous["payloadHash"]!=hash{return Err(Error::conflict("This draft has an u
     }
 }
 pub(crate) async fn remote_folders(app: &App, mail: &Value) -> Result<Vec<Value>> {
+    if let Some(error) = read_backoff(&app.settings().await?, mail) {
+        return Err(error);
+    }
     let folders = if ["", "imap"].contains(&string(mail, "provider")) {
         imap::folders(mail).await
     } else {
         providers::folders(&app.0.client, mail).await
-    }?;
+    };
+    let folders = finish_read(app, mail, folders).await?;
     let (connection, saved) = (mail.clone(), folders.clone());
     app.db(move |db| crate::folders::remember(db, &connection, &saved))
         .await?;
@@ -427,8 +560,9 @@ pub async fn sync_accounts(app: &App, owners: &[String]) -> Result<Value> {
 }
 fn sync_failure(owner: &str, error: &Error, previous: &Value) -> Value {
     let count = previous["retryCount"].as_u64().unwrap_or(0);
-    if let Some(delay) = providers::quota_retry_delay(error, count) {
-        let next = (chrono::Utc::now() + chrono::Duration::milliseconds(delay))
+    let timestamp = chrono::Utc::now();
+    if let Some(delay) = providers::quota_retry_delay(error, count, timestamp.timestamp_millis()) {
+        let next = (timestamp + chrono::Duration::milliseconds(delay))
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         return json!({"accountId":owner,"code":"rate_limited","recoveryAction":"retry","error":"The provider request limit was reached. Morrow will retry automatically while the app is open.","nextRetryAt":next,"retryCount":count.saturating_add(1)});
     }
@@ -483,7 +617,14 @@ async fn commit_sync_page(app: &App, owner: &str, mail: &Value, page: &Value) ->
 pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
     let mut errors = Vec::new();
     for owner in owners {
-        let previous = app.settings().await?["backgroundSyncErrors"]
+        let config = app.settings().await?;
+        if let Some(mail) = connections(&config).get(owner)
+            && let Some(error) = read_backoff(&config, mail)
+        {
+            errors.push(error.body);
+            continue;
+        }
+        let previous = config["backgroundSyncErrors"]
             .as_array()
             .and_then(|errors| errors.iter().find(|error| error["accountId"] == *owner))
             .cloned()
@@ -511,6 +652,7 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
                 vec!["inbox"]
             };
             let mut warning = None;
+            let mut fetched = HashMap::new();
             for folder in folders {
                 let mut input = json!({"folder":folder});
                 if !string(job, "since").is_empty() {
@@ -519,7 +661,7 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
                 // Refresh is deliberately bounded to the newest provider page in each
                 // scope. Complete, resumable pagination belongs to the reviewed history
                 // importer, which persists checkpoints and provider backoff metadata.
-                let page = fetch_page(app, &mail, &input).await?;
+                let page = fetch_page_cached(app, &mail, &input, &mut fetched).await?;
                 warning = warning.or(sync_warning(&page));
                 commit_sync_page(app, owner, &mail, &page).await?;
             }
@@ -638,8 +780,10 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                             .as_array()
                             .map(|errors| errors.iter().filter(|error| error["accountId"] != owner).cloned().collect::<Vec<_>>())
                             .unwrap_or_default();
+                        let mut backoffs = merge(json!({}), &config["mailReadBackoffs"]);
+                        backoffs.as_object_mut().unwrap().remove(&owner);
                         db.set_settings(
-                            &json!({"mailAccounts":accounts,"mail":mail,"activeAccount":selected,"backgroundSyncErrors":errors}),
+                            &json!({"mailAccounts":accounts,"mail":mail,"activeAccount":selected,"backgroundSyncErrors":errors,"mailReadBackoffs":backoffs}),
                         )?;
                         crate::ai::invalidate(db)?;
                         crate::smart_search::reconcile(db)?;
@@ -1071,6 +1215,27 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn read_cooldowns_apply_only_to_the_saved_connection() {
+        let owner = "reconnect@example.invalid";
+        let saved = json!({"email":owner,"provider":"google","connectionId":"previous"});
+        let candidate = json!({"email":owner,"provider":"imap","imapHost":"imap.example.invalid","imapPort":993});
+        let until = (chrono::Utc::now() + chrono::Duration::hours(1))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let version = crate::folders::connection_version(&saved);
+        for source in [
+            json!({"mailReadBackoffs":{owner:{"connection":version,"nextRetryAt":until}}}),
+            json!({"imports":{owner:{"connectionId":"previous","errorCode":"rate_limited","nextRetryAt":until}}}),
+            json!({"mailFolderCatalogs":{owner:{"connection":version,"errorCode":"rate_limited","nextRetryAt":until}}}),
+            json!({"backgroundSyncErrors":[{"accountId":owner,"code":"rate_limited","nextRetryAt":until}]}),
+        ] {
+            let mut config = merge(json!({"mailAccounts":{owner:saved.clone()}}), &source);
+            assert!(read_backoff(&config, &saved).is_some());
+            assert!(read_backoff(&config, &candidate).is_none());
+            config["mailAccounts"] = json!({});
+            assert!(read_backoff(&config, &candidate).is_none());
+        }
+    }
     #[test]
     fn sync_quota_failure_schedules_retry_without_reconnecting() {
         let mut quota = Error::new(502, "private provider detail");

@@ -1543,7 +1543,11 @@ async fn sync_combined_owners_keep_local_patches_and_stable_ids_after_provider_m
     let captured = calls.clone();
     let fixture=Fixture::new(Arc::new(move|request|{let current=current.clone();let changed=changed.clone();let captured=captured.clone();async move{let owner=request.owner().to_owned();let path=url::Url::parse(&format!("https://{}{}",request.host(),request.path)).unwrap();captured.lock().unwrap().push(request.clone());let body=format!("Remote body {} for {owner}",current.load(Ordering::SeqCst));
         if request.host()=="gmail.googleapis.com"{assert_eq!(request.method,"GET");if path.path().ends_with("/labels"){return Reply::Json(200,json!({"labels":[]}));}
-        if path.path().ends_with("/messages"){return Reply::Json(200,json!({"messages":[{"id":"same"}]}));}return Reply::Json(200,google_message("same",&owner,&body));}
+        if path.path().ends_with("/messages"){return Reply::Json(200,json!({"messages":[{"id":"same"}]}));}
+        // Gmail bodies stay immutable for a message ID; draft replacements use new IDs.
+        let mut message=google_message("same",&owner,&format!("Remote body 0 for {owner}"));
+        if path.query_pairs().any(|(key,value)|key=="format"&&value=="minimal"){message.as_object_mut().unwrap().remove("payload");}
+        return Reply::Json(200,message);}
         if path.path()=="/v1.0/me/mailFolders"{return Reply::Json(200,json!({"value":[{"id":"inbox-id","displayName":"Inbox","childFolderCount":0},{"id":"archive-id","displayName":"Archive","childFolderCount":0}]}));}
         if path.path()=="/v1.0/me/mailFolders/inbox"{return Reply::Json(200,json!({"id":"inbox-id"}));}
         if path.path()=="/v1.0/me/mailFolders/junkemail"{return Reply::Json(200,json!({"id":"junk-id"}));}
@@ -1628,11 +1632,12 @@ async fn sync_combined_owners_keep_local_patches_and_stable_ids_after_provider_m
             assert_eq!(a["read"], true);
             assert_eq!(a["starred"], true);
             assert_eq!(a["labels"], json!(["Local reviewed"]));
-            assert_eq!(a["body"], format!("Remote body 1 for {A}"));
+            assert_eq!(a["body"], format!("Remote body 0 for {A}"));
             assert_eq!(b["folder"], "inbox");
             assert_eq!(b["read"], false);
             assert_eq!(b["starred"], false);
-            assert_eq!(b["body"], format!("Remote body 1 for {B}"));
+            assert_eq!(b["body"], format!("Remote body 0 for {B}"));
+            assert_eq!(c["body"], format!("Remote body 1 for {C}"));
             assert_eq!(c["folder"], "archive");
             assert_eq!(c["providerFolderId"], "archive-id");
             assert_eq!(c["remoteId"], "microsoft:moved-id");
