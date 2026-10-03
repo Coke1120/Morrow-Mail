@@ -23,7 +23,14 @@ final class AppModel: ObservableObject {
     var canUndoTrash: Bool { canNavigate && trashUndos.contains { $0.expires > ProcessInfo.processInfo.systemUptime } }
     @Published var activity: JSON = .null
     @Published var activityError = ""
-    @Published var section = "inbox" { didSet { if section != oldValue { draftGeneration += 1 } } }
+    @Published var section = "inbox" {
+        didSet {
+            guard section != oldValue else { return }
+            draftGeneration += 1
+            if section != "studio" { selectedMessage = nil; messageDetail = .null }
+            mailPage = .null
+        }
+    }
     @Published var scheduledAccount = ""
     @Published var serverFolders: [String: [JSON]] = [:]
     @Published var selectedMessage: String? {

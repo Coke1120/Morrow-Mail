@@ -93,7 +93,6 @@ struct MailWorkspace: View {
         }
         .onDisappear { if let selectionMonitor { NSEvent.removeMonitor(selectionMonitor) }; selectionMonitor = nil }
         .task(id: (model.selectedMessage ?? "") + model.state["revision"].string) { await model.loadMessage() }
-        .onChange(of: model.section) { section in if section != "studio" { model.selectedMessage = nil; model.messageDetail = .null }; model.mailPage = .null }
         .onChange(of: readerLayout) { _ in leaveExpandedReader() }
         .onChange(of: outOfOfficeDirty) { model.dirty("out-of-office", $0) }
         .onChange(of: model.selectedMessage) { selection in if selection == nil { leaveExpandedReader() } }

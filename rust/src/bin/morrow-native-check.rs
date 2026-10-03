@@ -664,19 +664,27 @@ fn run() -> Result<()> {
     seed(&directory)?;
     let key = fs::read(directory.join("encryption.key"))?;
     let client = contents.join("MacOS/checks");
+    let mut sources: Vec<_> = fs::read_dir(root.join("macos/Sources/MorrowMail"))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<_>>()?;
+    sources.retain(|path| {
+        path.extension()
+            .is_some_and(|extension| extension == "swift")
+    });
+    sources.sort();
     print!(
         "{}",
         capture(
             command(root, "swiftc")
                 .args([
+                    "-D",
+                    "MORROW_WINDOW_CHECKS",
                     "-parse-as-library",
                     "-target",
                     "arm64-apple-macosx13.5",
-                    "macos/Sources/MorrowMail/Models.swift",
-                    "macos/Sources/MorrowMail/AppModel.swift",
-                    "macos/Checks/RustIntegration.swift",
-                    "-o"
                 ])
+                .args(sources)
+                .args(["macos/Checks/RustIntegration.swift", "-o"])
                 .arg(&client),
             180,
             1024 * 1024

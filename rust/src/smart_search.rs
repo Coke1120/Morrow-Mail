@@ -117,7 +117,12 @@ pub(crate) async fn ask(app: &App, owner: &str, prompt: &str) -> Result<Value> {
         owner: owner.into(),
         paged: true,
     };
-    search(app, &context).await
+    let mut options = query::parse(&json!({"scope":"account","smart":true}))?;
+    options.query = validation::text(&json!(prompt), "Ask question", 500, false)?
+        .trim()
+        .into();
+    options.terms = vec![crate::normalize::normalize(&options.query)];
+    search(app, &context, options).await
 }
 fn stamp(settings: &Value) -> String {
     query::digest(&json!([
@@ -1368,8 +1373,7 @@ fn apply_cursor(
     }
     Ok(accounts)
 }
-async fn search(app: &App, ctx: &Context) -> Result<Value> {
-    let mut options = query::parse(&ctx.body)?;
+async fn search(app: &App, ctx: &Context, mut options: Query) -> Result<Value> {
     let secret = app.0.page_secret;
     if !options.smart || options.terms.is_empty() {
         let ctx = ctx.clone();
@@ -1499,7 +1503,7 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
     initialize(app).await?;
     let mut status = StatusCode::OK;
     let result = match (ctx.method.as_str(), route.as_slice()) {
-        ("POST", ["search"]) => search(app, ctx).await?,
+        ("POST", ["search"]) => search(app, ctx, query::parse(&ctx.body)?).await?,
         ("GET" | "POST", ["search", "preferences"]) => {
             let ctx = ctx.clone();
             app.db(move |db| preferences(db, &ctx)).await?

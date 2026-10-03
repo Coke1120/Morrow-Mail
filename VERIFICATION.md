@@ -1,5 +1,11 @@
 # Verification — 3 October 2026
 
+## PR #14 review fixes — release candidate
+
+Source navigation now clears the previous folder's reader synchronously in the shared macOS model, before selecting the requested owned source. The production SwiftUI/service fixture checks Today, Ask and reply-queue navigation, colliding provider IDs across two accounts and a source outside the first page. Smart Ask passes the literal question into the existing approved search pipeline; the regular Search API retains its operator grammar. Its fixture covers colons, incomplete quotes, operator-looking text, the 500-character boundary and rejection before model work above that boundary, without changing the index or disclosing another account.
+
+All 192 locked Rust tests passed with no failures or ignored tests. Formatting and strict all-target Clippy passed. The merged candidate retains main's native multi-selection, Unread and shared-model activity fixes. Windows' earlier PR walkthrough failed because its combined-folder count still expected eight folders after adding Later; the assertion now expects all nine and retains the independent destination/owner checks. Fresh macOS native acceptance and paired CI are required before merge/publication; no test waiver applies.
+
 ## Reviewed attention workflows — local source, unpublished
 
 The [AI Emaily review](docs/AI_EMAILY_REVIEW-2026-10-03.md) records public website interaction, documentation and App Store screenshots; it does not claim authenticated competitor testing. This source adds actionable Today reply previews, Ask with opt-in approved semantic retrieval and numbered context sources, reply-queue evidence, separate Brain guardrails, reviewed manual local rules, a persistent Later view and a Today onboarding entry. Both clients remain native; no provider organization, automatic rule execution, sending or new indexing starts from these views.

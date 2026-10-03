@@ -1861,6 +1861,35 @@ async fn ask_opt_in_reuses_only_approved_owned_index_and_discards_revoked_result
     assert_eq!(result["sources"][0]["accountId"], A);
     assert_eq!(result["sources"][0]["id"], "same");
     assert_eq!(fixture.vectors().await, vectors);
+    for prompt in [
+        "What does Re: extra time mean?".to_owned(),
+        "Explain \"extra time".to_owned(),
+        "Explain in:trash extra time".to_owned(),
+        format!("extra time {}", "x".repeat(489)),
+    ] {
+        let result = morrow_search::ai::assistance(
+            fixture.app(),
+            &json!({"action":"ask","prompt":prompt,"useSmartSearch":true}),
+            A,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["sources"][0]["accountId"], A);
+        assert_eq!(result["sources"][0]["id"], "same");
+        assert_eq!(fixture.vectors().await, vectors);
+    }
+    let before_invalid = model.count();
+    let error = morrow_search::ai::assistance(
+        fixture.app(),
+        &json!({"action":"ask","prompt":"x".repeat(501),"useSmartSearch":true}),
+        A,
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.status, 400);
+    assert_eq!(model.count(), before_invalid);
     let seen = model.seen.lock().unwrap().clone();
     let chat = seen
         .iter()

@@ -1,4 +1,6 @@
 import Foundation
+import AppKit
+import SwiftUI
 
 // This session observes the localhost handoff but never follows an OAuth redirect.
 final class RustStopOAuthRedirects: NSObject, URLSessionTaskDelegate {
@@ -212,6 +214,32 @@ struct NativeRustChecks {
         throw APIError("Native Rust acceptance: stopped service still accepts requests")
     }
 
+    @MainActor static func checkSourceNavigation(_ model: AppModel, sources: [JSON]) async throws {
+        NSApplication.shared.setActivationPolicy(.accessory)
+        let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 1220, height: 780), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: MailWorkspace().environmentObject(model))
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close(); window.contentView = nil }
+        model.state = try await model.request("/settings/preferences", method: "POST", body: .object(["markReadOnOpen": .bool(false)]))
+        for (index, section) in ["today", "studio", "reply-suggestions"].enumerated() {
+            model.section = section
+            try await Task.sleep(nanoseconds: 150_000_000)
+            let source = sources[index % sources.count], owner = source["accountId"].string
+            await model.openSource(source)
+            try await Task.sleep(nanoseconds: 150_000_000)
+            try check(model.selectedMessage == source.viewID && model.current?.id == source.id && model.current?["accountId"].string == owner,
+                      "source navigation lost its selection or owner after leaving " + section)
+            try check(model.current?["body"].string.contains("Owned by " + owner) == true, "source reader lost its owned content")
+        }
+        model.section = "archive"
+        try check(model.selectedMessage == nil && model.messageDetail.isNull && model.mailPage.isNull, "folder change did not clear the previous reader synchronously")
+        model.state = try await model.request("/settings/preferences", method: "POST", body: .object(["markReadOnOpen": .bool(true)]))
+        try await model.selectAccount("all", folder: "inbox")
+        try check(await model.loadMailPage(), "source navigation did not restore the combined inbox")
+        print("Native Rust: production source navigation retains owned content from Today, Ask and reply suggestions.")
+    }
+
     @MainActor static func main() async throws {
         let empty = AppModel()
         empty.state = .object(["account": .object(["id": .string("demo")]), "accounts": .array([])])
@@ -288,6 +316,8 @@ struct NativeRustChecks {
             try check(detail["message"]["body"].string.contains("Owned by " + row["accountId"].string), "detail routed through a different account")
         }
         try await checkPreparedDrafts(model, sources: duplicates)
+        let older = try await model.request("/messages/" + encodedPath("google:fixture-064"), mailbox: first)
+        try await checkSourceNavigation(model, sources: duplicates + [older["message"]])
         let opened = duplicates.first { $0["accountId"].string == first }!
         model.selectedMessage = opened.viewID
         await model.loadMessage()

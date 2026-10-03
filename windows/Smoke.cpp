@@ -144,7 +144,7 @@ IAsyncAction Shell::smoke() {
         }
         check(bool(combined) == seeded, L"Combined folders do not reflect the connected accounts.");
         if (combined) {
-            check(combined.MenuItems().Size() == 8, L"Combined mail does not expose every mailbox folder.");
+            check(combined.MenuItems().Size() == 9, L"Combined mail does not expose every mailbox folder.");
             std::set<std::wstring> folders;
             for (auto const& value : combined.MenuItems()) {
                 auto tag = value.as<controls::NavigationViewItem>().Tag().as<Json>();
