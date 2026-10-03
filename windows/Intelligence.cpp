@@ -133,7 +133,7 @@ struct Intelligence : std::enable_shared_from_this<Intelligence> {
     }
     void changed(std::wstring const& formName) {
         if (!current()) return;
-        if (formName == L"tool") clearResult();
+        if (formName == L"tool" || formName == L"rule") clearResult();
         ++revision; dirty();
     }
     void stop() {
@@ -157,6 +157,7 @@ hstring contextOf(Json const& state, hstring const& owner) {
     Json context;
     context.Insert(L"settings", subset(object(state, L"settings"), {L"policy", L"ai", L"preferences"}));
     auto workspace = object(state, L"workspace"), learning = object(workspace, L"styleLearning");
+    context.Insert(L"search",object(object(state,L"settings"),L"searchAI"));
     context.Insert(L"brain", object(workspace, L"brain")); context.Insert(L"skills", array(workspace, L"skills"));
     context.Insert(L"style", object(learning, L"profile")); context.Insert(L"identity", object(object(learning, L"settings"), L"identity"));
     put(context, L"connection", connectionOf(state, owner)); return context.Stringify();
@@ -460,9 +461,18 @@ void buildLearning(Page const& p, StackPanel const& body) {
     renderLearning(p);
 }
 
+void sourceLinks(Page const& p, StackPanel const& panel, Array const& sources) {
+    if (!sources.Size()) return;
+    Expander details; details.Header(box_value(L"Mail supplied as context (" + to_hstring(sources.Size()) + L")")); auto links=stack(6); details.Content(links); panel.Children().Append(details);
+    for (auto const& entry : sources) {
+        auto source=entry.GetObject(); auto caption=(source.HasKey(L"reference") ? L"[" + count(source,L"reference") + L"] " : hstring()) + text(source,L"subject",L"Subject withheld") + L" · " + text(source,L"date");
+        std::weak_ptr<Intelligence> weak=p;
+        links.Children().Append(button(caption,[weak,source]{ if (auto page=weak.lock();page && page->current() && !page->busy) page->shell->openSource(source); }));
+    }
+}
 Json brainFields(Json const& state) {
     auto brain = object(object(state, L"workspace"), L"brain"); Json value;
-    put(value, L"voice", text(brain, L"voice")); put(value, L"notes", text(brain, L"notes")); return value;
+    put(value, L"voice", text(brain, L"voice")); put(value, L"notes", text(brain, L"notes")); put(value,L"guardrails",text(brain,L"guardrails")); return value;
 }
 void memorySources(StackPanel const& panel, Json const& item) {
     for (auto const& entry : array(item, L"sourceLabels")) {
@@ -542,7 +552,9 @@ void buildBrain(Page const& p, StackPanel const& body) {
     words(memory, L"Your instructions", 20);
     editor(p, L"brain", brainFields(p->state));
     editText(p, memory, L"brain", L"voice", L"Manual writing instructions", 2000, true);
-    editText(p, memory, L"brain", L"notes", L"Notes to remember", 4000, true);
+    editText(p, memory, L"brain", L"notes", L"Business facts & notes", 4000, true);
+    editText(p,memory,L"brain",L"guardrails",L"Writing guardrails",2000,true);
+    words(memory,L"Keep facts separate from tone. Do not quote prices or promise dates without current evidence. Saved context belongs to this mailbox.",12);
     action(p, memory, L"Save notes", [](Page page) -> IAsyncAction {
         auto input = clone(page->forms[L"brain"].value);
         auto result = co_await page->shell->service->request(L"/workspace/brain", page->owner, L"POST", input);
@@ -659,6 +671,9 @@ void renderSuggestions(Page const& p) {
         auto proposal=entry.GetObject(), message=object(proposal,L"message");
         require(text(message,L"accountId")==p->owner,L"Suggestion belongs to another mailbox.");
         auto row=group(proposals,messageCaption(message)); words(row,text(proposal,L"reason")); auto id=text(proposal,L"id");
+        auto preview=label(text(proposal,L"text")); preview.MaxLines(4); row.Children().Append(preview);
+        words(row,to_hstring(array(proposal,L"sourceMessages").Size()) + L" permitted source(s)" + (flag(proposal,L"approvedStyleUsed") ? L" · Approved writing style" : L""),12);
+        sourceLinks(p,row,array(proposal,L"sourceMessages"));
         action(p,row,L"Review suggested reply…",[id](Page page) { return useSuggestion(page,id); });
         action(p,row,L"Ignore",[id](Page page) -> IAsyncAction {
             Json input; put(input,L"id",id);
@@ -891,6 +906,7 @@ IAsyncAction runTool(Page p) {
         put(input, L"prompt", trim(text(value, L"prompt")));
         if (usesDraft(p)) put(input, L"draftText", text(value, L"draftText"));
         if (name == L"skill") put(input, L"skillId", text(value, L"skillId"));
+        if (name == L"ask") truth(input,L"useSmartSearch",flag(value,L"useSmartSearch"));
         if (name == L"reply") truth(input, L"includeHistory", flag(value, L"includeHistory"));
         auto policy = object(object(p->state, L"settings"), L"policy"), model = object(object(p->state, L"settings"), L"ai");
         auto detail = p->owner + L"\n" + text(feature, L"label") + L"\nModel: " + text(model, L"model") + L"\nEndpoint: " + text(model, L"baseUrl") +
@@ -960,6 +976,8 @@ void renderToolResult(Page const& p) {
     } else if (p->output.Size()) {
         words(panel, text(p->output, L"source") == L"demo" ? L"Illustrative demo — not a model analysis" : L"AI response — review required", 22);
         words(panel, text(p->output, L"text"));
+        sourceLinks(p,panel,array(p->output,L"sources"));
+        if (!text(p->output,L"retrievalWarning").empty()) words(panel,text(p->output,L"retrievalWarning"),12);
         auto history = object(p->output, L"history"); if (history.Size()) words(panel, coverage(history));
         if (p->outputAction == L"reply" || p->outputAction == L"write" || p->outputAction == L"rewrite" || p->outputAction == L"translate") action(p, panel, L"Review in a draft", useToolDraft);
     }
@@ -1034,7 +1052,11 @@ void renderTool(Page const& p) {
     if (!flag(feature, L"mock")) {
         if (name == L"ask" || name == L"write") {
             editText(p, panel, L"tool", L"prompt", name == L"ask" ? L"What would you like to know about your mail?" : L"What would you like to say?", 2000, true);
-            if (name == L"ask") words(panel, L"Include a person, project or topic to find relevant downloaded mail.", 12);
+            if (name == L"ask") {
+                for (auto example : {L"What did we agree about the project deadline?",L"Which questions about the proposal remain unanswered?"}) action(p,panel,example,[question=hstring(example)](Page page) -> IAsyncAction { put(page->forms[L"tool"].value,L"prompt",question); page->forms[L"tool"].show(); page->changed(L"tool"); co_return; });
+                editCheck(p,panel,L"tool",L"useSmartSearch",L"Use my approved Smart Search index");
+                words(panel,L"Smart retrieval uses this mailbox’s permitted indexed mail. The question may go to your embedding model and incur charges. No indexing starts here; maximum question length is 500 characters.",12);
+            }
         } else {
             Expander extra; extra.Header(box_value(L"Additional instructions (optional)")); auto fields = stack(8);
             editText(p, fields, L"tool", L"prompt", L"Instructions", 2000, true); extra.Content(fields); panel.Children().Append(extra);
@@ -1055,9 +1077,44 @@ void renderTool(Page const& p) {
         auto& form = page->forms[L"tool"]; put(form.value, L"prompt", L""); put(form.value, L"draftText", L""); form.accept(form.value); page->clearResult(); page->dirty(); renderTool(page);
     });
 }
+void renderRulePreview(Page const& p) {
+    auto panel=p->resultPanel.get(); if (!panel) return; panel.Children().Clear();
+    auto preview=clone(p->workflow); if (!preview.Size()) return;
+    words(panel,to_hstring(array(preview,L"messages").Size()) + L" matches among " + count(preview,L"scanned") + L" downloaded Inbox messages",18);
+    for (auto const& entry : array(preview,L"messages")) { auto message=entry.GetObject(); words(panel,text(message,L"fromEmail") + L" · " + text(message,L"subject")); }
+    words(panel,L"Preview expires in ten minutes. Changed mail or a reconnected account requires another review.",12);
+    action(p,panel,L"Apply reviewed matches & save rule",[id=text(preview,L"previewId")](Page page) -> IAsyncAction {
+        require(text(page->workflow,L"previewId") == id,L"Review a new rule preview."); Json input; put(input,L"previewId",id);
+        auto result=co_await page->shell->service->request(L"/workspace/rules/apply",page->owner,L"POST",input);
+        if (!page->current()) co_return; require(text(result,L"accountId")==page->owner,L"Rule account changed.");
+        page->forms[L"rule"].accept(page->forms[L"rule"].value); page->clearResult(); page->dirty();
+        auto shell=page->shell; page->stop(); co_await intelligencePage(shell,L"rules");
+    });
+}
+IAsyncAction previewRule(Page p) {
+    auto input=clone(p->forms[L"rule"].value); p->clearResult();
+    auto result=co_await p->shell->service->request(L"/workspace/rules/preview",p->owner,L"POST",input);
+    if (!p->current()) co_return; require(text(result,L"accountId")==p->owner,L"Rule mailbox changed."); p->workflow=result; renderRulePreview(p);
+}
+void buildRules(Page const& p, StackPanel const& body) {
+    words(body,L"Local Inbox Rules",24);
+    words(body,L"Checks the newest 500 downloaded Inbox messages in this mailbox. Rules run only after preview and apply. Mail stays in its provider folder; Later is a local review view.");
+    Json value; put(value,L"condition",L"domain"); put(value,L"value",L""); put(value,L"action",L"lowPriority"); editor(p,L"rule",value);
+    editChoice(p,body,L"rule",L"condition",L"Match",{{L"sender",L"Sender address equals"},{L"domain",L"Sender domain equals"},{L"subject",L"Subject contains"}});
+    editText(p,body,L"rule",L"value",L"Exact sender/domain or subject text",254);
+    editChoice(p,body,L"rule",L"action",L"Local marker",{{L"lowPriority",L"Read later"},{L"pending",L"Pending"},{L"starred",L"Star"}});
+    action(p,body,L"Discard rule inputs",[](Page page) -> IAsyncAction { page->forms[L"rule"].accept(page->forms[L"rule"].saved); page->clearResult(); page->dirty(); co_return; });
+    action(p,body,L"Preview matches",previewRule); auto review=stack(10); body.Children().Append(review); p->resultPanel=make_weak(review);
+    words(body,L"Saved rules",20);
+    for (auto const& entry : array(object(p->state,L"workspace"),L"rules")) {
+        auto rule=entry.GetObject(); auto row=group(body,text(rule,L"condition") + L": " + text(rule,L"value") + L" → " + (text(rule,L"action")==L"lowPriority" ? L"Later" : text(rule,L"action")));
+        action(p,row,L"Review",[rule](Page page) -> IAsyncAction { auto value=subset(rule,{L"condition",L"value",L"action"}); page->forms[L"rule"].value=value; page->forms[L"rule"].show(); page->changed(L"rule"); co_await previewRule(page); });
+        action(p,row,L"Remove",[id=text(rule,L"id")](Page page) -> IAsyncAction { require(!page->forms[L"rule"].dirty(),L"Apply or discard rule inputs before removing a saved rule."); co_await page->shell->service->request(L"/workspace/rules/" + escaped(id),page->owner,L"DELETE"); if (!page->current()) co_return; auto shell=page->shell; page->stop(); co_await intelligencePage(shell,L"rules"); });
+    }
+}
 void buildTools(Page const& p, StackPanel const& body) {
     words(body, p->kind == L"simulations" ? L"Local simulations" : L"Assistant", 24); words(body, L"Choose a task, then review the result.");
-    Json value; put(value, L"action", p->kind == L"simulations" ? L"triage" : L"ask"); put(value, L"prompt", L""); put(value, L"draftText", L""); put(value, L"messageId", L""); put(value, L"skillId", L""); put(value, L"translateSource", L"message"); truth(value, L"includeHistory", false);
+    Json value; put(value, L"action", p->kind == L"simulations" ? L"triage" : L"ask"); put(value, L"prompt", L""); put(value, L"draftText", L""); put(value, L"messageId", L""); put(value, L"skillId", L""); put(value, L"translateSource", L"message"); truth(value, L"includeHistory", false); truth(value,L"useSmartSearch",false);
     if (text(p->shell->selected, L"accountId") == p->owner) put(value, L"messageId", text(p->shell->selected, L"id"));
     for (auto const& entry : array(object(p->state, L"workspace"), L"skills")) if (flag(entry.GetObject(), L"enabled")) { put(value, L"skillId", text(entry.GetObject(), L"id")); break; }
     editor(p, L"tool", value);
@@ -1153,7 +1210,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
     ComboBox more; more.PlaceholderText(L"More");
     xaml::Automation::AutomationProperties::SetName(more, L"More AI Studio pages");
     for (auto const& [id, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{
-        {L"brain", L"Writing style & notes"}, {L"reply-suggestions", L"Reply suggestions"}, {L"skills", L"Reusable skills"}, {L"simulations", L"Local simulations"}, {L"records", L"Simulation history"}}) {
+        {L"brain", L"Writing style & notes"}, {L"reply-suggestions", L"Reply suggestions"}, {L"rules",L"Local Inbox Rules"}, {L"skills", L"Reusable skills"}, {L"simulations", L"Local simulations"}, {L"records", L"Simulation history"}}) {
         ComboBoxItem item; item.Content(box_value(caption)); item.Tag(box_value(hstring(id))); more.Items().Append(item);
         if (kind == id) { known = true; more.SelectedItem(item); }
     }
@@ -1178,6 +1235,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
         if (!p->current()) co_return; acceptState(p, state);
         if (kind == L"learning") buildLearning(p, body);
         else if (kind == L"brain") buildBrain(p, body);
+        else if (kind == L"rules") buildRules(p,body);
         else if (kind == L"skills") buildSkills(p, body);
         else if (kind == L"reply-suggestions") {
             auto result = co_await shell->service->request(L"/reply-suggestions", p->owner);

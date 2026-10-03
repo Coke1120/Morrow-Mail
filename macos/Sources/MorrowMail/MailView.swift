@@ -93,7 +93,6 @@ struct MailWorkspace: View {
         }
         .onDisappear { if let selectionMonitor { NSEvent.removeMonitor(selectionMonitor) }; selectionMonitor = nil }
         .task(id: (model.selectedMessage ?? "") + model.state["revision"].string) { await model.loadMessage() }
-        .onChange(of: model.section) { section in if section != "studio" { model.selectedMessage = nil; model.messageDetail = .null }; model.mailPage = .null }
         .onChange(of: readerLayout) { _ in leaveExpandedReader() }
         .onChange(of: outOfOfficeDirty) { model.dirty("out-of-office", $0) }
         .onChange(of: model.selectedMessage) { selection in if selection == nil { leaveExpandedReader() } }
@@ -230,10 +229,10 @@ struct MailWorkspace: View {
     @ViewBuilder func folderRows(_ account: String) -> some View {
         ForEach(mailFolders.filter { folderFilter.isEmpty || $0.localizedCaseInsensitiveContains(folderFilter) }, id: \.self) { folder in
             HStack {
-                Label(folder.capitalized, systemImage: ["inbox": "tray", "starred": "star", "pending": "clock", "sent": "paperplane", "drafts": "doc", "archive": "archivebox", "spam": "exclamationmark.shield", "trash": "trash"][folder] ?? "folder")
+                Label(folder.capitalized, systemImage: ["inbox": "tray", "starred": "star", "pending": "clock", "later": "tray.2", "sent": "paperplane", "drafts": "doc", "archive": "archivebox", "spam": "exclamationmark.shield", "trash": "trash"][folder] ?? "folder")
                 Spacer()
                 let count = folderCount(account, folder)
-                if count > 0 && ["inbox", "pending", "drafts"].contains(folder) { Text("\(count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+                if count > 0 && ["inbox", "pending", "later", "drafts"].contains(folder) { Text("\(count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
             }.tag(account + "\n" + folder).accessibilityIdentifier("mailbox.\(account).\(folder)")
                 .background(dropTarget == account + "\n" + folder ? morrowGreen.opacity(0.18) : .clear)
                 .onDrop(of: [MailFolderDrop.type], delegate: MailFolderDrop(model: model, owner: account, destination: model.mailDropDestination(account, folder: folder), target: account + "\n" + folder, highlighted: $dropTarget))
@@ -369,6 +368,8 @@ struct MailWorkspace: View {
                         Button("Unstar") { model.patchMessages(messages, .object(["starred": .bool(false)])) }
                         Button("Mark Pending") { model.patchMessages(messages, .object(["pending": .bool(true)])) }
                         Button("Clear Pending") { model.patchMessages(messages, .object(["pending": .bool(false)])) }
+                        Button("Read Later") { model.patchMessages(messages, .object(["lowPriority": .bool(true)])) }.disabled(messages.contains { !["inbox", "archive"].contains($0["folder"].string) })
+                        Button("Return from Later") { model.patchMessages(messages, .object(["lowPriority": .bool(false)])) }.disabled(messages.contains { !["inbox", "archive"].contains($0["folder"].string) })
                         Button("Archive Locally") { model.patchMessages(messages, .object(["folder": .string("archive")])) }.disabled(messages.contains { $0["folder"].string == "drafts" })
                         Button("Move to Local Trash") { model.patchMessages(messages, .object(["folder": .string("trash")])) }
                     }

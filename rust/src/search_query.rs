@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use std::{collections::HashSet, sync::LazyLock};
 
 pub const FOLDERS: &[&str] = &[
-    "inbox", "sent", "drafts", "archive", "spam", "trash", "starred", "pending",
+    "inbox", "sent", "drafts", "archive", "spam", "trash", "starred", "pending", "later",
 ];
 const FIELDS: &[&str] = &[
     "from", "to", "subject", "after", "before", "is", "label", "in",
@@ -245,6 +245,10 @@ pub fn where_clause(
         }
         if value == "starred" {
             clauses.push("d.starred=1 AND d.folder NOT IN ('trash','spam')".into());
+        } else if value == "later" {
+            clauses.push(
+                "json_extract(m.data,'$.lowPriority')=1 AND d.folder IN ('inbox','archive')".into(),
+            );
         } else if value == "pending" {
             clauses.push(
                 "json_extract(m.data,'$.pending')=1 AND d.folder NOT IN ('trash','spam')".into(),
