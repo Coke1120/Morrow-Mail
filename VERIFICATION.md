@@ -1,5 +1,13 @@
 # Verification — 3 October 2026
 
+## 0.6.0-beta.38 — paired release candidate
+
+The common package version and [release notes](docs/releases/v0.6.0-beta.38.md) prepare beta.38 with the attention workflows, review fixes and main's inbox/model-settings updates described below. All 192 locked Rust tests (zero ignored), formatting, strict all-target Clippy, macOS packaging, full production-service native acceptance, deep/strict ad-hoc signature verification and plist lint passed locally. No real mail, calendar event or paid-model request was submitted, and installed apps were not replaced.
+
+[PR #14](https://github.com/Coke1120/Morrow-Mail/pull/14) merged at 2026-10-03T05:11:14Z as `309a3da4a83698dc78de70c291b2e7559f3879c6`, after [CI 37097864427](https://github.com/Coke1120/Morrow-Mail/actions/runs/37097864427) passed both native jobs: 192 Rust tests on macOS and 191 on Windows, zero failed/ignored; full macOS acceptance; Windows fresh/owned/restart walkthrough, including model input/retention, selection, batch and Unread assertions; and its 1,000/10,000/50,000-message benchmark. The model smoke requires loaded/measured native controls and applied templates before its asynchronous input-event checks.
+
+Publication requires the existing fresh tagged macOS/Windows jobs, native security/persistence/updater checks and same-run/same-attempt paired publisher; no waiver applies. The Windows combined-folder count now includes Later while retaining all owner/destination assertions. Live-account, physical-pointer/accessibility, clean-machine, distribution signing and installed-updater acceptance remain incomplete. Public downloads and the pinned manifest signature must be checked after publication.
+
 ## PR #14 review fixes — release candidate
 
 The [first complete review-fix CI](https://github.com/Coke1120/Morrow-Mail/actions/runs/37092885268) passed macOS, both platforms' Rust checks, Windows packaging and its 1,000/10,000/50,000-message benchmark. Windows walkthrough failed at the new multi-selection fixture: it requested SelectionItem from the ListViewItem control peer. [WinUI documents](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.automation.peers.listviewitemautomationpeer?view=windows-app-sdk-1.8) selection automation on the parent ListView's item peers. The check now obtains its item peer through the native ListViewAutomationPeer; it still invokes SelectionItem and requires the correct owned reader content. No assertion or security gate is removed. Benchmark runs after a walkthrough failure, so reaching it does not establish walkthrough success.
