@@ -401,6 +401,13 @@ IAsyncAction Shell::smoke() {
                     check(keys.IsExpanded() != flag(object(object(state, L"settings"), L"ai"), L"hasApiKey"), L"Saved model keys must keep the replacement field collapsed.");
                     auto input = panel.Children().GetAt(1).as<controls::TextBox>();
                     auto secret = keys.Content().as<controls::StackPanel>().Children().GetAt(0).as<controls::PasswordBox>();
+                    root.UpdateLayout();
+                    auto readyDeadline = GetTickCount64() + 5000;
+                    while ((!input.IsLoaded() || !input.ActualWidth()) && GetTickCount64() < readyDeadline) {
+                        co_await resume_after(std::chrono::milliseconds(10)); co_await ui; root.UpdateLayout();
+                    }
+                    check(input.IsLoaded() && input.ActualWidth(), L"The model endpoint control did not load for native input.");
+                    input.ApplyTemplate(); secret.ApplyTemplate();
                     auto changed = std::make_shared<bool>(false);
                     auto textChanged = input.TextChanged(auto_revoke, [changed](auto const&, auto const&) { *changed = true; });
                     auto original = input.Text(); input.Text(L"http://remote.invalid/v1"); secret.Password(L"fictional-unsaved-model-key");
