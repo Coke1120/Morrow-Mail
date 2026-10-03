@@ -401,7 +401,14 @@ IAsyncAction Shell::smoke() {
                     check(keys.IsExpanded() != flag(object(object(state, L"settings"), L"ai"), L"hasApiKey"), L"Saved model keys must keep the replacement field collapsed.");
                     auto input = panel.Children().GetAt(1).as<controls::TextBox>();
                     auto secret = keys.Content().as<controls::StackPanel>().Children().GetAt(0).as<controls::PasswordBox>();
+                    auto changed = std::make_shared<bool>(false);
+                    auto textChanged = input.TextChanged(auto_revoke, [changed](auto const&, auto const&) { *changed = true; });
                     auto original = input.Text(); input.Text(L"http://remote.invalid/v1"); secret.Password(L"fictional-unsaved-model-key");
+                    auto editDeadline = GetTickCount64() + 5000;
+                    while (!*changed && GetTickCount64() < editDeadline) {
+                        co_await resume_after(std::chrono::milliseconds(10)); co_await ui;
+                    }
+                    check(*changed, L"The model endpoint edit did not reach its native TextChanged handler.");
                     auto test = panel.Children().GetAt(7).as<controls::Button>();
                     root.UpdateLayout();
                     auto peer = xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(test);
@@ -415,7 +422,12 @@ IAsyncAction Shell::smoke() {
                     }
                     check(navigation.IsEnabled() && std::wstring_view(notice.Text()).find(L"Remote AI providers") != std::wstring_view::npos, L"The invalid endpoint probe did not finish without model work.");
                     check(secret.Password() == L"fictional-unsaved-model-key", L"Testing a model discarded the entered key before it could be saved or retried.");
-                    input.Text(original); secret.Password(L"");
+                    *changed = false; input.Text(original); secret.Password(L"");
+                    editDeadline = GetTickCount64() + 5000;
+                    while (!*changed && GetTickCount64() < editDeadline) {
+                        co_await resume_after(std::chrono::milliseconds(10)); co_await ui;
+                    }
+                    check(*changed && dirty.empty(), L"Restoring the model fixture left unsaved edits.");
                 }
                 if (std::wstring_view(tab) == L"search") {
                     auto body = layout.Children().GetAt(3).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
