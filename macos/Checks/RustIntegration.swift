@@ -234,6 +234,8 @@ struct NativeRustChecks {
         }
         model.section = "archive"
         try check(model.selectedMessage == nil && model.messageDetail.isNull && model.mailPage.isNull, "folder change did not clear the previous reader synchronously")
+        window.contentView = nil; window.close()
+        try await Task.sleep(nanoseconds: 150_000_000)
         model.state = try await model.request("/settings/preferences", method: "POST", body: .object(["markReadOnOpen": .bool(true)]))
         try await model.selectAccount("all", folder: "inbox")
         try check(await model.loadMailPage(), "source navigation did not restore the combined inbox")
