@@ -2,6 +2,8 @@
 
 ## Provider fetch reliability — local source, unpublished
 
+PR #15 review recovery binds every cooldown lookup, including legacy sync errors without their own connection version, to the currently saved connection. A replacement IMAP connection can complete its verification read before saving clears the target account's old wait. The regression fails before the guard and covers shared, history, catalog and legacy sync waits for saved, replacement and disconnected connections. The merged-main recovery candidate passed formatting, strict all-target Clippy and all 198 locked Rust tests locally (zero failed/ignored); fresh paired PR CI remains required before merge.
+
 The shared Rust reader now persists one quota cooldown per account/connection across ordinary sync, history import and folder/label reads, including restart and import pause/resume. Existing persisted cooldowns are respected on upgrade. Provider Retry-After seconds/HTTP dates can extend local backoff, including transient history reads; authentication and writes do not gain automatic retry. Reconnect/disconnect clears only the target account's cooldown.
 
 Gmail refresh still checks the same five bounded scopes, but fetches each overlapping message once per refresh. Cached non-draft bodies use minimal metadata reads; drafts and older caches without HTML metadata receive full reads. Detail 404s skip only the vanished message and keep the page/checkpoint transaction; authorization, quota and 5xx errors still abort that page under the existing recovery policy. No server-deletion reconciliation or incremental Gmail history sync is claimed.

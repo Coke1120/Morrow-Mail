@@ -83,6 +83,12 @@ pub async fn current_mail(app: &App, owner: &str) -> Result<Value> {
 pub(crate) fn read_backoff(config: &Value, mail: &Value) -> Option<Error> {
     let owner = string(mail, "email");
     let version = crate::folders::connection_version(mail);
+    if connections(config)
+        .get(owner)
+        .is_none_or(|current| crate::folders::connection_version(current) != version)
+    {
+        return None;
+    }
     let shared = &config["mailReadBackoffs"][owner];
     let job = &config["imports"][owner];
     let folders = &config["mailFolderCatalogs"][owner];
@@ -1209,6 +1215,27 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn read_cooldowns_apply_only_to_the_saved_connection() {
+        let owner = "reconnect@example.invalid";
+        let saved = json!({"email":owner,"provider":"google","connectionId":"previous"});
+        let candidate = json!({"email":owner,"provider":"imap","imapHost":"imap.example.invalid","imapPort":993});
+        let until = (chrono::Utc::now() + chrono::Duration::hours(1))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let version = crate::folders::connection_version(&saved);
+        for source in [
+            json!({"mailReadBackoffs":{owner:{"connection":version,"nextRetryAt":until}}}),
+            json!({"imports":{owner:{"connectionId":"previous","errorCode":"rate_limited","nextRetryAt":until}}}),
+            json!({"mailFolderCatalogs":{owner:{"connection":version,"errorCode":"rate_limited","nextRetryAt":until}}}),
+            json!({"backgroundSyncErrors":[{"accountId":owner,"code":"rate_limited","nextRetryAt":until}]}),
+        ] {
+            let mut config = merge(json!({"mailAccounts":{owner:saved.clone()}}), &source);
+            assert!(read_backoff(&config, &saved).is_some());
+            assert!(read_backoff(&config, &candidate).is_none());
+            config["mailAccounts"] = json!({});
+            assert!(read_backoff(&config, &candidate).is_none());
+        }
+    }
     #[test]
     fn sync_quota_failure_schedules_retry_without_reconnecting() {
         let mut quota = Error::new(502, "private provider detail");
