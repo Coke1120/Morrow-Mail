@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0-beta.39 — 2026-10-03
+
+- Share persisted provider quota waits across sync, history and folder/label reads; honor longer Retry-After delays while retaining daily limits and indefinite transient history retries.
+- Deduplicate Gmail refresh IDs and reuse cached non-draft bodies with fresh minimal metadata. Keep full reads for drafts, new messages and legacy HTML-cache refill.
+- Skip only vanished Gmail message-detail 404s without abandoning the successful page or its checkpoint.
+- Let replacement IMAP connection verification exclude old waits; retain saved-account pacing, owner isolation and cached user data.
+- Retain beta.38 reviewed workflows and native selection/model-setting fixes; require fresh paired tagged builds and the existing signed publisher before publication.
+
 ## 0.6.0-beta.37 — 2026-10-02
 
 - Supply current folder/label management metadata in existing native fixtures and verify their schema, retaining production background refresh and persistence checks. Keep safe reply-mode diagnostics visible.
