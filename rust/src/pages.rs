@@ -35,8 +35,8 @@ pub fn provider_folder(folder: &str) -> Option<&str> {
         .strip_prefix("provider:")
         .filter(|id| !id.is_empty() && id.len() <= 4096 && !id.chars().any(char::is_control))
 }
-// ponytail: scan cached JSON membership; add an index if large label views become slow.
-pub const PROVIDER_FOLDER_ROWS: &str = "SELECT rowid FROM messages WHERE json_extract(data,'$.providerFolderId')=? OR EXISTS (SELECT 1 FROM json_each(data,'$.providerLabelIds') WHERE value=?)";
+pub const PROVIDER_FOLDER_ROWS: &str =
+    "SELECT message_rowid FROM mail_provider_memberships WHERE account=? AND folder_id=?";
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub struct Options {
@@ -229,7 +229,7 @@ pub(crate) fn page_at(
     let mut params: Vec<Sql> = accounts.iter().cloned().map(Sql::Text).collect();
     if let Some(id) = provider {
         conditions.push(format!("d.rowid IN ({PROVIDER_FOLDER_ROWS})"));
-        params.extend([Sql::Text(id.into()), Sql::Text(id.into())]);
+        params.extend([Sql::Text(accounts[0].clone()), Sql::Text(id.into())]);
     } else if options.folder == "starred" {
         conditions.push("d.starred=1 AND d.folder NOT IN ('trash','spam')".into());
     } else if options.folder == "later" {

@@ -313,6 +313,7 @@ impl Store {
         store.conn.execute_batch("CREATE INDEX IF NOT EXISTS mail_pending ON messages(account) WHERE json_extract(data,'$.pending')=1; CREATE INDEX IF NOT EXISTS mail_later ON messages(account) WHERE json_extract(data,'$.lowPriority')=1;")?;
         store.transaction(|store| {
             create_index(&store.conn)?;
+            create_provider_memberships(&store.conn)?;
             store.conn.execute_batch("CREATE TABLE IF NOT EXISTS morrow_schema(version INTEGER PRIMARY KEY); INSERT OR IGNORE INTO morrow_schema VALUES(1);")?;
             let initialized: bool = store.conn.query_row("SELECT EXISTS(SELECT 1 FROM settings WHERE id=1)", [], |row| row.get(0))?;
             if !initialized {
@@ -530,6 +531,30 @@ fn index_values(p: &str) -> String {
     mail_normalize(COALESCE(json_extract({p}.data,'$.to'),'')||' '||COALESCE(json_extract({p}.data,'$.cc'),'')||' '||COALESCE(json_extract({p}.data,'$.bcc'),'')),
     mail_normalize(json_extract({p}.data,'$.subject')),mail_normalize(json_extract({p}.data,'$.body')),mail_normalize(json_extract({p}.data,'$.labels'))")
 }
+fn create_provider_memberships(conn: &Connection) -> Result<()> {
+    let existed: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='mail_provider_memberships')",
+        [],
+        |row| row.get(0),
+    )?;
+    // Separate from the rebuildable keyword index so folder browsing stays complete.
+    // Store::open wraps creation and the one-time legacy backfill in one transaction.
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS mail_provider_memberships(account TEXT NOT NULL,folder_id TEXT NOT NULL,message_rowid INTEGER NOT NULL,PRIMARY KEY(account,folder_id,message_rowid));
+        CREATE INDEX IF NOT EXISTS mail_provider_message ON mail_provider_memberships(message_rowid);")?;
+    let insert = "INSERT INTO mail_provider_memberships(account,folder_id,message_rowid)
+        SELECT new.account,json_extract(new.data,'$.providerFolderId'),new.rowid WHERE json_type(new.data,'$.providerFolderId')='text'
+        UNION SELECT new.account,value,new.rowid FROM json_each(new.data,'$.providerLabelIds') WHERE type='text';";
+    conn.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS mail_provider_insert AFTER INSERT ON messages BEGIN {insert} END;
+        CREATE TRIGGER IF NOT EXISTS mail_provider_update AFTER UPDATE ON messages BEGIN DELETE FROM mail_provider_memberships WHERE message_rowid=old.rowid; {insert} END;
+        CREATE TRIGGER IF NOT EXISTS mail_provider_delete AFTER DELETE ON messages BEGIN DELETE FROM mail_provider_memberships WHERE message_rowid=old.rowid; END;"))?;
+    if !existed {
+        conn.execute_batch("INSERT INTO mail_provider_memberships(account,folder_id,message_rowid)
+            SELECT account,json_extract(data,'$.providerFolderId'),rowid FROM messages WHERE json_type(data,'$.providerFolderId')='text'
+            UNION SELECT m.account,labels.value,m.rowid FROM messages m,json_each(m.data,'$.providerLabelIds') labels WHERE labels.type='text';")?;
+    }
+    Ok(())
+}
+
 fn create_index(conn: &Connection) -> Result<()> {
     conn.execute_batch("CREATE TABLE IF NOT EXISTS search_meta(version INTEGER PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS search_documents(rowid INTEGER PRIMARY KEY,account TEXT NOT NULL,id TEXT NOT NULL,date TEXT,folder TEXT,unread INTEGER,starred INTEGER,category TEXT,sender TEXT,recipients TEXT,subject TEXT,body TEXT,labels TEXT,UNIQUE(account,id));

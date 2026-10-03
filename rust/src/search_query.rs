@@ -231,13 +231,23 @@ pub fn where_clause(
 ) -> Result<(String, Vec<Sql>)> {
     let mut clauses = vec![format!("d.account IN ({})", placeholders(accounts.len()))];
     let mut params: Vec<Sql> = accounts.iter().cloned().map(Sql::Text).collect();
-    fn folder_clause(value: &str, clauses: &mut Vec<String>, params: &mut Vec<Sql>) -> Result<()> {
+    fn folder_clause(
+        accounts: &[String],
+        value: &str,
+        clauses: &mut Vec<String>,
+        params: &mut Vec<Sql>,
+    ) -> Result<()> {
         if let Some(id) = crate::pages::provider_folder(value) {
+            if accounts.len() != 1 {
+                return Err(Error::invalid(
+                    "Choose one mailbox for a server folder or label.",
+                ));
+            }
             clauses.push(format!(
                 "m.rowid IN ({})",
                 crate::pages::PROVIDER_FOLDER_ROWS
             ));
-            params.extend([Sql::Text(id.into()), Sql::Text(id.into())]);
+            params.extend([Sql::Text(accounts[0].clone()), Sql::Text(id.into())]);
             return Ok(());
         }
         if !FOLDERS.contains(&value) {
@@ -260,12 +270,7 @@ pub fn where_clause(
         Ok(())
     }
     if let Some(folder) = folder {
-        if crate::pages::provider_folder(folder).is_some() && accounts.len() != 1 {
-            return Err(Error::invalid(
-                "Choose one mailbox for a server folder or label.",
-            ));
-        }
-        folder_clause(folder, &mut clauses, &mut params)?;
+        folder_clause(accounts, folder, &mut clauses, &mut params)?;
     } else if !conditions
         .iter()
         .any(|c| c.key == "in" && ["trash", "spam"].contains(&c.value.as_str()))
@@ -274,7 +279,7 @@ pub fn where_clause(
     }
     for c in conditions {
         match c.key.as_str() {
-            "in" => folder_clause(&c.value, &mut clauses, &mut params)?,
+            "in" => folder_clause(accounts, &c.value, &mut clauses, &mut params)?,
             "is" => clauses.push(
                 match c.value.as_str() {
                     "read" => "d.unread=0",
