@@ -264,6 +264,26 @@ async fn owned_review_queues_without_model_then_runs_serial_bounded_context_and_
     );
     assert!(!content.to_string().contains("Confirmed Bob"));
     drop(requests);
+    assert!(
+        current["proposals"][0]["sourceMessages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["accountId"] == OWNER && m.get("body").is_none())
+    );
+    let today = app
+        .db(|db| Ok(morrow_search::service::state(db, "all", true, &[8; 32])?["today"].clone()))
+        .await
+        .unwrap();
+    assert!(
+        today["replySuggestions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["accountId"] == OWNER
+                && p["status"] == "ready"
+                && p["proposalId"].is_string())
+    );
     let id = &current["proposals"][0]["id"];
     assert_eq!(call(&app, "use", OTHER, json!({"id":id})).await.0, 404);
     let (status, used) = call(&app, "use", OWNER, json!({"id":id})).await;

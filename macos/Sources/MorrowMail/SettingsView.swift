@@ -160,12 +160,13 @@ struct NativeSettingsView: View {
     }
     var startPage: some View {
         Group {
-            SectionHeading(title: "Start here", detail: "Three steps to get mail and optional AI help ready. You can use mail without configuring AI.")
+            SectionHeading(title: "Start here", detail: "Connect your mailbox, see what needs attention in Today, then review your first suggested reply. AI setup is optional.")
             GroupBox("1 · Connect your mail") { VStack(alignment: .leading, spacing: 8) {
                 Text(model.accounts.isEmpty ? "Add a Gmail, Outlook or IMAP account to see your inbox." : "\(model.accounts.count) mail account(s) connected.")
                 Button(model.accounts.isEmpty ? "Add an Account" : "Manage Accounts") { selectTab("mail") }
                 Text("Google or Microsoft sign-in opens in your browser. If your provider requires your own app registration, Mail explains the extra steps.").font(.caption).foregroundStyle(.secondary)
             }.padding(8).frame(maxWidth: .infinity, alignment: .leading) }
+            Button("Open Today") { dismiss(); model.section = "today" }.disabled(model.accounts.isEmpty || model.busy)
             GroupBox("2 · Set up AI help (optional)") { VStack(alignment: .leading, spacing: 8) {
                 Text("AI can help write replies and summarize mail. Ask your IT support or AI provider for the connection details. Online AI receives only the mail you permit and may charge for requests.")
                 Text(model.state["settings"]["ai"]["configured"].bool ? "AI connection saved." : "AI has not been set up yet. You can still use mail.").font(.caption).foregroundStyle(.secondary)

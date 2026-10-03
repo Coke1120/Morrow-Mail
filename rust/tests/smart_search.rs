@@ -254,6 +254,12 @@ async fn model(State(model): State<Model>, request: Request) -> Response {
         return Json(json!({"data":[{"index":0,"embedding":[1,0]},{"index":0,"embedding":[0,1]}]}))
             .into_response();
     }
+    if path.ends_with("/chat/completions") {
+        return Json(
+            json!({"choices":[{"message":{"content":"The sender requests extra time [1]."}}]}),
+        )
+        .into_response();
+    }
     let vectors = body["input"]
         .as_array()
         .unwrap()
@@ -1787,5 +1793,152 @@ async fn automatic_chunks_finish_across_daily_limits_without_replaying_completed
             false
         );
     }
+    task.abort();
+}
+
+#[tokio::test]
+async fn ask_opt_in_reuses_only_approved_owned_index_and_discards_revoked_results() {
+    let fixture = Fixture::new().await;
+    let model = Model::default();
+    let (url, task) = server(model.clone()).await;
+    fixture
+        .add(A, "same", json!({"body":"The customer asks for extra time to settle their bill.","subject":"Payment"}))
+        .await;
+    fixture
+        .add(
+            B,
+            "same",
+            json!({"body":"OTHER ACCOUNT PRIVATE extra time"}),
+        )
+        .await;
+    fixture
+        .add(
+            A,
+            "noise",
+            json!({"body":"PRIVATE TRASH newsletter","subject":"News","folder":"trash"}),
+        )
+        .await;
+    fixture
+        .app()
+        .db({
+            let url = url.clone();
+            move |db| {
+                db.set_settings(
+                    &json!({"ai":{"baseUrl":url,"model":"fixture"},"policy":{"maxMessages":1}}),
+                )?;
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+    fixture
+        .setup(
+            &url,
+            json!({"content":{"body":true,"subject":true,"sender":true}}),
+        )
+        .await;
+    fixture.preview_run().await;
+    for _ in 0..5 {
+        smart_search::tick(fixture.app()).await.unwrap();
+    }
+    let before = model.count();
+    let vectors = fixture.vectors().await;
+    let input = json!({"action":"ask","prompt":"延期付款","useSmartSearch":true});
+    assert!(
+        morrow_search::ai::assistance(
+            fixture.app(),
+            &json!({"action":"ask","prompt":"延期付款"}),
+            A,
+            None
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(model.count(), before);
+    let result = morrow_search::ai::assistance(fixture.app(), &input, A, None)
+        .await
+        .unwrap();
+    assert_eq!(result["sources"][0]["accountId"], A);
+    assert_eq!(result["sources"][0]["id"], "same");
+    assert_eq!(fixture.vectors().await, vectors);
+    for prompt in [
+        "What does Re: extra time mean?".to_owned(),
+        "Explain \"extra time".to_owned(),
+        "Explain in:trash extra time".to_owned(),
+        format!("extra time {}", "x".repeat(489)),
+    ] {
+        let result = morrow_search::ai::assistance(
+            fixture.app(),
+            &json!({"action":"ask","prompt":prompt,"useSmartSearch":true}),
+            A,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["sources"][0]["accountId"], A);
+        assert_eq!(result["sources"][0]["id"], "same");
+        assert_eq!(fixture.vectors().await, vectors);
+    }
+    let before_invalid = model.count();
+    let error = morrow_search::ai::assistance(
+        fixture.app(),
+        &json!({"action":"ask","prompt":"x".repeat(501),"useSmartSearch":true}),
+        A,
+        None,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.status, 400);
+    assert_eq!(model.count(), before_invalid);
+    let seen = model.seen.lock().unwrap().clone();
+    let chat = seen
+        .iter()
+        .find(|r| r["path"].as_str().unwrap().ends_with("/chat/completions"))
+        .unwrap();
+    assert!(!chat.to_string().contains("OTHER ACCOUNT PRIVATE"));
+    let before_missing_model = model.count();
+    let saved_ai = fixture.app().settings().await.unwrap()["ai"].clone();
+    fixture
+        .app()
+        .db(|db| {
+            db.set_settings(&json!({"ai":{"model":""}}))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(
+        morrow_search::ai::assistance(
+            fixture.app(),
+            &json!({"action":"ask","prompt":"a different paid query","useSmartSearch":true}),
+            A,
+            None
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(model.count(), before_missing_model);
+    fixture
+        .app()
+        .db(move |db| {
+            db.set_settings(&json!({"ai":saved_ai}))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    model.hold.store(true, Ordering::Release);
+    let app = fixture.app().clone();
+    let run =
+        tokio::spawn(async move { morrow_search::ai::assistance(&app, &input, A, None).await });
+    model.wait().await;
+    fixture
+        .app()
+        .db(|db| {
+            db.set_settings(&json!({"searchAI":{"enabled":false}}))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    model.finish();
+    assert_eq!(run.await.unwrap().unwrap_err().status, 409);
     task.abort();
 }

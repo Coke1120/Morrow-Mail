@@ -297,6 +297,7 @@ pub fn state(db: &Store, selected: &str, paged: bool, secret: &[u8; 32]) -> Resu
     // Aggregate only validated reports; each model request still belongs to one mailbox.
     let mut today_reports = Vec::new();
     let mut today_overflow = 0;
+    let mut today_replies = Vec::new();
     for owner in &ids {
         let reports = crate::background::reports(db, owner)?;
         for report in reports.as_array().into_iter().flatten() {
@@ -307,6 +308,18 @@ pub fn state(db: &Store, selected: &str, paged: bool, secret: &[u8; 32]) -> Resu
             today_reports.push(report);
         }
         today_overflow += crate::background::overflow(db, owner)?;
+        for proposal in crate::reply_suggestions::reviewed(db, owner)?
+            .0
+            .iter()
+            .filter(|p| p["status"] == "ready")
+            .take(5)
+        {
+            let mut proposal = proposal.clone();
+            proposal["accountId"] = owner.clone().into();
+            proposal["proposalId"] = proposal["id"].clone();
+            proposal["id"] = json!([owner, proposal["id"]]).to_string().into();
+            today_replies.push(proposal);
+        }
     }
     let mut counted = ids.clone();
     counted.push("demo".into());
@@ -362,7 +375,7 @@ pub fn state(db: &Store, selected: &str, paged: bool, secret: &[u8; 32]) -> Resu
     result["workspace"]["brainLearning"] = crate::brain::learning_state(db, &view)?;
     result["workspace"]["summaries"] = reports;
     result["workspace"]["summaryOverflow"] = overflow.into();
-    result["today"] = json!({"summaries":today_reports,"summaryOverflow":today_overflow});
+    result["today"] = json!({"summaries":today_reports,"summaryOverflow":today_overflow,"replySuggestions":today_replies});
     if paged {
         result["mailPage"] = page;
     }
@@ -605,6 +618,9 @@ pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
     if let Some(response) = crate::ai::handle(app, &context).await? {
         return Ok(response);
     }
+    if let Some(response) = crate::local_rules::handle(app, &context).await? {
+        return Ok(response);
+    }
     if let Some(response) = crate::workflows::handle(app, &context).await? {
         return Ok(response);
     }
@@ -799,7 +815,7 @@ pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
                 let original = get_message(db, &owner, &id)?;
                 crate::scheduled::guard_draft(db, &owner, &id, None)?;
                 let mut patch = json!({});
-                for key in ["read", "starred", "pending"] {
+                for key in ["read", "starred", "pending", "lowPriority"] {
                     if let Some(value) = body.get(key) {
                         if !value.is_boolean() {
                             return Err(Error::invalid(
@@ -826,7 +842,7 @@ pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
                         .cloned()
                         .unwrap_or_default();
                     for key in patch.as_object().unwrap().keys() {
-                        if key != "pending" {
+                        if !["pending", "lowPriority"].contains(&key.as_str()) {
                             overrides.insert(key.clone(), Value::Bool(true));
                         }
                     }

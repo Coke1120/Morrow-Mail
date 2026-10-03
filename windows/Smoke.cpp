@@ -144,14 +144,14 @@ IAsyncAction Shell::smoke() {
         }
         check(bool(combined) == seeded, L"Combined folders do not reflect the connected accounts.");
         if (combined) {
-            check(combined.MenuItems().Size() == 8, L"Combined mail does not expose every mailbox folder.");
+            check(combined.MenuItems().Size() == 9, L"Combined mail does not expose every mailbox folder.");
             std::set<std::wstring> folders;
             for (auto const& value : combined.MenuItems()) {
                 auto tag = value.as<controls::NavigationViewItem>().Tag().as<Json>();
                 check(text(tag, L"owner") == L"all" && text(tag, L"section") == L"mail", L"A combined folder is routed to an individual owner.");
                 folders.insert(std::wstring(text(tag, L"folder")));
             }
-            check(folders == std::set<std::wstring>{L"inbox", L"starred", L"pending", L"sent", L"drafts", L"archive", L"spam", L"trash"}, L"Combined mail folder destinations are duplicated or missing.");
+            check(folders == std::set<std::wstring>{L"inbox", L"starred", L"pending", L"later", L"sent", L"drafts", L"archive", L"spam", L"trash"}, L"Combined mail folder destinations are duplicated or missing.");
         }
         enter("initial-page");
         check(page.Content() && !loading && !closing && !dialogOpen && dirty.empty(), L"The normal initial page is not ready.");
@@ -261,7 +261,8 @@ IAsyncAction Shell::smoke() {
             while ((!row.ActualWidth() || !row.ActualHeight()) && GetTickCount64() < layoutDeadline) {
                 co_await resume_after(std::chrono::milliseconds(10)); co_await ui; root.UpdateLayout();
             }
-            auto peer = xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(row);
+            auto peer = xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(rows)
+                .as<xaml::Automation::Peers::ListViewAutomationPeer>().CreateItemAutomationPeer(row);
             auto select = peer.GetPattern(xaml::Automation::Peers::PatternInterface::SelectionItem).try_as<xaml::Automation::Provider::ISelectionItemProvider>();
             check(bool(select), L"The native mail row does not expose its selection action.");
             select.Select();
@@ -278,6 +279,10 @@ IAsyncAction Shell::smoke() {
             enter("mail-patches");
             Json pending; pending.Insert(L"pending",Value::CreateBooleanValue(true)); co_await patch(source,pending);
             check(flag(selected,L"pending"), L"Pending did not update the reader.");
+            Json later; later.Insert(L"lowPriority",Value::CreateBooleanValue(true)); co_await patch(selected,later);
+            check(flag(selected,L"lowPriority") && flag(selected,L"pending"),L"Later should be independent from Pending in the native reader.");
+            later.Insert(L"lowPriority",Value::CreateBooleanValue(false)); co_await patch(selected,later);
+            check(!flag(selected,L"lowPriority") && flag(selected,L"pending"),L"Returning from Later cleared the Pending marker.");
             auto cursorCount = cursors.size();
             Json unread; unread.Insert(L"read",Value::CreateBooleanValue(false)); co_await patch(selected,unread);
             check(!flag(selected,L"read") && cursors.size()==cursorCount, L"Manual unread reset selection or pagination.");
@@ -302,6 +307,9 @@ IAsyncAction Shell::smoke() {
             for (auto const& message : batch) check(flag(object(co_await service->request(L"/messages/"+escaped(text(message,L"id")),text(message,L"accountId")),L"message"),L"starred"), L"Batch patch lost an owning mailbox.");
             check(selectedMessages().size() == 2, L"Refreshing a batch discarded multi-selection.");
             enter("mail-unread-filter");
+            auto markOnOpen = flag(object(object(state,L"settings"),L"preferences"),L"markReadOnOpen");
+            Json readingPreference; readingPreference.Insert(L"markReadOnOpen",Value::CreateBooleanValue(true));
+            state = co_await service->request(L"/settings/preferences",L"",L"POST",readingPreference);
             unreadFilter.IsChecked(true); cursors = {L""}; co_await loadPage();
             check(rows.Items().Size() > 0, L"Unread filter lost the unread fixture message.");
             for (auto const& item : rows.Items()) check(!flag(item.as<controls::ListViewItem>().Tag().as<Json>(), L"read"), L"Unread-only view includes a read message.");
@@ -315,7 +323,11 @@ IAsyncAction Shell::smoke() {
             check(flag(retainedUnread,L"pending"), L"The retained row did not update its Pending marker.");
             co_await patch(selected,unread);
             check(!flag(selected,L"read") && !retainedUnread.Size(), L"Marking retained mail unread kept a stale read marker.");
-            unreadFilter.IsChecked(false); cursors = {L""}; co_await loadPage();
+            unreadFilter.IsChecked(false);
+            readingPreference.Insert(L"markReadOnOpen",Value::CreateBooleanValue(markOnOpen));
+            state = co_await service->request(L"/settings/preferences",L"",L"POST",readingPreference);
+            check(flag(object(object(state,L"settings"),L"preferences"),L"markReadOnOpen") == markOnOpen, L"Unread checks did not restore the fixture reading preference.");
+            cursors = {L""}; co_await loadPage();
             enter("mail-combined");
             co_await navigate(L"mail",L"all");
             check(pageLabel.Text().size() && rows.Items().Size()==50, L"Combined mail did not load.");
@@ -389,7 +401,21 @@ IAsyncAction Shell::smoke() {
                     check(keys.IsExpanded() != flag(object(object(state, L"settings"), L"ai"), L"hasApiKey"), L"Saved model keys must keep the replacement field collapsed.");
                     auto input = panel.Children().GetAt(1).as<controls::TextBox>();
                     auto secret = keys.Content().as<controls::StackPanel>().Children().GetAt(0).as<controls::PasswordBox>();
+                    root.UpdateLayout();
+                    auto readyDeadline = GetTickCount64() + 5000;
+                    while ((!input.IsLoaded() || !input.ActualWidth()) && GetTickCount64() < readyDeadline) {
+                        co_await resume_after(std::chrono::milliseconds(10)); co_await ui; root.UpdateLayout();
+                    }
+                    check(input.IsLoaded() && input.ActualWidth(), L"The model endpoint control did not load for native input.");
+                    input.ApplyTemplate(); secret.ApplyTemplate();
+                    auto changed = std::make_shared<bool>(false);
+                    auto textChanged = input.TextChanged(auto_revoke, [changed](auto const&, auto const&) { *changed = true; });
                     auto original = input.Text(); input.Text(L"http://remote.invalid/v1"); secret.Password(L"fictional-unsaved-model-key");
+                    auto editDeadline = GetTickCount64() + 5000;
+                    while (!*changed && GetTickCount64() < editDeadline) {
+                        co_await resume_after(std::chrono::milliseconds(10)); co_await ui;
+                    }
+                    check(*changed, L"The model endpoint edit did not reach its native TextChanged handler.");
                     auto test = panel.Children().GetAt(7).as<controls::Button>();
                     root.UpdateLayout();
                     auto peer = xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(test);
@@ -403,7 +429,12 @@ IAsyncAction Shell::smoke() {
                     }
                     check(navigation.IsEnabled() && std::wstring_view(notice.Text()).find(L"Remote AI providers") != std::wstring_view::npos, L"The invalid endpoint probe did not finish without model work.");
                     check(secret.Password() == L"fictional-unsaved-model-key", L"Testing a model discarded the entered key before it could be saved or retried.");
-                    input.Text(original); secret.Password(L"");
+                    *changed = false; input.Text(original); secret.Password(L"");
+                    editDeadline = GetTickCount64() + 5000;
+                    while (!*changed && GetTickCount64() < editDeadline) {
+                        co_await resume_after(std::chrono::milliseconds(10)); co_await ui;
+                    }
+                    check(*changed && dirty.empty(), L"Restoring the model fixture left unsaved edits.");
                 }
                 if (std::wstring_view(tab) == L"search") {
                     auto body = layout.Children().GetAt(3).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();

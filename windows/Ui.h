@@ -72,6 +72,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     winrt::Windows::Foundation::IAsyncAction navigate(winrt::hstring target, winrt::hstring account = {}, winrt::hstring mailFolder = L"inbox");
     winrt::Windows::Foundation::IAsyncAction loadPage();
     winrt::Windows::Foundation::IAsyncAction read(Json metadata);
+    winrt::Windows::Foundation::IAsyncAction openSource(Json metadata);
     winrt::Windows::Foundation::IAsyncAction patch(Json message, Json changes);
     winrt::Windows::Foundation::IAsyncAction patchMessages(std::vector<Json> messages, Json changes);
     std::vector<Json> selectedMessages(Json target = Json()) const;

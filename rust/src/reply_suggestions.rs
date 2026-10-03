@@ -375,7 +375,7 @@ fn schedule_automatic(db: &Store) -> Result<()> {
     }
     Ok(())
 }
-pub fn state(db: &Store, owner: &str) -> Result<Value> {
+pub(crate) fn reviewed(db: &Store, owner: &str) -> Result<(Vec<Value>, Vec<Value>)> {
     let settings = db.settings()?;
     connected(&settings, owner)?;
     let current = read(&settings, owner);
@@ -389,6 +389,19 @@ pub fn state(db: &Store, owner: &str) -> Result<Value> {
             let mut item = item.clone();
             item.as_object_mut().unwrap().remove("stamp");
             item.as_object_mut().unwrap().remove("sourceHash");
+            item["sourceMessages"] = json!(
+                item["sources"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|s| db.get(owner, string(s, "id")).transpose())
+                    .collect::<Result<Vec<_>>>()?
+                    .iter()
+                    .map(|m| summary(m, owner, &p))
+                    .collect::<Vec<_>>()
+            );
+            item["approvedStyleUsed"] =
+                (!crate::learning::voice(db, &settings, owner)?.is_empty()).into();
             item.as_object_mut().unwrap().remove("sources");
             item["message"] = summary(
                 &crate::service::get_message(db, owner, string(&item, "messageId"))?,
@@ -402,6 +415,14 @@ pub fn state(db: &Store, owner: &str) -> Result<Value> {
             }
         }
     }
+    Ok((proposals, assessments))
+}
+pub fn state(db: &Store, owner: &str) -> Result<Value> {
+    let settings = db.settings()?;
+    connected(&settings, owner)?;
+    let current = read(&settings, owner);
+    let p = policy::resolve(&settings["policy"]);
+    let (proposals, assessments) = reviewed(db, owner)?;
     let mut job = current["job"].clone();
     if job.is_object() {
         if job["stamp"] != stamp(db, &settings, owner)? {

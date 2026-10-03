@@ -17,6 +17,7 @@ struct StudioView: View {
     @State private var skillID = ""
     @State private var prompt = ""
     @State private var draftText = ""
+    @State private var useSmartSearch = false
     @State private var result: JSON = .null
     @State private var resultID = UUID()
     @State private var resultGeneration: Int?
@@ -25,6 +26,8 @@ struct StudioView: View {
     @State private var when = Date().addingTimeInterval(86400)
     @State private var voice = ""
     @State private var notes = ""
+    @State private var guardrails = ""
+    @State private var savedGuardrails = ""
     @State private var savedVoice = ""
     @State private var savedNotes = ""
     @State private var learningDirty = false
@@ -45,7 +48,7 @@ struct StudioView: View {
     var chosen: JSON { contextChoices.first { $0.viewID == messageID } ?? .null }
     var savedMemoryOptions: JSON { workspace["brainLearning"].picking(["enabled", "tokenBudget"]) }
     var memoryOptionsDirty: Bool { !memoryOptions.isNull && memoryOptions != savedMemoryOptions }
-    var brainDirty: Bool { voice != savedVoice || notes != savedNotes || memoryOptionsDirty || learningDirty }
+    var brainDirty: Bool { voice != savedVoice || notes != savedNotes || guardrails != savedGuardrails || memoryOptionsDirty || learningDirty }
     var visibleMemoryPreview: JSON { memoryPreview.isNull ? workspace["brainLearning"]["preview"] : memoryPreview }
     var blocked: Bool {
         !model.allowed(action) || (feature["context"].string == "selected" && chosen.isNull) ||
@@ -74,12 +77,13 @@ struct StudioView: View {
                 Spacer()
                 Menu("More") {
                     Button("Writing Style & Notes") { navigate("brain") }
+                    Button("Local Inbox Rules") { navigate("rules") }
                     Button("Reusable Skills") { navigate("skills") }
                     Button("Local Simulations") { navigate("simulations") }
                     Button("Simulation History") { navigate("activity") }
                 }.fixedSize().disabled(model.busy)
             }
-            if !model.state["settings"]["ai"]["configured"].bool {
+            if tab != "rules" && !model.state["settings"]["ai"]["configured"].bool {
                 HStack {
                     Text("Set up AI to use the assistant. Your IT support can help.").foregroundStyle(.secondary)
                     Button("Set Up AI") { model.settings("model") }.disabled(model.busy)
@@ -89,6 +93,7 @@ struct StudioView: View {
             switch tab {
             case "summaries": summariesPage
             case "brain": brainPage
+            case "rules": LocalRulesView()
             case "skills": skillsPage
             case "activity": activityPage
             default: toolsPage
@@ -107,10 +112,12 @@ struct StudioView: View {
         .onChange(of: model.account) { _ in clearContextSearch() }
         .onChange(of: skillID) { _ in clearResult() }
         .onChange(of: prompt) { _ in clearResult() }
+        .onChange(of: useSmartSearch) { _ in clearResult() }
         .onChange(of: draftText) { _ in clearResult() }
         .onChange(of: when) { _ in clearResult() }
         .onChange(of: voice) { _ in model.dirty("brain", brainDirty) }
         .onChange(of: notes) { _ in model.dirty("brain", brainDirty) }
+        .onChange(of: guardrails) { _ in model.dirty("brain", brainDirty) }
         .onChange(of: memoryOptions) { _ in model.dirty("brain", brainDirty) }
         .onChange(of: learningDirty) { _ in model.dirty("brain", brainDirty) }
         .onDisappear { contextOperation?.cancel(); contextTicket = UUID(); contextSearching = false; model.dirty("brain", false) }
@@ -200,7 +207,13 @@ struct StudioView: View {
                     if !feature["mock"].bool {
                         if ["ask", "write"].contains(action) {
                             TextArea(title: action == "ask" ? "What would you like to know about your mail?" : "What would you like to say?", text: $prompt, height: 90)
-                            if action == "ask" { Text("Include a person, project or topic to help find relevant downloaded mail.").font(.caption).foregroundStyle(.secondary) }
+                            if action == "ask" {
+                                HStack {
+                                    ForEach(["What did we agree about the project deadline?", "Which questions about the proposal remain unanswered?"], id: \.self) { example in Button(example) { prompt = example }.font(.caption) }
+                                }
+                                Toggle("Use my approved Smart Search index", isOn: $useSmartSearch).toggleStyle(.checkbox)
+                                Text(useSmartSearch ? "Retrieves this mailbox’s permitted indexed mail. The question may be sent to your embedding model and incur charges; no indexing starts here. Maximum question length: 500 characters." : "Include a person, project or topic. Uses keyword matches from downloaded, permitted mail.").font(.caption).foregroundStyle(.secondary)
+                            }
                         } else {
                             DisclosureGroup("Additional instructions (optional)") { TextArea(title: "Instructions", text: $prompt, height: 70) }
                         }
@@ -219,6 +232,8 @@ struct StudioView: View {
                         Divider()
                         Text(result["source"].string == "demo" ? "Illustrative demo result" : "Your AI result").font(.headline)
                         Text(result["text"].string).textSelection(.enabled).lineSpacing(5)
+                        if !result["sources"].array.isEmpty { SourceLinksView(sources: result["sources"].array) }
+                        if result["retrievalWarning"].nonempty { Text(result["retrievalWarning"].string).font(.caption).foregroundStyle(.secondary) }
                         HStack {
                             Button("Copy") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(result["text"].string, forType: .string) }
                             if ["write", "reply", "rewrite", "translate"].contains(action) { Button("Review in a Draft") { useDraft() }.disabled(model.busy || model.preparingDraft || resultGeneration != model.draftGeneration) }
@@ -273,12 +288,14 @@ struct StudioView: View {
                 }
                 Text("Your instructions").font(.title3.bold())
                 TextArea(title: "Writing voice", text: $voice, height: 85)
-                TextArea(title: "Notes to remember", text: $notes, height: 130)
+                TextArea(title: "Business facts & notes", text: $notes, height: 130)
+                TextArea(title: "Writing guardrails", text: $guardrails, height: 85)
+                Text("Keep facts separate from tone. For example: do not quote prices or promise a delivery date without current evidence. Saved context belongs to this mailbox.").font(.caption).foregroundStyle(.secondary)
                 HStack {
-                    if voice != savedVoice || notes != savedNotes { Button("Save Notes") {
+                    if voice != savedVoice || notes != savedNotes || guardrails != savedGuardrails { Button("Save Notes") {
                         model.perform {
-                            model.state = try await model.request("/workspace/brain", method: "POST", body: .object(["voice": .string(voice), "notes": .string(notes)]))
-                            savedVoice = voice; savedNotes = notes; memoryPreview = .null; model.dirty("brain", brainDirty); model.notice = "Notes saved."
+                            model.state = try await model.request("/workspace/brain", method: "POST", body: .object(["voice": .string(voice), "notes": .string(notes), "guardrails": .string(guardrails)]))
+                            savedVoice = voice; savedNotes = notes; savedGuardrails = guardrails; memoryPreview = .null; model.dirty("brain", brainDirty); model.notice = "Notes saved."
                         }
                     }.buttonStyle(.borderedProminent) }
                     Button("Discard Changes") { loadBrain(); model.dirty("brain", false) }.disabled(!brainDirty)
@@ -416,6 +433,7 @@ struct StudioView: View {
     func generate() {
         var payload: JSON = .object(["action": .string(action), "prompt": .string(prompt)])
         if feature["context"].string == "selected" { payload["messageId"] = .string(chosen.id) }
+        if action == "ask" { payload["useSmartSearch"] = .bool(useSmartSearch) }
         if action == "rewrite" { payload["draftText"] = .string(draftText) }
         if action == "skill" { payload["skillId"] = .string(skillID) }
         if ["followup", "schedule"].contains(action) { payload["when"] = .string(utcDate(when)) }
@@ -489,7 +507,7 @@ struct StudioView: View {
             }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
         }
     }
-    func loadBrain() { memoryOptions = savedMemoryOptions; voice = workspace["brain"]["voice"].string; notes = workspace["brain"]["notes"].string; savedVoice = voice; savedNotes = notes }
+    func loadBrain() { memoryOptions = savedMemoryOptions; voice = workspace["brain"]["voice"].string; notes = workspace["brain"]["notes"].string; guardrails = workspace["brain"]["guardrails"].string; savedVoice = voice; savedNotes = notes; savedGuardrails = guardrails }
 }
 
 struct SkillEdit: Identifiable { let id = UUID(); let value: JSON }

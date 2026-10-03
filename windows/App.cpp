@@ -510,14 +510,14 @@ void Shell::rebuildNavigation() {
             }
         });
         for (auto const& mailbox : {Destination{L"Inbox",L"inbox",L"\uE715"}, {L"Starred",L"starred",L"\uE734"},
-            {L"Pending",L"pending",L"\uE823"}, {L"Sent",L"sent",L"\uE724"}, {L"Drafts",L"drafts",L"\uE70F"},
+            {L"Pending",L"pending",L"\uE823"}, {L"Later",L"later",L"\uE823"}, {L"Sent",L"sent",L"\uE724"}, {L"Drafts",L"drafts",L"\uE70F"},
             {L"Archive",L"archive",L"\uE7B8"}, {L"Spam / Junk",L"spam",L"\uE7BA"}, {L"Trash",L"trash",L"\uE74D"}}) {
             if (!matches(mailbox.title)) continue;
             auto child = navItem(mailbox.title, L"mail", id, mailbox.id, mailbox.glyph);
             uint64_t count = 0;
             for (auto const& account : accounts) if (id == L"all" || text(account, L"id") == id)
                 count += static_cast<uint64_t>(mailbox.id == std::wstring_view(L"inbox") ? account.GetNamedNumber(L"unread", 0) : object(account, L"counts").GetNamedNumber(mailbox.id, 0));
-            if (count && (mailbox.id == std::wstring_view(L"inbox") || mailbox.id == std::wstring_view(L"pending") || mailbox.id == std::wstring_view(L"drafts"))) {
+            if (count && (mailbox.id == std::wstring_view(L"inbox") || mailbox.id == std::wstring_view(L"pending") || mailbox.id == std::wstring_view(L"later") || mailbox.id == std::wstring_view(L"drafts"))) {
                 InfoBadge badge; badge.Value(static_cast<int32_t>(std::min<uint64_t>(count, INT32_MAX))); child.InfoBadge(badge);
             }
             child.IsSelected(section == L"mail" && owner == id && folder == mailbox.id);
@@ -878,6 +878,19 @@ IAsyncAction Shell::loadPage() {
     search.IsEnabled(true); sorting.IsEnabled(search.Text().empty()); unreadFilter.IsEnabled(search.Text().empty());
     loading = false;
 }
+IAsyncAction Shell::openSource(Json metadata) {
+    auto self = shared_from_this(); auto account = text(metadata,L"accountId"), id = text(metadata,L"id");
+    if (!connected(account) || id.empty() || loading) co_return;
+    auto version = generation;
+    try {
+        auto result = co_await service->request(L"/messages/" + escaped(id),account);
+        if (generation != version) co_return;
+        auto message = object(result,L"message");
+        if (text(message,L"accountId") != account || text(message,L"id") != id) throw hresult_error(E_FAIL,L"The source mailbox changed.");
+        co_await navigate(L"mail",account,text(message,L"folder"));
+        if (owner == account && section == L"mail" && folder == text(message,L"folder")) co_await read(message);
+    } catch (...) { error(errorText()); }
+}
 IAsyncAction Shell::read(Json metadata) {
     auto lifetime = shared_from_this(); auto version = generation; auto sequence = ++selectionGeneration;
     auto captured = owner; auto account = text(metadata, L"accountId"); auto id = text(metadata, L"id");
@@ -920,8 +933,9 @@ void Shell::renderReader(Json const& message) {
     else for (auto const& option : {std::pair{L"Reply", L"reply"}, {L"Reply all",L"replyAll"}, {L"Forward",L"forward"}})
         replies.Children().Append(button(option.first, [weak, message, mode = hstring(option.second)] { if (auto self = weak.lock()) self->prepare(message, mode); }));
     auto markers = actions();
-    for (auto const& option : {std::pair{L"Read",L"read"}, {L"Starred",L"starred"}, {L"Pending",L"pending"}}) {
+    for (auto const& option : {std::pair{L"Read",L"read"}, {L"Starred",L"starred"}, {L"Pending",L"pending"}, {L"Read later",L"lowPriority"}}) {
         Primitives::ToggleButton toggle; toggle.Content(box_value(option.first)); toggle.IsChecked(flag(message, option.second));
+        if (std::wstring_view(option.second) == L"lowPriority" && text(message,L"folder") != L"inbox" && text(message,L"folder") != L"archive") toggle.IsEnabled(false);
         toggle.Click([weak, message, key = std::wstring(option.second)](auto const&, auto const&) { if (auto self = weak.lock()) { Json change; change.Insert(key, Value::CreateBooleanValue(!flag(message, key.c_str()))); self->patch(message, change); } });
         markers.Children().Append(toggle);
     }
@@ -1296,7 +1310,7 @@ IAsyncAction summarizeNow(std::shared_ptr<Shell> self, hstring mailbox) {
     } catch (...) { self->error(errorText()); }
 }
 IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
-    if (kind == L"studio" || kind == L"learning" || kind == L"brain" || kind == L"reply-suggestions" || kind == L"skills" || kind == L"summaries" || kind == L"records") {
+    if (kind == L"studio" || kind == L"learning" || kind == L"brain" || kind == L"rules" || kind == L"reply-suggestions" || kind == L"skills" || kind == L"summaries" || kind == L"records") {
         co_await intelligencePage(self, kind); co_return;
     }
     auto version = self->generation; auto account = self->owner;
@@ -1339,6 +1353,16 @@ IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
             overview(L"Unread Inbox", unread, L"inbox", true); overview(L"Inbox", inbox, L"inbox", false); overview(L"Drafts", drafts, L"drafts", false);
             content.Children().Append(totals);
             auto scope = label(L"Downloaded mail, across all dates. Sync and AI progress appear in Activity.", 12); scope.Opacity(0.7); content.Children().Append(scope);
+            content.Children().Append(label(L"Replies to review",22));
+            content.Children().Append(label(L"Up to five current suggestions per mailbox. Review and edit before sending.",12));
+            for (auto const& entry : array(object(self->state,L"today"),L"replySuggestions")) {
+                auto proposal = entry.GetObject(); auto item = stack(8); auto mailbox = text(proposal,L"accountId");
+                item.Children().Append(label(mailbox,12)); item.Children().Append(label(text(object(proposal,L"message"),L"subject",L"Subject withheld"),18));
+                item.Children().Append(label(text(proposal,L"reason"))); auto draft = label(text(proposal,L"text")); draft.MaxLines(4); item.Children().Append(draft);
+                item.Children().Append(button(L"Review replies for this mailbox",[weak=self->weak_from_this(),mailbox]{ if (auto shell=weak.lock()) shell->navigate(L"reply-suggestions",mailbox); }));
+                content.Children().Append(item);
+            }
+            if (!array(object(self->state,L"today"),L"replySuggestions").Size()) content.Children().Append(label(L"No current suggestions. Open Reply suggestions for one mailbox to get started."));
             content.Children().Append(label(L"Today's summaries", 22));
             auto subtitle = label(L"A clearer view of what needs your attention."); subtitle.Opacity(0.7); content.Children().Append(subtitle);
             auto summaryActions = actions();
@@ -1371,6 +1395,10 @@ IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
                 item.Children().Append(label(text(report, L"accountId"), 12)); item.Children().Append(label(title, 20));
                 item.Children().Append(label(text(report, L"status") + L" · " + mailDateLabel(date) + L" · " + to_hstring(array(report, L"messageIds").Size()) + L" messages", 12));
                 if (!text(report, L"text").empty()) item.Children().Append(label(text(report, L"text")));
+                for (auto const& entry : array(report,L"items")) {
+                    auto source = entry.GetObject(); Json metadata; put(metadata,L"id",text(source,L"messageId")); put(metadata,L"accountId",text(report,L"accountId"));
+                    item.Children().Append(button(L"Open source · " + text(source,L"priority") + L" · " + text(source,L"summary"),[weak=self->weak_from_this(),metadata]{ if (auto shell=weak.lock()) shell->openSource(metadata); }));
+                }
                 if (!text(report, L"error").empty()) item.Children().Append(label(text(report, L"error")));
                 auto card = Markup::XamlReader::Load(L"<Border xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' Background='{ThemeResource CardBackgroundFillColorDefaultBrush}' BorderBrush='{ThemeResource CardStrokeColorDefaultBrush}' BorderThickness='1' CornerRadius='12'/>").as<Border>();
                 card.Child(item); content.Children().Append(card);

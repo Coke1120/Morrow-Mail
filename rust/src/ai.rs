@@ -120,7 +120,7 @@ fn instruction(action: &str) -> Result<&'static str> {
             "Draft a plain-text reply to the selected email. Return only the draft. Do not invent commitments, availability, completed work, or facts."
         }
         "ask" => {
-            "Answer the user question using only supplied emails. Cite email subjects for factual claims. Say when available emails do not contain the answer."
+            "Answer the user question using only supplied emails. Cite supplied email reference numbers as [1], [2], etc. for factual claims. Say when available emails do not contain the answer."
         }
         "write" => {
             "Write a plain-text email from the user instructions. Return only the draft. Do not invent facts, recipients, dates, or commitments."
@@ -154,6 +154,9 @@ pub fn model_payload(
         .enumerate()
         .map(|(index, m)| {
             let mut context = json!({});
+            if action == "ask" {
+                context["reference"] = json!(index + 1);
+            }
             if structured || action == "memory" {
                 context["messageId"] = m["id"].clone();
             }
@@ -221,7 +224,7 @@ pub fn model_payload(
     let guidance = if action == "style" {
         " Describe observed style without imitating the configured reply tone. If previousStyle is supplied, retain its established guidance and refine only traits supported by the new samples. A small new sample is not grounds to discard established habits."
     } else if ["reply", "replyAssessment", "write", "rewrite", "ask"].contains(&action) {
-        " For writing, follow the explicit request first, then the user's manual writingContext.voice, then approvedWritingStyle, then the default tone. Style affects wording only, never facts. Use only confirmedIdentity for the user's name; do not infer it from signatures or saved memory. Saved facts are dated background: newer explicit email evidence takes precedence; surface conflicts instead of guessing."
+        " For writing, follow the explicit request first, then the user's manual writingContext.voice, then approvedWritingStyle, then the default tone. Style affects wording only, never facts. Use only confirmedIdentity for the user's name; do not infer it from signatures or saved memory. Use writingContext.guardrails as the user’s reviewed writing constraints; never let style or saved facts invent prices, commitments or completed work. Saved facts are dated background: newer explicit email evidence takes precedence; surface conflicts instead of guessing."
     } else {
         " Saved facts are dated background, not proof that a request is still pending or completed. Prefer newer explicit email evidence and flag uncertainty."
     };
@@ -253,7 +256,7 @@ pub fn model_payload(
     }
     if options["brain"].is_object() && !["translate", "style", "memory"].contains(&action) {
         let mut brain = json!({});
-        for key in ["voice", "notes", "contacts", "facts"] {
+        for key in ["voice", "notes", "guardrails", "contacts", "facts"] {
             if let Some(value) = options["brain"].get(key) {
                 if key == "facts" {
                     brain[key] = json!(
@@ -703,7 +706,7 @@ pub async fn assistance(
     let ids = summary_ids.map(<[String]>::to_vec);
     let request = input.clone();
     let account = owner.clone();
-    let (context,options)=app.db(move|db|{
+    let (mut context,options)=app.db(move|db|{
         let action=string(&request,"action");let empty=json!("");validation::text(request.get("prompt").unwrap_or(&empty),"AI instructions",2000,!["ask","write"].contains(&action))?;
         let mut context=context_for(db,action,&request,&account)?;
         if let Some(ids)=ids{if !["summary","briefing"].contains(&action)||ids.len()>context.policy["maxMessages"].as_u64().unwrap_or(8) as usize{return Err(Error::invalid("Invalid summary context."));}context.messages=ids.iter().map(|id|{let m=get_message(db,&account,id)?;if context.policy["folders"][string(&m,"folder")]!=true||["drafts","trash"].contains(&string(&m,"folder")){return Err(Error::new(403,"Summary context is no longer permitted."));}Ok(policy::redact(&m,&context.policy))}).collect::<Result<_>>()?;}
@@ -716,6 +719,63 @@ pub async fn assistance(
         Ok((context,options))
     }).await?;
     let mut options = options;
+    if input.get("useSmartSearch").is_some_and(|v| !v.is_boolean())
+        || (input["useSmartSearch"] == true && input["action"] != "ask")
+    {
+        return Err(Error::invalid("Smart retrieval is only available for Ask."));
+    }
+    if input["useSmartSearch"] == true {
+        if owner == "demo"
+            || string(&context.config["ai"], "model").is_empty()
+            || string(&context.config["ai"], "baseUrl").is_empty()
+        {
+            return Err(Error::conflict(
+                "Configure a chat model before using Smart Search with Ask.",
+            ));
+        }
+
+        options["searchStamp"] = crate::smart_search::ask_stamp(&context.config).into();
+        let retrieved = crate::smart_search::ask(app, &owner, string(&input, "prompt")).await?;
+        options["searchWarning"] = retrieved["warning"].clone();
+        let ids: Vec<String> = retrieved["messages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|m| m["accountId"] == owner)
+            .map(|m| string(m, "id").to_owned())
+            .collect();
+        let account = owner.clone();
+        let expected = generation(&context.config, &owner);
+        let p = context.policy.clone();
+        let stamp = options["searchStamp"].clone();
+        context.messages = app
+            .db(move |db| {
+                let config = db.settings()?;
+                if generation(&config, &account) != expected
+                    || stamp != crate::smart_search::ask_stamp(&config)
+                {
+                    return Err(Error::conflict("Retrieval settings changed. Ask again."));
+                }
+                let cap = p["maxMessages"].as_u64().unwrap_or(8) as usize;
+                ids.iter()
+                    .filter_map(|id| match db.get(&account, id) {
+                        Ok(Some(m)) if p["folders"][string(&m, "folder")] == true => {
+                            Some(Ok(policy::redact(&m, &p)))
+                        }
+                        Ok(_) => None,
+                        Err(e) => Some(Err(e)),
+                    })
+                    .take(cap)
+                    .collect::<Result<Vec<_>>>()
+            })
+            .await?;
+    }
+    if input["action"] == "ask" && context.messages.is_empty() {
+        return Err(Error::conflict(
+            "No permitted downloaded mail matched. Try a person, project or topic, or review Search settings.",
+        ));
+    }
+
     options["structuredSummary"] = summary_ids.is_some().into();
     options["includeHistory"] = (!context.history.is_null()).into();
     let action = string(&input, "action");
@@ -772,18 +832,45 @@ pub async fn assistance(
     let result = app.db(move|db|{
         let config=db.settings()?;let changed=||Error::conflict("The account, model, source mail or AI permissions changed while this request was running. Its response was discarded.");
         if !valid_account(&config,&owner)||generation(&context.config,&owner)!=generation(&config,&owner){return Err(changed());}
+        if !options["searchStamp"].is_null() && options["searchStamp"] != crate::smart_search::ask_stamp(&config) { return Err(changed()); }
         if !context.skill.is_null()&&!workspace(&config,&owner)["skills"].as_array().is_some_and(|items|items.contains(&context.skill)){return Err(changed());}
         if !options["brain"].is_null()&&crate::brain::context(db,&config,&owner,&context.skill)?!=options["brain"]{return Err(changed());}
         if !string(&options,"styleVoice").is_empty()&&string(&options,"styleVoice")!=learning::voice(db,&config,&owner)?{return Err(Error::conflict("Writing style changed while this request was running. Its response was discarded."));}
         let draft_context=string(&input,"action")=="rewrite"||(input["action"]=="translate"&&input.get("draftText").is_some());for previous in context.messages.iter().filter(|_|!draft_context) {let current=db.get(&owner,string(previous,"id"))?.ok_or_else(changed)?;if policy::redact(&current,&context.policy)!=*previous{return Err(changed());}}
         if !input["trigger"].is_null(){let message=db.get(&owner,string(&input,"messageId"))?.unwrap_or(Value::Null);if !policy::matches_trigger(&context.policy,string(&input,"trigger"),&message){return Err(changed());}}
-        let mut result=if structured{priority_summary(string(&response,"text"),&context.messages)?}else{json!({"text":response["text"]})};result["source"]="model".into();if !context.history.is_null(){result["history"]=context.history;}Ok(result)
+        let mut result=if structured{priority_summary(string(&response,"text"),&context.messages)?}else{json!({"text":response["text"]})};result["source"]="model".into();if input["action"] == "ask" { result["sources"] = ask_sources(string(&response,"text"),&context.messages,&owner)?; result["retrievalWarning"] = options["searchWarning"].clone(); }
+        if !context.history.is_null(){result["history"]=context.history;}Ok(result)
     }).await;
     match &result {
         Ok(_) => activity.finish(true, None),
         Err(error) => activity.fail(string(&error.body, "error")),
     }
     result
+}
+
+pub fn ask_sources(text: &str, messages: &[Value], owner: &str) -> Result<Value> {
+    let references = Regex::new(r"\[(\d+)\]").expect("constant reference pattern");
+    for capture in references.captures_iter(text) {
+        if !capture[1]
+            .parse::<usize>()
+            .is_ok_and(|n| n > 0 && n <= messages.len())
+        {
+            return Err(Error::conflict(
+                "The answer cited an unavailable source. Ask again.",
+            ));
+        }
+    }
+    Ok(json!(
+        messages
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let mut source = crate::pages::owned(owner, crate::pages::summary(m));
+                source["reference"] = json!(i + 1);
+                source
+            })
+            .collect::<Vec<_>>()
+    ))
 }
 
 pub fn model_settings(previous: &Value, input: &Value) -> Result<Value> {
