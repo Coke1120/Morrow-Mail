@@ -18,7 +18,7 @@ final class AppModel: ObservableObject {
     @Published var starting = true
     @Published var error = ""
     @Published var notice = ""
-    @Published var trashUndos: [(message: JSON, token: String, expires: TimeInterval)] = []
+    @Published var trashUndos: [(message: JSON, token: String, expires: TimeInterval, batch: UUID)] = []
     private var trashUndoKeyMonitor: Any?
     var canUndoTrash: Bool { canNavigate && trashUndos.contains { $0.expires > ProcessInfo.processInfo.systemUptime } }
     @Published var activity: JSON = .null
@@ -27,8 +27,10 @@ final class AppModel: ObservableObject {
     @Published var scheduledAccount = ""
     @Published var serverFolders: [String: [JSON]] = [:]
     @Published var selectedMessage: String? {
-        didSet { if selectedMessage != oldValue { openedMessage = nil; draftGeneration += 1 } }
+        didSet { if selectedMessage != oldValue { openedMessage = nil; retainedUnread = nil; selectedMessages = selectedMessage.map { [$0] } ?? []; draftGeneration += 1 } }
     }
+    @Published var selectedMessages: Set<String> = []
+    @Published private var retainedUnread: (message: JSON, index: Int, scope: String, page: Int)?
     @Published var compose: Draft? { didSet { if compose != oldValue { draftGeneration += 1 } } }
     @Published private(set) var preparingDraft = false
     private(set) var draftGeneration = 0
@@ -104,7 +106,31 @@ final class AppModel: ObservableObject {
     var mailSectionTitle: String { serverFolders[account]?.first { "provider:" + $0.id == section }?["name"].string ?? section.capitalized }
     var listedMessages: [JSON] {
         if mailPage.isNull { return section.hasPrefix("provider:") ? [] : messages.filter { section == "studio" || messageMatchesFolder($0, folder: section) } }
-        return mailPageKey == mailScopeKey ? mailPage["messages"].array : []
+        guard mailPageKey == mailScopeKey else { return [] }
+        var rows = mailPage["messages"].array
+        if unreadOnly, let retained = retainedUnread, retained.scope == mailScopeKey, retained.page == mailCursors.count,
+           retained.message.viewID == selectedMessage, accounts.contains(where: { $0.id == retained.message["accountId"].string }) {
+            if let index = rows.firstIndex(where: { $0.viewID == retained.message.viewID }) { rows[index] = retained.message }
+            else { rows.insert(retained.message, at: min(retained.index, rows.count)) }
+        }
+        return rows
+    }
+    var visibleMailRows: [JSON] { searchResponse.isNull ? listedMessages : searchResponse["messages"].array }
+    var selectedMailRows: [JSON] { visibleMailRows.filter { selectedMessages.contains($0.viewID) } }
+    func selectMailMessages(_ ids: Set<String>) {
+        let ids = ids.intersection(visibleMailRows.map(\.viewID))
+        let primary = selectedMessage.flatMap { ids.contains($0) ? $0 : nil } ?? visibleMailRows.first { ids.contains($0.viewID) }?.viewID
+        selectedMessage = primary
+        selectedMessages = ids
+    }
+    private func retainReadRow(_ message: JSON) {
+        guard selectedMessage == message.viewID else { return }
+        if !message["read"].bool { retainedUnread = nil; return }
+        guard unreadOnly, searchResponse.isNull,
+              let index = listedMessages.firstIndex(where: { $0.viewID == message.viewID }) else { return }
+        var row = listedMessages[index]
+        for key in ["read", "starred", "pending"] { row[key] = message[key] }
+        retainedUnread = (row, index, mailScopeKey, mailCursors.count)
     }
     var current: JSON? {
         let row = (searchResponse.isNull ? listedMessages : searchResponse["messages"].array).first { message in
@@ -319,7 +345,8 @@ final class AppModel: ObservableObject {
         do {
             let result = try await request("/mail/page", method: "POST", body: .object(["folder": .string(section == "studio" ? "" : section), "sort": preferences["sort"], "unreadOnly": .bool(section != "studio" && unreadOnly), "cursor": .string(cursor), "offset": .number(Double(offset ?? 0)), "locale": .string(Locale.current.identifier(.bcp47))]))
             guard !Task.isCancelled, ticket == mailGeneration, query == mailQueryKey else { return false }
-            if let offset, offset > 0, result["messages"].array.isEmpty {
+            let retainingPage = unreadOnly && retainedUnread?.scope == mailScopeKey && retainedUnread?.page == (offset ?? 0) / 50 + 1 && retainedUnread?.message.viewID == selectedMessage
+            if let offset, offset > 0, result["messages"].array.isEmpty, !retainingPage {
                 let last = max(0, (Int(result["total"].number) - 1) / 50) * 50
                 if last < offset { return await loadMailPage(reset: false, offset: last) }
             }
@@ -327,6 +354,7 @@ final class AppModel: ObservableObject {
             if let offset { mailCursors = Array(repeating: "", count: offset / 50 + 1) }
             mailPageKey = mailScopeKey
             mailPage = result
+            selectedMessages.formIntersection(visibleMailRows.map(\.viewID))
             return true
         } catch {
             guard !Task.isCancelled, ticket == mailGeneration, query == mailQueryKey else { return false }
@@ -354,11 +382,13 @@ final class AppModel: ObservableObject {
             let result = try await request("/messages/" + encodedPath(row.id), mailbox: row["accountId"].string)
             guard !Task.isCancelled, selectedMessage == id, account == view else { return }
             messageDetail = result["message"]
+            if !messageMatchesFolder(messageDetail, folder: section) { retainedUnread = nil }
+            else { retainReadRow(messageDetail) }
             let firstOpen = openedMessage != id
             openedMessage = id
             if firstOpen && preferences["markReadOnOpen"].bool && !messageDetail["read"].bool && messageDetail["folder"].string != "drafts" {
                 let updated = try await request("/messages/" + encodedPath(row.id), method: "PATCH", body: .object(["read": .bool(true)]), mailbox: row["accountId"].string)
-                if selectedMessage == id { messageDetail = updated["message"] }
+                if selectedMessage == id { retainReadRow(updated["message"]); messageDetail = updated["message"] }
                 try await reload()
             }
         } catch { if !Task.isCancelled, selectedMessage == id { messageDetail = .null; self.error = error.localizedDescription } }
@@ -471,38 +501,71 @@ final class AppModel: ObservableObject {
     func beginOrganize(_ message: JSON?, preferredKind: String = "", destinationId: String = "") {
         guard let message, canNavigate, canOrganize(message) else { return }
         if preferredKind == "trash" {
-            guard message["folder"].string != "trash" else { return }
-            perform {
-                let result = try await self.request("/messages/" + encodedPath(message.id) + "/trash", method: "POST", body: .object([:]), mailbox: message["accountId"].string)
-                guard result["message"].id == message.id, result["message"]["accountId"] == message["accountId"], result["undoToken"].nonempty else { throw APIError("The Trash move could not be verified. Refresh your mailbox.") }
-                self.trashUndos.append((message, result["undoToken"].string, ProcessInfo.processInfo.systemUptime + 60))
-                Task { [weak self] in
-                    try? await Task.sleep(nanoseconds: 60_000_000_000)
-                    self?.trashUndos.removeAll { $0.expires <= ProcessInfo.processInfo.systemUptime }
-                }
-                if self.selectedMessage == message.viewID { self.selectedMessage = nil; self.messageDetail = .null }
-                self.notice = "Moved to provider Trash. Undo is available for one minute (⌘Z)."
-                try await self.reload()
-            }
+            trashMessages([message])
             return
         }
         organizing = .object(["id": .string(UUID().uuidString), "message": message, "preferredKind": .string(preferredKind), "destinationId": .string(destinationId)])
     }
+    func trashMessages(_ messages: [JSON]) {
+        guard canNavigate, !messages.isEmpty, messages.allSatisfy({ canOrganize($0) && $0["folder"].string != "trash" }) else { return }
+        let batch = UUID()
+        perform {
+            var completed = 0
+            var failure = ""
+            do {
+                for message in messages {
+                    let result = try await self.request("/messages/" + encodedPath(message.id) + "/trash", method: "POST", body: .object([:]), mailbox: message["accountId"].string)
+                    guard result["message"].id == message.id, result["message"]["accountId"] == message["accountId"], result["undoToken"].nonempty else { throw APIError("The Trash move could not be verified. Refresh your mailbox.") }
+                    self.trashUndos.append((message, result["undoToken"].string, ProcessInfo.processInfo.systemUptime + 60, batch))
+                    completed += 1
+                    if self.selectedMessage == message.viewID { self.selectedMessage = nil; self.messageDetail = .null }
+                }
+                self.notice = "Moved \(completed) message(s) to provider Trash. Undo is available for one minute (⌘Z)."
+            } catch { failure = "Moved \(completed) of \(messages.count) messages. " + error.localizedDescription }
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+                self?.trashUndos.removeAll { $0.expires <= ProcessInfo.processInfo.systemUptime }
+            }
+            try await self.reload()
+            await self.refreshMailPage()
+            if !failure.isEmpty { self.error = failure }
+        }
+    }
     func undoTrash() {
         guard canUndoTrash else { return }
         trashUndos.removeAll { $0.expires <= ProcessInfo.processInfo.systemUptime }
-        guard let entry = trashUndos.popLast() else { return }
+        guard let batch = trashUndos.last?.batch else { return }
         perform {
-            _ = try await self.request("/messages/" + encodedPath(entry.message.id) + "/undo-trash", method: "POST", body: .object(["undoToken": .string(entry.token)]), mailbox: entry.message["accountId"].string)
+            while let entry = self.trashUndos.last, entry.batch == batch {
+                self.trashUndos.removeLast()
+                _ = try await self.request("/messages/" + encodedPath(entry.message.id) + "/undo-trash", method: "POST", body: .object(["undoToken": .string(entry.token)]), mailbox: entry.message["accountId"].string)
+            }
             self.notice = "Trash move undone. The message was restored."
             try await self.reload()
+            await self.refreshMailPage()
         }
     }
     func patch(_ message: JSON, _ values: JSON) {
+        patchMessages([message], values)
+    }
+    func patchMessages(_ messages: [JSON], _ values: JSON) {
+        guard canNavigate, !messages.isEmpty else { return }
         perform {
-            _ = try await self.request("/messages/" + encodedPath(message.id), method: "PATCH", body: values, mailbox: message["accountId"].string)
+            var completed = 0
+            var failure = ""
+            do {
+                for message in messages {
+                    let result = try await self.request("/messages/" + encodedPath(message.id), method: "PATCH", body: values, mailbox: message["accountId"].string)
+                    guard result["message"].id == message.id, result["message"]["accountId"] == message["accountId"] else { throw APIError("The updated message owner could not be verified. Refresh your mailbox.") }
+                    if values["folder"].nonempty && self.selectedMessage == message.viewID { self.selectedMessage = nil; self.messageDetail = .null }
+                    if !values["folder"].nonempty { self.retainReadRow(result["message"]) }
+                    completed += 1
+                }
+            } catch { failure = "Updated \(completed) of \(messages.count) messages. " + error.localizedDescription }
             try await self.reload()
+            await self.refreshMailPage()
             await self.loadMessage()
+            if !failure.isEmpty { self.error = failure }
         }
     }
     func prepareDraft(message: JSON, mode: String, body: String? = nil) async throws -> Draft {

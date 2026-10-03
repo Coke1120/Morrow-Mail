@@ -568,16 +568,15 @@ async fn handle_inner(app: App, request: axum::http::Request<Body>) -> Result<Re
         owner,
         paged,
     };
-    let mut activity = (context.method == Method::POST
-        && (route == ["ai"] || route == ["workspace", "brain", "preview"]))
-    .then(|| {
-        app.0.activity.start(
-            &context.owner,
-            "ai",
-            "AI assistance",
-            "Waiting for the configured model",
-        )
-    });
+    let mut activity =
+        (context.method == Method::POST && route == ["workspace", "brain", "preview"]).then(|| {
+            app.0.activity.start(
+                &context.owner,
+                "ai",
+                "AI assistance",
+                "Waiting for the configured model",
+            )
+        });
     let result = dispatch(&app, context).await;
     if let Some(work) = &mut activity {
         work.finish(result.as_ref().is_ok_and(|r| r.status().is_success()), None);

@@ -262,9 +262,9 @@ IAsyncAction Shell::smoke() {
                 co_await resume_after(std::chrono::milliseconds(10)); co_await ui; root.UpdateLayout();
             }
             auto peer = xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(row);
-            auto invoke = peer.GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).try_as<xaml::Automation::Provider::IInvokeProvider>();
-            check(bool(invoke), L"The native mail row does not expose its click action.");
-            invoke.Invoke();
+            auto select = peer.GetPattern(xaml::Automation::Peers::PatternInterface::SelectionItem).try_as<xaml::Automation::Provider::ISelectionItemProvider>();
+            check(bool(select), L"The native mail row does not expose its selection action.");
+            select.Select();
             auto clickDeadline = GetTickCount64() + 5000;
             while ((text(selected,L"viewId") != text(clicked,L"viewId") || text(selected,L"body").size() <= 20 || loading) && GetTickCount64() < clickDeadline) {
                 co_await resume_after(std::chrono::milliseconds(10)); co_await ui;
@@ -286,10 +286,35 @@ IAsyncAction Shell::smoke() {
             check(text(otherRow,L"viewId") != selectedID, L"Fixture rows did not have separate identities.");
             Json otherRead; otherRead.Insert(L"read",Value::CreateBooleanValue(!flag(otherRow,L"read"))); co_await patch(otherRow,otherRead);
             check(text(selected,L"viewId") == selectedID, L"A quick action on another row replaced the open reader.");
+            enter("mail-multi-selection");
+            check(rows.SelectionMode() == controls::ListViewSelectionMode::Extended, L"Mail list does not support range/multiple selection.");
+            loading = true; rows.SelectedItems().Clear();
+            rows.SelectedItems().Append(rows.Items().GetAt(0)); rows.SelectedItems().Append(rows.Items().GetAt(1)); loading = false;
+            auto batch = selectedMessages();
+            check(batch.size() == 2 && text(batch[0],L"viewId") != text(batch[1],L"viewId"), L"Multiple selection lost owned row identities.");
+            auto outside = rows.Items().GetAt(2).as<controls::ListViewItem>().Tag().as<Json>();
+            check(selectedMessages(outside).size() == 1, L"Right-click outside selection acts on unrelated mail.");
+            auto menu = rows.Items().GetAt(0).as<controls::ListViewItem>().ContextFlyout().as<controls::MenuFlyout>();
+            menu.ShowAt(rows.Items().GetAt(0).as<controls::ListViewItem>());
+            co_await resume_after(std::chrono::milliseconds(50)); co_await ui;
+            check(menu.Items().Size() >= 9, L"The selection context menu has no batch actions."); menu.Hide();
+            Json stars; stars.Insert(L"starred",Value::CreateBooleanValue(true)); co_await patchMessages(batch,stars);
+            for (auto const& message : batch) check(flag(object(co_await service->request(L"/messages/"+escaped(text(message,L"id")),text(message,L"accountId")),L"message"),L"starred"), L"Batch patch lost an owning mailbox.");
+            check(selectedMessages().size() == 2, L"Refreshing a batch discarded multi-selection.");
             enter("mail-unread-filter");
             unreadFilter.IsChecked(true); cursors = {L""}; co_await loadPage();
             check(rows.Items().Size() > 0, L"Unread filter lost the unread fixture message.");
             for (auto const& item : rows.Items()) check(!flag(item.as<controls::ListViewItem>().Tag().as<Json>(), L"read"), L"Unread-only view includes a read message.");
+            auto firstUnread = rows.Items().GetAt(0).as<controls::ListViewItem>().Tag().as<Json>();
+            co_await read(firstUnread);
+            check(flag(selected,L"read") && retainedUnread.Size() && rows.Items().Size() > 0, L"Unread filtering removed the active read row.");
+            auto following = rows.Items().GetAt(1).as<controls::ListViewItem>().Tag().as<Json>();
+            co_await read(following);
+            for (auto const& item : rows.Items()) check(text(item.as<controls::ListViewItem>().Tag().as<Json>(),L"viewId") != text(firstUnread,L"viewId"), L"Switching messages retained the previous read row.");
+            co_await patch(selected,pending);
+            check(flag(retainedUnread,L"pending"), L"The retained row did not update its Pending marker.");
+            co_await patch(selected,unread);
+            check(!flag(selected,L"read") && !retainedUnread.Size(), L"Marking retained mail unread kept a stale read marker.");
             unreadFilter.IsChecked(false); cursors = {L""}; co_await loadPage();
             enter("mail-combined");
             co_await navigate(L"mail",L"all");

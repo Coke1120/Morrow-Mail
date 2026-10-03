@@ -1,4 +1,14 @@
-# Verification — 2 October 2026
+# Verification — 3 October 2026
+
+## Inbox selection, Delete/Undo, Unread and AI activity — local source, unpublished
+
+Both native clients now expose direct provider Delete from the list toolbar, reader and selection context menu. Multiple selection uses owned view IDs with ⌘/Ctrl and Shift gestures. Selection actions apply local read/star/Pending/archive/Trash patches, or sequential provider Trash moves, through each captured owner. Undo restores the latest deletion batch using its individual one-minute, account-bound tokens; failures stop the batch and report confirmed progress without automatic replay. Arbitrary bulk destination moves and permanent deletion remain unsupported.
+
+Unread keeps the opened, newly read message at its original list position until another message or view/page is opened. The server's unread total remains authoritative. Retained rows update their read/star/Pending markers, and explicit Mark Unread releases the retained read snapshot. AI activity follows the actual shared model work rather than its HTTP waiters, so closing one automatic waiter cannot falsely mark a still-running model request interrupted. Failed model work exposes server-authored connection, HTTP, invalid/empty response or timeout diagnostics without provider bodies, keys or automatic retry; the model timeout remains 45 seconds.
+
+The 38 locked AI/activity/mail-service fixture tests, Rust formatting, strict all-target Clippy, Swift release compilation, macOS candidate packaging, deep/strict ad-hoc signature verification and plist lint passed. Native event checks cover ordinary click, ⌘ multiple selection, Shift ranges, selection collapse, and account-owned duplicate IDs on the production draggable list. Full production-service acceptance passed with combined batch patches, unread retention/release, retained-row manual-unread/Pending regressions, paging, encrypted persistence, online backup, reader isolation and network-zero checks. Fixture UI checks emitted the existing AppKit reentrant-table-delegate warning.
+
+Windows source and smoke checks include multiple selection, context actions, batch patch ownership and retained-row updates, but Windows compilation and UI smoke execution remain unverified on this macOS host. All executed tests used fictional providers/data and isolated temporary workspaces. Live-account batch Trash/Undo, model connectivity and physical/accessibility acceptance remain outstanding. No release was published and no installed app was replaced.
 
 ## Saved model API keys — local source, unpublished
 
