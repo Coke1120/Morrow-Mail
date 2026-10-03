@@ -31,7 +31,7 @@ Node runtime or second database writer into native packages.
 
 Reuse existing helpers, SwiftUI controls, and installed dependencies. Keep changes
 small and address the shared cause of a bug. Do not add speculative abstractions.
-Do not replace the native interface with a web view. Only sanitized message HTML uses an isolated reader: no email scripts, forms, frames, service token or script bridge. Block external images by default; HTTPS images require per-message consent and links require destination review. Preserve plain-text fallback and keep HTML out of AI/list metadata. CID images and attachments remain unsupported.
+Do not replace the native interface with a web view. Only sanitized message HTML uses an isolated reader: no email scripts, forms, frames, service token or script bridge. Block external images by default; HTTPS images require per-message consent or the user's explicit General-settings opt-in with its tracking disclosure. Keep the per-message Hide control, and restore default blocking when that preference is disabled. Links require destination review. Preserve plain-text fallback and keep HTML out of AI/list metadata. CID images and attachments remain unsupported.
 
 `settings.mailAccounts` maps an email address to its encrypted connection. Legacy
 `settings.mail` is read when the map is absent and retained as a compatibility

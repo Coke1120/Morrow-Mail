@@ -4,6 +4,8 @@ import WebKit
 
 @MainActor final class ReaderFixtureState: ObservableObject {
     @Published var html: String
+    @Published var autoLoadExternalImages = false
+    @Published var messageID = "reader-fixture-1"
     init(_ html: String) { self.html = html }
 }
 
@@ -13,7 +15,7 @@ struct ReaderFixture: View {
         ScrollView {
             VStack(spacing: 0) {
                 Color.clear.frame(height: 20)
-                MessageHTMLView(html: state.html, images: false).frame(height: MessageHTMLView.viewportHeight)
+                SecureMessageBody(message: .object(["id": .string(state.messageID), "accountId": .string("reader@fixture.invalid"), "body": .string("Fictional plain text"), "bodyHtml": .string(state.html)]), autoLoadExternalImages: state.autoLoadExternalImages)
                 Color.clear.frame(height: 800)
             }
         }
@@ -89,6 +91,53 @@ struct ReaderFixture: View {
                 assert(!scriptRan, "Email JavaScript executed")
                 assert(web.bounds.height == MessageHTMLView.viewportHeight)
                 guard let outer = web.enclosingScrollView else { fatalError("Reader has no enclosing scroll view") }
+
+                @MainActor func imagePolicy(_ enabled: Bool) async throws {
+                    let expected = "img-src \(enabled ? "https:" : "'none'");"
+                    for _ in 0..<100 {
+                        if !web.isLoading, (web.navigationDelegate as? MessageHTMLView.Coordinator)?.document.contains(expected) == true { return }
+                        try await Task.sleep(nanoseconds: 20_000_000)
+                    }
+                    fatalError("Reader did not apply its image preference")
+                }
+                @MainActor func hideImages() async throws {
+                    try await Task.sleep(nanoseconds: 100_000_000)
+                    let htmlFrame = host.convert(web.bounds, from: web)
+                    func views(_ view: NSView) -> [NSView] {
+                        [view] + view.subviews.flatMap { views($0) }
+                    }
+                    // SwiftUI's background fixture may have an empty AX tree.
+                    // Use the overlapping native control bounds at the toolbar's
+                    // right, then dispatch actual window mouse events.
+                    let buttons = views(host).map { host.convert($0.bounds, from: $0) }.filter { frame in
+                        frame.width > 0 && frame.height > 0 && frame.midX > htmlFrame.midX
+                        && (host.isFlipped ? frame.maxY <= htmlFrame.minY : frame.minY >= htmlFrame.maxY)
+                    }
+                    guard let first = buttons.first else { fatalError("The reader did not expose its individual image control") }
+                    let frame = buttons.dropFirst().reduce(first) { $0.intersection($1) }
+                    guard frame.width > 0 && frame.height > 0 else { fatalError("The image control's native bounds did not overlap") }
+                    let location = host.convert(NSPoint(x: frame.midX, y: frame.midY), to: nil)
+                    for kind in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                        guard let event = NSEvent.mouseEvent(with: kind, location: location, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1) else { fatalError("Could not create the image-control click") }
+                        window.sendEvent(event)
+                    }
+                }
+                phase("image-preference")
+                try await imagePolicy(false)
+                state.autoLoadExternalImages = true
+                try await imagePolicy(true)
+                assert(!web.configuration.defaultWebpagePreferences.allowsContentJavaScript)
+                let enabledScriptRan = try await find("Forbidden email script ran")
+                assert(!enabledScriptRan, "Automatic images enabled email scripts")
+                try await hideImages()
+                try await imagePolicy(false)
+                state.html = content + "<p>Another owned message</p>"; state.messageID = "reader-fixture-2"
+                try await loaded("Another owned message")
+                try await imagePolicy(true)
+                state.autoLoadExternalImages = false
+                try await imagePolicy(false)
+                state.messageID = "reader-fixture-3"
+                try await imagePolicy(false)
 
                 phase("long-scroll")
                 state.html = "<p>Long message start</p>" + (0..<1800).map { "<p>Formatted email line \($0), with enough text to wrap when the reader gets narrower.</p>" }.joined() + "<div style='background:#0000ff;height:180px'>Long message end</div>"

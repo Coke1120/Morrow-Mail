@@ -27,7 +27,7 @@ struct NativeSettingsView: View {
     @State private var advancedSettings = false
     private let tabs = [("start", "Start here", "sparkles"), ("general", "General", "slider.horizontal.3"), ("mail", "Mail accounts", "envelope"), ("calendar", "Calendar", "calendar"), ("permissions", "AI & privacy", "checkmark.shield"), ("about", "About", "info.circle")]
     private let advancedTabs = [("model", "AI connection", "cpu"), ("search", "Search index", "magnifyingglass"), ("learning", "Writing style", "text.badge.star")]
-    private let generalKeys = ["displayName", "signature", "signatureFormat", "theme", "density", "replyTone", "language", "translationLanguage", "syncInterval", "markReadOnOpen"]
+    private let generalKeys = ["displayName", "signature", "signatureFormat", "theme", "density", "replyTone", "language", "translationLanguage", "syncInterval", "markReadOnOpen", "autoLoadExternalImages"]
     private var displayedAccounts: [JSON] { model.accounts }
     var dirty: Bool { searchDirty || learningDirty || values != baseline || mailOAuth.object.values.contains { $0.object.values.contains(where: \.nonempty) } || calendarOAuth.object.values.contains { $0.object.values.contains(where: \.nonempty) } }
     var body: some View {
@@ -188,6 +188,8 @@ struct NativeSettingsView: View {
                 Picker("Density", selection: string("preferences", "density")) { Text("Comfortable").tag("comfortable"); Text("Compact").tag("compact"); Text("Spacious").tag("spacious") }
             }
             Toggle("Mark messages read when opened", isOn: boolean("preferences", "markReadOnOpen")).toggleStyle(.checkbox)
+            Toggle("Automatically load external images (HTTPS)", isOn: boolean("preferences", "autoLoadExternalImages")).toggleStyle(.checkbox)
+            Text("Applies to all mailboxes. Image servers may learn your IP address and that you opened an email. You can still hide images for individual messages.").font(.caption).foregroundStyle(.secondary)
             }.padding(8) }
             GroupBox("Mail sync") { VStack(alignment: .leading, spacing: 8) {
             Picker("Sync all accounts while Morrow is open", selection: number("preferences", "syncInterval")) { Text("Manually").tag(0); ForEach([1, 5, 15, 30], id: \.self) { Text("Every \($0) minutes").tag($0) } }

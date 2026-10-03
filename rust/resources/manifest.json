@@ -23,6 +23,13 @@
             5,
             6
           ]
+        },
+        "autoLoadExternalImages": {
+          "default": false,
+          "allowed": [
+            false,
+            true
+          ]
         }
       }
     },
@@ -52,8 +59,8 @@
   "files": [
     {
       "name": "catalog.json",
-      "bytes": 19501,
-      "sha256": "ac209d12260b48c02ac82d1005ffbc753e022c59f95d7429f7923062dac307a5"
+      "bytes": 19532,
+      "sha256": "10f29717c891931d0dc6027d2d04301fd87e8114fc05773f69d8683c741da9aa"
     },
     {
       "name": "opencc.json",

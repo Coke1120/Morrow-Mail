@@ -5,9 +5,11 @@ import WebKit
 // Reader-only content. Never gives email HTML a script bridge or the service token.
 struct SecureMessageBody: View {
     let message: JSON
+    var autoLoadExternalImages = false
     @State private var showPlain = false
-    @State private var loadImages = false
+    @State private var imageOverride: Bool?
     @State private var reviewImages = false
+    private var loadImages: Bool { imageOverride ?? autoLoadExternalImages }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -17,7 +19,7 @@ struct SecureMessageBody: View {
                     Spacer()
                     if !showPlain && message["bodyHtml"].string.contains("<img") {
                         Button(loadImages ? "Hide external images" : "Load external images…") {
-                            if loadImages { loadImages = false } else { reviewImages = true }
+                            if loadImages { imageOverride = false } else { reviewImages = true }
                         }
                     }
                 }.font(.caption)
@@ -39,10 +41,13 @@ struct SecureMessageBody: View {
             }
         }
         .onChange(of: message["viewId"].string + message["accountId"].string + message.id) { _ in
-            showPlain = false; loadImages = false; reviewImages = false
+            showPlain = false; imageOverride = nil; reviewImages = false
+        }
+        .onChange(of: autoLoadExternalImages) { _ in
+            imageOverride = nil; reviewImages = false
         }
         .confirmationDialog("Load external images for this message?", isPresented: $reviewImages, titleVisibility: .visible) {
-            Button("Load Images") { loadImages = true }
+            Button("Load Images") { imageOverride = true }
         } message: {
             Text("The sender’s image servers may learn your IP address and that you opened this email. This choice applies only to this message.")
         }

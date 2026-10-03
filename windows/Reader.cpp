@@ -211,6 +211,14 @@ struct Reader {
         } catch (...) { /* Diagnostics must not replace the original runtime failure. */ }
     }
     void say(hstring const& value) { if (notice) notice.Text(value); }
+    void chooseImages(bool enabled) {
+        images = enabled;
+        if (auto host = shell.lock(); host && live()) {
+            host->readerImageOverride = enabled;
+            host->readerImageGeneration = generation;
+            host->readerImageSelection = selection;
+        }
+    }
     void close() {
         cancelled->store(true);
         active = false; images = false; ready = false; ++epoch;
@@ -270,13 +278,13 @@ IAsyncAction openLink(std::shared_ptr<Reader> state, hstring destination) {
 }
 IAsyncAction consentImages(std::shared_ptr<Reader> state) {
     if (!state->live() || !state->ready || state->plain || state->imageReview) co_return;
-    if (state->images) { state->images = false; state->render(); co_return; }
+    if (state->images) { state->chooseImages(false); state->render(); co_return; }
     auto shell = state->shell.lock();
     state->imageReview = true;
     try {
         bool approved = co_await shell->confirm(L"Load external images for this message?",
             L"The sender’s HTTPS image servers may learn your IP address and that you opened this email. This permission applies only to this message. Cookies and sign-in credentials are not sent; redirects and non-image content are blocked.", L"Load Images");
-        if (approved && state->live() && state->ready && !state->plain) { state->images = true; state->render(); }
+        if (approved && state->live() && state->ready && !state->plain) { state->chooseImages(true); state->render(); }
     } catch (hresult_error const&) { if (state->live()) state->say(L"External images remain blocked."); }
     state->imageReview = false;
 }
@@ -435,6 +443,9 @@ std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel con
         state->shell = shell; state->generation = shell->generation; state->selection = shell->selectionGeneration;
         state->viewOwner = shell->owner; state->account = text(message, L"accountId"); state->messageId = text(message, L"id");
         state->html = html; state->serviceOrigin = shell->service->origin();
+        state->images = flag(object(object(shell->state, L"settings"), L"preferences"), L"autoLoadExternalImages");
+        if (shell->readerImageOverride && shell->readerImageGeneration == state->generation
+            && shell->readerImageSelection == state->selection) state->images = *shell->readerImageOverride;
         state->hasImages = std::wstring_view(html).find(L"<img") != std::wstring_view::npos;
         state->profilePath = shell->service->directory() / L"reader-webview2";
         state->fallback = plain;
@@ -446,7 +457,8 @@ std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel con
         images.IsEnabled(false); state->imageButton = make_weak(images);
         if (!state->hasImages) images.Visibility(xaml::Visibility::Collapsed);
         toolbar.Children().Append(images); reader.Children().Append(toolbar);
-        auto notice = label(L"Loading formatted mail. External images are blocked.", 12); state->notice = notice;
+        auto notice = label(state->images ? L"Loading formatted mail. External images are enabled by your reading preference."
+            : L"Loading formatted mail. External images are blocked.", 12); state->notice = notice;
         reader.Children().Append(notice);
         // A bounded viewport lets the HTML surface itself scroll under the cursor.
         // No script bridge or injected measurement script is needed.
@@ -455,7 +467,7 @@ std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel con
         web.DefaultBackgroundColor(Windows::UI::Color{255, 255, 255, 255});
         xaml::Automation::AutomationProperties::SetName(web, L"Formatted email content");
         state->view = make_weak(web); reader.Children().Append(web); reader.Children().Append(plain);
-        plainToggle.Checked([state](auto const&, auto const&) { state->plain = true; state->images = false; state->render(); });
+        plainToggle.Checked([state](auto const&, auto const&) { state->plain = true; state->chooseImages(false); state->render(); });
         plainToggle.Unchecked([state](auto const&, auto const&) { state->plain = false; state->render(); });
         reader.Loaded([state](auto const&, auto const&) { initialize(state); });
         reader.Unloaded([state](auto const&, auto const&) { state->unload(); });
@@ -609,8 +621,15 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     put(fixture, L"bodyHtml", L"<p id='reader-fixture-ready'>Fictional formatted mail.</p><img id='reader-empty-image'>");
     shell->selected = fixture;
     auto panel = stack(8);
+    auto settingsState = object(shell->state, L"settings");
+    auto originalPreferences = object(settingsState, L"preferences");
+    auto readingPreferences = Json::Parse(originalPreferences.Stringify());
+    readingPreferences.Insert(L"autoLoadExternalImages", Value::CreateBooleanValue(true));
+    settingsState.Insert(L"preferences", readingPreferences);
     auto state = mountReader(shell, panel, fixture);
+    settingsState.Insert(L"preferences", originalPreferences);
     runtimeCheck(state != nullptr, L"The production reader could not mount its fixture.");
+    runtimeCheck(state->images, L"The production reader ignored saved automatic image consent.");
     state->fixtureTraceBudget = 24;
     cleanup.readers.push_back(state);
     shell->show(scroll(panel));
@@ -664,7 +683,20 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
         && !settings.IsWebMessageEnabled() && !settings.AreHostObjectsAllowed()
         && !settings.AreDevToolsEnabled() && !settings.IsGeneralAutofillEnabled() && !settings.IsPasswordAutosaveEnabled(),
         L"The live WebView2 reader did not retain production isolation settings.");
-    state->imageButton.get().IsEnabled(false); // This fixture never grants image consent.
+    phase("image-preference");
+    auto imagePolicy = co_await runtimeAttributes(core, L"meta[http-equiv='Content-Security-Policy']", deadline);
+    runtimeCheck(std::wstring(text(imagePolicy, L"content")).find(L"img-src https:;") != std::wstring::npos,
+        L"Automatic image consent did not retain HTTPS-only policy.");
+    co_await consentImages(state); // Execute the production Hide action without granting new consent.
+    co_await runtimeWait([state] { return documentReady(state) || !state->active; }, deadline, L"hide-images");
+    runtimeCheck(state->live() && !state->images && state->budget->requests == 0,
+        L"Automatic image consent removed the per-message Hide control or fetched the inert fixture.");
+    settingsState.Insert(L"preferences", readingPreferences);
+    auto refreshed = mountReader(shell, stack(8), fixture);
+    settingsState.Insert(L"preferences", originalPreferences);
+    runtimeCheck(refreshed && !refreshed->images, L"Refreshing the same owned message lost its image override.");
+    refreshed->unload();
+    state->imageButton.get().IsEnabled(false); // Hostile-content phases never grant image consent.
     auto probe = std::make_shared<RuntimeProbe>();
     auto weak = std::weak_ptr<Reader>(state);
     cleanup.resource = core.WebResourceRequested([probe, weak](auto const& sender, CoreWebView2WebResourceRequestedEventArgs const& args) {
@@ -811,6 +843,7 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     put(result, L"webMessages", L"blocked"); put(result, L"hostObjects", L"disabled");
     put(result, L"images", L"blocked"); put(result, L"frames", L"blocked"); put(result, L"connect", L"policy-deny-script-disabled");
     put(result, L"cspEvidence", L"native-audits-image-frame");
+    put(result, L"autoImages", L"preference-and-hide-passed");
     put(result, L"inspection", L"native-dom-no-script");
     result.Insert(L"interceptedRequests", Value::CreateNumberValue(probe->requests));
     result.Insert(L"nativeImageRequests", Value::CreateNumberValue(state->budget->requests));

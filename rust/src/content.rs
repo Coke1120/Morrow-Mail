@@ -223,6 +223,12 @@ pub fn preferences(current: &Value, patch: &Value) -> Result<Value> {
             if !value.is_boolean() {
                 return Err(Error::invalid("Mark read on open must be true or false."));
             }
+        } else if key == "autoLoadExternalImages" {
+            if !value.is_boolean() {
+                return Err(Error::invalid(
+                    "Automatic external images must be true or false.",
+                ));
+            }
         } else {
             let max = if key == "signature" {
                 12000

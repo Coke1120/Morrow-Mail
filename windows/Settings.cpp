@@ -337,6 +337,8 @@ void general(Page const& p) {
     choice(f, L"theme", L"Theme", {{L"system", L"Match device"}, {L"light", L"Light"}, {L"dark", L"Dark"}});
     choice(f, L"density", L"Mail list density", {{L"comfortable", L"Comfortable"}, {L"compact", L"Compact"}, {L"spacious", L"Spacious"}});
     toggle(f, L"markReadOnOpen", L"Mark mail as read when opened (local to Morrow)");
+    toggle(f, L"autoLoadExternalImages", L"Automatically load external images (HTTPS)");
+    help(f->panel, L"Applies to all mailboxes. Image servers may learn your IP address and that you opened an email. You can still hide images for individual messages.");
     title(f->panel, L"Mail sync");
     choice(f, L"syncInterval", L"Sync all accounts while Morrow is open", {{L"0", L"Manually"}, {L"1", L"Every minute"}, {L"5", L"Every 5 minutes"}, {L"15", L"Every 15 minutes"}, {L"30", L"Every 30 minutes"}}, true);
     title(f->panel, L"Sending");

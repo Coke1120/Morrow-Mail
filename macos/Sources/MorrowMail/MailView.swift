@@ -522,7 +522,7 @@ struct MessageReader: View {
                         }.padding(10).background(morrowGreen.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
                     } else { AutomaticAssistance(messageID: message.id, account: message["accountId"].string, trigger: "onOpen") }
                     Divider()
-                    SecureMessageBody(message: message).id(message.viewID)
+                    SecureMessageBody(message: message, autoLoadExternalImages: model.preferences["autoLoadExternalImages"].bool).id(message.viewID)
                     FooterPreview(footer: message["footer"])
                     Divider()
                     LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)], alignment: .leading, spacing: 8) {
@@ -1003,7 +1003,7 @@ struct ComposeView: View {
                             Text(message["subject"].string).font(.headline)
                             Text("\(message["fromName"].string) <\(message["fromEmail"].string)> · \(dateLabel(message["date"].string))").font(.caption).foregroundStyle(.secondary)
                             Text("To: \(message["to"].string)\(message["cc"].nonempty ? " · Cc: " + message["cc"].string : "")").font(.caption).foregroundStyle(.secondary)
-                            SecureMessageBody(message: message)
+                            SecureMessageBody(message: message, autoLoadExternalImages: model.preferences["autoLoadExternalImages"].bool)
                         }.frame(maxWidth: .infinity, alignment: .leading)
                         Divider()
                     }
