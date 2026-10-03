@@ -26,7 +26,7 @@ pub struct Review {
 fn imap_mail(mail: &Value) -> bool {
     ["", "imap"].contains(&string(mail, "provider"))
 }
-fn connection_version(mail: &Value) -> Value {
+pub(crate) fn connection_version(mail: &Value) -> Value {
     json!([
         mail["connectionId"],
         mail["authorizationId"],
@@ -144,6 +144,9 @@ pub(crate) fn remember(db: &Store, mail: &Value, folders: &[Value]) -> Result<()
     Ok(())
 }
 fn due(config: &Value, owner: &str, mail: &Value) -> bool {
+    if mail::read_backoff(config, mail).is_some() {
+        return false;
+    }
     let cache = &config["mailFolderCatalogs"][owner];
     cache["connection"] != connection_version(mail)
         || cache["blocked"] != true
@@ -221,11 +224,15 @@ pub async fn tick(app: &App) -> Result<()> {
     Ok(())
 }
 async fn catalog(app: &App, mail: &Value) -> Result<Vec<Value>> {
+    if let Some(error) = mail::read_backoff(&app.settings().await?, mail) {
+        return Err(error);
+    }
     let folders = if imap_mail(mail) {
         imap::management_folders(mail).await
     } else {
         providers::management_folders(&app.0.client, mail).await
-    }?;
+    };
+    let folders = mail::finish_read(app, mail, folders).await?;
     let (connection, saved) = (mail.clone(), folders.clone());
     app.db(move |db| remember(db, &connection, &saved)).await?;
     Ok(folders)

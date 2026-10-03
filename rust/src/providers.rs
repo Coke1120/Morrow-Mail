@@ -8,7 +8,7 @@ use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, Datelike, SecondsFormat, Utc};
 use mail_parser::MessageParser;
 use reqwest::{Client, RequestBuilder};
 use serde_json::{Value, json};
@@ -77,6 +77,11 @@ async fn request_kind(request: RequestBuilder, limit: usize, oauth: bool) -> Res
             },
         );
         error.provider_status = Some(status);
+        error.retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| retry_after(value, Utc::now().timestamp_millis()));
         // Token errors are a small, fixed vocabulary; never expose provider descriptions/tokens.
         if oauth && [400, 401].contains(&status) {
             let body = response_json(response, 32768).await.unwrap_or(Value::Null);
@@ -114,14 +119,28 @@ fn provider_quota_code(body: &Value) -> Option<&'static str> {
             _ => None,
         })
 }
-pub fn quota_retry_delay(error: &Error, count: u64) -> Option<i64> {
-    // ponytail: hourly cap keeps read-only retries quiet; honor Retry-After if provider pacing needs it.
+pub fn quota_retry_delay(error: &Error, count: u64, timestamp: i64) -> Option<i64> {
     let code = string(&error.body, "code");
-    if code == "provider_daily_quota_exceeded" {
-        return Some(24 * 60 * 60 * 1000);
-    }
-    (code == "provider_quota_exceeded" || error.provider_status == Some(429))
-        .then_some([60_000, 120_000, 300_000, 900_000, 3_600_000][count.min(4) as usize])
+    let delay = if code == "provider_daily_quota_exceeded" {
+        24 * 60 * 60 * 1000
+    } else if code == "provider_quota_exceeded" || error.provider_status == Some(429) {
+        [60_000, 120_000, 300_000, 900_000, 3_600_000][count.min(4) as usize]
+    } else {
+        return None;
+    };
+    Some(delay.max(error.retry_after.unwrap_or(0).saturating_sub(timestamp)))
+}
+fn retry_after(value: &str, timestamp: i64) -> Option<i64> {
+    let value = value.trim();
+    let retry = if value.bytes().all(|byte| byte.is_ascii_digit()) {
+        timestamp.checked_add(value.parse::<i64>().ok()?.checked_mul(1000)?)?
+    } else {
+        DateTime::parse_from_rfc2822(value).ok()?.timestamp_millis()
+    };
+    // Persist four-digit RFC3339 years so scheduler ordering and date arithmetic stay valid.
+    DateTime::from_timestamp_millis(retry)
+        .filter(|date| retry >= timestamp && date.year() <= 9999)?;
+    Some(retry)
 }
 async fn response_json(mut response: reqwest::Response, limit: usize) -> Result<Value> {
     if response.content_length().is_some_and(|n| n > limit as u64) {
@@ -561,10 +580,14 @@ pub fn normalize_google(message: &Value) -> Result<Value> {
     } else {
         body
     };
-    result["id"] = format!("google:{}", string(message, "id")).into();
     result["body"] = body.clone().into();
     result["bodyHtml"] = crate::message_html::sanitize(&formatted.join("\n")).into();
     result["preview"] = preview(&body).into();
+    result["automated"] = automated(&json!(headers)).into();
+    google_metadata(message, result)
+}
+fn google_metadata(message: &Value, mut result: Value) -> Result<Value> {
+    result["id"] = format!("google:{}", string(message, "id")).into();
     if let Some(ms) = message["internalDate"]
         .as_str()
         .and_then(|s| s.parse::<i64>().ok())
@@ -586,7 +609,7 @@ pub fn normalize_google(message: &Value) -> Result<Value> {
     let folder = google_folder(&message["labelIds"]);
     result = merge(
         result,
-        &json!({"folder":folder,"providerSent":labels.contains(&json!("SENT")),"providerDraft":labels.contains(&json!("DRAFT")),"read":!labels.contains(&json!("UNREAD")),"starred":labels.contains(&json!("STARRED")),"automated":automated(&json!(headers)),"providerLabelIds":labels}),
+        &json!({"folder":folder,"providerSent":labels.contains(&json!("SENT")),"providerDraft":labels.contains(&json!("DRAFT")),"read":!labels.contains(&json!("UNREAD")),"starred":labels.contains(&json!("STARRED")),"providerLabelIds":labels}),
     );
     Ok(result)
 }
@@ -631,6 +654,163 @@ pub fn normalize_microsoft(message: &Value) -> Result<Value> {
     result["bodyHtml"] = body_html.into();
     Ok(result)
 }
+pub(crate) async fn google_list(client: &Client, mail: &Value, options: &Value) -> Result<Value> {
+    let folder = options["folder"].as_str().unwrap_or("inbox");
+    if !["all", "inbox", "sent", "drafts", "starred"].contains(&folder) {
+        return Err(Error::invalid("Unsupported import folder."));
+    }
+    let query = {
+        let mut query = url::form_urlencoded::Serializer::new(String::new());
+        query
+            .append_pair("maxResults", "50")
+            .append_pair("includeSpamTrash", "false");
+        if folder != "all" {
+            query.append_pair(
+                "labelIds",
+                match folder {
+                    "sent" => "SENT",
+                    "drafts" => "DRAFT",
+                    "starred" => "STARRED",
+                    _ => "INBOX",
+                },
+            );
+        }
+        let mut filter = Vec::new();
+        for (key, operator) in [("since", "after"), ("before", "before")] {
+            if !string(options, key).is_empty() {
+                let ms = DateTime::parse_from_rfc3339(string(options, key))
+                    .map_err(|_| Error::invalid("Invalid import date."))?
+                    .timestamp_millis();
+                let seconds = if key == "before" {
+                    (ms as f64 / 1000.0).ceil() as i64
+                } else {
+                    ms.div_euclid(1000)
+                };
+                filter.push(format!("{operator}:{seconds}"));
+            }
+        }
+        if !filter.is_empty() {
+            query.append_pair("q", &filter.join(" "));
+        }
+        if !string(options, "cursor").is_empty() {
+            query.append_pair("pageToken", string(options, "cursor"));
+        }
+        query.finish()
+    };
+    let list = get(client, mail, &format!("/messages?{query}")).await?;
+    let entries = list["messages"].as_array().cloned().unwrap_or_default();
+    if list.get("messages").is_some_and(|v| !v.is_array())
+        || entries.len() > 50
+        || entries.iter().any(|item| string(item, "id").is_empty())
+    {
+        return Err(remote_error());
+    }
+    Ok(list)
+}
+
+pub(crate) async fn google_fetch_page(
+    client: &Client,
+    mail: &Value,
+    list: &Value,
+    cached: &HashMap<String, Value>,
+    fetched: &mut HashMap<String, Value>,
+) -> Result<Value> {
+    let entries = list["messages"].as_array().cloned().unwrap_or_default();
+    let label_names: HashMap<String, String> = if entries.is_empty() {
+        HashMap::new()
+    } else {
+        google_labels(client, mail)
+            .await?
+            .iter()
+            .filter(|label| label["type"] == "user")
+            .map(|label| {
+                (
+                    string(label, "id").to_owned(),
+                    string(label, "name").to_owned(),
+                )
+            })
+            .collect()
+    };
+    let mut messages = Vec::new();
+    for entries in entries.chunks(5) {
+        let results = futures_util::future::join_all(entries.iter().map(|item| async {
+            let id = string(item, "id");
+            if let Some(value) = fetched.get(id) {
+                return Ok(Some(value.clone()));
+            }
+            let existing = cached.get(id);
+            let format = if existing.is_some() {
+                "minimal"
+            } else {
+                "full"
+            };
+            let mut raw = match get(
+                client,
+                mail,
+                &format!("/messages/{}?format={format}", component(id)),
+            )
+            .await
+            {
+                Ok(raw) => raw,
+                Err(error) if error.provider_status == Some(404) => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            if raw["id"] != id {
+                return Err(remote_error());
+            }
+            // Draft contents can change. Only immutable message bodies use the local cache.
+            let draft = raw["labelIds"]
+                .as_array()
+                .is_some_and(|labels| labels.contains(&json!("DRAFT")));
+            if existing.is_some() && draft {
+                raw = match get(
+                    client,
+                    mail,
+                    &format!("/messages/{}?format=full", component(id)),
+                )
+                .await
+                {
+                    Ok(raw) => raw,
+                    Err(error) if error.provider_status == Some(404) => return Ok(None),
+                    Err(error) => return Err(error),
+                };
+                if raw["id"] != id {
+                    return Err(remote_error());
+                }
+            }
+            let mut value = if let Some(existing) = existing.filter(|_| !draft) {
+                google_metadata(&raw, existing.clone())?
+            } else {
+                tokio::task::spawn_blocking(move || normalize_google(&raw))
+                    .await
+                    .map_err(|_| remote_error())??
+            };
+            value["labels"] = value["providerLabelIds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|id| label_names.get(id.as_str().unwrap()))
+                .map(|name| json!(name))
+                .collect();
+            Ok::<_, Error>(Some(value))
+        }))
+        .await;
+        for result in results {
+            if let Some(message) = result? {
+                fetched.insert(
+                    string(&message, "id")
+                        .strip_prefix("google:")
+                        .ok_or_else(remote_error)?
+                        .to_owned(),
+                    message.clone(),
+                );
+                messages.push(message);
+            }
+        }
+    }
+    Ok(json!({"messages":messages,"nextCursor":list.get("nextPageToken").unwrap_or(&Value::Null)}))
+}
+
 pub async fn fetch_page(client: &Client, mail: &Value, options: &Value) -> Result<Value> {
     let folder = options["folder"].as_str().unwrap_or("inbox");
     let provider = string(mail, "provider");
@@ -644,96 +824,8 @@ pub async fn fetch_page(client: &Client, mail: &Value, options: &Value) -> Resul
     }
     definition(provider)?;
     if provider == "google" {
-        let query = {
-            let mut query = url::form_urlencoded::Serializer::new(String::new());
-            query
-                .append_pair("maxResults", "50")
-                .append_pair("includeSpamTrash", "false");
-            if folder != "all" {
-                query.append_pair(
-                    "labelIds",
-                    match folder {
-                        "sent" => "SENT",
-                        "drafts" => "DRAFT",
-                        "starred" => "STARRED",
-                        _ => "INBOX",
-                    },
-                );
-            }
-            let mut filter = Vec::new();
-            for (key, operator) in [("since", "after"), ("before", "before")] {
-                if !string(options, key).is_empty() {
-                    let ms = DateTime::parse_from_rfc3339(string(options, key))
-                        .map_err(|_| Error::invalid("Invalid import date."))?
-                        .timestamp_millis();
-                    let seconds = if key == "before" {
-                        (ms as f64 / 1000.0).ceil() as i64
-                    } else {
-                        ms.div_euclid(1000)
-                    };
-                    filter.push(format!("{operator}:{seconds}"));
-                }
-            }
-            if !filter.is_empty() {
-                query.append_pair("q", &filter.join(" "));
-            }
-            if !string(options, "cursor").is_empty() {
-                query.append_pair("pageToken", string(options, "cursor"));
-            }
-            query.finish()
-        };
-        let list = get(client, mail, &format!("/messages?{query}")).await?;
-        let entries = list["messages"].as_array().cloned().unwrap_or_default();
-        if list.get("messages").is_some_and(|v| !v.is_array())
-            || entries.len() > 50
-            || entries.iter().any(|item| string(item, "id").is_empty())
-        {
-            return Err(remote_error());
-        }
-        let label_names: HashMap<String, String> = if entries.is_empty() {
-            HashMap::new()
-        } else {
-            google_labels(client, mail)
-                .await?
-                .iter()
-                .filter(|label| label["type"] == "user")
-                .map(|label| {
-                    (
-                        string(label, "id").to_owned(),
-                        string(label, "name").to_owned(),
-                    )
-                })
-                .collect()
-        };
-        let mut messages = Vec::new();
-        for entries in entries.chunks(5) {
-            let results = futures_util::future::join_all(entries.iter().map(|item| async {
-                let raw = get(
-                    client,
-                    mail,
-                    &format!("/messages/{}?format=full", component(string(item, "id"))),
-                )
-                .await?;
-                let mut value = tokio::task::spawn_blocking(move || normalize_google(&raw))
-                    .await
-                    .map_err(|_| remote_error())??;
-                value["labels"] = value["providerLabelIds"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .filter_map(|id| label_names.get(id.as_str().unwrap()))
-                    .map(|name| json!(name))
-                    .collect();
-                Ok::<_, Error>(value)
-            }))
-            .await;
-            for result in results {
-                messages.push(result?);
-            }
-        }
-        return Ok(
-            json!({"messages":messages,"nextCursor":list.get("nextPageToken").unwrap_or(&Value::Null)}),
-        );
+        let list = google_list(client, mail, options).await?;
+        return google_fetch_page(client, mail, &list, &HashMap::new(), &mut HashMap::new()).await;
     }
     let traversal = if folder == "all" {
         Some(microsoft_import_cursor(client, mail, &options["cursor"]).await?)
@@ -1592,7 +1684,7 @@ mod quota_tests {
             assert_eq!(code, Some(expected_code));
             let mut error = Error::new(502, "private provider detail");
             error.body["code"] = code.unwrap().into();
-            assert_eq!(quota_retry_delay(&error, 0), Some(delay));
+            assert_eq!(quota_retry_delay(&error, 0, 0), Some(delay));
         }
         assert_eq!(
             provider_quota_code(
@@ -1602,6 +1694,35 @@ mod quota_tests {
         );
         let mut rate = Error::new(502, "private provider detail");
         rate.provider_status = Some(429);
-        assert_eq!(quota_retry_delay(&rate, 4), Some(3_600_000));
+        assert_eq!(quota_retry_delay(&rate, 4, 0), Some(3_600_000));
+    }
+    #[test]
+    fn retry_after_accepts_seconds_and_http_dates_without_shortening_backoff() {
+        let timestamp = 1_000_000;
+        assert_eq!(retry_after("3600", timestamp), Some(timestamp + 3_600_000));
+        assert_eq!(
+            retry_after("Thu, 01 Jan 1970 01:16:40 GMT", timestamp),
+            Some(timestamp + 3_600_000)
+        );
+        for value in [
+            "",
+            "-1",
+            "later",
+            "18446744073709551615",
+            "253402299800",
+            "Wed, 31 Dec 1969 23:00:00 GMT",
+        ] {
+            assert_eq!(retry_after(value, timestamp), None);
+        }
+        let mut error = Error::new(502, "private");
+        error.provider_status = Some(429);
+        error.retry_after = Some(timestamp + 7_200_000);
+        assert_eq!(quota_retry_delay(&error, 0, timestamp), Some(7_200_000));
+        assert_eq!(quota_retry_delay(&error, 0, timestamp + 1), Some(7_199_999));
+        error.body["code"] = "provider_daily_quota_exceeded".into();
+        assert_eq!(quota_retry_delay(&error, 0, timestamp), Some(86_400_000));
+        error.provider_status = Some(401);
+        error.body["code"] = "oauth_reconnect_required".into();
+        assert_eq!(quota_retry_delay(&error, 0, timestamp), None);
     }
 }

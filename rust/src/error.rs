@@ -10,6 +10,8 @@ pub struct Error {
     pub status: u16,
     pub body: Value,
     pub provider_status: Option<u16>,
+    // Provider pacing metadata stays private; public status uses nextRetryAt.
+    pub retry_after: Option<i64>,
 }
 pub type Result<T> = std::result::Result<T, Error>;
 impl Error {
@@ -18,6 +20,7 @@ impl Error {
             status,
             body: json!({"error": message}),
             provider_status: None,
+            retry_after: None,
         }
     }
     pub fn invalid(message: &str) -> Self {

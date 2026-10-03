@@ -163,7 +163,9 @@ impl Fixture {
             .db(|db| {
                 let mut imports = db.settings()?["imports"].clone();
                 imports[OWNER]["nextRetryAt"] = "2000-01-01T00:00:00.000Z".into();
-                db.set_settings(&json!({"imports":imports}))?;
+                let mut backoffs = db.settings()?["mailReadBackoffs"].clone();
+                backoffs[OWNER]["nextRetryAt"] = "2000-01-01T00:00:00.000Z".into();
+                db.set_settings(&json!({"imports":imports,"mailReadBackoffs":backoffs}))?;
                 Ok(())
             })
             .await
@@ -418,4 +420,30 @@ fn stored_error_text_and_unrecognized_recovery_fields_never_leave_status_project
         );
         assert!(!status["error"].as_str().unwrap().is_empty());
     }
+}
+
+#[tokio::test]
+async fn quota_cooldown_survives_restart_and_import_pause_resume() {
+    let mut f = Fixture::new().await;
+    jobs::tick(f.app()).await.unwrap();
+    let wait = f.app().settings().await.unwrap()["mailReadBackoffs"][OWNER].clone();
+    f.restart();
+    f.app()
+        .db(|db| {
+            jobs::control_import(db, OWNER, "pause")?;
+            jobs::control_import(db, OWNER, "resume")
+        })
+        .await
+        .unwrap();
+    jobs::tick(f.app()).await.unwrap();
+    let result = morrow_search::mail::sync_accounts(f.app(), &[OWNER.into()])
+        .await
+        .unwrap();
+    assert_eq!(result[0]["code"], "rate_limited");
+    assert_eq!(result[0]["nextRetryAt"], wait["nextRetryAt"]);
+    assert_eq!(f.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        f.app().settings().await.unwrap()["mailReadBackoffs"][OWNER],
+        wait
+    );
 }

@@ -52,6 +52,8 @@ struct Fixture {
     rows: Arc<Mutex<Vec<Value>>>,
     hits: Arc<Mutex<Vec<(String, url::Url)>>>,
     list_status: Arc<AtomicU16>,
+    detail_status: Arc<AtomicU16>,
+    retry_after: Arc<Mutex<Option<String>>>,
     server: tokio::task::JoinHandle<()>,
     provider: tokio::task::JoinHandle<()>,
 }
@@ -71,6 +73,10 @@ impl Fixture {
         let remote_hits = hits.clone();
         let list_status = Arc::new(AtomicU16::new(200));
         let remote_status = list_status.clone();
+        let detail_status = Arc::new(AtomicU16::new(200));
+        let remote_detail_status = detail_status.clone();
+        let retry_after = Arc::new(Mutex::new(None::<String>));
+        let remote_retry_after = retry_after.clone();
         let rcgen::CertifiedKey { cert, signing_key } =
             rcgen::generate_simple_self_signed(vec!["gmail.googleapis.com".into()]).unwrap();
         let tls = tokio_rustls::rustls::ServerConfig::builder_with_provider(Arc::new(
@@ -103,6 +109,8 @@ impl Fixture {
                 let rows = remote_rows.clone();
                 let hits = remote_hits.clone();
                 let list_status = remote_status.clone();
+                let detail_status = remote_detail_status.clone();
+                let retry_after = remote_retry_after.clone();
                 tokio::spawn(async move {
                     let mut stream = tls.accept(socket).await.unwrap();
                     let mut bytes = Vec::new();
@@ -119,10 +127,14 @@ impl Fixture {
                         }
                     };
                     let headers = String::from_utf8(bytes[..end].to_vec()).unwrap();
+                    let other_owner = headers
+                        .to_ascii_lowercase()
+                        .contains(&format!("authorization: bearer fixture-{B}\r\n"));
                     assert!(
-                        headers
-                            .to_ascii_lowercase()
-                            .contains(&format!("authorization: bearer fixture-{A}\r\n"))
+                        other_owner
+                            || headers
+                                .to_ascii_lowercase()
+                                .contains(&format!("authorization: bearer fixture-{A}\r\n"))
                     );
                     let first = headers
                         .lines()
@@ -150,12 +162,20 @@ impl Fixture {
                     hits.lock().unwrap().push((method.clone(), url.clone()));
                     let status = if url.path().ends_with("/messages") {
                         list_status.load(Ordering::SeqCst)
+                    } else if url.path().ends_with("/deleted") {
+                        detail_status.load(Ordering::SeqCst)
                     } else {
                         200
                     };
                     if status != 200 {
                         let body = b"private quota response";
-                        stream.write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await.unwrap();
+                        let retry = retry_after
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .map(|value| format!("Retry-After: {value}\r\n"))
+                            .unwrap_or_default();
+                        stream.write_all(format!("HTTP/1.1 {status} Fixture\r\n{retry}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await.unwrap();
                         stream.write_all(body).await.unwrap();
                         return;
                     }
@@ -185,14 +205,34 @@ impl Fixture {
                         }
                         json!({"labelIds":labels})
                     } else if url.path().ends_with("/messages") {
-                        json!({"messages":rows.lock().unwrap().iter().map(|row| json!({"id":row["id"]})).collect::<Vec<_>>(),"nextPageToken":"historical-page"})
+                        let label = url
+                            .query_pairs()
+                            .find(|(key, _)| key == "labelIds")
+                            .map(|(_, value)| value.into_owned());
+                        if url.query_pairs().any(|(key, _)| key == "pageToken") {
+                            json!({"messages":[]})
+                        } else {
+                            json!({"messages":rows.lock().unwrap().iter().filter(|row| label.as_ref().is_none_or(|label| row["labelIds"].as_array().unwrap().contains(&json!(label)))).take(50).map(|row| json!({"id":row["id"]})).collect::<Vec<_>>(),"nextPageToken":"historical-page"})
+                        }
                     } else {
-                        rows.lock()
+                        let mut row = rows
+                            .lock()
                             .unwrap()
                             .iter()
                             .find(|row| url.path().ends_with(&format!("/{}", string(row, "id"))))
                             .unwrap()
-                            .clone()
+                            .clone();
+                        if other_owner {
+                            row["payload"]["body"]["data"] =
+                                URL_SAFE_NO_PAD.encode("Other account body").into();
+                        }
+                        if url
+                            .query_pairs()
+                            .any(|(key, value)| key == "format" && value == "minimal")
+                        {
+                            row.as_object_mut().unwrap().remove("payload");
+                        }
+                        row
                     };
                     let body = serde_json::to_vec(&result).unwrap();
                     stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await.unwrap();
@@ -231,6 +271,8 @@ impl Fixture {
             rows,
             hits,
             list_status,
+            detail_status,
+            retry_after,
             server,
             provider,
         }
@@ -273,7 +315,9 @@ async fn quota_limited_sync_retries_in_background_without_another_click() {
         .db(|db| {
             let mut errors = db.settings()?["backgroundSyncErrors"].clone();
             errors[0]["nextRetryAt"] = "2000-01-01T00:00:00.000Z".into();
-            db.set_settings(&json!({"backgroundSyncErrors":errors}))
+            let mut backoffs = db.settings()?["mailReadBackoffs"].clone();
+            backoffs[A]["nextRetryAt"] = "2000-01-01T00:00:00.000Z".into();
+            db.set_settings(&json!({"backgroundSyncErrors":errors,"mailReadBackoffs":backoffs}))
         })
         .await
         .unwrap();
@@ -734,4 +778,206 @@ async fn label_checklist_uses_one_validated_delta_without_changing_inbox_or_othe
             .count(),
         1
     );
+}
+
+#[tokio::test]
+async fn read_quota_wait_is_shared_by_sync_history_and_catalog_without_extending_it() {
+    for history_first in [false, true] {
+        let f = Fixture::new().await;
+        f.app
+            .db(|db| {
+                db.set_settings(&json!({"preferences":{"syncInterval":0}}))?;
+                background::start_import(db, A, &json!({"allMail":true,"months":0}))
+            })
+            .await
+            .unwrap();
+        *f.retry_after.lock().unwrap() = Some("3600".into());
+        f.list_status.store(429, Ordering::SeqCst);
+        let before = chrono::Utc::now().timestamp_millis();
+        if history_first {
+            background::tick(&f.app).await.unwrap();
+        } else {
+            assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 502);
+        }
+        let wait = f.app.settings().await.unwrap()["mailReadBackoffs"][A].clone();
+        let until = chrono::DateTime::parse_from_rfc3339(string(&wait, "nextRetryAt"))
+            .unwrap()
+            .timestamp_millis();
+        assert!(until >= before + 3_600_000);
+        assert_eq!(f.hits.lock().unwrap().len(), 1);
+        let (status, error) = f.call("POST", "/api/sync", A, json!({})).await;
+        assert_eq!(status, 502);
+        assert_eq!(error["code"], "rate_limited");
+        assert_eq!(error["nextRetryAt"], wait["nextRetryAt"]);
+        assert!(!error.to_string().contains("private"));
+        background::tick(&f.app).await.unwrap();
+        let (status, error) = f.call("GET", "/api/mail/folders", A, json!({})).await;
+        assert_eq!(status, 502);
+        assert_eq!(error["nextRetryAt"], wait["nextRetryAt"]);
+        assert_eq!(f.hits.lock().unwrap().len(), 1);
+        assert_eq!(f.app.settings().await.unwrap()["mailReadBackoffs"][A], wait);
+        let history = f
+            .app
+            .db(|db| background::import_status(db, A))
+            .await
+            .unwrap();
+        assert_eq!(history["phase"], "retrying");
+        assert_eq!(history["errorCode"], "rate_limited");
+        assert_eq!(history["nextRetryAt"], wait["nextRetryAt"]);
+
+        // Another owner can still refresh; reconnect/disconnect affects only its target.
+        f.list_status.store(200, Ordering::SeqCst);
+        assert_eq!(f.call("POST", "/api/sync", B, json!({})).await.0, 200);
+        let calls = f.hits.lock().unwrap().len();
+        assert!(calls > 1);
+        f.app
+            .db(|db| morrow_search::service::save_connection(db, &connection(A), true))
+            .await
+            .unwrap();
+        assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+        assert!(f.hits.lock().unwrap().len() > calls);
+        assert!(f.app.settings().await.unwrap()["mailReadBackoffs"][A].is_null());
+        f.list_status.store(429, Ordering::SeqCst);
+        f.call("POST", "/api/sync", A, json!({})).await;
+        f.call("POST", "/api/sync", B, json!({})).await;
+        let other_wait = f.app.settings().await.unwrap()["mailReadBackoffs"][B].clone();
+        assert!(other_wait.is_object());
+        assert_eq!(
+            f.call("POST", "/api/account/disconnect", A, json!({}))
+                .await
+                .0,
+            200
+        );
+        let config = f.app.settings().await.unwrap();
+        assert!(config["mailReadBackoffs"][A].is_null());
+        assert_eq!(config["mailReadBackoffs"][B], other_wait);
+    }
+}
+
+#[tokio::test]
+async fn refresh_deduplicates_scopes_reuses_bodies_and_keeps_drafts_and_owners_fresh() {
+    let f = Fixture::new().await;
+    for (prefix, labels) in [
+        ("inbox", json!(["INBOX", "STARRED"])),
+        ("sent", json!(["SENT"])),
+        ("draft", json!(["DRAFT"])),
+    ] {
+        f.rows
+            .lock()
+            .unwrap()
+            .extend((0..50).map(|i| raw(&format!("{prefix}{i}"), labels.clone())));
+    }
+    for expected_full in [150, 50] {
+        f.hits.lock().unwrap().clear();
+        assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+        let hits = f.hits.lock().unwrap();
+        let bodies = hits
+            .iter()
+            .filter(|(_, url)| url.path().contains("/messages/"))
+            .collect::<Vec<_>>();
+        assert_eq!(hits.len(), 160);
+        assert_eq!(bodies.len(), 150);
+        assert_eq!(
+            bodies
+                .iter()
+                .map(|(_, url)| url.path())
+                .collect::<std::collections::HashSet<_>>()
+                .len(),
+            150
+        );
+        assert_eq!(
+            bodies
+                .iter()
+                .filter(|(_, url)| url
+                    .query_pairs()
+                    .any(|(key, value)| key == "format" && value == "full"))
+                .count(),
+            expected_full
+        );
+    }
+    assert_eq!(f.message(A, "google:inbox0").await["body"], "Remote body");
+    f.app
+        .db(|db| {
+            let mut old = db.get(A, "google:inbox0")?.unwrap();
+            old.as_object_mut().unwrap().remove("bodyHtml");
+            db.upsert(A, &old)
+        })
+        .await
+        .unwrap();
+    f.hits.lock().unwrap().clear();
+    f.rows
+        .lock()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row["id"] == "draft0")
+        .unwrap()["payload"]["body"]["data"] = URL_SAFE_NO_PAD.encode("Edited draft").into();
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    assert_eq!(f.message(A, "google:draft0").await["body"], "Edited draft");
+    assert!(f.hits.lock().unwrap().iter().any(|(_, url)| {
+        url.path().ends_with("/inbox0")
+            && url
+                .query_pairs()
+                .any(|(key, value)| key == "format" && value == "full")
+    }));
+    // The same provider ID in another account must fetch its own body.
+    assert_eq!(f.call("POST", "/api/sync", B, json!({})).await.0, 200);
+    assert_eq!(
+        f.message(B, "google:inbox0").await["body"],
+        "Other account body"
+    );
+    assert_eq!(f.message(A, "google:inbox0").await["body"], "Remote body");
+}
+
+#[tokio::test]
+async fn only_missing_message_details_are_skipped_and_history_keeps_its_checkpoint() {
+    for status in [404, 401, 429, 503] {
+        let f = Fixture::new().await;
+        *f.rows.lock().unwrap() = vec![
+            raw("healthy", json!(["INBOX"])),
+            raw("deleted", json!(["INBOX"])),
+        ];
+        f.detail_status.store(status, Ordering::SeqCst);
+        f.app
+            .db(|db| {
+                db.set_settings(&json!({"preferences":{"syncInterval":0}}))?;
+                background::start_import(db, A, &json!({"allMail":true,"months":0}))
+            })
+            .await
+            .unwrap();
+        background::tick(&f.app).await.unwrap();
+        let history = f
+            .app
+            .db(|db| background::import_status(db, A))
+            .await
+            .unwrap();
+        if status == 404 {
+            assert_eq!(history["status"], "running");
+            assert_eq!(history["pages"], 1);
+            assert_eq!(history["imported"], 1);
+            assert_eq!(f.message(A, "google:healthy").await["body"], "Remote body");
+            assert_eq!(
+                f.app.settings().await.unwrap()["imports"][A]["cursor"],
+                "historical-page"
+            );
+            background::tick(&f.app).await.unwrap();
+            assert_eq!(
+                f.app
+                    .db(|db| background::import_status(db, A))
+                    .await
+                    .unwrap()["status"],
+                "complete"
+            );
+        } else {
+            assert_eq!(history["pages"], 0);
+            assert_eq!(
+                history["errorCode"],
+                match status {
+                    401 => "authorization",
+                    429 => "rate_limited",
+                    _ => "provider_unavailable",
+                }
+            );
+            assert!(f.message(A, "google:healthy").await.is_null());
+        }
+    }
 }

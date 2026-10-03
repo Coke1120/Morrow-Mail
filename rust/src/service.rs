@@ -242,6 +242,9 @@ pub fn save_connection(db: &Store, connection: &Value, select: bool) -> Result<(
         }
         if select {
             patch["activeAccount"] = address.clone().into();
+            let mut backoffs = merge(json!({}), &config["mailReadBackoffs"]);
+            backoffs.as_object_mut().unwrap().remove(&address);
+            patch["mailReadBackoffs"] = backoffs;
             patch["backgroundSyncErrors"] = config["backgroundSyncErrors"]
                 .as_array()
                 .map(|errors| {

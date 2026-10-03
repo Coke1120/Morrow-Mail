@@ -1,5 +1,13 @@
 # Verification — 3 October 2026
 
+## Provider fetch reliability — local source, unpublished
+
+The shared Rust reader now persists one quota cooldown per account/connection across ordinary sync, history import and folder/label reads, including restart and import pause/resume. Existing persisted cooldowns are respected on upgrade. Provider Retry-After seconds/HTTP dates can extend local backoff, including transient history reads; authentication and writes do not gain automatic retry. Reconnect/disconnect clears only the target account's cooldown.
+
+Gmail refresh still checks the same five bounded scopes, but fetches each overlapping message once per refresh. Cached non-draft bodies use minimal metadata reads; drafts and older caches without HTML metadata receive full reads. Detail 404s skip only the vanished message and keep the page/checkpoint transaction; authorization, quota and 5xx errors still abort that page under the existing recovery policy. No server-deletion reconciliation or incremental Gmail history sync is claimed.
+
+The isolated 150-message overlapping-scope fixture falls from 260 to 160 HTTP requests per refresh. Its unchanged second refresh fetches 50 draft bodies and 100 minimal responses, retaining fresh draft contents and account-owned duplicate IDs. Regression checks cover shared pacing, Retry-After, retained checkpoints, restart, pause/resume, reconnect/disconnect isolation and legacy HTML-cache refill. Rust formatting, strict all-target Clippy, all 193 locked Rust tests, macOS candidate packaging, deep/strict ad-hoc signature verification, plist lint and full production-service native acceptance passed. Windows compilation and native smoke execution remain unverified on this macOS host and are delegated to the existing PR CI. These are fictional local TLS provider tests, not live-account acceptance; no real mail, calendar event or installed app is changed.
+
 ## Inbox selection, Delete/Undo, Unread and AI activity — local source, unpublished
 
 Both native clients now expose direct provider Delete from the list toolbar, reader and selection context menu. Multiple selection uses owned view IDs with ⌘/Ctrl and Shift gestures. Selection actions apply local read/star/Pending/archive/Trash patches, or sequential provider Trash moves, through each captured owner. Undo restores the latest deletion batch using its individual one-minute, account-bound tokens; failures stop the batch and report confirmed progress without automatic replay. Arbitrary bulk destination moves and permanent deletion remain unsupported.

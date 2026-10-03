@@ -176,7 +176,7 @@ pub(crate) fn import_failure(error: &Error, stage: &str, job: &Value, timestamp:
     let status = error.provider_status.unwrap_or(error.status);
     let count = job["retryCount"].as_u64().unwrap_or(0);
     let quota_delay = (stage == "fetch")
-        .then(|| providers::quota_retry_delay(error, count))
+        .then(|| providers::quota_retry_delay(error, count, timestamp))
         .flatten();
     let (code, action, retry) = if message == "Repeated import page."
         || message == "The IMAP folder changed. Start the import again."
@@ -204,7 +204,9 @@ pub(crate) fn import_failure(error: &Error, stage: &str, job: &Value, timestamp:
         ("import_failed", "resume", false)
     };
     let delay = retry.then(|| {
-        quota_delay.unwrap_or([30_000, 120_000, 300_000, 900_000, 3_600_000][count.min(4) as usize])
+        quota_delay
+            .unwrap_or([30_000, 120_000, 300_000, 900_000, 3_600_000][count.min(4) as usize])
+            .max(error.retry_after.unwrap_or(0).saturating_sub(timestamp))
     });
     let retry_at = delay
         .and_then(|delay| DateTime::from_timestamp_millis(timestamp + delay))
@@ -266,10 +268,23 @@ pub fn import_status(db: &Store, account: &str) -> Result<Value> {
     Ok(import_status_from(&db.settings()?, account))
 }
 pub fn import_status_from(config: &Value, account: &str) -> Value {
-    let job = &config["imports"][account];
+    let live = connections(config);
+    let mut job = config["imports"][account].clone();
     if !job.is_object() {
         return Value::Null;
     }
+    if job["status"] == "running"
+        && let Some(mail) = live.get(account)
+        && job["connectionId"] == mail["connectionId"]
+        && let Some(wait) = mail::read_backoff(config, mail)
+        && string(&wait.body, "nextRetryAt") > string(&job, "nextRetryAt")
+    {
+        job = merge(
+            job,
+            &json!({"errorCode":"rate_limited","nextRetryAt":wait.body["nextRetryAt"],"retryCount":wait.body["retryCount"]}),
+        );
+    }
+    let job = &job;
     let code = if import_error_message(string(job, "errorCode")).is_some() {
         string(job, "errorCode")
     } else if job["status"] == "failed" {
@@ -290,7 +305,6 @@ pub fn import_status_from(config: &Value, account: &str) -> Value {
     } else {
         None
     };
-    let live = connections(config);
     let provider = live.get(account).map(|mail| string(mail, "provider"));
     let coverage = json!({"provider":provider,"folders":import_folders(job),"excludes":["spam","trash"],"folderLimit":if job["options"]["allMail"] == true && matches!(provider, Some("microsoft" | "imap" | "")){Some(300)}else{None}});
     merge(
@@ -381,6 +395,8 @@ async fn history_tick(app: &App) -> Result<()> {
                 .flat_map(|entries| entries.iter())
                 .filter(|(account, job)| {
                     live.get(*account).is_some()
+                        && (live[*account]["connectionId"] != job["connectionId"]
+                            || mail::read_backoff(&config, &live[*account]).is_none())
                         && job["status"] == "running"
                         && (string(job, "nextRetryAt").is_empty()
                             || string(job, "nextRetryAt") <= now().as_str()
