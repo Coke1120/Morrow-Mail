@@ -226,7 +226,7 @@ struct NativeRustChecks {
             model.section = section
             try await Task.sleep(nanoseconds: 150_000_000)
             let source = sources[index % sources.count], owner = source["accountId"].string
-            await model.openSource(source)
+            try await model.openSource(source)
             try await Task.sleep(nanoseconds: 150_000_000)
             try check(model.selectedMessage == source.viewID && model.current?.id == source.id && model.current?["accountId"].string == owner,
                       "source navigation lost its selection or owner after leaving " + section)
