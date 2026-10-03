@@ -304,10 +304,42 @@ struct NativeRustChecks {
         let other = try await model.request("/messages/" + encodedPath(opened.id), mailbox: second)
         try check(!other["message"]["starred"].bool && !other["message"]["read"].bool, "patch changed the other account's duplicate ID")
         try await expectFailure(model, path: "/messages/" + encodedPath(opened.id), method: "PATCH", body: .object(["read": .bool(true)]), owner: "all")
+        model.selectMailMessages(Set(duplicates.map(\.viewID)))
+        model.patchMessages(duplicates, .object(["starred": .bool(true)]))
+        while model.busy { try await Task.sleep(nanoseconds: 10_000_000) }
+        try check(model.error.isEmpty && model.selectedMailRows.count == 2, "batch patch lost selection or failed: " + model.error)
+        for row in duplicates {
+            let result = try await model.request("/messages/" + encodedPath(row.id), mailbox: row["accountId"].string)
+            try check(result["message"]["starred"].bool, "batch patch missed an owner with the same provider ID")
+        }
+        // Restore the established account-specific patch expected by the backup/persistence check.
+        _ = try await model.request("/messages/" + encodedPath(opened.id), method: "PATCH", body: .object(["starred": .bool(false)]), mailbox: second)
+        try await model.reload()
+        print("Native Rust: combined multi-selection patches duplicate IDs through each captured owner and retains selection.")
+        model.selectedMessage = nil
         model.unreadOnly = true
         try await model.reload()
         try check(await model.loadMailPage(), "unread filter failed")
         try check(!model.listedMessages.isEmpty && model.listedMessages.allSatisfy { !$0["read"].bool }, "unread filter included read mail")
+        let unreadRows = model.listedMessages
+        let firstUnread = unreadRows[0], followingUnread = unreadRows[1]
+        model.selectedMessage = firstUnread.viewID
+        await model.loadMessage()
+        await model.refreshMailPage()
+        try check(model.current?["read"].bool == true && model.listedMessages.contains { $0.viewID == firstUnread.viewID && $0["read"].bool }, "unread filtering removed the message being read")
+        try check(model.listedMessages.first?.viewID == firstUnread.viewID && model.mailCursors.count == 1, "retained unread row moved or reset paging")
+        model.selectedMessage = followingUnread.viewID
+        await model.loadMessage()
+        await model.refreshMailPage()
+        try check(!model.listedMessages.contains { $0.viewID == firstUnread.viewID } && model.listedMessages.contains { $0.viewID == followingUnread.viewID && $0["read"].bool }, "switching unread mail did not release the previous read row")
+        model.patch(followingUnread, .object(["pending": .bool(true)]))
+        while model.busy { try await Task.sleep(nanoseconds: 10_000_000) }
+        try check(model.error.isEmpty && model.listedMessages.contains { $0.viewID == followingUnread.viewID && $0["pending"].bool }, "retained read row kept an old Pending marker")
+        model.patch(followingUnread, .object(["read": .bool(false), "pending": .bool(false)]))
+        while model.busy { try await Task.sleep(nanoseconds: 10_000_000) }
+        try check(model.error.isEmpty && model.current?["read"].bool == false && model.listedMessages.contains { $0.viewID == followingUnread.viewID && !$0["read"].bool && !$0["pending"].bool }, "manual unread action kept a stale retained read row")
+        print("Native Rust: Unread retains the active read row, releases it on switching and preserves manual unread/Pending updates.")
+        model.selectedMessage = nil
         model.unreadOnly = false
         print("Native Rust: owner-bound detail/patch and manual unread preservation passed.")
         try check(await model.loadMailPage(), "inbox reset failed")

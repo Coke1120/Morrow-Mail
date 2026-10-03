@@ -288,11 +288,18 @@ pub async fn run_model(
 ) -> Result<Value> {
     let base = validation::api_base(&ai["baseUrl"])?;
     let payload = model_payload(ai, action, messages, prompt, options)?;
-    let failure = || {
-        Error::new(
-            502,
-            "Could not reach the AI model or read its response. Check your endpoint and model, then try again.",
-        )
+    let failure = |error: reqwest::Error| {
+        if error.is_timeout() {
+            Error::new(
+                504,
+                "The AI model did not respond within 45 seconds. Check model availability or use a faster model; no automatic retry was started.",
+            )
+        } else {
+            Error::new(
+                502,
+                "Could not reach the AI model or read its response. Check your endpoint and model, then try again.",
+            )
+        }
     };
     let mut request = client
         .post(format!("{base}/chat/completions"))
@@ -301,7 +308,7 @@ pub async fn run_model(
     if !string(ai, "apiKey").is_empty() {
         request = request.bearer_auth(string(ai, "apiKey"));
     }
-    let mut response = request.send().await.map_err(|_| failure())?;
+    let mut response = request.send().await.map_err(&failure)?;
     if !response.status().is_success() {
         return Err(Error::new(
             502,
@@ -321,13 +328,13 @@ pub async fn run_model(
         return Err(too_large());
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| failure())? {
+    while let Some(chunk) = response.chunk().await.map_err(&failure)? {
         if bytes.len() + chunk.len() > 1024 * 1024 {
             return Err(too_large());
         }
         bytes.extend_from_slice(&chunk);
     }
-    let data: Value = serde_json::from_slice(&bytes).map_err(|_| failure())?;
+    let data: Value = serde_json::from_slice(&bytes).map_err(|_| Error::new(502, "The AI model returned invalid JSON. Check that the endpoint supports chat completions."))?;
     let text = data["choices"][0]["message"]["content"]
         .as_str()
         .filter(|s| !s.trim().is_empty())
@@ -801,6 +808,13 @@ pub async fn assistance(
         }
         return Ok(result);
     }
+    // Observe the actual work, including a coalesced automatic request whose UI waiter closes.
+    let mut activity = app.0.activity.start(
+        &owner,
+        "ai",
+        "AI assistance",
+        "Waiting for the configured model",
+    );
     let response = run_model(
         &app.0.client,
         &context.config["ai"],
@@ -809,9 +823,13 @@ pub async fn assistance(
         &instructions,
         &options,
     )
-    .await?;
+    .await;
+    if let Err(error) = &response {
+        activity.fail(string(&error.body, "error"));
+    }
+    let response = response?;
     let structured = summary_ids.is_some();
-    app.db(move|db|{
+    let result = app.db(move|db|{
         let config=db.settings()?;let changed=||Error::conflict("The account, model, source mail or AI permissions changed while this request was running. Its response was discarded.");
         if !valid_account(&config,&owner)||generation(&context.config,&owner)!=generation(&config,&owner){return Err(changed());}
         if !options["searchStamp"].is_null() && options["searchStamp"] != crate::smart_search::ask_stamp(&config) { return Err(changed()); }
@@ -822,7 +840,12 @@ pub async fn assistance(
         if !input["trigger"].is_null(){let message=db.get(&owner,string(&input,"messageId"))?.unwrap_or(Value::Null);if !policy::matches_trigger(&context.policy,string(&input,"trigger"),&message){return Err(changed());}}
         let mut result=if structured{priority_summary(string(&response,"text"),&context.messages)?}else{json!({"text":response["text"]})};result["source"]="model".into();if input["action"] == "ask" { result["sources"] = ask_sources(string(&response,"text"),&context.messages,&owner)?; result["retrievalWarning"] = options["searchWarning"].clone(); }
         if !context.history.is_null(){result["history"]=context.history;}Ok(result)
-    }).await
+    }).await;
+    match &result {
+        Ok(_) => activity.finish(true, None),
+        Err(error) => activity.fail(string(&error.body, "error")),
+    }
+    result
 }
 
 pub fn ask_sources(text: &str, messages: &[Value], owner: &str) -> Result<Value> {

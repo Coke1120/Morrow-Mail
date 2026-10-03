@@ -229,6 +229,20 @@ impl Runtime {
     }
 }
 impl Work<'_> {
+    /// A server-authored error only; never pass provider bodies or model output.
+    pub fn fail(&mut self, message: &str) {
+        if self.finished {
+            return;
+        }
+        self.update("failed", None);
+        if let Ok(mut tasks) = self.runtime.tasks.lock()
+            && let Some(task) = tasks.iter_mut().find(|t| t["id"] == self.id)
+        {
+            task["error"] = message.into();
+            task["detail"] = "Request ended; review the error before trying again.".into();
+        }
+        self.finished = true;
+    }
     pub fn finish(&mut self, success: bool, completed: Option<usize>) {
         if self.finished {
             return;
@@ -247,7 +261,12 @@ impl Work<'_> {
                 .filter(|n| *n as u64 <= 9_007_199_254_740_991)
                 .into();
             if failure(status) {
-                task["error"] = "Operation did not complete. Check its page or connection settings; no automatic retry was started here.".into();
+                task["error"] = if status == "interrupted" {
+                    "The operation was interrupted before a result could be confirmed. Review its page before trying again; no automatic retry was started."
+                } else {
+                    "Operation did not complete. Check its page or connection settings; no automatic retry was started here."
+                }.into();
+                task["detail"] = "Operation ended.".into();
             }
             tasks.push(task);
             retain(&mut tasks);

@@ -9,6 +9,7 @@ struct WindowAssertions {
     @MainActor static func main() {
         let app = NSApplication.shared
         app.setActivationPolicy(.regular)
+        if CommandLine.arguments.contains("--mail-only") { checkMailDrop(); return }
         checkRestoredListWidth()
         if CommandLine.arguments.contains("--list-width-only") { return }
         checkMailDrop()
@@ -115,19 +116,29 @@ struct WindowAssertions {
         guard let list = lists(host).first(where: { $0.numberOfRows == messages.count && $0.frame.width > 250 }) else {
             assertionFailure("The production mail list is missing."); return
         }
-        for (row, message) in messages.enumerated() {
+        assert(list.allowsMultipleSelection, "The native mail table is in single-selection mode.")
+        func click(_ row: Int, modifiers: NSEvent.ModifierFlags = []) {
             let rect = list.rect(ofRow: row), point = list.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
             for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-                let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: modifiers, timestamp: ProcessInfo.processInfo.systemUptime,
                                               windowNumber: window.windowNumber, context: nil, eventNumber: row, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!
                 NSApp.postEvent(event, atStart: false)
             }
-            let deadline = Date().addingTimeInterval(0.3)
-            while Date() < deadline {
-                if let event = NSApp.nextEvent(matching: .any, until: Date().addingTimeInterval(0.02), inMode: .default, dequeue: true) { NSApp.sendEvent(event) }
-            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.stopModal() }
+            NSApp.runModal(for: window)
+        }
+        for (row, message) in messages.enumerated() {
+            click(row)
             assert(model.selectedMessage == message.viewID && model.current?["accountId"] == message["accountId"], "Clicking a draggable row must select its owned message.")
         }
+        click(0); click(1, modifiers: .command)
+        assert(model.selectedMessages == Set(messages.map(\.viewID)), "Command-click must select both account-owned duplicate IDs: \(model.selectedMessages), native: \(list.selectedRowIndexes)")
+        click(0)
+        assert(model.selectedMessages == [messages[0].viewID], "Plain-click must collapse multiple selection: \(model.selectedMessages)")
+        click(1, modifiers: .shift)
+        assert(model.selectedMailRows.count == 2, "Shift-click must select a range in the draggable native mail list: \(model.selectedMessages), native: \(list.selectedRowIndexes)")
+        model.selectMailMessages([messages[1].viewID])
+        assert(model.selectedMailRows == [messages[1]] && model.current?["accountId"] == messages[1]["accountId"])
         print("Native clicks on the production draggable mail list select each duplicate-ID message's own reader identity.")
     }
 

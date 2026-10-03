@@ -28,8 +28,9 @@ struct Shell : std::enable_shared_from_this<Shell> {
     controls::ContentControl page{nullptr};
     controls::TextBlock status{nullptr};
     controls::Button trashUndoButton{nullptr};
-    struct TrashUndo { Json message; winrt::hstring token; uint64_t expires; };
+    struct TrashUndo { Json message; winrt::hstring token; uint64_t expires; uint64_t batch; };
     std::vector<TrashUndo> trashUndos;
+    uint64_t trashBatch = 0;
     controls::ListView rows{nullptr};
     controls::ContentControl reader{nullptr};
     controls::Grid mailBody{nullptr};
@@ -48,6 +49,8 @@ struct Shell : std::enable_shared_from_this<Shell> {
     Json state;
     Json serverFolders;
     Json selected;
+    Json retainedUnread;
+    uint32_t retainedUnreadIndex = 0;
     Json mailDrag;
     Json updateResult;
     winrt::hstring owner, folder = L"inbox", section = L"mail", nextCursor;
@@ -71,6 +74,11 @@ struct Shell : std::enable_shared_from_this<Shell> {
     winrt::Windows::Foundation::IAsyncAction read(Json metadata);
     winrt::Windows::Foundation::IAsyncAction openSource(Json metadata);
     winrt::Windows::Foundation::IAsyncAction patch(Json message, Json changes);
+    winrt::Windows::Foundation::IAsyncAction patchMessages(std::vector<Json> messages, Json changes);
+    std::vector<Json> selectedMessages(Json target = Json()) const;
+    controls::MenuFlyout mailActionsMenu(Json message);
+    bool canTrash(Json const& message) const;
+    void retainReadRow(Json const& message);
     winrt::Windows::Foundation::IAsyncAction prepare(Json message, winrt::hstring mode, winrt::hstring body = {});
     winrt::Windows::Foundation::IAsyncAction messageAI(Json message, winrt::hstring action, bool history = false);
     winrt::Windows::Foundation::IAsyncAction organize(Json message, winrt::hstring preferredKind = {}, winrt::hstring preferredDestination = {});
@@ -81,6 +89,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     winrt::hstring mailDropDestination(winrt::hstring const& account, winrt::hstring const& folder) const;
     void resizeSidebar(double width, bool save = true);
     winrt::Windows::Foundation::IAsyncAction trash(Json message);
+    winrt::Windows::Foundation::IAsyncAction trashMessages(std::vector<Json> messages);
     winrt::Windows::Foundation::IAsyncAction undoTrash();
     void updateTrashUndo();
     winrt::Windows::Foundation::IAsyncAction sync();

@@ -587,13 +587,38 @@ async fn automatic_requests_coalesce_and_are_not_cached_after_completion() {
     model.entered.acquire().await.unwrap().forget();
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+    tasks.remove(0).abort(); // Closing one UI waiter must not interrupt the shared model work.
+    let activity = app.0.activity.snapshot(&app.settings().await.unwrap());
+    assert_eq!(activity["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(activity["tasks"][0]["status"], "running");
     model.release.add_permits(1);
     for task in tasks {
         assert_eq!(task.await.unwrap().unwrap()["text"], "A summary");
     }
+    let activity = app.0.activity.snapshot(&app.settings().await.unwrap());
+    assert_eq!(activity["tasks"][0]["status"], "complete");
+    assert!(activity["tasks"][0]["error"].is_null());
     model.release.add_permits(1);
     assert_eq!(ai_request(&app, body).await.unwrap()["source"], "model");
     assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+}
+#[tokio::test]
+async fn activity_shows_safe_model_failure_without_provider_body_or_retry() {
+    let directory = Temporary::new();
+    let mut model = Model::new(false, "private model output");
+    model.status = 401;
+    let server = model_server(model.clone()).await;
+    let app = app_at(&directory, &server.url).await;
+    let error = ai_request(&app, json!({"action":"summary","messageId":"same"}))
+        .await
+        .unwrap_err();
+    let activity = app.0.activity.snapshot(&app.settings().await.unwrap());
+    assert_eq!(activity["tasks"][0]["status"], "failed");
+    assert_eq!(activity["tasks"][0]["error"], error.body["error"]);
+    assert!(string(&error.body, "error").contains("HTTP 401"));
+    assert!(!activity.to_string().contains("fixture error"));
+    assert!(!activity.to_string().contains("fixture-only"));
+    assert_eq!(model.calls.load(Ordering::SeqCst), 1);
 }
 #[tokio::test]
 async fn workflow_preview_rechecks_owner_source_generation_and_replay() {

@@ -14,6 +14,8 @@ struct MailWorkspace: View {
     @State private var expandedServerAccounts: Set<String> = []
     @State private var folderFilter = ""
     @State private var dropTarget = ""
+    @State private var selectionClick: (modifiers: NSEvent.ModifierFlags, ids: Set<String>, anchor: String?) = ([], [], nil)
+    @State private var selectionMonitor: Any?
     @EnvironmentObject var model: AppModel
     private var layout: String { expandedReader ? "focus" : ["right", "bottom", "focus"].contains(readerLayout) ? readerLayout : "right" }
     var filtered: [JSON] {
@@ -80,6 +82,16 @@ struct MailWorkspace: View {
             }
         }
         .task(id: model.mailQueryKey) { if model.hasMailbox { await model.refreshMailPage() } }
+        .onAppear {
+            if selectionMonitor == nil {
+                // Drag-enabled rows defer their tap callback; capture modifiers and selection before AppKit handles the click.
+                selectionMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
+                    selectionClick = (event.modifierFlags, model.selectedMessages, model.selectedMessage)
+                    return event
+                }
+            }
+        }
+        .onDisappear { if let selectionMonitor { NSEvent.removeMonitor(selectionMonitor) }; selectionMonitor = nil }
         .task(id: (model.selectedMessage ?? "") + model.state["revision"].string) { await model.loadMessage() }
         .onChange(of: model.section) { section in if section != "studio" { model.selectedMessage = nil; model.messageDetail = .null }; model.mailPage = .null }
         .onChange(of: readerLayout) { _ in leaveExpandedReader() }
@@ -280,6 +292,9 @@ struct MailWorkspace: View {
                     }
                 } label: { Label("Sort", systemImage: "arrow.up.arrow.down") }.fixedSize().accessibilityIdentifier("mail.sortMenu").disabled(!model.searchResponse.isNull)
                 Spacer(minLength: 0)
+                Button { model.trashMessages(model.selectedMailRows) } label: { Label("Delete", systemImage: "trash") }
+                    .disabled(!model.canNavigate || model.selectedMailRows.isEmpty || !model.selectedMailRows.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" })
+                    .help("Move selected mail to provider Trash · Undo within one minute (⌘Z)")
                 Button { model.perform { try await model.sync() } } label: { Label("Sync Mail", systemImage: "arrow.clockwise") }.labelStyle(.iconOnly).buttonStyle(.borderless).disabled(!model.canNavigate || !model.hasMailbox).help("Sync Mail (⌘R)")
             }.menuStyle(.borderlessButton).controlSize(.small).disabled(model.busy).padding(.horizontal, 14).padding(.bottom, 8)
             Divider()
@@ -290,7 +305,10 @@ struct MailWorkspace: View {
                 }
             }
             else {
-                List(filtered, id: \.viewID, selection: $model.selectedMessage) { message in
+                List(filtered, id: \.viewID, selection: Binding(get: { model.selectedMessages }, set: { ids in
+                    guard selectionClick.modifiers.intersection([.command, .shift]).isEmpty else { return }
+                    DispatchQueue.main.async { if model.canNavigate { model.selectMailMessages(ids) } }
+                })) { message in
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
                             Text(["sent", "drafts"].contains(message["folder"].string) ? "To: " + message["to"].string : message["fromName"].string).lineLimit(1)
@@ -298,7 +316,7 @@ struct MailWorkspace: View {
                             if message["starred"].bool { Image(systemName: "star.fill").foregroundStyle(.orange).font(.caption) }
                             if message["pending"].bool { Image(systemName: "clock.fill").foregroundStyle(morrowGreen).font(.caption).accessibilityLabel("Pending") }
                             Circle().fill(message["read"].bool ? .clear : morrowGreen).frame(width: 6, height: 6).accessibilityLabel(message["read"].bool ? "Read" : "Unread")
-                            if hoveredMessage == message.viewID || model.selectedMessage == message.viewID { rowActions(message) }
+                            if hoveredMessage == message.viewID || model.selectedMessages.contains(message.viewID) { rowActions(message) }
                         }
                         searchHighlighted(message["searchSubject"], fallback: message["subject"].nonempty ? message["subject"].string : "(No subject)").font(.system(size: 13)).fontWeight(message["read"].bool ? .regular : .bold).lineLimit(1)
                         if model.preferences["density"].string != "compact" { searchHighlighted(message["searchSnippet"], fallback: message["preview"].string).fontWeight(message["read"].bool ? .regular : .bold).foregroundStyle(.secondary).font(.caption).lineLimit(model.preferences["density"].string == "spacious" ? 4 : 2) }
@@ -312,6 +330,7 @@ struct MailWorkspace: View {
                     .contentShape(Rectangle())
                     .onHover { inside in if inside { hoveredMessage = message.viewID } else if hoveredMessage == message.viewID { hoveredMessage = nil } }
                     .onDrag {
+                        selectionClick.modifiers = []
                         let provider = NSItemProvider()
                         if let token = model.startMailDrag(message) {
                             provider.registerDataRepresentation(forTypeIdentifier: MailFolderDrop.type, visibility: .ownProcess) { completion in
@@ -320,17 +339,42 @@ struct MailWorkspace: View {
                         }
                         return provider
                     }
-                    .onTapGesture { if model.canNavigate { model.selectedMessage = message.viewID } }
-                    .contextMenu {
-                        if model.canOrganize(message) { MessageOrganizationActions(message: message) }
-                        Button(message["starred"].bool ? "Unstar" : "Star") { model.patch(message, .object(["starred": .bool(!message["starred"].bool)])) }
-                        Button(message["lowPriority"].bool ? "Return from Later" : "Read Later") { model.patch(message, .object(["lowPriority": .bool(!message["lowPriority"].bool)])) }.disabled(!["inbox", "archive"].contains(message["folder"].string))
-                        Button(message["pending"].bool ? "Clear Pending" : "Mark Pending") { model.patch(message, .object(["pending": .bool(!message["pending"].bool)])) }
-                        Button(message["read"].bool ? "Mark Unread" : "Mark Read") { model.patch(message, .object(["read": .bool(!message["read"].bool)])) }
-                        if message["folder"].string != "drafts" { Button("Archive Locally") { model.patch(message, .object(["folder": .string("archive")])) } }
-                        Button("Move to Local Trash") { model.patch(message, .object(["folder": .string("trash")])) }
+                    .onTapGesture {
+                        guard model.canNavigate else { return }
+                        let click = selectionClick
+                        let ids: Set<String>
+                        if click.modifiers.contains(.command) {
+                            ids = click.ids.symmetricDifference([message.viewID])
+                        } else if click.modifiers.contains(.shift), let anchor = filtered.firstIndex(where: { $0.viewID == click.anchor }), let end = filtered.firstIndex(where: { $0.viewID == message.viewID }) {
+                            ids = Set(filtered[min(anchor, end)...max(anchor, end)].map(\.viewID))
+                        } else { ids = [message.viewID] }
+                        DispatchQueue.main.async {
+                            guard model.canNavigate else { return }
+                            if !click.modifiers.intersection([.command, .shift]).isEmpty, let anchor = click.anchor, ids.contains(anchor) { model.selectedMessage = anchor }
+                            model.selectMailMessages(ids)
+                            selectionClick.modifiers = []
+                        }
                     }.tag(message.viewID)
-                }.listStyle(.inset).disabled(model.busy)
+                }.listStyle(.inset).disabled(!model.canNavigate)
+                .contextMenu(forSelectionType: String.self) { ids in
+                    let messages = filtered.filter { ids.contains($0.viewID) }
+                    if messages.count == 1, let message = messages.first, model.canOrganize(message) { MessageOrganizationActions(message: message) }
+                    if !messages.isEmpty {
+                        Button("Delete") { model.trashMessages(messages) }
+                            .disabled(!messages.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" })
+                        Divider()
+                        Button("Mark Read") { model.patchMessages(messages, .object(["read": .bool(true)])) }
+                        Button("Mark Unread") { model.patchMessages(messages, .object(["read": .bool(false)])) }
+                        Button("Star") { model.patchMessages(messages, .object(["starred": .bool(true)])) }
+                        Button("Unstar") { model.patchMessages(messages, .object(["starred": .bool(false)])) }
+                        Button("Mark Pending") { model.patchMessages(messages, .object(["pending": .bool(true)])) }
+                        Button("Clear Pending") { model.patchMessages(messages, .object(["pending": .bool(false)])) }
+                        Button("Read Later") { model.patchMessages(messages, .object(["lowPriority": .bool(true)])) }.disabled(messages.contains { !["inbox", "archive"].contains($0["folder"].string) })
+                        Button("Return from Later") { model.patchMessages(messages, .object(["lowPriority": .bool(false)])) }.disabled(messages.contains { !["inbox", "archive"].contains($0["folder"].string) })
+                        Button("Archive Locally") { model.patchMessages(messages, .object(["folder": .string("archive")])) }.disabled(messages.contains { $0["folder"].string == "drafts" })
+                        Button("Move to Local Trash") { model.patchMessages(messages, .object(["folder": .string("trash")])) }
+                    }
+                }
 
             }
             Divider()
@@ -427,7 +471,9 @@ struct MessageReader: View {
                 if message["folder"].string != "drafts" {
                     Button { model.patch(message, .object(["folder": .string(message["folder"].string == "inbox" ? "archive" : "inbox")])) } label: { Image(systemName: message["folder"].string == "inbox" ? "archivebox" : "tray") }.help("Move locally").accessibilityLabel("Move locally")
                 }
-                Button { model.patch(message, .object(["folder": .string("trash")])) } label: { Image(systemName: "trash") }.help("Move to local trash").accessibilityLabel("Move to local trash")
+                Button { model.beginOrganize(message, preferredKind: "trash") } label: { Image(systemName: "trash") }
+                    .help("Move to provider Trash · Undo within one minute (⌘Z)").accessibilityLabel("Delete")
+                    .disabled(!model.canOrganize(message) || !model.canNavigate || message["folder"].string == "trash")
                 Divider().frame(height: 14)
                 Button(action: onExpand) { Label(expanded ? "Restore Panes" : "Expand Reader", systemImage: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") }.labelStyle(.iconOnly).help(expanded ? "Restore Panes" : "Expand Reader")
             }.buttonStyle(.borderless).controlSize(.small).padding(.horizontal, 16).padding(.vertical, 10).disabled(model.busy)
