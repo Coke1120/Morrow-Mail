@@ -261,7 +261,8 @@ IAsyncAction Shell::smoke() {
             while ((!row.ActualWidth() || !row.ActualHeight()) && GetTickCount64() < layoutDeadline) {
                 co_await resume_after(std::chrono::milliseconds(10)); co_await ui; root.UpdateLayout();
             }
-            auto peer = xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(row);
+            auto peer = xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(rows)
+                .as<xaml::Automation::Peers::ListViewAutomationPeer>().CreateItemAutomationPeer(row);
             auto select = peer.GetPattern(xaml::Automation::Peers::PatternInterface::SelectionItem).try_as<xaml::Automation::Provider::ISelectionItemProvider>();
             check(bool(select), L"The native mail row does not expose its selection action.");
             select.Select();
