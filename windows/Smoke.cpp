@@ -307,6 +307,9 @@ IAsyncAction Shell::smoke() {
             for (auto const& message : batch) check(flag(object(co_await service->request(L"/messages/"+escaped(text(message,L"id")),text(message,L"accountId")),L"message"),L"starred"), L"Batch patch lost an owning mailbox.");
             check(selectedMessages().size() == 2, L"Refreshing a batch discarded multi-selection.");
             enter("mail-unread-filter");
+            auto markOnOpen = flag(object(object(state,L"settings"),L"preferences"),L"markReadOnOpen");
+            Json readingPreference; readingPreference.Insert(L"markReadOnOpen",Value::CreateBooleanValue(true));
+            state = co_await service->request(L"/settings/preferences",L"",L"POST",readingPreference);
             unreadFilter.IsChecked(true); cursors = {L""}; co_await loadPage();
             check(rows.Items().Size() > 0, L"Unread filter lost the unread fixture message.");
             for (auto const& item : rows.Items()) check(!flag(item.as<controls::ListViewItem>().Tag().as<Json>(), L"read"), L"Unread-only view includes a read message.");
@@ -320,7 +323,11 @@ IAsyncAction Shell::smoke() {
             check(flag(retainedUnread,L"pending"), L"The retained row did not update its Pending marker.");
             co_await patch(selected,unread);
             check(!flag(selected,L"read") && !retainedUnread.Size(), L"Marking retained mail unread kept a stale read marker.");
-            unreadFilter.IsChecked(false); cursors = {L""}; co_await loadPage();
+            unreadFilter.IsChecked(false);
+            readingPreference.Insert(L"markReadOnOpen",Value::CreateBooleanValue(markOnOpen));
+            state = co_await service->request(L"/settings/preferences",L"",L"POST",readingPreference);
+            check(flag(object(object(state,L"settings"),L"preferences"),L"markReadOnOpen") == markOnOpen, L"Unread checks did not restore the fixture reading preference.");
+            cursors = {L""}; co_await loadPage();
             enter("mail-combined");
             co_await navigate(L"mail",L"all");
             check(pageLabel.Text().size() && rows.Items().Size()==50, L"Combined mail did not load.");
