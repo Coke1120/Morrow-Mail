@@ -706,7 +706,13 @@ void Shell::mailPage() {
     rows.SelectionChanged([weak](auto const&, SelectionChangedEventArgs const&) {
         if (auto self = weak.lock(); self && !self->loading && !self->dialogOpen && self->dirty.empty()) {
             auto messages = self->selectedMessages();
-            if (messages.size() == 1 && text(messages[0], L"viewId") != text(self->selected, L"viewId")) self->read(messages[0]);
+            if (self->pendingRead.Size() && (messages.size() != 1
+                || text(messages[0], L"viewId") != text(self->pendingRead, L"viewId"))) {
+                self->pendingRead = Json();
+                ++self->readGeneration;
+            }
+            // The displayed row may match again while a different detail is pending.
+            if (messages.size() == 1) self->read(messages[0]);
         }
     });
     Grid::SetRow(rows, 1); list.Children().Append(rows);
@@ -1043,7 +1049,7 @@ MenuFlyout Shell::mailActionsMenu(Json message) {
 IAsyncAction Shell::patchMessages(std::vector<Json> messages, Json changes) {
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
     if (dialogOpen || loading || closing || !dirty.empty() || service->writing() || messages.empty()) co_return;
-    // Reload an interrupted detail request after the patch, while retaining the
+    // Refresh the currently selected row if the patch interrupts a detail read, retaining the
     // mounted reader's Load/Hide choice and interactions for metadata changes.
     auto interrupted = pendingRead; auto sequence = selectionGeneration;
     pendingRead = Json();
@@ -1069,7 +1075,9 @@ IAsyncAction Shell::patchMessages(std::vector<Json> messages, Json changes) {
     if (current(version, captured)) {
         for (auto& cursor : cursors) cursor = L"";
         co_await loadPage();
-        if (current(version, captured) && sequence == selectionGeneration && interrupted.Size()) co_await read(interrupted);
+        auto chosen = selectedMessages();
+        if (current(version, captured) && sequence == selectionGeneration && interrupted.Size()
+            && chosen.size() == 1) co_await read(chosen[0]);
         if (!failure.empty()) error(failure);
     }
 }

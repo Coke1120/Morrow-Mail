@@ -1,4 +1,12 @@
-# Verification — 4 October 2026
+# Verification — 5 October 2026
+
+## PR #15 / #16 review — Windows reselection follow-up
+
+Both requested PRs were already merged into main: PR #15 at `287feaac00b0836884b57719e590dc7775d2c0cc` and PR #16 at `e3ddeef41d858fd9b5bdf46bf8f74541514c9ec9`. Their final heads (`5eff428f` / `bf21142`) passed paired native CI. Fixed-version review found a remaining Windows interleaving: while A is displayed and B's detail GET is pending, selecting A again and changing A's marker could revive B after PATCH, disagree with the highlighted row and mark B read.
+
+The follow-up cancels pending detail reads that no longer match the actual row selection, starts a fresh read on each real single-row selection change, and refreshes interrupted detail from the currently selected owned row after PATCH. This also handles reselection during an in-flight PATCH. Existing metadata-only refresh preserves the mounted reader's image consent. Added Windows smoke uses the real SelectionChanged handler and isolated owned fictional mail to exercise A → pending B → A with no PATCH, with Read/Starred/Pending changes, and with reselection while PATCH is busy; B must remain unread with mark-on-open enabled. Existing same-row/other-row detail recovery and reader security checks remain required.
+
+The macOS host cannot execute WinUI; Windows build and smoke execution are checked by the paired PR CI, with exact-run evidence recorded in the follow-up PR. This source change is not published in beta.42. Tests do not use the owner's workspace or real provider writes.
 
 ## 0.6.0-beta.42 — published paired native release
 
