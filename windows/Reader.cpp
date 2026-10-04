@@ -900,7 +900,9 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
         && !state->images && state->budget->requests == 0, L"Reader isolation failed during cleanup.");
     phase("multi-selection-hide");
     shell->selected = fixture;
-    settingsState.Insert(L"preferences", readingPreferences);
+    auto multiPreferences = Json::Parse(readingPreferences.Stringify());
+    multiPreferences.Insert(L"markReadOnOpen", Value::CreateBooleanValue(false));
+    settingsState.Insert(L"preferences", multiPreferences); // This consent check leaves fixture read markers unchanged.
     auto hidden = mountReader(shell, stack(8), fixture);
     runtimeCheck(hidden && hidden->images, L"The multi-selection fixture did not apply image opt-in.");
     cleanup.readers.push_back(hidden); hidden->chooseImages(false);
