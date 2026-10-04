@@ -618,6 +618,68 @@ fn save_private(path: &Path, data: &[u8]) -> Result<()> {
     file.sync_all()?;
     Ok(())
 }
+
+// Own only the files created by this attempt. A failed copy, spawn or readiness
+// handshake must leave the verified download available for another attempt.
+#[derive(Default)]
+struct InstallerFiles(Vec<PathBuf>);
+impl InstallerFiles {
+    fn create(&mut self, path: &Path) -> Result<File> {
+        let file = private_file(path)?;
+        self.0.push(path.to_owned());
+        Ok(file)
+    }
+    fn copy(&mut self, source: &Path, destination: &Path) -> Result<()> {
+        let metadata = fs::symlink_metadata(source)?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(fail("Invalid update installer runtime."));
+        }
+        let mut source = File::open(source)?;
+        let mut output = self.create(destination)?;
+        std::io::copy(&mut source, &mut output)?;
+        output.sync_all()?;
+        Ok(())
+    }
+    fn helper(&mut self, source: &Path, helper: &Path, platform: &str) -> Result<()> {
+        self.copy(source, helper)?;
+        if platform == "windows-x64" {
+            let runtime = source.parent().ok_or_else(|| fail(DOWNLOAD_ERROR))?;
+            let directory = helper.parent().ok_or_else(|| fail(DOWNLOAD_ERROR))?;
+            // Rust's MSVC runtime is app-local in native packages. Include the
+            // optional companion runtimes as well, without inheriting a DLL PATH.
+            for name in [
+                "vcruntime140.dll",
+                "vcruntime140_1.dll",
+                "vcruntime140_threads.dll",
+            ] {
+                let dependency = runtime.join(name);
+                if name != "vcruntime140.dll" && !dependency.try_exists()? {
+                    continue;
+                }
+                self.copy(&dependency, &directory.join(name))?;
+            }
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(helper, fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(())
+    }
+    fn save(&mut self, path: &Path, bytes: &[u8]) -> Result<()> {
+        let mut file = self.create(path)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        Ok(())
+    }
+}
+impl Drop for InstallerFiles {
+    fn drop(&mut self) {
+        for path in self.0.iter().rev() {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
 fn check_tree(target: &Path) -> Result<()> {
     fn visit(directory: &Path, root: &Path) -> Result<()> {
         for entry in fs::read_dir(directory)? {
@@ -1019,20 +1081,13 @@ impl Updater {
             if cfg!(windows) { ".exe" } else { "" }
         ));
         let copy = helper.clone();
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            let mut source = File::open(std::env::current_exe()?)?;
-            let mut output = private_file(&copy)?;
-            std::io::copy(&mut source, &mut output)?;
-            output.sync_all()?;
-            Ok(())
+        let mut prepared = tokio::task::spawn_blocking(move || -> Result<InstallerFiles> {
+            let mut files = InstallerFiles::default();
+            files.helper(&std::env::current_exe()?, &copy, platform)?;
+            Ok(files)
         })
         .await
         .map_err(|_| fail(DOWNLOAD_ERROR))??;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&helper, fs::Permissions::from_mode(0o700))?;
-        }
         let config = InstallConfig {
             directory: directory.clone(),
             root: root.into(),
@@ -1048,7 +1103,7 @@ impl Updater {
             ],
             result_file: self.0.data.join("update-result.json"),
         };
-        save_private(
+        prepared.save(
             &directory.join("update-target.json"),
             &serde_json::to_vec(&config.target)?,
         )?;
@@ -1083,7 +1138,6 @@ impl Updater {
             Ok(Ok(())) => {}
             outcome => {
                 let _ = child.kill().await;
-                let _ = tokio::fs::remove_file(helper).await;
                 return Err(match outcome {
                     Ok(Err(error)) => error,
                     _ => fail("The update installer did not become ready."),
@@ -1092,6 +1146,7 @@ impl Updater {
         }
         // kill_on_drop(false) leaves the detached helper alive after host/service exit.
         drop(child);
+        prepared.0.clear();
         state.value["phase"] = "installing".into();
         Ok(self.status_value(&state.value).await)
     }
@@ -1627,6 +1682,110 @@ pub async fn handle(app: &App, context: &Context) -> Result<Option<Response>> {
 #[cfg(test)]
 mod download_tests {
     use super::*;
+
+    #[test]
+    fn installer_runtime_is_private_and_failed_attempts_can_retry() {
+        let root =
+            std::env::temp_dir().join(format!("morrow-helper-files-{}", uuid::Uuid::new_v4()));
+        let runtime = root.join("runtime");
+        let staging = root.join("staging");
+        fs::create_dir_all(&runtime).unwrap();
+        private_directory(&staging).unwrap();
+        let executable = runtime.join("morrow-service.exe");
+        fs::write(&executable, "fictional helper executable").unwrap();
+        for name in [
+            "vcruntime140.dll",
+            "vcruntime140_1.dll",
+            "vcruntime140_threads.dll",
+        ] {
+            fs::write(runtime.join(name), format!("fictional {name}")).unwrap();
+        }
+        fs::write(runtime.join("unrelated.dll"), "not an installer dependency").unwrap();
+        let helper = staging.join("update-helper.exe");
+        let marker = staging.join("update-target.json");
+        let archive = staging.join("update.zip");
+        fs::write(&archive, "retained verified download").unwrap();
+        for _ in 0..2 {
+            let mut files = InstallerFiles::default();
+            files.helper(&executable, &helper, "windows-x64").unwrap();
+            files.save(&marker, b"fictional target").unwrap();
+            for name in [
+                "vcruntime140.dll",
+                "vcruntime140_1.dll",
+                "vcruntime140_threads.dll",
+            ] {
+                assert_eq!(
+                    fs::read(staging.join(name)).unwrap(),
+                    fs::read(runtime.join(name)).unwrap()
+                );
+            }
+            assert!(!staging.join("unrelated.dll").exists());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(&helper).unwrap().permissions().mode() & 0o777,
+                    0o700
+                );
+                assert_eq!(
+                    fs::metadata(staging.join("vcruntime140.dll"))
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o600
+                );
+            }
+            // All early returns (including spawn/handshake errors) drop this owner.
+            drop(files);
+            assert!(!helper.exists());
+            assert!(!marker.exists());
+            assert!(!staging.join("vcruntime140.dll").exists());
+            assert_eq!(
+                fs::read_to_string(&archive).unwrap(),
+                "retained verified download"
+            );
+        }
+        let mut files = InstallerFiles::default();
+        files.helper(&executable, &helper, "windows-x64").unwrap();
+        files
+            .save(&marker, b"retained for detached installer")
+            .unwrap();
+        files.0.clear();
+        drop(files);
+        assert!(helper.is_file());
+        assert!(staging.join("vcruntime140.dll").is_file());
+        assert!(marker.is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_installer_copy_and_existing_markers_are_not_overwritten() {
+        let root =
+            std::env::temp_dir().join(format!("morrow-helper-failure-{}", uuid::Uuid::new_v4()));
+        let runtime = root.join("runtime");
+        let staging = root.join("staging");
+        fs::create_dir_all(&runtime).unwrap();
+        private_directory(&staging).unwrap();
+        let executable = runtime.join("morrow-service.exe");
+        fs::write(&executable, "fictional helper executable").unwrap();
+        let helper = staging.join("update-helper.exe");
+        {
+            let mut files = InstallerFiles::default();
+            assert!(files.helper(&executable, &helper, "windows-x64").is_err());
+        }
+        assert!(!helper.exists());
+        let marker = staging.join("update-target.json");
+        fs::write(&marker, "existing marker").unwrap();
+        {
+            let mut files = InstallerFiles::default();
+            files.helper(&executable, &helper, "macos-arm64").unwrap();
+            assert!(files.save(&marker, b"replacement marker").is_err());
+        }
+        assert!(!helper.exists());
+        assert_eq!(fs::read_to_string(marker).unwrap(), "existing marker");
+        fs::remove_dir_all(root).unwrap();
+    }
     use ed25519_dalek::{Signer, SigningKey, pkcs8::EncodePublicKey};
     use std::sync::atomic::AtomicU8;
     use tokio_rustls::{TlsAcceptor, rustls};

@@ -27,7 +27,7 @@ struct NativeSettingsView: View {
     @State private var advancedSettings = false
     private let tabs = [("start", "Start here", "sparkles"), ("general", "General", "slider.horizontal.3"), ("mail", "Mail accounts", "envelope"), ("calendar", "Calendar", "calendar"), ("permissions", "AI & privacy", "checkmark.shield"), ("about", "About", "info.circle")]
     private let advancedTabs = [("model", "AI connection", "cpu"), ("search", "Search index", "magnifyingglass"), ("learning", "Writing style", "text.badge.star")]
-    private let generalKeys = ["displayName", "signature", "signatureFormat", "theme", "density", "replyTone", "language", "translationLanguage", "syncInterval", "markReadOnOpen", "autoLoadExternalImages"]
+    private static let generalKeys = ["displayName", "signature", "signatureFormat", "theme", "density", "replyTone", "language", "translationLanguage", "syncInterval", "sendDelayHours", "markReadOnOpen", "autoLoadExternalImages"]
     private var displayedAccounts: [JSON] { model.accounts }
     var dirty: Bool { searchDirty || learningDirty || values != baseline || mailOAuth.object.values.contains { $0.object.values.contains(where: \.nonempty) } || calendarOAuth.object.values.contains { $0.object.values.contains(where: \.nonempty) } }
     var body: some View {
@@ -166,7 +166,7 @@ struct NativeSettingsView: View {
                 Button(model.accounts.isEmpty ? "Add an Account" : "Manage Accounts") { selectTab("mail") }
                 Text("Google or Microsoft sign-in opens in your browser. If your provider requires your own app registration, Mail explains the extra steps.").font(.caption).foregroundStyle(.secondary)
             }.padding(8).frame(maxWidth: .infinity, alignment: .leading) }
-            Button("Open Today") { dismiss(); model.section = "today" }.disabled(model.accounts.isEmpty || model.busy)
+            Button("Open Today") { close { model.section = "today" } }.disabled(model.accounts.isEmpty || model.busy || searchRequestBusy || preferenceSaving)
             GroupBox("2 · Set up AI help (optional)") { VStack(alignment: .leading, spacing: 8) {
                 Text("AI can help write replies and summarize mail. Ask your IT support or AI provider for the connection details. Online AI receives only the mail you permit and may charge for requests.")
                 Text(model.state["settings"]["ai"]["configured"].bool ? "AI connection saved." : "AI has not been set up yet. You can still use mail.").font(.caption).foregroundStyle(.secondary)
@@ -609,12 +609,22 @@ GroupBox("History for your next connection or import") {
         }
     }
     func preferencePatch() -> JSON {
+        Self.preferencePatch(values: values, baseline: baseline)
+    }
+    static func preferencePatch(values: JSON, baseline: JSON) -> JSON {
         var patch = JSON.object([:])
         for key in generalKeys where values["preferences"][key] != baseline["preferences"][key] { patch[key] = values["preferences"][key] }
         if patch.object["signature"] != nil || patch.object["signatureFormat"] != nil {
             patch["signature"] = values["preferences"]["signature"]; patch["signatureFormat"] = values["preferences"]["signatureFormat"]
         }
         return patch
+    }
+    static func reconcilePreferences(values: inout JSON, baseline: inout JSON, sent: JSON, received: JSON) {
+        let sameFooter = values["preferences"]["signature"] == sent["signature"] && values["preferences"]["signatureFormat"] == sent["signatureFormat"]
+        for key in sent.object.keys {
+            baseline["preferences"][key] = received[key]
+            if values["preferences"][key] == sent[key] && (!["signature", "signatureFormat"].contains(key) || sameFooter) { values["preferences"][key] = received[key] }
+        }
     }
     func schedulePreferences() {
         preferenceTask?.cancel(); preferenceTask = nil
@@ -639,10 +649,8 @@ GroupBox("History for your next connection or import") {
             let received = result["settings"]["preferences"]
             guard !received.isNull else { throw APIError("Preferences could not be saved.") }
             guard visible else { return false }
-            let sameFooter = values["preferences"]["signature"] == sent["signature"] && values["preferences"]["signatureFormat"] == sent["signatureFormat"]
+            Self.reconcilePreferences(values: &values, baseline: &baseline, sent: sent, received: received)
             for key in sent.object.keys {
-                baseline["preferences"][key] = received[key]
-                if values["preferences"][key] == sent[key] && (!["signature", "signatureFormat"].contains(key) || sameFooter) { values["preferences"][key] = received[key] }
                 model.state["settings"]["preferences"][key] = received[key]
             }
             if sent.object["signature"] != nil { model.state["settings"]["footer"] = result["settings"]["footer"] }
@@ -671,11 +679,11 @@ GroupBox("History for your next connection or import") {
         localError = ""; status = ""
         model.perform { do { try await work() } catch { localError = error.localizedDescription } }
     }
-    func close() {
+    func close(afterClosing: @escaping @MainActor () -> Void = {}) {
         guard !searchRequestBusy, !model.busy, !preferenceSaving else { return }
         Task { @MainActor in
             guard await savePreferences(), preferencePatch().object.isEmpty else { return }
-            if !dirty || model.confirmDiscard() { dismiss() }
+            if !dirty || model.confirmDiscard() { dismiss(); afterClosing() }
         }
     }
     func backup() {

@@ -706,6 +706,10 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
         }
         ("POST", ["drafts"]) => {
             let value = content::content(&body, true)?;
+            // Keep the idle check and queued write in the same gate as send preparation.
+            let _mailbox = app.0.mailbox.try_lock().map_err(|_| {
+                Error::conflict("Another mailbox operation is running. Try again when it finishes.")
+            })?;
             ensure_draft_idle(app, &owner, string(&body, "id"))?;
             app.db(move |db| {
                 let config = db.settings()?;

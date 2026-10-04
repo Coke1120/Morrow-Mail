@@ -613,8 +613,14 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     };
     RuntimeCleanup cleanup{shell, shell->generation, shell->selected, shell->section, shell->page.Content(), shell->loading};
     shell->loading = true; shell->section = L"mail"; ++shell->selectionGeneration;
-    Json fixture;
-    put(fixture, L"accountId", L"reader@fixture.invalid"); put(fixture, L"id", L"reader-runtime-fixture");
+    runtimeCheck(shell->rows && shell->rows.Items().Size() >= 2,
+        L"Reader metadata acceptance requires two owned fixture rows.");
+    auto metadata = shell->rows.Items().GetAt(0).as<ListViewItem>().Tag().as<Json>();
+    auto otherMetadata = shell->rows.Items().GetAt(1).as<ListViewItem>().Tag().as<Json>();
+    runtimeCheck(shell->connected(text(metadata, L"accountId")) && text(metadata, L"accountId") == shell->owner
+        && text(otherMetadata, L"accountId") == shell->owner && text(metadata, L"id") != text(otherMetadata, L"id"),
+        L"Reader metadata acceptance received unowned or duplicate fixture rows.");
+    auto fixture = Json::Parse(metadata.Stringify());
     put(fixture, L"body", L"Fictional reader acceptance text. No mailbox content.");
     // The initial production navigation is inert. Adversarial markup is supplied
     // only after all production handlers AND the fixture last-deny are installed.
@@ -696,6 +702,60 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     settingsState.Insert(L"preferences", originalPreferences);
     runtimeCheck(refreshed && !refreshed->images, L"Refreshing the same owned message lost its image override.");
     refreshed->unload();
+    // Use real local PATCH requests in the marked fixture store. The mounted
+    // acceptance document stays inert; returned metadata is remounted with that
+    // same HTML so production's selection-scoped image choice is also checked.
+    phase("metadata-hide");
+    auto selection = shell->selectionGeneration;
+    for (auto key : {L"starred", L"pending", L"read"}) {
+        for (bool value : {!flag(metadata, key), flag(metadata, key)}) {
+            Json changes; changes.Insert(key, Value::CreateBooleanValue(value));
+            settingsState.Insert(L"preferences", readingPreferences);
+            shell->loading = false;
+            co_await shell->patch(shell->selected, changes);
+            shell->loading = true;
+            settingsState.Insert(L"preferences", originalPreferences);
+            runtimeCheck(shell->selectionGeneration == selection && state->live()
+                && flag(shell->selected, key) == value,
+                L"A local marker patch changed the mounted selection or did not update its metadata.");
+            runtimeCheck(shell->readerImageOverride && !*shell->readerImageOverride
+                && shell->readerImageSelection == selection,
+                L"A local marker patch revoked the same-message Hide choice.");
+            auto remountMessage = Json::Parse(shell->selected.Stringify());
+            put(remountMessage, L"bodyHtml", text(fixture, L"bodyHtml"));
+            settingsState.Insert(L"preferences", readingPreferences);
+            auto remounted = mountReader(shell, stack(8), remountMessage);
+            settingsState.Insert(L"preferences", originalPreferences);
+            runtimeCheck(remounted && remounted->live() && !remounted->images,
+                L"Remounting after a local marker patch enabled hidden images under automatic consent.");
+            remounted->unload();
+        }
+    }
+    phase("metadata-other-row");
+    auto readerContent = shell->reader.Content();
+    for (bool value : {!flag(otherMetadata, L"read"), flag(otherMetadata, L"read")}) {
+        Json changes; changes.Insert(L"read", Value::CreateBooleanValue(value));
+        shell->loading = false;
+        co_await shell->patch(otherMetadata, changes);
+        shell->loading = true;
+        runtimeCheck(shell->selectionGeneration == selection && state->live() && shell->reader.Content() == readerContent
+            && text(shell->selected, L"viewId") == text(fixture, L"viewId"),
+            L"A quick action on another row invalidated or replaced the current reader.");
+    }
+    phase("metadata-reader-interaction");
+    auto imageCancellation = state->cancelled;
+    state->plainButton.get().IsChecked(true);
+    co_await runtimeWait([state] { return documentReady(state) || !state->active; }, deadline, L"metadata-plain");
+    runtimeCheck(state->live() && state->plain && imageCancellation->load() && !state->images,
+        L"Plain text stopped working after local metadata updates.");
+    checkFallback(state, text(fixture, L"body"));
+    state->plainButton.get().IsChecked(false);
+    co_await runtimeWait([state] { return documentReady(state) || !state->active; }, deadline, L"metadata-html");
+    runtimeCheck(state->live() && !state->plain && !state->images && state->budget->requests == 0,
+        L"Returning to HTML after local metadata updates lost Hide or disabled reader interaction.");
+    auto hiddenPolicy = co_await runtimeAttributes(core, L"meta[http-equiv='Content-Security-Policy']", deadline);
+    runtimeCheck(std::wstring(text(hiddenPolicy, L"content")).find(L"img-src 'none';") != std::wstring::npos,
+        L"Hidden images lost their enforced resource policy after local metadata updates.");
     state->imageButton.get().IsEnabled(false); // Hostile-content phases never grant image consent.
     auto probe = std::make_shared<RuntimeProbe>();
     auto weak = std::weak_ptr<Reader>(state);
@@ -844,6 +904,7 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     put(result, L"images", L"blocked"); put(result, L"frames", L"blocked"); put(result, L"connect", L"policy-deny-script-disabled");
     put(result, L"cspEvidence", L"native-audits-image-frame");
     put(result, L"autoImages", L"preference-and-hide-passed");
+    put(result, L"metadataImages", L"hide-remount-and-other-row-interaction-passed");
     put(result, L"inspection", L"native-dom-no-script");
     result.Insert(L"interceptedRequests", Value::CreateNumberValue(probe->requests));
     result.Insert(L"nativeImageRequests", Value::CreateNumberValue(state->budget->requests));
