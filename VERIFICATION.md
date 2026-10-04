@@ -1,4 +1,12 @@
-# Verification — 4 October 2026
+# Verification — 5 October 2026
+
+## PR #15 / #16 review — Windows reselection follow-up
+
+Both requested PRs were already merged into main: PR #15 at `287feaac00b0836884b57719e590dc7775d2c0cc` and PR #16 at `e3ddeef41d858fd9b5bdf46bf8f74541514c9ec9`. Their final heads (`5eff428f` / `bf21142`) passed paired native CI. Fixed-version review found a remaining Windows interleaving: while A is displayed and B's detail GET is pending, selecting A again and changing A's marker could revive B after PATCH, disagree with the highlighted row and mark B read.
+
+The follow-up cancels pending detail reads that no longer match the actual row selection, starts a fresh read on each real single-row selection change, and refreshes interrupted detail from the currently selected owned row after PATCH. This also handles reselection during an in-flight PATCH. Resuming a row explicitly patched Read/Unread suppresses automatic mark-on-open for that read only, preserving the reviewed marker; another row's patch retains normal automatic reading. A valid image override carries into a refresh only for the same owned message, including reducing multi-selection back to its displayed row. Added Windows smoke uses the real SelectionChanged handler and isolated owned fictional mail to exercise A → pending B → A with no PATCH, with Read/Unread/Starred/Pending changes, and with reselection while PATCH is busy; B must remain unread with mark-on-open enabled, and A's manual unread choice must survive the resumed read. A marker-independent oldest sort keeps both fictional rows on the bounded page and is restored afterward. The reader runtime fixture also exercises actual multi-selection → single A events, production Hide handling, and an inert same-message remount under opt-in that must still block images. Existing same-row/other-row detail recovery and reader security checks remain required; the reader's 25-second security deadline is unchanged.
+
+The macOS host cannot execute WinUI; Windows build and smoke execution are checked by the paired PR CI, with exact-run evidence recorded in the follow-up PR. This source change is not published in beta.42. Tests do not use the owner's workspace or real provider writes.
 
 ## 0.6.0-beta.42 — published paired native release
 

@@ -320,6 +320,110 @@ IAsyncAction Shell::smoke() {
                     L"A local patch stranded the selected row's interrupted detail read or crossed its owner.");
                 if (key != std::wstring_view(L"other-row")) check(flag(selected,key), L"The resumed reader applied metadata from before the patch.");
             }
+            {
+                enter("mail-reader-reselection");
+                auto previousSort = sorting.SelectedIndex();
+                loading = true; sorting.SelectedIndex(1); loading = false; // Oldest keeps A and its peer on this page after Unstar.
+                for (auto& cursor : cursors) cursor = L"";
+                co_await loadPage();
+                check(rows.Items().Size() >= 2, L"Reselection requires two stable owned rows.");
+                auto stablePeer = rows.Items().GetAt(1).as<controls::ListViewItem>().Tag().as<Json>();
+                auto originalA = object(co_await service->request(L"/messages/" + escaped(text(source,L"id")),text(source,L"accountId")),L"message");
+                auto originalB = object(co_await service->request(L"/messages/" + escaped(text(stablePeer,L"id")),text(stablePeer,L"accountId")),L"message");
+                check(connected(text(originalA,L"accountId")) && text(originalA,L"accountId") == owner
+                    && text(originalB,L"accountId") == owner && text(originalA,L"viewId") == selectedID
+                    && text(originalB,L"viewId") == text(stablePeer,L"viewId") && text(originalA,L"viewId") != text(originalB,L"viewId"),
+                    L"Reselection requires two distinct owned fixture messages.");
+                auto previousMarkRead = flag(object(object(state,L"settings"),L"preferences"),L"markReadOnOpen");
+                Json readingPreference; readingPreference.Insert(L"markReadOnOpen",Value::CreateBooleanValue(true));
+                state = co_await service->request(L"/settings/preferences",L"",L"POST",readingPreference);
+                check(flag(object(object(state,L"settings"),L"preferences"),L"markReadOnOpen"),
+                    L"Reselection did not enable the fixture automatic read preference.");
+                for (auto key : {L"read", L"unread", L"starred", L"pending", L"no-patch", L"busy-reselect"}) {
+                    enter("mail-reselect-" + to_string(key));
+                    Json unreadB; unreadB.Insert(L"read",Value::CreateBooleanValue(false));
+                    auto preparedB = object(co_await service->request(L"/messages/" + escaped(text(originalB,L"id")),text(originalB,L"accountId"),L"PATCH",unreadB),L"message");
+                    check(!flag(preparedB,L"read") && text(preparedB,L"viewId") == text(originalB,L"viewId"),
+                        L"Reselection did not prepare the owned unread B fixture.");
+                    co_await read(source);
+                    auto mountedA = Json::Parse(selected.Stringify());
+                    auto mountedReader = reader.Content();
+                    check(text(mountedA,L"viewId") == selectedID && text(mountedA,L"accountId") == owner && text(mountedA,L"body").size() > 20,
+                        L"Reselection did not mount A's full owned body.");
+                    for (auto& cursor : cursors) cursor = L"";
+                    co_await loadPage();
+                    controls::ListViewItem itemA{nullptr}, itemB{nullptr};
+                    for (auto const& item : rows.Items()) {
+                        auto entry = item.as<controls::ListViewItem>(); auto metadata = entry.Tag().as<Json>();
+                        if (text(metadata,L"viewId") == selectedID) itemA = entry;
+                        if (text(metadata,L"viewId") == text(originalB,L"viewId")) itemB = entry;
+                    }
+                    check(itemA && itemB, L"Reselection fixture rows disappeared from the current page.");
+                    auto reselectPeer = xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(rows)
+                        .as<xaml::Automation::Peers::ListViewAutomationPeer>().CreateItemAutomationPeer(itemA);
+                    auto reselectA = reselectPeer.GetPattern(xaml::Automation::Peers::PatternInterface::SelectionItem)
+                        .try_as<xaml::Automation::Provider::ISelectionItemProvider>();
+                    check(bool(reselectA), L"A's native row does not expose its reselection action.");
+                    loading = true; rows.SelectedItems().Clear(); rows.SelectedItems().Append(itemB); loading = false;
+                    auto opening = read(itemB.Tag().as<Json>());
+                    auto pendingGeneration = readGeneration;
+                    check(text(pendingRead,L"viewId") == text(originalB,L"viewId") && text(selected,L"viewId") == selectedID,
+                        L"Reselection did not hold B's detail GET while A remained mounted.");
+                    bool busyReselect = key == std::wstring_view(L"busy-reselect");
+                    bool patchA = key != std::wstring_view(L"no-patch");
+                    auto markerKey = busyReselect ? L"pending" : key == std::wstring_view(L"unread") ? L"read" : key;
+                    // The resumed GET must respect an explicit unread change, even under mark-on-open.
+                    bool markerValue = key == std::wstring_view(L"read") || (markerKey != std::wstring_view(L"read") && patchA && !flag(mountedA,markerKey));
+                    Json marker; if (patchA) marker.Insert(markerKey,Value::CreateBooleanValue(markerValue));
+                    IAsyncAction mutation{nullptr};
+                    if (busyReselect) {
+                        mutation = patch(mountedA,marker);
+                        check(loading && !pendingRead.Size(), L"The busy reselection fixture did not interrupt B's detail GET.");
+                    }
+                    // No await between B's GET, the actual SelectionChanged and the optional PATCH.
+                    reselectA.Select();
+                    auto reselected = selectedMessages();
+                    check(reselected.size() == 1 && text(reselected[0],L"viewId") == selectedID && text(reselected[0],L"accountId") == owner
+                        && readGeneration != pendingGeneration
+                        && (busyReselect ? !pendingRead.Size() && loading
+                            : text(pendingRead,L"viewId") == selectedID && text(pendingRead,L"accountId") == owner),
+                        L"Actually reselecting A did not replace B's pending GET with A's owned detail request.");
+                    if (patchA) {
+                        if (!busyReselect) mutation = patch(mountedA,marker);
+                        co_await opening; co_await mutation;
+                    } else {
+                        co_await opening;
+                        // SelectionChanged owns A's new operation. Wait only for completion;
+                        // B's pending state and A's reselection above never depend on a delay.
+                        auto completionDeadline = GetTickCount64() + 5000;
+                        while ((pendingRead.Size() || loading || reader.Content() == mountedReader) && GetTickCount64() < completionDeadline) {
+                            co_await resume_after(std::chrono::milliseconds(10)); co_await ui;
+                        }
+                    }
+                    auto chosen = selectedMessages();
+                    check(!pendingRead.Size() && chosen.size() == 1 && text(chosen[0],L"viewId") == selectedID
+                        && text(chosen[0],L"accountId") == owner && text(selected,L"viewId") == selectedID
+                        && text(selected,L"accountId") == owner && text(selected,L"body") == text(mountedA,L"body")
+                        && reader.Content() != mountedReader && !loading,
+                        L"B's completed detail GET replaced the reselected A row, reader owner or full body.");
+                    if (patchA) check(flag(selected,markerKey) == markerValue && flag(chosen[0],markerKey) == markerValue,
+                        L"Reselection lost A's local marker update in the reader or list.");
+                    auto finishedB = object(co_await service->request(L"/messages/" + escaped(text(originalB,L"id")),text(originalB,L"accountId")),L"message");
+                    check(text(finishedB,L"viewId") == text(originalB,L"viewId") && text(finishedB,L"accountId") == owner && !flag(finishedB,L"read"),
+                        L"Completing the revoked B GET marked the unselected fixture message read.");
+                }
+                Json restoreA; for (auto key : {L"read", L"starred", L"pending"}) restoreA.Insert(key,Value::CreateBooleanValue(flag(originalA,key)));
+                co_await service->request(L"/messages/" + escaped(text(originalA,L"id")),text(originalA,L"accountId"),L"PATCH",restoreA);
+                Json restoreB; restoreB.Insert(L"read",Value::CreateBooleanValue(flag(originalB,L"read")));
+                co_await service->request(L"/messages/" + escaped(text(originalB,L"id")),text(originalB,L"accountId"),L"PATCH",restoreB);
+                readingPreference.Insert(L"markReadOnOpen",Value::CreateBooleanValue(previousMarkRead));
+                state = co_await service->request(L"/settings/preferences",L"",L"POST",readingPreference);
+                check(flag(object(object(state,L"settings"),L"preferences"),L"markReadOnOpen") == previousMarkRead,
+                    L"Reselection did not restore the fixture reading preference.");
+                loading = true; sorting.SelectedIndex(previousSort); loading = false;
+                for (auto& cursor : cursors) cursor = L"";
+                co_await loadPage();
+            }
             co_await read(source);
             enter("mail-multi-selection");
             check(rows.SelectionMode() == controls::ListViewSelectionMode::Extended, L"Mail list does not support range/multiple selection.");
