@@ -97,7 +97,6 @@ impl App {
             .user_agent(concat!("MorrowMail/", env!("MORROW_VERSION")))
             .build()
             .map_err(|_| Error::new(500, "Could not initialize secure networking."))?;
-        let updater = crate::updater::Updater::new(directory, None, &update_token);
         let executable = std::env::current_exe()?;
         let root = executable
             .parent()
@@ -112,6 +111,7 @@ impl App {
         let google_oauth = crate::oauth::bundled_google_oauth(&bundled)?;
         let dist = bundled.parent().unwrap().join("dist");
         let store = Store::open(directory)?;
+        let updater = crate::updater::Updater::new(directory, None, &update_token);
         crate::background::recover(&store)?;
         crate::learning::initialize(&store)?;
         crate::brain::initialize(&store)?;

@@ -9,6 +9,49 @@ final class RustStopOAuthRedirects: NSObject, URLSessionTaskDelegate {
     }
 }
 
+// Only the next explicitly armed localhost read/selection is held. All other
+// requests reach the packaged service; these checks never use provider traffic.
+final class HeldWorkspaceResponse: URLProtocol {
+    final class Hold {
+        let path: String
+        private let lock = NSLock()
+        private var transport: HeldWorkspaceResponse?
+        private var capturedRequest: URLRequest?
+        init(_ path: String) { self.path = path }
+        var request: URLRequest? { lock.lock(); defer { lock.unlock() }; return capturedRequest }
+        func capture(_ value: HeldWorkspaceResponse) {
+            lock.lock(); defer { lock.unlock() }
+            transport = value; capturedRequest = value.request
+        }
+        func complete(_ value: JSON, status: Int = 200) throws {
+            let data = try JSONEncoder().encode(value)
+            lock.lock(); let connection = transport; transport = nil; lock.unlock()
+            guard let connection else { throw APIError("Held workspace request did not start.") }
+            connection.client?.urlProtocol(connection, didReceive: HTTPURLResponse(url: connection.request.url!, statusCode: status, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+            connection.client?.urlProtocol(connection, didLoad: data)
+            connection.client?.urlProtocolDidFinishLoading(connection)
+        }
+    }
+    private static let lock = NSLock()
+    private static var next: Hold?
+    static func arm(_ path: String) -> Hold {
+        lock.lock(); defer { lock.unlock() }
+        precondition(next == nil && ["/api/state", "/api/account/select"].contains(path))
+        let hold = Hold(path); next = hold; return hold
+    }
+    override class func canInit(with request: URLRequest) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return request.url?.host == "127.0.0.1" && request.url?.path == next?.path
+    }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.lock.lock(); let hold = Self.next; Self.next = nil; Self.lock.unlock()
+        guard let hold else { client?.urlProtocol(self, didFailWithError: APIError("Unexpected held request.")); return }
+        hold.capture(self)
+    }
+    override func stopLoading() {}
+}
+
 @main
 struct NativeRustChecks {
     static let first = "first@native-rust.invalid"
@@ -16,6 +59,124 @@ struct NativeRustChecks {
 
     static func check(_ condition: Bool, _ message: String) throws {
         if !condition { throw APIError("Native Rust acceptance: " + message) }
+    }
+
+    @MainActor static func waitUntil(_ message: String, _ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(10)
+        while !condition() && Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
+        try check(condition(), message)
+    }
+
+    @MainActor static func checkGeneralPreferenceDiffs() throws {
+        var baseline: JSON = .object(["preferences": .object(["sendDelayHours": .number(0), "theme": .string("system")])])
+        var values = baseline
+        values["preferences"]["sendDelayHours"] = .number(2)
+        let sent = NativeSettingsView.preferencePatch(values: values, baseline: baseline)
+        try check(sent == .object(["sendDelayHours": .number(2)]), "changing only the default delay did not produce its field diff")
+        // A second edit happens while the first save is still in flight.
+        values["preferences"]["sendDelayHours"] = .number(3)
+        NativeSettingsView.reconcilePreferences(values: &values, baseline: &baseline, sent: sent, received: .object(["sendDelayHours": .number(2)]))
+        try check(values["preferences"]["sendDelayHours"].number == 3 && baseline["preferences"]["sendDelayHours"].number == 2, "saving the previous default delay replaced the newer edit")
+        let retry = NativeSettingsView.preferencePatch(values: values, baseline: baseline)
+        try check(retry == .object(["sendDelayHours": .number(3)]), "newer delay was not retained for the next serialized save")
+        NativeSettingsView.reconcilePreferences(values: &values, baseline: &baseline, sent: retry, received: .object(["sendDelayHours": .number(3)]))
+        try check(NativeSettingsView.preferencePatch(values: values, baseline: baseline).object.isEmpty && values == baseline, "confirmed delay save remained dirty")
+        print("Native Settings: production preference diff/merge helpers retain lone delay changes and edits during a save; no UI claim.")
+    }
+
+    @MainActor static func checkFreshStartup() async throws {
+        guard let seededPath = ProcessInfo.processInfo.environment["MORROW_DATA_DIR"], seededPath.hasPrefix("/") else { throw APIError("Fresh startup requires the isolated native fixture workspace.") }
+        let directory = URL(fileURLWithPath: seededPath).deletingLastPathComponent().appendingPathComponent("fresh-review-\(UUID().uuidString)", isDirectory: true)
+        try check(!FileManager.default.fileExists(atPath: directory.path), "fresh startup fixture directory already exists")
+        setenv("MORROW_DATA_DIR", directory.path, 1)
+        let fresh = AppModel()
+        setenv("MORROW_DATA_DIR", seededPath, 1)
+        defer { fresh.stop() }
+        // Do not create the workspace: Store::open must create it on this first session.
+        await fresh.start()
+        try check(fresh.baseURL != nil && fresh.error.isEmpty, "fresh packaged service launch failed: \(fresh.error)")
+        let updates = try await fresh.request("/updates/status", mailbox: "")
+        try check(updates["supported"].bool, "fresh workspace did not support updates in its first session")
+        try check(!fresh.hasMailbox && fresh.accounts.isEmpty && fresh.senderAccounts.isEmpty, "fresh workspace exposed a fixture mailbox")
+        fresh.newDraft()
+        try check(fresh.compose == nil && fresh.showSettings && fresh.settingsTab == "mail", "fresh workspace compose did not lead to Add account")
+        let closing = fresh.baseURL!
+        fresh.stop(); try await waitForStop(closing)
+        try FileManager.default.removeItem(at: directory)
+        print("Native Rust: nonexistent workspace supports updates and Add account on the first packaged-service session.")
+    }
+
+    @MainActor static func checkReloadOrdering(_ model: AppModel) async throws {
+        try await model.selectAccount(first, folder: "inbox")
+        let original = model.state
+        let secondState = try await model.request("/state", mailbox: second)
+
+        // Use actual URLSession, detached decoding, perform/busy and state didSet.
+        // This controls transport ordering, not SwiftUI clicks/task cancellation.
+        for completeSelectionFirst in [false, true] {
+            try await model.selectAccount(first, folder: "inbox")
+            let hold = HeldWorkspaceResponse.arm("/api/state")
+            let reload = Task { @MainActor in try await model.reload() }
+            try await waitUntil("reload request did not start") { hold.request != nil }
+            try check(model.canNavigate && !model.busy, "a read-only reload unexpectedly blocked account navigation")
+            try check(hold.request?.value(forHTTPHeaderField: "X-Genmail-Account") == nil, "reload pinned state to the old mailbox and broke OAuth selection")
+            let selection = HeldWorkspaceResponse.arm("/api/account/select")
+            model.perform { try await model.selectAccount(second, folder: "inbox") }
+            try await waitUntil("account selection did not start") { selection.request != nil }
+            try check(model.busy && !model.canNavigate, "account selection did not use the production navigation guard")
+            if completeSelectionFirst {
+                try selection.complete(secondState)
+                try await waitUntil("account selection did not finish") { !model.busy }
+                try check(model.account == second && model.error.isEmpty, "new account selection failed")
+                try check(await model.loadMailPage(), "selected account page did not load")
+                model.selectedMessage = model.listedMessages.first?.viewID
+            }
+            let retainedState = model.state, retainedPage = model.mailPage, retainedSelection = model.selectedMessage
+            var stale = original; stale["revision"] = .string("held-stale-revision")
+            try hold.complete(stale); try await reload.value
+            try check(model.state == retainedState && model.mailPage == retainedPage && model.selectedMessage == retainedSelection, "old reload replaced state or selection during/after account selection")
+            if !completeSelectionFirst {
+                try selection.complete(secondState)
+                try await waitUntil("held selection did not finish") { !model.busy }
+            }
+        }
+
+        // An account/settings change, even reverted before the response, invalidates it.
+        let hold = HeldWorkspaceResponse.arm("/api/state")
+        let reload = Task { @MainActor in try await model.reload() }
+        try await waitUntil("state-generation reload did not start") { hold.request != nil }
+        let before = model.state
+        model.state["account"]["id"] = .string(first); model.state = before
+        var stale = before; stale["settings"]["preferences"]["sendDelayHours"] = .number(6)
+        try hold.complete(stale); try await reload.value
+        try check(model.state == before, "reverted state change allowed an obsolete snapshot")
+
+        let cancelledHold = HeldWorkspaceResponse.arm("/api/state")
+        let cancelled = Task { @MainActor in try await model.reload() }
+        try await waitUntil("cancelled reload did not start") { cancelledHold.request != nil }
+        try cancelledHold.complete(stale); cancelled.cancel(); try await cancelled.value
+        try check(model.state == before && model.error.isEmpty, "cancelled reload applied state or surfaced a stale error")
+
+        // A normal same-account refresh retains page, rows, cursors and selection.
+        try await model.selectAccount(second, folder: "inbox")
+        try check(await model.loadMailPage(), "read-refresh fixture page did not load")
+        await model.turnMailPage(next: true)
+        try check(model.mailCursors.count == 2 && !model.listedMessages.isEmpty, "read-refresh fixture did not reach the second page")
+        model.selectedMessage = model.listedMessages.first?.viewID
+        let page = model.mailPage, cursors = model.mailCursors, selected = model.selectedMessage
+        try await model.reload()
+        try check(model.account == second && model.mailPage == page && model.mailCursors == cursors && model.selectedMessage == selected, "normal reload lost mail paging or selection")
+
+        // Simulate the service selecting a newly connected mailbox through OAuth.
+        try await model.selectAccount(first, folder: "inbox")
+        model.selectedMessage = "old-account-selection"
+        let oauthHold = HeldWorkspaceResponse.arm("/api/state")
+        let oauthReload = Task { @MainActor in try await model.reload() }
+        try await waitUntil("OAuth reload did not start") { oauthHold.request != nil }
+        try oauthHold.complete(secondState); try await oauthReload.value
+        try check(model.account == second && model.selectedMessage == nil && model.mailPage.isNull, "fresh service account selection was rejected or retained old mail")
+        try await model.selectAccount(first, folder: "inbox")
+        print("Native Rust: actual AppModel rejects held stale/cancelled reloads, retains read paging and follows new service account selection; GUI race is not asserted.")
     }
 
     @MainActor static func collect(_ model: AppModel, expected: Int) async throws -> [JSON] {
@@ -243,12 +404,19 @@ struct NativeRustChecks {
     }
 
     @MainActor static func main() async throws {
+        try checkGeneralPreferenceDiffs()
+        try await checkFreshStartup()
         let empty = AppModel()
         empty.state = .object(["account": .object(["id": .string("demo")]), "accounts": .array([])])
         try check(!empty.hasMailbox && empty.senderAccounts.isEmpty, "empty app still exposes a demo sender")
         empty.newDraft()
         try check(empty.compose == nil && empty.showSettings && empty.settingsTab == "mail", "empty compose did not lead to Add account")
-        let model = AppModel()
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 65
+        config.timeoutIntervalForResource = 90
+        config.protocolClasses = [HeldWorkspaceResponse.self]
+        config.httpCookieStorage = nil
+        let model = AppModel(session: URLSession(configuration: config))
         defer { model.stop() }
         await model.start()
         let activity = try await model.request("/activity", mailbox: "")
@@ -268,6 +436,9 @@ struct NativeRustChecks {
         try await expectFailure(model, path: "/settings/preferences", body: .object(["autoLoadExternalImages": .string("true")]))
         model.state = try await model.request("/settings/preferences", method: "POST", body: .object(["autoLoadExternalImages": .bool(false)]))
         try check(!model.preferences["autoLoadExternalImages"].bool, "saved image consent could not be revoked")
+        model.state = try await model.request("/settings/preferences", method: "POST", body: .object(["sendDelayHours": .number(2)]))
+        try check(model.preferences["sendDelayHours"].number == 2, "default delay diff did not save through the packaged service")
+        model.state = try await model.request("/settings/preferences", method: "POST", body: .object(["sendDelayHours": .number(0)]))
         try check(model.state["settings"]["oauthClients"]["google"]["configured"].bool, "trusted bundled OAuth client was not loaded")
         try check(model.state["settings"]["oauthClients"]["microsoft"]["configured"].bool, "built-in Microsoft OAuth client was not available")
         let publicState = String(decoding: try JSONEncoder().encode(model.state), as: UTF8.self)
@@ -300,6 +471,7 @@ struct NativeRustChecks {
         model.state = connected; model.unsavedForms.remove("settings"); model.selectedMessage = nil
         model.mailPage = .null; model.mailCursors = [""]
         print("Native Rust: local connection refresh preserves settings edits, owner, mail paging and persisted state.")
+        try await checkReloadOrdering(model)
 
         for owner in [first, "all"] {
             try await model.selectAccount(owner, folder: "inbox")

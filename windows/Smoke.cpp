@@ -277,20 +277,50 @@ IAsyncAction Shell::smoke() {
             check(readerLayout && readerLayout.RowDefinitions().Size() == 2,
                 L"The message actions are not kept above the scrolling reader.");
             enter("mail-patches");
+            auto markerSelection = selectionGeneration;
+            auto markerReadGeneration = readGeneration;
             Json pending; pending.Insert(L"pending",Value::CreateBooleanValue(true)); co_await patch(source,pending);
-            check(flag(selected,L"pending"), L"Pending did not update the reader.");
+            check(flag(selected,L"pending") && selectionGeneration == markerSelection && readGeneration != markerReadGeneration,
+                L"Pending did not update metadata while retaining selection and invalidating older reads.");
             Json later; later.Insert(L"lowPriority",Value::CreateBooleanValue(true)); co_await patch(selected,later);
             check(flag(selected,L"lowPriority") && flag(selected,L"pending"),L"Later should be independent from Pending in the native reader.");
             later.Insert(L"lowPriority",Value::CreateBooleanValue(false)); co_await patch(selected,later);
             check(!flag(selected,L"lowPriority") && flag(selected,L"pending"),L"Returning from Later cleared the Pending marker.");
             auto cursorCount = cursors.size();
             Json unread; unread.Insert(L"read",Value::CreateBooleanValue(false)); co_await patch(selected,unread);
-            check(!flag(selected,L"read") && cursors.size()==cursorCount, L"Manual unread reset selection or pagination.");
+            check(!flag(selected,L"read") && cursors.size()==cursorCount && selectionGeneration == markerSelection,
+                L"Manual unread reset selection or pagination.");
             auto otherRow = rows.Items().GetAt(1).as<controls::ListViewItem>().Tag().as<Json>();
             auto selectedID = text(selected,L"viewId");
             check(text(otherRow,L"viewId") != selectedID, L"Fixture rows did not have separate identities.");
-            Json otherRead; otherRead.Insert(L"read",Value::CreateBooleanValue(!flag(otherRow,L"read"))); co_await patch(otherRow,otherRead);
-            check(text(selected,L"viewId") == selectedID, L"A quick action on another row replaced the open reader.");
+            Json otherRead; otherRead.Insert(L"read",Value::CreateBooleanValue(!flag(otherRow,L"read")));
+            auto otherPatch = patch(otherRow,otherRead);
+            check(loading, L"The local marker patch did not guard its in-flight update.");
+            co_await read(otherRow); // A read started during the mutation must not replace the selection.
+            co_await otherPatch;
+            check(text(selected,L"viewId") == selectedID && selectionGeneration == markerSelection,
+                L"A quick action or overlapping read on another row replaced or invalidated the open reader.");
+            enter("mail-interrupted-read");
+            for (auto key : {L"read", L"starred", L"pending", L"other-row"}) {
+                co_await read(source);
+                loading = true; rows.SelectedItems().Clear();
+                for (auto const& item : rows.Items())
+                    if (text(item.as<controls::ListViewItem>().Tag().as<Json>(),L"viewId") == text(otherRow,L"viewId")) rows.SelectedItems().Append(item);
+                loading = false;
+                auto opening = read(otherRow); // The background GET cannot complete on this UI thread before the next PATCH starts.
+                check(text(pendingRead,L"viewId") == text(otherRow,L"viewId") && text(selected,L"viewId") == selectedID,
+                    L"The interrupted-read fixture did not hold the new selection's detail request.");
+                Json marker; marker.Insert(key == std::wstring_view(L"other-row") ? L"pending" : key,Value::CreateBooleanValue(true));
+                auto mutation = patch(key == std::wstring_view(L"other-row") ? source : otherRow,marker);
+                co_await opening; co_await mutation;
+                auto chosen = selectedMessages();
+                check(!pendingRead.Size() && chosen.size() == 1 && text(chosen[0],L"viewId") == text(otherRow,L"viewId")
+                    && text(selected,L"viewId") == text(otherRow,L"viewId") && text(selected,L"accountId") == text(otherRow,L"accountId")
+                    && text(selected,L"body").size() > 20,
+                    L"A local patch stranded the selected row's interrupted detail read or crossed its owner.");
+                if (key != std::wstring_view(L"other-row")) check(flag(selected,key), L"The resumed reader applied metadata from before the patch.");
+            }
+            co_await read(source);
             enter("mail-multi-selection");
             check(rows.SelectionMode() == controls::ListViewSelectionMode::Extended, L"Mail list does not support range/multiple selection.");
             loading = true; rows.SelectedItems().Clear();

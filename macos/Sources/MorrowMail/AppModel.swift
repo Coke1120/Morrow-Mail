@@ -6,6 +6,7 @@ import Security
 final class AppModel: ObservableObject {
     @Published var state: JSON = .null {
         didSet {
+            if state != oldValue { stateGeneration += 1 }
             if case .object(let catalogs) = state["serverFolders"] {
                 serverFolders = catalogs.mapValues { $0["folders"].array }
             }
@@ -80,18 +81,19 @@ final class AppModel: ObservableObject {
     private var periodic: Task<Void, Never>?
     private var activityPolling: Task<Void, Never>?
     private var refreshing = false
+    private var stateGeneration = 0
     private var shuttingDown = false
     private var launchAttempt = 0
     private var launching = false
     let dataDirectory: URL
     let session: URLSession
 
-    init() {
+    init(session: URLSession? = nil) {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 65
         config.timeoutIntervalForResource = 90
         config.httpCookieStorage = nil
-        session = URLSession(configuration: config)
+        self.session = session ?? URLSession(configuration: config)
         if let override = ProcessInfo.processInfo.environment["MORROW_DATA_DIR"], override.hasPrefix("/") {
             dataDirectory = URL(fileURLWithPath: override)
         } else {
@@ -316,17 +318,25 @@ final class AppModel: ObservableObject {
         _ = try await request("/backup", method: "POST", body: .object(["destination": .string(destination.path)]), authorizeUpdate: true)
     }
     func reload() async throws {
-        guard !refreshing else { return }
+        guard !refreshing, !Task.isCancelled else { return }
         refreshing = true; defer { refreshing = false }
+        let generation = stateGeneration
         // OAuth selects its newly connected mailbox on the service. Read that view;
         // message mutations still carry their explicitly captured owner.
-        var next = try await request("/state", mailbox: "")
-        if next["account"]["id"].string == "demo", let first = next["accounts"].array.first {
-            next = try await request("/account/select", method: "POST", body: .object(["accountId": .string(first.id)]))
+        do {
+            var next = try await request("/state", mailbox: "")
+            guard !Task.isCancelled, generation == stateGeneration else { return }
+            if next["account"]["id"].string == "demo", let first = next["accounts"].array.first {
+                next = try await request("/account/select", method: "POST", body: .object(["accountId": .string(first.id)]))
+            }
+            guard !Task.isCancelled, generation == stateGeneration else { return }
+            guard !next["account"].isNull, !next["messages"].isNull else { throw APIError("Morrow received an incomplete workspace.") }
+            if next["account"]["id"].string != account { mailPage = .null; messageDetail = .null; selectedMessage = nil; searchResponse = .null }
+            state = next
+        } catch {
+            guard !Task.isCancelled, generation == stateGeneration else { return }
+            throw error
         }
-        guard !next["account"].isNull, !next["messages"].isNull else { throw APIError("Morrow received an incomplete workspace.") }
-        if next["account"]["id"].string != account { mailPage = .null; messageDetail = .null; selectedMessage = nil; searchResponse = .null }
-        state = next
     }
     func refreshConnections() async throws {
         let before = state
@@ -428,6 +438,8 @@ final class AppModel: ObservableObject {
         }
     }
     func selectAccount(_ id: String, folder: String? = nil) async throws {
+        // Invalidate reads before awaiting the selection, including A → B → A.
+        stateGeneration += 1
         searchResponse = .null; mailPage = .null; messageDetail = .null
         state = try await request("/account/select", method: "POST", body: .object(["accountId": .string(id)]))
         selectedMessage = nil

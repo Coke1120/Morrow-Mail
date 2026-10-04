@@ -487,7 +487,28 @@ pub fn update_cache(
     catalog: &[Value],
 ) -> Result<()> {
     db.transaction(|db| {
-        for mut message in db.list(owner)? {
+        // Creating a folder has no existing memberships to reconcile. For other
+        // changes, use the same owned membership index as provider-folder pages.
+        let messages = if changes.is_empty() {
+            Vec::new()
+        } else {
+            let ids = serde_json::to_string(
+                &changes
+                    .iter()
+                    .map(|change| &change["oldId"])
+                    .collect::<Vec<_>>(),
+            )?;
+            db.conn
+                .prepare(
+                    "SELECT data FROM messages WHERE account=?1 AND rowid IN (
+                SELECT message_rowid FROM mail_provider_memberships WHERE account=?1
+                AND folder_id IN (SELECT value FROM json_each(?2)))",
+                )?
+                .query_map([owner, &ids], |row| row.get::<_, String>(0))?
+                .map(|row| Ok(serde_json::from_str::<Value>(&row?)?))
+                .collect::<Result<Vec<_>>>()?
+        };
+        for mut message in messages {
             let before = message.clone();
             if provider == "google" {
                 if let Some(ids) = message["providerLabelIds"].as_array().cloned() {

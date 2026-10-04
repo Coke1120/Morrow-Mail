@@ -576,7 +576,7 @@ IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder
     if (section == L"compose" && !navigation.IsEnabled()) co_return;
     if (!dirty.empty() && !(co_await confirm(L"Discard unsaved changes?", L"Your current edits have not been saved.", L"Discard"))) co_return;
     dirty.clear();
-    ++generation; ++selectionGeneration; selected = Json(); retainedUnread = Json(); readerFocused = false;
+    ++generation; ++selectionGeneration; ++readGeneration; pendingRead = Json(); selected = Json(); retainedUnread = Json(); readerFocused = false;
     auto version = generation;
     if (!account.empty()) owner = account;
     auto captured = owner;
@@ -892,12 +892,20 @@ IAsyncAction Shell::openSource(Json metadata) {
     } catch (...) { error(errorText()); }
 }
 IAsyncAction Shell::read(Json metadata) {
+    if (closing || loading || dialogOpen || !dirty.empty()) co_return;
     auto lifetime = shared_from_this(); auto version = generation; auto sequence = ++selectionGeneration;
+    auto requestGeneration = ++readGeneration;
     auto captured = owner; auto account = text(metadata, L"accountId"); auto id = text(metadata, L"id");
     if (!connected(account) || (captured != L"all" && captured != account)) co_return;
+    pendingRead = metadata;
+    struct Reading {
+        Shell& shell; uint64_t request;
+        ~Reading() { if (shell.readGeneration == request) shell.pendingRead = Json(); }
+    } reading{*this, requestGeneration};
     try {
         auto result = co_await service->request(L"/messages/" + escaped(id), account);
-        if (!current(version, captured) || sequence != selectionGeneration) co_return;
+        if (!current(version, captured) || sequence != selectionGeneration || requestGeneration != readGeneration) co_return;
+        pendingRead = Json();
         auto message = object(result, L"message");
         if (text(message, L"accountId") != account || text(message, L"id") != id) throw hresult_error(E_FAIL, L"The message owner changed. Open it again.");
         selected = message;
@@ -908,7 +916,7 @@ IAsyncAction Shell::read(Json metadata) {
         if (!flag(message, L"read") && flag(object(object(state, L"settings"), L"preferences"), L"markReadOnOpen")) {
             Json changes; changes.Insert(L"read", Value::CreateBooleanValue(true));
             auto updated = co_await service->request(L"/messages/" + escaped(id), account, L"PATCH", changes);
-            if (!current(version, captured) || sequence != selectionGeneration) co_return;
+            if (!current(version, captured) || sequence != selectionGeneration || requestGeneration != readGeneration) co_return;
             selected = object(updated, L"message"); renderReader(selected);
             retainReadRow(selected);
             for (auto& cursor : cursors) cursor = L"";
@@ -1035,7 +1043,11 @@ MenuFlyout Shell::mailActionsMenu(Json message) {
 IAsyncAction Shell::patchMessages(std::vector<Json> messages, Json changes) {
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
     if (dialogOpen || loading || closing || !dirty.empty() || service->writing() || messages.empty()) co_return;
-    ++selectionGeneration; loading = true; size_t completed = 0; hstring failure;
+    // Reload an interrupted detail request after the patch, while retaining the
+    // mounted reader's Load/Hide choice and interactions for metadata changes.
+    auto interrupted = pendingRead; auto sequence = selectionGeneration;
+    pendingRead = Json();
+    ++readGeneration; loading = true; size_t completed = 0; hstring failure;
     try {
         for (auto const& message : messages) {
             auto account = text(message, L"accountId"); auto id = text(message, L"id");
@@ -1046,7 +1058,7 @@ IAsyncAction Shell::patchMessages(std::vector<Json> messages, Json changes) {
             ++completed;
             if (!current(version, captured)) break;
             if (text(selected, L"accountId") == account && text(selected, L"id") == id) {
-                if (changes.HasKey(L"folder")) { selected = Json(); retainedUnread = Json(); }
+                if (changes.HasKey(L"folder")) { ++selectionGeneration; selected = Json(); retainedUnread = Json(); }
                 else selected = updated;
                 if (!changes.HasKey(L"folder")) retainReadRow(updated);
                 renderReader(selected);
@@ -1057,6 +1069,7 @@ IAsyncAction Shell::patchMessages(std::vector<Json> messages, Json changes) {
     if (current(version, captured)) {
         for (auto& cursor : cursors) cursor = L"";
         co_await loadPage();
+        if (current(version, captured) && sequence == selectionGeneration && interrupted.Size()) co_await read(interrupted);
         if (!failure.empty()) error(failure);
     }
 }

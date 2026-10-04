@@ -5,6 +5,68 @@ use morrow_search::{
 use serde_json::json;
 
 #[test]
+fn creating_a_folder_does_not_read_message_content() {
+    use rusqlite::ffi;
+    use std::ffi::{CStr, c_char, c_void};
+    unsafe extern "C" fn deny_message_reads(
+        _: *mut c_void,
+        action: i32,
+        table: *const c_char,
+        _: *const c_char,
+        _: *const c_char,
+        _: *const c_char,
+    ) -> i32 {
+        if action == ffi::SQLITE_READ
+            && !table.is_null()
+            && unsafe { CStr::from_ptr(table) }.to_bytes() == b"messages"
+        {
+            ffi::SQLITE_DENY
+        } else {
+            ffi::SQLITE_OK
+        }
+    }
+    let root = std::env::temp_dir().join(format!("morrow-empty-folder-{}", uuid::Uuid::new_v4()));
+    let db = Store::open(&root).unwrap();
+    db.upsert(
+        "a",
+        &json!({"id":"cached","body":"Unrelated downloaded mail","providerLabelIds":["old"]}),
+    )
+    .unwrap();
+    let before = db.get("a", "cached").unwrap();
+    db.set_settings(&json!({"imports":{"a":{"status":"paused","cursor":{"folders":[{"path":"INBOX"}],"index":0}}}})).unwrap();
+    // Enforce the operation's DB budget, independent of mailbox size or timing.
+    // The callback has no borrowed state and lives for the entire registration.
+    unsafe {
+        assert_eq!(
+            ffi::sqlite3_set_authorizer(
+                db.conn.handle(),
+                Some(deny_message_reads),
+                std::ptr::null_mut()
+            ),
+            ffi::SQLITE_OK
+        );
+    }
+    let result = update_cache(
+        &db,
+        "a",
+        "google",
+        &[],
+        &[json!({"id":"new","name":"New","kind":"label"})],
+    );
+    unsafe {
+        assert_eq!(
+            ffi::sqlite3_set_authorizer(db.conn.handle(), None, std::ptr::null_mut()),
+            ffi::SQLITE_OK
+        );
+    }
+    result.unwrap();
+    assert_eq!(db.get("a", "cached").unwrap(), before);
+    assert_eq!(db.settings().unwrap()["imports"]["a"]["status"], "paused");
+    drop(db);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn hierarchy_validation_and_owned_cache_reconciliation() {
     let catalog = vec![
         json!({"id":"INBOX","name":"Inbox","kind":"inbox","editable":false,"delimiter":"/"}),
