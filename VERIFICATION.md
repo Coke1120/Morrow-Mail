@@ -1,5 +1,11 @@
 # Verification — 4 October 2026
 
+## Current source (unreleased) — mail refresh review fixes
+
+Four new regression fixtures reproduced the three reviewed failures before the fixes: Outlook All Mail refresh skipped Inbox and Sent when their inactive checkboxes were off; the equivalent IMAP configuration reported success without attempting a fetch; Outlook reimport kept obsolete provider-folder membership; and a busy mailbox consumed the next regular sync interval. Coverage also checks selected-folder refresh, retained paused history options, duplicate provider IDs across accounts, local read/star/Pending/Later/folder markers, indexed provider-folder pages, preserved sent-message fingerprints, and failure pacing after an actual background read attempt. Fixtures use temporary workspaces and loopback providers or deliberately unusable IMAP configurations, with no real mail, calendar or model requests.
+
+Local macOS validation passed: Rust formatting, strict all-target Clippy, all 212 locked Rust tests (zero failed/ignored), the native production build, full production-service native acceptance, deep/strict signature verification and plist lint. The candidate is ad-hoc signed without notarization. Windows execution is left to the PR's existing native CI; no new release or live-account acceptance is claimed.
+
 ## 0.6.0-beta.42 — published paired native release
 
 [Beta.42](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.42) was published at 2026-10-04T08:48:58Z from `3bcdcc32ac3605fa60a4f3202417bdab488219ca`. [Tagged CI 37188678503, attempt 1](https://github.com/Coke1120/Morrow-Mail/actions/runs/37188678503/attempts/1) passed all three jobs: Node-free Rust formatting, strict all-target Clippy and locked tests (208 on macOS, 207 on Windows, zero failed/ignored); both native production builds and package checks; full macOS production-service acceptance; the complete Windows fresh/owned/restart UI walkthrough, including the new interrupted detail-read/marker PATCH regression and reader/image consent checks; the 1,000/10,000/50,000-message fictional-mail benchmark; and the existing publisher's same-run/same-attempt provenance and signing gate. No waiver applied. PR #16 was merged to main as `e3ddeef41d858fd9b5bdf46bf8f74541514c9ec9` after its paired CI passed.

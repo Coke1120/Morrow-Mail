@@ -300,7 +300,16 @@ pub fn import_messages(db: &Store, mail: &Value, messages: &[Value]) -> Result<V
         let mut existing=existing.map(|s|serde_json::from_str::<Value>(&s)).transpose()?;
         if existing.is_none()&&(message["folder"]=="sent"||(mail["provider"]=="google"&&message["providerSent"]==true))&&string(message,"fromEmail").eq_ignore_ascii_case(account)&&!string(message,"messageId").is_empty(){let local:Option<String>=db.conn.query_row("SELECT data FROM messages WHERE account=? AND id LIKE 'sent:%' AND COALESCE(json_extract(data,'$.remoteId'),'')='' AND json_extract(data,'$.messageId')=? LIMIT 1",params![account,string(message,"messageId")],|row|row.get(0)).optional()?;existing=local.map(|s|serde_json::from_str(&s)).transpose()?;}
         if existing.is_none()&&db.get(account,string(message,"id"))?.is_none(){new_ids.push(string(message,"id").to_owned());}
-        let mut value=message.clone();if let Some(existing)=&existing{if string(existing,"id").starts_with("sent:"){value=merge(value,existing);}for key in ["id","folder","read","starred","labels","pending","lowPriority"]{if let Some(entry)=existing.get(key){value[key]=entry.clone();}}value["remoteId"]=existing["remoteId"].as_str().filter(|s|!s.is_empty()).unwrap_or(remote).into();for key in ["providerFolderId","providerFolderName"]{if let Some(entry)=existing.get(key).filter(|v|!v.is_null()){value[key]=entry.clone();}}}
+        let mut value=message.clone();if let Some(existing)=&existing{if string(existing,"id").starts_with("sent:"){value=merge(value,existing);}for key in ["id","folder","read","starred","labels","pending","lowPriority"]{if let Some(entry)=existing.get(key){value[key]=entry.clone();}}value["remoteId"]=existing["remoteId"].as_str().filter(|s|!s.is_empty()).unwrap_or(remote).into();
+            // Provider locations describe the fetched message, independently of local folder overrides.
+            // Bounded refreshes that omit location metadata retain the last known provider location.
+            for key in ["providerFolderId", "providerFolderName"] {
+                if let Some(entry) = message.get(key).filter(|v| !v.is_null())
+                    .or_else(|| existing.get(key).filter(|v| !v.is_null())) {
+                    value[key] = entry.clone();
+                }
+            }
+        }
         if mail["provider"]=="google"{value=merge(value,&google_import_state(message,existing.as_ref()));}db.upsert(account,&value)?;
     }Ok(())})?;
     Ok(new_ids)
@@ -646,7 +655,7 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
             } else if options.is_object() {
                 ["inbox", "sent"]
                     .into_iter()
-                    .filter(|folder| options[*folder] == true)
+                    .filter(|folder| options["allMail"] == true || options[*folder] == true)
                     .collect::<Vec<_>>()
             } else {
                 vec!["inbox"]
@@ -1219,6 +1228,26 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn all_mail_imap_refresh_attempts_a_fetch() {
+        let root =
+            std::env::temp_dir().join(format!("morrow-all-mail-refresh-{}", uuid::Uuid::new_v4()));
+        let app = App::open(&root, 0, "fixture-token".into(), String::new()).unwrap();
+        let owner = "imap@example.invalid";
+        app.db(move |db| {
+            // Invalid port fails before networking; an empty scope must not report success.
+            db.set_settings(&json!({"mailAccounts":{owner:{"email":owner,"provider":"imap","connectionId":"fixture","imapPort":0}},"imports":{owner:{"options":{"allMail":true,"inbox":false,"sent":false}}}}))?;
+            Ok(())
+        }).await.unwrap();
+        let errors = sync(&app, &[owner.into()]).await.unwrap();
+        assert_eq!(errors.as_array().unwrap().len(), 1);
+        assert_eq!(errors[0]["accountId"], owner);
+        assert_eq!(errors[0]["code"], "mail_sync_failed");
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn read_cooldowns_apply_only_to_the_saved_connection() {
         let owner = "reconnect@example.invalid";

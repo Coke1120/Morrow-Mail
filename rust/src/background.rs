@@ -1127,11 +1127,11 @@ pub async fn tick(app: &App) -> Result<()> {
             let timestamp = Utc::now().timestamp_millis();
             let scheduled = due_sync_accounts(&config, &now());
             let regular = interval>0 && timestamp>=runtime.last_sync.load(Ordering::Acquire).saturating_add(interval.saturating_mul(60000));
-            if regular {
-                // Claim regular polling before provider calls, including failures.
-                runtime.last_sync.store(timestamp,Ordering::Release);
-            }
             if (regular || !scheduled.is_empty()) && let Ok(_mailbox) = app.0.mailbox.try_lock() {
+                if regular {
+                    // Claim only an acquired polling slot; a busy mailbox stays due for the next tick.
+                    runtime.last_sync.store(timestamp,Ordering::Release);
+                }
                 let accounts: Vec<_> = if regular { connections(&config).as_object().unwrap().keys().cloned().collect() } else { scheduled };
                 let _ = mail::sync_accounts(app,&accounts).await;
             }
@@ -1166,6 +1166,43 @@ pub fn stop(app: &App) {
 #[cfg(test)]
 mod history_retry_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn busy_mailbox_keeps_regular_sync_due_until_the_next_tick() {
+        let root = std::env::temp_dir().join(format!("morrow-busy-sync-{}", uuid::Uuid::new_v4()));
+        let app = App::open(&root, 0, "fixture-token".into(), String::new()).unwrap();
+        let owner = "busy@example.invalid";
+        app.db(move |db| {
+            // No socket is opened: a fetched IMAP page fails on the invalid port.
+            db.set_settings(&json!({"mailAccounts":{owner:{"email":owner,"provider":"imap","connectionId":"fixture","imapPort":0}},"preferences":{"syncInterval":1}}))?;
+            Ok(())
+        }).await.unwrap();
+        let previous = Utc::now().timestamp_millis() - 120_000;
+        app.0
+            .background
+            .last_sync
+            .store(previous, Ordering::Release);
+        let mailbox = app.0.mailbox.lock().await;
+        tick(&app).await.unwrap();
+        assert_eq!(app.0.background.last_sync.load(Ordering::Acquire), previous);
+        assert!(app.settings().await.unwrap()["backgroundSyncErrors"].is_null());
+        drop(mailbox);
+        tick(&app).await.unwrap();
+        let attempted = app.0.background.last_sync.load(Ordering::Acquire);
+        assert!(attempted > previous);
+        let errors = app.settings().await.unwrap()["backgroundSyncErrors"].clone();
+        assert_eq!(errors.as_array().unwrap().len(), 1);
+        assert_eq!(errors[0]["accountId"], owner);
+        assert_eq!(errors[0]["code"], "mail_sync_failed");
+        // A real attempt, even a failed read, still observes the configured interval.
+        tick(&app).await.unwrap();
+        assert_eq!(
+            app.0.background.last_sync.load(Ordering::Acquire),
+            attempted
+        );
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn quota_and_transient_reads_retry_without_exposing_details() {

@@ -34,6 +34,74 @@ const C: &str = "c@example.invalid";
 const NATIVE: &str = "fixture-native-token";
 
 #[tokio::test]
+async fn all_mail_refresh_ignores_inactive_inbox_sent_choices() {
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let captured = calls.clone();
+    let fixture = Fixture::new(Arc::new(move |request| {
+        let captured = captured.clone();
+        async move {
+            assert_eq!(request.method, "GET");
+            assert_eq!(request.host(), "graph.microsoft.com");
+            let url =
+                url::Url::parse(&format!("https://graph.microsoft.com{}", request.path)).unwrap();
+            let folder = match url.path() {
+                "/v1.0/me/mailFolders/inbox/messages" => "inbox",
+                "/v1.0/me/mailFolders/sentitems/messages" => "sent",
+                _ => panic!("Unexpected refresh scope: {}", url.path()),
+            };
+            assert!(url.query_pairs().any(|(k, v)| k == "$top" && v == "50"));
+            captured.lock().unwrap().push(folder.to_owned());
+            let mut row = microsoft_message(folder, A, "Fictional refreshed mail");
+            row["sentDateTime"] = row["receivedDateTime"].clone();
+            Reply::Json(200, json!({"value":[row]}))
+        }
+        .boxed()
+    }))
+    .await;
+    let server = fixture.start().await;
+    set(&server.app, config(&[(A, "microsoft")])).await;
+    for (all_mail, inbox, sent, expected) in [
+        (true, false, false, vec!["inbox", "sent"]),
+        (true, false, true, vec!["inbox", "sent"]),
+        (true, true, false, vec!["inbox", "sent"]),
+        (false, true, false, vec!["inbox"]),
+        (false, false, true, vec!["sent"]),
+    ] {
+        let options = json!({"months":0,"allMail":all_mail,"inbox":inbox,"sent":sent});
+        let reviewed = options.clone();
+        server
+            .app
+            .db(move |db| {
+                morrow_search::background::start_import(db, A, &reviewed)?;
+                morrow_search::background::control_import(db, A, "pause")
+            })
+            .await
+            .unwrap();
+        calls.lock().unwrap().clear();
+        let result = server.call("POST", "/api/sync", A, json!({})).await;
+        assert_eq!(result.0, 200, "{}", result.1);
+        assert_eq!(*calls.lock().unwrap(), expected, "{options}");
+        let saved = server.app.settings().await.unwrap();
+        assert_eq!(saved["imports"][A]["options"], options);
+        assert_eq!(saved["imports"][A]["status"], "paused");
+    }
+    server
+        .app
+        .db(|db| {
+            for folder in ["inbox", "sent"] {
+                let message = db.get(A, &format!("microsoft:{folder}"))?.unwrap();
+                assert_eq!(message["folder"], folder);
+                assert_eq!(message["body"], "Fictional refreshed mail");
+                assert!(db.get(B, &format!("microsoft:{folder}"))?.is_none());
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn automatic_folder_catalogs_are_owned_durable_and_keep_offline_names() {
     let reads = Arc::new(AtomicUsize::new(0));
     let mode = Arc::new(AtomicUsize::new(0));
