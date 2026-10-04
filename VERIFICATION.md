@@ -1,6 +1,16 @@
 # Verification — 4 October 2026
 
-## Review fixes — unreleased PR candidate
+## 0.6.0-beta.42 — paired release candidate
+
+The common package version is `0.6.0-beta.42`. The release includes PR #16's native reader, Settings persistence, draft-save serialization, folder-cache and updater preparation fixes, plus the interrupted Windows detail-read correction from follow-up review. The pinned update key is unchanged.
+
+Local Rust formatting, strict all-target Clippy and all locked tests passed on the final PR code. The macOS production candidate passed full `morrow-native-check` acceptance, deep/strict ad-hoc signature verification and plist lint. [PR CI 37187570969, attempt 1](https://github.com/Coke1120/Morrow-Mail/actions/runs/37187570969/attempts/1) passed for `bf21142ee40690e31a1e70762d806936b8e8eafa`: Node-free Rust checks (208 tests on macOS, 207 on Windows, zero failed/ignored), both production packages, full macOS native acceptance, Windows fresh/owned/restart UI smoke including the new detail-read interleavings and image/metadata regressions, and the 1,000/10,000/50,000-message fictional-mail benchmark. PR #16 was merged to main as `e3ddeef41d858fd9b5bdf46bf8f74541514c9ec9`. The local beta.42 macOS package also passed signature/plist checks and reports the correct service version.
+
+Fresh tagged macOS/Windows production builds and all required native checks remain mandatory before publication. The existing publisher must verify same-run/same-attempt platform candidates and sign the paired update manifest. No waiver applies. Public-download hashes and signature verification are recorded after publication.
+
+All fixtures are isolated and fictional. No real mail, calendar event or paid model request is submitted. Complete live-account, clean-machine, physical-pointer/accessibility and installed-updater restart/rollback acceptance remain outstanding; macOS is ad-hoc signed without notarization and Windows is unsigned. The existing intermittent Windows reader initialization timeout remains unresolved. See the [release notes](docs/releases/v0.6.0-beta.42.md).
+
+## PR #16 review checks — before release preparation
 
 The source fixes eight review findings: Windows metadata updates retain the selected reader and its per-message Hide override; macOS auto-saves `sendDelayHours` and routes Open Today through Settings save/discard review; draft saves hold the mailbox gate across the idle check and queued DB write; folder management loads only indexed affected provider memberships and skips message reads for empty deltas; updater preparation includes app-local Windows CRT companions, removes attempt-owned helper/marker files on failure, and initializes after Store creates a fresh workspace. The macOS reload path also rejects cancelled or superseded state snapshots. Package version and the pinned update key remain unchanged; beta.41 downloads do not contain these fixes.
 
@@ -12,7 +22,7 @@ The same isolated 10,000-message fixture (171,970,000 bytes of fictional message
 
 Windows smoke now checks actual local PATCH operations under image opt-in after Hide, same-message Starred/Pending/Read, an update to another row, and subsequent Plain text/HTML interaction. Windows compilation/execution is delegated to the paired PR CI rather than this macOS host. All checks use isolated fictional workspaces; no real mail, calendar event, paid model call or installed app replacement is used. Full live-account, clean-machine/accessibility, physical-pointer and installed-updater acceptance remain outstanding; macOS signing remains ad-hoc without notarization and Windows remains unsigned.
 
-PR #16 follow-up review found that invalidating an in-flight Windows detail GET during a local marker PATCH could leave the highlighted new row displaying the previous message. Local patches now capture and reload the interrupted owned detail after the metadata/page refresh, provided the view and selection are still current. Navigation clears the pending read; completed readers retain their image override. The Windows smoke adds immediate GET/PATCH interleavings for Read, Starred, Pending and a patch to another row, checking full body, owner, highlighted identity and current metadata. Execution evidence is recorded after paired CI completes.
+PR #16 follow-up review found that invalidating an in-flight Windows detail GET during a local marker PATCH could leave the highlighted new row displaying the previous message. Local patches now capture and reload the interrupted owned detail after the metadata/page refresh, provided the view and selection are still current. Navigation clears the pending read; completed readers retain their image override. The Windows smoke adds immediate GET/PATCH interleavings for Read, Starred, Pending and a patch to another row, checking full body, owner, highlighted identity and current metadata. The updated paired PR CI above passed both platforms, including the full Windows owned-mailbox walkthrough with these interleavings.
 
 ## 0.6.0-beta.41 — published paired native release
 
