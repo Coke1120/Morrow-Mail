@@ -322,18 +322,24 @@ IAsyncAction Shell::smoke() {
             }
             {
                 enter("mail-reader-reselection");
+                auto previousSort = sorting.SelectedIndex();
+                loading = true; sorting.SelectedIndex(1); loading = false; // Oldest keeps A and its peer on this page after Unstar.
+                for (auto& cursor : cursors) cursor = L"";
+                co_await loadPage();
+                check(rows.Items().Size() >= 2, L"Reselection requires two stable owned rows.");
+                auto stablePeer = rows.Items().GetAt(1).as<controls::ListViewItem>().Tag().as<Json>();
                 auto originalA = object(co_await service->request(L"/messages/" + escaped(text(source,L"id")),text(source,L"accountId")),L"message");
-                auto originalB = object(co_await service->request(L"/messages/" + escaped(text(otherRow,L"id")),text(otherRow,L"accountId")),L"message");
+                auto originalB = object(co_await service->request(L"/messages/" + escaped(text(stablePeer,L"id")),text(stablePeer,L"accountId")),L"message");
                 check(connected(text(originalA,L"accountId")) && text(originalA,L"accountId") == owner
                     && text(originalB,L"accountId") == owner && text(originalA,L"viewId") == selectedID
-                    && text(originalB,L"viewId") == text(otherRow,L"viewId") && text(originalA,L"viewId") != text(originalB,L"viewId"),
+                    && text(originalB,L"viewId") == text(stablePeer,L"viewId") && text(originalA,L"viewId") != text(originalB,L"viewId"),
                     L"Reselection requires two distinct owned fixture messages.");
                 auto previousMarkRead = flag(object(object(state,L"settings"),L"preferences"),L"markReadOnOpen");
                 Json readingPreference; readingPreference.Insert(L"markReadOnOpen",Value::CreateBooleanValue(true));
                 state = co_await service->request(L"/settings/preferences",L"",L"POST",readingPreference);
                 check(flag(object(object(state,L"settings"),L"preferences"),L"markReadOnOpen"),
                     L"Reselection did not enable the fixture automatic read preference.");
-                for (auto key : {L"read", L"starred", L"pending", L"no-patch", L"busy-reselect"}) {
+                for (auto key : {L"read", L"unread", L"starred", L"pending", L"no-patch", L"busy-reselect"}) {
                     enter("mail-reselect-" + to_string(key));
                     Json unreadB; unreadB.Insert(L"read",Value::CreateBooleanValue(false));
                     auto preparedB = object(co_await service->request(L"/messages/" + escaped(text(originalB,L"id")),text(originalB,L"accountId"),L"PATCH",unreadB),L"message");
@@ -365,9 +371,9 @@ IAsyncAction Shell::smoke() {
                         L"Reselection did not hold B's detail GET while A remained mounted.");
                     bool busyReselect = key == std::wstring_view(L"busy-reselect");
                     bool patchA = key != std::wstring_view(L"no-patch");
-                    auto markerKey = busyReselect ? L"pending" : key;
-                    // A's resumed GET obeys markReadOnOpen; its Read PATCH keeps it read.
-                    bool markerValue = markerKey == std::wstring_view(L"read") || (patchA && !flag(mountedA,markerKey));
+                    auto markerKey = busyReselect ? L"pending" : key == std::wstring_view(L"unread") ? L"read" : key;
+                    // The resumed GET must respect an explicit unread change, even under mark-on-open.
+                    bool markerValue = key == std::wstring_view(L"read") || (markerKey != std::wstring_view(L"read") && patchA && !flag(mountedA,markerKey));
                     Json marker; if (patchA) marker.Insert(markerKey,Value::CreateBooleanValue(markerValue));
                     IAsyncAction mutation{nullptr};
                     if (busyReselect) {
@@ -414,6 +420,7 @@ IAsyncAction Shell::smoke() {
                 state = co_await service->request(L"/settings/preferences",L"",L"POST",readingPreference);
                 check(flag(object(object(state,L"settings"),L"preferences"),L"markReadOnOpen") == previousMarkRead,
                     L"Reselection did not restore the fixture reading preference.");
+                loading = true; sorting.SelectedIndex(previousSort); loading = false;
                 for (auto& cursor : cursors) cursor = L"";
                 co_await loadPage();
             }

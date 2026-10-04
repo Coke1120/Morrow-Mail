@@ -898,6 +898,42 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     co_await runtimeWait([fallback] { return !fallback->initializing; }, deadline, L"failure-fallback");
     runtimeCheck(!probe->resourceLeak && !probe->navigationLeak && !probe->callbackFailure && !probe->messages
         && !state->images && state->budget->requests == 0, L"Reader isolation failed during cleanup.");
+    phase("multi-selection-hide");
+    shell->selected = fixture;
+    settingsState.Insert(L"preferences", readingPreferences);
+    auto hidden = mountReader(shell, stack(8), fixture);
+    runtimeCheck(hidden && hidden->images, L"The multi-selection fixture did not apply image opt-in.");
+    cleanup.readers.push_back(hidden); hidden->chooseImages(false);
+    ListViewItem itemA{nullptr}, itemB{nullptr};
+    for (auto const& item : shell->rows.Items()) {
+        auto entry = item.as<ListViewItem>(); auto row = entry.Tag().as<Json>();
+        if (text(row,L"viewId") == text(metadata,L"viewId")) itemA = entry;
+        if (text(row,L"viewId") == text(otherMetadata,L"viewId")) itemB = entry;
+    }
+    runtimeCheck(itemA && itemB, L"The image-consent fixture rows left the bounded page.");
+    shell->rows.SelectedItems().Clear(); shell->rows.SelectedItems().Append(itemA);
+    auto hiddenSelection = shell->selectionGeneration;
+    shell->loading = false; shell->rows.SelectedItems().Append(itemB);
+    runtimeCheck(shell->selectedMessages().size() == 2 && hidden->live() && !hidden->images,
+        L"Adding a second selected row revoked the current reader's Hide choice.");
+    uint32_t peerIndex = 0;
+    runtimeCheck(shell->rows.SelectedItems().IndexOf(itemB, peerIndex), L"The selected peer could not be removed.");
+    shell->rows.SelectedItems().RemoveAt(peerIndex); // Execute production SelectionChanged for the same owned A.
+    co_await runtimeWait([shell, hiddenSelection] {
+        return shell->selectionGeneration != hiddenSelection && !shell->pendingRead.Size()
+            && !shell->loading && !shell->service->writing();
+    }, deadline, L"multi-selection-hide");
+    runtimeCheck(text(shell->selected,L"viewId") == text(fixture,L"viewId")
+        && shell->readerImageOverride && !*shell->readerImageOverride
+        && shell->readerImageGeneration == shell->generation && shell->readerImageSelection == shell->selectionGeneration,
+        L"Returning from multi-selection lost the same owned message's Hide choice.");
+    auto hiddenMessage = Json::Parse(shell->selected.Stringify());
+    put(hiddenMessage,L"bodyHtml",text(fixture,L"bodyHtml"));
+    auto retained = mountReader(shell, stack(8), hiddenMessage);
+    runtimeCheck(retained && retained->live() && !retained->images,
+        L"Remounting the reselected owned message loaded images after Hide.");
+    cleanup.readers.push_back(retained); retained->unload(); hidden->unload();
+    settingsState.Insert(L"preferences", originalPreferences); shell->loading = true;
     put(result, L"htmlRuntime", L"passed"); put(result, L"fallback", L"passed");
     put(result, L"staleClose", L"passed"); put(result, L"script", L"blocked");
     put(result, L"webMessages", L"blocked"); put(result, L"hostObjects", L"disabled");
@@ -905,6 +941,7 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     put(result, L"cspEvidence", L"native-audits-image-frame");
     put(result, L"autoImages", L"preference-and-hide-passed");
     put(result, L"metadataImages", L"hide-remount-and-other-row-interaction-passed");
+    put(result, L"reselectionImages", L"multi-selection-hide-passed");
     put(result, L"inspection", L"native-dom-no-script");
     result.Insert(L"interceptedRequests", Value::CreateNumberValue(probe->requests));
     result.Insert(L"nativeImageRequests", Value::CreateNumberValue(state->budget->requests));
