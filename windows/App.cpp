@@ -576,7 +576,7 @@ IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder
     if (section == L"compose" && !navigation.IsEnabled()) co_return;
     if (!dirty.empty() && !(co_await confirm(L"Discard unsaved changes?", L"Your current edits have not been saved.", L"Discard"))) co_return;
     dirty.clear();
-    ++generation; ++selectionGeneration; selected = Json(); retainedUnread = Json(); readerFocused = false;
+    ++generation; ++selectionGeneration; ++readGeneration; pendingRead = Json(); selected = Json(); retainedUnread = Json(); readerFocused = false;
     auto version = generation;
     if (!account.empty()) owner = account;
     auto captured = owner;
@@ -897,9 +897,15 @@ IAsyncAction Shell::read(Json metadata) {
     auto requestGeneration = ++readGeneration;
     auto captured = owner; auto account = text(metadata, L"accountId"); auto id = text(metadata, L"id");
     if (!connected(account) || (captured != L"all" && captured != account)) co_return;
+    pendingRead = metadata;
+    struct Reading {
+        Shell& shell; uint64_t request;
+        ~Reading() { if (shell.readGeneration == request) shell.pendingRead = Json(); }
+    } reading{*this, requestGeneration};
     try {
         auto result = co_await service->request(L"/messages/" + escaped(id), account);
         if (!current(version, captured) || sequence != selectionGeneration || requestGeneration != readGeneration) co_return;
+        pendingRead = Json();
         auto message = object(result, L"message");
         if (text(message, L"accountId") != account || text(message, L"id") != id) throw hresult_error(E_FAIL, L"The message owner changed. Open it again.");
         selected = message;
@@ -1037,8 +1043,10 @@ MenuFlyout Shell::mailActionsMenu(Json message) {
 IAsyncAction Shell::patchMessages(std::vector<Json> messages, Json changes) {
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
     if (dialogOpen || loading || closing || !dirty.empty() || service->writing() || messages.empty()) co_return;
-    // Discard in-flight reads without revoking this message's Load/Hide choice
-    // or making the reader stale when a quick action updates another row.
+    // Reload an interrupted detail request after the patch, while retaining the
+    // mounted reader's Load/Hide choice and interactions for metadata changes.
+    auto interrupted = pendingRead; auto sequence = selectionGeneration;
+    pendingRead = Json();
     ++readGeneration; loading = true; size_t completed = 0; hstring failure;
     try {
         for (auto const& message : messages) {
@@ -1061,6 +1069,7 @@ IAsyncAction Shell::patchMessages(std::vector<Json> messages, Json changes) {
     if (current(version, captured)) {
         for (auto& cursor : cursors) cursor = L"";
         co_await loadPage();
+        if (current(version, captured) && sequence == selectionGeneration && interrupted.Size()) co_await read(interrupted);
         if (!failure.empty()) error(failure);
     }
 }

@@ -64,6 +64,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     std::vector<winrt::hstring> cursors{L""};
     uint64_t generation = 0, selectionGeneration = 0;
     uint64_t readGeneration = 0; // Metadata writes invalidate reads, not the mounted selection.
+    Json pendingRead; // Owned metadata for a detail read interrupted by a local patch.
     uint64_t readerImageGeneration = 0, readerImageSelection = 0;
     std::optional<bool> readerImageOverride;
     bool loading = false, closing = false, dialogOpen = false, selectingNavigation = false;
