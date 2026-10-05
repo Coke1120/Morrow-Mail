@@ -1,5 +1,17 @@
 # Verification — 5 October 2026
 
+## Current source (unreleased) — summary failure diagnostics
+
+The shared summary completion path now preserves the server-authored diagnostic from model requests or P0–P4 validation instead of replacing every failure with generic settings advice. Manual, arrival and scheduled jobs use that path. Existing generic historical errors cannot recover the discarded cause, and Activity retains its content-free last-summary projection. Failed paid work still requires a new review; no retry or model timeout was changed.
+
+The expanded regression failed against the previous implementation and passes after the fix. Existing fixtures cover distinct empty-response and malformed-summary diagnostics, exclusion of raw model/provider error text, manual API/report agreement, persistence after restart, and no automatic retry. On macOS with Rust 1.99, formatting, strict all-target Clippy and all 40 tests in `background`, `ai` and `activity` passed. Two unnecessary closure borrows in the model error handler were removed for the current Clippy check. Tests used isolated temporary stores and loopback model fixtures; no real mail, calendar event or paid model request was submitted. Native packages were not rebuilt or installed, and this does not establish the cause of an installed app's historical model failure or live-account acceptance.
+
+## Current source (unreleased) — mail refresh review fixes
+
+Four new regression fixtures reproduced the three reviewed failures before the fixes: Outlook All Mail refresh skipped Inbox and Sent when their inactive checkboxes were off; the equivalent IMAP configuration reported success without attempting a fetch; Outlook reimport kept obsolete provider-folder membership; and a busy mailbox consumed the next regular sync interval. Coverage also checks selected-folder refresh, retained paused history options, duplicate provider IDs across accounts, local read/star/Pending/Later/folder markers, indexed provider-folder pages, preserved sent-message fingerprints, and failure pacing after an actual background read attempt. Fixtures use temporary workspaces and loopback providers or deliberately unusable IMAP configurations, with no real mail, calendar or model requests.
+
+Local macOS validation passed: Rust formatting, strict all-target Clippy, all 212 locked Rust tests (zero failed/ignored), the native production build, full production-service native acceptance, deep/strict signature verification and plist lint. The candidate is ad-hoc signed without notarization. Windows execution is left to the PR's existing native CI; no new release or live-account acceptance is claimed.
+
 ## PR #15 / #16 review — Windows reselection follow-up
 
 Both requested PRs were already merged into main: PR #15 at `287feaac00b0836884b57719e590dc7775d2c0cc` and PR #16 at `e3ddeef41d858fd9b5bdf46bf8f74541514c9ec9`. Their final heads (`5eff428f` / `bf21142`) passed paired native CI. Fixed-version review found a remaining Windows interleaving: while A is displayed and B's detail GET is pending, selecting A again and changing A's marker could revive B after PATCH, disagree with the highlighted row and mark B read.

@@ -1,5 +1,64 @@
-use morrow_search::{mail, providers, store::Store};
+use morrow_search::{mail, pages, providers, store::Store};
 use serde_json::json;
+
+#[test]
+fn reimport_updates_provider_membership_without_losing_local_changes_or_other_owners() {
+    let directory =
+        std::env::temp_dir().join(format!("morrow-import-folders-{}", uuid::Uuid::new_v4()));
+    let db = Store::open(&directory).unwrap();
+    let owner = "a@example.invalid";
+    let other = "b@example.invalid";
+    let message = json!({"id":"microsoft:same","folder":"inbox","body":"Downloaded body","providerFolderId":"old-folder","providerFolderName":"Old folder","read":false,"starred":false,"labels":[]});
+    for account in [owner, other] {
+        mail::import_messages(
+            &db,
+            &json!({"email":account,"provider":"microsoft"}),
+            std::slice::from_ref(&message),
+        )
+        .unwrap();
+    }
+    db.update(owner, "microsoft:same", &json!({"folder":"trash","read":true,"starred":true,"pending":true,"lowPriority":true,"labels":["Local label"]})).unwrap();
+    let mut moved = message.clone();
+    moved["providerFolderId"] = "new-folder".into();
+    moved["providerFolderName"] = "New folder".into();
+    moved["body"] = "Refreshed body".into();
+    assert!(
+        mail::import_messages(
+            &db,
+            &json!({"email":owner,"provider":"microsoft"}),
+            &[moved]
+        )
+        .unwrap()
+        .is_empty()
+    );
+    let saved = db.get(owner, "microsoft:same").unwrap().unwrap();
+    assert_eq!(saved["providerFolderId"], "new-folder");
+    assert_eq!(saved["providerFolderName"], "New folder");
+    assert_eq!(saved["folder"], "trash");
+    assert_eq!(saved["body"], "Refreshed body");
+    for key in ["read", "starred", "pending", "lowPriority"] {
+        assert_eq!(saved[key], true, "{key}");
+    }
+    assert_eq!(saved["labels"], json!(["Local label"]));
+    assert_eq!(db.get(other, "microsoft:same").unwrap().unwrap(), message);
+    for (account, folder, total) in [
+        (owner, "old-folder", 0),
+        (owner, "new-folder", 1),
+        (other, "old-folder", 1),
+        (other, "new-folder", 0),
+    ] {
+        let page = pages::page(
+            &db,
+            &[account.into()],
+            &json!({"folder":format!("provider:{folder}")}),
+            &[7; 32],
+        )
+        .unwrap();
+        assert_eq!(page["total"], total, "{account}: {folder}");
+    }
+    drop(db);
+    std::fs::remove_dir_all(directory).unwrap();
+}
 
 #[test]
 fn imports_keep_owner_local_identity_and_delivery_fingerprint() {
@@ -49,6 +108,21 @@ fn imports_keep_owner_local_identity_and_delivery_fingerprint() {
         .unwrap();
     assert_eq!(mail::fingerprint(&saved).unwrap(), fingerprint);
     assert_eq!(saved["remoteId"], "microsoft:provider-sent");
+    db.update(
+        "a@example.test",
+        "sent:request-123",
+        &json!({"providerFolderId":"sent-folder","providerFolderName":"Sent"}),
+    )
+    .unwrap();
+    let moved_sent = json!({"id":"microsoft:provider-sent","folder":"archive","body":"Provider representation","providerFolderId":"project-folder","providerFolderName":"Project"});
+    mail::import_messages(&db, &mail, &[moved_sent]).unwrap();
+    let saved = db
+        .get("a@example.test", "sent:request-123")
+        .unwrap()
+        .unwrap();
+    assert_eq!(mail::fingerprint(&saved).unwrap(), fingerprint);
+    assert_eq!(saved["providerFolderId"], "project-folder");
+    assert_eq!(saved["providerFolderName"], "Project");
     drop(db);
     std::fs::remove_dir_all(directory).unwrap();
 }
