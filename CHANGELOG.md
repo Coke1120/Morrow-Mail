@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0-beta.43 — 2026-10-06
+
+- Refresh bounded Inbox and Sent pages for Outlook/IMAP All Mail even when inactive folder checkboxes are off; update Outlook provider-folder membership while retaining local IDs and markers.
+- Keep automatic refresh due while another operation owns the mailbox lock, and pace subsequent attempts normally.
+- Preserve safe connection, HTTP, timeout and response-format diagnostics in failed AI summary reports without exposing raw provider responses or automatically retrying paid calls.
+- Keep Windows reader content aligned with the selected message through rapid reselection and local marker updates, preserving explicit Unread and same-message Hide choices.
+- Require fresh paired tagged native checks and the existing signed publisher; see [release notes](docs/releases/v0.6.0-beta.43.md) for validation and limits.
+
 ## 0.6.0-beta.39 — 2026-10-03
 
 - Share persisted provider quota waits across sync, history and folder/label reads; honor longer Retry-After delays while retaining daily limits and indefinite transient history retries.

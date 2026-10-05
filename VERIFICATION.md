@@ -1,4 +1,10 @@
-# Verification — 5 October 2026
+# Verification — 6 October 2026
+
+## 0.6.0-beta.43 — release candidate
+
+The candidate carries merged PR #17 mail refresh/summary diagnostics and PR #18 Windows reader reselection fixes. The integrated main commit `ee0d7d6bc0ee6117051b26fe4d9856e06f14b832` passed [paired native CI 37294922556](https://github.com/Coke1120/Morrow-Mail/actions/runs/37294922556): both Rust checks and native packages, full macOS acceptance, Windows UI smoke and the fictional-mail benchmark. The PR #18 head separately passed [paired CI 37220068928](https://github.com/Coke1120/Morrow-Mail/actions/runs/37220068928), including the new selection/Unread/Hide checks. These runs used beta.42 metadata and are pre-release evidence only.
+
+Beta.43 publication requires fresh same-tag macOS and Windows builds, full native checks, and the existing publisher's same-run/same-attempt provenance and pinned-key signature verification. No waiver applies. Public assets and publication evidence will be verified after that gate succeeds. The preparation changes only version metadata and release documentation. See the [release notes](docs/releases/v0.6.0-beta.43.md) for scope and remaining acceptance limits.
 
 ## Current source (unreleased) — summary failure diagnostics
 
