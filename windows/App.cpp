@@ -706,7 +706,13 @@ void Shell::mailPage() {
     rows.SelectionChanged([weak](auto const&, SelectionChangedEventArgs const&) {
         if (auto self = weak.lock(); self && !self->loading && !self->dialogOpen && self->dirty.empty()) {
             auto messages = self->selectedMessages();
-            if (messages.size() == 1 && text(messages[0], L"viewId") != text(self->selected, L"viewId")) self->read(messages[0]);
+            if (self->pendingRead.Size() && (messages.size() != 1
+                || text(messages[0], L"viewId") != text(self->pendingRead, L"viewId"))) {
+                self->pendingRead = Json();
+                ++self->readGeneration;
+            }
+            // The displayed row may match again while a different detail is pending.
+            if (messages.size() == 1) self->read(messages[0]);
         }
     });
     Grid::SetRow(rows, 1); list.Children().Append(rows);
@@ -891,12 +897,17 @@ IAsyncAction Shell::openSource(Json metadata) {
         if (owner == account && section == L"mail" && folder == text(message,L"folder")) co_await read(message);
     } catch (...) { error(errorText()); }
 }
-IAsyncAction Shell::read(Json metadata) {
+IAsyncAction Shell::read(Json metadata, bool markOnOpen) {
     if (closing || loading || dialogOpen || !dirty.empty()) co_return;
-    auto lifetime = shared_from_this(); auto version = generation; auto sequence = ++selectionGeneration;
+    auto lifetime = shared_from_this(); auto version = generation;
+    auto previousSelection = selectionGeneration; auto sequence = ++selectionGeneration;
     auto requestGeneration = ++readGeneration;
     auto captured = owner; auto account = text(metadata, L"accountId"); auto id = text(metadata, L"id");
     if (!connected(account) || (captured != L"all" && captured != account)) co_return;
+    if (account == text(selected, L"accountId") && id == text(selected, L"id")
+        && readerImageOverride && readerImageGeneration == version && readerImageSelection == previousSelection) {
+        readerImageSelection = sequence;
+    }
     pendingRead = metadata;
     struct Reading {
         Shell& shell; uint64_t request;
@@ -913,7 +924,7 @@ IAsyncAction Shell::read(Json metadata) {
         if (hadRetained) retainedUnread = Json();
         if (text(message, L"folder") == L"drafts" && !flag(message, L"providerDraft")) { co_await compose(lifetime, message); co_return; }
         readerFocused = true; applyMailLayout(); renderReader(message);
-        if (!flag(message, L"read") && flag(object(object(state, L"settings"), L"preferences"), L"markReadOnOpen")) {
+        if (markOnOpen && !flag(message, L"read") && flag(object(object(state, L"settings"), L"preferences"), L"markReadOnOpen")) {
             Json changes; changes.Insert(L"read", Value::CreateBooleanValue(true));
             auto updated = co_await service->request(L"/messages/" + escaped(id), account, L"PATCH", changes);
             if (!current(version, captured) || sequence != selectionGeneration || requestGeneration != readGeneration) co_return;
@@ -1043,7 +1054,7 @@ MenuFlyout Shell::mailActionsMenu(Json message) {
 IAsyncAction Shell::patchMessages(std::vector<Json> messages, Json changes) {
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
     if (dialogOpen || loading || closing || !dirty.empty() || service->writing() || messages.empty()) co_return;
-    // Reload an interrupted detail request after the patch, while retaining the
+    // Refresh the currently selected row if the patch interrupts a detail read, retaining the
     // mounted reader's Load/Hide choice and interactions for metadata changes.
     auto interrupted = pendingRead; auto sequence = selectionGeneration;
     pendingRead = Json();
@@ -1069,7 +1080,13 @@ IAsyncAction Shell::patchMessages(std::vector<Json> messages, Json changes) {
     if (current(version, captured)) {
         for (auto& cursor : cursors) cursor = L"";
         co_await loadPage();
-        if (current(version, captured) && sequence == selectionGeneration && interrupted.Size()) co_await read(interrupted);
+        auto chosen = selectedMessages();
+        if (current(version, captured) && sequence == selectionGeneration && interrupted.Size() && chosen.size() == 1) {
+            bool explicitRead = changes.HasKey(L"read") && std::any_of(messages.begin(), messages.end(), [&](auto const& message) {
+                return text(message, L"accountId") == text(chosen[0], L"accountId") && text(message, L"id") == text(chosen[0], L"id");
+            });
+            co_await read(chosen[0], !explicitRead);
+        }
         if (!failure.empty()) error(failure);
     }
 }
