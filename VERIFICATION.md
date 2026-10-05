@@ -1,4 +1,10 @@
-# Verification — 4 October 2026
+# Verification — 5 October 2026
+
+## Current source (unreleased) — summary failure diagnostics
+
+The shared summary completion path now preserves the server-authored diagnostic from model requests or P0–P4 validation instead of replacing every failure with generic settings advice. Manual, arrival and scheduled jobs use that path. Existing generic historical errors cannot recover the discarded cause, and Activity retains its content-free last-summary projection. Failed paid work still requires a new review; no retry or model timeout was changed.
+
+The expanded regression failed against the previous implementation and passes after the fix. Existing fixtures cover distinct empty-response and malformed-summary diagnostics, exclusion of raw model/provider error text, manual API/report agreement, persistence after restart, and no automatic retry. On macOS with Rust 1.99, formatting, strict all-target Clippy and all 40 tests in `background`, `ai` and `activity` passed. Two unnecessary closure borrows in the model error handler were removed for the current Clippy check. Tests used isolated temporary stores and loopback model fixtures; no real mail, calendar event or paid model request was submitted. Native packages were not rebuilt or installed, and this does not establish the cause of an installed app's historical model failure or live-account acceptance.
 
 ## Current source (unreleased) — mail refresh review fixes
 

@@ -680,15 +680,16 @@ async fn manual_summary_reviews_are_single_use_owner_bound_and_do_not_change_sch
     let failed = run.await.unwrap();
     assert_eq!(failed["status"], "failed");
     assert_eq!(failed["summaries"][0]["status"], "failed");
+    assert!(failed["error"].as_str().unwrap().contains("empty response"));
+    assert_eq!(failed["summaries"][0]["error"], failed["error"]);
     assert!(!failed.to_string().contains("private model failure"));
     jobs::tick(&app).await.unwrap();
     assert!(calls.try_recv().is_err()); // Failed paid work is never automatically retried.
     drop(app);
     let restarted = App::open(&root, 3011, String::new(), String::new()).unwrap();
-    assert_eq!(
-        restarted.db(|db| jobs::reports(db, A)).await.unwrap()[0]["status"],
-        "failed"
-    );
+    let reports = restarted.db(|db| jobs::reports(db, A)).await.unwrap();
+    assert_eq!(reports[0]["status"], "failed");
+    assert_eq!(reports[0]["error"], failed["error"]);
     drop(restarted);
     server.abort();
     fs::remove_dir_all(root).unwrap();
@@ -842,20 +843,27 @@ async fn source_permissions_models_connections_and_transient_generation_discard_
 async fn failed_or_shutdown_model_calls_never_retry_and_overflow_stays_visible() {
     let (url, mut calls, server) = fake_model().await;
     let (app, root) = app_fixture(url).await;
-    app.db(|db| jobs::arrivals(db, A, &["same".into()]))
-        .await
-        .unwrap();
-    let worker = run_tick(&app);
-    let (_, release) = next_call(&mut calls).await;
-    release
-        .send(json!({"privateError":"fixture secret"}))
-        .unwrap();
-    worker.await.unwrap();
-    jobs::tick(&app).await.unwrap();
-    assert!(calls.try_recv().is_err());
-    let reports = app.db(|db| jobs::reports(db, A)).await.unwrap();
-    assert_eq!(reports[0]["status"], "failed");
-    assert!(!reports.to_string().contains("fixture secret"));
+    for (response, diagnostic) in [
+        (json!({"privateError":"fixture secret"}), "empty response"),
+        (
+            json!({"choices":[{"message":{"content":"fixture secret"}}]}),
+            "incomplete P0–P4 summary",
+        ),
+    ] {
+        app.db(|db| jobs::arrivals(db, A, &["same".into()]))
+            .await
+            .unwrap();
+        let worker = run_tick(&app);
+        let (_, release) = next_call(&mut calls).await;
+        release.send(response).unwrap();
+        worker.await.unwrap();
+        jobs::tick(&app).await.unwrap();
+        assert!(calls.try_recv().is_err());
+        let reports = app.db(|db| jobs::reports(db, A)).await.unwrap();
+        assert_eq!(reports[0]["status"], "failed");
+        assert!(reports[0]["error"].as_str().unwrap().contains(diagnostic));
+        assert!(!reports.to_string().contains("fixture secret"));
+    }
     app.db(|db| jobs::arrivals(db, A, &["same".into()]))
         .await
         .unwrap();

@@ -308,7 +308,7 @@ pub async fn run_model(
     if !string(ai, "apiKey").is_empty() {
         request = request.bearer_auth(string(ai, "apiKey"));
     }
-    let mut response = request.send().await.map_err(&failure)?;
+    let mut response = request.send().await.map_err(failure)?;
     if !response.status().is_success() {
         return Err(Error::new(
             502,
@@ -328,7 +328,7 @@ pub async fn run_model(
         return Err(too_large());
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(&failure)? {
+    while let Some(chunk) = response.chunk().await.map_err(failure)? {
         if bytes.len() + chunk.len() > 1024 * 1024 {
             return Err(too_large());
         }

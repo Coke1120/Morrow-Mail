@@ -1053,18 +1053,30 @@ fn finish(
 ) -> Result<()> {
     db.transaction(|db| {
         let config = db.settings()?;
-        let value = automation(&config,account);
-        if !value["jobs"].as_array().into_iter().flatten().any(|current|current["id"]==job["id"]&&current["status"]=="running") { return Ok(()); }
-        let brain_changed=crate::brain::context(db,&config,account,&Value::Null)?!=context["brain"];
-        let patch = if !valid_job(db,account,job,&config)? || ai::generation(&config,account)!=context["generation"] || brain_changed {
+        let value = automation(&config, account);
+        if !value["jobs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|current| current["id"] == job["id"] && current["status"] == "running")
+        {
+            return Ok(());
+        }
+        let brain_changed =
+            crate::brain::context(db, &config, account, &Value::Null)? != context["brain"];
+        let patch = if !valid_job(db, account, job, &config)?
+            || ai::generation(&config, account) != context["generation"]
+            || brain_changed
+        {
             json!({"status":"skipped","error":"Context changed; the result was discarded."})
         } else {
             match result {
-                Ok(value)=>merge(value,&json!({"status":"completed","completedAt":now()})),
-                Err(_)=>json!({"status":"failed","error":"Summary could not be generated. Check model settings and permissions; try a manual summary."}),
+                Ok(value) => merge(value, &json!({"status":"completed","completedAt":now()})),
+                // generate returns server-authored diagnostics, never provider/model response bodies.
+                Err(error) => json!({"status":"failed","error":error.to_string()}),
             }
         };
-        update_job(db,account,string(job,"id"),&patch)
+        update_job(db, account, string(job, "id"), &patch)
     })
 }
 async fn automation_tick(app: &App) -> Result<()> {
