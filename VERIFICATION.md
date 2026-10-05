@@ -6,6 +6,10 @@ The candidate carries merged PR #17 mail refresh/summary diagnostics and PR #18 
 
 Beta.43 publication requires fresh same-tag macOS and Windows builds, full native checks, and the existing publisher's same-run/same-attempt provenance and pinned-key signature verification. No waiver applies. Public assets and publication evidence will be verified after that gate succeeds. The preparation changes only version metadata and release documentation. See the [release notes](docs/releases/v0.6.0-beta.43.md) for scope and remaining acceptance limits.
 
+[Tagged attempts 1](https://github.com/Coke1120/Morrow-Mail/actions/runs/37362899273/attempts/1) and [2](https://github.com/Coke1120/Morrow-Mail/actions/runs/37362899273/attempts/2) both passed the complete macOS job. Windows never received a hosted runner and was cancelled after repeated allocation attempts in both runs, with no build or test steps executed; the release jobs were skipped. GitHub's Actions status incident reported hosted-runner assignment delays at that time. A full rerun remains required once runner availability recovers so both platform artifacts come from the same successful attempt; no tests, deadlines or security gates were changed.
+
+Publication is blocked on hosted-runner availability. No beta.43 release or public assets have been created. Resume by rerunning the full workflow for run `37362899273` on the existing tag `v0.6.0-beta.43` (`fdb964e940650476d79771b6ea100512f8bcf85e`); both platform jobs and the existing publisher must pass in that same attempt, followed by public-download/signature verification.
+
 ## Current source (unreleased) — summary failure diagnostics
 
 The shared summary completion path now preserves the server-authored diagnostic from model requests or P0–P4 validation instead of replacing every failure with generic settings advice. Manual, arrival and scheduled jobs use that path. Existing generic historical errors cannot recover the discarded cause, and Activity retains its content-free last-summary projection. Failed paid work still requires a new review; no retry or model timeout was changed.
