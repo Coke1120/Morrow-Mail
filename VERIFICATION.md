@@ -1,5 +1,11 @@
 # Verification — 6 October 2026
 
+## Current source (unreleased) — remote read-state reconciliation
+
+The shared import path now records the last observed provider read flag, accepts changed remote Read/Unread values, and retains local read edits while the server flag is unchanged. It releases obsolete Gmail read overrides on convergence or a changed server flag. Missing read metadata preserves the baseline; legacy caches without one adopt the first fetched server value, with legacy Gmail label IDs used when available. The change applies to sync, history and initial account imports through the existing common function, retaining bounded fetch scopes and local-only marker writes.
+
+The new regression failed against the previous implementation when an Outlook message changed from unread to read remotely. The focused mail/Gmail suites pass all 16 tests, covering both read directions across Gmail/Outlook/IMAP, local edits, convergence, legacy rows, partial metadata, restart, account collisions and retained local markers. The existing TLS-loopback Gmail service fixture also exercises real sync/PATCH requests and cached metadata refreshes. Rust 1.99 formatting, strict all-target Clippy and all 213 locked Rust tests passed (zero failed or ignored). Native packages were not rebuilt or installed; tests use isolated temporary workspaces and fictional providers, without real mail/calendar/model writes or live-account acceptance. This fix is not part of the beta.43 tag.
+
 ## 0.6.0-beta.43 — release candidate
 
 The candidate carries merged PR #17 mail refresh/summary diagnostics and PR #18 Windows reader reselection fixes. The integrated main commit `ee0d7d6bc0ee6117051b26fe4d9856e06f14b832` passed [paired native CI 37294922556](https://github.com/Coke1120/Morrow-Mail/actions/runs/37294922556): both Rust checks and native packages, full macOS acceptance, Windows UI smoke and the fictional-mail benchmark. The PR #18 head separately passed [paired CI 37220068928](https://github.com/Coke1120/Morrow-Mail/actions/runs/37220068928), including the new selection/Unread/Hide checks. These runs used beta.42 metadata and are pre-release evidence only.

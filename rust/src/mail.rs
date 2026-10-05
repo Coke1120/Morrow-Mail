@@ -291,6 +291,40 @@ pub(crate) fn google_import_state(message: &Value, existing: Option<&Value>) -> 
     result
 }
 
+fn import_read_state(message: &Value, existing: Option<&Value>, imported: &mut Value) {
+    let previous = existing.and_then(|value| {
+        value["providerSnapshot"]["read"].as_bool().or_else(|| {
+            value["providerLabelIds"]
+                .as_array()
+                .map(|labels| !labels.iter().any(|label| label == "UNREAD"))
+        })
+    });
+    let remote = message["read"].as_bool();
+    if let Some(snapshot) = remote.or(previous) {
+        if !imported["providerSnapshot"].is_object() {
+            imported["providerSnapshot"] = json!({});
+        }
+        imported["providerSnapshot"]["read"] = snapshot.into();
+    }
+    if let Some(remote) = remote {
+        // Keep local edits while the provider is unchanged; a newly observed
+        // provider value wins, and convergence releases obsolete overrides.
+        let read = if previous == Some(remote) {
+            existing
+                .and_then(|value| value["read"].as_bool())
+                .unwrap_or(remote)
+        } else {
+            remote
+        };
+        imported["read"] = read.into();
+        if read == remote
+            && let Some(overrides) = imported["localOverrides"].as_object_mut()
+        {
+            overrides.remove("read");
+        }
+    }
+}
+
 pub fn import_messages(db: &Store, mail: &Value, messages: &[Value]) -> Result<Vec<String>> {
     let account = string(mail, "email");
     let is_imap = ["", "imap"].contains(&string(mail, "provider"));
@@ -310,7 +344,9 @@ pub fn import_messages(db: &Store, mail: &Value, messages: &[Value]) -> Result<V
                 }
             }
         }
-        if mail["provider"]=="google"{value=merge(value,&google_import_state(message,existing.as_ref()));}db.upsert(account,&value)?;
+        if mail["provider"]=="google"{value=merge(value,&google_import_state(message,existing.as_ref()));}
+        import_read_state(message, existing.as_ref(), &mut value);
+        db.upsert(account,&value)?;
     }Ok(())})?;
     Ok(new_ids)
 }

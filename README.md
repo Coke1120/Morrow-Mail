@@ -28,6 +28,8 @@ AI Studio covers 19 behaviors through model-backed assistance and clearly labele
 
 This project is not affiliated with Genspark and does not claim complete parity. See [feature coverage](FEATURE_COVERAGE.md) for implementation status and simulation limits, and [verification](VERIFICATION.md) for completed checks and remaining release validation.
 
+**Current source (unreleased) — read-state refresh:** Fetched Gmail, Outlook and IMAP messages now follow a changed server Read/Unread value. Local read changes survive refreshes while the last observed server value is unchanged; stale read overrides are released when the server catches up or changes. This applies to messages fetched by the existing bounded refresh/history scopes; local Read/Unread actions still do not write to the provider. See [verification](VERIFICATION.md).
+
 **0.6.0-beta.43 candidate:** Outlook/IMAP All Mail imports refresh the newest Inbox and Sent pages even when the individual folder checkboxes are off. Reimported Outlook messages update their downloaded provider-folder membership while retaining local IDs and markers. Automatic refresh remains due when another mailbox operation holds the lock, so it can run on the next worker tick. Failed AI summaries retain safe model diagnostics in their saved reports.
 
 The candidate also fixes Windows returning to the already displayed message while another detail read is pending. Changing the row cancels obsolete reads, and marker refresh uses the currently selected owned message while preserving an explicit Read/Unread change and the same message's Hide choice. Publication requires fresh paired tagged checks and signed provenance; see the [release notes](docs/releases/v0.6.0-beta.43.md) and [verification](VERIFICATION.md).
