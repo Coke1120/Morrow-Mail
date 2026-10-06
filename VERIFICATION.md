@@ -1,10 +1,21 @@
 # Verification — 6 October 2026
 
-## 0.6.0-beta.44 — release candidate
+## 0.6.0-beta.44 — published paired native release
+
+[Beta.44](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.44) was published at 2026-10-06 14:17:21 HKT from `f4e3b3d24b1e5294b9446d87c797c268d1827c10`. [Tagged CI 37420582083, attempt 1](https://github.com/Coke1120/Morrow-Mail/actions/runs/37420582083/attempts/1) passed all three jobs: Node-free Rust formatting, strict all-target Clippy and locked tests (213 on macOS, 212 on Windows, zero failed/ignored); both native builds and package checks; full macOS production-service acceptance; the Windows fresh/owned/restart UI walkthrough and 1,000/10,000/50,000-message fictional-mail benchmark; and the existing publisher's same-run/same-attempt provenance and pinned-key signing gate. No waiver applied.
+
+All six public assets were downloaded without authentication and matched their GitHub sizes and SHA-256 digests. Both public ZIPs and checksum files are byte-identical to this tag run's candidates. ZIP integrity, duplicate/path checks, exact checksum files, manifest platform/version metadata and the published release body against the committed notes passed. The manifest's Ed25519 signature verified against the pinned public key, unchanged from beta.42. The identical macOS candidate passed deep/strict ad-hoc signature verification, plist lint, numeric bundle/release/service version checks and the exported private drag-type declaration. The service-version probe used a separate absolute fixture workspace. Both packaged Windows metadata files report beta.44; Windows execution was verified by the tagged native job.
+
+| Public archive | Bytes | SHA-256 |
+| --- | ---: | --- |
+| macos-arm64 | 13,418,418 | `66f47a46b6ed1dd70fa435039f3a2d7ea5c69036c7b160647088323c27924af4` |
+| windows-x64 | 37,745,171 | `fe1a5431c27a8ae0d61a5da6b5316e082490213cc7aa91ee7c32d6e4e421cb95` |
+
+Beta.44 includes PR #19 read-state reconciliation and the PR #17/#18 mail refresh, summary diagnostics and Windows reader fixes from unpublished beta.43. Tests use fictional providers and isolated temporary workspaces; no real mail, calendar event or paid-model request was submitted, and installed apps were not replaced. macOS is ad-hoc signed without notarization and Windows is unsigned. Full live-account/provider/model, real external HTTPS image fetching, physical-pointer/accessibility, clean-machine and complete installed-updater restart/rollback acceptance remain outstanding. The previously recorded intermittent Windows reader initialization timeout remains unresolved; its existing gate passed this run. See the [release notes](docs/releases/v0.6.0-beta.44.md).
+
+## PR #19 review before publication
 
 PR #19 was reviewed at `b724142d554698ade19a582da9e1412bd9b7d1dc` and merged into main as `8073d3e40f8ca8c85fc1991ccd3edb8076b35d39`. Review traced the common import path through sync, history and account connection, including cached Gmail metadata, local PATCH overrides, restart persistence and colliding account IDs; no blocking defect was found. Fresh local Rust 1.99 formatting, strict all-target Clippy and all 16 mail/Gmail regression tests passed. The PR's [paired native CI 37368658725](https://github.com/Coke1120/Morrow-Mail/actions/runs/37368658725) passed both platform jobs, including native acceptance and Windows UI smoke/benchmark. These runs used beta.43 metadata and are pre-release evidence. The optional Jev evaluation was unavailable because its API key was not configured.
-
-Beta.44 includes PR #19 read-state reconciliation and the PR #17/#18 changes from the unpublished beta.43 candidate. Publication requires fresh same-tag macOS and Windows builds, all native checks and the existing publisher's same-run/same-attempt provenance and pinned-key signature gate. No waiver applies. Public-download verification will be recorded after publication. See the [release notes](docs/releases/v0.6.0-beta.44.md) for scope and remaining acceptance limits.
 
 ## PR #19 pre-release checks — remote read-state reconciliation
 
@@ -16,19 +27,19 @@ The new regression failed against the previous implementation when an Outlook me
 
 The candidate carries merged PR #17 mail refresh/summary diagnostics and PR #18 Windows reader reselection fixes. The integrated main commit `ee0d7d6bc0ee6117051b26fe4d9856e06f14b832` passed [paired native CI 37294922556](https://github.com/Coke1120/Morrow-Mail/actions/runs/37294922556): both Rust checks and native packages, full macOS acceptance, Windows UI smoke and the fictional-mail benchmark. The PR #18 head separately passed [paired CI 37220068928](https://github.com/Coke1120/Morrow-Mail/actions/runs/37220068928), including the new selection/Unread/Hide checks. These runs used beta.42 metadata and are pre-release evidence only.
 
-Beta.43 publication requires fresh same-tag macOS and Windows builds, full native checks, and the existing publisher's same-run/same-attempt provenance and pinned-key signature verification. No waiver applies. Public assets and publication evidence will be verified after that gate succeeds. The preparation changes only version metadata and release documentation. See the [release notes](docs/releases/v0.6.0-beta.43.md) for scope and remaining acceptance limits.
+The beta.43 gate required fresh same-tag macOS and Windows builds, full native checks and the existing publisher's same-run/same-attempt provenance and pinned-key signature verification. No waiver applied. Its preparation changed only version metadata and release documentation. See the [release notes](docs/releases/v0.6.0-beta.43.md) for scope and remaining acceptance limits.
 
 [Tagged attempts 1](https://github.com/Coke1120/Morrow-Mail/actions/runs/37362899273/attempts/1) and [2](https://github.com/Coke1120/Morrow-Mail/actions/runs/37362899273/attempts/2) both passed the complete macOS job. Windows never received a hosted runner and was cancelled after repeated allocation attempts in both runs, with no build or test steps executed; the release jobs were skipped. GitHub's Actions status incident reported hosted-runner assignment delays at that time. Both platform artifacts would have required the same successful attempt; no tests, deadlines or security gates were changed.
 
 No beta.43 release or public assets were created. Its existing tag `v0.6.0-beta.43` (`fdb964e940650476d79771b6ea100512f8bcf85e`) is preserved. Beta.44 supersedes this candidate and adds PR #19; its own complete paired release gate remains required.
 
-## Current source (unreleased) — summary failure diagnostics
+## PR #17 pre-release checks — summary failure diagnostics
 
 The shared summary completion path now preserves the server-authored diagnostic from model requests or P0–P4 validation instead of replacing every failure with generic settings advice. Manual, arrival and scheduled jobs use that path. Existing generic historical errors cannot recover the discarded cause, and Activity retains its content-free last-summary projection. Failed paid work still requires a new review; no retry or model timeout was changed.
 
 The expanded regression failed against the previous implementation and passes after the fix. Existing fixtures cover distinct empty-response and malformed-summary diagnostics, exclusion of raw model/provider error text, manual API/report agreement, persistence after restart, and no automatic retry. On macOS with Rust 1.99, formatting, strict all-target Clippy and all 40 tests in `background`, `ai` and `activity` passed. Two unnecessary closure borrows in the model error handler were removed for the current Clippy check. Tests used isolated temporary stores and loopback model fixtures; no real mail, calendar event or paid model request was submitted. Native packages were not rebuilt or installed, and this does not establish the cause of an installed app's historical model failure or live-account acceptance.
 
-## Current source (unreleased) — mail refresh review fixes
+## PR #17 pre-release checks — mail refresh review fixes
 
 Four new regression fixtures reproduced the three reviewed failures before the fixes: Outlook All Mail refresh skipped Inbox and Sent when their inactive checkboxes were off; the equivalent IMAP configuration reported success without attempting a fetch; Outlook reimport kept obsolete provider-folder membership; and a busy mailbox consumed the next regular sync interval. Coverage also checks selected-folder refresh, retained paused history options, duplicate provider IDs across accounts, local read/star/Pending/Later/folder markers, indexed provider-folder pages, preserved sent-message fingerprints, and failure pacing after an actual background read attempt. Fixtures use temporary workspaces and loopback providers or deliberately unusable IMAP configurations, with no real mail, calendar or model requests.
 
