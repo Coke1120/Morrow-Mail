@@ -2,6 +2,111 @@ use morrow_search::{mail, pages, providers, store::Store};
 use serde_json::json;
 
 #[test]
+fn remote_read_changes_replace_stale_flags_without_losing_local_edits_or_owners() {
+    let directory = std::env::temp_dir().join(format!("morrow-read-sync-{}", uuid::Uuid::new_v4()));
+    let mut db = Store::open(&directory).unwrap();
+    let owner = "a@example.invalid";
+    let other = "b@example.invalid";
+    for provider in ["microsoft", "imap", "google"] {
+        for initial in [false, true] {
+            let id = format!("{provider}:{initial}");
+            let connection = json!({"email":owner,"provider":provider});
+            let mut message = json!({"id":id,"folder":"inbox","providerFolderId":"INBOX","body":"Downloaded body","read":initial,"starred":false,"labels":[]});
+            if provider == "google" {
+                message["providerLabelIds"] = if initial {
+                    json!(["INBOX"])
+                } else {
+                    json!(["INBOX", "UNREAD"])
+                };
+            }
+            for account in [owner, other] {
+                mail::import_messages(
+                    &db,
+                    &json!({"email":account,"provider":provider}),
+                    std::slice::from_ref(&message),
+                )
+                .unwrap();
+            }
+            let untouched = db.get(other, &id).unwrap().unwrap();
+            let mut remote = message.clone();
+            remote["read"] = (!initial).into();
+            if provider == "google" {
+                remote["providerLabelIds"] = if initial {
+                    json!(["INBOX", "UNREAD"])
+                } else {
+                    json!(["INBOX"])
+                };
+            }
+            mail::import_messages(&db, &connection, std::slice::from_ref(&remote)).unwrap();
+            assert_eq!(
+                db.get(owner, &id).unwrap().unwrap()["read"],
+                !initial,
+                "{provider}: remote change"
+            );
+            mail::import_messages(&db, &connection, std::slice::from_ref(&message)).unwrap();
+            assert_eq!(db.get(owner, &id).unwrap().unwrap()["read"], initial);
+
+            db.update(
+                owner,
+                &id,
+                &json!({"read":!initial,"starred":true,"pending":true,"lowPriority":true}),
+            )
+            .unwrap();
+            mail::import_messages(&db, &connection, std::slice::from_ref(&message)).unwrap();
+            assert_eq!(
+                db.get(owner, &id).unwrap().unwrap()["read"],
+                !initial,
+                "{provider}: unchanged server keeps local edit"
+            );
+            let mut partial = message.clone();
+            partial.as_object_mut().unwrap().remove("read");
+            mail::import_messages(&db, &connection, &[partial]).unwrap();
+            let saved = db.get(owner, &id).unwrap().unwrap();
+            assert_eq!(saved["read"], !initial);
+            assert_eq!(saved["providerSnapshot"]["read"], initial);
+
+            drop(db);
+            db = Store::open(&directory).unwrap();
+            mail::import_messages(&db, &connection, std::slice::from_ref(&message)).unwrap();
+            assert_eq!(db.get(owner, &id).unwrap().unwrap()["read"], !initial);
+            // Once the server catches up, its next change must not be hidden by an old override.
+            mail::import_messages(&db, &connection, &[remote]).unwrap();
+            mail::import_messages(&db, &connection, std::slice::from_ref(&message)).unwrap();
+            let saved = db.get(owner, &id).unwrap().unwrap();
+            assert_eq!(
+                saved["read"], initial,
+                "{provider}: obsolete override released"
+            );
+            for key in ["starred", "pending", "lowPriority"] {
+                assert_eq!(saved[key], true, "{provider}: retain {key}");
+            }
+            assert_eq!(db.get(other, &id).unwrap().unwrap(), untouched);
+
+            // Old caches without a read snapshot adopt the fetched server value on first refresh.
+            let legacy_id = format!("{provider}:legacy-{initial}");
+            message["id"] = legacy_id.clone().into();
+            db.upsert(owner, &message).unwrap();
+            message["read"] = (!initial).into();
+            if provider == "google" {
+                message["providerLabelIds"] = if initial {
+                    json!(["INBOX", "UNREAD"])
+                } else {
+                    json!(["INBOX"])
+                };
+            }
+            mail::import_messages(&db, &connection, &[message]).unwrap();
+            assert_eq!(
+                db.get(owner, &legacy_id).unwrap().unwrap()["read"],
+                !initial,
+                "{provider}: legacy cache"
+            );
+        }
+    }
+    drop(db);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn reimport_updates_provider_membership_without_losing_local_changes_or_other_owners() {
     let directory =
         std::env::temp_dir().join(format!("morrow-import-folders-{}", uuid::Uuid::new_v4()));
@@ -17,6 +122,7 @@ fn reimport_updates_provider_membership_without_losing_local_changes_or_other_ow
         )
         .unwrap();
     }
+    let untouched = db.get(other, "microsoft:same").unwrap().unwrap();
     db.update(owner, "microsoft:same", &json!({"folder":"trash","read":true,"starred":true,"pending":true,"lowPriority":true,"labels":["Local label"]})).unwrap();
     let mut moved = message.clone();
     moved["providerFolderId"] = "new-folder".into();
@@ -40,7 +146,7 @@ fn reimport_updates_provider_membership_without_losing_local_changes_or_other_ow
         assert_eq!(saved[key], true, "{key}");
     }
     assert_eq!(saved["labels"], json!(["Local label"]));
-    assert_eq!(db.get(other, "microsoft:same").unwrap().unwrap(), message);
+    assert_eq!(db.get(other, "microsoft:same").unwrap().unwrap(), untouched);
     for (account, folder, total) in [
         (owner, "old-folder", 0),
         (owner, "new-folder", 1),

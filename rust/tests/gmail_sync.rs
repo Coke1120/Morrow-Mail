@@ -408,13 +408,36 @@ async fn sync_refreshes_remote_state_in_five_scopes_and_keeps_local_patches_and_
     assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
     let saved = f.message(A, "google:same").await;
     assert_eq!(saved["folder"], "archive");
-    assert_eq!(saved["read"], true);
+    assert_eq!(saved["read"], false);
     assert_eq!(saved["starred"], false);
     assert_eq!(saved["labels"], json!(["Old label"]));
     assert_eq!(
         saved["providerSnapshot"],
         json!({"folder":"inbox","read":false,"starred":true,"labels":["Old label"]})
     );
+    assert_ne!(saved["localOverrides"]["read"], true);
+    assert_eq!(
+        f.call(
+            "PATCH",
+            "/api/messages/google:same",
+            A,
+            json!({"read":true})
+        )
+        .await
+        .0,
+        200
+    );
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    assert_eq!(f.message(A, "google:same").await["read"], true);
+    f.rows.lock().unwrap()[0] = raw("same", json!(["INBOX", "STARRED", "Label_1"]));
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    assert_ne!(
+        f.message(A, "google:same").await["localOverrides"]["read"],
+        true
+    );
+    f.rows.lock().unwrap()[0] = raw("same", json!(["INBOX", "UNREAD", "STARRED", "Label_1"]));
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    assert_eq!(f.message(A, "google:same").await["read"], false);
     assert_eq!(f.message(B, "google:same").await, other);
     assert_eq!(f.app.settings().await.unwrap()["activeAccount"], B);
     assert_eq!(
