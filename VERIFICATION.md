@@ -1,20 +1,26 @@
 # Verification — 6 October 2026
 
-## Current source (unreleased) — remote read-state reconciliation
+## 0.6.0-beta.44 — release candidate
+
+PR #19 was reviewed at `b724142d554698ade19a582da9e1412bd9b7d1dc` and merged into main as `8073d3e40f8ca8c85fc1991ccd3edb8076b35d39`. Review traced the common import path through sync, history and account connection, including cached Gmail metadata, local PATCH overrides, restart persistence and colliding account IDs; no blocking defect was found. Fresh local Rust 1.99 formatting, strict all-target Clippy and all 16 mail/Gmail regression tests passed. The PR's [paired native CI 37368658725](https://github.com/Coke1120/Morrow-Mail/actions/runs/37368658725) passed both platform jobs, including native acceptance and Windows UI smoke/benchmark. These runs used beta.43 metadata and are pre-release evidence. The optional Jev evaluation was unavailable because its API key was not configured.
+
+Beta.44 includes PR #19 read-state reconciliation and the PR #17/#18 changes from the unpublished beta.43 candidate. Publication requires fresh same-tag macOS and Windows builds, all native checks and the existing publisher's same-run/same-attempt provenance and pinned-key signature gate. No waiver applies. Public-download verification will be recorded after publication. See the [release notes](docs/releases/v0.6.0-beta.44.md) for scope and remaining acceptance limits.
+
+## PR #19 pre-release checks — remote read-state reconciliation
 
 The shared import path now records the last observed provider read flag, accepts changed remote Read/Unread values, and retains local read edits while the server flag is unchanged. It releases obsolete Gmail read overrides on convergence or a changed server flag. Missing read metadata preserves the baseline; legacy caches without one adopt the first fetched server value, with legacy Gmail label IDs used when available. The change applies to sync, history and initial account imports through the existing common function, retaining bounded fetch scopes and local-only marker writes.
 
 The new regression failed against the previous implementation when an Outlook message changed from unread to read remotely. The focused mail/Gmail suites pass all 16 tests, covering both read directions across Gmail/Outlook/IMAP, local edits, convergence, legacy rows, partial metadata, restart, account collisions and retained local markers. The existing TLS-loopback Gmail service fixture also exercises real sync/PATCH requests and cached metadata refreshes. Rust 1.99 formatting, strict all-target Clippy and all 213 locked Rust tests passed (zero failed or ignored). Native packages were not rebuilt or installed; tests use isolated temporary workspaces and fictional providers, without real mail/calendar/model writes or live-account acceptance. This fix is not part of the beta.43 tag.
 
-## 0.6.0-beta.43 — release candidate
+## 0.6.0-beta.43 — unpublished, superseded by beta.44
 
 The candidate carries merged PR #17 mail refresh/summary diagnostics and PR #18 Windows reader reselection fixes. The integrated main commit `ee0d7d6bc0ee6117051b26fe4d9856e06f14b832` passed [paired native CI 37294922556](https://github.com/Coke1120/Morrow-Mail/actions/runs/37294922556): both Rust checks and native packages, full macOS acceptance, Windows UI smoke and the fictional-mail benchmark. The PR #18 head separately passed [paired CI 37220068928](https://github.com/Coke1120/Morrow-Mail/actions/runs/37220068928), including the new selection/Unread/Hide checks. These runs used beta.42 metadata and are pre-release evidence only.
 
 Beta.43 publication requires fresh same-tag macOS and Windows builds, full native checks, and the existing publisher's same-run/same-attempt provenance and pinned-key signature verification. No waiver applies. Public assets and publication evidence will be verified after that gate succeeds. The preparation changes only version metadata and release documentation. See the [release notes](docs/releases/v0.6.0-beta.43.md) for scope and remaining acceptance limits.
 
-[Tagged attempts 1](https://github.com/Coke1120/Morrow-Mail/actions/runs/37362899273/attempts/1) and [2](https://github.com/Coke1120/Morrow-Mail/actions/runs/37362899273/attempts/2) both passed the complete macOS job. Windows never received a hosted runner and was cancelled after repeated allocation attempts in both runs, with no build or test steps executed; the release jobs were skipped. GitHub's Actions status incident reported hosted-runner assignment delays at that time. A full rerun remains required once runner availability recovers so both platform artifacts come from the same successful attempt; no tests, deadlines or security gates were changed.
+[Tagged attempts 1](https://github.com/Coke1120/Morrow-Mail/actions/runs/37362899273/attempts/1) and [2](https://github.com/Coke1120/Morrow-Mail/actions/runs/37362899273/attempts/2) both passed the complete macOS job. Windows never received a hosted runner and was cancelled after repeated allocation attempts in both runs, with no build or test steps executed; the release jobs were skipped. GitHub's Actions status incident reported hosted-runner assignment delays at that time. Both platform artifacts would have required the same successful attempt; no tests, deadlines or security gates were changed.
 
-Publication is blocked on hosted-runner availability. No beta.43 release or public assets have been created. Resume by rerunning the full workflow for run `37362899273` on the existing tag `v0.6.0-beta.43` (`fdb964e940650476d79771b6ea100512f8bcf85e`); both platform jobs and the existing publisher must pass in that same attempt, followed by public-download/signature verification.
+No beta.43 release or public assets were created. Its existing tag `v0.6.0-beta.43` (`fdb964e940650476d79771b6ea100512f8bcf85e`) is preserved. Beta.44 supersedes this candidate and adds PR #19; its own complete paired release gate remains required.
 
 ## Current source (unreleased) — summary failure diagnostics
 

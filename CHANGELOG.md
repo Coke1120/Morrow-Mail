@@ -1,6 +1,13 @@
 # Changelog
 
-## 0.6.0-beta.43 — 2026-10-06
+## 0.6.0-beta.44 — 2026-10-06
+
+- Reconcile fetched Gmail, Outlook and IMAP Read/Unread changes against the last observed server flag, retaining local edits while that flag is unchanged and releasing obsolete Gmail read overrides on convergence or server change.
+- Preserve the read baseline across restart and partial metadata refreshes, with legacy-cache migration and account isolation covered by regression tests. Refresh remains bounded and local Read/Unread actions do not write to providers.
+- Include the mail refresh, summary diagnostics and Windows reader fixes from the unpublished beta.43 candidate; preserve its existing tag.
+- Require fresh paired tagged native checks and the existing signed publisher; see [release notes](docs/releases/v0.6.0-beta.44.md) for validation and limits.
+
+## 0.6.0-beta.43 — 2026-10-06 (unpublished)
 
 - Refresh bounded Inbox and Sent pages for Outlook/IMAP All Mail even when inactive folder checkboxes are off; update Outlook provider-folder membership while retaining local IDs and markers.
 - Keep automatic refresh due while another operation owns the mailbox lock, and pace subsequent attempts normally.
