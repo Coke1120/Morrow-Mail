@@ -1,10 +1,17 @@
 # Verification — 7 October 2026
 
-## 0.6.0-beta.45 — release candidate
+## 0.6.0-beta.45 — published paired native release
 
-Beta.45 carries PR #20, merged as `334d305c1d902c5129e8f76cb25643f157396bcd`. The reviewed head `11d7898` passed all 214 local locked Rust tests, formatting and strict all-target Clippy. [PR CI 37590455373, attempt 1](https://github.com/Coke1120/Morrow-Mail/actions/runs/37590455373/attempts/1) passed both native builds, macOS acceptance, Windows fresh/owned/restart UI smoke and the fictional-mail benchmark. These checks used beta.44 metadata and are pre-release evidence only.
+[Beta.45](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.45) was published at 2026-10-07 17:15:03 HKT from `cb68c8f91cdce72d9e53b3d7928d7b0d8632eb87`. [Tagged CI 37596278116, attempt 1](https://github.com/Coke1120/Morrow-Mail/actions/runs/37596278116/attempts/1) passed all three jobs: Node-free Rust formatting, strict all-target Clippy and locked tests (214 on macOS, 213 on Windows, zero failed/ignored); both native builds and package checks; full macOS production-service acceptance; the Windows fresh/owned/restart UI walkthrough and 1,000/10,000/50,000-message fictional-mail benchmark; and the existing publisher's same-run/same-attempt provenance and pinned-key signing gate. No waiver applied.
 
-The beta.45 tag requires fresh same-tag macOS and Windows builds, Node-free Rust checks, full native acceptance and the existing publisher's same-run/same-attempt provenance and pinned-key signature verification before either download is public. No waiver applies. Preparation changes only common version metadata and release documentation. Tagged CI and public-download verification are pending. See the [release notes](docs/releases/v0.6.0-beta.45.md) for scope and remaining acceptance limits.
+All six public assets were downloaded without authentication and matched their GitHub sizes and SHA-256 digests. Both public ZIPs and checksum files are byte-identical to this tag run's candidates. ZIP integrity and duplicate/path checks, exact checksum files, manifest platform/version metadata and the published release body against committed notes passed. The manifest's Ed25519 signature verified against the pinned public key, unchanged from beta.44. The identical macOS candidate passed deep/strict ad-hoc signature verification and plist lint; its numeric bundle version is 0.6.0 and its release version is beta.45. Both packaged Windows metadata files report beta.45; Windows execution was verified by the tagged native job. The existing publisher's local check also accepted both paired archives, checksums and explicit notes.
+
+| Public archive | Bytes | SHA-256 |
+| --- | ---: | --- |
+| macos-arm64 | 13,429,053 | `6fdad398ab02000ee2eb29aabbd0fb23dc47dee33041fdfb2541dcdd98b283aa` |
+| windows-x64 | 37,809,518 | `f1b439f886e6c935437f579447f476b16c6ae070067631e1d5ecdeab04b340b8` |
+
+Beta.45 carries PR #20, merged as `334d305c1d902c5129e8f76cb25643f157396bcd`, including the reviewed legacy quota status correction. Its [PR CI 37590455373](https://github.com/Coke1120/Morrow-Mail/actions/runs/37590455373) separately passed both platform jobs with beta.44 metadata. Tagged checks use fictional providers and isolated temporary workspaces; no real mail, calendar event or paid-model request was submitted, and installed apps were not replaced. macOS is ad-hoc signed without notarization and Windows is unsigned. Full live-account/provider/model, real external HTTPS image fetching, physical-pointer/accessibility, clean-machine and complete installed-updater restart/rollback acceptance remain outstanding. The previously recorded intermittent Windows reader initialization timeout remains unresolved; its existing gate passed this run. See the [release notes](docs/releases/v0.6.0-beta.45.md).
 
 ## PR #20 — sync status UX review
 
