@@ -149,11 +149,15 @@ impl Runtime {
             {
                 let retry_at = timestamp(&[&sync["nextRetryAt"]]);
                 // Saved errors are projected from known codes, never stored provider text.
-                let waiting = sync["code"] == "rate_limited" && !retry_at.is_null();
+                let waiting = (sync["code"] == "rate_limited" && !retry_at.is_null())
+                    || sync["code"] == "provider_quota_exceeded";
                 let detail = if waiting {
                     format!(
-                        "The provider request limit was reached. Next retry: {}. Keep Morrow open; downloaded mail is retained.",
-                        retry_at.as_str().unwrap()
+                        "The provider request limit was reached. {} Keep Morrow open; downloaded mail is retained.",
+                        retry_at
+                            .as_str()
+                            .map(|at| format!("Next retry: {at}."))
+                            .unwrap_or_else(|| "Retry pending.".into())
                     )
                 } else {
                     match string(sync, "code") {

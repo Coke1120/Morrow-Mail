@@ -194,6 +194,28 @@ fn saved_sync_failures_survive_runtime_restart_and_clear_after_recovery() {
     assert_eq!(invalid_retry["status"], "failed");
     assert!(!invalid_retry.to_string().contains("PRIVATE-"));
 
+    config["backgroundSyncErrors"][0]["code"] = "provider_quota_exceeded".into();
+    for retry_at in [json!(AT), Value::Null, json!("PRIVATE-TIMESTAMP")] {
+        config["backgroundSyncErrors"][0]["nextRetryAt"] = retry_at.clone();
+        let legacy = task(&runtime, &config, &id);
+        assert_eq!(legacy["status"], "queued");
+        assert_eq!(
+            legacy["nextRetryAt"],
+            if retry_at == AT {
+                json!(AT)
+            } else {
+                Value::Null
+            }
+        );
+        assert!(
+            legacy["detail"]
+                .as_str()
+                .unwrap()
+                .contains(if retry_at == AT { AT } else { "Retry pending" })
+        );
+        assert!(!legacy.to_string().contains("PRIVATE-"));
+    }
+
     let mut failed = runtime.start(A, "sync", "Fetching mail", "Inbox");
     failed.finish(false, None);
     let mut retry = runtime.start(A, "sync", "Fetching mail", "Inbox");
