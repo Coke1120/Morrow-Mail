@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0-beta.45 — 2026-10-07
+
+- Preserve Windows mailbox-scoped sync warnings across workspace refreshes, including partial All accounts failures and retry timing.
+- Show saved authorization/sync failures and quota waits in Activity across restarts using safe messages. Legacy quota retries remain queued even when their deadline is missing or invalid.
+- Label Read/Unread actions as local, explain bounded recent-mail coverage, distinguish Activity status timestamps from mailbox sync, and remove the obsolete displayed three-attempt history-retry limit.
+- Require fresh paired tagged native checks and the existing signed publisher; see [release notes](docs/releases/v0.6.0-beta.45.md) for validation and limits.
+
 ## 0.6.0-beta.44 — 2026-10-06
 
 - Reconcile fetched Gmail, Outlook and IMAP Read/Unread changes against the last observed server flag, retaining local edits while that flag is unchanged and releasing obsolete Gmail read overrides on convergence or server change.

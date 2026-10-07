@@ -1,6 +1,12 @@
 # Verification — 7 October 2026
 
-## Unreleased — sync status UX review
+## 0.6.0-beta.45 — release candidate
+
+Beta.45 carries PR #20, merged as `334d305c1d902c5129e8f76cb25643f157396bcd`. The reviewed head `11d7898` passed all 214 local locked Rust tests, formatting and strict all-target Clippy. [PR CI 37590455373, attempt 1](https://github.com/Coke1120/Morrow-Mail/actions/runs/37590455373/attempts/1) passed both native builds, macOS acceptance, Windows fresh/owned/restart UI smoke and the fictional-mail benchmark. These checks used beta.44 metadata and are pre-release evidence only.
+
+The beta.45 tag requires fresh same-tag macOS and Windows builds, Node-free Rust checks, full native acceptance and the existing publisher's same-run/same-attempt provenance and pinned-key signature verification before either download is public. No waiver applies. Preparation changes only common version metadata and release documentation. Tagged CI and public-download verification are pending. See the [release notes](docs/releases/v0.6.0-beta.45.md) for scope and remaining acceptance limits.
+
+## PR #20 — sync status UX review
 
 The source changes retain Windows mailbox-scoped sync failures during workspace refresh, project persisted sync failures and quota waits into Activity, identify Read/Unread actions as local, distinguish Activity's local status timestamp from remote mail sync and disclose the bounded recent-mail scope. History retry text no longer implies a three-attempt limit. No version/tag/release, provider-write behavior, polling scope or retry schedule changes are included.
 
