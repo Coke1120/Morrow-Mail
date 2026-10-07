@@ -189,6 +189,31 @@ struct ReaderFixture: View {
                 try await Task.sleep(nanoseconds: 100_000_000)
                 assert(web.bounds.width > narrowWidth && web.bounds.height == MessageHTMLView.viewportHeight)
                 assert(!web.configuration.defaultWebpagePreferences.allowsContentJavaScript)
+                phase("reader-failure-fallback")
+                guard let delegate = web.navigationDelegate as? MessageHTMLView.Coordinator else { fatalError("Missing reader delegate") }
+                var failures = 0
+                let probe = MessageHTMLView.Coordinator()
+                probe.onFailure = { failures += 1 }
+                probe.webView(web, didFail: nil, withError: NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled))
+                assert(failures == 0, "Cancelled navigation must not fail the current message")
+                probe.webView(web, didFailProvisionalNavigation: nil, withError: NSError(domain: NSURLErrorDomain, code: NSURLErrorCannotLoadFromNetwork))
+                probe.webViewWebContentProcessDidTerminate(web)
+                assert(failures == 1, "Reader failures must notify once")
+                delegate.webViewWebContentProcessDidTerminate(web)
+                for _ in 0..<100 {
+                    if findWeb(host) == nil { break }
+                    try await Task.sleep(nanoseconds: 20_000_000)
+                }
+                assert(findWeb(host) == nil, "Renderer failure did not switch to native plain text")
+                state.autoLoadExternalImages = false
+                state.messageID = "reader-after-failure"
+                for _ in 0..<100 {
+                    if let next = findWeb(host), !next.isLoading, next.url != nil { break }
+                    try await Task.sleep(nanoseconds: 20_000_000)
+                }
+                guard let next = findWeb(host), let nextDelegate = next.navigationDelegate as? MessageHTMLView.Coordinator else { fatalError("Next message did not recover its HTML reader") }
+                assert(next !== web && !next.configuration.defaultWebpagePreferences.allowsContentJavaScript)
+                assert(nextDelegate.document.contains("img-src 'none'"), "Recovery enabled external images")
                 phase("done")
                 print("Native email reader: bounded viewport, bidirectional native scrolling, selectable/revealed long tail, adversarial layout, replacement/reflow, scripts/resources blocked and link protocols checked without host script execution.")
                 window.orderOut(nil)

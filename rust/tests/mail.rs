@@ -2,6 +2,92 @@ use morrow_search::{mail, pages, providers, store::Store};
 use serde_json::json;
 
 #[test]
+fn provider_text_limits_report_truncation_at_the_actual_boundary() {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    for length in [99999, 100000, 100001] {
+        let body = "文".repeat(length);
+        let mime = providers::mime(
+            format!("Content-Type: text/plain; charset=utf-8\r\n\r\n{body}").as_bytes(),
+        )
+        .unwrap();
+        let google = providers::normalize_google(&json!({"id":"long","payload":{"mimeType":"text/plain","body":{"data":URL_SAFE_NO_PAD.encode(body.as_bytes())}}})).unwrap();
+        let microsoft = providers::normalize_microsoft(
+            &json!({"id":"long","body":{"contentType":"text","content":body}}),
+        )
+        .unwrap();
+        for message in [mime, google, microsoft] {
+            assert_eq!(
+                message["body"].as_str().unwrap().chars().count(),
+                length.min(100000)
+            );
+            assert_eq!(message["bodyTruncated"], length > 100000);
+        }
+    }
+    // Each individual MIME part is below the cap, but their combined text is not.
+    let part = URL_SAFE_NO_PAD.encode("x".repeat(60000));
+    let google = providers::normalize_google(&json!({"id":"parts","payload":{"parts":[{"mimeType":"text/plain","body":{"data":part}},{"mimeType":"text/plain","body":{"data":part}}]}})).unwrap();
+    assert_eq!(google["bodyTruncated"], true);
+}
+
+#[test]
+fn reconnect_uses_cached_account_casing_and_rejects_ambiguous_legacy_accounts() {
+    use morrow_search::service::{reconnect_address, save_connection};
+    let directory = std::env::temp_dir().join(format!("morrow-reconnect-{}", uuid::Uuid::new_v4()));
+    let db = Store::open(&directory).unwrap();
+    let owner = "Leo@example.com";
+    let other = "other@example.com";
+    save_connection(&db, &json!({"email":owner,"provider":"imap"}), true).unwrap();
+    save_connection(&db, &json!({"email":other,"provider":"imap"}), true).unwrap();
+    for account in [owner, other] {
+        db.upsert(
+            account,
+            &json!({"id":"same","folder":"drafts","body":account}),
+        )
+        .unwrap();
+    }
+    // Disconnect retains both owners' rows, while removing only the target connection.
+    db.set_settings(
+        &json!({"mailAccounts":{other:{"email":other,"provider":"imap"}},"mail":{"email":other}}),
+    )
+    .unwrap();
+    drop(db);
+    let db = Store::open(&directory).unwrap();
+    let canonical = reconnect_address(&db, "leo@EXAMPLE.com").unwrap();
+    assert_eq!(canonical, owner);
+    save_connection(&db, &json!({"email":canonical,"provider":"imap"}), true).unwrap();
+    assert_eq!(db.get(&canonical, "same").unwrap().unwrap()["body"], owner);
+    assert_eq!(db.get(other, "same").unwrap().unwrap()["body"], other);
+    assert_eq!(
+        db.settings().unwrap()["mailAccounts"]
+            .as_object()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        reconnect_address(&db, "new@example.com").unwrap(),
+        "new@example.com"
+    );
+    db.upsert(
+        "leo@example.com",
+        &json!({"id":"same","body":"Conflicting legacy data"}),
+    )
+    .unwrap();
+    assert_eq!(
+        reconnect_address(&db, "leo@example.com")
+            .unwrap_err()
+            .status,
+        409
+    );
+    assert_eq!(
+        db.get("leo@example.com", "same").unwrap().unwrap()["body"],
+        "Conflicting legacy data"
+    );
+    drop(db);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn remote_read_changes_replace_stale_flags_without_losing_local_edits_or_owners() {
     let directory = std::env::temp_dir().join(format!("morrow-read-sync-{}", uuid::Uuid::new_v4()));
     let mut db = Store::open(&directory).unwrap();

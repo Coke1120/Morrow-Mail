@@ -9,13 +9,23 @@ struct SecureMessageBody: View {
     @State private var showPlain = false
     @State private var imageOverride: Bool?
     @State private var reviewImages = false
+    @State private var readerFailed = false
     private var loadImages: Bool { imageOverride ?? autoLoadExternalImages }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if message["bodyTruncated"].bool {
+                Text("Downloaded message text was truncated. Check the original mailbox for the complete message.").font(.callout).foregroundStyle(.orange)
+            }
+            if message["deliveryStatus"].string == "resolved" {
+                Text(message["deliveryResolution"].string == "sent" ? "You marked this delivery as sent after checking your mailbox. Morrow did not send another copy." : "You closed this delivery without retrying. Its original delivery status remains unknown.").font(.callout)
+            }
+            if readerFailed {
+                Text("Formatted mail is unavailable. Showing downloaded plain text; external images are blocked.").font(.callout).foregroundStyle(.orange)
+            }
             if message["bodyHtml"].nonempty {
                 HStack {
-                    Toggle("Plain text", isOn: $showPlain).toggleStyle(.checkbox)
+                    Toggle("Plain text", isOn: $showPlain).toggleStyle(.checkbox).disabled(readerFailed)
                     Spacer()
                     if !showPlain && message["bodyHtml"].string.contains("<img") {
                         Button(loadImages ? "Hide external images" : "Load external images…") {
@@ -26,7 +36,9 @@ struct SecureMessageBody: View {
                 if !showPlain {
                     Text(loadImages ? "External images enabled for this message." : "External images blocked. Scripts and forms are disabled.")
                         .font(.caption).foregroundStyle(.secondary)
-                    MessageHTMLView(html: message["bodyHtml"].string, images: loadImages)
+                    MessageHTMLView(html: message["bodyHtml"].string, images: loadImages) {
+                        readerFailed = true; showPlain = true; imageOverride = false; reviewImages = false
+                    }
                         .frame(height: MessageHTMLView.viewportHeight).background(Color.white)
                         .accessibilityLabel("Formatted email")
                 }
@@ -41,7 +53,7 @@ struct SecureMessageBody: View {
             }
         }
         .onChange(of: message["viewId"].string + message["accountId"].string + message.id) { _ in
-            showPlain = false; imageOverride = nil; reviewImages = false
+            showPlain = false; imageOverride = nil; reviewImages = false; readerFailed = false
         }
         .onChange(of: autoLoadExternalImages) { _ in
             imageOverride = nil; reviewImages = false
@@ -67,6 +79,7 @@ struct SecureMessageBody: View {
 struct MessageHTMLView: NSViewRepresentable {
     let html: String
     let images: Bool
+    var onFailure: () -> Void = {}
     // ponytail: bounded viewport uses native scrolling; resize with native layout if needed.
     static let viewportHeight: CGFloat = 480
 
@@ -98,14 +111,33 @@ struct MessageHTMLView: NSViewRepresentable {
         return view
     }
     func updateNSView(_ view: WKWebView, context: Context) {
+        context.coordinator.onFailure = onFailure
         let next = Self.document(html, images: images)
         guard context.coordinator.document != next else { return }
         context.coordinator.document = next
-        view.loadHTMLString(next, baseURL: nil)
+        context.coordinator.navigation = view.loadHTMLString(next, baseURL: nil)
+    }
+    static func dismantleNSView(_ view: WKWebView, coordinator: Coordinator) {
+        coordinator.onFailure = {}; coordinator.navigation = nil
+        view.navigationDelegate = nil; view.uiDelegate = nil; view.stopLoading()
     }
     func makeCoordinator() -> Coordinator { Coordinator() }
     @MainActor final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var document = ""
+        var navigation: WKNavigation?
+        var onFailure: () -> Void = {}
+        private func failed(_ webView: WKWebView) {
+            let notify = onFailure; onFailure = {}
+            webView.stopLoading(); notify()
+        }
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            guard navigation === self.navigation, (error as NSError).code != NSURLErrorCancelled else { return }
+            failed(webView)
+        }
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            self.webView(webView, didFail: navigation, withError: error)
+        }
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) { failed(webView) }
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             if action.navigationType == .linkActivated, let url = action.request.url {
                 decisionHandler(.cancel)

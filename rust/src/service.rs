@@ -213,6 +213,28 @@ pub fn canonical_address(config: &Value, address: &str) -> String {
         .cloned()
         .unwrap_or_else(|| address.to_owned())
 }
+pub fn reconnect_address(db: &Store, address: &str) -> Result<String> {
+    let mut accounts = connections(&db.settings()?)
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut query = db.conn.prepare("SELECT DISTINCT account FROM messages")?;
+    for account in query.query_map([], |row| row.get::<_, String>(0))? {
+        accounts.insert(account?);
+    }
+    let mut matches = accounts
+        .into_iter()
+        .filter(|key| key.to_lowercase() == address.to_lowercase());
+    let canonical = matches.next().unwrap_or_else(|| address.to_owned());
+    if matches.next().is_some() {
+        return Err(Error::conflict(
+            "Multiple cached mailboxes differ only by address casing. Resolve their identities before reconnecting; cached data was retained.",
+        ));
+    }
+    Ok(canonical)
+}
 pub fn workspace(config: &Value, owner: &str) -> Value {
     merge(
         json!({"activity":[],"reminders":[],"events":[],"unsubscribed":[],"brain":null,"skills":catalog()["skills"]}),
@@ -513,7 +535,7 @@ async fn handle_inner(app: App, request: axum::http::Request<Body>) -> Result<Re
         && matches!(
             route.as_slice(),
             ["send" | "drafts" | "ai" | "sync" | "skills"]
-                | ["drafts", "prepare"]
+                | ["drafts", "prepare" | "resolve"]
                 | ["messages", _]
                 | ["messages", _, "organize" | "trash" | "undo-trash"]
                 | [

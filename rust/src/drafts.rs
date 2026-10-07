@@ -122,6 +122,7 @@ pub fn history(db: &Store, owner: &str, id: &str) -> Result<Value> {
             "cc",
             "date",
             "body",
+            "bodyTruncated",
         ] {
             plain[field] = message[field].clone();
         }
@@ -227,6 +228,11 @@ pub fn prepare(db: &Store, owner: &str, input: &Value) -> Result<Value> {
         }
         _ => {
             let sent = message["folder"] == "sent";
+            let reply = if string(&message, "replyTo").trim().is_empty() {
+                "fromEmail"
+            } else {
+                "replyTo"
+            };
             if mode == "replyAll" {
                 let address = if owner == "demo" {
                     "alex@genmail.example"
@@ -234,15 +240,12 @@ pub fn prepare(db: &Store, owner: &str, input: &Value) -> Result<Value> {
                     owner
                 };
                 let mut seen = HashSet::from([address.to_lowercase()]);
-                draft["to"] = unique(
-                    &message,
-                    if sent { &["to"] } else { &["fromEmail", "to"] },
-                    &mut seen,
-                )
-                .into();
+                let incoming = [reply, "to"];
+                draft["to"] =
+                    unique(&message, if sent { &["to"] } else { &incoming }, &mut seen).into();
                 draft["cc"] = unique(&message, &["cc"], &mut seen).into();
             } else {
-                draft["to"] = mailboxes(string(&message, if sent { "to" } else { "fromEmail" }))
+                draft["to"] = mailboxes(string(&message, if sent { "to" } else { reply }))
                     .join(", ")
                     .into();
             }
@@ -251,6 +254,25 @@ pub fn prepare(db: &Store, owner: &str, input: &Value) -> Result<Value> {
             }
             draft["replyToId"] = id.into();
         }
+    }
+    if message["bodyTruncated"] == true && ["forward", "copy"].contains(&mode) {
+        let text = format!(
+            "[Downloaded message text was truncated. Check the original mailbox for the complete message.]\n{}",
+            string(&draft, "body")
+        );
+        // Keep the disclosure inside the existing UTF-16 composer limit.
+        let mut remaining = 100000usize;
+        draft["body"] = text
+            .chars()
+            .take_while(|c| {
+                if c.len_utf16() > remaining {
+                    return false;
+                }
+                remaining -= c.len_utf16();
+                true
+            })
+            .collect::<String>()
+            .into();
     }
     Ok(json!({"draft":draft}))
 }
