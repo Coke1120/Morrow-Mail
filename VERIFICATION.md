@@ -1,5 +1,11 @@
 # Verification — 7 October 2026
 
+## 0.6.0-beta.46 — release candidate
+
+PR #21 was reviewed at `54a265fe26351627280b363abb23bca52ab21a8b` and merged into main as `6dcea29916361d207a8a3926ebc0a6d822c92404`. Review traced reply preparation and provider normalization, both reconnect paths, the owner-bound delivery ledger and scheduled-send recovery, and both native review/reader flows. No blocking defect was found. Fresh local Rust 1.99 formatting, strict all-target Clippy and all 46 tests across `draft_concurrency`, `drafts`, `gmail_sync`, `mail`, `mail_service` and `scheduled` passed.
+
+[PR CI 37601930180](https://github.com/Coke1120/Morrow-Mail/actions/runs/37601930180) passed both platform jobs, including Node-free Rust checks (218 tests on macOS, 217 on Windows, zero failed/ignored), native packaging, full macOS production-service acceptance, Windows fresh/owned/restart UI walkthrough and the 1,000/10,000/50,000-message fictional-mail benchmark. This is pre-release evidence using beta.45 metadata. Beta.46 preparation changes only version metadata and release documentation; its own same-tag/same-attempt paired gate and pinned-key signed publication remain required. No waiver applies. See the [release notes](docs/releases/v0.6.0-beta.46.md) for scope and remaining acceptance limits.
+
 ## Mail-client review fixes — PR validation
 
 Current source addresses Reply-To routing, disconnected-account casing recovery, reviewed uncertain-delivery resolution, incomplete downloaded-text disclosure and macOS renderer failure recovery. Resolution is a local user decision, not provider delivery verification; it preserves the request/payload ledger and blocks retries after restart. It also closes uncertain scheduled jobs without resubmission. No version, tag, release or installed application is changed.
