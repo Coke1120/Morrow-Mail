@@ -294,7 +294,7 @@ struct MailWorkspace: View {
                 Button { model.trashMessages(model.selectedMailRows) } label: { Label("Delete", systemImage: "trash") }
                     .disabled(!model.canNavigate || model.selectedMailRows.isEmpty || !model.selectedMailRows.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" })
                     .help("Move selected mail to provider Trash · Undo within one minute (⌘Z)")
-                Button { model.perform { try await model.sync() } } label: { Label("Sync Mail", systemImage: "arrow.clockwise") }.labelStyle(.iconOnly).buttonStyle(.borderless).disabled(!model.canNavigate || !model.hasMailbox).help("Sync Mail (⌘R)")
+                Button { model.perform { try await model.sync() } } label: { Label("Refresh Recent Mail", systemImage: "arrow.clockwise") }.labelStyle(.iconOnly).buttonStyle(.borderless).disabled(!model.canNavigate || !model.hasMailbox).help("Refresh recent mail (⌘R). Older downloaded messages may not be checked.")
             }.menuStyle(.borderlessButton).controlSize(.small).disabled(model.busy).padding(.horizontal, 14).padding(.bottom, 8)
             Divider()
             if filtered.isEmpty {
@@ -362,8 +362,8 @@ struct MailWorkspace: View {
                         Button("Delete") { model.trashMessages(messages) }
                             .disabled(!messages.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" })
                         Divider()
-                        Button("Mark Read") { model.patchMessages(messages, .object(["read": .bool(true)])) }
-                        Button("Mark Unread") { model.patchMessages(messages, .object(["read": .bool(false)])) }
+                        Button("Mark Read Locally") { model.patchMessages(messages, .object(["read": .bool(true)])) }
+                        Button("Mark Unread Locally") { model.patchMessages(messages, .object(["read": .bool(false)])) }
                         Button("Star") { model.patchMessages(messages, .object(["starred": .bool(true)])) }
                         Button("Unstar") { model.patchMessages(messages, .object(["starred": .bool(false)])) }
                         Button("Mark Pending") { model.patchMessages(messages, .object(["pending": .bool(true)])) }
@@ -392,7 +392,7 @@ struct MailWorkspace: View {
     private func rowActions(_ message: JSON) -> some View {
         HStack(spacing: 4) {
             Button { model.patch(message, .object(["read": .bool(!message["read"].bool)])) } label: {
-                Label(message["read"].bool ? "Mark Unread" : "Mark Read", systemImage: message["read"].bool ? "envelope.badge" : "envelope.open")
+                Label(message["read"].bool ? "Mark Unread Locally" : "Mark Read Locally", systemImage: message["read"].bool ? "envelope.badge" : "envelope.open")
             }.help(message["read"].bool ? "Mark Unread locally" : "Mark Read locally")
             Button { Task { await model.openDraft(message: message, mode: "replyAll") } } label: {
                 Label("Reply All", systemImage: "arrowshape.turn.up.left.2")

@@ -88,7 +88,7 @@ fn import_detail(job: &Value, phase: &str) -> String {
         .unwrap_or_else(|| "New message count unknown".into());
     let retry_at = timestamp(&[&job["nextRetryAt"]]);
     let retry = format!(
-        "Temporary interruption. Retry {}/3 scheduled for {}.",
+        "Temporary interruption. Retry {} scheduled for {}. Retrying continues while Morrow is open; you can pause this import.",
         count(&job["retryCount"]).unwrap_or(0),
         retry_at.as_str().unwrap_or("")
     );
@@ -121,6 +121,13 @@ impl Runtime {
     pub fn start(&self, account: &str, kind: &str, label: &str, detail: &str) -> Work<'_> {
         let id = uuid::Uuid::new_v4().to_string();
         if let Ok(mut tasks) = self.tasks.lock() {
+            if kind == "sync" {
+                tasks.retain(|task| {
+                    task["accountId"] != account
+                        || task["kind"] != "sync"
+                        || !failure(string(task, "status"))
+                });
+            }
             tasks.push(json!({"id":id,"accountId":account,"kind":kind,"label":label,"detail":detail,"status":"running","completed":null,"total":null,"updatedAt":now()}));
         }
         Work {
@@ -136,6 +143,33 @@ impl Runtime {
             string(t, "accountId").is_empty() || live.get(string(t, "accountId")).is_some()
         });
         for owner in live.as_object().into_iter().flat_map(|v| v.keys()) {
+            if let Some(sync) = config["backgroundSyncErrors"]
+                .as_array()
+                .and_then(|errors| errors.iter().find(|error| error["accountId"] == *owner))
+            {
+                let retry_at = timestamp(&[&sync["nextRetryAt"]]);
+                // Saved errors are projected from known codes, never stored provider text.
+                let waiting = sync["code"] == "rate_limited" && !retry_at.is_null();
+                let detail = if waiting {
+                    format!(
+                        "The provider request limit was reached. Next retry: {}. Keep Morrow open; downloaded mail is retained.",
+                        retry_at.as_str().unwrap()
+                    )
+                } else {
+                    match string(sync, "code") {
+                        "oauth_reconnect_required" => "Mailbox authorization is no longer valid. Reconnect this account in Settings; downloaded mail is retained.",
+                        "oauth_configuration" => "The provider rejected the OAuth app configuration. Check this account's OAuth client settings in Settings.",
+                        "oauth_refresh_failed" => "Could not refresh mailbox authorization. Check your connection and refresh recent mail again; saved credentials are retained.",
+                        _ => "Recent mail could not be fully refreshed. Check the connection and import settings, then refresh again; downloaded mail is retained.",
+                    }.to_owned()
+                };
+                tasks.retain(|task| {
+                    task["accountId"] != *owner
+                        || task["kind"] != "sync"
+                        || task["status"] == "running"
+                });
+                tasks.push(json!({"id":format!("sync:{owner}"),"accountId":owner,"kind":"sync","label":"Recent mail sync","status":if waiting {"queued"} else {"failed"},"detail":detail,"completed":null,"total":null,"updatedAt":timestamp(&[&sync["updatedAt"]]),"nextRetryAt":if waiting {retry_at} else {Value::Null},"retryCount":count(&sync["retryCount"])}));
+            }
             let import = crate::background::import_status_from(config, owner);
             if import.is_object() {
                 // Ordinary sync is not evidence that a history page is in flight.

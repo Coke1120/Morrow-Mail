@@ -12,6 +12,22 @@ using namespace winrt;
 using namespace Windows::Foundation;
 using namespace Windows::Data::Json;
 IAsyncAction nativeInteractionChecks(std::shared_ptr<Shell> shell);
+void syncStatusChecks() {
+    auto check = [](bool condition, wchar_t const* message) { if (!condition) throw hresult_error(E_FAIL, message); };
+    Shell shell; shell.status = controls::TextBlock(); shell.owner = L"all";
+    shell.state = Json::Parse(LR"({"accounts":[{"id":"one@example.invalid"},{"id":"two@example.invalid"}],"syncErrors":[{"accountId":"one@example.invalid","error":"Reconnect this account."},{"accountId":"two@example.invalid","error":"Provider request limit.","nextRetryAt":"2030-01-01T00:00:00.000Z"},{"accountId":"off@example.invalid","error":"Disconnected account."}]})");
+    auto contains = [&](wchar_t const* value) { return std::wstring_view(shell.status.Text()).find(value) != std::wstring_view::npos; };
+    shell.error(L"");
+    check(contains(L"one@example.invalid") && contains(L"two@example.invalid") && contains(L"Next retry:") && !contains(L"off@example.invalid"), L"Combined sync failures, retry timing or disconnected-account filtering are missing.");
+    shell.error(L""); // The same status reset is used by periodic workspace refresh.
+    check(contains(L"Reconnect") && contains(L"Provider request limit"), L"Workspace refresh cleared unresolved sync failures.");
+    shell.owner = L"one@example.invalid"; shell.error(L"");
+    check(contains(L"one@example.invalid") && !contains(L"two@example.invalid"), L"Sync status crossed the selected mailbox.");
+    shell.error(L"Draft save failed.");
+    check(shell.status.Text() == L"Draft save failed.", L"Sync status hid the current operation's error.");
+    shell.state.Insert(L"syncErrors", JsonArray()); shell.error(L"");
+    check(shell.status.Text().empty(), L"Resolved sync failures remained visible.");
+}
 void mailDragChecks(std::shared_ptr<Service> const& service) {
     auto check = [](bool condition, wchar_t const* message) { if (!condition) throw hresult_error(E_FAIL, message); };
     auto shell = std::make_shared<Shell>(); shell->service = service; shell->owner = L"all"; shell->rows = controls::ListView();
@@ -86,6 +102,7 @@ IAsyncAction Shell::smoke() {
         std::string value((std::istreambuf_iterator<char>(marker)), {});
         check(value == "Morrow native acceptance fixture", L"Native acceptance fixture marker is missing.");
         fixtureVerified = true;
+        enter("sync-status"); syncStatusChecks();
         enter("mail-drag-drop-guards"); mailDragChecks(service);
         bool seeded = array(state,L"accounts").Size() > 0;
         enter("sidebar-resize-and-filter");

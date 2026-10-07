@@ -217,7 +217,20 @@ void setupKeyboardAccelerators(std::shared_ptr<Shell> const& shell) {
     shell->root.KeyboardAccelerators().Append(undo);
 }
 }
-void Shell::error(hstring const& message) { if (status) status.Text(message); }
+void Shell::error(hstring const& message) {
+    if (!status) return;
+    if (!message.empty()) { status.Text(message); return; }
+    hstring failures;
+    for (auto const& entry : array(state, L"syncErrors")) {
+        auto failure = entry.GetObject(); auto account = text(failure, L"accountId");
+        if (!connected(account) || (owner != L"all" && owner != account)) continue;
+        failures = failures + (failures.empty() ? L"Recent mail needs attention: " : L"\n")
+            + account + L": " + text(failure, L"error", L"Check connection and import settings.");
+        auto retry = text(failure, L"nextRetryAt");
+        if (!retry.empty()) failures = failures + L" Next retry: " + mailDateLabel(retry) + L".";
+    }
+    status.Text(failures);
+}
 bool Shell::connected(hstring const& account) const {
     for (auto const& entry : array(state, L"accounts")) if (text(entry.GetObject(), L"id") == account && account != L"demo") return true;
     return false;
@@ -698,7 +711,7 @@ void Shell::mailPage() {
     Grid toolbarRow; toolbarRow.ColumnDefinitions().Append(ColumnDefinition());
     ColumnDefinition syncColumn; syncColumn.Width(GridLengthHelper::Auto()); toolbarRow.ColumnDefinitions().Append(syncColumn);
     toolbarRow.Children().Append(toolbar);
-    auto syncButton = iconButton(L"\uE72C", L"Sync Mail", [weak] { if (auto self = weak.lock()) self->sync(); });
+    auto syncButton = iconButton(L"\uE72C", L"Refresh recent mail — older downloaded messages may not be checked", [weak] { if (auto self = weak.lock()) self->sync(); });
     Grid::SetColumn(syncButton, 1); toolbarRow.Children().Append(syncButton);
     heading.Children().Append(toolbarRow); list.Children().Append(heading);
     rows = ListView(); rows.SelectionMode(ListViewSelectionMode::Extended);
@@ -1037,7 +1050,7 @@ MenuFlyout Shell::mailActionsMenu(Json message) {
         remove.IsEnabled(enabled && std::all_of(messages.begin(), messages.end(), [&](auto const& row) { return self->canTrash(row); }));
         remove.Click([weak, messages](auto const&, auto const&) { if (auto self = weak.lock()) self->trashMessages(messages); }); menu.Items().Append(remove);
         menu.Items().Append(MenuFlyoutSeparator());
-        for (auto const& choice : {std::tuple{L"Mark read", L"read", true}, {L"Mark unread", L"read", false}, {L"Star", L"starred", true}, {L"Unstar", L"starred", false}, {L"Mark Pending", L"pending", true}, {L"Clear Pending", L"pending", false}}) {
+        for (auto const& choice : {std::tuple{L"Mark read locally", L"read", true}, {L"Mark unread locally", L"read", false}, {L"Star", L"starred", true}, {L"Unstar", L"starred", false}, {L"Mark Pending", L"pending", true}, {L"Clear Pending", L"pending", false}}) {
             MenuFlyoutItem item; item.Text(std::get<0>(choice)); item.IsEnabled(enabled);
             item.Click([weak, messages, key = hstring(std::get<1>(choice)), value = std::get<2>(choice)](auto const&, auto const&) {
                 if (auto self = weak.lock()) { Json changes; changes.Insert(key, Value::CreateBooleanValue(value)); self->patchMessages(messages, changes); }
@@ -1201,10 +1214,11 @@ IAsyncAction Shell::messageAI(Json message, hstring action, bool history) {
 IAsyncAction Shell::sync() {
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
     if ((!connected(captured) && captured != L"all") || service->writing()) co_return;
-    error(L"Fetching mail… See Activity for progress.");
+    error(L"Refreshing recent mail… Older downloaded messages may not be checked. See Activity for progress.");
     try {
-        co_await service->request(L"/sync", captured, L"POST");
+        auto result = co_await service->request(L"/sync", captured, L"POST");
         if (!current(version, captured)) co_return;
+        state = result;
         co_await refresh(true); if (section == L"mail") co_await loadPage();
     } catch (...) { error(errorText()); }
 }
@@ -1351,7 +1365,8 @@ IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
         if (kind == L"activity") {
             auto result = co_await self->service->request(L"/activity", account);
             if (!self->current(version, account)) co_return;
-            content.Children().Append(label(L"Observational progress only. Opening this page does not start provider or AI work."));
+            content.Children().Append(label(L"Recent-mail sync checks a limited set of messages. Older downloaded messages may still have an earlier read/unread state. Opening Activity does not start provider or AI work."));
+            content.Children().Append(label(L"Activity status updated: " + mailDateLabel(text(result, L"checkedAt")) + L" (local status, not the last mailbox sync)", 12));
             for (auto const& value : array(result, L"tasks")) {
                 auto task = value.GetObject(); auto item = stack(4);
                 item.Children().Append(label(text(task, L"label") + L" · " + text(task, L"status"), 18));
