@@ -921,9 +921,16 @@ async fn refresh_deduplicates_scopes_reuses_bodies_and_keeps_drafts_and_owners_f
     assert_eq!(f.message(A, "google:inbox0").await["body"], "Remote body");
     f.app
         .db(|db| {
-            let mut old = db.get(A, "google:inbox0")?.unwrap();
-            old.as_object_mut().unwrap().remove("bodyHtml");
-            db.upsert(A, &old)
+            for (id, field) in [
+                ("google:inbox0", "bodyHtml"),
+                ("google:inbox1", "replyTo"),
+                ("google:inbox2", "bodyTruncated"),
+            ] {
+                let mut old = db.get(A, id)?.unwrap();
+                old.as_object_mut().unwrap().remove(field);
+                db.upsert(A, &old)?;
+            }
+            Ok(())
         })
         .await
         .unwrap();
@@ -932,16 +939,32 @@ async fn refresh_deduplicates_scopes_reuses_bodies_and_keeps_drafts_and_owners_f
         .lock()
         .unwrap()
         .iter_mut()
+        .find(|row| row["id"] == "inbox1")
+        .unwrap()["payload"]["headers"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name":"Reply-To","value":"support@example.invalid"}));
+    f.rows
+        .lock()
+        .unwrap()
+        .iter_mut()
         .find(|row| row["id"] == "draft0")
         .unwrap()["payload"]["body"]["data"] = URL_SAFE_NO_PAD.encode("Edited draft").into();
     assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
     assert_eq!(f.message(A, "google:draft0").await["body"], "Edited draft");
-    assert!(f.hits.lock().unwrap().iter().any(|(_, url)| {
-        url.path().ends_with("/inbox0")
-            && url
-                .query_pairs()
-                .any(|(key, value)| key == "format" && value == "full")
-    }));
+    assert_eq!(
+        f.message(A, "google:inbox1").await["replyTo"],
+        "support@example.invalid"
+    );
+    assert_eq!(f.message(A, "google:inbox2").await["bodyTruncated"], false);
+    for suffix in ["/inbox0", "/inbox1", "/inbox2"] {
+        assert!(f.hits.lock().unwrap().iter().any(|(_, url)| {
+            url.path().ends_with(suffix)
+                && url
+                    .query_pairs()
+                    .any(|(key, value)| key == "format" && value == "full")
+        }));
+    }
     // The same provider ID in another account must fetch its own body.
     assert_eq!(f.call("POST", "/api/sync", B, json!({})).await.0, 200);
     assert_eq!(

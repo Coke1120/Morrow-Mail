@@ -5,6 +5,77 @@ const OWNER: &str = "Owner@example.com";
 const OTHER: &str = "other@example.com";
 
 #[test]
+fn replies_use_provider_reply_to_and_truncated_forwards_disclose_missing_text() {
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    use morrow_search::providers;
+    let directory = std::env::temp_dir().join(format!("morrow-reply-to-{}", uuid::Uuid::new_v4()));
+    let db = Store::open(&directory).unwrap();
+    db.set_settings(&json!({"mailAccounts":{OWNER:{"email":OWNER}}}))
+        .unwrap();
+    let raw = format!(
+        "From: notify@example.com\r\nReply-To: Support <support@example.com>, {OWNER}\r\nTo: {OWNER}, team@example.com\r\nCc: support@example.com, cc@example.com\r\nBcc: secret@example.com\r\nSubject: Test\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nMessage"
+    );
+    let google = json!({"id":"same","labelIds":["INBOX"],"payload":{"mimeType":"text/plain","headers":[{"name":"From","value":"notify@example.com"},{"name":"Reply-To","value":format!("support@example.com, {OWNER}")},{"name":"To","value":format!("{OWNER}, team@example.com")},{"name":"Cc","value":"support@example.com, cc@example.com"},{"name":"Bcc","value":"secret@example.com"}],"body":{"data":URL_SAFE_NO_PAD.encode("Message")}}});
+    let microsoft = json!({"id":"same","from":{"emailAddress":{"address":"notify@example.com"}},"replyTo":[{"emailAddress":{"address":"support@example.com"}},{"emailAddress":{"address":OWNER}}],"toRecipients":[{"emailAddress":{"address":OWNER}},{"emailAddress":{"address":"team@example.com"}}],"ccRecipients":[{"emailAddress":{"address":"support@example.com"}},{"emailAddress":{"address":"cc@example.com"}}],"bccRecipients":[{"emailAddress":{"address":"secret@example.com"}}],"body":{"contentType":"text","content":"Message"}});
+    for mut message in [
+        providers::mime(raw.as_bytes()).unwrap(),
+        providers::normalize_google(&google).unwrap(),
+        providers::normalize_microsoft(&microsoft).unwrap(),
+    ] {
+        message["id"] = "same".into();
+        message["folder"] = "inbox".into();
+        db.upsert(OWNER, &message).unwrap();
+        let prepare = |mode| {
+            drafts::prepare(&db, OWNER, &json!({"messageId":"same","mode":mode})).unwrap()["draft"]
+                .clone()
+        };
+        assert_eq!(
+            prepare("reply")["to"],
+            format!("support@example.com, {OWNER}")
+        );
+        let all = prepare("replyAll");
+        assert_eq!(all["to"], "support@example.com, team@example.com");
+        assert_eq!(all["cc"], "cc@example.com");
+        assert_eq!(all["bcc"], "");
+        message["replyTo"] = "".into();
+        db.upsert(OWNER, &message).unwrap();
+        assert_eq!(prepare("reply")["to"], "notify@example.com");
+        message["replyTo"] = "support@example.com".into();
+        message["folder"] = "sent".into();
+        db.upsert(OWNER, &message).unwrap();
+        assert_eq!(prepare("reply")["to"], format!("{OWNER}, team@example.com"));
+        message["bodyTruncated"] = true.into();
+        message["body"] = "😀".repeat(100000).into();
+        db.upsert(OWNER, &message).unwrap();
+        let forward = prepare("forward");
+        assert!(
+            forward["body"]
+                .as_str()
+                .unwrap()
+                .contains("text was truncated")
+        );
+        assert_eq!(forward["to"], "");
+        assert_eq!(forward["bcc"], "");
+        assert!(forward.get("replyToId").is_none());
+        assert!(forward["body"].as_str().unwrap().encode_utf16().count() <= 100000);
+        assert!(morrow_search::content::content(&forward, true).is_ok());
+        message["folder"] = "drafts".into();
+        message["providerDraft"] = true.into();
+        db.upsert(OWNER, &message).unwrap();
+        let copied = prepare("copy");
+        assert!(
+            copied["body"]
+                .as_str()
+                .unwrap()
+                .starts_with("[Downloaded message text was truncated.")
+        );
+        assert!(morrow_search::content::content(&copied, true).is_ok());
+    }
+    drop(db);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn reply_history_is_bounded_owned_plain_text_and_read_only() {
     let directory =
         std::env::temp_dir().join(format!("morrow-reply-history-{}", uuid::Uuid::new_v4()));

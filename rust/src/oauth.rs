@@ -2,7 +2,7 @@ use crate::{
     background, calendar,
     error::{Error, Result},
     mail, providers,
-    service::{App, Context, canonical_address, connections, save_connection},
+    service::{App, Context, connections, reconnect_address, save_connection},
     store::{merge, random_bytes, string},
     validation,
 };
@@ -369,7 +369,7 @@ async fn finish_mail(app: &App, attempt: &Attempt, code: &str) -> Result<()> {
     app.db(move |db| {
         db.transaction(|db| {
             let email =
-                canonical_address(&db.settings()?, &validation::email(&connection["email"])?);
+                reconnect_address(db, &validation::email(&connection["email"])?)?;
             connection["email"] = email.clone().into();
             if let Some(previous) = upgrade {
                 let current = connections(&db.settings()?);

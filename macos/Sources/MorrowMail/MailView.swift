@@ -793,7 +793,7 @@ struct ScheduledMailView: View {
             let result = try await model.request("/scheduled", mailbox: owner)
             guard !Task.isCancelled, account == owner, generation == loadGeneration else { return }
             guard case .array = result["scheduled"] else { throw APIError("Morrow received an incomplete schedule list.") }
-            jobs = result["scheduled"].array.filter { $0["accountId"].string == owner && !["sent", "cancelled"].contains($0["status"].string) }
+            jobs = result["scheduled"].array.filter { $0["accountId"].string == owner && !["sent", "cancelled", "resolved"].contains($0["status"].string) }
         } catch { if !Task.isCancelled, account == owner, generation == loadGeneration { localError = error.localizedDescription } }
     }
     private func cancel(_ job: JSON, reschedule: Bool) {
@@ -896,6 +896,10 @@ struct ComposeView: View {
             if draft.unconfirmed {
                 Label("Delivery was not confirmed. Check your provider’s Sent folder before retrying. Retrying may send a duplicate.", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
                 Toggle("I checked Sent and want to retry this delivery", isOn: $reviewed).toggleStyle(.checkbox)
+                HStack {
+                    Button("I found it in Sent…") { resolveDelivery("sent") }
+                    Button("Close without retrying…") { resolveDelivery("dismissed") }
+                }.disabled(model.busy)
             }
             VStack(spacing: 12) {
                 recipientField("To", text: $draft.to, placeholder: "Email addresses, separated by commas")
@@ -1047,6 +1051,20 @@ struct ComposeView: View {
                 let result = try await model.request("/drafts", method: "POST", body: payload, mailbox: account)
                 draft.savedID = result["message"].id; saved = draft.payload
                 try await model.reload(); model.notice = "Draft saved."; dismiss()
+            } catch { localError = error.localizedDescription }
+        }
+    }
+    func resolveDelivery(_ resolution: String) {
+        let owner = draft.accountID, request = draft.requestID, id = draft.savedID
+        guard draft.unconfirmed, !model.busy, !id.isEmpty,
+              model.confirm(resolution == "sent" ? "Mark this delivery as sent?" : "Close this delivery without retrying?", detail: "Mailbox: \(owner)\nTo: \(draft.to)\nSubject: \(draft.subject)\n\(resolution == "sent" ? "Confirm that you found this message in your provider’s Sent folder. The local copy will move to Sent." : "The delivery status will remain unknown. The local copy will move to Archive.")\nMorrow will retain your decision and prevent this request from being sent again.") else { return }
+        model.perform {
+            do {
+                let result = try await model.request("/drafts/resolve", method: "POST", body: .object(["draftId": .string(id), "requestId": .string(request), "resolution": .string(resolution), "confirmed": .bool(true)]), mailbox: owner)
+                let message = result["message"]
+                guard message.id == id, message["accountId"].string == owner, message["deliveryStatus"].string == "resolved", message["deliveryResolution"].string == resolution else { throw APIError("Delivery review could not be confirmed. Refresh before trying again.") }
+                model.notice = "Delivery review saved. No message was sent."
+                try? await model.reload(); dismiss()
             } catch { localError = error.localizedDescription }
         }
     }

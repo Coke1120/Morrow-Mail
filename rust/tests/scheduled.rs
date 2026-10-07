@@ -308,6 +308,33 @@ async fn restart_claims_require_existing_delivery_review_and_manual_send_cannot_
             .len(),
         1
     );
+    let resolve = json!({"draftId":job["draftId"],"requestId":job["id"],"resolution":"dismissed","confirmed":true});
+    app.db(move |db| {
+        mail::resolve_delivery(db, A, &resolve)?;
+        assert_eq!(
+            scheduled::list(db, A)?["scheduled"][0]["status"],
+            "resolved"
+        );
+        Ok(())
+    })
+    .await
+    .unwrap();
+    drop(app);
+    let app = App::open(&path, 3011, String::new(), String::new()).unwrap();
+    scheduled::tick(&app).await.unwrap();
+    app.db(|db| {
+        assert_eq!(
+            scheduled::list(db, A)?["scheduled"][0]["status"],
+            "resolved"
+        );
+        assert_eq!(
+            db.settings()?["deliveryAttempts"][0]["resolution"],
+            "dismissed"
+        );
+        Ok(())
+    })
+    .await
+    .unwrap();
     drop(app);
     fs::remove_dir_all(path).unwrap();
 }

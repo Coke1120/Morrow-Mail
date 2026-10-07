@@ -435,6 +435,10 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
 }
 
 std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel const& panel, Json const& message) {
+    if (flag(message, L"bodyTruncated")) panel.Children().Append(label(L"Downloaded message text was truncated. Check the original mailbox for the complete message."));
+    if (text(message, L"deliveryStatus") == L"resolved") panel.Children().Append(label(text(message, L"deliveryResolution") == L"sent"
+        ? L"You marked this delivery as sent after checking your mailbox. Morrow did not send another copy."
+        : L"You closed this delivery without retrying. Its original delivery status remains unknown."));
     auto plain = label(text(message, L"body"), 15);
     auto html = text(message, L"bodyHtml");
     if (html.empty() || html.size() > 512 * 1024) { panel.Children().Append(plain); return {}; }

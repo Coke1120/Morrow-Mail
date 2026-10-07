@@ -209,6 +209,20 @@ pub fn cancel(db: &Store, owner: &str, id: &str) -> Result<Value> {
         result(db, &owned(db, owner, id)?)
     })
 }
+pub(crate) fn resolve_delivery(db: &Store, owner: &str, request: &str) -> Result<()> {
+    if let Some(job) = jobs(db)?
+        .into_iter()
+        .find(|j| j["accountId"] == owner && j["id"] == request)
+    {
+        if job["status"] != "uncertain" {
+            return Err(Error::conflict(
+                "Refresh Outbox before closing this delivery.",
+            ));
+        }
+        finish(db, &job, "resolved", None)?;
+    }
+    Ok(())
+}
 fn finish(db: &Store, job: &Value, status: &str, error: Option<&str>) -> Result<()> {
     db.transaction(|db| {
         let mut patch = json!({"status":status,"errorCode":error,"updatedAt":now()});

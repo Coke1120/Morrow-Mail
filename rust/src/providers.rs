@@ -465,7 +465,7 @@ pub fn mime(raw: &[u8]) -> Result<Value> {
         .body_text(0)
         .map(|s| s.replace("\r\n", "\n"))
         .unwrap_or_else(|| "(This message has no readable text.)".into());
-    let body: String = body.chars().take(100000).collect();
+    let (body, truncated) = bounded_body(&body);
     let body_html = parsed
         .body_html(0)
         .map(|html| crate::message_html::sanitize(&html))
@@ -477,7 +477,14 @@ pub fn mime(raw: &[u8]) -> Result<Value> {
     let subject = parsed.subject().unwrap_or("(No subject)");
     let mut result = json!({"fromName":from.and_then(|a|a.name().or(a.address())).unwrap_or("Unknown sender"),"fromEmail":from.and_then(|a|a.address()).unwrap_or(""),"to":address_text(parsed.to()),"cc":address_text(parsed.cc()),"bcc":address_text(parsed.bcc()),"subject":subject,"body":body,"preview":preview(&body),"date":DateTime::<Utc>::from_timestamp(parsed.date().map(|d|d.to_timestamp()).unwrap_or(0),0).unwrap_or_default().to_rfc3339_opts(SecondsFormat::Millis,true),"messageId":parsed.message_id().map(|id|format!("<{id}>")).unwrap_or_default(),"automated":automated(&json!(headers)),"category":category(subject,&json!(headers)),"labels":[]});
     result["bodyHtml"] = body_html.into();
+    result["bodyTruncated"] = truncated.into();
+    result["replyTo"] = address_text(parsed.reply_to()).into();
     Ok(result)
+}
+fn bounded_body(body: &str) -> (String, bool) {
+    let mut chars = body.chars();
+    let text = chars.by_ref().take(100000).collect();
+    (text, chars.next().is_some())
 }
 pub fn google_folder(label_ids: &Value) -> &'static str {
     let Some(labels) = label_ids.as_array() else {
@@ -520,6 +527,8 @@ pub fn normalize_google(message: &Value) -> Result<Value> {
     let mut plain = Vec::new();
     let mut html = Vec::new();
     let mut formatted = Vec::new();
+    let mut plain_truncated = false;
+    let mut html_truncated = false;
     let mut count = 0;
     while let Some(part) = stack.pop() {
         count += 1;
@@ -560,8 +569,10 @@ pub fn normalize_google(message: &Value) -> Result<Value> {
             let parsed = mime(raw.as_bytes())?;
             if part["mimeType"] == "text/plain" {
                 plain.push(string(&parsed, "body").to_owned());
+                plain_truncated |= parsed["bodyTruncated"] == true;
             } else {
                 html.push(string(&parsed, "body").to_owned());
+                html_truncated |= parsed["bodyTruncated"] == true;
                 formatted.push(string(&parsed, "bodyHtml").to_owned());
             }
         }
@@ -569,18 +580,23 @@ pub fn normalize_google(message: &Value) -> Result<Value> {
             stack.extend(parts.iter().rev());
         }
     }
-    let body = if plain.is_empty() { html } else { plain }
-        .join("\n\n")
-        .trim()
-        .chars()
-        .take(100000)
-        .collect::<String>();
+    let truncated = if plain.is_empty() {
+        html_truncated
+    } else {
+        plain_truncated
+    };
+    let (body, joined_truncated) = bounded_body(
+        if plain.is_empty() { html } else { plain }
+            .join("\n\n")
+            .trim(),
+    );
     let body = if body.is_empty() {
         "(No inline text was available. Open this message in your original mailbox to read any attachments or large message bodies.)".into()
     } else {
         body
     };
     result["body"] = body.clone().into();
+    result["bodyTruncated"] = (truncated || joined_truncated).into();
     result["bodyHtml"] = crate::message_html::sanitize(&formatted.join("\n")).into();
     result["preview"] = preview(&body).into();
     result["automated"] = automated(&json!(headers)).into();
@@ -627,7 +643,7 @@ pub fn normalize_microsoft(message: &Value) -> Result<Value> {
     } else {
         body.to_owned()
     };
-    let body: String = body.chars().take(100000).collect();
+    let (body, truncated) = bounded_body(&body);
     let body = if body.is_empty() {
         "(This message has no readable text.)".into()
     } else {
@@ -638,8 +654,13 @@ pub fn normalize_microsoft(message: &Value) -> Result<Value> {
         .filter(|s| !s.is_empty())
         .unwrap_or("(No subject)");
     let mut result = json!({"id":format!("microsoft:{}",string(message,"id")),"fromName":from["name"].as_str().filter(|s|!s.is_empty()).or(from["address"].as_str()).unwrap_or("Unknown sender"),"fromEmail":string(from,"address"),"subject":subject,"body":body,"preview":preview(&body),"date":iso(string(message,"receivedDateTime")),"folder":"inbox","read":message["isRead"]==true,"starred":message["flag"]["flagStatus"]=="flagged","category":category(subject,&message["internetMessageHeaders"]),"automated":automated(&message["internetMessageHeaders"]),"labels":[],"messageId":string(message,"internetMessageId")});
-    for field in ["to", "cc", "bcc"] {
-        result[field] = message[format!("{field}Recipients")]
+    for (field, source) in [
+        ("to", "toRecipients"),
+        ("cc", "ccRecipients"),
+        ("bcc", "bccRecipients"),
+        ("replyTo", "replyTo"),
+    ] {
+        result[field] = message[source]
             .as_array()
             .map(|rows| {
                 rows.iter()
@@ -652,6 +673,7 @@ pub fn normalize_microsoft(message: &Value) -> Result<Value> {
             .into();
     }
     result["bodyHtml"] = body_html.into();
+    result["bodyTruncated"] = truncated.into();
     Ok(result)
 }
 pub(crate) async fn google_list(client: &Client, mail: &Value, options: &Value) -> Result<Value> {
@@ -858,7 +880,7 @@ pub async fn fetch_page(client: &Client, mail: &Value, options: &Value) -> Resul
         });
     let path = format!("/v1.0/me/mailFolders/{}/messages", component(identity));
     let mut url = url::Url::parse(&format!("https://graph.microsoft.com{path}")).unwrap();
-    url.query_pairs_mut().extend_pairs([("$top","50"),("$orderby",&format!("{date} desc")),("$select","id,from,sender,toRecipients,ccRecipients,bccRecipients,subject,body,receivedDateTime,sentDateTime,createdDateTime,isDraft,isRead,flag,internetMessageId,internetMessageHeaders")]);
+    url.query_pairs_mut().extend_pairs([("$top","50"),("$orderby",&format!("{date} desc")),("$select","id,from,sender,replyTo,toRecipients,ccRecipients,bccRecipients,subject,body,receivedDateTime,sentDateTime,createdDateTime,isDraft,isRead,flag,internetMessageId,internetMessageHeaders")]);
     let mut filters = Vec::new();
     for (key, operator) in [("since", "ge"), ("before", "lt")] {
         if !string(options, key).is_empty() {

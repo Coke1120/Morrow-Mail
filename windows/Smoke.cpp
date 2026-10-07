@@ -651,6 +651,31 @@ IAsyncAction Shell::smoke() {
             auto editor = page.Content().try_as<controls::Grid>();
             check(section == L"compose" && editor && editor.RowDefinitions().Size() == 2 && dirty.empty(),
                 L"The composer did not keep its actions outside the scrolling form.");
+            auto reviewControls = [&](controls::Grid const& layout, bool visible) {
+                auto panes = layout.Children().GetAt(layout.Children().Size() - 1).as<controls::Grid>();
+                auto form = panes.Children().GetAt(0).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
+                int choices = 0;
+                for (auto const& child : form.Children()) if (auto button = child.try_as<controls::Button>()) {
+                    auto title = unbox_value_or<hstring>(button.Content(), L"");
+                    if (title == L"I found it in Sent…" || title == L"Close without retrying…") {
+                        ++choices;
+                        check((button.Visibility() == xaml::Visibility::Visible) == visible && button.IsEnabled() == visible,
+                            L"Delivery resolution controls do not reflect the owned uncertain draft.");
+                    }
+                }
+                check(choices == 2, L"Both delivery resolution decisions must be available.");
+            };
+            reviewControls(editor, false);
+            Json unresolved; put(unresolved, L"id", L"fictional-uncertain-draft"); put(unresolved, L"accountId", L"one@fixture.invalid");
+            put(unresolved, L"deliveryStatus", L"unconfirmed"); put(unresolved, L"deliveryRequestId", L"fictional-resolution-request");
+            put(unresolved, L"to", L"recipient@fixture.invalid"); put(unresolved, L"body", L"Fictional retained delivery text.");
+            co_await compose(lifetime, unresolved);
+            reviewControls(page.Content().as<controls::Grid>(), true);
+            controls::StackPanel limitedReader; Json limited;
+            put(limited, L"body", L"Fictional partial text"); limited.Insert(L"bodyTruncated", Value::CreateBooleanValue(true));
+            appendReader(lifetime, limitedReader, limited);
+            check(limitedReader.Children().Size() == 2 && std::wstring_view(limitedReader.Children().GetAt(0).as<controls::TextBlock>().Text()).find(L"truncated") != std::wstring_view::npos,
+                L"Partial downloaded text must show a truncation warning.");
             co_await navigate(L"mail", L"one@fixture.invalid");
             for (auto mode : {L"reply", L"replyAll", L"savedReply"}) {
                 enter(std::wstring_view(mode) == L"replyAll" ? "reply-history-reply-all" : std::wstring_view(mode) == L"savedReply" ? "reply-history-saved-reply" : "reply-history-reply");

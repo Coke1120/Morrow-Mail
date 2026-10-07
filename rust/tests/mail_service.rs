@@ -34,6 +34,171 @@ const C: &str = "c@example.invalid";
 const NATIVE: &str = "fixture-native-token";
 
 #[tokio::test]
+async fn closing_uncertain_delivery_is_owned_durable_and_never_submits_again() {
+    for resolution in ["sent", "dismissed"] {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let fixture = Fixture::new(Arc::new(move |request| {
+            let count = count.clone();
+            async move {
+                assert_eq!(request.method, "POST");
+                count.fetch_add(1, Ordering::SeqCst);
+                Reply::Lost
+            }
+            .boxed()
+        }))
+        .await;
+        let server = fixture.start().await;
+        set(&server.app, config(&[(A, "google"), (B, "google")])).await;
+        let body = outgoing("close-delivery-123");
+        server
+            .app
+            .db(|db| {
+                db.upsert(A, &cached("same", A, "inbox"))?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let failed = server.call("POST", "/api/send", A, body.clone()).await;
+        assert_eq!(failed.0, 502);
+        let id = string(&failed.1, "draftId").to_owned();
+        let collision = id.clone();
+        server
+            .app
+            .db(move |db| {
+                db.upsert(B, &cached(&collision, B, "drafts"))?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let input = json!({"draftId":id,"requestId":"close-delivery-123","resolution":resolution,"confirmed":true});
+        for owner in ["", "all", B, C] {
+            assert_eq!(
+                server
+                    .call("POST", "/api/drafts/resolve", owner, input.clone())
+                    .await
+                    .0,
+                409
+            );
+        }
+        for patch in [
+            json!({"confirmed":false}),
+            json!({"resolution":"unknown"}),
+            json!({"accountId":B}),
+        ] {
+            assert_eq!(
+                server
+                    .call(
+                        "POST",
+                        "/api/drafts/resolve",
+                        A,
+                        merge(input.clone(), &patch)
+                    )
+                    .await
+                    .0,
+                400
+            );
+        }
+        assert_eq!(
+            server
+                .call(
+                    "POST",
+                    "/api/drafts/resolve",
+                    A,
+                    merge(input.clone(), &json!({"requestId":"other-request"}))
+                )
+                .await
+                .0,
+            409
+        );
+        let closed = server
+            .call("POST", "/api/drafts/resolve", A, input.clone())
+            .await;
+        assert_eq!(closed.0, 200, "{}", closed.1);
+        assert_eq!(closed.1["message"]["deliveryStatus"], "resolved");
+        assert_eq!(
+            closed.1["message"]["folder"],
+            if resolution == "sent" {
+                "sent"
+            } else {
+                "archive"
+            }
+        );
+        assert_eq!(closed.1["message"]["bcc"], "hidden@example.invalid");
+        assert_eq!(
+            server
+                .call("POST", "/api/drafts/resolve", A, input.clone())
+                .await,
+            closed
+        );
+        server.shutdown().await;
+        let server = fixture.start().await;
+        assert_eq!(
+            server
+                .call("POST", "/api/drafts/resolve", A, input.clone())
+                .await,
+            closed
+        );
+        assert_eq!(
+            server
+                .call(
+                    "POST",
+                    "/api/drafts/resolve",
+                    A,
+                    merge(
+                        input,
+                        &json!({"resolution":if resolution == "sent" {"dismissed"} else {"sent"}})
+                    )
+                )
+                .await
+                .0,
+            409
+        );
+        for patch in [
+            json!({}),
+            json!({"retryUnconfirmed":true}),
+            json!({"draftId":id,"requestId":"different-request","retryUnconfirmed":true}),
+        ] {
+            assert_eq!(
+                server
+                    .call("POST", "/api/send", A, merge(body.clone(), &patch))
+                    .await
+                    .0,
+                409
+            );
+        }
+        assert_eq!(
+            server
+                .call("POST", "/api/drafts", A, merge(body, &json!({"id":id})))
+                .await
+                .0,
+            400
+        );
+        let stored = server.app.settings().await.unwrap();
+        assert_eq!(stored["deliveryAttempts"][0]["resolution"], resolution);
+        assert_eq!(
+            stored["deliveryAttempts"][0]["requestId"],
+            "close-delivery-123"
+        );
+        let owned_id = id.clone();
+        server
+            .app
+            .db(move |db| {
+                assert_eq!(db.get(B, &owned_id)?.unwrap()["folder"], "drafts");
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "closing/restarting/replaying must not resubmit"
+        );
+        server.shutdown().await;
+    }
+}
+
+#[tokio::test]
 async fn all_mail_refresh_ignores_inactive_inbox_sent_choices() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let captured = calls.clone();

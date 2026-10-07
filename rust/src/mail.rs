@@ -3,7 +3,7 @@ use crate::{
     error::{Error, Result},
     imap, pages, providers,
     service::{
-        App, Context, canonical_address, connections, get_message, save_connection, valid_account,
+        App, Context, connections, get_message, reconnect_address, save_connection, valid_account,
     },
     store::{Store, merge, now, string},
     validation,
@@ -204,7 +204,7 @@ async fn fetch_page_cached(
                     let raw: Option<String> = db.conn.query_row("SELECT data FROM messages WHERE account=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id)=? LIMIT 1", params![owner, format!("google:{id}")], |row| row.get(0)).optional()?;
                     if let Some(raw) = raw {
                         let value: Value = serde_json::from_str(&raw)?;
-                        if value["providerSnapshot"].is_object() && value["body"].is_string() && value["bodyHtml"].is_string() && value["providerDraft"] != true {
+                        if value["providerSnapshot"].is_object() && value["body"].is_string() && value["bodyHtml"].is_string() && value["replyTo"].is_string() && value["bodyTruncated"].is_boolean() && value["providerDraft"] != true {
                             cached.insert(id, value);
                         }
                     }
@@ -391,6 +391,78 @@ fn attempts(config: &Value) -> Vec<Value> {
         .cloned()
         .unwrap_or_default()
 }
+pub fn resolve_delivery(db: &Store, owner: &str, input: &Value) -> Result<Value> {
+    db.transaction(|db| {
+        let config = db.settings()?;
+        if ["", "all", "demo"].contains(&owner) || !valid_account(&config, owner) {
+            return Err(Error::conflict(
+                "Reconnect the original mailbox before reviewing delivery.",
+            ));
+        }
+        if !input.as_object().is_some_and(|fields| {
+            fields.keys().all(|key| {
+                ["draftId", "requestId", "resolution", "confirmed"].contains(&key.as_str())
+            })
+        }) || input["confirmed"] != true
+            || !["sent", "dismissed"].contains(&string(input, "resolution"))
+        {
+            return Err(Error::invalid(
+                "Review and confirm how to close this delivery.",
+            ));
+        }
+        let draft_id = validation::text(&input["draftId"], "Draft ID", 8192, false)?;
+        let request = validation::text(&input["requestId"], "Send request ID", 100, false)?;
+        let mut records = attempts(&config);
+        let record = records
+            .iter_mut()
+            .find(|a| {
+                a["account"] == owner && a["draftId"] == draft_id && a["requestId"] == request
+            })
+            .ok_or_else(|| {
+                Error::conflict(
+                    "No matching unconfirmed delivery was found. Refresh and check Sent.",
+                )
+            })?;
+        let mut draft = get_message(db, owner, draft_id)?;
+        if record["resolution"].is_string() {
+            if record["resolution"] != input["resolution"] {
+                return Err(Error::conflict(
+                    "This delivery was already closed with another decision.",
+                ));
+            }
+            return Ok(json!({"message":pages::owned(owner,draft)}));
+        }
+        if draft["deliveryStatus"] != "unconfirmed"
+            || draft["deliveryRequestId"] != request
+            || fingerprint(&draft)? != string(record, "payloadHash")
+        {
+            return Err(Error::conflict(
+                "The saved delivery changed. Reopen it before reviewing.",
+            ));
+        }
+        let date = now();
+        record["resolution"] = input["resolution"].clone();
+        record["resolvedAt"] = date.clone().into();
+        // ponytail: retain decisions in the existing ledger to prevent replay;
+        // move to an indexed table if long-term ledger size becomes material.
+        db.set_settings(&json!({"deliveryAttempts":records}))?;
+        crate::scheduled::resolve_delivery(db, owner, request)?;
+        draft["folder"] = if input["resolution"] == "sent" {
+            "sent"
+        } else {
+            "archive"
+        }
+        .into();
+        draft["deliveryStatus"] = "resolved".into();
+        draft["deliveryResolution"] = input["resolution"].clone();
+        draft["deliveryResolvedAt"] = date.into();
+        if draft["scheduledSend"].is_object() {
+            draft["scheduledSend"]["status"] = "resolved".into();
+        }
+        db.upsert(owner, &draft)?;
+        Ok(json!({"message":pages::owned(owner,draft)}))
+    })
+}
 fn review(db: &Store, owner: &str, attempt: &Value, status: u16) -> Result<Error> {
     let mut error = Error::new(
         status,
@@ -447,6 +519,7 @@ pub(crate) async fn send_locked(
         if let Some(job)=&scheduled_review { crate::scheduled::validate_review(db,&owner,&input_clone,job)?; }
         if !string(&input_clone,"draftId").is_empty() && db.get(&owner,string(&input_clone,"draftId"))?.is_some_and(|draft|draft["providerDraft"]==true) {return Err(Error::conflict("This is a read-only provider draft. Copy it to a local draft before editing or sending."));}
         let previous=attempts(&config).into_iter().find(|a|a["account"]==owner&&(a["requestId"]==request_clone||!string(&input_clone,"draftId").is_empty()&&a["draftId"]==input_clone["draftId"]));
+        if previous.as_ref().is_some_and(|a| a["resolution"].is_string()) { return Err(Error::conflict("This delivery was closed after review and cannot be retried. Start a new message for a separate delivery.")); }
         let mut value=initial_value;value["replyToId"]=input_clone.get("replyToId").cloned().unwrap_or(json!(""));
         // An already persisted footer is the reviewed payload; preserve its exact text across serializer upgrades.
         if let Some(attempt)=&previous
@@ -459,7 +532,7 @@ if fingerprint(&sent)?!=fingerprint(&comparable)?{return Err(Error::conflict("Th
 if previous["payloadHash"]!=hash{return Err(Error::conflict("This draft has an unconfirmed delivery with different text. Check Sent and reopen the saved draft before retrying."));}}
         let draft_id=if !string(&input_clone,"draftId").is_empty(){let id=validation::text(&input_clone["draftId"],"Draft ID",8192,false)?;if get_message(db,&owner,id)?["folder"]!="drafts"{return Err(Error::invalid("Only saved drafts can be sent."));}id.to_owned()}else if let Some(previous)=&previous{string(previous,"draftId").into()}else if owner!="demo"{format!("outbox:{request_clone}")}else{String::new()};
         let original=if !string(&input_clone,"replyToId").is_empty(){get_message(db,&owner,string(&input_clone,"replyToId"))?}else{Value::Null};
-        if previous.is_none()&&owner!="demo"&&attempts(&config).len()>=1000{return Err(Error::conflict("Too many unconfirmed deliveries. Review saved drafts before sending more."));}
+        if previous.is_none()&&owner!="demo"&&attempts(&config).iter().filter(|a| !a["resolution"].is_string()).count()>=1000{return Err(Error::conflict("Too many unconfirmed deliveries. Review saved drafts before sending more."));}
         Ok(json!({"value":value,"draftId":draft_id,"sentId":sent_id,"original":original,"previous":previous,"payloadHash":hash}))
     }).await?;
     if let Some(sent) = prepared.get("sent") {
@@ -749,6 +822,13 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             app.db(move |db| crate::drafts::prepare(db, &owner, &body))
                 .await?
         }
+        ("POST", ["drafts", "resolve"]) => {
+            let _gate = app.0.mailbox.try_lock().map_err(|_| {
+                Error::conflict("Another mailbox operation is running. Try again when it finishes.")
+            })?;
+            app.db(move |db| resolve_delivery(db, &owner, &body))
+                .await?
+        }
         ("POST", ["drafts"]) => {
             let value = content::content(&body, true)?;
             // Keep the idle check and queued write in the same gate as send preparation.
@@ -850,7 +930,8 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                 .try_lock()
                 .map_err(|_| Error::conflict("Another mailbox operation is running."))?;
             let config = app.settings().await?;
-            let address = canonical_address(&config, &validation::email(&body["email"])?);
+            let entered = validation::email(&body["email"])?;
+            let address = app.db(move |db| reconnect_address(db, &entered)).await?;
             let mut mail = json!({"provider":"imap","email":address,"imapHost":validation::hostname(&body["imapHost"],"IMAP host")?,"smtpHost":validation::hostname(&body["smtpHost"],"SMTP host")?});
             for (key, default) in [("imapPort", 993), ("smtpPort", 465)] {
                 let number = if body.get(key).is_none() || body[key] == 0 || body[key] == "" {

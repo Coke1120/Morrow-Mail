@@ -134,6 +134,7 @@ struct Composer {
     weak_ref<DatePicker> date;
     weak_ref<TimePicker> time;
     weak_ref<Button> save, send, removeFooter, generate, useAI, close;
+    weak_ref<Button> foundSent, dismissDelivery;
     hstring suggestion;
     bool live(std::shared_ptr<Shell> const& host) const {
         return host && !host->closing && host->generation == generation
@@ -169,6 +170,10 @@ struct Composer {
             view.IsEnabled(!busy);
         }
         bool connected = host->connected(owner);
+        for (auto const& reference : {foundSent, dismissDelivery}) if (auto view = reference.get()) {
+            view.Visibility(uncertain ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
+            view.IsEnabled(uncertain && !busy && connected && !text(message, L"id").empty());
+        }
         if (auto view = save.get()) view.IsEnabled(!isFrozen && !scheduleOn() && connected);
         if (auto view = send.get()) {
             auto review = reviewed.get();
@@ -237,6 +242,7 @@ IAsyncAction replyHistory(std::shared_ptr<Composer> state) {
             entry.Children().Append(label(text(message, L"fromName") + L" <" + text(message, L"fromEmail") + L"> · " + mailDateLabel(text(message, L"date")), 12));
             entry.Children().Append(label(L"To: " + text(message, L"to") + (text(message, L"cc").empty() ? L"" : L" · Cc: " + text(message, L"cc")), 12));
             entry.Children().Append(label(text(message, L"body")));
+            if (flag(message, L"bodyTruncated")) entry.Children().Append(label(L"Downloaded message text was truncated. Check the original mailbox for the complete message."));
             panel.Children().Append(entry);
         }
         if (flag(result, L"limited")) panel.Children().Append(label(L"Some earlier messages are unavailable, or the 20-message limit was reached.", 12));
@@ -269,6 +275,30 @@ struct ComposerWrite {
     }
     ~ComposerWrite() { try { release(); } catch (...) {} }
 };
+
+IAsyncAction resolveDelivery(std::shared_ptr<Composer> state, hstring resolution) {
+    auto shell = state->shell.lock();
+    if (!state->live(shell) || state->busy || !state->uncertain) co_return;
+    auto owner = state->owner, id = text(state->message, L"id"), request = state->requestId;
+    if (id.empty() || !shell->connected(owner)) co_return;
+    ComposerWrite write(state); state->update();
+    try {
+        bool approved = co_await shell->confirm(resolution == L"sent" ? L"Mark this delivery as sent?" : L"Close this delivery without retrying?",
+            L"Mailbox: " + owner + L"\nTo: " + text(state->message, L"to") + L"\nSubject: " + text(state->message, L"subject") + L"\n"
+            + (resolution == L"sent" ? L"Confirm that you found this message in your provider’s Sent folder. The local copy will move to Sent."
+                : L"The delivery status will remain unknown. The local copy will move to Archive.")
+            + L"\nMorrow will retain your decision and prevent this request from being sent again.", L"Save Decision");
+        if (!approved || !state->live(shell) || !shell->connected(owner)) co_return;
+        Json input; put(input, L"draftId", id); put(input, L"requestId", request); put(input, L"resolution", resolution); input.Insert(L"confirmed", Value::CreateBooleanValue(true));
+        auto result = co_await shell->service->request(L"/drafts/resolve", owner, L"POST", input);
+        if (!state->live(shell)) co_return;
+        auto message = object(result, L"message"); ownedMessage(message, owner, id);
+        require(text(message, L"deliveryStatus") == L"resolved" && text(message, L"deliveryResolution") == resolution,
+            L"Delivery review could not be confirmed. Refresh before trying again.");
+        write.release(); shell->dirty.erase(L"compose");
+        if (state->live(shell)) co_await shell->navigate(L"mail", owner, resolution == L"sent" ? L"sent" : L"archive");
+    } catch (...) { if (state->live(shell)) state->say(errorText()); }
+}
 
 IAsyncAction submit(std::shared_ptr<Composer> state, bool send) {
     auto shell = state->shell.lock();
@@ -493,6 +523,8 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         scheduleDetails.Children().Append(label(L"Morrow must be open to send. Catch-up is limited to 15 minutes; later messages are marked missed. The confirmation also shows the exact UTC time, including at a daylight-saving clock change."));
         panel.Children().Append(scheduleDetails);
         CheckBox review; review.Content(box_value(L"I checked Sent and want to retry this exact delivery, even if it creates a duplicate.")); state->reviewed = make_weak(review); panel.Children().Append(review);
+        auto found = button(L"I found it in Sent…", [state] { resolveDelivery(state, L"sent"); }); state->foundSent = make_weak(found); panel.Children().Append(found);
+        auto dismiss = button(L"Close without retrying…", [state] { resolveDelivery(state, L"dismissed"); }); state->dismissDelivery = make_weak(dismiss); panel.Children().Append(dismiss);
         auto notice = label(L""); notice.IsTextSelectionEnabled(true); state->notice = notice; panel.Children().Append(notice);
         Grid buttons; buttons.ColumnSpacing(12); buttons.Margin(xaml::Thickness{24, 12, 24, 20});
         ColumnDefinition left; left.Width(xaml::GridLengthHelper::Auto()); buttons.ColumnDefinitions().Append(left);
@@ -716,7 +748,7 @@ IAsyncAction loadSchedules(std::shared_ptr<Schedules> state) {
         uint32_t awaiting = 0;
         for (auto const& value : jobs) {
             auto job = value.GetObject(); auto payload = object(job, L"payload");
-            if (text(job, L"status") == L"sent" || text(job, L"status") == L"cancelled") continue;
+            if (text(job, L"status") == L"sent" || text(job, L"status") == L"cancelled" || text(job, L"status") == L"resolved") continue;
             ++awaiting;
             auto row = stack();
             row.Children().Append(label(text(payload, L"subject", L"(No subject)"), 20));
