@@ -139,8 +139,95 @@ fn actual_import_schema_is_queued_between_pages_and_unknown_counts_stay_unknown(
     assert!(!runtime.snapshot(&config).to_string().contains("PRIVATE-"));
     config["imports"][A]["status"] = "paused".into();
     assert_eq!(task(&runtime, &config, &id)["status"], "paused");
+    config["imports"][A]["status"] = "running".into();
+    config["imports"][A]["errorCode"] = "network_error".into();
+    config["imports"][A]["nextRetryAt"] = AT.into();
+    config["imports"][A]["retryCount"] = 7.into();
+    let retry = task(&runtime, &config, &id);
+    assert!(
+        retry["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Retry 7 scheduled")
+    );
+    assert!(!retry["detail"].as_str().unwrap().contains("/3"));
     drop(db);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn saved_sync_failures_survive_runtime_restart_and_clear_after_recovery() {
+    let runtime = Runtime::default();
+    let mut config = config();
+    let id = format!("sync:{A}");
+    let before = config.clone();
+    for (code, expected) in [
+        ("oauth_reconnect_required", "Reconnect"),
+        ("oauth_configuration", "OAuth client settings"),
+        ("oauth_refresh_failed", "authorization"),
+        ("mail_sync_failed", "connection"),
+        ("PRIVATE-UNKNOWN-CODE", "connection"),
+    ] {
+        config["backgroundSyncErrors"] = json!([
+            {"accountId":A,"code":code,"error":"PRIVATE-PROVIDER-ERROR","recoveryAction":"PRIVATE-ACTION","updatedAt":"PRIVATE-TIMESTAMP"},
+            {"accountId":OFF,"code":"oauth_reconnect_required"}
+        ]);
+        let saved = config.clone();
+        let snapshot = runtime.snapshot(&config);
+        assert_eq!(snapshot["tasks"].as_array().unwrap().len(), 1);
+        let failure = task(&runtime, &config, &id);
+        assert_eq!(failure["status"], "failed");
+        assert!(failure["detail"].as_str().unwrap().contains(expected));
+        assert!(failure["updatedAt"].is_null());
+        assert!(!snapshot.to_string().contains("PRIVATE-"));
+        assert_eq!(task(&Runtime::default(), &config, &id), failure);
+        assert_eq!(config, saved, "Activity must not change saved work");
+    }
+    config["backgroundSyncErrors"] = json!([{"accountId":A,"code":"rate_limited","nextRetryAt":AT,"retryCount":7,"error":"PRIVATE-PROVIDER-ERROR"}]);
+    let waiting = task(&runtime, &config, &id);
+    assert_eq!(waiting["status"], "queued");
+    assert!(waiting["detail"].as_str().unwrap().contains(AT));
+    assert_eq!(waiting["retryCount"], 7);
+    assert!(waiting["completed"].is_null() && waiting["total"].is_null());
+    config["backgroundSyncErrors"][0]["nextRetryAt"] = "PRIVATE-TIMESTAMP".into();
+    let invalid_retry = task(&runtime, &config, &id);
+    assert_eq!(invalid_retry["status"], "failed");
+    assert!(!invalid_retry.to_string().contains("PRIVATE-"));
+
+    config["backgroundSyncErrors"][0]["code"] = "provider_quota_exceeded".into();
+    for retry_at in [json!(AT), Value::Null, json!("PRIVATE-TIMESTAMP")] {
+        config["backgroundSyncErrors"][0]["nextRetryAt"] = retry_at.clone();
+        let legacy = task(&runtime, &config, &id);
+        assert_eq!(legacy["status"], "queued");
+        assert_eq!(
+            legacy["nextRetryAt"],
+            if retry_at == AT {
+                json!(AT)
+            } else {
+                Value::Null
+            }
+        );
+        assert!(
+            legacy["detail"]
+                .as_str()
+                .unwrap()
+                .contains(if retry_at == AT { AT } else { "Retry pending" })
+        );
+        assert!(!legacy.to_string().contains("PRIVATE-"));
+    }
+
+    let mut failed = runtime.start(A, "sync", "Fetching mail", "Inbox");
+    failed.finish(false, None);
+    let mut retry = runtime.start(A, "sync", "Fetching mail", "Inbox");
+    let snapshot = runtime.snapshot(&config);
+    assert_eq!(snapshot["tasks"].as_array().unwrap().len(), 2);
+    assert_eq!(snapshot["tasks"][0]["status"], "running");
+    retry.finish(true, Some(1));
+    config = before;
+    let recovered = runtime.snapshot(&config);
+    assert_eq!(recovered["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(recovered["tasks"][0]["status"], "complete");
+    assert_eq!(recovered["tasks"][0]["accountId"], A);
 }
 
 #[test]

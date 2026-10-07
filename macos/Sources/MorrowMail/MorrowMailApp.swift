@@ -60,7 +60,7 @@ struct MorrowMailApp: App {
                 Button("Archive Locally") { if let message = model.current { model.patch(message, .object(["folder": .string("archive")])) } }.keyboardShortcut("a", modifiers: [.command, .shift]).disabled(!model.canNavigate || model.current == nil || model.current?["folder"].string == "drafts")
                 Button("Toggle Read Locally") { if let message = model.current { model.patch(message, .object(["read": .bool(!message["read"].bool)])) } }.keyboardShortcut("u", modifiers: [.command, .shift]).disabled(!model.canNavigate || model.current == nil)
                 Divider()
-                Button("Sync Mail") { model.perform { try await model.sync() } }.keyboardShortcut("r").disabled(!model.canNavigate || model.starting)
+                Button("Refresh Recent Mail") { model.perform { try await model.sync() } }.keyboardShortcut("r").disabled(!model.canNavigate || model.starting)
                 Button("Inbox") { model.section = "inbox" }.keyboardShortcut("1").disabled(!model.canNavigate)
                 Button("AI Studio") { model.section = "studio" }.keyboardShortcut("2").disabled(!model.canNavigate)
                 Button("Calendar") { model.section = "calendar" }.keyboardShortcut("3").disabled(!model.canNavigate)

@@ -47,8 +47,8 @@ struct ActivityStatusView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Mail & AI activity").font(.headline)
             if !error.isEmpty { Text(error).foregroundStyle(.red).textSelection(.enabled) }
-            Text("Idle does not mean your entire mailbox is downloaded. Mail views and AI use only downloaded mail; history is limited to your selected import range.").font(.caption).foregroundStyle(.secondary)
-            if let checked = date(value["checkedAt"]) { Text("Last checked \(checked)").font(.caption).foregroundStyle(.secondary) }
+            Text("Idle does not mean your entire mailbox is downloaded. Recent-mail sync checks a limited set of messages; older downloaded messages may still have an earlier read/unread state. History is limited to your selected import range.").font(.caption).foregroundStyle(.secondary)
+            if let checked = date(value["checkedAt"]) { Text("Activity status updated \(checked) · Local status, not the last mailbox sync.").font(.caption).foregroundStyle(.secondary) }
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     ForEach(accounts, id: \.self) { account in

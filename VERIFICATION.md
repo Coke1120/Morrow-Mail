@@ -1,4 +1,12 @@
-# Verification — 6 October 2026
+# Verification — 7 October 2026
+
+## Unreleased — sync status UX review
+
+The source changes retain Windows mailbox-scoped sync failures during workspace refresh, project persisted sync failures and quota waits into Activity, identify Read/Unread actions as local, distinguish Activity's local status timestamp from remote mail sync and disclose the bounded recent-mail scope. History retry text no longer implies a three-attempt limit. No version/tag/release, provider-write behavior, polling scope or retry schedule changes are included.
+
+Two Rust regression assertions failed before the fix: saved authorization errors were absent from Activity and the seventh retry still displayed `/3`. The updated Activity and history-retry suites pass all 10 tests, including safe error projection, disconnected-owner filtering, runtime restart, retry timing and recovery. Windows smoke now checks combined/selected mailbox warnings, retry timing, persistence across status resets, current-operation error precedence and clearing after recovery. Rust formatting and strict all-target Clippy pass; the full locked Rust suite passes 214 tests across 35 test binaries/doc-test runs, with no failures or ignored tests. The macOS native candidate builds successfully and passes deep/strict ad-hoc signature verification and plist lint. Production-service native acceptance also passes, including fresh onboarding, native reader isolation, window/lifecycle checks, encrypted persistence, read-state/page retention and account isolation. The original PR revision `40b5db3` passed both macOS and Windows builds and native acceptance in [CI run 221](https://github.com/Coke1120/Morrow-Mail/actions/runs/37585467377), including the Windows fixture walkthrough. Fixtures are isolated and fictional; no real-account acceptance is claimed. Jev scoring was unavailable because its service has no `JEV_API_KEY`; the changes were reviewed directly and checked with the repository tests.
+
+The PR review follow-up also reproduced a legacy quota regression: Activity reported `provider_quota_exceeded` as failed even though the background scheduler automatically retries it. Activity now shows it as queued, with a safe pending-retry message when its deadline is absent or invalid. Regression checks cover valid, missing and invalid deadlines without exposing stored provider text; the Activity/history-retry suites and strict Clippy pass. Retry scheduling is unchanged.
 
 ## 0.6.0-beta.44 — published paired native release
 
