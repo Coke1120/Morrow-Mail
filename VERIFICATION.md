@@ -1,6 +1,10 @@
 # Verification — 8 October 2026
 
-## Unreleased — Inbox list layout
+## 0.6.0-beta.47 — release preparation
+
+The Inbox changes and Windows follow-up are merged into main from `codex/inbox-list-ui-check`. Source candidate [CI 37746711282](https://github.com/Coke1120/Morrow-Mail/actions/runs/37746711282) passes both native jobs at `4f9273d674fa8b3a0f2549ca99bef5f167d7e1fa`, using beta.46 metadata. Beta.47 preparation changes only common version metadata and release documentation. Fresh same-tag/same-attempt paired builds, all existing native gates and pinned-key signed publication remain required; no test waiver applies. See the [release notes](docs/releases/v0.6.0-beta.47.md).
+
+## Inbox list layout — source verification before release
 
 Both native mail lists move the date/time to the right of the sender header and place the owning mailbox beside the sender in All accounts and search results. Sender/subject retain unread emphasis; previews use regular weight. Quick actions occupy the subject line. Account identity, selection, search and provider operations are unchanged.
 
