@@ -19,7 +19,7 @@ using namespace Windows::Data::Json;
 IAsyncAction nativeInteractionChecks(std::shared_ptr<Shell> shell);
 IAsyncAction captureMailList(std::shared_ptr<Shell> shell, hstring name) {
     xaml::Media::Imaging::RenderTargetBitmap bitmap;
-    co_await bitmap.RenderAsync(shell->mailList);
+    co_await bitmap.RenderAsync(shell->root);
     if (bitmap.PixelWidth() <= 0 || bitmap.PixelHeight() <= 0) throw hresult_error(E_FAIL, L"Mail list capture is empty.");
     auto pixels = co_await bitmap.GetPixelsAsync();
     std::vector<uint8_t> bytes(pixels.Length());
