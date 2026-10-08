@@ -1,8 +1,17 @@
 # Verification — 8 October 2026
 
-## 0.6.0-beta.47 — release preparation
+## 0.6.0-beta.47 — published paired native release
 
-The Inbox changes and Windows follow-up are merged into main from `codex/inbox-list-ui-check`. Source candidate [CI 37746711282](https://github.com/Coke1120/Morrow-Mail/actions/runs/37746711282) passes both native jobs at `4f9273d674fa8b3a0f2549ca99bef5f167d7e1fa`, using beta.46 metadata. Beta.47 preparation changes only common version metadata and release documentation. Fresh same-tag/same-attempt paired builds, all existing native gates and pinned-key signed publication remain required; no test waiver applies. See the [release notes](docs/releases/v0.6.0-beta.47.md).
+[Beta.47](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.47) was published at 2026-10-08 17:16:19 HKT from `3fa3ddca9801756c4e0d6f1fbd7a6cd0eac3cb81`. [Tagged CI 37752267440, attempt 1](https://github.com/Coke1120/Morrow-Mail/actions/runs/37752267440/attempts/1) passed all three jobs: Node-free Rust formatting, strict all-target Clippy and locked tests (218 on macOS, 217 on Windows, zero failed/ignored); both native builds and package checks; full macOS production-service acceptance; the Windows fresh/owned/restart UI walkthrough and 1,000/10,000/50,000-message fictional-mail benchmark; and the existing publisher's same-run/same-attempt provenance and pinned-key signing gate. No waiver applied.
+
+All six public assets were downloaded without authentication and matched their GitHub sizes and SHA-256 digests. Both public ZIPs and checksum files are byte-identical to this tag run's candidates. Archive integrity, duplicate/path checks, exact checksum files, manifest platform/version metadata and the published release body against the committed notes passed. The manifest's Ed25519 signature verified against the pinned public key, unchanged from beta.46. The byte-identical macOS candidate passed deep/strict ad-hoc signature verification, plist lint and bundle/release/service version checks; its service-version probe used a separate absolute temporary workspace. Both packaged Windows metadata files report beta.47. The existing publisher's local check also accepted both archives, checksums and explicit release notes.
+
+| Public archive | Bytes | SHA-256 |
+| --- | ---: | --- |
+| macos-arm64 | 13,489,161 | `663b758cb178102cea16d16b04ee3ec15883eb074c1aa3ad0a732767023186b4` |
+| windows-x64 | 37,872,243 | `77dd33ae9055c5882f345bce2c14f639dd74ec9f26d137fb9bbefe70ddcec143` |
+
+Beta.47 includes the Inbox layout changes and Windows narrow-toolbar fix, merged into main from `codex/inbox-list-ui-check`. The tagged checks repeat the native width/density/theme assertions described below. Fixtures use fictional providers and isolated temporary workspaces; no real mail, calendar event or paid-model request was submitted, and installed apps were not replaced. macOS is ad-hoc signed without notarization and Windows is unsigned. Local Parallels/Windows ARM manual, full live-account/provider/model, real external HTTPS image fetching, physical-pointer/accessibility, clean-machine and complete installed-updater restart/rollback acceptance remain outstanding. The previously recorded intermittent Windows reader initialization timeout remains unresolved; its existing gate passed this run. See the [release notes](docs/releases/v0.6.0-beta.47.md).
 
 ## Inbox list layout — source verification before release
 
