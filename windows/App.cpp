@@ -684,7 +684,7 @@ void Shell::mailPage() {
     Automation::AutomationProperties::SetName(unreadFilter, L"Show unread only");
     unreadFilter.Click([submitSearch](auto const&, auto const&) { submitSearch(); });
     Grid::SetColumn(unreadFilter, 1); listTitle.Children().Append(unreadFilter); heading.Children().Append(listTitle);
-    auto toolbar = actions(); toolbar.Spacing(8);
+    auto toolbar = actions(); toolbar.Spacing(4);
     DropDownButton view; view.Content(box_value(L"View")); MenuFlyout viewMenu;
     for (auto const& option : {std::pair{L"Reader on right",L"right"}, {L"Reader below",L"bottom"}, {L"Focused reading",L"focus"}}) {
         MenuFlyoutItem choice; choice.Text(option.first);
@@ -707,7 +707,7 @@ void Shell::mailPage() {
     sorting.SelectedIndex(0);
     sorting.SelectionChanged([weak](auto const&, auto const&) { if (auto self = weak.lock(); self && !self->loading) { self->retainedUnread = Json(); self->cursors = {L""}; self->loadPage(); } });
     toolbar.Children().Append(sorting);
-    toolbar.Children().Append(button(L"Delete", [weak] { if (auto self = weak.lock()) self->trashMessages(self->selectedMessages()); }));
+    toolbar.Children().Append(iconButton(L"\uE74D", L"Delete selected messages", [weak] { if (auto self = weak.lock()) self->trashMessages(self->selectedMessages()); }));
     Grid toolbarRow; toolbarRow.ColumnDefinitions().Append(ColumnDefinition());
     ColumnDefinition syncColumn; syncColumn.Width(GridLengthHelper::Auto()); toolbarRow.ColumnDefinitions().Append(syncColumn);
     toolbarRow.Children().Append(toolbar);

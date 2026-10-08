@@ -534,6 +534,17 @@ IAsyncAction Shell::smoke() {
                     auto deadline = GetTickCount64() + 2000;
                     do { co_await resume_after(std::chrono::milliseconds(20)); co_await ui; root.UpdateLayout(); }
                     while ((!item.ActualHeight() || std::abs(mailList.ActualWidth() - width) > 1) && GetTickCount64() < deadline);
+                    auto listHeading = mailList.Children().GetAt(0).as<controls::StackPanel>();
+                    auto toolbar = listHeading.Children().GetAt(listHeading.Children().Size() - 1).as<controls::Grid>();
+                    auto deleteButton = toolbar.Children().GetAt(0).as<controls::StackPanel>().Children().GetAt(2).as<controls::Button>();
+                    auto refreshButton = toolbar.Children().GetAt(1).as<controls::Button>();
+                    auto deleteOrigin = deleteButton.TransformToVisual(toolbar).TransformPoint(Point{});
+                    auto refreshOrigin = refreshButton.TransformToVisual(toolbar).TransformPoint(Point{});
+                    check(deleteButton.ActualWidth() >= 28 && deleteOrigin.X + deleteButton.ActualWidth() <= refreshOrigin.X + 1
+                        && refreshOrigin.X + refreshButton.ActualWidth() <= toolbar.ActualWidth() + 1,
+                        L"The narrow mail toolbar overlaps Delete and Refresh or clips an action.");
+                    check(xaml::Automation::AutomationProperties::GetName(deleteButton) == L"Delete selected messages",
+                        L"The toolbar Delete icon lost its accessible action name.");
                     auto row = item.Content().as<controls::StackPanel>();
                     auto heading = row.Children().GetAt(0).as<controls::Grid>();
                     auto identity = heading.Children().GetAt(0).as<controls::Grid>();
