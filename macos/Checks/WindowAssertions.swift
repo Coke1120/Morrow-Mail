@@ -56,7 +56,7 @@ struct WindowAssertions {
         let model = AppModel(), owner = "drag@example.invalid", other = "other@example.invalid"
         let accounts: [JSON] = [owner, other].map { .object(["id": .string($0), "provider": .string("google"), "settings": .object(["connection": .string("original")])]) }
         let folder: JSON = .object(["id": .string("label"), "kind": .string("label"), "name": .string("Work / 中文")])
-        let messages: [JSON] = [owner, other].map { .object(["id": .string("google:duplicate"), "viewId": .string($0 + ":duplicate"), "accountId": .string($0), "folder": .string("inbox")]) }
+        let messages: [JSON] = [owner, other].map { .object(["id": .string("google:duplicate"), "viewId": .string($0 + ":duplicate"), "accountId": .string($0), "folder": .string("inbox"), "fromName": .string("Alex Chen · Long sender name 中文"), "fromEmail": .string("alex@example.invalid"), "subject": .string("Fictional project update"), "preview": .string("A short preview for the native mail list layout."), "date": .string("2026-10-08T09:41:00Z")]) }
         model.state = .object(["account": .object(["id": .string("all")]), "accounts": .array(accounts), "messages": .array(messages)])
         model.serverFolders = [owner: [folder], other: [folder]]
         model.searchResponse = .object(["messages": .array(messages)])
@@ -117,6 +117,21 @@ struct WindowAssertions {
             assertionFailure("The production mail list is missing."); return
         }
         assert(list.allowsMultipleSelection, "The native mail table is in single-selection mode.")
+        var ancestor = list.superview
+        while ancestor != nil && !(ancestor is NSSplitView) { ancestor = ancestor?.superview }
+        guard let split = ancestor as? NSSplitView else { fatalError("Mail list split is missing") }
+        for width in [260.0, 320.0, 500.0] {
+            split.setPosition(width, ofDividerAt: 0)
+            for density in ["compact", "comfortable", "spacious"] {
+                model.state["settings"]["preferences"]["density"] = .string(density)
+                RunLoop.current.run(until: Date().addingTimeInterval(0.1)); host.layoutSubtreeIfNeeded()
+                guard let displayed = lists(host).first(where: { $0.numberOfRows == messages.count && $0.frame.width > 250 }) else { fatalError("Resizing lost the mail list") }
+                let row = displayed.rect(ofRow: 0)
+                assert(row.height > 30 && row.height < 180, "Mail metadata must stay bounded at \(width), \(density): \(row)")
+                assert(displayed.enclosingScrollView?.hasHorizontalScroller == false, "Mail rows must truncate within the list")
+            }
+        }
+        print("Mail rows with long sender/account text stay bounded at narrow/default/wide widths in every density.")
         func click(_ row: Int, modifiers: NSEvent.ModifierFlags = []) {
             let rect = list.rect(ofRow: row), point = list.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
             for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {

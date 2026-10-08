@@ -130,5 +130,6 @@ jobs:
             build/windows-native/artifacts/*
             build/windows-native/*evidence*.json
             test-results/windows-native-*.json
+            test-results/windows-native-*.png
           if-no-files-found: ignore
           retention-days: 3

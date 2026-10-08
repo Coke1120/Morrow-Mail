@@ -14,7 +14,7 @@
 
 Morrow Mail is an independent, MIT-licensed alternative inspired by Genspark GenMail. From **0.6.0-beta.18**, it uses **SwiftUI on macOS** and **WinUI 3/C++/WinRT on Windows**, with the same Rust mail service and release version. Native packages do not bundle Node, React or Electron. The retired React/Electron and Node sources are retained in Git history only. Current builds use Rust, SwiftUI and WinUI; see [JavaScript retirement](docs/JAVASCRIPT_RETIREMENT.md) for native HTML scrolling and historical CI retirement.
 
-- **Multiple mailboxes:** Gmail, Outlook / Microsoft 365, and IMAP / SMTP; combined or separate inboxes with collapsible account groups, sorting, and compact views.
+- **Multiple mailboxes:** Gmail, Outlook / Microsoft 365, and IMAP / SMTP; combined or separate inboxes with collapsible account groups, sorting, and compact views. Native mail lists place dates at the right and identify the owning mailbox beside the sender in combined views and search results.
 - **Indexed search:** local full-text search, Chinese traditional/simplified matching, filters, saved searches and optional reviewed semantic indexing in both clients.
 - **Drag to organize:** move one imported email onto a sidebar label or server folder, then review the captured account and destination before applying the provider change. Cross-account transfers and bulk moves are unsupported.
 - **Mail and calendars together:** read, search, compose, reply / reply all / forward, manage provider folders / Gmail labels, and connect Google Calendar and Outlook Calendar.

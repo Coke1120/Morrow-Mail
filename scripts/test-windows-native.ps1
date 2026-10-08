@@ -573,6 +573,9 @@ try {
             $evidence = Join-Path $root 'test-results'
             New-Item -ItemType Directory -Force $evidence | Out-Null
             Copy-Item -LiteralPath $resultFile -Destination (Join-Path $evidence "windows-native-ui-$caseIndex.json")
+            foreach ($capture in Get-ChildItem -LiteralPath $case.path -Filter 'mail-list-*.png' -File) {
+                Copy-Item -LiteralPath $capture.FullName -Destination (Join-Path $evidence "windows-native-ui-$caseIndex-$($capture.Name)")
+            }
             Require ($result.ok -eq $true -and $result.mode -ceq $case.mode) "Native UI fixture assertions failed: $($result | ConvertTo-Json -Compress -Depth 4)"
             $process.Dispose(); $process = $null
             Restore-CrashCapture $crashCapture; $crashCapture = $null

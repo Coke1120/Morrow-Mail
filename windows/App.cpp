@@ -825,13 +825,32 @@ IAsyncAction Shell::loadPage() {
             auto density = text(object(object(state, L"settings"), L"preferences"), L"density");
             auto row = stack(density == L"compact" ? 1 : density == L"spacious" ? 6 : 3);
             row.Padding(ThicknessHelper::FromUniformLength(density == L"compact" ? 4 : density == L"spacious" ? 12 : 8));
-            Grid heading; ColumnDefinition nameColumn; nameColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); heading.ColumnDefinitions().Append(nameColumn);
-            ColumnDefinition dotColumn; dotColumn.Width(GridLengthHelper::Auto()); heading.ColumnDefinitions().Append(dotColumn);
-            ColumnDefinition actionsColumn; actionsColumn.Width(GridLengthHelper::Auto()); heading.ColumnDefinitions().Append(actionsColumn);
+            Grid heading; heading.ColumnSpacing(8);
+            ColumnDefinition nameColumn; nameColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); heading.ColumnDefinitions().Append(nameColumn);
+            ColumnDefinition dateColumn; dateColumn.Width(GridLengthHelper::Auto()); heading.ColumnDefinitions().Append(dateColumn);
             bool unread = !flag(message, L"read");
             auto from = text(message, L"folder") == L"sent" || text(message, L"folder") == L"drafts" ? L"To: " + text(message, L"to") : text(message, L"fromName", text(message, L"fromEmail"));
-            auto sender = label(from, 14, false); sender.MaxLines(1); sender.TextTrimming(TextTrimming::CharacterEllipsis); bold(sender, unread); heading.Children().Append(sender);
-            auto markers = label((flag(message, L"starred") ? hstring(L"★  ") : hstring{}) + (unread ? L"●" : L""), 14, false); Grid::SetColumn(markers, 1); heading.Children().Append(markers);
+            Grid identity; identity.ColumnSpacing(6);
+            ColumnDefinition senderColumn; senderColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); identity.ColumnDefinitions().Append(senderColumn);
+            auto sender = label(from, 14, false); sender.MaxLines(1); sender.TextTrimming(TextTrimming::CharacterEllipsis); bold(sender, unread); identity.Children().Append(sender);
+            ToolTipService::SetToolTip(sender, box_value(from));
+            if (captured == L"all" || !search.Text().empty()) {
+                ColumnDefinition accountColumn; accountColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); accountColumn.MaxWidth(160); identity.ColumnDefinitions().Append(accountColumn);
+                auto account = label(text(message, L"accountId"), 11, false); account.MaxLines(1); account.TextTrimming(TextTrimming::CharacterEllipsis);
+                Grid::SetColumn(account, 1); account.Margin(ThicknessHelper::FromLengths(0, 3, 0, 0)); identity.Children().Append(account);
+                ToolTipService::SetToolTip(account, box_value(L"Mailbox: " + text(message, L"accountId")));
+                Automation::AutomationProperties::SetName(account, L"Mailbox: " + text(message, L"accountId"));
+            }
+            heading.Children().Append(identity);
+            auto date = label(mailDateLabel(text(message, L"date")), 11, false); date.MaxWidth(100); date.MaxLines(2); date.TextTrimming(TextTrimming::CharacterEllipsis);
+            date.TextAlignment(TextAlignment::Right); date.HorizontalAlignment(HorizontalAlignment::Right); Grid::SetColumn(date, 1); heading.Children().Append(date);
+            ToolTipService::SetToolTip(date, box_value(date.Text())); row.Children().Append(heading);
+            Grid subjectLine; subjectLine.ColumnSpacing(6);
+            ColumnDefinition subjectColumn; subjectColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); subjectLine.ColumnDefinitions().Append(subjectColumn);
+            ColumnDefinition dotColumn; dotColumn.Width(GridLengthHelper::Auto()); subjectLine.ColumnDefinitions().Append(dotColumn);
+            ColumnDefinition actionsColumn; actionsColumn.Width(GridLengthHelper::Auto()); subjectLine.ColumnDefinitions().Append(actionsColumn);
+            auto subject = label(text(message, L"subject", L"(No subject)"), 13, false); subject.MaxLines(1); subject.TextTrimming(TextTrimming::CharacterEllipsis); bold(subject, unread); subjectLine.Children().Append(subject);
+            auto markers = label((flag(message, L"starred") ? hstring(L"★  ") : hstring{}) + (unread ? L"●" : L""), 14, false); Grid::SetColumn(markers, 1); subjectLine.Children().Append(markers);
             auto quick = actions(); quick.Spacing(2); quick.Visibility(Visibility::Collapsed);
             quick.Children().Append(iconButton(unread ? L"\uE8C3" : L"\uE715", unread ? L"Mark read locally" : L"Mark unread locally", [weak, message, unread] {
                 if (auto self = weak.lock()) { Json changes; changes.Insert(L"read", Value::CreateBooleanValue(unread)); self->patch(message, changes); }
@@ -840,16 +859,12 @@ IAsyncAction Shell::loadPage() {
             replyAll.IsEnabled(text(message, L"folder") != L"drafts"); quick.Children().Append(replyAll);
             auto trash = iconButton(L"\uE74D", L"Move to provider Trash", [weak, message] { if (auto self = weak.lock()) self->organize(message, L"trash"); });
             trash.IsEnabled(canTrash(message));
-            quick.Children().Append(trash); Grid::SetColumn(quick, 2); heading.Children().Append(quick); row.Children().Append(heading);
+            quick.Children().Append(trash); Grid::SetColumn(quick, 2); subjectLine.Children().Append(quick); row.Children().Append(subjectLine);
             row.Tag(quick);
-            for (auto key : {L"subject",L"preview",L"date"}) {
-                if (key == std::wstring_view(L"preview") && density == L"compact") continue;
-                auto value = text(message, key, key == std::wstring_view(L"subject") ? L"(No subject)" : L"");
-                auto content = label(key == std::wstring_view(L"date") ? mailDateLabel(value) : value, key == std::wstring_view(L"date") ? 11 : 13, false);
-                content.MaxLines(key == std::wstring_view(L"preview") && density == L"spacious" ? 3 : 1); content.TextTrimming(TextTrimming::CharacterEllipsis);
-                bold(content, unread && key != std::wstring_view(L"date")); row.Children().Append(content);
+            if (density != L"compact") {
+                auto preview = label(text(message, L"preview"), 12, false);
+                preview.MaxLines(density == L"spacious" ? 3 : 1); preview.TextTrimming(TextTrimming::CharacterEllipsis); row.Children().Append(preview);
             }
-            if (captured == L"all") row.Children().Append(label(text(message, L"accountId"), 11, false));
             if (flag(message, L"pending")) row.Children().Append(label(L"Pending", 11, false));
             auto entry = preserve ? rows.Items().GetAt(index).as<ListViewItem>() : ListViewItem();
             entry.Content(row); entry.Tag(message); entry.HorizontalContentAlignment(HorizontalAlignment::Stretch);
@@ -881,7 +896,7 @@ IAsyncAction Shell::loadPage() {
                 });
             }
             quick.Visibility(entry.FocusState() == FocusState::Unfocused ? Visibility::Collapsed : Visibility::Visible);
-            Automation::AutomationProperties::SetName(entry, text(message, L"fromName") + L", " + text(message, L"subject") + (unread ? L", unread" : L", read"));
+            Automation::AutomationProperties::SetName(entry, from + L", " + text(message, L"subject") + L", Mailbox: " + text(message, L"accountId") + L", " + date.Text() + (unread ? L", unread" : L", read"));
             if (!preserve) rows.Items().Append(entry);
             if (!preserve && selectedIds.contains(std::wstring(text(message, L"viewId")))) rows.SelectedItems().Append(entry);
             ++index;

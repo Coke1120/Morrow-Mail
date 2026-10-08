@@ -309,23 +309,37 @@ struct MailWorkspace: View {
                     DispatchQueue.main.async { if model.canNavigate { model.selectMailMessages(ids) } }
                 })) { message in
                     VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Text(["sent", "drafts"].contains(message["folder"].string) ? "To: " + message["to"].string : message["fromName"].string).lineLimit(1)
+                        HStack(alignment: .top, spacing: 8) {
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                Text(["sent", "drafts"].contains(message["folder"].string) ? "To: " + message["to"].string : message["fromName"].nonempty ? message["fromName"].string : message["fromEmail"].string)
+                                    .fontWeight(message["read"].bool ? .regular : .bold).lineLimit(1)
+                                    .help(["sent", "drafts"].contains(message["folder"].string) ? message["to"].string : message["fromEmail"].string)
+                                if model.combined || !model.searchResponse.isNull {
+                                    Text(message["accountId"].string).font(.caption2).foregroundStyle(.secondary)
+                                        .lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
+                                        .help("Mailbox: " + message["accountId"].string).accessibilityLabel("Mailbox: " + message["accountId"].string)
+                                }
+                            }
+                            Spacer(minLength: 0)
+                            Text(dateLabel(message["date"].string)).font(.caption2).foregroundStyle(.secondary)
+                                .multilineTextAlignment(.trailing).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: 100, alignment: .trailing).layoutPriority(1)
+                                .help(dateLabel(message["date"].string))
+                        }
+                        HStack(spacing: 6) {
+                            searchHighlighted(message["searchSubject"], fallback: message["subject"].nonempty ? message["subject"].string : "(No subject)").font(.system(size: 13)).fontWeight(message["read"].bool ? .regular : .bold).lineLimit(1)
                             Spacer(minLength: 2)
                             if message["starred"].bool { Image(systemName: "star.fill").foregroundStyle(.orange).font(.caption) }
                             if message["pending"].bool { Image(systemName: "clock.fill").foregroundStyle(morrowGreen).font(.caption).accessibilityLabel("Pending") }
                             Circle().fill(message["read"].bool ? .clear : morrowGreen).frame(width: 6, height: 6).accessibilityLabel(message["read"].bool ? "Read" : "Unread")
                             if hoveredMessage == message.viewID || model.selectedMessages.contains(message.viewID) { rowActions(message) }
                         }
-                        searchHighlighted(message["searchSubject"], fallback: message["subject"].nonempty ? message["subject"].string : "(No subject)").font(.system(size: 13)).fontWeight(message["read"].bool ? .regular : .bold).lineLimit(1)
-                        if model.preferences["density"].string != "compact" { searchHighlighted(message["searchSnippet"], fallback: message["preview"].string).fontWeight(message["read"].bool ? .regular : .bold).foregroundStyle(.secondary).font(.caption).lineLimit(model.preferences["density"].string == "spacious" ? 4 : 2) }
-                        if model.combined || !model.searchResponse.isNull { Text(message["accountId"].string).font(.caption2).foregroundStyle(morrowGreen).lineLimit(1) }
+                        if model.preferences["density"].string != "compact" { searchHighlighted(message["searchSnippet"], fallback: message["preview"].string).foregroundStyle(.secondary).font(.caption).lineLimit(model.preferences["density"].string == "spacious" ? 4 : 2) }
                         if message["searchMatch"].nonempty { Text(message["folder"].string + " · " + message["searchMatch"].string).font(.caption2).foregroundStyle(.secondary) }
-                        Text(dateLabel(message["date"].string)).font(.caption2).foregroundStyle(.tertiary)
                         if message["deliveryStatus"].string == "unconfirmed" { Label("Check delivery", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange) }
                         if message["scheduledSend"]["status"].string == "scheduled" { Label("Scheduled: " + dateLabel(message["scheduledSend"]["sendAt"].string), systemImage: "clock").font(.caption).foregroundStyle(.secondary) }
                         if message["scheduledSend"]["status"].string == "sending" { Label("Sending", systemImage: "paperplane").font(.caption).foregroundStyle(.secondary) }
-                    }.fontWeight(message["read"].bool ? .regular : .bold).padding(.vertical, model.preferences["density"].string == "compact" ? 3 : model.preferences["density"].string == "spacious" ? 14 : 8)
+                    }.padding(.vertical, model.preferences["density"].string == "compact" ? 3 : model.preferences["density"].string == "spacious" ? 14 : 8)
                     .contentShape(Rectangle())
                     .onHover { inside in if inside { hoveredMessage = message.viewID } else if hoveredMessage == message.viewID { hoveredMessage = nil } }
                     .onDrag {

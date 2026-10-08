@@ -1,4 +1,12 @@
-# Verification — 7 October 2026
+# Verification — 8 October 2026
+
+## Unreleased — Inbox list layout
+
+Both native mail lists move the date/time to the right of the sender header and place the owning mailbox beside the sender in All accounts and search results. Sender/subject retain unread emphasis; previews use regular weight. Quick actions occupy the subject line. Account identity, selection, search and provider operations are unchanged.
+
+The macOS candidate builds with the normal Node-free builder and passes deep/strict ad-hoc signature verification, plist lint and complete production-service `morrow-native-check` acceptance. The extended native window fixture exercises long sender/account text at 260/320/500-point list widths in all three densities, bounded rows without horizontal scrolling, duplicate-ID owner selection, Command/Shift multi-selection and existing drag/drop guards. Local native-rendered captures were inspected for header placement and truncation. The run emitted an AppKit NSTableView reentrancy warning; assertions passed. These fictional fixtures do not establish full manual VoiceOver or live-account acceptance.
+
+Windows source and smoke assertions cover the owning account beside the sender, right-side date and accessible account text. Windows compilation/UI execution were not performed locally: the installed Parallels edition rejects `prlctl exec`. Jev review was unavailable because its service lacks `JEV_API_KEY`; source inspection and native checks were used. No version/tag/publication, installed-app replacement, real-mail/calendar write or paid-model request was performed.
 
 ## 0.6.0-beta.46 — published paired native release
 

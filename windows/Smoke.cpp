@@ -3,8 +3,13 @@
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
 #include <winrt/Windows.ApplicationModel.DataTransfer.h>
+#include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
+#include <winrt/Windows.Graphics.Imaging.h>
+#include <winrt/Windows.Storage.h>
+#include <winrt/Windows.Storage.Streams.h>
 #include <fstream>
 #include <cstdio>
+#include <cmath>
 #include <set>
 
 namespace morrow {
@@ -12,6 +17,21 @@ using namespace winrt;
 using namespace Windows::Foundation;
 using namespace Windows::Data::Json;
 IAsyncAction nativeInteractionChecks(std::shared_ptr<Shell> shell);
+IAsyncAction captureMailList(std::shared_ptr<Shell> shell, hstring name) {
+    xaml::Media::Imaging::RenderTargetBitmap bitmap;
+    co_await bitmap.RenderAsync(shell->mailList);
+    if (bitmap.PixelWidth() <= 0 || bitmap.PixelHeight() <= 0) throw hresult_error(E_FAIL, L"Mail list capture is empty.");
+    auto pixels = co_await bitmap.GetPixelsAsync();
+    std::vector<uint8_t> bytes(pixels.Length());
+    Windows::Storage::Streams::DataReader::FromBuffer(pixels).ReadBytes(bytes);
+    auto folder = co_await Windows::Storage::StorageFolder::GetFolderFromPathAsync(shell->service->directory().wstring());
+    auto file = co_await folder.CreateFileAsync(name, Windows::Storage::CreationCollisionOption::ReplaceExisting);
+    auto stream = co_await file.OpenAsync(Windows::Storage::FileAccessMode::ReadWrite);
+    using namespace Windows::Graphics::Imaging;
+    auto encoder = co_await BitmapEncoder::CreateAsync(BitmapEncoder::PngEncoderId(), stream);
+    encoder.SetPixelData(BitmapPixelFormat::Bgra8, BitmapAlphaMode::Premultiplied, bitmap.PixelWidth(), bitmap.PixelHeight(), 96, 96, bytes);
+    co_await encoder.FlushAsync();
+}
 void syncStatusChecks() {
     auto check = [](bool condition, wchar_t const* message) { if (!condition) throw hresult_error(E_FAIL, message); };
     Shell shell; shell.status = controls::TextBlock(); shell.owner = L"all";
@@ -482,6 +502,59 @@ IAsyncAction Shell::smoke() {
             enter("mail-combined");
             co_await navigate(L"mail",L"all");
             check(pageLabel.Text().size() && rows.Items().Size()==50, L"Combined mail did not load.");
+            for (auto const& value : rows.Items()) {
+                auto item = value.as<controls::ListViewItem>();
+                auto row = item.Content().as<controls::StackPanel>();
+                auto heading = row.Children().GetAt(0).as<controls::Grid>();
+                auto identity = heading.Children().GetAt(0).as<controls::Grid>();
+                auto account = identity.Children().GetAt(1).as<controls::TextBlock>();
+                auto date = heading.Children().GetAt(1).as<controls::TextBlock>();
+                auto message = item.Tag().as<Json>();
+                check(account.Text() == text(message, L"accountId") && controls::Grid::GetColumn(account) == 1,
+                    L"Combined row did not show its own mailbox beside the sender.");
+                check(date.Text() == mailDateLabel(text(message, L"date")) && controls::Grid::GetColumn(date) == 1 && date.TextAlignment() == xaml::TextAlignment::Right,
+                    L"Mail date is missing from the right side of the header.");
+                auto subjectLine = row.Children().GetAt(1).as<controls::Grid>();
+                check(subjectLine.Children().GetAt(2) == row.Tag(), L"Quick actions must not displace the sender header.");
+                auto name = xaml::Automation::AutomationProperties::GetName(item);
+                check(std::wstring_view(name).find(account.Text()) != std::wstring_view::npos, L"Accessible mail row lost its complete owning mailbox.");
+            }
+            enter("mail-list-layout");
+            auto originalLayout = mailLayout; auto originalWidth = listWidth; auto originalTheme = root.RequestedTheme();
+            auto originalDensity = text(object(object(state, L"settings"), L"preferences"), L"density");
+            mailLayout = L"right";
+            for (auto density : {L"compact", L"comfortable", L"spacious"}) {
+                Json preference; put(preference, L"density", density);
+                state = co_await service->request(L"/settings/preferences", L"", L"POST", preference);
+                co_await loadPage();
+                for (bool dark : {false, true}) for (double width : {260., 320., 500.}) {
+                    root.RequestedTheme(dark ? xaml::ElementTheme::Dark : xaml::ElementTheme::Light);
+                    listWidth = width; applyMailLayout(); root.UpdateLayout();
+                    auto item = rows.Items().GetAt(0).as<controls::ListViewItem>(); rows.ScrollIntoView(item);
+                    auto deadline = GetTickCount64() + 2000;
+                    do { co_await resume_after(std::chrono::milliseconds(20)); co_await ui; root.UpdateLayout(); }
+                    while ((!item.ActualHeight() || std::abs(mailList.ActualWidth() - width) > 1) && GetTickCount64() < deadline);
+                    auto row = item.Content().as<controls::StackPanel>();
+                    auto heading = row.Children().GetAt(0).as<controls::Grid>();
+                    auto identity = heading.Children().GetAt(0).as<controls::Grid>();
+                    auto sender = identity.Children().GetAt(0).as<controls::TextBlock>();
+                    auto account = identity.Children().GetAt(1).as<controls::TextBlock>();
+                    auto date = heading.Children().GetAt(1).as<controls::TextBlock>();
+                    auto origin = [&](xaml::UIElement const& element) { return element.TransformToVisual(heading).TransformPoint(Point{}); };
+                    check(std::abs(mailList.ActualWidth() - width) < 1 && sender.ActualWidth() > 20 && account.ActualWidth() > 20 && date.ActualWidth() > 20,
+                        L"A narrow mail header lost its sender, mailbox or date.");
+                    check(origin(account).X >= origin(sender).X + sender.ActualWidth() - 1 && origin(date).X >= origin(account).X + account.ActualWidth() - 1
+                        && origin(date).X + date.ActualWidth() <= heading.ActualWidth() + 1, L"Mail header fields overlap or overflow.");
+                    auto before = origin(date); auto quick = row.Tag().as<controls::StackPanel>(); quick.Visibility(xaml::Visibility::Visible); root.UpdateLayout();
+                    check(origin(date) == before, L"Quick actions displaced the mail date.");
+                    quick.Visibility(xaml::Visibility::Collapsed);
+                    if (width == 320 || density == std::wstring_view(L"comfortable"))
+                        co_await captureMailList(lifetime, L"mail-list-" + hstring(density) + (dark ? L"-dark-" : L"-light-") + to_hstring(static_cast<int>(width)) + L".png");
+                }
+            }
+            Json preference; put(preference, L"density", originalDensity);
+            state = co_await service->request(L"/settings/preferences", L"", L"POST", preference);
+            mailLayout = originalLayout; listWidth = originalWidth; root.RequestedTheme(originalTheme); applyMailLayout(); co_await loadPage();
             enter("studio-combined");
             co_await navigate(L"studio",L"all");
             check(section==L"summaries" && owner==L"all" && page.Content(), L"Combined AI Studio did not show saved summaries.");
