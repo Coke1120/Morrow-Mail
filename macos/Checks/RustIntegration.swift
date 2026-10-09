@@ -266,7 +266,7 @@ struct NativeRustChecks {
             try check(history["accountId"].string == owner && history["messageId"].string == source.id && history["messages"].array.first?["accountId"].string == owner, "Reply history lost its captured owner or original ID")
             try check(history["messages"].array.first?["body"].string.contains("Owned by " + owner) == true && history["messages"].array.allSatisfy({ $0["bodyHtml"].isNull && $0["bcc"].isNull }), "Reply history disclosed another owner or active HTML/Bcc")
         }
-        let providerPath = "/messages/" + encodedPath("google:provider-draft")
+        let providerPath = "/messages/" + encodedPath("fixture:provider-draft")
         let originalProvider = try await model.request(providerPath, mailbox: first)
         let copied = try await model.prepareDraft(message: originalProvider["message"], mode: "copy")
         try check(copied.sourceDraft && copied.accountID == first && copied.savedID.isEmpty && copied.replyToID.isEmpty && copied.footer.isNull && !copied.unconfirmed, "provider copy retained remote delivery identity")
@@ -320,7 +320,7 @@ struct NativeRustChecks {
         let legacy: JSON = .object(["id": .string("legacy"), "accountId": .string(first), "folder": .string("drafts")])
         try check(!messageMatchesFolder(legacy, folder: "pending") && !Draft(message: legacy).scheduleLocked, "older messages require no new flag or schedule fields")
 
-        let messagePath = "/messages/" + encodedPath("google:shared")
+        let messagePath = "/messages/" + encodedPath("fixture:shared")
         let original = try await model.request(messagePath, mailbox: first)
         // Exercise the same owner-capturing patch helper as the reader toggle,
         // while the global selected account is deliberately different.
@@ -418,21 +418,24 @@ struct NativeRustChecks {
         throw APIError("Native Rust acceptance: stopped service still accepts requests")
     }
 
-    @MainActor static func checkOutlookReadPermission(_ model: AppModel, source: JSON) async throws {
+    @MainActor static func checkReadPermissions(_ model: AppModel, source: JSON) async throws {
         let path = "/messages/" + encodedPath(source.id), owner = source["accountId"].string
         _ = try await model.request(path, method: "PATCH", body: .object(["read": .bool(false)]), mailbox: owner)
         try await model.selectAccount(owner, folder: "inbox")
         try check(await model.loadMailPage(), "read permission fixture did not load")
         model.state["settings"]["preferences"]["markReadOnOpen"] = .bool(true)
-        model.state["accounts"] = .array(model.accounts.map { account in
-            var account = account
-            if account.id == owner { account["provider"] = .string("microsoft"); account["settings"]["canOrganize"] = .bool(false) }
-            return account
-        })
-        model.selectedMessage = source.viewID
-        await model.loadMessage()
-        let saved = try await model.request(path, mailbox: owner)
-        try check(model.messageDetail.id == source.id && !saved["message"]["read"].bool && model.error.isEmpty, "read-only Outlook must remain readable without a mark-on-open write")
+        for provider in ["google", "microsoft"] {
+            model.state["accounts"] = .array(model.accounts.map { account in
+                var account = account
+                if account.id == owner { account["provider"] = .string(provider); account["settings"]["canOrganize"] = .bool(false) }
+                return account
+            })
+            model.selectedMessage = nil
+            model.selectedMessage = source.viewID
+            await model.loadMessage()
+            let saved = try await model.request(path, mailbox: owner)
+            try check(model.messageDetail.id == source.id && !saved["message"]["read"].bool && model.error.isEmpty, "read-only mail must remain readable without a mark-on-open write")
+        }
         _ = try await model.request(path, method: "PATCH", body: .object(["read": source["read"]]), mailbox: owner)
         try await model.reload()
     }
@@ -554,15 +557,15 @@ struct NativeRustChecks {
 
         model.state = try await model.request("/settings/preferences", method: "POST", body: .object(["sort": .string("newest")]))
         try check(await model.loadMailPage(), "could not reload combined inbox")
-        let duplicates = model.listedMessages.filter { $0.id == "google:shared" }
+        let duplicates = model.listedMessages.filter { $0.id == "fixture:shared" }
         try check(duplicates.count == 2, "shared fixture messages were not on the first page")
         for row in duplicates {
             let detail = try await model.request("/messages/" + encodedPath(row.id), mailbox: row["accountId"].string)
             try check(detail["message"]["body"].string.contains("Owned by " + row["accountId"].string), "detail routed through a different account")
         }
         try await checkPreparedDrafts(model, sources: duplicates)
-        let older = try await model.request("/messages/" + encodedPath("google:fixture-064"), mailbox: first)
-        try await checkOutlookReadPermission(model, source: duplicates[0])
+        let older = try await model.request("/messages/" + encodedPath("fixture:message-064"), mailbox: first)
+        try await checkReadPermissions(model, source: duplicates[0])
         try await checkSourceNavigation(model, sources: duplicates + [older["message"]])
         let opened = duplicates.first { $0["accountId"].string == first }!
         model.selectedMessage = opened.viewID

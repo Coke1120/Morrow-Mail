@@ -3173,3 +3173,70 @@ async fn attachments_are_owned_and_large_outlook_uploads_never_forward_bearer_or
     assert_eq!(sent.load(Ordering::SeqCst), 1);
     server.shutdown().await;
 }
+
+#[tokio::test]
+async fn downloaded_cid_attachments_stay_owned_and_reader_bytes_never_enter_storage_json() {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let count = reads.clone();
+    let fixture = Fixture::new(Arc::new(move |request| {
+        let count = count.clone();
+        async move {
+            assert_eq!(request.owner(), A);
+            assert_eq!(request.method, "GET");
+            assert_eq!(request.path, "/gmail/v1/users/me/messages/attached?format=raw");
+            count.fetch_add(1, Ordering::SeqCst);
+            let raw = "From: Fixture <a@example.invalid>\r\nTo: a@example.invalid\r\nSubject: Attachment fixture\r\nMIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=fixture\r\n\r\n--fixture\r\nContent-Type: text/html\r\n\r\n<p>Body</p><img src=\"cid:picture\"><script>unsafe</script>\r\n--fixture\r\nContent-Type: image/png\r\nContent-Disposition: inline; filename=picture.png\r\nContent-ID: <picture>\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jK1EAAAAASUVORK5CYII=\r\n--fixture--\r\n";
+            Reply::Json(200,json!({"id":"attached","raw":URL_SAFE_NO_PAD.encode(raw)}))
+        }.boxed()
+    })).await;
+    let server = fixture.start().await;
+    set(&server.app, config(&[(A, "google"), (B, "google")])).await;
+    server
+        .app
+        .db(|db| {
+            let message = merge(
+                cached("google:attached", A, "inbox"),
+                &json!({"hasAttachments":true}),
+            );
+            db.upsert(A, &message)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let path = "/api/messages/google%3Aattached/attachments";
+    let result = server.call("POST", path, A, json!({})).await;
+    assert_eq!(result.0, 200, "{}", result.1);
+    let message = &result.1["message"];
+    assert_eq!(message["inlineImages"], true);
+    assert!(string(message, "bodyHtml").contains("data:image/png;base64,"));
+    assert!(!string(message, "bodyHtml").contains("script"));
+    assert_eq!(message["attachments"].as_array().unwrap().len(), 1);
+    let item = &message["attachments"][0];
+    assert!(item["data"].is_null());
+    let download = format!("/api/attachments/{}", string(item, "id"));
+    assert_eq!(server.call("GET", &download, B, json!({})).await.0, 409);
+    assert_eq!(server.call("GET", &download, A, json!({})).await.0, 200);
+    let cached = server
+        .call("GET", "/api/messages/google%3Aattached", A, json!({}))
+        .await;
+    assert!(!cached.1.to_string().contains("data:image"));
+    assert!(string(&cached.1["message"], "bodyHtml").contains("cid:picture"));
+    assert!(cached.1["message"]["inlineImages"].is_null());
+    assert_eq!(server.call("POST", path, A, json!({})).await.0, 200);
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        1,
+        "Downloaded bytes should be reused offline"
+    );
+    let copied = server
+        .call(
+            "POST",
+            "/api/drafts/prepare",
+            A,
+            json!({"messageId":"google:attached","mode":"forward"}),
+        )
+        .await;
+    assert_eq!(copied.0, 200, "{}", copied.1);
+    assert_eq!(copied.1["draft"]["attachments"], message["attachments"]);
+    server.shutdown().await;
+}
