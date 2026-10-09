@@ -3242,7 +3242,7 @@ async fn downloaded_cid_attachments_stay_owned_and_reader_bytes_never_enter_stor
 }
 
 #[tokio::test]
-async fn writing_one_provider_flag_preserves_an_unrelated_explicit_local_override() {
+async fn flag_writes_preserve_local_stars_but_reconcile_legacy_read_overrides() {
     for provider in ["google", "microsoft"] {
         let fixture = Fixture::new(Arc::new(move |request| {
             async move {
@@ -3273,12 +3273,28 @@ async fn writing_one_provider_flag_preserves_an_unrelated_explicit_local_overrid
         assert_eq!(changed.1["message"]["starred"], true);
         assert_eq!(changed.1["message"]["localOverrides"]["starred"], true);
         assert_eq!(changed.1["message"]["providerSnapshot"]["starred"], false);
+        let key = id.clone();
+        server
+            .app
+            .db(move |db| {
+                db.update(
+                    A,
+                    &key,
+                    &json!({"read":false,"localOverrides":{"read":true,"starred":true}}),
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
         let changed = server
             .call("PATCH", &path, A, json!({"starred":false}))
             .await;
         assert_eq!(changed.0, 200, "{}", changed.1);
         assert_eq!(changed.1["message"]["starred"], false);
         assert!(changed.1["message"]["localOverrides"]["starred"].is_null());
+        assert_eq!(changed.1["message"]["read"], true);
+        assert_eq!(changed.1["message"]["providerSnapshot"]["read"], true);
+        assert!(changed.1["message"]["localOverrides"]["read"].is_null());
         server.shutdown().await;
     }
 }

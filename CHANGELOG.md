@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.1 — 2026-10-10
+
+- Repair stale Gmail/IMAP Read/Unread flags using fetched server values, including unchanged provider snapshots and caches reopened after restart. Confirmed star writes also reconcile the returned read state.
+- Continue IMAP cached-message reconciliation past folders confirmed absent by a successful complete LIST. Preserve cached content and recheck restored folders; failed folder reads remain errors.
+- Preserve the last known flags/snapshots for unavailable messages, unrelated local markers and duplicate-ID account ownership. Bounded sync coverage and explicit provider-write permissions are unchanged.
+- Require paired native checks and the existing pinned-key publisher. Distribution and live-account acceptance limits remain; see [release notes](docs/releases/v0.7.1.md) and [verification](VERIFICATION.md).
+
 ## 0.7.0 — 2026-10-09
 
 - Use normal `vMAJOR.MINOR.PATCH` releases without prerelease suffixes, beginning with 0.7.0. Keep paired platform checks, signed update manifests and compatibility with older installed versions.

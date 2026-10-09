@@ -88,7 +88,7 @@ fn reconnect_uses_cached_account_casing_and_rejects_ambiguous_legacy_accounts() 
 }
 
 #[test]
-fn remote_read_changes_replace_stale_flags_without_losing_local_edits_or_owners() {
+fn remote_reads_override_legacy_local_state_without_losing_other_edits_or_owners() {
     let directory = std::env::temp_dir().join(format!("morrow-read-sync-{}", uuid::Uuid::new_v4()));
     let mut db = Store::open(&directory).unwrap();
     let owner = "a@example.invalid";
@@ -135,45 +135,33 @@ fn remote_read_changes_replace_stale_flags_without_losing_local_edits_or_owners(
             db.update(
                 owner,
                 &id,
-                &json!({"read":!initial,"starred":true,"pending":true,"lowPriority":true}),
+                &json!({"read":!initial,"localOverrides":{"read":true},"starred":true,"pending":true,"lowPriority":true}),
             )
             .unwrap();
-            mail::import_messages(&db, &connection, std::slice::from_ref(&message)).unwrap();
-            assert_eq!(
-                db.get(owner, &id).unwrap().unwrap()["read"],
-                if provider == "microsoft" {
-                    initial
-                } else {
-                    !initial
-                },
-                "{provider}: Outlook is authoritative; other providers retain local edits"
-            );
-            let mut partial = message.clone();
-            partial.as_object_mut().unwrap().remove("read");
-            mail::import_messages(&db, &connection, &[partial]).unwrap();
-            let saved = db.get(owner, &id).unwrap().unwrap();
-            assert_eq!(
-                saved["read"],
-                if provider == "microsoft" {
-                    initial
-                } else {
-                    !initial
-                }
-            );
-            assert_eq!(saved["providerSnapshot"]["read"], initial);
-
             drop(db);
             db = Store::open(&directory).unwrap();
             mail::import_messages(&db, &connection, std::slice::from_ref(&message)).unwrap();
             assert_eq!(
                 db.get(owner, &id).unwrap().unwrap()["read"],
-                if provider == "microsoft" {
-                    initial
-                } else {
-                    !initial
-                }
+                initial,
+                "{provider}: unchanged server read state repairs legacy local edits after restart"
             );
-            // Once the server catches up, its next change must not be hidden by an old override.
+            assert_ne!(
+                db.get(owner, &id).unwrap().unwrap()["localOverrides"]["read"],
+                true
+            );
+            let mut partial = message.clone();
+            partial.as_object_mut().unwrap().remove("read");
+            mail::import_messages(&db, &connection, &[partial]).unwrap();
+            let saved = db.get(owner, &id).unwrap().unwrap();
+            assert_eq!(saved["read"], initial);
+            assert_eq!(saved["providerSnapshot"]["read"], initial);
+
+            drop(db);
+            db = Store::open(&directory).unwrap();
+            mail::import_messages(&db, &connection, std::slice::from_ref(&message)).unwrap();
+            assert_eq!(db.get(owner, &id).unwrap().unwrap()["read"], initial);
+            // The next server change must not be hidden by an old override.
             mail::import_messages(&db, &connection, &[remote]).unwrap();
             mail::import_messages(&db, &connection, std::slice::from_ref(&message)).unwrap();
             let saved = db.get(owner, &id).unwrap().unwrap();

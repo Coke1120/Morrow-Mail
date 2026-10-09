@@ -1,4 +1,14 @@
-# Verification — 9 October 2026
+# Verification — 10 October 2026
+
+## 0.7.1 — read-state reconciliation repair
+
+The review found that Gmail/IMAP could retain a legacy local Read/Unread value indefinitely when the fetched provider flag matched the previous snapshot. Imports now accept each fetched read value, and confirmed flag-write responses clear obsolete read overrides. Local-only stars, Pending, folders and account ownership remain protected. Unavailable results retain cached flags/snapshots. An IMAP EXAMINE rejection no longer blocks other folders when a complete successful LIST confirms the folder is absent; later rounds can recheck it. Tagged LIST failures are explicitly rejected because the dependency's streaming adapter otherwise discards them.
+
+The approach was compared with [Thunderbird Android](https://github.com/thunderbird/thunderbird-android/tree/e3fb7f3341827eb756327e26198f97b7c3f1821e)'s server-flag reconciliation after queued operations, and [Mailspring Sync](https://github.com/Foundry376/Mailspring-Sync/tree/f7b023980b85499909de595f029deb51db9837cf)'s rescan after failed flag writes. Morrow serializes imports and provider-confirmed flag writes with its mailbox gate; it has no deferred flag-write queue to preserve as a permanent read override. This repair retains the existing bounded polling design.
+
+Regression fixtures exercise both read-state directions with unchanged snapshots, reopen/restart, partial metadata, duplicate IDs across accounts, local markers, confirmed star writes, missing/restored IMAP folders and failed LIST/EXAMINE/FETCH responses. Local formatting, strict all-target Clippy and all **242 locked Rust tests** passed (zero failed/ignored). All 85 local file links in the changed user-facing documentation resolve. Jev scoring was attempted but is unavailable because its API key is not configured. Local disk space is limited, so native packaging/acceptance will run in the required paired tagged workflow. No native check waiver applies.
+
+The tagged gate and public-download verification must complete before this release is described as published. macOS remains ad-hoc signed without notarization and Windows unsigned. Full live-provider/model, independently provisioned clean Windows, accessibility and installed-updater acceptance remain outstanding. Tests use isolated fictional mailboxes; no real mail/calendar writes, paid model calls or installed-app replacement are part of this verification.
 
 ## 0.7.0 — numbered release verification
 

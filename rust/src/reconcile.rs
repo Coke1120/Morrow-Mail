@@ -101,7 +101,8 @@ pub async fn sync(
     app.db(move|db| db.transaction(|db| {
         let owner=string(&connection,"email");
         if connections(&db.settings()?).get(owner)!=Some(&connection) {return Err(Error::conflict("This mailbox changed during reconciliation."));}
-        mail::import_messages(db,&connection,&result)?;
+        let available: Vec<_> = result.iter().filter(|m| m["providerDeleted"] != true && m["providerFolderMissing"] != true).cloned().collect();
+        mail::import_messages(db,&connection,&available)?;
         for message in result.iter().filter(|m|m["providerDeleted"]==true || m["providerFolderMissing"]==true) {
             // Keep cached content and the user's local folder; never bind old UIDs to a new mailbox generation.
             db.update(owner,string(message,"id"),&json!({"providerDeleted":message["providerDeleted"]==true,"providerFolderMissing":true}))?;

@@ -172,6 +172,8 @@ Current source deduplicates Gmail message IDs across the five refresh scopes. Ca
 
 Gmail and IMAP reconcile up to 50 cached messages per sync using an account/connection checkpoint. Read/star changes write back to supported provider messages; Gmail needs organization permission. Missing messages keep their cached content. IMAP UIDVALIDITY changes mark an old location unavailable instead of applying its UID to another message. Outlook advances a saved delta page and checks up to 25 cached messages per round. These bounded rounds can require multiple syncs; none is a complete server mirror.
 
+From 0.7.1, a fetched server Read/Unread value repairs a stale local flag even if the server value has not changed since an earlier sync. Missing metadata does not invent a read state. An IMAP folder confirmed absent is marked unavailable while other folders continue; its cached content stays available and later sync rounds can detect its return. Authentication, connection and failed folder-list responses remain visible errors. Use Sync again or enable a regular sync interval to continue through larger caches.
+
 The **Mail and AI activity** control updates independently every two seconds while the app is active. Expand it for each account's fetching, history pages/messages, queued/running AI summaries, learning and embedding indexing, plus paused or failed work. Unknown totals are not shown as percentages. Idle does not mean the whole mailbox has downloaded; older mail depends on the import range, and AI runs only under its existing permissions and triggers.
 
 ## Connect calendars

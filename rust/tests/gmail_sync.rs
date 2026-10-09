@@ -597,7 +597,7 @@ fn legacy_rows_heal_forced_folders_preserve_local_edits_and_attach_dual_label_se
         );
     }
     let edited = db.get(A, "google:edited").unwrap().unwrap();
-    assert_eq!(edited["read"], true);
+    assert_eq!(edited["read"], false);
     assert_eq!(edited["starred"], false);
     assert_eq!(edited["labels"], json!(["Local label"]));
     assert_eq!(edited["providerFolderId"], "kept-id");
@@ -1049,6 +1049,11 @@ async fn old_cached_mail_reconciles_in_owned_resumable_batches_without_refetchin
         .db(move |db| {
             mail::import_messages(db, &connection(A), &cached)?;
             db.update(A, "google:old54", &json!({"pending":true}))?;
+            db.update(
+                A,
+                "google:deleted",
+                &json!({"read":false,"localOverrides":{"read":true}}),
+            )?;
             db.upsert(B, &remote("old54", json!(["INBOX", "UNREAD"])))?;
             Ok(())
         })
@@ -1072,6 +1077,9 @@ async fn old_cached_mail_reconciles_in_owned_resumable_batches_without_refetchin
     let deleted = f.message(A, "google:deleted").await;
     assert_eq!(deleted["providerDeleted"], true);
     assert_eq!(deleted["body"], "Remote body");
+    assert_eq!(deleted["read"], false);
+    assert_eq!(deleted["providerSnapshot"]["read"], true);
+    assert_eq!(deleted["localOverrides"]["read"], true);
     assert_eq!(
         f.app.settings().await.unwrap()["mailReconcile"][A]["after"],
         0

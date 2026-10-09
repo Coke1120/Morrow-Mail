@@ -312,9 +312,8 @@ fn import_read_state(message: &Value, existing: Option<&Value>, imported: &mut V
             imported["providerSnapshot"][key] = snapshot.into();
         }
         if let Some(remote) = remote {
-            // Keep local edits while the provider is unchanged; a newly observed
-            // provider value wins, and convergence releases obsolete overrides.
-            let read = if previous == Some(remote) {
+            // Read writes are provider-confirmed; only stars may retain local-only edits.
+            let read = if key == "starred" && previous == Some(remote) {
                 existing
                     .and_then(|value| value[key].as_bool())
                     .unwrap_or(remote)

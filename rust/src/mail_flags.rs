@@ -121,7 +121,7 @@ pub async fn patch(app: &App, ctx: &Context) -> Result<Value> {
         .cloned()
         .unwrap_or_default();
     for key in ["read", "starred"] {
-        if patch.get(key).is_some() || message[key] == confirmed[key] {
+        if key == "read" || patch.get(key).is_some() || message[key] == confirmed[key] {
             overrides.remove(key);
             patch[key] = confirmed[key].clone();
         } else if overrides.get(key) != Some(&json!(true)) {

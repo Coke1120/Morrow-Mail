@@ -13,7 +13,6 @@ use base64::{
     engine::general_purpose::{STANDARD_NO_PAD, URL_SAFE_NO_PAD},
 };
 use chrono::{DateTime, SecondsFormat, Utc};
-use futures_util::TryStreamExt;
 use lettre::{
     AsyncSmtpTransport, AsyncTransport, Tokio1Executor,
     transport::smtp::{
@@ -335,10 +334,38 @@ struct ImportFolder {
     editable: bool,
 }
 async fn list_names(session: &mut Mailbox) -> Result<Vec<ImportFolder>> {
-    let mut stream = session.list(None, Some("*")).await.map_err(imap_error)?;
+    use imap_proto::types::{MailboxDatum, Response, Status};
+    // The library's LIST stream discards tagged failures, so check completion before trusting absence.
+    let tag = session
+        .run_command("LIST \"\" \"*\"")
+        .await
+        .map_err(imap_error)?;
     let mut names = Vec::new();
     let mut count = 0;
-    while let Some(name) = stream.try_next().await.map_err(imap_error)? {
+    loop {
+        let response = session
+            .read_response()
+            .await
+            .map_err(imap_error)?
+            .ok_or_else(providers::remote_error)?;
+        let (attributes, delimiter, name) = match response.parsed() {
+            Response::Done {
+                tag: finished,
+                status,
+                ..
+            } => {
+                if *finished != tag || *status != Status::Ok {
+                    return Err(providers::remote_error());
+                }
+                return Ok(names);
+            }
+            Response::MailboxData(MailboxDatum::List {
+                name_attributes,
+                delimiter,
+                name,
+            }) => (name_attributes, delimiter, name),
+            _ => continue,
+        };
         count += 1;
         if count > 300 {
             return Err(Error::new(
@@ -346,9 +373,9 @@ async fn list_names(session: &mut Mailbox) -> Result<Vec<ImportFolder>> {
                 "This mailbox exceeds the 300 folder limit.",
             ));
         }
-        let path = decode_folder(name.name())?;
+        let path = decode_folder(name)?;
         let has = |expected: NameAttribute<'_>, text: &str| {
-            name.attributes().iter().any(|attribute| *attribute == expected || matches!(attribute, NameAttribute::Extension(value) if value.eq_ignore_ascii_case(text)))
+            attributes.iter().any(|attribute| *attribute == expected || matches!(attribute, NameAttribute::Extension(value) if value.eq_ignore_ascii_case(text)))
         };
         let kind = if has(NameAttribute::Junk, "\\Junk") {
             "spam"
@@ -368,12 +395,11 @@ async fn list_names(session: &mut Mailbox) -> Result<Vec<ImportFolder>> {
         names.push(ImportFolder {
             path,
             kind,
-            delimiter: name.delimiter().map(str::to_owned),
-            selectable: !name.attributes().contains(&NameAttribute::NoSelect),
-            editable: kind == "archive" && !has(NameAttribute::Archive,"\\Archive") && !name.attributes().iter().any(|a| matches!(a, NameAttribute::Extension(v) if v.eq_ignore_ascii_case("\\Important"))),
+            delimiter: delimiter.as_ref().map(|value| value.to_string()),
+            selectable: !attributes.contains(&NameAttribute::NoSelect),
+            editable: kind == "archive" && !has(NameAttribute::Archive,"\\Archive") && !attributes.iter().any(|a| matches!(a, NameAttribute::Extension(v) if v.eq_ignore_ascii_case("\\Important"))),
         });
     }
-    Ok(names)
 }
 async fn move_capabilities(session: &mut Mailbox) -> Result<()> {
     let capabilities = session.capabilities().await.map_err(imap_error)?;
@@ -675,7 +701,18 @@ pub async fn reconcile_with_tls(
         let mut folders=std::collections::BTreeMap::<String,Vec<&Value>>::new();
         for message in messages { folders.entry(message["providerFolderId"].as_str().filter(|s|!s.is_empty()).unwrap_or("INBOX").to_owned()).or_default().push(message); }
         for (folder, messages) in folders {
-            let mailbox=session.examine(encode_folder(&folder)?).await.map_err(imap_error)?;
+            let mailbox = match session.examine(encode_folder(&folder)?).await {
+                Ok(mailbox) => mailbox,
+                Err(error @ async_imap::error::Error::No(_)) => {
+                    let names = list_names(&mut session).await?;
+                    if names.iter().any(|name| name.path == folder || name.path.eq_ignore_ascii_case("INBOX") && folder.eq_ignore_ascii_case("INBOX")) {
+                        return Err(imap_error(error));
+                    }
+                    result.extend(messages.into_iter().map(|message| merge(message.clone(), &json!({"providerFolderMissing":true}))));
+                    continue;
+                }
+                Err(error) => return Err(imap_error(error)),
+            };
             let validity=mailbox.uid_validity.filter(|v|*v>0).ok_or_else(providers::remote_error)?;
             let mut selected=std::collections::HashMap::new();
             for message in messages {

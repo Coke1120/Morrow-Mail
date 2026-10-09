@@ -224,6 +224,8 @@ struct ImapScenario {
     search_outside: bool,
     hidden_folders: usize,
     extra_folders: &'static str,
+    list_completion: &'static str,
+    examine_failure: Option<(&'static str, &'static str)>,
     mapping: Option<&'static str>,
     extra_mapping: Option<&'static str>,
     renamed_validity: Option<u32>,
@@ -256,6 +258,8 @@ impl Default for ImapScenario {
             search_outside: false,
             hidden_folders: 1,
             extra_folders: "",
+            list_completion: "OK",
+            examine_failure: None,
             mapping: Some("88 7 19"),
             extra_mapping: None,
             renamed_validity: None,
@@ -382,7 +386,7 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
             let hidden = (0..scenario.hidden_folders)
                 .map(|index| format!("* LIST (\\Noselect) \"/\" \"Hidden{index}\"\r\n"))
                 .collect::<String>();
-            write(&mut stream,&format!("* LIST () \"/\" \"INBOX\"\r\n{sent}* LIST () \"/\" \"&mAV27g- &- stuff\"\r\n{hidden}{}{tag} OK list\r\n",scenario.extra_folders)).await?;
+            write(&mut stream,&format!("* LIST () \"/\" \"INBOX\"\r\n{sent}* LIST () \"/\" \"&mAV27g- &- stuff\"\r\n{hidden}{}{tag} {} list\r\n",scenario.extra_folders,scenario.list_completion)).await?;
         } else if upper.starts_with("STATUS ") {
             let mailbox = command
                 .strip_prefix("STATUS ")
@@ -413,6 +417,12 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
             )
             .await?;
         } else if upper.starts_with("EXAMINE ") || upper.starts_with("SELECT ") {
+            if let Some((folder, response)) = scenario.examine_failure
+                && command.ends_with(&format!("\"{folder}\""))
+            {
+                write(&mut stream, &format!("{tag} {response}\r\n")).await?;
+                continue;
+            }
             let next = if scenario.omit_uidnext {
                 String::new()
             } else {
@@ -1463,6 +1473,98 @@ async fn imap_flags_and_attachment_reads_validate_generation_preserve_other_flag
             .count(),
         writes + 1
     );
+}
+
+#[tokio::test]
+async fn missing_imap_folder_does_not_block_other_flags_or_erase_cached_mail() {
+    let fixture = ImapFixture::new(ImapScenario {
+        examine_failure: Some(("A-removed", "NO [NONEXISTENT] No such mailbox")),
+        ..Default::default()
+    })
+    .await;
+    let missing = json!({"id":"imap:55:1","providerFolderId":"A-removed","read":false,"body":"Retained cache","pending":true,"providerSnapshot":{"read":true}});
+    let messages = vec![
+        missing.clone(),
+        json!({"id":"imap:55:2","providerFolderId":"INBOX","read":false}),
+    ];
+    for _ in 0..2 {
+        let result = imap::reconcile_with_tls(&fixture.mail, &messages, &fixture.connector)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 2);
+        let unavailable = result.iter().find(|m| m["id"] == missing["id"]).unwrap();
+        assert_eq!(unavailable["providerFolderMissing"], true);
+        assert_ne!(unavailable["providerDeleted"], true);
+        for key in ["read", "body", "pending", "providerSnapshot"] {
+            assert_eq!(unavailable[key], missing[key]);
+        }
+        assert_eq!(
+            result.iter().find(|m| m["id"] == "imap:55:2").unwrap()["read"],
+            true
+        );
+    }
+    // A restored folder is rechecked and must still have the original UIDVALIDITY.
+    fixture.update(|s| s.examine_failure = None);
+    let result = imap::reconcile_with_tls(&fixture.mail, &messages, &fixture.connector)
+        .await
+        .unwrap();
+    assert!(
+        result
+            .iter()
+            .all(|m| m["providerFolderMissing"] == false && m["read"] == true)
+    );
+    assert!(
+        !fixture
+            .commands()
+            .iter()
+            .any(|s| s.starts_with("UID STORE"))
+    );
+}
+
+#[tokio::test]
+async fn imap_folder_reconciliation_does_not_mistake_failed_reads_for_missing_folders() {
+    for completion in ["NO", "BAD"] {
+        let fixture = ImapFixture::new(ImapScenario {
+            examine_failure: Some(("A-removed", "NO [NONEXISTENT] No such mailbox")),
+            list_completion: completion,
+            ..Default::default()
+        })
+        .await;
+        let result = imap::reconcile_with_tls(
+            &fixture.mail,
+            &[json!({"id":"imap:55:1","providerFolderId":"A-removed"})],
+            &fixture.connector,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "A failed LIST cannot establish that a folder is missing"
+        );
+        assert!(
+            imap::folders_with_tls(&fixture.mail, &fixture.connector)
+                .await
+                .is_err()
+        );
+    }
+    for (folder, response) in [
+        ("INBOX", "NO [UNAVAILABLE] Try later"),
+        ("A-removed", "BAD Cannot examine"),
+    ] {
+        let fixture = ImapFixture::new(ImapScenario {
+            examine_failure: Some((folder, response)),
+            ..Default::default()
+        })
+        .await;
+        assert!(
+            imap::reconcile_with_tls(
+                &fixture.mail,
+                &[json!({"id":"imap:55:1","providerFolderId":folder})],
+                &fixture.connector
+            )
+            .await
+            .is_err()
+        );
+    }
 }
 
 #[tokio::test]

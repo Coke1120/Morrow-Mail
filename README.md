@@ -43,7 +43,11 @@ Browser sign-in uses the desktop registration included in the build; custom regi
 
 Detailed behavior and limits are in [feature coverage](FEATURE_COVERAGE.md) and the [user guide](docs/USER_GUIDE.md).
 
-## New in 0.7.0
+## New in 0.7.1
+
+Fetched server Read/Unread values now repair stale local states even when the server flag has not changed since the last sync. Missing IMAP folders no longer block the rest of a cached-message reconciliation batch; cached mail is retained. Larger mailboxes may need multiple sync rounds. See the [0.7.1 release notes](docs/releases/v0.7.1.md).
+
+### Included since 0.7.0
 
 Version **0.7.0** includes the changes from [PR #22](https://github.com/Coke1120/Morrow-Mail/pull/22). Releases now use ordinary version numbers without a prerelease suffix:
 
@@ -57,7 +61,7 @@ See the [changelog](CHANGELOG.md), [release notes](docs/releases/) and [verifica
 
 ## Agent CLI
 
-The CLI ships inside `morrow-service` with Morrow Mail **0.7.0**. It returns JSON and works with the app open or closed. Set up your accounts in the app first.
+The CLI ships inside `morrow-service` with Morrow Mail **0.7.0 and later**. It returns JSON and works with the app open or closed. Set up your accounts in the app first.
 
 For macOS, define a temporary shell helper:
 
