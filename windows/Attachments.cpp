@@ -62,10 +62,11 @@ IAsyncOperation<Json> uploadAttachment(std::shared_ptr<Shell> shell, hstring own
     co_return object(response, L"attachment");
 }
 IAsyncAction saveAttachment(std::shared_ptr<Shell> shell, hstring owner, Json item) {
-    apartment_context ui; hstring error;
+    apartment_context ui; hstring error; bool holding = false;
     try {
         auto path = chooseFile(shell, true, text(item, L"name"));
         if (path.empty()) co_return;
+        shell->dialogOpen = true; holding = true;
         auto response = co_await shell->service->request(L"/attachments/" + escaped(text(item, L"id")), owner);
         auto value = object(response, L"attachment");
         auto buffer = CryptographicBuffer::DecodeFromBase64String(text(value, L"data"));
@@ -91,6 +92,7 @@ IAsyncAction saveAttachment(std::shared_ptr<Shell> shell, hstring owner, Json it
         co_await ui;
     } catch (...) { error = errorText(); }
     co_await ui;
+    if (holding) shell->dialogOpen = false;
     if (!error.empty() && !shell->closing) shell->error(error);
 }
 IAsyncAction loadAttachments(std::shared_ptr<Shell> shell, Json message, controls::Button button) {

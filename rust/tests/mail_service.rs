@@ -3095,13 +3095,16 @@ async fn outlook_reconnect_discards_an_inflight_delta_page_and_its_checkpoint() 
 
 #[tokio::test]
 async fn attachments_are_owned_and_large_outlook_uploads_never_forward_bearer_or_replay() {
+    let fail_upload = Arc::new(AtomicUsize::new(0));
+    let failed = fail_upload.clone();
     let received = Arc::new(Mutex::new(Vec::<u8>::new()));
     let uploaded = received.clone();
     let sent = Arc::new(AtomicUsize::new(0));
     let sends = sent.clone();
-    let fixture=Fixture::new(Arc::new(move|request|{let uploaded=uploaded.clone();let sends=sends.clone();async move {
+    let fixture=Fixture::new(Arc::new(move|request|{let uploaded=uploaded.clone();let sends=sends.clone();let failed=failed.clone();async move {
         if request.host()=="outlook.office.com" {
             assert!(request.headers.get("authorization").is_none()); assert_eq!(request.method,"PUT");
+            if failed.load(Ordering::SeqCst)>0 {failed.fetch_add(1,Ordering::SeqCst);return Reply::Empty(503);}
             let mut bytes=uploaded.lock().unwrap(); let start=bytes.len();bytes.extend(&request.body);
             assert_eq!(request.headers["content-range"],format!("bytes {}-{}/{}",start,bytes.len()-1,4*1024*1024));
             return if bytes.len()==4*1024*1024 {Reply::Json(201,json!({"id":"file"}))} else {Reply::Json(200,json!({"nextExpectedRanges":[format!("{}-",bytes.len())]}))};
@@ -3141,7 +3144,7 @@ async fn attachments_are_owned_and_large_outlook_uploads_never_forward_bearer_or
     );
     let mut message = outgoing("attachment-reviewed-send");
     message.as_object_mut().unwrap().remove("replyToId");
-    message["attachments"] = json!([item]);
+    message["attachments"] = json!([item.clone()]);
     let sent_result = server.call("POST", "/api/send", A, message.clone()).await;
     assert_eq!(sent_result.0, 200, "{}", sent_result.1);
     assert_eq!(
@@ -3150,5 +3153,23 @@ async fn attachments_are_owned_and_large_outlook_uploads_never_forward_bearer_or
     );
     assert_eq!(sent.load(Ordering::SeqCst), 1);
     assert_eq!(*received.lock().unwrap(), bytes);
+    fail_upload.store(1, Ordering::SeqCst);
+    let mut interrupted = outgoing("interrupted-attachment-upload");
+    interrupted.as_object_mut().unwrap().remove("replyToId");
+    interrupted["attachments"] = json!([item]);
+    let failed_result = server
+        .call("POST", "/api/send", A, interrupted.clone())
+        .await;
+    assert_eq!(failed_result.0, 502);
+    assert_eq!(
+        server.call("POST", "/api/send", A, interrupted).await.0,
+        409
+    );
+    assert_eq!(
+        fail_upload.load(Ordering::SeqCst),
+        2,
+        "An uncertain upload must not replay"
+    );
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
     server.shutdown().await;
 }

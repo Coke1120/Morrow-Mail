@@ -28,9 +28,10 @@ struct AttachmentReader: View {
         }
     }
     func load() {
+        guard !busy, !model.busy else { return }
         busy = true; error = ""
         let owner = message["accountId"].string, id = message.id
-        Task {
+        model.perform {
             defer { busy = false }
             do {
                 let result = try await model.request("/messages/" + encodedPath(id) + "/attachments", method: "POST", body: .object([:]), mailbox: owner)
@@ -40,11 +41,12 @@ struct AttachmentReader: View {
         }
     }
     func save(_ item: JSON) {
+        guard !busy, !model.busy else { return }
         let panel = NSSavePanel(); panel.nameFieldStringValue = item["name"].string
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         let owner = message["accountId"].string
         busy = true; error = ""
-        Task {
+        model.perform {
             defer { busy = false }
             do {
                 let result = try await model.request("/attachments/" + encodedPath(item.id), mailbox: owner)

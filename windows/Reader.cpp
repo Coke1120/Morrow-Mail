@@ -1016,7 +1016,7 @@ void readerSecurityChecks() {
     auto blocked = std::wstring(document(L"<p>hello</p>", false));
     auto consented = std::wstring(document(L"<p>hello</p>", true));
     auto inlineOnly = std::wstring(document(L"<p>hello</p>", false, true));
-    check(inlineOnly.find(L"img-src data: ;") != std::wstring::npos && inlineOnly.find(L"https:") == std::wstring::npos);
+    check(inlineOnly.find(L"img-src data:;") != std::wstring::npos && inlineOnly.find(L"https:") == std::wstring::npos);
     check(blocked.find(L"img-src data:") == std::wstring::npos);
     check(blocked.find(L"img-src 'none'") != std::wstring::npos && consented.find(L"img-src https:") != std::wstring::npos);
     for (auto rule : { L"default-src 'none'", L"script-src 'none'", L"connect-src 'none'", L"frame-src 'none'", L"form-action 'none'", L"no-referrer" })

@@ -1937,6 +1937,23 @@ mod quota_tests {
     use super::*;
 
     #[test]
+    fn large_attachment_upload_urls_stay_on_the_provider_host() {
+        let valid = "https://outlook.office.com/api/v2.0/Users('fixture')/Messages('draft')/AttachmentSessions('file')?token=fixture";
+        assert!(outlook_upload_url(valid).is_ok());
+        for invalid in [
+            valid.replace("https:", "http:"),
+            valid.replace("outlook.office.com", "127.0.0.1"),
+            valid.replace("outlook.office.com", "outlook.office.com.evil.invalid"),
+            valid.replace("outlook.office.com", "user@outlook.office.com"),
+            valid.replace("outlook.office.com", "outlook.office.com:444"),
+            format!("{valid}#fragment"),
+            valid.replace("/api/", "/other/"),
+        ] {
+            assert!(outlook_upload_url(&invalid).is_err());
+        }
+    }
+
+    #[test]
     fn only_known_quota_reasons_retry() {
         for (reason, expected_code, delay) in [
             ("rateLimitExceeded", "provider_quota_exceeded", 60_000),
