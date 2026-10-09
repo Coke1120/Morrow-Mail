@@ -1,5 +1,7 @@
 # Agent CLI
 
+[README](../README.md#agent-cli) · [User guide](USER_GUIDE.md)
+
 Included in desktop packages from **v0.6.0-beta.3**. The CLI is part of the existing Rust service binary; no separate daemon or Node installation is required at runtime. Earlier downloads do not include it.
 
 ## Run
@@ -45,7 +47,7 @@ morrow read --account person@example.com --id 'provider-message-id'
 
 Use the account `id` from `accounts`. `all` combines connected real mailboxes and excludes demo; it is supported by list/search/status/sync. Other commands require the owning account, even if two accounts have the same provider message ID. Use the original message `id`, not its UI `viewId`.
 
-Reading does not mark mail read or trigger AI. Search is local keyword search, never paid semantic search. Results cover downloaded mail; check `coverage` and `warning` for incomplete indexes/imports. Start the app to continue indexing or sync mail. There is no hidden provider fetch during list/search/read.
+Reading does not mark mail read or trigger AI. Search is local keyword search, never paid semantic search. Results cover downloaded mail; check `coverage` and `warning` for incomplete indexes/imports. Current-source builds can explicitly `sync` from the CLI; background indexing and history imports require the app to remain running. There is no hidden provider fetch during list/search/read.
 
 List returns metadata, with body loaded by `read`. Folders: `inbox`, `sent`, `drafts`, `archive`, `trash`, `starred`; sorts: `newest`, `oldest`, `sender`, `subject`, `unread`, `starred`. List limits are 1–100; search pages contain 30 results. Both use one-based `page` and `nextPage` (null at the end), with a maximum of 2,000 pages. Numeric pages are not a snapshot: concurrent mailbox changes can shift rows between calls.
 
