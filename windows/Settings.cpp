@@ -930,12 +930,19 @@ void about(Page const& p) {
         if (page->current()) { page->updateState = result; updateStatus(page, status); page->tell(L"Download cancelled."); }
     });
     action(p, p->body, L"Install & Restart…", [](Page page) -> IAsyncAction {
-        if (text(page->updateState, L"phase") != L"ready") throw hresult_error(E_FAIL, L"Download and verify an update first.");
+        if (text(page->updateState, L"phase") != L"ready" && text(page->updateState, L"phase") != L"installing") throw hresult_error(E_FAIL, L"Download and verify an update first.");
         auto dirty = page->shell->dirty; dirty.erase(page->busyKey);
-        if (!dirty.empty() || page->shell->service->writing()) throw hresult_error(E_FAIL, L"Save or discard edits and wait for pending writes before installing.");
-        if (!(co_await page->shell->confirm(L"Install verified update and restart?", L"Morrow will close after the installer is prepared. Both UI and service must stop before replacement. The previous app and your separate workspace are retained.", L"Install & Restart")) || !page->current()) co_return;
-        co_await page->shell->service->request(L"/updates/install", {}, L"POST", Json(), true);
+        if (!dirty.empty()) throw hresult_error(E_FAIL, L"Save or discard unsaved edits before restarting.");
+        if (!(co_await page->shell->confirm(L"Install verified update and restart?", L"Morrow will restart now. Active requests finish saving before replacement; downloads and checkpointed indexing continue after restart. Uncertain sends are never replayed. The previous app and your workspace are retained.", L"Install & Restart")) || !page->current()) co_return;
+        std::exception_ptr failed;
+        try { co_await page->shell->service->request(L"/updates/install", {}, L"POST", Json(), true); }
+        catch (...) { failed = std::current_exception(); }
+        if (failed) {
+            auto status = co_await page->shell->service->request(L"/updates/status");
+            if (text(status,L"phase") != L"installing") std::rethrow_exception(failed);
+        }
         if (!page->current()) co_return;
+        page->shell->restartingForUpdate = true;
         page->shell->dirty.erase(page->busyKey); page->busy = false;
         co_await page->shell->shutdown();
     });

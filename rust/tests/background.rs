@@ -1164,3 +1164,34 @@ fn briefing_includes_older_pending_and_starred_mail_before_recent_bulk() {
     drop(db);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn today_updates_one_daily_card_and_keeps_the_latest_summary_for_each_message() {
+    let completed = |id: &str, at: &str, priority: &str, text: &str| {
+        json!({
+            "id":id,"kind":"manual","createdAt":at,"completedAt":at,"status":"completed",
+            "messageIds":["same"],"items":[{"messageId":"same","priority":priority,"summary":text}]
+        })
+    };
+    let first = completed("job-1", "2026-10-09T12:00:00Z", "P2", "First version");
+    let initial = jobs::daily_reports(&json!([first]));
+    let second = completed("job-2", "2026-10-09T12:05:00Z", "P1", "Updated version");
+    let third = json!({"id":"job-3","kind":"manual","createdAt":"2026-10-09T12:10:00Z","status":"failed","error":"Retry manually."});
+    let current = jobs::daily_reports(&json!([third, second, first]));
+    assert_eq!(current.len(), 1);
+    assert_eq!(current[0]["id"], initial[0]["id"]);
+    assert_eq!(current[0]["createdAt"], initial[0]["createdAt"]);
+    assert_eq!(current[0]["items"].as_array().unwrap().len(), 1);
+    assert_eq!(current[0]["items"][0]["summary"], "Updated version");
+    assert_eq!(current[0]["items"][0]["priority"], "P1");
+    assert_eq!(current[0]["status"], "failed");
+    assert!(
+        current[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Updated version")
+    );
+    let other_day = completed("job-4", "2026-10-10T12:00:00Z", "P3", "Next day");
+    assert_eq!(jobs::daily_reports(&json!([other_day, first])).len(), 2);
+    assert!(jobs::daily_reports(&json!([])).is_empty());
+}

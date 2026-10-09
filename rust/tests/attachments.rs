@@ -134,3 +134,62 @@ fn attachment_inputs_and_tampered_bytes_fail_closed() {
     drop(db);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn fifty_mib_is_accepted_but_larger_files_and_aggregate_payloads_are_rejected() {
+    let root =
+        std::env::temp_dir().join(format!("morrow-attachment-limit-{}", uuid::Uuid::new_v4()));
+    let db = Store::open(&root).unwrap();
+    let bytes = vec![0; 50 * 1024 * 1024];
+    let item = attachments::save(
+        &db,
+        "owner",
+        "limit.bin",
+        "application/octet-stream",
+        "",
+        &bytes,
+    )
+    .unwrap();
+    assert!(
+        providers::check_attachment_send_limit(
+            &json!({"provider":"google"}),
+            &json!({"attachments":[item]})
+        )
+        .is_err()
+    );
+    assert!(
+        providers::check_attachment_send_limit(
+            &json!({"provider":"microsoft"}),
+            &json!({"attachments":[item]})
+        )
+        .is_ok()
+    );
+    let extra = attachments::save(
+        &db,
+        "owner",
+        "extra.bin",
+        "application/octet-stream",
+        "",
+        b"x",
+    )
+    .unwrap();
+    let mut message = json!({"attachments":[item]});
+    attachments::resolve(&db, "owner", &mut message, false).unwrap();
+    message["attachments"].as_array_mut().unwrap().push(extra);
+    assert!(attachments::resolve(&db, "owner", &mut message, false).is_err());
+    let mut oversized = bytes;
+    oversized.push(0);
+    assert!(
+        attachments::save(
+            &db,
+            "owner",
+            "oversized.bin",
+            "application/octet-stream",
+            "",
+            &oversized
+        )
+        .is_err()
+    );
+    drop(db);
+    std::fs::remove_dir_all(root).unwrap();
+}

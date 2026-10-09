@@ -489,3 +489,90 @@ async fn changed_sender_connection_and_uncertain_delivery_require_new_review() {
     assert_eq!(error.status, 409);
     assert_eq!(error.body["requiresSendReview"], true);
 }
+
+#[test]
+fn cli_sync_plan_status_and_owned_attachments_work_with_the_running_service() {
+    let fixture = Fixture::new();
+    let mut server = Server::start(&fixture.0);
+    let plan = fixture.cli(&["sync", "--account", "all", "--dry-run"], None, 0);
+    assert_eq!(plan["data"]["accounts"].as_array().unwrap().len(), 2);
+    assert_eq!(plan["data"]["providerWrites"], false);
+    let status = fixture.cli(&["status", "--account", "a@example.invalid"], None, 0);
+    assert_eq!(status["data"]["accounts"].as_array().unwrap().len(), 1);
+    assert!(!status.to_string().contains("fixture-secret"));
+    assert!(!status.to_string().contains("b@example.invalid"));
+    let file = fixture.0.join("fictional.bin");
+    fs::write(&file, b"fictional attachment").unwrap();
+    let item = fixture.cli(
+        &[
+            "attachment-add",
+            "--account",
+            "a@example.invalid",
+            "--file",
+            file.to_str().unwrap(),
+        ],
+        None,
+        0,
+    )["data"]["attachment"]
+        .clone();
+    let data = fixture.cli(
+        &[
+            "attachment-read",
+            "--account",
+            "a@example.invalid",
+            "--id",
+            item["id"].as_str().unwrap(),
+        ],
+        None,
+        0,
+    );
+    assert_eq!(
+        data["data"]["attachment"]["data"],
+        "ZmljdGlvbmFsIGF0dGFjaG1lbnQ="
+    );
+    fixture.cli(
+        &[
+            "attachment-read",
+            "--account",
+            "b@example.invalid",
+            "--id",
+            item["id"].as_str().unwrap(),
+        ],
+        None,
+        3,
+    );
+    let draft = fixture.cli(&["draft","--account","a@example.invalid","--input","-"],Some(&json!({"to":"b@example.invalid","subject":"Attachment","body":"One","attachments":[item]})),0)["data"]["message"].clone();
+    let updated = fixture.cli(
+        &["draft", "--account", "a@example.invalid", "--input", "-"],
+        Some(
+            &json!({"id":draft["id"],"to":"b@example.invalid","subject":"Attachment","body":"Two"}),
+        ),
+        0,
+    );
+    assert_eq!(
+        updated["data"]["message"]["attachments"],
+        draft["attachments"]
+    );
+    let removed = fixture.cli(&["draft","--account","a@example.invalid","--input","-"],Some(&json!({"id":draft["id"],"to":"b@example.invalid","subject":"Attachment","body":"Three","attachments":[]})),0);
+    assert!(
+        removed["data"]["message"]["attachments"].is_null()
+            || removed["data"]["message"]["attachments"] == json!([])
+    );
+    server.stop();
+    fixture.cli(&["sync", "--account", "demo"], None, 0);
+}
+
+#[test]
+fn partial_sync_has_its_own_exit_code_and_never_claims_complete_coverage() {
+    let fixture = Fixture::new();
+    let db = Store::open(&fixture.0).unwrap();
+    db.set_settings(&json!({"mailAccounts":{"a@example.invalid":{"email":"a@example.invalid","provider":"imap","connectionId":"invalid-port","imapPort":0}}})).unwrap();
+    drop(db);
+    let result = fixture.cli(&["sync", "--account", "a@example.invalid"], None, 4);
+    assert_eq!(result["data"]["status"], "partial");
+    assert_eq!(result["data"]["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        result["data"]["coverage"],
+        "bounded-recent-and-cached-metadata"
+    );
+}

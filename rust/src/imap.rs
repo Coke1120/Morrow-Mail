@@ -750,7 +750,7 @@ pub async fn raw_message_with_tls(
         if size > crate::attachments::MAX_RAW_BYTES {
             return Err(Error::new(
                 413,
-                "This message exceeds the 32 MiB download limit.",
+                "This message exceeds the 80 MiB download limit.",
             ));
         }
         let mut bytes = Vec::with_capacity(size);

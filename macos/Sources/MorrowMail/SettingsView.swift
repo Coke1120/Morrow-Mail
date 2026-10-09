@@ -67,7 +67,7 @@ struct NativeSettingsView: View {
                         case "about": aboutPage
                         default: generalPage
                         }
-                    }.padding(28).frame(maxWidth: .infinity, alignment: .leading).disabled(model.busy || (preferenceSaving && model.settingsTab != "general"))
+                    }.padding(28).frame(maxWidth: .infinity, alignment: .leading).disabled(model.settingsTab != "about" && (model.busy || (preferenceSaving && model.settingsTab != "general")))
                 }.onChange(of: model.settingsTab) { _ in scroll.scrollTo("settings-top", anchor: .top) }
                  .onChange(of: mailEditor) { expanded in if expanded { scroll.scrollTo("mail-connect", anchor: .top) } }
                 }
@@ -117,7 +117,7 @@ struct NativeSettingsView: View {
         }
     }
     private func selectTab(_ next: String) {
-        if searchRequestBusy || model.busy || preferenceSaving { return }
+        if (searchRequestBusy || model.busy || preferenceSaving) && (next != "about" || dirty) { return }
         if (learningDirty || searchDirty) && !model.confirmDiscard("Discard unsaved learning, search or embedding settings?") { return }
         model.settingsTab = next
     }
@@ -550,8 +550,8 @@ GroupBox("History for your next connection or import") {
                     }
                     if downloadState["phase"].string == "ready" {
                         Text("Version \(downloadState["version"].string) is ready to install.").font(.headline)
-                        Button("Install & Restart") { localError = ""; model.restartToInstallUpdate { localError = $0 } }.buttonStyle(.borderedProminent).disabled(dirty || !model.unsavedForms.isEmpty)
-                        if dirty || !model.unsavedForms.isEmpty { Text("Save or discard unsaved changes before restarting.").font(.caption) }
+                        Button("Install & Restart") { localError = ""; model.restartToInstallUpdate { localError = $0 } }.buttonStyle(.borderedProminent).disabled(dirty || model.updateHasUnsavedChanges)
+                        if dirty || model.updateHasUnsavedChanges { Text("Save or discard unsaved changes before restarting.").font(.caption) }
                     }
                     if downloadState["error"].nonempty { Text(downloadState["error"].string).foregroundStyle(.red) }
                     if downloadState["previous"].nonempty { Text("Last installation record: " + downloadState["previous"].string).font(.caption) }

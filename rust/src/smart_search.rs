@@ -887,7 +887,23 @@ async fn initialize(app: &App) -> Result<()> {
     if app.0.smart.initialized.load(Ordering::Acquire) {
         return Ok(());
     }
-    app.db(|db|{let settings=db.settings()?;let mut job=settings["searchIndex"].clone();if job["status"]=="running" && (job["automatic"]!=true || !job["inflight"].is_null()){job["status"]="interrupted".into();job["error"]="Indexing was interrupted. No automatic retry was made; resume explicitly or preview another batch.".into();job["runId"]=uuid::Uuid::new_v4().to_string().into();job.as_object_mut().unwrap().remove("inflight");db.set_settings(&json!({"searchIndex":job}))?;}reconcile(db)}).await?;
+    app.db(|db| {
+        let settings = db.settings()?;
+        let mut job = settings["searchIndex"].clone();
+        let resume = &settings["updateResumeIndex"];
+        let checkpointed_update = resume["id"].is_string() && resume["id"] == job["id"]
+            && resume["runId"] == job["runId"] && job["inflight"].is_null();
+        if job["status"] == "running" && !checkpointed_update
+            && (job["automatic"] != true || !job["inflight"].is_null()) {
+            job["status"] = "interrupted".into();
+            job["error"] = "Indexing was interrupted. No automatic retry was made; resume explicitly or preview another batch.".into();
+            job["runId"] = uuid::Uuid::new_v4().to_string().into();
+            job.as_object_mut().unwrap().remove("inflight");
+            db.set_settings(&json!({"searchIndex":job}))?;
+        }
+        if !resume.is_null() { db.set_settings(&json!({"updateResumeIndex":null}))?; }
+        reconcile(db)
+    }).await?;
     app.0.smart.initialized.store(true, Ordering::Release);
     Ok(())
 }

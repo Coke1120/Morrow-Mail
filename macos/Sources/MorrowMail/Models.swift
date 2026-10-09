@@ -135,7 +135,7 @@ func dateLabel(_ value: String) -> String {
     return date.formatted(date: .abbreviated, time: .shortened)
 }
 func summaryReportTimestamp(_ report: JSON) -> String {
-    report["status"].string == "completed" && report["completedAt"].nonempty ? report["completedAt"].string : report["createdAt"].string
+    report["updatedAt"].nonempty ? report["updatedAt"].string : (report["status"].string == "completed" && report["completedAt"].nonempty ? report["completedAt"].string : report["createdAt"].string)
 }
 func summariesForDay(_ reports: [JSON], now: Date = Date(), calendar: Calendar = .current) -> [JSON] {
     reports.filter { report in

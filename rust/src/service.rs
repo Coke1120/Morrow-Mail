@@ -22,6 +22,7 @@ use tokio::sync::Semaphore;
 #[derive(Clone)]
 pub struct App(pub Arc<Runtime>);
 pub struct Runtime {
+    pub restarting: std::sync::atomic::AtomicBool,
     pub activity: crate::activity::Runtime,
     dist: std::path::PathBuf,
     pub background: crate::background::Runtime,
@@ -38,6 +39,7 @@ pub struct Runtime {
     db_slots: Arc<Semaphore>,
     requests: Semaphore,
     pub mailbox: tokio::sync::Mutex<()>,
+    pub(crate) syncing: Mutex<Vec<String>>,
     pub trash_undo: Mutex<std::collections::HashMap<String, crate::mail::TrashUndo>>,
     pub folder_reviews: Mutex<std::collections::HashMap<String, crate::folders::Review>>,
     pub sending: Mutex<std::collections::HashSet<(String, String)>>,
@@ -119,6 +121,7 @@ impl App {
         crate::reply_suggestions::initialize(&store)?;
         crate::smart_search::reconcile(&store)?;
         Ok(Self(Arc::new(Runtime {
+            restarting: Default::default(),
             activity: Default::default(),
             dist,
             background: Default::default(),
@@ -135,6 +138,7 @@ impl App {
             db_slots: Arc::new(Semaphore::new(1)),
             requests: Semaphore::new(32),
             mailbox: tokio::sync::Mutex::new(()),
+            syncing: Default::default(),
             trash_undo: Default::default(),
             folder_reviews: Default::default(),
             sending: Mutex::new(std::collections::HashSet::new()),
@@ -365,8 +369,7 @@ pub fn state(db: &Store, selected: &str, paged: bool, secret: &[u8; 32]) -> Resu
     let mut today_replies = Vec::new();
     for owner in &ids {
         let reports = crate::background::reports(db, owner)?;
-        for report in reports.as_array().into_iter().flatten() {
-            let mut report = report.clone();
+        for mut report in crate::background::daily_reports(&reports) {
             report["reportId"] = report["id"].clone();
             report["id"] = json!([owner, report["id"]]).to_string().into();
             report["accountId"] = owner.clone().into();
@@ -596,7 +599,7 @@ async fn handle_inner(app: App, request: axum::http::Request<Body>) -> Result<Re
                 | ["account", "disconnect"]
                 | ["mail", "folders", ..]
         );
-    let limit = if route == ["attachments"] && parts.method == Method::POST {
+    let limit = if (route == ["attachments"] || route == ["cli"]) && parts.method == Method::POST {
         crate::attachments::MAX_BYTES.div_ceil(3) * 4 + 8192
     } else {
         256 * 1024
@@ -619,6 +622,9 @@ async fn handle_inner(app: App, request: axum::http::Request<Body>) -> Result<Re
             return Err(Error::invalid("Repeated query parameter."));
         }
         query[key.as_ref()] = value.into_owned().into();
+    }
+    if cli_route && bytes.len() > 256 * 1024 && body["command"] != "attachment-add" {
+        return Err(Error::new(413, "CLI command exceeds its size limit."));
     }
     if cli_route {
         return match (parts.method.as_str(), route.as_slice()) {
@@ -671,6 +677,14 @@ async fn handle_inner(app: App, request: axum::http::Request<Body>) -> Result<Re
     result
 }
 pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
+    if context.method != Method::GET
+        && context.path != ["updates", "install"]
+        && app.0.restarting.load(std::sync::atomic::Ordering::Acquire)
+    {
+        return Err(Error::conflict(
+            "Morrow is restarting for an update. Saved work is retained.",
+        ));
+    }
     if let Some(response) = crate::attachments::handle(app, &context).await? {
         return Ok(response);
     }

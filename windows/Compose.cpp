@@ -312,7 +312,7 @@ IAsyncAction addComposerAttachment(std::shared_ptr<Composer> state) {
         if (state->live(shell) && state->owner == owner && !text(item, L"id").empty()) {
             auto items = array(state->message, L"attachments"); double size = item.GetNamedNumber(L"size", 0); bool duplicate = false;
             for (auto const& value : items) { size += value.GetObject().GetNamedNumber(L"size", 0); duplicate = duplicate || text(value.GetObject(), L"id") == text(item, L"id"); }
-            require(duplicate || (items.Size() < 100 && size <= 20 * 1024 * 1024), L"Attachments exceed 100 files or 20 MiB.");
+            require(duplicate || (items.Size() < 100 && size <= 50 * 1024 * 1024), L"Attachments exceed 100 files or 50 MiB.");
             if (!duplicate) items.Append(item);
             state->message.Insert(L"attachments", items); state->requestId = Service::uuid(); renderComposerAttachments(state);
         }
@@ -537,7 +537,7 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         panel.Children().Append(attachmentPanel);
         auto addFile = button(L"Add attachment…", [state] { addComposerAttachment(state); });
         state->addAttachment = make_weak(addFile); panel.Children().Append(addFile);
-        panel.Children().Append(label(L"Attachments: up to 100 files / 20 MiB total. Attachments are excluded from AI requests."));
+        panel.Children().Append(label(L"Attachments: up to 100 files / 50 MiB total. Provider send limits also apply. Attachments are excluded from AI requests."));
         renderComposerAttachments(state);
         panel.Children().Append(label(L"Use plain addresses separated by commas or semicolons (100 recipients total). Bcc remains hidden from other recipients."));
         auto footerText = label(text(object(state->message, L"footer"), L"text", text(object(state->message, L"footer"), L"html")));

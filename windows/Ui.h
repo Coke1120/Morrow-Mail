@@ -67,6 +67,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     Json pendingRead; // Owned metadata for a detail read interrupted by a local patch.
     uint64_t readerImageGeneration = 0, readerImageSelection = 0;
     std::optional<bool> readerImageOverride;
+    bool restartingForUpdate = false;
     bool syncing = false, loading = false, closing = false, dialogOpen = false, selectingNavigation = false;
     bool closeReady = false;
     bool checkingUpdates = false, includePrereleases = true;

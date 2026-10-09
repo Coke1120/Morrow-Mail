@@ -599,6 +599,7 @@ if previous["payloadHash"]!=hash{return Err(Error::conflict("This draft has an u
     let mut message_id = String::new();
     if ctx.owner != "demo" {
         let mail = current_mail(app, &ctx.owner).await?;
+        providers::check_attachment_send_limit(&mail, &value)?;
         let attachment_owner = ctx.owner.clone();
         let mut delivery = value.clone();
         let delivery = app
@@ -787,6 +788,19 @@ pub(crate) async fn commit_sync_page(
     .await
 }
 pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
+    struct Syncing<'a>(&'a App);
+    impl Drop for Syncing<'_> {
+        fn drop(&mut self) {
+            if let Ok(mut owners) = self.0.0.syncing.lock() {
+                owners.clear();
+            }
+        }
+    }
+    *app.0
+        .syncing
+        .lock()
+        .map_err(|_| Error::new(503, "Restart the workspace."))? = owners.to_vec();
+    let _syncing = Syncing(app);
     let mut errors = Vec::new();
     for owner in owners {
         let config = app.settings().await?;
@@ -870,7 +884,11 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
             .unwrap_or_default();
         all.retain(|e| !owners.iter().any(|owner| e["accountId"] == *owner));
         all.extend(saved);
-        db.set_settings(&json!({"backgroundSyncErrors":all}))?;
+        let mut resumed = merge(json!({}), &config["updateResumeSync"]);
+        for owner in &owners {
+            resumed.as_object_mut().unwrap().remove(owner);
+        }
+        db.set_settings(&json!({"backgroundSyncErrors":all,"updateResumeSync":resumed}))?;
         Ok(())
     })
     .await?;

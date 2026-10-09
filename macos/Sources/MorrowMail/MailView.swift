@@ -942,7 +942,7 @@ struct ComposeView: View {
                         Button("Remove") { draft.attachments.removeAll { $0.id == item.id } }.disabled(frozen)
                     }
                 }
-                Text("Choose From before attaching files. Up to 100 files / 20 MiB total. Files are not sent to AI.").font(.caption).foregroundStyle(.secondary)
+                Text("Choose From before attaching files. Up to 100 files / 50 MiB total. Provider send limits also apply. Files are not sent to AI.").font(.caption).foregroundStyle(.secondary)
             }
             if draft.footer["text"].nonempty || draft.footer["html"].nonempty {
                 VStack(alignment: .leading, spacing: 8) {
@@ -1078,15 +1078,15 @@ struct ComposeView: View {
                 for url in urls {
                     let bytes = try await Task.detached(priority: .userInitiated) {
                         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-                        guard values.isRegularFile == true, let size = values.fileSize, size <= 20 * 1024 * 1024 else { throw APIError("Choose a regular file no larger than 20 MiB.") }
+                        guard values.isRegularFile == true, let size = values.fileSize, size <= 50 * 1024 * 1024 else { throw APIError("Choose a regular file no larger than 50 MiB.") }
                         let handle = try FileHandle(forReadingFrom: url)
                         defer { try? handle.close() }
-                        let data = try handle.read(upToCount: 20 * 1024 * 1024 + 1) ?? Data()
-                        guard data.count <= 20 * 1024 * 1024 else { throw APIError("The file exceeds 20 MiB.") }
+                        let data = try handle.read(upToCount: 50 * 1024 * 1024 + 1) ?? Data()
+                        guard data.count <= 50 * 1024 * 1024 else { throw APIError("The file exceeds 50 MiB.") }
                         return data
                     }.value
                     guard owner == draft.accountID, draft.attachments.count < 100,
-                          draft.attachments.reduce(0, { $0 + Int($1["size"].number) }) + bytes.count <= 20 * 1024 * 1024 else { throw APIError("Attachments exceed 100 files or 20 MiB.") }
+                          draft.attachments.reduce(0, { $0 + Int($1["size"].number) }) + bytes.count <= 50 * 1024 * 1024 else { throw APIError("Attachments exceed 100 files or 50 MiB.") }
                     let result = try await model.request("/attachments", method: "POST", body: .object(["name": .string(url.lastPathComponent), "data": .string(bytes.base64EncodedString()), "contentType": .string(UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream")]), mailbox: owner)
                     let item = result["attachment"]
                     guard owner == draft.accountID, item["id"].nonempty else { throw APIError("The attachment could not be confirmed.") }

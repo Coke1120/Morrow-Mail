@@ -14,7 +14,7 @@ using namespace winrt;
 using namespace Windows::Foundation;
 using namespace Windows::Security::Cryptography;
 namespace {
-constexpr size_t maxBytes = 20 * 1024 * 1024;
+constexpr size_t maxBytes = 50 * 1024 * 1024;
 std::filesystem::path chooseFile(std::shared_ptr<Shell> const& shell, bool save, hstring const& name = {}) {
     if (shell->dialogOpen || shell->closing) return {};
     shell->dialogOpen = true;
@@ -45,7 +45,7 @@ IAsyncOperation<Json> uploadAttachment(std::shared_ptr<Shell> shell, hstring own
     try {
     auto size = std::filesystem::file_size(path);
     if (!std::filesystem::is_regular_file(path) || size > maxBytes)
-        throw hresult_error(E_INVALIDARG, L"Choose a regular file up to 20 MiB.");
+        throw hresult_error(E_INVALIDARG, L"Choose a regular file up to 50 MiB.");
     std::vector<uint8_t> bytes(static_cast<size_t>(size));
     std::ifstream stream(path, std::ios::binary);
     stream.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));

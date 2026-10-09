@@ -15,8 +15,8 @@ use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-pub const MAX_BYTES: usize = 20 * 1024 * 1024;
-pub const MAX_RAW_BYTES: usize = 32 * 1024 * 1024;
+pub const MAX_BYTES: usize = 50 * 1024 * 1024;
+pub const MAX_RAW_BYTES: usize = 80 * 1024 * 1024;
 pub const MAX_COUNT: usize = 100;
 
 fn filename(name: &str) -> String {
@@ -51,7 +51,7 @@ pub fn save(
     bytes: &[u8],
 ) -> Result<Value> {
     if bytes.len() > MAX_BYTES {
-        return Err(Error::invalid("An attachment exceeds the 20 MiB limit."));
+        return Err(Error::invalid("An attachment exceeds the 50 MiB limit."));
     }
     let name = filename(name);
     let mime = if mime.len() <= 100
@@ -133,7 +133,7 @@ pub fn resolve(db: &Store, owner: &str, input: &mut Value, bytes: bool) -> Resul
             )
             .ok_or_else(|| Error::invalid("Attachments exceed the size limit."))?;
         if total > MAX_BYTES as u64 {
-            return Err(Error::invalid("Attachments together exceed 20 MiB."));
+            return Err(Error::invalid("Attachments together exceed 50 MiB."));
         }
         if bytes {
             let data: Vec<u8> = db.conn.query_row(
@@ -159,7 +159,7 @@ pub fn resolve(db: &Store, owner: &str, input: &mut Value, bytes: bool) -> Resul
 pub fn import(db: &Store, owner: &str, raw: &[u8]) -> Result<Value> {
     if raw.len() > MAX_RAW_BYTES {
         return Err(Error::invalid(
-            "This message exceeds the 32 MiB download limit.",
+            "This message exceeds the 80 MiB download limit.",
         ));
     }
     let parsed = MessageParser::default()
@@ -171,7 +171,7 @@ pub fn import(db: &Store, owner: &str, raw: &[u8]) -> Result<Value> {
         total += part.len();
         if result.len() >= MAX_COUNT || total > MAX_BYTES {
             return Err(Error::invalid(
-                "This message exceeds 100 attachments or 20 MiB of attachment data.",
+                "This message exceeds 100 attachments or 50 MiB of attachment data.",
             ));
         }
         let mime = part

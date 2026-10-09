@@ -1275,7 +1275,7 @@ IAsyncAction Shell::checkUpdates(bool force) {
 IAsyncAction Shell::shutdown() {
     auto lifetime = shared_from_this();
     if (closing || dialogOpen) co_return;
-    if (service && service->writing()) { error(L"Wait for the current save or provider operation before closing."); co_return; }
+    if (!restartingForUpdate && service && service->writing()) { error(L"Wait for the current save or provider operation before closing."); co_return; }
     if (!dirty.empty() && !co_await confirm(L"Discard unsaved changes and close?", L"Saved drafts and account data will stay on this device.", L"Discard and close")) co_return;
     try {
         auto presenter = window.AppWindow().Presenter().try_as<Microsoft::UI::Windowing::OverlappedPresenter>();
@@ -1466,11 +1466,11 @@ IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
             bool found = false;
             for (auto const& value : array(object(self->state, L"today"), L"summaries")) {
                 auto report = value.GetObject();
-                auto date = text(report, L"status") == L"completed" ? text(report, L"completedAt", text(report, L"createdAt")) : text(report, L"createdAt");
+                auto date = text(report, L"updatedAt", text(report, L"status") == L"completed" ? text(report, L"completedAt", text(report, L"createdAt")) : text(report, L"createdAt"));
                 if (!sameDay(date)) continue;
                 found = true;
                 auto item = stack(10); item.Padding(ThicknessHelper::FromUniformLength(18));
-                auto title = text(report, L"kind") == L"arrival" ? L"New mail" : text(report, L"kind") == L"manual" ? L"On-demand summary" : L"Scheduled summary";
+                auto title = text(report, L"kind") == L"daily" ? L"Daily summary" : text(report, L"kind") == L"arrival" ? L"New mail" : text(report, L"kind") == L"manual" ? L"On-demand summary" : L"Scheduled summary";
                 item.Children().Append(label(text(report, L"accountId"), 12)); item.Children().Append(label(title, 20));
                 item.Children().Append(label(text(report, L"status") + L" · " + mailDateLabel(date) + L" · " + to_hstring(array(report, L"messageIds").Size()) + L" messages", 12));
                 if (!text(report, L"text").empty()) item.Children().Append(label(text(report, L"text")));
@@ -1488,7 +1488,7 @@ IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
             }
             if (!flag(policy, L"enabled")) content.Children().Append(label(L"AI is paused in your saved permissions."));
             content.Children().Append(button(mailboxPicker.Items().Size() ? L"AI & Privacy" : L"Add account", [weak = self->weak_from_this(), hasAccounts = mailboxPicker.Items().Size() > 0] { if (auto shell = weak.lock()) shell->navigate(hasAccounts ? L"policy" : L"settings"); }));
-            content.Children().Append(label(L"Latest 20 jobs per mailbox, dated in your local time. Each summary uses only its own mailbox.", 12));
+            content.Children().Append(label(L"One daily summary per mailbox, updated from its latest 20 validated jobs. Summary History keeps individual jobs.", 12));
         }
         if (self->current(version, account)) self->show(scroll(content));
     } catch (...) { self->error(errorText()); }

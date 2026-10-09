@@ -743,6 +743,62 @@ pub fn reports(db: &Store, account: &str) -> Result<Value> {
     }
     Ok(result.into())
 }
+/// Today is one changing card per local day; validated jobs remain the audit history.
+pub fn daily_reports(reports: &Value) -> Vec<Value> {
+    let mut jobs: Vec<_> = reports.as_array().into_iter().flatten().cloned().collect();
+    let timestamp = |job: &Value| {
+        if job["status"] == "completed" && job["completedAt"].is_string() {
+            string(job, "completedAt").to_owned()
+        } else {
+            string(job, "createdAt").to_owned()
+        }
+    };
+    jobs.sort_by_key(&timestamp);
+    let mut days = std::collections::BTreeMap::<String, Value>::new();
+    for job in jobs {
+        let updated = timestamp(&job);
+        let Ok(date) = DateTime::parse_from_rfc3339(&updated) else {
+            continue;
+        };
+        let day = date
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d")
+            .to_string();
+        let card = days.entry(day.clone()).or_insert_with(|| {
+            json!({
+                "id":format!("daily:{day}"),"kind":"daily","date":day,
+                "createdAt":job["createdAt"],"items":[],"text":"","messageIds":[]
+            })
+        });
+        for field in ["status", "error", "source"] {
+            card[field] = job[field].clone();
+        }
+        card["updatedAt"] = updated.clone().into();
+        if job["status"] == "completed" {
+            let mut items = card["items"].as_array().cloned().unwrap_or_default();
+            for item in job["items"].as_array().into_iter().flatten() {
+                items.retain(|old| old["messageId"] != item["messageId"]);
+                items.push(item.clone());
+            }
+            let sources: Vec<_> = items
+                .iter()
+                .map(|item| json!({"id":item["messageId"]}))
+                .collect();
+            if !items.is_empty()
+                && let Ok(summary) = priority_summary(&json!({"items":items}).to_string(), &sources)
+            {
+                card["items"] = summary["items"].clone();
+                card["text"] = summary["text"].clone();
+                card["messageIds"] = sources.iter().map(|source| source["id"].clone()).collect();
+            } else {
+                card["text"] = job["text"].clone();
+                card["messageIds"] = job["messageIds"].clone();
+            }
+            card["completedAt"] = updated.into();
+        }
+    }
+    days.into_values().rev().collect()
+}
 pub fn overflow(db: &Store, account: &str) -> Result<u64> {
     let config = db.settings()?;
     Ok(if owners(&config).iter().any(|owner| owner == account) {
@@ -1180,18 +1236,24 @@ pub async fn tick(app: &App) -> Result<()> {
                     runtime.last_sync.store(timestamp,Ordering::Release);
                 }
                 let accounts: Vec<_> = if regular { connections(&config).as_object().unwrap().keys().cloned().collect() } else { scheduled };
+                // Claim update continuation once; normal provider backoff handles subsequent read failures.
+                app.db(|db| { db.set_settings(&json!({"updateResumeSync":null}))?; Ok(()) }).await?;
                 let _ = mail::sync_accounts(app,&accounts).await;
             }
+            if runtime.stopped.load(Ordering::Acquire) { return Ok(()); }
             history_tick(app).await?;
+            if runtime.stopped.load(Ordering::Acquire) { return Ok(()); }
             crate::learning::scheduled_tick(app).await?;
+            if runtime.stopped.load(Ordering::Acquire) { return Ok(()); }
             crate::brain::scheduled_tick(app).await?;
+            if runtime.stopped.load(Ordering::Acquire) { return Ok(()); }
             automation_tick(app).await
         } => result,
     }
 }
 fn due_sync_accounts(config: &Value, timestamp: &str) -> Vec<String> {
     let live = connections(config);
-    config["backgroundSyncErrors"]
+    let mut accounts: Vec<String> = config["backgroundSyncErrors"]
         .as_array()
         .into_iter()
         .flat_map(|errors| errors.iter())
@@ -1203,7 +1265,20 @@ fn due_sync_accounts(config: &Value, timestamp: &str) -> Vec<String> {
                     || error["code"] == "provider_quota_exceeded")
         })
         .map(|error| string(error, "accountId").to_owned())
-        .collect()
+        .collect();
+    for (owner, version) in config["updateResumeSync"].as_object().into_iter().flatten() {
+        if live
+            .get(owner)
+            .is_some_and(|mail| *version == crate::folders::connection_version(mail))
+            && !accounts.contains(owner)
+        {
+            accounts.push(owner.clone());
+        }
+    }
+    accounts
+}
+pub fn quiesce(app: &App) {
+    app.0.background.stopped.store(true, Ordering::Release);
 }
 pub fn stop(app: &App) {
     app.0.background.stopped.store(true, Ordering::Release);
@@ -1213,6 +1288,33 @@ pub fn stop(app: &App) {
 #[cfg(test)]
 mod history_retry_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn update_continues_manual_sync_once_without_enabling_periodic_sync() {
+        let root =
+            std::env::temp_dir().join(format!("morrow-update-sync-{}", uuid::Uuid::new_v4()));
+        let app = App::open(&root, 0, "fixture".into(), String::new()).unwrap();
+        app.db(|db| {
+            let mail = json!({"email":"resume@example.invalid","provider":"imap","connectionId":"same","imapPort":0});
+            db.set_settings(&json!({"mailAccounts":{"resume@example.invalid":mail},"preferences":{"syncInterval":0},"updateResumeSync":{"resume@example.invalid":crate::folders::connection_version(&mail),"disconnected@example.invalid":{} }}))?;
+            Ok(())
+        }).await.unwrap();
+        tick(&app).await.unwrap();
+        let settings = app.settings().await.unwrap();
+        assert_eq!(settings["preferences"]["syncInterval"], 0);
+        assert_eq!(
+            settings["backgroundSyncErrors"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(
+            settings["backgroundSyncErrors"][0]["accountId"],
+            "resume@example.invalid"
+        );
+        assert!(settings["updateResumeSync"].as_object().unwrap().is_empty());
+        assert!(due_sync_accounts(&settings, &now()).is_empty());
+        drop(app);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[tokio::test]
     async fn busy_mailbox_keeps_regular_sync_due_until_the_next_tick() {

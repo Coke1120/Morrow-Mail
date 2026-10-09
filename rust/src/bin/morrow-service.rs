@@ -173,6 +173,7 @@ async fn run() -> Result<()> {
                 let seconds = match kind { 0 => 30, 1 => 1, _ => 5 };
                 if *stop.borrow() { break; }
                 tokio::select! { biased; _ = stop.changed() => break, _ = tokio::time::sleep(Duration::from_secs(seconds)) => {} }
+                if worker.0.restarting.load(std::sync::atomic::Ordering::Acquire) { continue; }
                 if !finish_background_tick(async {
                         match kind {
                             0 => { let _ = morrow_search::background::tick(&worker).await; }
@@ -181,7 +182,7 @@ async fn run() -> Result<()> {
                             3 => { let _ = morrow_search::reply_suggestions::tick(&worker).await; }
                             _ => { let _ = morrow_search::folders::tick(&worker).await; }
                         }
-                    }, &mut stop, kind == 2).await { break; }
+                    }, &mut stop, || kind == 2 || worker.0.restarting.load(std::sync::atomic::Ordering::Acquire)).await { break; }
             }
         }));
     }
@@ -200,8 +201,12 @@ async fn run() -> Result<()> {
     println!("{{\"port\":{port}}}");
     std::io::stdout().flush()?;
     let completed = tokio::select! { result = &mut server => Some(result), _=closed_rx.changed()=>None,_ = shutdown_signal()=>None };
-    morrow_search::background::stop(&app);
-    morrow_search::reply_suggestions::stop(&app);
+    if app.0.restarting.load(std::sync::atomic::Ordering::Acquire) {
+        morrow_search::background::quiesce(&app);
+    } else {
+        morrow_search::background::stop(&app);
+        morrow_search::reply_suggestions::stop(&app);
+    }
     let _ = shutdown_tx.send(true);
     // One deadline covers worker, HTTP and DB draining, inside the host's 70-second limit.
     match tokio::time::timeout(Duration::from_secs(65), async {
@@ -227,19 +232,21 @@ async fn run() -> Result<()> {
 async fn finish_background_tick(
     tick: impl std::future::Future<Output = ()>,
     stop: &mut tokio::sync::watch::Receiver<bool>,
-    drain: bool,
+    drain: impl Fn() -> bool,
 ) -> bool {
     if *stop.borrow() {
         return false;
     }
-    if drain {
-        // A scheduled send may already be accepted remotely. Observe and persist its result.
-        tick.await;
-        true
-    } else {
-        tokio::select! { biased; _ = stop.changed() => false, _ = tick => true }
+    tokio::pin!(tick);
+    tokio::select! {
+        biased;
+        _ = stop.changed() => {
+            if drain() { tick.await; true } else { false }
+        }
+        _ = &mut tick => true,
     }
 }
+
 async fn shutdown_signal() {
     #[cfg(unix)]
     {
@@ -292,7 +299,7 @@ mod tests {
                         let _ = release_rx.await;
                     },
                     &mut stop_rx,
-                    drain,
+                    || drain,
                 )
                 .await
             });
@@ -319,7 +326,7 @@ mod tests {
             !finish_background_tick(
                 async { panic!("Must not start after shutdown") },
                 &mut stop,
-                true
+                || true
             )
             .await
         );

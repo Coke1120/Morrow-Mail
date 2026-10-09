@@ -49,6 +49,7 @@ final class PreparedInstallerProtocol: URLProtocol {
                     // Approve only this fixture's native review, even inside its modal run loop.
                     let approve = Timer(timeInterval: 0.25, repeats: false) { _ in NSApp.stopModal(withCode: .alertFirstButtonReturn) }
                     RunLoop.main.add(approve, forMode: .modalPanel)
+                    model.busy = true // An active operation must not disable update handoff.
                     model.restartToInstallUpdate { _ in
                         fputs("Fixture installer preparation failed\n", stderr)
                         model.stop(); exit(1)

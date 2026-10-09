@@ -239,7 +239,7 @@ pub async fn raw_message(client: &Client, mail: &Value, message: &Value) -> Resu
         if bytes.len() > max {
             return Err(Error::new(
                 413,
-                "This message exceeds the 32 MiB download limit.",
+                "This message exceeds the 80 MiB download limit.",
             ));
         }
         return Ok(bytes);
@@ -265,7 +265,7 @@ pub async fn raw_message(client: &Client, mail: &Value, message: &Value) -> Resu
     if response.content_length().is_some_and(|n| n > max as u64) {
         return Err(Error::new(
             413,
-            "This message exceeds the 32 MiB download limit.",
+            "This message exceeds the 80 MiB download limit.",
         ));
     }
     let mut bytes = Vec::new();
@@ -273,7 +273,7 @@ pub async fn raw_message(client: &Client, mail: &Value, message: &Value) -> Resu
         if bytes.len() + chunk.len() > max {
             return Err(Error::new(
                 413,
-                "This message exceeds the 32 MiB download limit.",
+                "This message exceeds the 80 MiB download limit.",
             ));
         }
         bytes.extend_from_slice(&chunk);
@@ -1153,6 +1153,21 @@ pub fn validated_next(next: &str, original: &url::Url) -> Result<url::Url> {
         ));
     }
     Ok(next)
+}
+pub fn check_attachment_send_limit(mail: &Value, message: &Value) -> Result<()> {
+    let bytes: u64 = message["attachments"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|item| item["size"].as_u64().unwrap_or(0))
+        .sum();
+    // Gmail's published upload cap applies to encoded MIME, independently of local storage.
+    if mail["provider"] == "google" && bytes.div_ceil(3) * 4 > 35 * 1024 * 1024 {
+        return Err(Error::invalid(
+            "These attachments exceed Gmail's 35 MiB encoded-message limit. Reduce the attachment size before sending.",
+        ));
+    }
+    Ok(())
 }
 pub fn compose(mail: &Value, message: &Value, keep_bcc: bool) -> Result<(lettre::Message, String)> {
     let address = validation::email(&mail["email"])?;
