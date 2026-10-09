@@ -1,10 +1,23 @@
 # Verification — 9 October 2026
 
-## 0.7.0 — release preparation
+## 0.7.0 — numbered release verification
 
 The owner requested normal numbered releases starting at **v0.7.0**, without a prerelease suffix. The publisher now accepts exact `vMAJOR.MINOR.PATCH` tags, creates a normal GitHub Release and still requires both platform jobs, same-attempt artifact provenance, immutable assets and the pinned update signature. The update public key is unchanged. Native update-channel labels use “pre-release versions”; new packages default to normal releases. Historical tags and updater compatibility remain intact.
 
-Local formatting, strict all-target Clippy, all 16 publisher/build/updater tests and 112 local documentation links/anchors passed. The focused tests cover canonical version/tag matching, rejection of malformed/suffixed versions, normal macOS bundle metadata and existing-client discovery of 0.7.0 in both update channels. Tagged CI must run the complete paired native gate before publication; results and public-asset verification will be recorded here after completion. Jev scoring is unavailable because its API key is not configured.
+Local formatting, strict all-target Clippy, all 16 publisher/build/updater tests and 112 local documentation links/anchors passed. The focused tests cover canonical version/tag matching, rejection of malformed/suffixed versions, normal macOS bundle metadata and existing-client discovery of 0.7.0 in both update channels. The tagged paired native gate and public-asset verification passed as recorded below. Jev scoring is unavailable because its API key is not configured.
+
+Tagged [run 37919895606](https://github.com/Coke1120/Morrow-Mail/actions/runs/37919895606), attempt 1, built commit `6f4f164eda4a07947fe5988aeb775cceed8cabf8`. macOS [job 113785028315](https://github.com/Coke1120/Morrow-Mail/actions/runs/37919895606/job/113785028315) passed **240 Rust tests**; Windows [job 113785028666](https://github.com/Coke1120/Morrow-Mail/actions/runs/37919895606/job/113785028666) passed **239** (zero failures/ignored). Both passed Node-free formatting, strict Clippy, packaging and native acceptance. macOS verified the production Rust service, reader isolation, account boundaries, persistence, lifecycle and backup. Windows passed fresh/owned/restarted UI checks, script-disabled HTML/fallback checks and the separate Windows PowerShell 5.1 relocated Unicode-path package check with developer tools removed from PATH. No waiver was used.
+
+The Windows 1,000/10,000/50,000-message fictional service benchmark completed, including interrupted-index recovery. At 50,000 messages it observed 110.3 ms first service startup, 23.4 ms warm state p95, 152.9 ms warm search p95 and 19.83 MiB service RSS after the 30-second idle sample. These are CI fixture service measurements, not whole-app or real-mailbox guarantees. The owned UI resource report was **incomplete because of sample gaps**, although its functional check and milestones passed; fresh/restarted resource reports completed. Existing C++ compiler warnings remain. A separate clean VM, full UI performance/accessibility and physical-pointer acceptance remain outstanding.
+
+Publisher [job 113794478036](https://github.com/Coke1120/Morrow-Mail/actions/runs/37919895606/job/113794478036) passed and published [v0.7.0](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.7.0) at **2026-10-09 11:19:57 UTC** as a normal public Release (`draft=false`, `prerelease=false`). GitHub's Latest endpoint resolves to v0.7.0. All six assets were downloaded anonymously through their public URLs and matched GitHub's SHA-256/size metadata. Both ZIPs passed integrity/content/version checks and their exact checksum files; the update manifest's platform hashes/sizes matched both archives, and its Ed25519 signature verified against the unchanged pinned public key. The downloaded macOS bundle also passed strict/deep codesign verification and plist lint, and its service reported `Morrow Mail 0.7.0`. No installed app was replaced.
+
+| Public ZIP | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `Morrow-Mail-0.7.0-macos-arm64.zip` | 14073723 | `c9f1c41e08638b4d3ebf31a7b1041035a62beaebd21ea60ce1d56022e882fc86` |
+| `Morrow-Mail-0.7.0-windows-x64.zip` | 38630575 | `e110337b45325fa0958352c79483b046c018ac75e26d01540422300b173c97a7` |
+
+This post-publication evidence update does not change the release tag or published binaries.
 
 The release includes the attachment, synchronization, CLI, Today, restart and Windows changes verified below. The numbering change does not certify production readiness: macOS remains ad-hoc signed without notarization and Windows unsigned; full live-provider/model, independently provisioned clean Windows, accessibility and installed-updater acceptance remain outstanding. No installed app or real workspace is used for release testing.
 
