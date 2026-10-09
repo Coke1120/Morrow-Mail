@@ -3240,3 +3240,45 @@ async fn downloaded_cid_attachments_stay_owned_and_reader_bytes_never_enter_stor
     assert_eq!(copied.1["draft"]["attachments"], message["attachments"]);
     server.shutdown().await;
 }
+
+#[tokio::test]
+async fn writing_one_provider_flag_preserves_an_unrelated_explicit_local_override() {
+    for provider in ["google", "microsoft"] {
+        let fixture = Fixture::new(Arc::new(move |request| {
+            async move {
+                assert_eq!(request.owner(), A);
+                if provider == "google" {
+                    Reply::Json(200, json!({"id":"flags","labelIds":["INBOX"]}))
+                } else {
+                    Reply::Json(
+                        200,
+                        json!({"id":"flags","isRead":true,"flag":{"flagStatus":"notFlagged"}}),
+                    )
+                }
+            }
+            .boxed()
+        }))
+        .await;
+        let server = fixture.start().await;
+        set(&server.app, config(&[(A, provider)])).await;
+        let id = format!("{provider}:flags");
+        let key = id.clone();
+        server.app.db(move |db| {
+            db.upsert(A,&merge(cached(&key,A,"inbox"),&json!({"starred":true,"localOverrides":{"starred":true},"providerSnapshot":{"read":false,"starred":false}})))?;Ok(())
+        }).await.unwrap();
+        let path = format!("/api/messages/{}", providers::component(&id));
+        let changed = server.call("PATCH", &path, A, json!({"read":true})).await;
+        assert_eq!(changed.0, 200, "{}", changed.1);
+        assert_eq!(changed.1["message"]["read"], true);
+        assert_eq!(changed.1["message"]["starred"], true);
+        assert_eq!(changed.1["message"]["localOverrides"]["starred"], true);
+        assert_eq!(changed.1["message"]["providerSnapshot"]["starred"], false);
+        let changed = server
+            .call("PATCH", &path, A, json!({"starred":false}))
+            .await;
+        assert_eq!(changed.0, 200, "{}", changed.1);
+        assert_eq!(changed.1["message"]["starred"], false);
+        assert!(changed.1["message"]["localOverrides"]["starred"].is_null());
+        server.shutdown().await;
+    }
+}

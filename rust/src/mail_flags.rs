@@ -116,13 +116,17 @@ pub async fn patch(app: &App, ctx: &Context) -> Result<Value> {
             return Err(uncertain());
         }
     }
-    patch = merge(patch, &confirmed);
     let mut overrides = message["localOverrides"]
         .as_object()
         .cloned()
         .unwrap_or_default();
     for key in ["read", "starred"] {
-        overrides.remove(key);
+        if patch.get(key).is_some() || message[key] == confirmed[key] {
+            overrides.remove(key);
+            patch[key] = confirmed[key].clone();
+        } else if overrides.get(key) != Some(&json!(true)) {
+            patch[key] = confirmed[key].clone();
+        }
     }
     if patch.get("folder").is_some() {
         overrides.insert("folder".into(), true.into());
