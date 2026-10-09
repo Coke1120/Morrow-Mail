@@ -128,6 +128,7 @@ struct Composer {
     bool historyLoading = false;
     weak_ref<StackPanel> history, attachmentPanel;
     weak_ref<Button> addAttachment;
+    std::vector<weak_ref<Button>> attachmentRemovals;
     std::vector<hstring> accounts;
     std::vector<weak_ref<TextBox>> fields;
     weak_ref<ComboBox> from, aiAction;
@@ -166,7 +167,7 @@ struct Composer {
         for (auto const& reference : fields) if (auto view = reference.get()) view.IsReadOnly(isFrozen);
         if (auto view = from.get()) view.IsEnabled(!isFrozen && !bound && text(message, L"id").empty() && !array(message, L"attachments").Size());
         if (auto view = addAttachment.get()) view.IsEnabled(!isFrozen && host->connected(owner));
-        if (auto view = attachmentPanel.get()) view.IsEnabled(!isFrozen);
+        for (auto const& reference : attachmentRemovals) if (auto view = reference.get()) view.IsEnabled(!isFrozen);
         if (auto view = schedule.get()) view.IsEnabled(!isFrozen);
         if (auto view = scheduleDetails.get()) view.Visibility(scheduleOn() ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
         if (auto view = date.get()) view.IsEnabled(!isFrozen && scheduleOn());
@@ -229,18 +230,20 @@ struct Composer {
 
 void renderComposerAttachments(std::shared_ptr<Composer> const& state) {
     auto panel = state->attachmentPanel.get(); if (!panel) return;
-    panel.Children().Clear();
+    panel.Children().Clear(); state->attachmentRemovals.clear();
     for (auto const& value : array(state->message, L"attachments")) {
         auto item = value.GetObject(); auto row = stack(4);
         row.Children().Append(label(text(item, L"name") + L" (" + to_hstring(static_cast<uint64_t>(item.GetNamedNumber(L"size", 0))) + L" bytes)"));
-        row.Children().Append(button(L"Remove attachment", [state, item] {
+        auto remove = button(L"Remove attachment", [state, item] {
             if (state->frozen()) return;
             Array remaining;
             for (auto const& entry : array(state->message, L"attachments"))
                 if (text(entry.GetObject(), L"id") != text(item, L"id")) remaining.Append(entry);
             state->message.Insert(L"attachments", remaining); state->requestId = Service::uuid();
             renderComposerAttachments(state); state->update();
-        }));
+        });
+        remove.IsEnabled(!state->frozen()); state->attachmentRemovals.push_back(make_weak(remove));
+        row.Children().Append(remove);
         panel.Children().Append(row);
     }
 }
@@ -688,8 +691,10 @@ IAsyncAction composerWriteGuardChecks(std::shared_ptr<Shell> shell) {
     state->uncertain = true; state->update();
     require(!state->scheduleNeeded() && unbox_value<hstring>(sendReview.Content()) == L"Review Retry", L"Global delay bypassed uncertain-delivery review.");
     state->uncertain = false; state->send = {}; shell->state = originalState;
+    Button attachmentRemove; state->attachmentRemovals.push_back(make_weak(attachmentRemove));
     {
-        ComposerWrite write(state);
+        ComposerWrite write(state); state->update();
+        require(!attachmentRemove.IsEnabled(), L"A pending write left attachment removal enabled.");
         co_await resume_after(std::chrono::milliseconds(20)); co_await ui;
         require(state->busy && !shell->navigation.IsEnabled(), L"Composer write did not lock foreground navigation.");
         co_await shell->navigate(L"today", L"blocked-switch@fixture.invalid");
@@ -698,7 +703,7 @@ IAsyncAction composerWriteGuardChecks(std::shared_ptr<Shell> shell) {
             && shell->section == L"compose" && shell->page.Content() == previousPage && !shell->dialogOpen,
             L"A foreground composer write allowed navigation or a replacement composer.");
         write.release();
-        require(!state->busy && shell->navigation.IsEnabled(), L"A completed composer write retained its navigation lock.");
+        require(!state->busy && shell->navigation.IsEnabled() && attachmentRemove.IsEnabled(), L"A completed composer write retained its navigation or attachment lock.");
     }
     try { ComposerWrite write(state); throw hresult_error(E_ABORT); }
     catch (hresult_error const&) {}

@@ -455,7 +455,7 @@ std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel con
         : L"You closed this delivery without retrying. Its original delivery status remains unknown."));
     auto plain = label(text(message, L"body"), 15);
     auto html = text(message, L"bodyHtml");
-    if (html.empty() || html.size() > (flag(message, L"inlineImages") ? 1536 * 1024 : 512 * 1024)) { panel.Children().Append(plain); return {}; }
+    if (html.empty() || html.size() > (flag(message, L"inlineImages") ? size_t(1536 * 1024) : size_t(512 * 1024))) { panel.Children().Append(plain); return {}; }
     try {
         auto state = std::make_shared<Reader>();
         state->shell = shell; state->generation = shell->generation; state->selection = shell->selectionGeneration;
