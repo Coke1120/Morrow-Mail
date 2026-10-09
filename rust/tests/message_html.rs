@@ -159,7 +159,6 @@ fn safe_formatting_and_url_contracts() {
         "http://example.test/a.png",
         "//example.test/a.png",
         "/a.png",
-        "cid:attachment",
         "data:image/svg+xml,bad",
         "file:///a.png",
         "https://u:p@example.test/a.png",
@@ -177,6 +176,10 @@ fn safe_formatting_and_url_contracts() {
         assert!(output.contains("Fallback"));
         samples.push(input);
     }
+    assert_eq!(
+        sanitize(r#"<img src="cid:attachment"><a href="cid:attachment">x</a>"#),
+        r#"<img src="cid:attachment"><a rel="noreferrer noopener" target="_blank">x</a>"#
+    );
     assert_eq!(sanitize(&samples[0]), samples[0]);
     let table = sanitize(&samples[1]);
     for safe in [

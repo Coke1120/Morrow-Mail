@@ -43,7 +43,7 @@ struct MorrowMailApp: App {
                 Button("New Message") { model.newDraft() }.keyboardShortcut("n").disabled(model.starting || model.busy || model.showSettings)
             }
             CommandGroup(replacing: .appSettings) {
-                Button("Settings…") { model.settings() }.keyboardShortcut(",").disabled(model.starting || model.busy || model.compose != nil)
+                Button("Settings…") { model.settings() }.keyboardShortcut(",").disabled(model.starting || model.compose != nil)
             }
             CommandGroup(after: .windowSize) {
                 Menu("Window Size") {

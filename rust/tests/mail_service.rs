@@ -1150,6 +1150,7 @@ async fn reviewed_folder_management_is_owned_single_use_and_preserves_cached_mai
 const HOSTS: &[&str] = &[
     "gmail.googleapis.com",
     "graph.microsoft.com",
+    "outlook.office.com",
     "oauth2.googleapis.com",
     "login.microsoftonline.com",
 ];
@@ -1260,7 +1261,7 @@ impl Fixture {
                         loop{let n=stream.read(&mut chunk).await.unwrap();if n==0{return;}bytes.extend_from_slice(&chunk[..n]);if let Some(i)=bytes.windows(4).position(|v|v==b"\r\n\r\n"){end=i+4;break;}assert!(bytes.len()<65536);}
                         let header=std::str::from_utf8(&bytes[..end]).unwrap();let mut lines=header.split("\r\n");let first=lines.next().unwrap().split(' ').collect::<Vec<_>>();let method=first[0].to_owned();let path=first[1].to_owned();let mut headers=HeaderMap::new();
                         for line in lines {if let Some((k,v))=line.split_once(':'){headers.insert(axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap(),v.trim().parse().unwrap());}}
-                        let length=headers.get("content-length").map(|v|v.to_str().unwrap().parse::<usize>().unwrap()).unwrap_or(0);assert!(length<=256*1024);
+                        let length=headers.get("content-length").map(|v|v.to_str().unwrap().parse::<usize>().unwrap()).unwrap_or(0);assert!(length<=32*1024*1024);
                         while bytes.len()<end+length{let n=stream.read(&mut chunk).await.unwrap();assert!(n>0);bytes.extend_from_slice(&chunk[..n]);}
                         let request=Request{method,path,headers,body:bytes[end..end+length].to_vec()};
                         let(status,body)=match handler(request).await{Reply::Json(status,value)=>(status,serde_json::to_vec(&value).unwrap()),Reply::Empty(status)=>(status,vec![]),Reply::Lost=>return};
@@ -2212,10 +2213,13 @@ async fn sync_combined_owners_keep_local_patches_and_stable_ids_after_provider_m
     let calls = Arc::new(Mutex::new(Vec::<Request>::new()));
     let captured = calls.clone();
     let fixture=Fixture::new(Arc::new(move|request|{let current=current.clone();let changed=changed.clone();let captured=captured.clone();async move{let owner=request.owner().to_owned();let path=url::Url::parse(&format!("https://{}{}",request.host(),request.path)).unwrap();captured.lock().unwrap().push(request.clone());let body=format!("Remote body {} for {owner}",current.load(Ordering::SeqCst));
-        if request.host()=="gmail.googleapis.com"{assert_eq!(request.method,"GET");if path.path().ends_with("/labels"){return Reply::Json(200,json!({"labels":[]}));}
+        if request.host()=="gmail.googleapis.com"{
+        if request.method=="POST" && path.path().ends_with("/modify") { assert_eq!(owner,A); assert_eq!(request.json(),json!({"addLabelIds":["STARRED"],"removeLabelIds":["UNREAD"]})); return Reply::Json(200,json!({"id":"same","labelIds":["INBOX","STARRED"]})); }
+        assert_eq!(request.method,"GET");if path.path().ends_with("/labels"){return Reply::Json(200,json!({"labels":[]}));}
         if path.path().ends_with("/messages"){return Reply::Json(200,json!({"messages":[{"id":"same"}]}));}
         // Gmail bodies stay immutable for a message ID; draft replacements use new IDs.
         let mut message=google_message("same",&owner,&format!("Remote body 0 for {owner}"));
+        if owner==A && captured.lock().unwrap().iter().any(|r|r.method=="POST"&&r.path.ends_with("/modify")) {message["labelIds"]=json!(["INBOX","STARRED"]);}
         if path.query_pairs().any(|(key,value)|key=="format"&&value=="minimal"){message.as_object_mut().unwrap().remove("payload");}
         return Reply::Json(200,message);}
         if path.path()=="/v1.0/me/mailFolders"{return Reply::Json(200,json!({"value":[{"id":"inbox-id","displayName":"Inbox","childFolderCount":0},{"id":"archive-id","displayName":"Archive","childFolderCount":0}]}));}
@@ -2328,8 +2332,8 @@ async fn sync_combined_owners_keep_local_patches_and_stable_ids_after_provider_m
             .iter()
             .filter(|r| r.method == "POST")
             .count(),
-        1,
-        "only the explicitly confirmed fixture move writes"
+        2,
+        "only the explicit flag update and confirmed fixture move write"
     );
     server.shutdown().await;
 }
@@ -3087,4 +3091,194 @@ async fn outlook_reconnect_discards_an_inflight_delta_page_and_its_checkpoint() 
         "new-authorization"
     );
     server.shutdown().await;
+}
+
+#[tokio::test]
+async fn attachments_are_owned_and_large_outlook_uploads_never_forward_bearer_or_replay() {
+    let fail_upload = Arc::new(AtomicUsize::new(0));
+    let failed = fail_upload.clone();
+    let received = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let uploaded = received.clone();
+    let sent = Arc::new(AtomicUsize::new(0));
+    let sends = sent.clone();
+    let fixture=Fixture::new(Arc::new(move|request|{let uploaded=uploaded.clone();let sends=sends.clone();let failed=failed.clone();async move {
+        if request.host()=="outlook.office.com" {
+            assert!(request.headers.get("authorization").is_none()); assert_eq!(request.method,"PUT");
+            if failed.load(Ordering::SeqCst)>0 {failed.fetch_add(1,Ordering::SeqCst);return Reply::Empty(503);}
+            let mut bytes=uploaded.lock().unwrap(); let start=bytes.len();bytes.extend(&request.body);
+            assert_eq!(request.headers["content-range"],format!("bytes {}-{}/{}",start,bytes.len()-1,4*1024*1024));
+            return if bytes.len()==4*1024*1024 {Reply::Json(201,json!({"id":"file"}))} else {Reply::Json(200,json!({"nextExpectedRanges":[format!("{}-",bytes.len())]}))};
+        }
+        assert_eq!(request.owner(),A);
+        match request.path.as_str() {
+            "/v1.0/me/messages"=> {assert_eq!(request.method,"POST");let bytes=request.mime();let parsed=mail_parser::MessageParser::default().parse(&bytes).unwrap();assert!(parsed.attachments().next().is_none());assert!(String::from_utf8_lossy(&bytes).contains("Bcc:"));Reply::Json(201,json!({"id":"draftwithfile","isDraft":true}))},
+            "/v1.0/me/messages/draftwithfile/attachments/createUploadSession"=> {assert_eq!(request.json()["AttachmentItem"]["size"],4*1024*1024);Reply::Json(201,json!({"uploadUrl":"https://outlook.office.com/api/v2.0/Users('fixture')/Messages('draftwithfile')/AttachmentSessions('fixture')?fixture-only","nextExpectedRanges":["0-"]}))},
+            "/v1.0/me/messages/draftwithfile/send"=> {sends.fetch_add(1,Ordering::SeqCst);Reply::Empty(202)},
+            _=>panic!("Unexpected fixture route")
+        }
+    }.boxed()})).await;
+    let server = fixture.start().await;
+    set(&server.app, config(&[(A, "microsoft"), (B, "microsoft")])).await;
+    let bytes = vec![42u8; 4 * 1024 * 1024];
+    let (status, response) = server
+        .call(
+            "POST",
+            "/api/attachments",
+            A,
+            json!({"name":"fixture.bin","data":STANDARD.encode(&bytes)}),
+        )
+        .await;
+    assert_eq!(status, 200, "{response}");
+    let item = response["attachment"].clone();
+    assert_eq!(
+        server
+            .call(
+                "GET",
+                &format!("/api/attachments/{}", string(&item, "id")),
+                B,
+                json!({})
+            )
+            .await
+            .0,
+        409
+    );
+    let mut message = outgoing("attachment-reviewed-send");
+    message.as_object_mut().unwrap().remove("replyToId");
+    message["attachments"] = json!([item.clone()]);
+    let sent_result = server.call("POST", "/api/send", A, message.clone()).await;
+    assert_eq!(sent_result.0, 200, "{}", sent_result.1);
+    assert_eq!(
+        server.call("POST", "/api/send", A, message).await,
+        sent_result
+    );
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
+    assert_eq!(*received.lock().unwrap(), bytes);
+    fail_upload.store(1, Ordering::SeqCst);
+    let mut interrupted = outgoing("interrupted-attachment-upload");
+    interrupted.as_object_mut().unwrap().remove("replyToId");
+    interrupted["attachments"] = json!([item]);
+    let failed_result = server
+        .call("POST", "/api/send", A, interrupted.clone())
+        .await;
+    assert_eq!(failed_result.0, 502);
+    assert_eq!(
+        server.call("POST", "/api/send", A, interrupted).await.0,
+        409
+    );
+    assert_eq!(
+        fail_upload.load(Ordering::SeqCst),
+        2,
+        "An uncertain upload must not replay"
+    );
+    assert_eq!(sent.load(Ordering::SeqCst), 1);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn downloaded_cid_attachments_stay_owned_and_reader_bytes_never_enter_storage_json() {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let count = reads.clone();
+    let fixture = Fixture::new(Arc::new(move |request| {
+        let count = count.clone();
+        async move {
+            assert_eq!(request.owner(), A);
+            assert_eq!(request.method, "GET");
+            assert_eq!(request.path, "/gmail/v1/users/me/messages/attached?format=raw");
+            count.fetch_add(1, Ordering::SeqCst);
+            let raw = "From: Fixture <a@example.invalid>\r\nTo: a@example.invalid\r\nSubject: Attachment fixture\r\nMIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=fixture\r\n\r\n--fixture\r\nContent-Type: text/html\r\n\r\n<p>Body</p><img src=\"cid:picture\"><script>unsafe</script>\r\n--fixture\r\nContent-Type: image/png\r\nContent-Disposition: inline; filename=picture.png\r\nContent-ID: <picture>\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jK1EAAAAASUVORK5CYII=\r\n--fixture--\r\n";
+            Reply::Json(200,json!({"id":"attached","raw":URL_SAFE_NO_PAD.encode(raw)}))
+        }.boxed()
+    })).await;
+    let server = fixture.start().await;
+    set(&server.app, config(&[(A, "google"), (B, "google")])).await;
+    server
+        .app
+        .db(|db| {
+            let message = merge(
+                cached("google:attached", A, "inbox"),
+                &json!({"hasAttachments":true}),
+            );
+            db.upsert(A, &message)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let path = "/api/messages/google%3Aattached/attachments";
+    let result = server.call("POST", path, A, json!({})).await;
+    assert_eq!(result.0, 200, "{}", result.1);
+    let message = &result.1["message"];
+    assert_eq!(message["inlineImages"], true);
+    assert!(string(message, "bodyHtml").contains("data:image/png;base64,"));
+    assert!(!string(message, "bodyHtml").contains("script"));
+    assert_eq!(message["attachments"].as_array().unwrap().len(), 1);
+    let item = &message["attachments"][0];
+    assert!(item["data"].is_null());
+    let download = format!("/api/attachments/{}", string(item, "id"));
+    assert_eq!(server.call("GET", &download, B, json!({})).await.0, 409);
+    assert_eq!(server.call("GET", &download, A, json!({})).await.0, 200);
+    let cached = server
+        .call("GET", "/api/messages/google%3Aattached", A, json!({}))
+        .await;
+    assert!(!cached.1.to_string().contains("data:image"));
+    assert!(string(&cached.1["message"], "bodyHtml").contains("cid:picture"));
+    assert!(cached.1["message"]["inlineImages"].is_null());
+    assert_eq!(server.call("POST", path, A, json!({})).await.0, 200);
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        1,
+        "Downloaded bytes should be reused offline"
+    );
+    let copied = server
+        .call(
+            "POST",
+            "/api/drafts/prepare",
+            A,
+            json!({"messageId":"google:attached","mode":"forward"}),
+        )
+        .await;
+    assert_eq!(copied.0, 200, "{}", copied.1);
+    assert_eq!(copied.1["draft"]["attachments"], message["attachments"]);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn writing_one_provider_flag_preserves_an_unrelated_explicit_local_override() {
+    for provider in ["google", "microsoft"] {
+        let fixture = Fixture::new(Arc::new(move |request| {
+            async move {
+                assert_eq!(request.owner(), A);
+                if provider == "google" {
+                    Reply::Json(200, json!({"id":"flags","labelIds":["INBOX"]}))
+                } else {
+                    Reply::Json(
+                        200,
+                        json!({"id":"flags","isRead":true,"flag":{"flagStatus":"notFlagged"}}),
+                    )
+                }
+            }
+            .boxed()
+        }))
+        .await;
+        let server = fixture.start().await;
+        set(&server.app, config(&[(A, provider)])).await;
+        let id = format!("{provider}:flags");
+        let key = id.clone();
+        server.app.db(move |db| {
+            db.upsert(A,&merge(cached(&key,A,"inbox"),&json!({"starred":true,"localOverrides":{"starred":true},"providerSnapshot":{"read":false,"starred":false}})))?;Ok(())
+        }).await.unwrap();
+        let path = format!("/api/messages/{}", providers::component(&id));
+        let changed = server.call("PATCH", &path, A, json!({"read":true})).await;
+        assert_eq!(changed.0, 200, "{}", changed.1);
+        assert_eq!(changed.1["message"]["read"], true);
+        assert_eq!(changed.1["message"]["starred"], true);
+        assert_eq!(changed.1["message"]["localOverrides"]["starred"], true);
+        assert_eq!(changed.1["message"]["providerSnapshot"]["starred"], false);
+        let changed = server
+            .call("PATCH", &path, A, json!({"starred":false}))
+            .await;
+        assert_eq!(changed.0, 200, "{}", changed.1);
+        assert_eq!(changed.1["message"]["starred"], false);
+        assert!(changed.1["message"]["localOverrides"]["starred"].is_null());
+        server.shutdown().await;
+    }
 }

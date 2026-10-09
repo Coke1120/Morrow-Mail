@@ -67,6 +67,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     Json pendingRead; // Owned metadata for a detail read interrupted by a local patch.
     uint64_t readerImageGeneration = 0, readerImageSelection = 0;
     std::optional<bool> readerImageOverride;
+    bool restartingForUpdate = false;
     bool syncing = false, loading = false, closing = false, dialogOpen = false, selectingNavigation = false;
     bool closeReady = false;
     bool checkingUpdates = false, includePrereleases = true;
@@ -120,6 +121,9 @@ winrt::Windows::Foundation::IAsyncAction workspacePage(std::shared_ptr<Shell> sh
 winrt::Windows::Foundation::IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, winrt::hstring kind);
 winrt::Windows::Foundation::IAsyncAction outOfOfficePage(std::shared_ptr<Shell> shell);
 winrt::Windows::Foundation::IAsyncAction calendarPage(std::shared_ptr<Shell> shell);
+winrt::Windows::Foundation::IAsyncOperation<Json> uploadAttachment(std::shared_ptr<Shell> shell, winrt::hstring owner);
+winrt::Windows::Foundation::IAsyncAction saveAttachment(std::shared_ptr<Shell> shell, winrt::hstring owner, Json item);
+void appendAttachmentControls(std::shared_ptr<Shell> shell, controls::StackPanel const& panel, Json const& message);
 void appendReader(std::shared_ptr<Shell> shell, controls::StackPanel const& container, Json message);
 winrt::Windows::Foundation::IAsyncAction folderPickerChecks(controls::Grid root);
 void readerSecurityChecks();

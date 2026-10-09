@@ -129,6 +129,9 @@ impl Fixture {
         app.db(|db| {
             db.set_settings(&json!({"mailAccounts":{OWNER:{"email":OWNER,"provider":"google","connectionId":"original","accessToken":"fixture-token","expiresAt":chrono::Utc::now().timestamp_millis()+3600000}},"preferences":{"syncInterval":0}}))?;
             jobs::start_import(db, OWNER, &json!({"allMail":true}))?;
+            let mut imports = db.settings()?["imports"].clone();
+            imports[OWNER]["recentSince"] = Value::Null;
+            db.set_settings(&json!({"imports":imports}))?;
             let date = (chrono::Utc::now()-chrono::Duration::days(1)).to_rfc3339_opts(chrono::SecondsFormat::Millis,true);
             let job = db.settings()?["imports"][OWNER].clone();
             jobs::apply_import_page(db, OWNER, &job, &json!({"messages":[{"id":"google:first","date":date,"folder":"inbox"}],"nextCursor":"private-checkpoint"}))?;

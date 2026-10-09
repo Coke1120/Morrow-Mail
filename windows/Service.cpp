@@ -252,7 +252,7 @@ Json Service::requestBlocking(hstring const& path, hstring const& owner, hstring
     if (!owner.empty()) headers += L"X-Genmail-Account: " + std::wstring(owner) + L"\r\n";
     if (hostOperation) headers += L"X-Morrow-Update: " + updateToken_ + L"\r\n";
     std::string payload = method == L"GET" ? "" : to_string(body.Stringify());
-    require(payload.size() <= 256 * 1024, L"The request exceeds the supported size.");
+    require(payload.size() <= (path == L"/attachments" && method == L"POST" ? 68 * 1024 * 1024 : 256 * 1024), L"The request exceeds the supported size.");
     require(WinHttpSendRequest(request.value, headers.c_str(), static_cast<DWORD>(headers.size()),
         payload.empty() ? WINHTTP_NO_REQUEST_DATA : payload.data(), static_cast<DWORD>(payload.size()), static_cast<DWORD>(payload.size()), 0)
         && WinHttpReceiveResponse(request.value, nullptr), L"The private service did not respond. Retry after checking its status.");
@@ -263,7 +263,7 @@ Json Service::requestBlocking(hstring const& path, hstring const& owner, hstring
         char buffer[16384]; DWORD read = 0;
         require(WinHttpReadData(request.value, buffer, sizeof buffer, &read), L"The private service response was interrupted.");
         if (!read) break;
-        require(response.size() + read <= 16 * 1024 * 1024, L"The private service response exceeds its limit.");
+        require(response.size() + read <= (std::wstring_view(path).starts_with(L"/attachments/") ? 68 * 1024 * 1024 : 16 * 1024 * 1024), L"The private service response exceeds its limit.");
         response.append(buffer, read);
     }
     Json result;

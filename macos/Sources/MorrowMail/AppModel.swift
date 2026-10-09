@@ -73,7 +73,8 @@ final class AppModel: ObservableObject {
     @Published var studioTab = "tools"
     @Published var readerAssistant: JSON?
     @Published var unsavedForms = Set<String>()
-    private(set) var restartingForUpdate = false
+    @Published private(set) var restartingForUpdate = false
+    @Published private(set) var preparingUpdateRestart = false
     private var process: Process?
     private var input: Pipe?
     private var output: Pipe?
@@ -155,7 +156,8 @@ final class AppModel: ObservableObject {
     var colorScheme: ColorScheme? {
         switch preferences["theme"].string { case "light": return .light; case "dark": return .dark; default: return nil }
     }
-    var canNavigate: Bool { !busy && unsavedForms.isEmpty && compose == nil && organizing == nil && managingFolders == nil && readerAssistant == nil && !showSettings }
+    var updateHasUnsavedChanges: Bool { !unsavedForms.subtracting(["search-request"]).isEmpty || compose != nil }
+    var canNavigate: Bool { !preparingUpdateRestart && !restartingForUpdate && !busy && unsavedForms.isEmpty && compose == nil && organizing == nil && managingFolders == nil && readerAssistant == nil && !showSettings }
 
     func start() async {
         guard !launching else { return }
@@ -291,26 +293,35 @@ final class AppModel: ObservableObject {
         let (data, response) = try await session.data(for: request)
         guard self.baseURL == baseURL, self.token == sessionToken else { throw CancellationError() }
         guard let http = response as? HTTPURLResponse, http.url?.host == baseURL.host, http.url?.port == baseURL.port else { throw APIError("The local service returned an unexpected response.") }
-        guard data.count <= 32 * 1024 * 1024 else { throw APIError("The response was too large. Narrow your request.") }
+        guard data.count <= (path.hasPrefix("/attachments/") ? 68 : 32) * 1024 * 1024 else { throw APIError("The response was too large. Narrow your request.") }
         let result = try await Task.detached(priority: .userInitiated) { try JSONDecoder().decode(JSON.self, from: data) }.value
         guard (200...299).contains(http.statusCode) else { throw APIError(payload: result) }
         return result
     }
     func restartToInstallUpdate(onError: @escaping (String) -> Void) {
-        guard !busy, unsavedForms.isEmpty, readerAssistant == nil else { onError("Close AI assistance, save or discard unsaved changes and wait for current operations before installing an update."); return }
+        guard !preparingUpdateRestart, !restartingForUpdate else { return }
+        guard !updateHasUnsavedChanges else { onError("Save or discard unsaved edits before restarting."); return }
         let alert = NSAlert(); alert.messageText = "Install update and restart Morrow Mail?"
-        alert.informativeText = "Your saved mail, accounts and settings will stay on this device. The previous app will be retained if installation fails."
+        alert.informativeText = "Morrow will restart now. Active requests finish saving before replacement; downloads and checkpointed indexing continue after restart. Uncertain sends are never replayed. Your saved mail and the previous app are retained."
         alert.addButton(withTitle: "Install & Restart"); alert.addButton(withTitle: "Later")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        perform {
+        preparingUpdateRestart = true
+        Task {
+            defer { preparingUpdateRestart = false }
             do {
                 _ = try await self.request("/updates/install", method: "POST", body: .object([:]), authorizeUpdate: true)
-                self.restartingForUpdate = true
-                // Wait for the Settings sheet's dismissal before asking AppKit to quit.
-                if self.showSettings { self.showSettings = false }
-                else { self.finishUpdateRestart() }
-            } catch { onError(error.localizedDescription) }
+                self.beginUpdateRestart()
+            } catch {
+                let status = try? await self.request("/updates/status")
+                if status?["phase"].string == "installing" { self.beginUpdateRestart() }
+                else { onError(error.localizedDescription) }
+            }
         }
+    }
+    private func beginUpdateRestart() {
+        restartingForUpdate = true
+        // Dismiss Settings before asking AppKit to quit.
+        if showSettings { showSettings = false } else { finishUpdateRestart() }
     }
     func finishUpdateRestart() {
         if restartingForUpdate { NSApp.terminate(nil) }
@@ -405,7 +416,7 @@ final class AppModel: ObservableObject {
             let firstOpen = openedMessage != id
             openedMessage = id
             let mailbox = accounts.first { $0.id == row["accountId"].string }
-            let canMarkRead = mailbox?["provider"].string != "microsoft" || mailbox?["settings"]["canOrganize"].bool == true
+            let canMarkRead = !["microsoft", "google"].contains(mailbox?["provider"].string ?? "") || mailbox?["settings"]["canOrganize"].bool == true
             if firstOpen && canMarkRead && !messageDetail["providerDeleted"].bool && preferences["markReadOnOpen"].bool && !messageDetail["read"].bool && messageDetail["folder"].string != "drafts" {
                 do {
                     let updated = try await request("/messages/" + encodedPath(row.id), method: "PATCH", body: .object(["read": .bool(true)]), mailbox: row["accountId"].string)
@@ -435,7 +446,7 @@ final class AppModel: ObservableObject {
         }
     }
     func perform(_ work: @escaping @MainActor () async throws -> Void) {
-        guard !busy else { return }
+        guard !busy, !preparingUpdateRestart, !restartingForUpdate else { return }
         busy = true; error = ""
         Task {
             defer { busy = false }
@@ -660,7 +671,7 @@ final class AppModel: ObservableObject {
         catch { self.error = error.localizedDescription }
     }
     func newDraft(_ value: Draft? = nil) {
-        guard !busy, compose == nil, organizing == nil, readerAssistant == nil, !showSettings else { return }
+        guard !busy, !preparingUpdateRestart, !restartingForUpdate, compose == nil, organizing == nil, readerAssistant == nil, !showSettings else { return }
         guard unsavedForms.isEmpty else { notice = "Save your current changes before opening a new draft."; return }
         var draft = value ?? Draft()
         guard (draft.replyToID.isEmpty && !draft.forwarding && !draft.sourceDraft) || !draft.accountID.isEmpty else { error = "The original mailbox is unavailable. Reopen the original message."; return }
@@ -676,6 +687,7 @@ final class AppModel: ObservableObject {
         compose = draft
     }
     func settings(_ tab: String = "start") {
+        guard !preparingUpdateRestart, !restartingForUpdate else { return }
         guard compose == nil, readerAssistant == nil, unsavedForms.subtracting(["settings"]).isEmpty else { notice = "Close AI assistance or save your current changes before opening Settings."; return }
         settingsTab = tab; showSettings = true
     }

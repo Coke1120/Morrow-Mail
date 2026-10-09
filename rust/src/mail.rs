@@ -292,35 +292,41 @@ pub(crate) fn google_import_state(message: &Value, existing: Option<&Value>) -> 
 }
 
 fn import_read_state(message: &Value, existing: Option<&Value>, imported: &mut Value) {
-    let previous = existing.and_then(|value| {
-        value["providerSnapshot"]["read"].as_bool().or_else(|| {
-            value["providerLabelIds"]
-                .as_array()
-                .map(|labels| !labels.iter().any(|label| label == "UNREAD"))
-        })
-    });
-    let remote = message["read"].as_bool();
-    if let Some(snapshot) = remote.or(previous) {
-        if !imported["providerSnapshot"].is_object() {
-            imported["providerSnapshot"] = json!({});
+    for key in ["read", "starred"] {
+        let previous = existing.and_then(|value| {
+            value["providerSnapshot"][key].as_bool().or_else(|| {
+                value["providerLabelIds"].as_array().map(|labels| {
+                    if key == "read" {
+                        !labels.iter().any(|label| label == "UNREAD")
+                    } else {
+                        labels.iter().any(|label| label == "STARRED")
+                    }
+                })
+            })
+        });
+        let remote = message[key].as_bool();
+        if let Some(snapshot) = remote.or(previous) {
+            if !imported["providerSnapshot"].is_object() {
+                imported["providerSnapshot"] = json!({});
+            }
+            imported["providerSnapshot"][key] = snapshot.into();
         }
-        imported["providerSnapshot"]["read"] = snapshot.into();
-    }
-    if let Some(remote) = remote {
-        // Keep local edits while the provider is unchanged; a newly observed
-        // provider value wins, and convergence releases obsolete overrides.
-        let read = if previous == Some(remote) {
-            existing
-                .and_then(|value| value["read"].as_bool())
-                .unwrap_or(remote)
-        } else {
-            remote
-        };
-        imported["read"] = read.into();
-        if read == remote
-            && let Some(overrides) = imported["localOverrides"].as_object_mut()
-        {
-            overrides.remove("read");
+        if let Some(remote) = remote {
+            // Keep local edits while the provider is unchanged; a newly observed
+            // provider value wins, and convergence releases obsolete overrides.
+            let read = if previous == Some(remote) {
+                existing
+                    .and_then(|value| value[key].as_bool())
+                    .unwrap_or(remote)
+            } else {
+                remote
+            };
+            imported[key] = read.into();
+            if read == remote
+                && let Some(overrides) = imported["localOverrides"].as_object_mut()
+            {
+                overrides.remove(key);
+            }
         }
     }
 }
@@ -343,6 +349,9 @@ pub fn import_messages(db: &Store, mail: &Value, messages: &[Value]) -> Result<V
                     value[key] = entry.clone();
                 }
             }
+        }
+        if message["providerDraft"] != true && let Some(previous)=existing.as_ref().filter(|m|m["attachmentsLoaded"]==true) {
+            value["attachments"] = previous["attachments"].clone(); value["attachmentsLoaded"] = true.into();
         }
         if mail["provider"]=="google"{value=merge(value,&google_import_state(message,existing.as_ref()));}
         import_read_state(message, existing.as_ref(), &mut value);
@@ -382,6 +391,10 @@ pub fn outgoing(config: &Value, owner: &str, value: &Value, extra: &Value) -> Va
 }
 pub fn fingerprint(message: &Value) -> Result<String> {
     let mut payload = json!({"to":message["to"],"subject":message["subject"],"body":message["body"],"replyToId":string(message,"replyToId")});
+    let attached = crate::attachments::references(message)?;
+    if !attached.as_array().unwrap().is_empty() {
+        payload["attachments"] = attached;
+    }
     for key in ["cc", "bcc"] {
         if !string(message, key).is_empty() {
             payload[key] = message[key].clone();
@@ -532,7 +545,7 @@ pub(crate) async fn send_locked(
         if !string(&input_clone,"draftId").is_empty() && db.get(&owner,string(&input_clone,"draftId"))?.is_some_and(|draft|draft["providerDraft"]==true) {return Err(Error::conflict("This is a read-only provider draft. Copy it to a local draft before editing or sending."));}
         let previous=attempts(&config).into_iter().find(|a|a["account"]==owner&&(a["requestId"]==request_clone||!string(&input_clone,"draftId").is_empty()&&a["draftId"]==input_clone["draftId"]));
         if previous.as_ref().is_some_and(|a| a["resolution"].is_string()) { return Err(Error::conflict("This delivery was closed after review and cannot be retried. Start a new message for a separate delivery.")); }
-        let mut value=initial_value;value["replyToId"]=input_clone.get("replyToId").cloned().unwrap_or(json!(""));
+        let mut value=initial_value;crate::attachments::resolve(db,&owner,&mut value,false)?;value["replyToId"]=input_clone.get("replyToId").cloned().unwrap_or(json!(""));
         // An already persisted footer is the reviewed payload; preserve its exact text across serializer upgrades.
         if let Some(attempt)=&previous
  && let Some(draft)=db.get(&owner,string(attempt,"draftId"))?
@@ -586,6 +599,29 @@ if previous["payloadHash"]!=hash{return Err(Error::conflict("This draft has an u
     let mut message_id = String::new();
     if ctx.owner != "demo" {
         let mail = current_mail(app, &ctx.owner).await?;
+        providers::check_attachment_send_limit(&mail, &value)?;
+        let attachment_owner = ctx.owner.clone();
+        let mut delivery = value.clone();
+        let delivery = app
+            .db(move |db| {
+                crate::attachments::resolve(db, &attachment_owner, &mut delivery, true)?;
+                Ok(delivery)
+            })
+            .await?;
+        if mail["provider"] == "microsoft"
+            && !providers::can_organize(&mail)
+            && delivery["attachments"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|a| a["size"].as_u64().unwrap_or(0))
+                .sum::<u64>()
+                > 2 * 1024 * 1024
+        {
+            return Err(Error::invalid(
+                "Reconnect Outlook with mail organization permission before sending attachments larger than 2 MiB.",
+            ));
+        }
         attempt = if prepared["previous"].is_null() {
             json!({"account":ctx.owner,"requestId":request,"draftId":draft_id,"payloadHash":prepared["payloadHash"],"createdAt":now()})
         } else {
@@ -599,7 +635,7 @@ if previous["payloadHash"]!=hash{return Err(Error::conflict("This draft has an u
         let draft = draft_id.clone();
         let reviewed_input = input.clone();
         let send_settings=app.db(move|db|db.transaction(|db|{crate::cli::guard_review(db,&owner,&reviewed_input)?;let config=db.settings()?;let mut extra=json!({"id":draft,"folder":"drafts","deliveryStatus":"unconfirmed","deliveryRequestId":request_clone});if !reply.is_empty(){extra["replyToId"]=reply.into();}draft_value.as_object_mut().unwrap().remove("replyToId");db.upsert(&owner,&outgoing(&config,&owner,&draft_value,&extra))?;let mut pending=attempts(&config);if !pending.iter().any(|a|a["account"]==owner&&a["requestId"]==saved_attempt["requestId"]){pending.push(saved_attempt);}db.set_settings(&json!({"deliveryAttempts":pending}))?;Ok(config)})).await?;
-        let mut message = value.clone();
+        let mut message = delivery;
         message["fromName"] = scheduled
             .as_ref()
             .map(|job| job["fromName"].clone())
@@ -642,6 +678,7 @@ if previous["payloadHash"]!=hash{return Err(Error::conflict("This draft has an u
                     extra["replyToId"] = reply.into();
                 }
                 value.as_object_mut().unwrap().remove("replyToId");
+                crate::attachments::resolve(db, &owner, &mut value, false)?;
                 let message = outgoing(&config, &owner, &value, &extra);
                 db.upsert(&owner, &message)?;
                 if !draft_id.is_empty() {
@@ -751,6 +788,19 @@ pub(crate) async fn commit_sync_page(
     .await
 }
 pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
+    struct Syncing<'a>(&'a App);
+    impl Drop for Syncing<'_> {
+        fn drop(&mut self) {
+            if let Ok(mut owners) = self.0.0.syncing.lock() {
+                owners.clear();
+            }
+        }
+    }
+    *app.0
+        .syncing
+        .lock()
+        .map_err(|_| Error::new(503, "Restart the workspace."))? = owners.to_vec();
+    let _syncing = Syncing(app);
     let mut errors = Vec::new();
     for owner in owners {
         let config = app.settings().await?;
@@ -815,6 +865,7 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
                 warning = warning.or(sync_warning(&page));
                 commit_sync_page(app, owner, &mail, &page).await?;
             }
+            crate::reconcile::sync(app, &mail, &mut fetched).await?;
             Ok(warning)
         };
         match work.await {
@@ -833,7 +884,11 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
             .unwrap_or_default();
         all.retain(|e| !owners.iter().any(|owner| e["accountId"] == *owner));
         all.extend(saved);
-        db.set_settings(&json!({"backgroundSyncErrors":all}))?;
+        let mut resumed = merge(json!({}), &config["updateResumeSync"]);
+        for owner in &owners {
+            resumed.as_object_mut().unwrap().remove(owner);
+        }
+        db.set_settings(&json!({"backgroundSyncErrors":all,"updateResumeSync":resumed}))?;
         Ok(())
     })
     .await?;
@@ -853,21 +908,44 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
         && (body.get("read").is_some() || body.get("starred").is_some())
         && connections(&app.settings().await?)
             .get(&owner)
-            .is_some_and(|mail| mail["provider"] == "microsoft")
+            .is_some_and(|mail| {
+                ["google", "microsoft", "imap", ""].contains(&string(mail, "provider"))
+            })
     {
         let (bound_owner, id) = (owner.clone(), ctx.path[1].clone());
         let message = app.db(move |db| get_message(db, &bound_owner, &id)).await?;
-        if string(&message, "id").starts_with("microsoft:")
-            || string(&message, "remoteId").starts_with("microsoft:")
-        {
+        if ["google:", "microsoft:", "imap:"].iter().any(|prefix| {
+            string(&message, "id").starts_with(prefix)
+                || string(&message, "remoteId").starts_with(prefix)
+        }) {
             return Ok(Some(
-                Json(crate::outlook::patch(app, ctx).await?).into_response(),
+                Json(crate::mail_flags::patch(app, ctx).await?).into_response(),
             ));
         }
     }
     let result = match (ctx.method.as_str(), path.as_slice()) {
         ("POST", ["send"]) => send(app, ctx).await?,
         ("POST", ["drafts", "prepare"]) => {
+            if ["forward", "copy"].contains(&string(&body, "mode")) {
+                let _gate = app.0.mailbox.try_lock().map_err(|_| {
+                    Error::conflict(
+                        "Another mailbox operation is running. Try again when it finishes.",
+                    )
+                })?;
+                let key = validation::text(&body["messageId"], "Message ID", 8192, false)?;
+                let (account, id) = (owner.clone(), key.to_owned());
+                let message = app.db(move |db| get_message(db, &account, &id)).await?;
+                if (message["hasAttachments"] != false
+                    || string(&message, "bodyHtml").contains("cid:"))
+                    && message["attachmentsLoaded"] != true
+                    && ["google:", "microsoft:", "imap:"].iter().any(|prefix| {
+                        string(&message, "remoteId").starts_with(prefix)
+                            || string(&message, "id").starts_with(prefix)
+                    })
+                {
+                    crate::attachments::download(app, &owner, key).await?;
+                }
+            }
             app.db(move |db| crate::drafts::prepare(db, &owner, &body))
                 .await?
         }
@@ -879,7 +957,7 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                 .await?
         }
         ("POST", ["drafts"]) => {
-            let value = content::content(&body, true)?;
+            let mut value = content::content(&body, true)?;
             // Keep the idle check and queued write in the same gate as send preparation.
             let _mailbox = app.0.mailbox.try_lock().map_err(|_| {
                 Error::conflict("Another mailbox operation is running. Try again when it finishes.")
@@ -917,6 +995,7 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                     get_message(db, &owner, string(&body, "replyToId"))?;
                     extra["replyToId"] = body["replyToId"].clone();
                 }
+                crate::attachments::resolve(db,&owner,&mut value,false)?;
                 let message = outgoing(&config, &owner, &value, &extra);
                 db.upsert(&owner, &message)?;
                 Ok(json!({"message":pages::owned(&owner,message)}))

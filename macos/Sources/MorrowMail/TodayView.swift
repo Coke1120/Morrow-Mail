@@ -102,7 +102,7 @@ struct TodayView: View {
         if model.state["today"]["summaryOverflow"].number > 0 {
             Text("\(Int(model.state["today"]["summaryOverflow"].number)) summary jobs exceeded the queue limit. Review remaining mail in AI Studio.").foregroundStyle(.orange)
         }
-        Text("Latest 20 jobs per mailbox, dated in your local time. Each summary uses only its own mailbox. Completed summaries use their completion date.").font(.caption).foregroundStyle(.secondary)
+        Text("One daily summary per mailbox, updated from its latest 20 validated jobs in your local time. Summary History keeps individual jobs.").font(.caption).foregroundStyle(.secondary)
     }
 }
 
@@ -114,7 +114,7 @@ struct SummaryReportView: View {
             VStack(alignment: .leading, spacing: 10) {
                 if report["accountId"].nonempty { Text(report["accountId"].string).font(.caption.weight(.semibold)).foregroundStyle(morrowGreen) }
                 HStack {
-                    Label(report["kind"].string == "arrival" ? "New mail" : report["kind"].string == "manual" ? "On-demand summary" : "Scheduled summary", systemImage: report["kind"].string == "arrival" ? "envelope.badge" : report["kind"].string == "manual" ? "sparkles" : "clock").font(.headline)
+                    Label(report["kind"].string == "daily" ? "Daily summary" : report["kind"].string == "arrival" ? "New mail" : report["kind"].string == "manual" ? "On-demand summary" : "Scheduled summary", systemImage: report["kind"].string == "arrival" ? "envelope.badge" : report["kind"].string == "manual" ? "sparkles" : "clock").font(.headline)
                     Spacer()
                     if report["status"].string == "running" { ProgressView().controlSize(.small) }
                     Text(report["status"].string.capitalized).font(.caption.weight(.medium)).foregroundStyle(.secondary)

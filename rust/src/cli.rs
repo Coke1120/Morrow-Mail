@@ -23,13 +23,32 @@ use std::{
 };
 
 const INPUT_LIMIT: usize = 256 * 1024;
-const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
+const OUTPUT_LIMIT: usize = crate::attachments::MAX_BYTES.div_ceil(3) * 4 + 8192;
 const ENDPOINT: &str = "cli.json";
 
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "command", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Command {
     Accounts {},
+    Status {
+        account: String,
+    },
+    Sync {
+        account: String,
+        dry_run: bool,
+    },
+    Fetch {
+        account: String,
+        id: String,
+    },
+    AttachmentAdd {
+        account: String,
+        attachment: Value,
+    },
+    AttachmentRead {
+        account: String,
+        id: String,
+    },
     List {
         account: String,
         folder: String,
@@ -160,7 +179,7 @@ async fn route(
     let status = response.status().as_u16();
     let bytes = to_bytes(response.into_body(), OUTPUT_LIMIT)
         .await
-        .map_err(|_| Error::new(413, "Result exceeds 16 MiB."))?;
+        .map_err(|_| Error::new(413, "Result exceeds the CLI size limit."))?;
     let value = serde_json::from_slice(&bytes)?;
     if status >= 400 {
         let mut error = Error::new(status, "Command failed.");
@@ -170,8 +189,114 @@ async fn route(
         Ok(value)
     }
 }
+fn sync_owners(config: &Value, account: &str) -> Result<Vec<String>> {
+    let account = owner(config, account, true)?;
+    Ok(if account == "all" {
+        service::connections(config)
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect()
+    } else if account == "demo" {
+        vec![]
+    } else {
+        vec![account]
+    })
+}
+async fn sync_status(app: &App, accounts: Vec<String>) -> Result<Value> {
+    let config = app.settings().await?;
+    let activity = app.0.activity.snapshot(&config);
+    let connections = service::connections(&config);
+    let statuses: Vec<_> = accounts
+        .iter()
+        .map(|account| {
+            json!({
+                "accountId":account, "provider":connections[account]["provider"],
+                "history":crate::background::import_status_from(&config,account)
+            })
+        })
+        .collect();
+    let tasks: Vec<_> = activity["tasks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|task| accounts.iter().any(|id| task["accountId"] == *id))
+        .cloned()
+        .collect();
+    Ok(
+        json!({"accounts":statuses,"activity":tasks,"coverage":"bounded-recent-and-cached-metadata","downloadOrder":"newest","historyContinuesWhileAppOpen":true}),
+    )
+}
 pub async fn execute(app: &App, command: Command) -> Result<Value> {
+    if app.0.restarting.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(Error::conflict(
+            "Morrow is restarting for an update. Try again after restart; never retry an uncertain send automatically.",
+        ));
+    }
     match command {
+        Command::Status { account } => {
+            sync_status(app, sync_owners(&app.settings().await?, &account)?).await
+        }
+        Command::Sync { account, dry_run } => {
+            let accounts = sync_owners(&app.settings().await?, &account)?;
+            if dry_run {
+                return Ok(
+                    json!({"dryRun":true,"accounts":accounts,"downloadOrder":"newest","coverage":"bounded-recent-and-cached-metadata","providerWrites":false,"aiRequests":false}),
+                );
+            }
+            let _gate = app
+                .0
+                .mailbox
+                .try_lock()
+                .map_err(|_| Error::conflict("Another mailbox operation is running."))?;
+            let errors = crate::mail::sync_accounts(app, &accounts).await?;
+            let mut result = sync_status(app, accounts).await?;
+            result["status"] = json!(if errors.as_array().is_some_and(|e| !e.is_empty()) {
+                "partial"
+            } else {
+                "complete"
+            });
+            result["errors"] = errors;
+            Ok(result)
+        }
+        Command::Fetch { account, id } => {
+            validation::text(&json!(id), "Message ID", 8192, false)?;
+            let owner = owner(&app.settings().await?, &account, false)?;
+            route(
+                app,
+                owner,
+                Method::POST,
+                vec!["messages".into(), id, "attachments".into()],
+                json!({}),
+            )
+            .await
+        }
+        Command::AttachmentAdd {
+            account,
+            attachment,
+        } => {
+            let owner = owner(&app.settings().await?, &account, false)?;
+            route(
+                app,
+                owner,
+                Method::POST,
+                vec!["attachments".into()],
+                attachment,
+            )
+            .await
+        }
+        Command::AttachmentRead { account, id } => {
+            let owner = owner(&app.settings().await?, &account, false)?;
+            route(
+                app,
+                owner,
+                Method::GET,
+                vec!["attachments".into(), id],
+                json!({}),
+            )
+            .await
+        }
         Command::Accounts {} => {
             app.db(|db| {
                 let config = db.settings()?;
@@ -282,6 +407,7 @@ pub async fn execute(app: &App, command: Command) -> Result<Value> {
                     "body",
                     "replyToId",
                     "footer",
+                    "attachments",
                 ]
                 .contains(&k.as_str())
             }) {
@@ -289,17 +415,24 @@ pub async fn execute(app: &App, command: Command) -> Result<Value> {
             }
             let config = app.settings().await?;
             let owner = owner(&config, &account, false)?;
+            let id = string(&message, "id").to_owned();
+            let account = owner.clone();
+            let saved = if id.is_empty() {
+                None
+            } else {
+                app.db(move |db| db.get(&account, &id)).await?
+            };
             if message.get("footer").is_none() {
-                let id = string(&message, "id").to_owned();
-                let account = owner.clone();
-                let saved = if id.is_empty() {
-                    None
-                } else {
-                    app.db(move |db| db.get(&account, &id)).await?
-                };
                 message["footer"] = saved
+                    .as_ref()
                     .and_then(|m| m.get("footer").cloned())
                     .unwrap_or(content::preferences_footer(&config["preferences"])?);
+            }
+            if message.get("attachments").is_none() {
+                message["attachments"] = saved
+                    .as_ref()
+                    .and_then(|m| m.get("attachments").cloned())
+                    .unwrap_or(json!([]));
             }
             route(app, owner, Method::POST, vec!["drafts".into()], message).await
         }
@@ -515,7 +648,7 @@ async fn response_json(mut response: reqwest::Response) -> Result<Value> {
     let status = response.status().as_u16();
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| Error::new(502, "CLI response interrupted. Do not retry a send automatically; inspect its saved draft or Sent record."))? {
-        if bytes.len() + chunk.len() > OUTPUT_LIMIT { return Err(Error::new(413,"Result exceeds 16 MiB.")); } bytes.extend_from_slice(&chunk);
+        if bytes.len() + chunk.len() > OUTPUT_LIMIT { return Err(Error::new(413,"Result exceeds the CLI size limit.")); } bytes.extend_from_slice(&chunk);
     }
     let value = serde_json::from_slice(&bytes)?;
     if status >= 400 {
@@ -591,7 +724,7 @@ async fn run(directory: PathBuf, command: Command) -> Result<Value> {
     app.db(|_| Ok(())).await?;
     result
 }
-const HELP: &str = "Morrow Mail agent CLI\n\nUsage: morrow-service cli <command> [--workspace ABSOLUTE_PATH] [options]\n\n  accounts\n  list   --account ID [--folder inbox] [--sort newest] [--page 1] [--limit 50]\n  read   --account ID --id MESSAGE_ID\n  search --account ID --query QUERY [--page 1]\n  draft  --account ID --input FILE_OR_-\n  review --account ID --id DRAFT_ID\n  send   --input REVIEW_FILE_OR_- --confirm [--retry-unconfirmed]\n\nJSON stdout: {ok:true,data:...} or {ok:false,status:...,error:...}.\nAccount is explicit; all is read-only for list/search. Read never marks mail read.\nDraft JSON: to, cc, bcc, subject, body, optional id/replyToId/footer.\nReview before sending. Keep the review/request ID for replay; never auto-retry uncertain delivery.\nApp open: private local connection. App closed: exclusive workspace access, no background jobs.\nDefaults: MORROW_DATA_DIR, otherwise the desktop workspace on macOS/Windows.\nExit: 0 success, 2 invalid input, 3 conflict, 1 other failure.\n";
+const HELP: &str = "Morrow Mail agent CLI\n\nUsage: morrow-service cli <command> [--workspace ABSOLUTE_PATH] [options]\n\n  accounts\n  status --account ID_OR_all\n  sync   --account ID_OR_all [--dry-run]\n  fetch  --account ID --id MESSAGE_ID\n  attachment-add --account ID --file PATH\n  attachment-read --account ID --id ATTACHMENT_ID\n  list   --account ID [--folder inbox] [--sort newest] [--page 1] [--limit 50]\n  read   --account ID --id MESSAGE_ID\n  search --account ID --query QUERY [--page 1]\n  draft  --account ID --input FILE_OR_-\n  review --account ID --id DRAFT_ID\n  send   --input REVIEW_FILE_OR_- --confirm [--retry-unconfirmed]\n\nJSON stdout: {ok:true,data:...} or {ok:false,status:...,error:...}.\nAccount is explicit; all is available for list/search/status/sync. Read never marks mail read.\nDraft JSON: to, cc, bcc, subject, body, optional id/replyToId/footer/attachments. Omitted attachments preserve saved references; [] removes them.\nReview before sending. Keep the review/request ID for replay; never auto-retry uncertain delivery.\nApp open: private local connection. App closed: exclusive workspace access, no background jobs.\nDefaults: MORROW_DATA_DIR, otherwise the desktop workspace on macOS/Windows.\nExit: 0 success, 2 invalid input, 3 conflict, 4 partial sync, 1 other failure.\n";
 fn parse(args: Vec<String>) -> Result<(PathBuf, Command)> {
     let name = args
         .first()
@@ -604,7 +737,7 @@ fn parse(args: Vec<String>) -> Result<(PathBuf, Command)> {
                 "Invalid or repeated option. Use cli --help.",
             ));
         }
-        let value = if ["--confirm", "--retry-unconfirmed"].contains(&key.as_str()) {
+        let value = if ["--confirm", "--retry-unconfirmed", "--dry-run"].contains(&key.as_str()) {
             "true".into()
         } else {
             it.next()
@@ -642,6 +775,35 @@ fn parse(args: Vec<String>) -> Result<(PathBuf, Command)> {
     };
     let command = match name.as_str() {
         "accounts" => Command::Accounts {},
+        "status" => Command::Status {
+            account: required(&mut flags, "--account")?,
+        },
+        "sync" => Command::Sync {
+            account: required(&mut flags, "--account")?,
+            dry_run: flags.remove("--dry-run").is_some(),
+        },
+        "fetch" => Command::Fetch {
+            account: required(&mut flags, "--account")?,
+            id: required(&mut flags, "--id")?,
+        },
+        "attachment-read" => Command::AttachmentRead {
+            account: required(&mut flags, "--account")?,
+            id: required(&mut flags, "--id")?,
+        },
+        "attachment-add" => {
+            use base64::Engine;
+            let account = required(&mut flags, "--account")?;
+            let file = PathBuf::from(required(&mut flags, "--file")?);
+            let handle = std::fs::File::open(&file)?;
+            if !handle.metadata()?.is_file() {
+                return Err(Error::invalid("Choose a regular attachment file."));
+            }
+            let bytes = read_limited(handle, crate::attachments::MAX_BYTES)?;
+            Command::AttachmentAdd {
+                account,
+                attachment: json!({"name":file.file_name().and_then(|v|v.to_str()).unwrap_or("attachment.bin"),"contentType":"application/octet-stream","data":base64::engine::general_purpose::STANDARD.encode(bytes)}),
+            }
+        }
         "list" => Command::List {
             account: required(&mut flags, "--account")?,
             folder: flags.remove("--folder").unwrap_or("inbox".into()),
@@ -714,7 +876,7 @@ pub async fn main(args: Vec<String>) -> i32 {
     match result {
         Ok(data) => {
             println!("{}", json!({"ok":true,"data":data}));
-            0
+            if data["status"] == "partial" { 4 } else { 0 }
         }
         Err(error) => {
             println!(

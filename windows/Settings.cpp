@@ -337,12 +337,12 @@ void general(Page const& p) {
     choice(f, L"theme", L"Theme", {{L"system", L"Match device"}, {L"light", L"Light"}, {L"dark", L"Dark"}});
     choice(f, L"density", L"Mail list density", {{L"comfortable", L"Comfortable"}, {L"compact", L"Compact"}, {L"spacious", L"Spacious"}});
     toggle(f, L"markReadOnOpen", L"Mark mail as read when opened");
-    help(f->panel, L"Outlook read/star changes sync with mail organization permission. Gmail/IMAP flags and Pending/Read Later stay local. Outlook change tracking and cached-mail checks resume at the configured sync interval.");
+    help(f->panel, L"Gmail, Outlook and IMAP read/star changes sync to the server. Gmail/Outlook require mail organization permission. Pending/Read Later stay local. Cached-mail checks resume at the configured sync interval.");
     toggle(f, L"autoLoadExternalImages", L"Automatically load external images (HTTPS)");
     help(f->panel, L"Applies to all mailboxes. Image servers may learn your IP address and that you opened an email. You can still hide images for individual messages.");
     title(f->panel, L"Mail sync");
     choice(f, L"syncInterval", L"Sync all accounts while Morrow is open", {{L"0", L"Manually"}, {L"1", L"Every minute"}, {L"5", L"Every 5 minutes"}, {L"15", L"Every 15 minutes"}, {L"30", L"Every 30 minutes"}}, true);
-    help(f->panel, L"Checks a limited set of recent messages. Older downloaded messages may still have an earlier read/unread state. Marking mail read or unread in Morrow does not change the server.");
+    help(f->panel, L"Fetches recent messages first, then reconciles a bounded batch of older downloaded mail at each sync. Large caches take multiple cycles. Failed provider writes are not retried automatically.");
     title(f->panel, L"Sending");
     choice(f, L"sendDelayHours", L"Default send delay · all accounts", {{L"0", L"Immediately"}, {L"1", L"1 hour"}, {L"2", L"2 hours"}, {L"3", L"3 hours"}, {L"4", L"4 hours"}, {L"5", L"5 hours"}, {L"6", L"6 hours"}}, true);
     help(f->panel, L"Delayed messages appear in Outbox. Keep Morrow open at the send time. A custom schedule overrides this default; changing it does not alter mail already queued.");
@@ -385,7 +385,7 @@ Form historyOptions(Page const& p, StackPanel const& into) {
     auto f = form(p, into, options, L"import-options");
     choice(f, L"months", L"History range", {{L"0", L"All available history"}, {L"1", L"Last month"}, {L"3", L"Last 3 months"}, {L"6", L"Last 6 months"}, {L"12", L"Last 12 months"}}, true);
     toggle(f, L"allMail", L"All normal folders"); toggle(f, L"inbox", L"Inbox (when All normal folders is off)"); toggle(f, L"sent", L"Sent (when All normal folders is off)");
-    help(f->panel, L"Gmail / Outlook exclude Spam/Junk and Trash. IMAP relies on special-use flags and skips virtual/non-selectable folders. Imported mail stays local; this does not call AI.");
+    help(f->panel, L"New imports fetch the latest seven days first, then older history. Gmail / Outlook exclude Spam/Junk and Trash. IMAP relies on special-use flags and skips virtual/non-selectable folders. Imported mail stays local; this does not call AI.");
     return f;
 }
 
@@ -452,7 +452,7 @@ void accounts(Page const& p, StackPanel const& panel, Json const& state, Form co
         if (owner == L"demo" || owner == L"all" || owner.empty()) continue;
         auto job = object(account, L"import"); auto status = text(job, L"status");
         title(panel, text(account, L"email") + L" · " + text(account, L"provider"));
-        help(panel, status.empty() ? L"History import has not started." : L"History: " + status + L" · " + text(job, L"phase") + L" · " + number(job, L"imported") + L" imported · " + number(job, L"processed") + L" checked · " + number(job, L"pages") + L" pages");
+        help(panel, status.empty() ? L"History import has not started." : L"History: " + status + L" · " + (text(job, L"downloadStage") == L"recent" ? L"Latest seven days first" : L"Older history") + L" · " + text(job, L"phase") + L" · " + number(job, L"imported") + L" imported · " + number(job, L"processed") + L" checked · " + number(job, L"pages") + L" pages");
         if (!text(job, L"error").empty()) help(panel, text(job, L"error"));
         if (!text(job, L"nextRetryAt").empty()) help(panel, L"Next retry: " + text(job, L"nextRetryAt") + L" · retry " + number(job, L"retryCount"));
         auto recovery = text(job, L"recoveryAction");
@@ -930,12 +930,19 @@ void about(Page const& p) {
         if (page->current()) { page->updateState = result; updateStatus(page, status); page->tell(L"Download cancelled."); }
     });
     action(p, p->body, L"Install & Restart…", [](Page page) -> IAsyncAction {
-        if (text(page->updateState, L"phase") != L"ready") throw hresult_error(E_FAIL, L"Download and verify an update first.");
+        if (text(page->updateState, L"phase") != L"ready" && text(page->updateState, L"phase") != L"installing") throw hresult_error(E_FAIL, L"Download and verify an update first.");
         auto dirty = page->shell->dirty; dirty.erase(page->busyKey);
-        if (!dirty.empty() || page->shell->service->writing()) throw hresult_error(E_FAIL, L"Save or discard edits and wait for pending writes before installing.");
-        if (!(co_await page->shell->confirm(L"Install verified update and restart?", L"Morrow will close after the installer is prepared. Both UI and service must stop before replacement. The previous app and your separate workspace are retained.", L"Install & Restart")) || !page->current()) co_return;
-        co_await page->shell->service->request(L"/updates/install", {}, L"POST", Json(), true);
+        if (!dirty.empty()) throw hresult_error(E_FAIL, L"Save or discard unsaved edits before restarting.");
+        if (!(co_await page->shell->confirm(L"Install verified update and restart?", L"Morrow will restart now. Active requests finish saving before replacement; downloads and checkpointed indexing continue after restart. Uncertain sends are never replayed. The previous app and your workspace are retained.", L"Install & Restart")) || !page->current()) co_return;
+        std::exception_ptr failed;
+        try { co_await page->shell->service->request(L"/updates/install", {}, L"POST", Json(), true); }
+        catch (...) { failed = std::current_exception(); }
+        if (failed) {
+            auto status = co_await page->shell->service->request(L"/updates/status");
+            if (text(status,L"phase") != L"installing") std::rethrow_exception(failed);
+        }
         if (!page->current()) co_return;
+        page->shell->restartingForUpdate = true;
         page->shell->dirty.erase(page->busyKey); page->busy = false;
         co_await page->shell->shutdown();
     });

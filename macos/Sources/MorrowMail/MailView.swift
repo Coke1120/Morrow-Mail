@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct MailWorkspace: View {
     @AppStorage("collapsedMailAccounts") private var collapsedAccounts = "[]"
@@ -203,13 +204,13 @@ struct MailWorkspace: View {
             }
                 .accessibilityLabel(model.updateAvailable ? "Settings & connections, update available" : "Settings & connections")
                 .help(model.updateAvailable ? "A new version is available. Open App updates." : "Settings & connections")
-                .buttonStyle(.plain).disabled(model.busy).frame(maxWidth: .infinity, alignment: .leading).padding(18).fixedSize(horizontal: false, vertical: true)
+                .buttonStyle(.plain).frame(maxWidth: .infinity, alignment: .leading).padding(18).fixedSize(horizontal: false, vertical: true)
         }
     }
     private var syncButton: some View {
         Button { model.perform { try await model.sync() } } label: { Label("Sync", systemImage: model.syncing ? "hourglass" : "arrow.clockwise") }
             .fixedSize().disabled(!model.canNavigate || !model.hasMailbox)
-            .help("Sync recent mail in the current account view (⌘R); Today syncs all accounts. Outlook continues saved change tracking; other providers refresh recent mail.").accessibilityIdentifier("mail.sync")
+            .help("Sync recent mail in the current account view (⌘R); Today syncs all accounts. New mail is fetched first; saved checkpoints reconcile older cached messages.").accessibilityIdentifier("mail.sync")
     }
     private var composeButton: some View {
         Button { model.newDraft() } label: { Label("Compose", systemImage: "square.and.pencil").frame(maxWidth: sidebarVisible ? .infinity : nil) }
@@ -544,7 +545,7 @@ struct MessageReader: View {
                         }.padding(10).background(morrowGreen.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
                     } else { AutomaticAssistance(messageID: message.id, account: message["accountId"].string, trigger: "onOpen") }
                     Divider()
-                    SecureMessageBody(message: message, autoLoadExternalImages: model.preferences["autoLoadExternalImages"].bool).id(message.viewID)
+                    AttachmentReader(message: message).id(message.viewID)
                     FooterPreview(footer: message["footer"])
                     Divider()
                     LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)], alignment: .leading, spacing: 8) {
@@ -900,11 +901,11 @@ struct ComposeView: View {
             } else {
                 Picker("From", selection: $draft.accountID) {
                     ForEach(model.senderAccounts) { account in Text(account["email"].string).tag(account.id) }
-                }.disabled(frozen)
+                }.disabled(frozen || !draft.attachments.isEmpty)
                 .onChange(of: draft.accountID) { _ in aiResult = ""; draft.requestID = UUID().uuidString }
             }
-            if draft.sourceDraft { Text("Editing a local copy without attachments. The original Gmail draft stays in Gmail; changes here are not uploaded to it.").font(.caption).foregroundStyle(.secondary) }
-            if draft.forwarding { Text("Forwarding the message text. Attachments are not included.").font(.caption).foregroundStyle(.secondary) }
+            if draft.sourceDraft { Text("Editing a local copy with its downloaded attachments. The original Gmail draft stays in Gmail; changes here are not uploaded to it.").font(.caption).foregroundStyle(.secondary) }
+            if draft.forwarding { Text("Forwarding the message text and downloaded attachments. Review the attachment list before sending.").font(.caption).foregroundStyle(.secondary) }
             if draft.scheduleLocked {
                 Label("This draft is scheduled for \(dateLabel(draft.scheduledSend["sendAt"].string)). Open Outbox and cancel its schedule before editing or sending it.", systemImage: "lock.fill").font(.callout).foregroundStyle(.orange)
             }
@@ -931,6 +932,18 @@ struct ComposeView: View {
                 TextField("Subject", text: $draft.subject)
                 TextArea(title: "Message", text: $draft.body, height: 210)
             }.textFieldStyle(.roundedBorder).disabled(frozen)
+            VStack(alignment: .leading, spacing: 8) {
+                Button { addAttachments() } label: { Label("Add attachments…", systemImage: "paperclip") }.disabled(frozen || draft.accountID.isEmpty)
+                ForEach(draft.attachments) { item in
+                    HStack {
+                        Text(item["name"].string).lineLimit(1).help(item["name"].string)
+                        Text(ByteCountFormatter.string(fromByteCount: Int64(item["size"].number), countStyle: .file)).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Remove") { draft.attachments.removeAll { $0.id == item.id } }.disabled(frozen)
+                    }
+                }
+                Text("Choose From before attaching files. Up to 100 files / 50 MiB total. Provider send limits also apply. Files are not sent to AI.").font(.caption).foregroundStyle(.secondary)
+            }
             if draft.footer["text"].nonempty || draft.footer["html"].nonempty {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -1005,12 +1018,12 @@ struct ComposeView: View {
         .confirmationDialog(draft.accountID == "demo" ? "Simulate sending this message?" : "Send this message to the listed recipients?", isPresented: $confirmSend, titleVisibility: .visible) {
             Button(draft.accountID == "demo" ? "Simulate Send" : "Send Message") { send() }
             Button("Cancel", role: .cancel) {}
-        } message: { Text("From: \(draft.accountID)\nTo: \(draft.to)\nCc: \(draft.cc)\nBcc: \(draft.bcc)\nSubject: \(draft.subject.isEmpty ? "(No subject)" : draft.subject)\n\(draft.unconfirmed ? "This retry may create a duplicate." : "The message and displayed footer will be sent together.")") }
+        } message: { Text("From: \(draft.accountID)\nTo: \(draft.to)\nCc: \(draft.cc)\nBcc: \(draft.bcc)\nSubject: \(draft.subject.isEmpty ? "(No subject)" : draft.subject)\nAttachments: \(draft.attachments.map { $0["name"].string }.joined(separator: ", "))\n\(draft.unconfirmed ? "This retry may create a duplicate." : "The message and displayed footer will be sent together.")") }
         .confirmationDialog("Schedule this message?", isPresented: $confirmSchedule, titleVisibility: .visible) {
             Button(scheduleAttempt == nil ? "Schedule Message" : "Retry Same Schedule") { schedule() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("From: \(draft.accountID)\nTo: \(draft.to)\nCc: \(draft.cc)\nBcc: \(draft.bcc)\nSubject: \(draft.subject.isEmpty ? "(No subject)" : draft.subject)\nSend at: \(reviewedSendAt.formatted(date: .abbreviated, time: .shortened)) (\(TimeZone.current.identifier))\nMorrow must be open. Catch-up is limited to 15 minutes; later delivery requires a new review. The reviewed message and displayed footer will be locked until this schedule is cancelled.")
+            Text("From: \(draft.accountID)\nTo: \(draft.to)\nCc: \(draft.cc)\nBcc: \(draft.bcc)\nSubject: \(draft.subject.isEmpty ? "(No subject)" : draft.subject)\nAttachments: \(draft.attachments.map { $0["name"].string }.joined(separator: ", "))\nSend at: \(reviewedSendAt.formatted(date: .abbreviated, time: .shortened)) (\(TimeZone.current.identifier))\nMorrow must be open. Catch-up is limited to 15 minutes; later delivery requires a new review. The reviewed message and displayed footer will be locked until this schedule is cancelled.")
         }
     }
     private var replyHistory: some View {
@@ -1053,6 +1066,34 @@ struct ComposeView: View {
             history = result
         } catch {
             if !Task.isCancelled { historyError = "Previous messages could not be loaded. Your draft is retained. " + error.localizedDescription }
+        }
+    }
+    func addAttachments() {
+        guard !frozen else { return }
+        let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        let owner = draft.accountID, urls = panel.urls
+        model.perform {
+            do {
+                for url in urls {
+                    let bytes = try await Task.detached(priority: .userInitiated) {
+                        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                        guard values.isRegularFile == true, let size = values.fileSize, size <= 50 * 1024 * 1024 else { throw APIError("Choose a regular file no larger than 50 MiB.") }
+                        let handle = try FileHandle(forReadingFrom: url)
+                        defer { try? handle.close() }
+                        let data = try handle.read(upToCount: 50 * 1024 * 1024 + 1) ?? Data()
+                        guard data.count <= 50 * 1024 * 1024 else { throw APIError("The file exceeds 50 MiB.") }
+                        return data
+                    }.value
+                    guard owner == draft.accountID, draft.attachments.count < 100,
+                          draft.attachments.reduce(0, { $0 + Int($1["size"].number) }) + bytes.count <= 50 * 1024 * 1024 else { throw APIError("Attachments exceed 100 files or 50 MiB.") }
+                    let result = try await model.request("/attachments", method: "POST", body: .object(["name": .string(url.lastPathComponent), "data": .string(bytes.base64EncodedString()), "contentType": .string(UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream")]), mailbox: owner)
+                    let item = result["attachment"]
+                    guard owner == draft.accountID, item["id"].nonempty else { throw APIError("The attachment could not be confirmed.") }
+                    if !draft.attachments.contains(where: { $0.id == item.id }) { draft.attachments.append(item) }
+                }
+                draft.requestID = UUID().uuidString
+            } catch { localError = error.localizedDescription }
         }
     }
     func recipientField(_ label: String, text: Binding<String>, placeholder: String) -> some View {
@@ -1138,7 +1179,7 @@ struct ComposeView: View {
                     let savedDraft = try await model.request("/drafts", method: "POST", body: reviewedPayload, mailbox: account)
                     draft.savedID = savedDraft["message"].id; saved = draft.payload
                     guard !draft.savedID.isEmpty else { throw APIError("The draft could not be confirmed, so scheduling was not attempted.") }
-                    var payload = reviewedPayload.picking(["to", "cc", "bcc", "subject", "body", "footer", "replyToId"])
+                    var payload = reviewedPayload.picking(["to", "cc", "bcc", "subject", "body", "footer", "replyToId", "attachments"])
                     payload["draftId"] = .string(draft.savedID)
                     payload["requestId"] = .string(scheduleRequestID)
                     payload["sendAt"] = .string(reviewedTime)

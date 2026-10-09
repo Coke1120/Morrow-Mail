@@ -1,5 +1,6 @@
 pub mod activity;
 pub mod ai;
+pub mod attachments;
 pub mod background;
 pub mod brain;
 pub mod calendar;
@@ -30,3 +31,6 @@ pub mod store;
 pub mod updater;
 pub mod validation;
 pub mod workflows;
+
+pub mod mail_flags;
+pub mod reconcile;

@@ -203,3 +203,13 @@ Separately run on
 a clean supported Windows VM with no VS, no Windows App Runtime, offline startup,
 ordinary-user permissions, and WebView2 absent. A hosted-runner pass alone cannot
 establish those clean-machine conditions. There is no production cutover here.
+
+## Clean deployment acceptance
+
+Use a separately provisioned disposable Windows 10/11 VM, with no Rust, Visual Studio/MSBuild or Node on PATH. Copy the unpacked candidate and a separately built `native_fixture.exe` QA helper; never publish the helper inside the app. Windows PowerShell 5.1 is sufficient:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-windows-clean.ps1 -PackageDirectory 'C:\QA\Morrow Mail-win32-x64' -FixtureHelper 'C:\QA\native_fixture.exe' -ReportPath 'C:\QA\clean-report.json'
+```
+
+This relocates the package into a path containing spaces and Unicode, uses only disposable fixture workspaces, checks fresh onboarding, an owned fictional mailbox, restart and unchanged package hashes with a restricted child PATH. Retain the report and inspect HTML-runtime availability. Missing WebView2 must keep plain text usable; it is not an HTML acceptance pass. The script cannot establish that the VM itself was freshly provisioned. Live-account tests, signing, accessibility and installed-updater restart/rollback remain separate gates. No real mail is sent and no installed application is replaced.

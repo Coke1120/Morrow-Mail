@@ -255,6 +255,10 @@ pub fn preferences(current: &Value, patch: &Value) -> Result<Value> {
 }
 pub fn content(input: &Value, draft: bool) -> Result<Value> {
     let mut result = recipients(input, draft)?;
+    let attachments = crate::attachments::references(input)?;
+    if !attachments.as_array().unwrap().is_empty() {
+        result["attachments"] = attachments;
+    }
     let empty = json!("");
     let subject = validation::text(input.get("subject").unwrap_or(&empty), "Subject", 500, true)?;
     if subject.contains(['\r', '\n']) {
@@ -270,7 +274,10 @@ pub fn content(input: &Value, draft: bool) -> Result<Value> {
         input.get("body").unwrap_or(&empty),
         "Message body",
         100000,
-        draft,
+        draft
+            || result["attachments"]
+                .as_array()
+                .is_some_and(|a| !a.is_empty()),
     )?
     .into();
     if let Some(value) = input.get("footer") {

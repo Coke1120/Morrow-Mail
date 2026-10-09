@@ -114,6 +114,12 @@ jobs:
         if: env.SKIP_TESTS != 'true'
         shell: pwsh
         run: ./scripts/test-windows-native.ps1 -UiSmoke
+      - name: Verify relocated package with Windows PowerShell 5.1
+        if: env.SKIP_TESTS != 'true'
+        shell: powershell
+        run: |
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+          ./scripts/test-windows-clean.ps1 -PackageDirectory 'build/windows-native/Morrow Mail-win32-x64' -FixtureHelper 'rust/target/debug/examples/native_fixture.exe' -ReportPath "$PWD/test-results/windows-native-relocated.json"
       - name: Measure native Windows service with fictional mail
         if: ${{ !cancelled() && env.SKIP_TESTS != 'true' && steps.package.outcome == 'success' }}
         shell: pwsh

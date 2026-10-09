@@ -67,7 +67,7 @@ struct NativeSettingsView: View {
                         case "about": aboutPage
                         default: generalPage
                         }
-                    }.padding(28).frame(maxWidth: .infinity, alignment: .leading).disabled(model.busy || (preferenceSaving && model.settingsTab != "general"))
+                    }.padding(28).frame(maxWidth: .infinity, alignment: .leading).disabled(model.settingsTab != "about" && (model.busy || (preferenceSaving && model.settingsTab != "general")))
                 }.onChange(of: model.settingsTab) { _ in scroll.scrollTo("settings-top", anchor: .top) }
                  .onChange(of: mailEditor) { expanded in if expanded { scroll.scrollTo("mail-connect", anchor: .top) } }
                 }
@@ -89,7 +89,8 @@ struct NativeSettingsView: View {
                 idealHeight: min(760, (NSScreen.main?.visibleFrame.height ?? 850) - 100),
                 maxHeight: (NSScreen.main?.visibleFrame.height ?? 850) - 100)
         .textFieldStyle(.roundedBorder)
-        .interactiveDismissDisabled(dirty || model.busy || searchRequestBusy || preferenceSaving)
+        .disabled(model.preparingUpdateRestart || model.restartingForUpdate)
+        .interactiveDismissDisabled(dirty || model.busy || searchRequestBusy || preferenceSaving || model.preparingUpdateRestart)
         .onAppear { initialize(); visible = true; advancedSettings = advancedTabs.contains { $0.0 == model.settingsTab } }
         .onChange(of: model.settingsTab) { tab in if advancedTabs.contains(where: { $0.0 == tab }) { advancedSettings = true } }
         .onChange(of: searchDirty) { _ in model.dirty("settings", dirty) }
@@ -117,7 +118,7 @@ struct NativeSettingsView: View {
         }
     }
     private func selectTab(_ next: String) {
-        if searchRequestBusy || model.busy || preferenceSaving { return }
+        if (searchRequestBusy || model.busy || preferenceSaving) && (next != "about" || dirty) { return }
         if (learningDirty || searchDirty) && !model.confirmDiscard("Discard unsaved learning, search or embedding settings?") { return }
         model.settingsTab = next
     }
@@ -422,7 +423,7 @@ struct NativeSettingsView: View {
             } else {
                 oauthForm(provider, calendar: false)
             }
-            Text("Outlook read and star changes sync to the server with mail organization permission, including marking read on open. Gmail/IMAP flags, Pending, Read Later, and local archive/trash shortcuts stay local. The Move / Labels dialog applies reviewed changes on the provider. Sending requires an explicit send or schedule review. Formatted mail uses a protected reader; attachments and CID images are not supported.").font(.caption).foregroundStyle(.secondary)
+            Text("Gmail, Outlook and IMAP read and star changes sync to the server; Gmail/Outlook require mail organization permission. Pending, Read Later and local archive/trash shortcuts stay local. The Move / Labels dialog applies reviewed changes on the provider. Sending requires an explicit send or schedule review. Attachments can be saved or sent; downloaded inline raster images use the protected reader. Attachments are excluded from AI.").font(.caption).foregroundStyle(.secondary)
         }
     }
     var historyOptions: some View {
@@ -438,7 +439,7 @@ GroupBox("History for your next connection or import") {
                         Text("Import selected folders:").font(.caption).foregroundStyle(.secondary)
                         ForEach(["inbox", "sent"], id: \.self) { folder in Toggle(folder.capitalized, isOn: Binding(get: { importSettings[folder].bool }, set: { importSettings[folder] = .bool($0) })).toggleStyle(.checkbox) }
                     }
-                    Text("Choose All normal folders or at least one folder. All history removes the date limit; choosing a shorter range keeps cached mail. Gmail and Outlook exclude Spam/Trash. IMAP skips folders identified by the provider as Junk or Trash, plus virtual and non-selectable folders. Style learning is a separate opt-in in Learning.").font(.caption).foregroundStyle(.secondary)
+                    Text("New imports fetch the latest seven days in the selected folders first, then older history. Choose All normal folders or at least one folder. All history removes the date limit; choosing a shorter range keeps cached mail. Gmail and Outlook exclude Spam/Trash. IMAP skips folders identified by the provider as Junk or Trash, plus virtual and non-selectable folders. Style learning is a separate opt-in in Learning.").font(.caption).foregroundStyle(.secondary)
                     Button("Refresh Import Progress") { run { await refreshConnectionStatus() } }
                 }.padding(8)
             }
@@ -550,8 +551,8 @@ GroupBox("History for your next connection or import") {
                     }
                     if downloadState["phase"].string == "ready" {
                         Text("Version \(downloadState["version"].string) is ready to install.").font(.headline)
-                        Button("Install & Restart") { localError = ""; model.restartToInstallUpdate { localError = $0 } }.buttonStyle(.borderedProminent).disabled(dirty || !model.unsavedForms.isEmpty)
-                        if dirty || !model.unsavedForms.isEmpty { Text("Save or discard unsaved changes before restarting.").font(.caption) }
+                        Button("Install & Restart") { localError = ""; model.restartToInstallUpdate { localError = $0 } }.buttonStyle(.borderedProminent).disabled(dirty || model.updateHasUnsavedChanges)
+                        if dirty || model.updateHasUnsavedChanges { Text("Save or discard unsaved changes before restarting.").font(.caption) }
                     }
                     if downloadState["error"].nonempty { Text(downloadState["error"].string).foregroundStyle(.red) }
                     if downloadState["previous"].nonempty { Text("Last installation record: " + downloadState["previous"].string).font(.caption) }
@@ -589,7 +590,7 @@ GroupBox("History for your next connection or import") {
         let label = (job["status"].string == "running" ? runningLabels[job["phase"].string] : nil) ?? labels[job["status"].string] ?? "History import status unknown"
         let months = job["options"]["months"]
         let range = months.isNull ? "History range unavailable" : months.number == 0 ? "All history (no date limit)" : "\(Int(months.number)) months"
-        var details = [label, "\(Int(job["imported"].number)) new messages", range]
+        var details = [label, job["downloadStage"].string == "recent" ? "Latest seven days first" : "Older history", "\(Int(job["imported"].number)) new messages", range]
         if job["currentFolder"].nonempty { details.append(job["currentFolder"].string == "all" ? "All normal folders" : job["currentFolder"].string.capitalized) }
         if !job["pages"].isNull { details.append("\(Int(job["pages"].number)) pages") }
         if !job["processed"].isNull { details.append("\(Int(job["processed"].number)) checked") }

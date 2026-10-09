@@ -1942,3 +1942,47 @@ async fn ask_opt_in_reuses_only_approved_owned_index_and_discards_revoked_result
     assert_eq!(run.await.unwrap().unwrap_err().status, 409);
     task.abort();
 }
+
+#[tokio::test]
+async fn planned_update_resumes_only_the_matching_committed_index_checkpoint() {
+    for inflight in [false, true] {
+        let mut fixture = Fixture::new().await;
+        let model = Model::default();
+        let (url, task) = server(model.clone()).await;
+        fixture
+            .add(A, "long", json!({"subject":"","body":"x".repeat(20000)}))
+            .await;
+        fixture.setup(&url, json!({"tokenBudget":64000})).await;
+        fixture.preview_run().await;
+        smart_search::tick(fixture.app()).await.unwrap();
+        let before = fixture.request("settings", None, A).await.1["job"].clone();
+        assert_eq!(before["part"], 16);
+        fixture.app().db(move |db| {
+            let mut job = db.settings()?["searchIndex"].clone();
+            if inflight { job["inflight"] = json!({"part":16,"chunks":6}); }
+            db.set_settings(&json!({"searchIndex":job,"updateResumeIndex":{"id":job["id"],"runId":job["runId"]}}))?;
+            Ok(())
+        }).await.unwrap();
+        fixture.reopen();
+        let state = fixture.request("settings", None, A).await.1;
+        assert_eq!(state["job"]["spentTokens"], before["spentTokens"]);
+        assert_eq!(
+            state["job"]["status"],
+            if inflight { "interrupted" } else { "running" }
+        );
+        smart_search::tick(fixture.app()).await.unwrap();
+        assert_eq!(model.count(), if inflight { 1 } else { 2 });
+        if !inflight {
+            assert_eq!(
+                model.seen.lock().unwrap()[1]["body"]["input"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                6
+            );
+        }
+        assert!(fixture.app().settings().await.unwrap()["updateResumeIndex"].is_null());
+        task.abort();
+        let _ = task.await;
+    }
+}

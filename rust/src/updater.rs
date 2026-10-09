@@ -1650,29 +1650,44 @@ pub async fn handle(app: &App, context: &Context) -> Result<Option<Response>> {
                     "Install updates from the desktop app controls.",
                 ));
             }
-            let _guard = app
+            // Freeze new work before handoff; accepted requests drain during service shutdown.
+            if app
                 .0
-                .mailbox
-                .try_lock()
-                .map_err(|_| fail("Wait for the current operation to finish."))?;
-            let _google = app
-                .0
-                .calendars
-                .provider("google")?
-                .change
-                .try_lock()
-                .map_err(|_| crate::calendar::busy())?;
-            let _microsoft = app
-                .0
-                .calendars
-                .provider("microsoft")?
-                .change
-                .try_lock()
-                .map_err(|_| crate::calendar::busy())?;
-            if app.settings().await?["searchIndex"]["status"] == "running" {
-                return Err(fail("Wait for the current indexing operation to finish."));
+                .restarting
+                .swap(true, std::sync::atomic::Ordering::AcqRel)
+            {
+                let state = updater.status().await;
+                if state["phase"] == "installing" {
+                    return Ok(Some(Json(state).into_response()));
+                }
+                return Err(Error::conflict(
+                    "Morrow is already restarting for an update.",
+                ));
             }
-            updater.prepare().await?
+            let prepared = async {
+                let syncing = app.0.syncing.lock().map_err(|_| Error::new(503,"Restart the workspace."))?.clone();
+                app.db(move |db| {
+                    let config = db.settings()?;
+                    let live = crate::service::connections(&config);
+                    let mut resume = json!({});
+                    for owner in syncing { if let Some(connection) = live.get(&owner) { resume[&owner] = crate::folders::connection_version(connection); } }
+                    let job = &config["searchIndex"];
+                    db.set_settings(&json!({"updateResumeSync":resume,"updateResumeIndex":if job["status"] == "running" {json!({"id":job["id"],"runId":job["runId"]})} else {Value::Null}}))?;
+                    Ok(())
+                }).await?;
+                updater.prepare().await
+            }.await;
+            if prepared.is_err() {
+                app.0
+                    .restarting
+                    .store(false, std::sync::atomic::Ordering::Release);
+                app.db(|db| {
+                    db.set_settings(&json!({"updateResumeIndex":null,"updateResumeSync":null}))?;
+                    Ok(())
+                })
+                .await?;
+            }
+            prepared?
         }
         _ => return Ok(None),
     };
@@ -2496,7 +2511,7 @@ mod download_tests {
         assert!(updater.cancel().await.is_err());
     }
     #[tokio::test]
-    async fn installation_holds_calendar_change_gates_and_rejects_active_indexing() {
+    async fn installation_checks_the_package_while_operations_are_active() {
         let root = std::env::temp_dir().join(format!(
             "morrow-update-install-guards-{}",
             uuid::Uuid::new_v4()
@@ -2528,7 +2543,7 @@ mod download_tests {
                 .await;
             assert_eq!(
                 handle(&app, &context).await.unwrap_err().body,
-                crate::calendar::busy().body
+                fail("Download and verify an update before installing it.").body
             );
             drop(gate);
         }
@@ -2540,7 +2555,37 @@ mod download_tests {
         .unwrap();
         assert_eq!(
             handle(&app, &context).await.unwrap_err().to_string(),
-            "Wait for the current indexing operation to finish."
+            "Download and verify an update before installing it."
+        );
+        assert!(!app.0.restarting.load(std::sync::atomic::Ordering::Acquire));
+        assert!(app.settings().await.unwrap()["updateResumeIndex"].is_null());
+        // A lost host response can repeat the handoff, never launch another installer.
+        app.0
+            .restarting
+            .store(true, std::sync::atomic::Ordering::Release);
+        app.0.updater.0.state.lock().await.value["phase"] = "installing".into();
+        assert!(
+            crate::service::dispatch(&app, context.clone())
+                .await
+                .is_ok()
+        );
+        let mut blocked = context.clone();
+        blocked.path = vec!["sync".into()];
+        assert_eq!(
+            crate::service::dispatch(&app, blocked)
+                .await
+                .unwrap_err()
+                .status,
+            409
+        );
+        let mut untrusted = context;
+        untrusted.headers.remove("x-morrow-update");
+        assert_eq!(
+            crate::service::dispatch(&app, untrusted)
+                .await
+                .unwrap_err()
+                .status,
+            403
         );
         drop(app);
         fs::remove_dir_all(root).unwrap();

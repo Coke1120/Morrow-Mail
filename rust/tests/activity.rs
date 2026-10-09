@@ -77,6 +77,9 @@ fn actual_import_schema_is_queued_between_pages_and_unknown_counts_stay_unknown(
     let db = Store::open(&root).unwrap();
     db.set_settings(&config()).unwrap();
     background::start_import(&db, A, &json!({"allMail":true})).unwrap();
+    let mut imports = db.settings().unwrap()["imports"].clone();
+    imports[A]["recentSince"] = serde_json::Value::Null;
+    db.set_settings(&json!({"imports":imports})).unwrap();
     let runtime = Runtime::default();
     let id = format!("import:{A}");
     let mut config = db.settings().unwrap();

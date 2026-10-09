@@ -98,8 +98,8 @@ bool allowedUrl(hstring const& value, hstring const& serviceOrigin, bool image) 
             && value.size() > scheme.size() + 1 && value[static_cast<uint32_t>(scheme.size() + 1)] != L'/';
     } catch (hresult_error const&) { return false; }
 }
-hstring document(hstring const& html, bool images) {
-    auto imagePolicy = images ? L"https:" : L"'none'";
+hstring document(hstring const& html, bool images, bool inlineImages = false) {
+    auto imagePolicy = inlineImages ? (images ? L"data: https:" : L"data:") : (images ? L"https:" : L"'none'");
     return L"<!doctype html><html><head><meta charset=\"utf-8\">"
         L"<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'none'; "
         L"style-src 'unsafe-inline'; img-src " + hstring(imagePolicy)
@@ -179,7 +179,7 @@ struct Reader {
     hstring viewOwner, account, messageId, html, serviceOrigin, expectedDocumentBase64;
     std::filesystem::path profilePath;
     bool active = true, ready = false, initializing = false, plain = false, images = false, hasImages = false;
-    bool expectingDocument = false, imageReview = false;
+    bool expectingDocument = false, imageReview = false, inlineImages = false;
     std::shared_ptr<ImageBudget> budget = std::make_shared<ImageBudget>();
     std::shared_ptr<std::atomic_bool> cancelled = std::make_shared<std::atomic_bool>(false);
     weak_ref<WebView2> view;
@@ -188,6 +188,7 @@ struct Reader {
     TextBlock fallback{nullptr}, notice{nullptr};
     weak_ref<Button> imageButton;
     weak_ref<CheckBox> plainButton;
+    xaml::DispatcherTimer startupTimer{nullptr};
     CoreWebView2 core{nullptr};
     CoreWebView2Environment environment{nullptr};
     bool live() const {
@@ -220,6 +221,7 @@ struct Reader {
         }
     }
     void close() {
+        if (startupTimer) startupTimer.Stop();
         cancelled->store(true);
         active = false; images = false; ready = false; ++epoch;
         expectingDocument = false; expectedDocumentBase64 = {};
@@ -255,7 +257,7 @@ struct Reader {
                 : L"External images blocked. Scripts, forms, and embedded content are disabled.");
             // Switching to plain text cancels the HTML document and its pending
             // requests rather than merely hiding a still-networked surface.
-            auto content = document(plain ? hstring{} : html, images && !plain);
+            auto content = document(plain ? hstring{} : html, images && !plain, inlineImages && !plain);
             expectedDocumentBase64 = documentBase64(content);
             if (expectedDocumentBase64.empty()) { fail(); return; }
             expectingDocument = true;
@@ -320,16 +322,27 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
     auto view = state->view.get();
     if (!view) co_return;
     state->initializing = true;
+    apartment_context ui;
+    state->startupTimer = xaml::DispatcherTimer();
+    state->startupTimer.Interval(std::chrono::seconds(20));
+    state->startupTimer.Tick([weak = std::weak_ptr<Reader>(state)](auto const&, auto const&) {
+        if (auto page = weak.lock(); page && page->live() && !page->ready) {
+            page->initializationError = HRESULT_FROM_WIN32(ERROR_TIMEOUT); page->fail();
+        }
+    });
+    state->startupTimer.Start();
     try {
         CoreWebView2EnvironmentOptions options;
         options.AllowSingleSignOnUsingOSPrimaryAccount(false);
         options.AreBrowserExtensionsEnabled(false);
         auto environment = co_await CoreWebView2Environment::CreateWithOptionsAsync(L"", hstring(state->profilePath.wstring()), options);
+        co_await ui;
         if (!state->live()) { state->initializing = false; state->close(); co_return; }
         state->environment = environment;
         auto controller = state->environment.CreateCoreWebView2ControllerOptions();
         controller.ProfileName(L"MorrowMailReader"); controller.IsInPrivateModeEnabled(true);
         co_await view.EnsureCoreWebView2Async(state->environment, controller);
+        co_await ui;
         if (!state->live()) { state->initializing = false; state->close(); co_return; }
         state->core = view.CoreWebView2();
         require(state->core && state->core.Profile().IsInPrivateModeEnabled());
@@ -418,6 +431,7 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
             }
         });
         state->core.ProcessFailed([weak](auto const&, auto const&) { if (auto page = weak.lock()) page->fail(); });
+        state->startupTimer.Stop();
         state->ready = true;
         if (auto images = state->imageButton.get()) images.IsEnabled(true);
         state->render();
@@ -441,12 +455,12 @@ std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel con
         : L"You closed this delivery without retrying. Its original delivery status remains unknown."));
     auto plain = label(text(message, L"body"), 15);
     auto html = text(message, L"bodyHtml");
-    if (html.empty() || html.size() > 512 * 1024) { panel.Children().Append(plain); return {}; }
+    if (html.empty() || html.size() > (flag(message, L"inlineImages") ? size_t(1536 * 1024) : size_t(512 * 1024))) { panel.Children().Append(plain); return {}; }
     try {
         auto state = std::make_shared<Reader>();
         state->shell = shell; state->generation = shell->generation; state->selection = shell->selectionGeneration;
         state->viewOwner = shell->owner; state->account = text(message, L"accountId"); state->messageId = text(message, L"id");
-        state->html = html; state->serviceOrigin = shell->service->origin();
+        state->html = html; state->inlineImages = flag(message, L"inlineImages"); state->serviceOrigin = shell->service->origin();
         state->images = flag(object(object(shell->state, L"settings"), L"preferences"), L"autoLoadExternalImages");
         if (shell->readerImageOverride && shell->readerImageGeneration == state->generation
             && shell->readerImageSelection == state->selection) state->images = *shell->readerImageOverride;
@@ -473,8 +487,9 @@ std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel con
         state->view = make_weak(web); reader.Children().Append(web); reader.Children().Append(plain);
         plainToggle.Checked([state](auto const&, auto const&) { state->plain = true; state->chooseImages(false); state->render(); });
         plainToggle.Unchecked([state](auto const&, auto const&) { state->plain = false; state->render(); });
-        reader.Loaded([state](auto const&, auto const&) { initialize(state); });
-        reader.Unloaded([state](auto const&, auto const&) { state->unload(); });
+        // XAML can deliver an old Unloaded after a new Loaded during reparenting.
+        reader.Loaded([state](auto const& sender, auto const&) { if (sender.template as<xaml::FrameworkElement>().IsLoaded()) initialize(state); });
+        reader.Unloaded([state](auto const& sender, auto const&) { if (!sender.template as<xaml::FrameworkElement>().IsLoaded()) state->unload(); });
         panel.Children().Append(reader);
         return state;
     } catch (hresult_error const&) {
@@ -486,6 +501,7 @@ std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel con
 }
 
 void appendReader(std::shared_ptr<Shell> shell, StackPanel const& panel, Json message) {
+    appendAttachmentControls(shell, panel, message);
     mountReader(std::move(shell), panel, message);
 }
 
@@ -999,6 +1015,9 @@ void readerSecurityChecks() {
         check(!allowedUrl(url, origin, true));
     auto blocked = std::wstring(document(L"<p>hello</p>", false));
     auto consented = std::wstring(document(L"<p>hello</p>", true));
+    auto inlineOnly = std::wstring(document(L"<p>hello</p>", false, true));
+    check(inlineOnly.find(L"img-src data:;") != std::wstring::npos && inlineOnly.find(L"https:") == std::wstring::npos);
+    check(blocked.find(L"img-src data:") == std::wstring::npos);
     check(blocked.find(L"img-src 'none'") != std::wstring::npos && consented.find(L"img-src https:") != std::wstring::npos);
     for (auto rule : { L"default-src 'none'", L"script-src 'none'", L"connect-src 'none'", L"frame-src 'none'", L"form-action 'none'", L"no-referrer" })
         check(blocked.find(rule) != std::wstring::npos && consented.find(rule) != std::wstring::npos);

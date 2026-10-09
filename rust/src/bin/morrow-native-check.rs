@@ -389,9 +389,11 @@ fn seed(directory: &Path) -> Result<()> {
             email.into(),
             json!({"provider":"google", "email":email,
             "connectionId":format!("fixture-{email}"), "clientId":"fixture-client",
+            "grantedScopes":"https://www.googleapis.com/auth/gmail.modify",
             "accessToken":ACCESS, "refreshToken":REFRESH, "expiresAt":4_102_444_800_000_i64}),
         );
     }
+    // Local-only message IDs keep native UI checks offline; provider writes use TLS fixtures in mail_service tests.
     let baseline = DateTime::parse_from_rfc3339("2026-09-25T00:00:00.000Z")?;
     let catalogs = ACCOUNTS.iter().map(|owner| {
         let mail = &connections[*owner];
@@ -407,18 +409,18 @@ fn seed(directory: &Path) -> Result<()> {
         for email in ACCOUNTS {
             for index in 0..65 {
                 db.upsert(email, &json!({
-                    "id":if index == 0 { "google:shared".to_owned() } else { format!("google:fixture-{index:03}") },
+                    "id":if index == 0 { "fixture:shared".to_owned() } else { format!("fixture:message-{index:03}") },
                     "fromName":format!("Sender {}", index % 7), "fromEmail":format!("sender{}@example.invalid", index % 7),
                     "to":email, "subject":format!("Thread {}", 64 - index), "preview":format!("Cached fixture {index}"),
                     "body":format!("Owned by {email}: fixture {index}. ").repeat(100),
                     "date":(baseline - chrono::Duration::minutes(index)).to_rfc3339_opts(SecondsFormat::Millis, true),
-                    "folder":"inbox", "category":"primary", "read":index % 3 != 0,
+                    "folder":"inbox", "category":"primary", "hasAttachments":false, "read":index % 3 != 0,
                     "starred":index > 0 && index % 9 == 0, "labels":[],
                     "footer":{"text":"Fixture footer excluded from list metadata", "html":""}
                 }))?;
             }
         }
-        db.upsert(ACCOUNTS[0], &json!({"id":"google:provider-draft", "folder":"drafts", "providerDraft":true,
+        db.upsert(ACCOUNTS[0], &json!({"id":"fixture:provider-draft", "folder":"drafts", "providerDraft":true, "hasAttachments":false,
             "to":"\"Fixture, Recipient\" <to@example.invalid>", "cc":"cc@example.invalid", "bcc":"hidden@example.invalid",
             "subject":"Provider draft fixture", "body":"Original provider draft; never sent.", "date":"2026-09-25T00:00:00.000Z"}))?;
         Ok(())
@@ -485,7 +487,7 @@ fn verify_store(directory: &Path, backup: bool) -> Result<()> {
             "Persistence lost cached inbox messages.",
         )?;
         let shared = store
-            .get(owner, "google:shared")?
+            .get(owner, "fixture:shared")?
             .ok_or("An owned duplicate ID was lost.")?;
         check(
             shared["body"]
@@ -520,8 +522,8 @@ fn verify_store(directory: &Path, backup: bool) -> Result<()> {
             "Online backup lost the reviewed preferences or selected account.",
         )?;
         check(
-            store.get(ACCOUNTS[0], "google:shared")?.unwrap()["starred"] == true
-                && store.get(ACCOUNTS[1], "google:shared")?.unwrap()["starred"] == false,
+            store.get(ACCOUNTS[0], "fixture:shared")?.unwrap()["starred"] == true
+                && store.get(ACCOUNTS[1], "fixture:shared")?.unwrap()["starred"] == false,
             "Online backup lost the owner-specific starred patch.",
         )?;
     }
@@ -780,7 +782,7 @@ mod tests {
                     .count(),
                 65
             );
-            let shared = store.get(owner, "google:shared").unwrap().unwrap();
+            let shared = store.get(owner, "fixture:shared").unwrap().unwrap();
             assert_eq!(shared["date"], "2026-09-25T00:00:00.000Z");
             assert_eq!(
                 shared["body"],
@@ -791,14 +793,14 @@ mod tests {
         }
         assert_eq!(
             store
-                .get(ACCOUNTS[0], "google:provider-draft")
+                .get(ACCOUNTS[0], "fixture:provider-draft")
                 .unwrap()
                 .unwrap()["bcc"],
             "hidden@example.invalid"
         );
         assert!(
             store
-                .get(ACCOUNTS[1], "google:provider-draft")
+                .get(ACCOUNTS[1], "fixture:provider-draft")
                 .unwrap()
                 .is_none()
         );
@@ -835,7 +837,7 @@ mod tests {
         store.upsert(ACCOUNTS[0], &json!({"id":"outbox:fixture", "folder":"drafts",
             "subject":"Native Rust owned draft", "body":DRAFT_BODY, "bcc":"hidden@example.invalid"})).unwrap();
         store
-            .update(ACCOUNTS[0], "google:shared", &json!({"starred":true}))
+            .update(ACCOUNTS[0], "fixture:shared", &json!({"starred":true}))
             .unwrap();
         store.backup(&backup).unwrap();
         settings["mailAccounts"]

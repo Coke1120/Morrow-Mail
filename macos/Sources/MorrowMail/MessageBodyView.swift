@@ -36,7 +36,7 @@ struct SecureMessageBody: View {
                 if !showPlain {
                     Text(loadImages ? "External images enabled for this message." : "External images blocked. Scripts and forms are disabled.")
                         .font(.caption).foregroundStyle(.secondary)
-                    MessageHTMLView(html: message["bodyHtml"].string, images: loadImages) {
+                    MessageHTMLView(html: message["bodyHtml"].string, images: loadImages, inlineImages: message["inlineImages"].bool) {
                         readerFailed = true; showPlain = true; imageOverride = false; reviewImages = false
                     }
                         .frame(height: MessageHTMLView.viewportHeight).background(Color.white)
@@ -79,6 +79,7 @@ struct SecureMessageBody: View {
 struct MessageHTMLView: NSViewRepresentable {
     let html: String
     let images: Bool
+    var inlineImages = false
     var onFailure: () -> Void = {}
     // ponytail: bounded viewport uses native scrolling; resize with native layout if needed.
     static let viewportHeight: CGFloat = 480
@@ -95,8 +96,8 @@ struct MessageHTMLView: NSViewRepresentable {
         alert.addButton(withTitle: "Cancel")
         if alert.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(url) }
     }
-    static func document(_ html: String, images: Bool) -> String {
-        let policy = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src \(images ? "https:" : "'none'"); connect-src 'none'; frame-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    static func document(_ html: String, images: Bool, inlineImages: Bool = false) -> String {
+        let policy = "default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src \(inlineImages ? "data: " : "")\(images ? "https:" : inlineImages ? "" : "'none'"); connect-src 'none'; frame-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
         return "<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"\(policy)\"><meta name=\"referrer\" content=\"no-referrer\"><style>body{font:15px -apple-system,sans-serif;color:#202720;background:white;margin:8px;overflow-wrap:anywhere}img{max-width:100%;max-height:2048px;object-fit:contain;height:auto}table{max-width:100%}pre{white-space:pre-wrap}blockquote{margin-left:12px;padding-left:12px;border-left:2px solid #ddd}a{color:#236042}</style></head><body>\(html)</body></html>"
     }
     func makeNSView(context: Context) -> WKWebView {
@@ -112,7 +113,7 @@ struct MessageHTMLView: NSViewRepresentable {
     }
     func updateNSView(_ view: WKWebView, context: Context) {
         context.coordinator.onFailure = onFailure
-        let next = Self.document(html, images: images)
+        let next = Self.document(html, images: images, inlineImages: inlineImages)
         guard context.coordinator.document != next else { return }
         context.coordinator.document = next
         context.coordinator.navigation = view.loadHTMLString(next, baseURL: nil)

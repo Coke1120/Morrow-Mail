@@ -33,7 +33,9 @@ final class PreparedInstallerProtocol: URLProtocol {
                     delegate.model = model
                     await model.start()
                     guard model.baseURL != nil else { fatalError("Fixture service failed") }
-                    model.showSettings = true
+                    model.busy = true // Settings and update handoff remain available during an operation.
+                    model.settings("about")
+                    precondition(model.showSettings && model.settingsTab == "about", "An active operation must not block opening update settings")
                     for _ in 0..<100 {
                         if delegate.mainWindow?.attachedSheet != nil { break }
                         try? await Task.sleep(nanoseconds: 20_000_000)
@@ -42,6 +44,12 @@ final class PreparedInstallerProtocol: URLProtocol {
                     _ = NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { _ in
                         MainActor.assumeIsolated {
                             precondition(model.restartingForUpdate && model.baseURL == nil, "Update quit did not stop the service")
+                            model.busy = false
+                            precondition(!model.canNavigate, "Update handoff must keep navigation frozen after Settings closes")
+                            model.settings(); model.newDraft()
+                            precondition(!model.showSettings && model.compose == nil, "Update handoff must reject new editable forms")
+                            model.perform { fatalError("Update handoff accepted a new operation") }
+                            precondition(!model.busy, "Update handoff must reject new operations")
                             let path = ProcessInfo.processInfo.environment["MORROW_QUIT_RESULT"]!
                             try! Data("Automatic update quit passed".utf8).write(to: URL(fileURLWithPath: path))
                         }
@@ -53,6 +61,7 @@ final class PreparedInstallerProtocol: URLProtocol {
                         fputs("Fixture installer preparation failed\n", stderr)
                         model.stop(); exit(1)
                     }
+                    precondition(model.preparingUpdateRestart, "Update handoff must freeze new Settings edits")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
                         fputs("Prepared update did not automatically quit: prepared=\(model.restartingForUpdate), sheet=\(model.showSettings), attached=\(delegate.mainWindow?.attachedSheet != nil), modal=\(NSApp.modalWindow != nil)\n", stderr)
                         model.stop(); exit(1)
