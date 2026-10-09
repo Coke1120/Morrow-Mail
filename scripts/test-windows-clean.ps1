@@ -15,7 +15,11 @@ $report = [IO.Path]::GetFullPath($ReportPath)
 foreach ($tool in @('cargo.exe', 'cl.exe', 'msbuild.exe', 'node.exe')) {
     if (Get-Command $tool -ErrorAction SilentlyContinue) { throw "Use a clean VM without developer tools on PATH ($tool was found)." }
 }
-$root = Join-Path ([IO.Path]::GetTempPath()) ('Morrow clean 測試 ' + [Guid]::NewGuid().ToString('N'))
+$runId = [Guid]::NewGuid().ToString('N')
+$root = Join-Path ([IO.Path]::GetTempPath()) ('Morrow clean 測試 ' + $runId)
+# Keep fixture workspaces inside the existing helper/native-smoke safety boundary.
+$fresh = Join-Path ([IO.Path]::GetTempPath()) ('morrow-native-check-' + $runId + '-fresh')
+$owned = Join-Path ([IO.Path]::GetTempPath()) ('morrow-native-check-' + $runId + '-owned')
 $install = Join-Path $root 'Portable app with spaces'
 $results = @()
 $process = $null
@@ -46,7 +50,6 @@ try {
         if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination (Join-Path $root $dll) }
     }
     $before = @(Get-ChildItem -LiteralPath $install -Recurse -File | ForEach-Object { $_.FullName + ':' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash })
-    $fresh = Join-Path $root 'Fresh workspace'; $owned = Join-Path $root 'Owned fictional mailbox'
     foreach ($workspace in @($fresh,$owned)) {
         New-Item -ItemType Directory -Path $workspace | Out-Null
         [IO.File]::WriteAllText((Join-Path $workspace 'disposable-native-fixture'),'Morrow native acceptance fixture')
@@ -56,17 +59,18 @@ try {
         $resultPath = Join-Path $case.workspace 'native-smoke-result.json'
         if (Test-Path -LiteralPath $resultPath) { Remove-Item -LiteralPath $resultPath }
         Run-Child $exe '--native-smoke' $case.workspace 180
-        $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+        $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($result.ok -ne $true -or $result.mode -ne $(if ($case.name -eq 'fresh') { 'fresh' } else { 'owned' })) { throw ('Native smoke did not pass: ' + $case.name) }
         $results += [ordered]@{ name=$case.name; report=$result }
     }
     $after = @(Get-ChildItem -LiteralPath $install -Recurse -File | ForEach-Object { $_.FullName + ':' + (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash })
     if (Compare-Object $before $after) { throw 'The portable installation changed during acceptance.' }
+    New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($report)) -Force | Out-Null
     [ordered]@{ status='passed'; os=[Environment]::OSVersion.Version.ToString(); developerToolsOnPath=$false; isolatedWorkspace=$true; unicodePortablePath=$true; cases=$results; scope='Relocated-package check; this does not prove clean VM provenance, signing, live accounts or installed-updater rollback.' } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $report -Encoding UTF8
     Write-Host 'Clean deployment checks passed. Inspect the report for HTML-runtime availability and remaining acceptance scope.'
 } finally {
     if ($process) { if (-not $process.HasExited) { $process.Kill(); $process.WaitForExit() }; $process.Dispose() }
     [Environment]::SetEnvironmentVariable('MORROW_DATA_DIR', $originalData, 'Process')
     # Preserve failed fixture evidence. No installed app or owner workspace is touched.
-    if (Test-Path -LiteralPath $root) { Write-Host "Disposable acceptance files: $root" }
+    foreach ($path in @($root, $fresh, $owned)) { if (Test-Path -LiteralPath $path) { Write-Host "Disposable acceptance files: $path" } }
 }
