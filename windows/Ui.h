@@ -70,7 +70,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     bool restartingForUpdate = false;
     bool syncing = false, loading = false, closing = false, dialogOpen = false, selectingNavigation = false;
     bool closeReady = false;
-    bool checkingUpdates = false, includePrereleases = true;
+    bool checkingUpdates = false, includePrereleases = false;
     uint64_t lastUpdateCheck = 0;
     std::set<std::wstring> dirty;
     winrt::Windows::Foundation::IAsyncAction start();

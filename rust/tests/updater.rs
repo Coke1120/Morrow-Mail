@@ -98,6 +98,23 @@ fn signatures_require_both_platforms_exact_version_and_bounded_assets() {
     }
 }
 #[test]
+fn numbered_release_reaches_existing_users_in_both_channels() {
+    let releases = json!([
+        {"tag_name":"v0.6.0-beta.48","prerelease":true},
+        {"tag_name":"v0.7.0","prerelease":false},
+        {"tag_name":"v9.0.0","draft":true}
+    ]);
+    for installed in ["0.6.0-beta.48", "0.6.0", "0.7.0"] {
+        for include_prereleases in [false, true] {
+            let result = select_release(&releases, installed, include_prereleases).unwrap();
+            assert_eq!(result["latestVersion"], "0.7.0");
+            assert_eq!(result["prerelease"], false);
+            assert_eq!(result["updateAvailable"], installed != "0.7.0");
+        }
+    }
+}
+
+#[test]
 fn channel_selection_matches_node_semver_and_never_reports_failures_up_to_date() {
     for (installed, tag, expected) in [
         ("1.0.0-alpha.9", "v1.0.0-alpha.10", true),

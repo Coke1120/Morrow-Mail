@@ -80,7 +80,7 @@ struct SettingsPage : std::enable_shared_from_this<SettingsPage> {
     xaml::DispatcherTimer timer{nullptr}, autosave{nullptr};
     std::vector<Form> forms;
     Json searchState, updateState, release;
-    bool prereleases = true;
+    bool prereleases = false;
     std::wstring busyKey;
     // Navigation changes generation. OAuth/background owner changes must keep
     // this page and its edits alive; requests retain the captured owner.
@@ -886,9 +886,9 @@ void about(Page const& p) {
     p->prereleases = p->shell->includePrereleases;
     p->release = copy(p->shell->updateResult);
     title(p->body, L"Morrow Mail"); help(p->body, L"Independent open-source mail workspace · MIT. Mail and encrypted credentials stay in the separate workspace. Only explicitly permitted AI context goes to your chosen model.");
-    help(p->body, L"The host checks for public GitHub updates at launch and hourly while open. Installation always requires review, no pending writes and a verified signed package.");
+    help(p->body, L"The host checks for public GitHub updates at launch and hourly while open. Installation requires review and a verified signed package; save edits first. Install & Restart pauses activity, drains accepted requests and resumes safe checkpoints.");
     auto status = stack(8); p->body.Children().Append(status); updateStatus(p, status);
-    CheckBox prereleases; prereleases.Content(box_value(L"Include alpha and beta releases")); prereleases.IsChecked(p->prereleases);
+    CheckBox prereleases; prereleases.Content(box_value(L"Include pre-release versions")); prereleases.IsChecked(p->prereleases);
     std::weak_ptr<SettingsPage> weak = p;
     prereleases.Click([weak, status](auto const& sender, auto const&) {
         if (auto page = weak.lock(); page && page->current()) {

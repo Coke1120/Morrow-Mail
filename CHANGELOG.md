@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.0 — 2026-10-09
+
+- Use normal `vMAJOR.MINOR.PATCH` releases without prerelease suffixes, beginning with 0.7.0. Keep paired platform checks, signed update manifests and compatibility with older installed versions.
+- Add native account-owned attachments, explicit download/save and inline raster images; allow 100 files / 50 MiB total per message while respecting provider send limits.
+- Fetch the latest seven days before older history, reconcile cached Gmail/IMAP metadata, and write read/star changes back to supported provider messages.
+- Add agent CLI sync/status/dry-run, MIME fetch and attachment commands through the existing Rust service, with explicit send review and partial-sync results.
+- Update one Today summary card per mailbox/local date while retaining individual job history.
+- Let Install & Restart begin during activity, drain accepted work and resume safe checkpoints. Keep unsaved-edit and uncertain-delivery protections.
+- Improve Windows reader lifecycle/fallback and add relocated-package acceptance with Windows PowerShell 5.1. Shorten the README and provide separate user/CLI guides.
+- Distribution remains ad-hoc signed without notarization on macOS and unsigned on Windows; live-account, clean-machine and full accessibility acceptance remains incomplete. See [release notes](docs/releases/v0.7.0.md) and [verification](VERIFICATION.md).
+
 ## 0.6.0-beta.45 — 2026-10-07
 
 - Preserve Windows mailbox-scoped sync warnings across workspace refreshes, including partial All accounts failures and retry timing.

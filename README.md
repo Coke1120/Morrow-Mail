@@ -6,7 +6,7 @@
 
 [![Checks](https://github.com/Coke1120/Morrow-Mail/actions/workflows/check.yml/badge.svg)](https://github.com/Coke1120/Morrow-Mail/actions/workflows/check.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Beta release](https://img.shields.io/github/v/release/Coke1120/Morrow-Mail?include_prereleases&label=beta)](https://github.com/Coke1120/Morrow-Mail/releases)
+[![Release](https://img.shields.io/github/v/release/Coke1120/Morrow-Mail?label=release)](https://github.com/Coke1120/Morrow-Mail/releases)
 
 [Download](https://github.com/Coke1120/Morrow-Mail/releases) · [User guide](docs/USER_GUIDE.md) · [Agent CLI](docs/CLI.md) · [Feature coverage](FEATURE_COVERAGE.md)
 
@@ -14,16 +14,16 @@ Morrow is a local, single-user app: **SwiftUI on macOS**, **WinUI 3 on Windows**
 
 ## Download
 
-Get a beta package and its SHA-256 checksum from [GitHub Releases](https://github.com/Coke1120/Morrow-Mail/releases).
+Get a release package and its SHA-256 checksum from [GitHub Releases](https://github.com/Coke1120/Morrow-Mail/releases).
 
 | Platform | Package | Install |
 | --- | --- | --- |
 | macOS 13.5+, Apple silicon | `Morrow-Mail-<version>-macos-arm64.zip` | Unzip and move **Morrow Mail.app** to Applications. |
 | Windows 10/11, x64 | `Morrow-Mail-<version>-windows-x64.zip` | Extract the **entire folder**, keep its files together, and run **Morrow Mail.exe**. |
 
-**Experimental beta:** macOS builds are ad-hoc signed without Apple notarization; Windows builds are unsigned and may show SmartScreen warnings. Full live-account, clean-machine and accessibility acceptance remains incomplete. See [verification](VERIFICATION.md) before relying on Morrow for critical mail.
+**Distribution limits:** macOS builds are ad-hoc signed without Apple notarization; Windows builds are unsigned and may show SmartScreen warnings. Full live-account, clean-machine and accessibility acceptance remains incomplete. See [verification](VERIFICATION.md) before relying on Morrow for critical mail.
 
-Upgrading from beta.4 or earlier requires a manual download because those versions use the retired update URL. Back up your workspace and quit the old app before replacing it. See [backup and recovery](docs/USER_GUIDE.md#backup-and-recovery).
+Older builds using the retired update URL require a manual download. Back up your workspace and quit the old app before replacing it. See [backup and recovery](docs/USER_GUIDE.md#backup-and-recovery).
 
 ## Get started
 
@@ -43,9 +43,9 @@ Browser sign-in uses the desktop registration included in the build; custom regi
 
 Detailed behavior and limits are in [feature coverage](FEATURE_COVERAGE.md) and the [user guide](docs/USER_GUIDE.md).
 
-## Current source and beta downloads
+## New in 0.7.0
 
-`main` includes the following changes from [PR #22](https://github.com/Coke1120/Morrow-Mail/pull/22), **not yet included in beta.48 downloads**:
+Version **0.7.0** includes the changes from [PR #22](https://github.com/Coke1120/Morrow-Mail/pull/22). Releases now use ordinary version numbers without a prerelease suffix:
 
 - Attachment add/remove/download/save, reviewed sending and scheduling: **100 files / 50 MiB total per message**. Provider send limits and MIME encoding overhead still apply; attachment bytes stay out of AI context.
 - New history imports fetch the **latest seven days first**, then older mail. Gmail/IMAP read/star write-back and checkpointed cached-message reconciliation complement Outlook delta sync. Sync remains bounded, not a complete server mirror.
@@ -57,7 +57,7 @@ See the [changelog](CHANGELOG.md), [release notes](docs/releases/) and [verifica
 
 ## Agent CLI
 
-The CLI ships inside `morrow-service` from **v0.6.0-beta.3**. It returns JSON and works with the app open or closed. Set up your accounts in the app first.
+The CLI ships inside `morrow-service` with Morrow Mail **0.7.0**. It returns JSON and works with the app open or closed. Set up your accounts in the app first.
 
 For macOS, define a temporary shell helper:
 
@@ -75,7 +75,7 @@ function morrow { & 'C:\Apps\Morrow Mail\resources\app\runtime\morrow-service.ex
 morrow accounts
 ```
 
-The extended commands below require a build from current source; beta.48 does not include them:
+Use these commands to preview synchronization, fetch recent mail and inspect progress:
 
 ```sh
 morrow sync --account all --dry-run

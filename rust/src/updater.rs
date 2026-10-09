@@ -131,7 +131,7 @@ pub fn select_release(
     })?;
     let (item, latest) = releases.iter().rev().filter(|item| item["draft"] != true).filter_map(|item| Version::parse(string(item,"tag_name")).map(|parsed| (item,parsed)))
         .filter(|(item,parsed)| include_prereleases || (item["prerelease"] != true && parsed.pre.is_empty())).max_by(|a,b| a.1.compare(&b.1))
-        .ok_or_else(|| Error::new(404,"No published releases were found for this channel. Try including alpha and beta releases."))?;
+        .ok_or_else(|| Error::new(404,"No published releases were found for this channel. Try including pre-release versions."))?;
     let tag = string(item, "tag_name");
     Ok(
         json!({"currentVersion":installed,"latestVersion":tag.strip_prefix('v').unwrap_or(tag),"updateAvailable":latest.compare(&local)==Ordering::Greater,"prerelease":item["prerelease"]==true || !latest.pre.is_empty(),"url":format!("{REPOSITORY}/releases/tag/{}",crate::providers::component(tag)),"checkedAt":now()}),

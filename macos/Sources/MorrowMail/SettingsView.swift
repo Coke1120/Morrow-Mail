@@ -529,7 +529,7 @@ GroupBox("History for your next connection or import") {
             }
             GroupBox("App updates") {
                 VStack(alignment: .leading, spacing: 12) {
-                    Toggle("Include alpha and beta releases", isOn: $model.includePrereleases).toggleStyle(.checkbox)
+                    Toggle("Include pre-release versions", isOn: $model.includePrereleases).toggleStyle(.checkbox)
                         .disabled(model.checkingUpdates)
                     Button(model.checkingUpdates ? "Checking…" : "Check for Updates") {
                         Task { await model.checkForUpdates(force: true) }

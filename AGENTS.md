@@ -140,9 +140,11 @@ unrelated repository.
 
 Keep README.md, FEATURE_COVERAGE.md, and VERIFICATION.md accurate when behavior
 changes. Document simulations and limits plainly. Fixture tests do not establish
-real-account acceptance. Local ad-hoc signing is not Developer ID notarization;
-stable public distribution requires the owner's signing identity, notarization, and
-provider verification where applicable. Do not claim error-free operation.
+real-account acceptance. Local ad-hoc signing is not Developer ID notarization.
+The owner requested numbered releases starting at v0.7.0, without a beta suffix;
+version naming does not certify production readiness. Keep outstanding Developer ID,
+notarization, Windows signing, provider verification and live-account limits explicit.
+Do not claim error-free operation.
 
 Manual provider organization is separate from local patches and simulations. Require
 an explicit mailbox header, server-validated destination, confirmation and provider
@@ -150,14 +152,16 @@ write permission. Gmail Spam and Outlook Junk are reviewed provider moves; phish
 Keep the local message ID stable while recording the provider's destination ID.
 To/Cc/Bcc belong to the send fingerprint and uncertain draft; never drop Bcc from
 the provider delivery submission or expose it in SMTP recipient-visible headers.
-Public alpha and beta releases must explicitly disclose ad-hoc signing and missing live-account
+Public releases must explicitly disclose ad-hoc signing and missing live-account
 acceptance. Never publish runtime data, fixture workspaces, or secrets.
 
 ## Paired release policy
 
 The canonical GitHub repository is `Coke1120/Morrow-Mail`; the local checkout and persisted `genmail` data/API identifiers retain their names for compatibility. Update checks deliberately reject API redirects, so use the canonical repository URL in the Rust runtime and fixtures. Do not rename persisted files or protocol headers for branding.
 
-Keep package.json as the common version source. Every tagged alpha or beta must build and pass
+Keep package.json as the common version source. Future releases use vMAJOR.MINOR.PATCH
+and GitHub's normal release channel. Preserve historical tags and update compatibility.
+Every tagged release must build and pass
 checks on macOS and Windows before either download becomes public, except the explicit beta.18 test waiver recorded in VERIFICATION.md. Both platform builds and signed provenance remain mandatory. Use the existing
 workflow and publisher; never replace published binaries or ship only one platform.
 Preserve SwiftUI on macOS, WinUI on Windows, persisted formats and update package layouts.

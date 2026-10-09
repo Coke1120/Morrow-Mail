@@ -1,7 +1,7 @@
-//! Paired prerelease publisher. Check/dry-run never writes files or invokes gh.
+//! Paired release publisher. Check/dry-run never writes files or invokes gh.
 //! Publish requires the existing serialized `release` job in check.yml and a
 //! gate file identifying every successful macOS/Windows job in this run attempt:
-//! {"repository":"Coke1120/Morrow-Mail","tag":"v0.6.0-beta.16",
+//! {"repository":"Coke1120/Morrow-Mail","tag":"v0.7.0",
 //!  "sha":"<GITHUB_SHA>","runId":123,"runAttempt":1,
 //!  "platforms":{"macos-arm64":[111,112],"windows-x64":[113,114]}}
 //! IDs come from GitHub's jobs API, not runner IDs. No trust-key override exists.
@@ -166,10 +166,12 @@ fn version(package: &Value, tag: &str) -> Result<String> {
         .as_str()
         .ok_or("Missing package version.")?;
     if version.len() > 100
-        || !Regex::new(r"^[0-9]+\.[0-9]+\.[0-9]+-(?:alpha|beta)\.[0-9]+$")?.is_match(version)
+        || !Regex::new(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")?.is_match(version)
         || tag != format!("v{version}")
     {
-        return Err("Only alpha/beta tags exactly matching package.json may be published.".into());
+        return Err(
+            "Only vMAJOR.MINOR.PATCH tags exactly matching package.json may be published.".into(),
+        );
     }
     if package["repository"]["url"] != "git+https://github.com/Coke1120/Morrow-Mail.git" {
         return Err("package.json must name the canonical repository.".into());
@@ -881,7 +883,7 @@ fn publish(
                 "name": format!("Morrow Mail {version}"),
                 "body": std::str::from_utf8(notes)?,
                 "draft": true,
-                "prerelease": true,
+                "prerelease": false,
             }))?,
         )?;
         let mut args = api_args("releases", "POST");
@@ -927,7 +929,7 @@ fn publish(
         "edit".into(),
         tag.into(),
         "--draft=false".into(),
-        "--prerelease".into(),
+        "--prerelease=false".into(),
         "--notes-file".into(),
         notes_file.into_os_string(),
     ];
@@ -937,7 +939,7 @@ fn publish(
         .map_err(|_| "Final publication could not be confirmed; inspect GitHub before retrying.")?;
     if published["tag_name"] != tag
         || published["draft"] != false
-        || published["prerelease"] != true
+        || published["prerelease"] != false
     {
         return Err(
             "Final publication could not be confirmed; inspect GitHub before retrying.".into(),
@@ -1026,7 +1028,7 @@ mod tests {
     use ed25519_dalek::Signature;
     use serde_json::json;
 
-    const VERSION: &str = "0.6.0-beta.16";
+    const VERSION: &str = "0.7.0";
     fn package() -> Value {
         json!({"version":VERSION,"repository":{"url":"git+https://github.com/Coke1120/Morrow-Mail.git"}})
     }
@@ -1043,7 +1045,7 @@ mod tests {
     }
 
     #[test]
-    fn default_is_read_only_and_versions_are_exact_prereleases() {
+    fn default_is_read_only_and_versions_are_exact_numbered_releases() {
         for mode in [None, Some("--check"), Some("--dry-run")] {
             let mut args = vec![OsString::from("--notes-file"), "notes.md".into()];
             if let Some(mode) = mode {
@@ -1056,12 +1058,32 @@ mod tests {
         );
         assert!(options(["--publish"].map(Into::into)).is_err());
         assert!(version(&package(), &format!("v{VERSION}")).is_ok());
-        assert!(version(&package(), "v0.6.0-beta.15").is_err());
-        let mut stable = package();
-        stable["version"] = "0.6.0".into();
-        assert!(version(&stable, "v0.6.0").is_err());
-        stable["repository"]["url"] = "git+https://github.com/Coke1120/genmail.git".into();
-        assert!(version(&stable, "v0.6.0").is_err());
+        assert!(version(&package(), "v0.7.1").is_err());
+        let mut candidate = package();
+        for value in ["0.7.0", "0.7.1", "0.8.0", "1.0.0"] {
+            candidate["version"] = value.into();
+            assert_eq!(version(&candidate, &format!("v{value}")).unwrap(), value);
+        }
+        for value in [
+            "0.7",
+            "0.7.0-beta.1",
+            "0.7.0-alpha.1",
+            "0.7.0-rc.1",
+            "0.7.0+local",
+            "01.7.0",
+            "0.07.0",
+            "0.7.00",
+            "0.7.0\n",
+        ] {
+            candidate["version"] = value.into();
+            assert!(
+                version(&candidate, &format!("v{value}")).is_err(),
+                "{value}"
+            );
+        }
+        candidate["version"] = VERSION.into();
+        candidate["repository"]["url"] = "git+https://github.com/Coke1120/genmail.git".into();
+        assert!(version(&candidate, &format!("v{VERSION}")).is_err());
     }
 
     #[test]

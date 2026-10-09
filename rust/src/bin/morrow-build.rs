@@ -411,7 +411,7 @@ fn macos(root: &Path, zip: bool) -> Result<()> {
         "Built {}\nMinimum macOS: {MINIMUM}. Architecture: arm64. {}",
         application.display(),
         if ad_hoc {
-            "Ad-hoc signed candidate; public distribution requires Developer ID signing and notarization."
+            "Ad-hoc signed candidate; no Developer ID signature or Apple notarization."
         } else {
             "Signed candidate; notarize before public distribution."
         }
@@ -472,6 +472,10 @@ mod tests {
     }
     #[test]
     fn package_values_and_system_library_boundary() {
+        assert_eq!(version(&json!({"version":"0.7.0"})).unwrap(), "0.7.0");
+        let numbered = plist("0.7.0");
+        assert!(numbered.contains("<key>MorrowReleaseVersion</key><string>0.7.0</string>"));
+        assert!(numbered.contains("<key>CFBundleShortVersionString</key><string>0.7.0</string>"));
         assert_eq!(
             version(&json!({"version":"0.6.0-beta.16"})).unwrap(),
             "0.6.0-beta.16"
