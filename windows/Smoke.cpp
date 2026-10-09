@@ -766,8 +766,12 @@ IAsyncAction Shell::smoke() {
             controls::StackPanel limitedReader; Json limited;
             put(limited, L"body", L"Fictional partial text"); limited.Insert(L"bodyTruncated", Value::CreateBooleanValue(true));
             appendReader(lifetime, limitedReader, limited);
-            check(limitedReader.Children().Size() == 2 && std::wstring_view(limitedReader.Children().GetAt(0).as<controls::TextBlock>().Text()).find(L"truncated") != std::wstring_view::npos,
-                L"Partial downloaded text must show a truncation warning.");
+            bool truncationWarning = false, partialBody = false;
+            for (auto const& child : limitedReader.Children()) if (auto textBlock = child.try_as<controls::TextBlock>()) {
+                truncationWarning |= std::wstring_view(textBlock.Text()).find(L"truncated") != std::wstring_view::npos;
+                partialBody |= textBlock.Text() == text(limited, L"body");
+            }
+            check(truncationWarning && partialBody, L"Partial downloaded text must retain its body and truncation warning.");
             co_await navigate(L"mail", L"one@fixture.invalid");
             for (auto mode : {L"reply", L"replyAll", L"savedReply"}) {
                 enter(std::wstring_view(mode) == L"replyAll" ? "reply-history-reply-all" : std::wstring_view(mode) == L"savedReply" ? "reply-history-saved-reply" : "reply-history-reply");
