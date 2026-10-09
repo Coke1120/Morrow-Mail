@@ -34,7 +34,7 @@ impl Default for Runtime {
             gate: Mutex::new(()),
             stopped: AtomicBool::new(false),
             shutdown: Notify::new(),
-            last_sync: AtomicI64::new(Utc::now().timestamp_millis()),
+            last_sync: AtomicI64::new(0),
         }
     }
 }
@@ -228,6 +228,9 @@ pub fn start_import(db: &Store, account: &str, input: &Value) -> Result<()> {
     let timestamp = Utc::now();
     let before = timestamp.to_rfc3339_opts(SecondsFormat::Millis, true);
     let mut job = json!({"id":uuid::Uuid::new_v4().to_string(),"options":options,"since":if options["months"] == 0 { String::new() } else { months_ago(options["months"].as_u64().unwrap() as u32,timestamp.timestamp_millis())? },"before":before,"folderIndex":0,"cursor":null,"visited":[],"status":"running","imported":0,"pages":0,"processed":0,"updatedAt":before});
+    job["recentSince"] = (timestamp - chrono::Duration::days(7))
+        .to_rfc3339_opts(SecondsFormat::Millis, true)
+        .into();
     if let Some(identity) = connection.get("connectionId") {
         job["connectionId"] = identity.clone();
     }
@@ -320,7 +323,7 @@ pub fn import_status_from(config: &Value, account: &str) -> Value {
                 "error",
             ],
         ),
-        &json!({"coverage":coverage,"currentFolder":import_folders(job).get(job["folderIndex"].as_u64().unwrap_or(0) as usize),"phase":if job["status"]=="running"{if string(job,"nextRetryAt").is_empty(){"queued"}else{"retrying"}}else{string(job,"status")},"pages":job["pages"],"processed":job["processed"],"lastPageChecked":job["lastPageChecked"],"lastPageAdded":job["lastPageAdded"],"nextRetryAt":job["nextRetryAt"],"retryCount":job["retryCount"].as_u64().unwrap_or(0),"error":import_error_message(code).unwrap_or_default(),"errorCode":if code.is_empty(){Value::Null}else{json!(code)},"recoveryAction":action}),
+        &json!({"downloadStage":if !string(job,"recentSince").is_empty() && job["recentComplete"]!=true {"recent"}else{"older"},"coverage":coverage,"currentFolder":import_folders(job).get(job["folderIndex"].as_u64().unwrap_or(0) as usize),"phase":if job["status"]=="running"{if string(job,"nextRetryAt").is_empty(){"queued"}else{"retrying"}}else{string(job,"status")},"pages":job["pages"],"processed":job["processed"],"lastPageChecked":job["lastPageChecked"],"lastPageAdded":job["lastPageAdded"],"nextRetryAt":job["nextRetryAt"],"retryCount":job["retryCount"].as_u64().unwrap_or(0),"error":import_error_message(code).unwrap_or_default(),"errorCode":if code.is_empty(){Value::Null}else{json!(code)},"recoveryAction":action}),
     )
 }
 pub fn import_config(db: &Store, account: &str) -> Result<Value> {
@@ -352,6 +355,19 @@ fn import_folders(job: &Value) -> Vec<&'static str> {
         .collect()
 }
 
+fn import_window(job: &Value) -> (&str, &str) {
+    let recent = string(job, "recentSince");
+    if !recent.is_empty() && recent > string(job, "since") && recent < string(job, "before") {
+        if job["recentComplete"] == true {
+            (string(job, "since"), recent)
+        } else {
+            (recent, string(job, "before"))
+        }
+    } else {
+        (string(job, "since"), string(job, "before"))
+    }
+}
+
 /// Commit the provider page and checkpoint together; stale network results never write.
 pub fn apply_import_page(db: &Store, account: &str, job: &Value, result: &Value) -> Result<()> {
     db.transaction(|db| {
@@ -366,7 +382,8 @@ pub fn apply_import_page(db: &Store, account: &str, job: &Value, result: &Value)
                 db.conn.query_row("SELECT EXISTS(SELECT 1 FROM import_cursor_hashes WHERE account=? AND digest=?)", rusqlite::params![account, hash], |row| row.get::<_, bool>(0))?
         } else { false };
         if cursor.is_some_and(|cursor| *cursor == job["cursor"]) || repeated { return Err(Error::new(502,"Repeated import page.")); }
-        let messages: Vec<_> = messages.iter().filter(|message| string(message,"date") >= string(job,"since") && string(message,"date") < string(job,"before")).cloned().collect();
+        let (since, before) = import_window(job);
+        let messages: Vec<_> = messages.iter().filter(|message| string(message,"date") >= since && string(message,"date") < before).cloned().collect();
         let imported = mail::import_messages(db,&connections(&config)[account],&messages)?.len();
         let folder_index = job["folderIndex"].as_u64().unwrap_or(0) + u64::from(cursor.is_none());
         if cursor.is_some() {
@@ -377,7 +394,13 @@ pub fn apply_import_page(db: &Store, account: &str, job: &Value, result: &Value)
         } else {
             db.conn.execute("DELETE FROM import_cursor_hashes WHERE account=?", [account])?;
         }
-        write_owner(db,"imports",account,merge(merge(job.clone(),&clear_import_failure()), &json!({"imported":job["imported"].as_u64().unwrap_or(0)+imported as u64,"pages":job["pages"].as_u64().map(|pages|pages+1),"processed":job["processed"].as_u64().map(|processed|processed+checked),"lastPageChecked":checked,"lastPageAdded":imported,"cursor":cursor,"visited":[],"folderIndex":folder_index,"status":if folder_index as usize>=import_folders(job).len(){"complete"}else{"running"},"updatedAt":now()})))
+        let recent_done = folder_index as usize >= import_folders(job).len()
+            && since != string(job, "since") && job["recentComplete"] != true;
+        let mut next = merge(merge(job.clone(),&clear_import_failure()), &json!({"imported":job["imported"].as_u64().unwrap_or(0)+imported as u64,"pages":job["pages"].as_u64().map(|pages|pages+1),"processed":job["processed"].as_u64().map(|processed|processed+checked),"lastPageChecked":checked,"lastPageAdded":imported,"cursor":cursor,"visited":[],"folderIndex":folder_index,"status":if folder_index as usize>=import_folders(job).len(){"complete"}else{"running"},"updatedAt":now()}));
+        if recent_done {
+            next = merge(next, &json!({"recentComplete":true,"folderIndex":0,"cursor":null,"status":"running"}));
+        }
+        write_owner(db,"imports",account,next)
     })
 }
 
@@ -420,16 +443,28 @@ async fn history_tick(app: &App) -> Result<()> {
     }
     let mut stage = "refresh";
     let work = async {
-        let mail = mail::current_mail(app,&account).await?;
-        if !import_current(&app.settings().await?,&account,&job) { return Ok(()); }
+        let mail = mail::current_mail(app, &account).await?;
+        if !import_current(&app.settings().await?, &account, &job) {
+            return Ok(());
+        }
         let folders = import_folders(&job);
-        let folder = folders.get(job["folderIndex"].as_u64().unwrap_or(0) as usize).ok_or_else(|| Error::invalid("Invalid import folder."))?;
+        let folder = folders
+            .get(job["folderIndex"].as_u64().unwrap_or(0) as usize)
+            .ok_or_else(|| Error::invalid("Invalid import folder."))?;
         stage = "fetch";
-        let result = mail::fetch_page(app,&mail,&json!({"folder":folder,"since":job["since"],"before":job["before"],"cursor":job["cursor"]})).await?;
+        let (since, before) = import_window(&job);
+        let result = mail::fetch_page(
+            app,
+            &mail,
+            &json!({"folder":folder,"since":since,"before":before,"cursor":job["cursor"]}),
+        )
+        .await?;
         stage = "commit";
-        let (account,job) = (account.clone(),job.clone());
-        app.db(move |db| apply_import_page(db,&account,&job,&result)).await
-    }.await;
+        let (account, job) = (account.clone(), job.clone());
+        app.db(move |db| apply_import_page(db, &account, &job, &result))
+            .await
+    }
+    .await;
     if let Err(error) = work {
         let failure = import_failure(&error, stage, &job, Utc::now().timestamp_millis());
         app.db(move |db| {

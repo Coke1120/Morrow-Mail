@@ -228,6 +228,11 @@ struct ImapScenario {
     extra_mapping: Option<&'static str>,
     renamed_validity: Option<u32>,
     folder_write_failure: bool,
+    fetch_failure: bool,
+    remote_read: bool,
+    remote_starred: bool,
+    missing_uid: Option<u32>,
+    raw_message: Option<String>,
 }
 impl Default for ImapScenario {
     fn default() -> Self {
@@ -255,6 +260,11 @@ impl Default for ImapScenario {
             extra_mapping: None,
             renamed_validity: None,
             folder_write_failure: false,
+            fetch_failure: false,
+            remote_read: true,
+            remote_starred: true,
+            missing_uid: None,
+            raw_message: None,
         }
     }
 }
@@ -446,11 +456,60 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                 &format!("* SEARCH {ids}\r\n{tag} OK search\r\n"),
             )
             .await?;
+        } else if upper.starts_with("UID STORE ") {
+            if scenario.folder_write_failure {
+                write(&mut stream, &format!("{tag} NO rejected\r\n")).await?;
+                continue;
+            }
+            {
+                let mut value = state.lock().unwrap();
+                let enabled = upper.contains("+FLAGS");
+                if upper.contains("\\SEEN") {
+                    value.remote_read = enabled;
+                }
+                if upper.contains("\\FLAGGED") {
+                    value.remote_starred = enabled;
+                }
+            }
+            write(&mut stream, &format!("{tag} OK stored\r\n")).await?;
         } else if upper.starts_with("UID FETCH ") {
             let args = command.splitn(4, ' ').collect::<Vec<_>>();
             let selected = args[2];
             let fields = args[3];
-            if fields.contains("RFC822.SIZE") {
+            if let Some(raw) = scenario
+                .raw_message
+                .as_ref()
+                .filter(|_| fields == "(UID RFC822.SIZE)")
+            {
+                write(
+                    &mut stream,
+                    &format!("* 1 FETCH (UID {selected} RFC822.SIZE {})\r\n", raw.len()),
+                )
+                .await?;
+            } else if fields == "(UID FLAGS)" {
+                for (index, uid) in selected.split(',').enumerate() {
+                    if scenario.missing_uid == uid.parse().ok() {
+                        continue;
+                    }
+                    let mut flags = vec!["\\Answered"];
+                    if scenario.remote_read {
+                        flags.push("\\Seen");
+                    }
+                    if scenario.remote_starred {
+                        flags.push("\\Flagged");
+                    }
+                    write(
+                        &mut stream,
+                        &format!(
+                            "* {} FETCH (UID {} FLAGS ({}))\r\n",
+                            index + 1,
+                            uid,
+                            flags.join(" ")
+                        ),
+                    )
+                    .await?;
+                }
+            } else if fields.contains("RFC822.SIZE") {
                 let header = if scenario.oversized_header {
                     "x".repeat(65537)
                 } else {
@@ -478,7 +537,13 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                     assert!(line(&mut stream).await?.is_none());
                     return Ok(());
                 }
-                let body = if scenario.oversized_body {
+                let body = if let Some(raw) = scenario.raw_message {
+                    let range = fields.split('<').nth(1).unwrap().split('>').next().unwrap();
+                    let (start, count) = range.split_once('.').unwrap();
+                    let start: usize = start.parse().unwrap();
+                    let count: usize = count.parse().unwrap();
+                    raw[start..raw.len().min(start + count)].to_owned()
+                } else if scenario.oversized_body {
                     "x".repeat(5 * 1024 * 1024 + 1)
                 } else if scenario.body_size > 0 {
                     format!(
@@ -504,7 +569,14 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                 };
                 write(&mut stream, &format!("* 1 FETCH (UID {uid})\r\n")).await?;
             }
-            write(&mut stream, &format!("{tag} OK fetch\r\n")).await?;
+            write(
+                &mut stream,
+                &format!(
+                    "{tag} {} fetch\r\n",
+                    if scenario.fetch_failure { "NO" } else { "OK" }
+                ),
+            )
+            .await?;
         } else if upper.starts_with("UID MOVE ") {
             if let Some(mapping) = scenario.mapping {
                 write(&mut stream, &format!("* OK [COPYUID {mapping}] moved\r\n")).await?;
@@ -1283,5 +1355,165 @@ async fn full_history_imap_persists_folder_and_uid_checkpoints_excluding_special
             .iter()
             .filter(|s| s.starts_with("UID SEARCH "))
             .all(|s| !s.contains("SINCE"))
+    );
+}
+
+#[tokio::test]
+async fn imap_flags_and_attachment_reads_validate_generation_preserve_other_flags_and_do_not_replay()
+ {
+    let raw = format!(
+        "{HEADER}MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=fixture\r\n\r\n--fixture\r\nContent-Type: text/plain\r\n\r\nHello\r\n--fixture\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=fixture.bin\r\nContent-Transfer-Encoding: base64\r\n\r\nAP8=\r\n--fixture--\r\n"
+    );
+    let fixture = ImapFixture::new(ImapScenario {
+        raw_message: Some(raw.clone()),
+        missing_uid: Some(2),
+        ..Default::default()
+    })
+    .await;
+    let message = json!({"id":"imap:55:1","providerFolderId":"INBOX","body":"cached","read":false,"starred":false});
+    assert_eq!(
+        imap::raw_message_with_tls(&fixture.mail, &message, &fixture.connector)
+            .await
+            .unwrap(),
+        raw.as_bytes()
+    );
+    let confirmed = imap::write_flags_with_tls(
+        &fixture.mail,
+        &message,
+        &json!({"read":false,"starred":true}),
+        &fixture.connector,
+    )
+    .await
+    .unwrap();
+    assert_eq!(confirmed, json!({"read":false,"starred":true}));
+    let messages = vec![
+        message.clone(),
+        json!({"id":"imap:55:2","body":"deleted cache"}),
+        json!({"id":"imap:12:1","body":"old generation"}),
+    ];
+    let result = imap::reconcile_with_tls(&fixture.mail, &messages, &fixture.connector)
+        .await
+        .unwrap();
+    assert!(
+        result
+            .iter()
+            .any(|m| m["id"] == "imap:55:1" && m["read"] == false && m["starred"] == true)
+    );
+    assert!(result.iter().any(|m| m["id"] == "imap:55:2"
+        && m["providerDeleted"] == true
+        && m["body"] == "deleted cache"));
+    assert!(result.iter().any(|m| m["id"] == "imap:12:1"
+        && m["providerFolderMissing"] == true
+        && m["providerDeleted"] != true));
+    fixture.update(|v| v.validity = 77);
+    let writes = fixture
+        .commands()
+        .iter()
+        .filter(|s| s.starts_with("UID STORE"))
+        .count();
+    assert!(
+        imap::write_flags_with_tls(
+            &fixture.mail,
+            &message,
+            &json!({"read":true}),
+            &fixture.connector
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        imap::raw_message_with_tls(&fixture.mail, &message, &fixture.connector)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        fixture
+            .commands()
+            .iter()
+            .filter(|s| s.starts_with("UID STORE"))
+            .count(),
+        writes
+    );
+    assert!(
+        fixture
+            .commands()
+            .iter()
+            .filter(|s| s.starts_with("UID STORE"))
+            .all(|s| s.contains("+FLAGS.SILENT") || s.contains("-FLAGS.SILENT"))
+    );
+    fixture.update(|v| {
+        v.validity = 55;
+        v.folder_write_failure = true;
+    });
+    assert!(
+        imap::write_flags_with_tls(
+            &fixture.mail,
+            &message,
+            &json!({"read":true}),
+            &fixture.connector
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(
+        fixture
+            .commands()
+            .iter()
+            .filter(|s| s.starts_with("UID STORE"))
+            .count(),
+        writes + 1
+    );
+}
+
+#[tokio::test]
+async fn failed_fetch_completion_never_means_success_or_deleted_mail() {
+    let fixture = ImapFixture::new(ImapScenario {
+        fetch_failure: true,
+        missing_uid: Some(1),
+        raw_message: Some(format!("{HEADER}\r\nbody")),
+        ..Default::default()
+    })
+    .await;
+    let message = json!({"id":"imap:55:1","providerFolderId":"INBOX"});
+    assert!(
+        imap::reconcile_with_tls(
+            &fixture.mail,
+            std::slice::from_ref(&message),
+            &fixture.connector
+        )
+        .await
+        .is_err()
+    );
+    fixture.update(|s| s.missing_uid = None);
+    assert!(
+        imap::reconcile_with_tls(
+            &fixture.mail,
+            std::slice::from_ref(&message),
+            &fixture.connector
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        imap::raw_message_with_tls(&fixture.mail, &message, &fixture.connector)
+            .await
+            .is_err()
+    );
+    assert!(fixture.fetch(json!({"folder":"inbox"})).await.is_err());
+    assert!(
+        imap::write_flags_with_tls(
+            &fixture.mail,
+            &message,
+            &json!({"read":true}),
+            &fixture.connector
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        !fixture
+            .commands()
+            .iter()
+            .any(|c| c.starts_with("UID STORE"))
     );
 }

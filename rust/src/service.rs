@@ -574,10 +574,14 @@ async fn handle_inner(app: App, request: axum::http::Request<Body>) -> Result<Re
     let bound = mutation
         && matches!(
             route.as_slice(),
-            ["send" | "drafts" | "ai" | "sync" | "skills"]
+            ["send" | "drafts" | "ai" | "sync" | "skills" | "attachments"]
                 | ["drafts", "prepare" | "resolve"]
                 | ["messages", _]
-                | ["messages", _, "organize" | "trash" | "undo-trash"]
+                | [
+                    "messages",
+                    _,
+                    "organize" | "trash" | "undo-trash" | "attachments"
+                ]
                 | [
                     "workflows"
                         | "imports"
@@ -592,10 +596,15 @@ async fn handle_inner(app: App, request: axum::http::Request<Body>) -> Result<Re
                 | ["account", "disconnect"]
                 | ["mail", "folders", ..]
         );
-    let bytes = tokio::time::timeout(Duration::from_secs(15), to_bytes(body, 256 * 1024))
+    let limit = if route == ["attachments"] && parts.method == Method::POST {
+        crate::attachments::MAX_BYTES.div_ceil(3) * 4 + 8192
+    } else {
+        256 * 1024
+    };
+    let bytes = tokio::time::timeout(Duration::from_secs(15), to_bytes(body, limit))
         .await
         .map_err(|_| Error::new(408, "Request body timed out."))?
-        .map_err(|_| Error::new(413, "Request body exceeds 256 KiB."))?;
+        .map_err(|_| Error::new(413, "Request body exceeds its size limit."))?;
     let body = if bytes.is_empty() {
         json!({})
     } else {
@@ -662,6 +671,9 @@ async fn handle_inner(app: App, request: axum::http::Request<Body>) -> Result<Re
     result
 }
 pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
+    if let Some(response) = crate::attachments::handle(app, &context).await? {
+        return Ok(response);
+    }
     if let Some(response) = crate::folders::handle(app, &context).await? {
         return Ok(response);
     }

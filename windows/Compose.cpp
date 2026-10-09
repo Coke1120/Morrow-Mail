@@ -91,6 +91,7 @@ hstring delayedTime(int hours) {
 Json content(Json const& message) {
     Json value;
     for (auto name : { L"to", L"cc", L"bcc", L"subject", L"body" }) put(value, name, text(message, name));
+    if (array(message, L"attachments").Size()) value.Insert(L"attachments", array(message, L"attachments"));
     auto footer = message.TryLookup(L"footer");
     if (footer && footer.ValueType() == JsonValueType::Object) value.Insert(L"footer", footer);
     if (!text(message, L"replyToId").empty()) put(value, L"replyToId", text(message, L"replyToId"));
@@ -98,9 +99,11 @@ Json content(Json const& message) {
 }
 hstring reviewText(hstring const& owner, Json const& value) {
     auto footer = object(value, L"footer");
+    hstring attachments;
+    for (auto const& item : array(value, L"attachments")) attachments = attachments + text(item.GetObject(), L"name") + L"; ";
     return L"From: " + owner + L"\nTo: " + text(value, L"to") + L"\nCc: " + text(value, L"cc")
         + L"\nBcc: " + text(value, L"bcc") + L"\nSubject: " + text(value, L"subject", L"(No subject)")
-        + L"\n\n" + text(value, L"body") + L"\n\nFooter:\n"
+        + L"\nAttachments: " + attachments + L"\n\n" + text(value, L"body") + L"\n\nFooter:\n"
         + text(footer, L"text", text(footer, L"html"));
 }
 std::vector<hstring> mailboxChoices(std::shared_ptr<Shell> const& shell, ComboBox const& picker) {
@@ -123,7 +126,8 @@ struct Composer {
     Json message, scheduleAttempt;
     bool busy = false, uncertain = false, bound = false, initializing = false;
     bool historyLoading = false;
-    weak_ref<StackPanel> history;
+    weak_ref<StackPanel> history, attachmentPanel;
+    weak_ref<Button> addAttachment;
     std::vector<hstring> accounts;
     std::vector<weak_ref<TextBox>> fields;
     weak_ref<ComboBox> from, aiAction;
@@ -160,7 +164,9 @@ struct Composer {
         if (!live(host)) return;
         auto isFrozen = frozen();
         for (auto const& reference : fields) if (auto view = reference.get()) view.IsReadOnly(isFrozen);
-        if (auto view = from.get()) view.IsEnabled(!isFrozen && !bound && text(message, L"id").empty());
+        if (auto view = from.get()) view.IsEnabled(!isFrozen && !bound && text(message, L"id").empty() && !array(message, L"attachments").Size());
+        if (auto view = addAttachment.get()) view.IsEnabled(!isFrozen && host->connected(owner));
+        if (auto view = attachmentPanel.get()) view.IsEnabled(!isFrozen);
         if (auto view = schedule.get()) view.IsEnabled(!isFrozen);
         if (auto view = scheduleDetails.get()) view.Visibility(scheduleOn() ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
         if (auto view = date.get()) view.IsEnabled(!isFrozen && scheduleOn());
@@ -221,6 +227,24 @@ struct Composer {
     }
 };
 
+void renderComposerAttachments(std::shared_ptr<Composer> const& state) {
+    auto panel = state->attachmentPanel.get(); if (!panel) return;
+    panel.Children().Clear();
+    for (auto const& value : array(state->message, L"attachments")) {
+        auto item = value.GetObject(); auto row = stack(4);
+        row.Children().Append(label(text(item, L"name") + L" (" + to_hstring(static_cast<uint64_t>(item.GetNamedNumber(L"size", 0))) + L" bytes)"));
+        row.Children().Append(button(L"Remove attachment", [state, item] {
+            if (state->frozen()) return;
+            Array remaining;
+            for (auto const& entry : array(state->message, L"attachments"))
+                if (text(entry.GetObject(), L"id") != text(item, L"id")) remaining.Append(entry);
+            state->message.Insert(L"attachments", remaining); state->requestId = Service::uuid();
+            renderComposerAttachments(state); state->update();
+        }));
+        panel.Children().Append(row);
+    }
+}
+
 IAsyncAction replyHistory(std::shared_ptr<Composer> state) {
     auto shell = state->shell.lock(); auto panel = state->history.get();
     if (!state->live(shell) || !panel || state->historyLoading) co_return;
@@ -275,6 +299,23 @@ struct ComposerWrite {
     }
     ~ComposerWrite() { try { release(); } catch (...) {} }
 };
+
+IAsyncAction addComposerAttachment(std::shared_ptr<Composer> state) {
+    auto shell = state->shell.lock();
+    if (!state->live(shell) || state->frozen()) co_return;
+    auto owner = state->owner; ComposerWrite write(state); state->update();
+    try {
+        auto item = co_await uploadAttachment(shell, owner);
+        if (state->live(shell) && state->owner == owner && !text(item, L"id").empty()) {
+            auto items = array(state->message, L"attachments"); double size = item.GetNamedNumber(L"size", 0); bool duplicate = false;
+            for (auto const& value : items) { size += value.GetObject().GetNamedNumber(L"size", 0); duplicate = duplicate || text(value.GetObject(), L"id") == text(item, L"id"); }
+            require(duplicate || (items.Size() < 100 && size <= 20 * 1024 * 1024), L"Attachments exceed 100 files or 20 MiB.");
+            if (!duplicate) items.Append(item);
+            state->message.Insert(L"attachments", items); state->requestId = Service::uuid(); renderComposerAttachments(state);
+        }
+    } catch (...) { if (state->live(shell)) state->say(errorText()); }
+    write.release();
+}
 
 IAsyncAction resolveDelivery(std::shared_ptr<Composer> state, hstring resolution) {
     auto shell = state->shell.lock();
@@ -473,8 +514,8 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         for (size_t i = 0; i < state->accounts.size(); ++i) if (state->accounts[i] == state->owner) from.SelectedIndex(static_cast<int32_t>(i));
         panel.Children().Append(from);
         if (state->bound) panel.Children().Append(label(L"The sending mailbox is locked to this conversation or saved draft."));
-        if (flag(draft, L"sourceDraft")) panel.Children().Append(label(L"This is a local copy without attachments. The original Gmail draft stays unchanged in Gmail."));
-        if (flag(draft, L"forwarding")) panel.Children().Append(label(L"Forwarding message text only. Attachments are not included."));
+        if (flag(draft, L"sourceDraft")) panel.Children().Append(label(L"This is a local copy with downloaded attachments. The original Gmail draft stays unchanged in Gmail."));
+        if (flag(draft, L"forwarding")) panel.Children().Append(label(L"Forwarding message text and downloaded attachments. Review the attachment list before sending."));
         if (text(draft, L"id").empty() && !draft.HasKey(L"footer"))
             state->message.Insert(L"footer", object(object(shell->state, L"settings"), L"footer"));
         for (auto name : { L"to", L"cc", L"bcc", L"subject", L"body" }) {
@@ -489,6 +530,12 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
             input.TextChanged([state, name](auto const& sender, auto const&) { state->edit(name, sender.template as<TextBox>().Text()); });
             panel.Children().Append(input);
         }
+        auto attachmentPanel = stack(4); state->attachmentPanel = make_weak(attachmentPanel);
+        panel.Children().Append(attachmentPanel);
+        auto addFile = button(L"Add attachment…", [state] { addComposerAttachment(state); });
+        state->addAttachment = make_weak(addFile); panel.Children().Append(addFile);
+        panel.Children().Append(label(L"Attachments: up to 100 files / 20 MiB total. Attachments are excluded from AI requests."));
+        renderComposerAttachments(state);
         panel.Children().Append(label(L"Use plain addresses separated by commas or semicolons (100 recipients total). Bcc remains hidden from other recipients."));
         auto footerText = label(text(object(state->message, L"footer"), L"text", text(object(state->message, L"footer"), L"html")));
         state->footer = footerText;
@@ -569,7 +616,7 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         close.KeyboardAccelerators().Append(closeShortcut);
         Grid::SetRow(buttons, 1); editor.Children().Append(buttons);
         from.SelectionChanged([state](auto const& sender, auto const&) {
-            if (state->frozen() || state->bound) return;
+            if (state->frozen() || state->bound || array(state->message, L"attachments").Size()) return;
             auto index = sender.template as<ComboBox>().SelectedIndex();
             if (index >= 0 && static_cast<size_t>(index) < state->accounts.size()) {
                 state->owner = state->accounts[index]; state->requestId = Service::uuid(); state->clearAI(); state->update();

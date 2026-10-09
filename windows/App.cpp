@@ -335,7 +335,7 @@ IAsyncAction Shell::start() {
     syncButton = button(L"Sync", [weak = weak_from_this()] { if (auto self = weak.lock()) self->sync(); });
     syncButton.IsEnabled(false);
     Automation::AutomationProperties::SetAutomationId(syncButton, L"mail.sync");
-    ToolTipService::SetToolTip(syncButton, box_value(L"Sync recent mail in the current account view (Ctrl+R); Today syncs all accounts. Outlook continues saved change tracking; other providers refresh recent mail."));
+    ToolTipService::SetToolTip(syncButton, box_value(L"Sync recent mail in the current account view (Ctrl+R); Today syncs all accounts. New mail is fetched first; saved checkpoints reconcile older cached messages."));
     Grid::SetColumn(syncButton, 1); mailboxActions.Children().Append(syncButton);
     brand.Children().Append(mailboxActions); navigation.PaneHeader(brand);
     folderFilter = field(L"Filter labels / folders"); folderFilter.Header(nullptr); folderFilter.PlaceholderText(L"Filter labels / folders");
@@ -959,7 +959,7 @@ IAsyncAction Shell::read(Json metadata, bool markOnOpen) {
         bool canMarkRead = !flag(message, L"providerDeleted");
         for (auto const& item : array(state, L"accounts")) {
             auto entry = item.GetObject();
-            if (text(entry, L"id") == account && text(entry, L"provider") == L"microsoft" && !flag(object(entry, L"settings"), L"canOrganize")) canMarkRead = false;
+            if (text(entry, L"id") == account && (text(entry, L"provider") == L"microsoft" || text(entry, L"provider") == L"google") && !flag(object(entry, L"settings"), L"canOrganize")) canMarkRead = false;
         }
         if (markOnOpen && canMarkRead && !flag(message, L"read") && flag(object(object(state, L"settings"), L"preferences"), L"markReadOnOpen")) {
             Json changes; changes.Insert(L"read", Value::CreateBooleanValue(true));

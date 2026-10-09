@@ -50,6 +50,8 @@ struct ReaderFixture: View {
                     try await Task.sleep(nanoseconds: 50_000_000)
                 }
                 guard let web, web.url != nil else { fatalError("Formatted reader did not load") }
+                assert(MessageHTMLView.document("", images: false, inlineImages: true).contains("img-src data: ;"))
+                assert(!MessageHTMLView.document("", images: false).contains("img-src data:"))
                 assert(!web.configuration.defaultWebpagePreferences.allowsContentJavaScript)
                 assert(!web.configuration.preferences.javaScriptCanOpenWindowsAutomatically)
                 assert(!web.configuration.websiteDataStore.isPersistent)

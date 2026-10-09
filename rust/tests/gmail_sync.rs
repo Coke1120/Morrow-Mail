@@ -203,7 +203,7 @@ impl Fixture {
                                 labels.push(id.clone());
                             }
                         }
-                        json!({"labelIds":labels})
+                        json!({"id":row["id"],"labelIds":row["labelIds"]})
                     } else if url.path().ends_with("/messages") {
                         let label = url
                             .query_pairs()
@@ -400,16 +400,13 @@ async fn sync_refreshes_remote_state_in_five_scopes_and_keeps_local_patches_and_
     assert_eq!(saved["labels"], json!(["New label"]));
     let (status, patch) = f.call("PATCH", "/api/messages/google:same", A, json!({"folder":"archive","read":true,"starred":false,"localOverrides":{"labels":true}})).await;
     assert_eq!(status, 200);
-    assert_eq!(
-        patch["message"]["localOverrides"],
-        json!({"folder":true,"read":true,"starred":true})
-    );
+    assert_eq!(patch["message"]["localOverrides"], json!({"folder":true}));
     f.rows.lock().unwrap()[0] = raw("same", json!(["INBOX", "UNREAD", "STARRED", "Label_1"]));
     assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
     let saved = f.message(A, "google:same").await;
     assert_eq!(saved["folder"], "archive");
     assert_eq!(saved["read"], false);
-    assert_eq!(saved["starred"], false);
+    assert_eq!(saved["starred"], true);
     assert_eq!(saved["labels"], json!(["Old label"]));
     assert_eq!(
         saved["providerSnapshot"],
@@ -810,7 +807,11 @@ async fn read_quota_wait_is_shared_by_sync_history_and_catalog_without_extending
         f.app
             .db(|db| {
                 db.set_settings(&json!({"preferences":{"syncInterval":0}}))?;
-                background::start_import(db, A, &json!({"allMail":true,"months":0}))
+                background::start_import(db, A, &json!({"allMail":true,"months":0}))?;
+                let mut imports = db.settings()?["imports"].clone();
+                imports[A]["recentSince"] = Value::Null;
+                db.set_settings(&json!({"imports":imports}))?;
+                Ok(())
             })
             .await
             .unwrap();
@@ -898,7 +899,7 @@ async fn refresh_deduplicates_scopes_reuses_bodies_and_keeps_drafts_and_owners_f
             .iter()
             .filter(|(_, url)| url.path().contains("/messages/"))
             .collect::<Vec<_>>();
-        assert_eq!(hits.len(), 160);
+        assert_eq!(hits.len(), 158);
         assert_eq!(bodies.len(), 150);
         assert_eq!(
             bodies
@@ -986,7 +987,11 @@ async fn only_missing_message_details_are_skipped_and_history_keeps_its_checkpoi
         f.app
             .db(|db| {
                 db.set_settings(&json!({"preferences":{"syncInterval":0}}))?;
-                background::start_import(db, A, &json!({"allMail":true,"months":0}))
+                background::start_import(db, A, &json!({"allMail":true,"months":0}))?;
+                let mut imports = db.settings()?["imports"].clone();
+                imports[A]["recentSince"] = Value::Null;
+                db.set_settings(&json!({"imports":imports}))?;
+                Ok(())
             })
             .await
             .unwrap();
@@ -1026,4 +1031,57 @@ async fn only_missing_message_details_are_skipped_and_history_keeps_its_checkpoi
             assert!(f.message(A, "google:healthy").await.is_null());
         }
     }
+}
+
+#[tokio::test]
+async fn old_cached_mail_reconciles_in_owned_resumable_batches_without_refetching_bodies() {
+    let f = Fixture::new().await;
+    let rows: Vec<_> = (0..55)
+        .map(|i| raw(&format!("old{i}"), json!(["INBOX", "UNREAD"])))
+        .chain([raw("deleted", json!(["INBOX"]))])
+        .collect();
+    *f.rows.lock().unwrap() = rows.clone();
+    let cached: Vec<_> = rows
+        .iter()
+        .map(|row| providers::normalize_google(row).unwrap())
+        .collect();
+    f.app
+        .db(move |db| {
+            mail::import_messages(db, &connection(A), &cached)?;
+            db.update(A, "google:old54", &json!({"pending":true}))?;
+            db.upsert(B, &remote("old54", json!(["INBOX", "UNREAD"])))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    f.detail_status.store(404, Ordering::SeqCst);
+    f.rows.lock().unwrap()[54]["labelIds"] = json!(["STARRED"]);
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    assert!(
+        f.app.settings().await.unwrap()["mailReconcile"][A]["after"]
+            .as_i64()
+            .unwrap()
+            > 0
+    );
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    let changed = f.message(A, "google:old54").await;
+    assert_eq!(changed["read"], true);
+    assert_eq!(changed["starred"], true);
+    assert_eq!(changed["pending"], true);
+    assert_eq!(f.message(B, "google:old54").await["read"], false);
+    let deleted = f.message(A, "google:deleted").await;
+    assert_eq!(deleted["providerDeleted"], true);
+    assert_eq!(deleted["body"], "Remote body");
+    assert_eq!(
+        f.app.settings().await.unwrap()["mailReconcile"][A]["after"],
+        0
+    );
+    assert!(
+        f.hits
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(method, url)| method == "GET"
+                && !url.query_pairs().any(|(k, v)| k == "format" && v == "full"))
+    );
 }

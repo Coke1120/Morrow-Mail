@@ -3,8 +3,8 @@ use crate::{
     background::write_owner,
     error::{Error, Result},
     folders::connection_version,
-    mail, pages, providers,
-    service::{App, Context, connections, get_message},
+    mail, providers,
+    service::{App, connections},
     store::{Store, merge, now, string},
 };
 use reqwest::Method;
@@ -51,7 +51,7 @@ async fn get(app: &App, mail: &Value, path: &str) -> Result<Value> {
         Err(error) => mail::finish_read(app, mail, Err(error)).await,
     }
 }
-fn flags(raw: &Value) -> Result<Value> {
+pub(crate) fn flags(raw: &Value) -> Result<Value> {
     let read = raw["isRead"]
         .as_bool()
         .ok_or_else(providers::remote_error)?;
@@ -459,83 +459,6 @@ async fn persist(app: &App, connection: &Value, state: &Value, messages: &[Value
             save(db, &connection, &messages)?;
             write_owner(db, "outlookSync", string(&connection, "email"), state)
         })
-    })
-    .await
-}
-
-pub async fn patch(app: &App, ctx: &Context) -> Result<Value> {
-    let _gate = app.0.mailbox.try_lock().map_err(|_| {
-        Error::conflict("Another mailbox operation is running. Try again when it finishes.")
-    })?;
-    let (owner, id, body) = (ctx.owner.clone(), ctx.path[1].clone(), ctx.body.clone());
-    mail::ensure_draft_idle(app, &owner, &id)?;
-    let (message, mut patch) = app
-        .db(move |db| {
-            let message = get_message(db, &owner, &id)?;
-            crate::scheduled::guard_draft(db, &owner, &id, None)?;
-            let patch = crate::service::message_patch(&message, &body)?;
-            Ok((message, patch))
-        })
-        .await?;
-    let connection = mail::current_mail(app, &ctx.owner).await?;
-    if connection["provider"] != "microsoft" {
-        return Err(Error::conflict("This mailbox connection changed."));
-    }
-    if !providers::can_organize(&connection) {
-        let mut error = Error::new(
-            403,
-            "Reconnect Outlook in Settings with mail organization permission to sync read and starred changes.",
-        );
-        error.body["recoveryAction"] = "reconnect".into();
-        return Err(error);
-    }
-    if message["providerDeleted"] == true {
-        return Err(Error::conflict(
-            "This message was deleted from Outlook. The cached copy is retained.",
-        ));
-    }
-    let remote = remote_id(&message)?;
-    let mut changes = json!({});
-    if let Some(read) = patch.get("read") {
-        changes["isRead"] = read.clone();
-    }
-    if let Some(star) = patch.get("starred") {
-        changes["flag"] = json!({"flagStatus":if star==true {"flagged"}else{"notFlagged"}});
-    }
-    let result = providers::request(providers::api(&app.0.client, &connection, Method::PATCH, &format!("/messages/{}",providers::component(remote)))?.header("Prefer",PREFER).json(&changes), 8*1024*1024).await
-        .map_err(|_| Error::new(502,"The Outlook change could not be confirmed. Sync to check its current state before trying again."))?;
-    if result["id"] != remote {
-        return Err(providers::remote_error());
-    }
-    let confirmed = flags(&result)?;
-    for key in ["read", "starred"] {
-        if patch.get(key).is_some_and(|v| *v != confirmed[key]) {
-            return Err(providers::remote_error());
-        }
-    }
-    patch = merge(patch, &confirmed);
-    let mut overrides = message["localOverrides"]
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
-    for key in ["read", "starred"] {
-        overrides.remove(key);
-    }
-    if patch.get("folder").is_some() {
-        overrides.insert("folder".into(), true.into());
-    }
-    patch["localOverrides"] = json!(overrides);
-    patch["providerSnapshot"] = merge(merge(json!({}), &message["providerSnapshot"]), &confirmed);
-    let (owner, id) = (ctx.owner.clone(), ctx.path[1].clone());
-    app.db(move |db| {
-        current(db, &connection)?;
-        let current = get_message(db, &owner, &id)?;
-        if remote_id(&current)? != remote_id(&message)? {
-            return Err(Error::conflict(
-                "This message changed during the Outlook update.",
-            ));
-        }
-        Ok(json!({"message":pages::owned(&owner,db.update(&owner,&id,&patch)?.unwrap())}))
     })
     .await
 }

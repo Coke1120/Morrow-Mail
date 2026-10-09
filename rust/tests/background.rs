@@ -28,6 +28,62 @@ fn configure(db: &Store) {
     }
 }
 
+fn start_legacy_import(
+    db: &Store,
+    account: &str,
+    input: &Value,
+) -> morrow_search::error::Result<()> {
+    jobs::start_import(db, account, input)?;
+    let mut imports = db.settings()?["imports"].clone();
+    imports[account]["recentSince"] = Value::Null;
+    db.set_settings(&json!({"imports": imports}))?;
+    Ok(())
+}
+
+#[test]
+fn new_import_finishes_recent_folders_before_old_history_and_retains_boundary_on_restart() {
+    let root = directory();
+    let db = Store::open(&root).unwrap();
+    configure(&db);
+    jobs::start_import(&db, A, &json!({"months":0,"inbox":true,"sent":true})).unwrap();
+    let initial = db.settings().unwrap()["imports"][A].clone();
+    let boundary = initial["recentSince"].clone();
+    let recent = (chrono::Utc::now() - chrono::Duration::days(1))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let page = |id: &str, date: &str| json!({"messages":[{"id":id,"date":date,"folder":"inbox"}],"nextCursor":null});
+    jobs::apply_import_page(&db, A, &initial, &page("latest-inbox", &recent)).unwrap();
+    let job = db.settings().unwrap()["imports"][A].clone();
+    assert_eq!(job["folderIndex"], 1);
+    jobs::apply_import_page(
+        &db,
+        A,
+        &job,
+        &page("latest-sent", boundary.as_str().unwrap()),
+    )
+    .unwrap();
+    let job = db.settings().unwrap()["imports"][A].clone();
+    assert_eq!(job["status"], "running");
+    assert_eq!(job["recentComplete"], true);
+    assert_eq!(job["folderIndex"], 0);
+    assert!(db.get(A, "latest-sent").unwrap().is_some());
+    jobs::control_import(&db, A, "pause").unwrap();
+    drop(db);
+    let db = Store::open(&root).unwrap();
+    jobs::control_import(&db, A, "resume").unwrap();
+    let job = db.settings().unwrap()["imports"][A].clone();
+    assert_eq!(job["recentSince"], boundary);
+    assert_eq!(job["before"], initial["before"]);
+    jobs::apply_import_page(&db, A, &job, &page("old", "1999-01-01T00:00:00.000Z")).unwrap();
+    let job = db.settings().unwrap()["imports"][A].clone();
+    jobs::apply_import_page(&db, A, &job, &page("overlap", boundary.as_str().unwrap())).unwrap();
+    assert_eq!(jobs::import_status(&db, A).unwrap()["status"], "complete");
+    assert!(db.get(A, "old").unwrap().is_some());
+    assert!(db.get(A, "overlap").unwrap().is_none());
+    assert!(db.get(B, "old").unwrap().is_none());
+    drop(db);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn dates_dst_clock_rollback_and_strict_summary_contract() {
     assert_eq!(
@@ -124,15 +180,15 @@ fn gmail_all_mail_scope_and_progress_are_durable_safe_and_backward_compatible() 
     let options = json!({"allMail":true,"inbox":false,"sent":false});
     assert_eq!(jobs::import_options(&options).unwrap()["allMail"], true);
     let before = db.settings().unwrap();
-    jobs::start_import(&db, A, &options).unwrap();
+    start_legacy_import(&db, A, &options).unwrap();
     assert_eq!(jobs::import_status(&db, A).unwrap()["currentFolder"], "all");
     let mut accounts = before["mailAccounts"].clone();
     accounts[A]["provider"] = "google".into();
     accounts[B]["provider"] = "microsoft".into();
     db.set_settings(&json!({"mailAccounts":accounts})).unwrap();
-    jobs::start_import(&db, B, &options).unwrap();
+    start_legacy_import(&db, B, &options).unwrap();
     assert_eq!(jobs::import_status(&db, B).unwrap()["currentFolder"], "all");
-    jobs::start_import(&db, A, &options).unwrap();
+    start_legacy_import(&db, A, &options).unwrap();
     let status = jobs::import_status(&db, A).unwrap();
     assert_eq!(status["currentFolder"], "all");
     assert_eq!(status["phase"], "queued");
@@ -181,7 +237,7 @@ fn gmail_all_mail_scope_and_progress_are_durable_safe_and_backward_compatible() 
     }
     assert!(!status.to_string().contains("private-provider-cursor"));
 
-    jobs::start_import(&db, B, &json!({})).unwrap();
+    start_legacy_import(&db, B, &json!({})).unwrap();
     let mut imports = db.settings().unwrap()["imports"].clone();
     imports[B].as_object_mut().unwrap().remove("pages");
     imports[B].as_object_mut().unwrap().remove("processed");
@@ -211,7 +267,7 @@ fn history_checkpoints_atomic_pages_pause_resume_reconnect_and_cursor_loops() {
     let root = directory();
     let db = Store::open(&root).unwrap();
     configure(&db);
-    jobs::start_import(&db, A, &json!({"months":3,"inbox":true,"sent":true})).unwrap();
+    start_legacy_import(&db, A, &json!({"months":3,"inbox":true,"sent":true})).unwrap();
     let first = db.settings().unwrap()["imports"][A].clone();
     let date = (chrono::Utc::now() - chrono::Duration::days(1))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -248,7 +304,7 @@ fn history_checkpoints_atomic_pages_pause_resume_reconnect_and_cursor_loops() {
     assert_eq!(jobs::import_status(&db, A).unwrap()["pages"], 3);
     assert_eq!(jobs::import_status(&db, A).unwrap()["processed"], 3);
     assert!(jobs::control_import(&db, A, "resume").is_err());
-    jobs::start_import(&db, A, &json!({})).unwrap();
+    start_legacy_import(&db, A, &json!({})).unwrap();
     let job = db.settings().unwrap()["imports"][A].clone();
     let mut invalid = page("rollback", json!("next"));
     invalid["messages"]
@@ -290,7 +346,7 @@ fn unlimited_import_tracks_many_cursors_outside_settings_and_cleans_up() {
     let root = directory();
     let db = Store::open(&root).unwrap();
     configure(&db);
-    jobs::start_import(&db, A, &json!({"months":0,"inbox":true,"sent":false})).unwrap();
+    start_legacy_import(&db, A, &json!({"months":0,"inbox":true,"sent":false})).unwrap();
     let initial_size = db.settings().unwrap().to_string().len();
     for n in 0..256 {
         let job = db.settings().unwrap()["imports"][A].clone();
@@ -1053,7 +1109,7 @@ fn unlimited_history_preserves_old_mail_checkpoint_and_fixed_upper_bound() {
     let root = directory();
     let db = Store::open(&root).unwrap();
     configure(&db);
-    jobs::start_import(&db, A, &json!({"months":0,"allMail":true})).unwrap();
+    start_legacy_import(&db, A, &json!({"months":0,"allMail":true})).unwrap();
     let job = db.settings().unwrap()["imports"][A].clone();
     assert_eq!(job["since"], "");
     let before = job["before"].clone();

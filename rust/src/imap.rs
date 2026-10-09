@@ -484,8 +484,297 @@ pub async fn manage_folder_with_tls(
         Ok(result)
     }).await.map_err(|_|providers::remote_error())?
 }
+#[derive(Default)]
+struct Fetched {
+    uid: Option<u32>,
+    size: Option<u32>,
+    header: Option<Vec<u8>>,
+    body: Option<Vec<u8>>,
+    date: Option<DateTime<Utc>>,
+    read: bool,
+    starred: bool,
+    draft: bool,
+}
+// async-imap 0.11's FETCH stream discards tagged NO/BAD; validate completion before using rows.
+async fn checked_fetch(
+    session: &mut Mailbox,
+    sequence: impl std::fmt::Display,
+    query: impl std::fmt::Display,
+) -> Result<Vec<Fetched>> {
+    use imap_proto::types::{AttributeValue, MessageSection, Response, SectionPath, Status};
+    let tag = session
+        .run_command(format!("UID FETCH {sequence} {query}"))
+        .await
+        .map_err(imap_error)?;
+    let mut rows = Vec::new();
+    loop {
+        let response = session
+            .read_response()
+            .await
+            .map_err(imap_error)?
+            .ok_or_else(providers::remote_error)?;
+        match response.parsed() {
+            Response::Done {
+                tag: finished,
+                status,
+                ..
+            } => {
+                if *finished != tag || *status != Status::Ok {
+                    return Err(providers::remote_error());
+                }
+                return Ok(rows);
+            }
+            Response::Fetch(_, attrs) => {
+                if rows.len() >= 50 {
+                    return Err(providers::remote_error());
+                }
+                let mut row = Fetched::default();
+                let mut has_flags = false;
+                for attr in attrs {
+                    match attr {
+                        AttributeValue::Uid(id) => row.uid = Some(*id),
+                        AttributeValue::Rfc822Size(size) => row.size = Some(*size),
+                        AttributeValue::Flags(flags) => {
+                            has_flags = true;
+                            row.read = flags.iter().any(|f| Flag::from(f.as_ref()) == Flag::Seen);
+                            row.starred = flags
+                                .iter()
+                                .any(|f| Flag::from(f.as_ref()) == Flag::Flagged);
+                            row.draft = flags.iter().any(|f| Flag::from(f.as_ref()) == Flag::Draft);
+                        }
+                        AttributeValue::InternalDate(date) => {
+                            row.date = DateTime::parse_from_str(date, "%d-%b-%Y %H:%M:%S %z")
+                                .ok()
+                                .map(|d| d.with_timezone(&Utc))
+                        }
+                        AttributeValue::BodySection {
+                            section: Some(SectionPath::Full(MessageSection::Header)),
+                            data: Some(data),
+                            ..
+                        }
+                        | AttributeValue::Rfc822Header(Some(data)) => {
+                            row.header = Some(data.to_vec())
+                        }
+                        AttributeValue::BodySection {
+                            section: None,
+                            data: Some(data),
+                            ..
+                        }
+                        | AttributeValue::Rfc822(Some(data)) => row.body = Some(data.to_vec()),
+                        _ => {}
+                    }
+                }
+                if query.to_string().contains("FLAGS") && !has_flags {
+                    return Err(providers::remote_error());
+                }
+                rows.push(row);
+            }
+            Response::Data {
+                status: Status::Bye,
+                ..
+            } => return Err(providers::remote_error()),
+            _ => {}
+        }
+    }
+}
 pub async fn fetch_page(mail: &Value, options: &Value) -> Result<Value> {
     fetch_page_with_tls(mail, options, &connector()?).await
+}
+pub async fn write_flags(mail: &Value, message: &Value, patch: &Value) -> Result<Value> {
+    write_flags_with_tls(mail, message, patch, &connector()?).await
+}
+pub async fn write_flags_with_tls(
+    mail: &Value,
+    message: &Value,
+    patch: &Value,
+    connector: &native_tls::TlsConnector,
+) -> Result<Value> {
+    tokio::time::timeout(Duration::from_secs(45), async {
+        let remote = message["remoteId"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(string(message, "id"));
+        let parts: Vec<_> = remote.split(':').collect();
+        if parts.len() != 3 || parts[0] != "imap" {
+            return Err(providers::remote_error());
+        }
+        let validity = parts[1]
+            .parse::<u32>()
+            .map_err(|_| providers::remote_error())?;
+        let uid = parts[2]
+            .parse::<u32>()
+            .ok()
+            .filter(|id| *id > 0)
+            .ok_or_else(providers::remote_error)?;
+        let mut session = connect(mail, connector).await?;
+        let folder = message["providerFolderId"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("INBOX");
+        let mailbox = session
+            .select(encode_folder(folder)?)
+            .await
+            .map_err(imap_error)?;
+        if mailbox.uid_validity != Some(validity) {
+            return Err(Error::conflict(
+                "IMAP UIDVALIDITY changed. Sync before another change.",
+            ));
+        }
+        {
+            let rows = checked_fetch(&mut session, uid, "UID").await?;
+            if rows.len() != 1 || rows[0].uid != Some(uid) {
+                return Err(providers::remote_error());
+            }
+        }
+        for enabled in [true, false] {
+            let flags = [("read", "\\Seen"), ("starred", "\\Flagged")]
+                .into_iter()
+                .filter(|(key, _)| patch[*key].as_bool() == Some(enabled))
+                .map(|(_, flag)| flag)
+                .collect::<Vec<_>>();
+            if flags.is_empty() {
+                continue;
+            }
+            let command = format!(
+                "{}FLAGS.SILENT ({})",
+                if enabled { "+" } else { "-" },
+                flags.join(" ")
+            );
+            session
+                .run_command_and_check_ok(format!("UID STORE {uid} {command}"))
+                .await
+                .map_err(imap_error)?;
+        }
+        let confirmed = {
+            let rows = checked_fetch(&mut session, uid, "(UID FLAGS)").await?;
+            if rows.len() != 1 || rows[0].uid != Some(uid) {
+                return Err(providers::remote_error());
+            }
+            json!({"read":rows[0].read,"starred":rows[0].starred})
+        };
+        let _ = session.logout().await;
+        Ok(confirmed)
+    })
+    .await
+    .map_err(|_| providers::remote_error())?
+}
+pub async fn reconcile(mail: &Value, messages: &[Value]) -> Result<Vec<Value>> {
+    reconcile_with_tls(mail, messages, &connector()?).await
+}
+pub async fn reconcile_with_tls(
+    mail: &Value,
+    messages: &[Value],
+    connector: &native_tls::TlsConnector,
+) -> Result<Vec<Value>> {
+    if messages.len() > 50 {
+        return Err(Error::invalid("Reconciliation batch exceeds 50 messages."));
+    }
+    tokio::time::timeout(Duration::from_secs(45),async {
+        let mut session=connect(mail,connector).await?;
+        let mut result=Vec::new();
+        let mut folders=std::collections::BTreeMap::<String,Vec<&Value>>::new();
+        for message in messages { folders.entry(message["providerFolderId"].as_str().filter(|s|!s.is_empty()).unwrap_or("INBOX").to_owned()).or_default().push(message); }
+        for (folder, messages) in folders {
+            let mailbox=session.examine(encode_folder(&folder)?).await.map_err(imap_error)?;
+            let validity=mailbox.uid_validity.filter(|v|*v>0).ok_or_else(providers::remote_error)?;
+            let mut selected=std::collections::HashMap::new();
+            for message in messages {
+                let remote=message["remoteId"].as_str().filter(|s|!s.is_empty()).unwrap_or(string(message,"id"));
+                let parts:Vec<_>=remote.split(':').collect();
+                if parts.len()!=3 || parts[0]!="imap" { return Err(providers::remote_error()); }
+                let original=parts[1].parse::<u32>().map_err(|_|providers::remote_error())?;
+                let uid=parts[2].parse::<u32>().ok().filter(|id|*id>0).ok_or_else(providers::remote_error)?;
+                if validity!=original { result.push(merge(message.clone(),&json!({"providerFolderMissing":true}))); }
+                else if selected.insert(uid,message).is_some() {return Err(providers::remote_error());}
+            }
+            if selected.is_empty() {continue;}
+            let sequence=selected.keys().map(u32::to_string).collect::<Vec<_>>().join(",");
+            for row in checked_fetch(&mut session,sequence,"(UID FLAGS)").await? {
+                let uid=row.uid.ok_or_else(providers::remote_error)?;
+                let message=selected.remove(&uid).ok_or_else(providers::remote_error)?;
+                result.push(merge(message.clone(),&json!({"read":row.read,"starred":row.starred,"providerFolderMissing":false,"providerDeleted":false})));
+            }
+            for message in selected.values() {result.push(merge((*message).clone(),&json!({"providerDeleted":true,"providerFolderMissing":true})));}
+        }
+        let _=session.logout().await; Ok(result)
+    }).await.map_err(|_|providers::remote_error())?
+}
+pub async fn raw_message(mail: &Value, message: &Value) -> Result<Vec<u8>> {
+    raw_message_with_tls(mail, message, &connector()?).await
+}
+pub async fn raw_message_with_tls(
+    mail: &Value,
+    message: &Value,
+    connector: &native_tls::TlsConnector,
+) -> Result<Vec<u8>> {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let remote = message["remoteId"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(string(message, "id"));
+        let parts: Vec<_> = remote.split(':').collect();
+        if parts.len() != 3 || parts[0] != "imap" {
+            return Err(Error::invalid("Invalid IMAP message identity."));
+        }
+        let validity = parts[1]
+            .parse::<u32>()
+            .ok()
+            .filter(|v| *v > 0)
+            .ok_or_else(|| Error::invalid("Invalid IMAP UIDVALIDITY."))?;
+        let uid = parts[2]
+            .parse::<u32>()
+            .ok()
+            .filter(|v| *v > 0)
+            .ok_or_else(|| Error::invalid("Invalid IMAP UID."))?;
+        let path = message["providerFolderId"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("INBOX");
+        let mut session = connect(mail, connector).await?;
+        let mailbox = session
+            .examine(encode_folder(path)?)
+            .await
+            .map_err(imap_error)?;
+        if mailbox.uid_validity != Some(validity) {
+            return Err(Error::conflict(
+                "The IMAP folder changed. Sync before downloading attachments.",
+            ));
+        }
+        let size = {
+            let rows = checked_fetch(&mut session, uid, "(UID RFC822.SIZE)").await?;
+            if rows.len() != 1 || rows[0].uid != Some(uid) {
+                return Err(providers::remote_error());
+            }
+            rows[0].size.ok_or_else(providers::remote_error)? as usize
+        };
+        if size > crate::attachments::MAX_RAW_BYTES {
+            return Err(Error::new(
+                413,
+                "This message exceeds the 32 MiB download limit.",
+            ));
+        }
+        let mut bytes = Vec::with_capacity(size);
+        while bytes.len() < size {
+            let count = (size - bytes.len()).min(1024 * 1024);
+            let query = format!("(UID BODY.PEEK[]<{}.{}>)", bytes.len(), count);
+            let rows = checked_fetch(&mut session, uid, query).await?;
+            if rows.len() != 1 || rows[0].uid != Some(uid) {
+                return Err(providers::remote_error());
+            }
+            let body = rows[0]
+                .body
+                .as_deref()
+                .ok_or_else(providers::remote_error)?;
+            if body.len() != count {
+                return Err(providers::remote_error());
+            }
+            bytes.extend_from_slice(body);
+        }
+        let _ = session.logout().await;
+        Ok(bytes)
+    })
+    .await
+    .map_err(|_| providers::remote_error())?
 }
 pub async fn fetch_page_with_tls(
     mail: &Value,
@@ -653,20 +942,14 @@ async fn fetch_folder(
         next - 1
     } else {
         // UIDNEXT may be absent; UID * fetches the highest existing UID, not EXISTS.
-        let mut rows = session.uid_fetch("*", "UID").await.map_err(imap_error)?;
-        let row = rows
-            .try_next()
-            .await
-            .map_err(imap_error)?
-            .ok_or_else(providers::remote_error)?;
-        let highest = row
-            .uid
-            .filter(|uid| *uid > 0)
-            .ok_or_else(providers::remote_error)?;
-        if rows.try_next().await.map_err(imap_error)?.is_some() {
+        let rows = checked_fetch(&mut session, "*", "UID").await?;
+        if rows.len() != 1 {
             return Err(providers::remote_error());
         }
-        highest
+        rows[0]
+            .uid
+            .filter(|uid| *uid > 0)
+            .ok_or_else(providers::remote_error)?
     };
     let mut ids = Vec::new();
     // ponytail: fixed UID windows bound SEARCH to 8192 IDs / 128 KiB per command.
@@ -707,19 +990,12 @@ async fn fetch_folder(
             .map(u32::to_string)
             .collect::<Vec<_>>()
             .join(",");
-        let mut stream = session
-            .uid_fetch(
-                sequence,
-                "(UID FLAGS RFC822.SIZE INTERNALDATE BODY.PEEK[HEADER]<0.65536>)",
-            )
-            .await
-            .map_err(imap_error)?;
-        while let Some(row) = stream.try_next().await.map_err(imap_error)? {
-            if metadata.len() >= 50 {
-                return Err(providers::remote_error());
-            }
-            metadata.push(row);
-        }
+        metadata = checked_fetch(
+            &mut session,
+            sequence,
+            "(UID FLAGS RFC822.SIZE INTERNALDATE BODY.PEEK[HEADER]<0.65536>)",
+        )
+        .await?;
     }
     let mut messages = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -728,37 +1004,37 @@ async fn fetch_folder(
         if !selected.contains(&uid) || !seen.insert(uid) {
             return Err(providers::remote_error());
         }
-        if row.header().is_some_and(|header| header.len() > 65536) {
+        if row
+            .header
+            .as_deref()
+            .is_some_and(|header| header.len() > 65536)
+        {
             return Err(providers::remote_error());
         }
         let large = row.size.unwrap_or(u32::MAX) > 5 * 1024 * 1024;
         let mut value = if large {
-            let mut bytes = row.header().unwrap_or_default().to_vec();
+            let mut bytes = row.header.as_deref().unwrap_or_default().to_vec();
             bytes.extend_from_slice(b"\r\n\r\nThis message exceeds the 5 MB import limit. Open it in your original mailbox to read it.");
             let mut value = parse_mime(bytes).await?;
             value["body"]="This message exceeds the 5 MB import limit. Open it in your original mailbox to read it.".into();
             value["automated"] = true.into();
+            value["hasAttachments"] = true.into();
             value
         } else {
-            let mut stream = session
-                .uid_fetch(uid.to_string(), "(UID BODY.PEEK[]<0.5242881>)")
-                .await
-                .map_err(imap_error)?;
-            let Some(body) = stream.try_next().await.map_err(imap_error)? else {
+            let rows = checked_fetch(&mut session, uid, "(UID BODY.PEEK[]<0.5242881>)").await?;
+            if rows.is_empty() {
                 continue;
-            };
-            if body.uid != Some(uid) {
+            }
+            if rows.len() != 1 || rows[0].uid != Some(uid) {
                 return Err(providers::remote_error());
             }
-            let Some(bytes) = body.body() else { continue };
+            let Some(bytes) = rows[0].body.as_deref() else {
+                continue;
+            };
             if bytes.len() > 5 * 1024 * 1024 {
                 return Err(providers::remote_error());
             }
-            let value = parse_mime(bytes.to_vec()).await?;
-            if stream.try_next().await.map_err(imap_error)?.is_some() {
-                return Err(providers::remote_error());
-            }
-            value
+            parse_mime(bytes.to_vec()).await?
         };
         let remote = format!("imap:{validity}:{uid}");
         let id = if path.eq_ignore_ascii_case("INBOX") {
@@ -771,7 +1047,7 @@ async fn fetch_folder(
         };
         if string(&value, "date").starts_with("1970-") {
             value["date"] = row
-                .internal_date()
+                .date
                 .map(|date| date.with_timezone(&Utc))
                 .unwrap_or_else(Utc::now)
                 .to_rfc3339_opts(SecondsFormat::Millis, true)
@@ -779,12 +1055,11 @@ async fn fetch_folder(
         }
         value = merge(
             value,
-            &json!({"id":id,"remoteId":remote,"providerFolderId":path,"providerFolderName":path,"folder":folder,"read":row.flags().any(|flag|flag==Flag::Seen),"starred":row.flags().any(|flag|flag==Flag::Flagged)}),
+            &json!({"id":id,"remoteId":remote,"providerFolderId":path,"providerFolderName":path,"folder":folder,"read":row.read,"starred":row.starred}),
         );
         if selected_path.is_some() {
             value["providerSent"] = (folder == "sent").into();
-            value["providerDraft"] =
-                (folder == "drafts" || row.flags().any(|flag| flag == Flag::Draft)).into();
+            value["providerDraft"] = (folder == "drafts" || row.draft).into();
             if value["providerDraft"] == true {
                 value["folder"] = "drafts".into();
             }
@@ -954,9 +1229,8 @@ pub async fn organize_with_tls(
             return Err(Error::conflict("This mailbox changed. Sync and reopen the message before moving it."));
         }
         {
-            let mut stream = session.uid_fetch(uid.to_string(), "UID").await.map_err(imap_error)?;
-            let first = stream.try_next().await.map_err(imap_error)?;
-            if first.is_none_or(|row| row.uid != Some(uid)) || stream.try_next().await.map_err(imap_error)?.is_some() {
+            let rows = checked_fetch(&mut session,uid,"UID").await?;
+            if rows.len()!=1 || rows[0].uid!=Some(uid) {
                 return Err(Error::conflict("This message is no longer in its original folder."));
             }
         }

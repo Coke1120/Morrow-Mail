@@ -178,6 +178,11 @@ pub fn prepare(db: &Store, owner: &str, input: &Value) -> Result<Value> {
     let subject = string(&message, "subject");
     let mut draft =
         json!({"accountId":owner,"to":"","cc":"","bcc":"","subject":subject,"body":body});
+    if ["forward", "copy"].contains(&mode)
+        && let Some(attachments) = message.get("attachments")
+    {
+        draft["attachments"] = attachments.clone();
+    }
     match mode {
         "copy" => {
             draft["sourceDraft"] = true.into();

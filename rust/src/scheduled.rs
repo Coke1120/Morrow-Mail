@@ -162,12 +162,12 @@ pub fn start(db: &Store, owner: &str, input: &Value) -> Result<Value> {
     db.transaction(|db| {
         let connection=real_owner(db,owner)?;
         let fields=input.as_object().ok_or_else(||Error::invalid("Invalid scheduled message."))?;
-        if fields.keys().any(|key|!["sendAt","requestId","draftId","to","cc","bcc","subject","body","footer","replyToId"].contains(&key.as_str())) { return Err(Error::invalid("Invalid scheduled message.")); }
+        if fields.keys().any(|key|!["sendAt","requestId","draftId","to","cc","bcc","subject","body","footer","replyToId","attachments"].contains(&key.as_str())) { return Err(Error::invalid("Invalid scheduled message.")); }
         let id=validation::text(&input["requestId"],"Send request ID",100,false)?;
         if id.len()<8 || !id.bytes().all(|b|b.is_ascii_alphanumeric() || b==b'-') { return Err(Error::invalid("Invalid send request ID.")); }
         let at=DateTime::parse_from_rfc3339(string(input,"sendAt")).map_err(|_|Error::invalid("Choose a valid send time in UTC."))?;
         if at.with_timezone(&Utc).to_rfc3339_opts(SecondsFormat::Millis,true)!=string(input,"sendAt") { return Err(Error::invalid("Choose a valid send time in UTC.")); }
-        let mut payload=content::content(input,false)?;
+        let mut payload=content::content(input,false)?;crate::attachments::resolve(db,owner,&mut payload,false)?;
         let reply=string(input,"replyToId"); payload["replyToId"]=reply.into();
         let hash=mail::fingerprint(&payload)?;
         let draft_id=if string(input,"draftId").is_empty(){format!("outbox:scheduled:{id}")}else{validation::text(&input["draftId"],"Draft ID",8192,false)?.to_owned()};

@@ -1,5 +1,12 @@
 # Verification — 9 October 2026
 
+## Unreleased source — readiness work
+
+Work in progress after beta.48; no new release or installed-app replacement. Changes cover immutable account-owned attachments, native add/remove/download/save and CID raster display, Graph large-attachment uploads, frozen delivery/schedule references, seven-day-first history imports, Gmail/IMAP flag write-back and resumable cached metadata reconciliation, and Windows reader lifecycle/startup fallback. A separate Windows PowerShell 5.1 clean-deployment script accepts a prebuilt QA helper and runs a relocated candidate without developer tools.
+
+Validation is still being completed. macOS Swift compilation and focused Rust attachment/Gmail/IMAP checks have run; the final locked suite, native candidates and Windows acceptance results will be recorded below. Fixtures do not establish real-account, clean-VM, accessibility, signing/notarization, or installed-updater acceptance. The previous intermittent Windows controller initialization issue is not declared resolved solely by lifecycle safeguards.
+
+
 ## 0.6.0-beta.48 — published paired native release
 
 [Beta.48](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.6.0-beta.48) was published at 2026-10-09 13:47:06 HKT from `7290dcc82df8d1405953c1dedae577d31eedd39d`. [Tagged CI 37888395865, attempt 1](https://github.com/Coke1120/Morrow-Mail/actions/runs/37888395865/attempts/1) passed all three jobs: Node-free Rust formatting, strict all-target Clippy and locked tests (222 on macOS, 221 on Windows, zero failed/ignored); both native builds and package checks; full macOS production-service acceptance; the Windows fresh/owned/restart UI walkthrough and 1,000/10,000/50,000-message fictional-mail benchmark; and the existing publisher's same-run/same-attempt provenance and pinned-key signing gate. No waiver applied.

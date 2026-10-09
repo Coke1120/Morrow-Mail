@@ -203,6 +203,83 @@ pub async fn get(client: &Client, mail: &Value, path: &str) -> Result<Value> {
     )
     .await
 }
+pub async fn raw_message(client: &Client, mail: &Value, message: &Value) -> Result<Vec<u8>> {
+    let provider = string(mail, "provider");
+    let prefix = format!("{provider}:");
+    let id = message["remoteId"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(string(message, "id"))
+        .strip_prefix(&prefix)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| Error::invalid("This message has no provider identity."))?;
+    if message["providerDeleted"] == true {
+        return Err(Error::conflict(
+            "This message was deleted from the server. Only downloaded attachments are available.",
+        ));
+    }
+    let max = crate::attachments::MAX_RAW_BYTES;
+    if provider == "google" {
+        let value = request(
+            api(
+                client,
+                mail,
+                reqwest::Method::GET,
+                &format!("/messages/{}?format=raw", component(id)),
+            )?,
+            max.div_ceil(3) * 4 + 65536,
+        )
+        .await?;
+        if value["id"] != id {
+            return Err(remote_error());
+        }
+        let bytes = URL_SAFE_NO_PAD
+            .decode(string(&value, "raw"))
+            .map_err(|_| remote_error())?;
+        if bytes.len() > max {
+            return Err(Error::new(
+                413,
+                "This message exceeds the 32 MiB download limit.",
+            ));
+        }
+        return Ok(bytes);
+    }
+    if provider != "microsoft" {
+        return Err(Error::invalid("Unsupported mailbox provider."));
+    }
+    let mut response = api(
+        client,
+        mail,
+        reqwest::Method::GET,
+        &format!("/messages/{}/$value", component(id)),
+    )?
+    .header("Prefer", "IdType=\"ImmutableId\"")
+    .send()
+    .await
+    .map_err(|_| network_error())?;
+    if !response.status().is_success() {
+        let mut error = remote_error();
+        error.provider_status = Some(response.status().as_u16());
+        return Err(error);
+    }
+    if response.content_length().is_some_and(|n| n > max as u64) {
+        return Err(Error::new(
+            413,
+            "This message exceeds the 32 MiB download limit.",
+        ));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|_| network_error())? {
+        if bytes.len() + chunk.len() > max {
+            return Err(Error::new(
+                413,
+                "This message exceeds the 32 MiB download limit.",
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
 pub fn component(value: &str) -> String {
     percent_encoding::utf8_percent_encode(value, percent_encoding::NON_ALPHANUMERIC).to_string()
 }
@@ -490,6 +567,7 @@ pub fn mime(raw: &[u8]) -> Result<Value> {
     result["bodyHtml"] = body_html.into();
     result["bodyTruncated"] = truncated.into();
     result["replyTo"] = address_text(parsed.reply_to()).into();
+    result["hasAttachments"] = (parsed.attachments().next().is_some()).into();
     Ok(result)
 }
 fn bounded_body(body: &str) -> (String, bool) {
@@ -534,6 +612,7 @@ pub fn normalize_google(message: &Value) -> Result<Value> {
     }
     raw.push_str("\r\n");
     let mut result = mime(raw.as_bytes())?;
+    result["hasAttachments"] = false.into();
     let mut stack = vec![&message["payload"]];
     let mut plain = Vec::new();
     let mut html = Vec::new();
@@ -542,11 +621,18 @@ pub fn normalize_google(message: &Value) -> Result<Value> {
     let mut html_truncated = false;
     let mut count = 0;
     while let Some(part) = stack.pop() {
+        if !string(part, "filename").is_empty()
+            || !string(&part["body"], "attachmentId").is_empty()
+            || string(part, "mimeType").starts_with("image/")
+        {
+            result["hasAttachments"] = true.into();
+        }
         count += 1;
         if count > 2000 {
             return Err(remote_error());
         }
         if !string(part, "filename").is_empty()
+            || !string(&part["body"], "attachmentId").is_empty()
             || part["headers"].as_array().is_some_and(|h| {
                 h.iter().any(|h| {
                     string(h, "name").eq_ignore_ascii_case("content-disposition")
@@ -685,6 +771,8 @@ pub fn normalize_microsoft(message: &Value) -> Result<Value> {
     }
     result["bodyHtml"] = body_html.into();
     result["bodyTruncated"] = truncated.into();
+    result["hasAttachments"] =
+        (message["hasAttachments"] == true || string(&result, "bodyHtml").contains("cid:")).into();
     Ok(result)
 }
 pub(crate) async fn google_list(client: &Client, mail: &Value, options: &Value) -> Result<Value> {
@@ -749,7 +837,10 @@ pub(crate) async fn google_fetch_page(
     fetched: &mut HashMap<String, Value>,
 ) -> Result<Value> {
     let entries = list["messages"].as_array().cloned().unwrap_or_default();
-    let label_names: HashMap<String, String> = if entries.is_empty() {
+    let label_names: HashMap<String, String> = if entries
+        .iter()
+        .all(|item| fetched.contains_key(string(item, "id")))
+    {
         HashMap::new()
     } else {
         google_labels(client, mail)
@@ -891,7 +982,7 @@ pub async fn fetch_page(client: &Client, mail: &Value, options: &Value) -> Resul
         });
     let path = format!("/v1.0/me/mailFolders/{}/messages", component(identity));
     let mut url = url::Url::parse(&format!("https://graph.microsoft.com{path}")).unwrap();
-    url.query_pairs_mut().extend_pairs([("$top","50"),("$orderby",&format!("{date} desc")),("$select","id,from,sender,replyTo,toRecipients,ccRecipients,bccRecipients,subject,body,receivedDateTime,sentDateTime,createdDateTime,isDraft,isRead,flag,internetMessageId,internetMessageHeaders")]);
+    url.query_pairs_mut().extend_pairs([("$top","50"),("$orderby",&format!("{date} desc")),("$select","id,hasAttachments,from,sender,replyTo,toRecipients,ccRecipients,bccRecipients,subject,body,receivedDateTime,sentDateTime,createdDateTime,isDraft,isRead,flag,internetMessageId,internetMessageHeaders")]);
     let mut filters = Vec::new();
     for (key, operator) in [("since", "ge"), ("before", "lt")] {
         if !string(options, key).is_empty() {
@@ -1107,7 +1198,38 @@ pub fn compose(mail: &Value, message: &Value, keep_bcc: bool) -> Result<(lettre:
         builder = builder.keep_bcc();
     }
     let (text, html) = content::message_content(message)?;
-    let message = if let Some(html) = html {
+    let attachments = message["attachments"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let message = if !attachments.is_empty() {
+        let mixed = lettre::message::MultiPart::mixed();
+        let mut parts = if let Some(html) = html {
+            mixed.multipart(lettre::message::MultiPart::alternative_plain_html(
+                text, html,
+            ))
+        } else {
+            mixed.singlepart(lettre::message::SinglePart::plain(text))
+        };
+        for attachment in attachments {
+            let bytes = STANDARD
+                .decode(string(&attachment, "data"))
+                .map_err(|_| Error::invalid("Attachment data is unavailable."))?;
+            if attachment.get("data").is_none() || bytes.len() > crate::attachments::MAX_BYTES {
+                return Err(Error::invalid(
+                    "Attachment data is unavailable or too large.",
+                ));
+            }
+            let mime = string(&attachment, "contentType")
+                .parse()
+                .map_err(|_| Error::invalid("Invalid attachment type."))?;
+            parts = parts.singlepart(
+                lettre::message::Attachment::new(string(&attachment, "name").to_owned())
+                    .body(bytes, mime),
+            );
+        }
+        builder.multipart(parts)
+    } else if let Some(html) = html {
         builder.multipart(lettre::message::MultiPart::alternative_plain_html(
             text, html,
         ))
@@ -1117,9 +1239,104 @@ pub fn compose(mail: &Value, message: &Value, keep_bcc: bool) -> Result<(lettre:
     .map_err(|_| Error::invalid("This email could not be composed."))?;
     Ok((message, id))
 }
+async fn send_large_outlook(client: &Client, mail: &Value, message: &Value) -> Result<String> {
+    if !can_organize(mail) {
+        return Err(Error::invalid(
+            "Reconnect Outlook with mail organization permission before sending large attachments.",
+        ));
+    }
+    let mut base = message.clone();
+    base.as_object_mut().unwrap().remove("attachments");
+    let (mime, id) = compose(mail, &base, true)?;
+    let draft = request(
+        api(client, mail, reqwest::Method::POST, "/messages")?
+            .header("Prefer", "IdType=\"ImmutableId\"")
+            .header("Content-Type", "text/plain")
+            .body(STANDARD.encode(mime.formatted())),
+        1024 * 1024,
+    )
+    .await?;
+    let remote = string(&draft, "id");
+    if remote.is_empty() || remote.len() > 4096 || draft["isDraft"] != true {
+        return Err(remote_error());
+    }
+    let path = format!("/messages/{}", component(remote));
+    for attachment in message["attachments"].as_array().unwrap() {
+        let data = STANDARD
+            .decode(string(attachment, "data"))
+            .map_err(|_| remote_error())?;
+        if data.len() < 3 * 1024 * 1024 {
+            request(api(client,mail,reqwest::Method::POST,&format!("{path}/attachments"))?.json(&json!({"@odata.type":"#microsoft.graph.fileAttachment","name":attachment["name"],"contentType":attachment["contentType"],"contentBytes":attachment["data"]})),1024*1024).await?;
+        } else {
+            let session=request(api(client,mail,reqwest::Method::POST,&format!("{path}/attachments/createUploadSession"))?.json(&json!({"AttachmentItem":{"attachmentType":"file","name":attachment["name"],"size":data.len(),"contentType":attachment["contentType"]}})),65536).await?;
+            let url = outlook_upload_url(string(&session, "uploadUrl"))?;
+            if session["nextExpectedRanges"] != json!(["0-"]) {
+                return Err(remote_error());
+            }
+            let mut offset = 0;
+            for chunk in data.chunks(10 * 320 * 1024) {
+                let end = offset + chunk.len();
+                // The provider URL is already authorized. Never forward the Graph bearer or follow redirects.
+                let response = client
+                    .put(url.clone())
+                    .header("Content-Type", "application/octet-stream")
+                    .header(
+                        "Content-Range",
+                        format!("bytes {}-{}/{}", offset, end - 1, data.len()),
+                    )
+                    .body(chunk.to_vec())
+                    .send()
+                    .await
+                    .map_err(|_| network_error())?;
+                let expected = if end == data.len() { 201 } else { 200 };
+                if response.status().as_u16() != expected {
+                    return Err(remote_error());
+                }
+                let next = response_json(response, 65536).await?;
+                if end != data.len() && next["nextExpectedRanges"] != json!([format!("{end}-")]) {
+                    return Err(remote_error());
+                }
+                offset = end;
+            }
+        }
+    }
+    request(
+        api(client, mail, reqwest::Method::POST, &format!("{path}/send"))?,
+        65536,
+    )
+    .await?;
+    Ok(id)
+}
+fn outlook_upload_url(raw: &str) -> Result<url::Url> {
+    let url = url::Url::parse(raw).map_err(|_| remote_error())?;
+    if raw.len() > 16384
+        || url.scheme() != "https"
+        || url.host_str() != Some("outlook.office.com")
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || !url.path().starts_with("/api/")
+        || !url.path().contains("/AttachmentSessions(")
+    {
+        return Err(remote_error());
+    }
+    Ok(url)
+}
 pub async fn send(client: &Client, mail: &Value, message: &Value) -> Result<String> {
     let provider = string(mail, "provider");
     definition(provider)?;
+    if provider == "microsoft"
+        && message["attachments"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|a| a["size"].as_u64().unwrap_or(0))
+            .sum::<u64>()
+            > 2 * 1024 * 1024
+    {
+        return send_large_outlook(client, mail, message).await;
+    }
     let (message, id) = compose(mail, message, true)?;
     let raw = message.formatted();
     let outgoing = if provider == "google" {

@@ -96,6 +96,11 @@ jobs:
       - name: Native fixture walkthrough
         shell: pwsh
         run: ./scripts/test-windows-native.ps1 -UiSmoke
+      - name: Verify relocated package with Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+          ./scripts/test-windows-clean.ps1 -PackageDirectory 'build/windows-native/Morrow Mail-win32-x64' -FixtureHelper 'rust/target/debug/examples/native_fixture.exe' -ReportPath "$PWD/test-results/windows-native-relocated.json"
       - name: Measure native Windows service with fictional mail
         if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         shell: pwsh
@@ -121,6 +126,15 @@ jobs:
             ~/.cargo/registry
             rust/target
           key: ${{ steps.rust-cache.outputs.cache-primary-key }}
+      - name: Retain separate clean-machine QA helper
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-clean-qa
+          path: |
+            rust/target/debug/examples/native_fixture.exe
+            scripts/test-windows-clean.ps1
+          retention-days: 3
       - name: Retain candidate evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

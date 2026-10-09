@@ -68,6 +68,7 @@ struct Draft: Identifiable, Equatable {
     var requestID = UUID().uuidString
     var to = "", cc = "", bcc = "", subject = "", body = "", replyToID = ""
     var footer: JSON = .null
+    var attachments: [JSON] = []
     var unconfirmed = false
     var forwarding = false
     var sourceDraft = false
@@ -79,6 +80,7 @@ struct Draft: Identifiable, Equatable {
     var payload: JSON {
         var value: [String: JSON] = ["to": .string(to), "cc": .string(cc), "bcc": .string(bcc), "subject": .string(subject), "body": .string(body)]
         if !footer.isNull { value["footer"] = footer }
+        value["attachments"] = .array(attachments)
         if !savedID.isEmpty { value["id"] = .string(savedID) }
         if !replyToID.isEmpty { value["replyToId"] = .string(replyToID) }
         return .object(value)
@@ -91,6 +93,7 @@ struct Draft: Identifiable, Equatable {
         replyToID = message["replyToId"].string
         unconfirmed = message["deliveryStatus"].string == "unconfirmed"
         if message["deliveryRequestId"].nonempty { requestID = message["deliveryRequestId"].string }
+        attachments = message["attachments"].array
         scheduledSend = message["scheduledSend"]
     }
     init(prepared: JSON) throws {
@@ -100,6 +103,7 @@ struct Draft: Identifiable, Equatable {
         to = prepared["to"].string; cc = prepared["cc"].string; bcc = prepared["bcc"].string
         subject = prepared["subject"].string; body = prepared["body"].string
         replyToID = prepared["replyToId"].string
+        attachments = prepared["attachments"].array
         forwarding = prepared["forwarding"].bool; sourceDraft = prepared["sourceDraft"].bool
     }
 }

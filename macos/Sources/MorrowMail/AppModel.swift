@@ -405,7 +405,7 @@ final class AppModel: ObservableObject {
             let firstOpen = openedMessage != id
             openedMessage = id
             let mailbox = accounts.first { $0.id == row["accountId"].string }
-            let canMarkRead = mailbox?["provider"].string != "microsoft" || mailbox?["settings"]["canOrganize"].bool == true
+            let canMarkRead = !["microsoft", "google"].contains(mailbox?["provider"].string ?? "") || mailbox?["settings"]["canOrganize"].bool == true
             if firstOpen && canMarkRead && !messageDetail["providerDeleted"].bool && preferences["markReadOnOpen"].bool && !messageDetail["read"].bool && messageDetail["folder"].string != "drafts" {
                 do {
                     let updated = try await request("/messages/" + encodedPath(row.id), method: "PATCH", body: .object(["read": .bool(true)]), mailbox: row["accountId"].string)

@@ -167,7 +167,11 @@ pub fn sanitize(input: &str) -> String {
         )
         .link_rel(Some("noreferrer noopener"))
         .set_tag_attribute_value("a", "target", "_blank")
-        .url_schemes(["http", "https", "mailto", "tel"].into_iter().collect())
+        .url_schemes(
+            ["http", "https", "mailto", "tel", "cid"]
+                .into_iter()
+                .collect(),
+        )
         .url_relative(ammonia::UrlRelative::Deny)
         .attribute_filter(|tag, key, value| match key {
             "style" => {
@@ -176,6 +180,16 @@ pub fn sanitize(input: &str) -> String {
             }
             "href" if safe_url(value, false) => Some(value.into()),
             "src" if safe_url(value, true) => Some(value.into()),
+            "src"
+                if tag == "img"
+                    && value.starts_with("cid:")
+                    && value.len() <= 516
+                    && !value
+                        .chars()
+                        .any(|c| c.is_control() || matches!(c, '<' | '>' | '"' | '\'')) =>
+            {
+                Some(value.into())
+            }
             "alt" => Some(value.into()),
             "width" | "height" if dimension(value, 2048) => Some(value.into()),
             "colspan" | "rowspan" if dimension(value, 100) => Some(value.into()),
