@@ -121,6 +121,9 @@ fn attachment_inputs_and_tampered_bytes_fail_closed() {
     ] {
         assert!(attachments::references(&bad).is_err());
     }
+    let unicode =
+        attachments::save(&db, "owner", &"附📎".repeat(100), "text/plain", "", b"safe").unwrap();
+    assert!(unicode["name"].as_str().unwrap().len() <= 180);
     let item = attachments::save(&db, "owner", "CON.txt", "text/html;evil", "", b"safe").unwrap();
     assert_eq!(item["name"], "_CON.txt");
     assert_eq!(item["contentType"], "application/octet-stream");

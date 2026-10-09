@@ -20,7 +20,8 @@ pub const MAX_RAW_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_COUNT: usize = 100;
 
 fn filename(name: &str) -> String {
-    let safe: String = name.chars().filter(|c| !c.is_control() && !matches!(c, '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')).take(180).collect();
+    let mut safe: String = name.chars().filter(|c| !c.is_control() && !matches!(c, '/' | '\\' | ':' | '<' | '>' | '"' | '|' | '?' | '*' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')).take(180).collect();
+    safe.truncate(safe.floor_char_boundary(180));
     let safe = safe.trim_matches([' ', '.']);
     let stem = safe
         .split('.')
