@@ -204,7 +204,7 @@ struct MailWorkspace: View {
             }
                 .accessibilityLabel(model.updateAvailable ? "Settings & connections, update available" : "Settings & connections")
                 .help(model.updateAvailable ? "A new version is available. Open App updates." : "Settings & connections")
-                .buttonStyle(.plain).disabled(model.busy).frame(maxWidth: .infinity, alignment: .leading).padding(18).fixedSize(horizontal: false, vertical: true)
+                .buttonStyle(.plain).frame(maxWidth: .infinity, alignment: .leading).padding(18).fixedSize(horizontal: false, vertical: true)
         }
     }
     private var syncButton: some View {

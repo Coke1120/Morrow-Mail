@@ -73,8 +73,8 @@ final class AppModel: ObservableObject {
     @Published var studioTab = "tools"
     @Published var readerAssistant: JSON?
     @Published var unsavedForms = Set<String>()
-    private(set) var restartingForUpdate = false
-    private var preparingUpdateRestart = false
+    @Published private(set) var restartingForUpdate = false
+    @Published private(set) var preparingUpdateRestart = false
     private var process: Process?
     private var input: Pipe?
     private var output: Pipe?
@@ -157,7 +157,7 @@ final class AppModel: ObservableObject {
         switch preferences["theme"].string { case "light": return .light; case "dark": return .dark; default: return nil }
     }
     var updateHasUnsavedChanges: Bool { !unsavedForms.subtracting(["search-request"]).isEmpty || compose != nil }
-    var canNavigate: Bool { !busy && unsavedForms.isEmpty && compose == nil && organizing == nil && managingFolders == nil && readerAssistant == nil && !showSettings }
+    var canNavigate: Bool { !preparingUpdateRestart && !restartingForUpdate && !busy && unsavedForms.isEmpty && compose == nil && organizing == nil && managingFolders == nil && readerAssistant == nil && !showSettings }
 
     func start() async {
         guard !launching else { return }
@@ -446,7 +446,7 @@ final class AppModel: ObservableObject {
         }
     }
     func perform(_ work: @escaping @MainActor () async throws -> Void) {
-        guard !busy else { return }
+        guard !busy, !preparingUpdateRestart, !restartingForUpdate else { return }
         busy = true; error = ""
         Task {
             defer { busy = false }
@@ -671,7 +671,7 @@ final class AppModel: ObservableObject {
         catch { self.error = error.localizedDescription }
     }
     func newDraft(_ value: Draft? = nil) {
-        guard !busy, compose == nil, organizing == nil, readerAssistant == nil, !showSettings else { return }
+        guard !busy, !preparingUpdateRestart, !restartingForUpdate, compose == nil, organizing == nil, readerAssistant == nil, !showSettings else { return }
         guard unsavedForms.isEmpty else { notice = "Save your current changes before opening a new draft."; return }
         var draft = value ?? Draft()
         guard (draft.replyToID.isEmpty && !draft.forwarding && !draft.sourceDraft) || !draft.accountID.isEmpty else { error = "The original mailbox is unavailable. Reopen the original message."; return }
@@ -687,6 +687,7 @@ final class AppModel: ObservableObject {
         compose = draft
     }
     func settings(_ tab: String = "start") {
+        guard !preparingUpdateRestart, !restartingForUpdate else { return }
         guard compose == nil, readerAssistant == nil, unsavedForms.subtracting(["settings"]).isEmpty else { notice = "Close AI assistance or save your current changes before opening Settings."; return }
         settingsTab = tab; showSettings = true
     }

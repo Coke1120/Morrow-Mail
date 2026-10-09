@@ -89,7 +89,8 @@ struct NativeSettingsView: View {
                 idealHeight: min(760, (NSScreen.main?.visibleFrame.height ?? 850) - 100),
                 maxHeight: (NSScreen.main?.visibleFrame.height ?? 850) - 100)
         .textFieldStyle(.roundedBorder)
-        .interactiveDismissDisabled(dirty || model.busy || searchRequestBusy || preferenceSaving)
+        .disabled(model.preparingUpdateRestart || model.restartingForUpdate)
+        .interactiveDismissDisabled(dirty || model.busy || searchRequestBusy || preferenceSaving || model.preparingUpdateRestart)
         .onAppear { initialize(); visible = true; advancedSettings = advancedTabs.contains { $0.0 == model.settingsTab } }
         .onChange(of: model.settingsTab) { tab in if advancedTabs.contains(where: { $0.0 == tab }) { advancedSettings = true } }
         .onChange(of: searchDirty) { _ in model.dirty("settings", dirty) }
