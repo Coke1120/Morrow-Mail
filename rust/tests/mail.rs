@@ -141,20 +141,38 @@ fn remote_read_changes_replace_stale_flags_without_losing_local_edits_or_owners(
             mail::import_messages(&db, &connection, std::slice::from_ref(&message)).unwrap();
             assert_eq!(
                 db.get(owner, &id).unwrap().unwrap()["read"],
-                !initial,
-                "{provider}: unchanged server keeps local edit"
+                if provider == "microsoft" {
+                    initial
+                } else {
+                    !initial
+                },
+                "{provider}: Outlook is authoritative; other providers retain local edits"
             );
             let mut partial = message.clone();
             partial.as_object_mut().unwrap().remove("read");
             mail::import_messages(&db, &connection, &[partial]).unwrap();
             let saved = db.get(owner, &id).unwrap().unwrap();
-            assert_eq!(saved["read"], !initial);
+            assert_eq!(
+                saved["read"],
+                if provider == "microsoft" {
+                    initial
+                } else {
+                    !initial
+                }
+            );
             assert_eq!(saved["providerSnapshot"]["read"], initial);
 
             drop(db);
             db = Store::open(&directory).unwrap();
             mail::import_messages(&db, &connection, std::slice::from_ref(&message)).unwrap();
-            assert_eq!(db.get(owner, &id).unwrap().unwrap()["read"], !initial);
+            assert_eq!(
+                db.get(owner, &id).unwrap().unwrap()["read"],
+                if provider == "microsoft" {
+                    initial
+                } else {
+                    !initial
+                }
+            );
             // Once the server catches up, its next change must not be hidden by an old override.
             mail::import_messages(&db, &connection, &[remote]).unwrap();
             mail::import_messages(&db, &connection, std::slice::from_ref(&message)).unwrap();
@@ -164,7 +182,11 @@ fn remote_read_changes_replace_stale_flags_without_losing_local_edits_or_owners(
                 "{provider}: obsolete override released"
             );
             for key in ["starred", "pending", "lowPriority"] {
-                assert_eq!(saved[key], true, "{provider}: retain {key}");
+                assert_eq!(
+                    saved[key],
+                    !(provider == "microsoft" && key == "starred"),
+                    "{provider}: retain {key}"
+                );
             }
             assert_eq!(db.get(other, &id).unwrap().unwrap(), untouched);
 
@@ -229,7 +251,7 @@ fn reimport_updates_provider_membership_without_losing_local_changes_or_other_ow
     assert_eq!(saved["folder"], "trash");
     assert_eq!(saved["body"], "Refreshed body");
     for key in ["read", "starred", "pending", "lowPriority"] {
-        assert_eq!(saved[key], true, "{key}");
+        assert_eq!(saved[key], !["read", "starred"].contains(&key), "{key}");
     }
     assert_eq!(saved["labels"], json!(["Local label"]));
     assert_eq!(db.get(other, "microsoft:same").unwrap().unwrap(), untouched);
@@ -275,7 +297,7 @@ fn imports_keep_owner_local_identity_and_delivery_fingerprint() {
     let saved = db.get("a@example.test", "microsoft:same").unwrap().unwrap();
     assert_eq!(saved["body"], "refreshed");
     assert_eq!(saved["folder"], "archive");
-    assert_eq!(saved["read"], true);
+    assert_eq!(saved["read"], false);
     assert!(
         db.get("a@example.test", "microsoft:moved")
             .unwrap()

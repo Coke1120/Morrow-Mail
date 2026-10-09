@@ -336,7 +336,8 @@ void general(Page const& p) {
     title(f->panel, L"Appearance & reading");
     choice(f, L"theme", L"Theme", {{L"system", L"Match device"}, {L"light", L"Light"}, {L"dark", L"Dark"}});
     choice(f, L"density", L"Mail list density", {{L"comfortable", L"Comfortable"}, {L"compact", L"Compact"}, {L"spacious", L"Spacious"}});
-    toggle(f, L"markReadOnOpen", L"Mark mail as read when opened (local to Morrow)");
+    toggle(f, L"markReadOnOpen", L"Mark mail as read when opened");
+    help(f->panel, L"Outlook read/star changes sync with mail organization permission. Gmail/IMAP flags and Pending/Read Later stay local. Outlook change tracking and cached-mail checks resume at the configured sync interval.");
     toggle(f, L"autoLoadExternalImages", L"Automatically load external images (HTTPS)");
     help(f->panel, L"Applies to all mailboxes. Image servers may learn your IP address and that you opened an email. You can still hide images for individual messages.");
     title(f->panel, L"Mail sync");

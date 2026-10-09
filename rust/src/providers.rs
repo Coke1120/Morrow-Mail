@@ -93,6 +93,17 @@ async fn request_kind(request: RequestBuilder, limit: usize, oauth: bool) -> Res
                 _ => "oauth_refresh_failed",
             };
             error.body["code"] = code.into();
+        } else if [400, 404, 410].contains(&status) {
+            let body = response_json(response, 32768).await.unwrap_or(Value::Null);
+            if [
+                "syncStateNotFound",
+                "SyncStateNotFound",
+                "ErrorInvalidSyncStateData",
+            ]
+            .contains(&string(&body["error"], "code"))
+            {
+                error.body["code"] = "provider_sync_expired".into();
+            }
         } else if status == 403 {
             let body = response_json(response, 32768).await.unwrap_or(Value::Null);
             if let Some(code) = provider_quota_code(&body) {
@@ -997,27 +1008,30 @@ async fn microsoft_import_cursor(client: &Client, mail: &Value, cursor: &Value) 
     }
     Ok(cursor.clone())
 }
-// Only the two exact spellings for the already-resolved folder are equivalent.
-fn validated_folder_next(
+// Accept encoded segments and Graph's two path spellings only for this exact folder.
+pub(crate) fn validated_folder_next(
     next: &str,
     original: &url::Url,
     id: &str,
     collection: &str,
 ) -> Result<url::Url> {
-    validated_next(next, original)
-        .or_else(|_| {
-            let mut alias = original.clone();
-            alias.set_path(&format!(
-                "/v1.0/me/mailFolders('{}')/{collection}",
-                component(id)
-            ));
-            validated_next(next, &alias)
-        })
-        .or_else(|_| {
-            let mut alias = original.clone();
-            alias.set_path(&format!("/v1.0/me/mailFolders('{id}')/{collection}"));
-            validated_next(next, &alias)
-        })
+    if !valid_microsoft_folder_id(id) {
+        return Err(remote_error());
+    }
+    let parsed = url::Url::parse(next).map_err(|_| remote_error())?;
+    let path = percent_encoding::percent_decode_str(parsed.path())
+        .decode_utf8()
+        .map_err(|_| remote_error())?;
+    let valid = ["mailFolders", "mailfolders"].iter().any(|name| {
+        path == format!("/v1.0/me/{name}/{id}/{collection}")
+            || path == format!("/v1.0/me/{name}('{id}')/{collection}")
+    });
+    if !valid {
+        return Err(remote_error());
+    }
+    let mut equivalent = original.clone();
+    equivalent.set_path(parsed.path());
+    validated_next(next, &equivalent)
 }
 pub fn validated_mail_next(next: &str, original: &url::Url) -> Result<url::Url> {
     let equivalent = match original.path() {
@@ -1378,6 +1392,20 @@ async fn microsoft_folders(
                 folder["editable"] = false.into();
             }
         }
+    }
+    Ok(folders)
+}
+pub(crate) async fn microsoft_sync_folders(client: &Client, mail: &Value) -> Result<Vec<Value>> {
+    let mut folders = microsoft_folders(client, mail, true, false).await?;
+    for (alias, kind, name) in [
+        ("junkemail", "spam", "Junk"),
+        ("deleteditems", "trash", "Trash"),
+    ] {
+        let folder = get(client, mail, &format!("/mailFolders/{alias}?$select=id")).await?;
+        if !valid_microsoft_folder_id(string(&folder, "id")) {
+            return Err(remote_error());
+        }
+        folders.push(json!({"id":folder["id"],"kind":kind,"name":name}));
     }
     Ok(folders)
 }

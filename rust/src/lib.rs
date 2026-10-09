@@ -16,6 +16,7 @@ pub mod message_html;
 pub mod normalize;
 pub mod oauth;
 pub mod out_of_office;
+mod outlook;
 pub mod pages;
 pub mod policy;
 pub mod providers;

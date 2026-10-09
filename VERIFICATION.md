@@ -1,4 +1,12 @@
-# Verification — 8 October 2026
+# Verification — 9 October 2026
+
+## Beta.48 candidate — Sync and Outlook consistency — 2026-10-09
+
+The native sidebar has Sync beside Compose (also beside Compose with the macOS sidebar hidden); Today Sync All calls provider sync without changing the current mailbox. Outlook adds account/connection-bound delta checkpoints committed atomically with their messages, a rolling cached-message scan, authoritative server read/star flags, move-vs-delete resolution using immutable IDs and explicit flag writeback with Mail.ReadWrite. Permanent deletion retains cached content in local Trash. Local markers, drafts and delivery records remain; initial missing historical content stays with the independently pausable importer. Read/write failures never trigger send/calendar or flag-write replays. Each sync cycle refreshes newest Inbox/Sent, one delta page and up to 25 cached rows; continuing work requires configured polling or manual Sync.
+
+TLS-loopback fixtures cover duplicate IDs, stale local flags even when the provider baseline is unchanged, old cached mail, moves/deletions, restart/pagination, failed writes followed by read reconciliation, missing permission, malformed/cyclic/foreign cursors, expired tokens, provider quota and reconnect races. Native AppModel fixtures verify the actual sync route/header, Today scope, retained paging/selection, coalesced clicks and visible failures. Fictional sidebar captures at 200 and 230 points verify placement. These fixtures do not establish live Outlook acceptance.
+
+Rust 1.99 formatting, strict all-target Clippy and all 222 locked Rust tests passed (zero failed/ignored). After the final quota/local-folder refinements, the 32 affected mail/service/Activity tests and strict Clippy passed again. The macOS candidate built with Swift 6.3.3, passed deep/strict ad-hoc signature verification and Info.plist lint, and passed full production-service native acceptance, including the new manual-sync and read-only Outlook mark-on-open checks, retained page/selection, reader isolation/network-zero, window layout/lifecycle, encrypted persistence and online backup. The existing NSTableView reentrant-delegate warning appeared; no check failed. Windows compilation/UI smoke requires a Windows host and was not run locally. Beta.48 is prepared for the existing paired tagged workflow; both platforms and the publisher gate must pass before publication, with no waiver. No installed app was replaced. Jev review was attempted but unavailable because its API key is not configured.
 
 ## 0.6.0-beta.47 — published paired native release
 

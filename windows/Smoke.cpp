@@ -172,7 +172,9 @@ IAsyncAction Shell::smoke() {
                 : std::min({color.R, color.G, color.B}) > 220), L"Switching Light/Dark did not repaint the native shell background.");
         }
         root.RequestedTheme(requestedTheme);
-        check(composeButton.IsEnabled() == seeded, L"Compose does not reflect connected-account onboarding.");
+        check(composeButton.IsEnabled() == seeded && syncButton.IsEnabled() == seeded, L"Compose/Sync do not reflect connected-account onboarding.");
+        check(composeButton.Parent() == syncButton.Parent() && controls::Grid::GetColumn(syncButton) == 1,
+            L"Sync must sit beside Compose in the sidebar.");
         controls::NavigationViewItem combined{nullptr};
         for (auto const& value : navigation.MenuItems()) if (auto item = value.try_as<controls::NavigationViewItem>(); item && item.Tag()) {
             auto tag = item.Tag().as<Json>();
@@ -535,14 +537,18 @@ IAsyncAction Shell::smoke() {
                     do { co_await resume_after(std::chrono::milliseconds(20)); co_await ui; root.UpdateLayout(); }
                     while ((!item.ActualHeight() || std::abs(mailList.ActualWidth() - width) > 1) && GetTickCount64() < deadline);
                     auto listHeading = mailList.Children().GetAt(0).as<controls::StackPanel>();
-                    auto toolbar = listHeading.Children().GetAt(listHeading.Children().Size() - 1).as<controls::Grid>();
-                    auto deleteButton = toolbar.Children().GetAt(0).as<controls::StackPanel>().Children().GetAt(2).as<controls::Button>();
-                    auto refreshButton = toolbar.Children().GetAt(1).as<controls::Button>();
+                    auto toolbar = listHeading.Children().GetAt(listHeading.Children().Size() - 1).as<controls::StackPanel>();
+                    auto deleteButton = toolbar.Children().GetAt(2).as<controls::Button>();
+                    auto sidebarActions = syncButton.Parent().as<controls::Grid>();
                     auto deleteOrigin = deleteButton.TransformToVisual(toolbar).TransformPoint(Point{});
-                    auto refreshOrigin = refreshButton.TransformToVisual(toolbar).TransformPoint(Point{});
-                    check(deleteButton.ActualWidth() >= 28 && deleteOrigin.X + deleteButton.ActualWidth() <= refreshOrigin.X + 1
-                        && refreshOrigin.X + refreshButton.ActualWidth() <= toolbar.ActualWidth() + 1,
-                        L"The narrow mail toolbar overlaps Delete and Refresh or clips an action.");
+                    auto syncOrigin = syncButton.TransformToVisual(sidebarActions).TransformPoint(Point{});
+                    auto composeOrigin = composeButton.TransformToVisual(sidebarActions).TransformPoint(Point{});
+                    check(deleteButton.ActualWidth() >= 28 && deleteOrigin.X + deleteButton.ActualWidth() <= toolbar.ActualWidth() + 1
+                        && syncButton.ActualWidth() >= 40 && syncOrigin.X + syncButton.ActualWidth() <= sidebarActions.ActualWidth() + 1
+                        && composeOrigin.X + composeButton.ActualWidth() <= syncOrigin.X,
+                        L"The sidebar actions overlap or Sync/Delete is clipped.");
+                    check(unbox_value<hstring>(syncButton.Content()) == L"Sync" && xaml::Automation::AutomationProperties::GetAutomationId(syncButton) == L"mail.sync",
+                        L"The sidebar lost its labeled Sync button.");
                     check(xaml::Automation::AutomationProperties::GetName(deleteButton) == L"Delete selected messages",
                         L"The toolbar Delete icon lost its accessible action name.");
                     auto row = item.Content().as<controls::StackPanel>();
@@ -592,14 +598,16 @@ IAsyncAction Shell::smoke() {
                 check(dirty.empty(), L"Opening a saved page incorrectly created unsaved edits.");
                 if (std::wstring_view(target) == L"today") {
                     auto today = page.Content().as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
-                    controls::Button generate{nullptr}; controls::ComboBox mailbox{nullptr};
+                    controls::Button generate{nullptr}, sync{nullptr}; controls::ComboBox mailbox{nullptr};
                     for (auto const& child : today.Children()) if (auto actions = child.try_as<controls::StackPanel>()) {
                         for (auto const& control : actions.Children()) {
                             if (auto choice = control.try_as<controls::ComboBox>()) mailbox = choice;
                             if (auto action = control.try_as<controls::Button>(); action && unbox_value<hstring>(action.Content()) == L"Summarize now") generate = action;
+                            if (auto action = control.try_as<controls::Button>(); action && xaml::Automation::AutomationProperties::GetAutomationId(action) == L"mail.syncAll") sync = action;
                         }
                     }
                     check(generate && generate.IsEnabled() && mailbox && mailbox.Items().Size() == array(state, L"accounts").Size(), L"Today lost its explicit summary action or mailbox scope.");
+                    check(sync && sync.IsEnabled() && unbox_value<hstring>(sync.Content()) == L"Sync All", L"Today lost its labeled Sync All button.");
                     for (auto const& value : mailbox.Items()) check(connected(unbox_value<hstring>(value.as<controls::ComboBoxItem>().Tag())), L"Today offers a combined or internal Demo AI identity.");
                     check(connected(todaySummaryOwner), L"Today did not retain an individual summary mailbox.");
                 }

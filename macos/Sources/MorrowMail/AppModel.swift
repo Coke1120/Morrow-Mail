@@ -16,6 +16,7 @@ final class AppModel: ObservableObject {
         }
     }
     @Published var busy = false
+    @Published private(set) var syncing = false
     @Published var starting = true
     @Published var error = ""
     @Published var notice = ""
@@ -403,10 +404,14 @@ final class AppModel: ObservableObject {
             else { retainReadRow(messageDetail) }
             let firstOpen = openedMessage != id
             openedMessage = id
-            if firstOpen && preferences["markReadOnOpen"].bool && !messageDetail["read"].bool && messageDetail["folder"].string != "drafts" {
-                let updated = try await request("/messages/" + encodedPath(row.id), method: "PATCH", body: .object(["read": .bool(true)]), mailbox: row["accountId"].string)
-                if selectedMessage == id { retainReadRow(updated["message"]); messageDetail = updated["message"] }
-                try await reload()
+            let mailbox = accounts.first { $0.id == row["accountId"].string }
+            let canMarkRead = mailbox?["provider"].string != "microsoft" || mailbox?["settings"]["canOrganize"].bool == true
+            if firstOpen && canMarkRead && !messageDetail["providerDeleted"].bool && preferences["markReadOnOpen"].bool && !messageDetail["read"].bool && messageDetail["folder"].string != "drafts" {
+                do {
+                    let updated = try await request("/messages/" + encodedPath(row.id), method: "PATCH", body: .object(["read": .bool(true)]), mailbox: row["accountId"].string)
+                    if selectedMessage == id { retainReadRow(updated["message"]); messageDetail = updated["message"] }
+                    try await reload()
+                } catch { if selectedMessage == id { self.error = error.localizedDescription } }
             }
         } catch { if !Task.isCancelled, selectedMessage == id { messageDetail = .null; self.error = error.localizedDescription } }
     }
@@ -476,11 +481,21 @@ final class AppModel: ObservableObject {
         return owner["settings"] == request["connection"]
     }
     func sync() async throws {
-        state = try await request("/sync", method: "POST", body: .object([:]))
-        let failures = state["syncErrors"].array.map { item in
+        guard hasMailbox, !syncing else { return }
+        let view = account, scope = section == "today" ? "all" : account
+        let generation = stateGeneration
+        syncing = true; notice = "Syncing mail…"
+        defer { syncing = false; if notice == "Syncing mail…" { notice = "" } }
+        let result = try await request("/sync", method: "POST", body: .object([:]), mailbox: scope)
+        guard !Task.isCancelled, generation == stateGeneration else { return }
+        var next = result
+        if scope != view { next = try await request("/state", mailbox: view) }
+        guard !Task.isCancelled, generation == stateGeneration else { return }
+        state = next
+        let failures = result["syncErrors"].array.map { item in
             item["accountId"].string + ": " + item["error"].string + (item["nextRetryAt"].nonempty ? " Next retry: \(dateLabel(item["nextRetryAt"].string))." : "")
         }
-        notice = failures.isEmpty ? "Recent mail refreshed. Older mail follows the import range in Settings; see Activity for progress." : "Some accounts could not sync: " + failures.joined(separator: "; ")
+        notice = failures.isEmpty ? "Sync cycle finished. Outlook changes and cached-mail checks continue at the sync interval in Settings." : "Some accounts could not sync: " + failures.joined(separator: "; ")
     }
     func preference(_ key: String, _ value: String) {
         perform { self.state = try await self.request("/settings/preferences", method: "POST", body: .object([key: .string(value)])) }

@@ -162,6 +162,7 @@ impl Runtime {
                 } else {
                     match string(sync, "code") {
                         "oauth_reconnect_required" => "Mailbox authorization is no longer valid. Reconnect this account in Settings; downloaded mail is retained.",
+                        "outlook_sync_invalid" => "Outlook returned an invalid sync checkpoint. Reconnect this account in Settings to restart change tracking; downloaded mail is retained.",
                         "oauth_configuration" => "The provider rejected the OAuth app configuration. Check this account's OAuth client settings in Settings.",
                         "oauth_refresh_failed" => "Could not refresh mailbox authorization. Check your connection and refresh recent mail again; saved credentials are retained.",
                         _ => "Recent mail could not be fully refreshed. Check the connection and import settings, then refresh again; downloaded mail is retained.",

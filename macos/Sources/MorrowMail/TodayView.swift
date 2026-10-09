@@ -11,7 +11,8 @@ struct TodayView: View {
                 VStack(alignment: .leading, spacing: 22) {
                     HStack(alignment: .top) {
                         SectionHeading(title: "Today", detail: context.date.formatted(date: .complete, time: .omitted) + " · " + TimeZone.current.identifier)
-                        Button { model.perform { try await model.reload() } } label: { Label("Refresh", systemImage: "arrow.clockwise") }.disabled(!model.canNavigate)
+                        Button { model.perform { try await model.sync() } } label: { Label(model.syncing ? "Syncing…" : "Sync All", systemImage: "arrow.clockwise") }
+                            .disabled(!model.canNavigate || !model.hasMailbox).help("Sync recent mail from all connected accounts (⌘R)").accessibilityIdentifier("mail.syncAll")
                     }
                     Label("All connected accounts", systemImage: "person.2").font(.callout).foregroundStyle(.secondary)
                     HStack(spacing: 14) {

@@ -329,7 +329,15 @@ IAsyncAction Shell::start() {
     });
     composeButton.HorizontalAlignment(HorizontalAlignment::Stretch); composeButton.IsEnabled(false);
     composeButton.Style(Application::Current().Resources().Lookup(box_value(L"AccentButtonStyle")).as<Style>());
-    brand.Children().Append(composeButton); navigation.PaneHeader(brand);
+    Grid mailboxActions; mailboxActions.ColumnSpacing(8); mailboxActions.ColumnDefinitions().Append(ColumnDefinition());
+    ColumnDefinition syncColumn; syncColumn.Width(GridLengthHelper::Auto()); mailboxActions.ColumnDefinitions().Append(syncColumn);
+    mailboxActions.Children().Append(composeButton);
+    syncButton = button(L"Sync", [weak = weak_from_this()] { if (auto self = weak.lock()) self->sync(); });
+    syncButton.IsEnabled(false);
+    Automation::AutomationProperties::SetAutomationId(syncButton, L"mail.sync");
+    ToolTipService::SetToolTip(syncButton, box_value(L"Sync recent mail in the current account view (Ctrl+R); Today syncs all accounts. Outlook continues saved change tracking; other providers refresh recent mail."));
+    Grid::SetColumn(syncButton, 1); mailboxActions.Children().Append(syncButton);
+    brand.Children().Append(mailboxActions); navigation.PaneHeader(brand);
     folderFilter = field(L"Filter labels / folders"); folderFilter.Header(nullptr); folderFilter.PlaceholderText(L"Filter labels / folders");
     folderFilter.HorizontalAlignment(HorizontalAlignment::Stretch); brand.Children().Append(folderFilter);
     folderFilter.TextChanged([weak = weak_from_this()](auto const&, auto const&) {
@@ -506,6 +514,7 @@ void Shell::rebuildNavigation() {
         if (!id.empty() && id != L"demo" && id != L"all") accounts.push_back(account);
     }
     composeButton.IsEnabled(!accounts.empty());
+    syncButton.IsEnabled(!accounts.empty() && !syncing);
     auto accountGroup = [&](hstring const& id, hstring const& title, hstring const& subtitle) {
         auto item = navItem(title, L"mail", id, L"inbox", id == L"all" ? L"\uE8F1" : L"\uE715");
         item.SelectsOnInvoked(false);
@@ -708,12 +717,7 @@ void Shell::mailPage() {
     sorting.SelectionChanged([weak](auto const&, auto const&) { if (auto self = weak.lock(); self && !self->loading) { self->retainedUnread = Json(); self->cursors = {L""}; self->loadPage(); } });
     toolbar.Children().Append(sorting);
     toolbar.Children().Append(iconButton(L"\uE74D", L"Delete selected messages", [weak] { if (auto self = weak.lock()) self->trashMessages(self->selectedMessages()); }));
-    Grid toolbarRow; toolbarRow.ColumnDefinitions().Append(ColumnDefinition());
-    ColumnDefinition syncColumn; syncColumn.Width(GridLengthHelper::Auto()); toolbarRow.ColumnDefinitions().Append(syncColumn);
-    toolbarRow.Children().Append(toolbar);
-    auto syncButton = iconButton(L"\uE72C", L"Refresh recent mail — older downloaded messages may not be checked", [weak] { if (auto self = weak.lock()) self->sync(); });
-    Grid::SetColumn(syncButton, 1); toolbarRow.Children().Append(syncButton);
-    heading.Children().Append(toolbarRow); list.Children().Append(heading);
+    heading.Children().Append(toolbar); list.Children().Append(heading);
     rows = ListView(); rows.SelectionMode(ListViewSelectionMode::Extended);
     Automation::AutomationProperties::SetName(rows, L"Mail list");
     rows.SelectionChanged([weak](auto const&, SelectionChangedEventArgs const&) {
@@ -852,7 +856,7 @@ IAsyncAction Shell::loadPage() {
             auto subject = label(text(message, L"subject", L"(No subject)"), 13, false); subject.MaxLines(1); subject.TextTrimming(TextTrimming::CharacterEllipsis); bold(subject, unread); subjectLine.Children().Append(subject);
             auto markers = label((flag(message, L"starred") ? hstring(L"★  ") : hstring{}) + (unread ? L"●" : L""), 14, false); Grid::SetColumn(markers, 1); subjectLine.Children().Append(markers);
             auto quick = actions(); quick.Spacing(2); quick.Visibility(Visibility::Collapsed);
-            quick.Children().Append(iconButton(unread ? L"\uE8C3" : L"\uE715", unread ? L"Mark read locally" : L"Mark unread locally", [weak, message, unread] {
+            quick.Children().Append(iconButton(unread ? L"\uE8C3" : L"\uE715", unread ? L"Mark read" : L"Mark unread", [weak, message, unread] {
                 if (auto self = weak.lock()) { Json changes; changes.Insert(L"read", Value::CreateBooleanValue(unread)); self->patch(message, changes); }
             }));
             auto replyAll = iconButton(L"\uE8A6", L"Reply all", [weak, message] { if (auto self = weak.lock()) self->prepare(message, L"replyAll"); });
@@ -952,7 +956,12 @@ IAsyncAction Shell::read(Json metadata, bool markOnOpen) {
         if (hadRetained) retainedUnread = Json();
         if (text(message, L"folder") == L"drafts" && !flag(message, L"providerDraft")) { co_await compose(lifetime, message); co_return; }
         readerFocused = true; applyMailLayout(); renderReader(message);
-        if (markOnOpen && !flag(message, L"read") && flag(object(object(state, L"settings"), L"preferences"), L"markReadOnOpen")) {
+        bool canMarkRead = !flag(message, L"providerDeleted");
+        for (auto const& item : array(state, L"accounts")) {
+            auto entry = item.GetObject();
+            if (text(entry, L"id") == account && text(entry, L"provider") == L"microsoft" && !flag(object(entry, L"settings"), L"canOrganize")) canMarkRead = false;
+        }
+        if (markOnOpen && canMarkRead && !flag(message, L"read") && flag(object(object(state, L"settings"), L"preferences"), L"markReadOnOpen")) {
             Json changes; changes.Insert(L"read", Value::CreateBooleanValue(true));
             auto updated = co_await service->request(L"/messages/" + escaped(id), account, L"PATCH", changes);
             if (!current(version, captured) || sequence != selectionGeneration || requestGeneration != readGeneration) co_return;
@@ -1065,7 +1074,7 @@ MenuFlyout Shell::mailActionsMenu(Json message) {
         remove.IsEnabled(enabled && std::all_of(messages.begin(), messages.end(), [&](auto const& row) { return self->canTrash(row); }));
         remove.Click([weak, messages](auto const&, auto const&) { if (auto self = weak.lock()) self->trashMessages(messages); }); menu.Items().Append(remove);
         menu.Items().Append(MenuFlyoutSeparator());
-        for (auto const& choice : {std::tuple{L"Mark read locally", L"read", true}, {L"Mark unread locally", L"read", false}, {L"Star", L"starred", true}, {L"Unstar", L"starred", false}, {L"Mark Pending", L"pending", true}, {L"Clear Pending", L"pending", false}}) {
+        for (auto const& choice : {std::tuple{L"Mark read", L"read", true}, {L"Mark unread", L"read", false}, {L"Star", L"starred", true}, {L"Unstar", L"starred", false}, {L"Mark Pending", L"pending", true}, {L"Clear Pending", L"pending", false}}) {
             MenuFlyoutItem item; item.Text(std::get<0>(choice)); item.IsEnabled(enabled);
             item.Click([weak, messages, key = hstring(std::get<1>(choice)), value = std::get<2>(choice)](auto const&, auto const&) {
                 if (auto self = weak.lock()) { Json changes; changes.Insert(key, Value::CreateBooleanValue(value)); self->patchMessages(messages, changes); }
@@ -1228,14 +1237,16 @@ IAsyncAction Shell::messageAI(Json message, hstring action, bool history) {
 }
 IAsyncAction Shell::sync() {
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
-    if ((!connected(captured) && captured != L"all") || service->writing()) co_return;
-    error(L"Refreshing recent mail… Older downloaded messages may not be checked. See Activity for progress.");
+    if ((!connected(captured) && captured != L"all") || service->writing() || syncing || dialogOpen || !dirty.empty()) co_return;
+    syncing = true; syncButton.IsEnabled(false);
+    error(L"Syncing mail… See Activity for progress.");
     try {
-        auto result = co_await service->request(L"/sync", captured, L"POST");
-        if (!current(version, captured)) co_return;
+        auto result = co_await service->request(L"/sync", section == L"today" ? L"all" : captured, L"POST");
+        if (!current(version, captured)) { syncing = false; syncButton.IsEnabled(array(state, L"accounts").Size() > 0); co_return; }
         state = result;
         co_await refresh(true); if (section == L"mail") co_await loadPage();
     } catch (...) { error(errorText()); }
+    syncing = false; syncButton.IsEnabled(array(state, L"accounts").Size() > 0);
 }
 void Shell::updateBadge() {
     auto item = navigation.SettingsItem().try_as<NavigationViewItem>();
@@ -1374,7 +1385,15 @@ IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
     }
     auto version = self->generation; auto account = self->owner;
     auto content = stack(16); content.Padding(ThicknessHelper::FromUniformLength(24));
-    content.Children().Append(label(kind == L"activity" ? L"Activity" : L"Today", 28));
+    auto heading = actions();
+    heading.Children().Append(label(kind == L"activity" ? L"Activity" : L"Today", 28));
+    if (kind == L"today") {
+        auto sync = button(L"Sync All", [weak = self->weak_from_this()] { if (auto shell = weak.lock()) shell->sync(); });
+        sync.IsEnabled(array(self->state, L"accounts").Size() > 0);
+        Automation::AutomationProperties::SetAutomationId(sync, L"mail.syncAll");
+        heading.Children().Append(sync);
+    }
+    content.Children().Append(heading);
     content.Children().Append(label(kind == L"today" ? L"All connected accounts" : account.empty() ? L"Your workspace" : account));
     try {
         if (kind == L"activity") {

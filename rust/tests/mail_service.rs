@@ -199,6 +199,381 @@ async fn closing_uncertain_delivery_is_owned_durable_and_never_submits_again() {
 }
 
 #[tokio::test]
+async fn outlook_delta_resumes_and_reconciles_moves_deletions_old_flags_and_owned_writes() {
+    let remote = Arc::new(Mutex::new(std::collections::HashMap::<
+        (String, String),
+        Value,
+    >::new()));
+    for owner in [A, B] {
+        for id in [
+            "fresh".to_owned(),
+            "older".into(),
+            "second".into(),
+            "moved".into(),
+            "same".into(),
+        ]
+        .into_iter()
+        .chain((0..30).map(|i| format!("old-{i:02}")))
+        {
+            let mut message = microsoft_message(&id, owner, "Provider content");
+            if id == "second" {
+                message["receivedDateTime"] = "2099-01-01T00:00:00Z".into();
+            }
+            message["isRead"] = true.into();
+            message["flag"]["flagStatus"] = "flagged".into();
+            if id == "moved" {
+                message["parentFolderId"] = "archive-id".into();
+            }
+            remote.lock().unwrap().insert((owner.into(), id), message);
+        }
+    }
+    let writes = Arc::new(AtomicUsize::new(0));
+    let lost = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (data, count, lose, visited) = (remote.clone(), writes.clone(), lost.clone(), seen.clone());
+    let fixture = Fixture::new(Arc::new(move |request| {
+        let (data,count,lose,visited) = (data.clone(),count.clone(),lose.clone(),visited.clone());
+        async move {
+            assert_eq!(request.host(),"graph.microsoft.com");
+            if let Some(reply)=outlook_catalog(&request) { return reply; }
+            let url=url::Url::parse(&format!("https://graph.microsoft.com{}",request.path)).unwrap();
+            assert!(request.headers["prefer"].to_str().unwrap().contains("ImmutableId"));
+            if url.path().ends_with("/messages/delta") {
+                assert_eq!(request.method,"GET");
+                let query=url.query().unwrap_or("").to_owned(); visited.lock().unwrap().push(query.clone());
+                if query.contains("skiptoken=page2") { return outlook_delta("inbox-id",json!([{"id":"second"},{"id":"older"}])); }
+                if query.contains("deltatoken=fixture") { return outlook_delta("inbox-id",json!([])); }
+                return Reply::Json(200,json!({"value":[{"id":"fresh"},{"id":"same","isRead":false},{"id":"moved","@removed":{"reason":"deleted"}},{"id":"gone","@removed":{"reason":"deleted"}}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/me/mailfolders('inbox-id')/messages/delta?$skiptoken=page2"}));
+            }
+            let id=percent_encoding::percent_decode_str(url.path().rsplit('/').next().unwrap()).decode_utf8().unwrap().to_string();
+            let mut data=data.lock().unwrap();
+            let Some(row)=data.get_mut(&(request.owner().into(),id)) else { return Reply::Json(404,json!({"error":{"code":"ErrorItemNotFound"}})); };
+            if request.method=="PATCH" {
+                count.fetch_add(1,Ordering::SeqCst);
+                let input=request.json();
+                assert!(input.as_object().unwrap().keys().all(|key|["isRead","flag"].contains(&key.as_str())));
+                for (key,value) in input.as_object().unwrap() { row[key]=value.clone(); }
+                if lose.load(Ordering::SeqCst)>0 { return Reply::Lost; }
+            } else { assert_eq!(request.method,"GET"); }
+            Reply::Json(200,row.clone())
+        }.boxed()
+    })).await;
+    let server = fixture.start().await;
+    set(&server.app, config(&[(A, "microsoft"), (B, "microsoft")])).await;
+    server.app.db(|db| {
+        for owner in [A,B] {
+            for id in ["gone".to_owned(),"same".into()].into_iter().chain((0..30).map(|i|format!("old-{i:02}"))) {
+                db.upsert(owner,&merge(cached(&format!("microsoft:{id}"),owner,"inbox"),&json!({"providerFolderId":"inbox-id","providerSnapshot":{"read":true},"read":false,"pending":true,"lowPriority":true})))?;
+            }
+            db.upsert(owner,&merge(cached("sent:stable",owner,"sent"),&json!({"remoteId":"microsoft:moved","providerFolderId":"inbox-id","pending":true,"deliveryStatus":"sent"})))?;
+            db.upsert(owner,&cached("local-draft",owner,"drafts"))?;
+        }
+        Ok(())
+    }).await.unwrap();
+    let synced = server.call("POST", "/api/sync", A, json!({})).await;
+    assert_eq!(synced.0, 200, "{}", synced.1);
+    let checkpoint = server.app.settings().await.unwrap()["outlookSync"][A].clone();
+    assert!(string(&checkpoint["checkpoints"]["inbox-id"], "url").contains("skiptoken=page2"));
+    server
+        .app
+        .db(|db| {
+            let gone = db.get(A, "microsoft:gone")?.unwrap();
+            assert_eq!(gone["folder"], "trash");
+            assert_eq!(gone["providerDeleted"], true);
+            assert_eq!(gone["body"], "Cached body");
+            assert_eq!(gone["pending"], true);
+            let moved = db.get(A, "sent:stable")?.unwrap();
+            assert_eq!(moved["folder"], "archive");
+            assert_eq!(moved["remoteId"], "microsoft:moved");
+            assert_eq!(moved["deliveryStatus"], "sent");
+            assert!(db.get(A, "microsoft:moved")?.is_none());
+            let same = db.get(A, "microsoft:same")?.unwrap();
+            assert_eq!(same["read"], true);
+            assert_eq!(same["starred"], true);
+            assert_eq!(same["lowPriority"], true);
+            assert_eq!(db.get(B, "microsoft:same")?.unwrap()["read"], false);
+            assert!(db.get(A, "microsoft:second")?.is_none());
+            assert_eq!(db.get(A, "local-draft")?.unwrap()["folder"], "drafts");
+            Ok(())
+        })
+        .await
+        .unwrap();
+    server.shutdown().await;
+    let server = fixture.start().await;
+    let synced = server.call("POST", "/api/sync", A, json!({})).await;
+    assert_eq!(synced.0, 200, "{}", synced.1);
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|q| q.contains("skiptoken=page2"))
+    );
+    server
+        .app
+        .db(|db| {
+            assert!(db.get(A, "microsoft:second")?.is_some());
+            assert!(db.get(A, "microsoft:older")?.is_none());
+            for i in 0..30 {
+                assert_eq!(
+                    db.get(A, &format!("microsoft:old-{i:02}"))?.unwrap()["read"],
+                    true
+                );
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let update = server
+        .call(
+            "PATCH",
+            "/api/messages/microsoft%3Asame",
+            A,
+            json!({"read":false,"starred":false,"pending":false,"localOverrides":{"read":true}}),
+        )
+        .await;
+    assert_eq!(update.0, 200, "{}", update.1);
+    assert_eq!(update.1["message"]["read"], false);
+    assert_eq!(update.1["message"]["starred"], false);
+    assert_eq!(update.1["message"]["localOverrides"]["read"], Value::Null);
+    assert_eq!(
+        remote.lock().unwrap()[&(B.into(), "same".into())]["isRead"],
+        true
+    );
+    assert_eq!(writes.load(Ordering::SeqCst), 1);
+    for body in [
+        json!({"read":"yes"}),
+        json!({"read":true,"folder":"drafts"}),
+    ] {
+        assert_eq!(
+            server
+                .call("PATCH", "/api/messages/microsoft%3Asame", A, body)
+                .await
+                .0,
+            400
+        );
+    }
+    assert_eq!(
+        server
+            .call(
+                "PATCH",
+                "/api/messages/microsoft%3Asame",
+                "all",
+                json!({"read":true})
+            )
+            .await
+            .0,
+        409
+    );
+    assert_eq!(writes.load(Ordering::SeqCst), 1);
+    lost.store(1, Ordering::SeqCst);
+    assert_eq!(
+        server
+            .call(
+                "PATCH",
+                "/api/messages/microsoft%3Asame",
+                A,
+                json!({"read":true})
+            )
+            .await
+            .0,
+        502
+    );
+    let cached = server
+        .call("GET", "/api/messages/microsoft%3Asame", A, json!({}))
+        .await;
+    assert_eq!(cached.1["message"]["read"], false);
+    for _ in 0..2 {
+        assert_eq!(server.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    }
+    assert_eq!(
+        writes.load(Ordering::SeqCst),
+        2,
+        "Sync must never replay a failed write"
+    );
+    let cached = server
+        .call("GET", "/api/messages/microsoft%3Asame", A, json!({}))
+        .await;
+    assert_eq!(cached.1["message"]["read"], true);
+    server
+        .app
+        .db(|db| {
+            let mut config = db.settings()?;
+            config["mailAccounts"][A]["grantedScopes"] = "Mail.Read Mail.Send".into();
+            db.set_settings(&json!({"mailAccounts":config["mailAccounts"]}))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        server
+            .call(
+                "PATCH",
+                "/api/messages/microsoft%3Asame",
+                A,
+                json!({"starred":true})
+            )
+            .await
+            .0,
+        403
+    );
+    assert_eq!(writes.load(Ordering::SeqCst), 2);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn outlook_delta_checkpoints_expire_safely_and_reject_unsafe_or_cyclic_links() {
+    for failure in ["foreign", "cycle", "expired", "malformed", "quota"] {
+        let mode = Arc::new(AtomicUsize::new(0));
+        let count = Arc::new(AtomicUsize::new(0));
+        let (step, calls) = (mode.clone(), count.clone());
+        let fixture=Fixture::new(Arc::new(move |request| {
+            let (step,calls)=(step.clone(),calls.clone());
+            async move {
+                assert_eq!(request.host(),"graph.microsoft.com"); assert_eq!(request.method,"GET");
+                if let Some(reply)=outlook_catalog(&request) { return reply; }
+                assert!(request.path.contains("/messages/delta"));
+                calls.fetch_add(1,Ordering::SeqCst);
+                let link="https://graph.microsoft.com/v1.0/me/mailFolders/inbox-id/messages/delta?$skiptoken=p1";
+                if step.load(Ordering::SeqCst)==0 { return Reply::Json(200,json!({"value":[],"@odata.nextLink":link})); }
+                match failure {
+                    "quota" => Reply::Json(429,json!({"error":{"message":"PRIVATE_PROVIDER_TEXT"}})),
+                    "expired" => Reply::Json(410,json!({"error":{"code":"syncStateNotFound","message":"PRIVATE_PROVIDER_TEXT"}})),
+                    "foreign" => Reply::Json(200,json!({"value":[],"@odata.deltaLink":"https://example.invalid/v1.0/me/mailFolders/inbox-id/messages/delta?$deltatoken=private"})),
+                    "malformed" => Reply::Json(200,json!({"value":[{"id":""}],"@odata.deltaLink":link})),
+                    _ => Reply::Json(200,json!({"value":[],"@odata.nextLink":link})),
+                }
+            }.boxed()
+        })).await;
+        let server = fixture.start().await;
+        set(&server.app, config(&[(A, "microsoft")])).await;
+        assert_eq!(server.call("POST", "/api/sync", A, json!({})).await.0, 200);
+        mode.store(1, Ordering::SeqCst);
+        let response = server.call("POST", "/api/sync", A, json!({})).await;
+        let state = server.app.settings().await.unwrap();
+        assert!(!response.1.to_string().contains("PRIVATE_PROVIDER_TEXT"));
+        if failure == "expired" {
+            assert_eq!(response.0, 200);
+            assert!(state["outlookSync"][A]["checkpoints"]["inbox-id"]["url"].is_null());
+            mode.store(0, Ordering::SeqCst);
+            assert_eq!(server.call("POST", "/api/sync", A, json!({})).await.0, 200);
+        } else if failure == "quota" {
+            assert_eq!(response.0, 502);
+            assert_eq!(response.1["code"], "rate_limited");
+            assert!(
+                string(&state["outlookSync"][A]["checkpoints"]["inbox-id"], "url")
+                    .contains("skiptoken=p1")
+            );
+            let previous = count.load(Ordering::SeqCst);
+            assert_eq!(server.call("POST", "/api/sync", A, json!({})).await.0, 502);
+            assert_eq!(count.load(Ordering::SeqCst), previous);
+        } else {
+            assert_eq!(response.0, 502);
+            assert_eq!(
+                state["outlookSync"][A]["checkpoints"]["inbox-id"]["blocked"],
+                true
+            );
+            let previous = count.load(Ordering::SeqCst);
+            assert_eq!(server.call("POST", "/api/sync", A, json!({})).await.0, 502);
+            assert_eq!(
+                count.load(Ordering::SeqCst),
+                previous,
+                "Invalid cursors must not be replayed"
+            );
+        }
+        server.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn outlook_sync_updates_recent_read_flags_and_native_pages_without_crossing_accounts() {
+    let read = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let remote = read.clone();
+    let fixture = Fixture::new(Arc::new(move |request| {
+        let remote = remote.clone();
+        async move {
+            assert_eq!(request.method, "GET");
+            assert_eq!(request.host(), "graph.microsoft.com");
+            if let Some(reply) = outlook_catalog(&request) {
+                return reply;
+            }
+            assert!(
+                request.headers["prefer"]
+                    .to_str()
+                    .unwrap()
+                    .contains("IdType=\"ImmutableId\"")
+            );
+            if request.path.contains("/messages/delta") {
+                return outlook_delta("inbox-id", json!([{"id":"same"}]));
+            }
+            assert!(request.path.starts_with("/v1.0/me/messages/same"));
+            let mut message =
+                microsoft_message("same", request.owner(), "Fictional recent Outlook mail");
+            message["isRead"] = remote.load(Ordering::SeqCst).into();
+            Reply::Json(200, message)
+        }
+        .boxed()
+    }))
+    .await;
+    let server = fixture.start().await;
+    set(&server.app, config(&[(A, "microsoft"), (B, "microsoft")])).await;
+    assert_eq!(
+        server.call("POST", "/api/sync", "all", json!({})).await.0,
+        200
+    );
+    for owner in [A, B] {
+        let detail = server
+            .call("GET", "/api/messages/microsoft%3Asame", owner, json!({}))
+            .await;
+        assert_eq!(detail.0, 200);
+        assert_eq!(detail.1["message"]["read"], false);
+    }
+    for expected in [true, false, true] {
+        read.store(expected, Ordering::SeqCst);
+        let synced = server.call("POST", "/api/sync", A, json!({})).await;
+        assert_eq!(synced.0, 200, "{}", synced.1);
+        let page = server
+            .call(
+                "POST",
+                "/api/mail/page",
+                A,
+                json!({"folder":"inbox","sort":"newest","offset":0}),
+            )
+            .await;
+        assert_eq!(page.0, 200, "{}", page.1);
+        assert_eq!(page.1["messages"][0]["read"], expected);
+        assert_eq!(page.1["messages"][0]["accountId"], A);
+        let unread = server
+            .call(
+                "POST",
+                "/api/mail/page",
+                A,
+                json!({"folder":"inbox","unreadOnly":true,"offset":0}),
+            )
+            .await;
+        assert_eq!(unread.0, 200, "{}", unread.1);
+        assert_eq!(unread.1["total"], usize::from(!expected));
+        let other = server
+            .call("GET", "/api/messages/microsoft%3Asame", B, json!({}))
+            .await;
+        assert_eq!(other.1["message"]["read"], false);
+    }
+    // All-account sync catches the other owner up, and the stored value survives restart.
+    assert_eq!(
+        server.call("POST", "/api/sync", "all", json!({})).await.0,
+        200
+    );
+    server.shutdown().await;
+    let server = fixture.start().await;
+    for owner in [A, B] {
+        let detail = server
+            .call("GET", "/api/messages/microsoft%3Asame", owner, json!({}))
+            .await;
+        assert_eq!(detail.1["message"]["read"], true);
+    }
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn all_mail_refresh_ignores_inactive_inbox_sent_choices() {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let captured = calls.clone();
@@ -207,18 +582,40 @@ async fn all_mail_refresh_ignores_inactive_inbox_sent_choices() {
         async move {
             assert_eq!(request.method, "GET");
             assert_eq!(request.host(), "graph.microsoft.com");
+            if let Some(reply) = outlook_catalog(&request) {
+                return reply;
+            }
             let url =
                 url::Url::parse(&format!("https://graph.microsoft.com{}", request.path)).unwrap();
-            let folder = match url.path() {
-                "/v1.0/me/mailFolders/inbox/messages" => "inbox",
-                "/v1.0/me/mailFolders/sentitems/messages" => "sent",
-                _ => panic!("Unexpected refresh scope: {}", url.path()),
-            };
-            assert!(url.query_pairs().any(|(k, v)| k == "$top" && v == "50"));
-            captured.lock().unwrap().push(folder.to_owned());
+            if url.path().ends_with("/messages/delta") {
+                let folder = if percent_encoding::percent_decode_str(url.path())
+                    .decode_utf8()
+                    .unwrap()
+                    .contains("inbox-id")
+                {
+                    "inbox"
+                } else {
+                    "sent"
+                };
+                captured.lock().unwrap().push(folder.to_owned());
+                return outlook_delta(
+                    if folder == "inbox" {
+                        "inbox-id"
+                    } else {
+                        "sent-id"
+                    },
+                    json!([{"id":folder}]),
+                );
+            }
+            let folder = url.path().rsplit('/').next().unwrap();
             let mut row = microsoft_message(folder, A, "Fictional refreshed mail");
-            row["sentDateTime"] = row["receivedDateTime"].clone();
-            Reply::Json(200, json!({"value":[row]}))
+            row["parentFolderId"] = if folder == "inbox" {
+                "inbox-id"
+            } else {
+                "sent-id"
+            }
+            .into();
+            Reply::Json(200, row)
         }
         .boxed()
     }))
@@ -243,9 +640,13 @@ async fn all_mail_refresh_ignores_inactive_inbox_sent_choices() {
             .await
             .unwrap();
         calls.lock().unwrap().clear();
-        let result = server.call("POST", "/api/sync", A, json!({})).await;
-        assert_eq!(result.0, 200, "{}", result.1);
-        assert_eq!(*calls.lock().unwrap(), expected, "{options}");
+        for _ in 0..expected.len() {
+            let result = server.call("POST", "/api/sync", A, json!({})).await;
+            assert_eq!(result.0, 200, "{}", result.1);
+        }
+        let mut actual = calls.lock().unwrap().clone();
+        actual.sort();
+        assert_eq!(actual, expected, "{options}");
         let saved = server.app.settings().await.unwrap();
         assert_eq!(saved["imports"][A]["options"], options);
         assert_eq!(saved["imports"][A]["status"], "paused");
@@ -982,8 +1383,44 @@ fn outgoing(id: &str) -> Value {
 fn google_message(id: &str, owner: &str, body: &str) -> Value {
     json!({"id":id,"internalDate":"1790294400000","labelIds":["INBOX","UNREAD"],"payload":{"mimeType":"text/plain","headers":[{"name":"From","value":format!("Fixture <{owner}>")},{"name":"To","value":owner},{"name":"Subject","value":"Synced subject"},{"name":"Message-ID","value":format!("<remote-{id}@example.invalid>")}],"body":{"data":URL_SAFE_NO_PAD.encode(body)}}})
 }
+// Shared fictional folder catalogue for Outlook delta tests.
+fn outlook_catalog(request: &Request) -> Option<Reply> {
+    let path = request.path.split('?').next().unwrap();
+    if [
+        "/v1.0/me/mailFolders/inbox/messages",
+        "/v1.0/me/mailFolders/sentitems/messages",
+    ]
+    .contains(&path)
+    {
+        return Some(Reply::Json(200, json!({"value":[]})));
+    }
+    if path == "/v1.0/me/mailFolders" {
+        return Some(Reply::Json(
+            200,
+            json!({"value":[{"id":"inbox-id","displayName":"Inbox","childFolderCount":0},{"id":"sent-id","displayName":"Sent","childFolderCount":0}]}),
+        ));
+    }
+    for (alias, id) in [
+        ("inbox", "inbox-id"),
+        ("sentitems", "sent-id"),
+        ("drafts", "draft-id"),
+        ("junkemail", "junk-id"),
+        ("deleteditems", "trash-id"),
+    ] {
+        if path == format!("/v1.0/me/mailFolders/{alias}") {
+            return Some(Reply::Json(200, json!({"id":id})));
+        }
+    }
+    None
+}
+fn outlook_delta(folder: &str, rows: Value) -> Reply {
+    Reply::Json(
+        200,
+        json!({"value":rows,"@odata.deltaLink":format!("https://graph.microsoft.com/v1.0/me/mailFolders/{folder}/messages/delta?$deltatoken=fixture")}),
+    )
+}
 fn microsoft_message(id: &str, owner: &str, body: &str) -> Value {
-    json!({"id":id,"from":{"emailAddress":{"name":"Fixture","address":owner}},"toRecipients":[{"emailAddress":{"address":owner}}],"subject":"Synced subject","body":{"contentType":"text","content":body},"receivedDateTime":"2026-09-25T00:00:00Z","isRead":false,"flag":{"flagStatus":"notFlagged"},"internetMessageId":format!("<remote-{id}@example.invalid>")})
+    json!({"id":id,"parentFolderId":"inbox-id","isDraft":false,"sentDateTime":"2026-09-25T00:00:00Z","from":{"emailAddress":{"name":"Fixture","address":owner}},"toRecipients":[{"emailAddress":{"address":owner}}],"subject":"Synced subject","body":{"contentType":"text","content":body},"receivedDateTime":"2026-09-25T00:00:00Z","isRead":false,"flag":{"flagStatus":"notFlagged"},"internetMessageId":format!("<remote-{id}@example.invalid>")})
 }
 async fn wait_for(gate: &Semaphore) {
     tokio::time::timeout(Duration::from_secs(5), gate.acquire())
@@ -1786,8 +2223,12 @@ async fn sync_combined_owners_keep_local_patches_and_stable_ids_after_provider_m
         if path.path()=="/v1.0/me/mailFolders/junkemail"{return Reply::Json(200,json!({"id":"junk-id"}));}
         if path.path()=="/v1.0/me/mailFolders/deleteditems"{return Reply::Json(200,json!({"id":"trash-id"}));}
         if path.path().ends_with("/messages/same/move"){assert_eq!(request.method,"POST");assert_eq!(request.json()["destinationId"],"archive-id");assert_eq!(request.headers["prefer"],"IdType=\"ImmutableId\"");changed.store(1,Ordering::SeqCst);return Reply::Json(201,json!({"id":"moved-id","parentFolderId":"archive-id"}));}
-        if path.path().ends_with("/messages/same"){return Reply::Json(200,json!({"id":"same","parentFolderId":"inbox-id"}));}
-        assert_eq!(path.path(),"/v1.0/me/mailFolders/inbox/messages");assert!(request.headers["prefer"].to_str().unwrap().contains("IdType=\"ImmutableId\""));Reply::Json(200,json!({"value":[microsoft_message(if changed.load(Ordering::SeqCst)>0{"moved-id"}else{"same"},&owner,&body)]}))
+        if let Some(reply) = outlook_catalog(&request) { return reply; }
+        if path.path().ends_with("/messages/delta") { return outlook_delta("inbox-id",json!([{"id":if changed.load(Ordering::SeqCst)>0{"moved-id"}else{"same"}}])); }
+        let id=path.path().rsplit('/').next().unwrap();
+        let mut message=microsoft_message(id,&owner,&body);
+        if changed.load(Ordering::SeqCst)>0 { message["parentFolderId"]="archive-id".into(); }
+        Reply::Json(200,message)
     }.boxed()})).await;
     let server = fixture.start().await;
     set(
@@ -1870,7 +2311,7 @@ async fn sync_combined_owners_keep_local_patches_and_stable_ids_after_provider_m
             assert_eq!(b["read"], false);
             assert_eq!(b["starred"], false);
             assert_eq!(b["body"], format!("Remote body 0 for {B}"));
-            assert_eq!(c["body"], format!("Remote body 1 for {C}"));
+            assert_eq!(c["body"], format!("Remote body 0 for {C}"));
             assert_eq!(c["folder"], "archive");
             assert_eq!(c["providerFolderId"], "archive-id");
             assert_eq!(c["remoteId"], "microsoft:moved-id");
@@ -2573,4 +3014,77 @@ async fn full_history_microsoft_traverses_folders_with_private_checkpoints_and_e
             .any(|folder| folder["id"] == "c=" && folder["name"] == "Projects / Child")
     );
     assert!(!providers::can_organize(&mail));
+}
+
+#[tokio::test]
+async fn outlook_reconnect_discards_an_inflight_delta_page_and_its_checkpoint() {
+    let entered = Arc::new(Semaphore::new(0));
+    let release = Arc::new(Semaphore::new(0));
+    let (arrived, ready) = (entered.clone(), release.clone());
+    let fixture = Fixture::new(Arc::new(move |request| {
+        let (arrived, ready) = (arrived.clone(), ready.clone());
+        async move {
+            if let Some(reply) = outlook_catalog(&request) {
+                return reply;
+            }
+            assert!(request.path.contains("/messages/delta"));
+            arrived.add_permits(1);
+            ready.acquire().await.unwrap().forget();
+            outlook_delta("inbox-id", json!([]))
+        }
+        .boxed()
+    }))
+    .await;
+    let server = fixture.start().await;
+    set(&server.app, config(&[(A, "microsoft"), (B, "microsoft")])).await;
+    server
+        .app
+        .db(|db| {
+            db.upsert(A, &cached("microsoft:same", A, "inbox"))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let request = server.request("POST", "/api/sync", A, &json!({}));
+    let pending = tokio::spawn(async move { request.send().await.unwrap() });
+    wait_for(&entered).await;
+    assert_eq!(
+        server
+            .call("POST", "/api/account/disconnect", A, json!({}))
+            .await
+            .0,
+        409
+    );
+    assert_eq!(
+        server
+            .call(
+                "PATCH",
+                "/api/messages/microsoft%3Asame",
+                A,
+                json!({"read":true})
+            )
+            .await
+            .0,
+        409
+    );
+    server
+        .app
+        .db(|db| {
+            let mut config = db.settings()?;
+            config["mailAccounts"][A]["authorizationId"] = "new-authorization".into();
+            db.set_settings(&json!({"mailAccounts":config["mailAccounts"]}))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    release.add_permits(1);
+    assert_eq!(pending.await.unwrap().status(), 502);
+    let state = server.app.settings().await.unwrap();
+    assert!(state["outlookSync"][A].is_null());
+    assert!(state["outlookSync"][B].is_null());
+    assert_eq!(
+        state["mailAccounts"][A]["authorizationId"],
+        "new-authorization"
+    );
+    server.shutdown().await;
 }

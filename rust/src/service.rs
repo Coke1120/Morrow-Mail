@@ -291,6 +291,46 @@ pub fn get_message(db: &Store, owner: &str, id: &str) -> Result<Value> {
     db.get(owner, id)?
         .ok_or_else(|| Error::new(404, "Message not found."))
 }
+pub(crate) fn message_patch(original: &Value, body: &Value) -> Result<Value> {
+    let mut patch = json!({});
+    for key in ["read", "starred", "pending", "lowPriority"] {
+        if let Some(value) = body.get(key) {
+            if !value.is_boolean() {
+                return Err(Error::invalid(
+                    "Read, starred and pending must be true or false.",
+                ));
+            }
+            patch[key] = value.clone();
+        }
+    }
+    if let Some(folder) = body.get("folder") {
+        if !["inbox", "archive", "trash"].contains(&folder.as_str().unwrap_or(""))
+            || original["folder"] == "drafts" && folder != "trash"
+        {
+            return Err(Error::invalid("Save or send this draft before moving it."));
+        }
+        patch["folder"] = folder.clone();
+    }
+    if patch.as_object().unwrap().is_empty() {
+        return Err(Error::invalid("No supported changes were provided."));
+    }
+    if original["providerLabelIds"].is_array()
+        || string(original, "id").starts_with("microsoft:")
+        || string(original, "remoteId").starts_with("microsoft:")
+    {
+        let mut overrides = original["localOverrides"]
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        for key in patch.as_object().unwrap().keys() {
+            if !["pending", "lowPriority"].contains(&key.as_str()) {
+                overrides.insert(key.clone(), Value::Bool(true));
+            }
+        }
+        patch["localOverrides"] = Value::Object(overrides);
+    }
+    Ok(patch)
+}
 pub fn safe_mail(mail: &Value) -> Value {
     let mut safe = json!({"configured":!string(mail,"email").is_empty(),"provider":"imap","email":"","imapHost":"","imapPort":993,"smtpHost":"","smtpPort":465,"clientId":"","canOrganize":crate::providers::can_organize(mail)});
     for key in [
@@ -839,40 +879,7 @@ pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
                 }
                 let original = get_message(db, &owner, &id)?;
                 crate::scheduled::guard_draft(db, &owner, &id, None)?;
-                let mut patch = json!({});
-                for key in ["read", "starred", "pending", "lowPriority"] {
-                    if let Some(value) = body.get(key) {
-                        if !value.is_boolean() {
-                            return Err(Error::invalid(
-                                "Read, starred and pending must be true or false.",
-                            ));
-                        }
-                        patch[key] = value.clone();
-                    }
-                }
-                if let Some(folder) = body.get("folder") {
-                    if !["inbox", "archive", "trash"].contains(&folder.as_str().unwrap_or(""))
-                        || original["folder"] == "drafts" && folder != "trash"
-                    {
-                        return Err(Error::invalid("Save or send this draft before moving it."));
-                    }
-                    patch["folder"] = folder.clone();
-                }
-                if patch.as_object().unwrap().is_empty() {
-                    return Err(Error::invalid("No supported changes were provided."));
-                }
-                if original["providerLabelIds"].is_array() {
-                    let mut overrides = original["localOverrides"]
-                        .as_object()
-                        .cloned()
-                        .unwrap_or_default();
-                    for key in patch.as_object().unwrap().keys() {
-                        if !["pending", "lowPriority"].contains(&key.as_str()) {
-                            overrides.insert(key.clone(), Value::Bool(true));
-                        }
-                    }
-                    patch["localOverrides"] = Value::Object(overrides);
-                }
+                let patch = message_patch(&original, &body)?;
                 Ok(json!({"message":pages::owned(&owner,db.update(&owner,&id,&patch)?.unwrap())}))
             })
             .await?

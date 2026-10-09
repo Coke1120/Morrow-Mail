@@ -37,6 +37,7 @@ struct MailWorkspace: View {
                             HStack(spacing: 14) {
                                 Button { sidebarVisible = true } label: { Label("Show Sidebar", systemImage: "sidebar.left") }.labelStyle(.iconOnly).help("Show Sidebar")
                                 Spacer()
+                                syncButton
                                 composeButton
                             }.buttonStyle(.borderless).padding(.horizontal, 14).padding(.vertical, 8).background(.bar)
                         }
@@ -159,7 +160,10 @@ struct MailWorkspace: View {
                 Spacer(minLength: 0)
                 Button { sidebarVisible = false } label: { Label("Hide Sidebar", systemImage: "sidebar.left") }.labelStyle(.iconOnly).buttonStyle(.borderless).help("Hide Sidebar")
             }.padding(.horizontal, 14).padding(.vertical, 12)
-            composeButton.buttonStyle(.borderedProminent).frame(maxWidth: .infinity).padding(.horizontal, 14).padding(.bottom, 10)
+            HStack(spacing: 8) {
+                composeButton.buttonStyle(.borderedProminent)
+                syncButton
+            }.controlSize(.small).padding(.horizontal, 14).padding(.bottom, 10)
             TextField("Filter labels / folders", text: $folderFilter).textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Filter sidebar labels and folders").padding(.horizontal, 14).padding(.bottom, 10)
             List(selection: Binding(get: { model.isMailSection ? model.account + "\n" + model.section : model.section == "scheduled" && !model.scheduledAccount.isEmpty ? model.scheduledAccount + "\n" + model.section : model.section }, set: { value in
@@ -201,6 +205,11 @@ struct MailWorkspace: View {
                 .help(model.updateAvailable ? "A new version is available. Open App updates." : "Settings & connections")
                 .buttonStyle(.plain).disabled(model.busy).frame(maxWidth: .infinity, alignment: .leading).padding(18).fixedSize(horizontal: false, vertical: true)
         }
+    }
+    private var syncButton: some View {
+        Button { model.perform { try await model.sync() } } label: { Label("Sync", systemImage: model.syncing ? "hourglass" : "arrow.clockwise") }
+            .fixedSize().disabled(!model.canNavigate || !model.hasMailbox)
+            .help("Sync recent mail in the current account view (⌘R); Today syncs all accounts. Outlook continues saved change tracking; other providers refresh recent mail.").accessibilityIdentifier("mail.sync")
     }
     private var composeButton: some View {
         Button { model.newDraft() } label: { Label("Compose", systemImage: "square.and.pencil").frame(maxWidth: sidebarVisible ? .infinity : nil) }
@@ -294,7 +303,6 @@ struct MailWorkspace: View {
                 Button { model.trashMessages(model.selectedMailRows) } label: { Label("Delete", systemImage: "trash") }
                     .disabled(!model.canNavigate || model.selectedMailRows.isEmpty || !model.selectedMailRows.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" })
                     .help("Move selected mail to provider Trash · Undo within one minute (⌘Z)")
-                Button { model.perform { try await model.sync() } } label: { Label("Refresh Recent Mail", systemImage: "arrow.clockwise") }.labelStyle(.iconOnly).buttonStyle(.borderless).disabled(!model.canNavigate || !model.hasMailbox).help("Refresh recent mail (⌘R). Older downloaded messages may not be checked.")
             }.menuStyle(.borderlessButton).controlSize(.small).disabled(model.busy).padding(.horizontal, 14).padding(.bottom, 8)
             Divider()
             if filtered.isEmpty {
@@ -376,8 +384,8 @@ struct MailWorkspace: View {
                         Button("Delete") { model.trashMessages(messages) }
                             .disabled(!messages.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" })
                         Divider()
-                        Button("Mark Read Locally") { model.patchMessages(messages, .object(["read": .bool(true)])) }
-                        Button("Mark Unread Locally") { model.patchMessages(messages, .object(["read": .bool(false)])) }
+                        Button("Mark Read") { model.patchMessages(messages, .object(["read": .bool(true)])) }
+                        Button("Mark Unread") { model.patchMessages(messages, .object(["read": .bool(false)])) }
                         Button("Star") { model.patchMessages(messages, .object(["starred": .bool(true)])) }
                         Button("Unstar") { model.patchMessages(messages, .object(["starred": .bool(false)])) }
                         Button("Mark Pending") { model.patchMessages(messages, .object(["pending": .bool(true)])) }
@@ -406,8 +414,8 @@ struct MailWorkspace: View {
     private func rowActions(_ message: JSON) -> some View {
         HStack(spacing: 4) {
             Button { model.patch(message, .object(["read": .bool(!message["read"].bool)])) } label: {
-                Label(message["read"].bool ? "Mark Unread Locally" : "Mark Read Locally", systemImage: message["read"].bool ? "envelope.badge" : "envelope.open")
-            }.help(message["read"].bool ? "Mark Unread locally" : "Mark Read locally")
+                Label(message["read"].bool ? "Mark Unread" : "Mark Read", systemImage: message["read"].bool ? "envelope.badge" : "envelope.open")
+            }.help(message["read"].bool ? "Mark Unread" : "Mark Read")
             Button { Task { await model.openDraft(message: message, mode: "replyAll") } } label: {
                 Label("Reply All", systemImage: "arrowshape.turn.up.left.2")
             }.help("Reply All").disabled(message["folder"].string == "drafts" || !model.canNavigate || model.preparingDraft)

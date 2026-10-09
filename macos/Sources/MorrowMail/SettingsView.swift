@@ -187,7 +187,7 @@ struct NativeSettingsView: View {
                 Picker("Appearance", selection: string("preferences", "theme")) { Text("System").tag("system"); Text("Light").tag("light"); Text("Dark").tag("dark") }
                 Picker("Density", selection: string("preferences", "density")) { Text("Comfortable").tag("comfortable"); Text("Compact").tag("compact"); Text("Spacious").tag("spacious") }
             }
-            Toggle("Mark messages read when opened (local to Morrow)", isOn: boolean("preferences", "markReadOnOpen")).toggleStyle(.checkbox)
+            Toggle("Mark messages read when opened", isOn: boolean("preferences", "markReadOnOpen")).toggleStyle(.checkbox)
             Toggle("Automatically load external images (HTTPS)", isOn: boolean("preferences", "autoLoadExternalImages")).toggleStyle(.checkbox)
             Text("Applies to all mailboxes. Image servers may learn your IP address and that you opened an email. You can still hide images for individual messages.").font(.caption).foregroundStyle(.secondary)
             }.padding(8) }
@@ -345,7 +345,7 @@ struct NativeSettingsView: View {
     }
     var mailPage: some View {
         Group {
-            SectionHeading(title: "Bring your inbox along", detail: "Connect multiple Gmail, Outlook, or IMAP accounts. Sync checks recent mail in bounded batches. History imports fill the chosen range while Morrow is open, without AI calls.")
+            SectionHeading(title: "Bring your inbox along", detail: "Connect multiple Gmail, Outlook, or IMAP accounts. Outlook tracks changes and checks downloaded mail in resumable batches. Gmail and IMAP refresh recent mail. History imports fill the chosen range while Morrow is open, without AI calls.")
             DisclosureGroup(isExpanded: $mailEditor) {
                 mailConnectionForm.padding(.top, 12)
             } label: { Label("Add or reconnect an account", systemImage: "plus.circle.fill").font(.headline) }.id("mail-connect")
@@ -422,7 +422,7 @@ struct NativeSettingsView: View {
             } else {
                 oauthForm(provider, calendar: false)
             }
-            Text("Read, star, archive, and trash shortcuts stay local. The Move / Labels dialog applies reviewed changes on the provider. Sending requires an explicit send or schedule review. Formatted mail uses a protected reader; attachments and CID images are not supported.").font(.caption).foregroundStyle(.secondary)
+            Text("Outlook read and star changes sync to the server with mail organization permission, including marking read on open. Gmail/IMAP flags, Pending, Read Later, and local archive/trash shortcuts stay local. The Move / Labels dialog applies reviewed changes on the provider. Sending requires an explicit send or schedule review. Formatted mail uses a protected reader; attachments and CID images are not supported.").font(.caption).foregroundStyle(.secondary)
         }
     }
     var historyOptions: some View {

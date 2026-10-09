@@ -36,7 +36,7 @@ final class HeldWorkspaceResponse: URLProtocol {
     private static var next: Hold?
     static func arm(_ path: String) -> Hold {
         lock.lock(); defer { lock.unlock() }
-        precondition(next == nil && ["/api/state", "/api/account/select"].contains(path))
+        precondition(next == nil && ["/api/state", "/api/account/select", "/api/sync"].contains(path))
         let hold = Hold(path); next = hold; return hold
     }
     override class func canInit(with request: URLRequest) -> Bool {
@@ -177,6 +177,49 @@ struct NativeRustChecks {
         try check(model.account == second && model.selectedMessage == nil && model.mailPage.isNull, "fresh service account selection was rejected or retained old mail")
         try await model.selectAccount(first, folder: "inbox")
         print("Native Rust: actual AppModel rejects held stale/cancelled reloads, retains read paging and follows new service account selection; GUI race is not asserted.")
+    }
+
+    @MainActor static func checkManualSync(_ model: AppModel) async throws {
+        try await model.selectAccount(first, folder: "inbox")
+        try check(await model.loadMailPage(), "sync fixture page did not load")
+        await model.turnMailPage(next: true)
+        model.selectedMessage = model.listedMessages.first?.viewID
+        let page = model.mailPage, cursors = model.mailCursors, selected = model.selectedMessage
+        for section in ["inbox", "today"] {
+            model.section = section
+            let hold = HeldWorkspaceResponse.arm("/api/sync")
+            model.perform { try await model.sync() }
+            try await waitUntil("manual sync did not call the provider-sync route") { hold.request != nil }
+            try check(hold.request?.httpMethod == "POST" && hold.request?.value(forHTTPHeaderField: "X-Genmail-Account") == (section == "today" ? "all" : first), "manual sync targeted the wrong mailbox scope")
+            try check(model.syncing && model.busy && !model.canNavigate, "manual sync lacked its busy/navigation guard")
+            try await model.sync() // A repeated click must not start another provider request.
+            var response = model.state
+            if section == "today" { response["account"]["id"] = .string("all") }
+            response["syncErrors"] = .array([])
+            try hold.complete(response)
+            try await waitUntil("manual sync did not finish") { !model.busy }
+            try check(!model.syncing && model.error.isEmpty && model.account == first && model.notice.contains("Sync cycle finished"), "manual sync changed the active account or left a stale status")
+            if section == "inbox" {
+                try check(model.mailPage == page && model.mailCursors == cursors && model.selectedMessage == selected, "manual sync reset mail paging or selection")
+            }
+        }
+        let failed = HeldWorkspaceResponse.arm("/api/sync")
+        model.perform { try await model.sync() }
+        try await waitUntil("failed sync did not start") { failed.request != nil }
+        try failed.complete(.object(["error": .string("Fixture offline")]), status: 502)
+        try await waitUntil("failed sync remained busy") { !model.busy }
+        try check(!model.syncing && model.error == "Fixture offline" && model.notice.isEmpty, "sync failure was hidden or reported as success")
+        model.error = ""; model.notice = ""
+        let obsolete = HeldWorkspaceResponse.arm("/api/sync")
+        let oldState = model.state
+        model.perform { try await model.sync() }
+        try await waitUntil("obsolete sync did not start") { obsolete.request != nil }
+        try await model.selectAccount(second, folder: "inbox")
+        try obsolete.complete(oldState)
+        try await waitUntil("obsolete sync did not finish") { !model.busy }
+        try check(model.account == second && !model.syncing && model.notice.isEmpty, "an obsolete sync replaced the new account or reported success")
+        try await model.selectAccount(first, folder: "inbox")
+        print("Native Rust: manual sync reaches the owned POST route, Today syncs all without switching accounts, repeated clicks coalesce, and failures remain visible.")
     }
 
     @MainActor static func collect(_ model: AppModel, expected: Int) async throws -> [JSON] {
@@ -375,6 +418,25 @@ struct NativeRustChecks {
         throw APIError("Native Rust acceptance: stopped service still accepts requests")
     }
 
+    @MainActor static func checkOutlookReadPermission(_ model: AppModel, source: JSON) async throws {
+        let path = "/messages/" + encodedPath(source.id), owner = source["accountId"].string
+        _ = try await model.request(path, method: "PATCH", body: .object(["read": .bool(false)]), mailbox: owner)
+        try await model.selectAccount(owner, folder: "inbox")
+        try check(await model.loadMailPage(), "read permission fixture did not load")
+        model.state["settings"]["preferences"]["markReadOnOpen"] = .bool(true)
+        model.state["accounts"] = .array(model.accounts.map { account in
+            var account = account
+            if account.id == owner { account["provider"] = .string("microsoft"); account["settings"]["canOrganize"] = .bool(false) }
+            return account
+        })
+        model.selectedMessage = source.viewID
+        await model.loadMessage()
+        let saved = try await model.request(path, mailbox: owner)
+        try check(model.messageDetail.id == source.id && !saved["message"]["read"].bool && model.error.isEmpty, "read-only Outlook must remain readable without a mark-on-open write")
+        _ = try await model.request(path, method: "PATCH", body: .object(["read": source["read"]]), mailbox: owner)
+        try await model.reload()
+    }
+
     @MainActor static func checkSourceNavigation(_ model: AppModel, sources: [JSON]) async throws {
         NSApplication.shared.setActivationPolicy(.accessory)
         let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 1220, height: 780), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
@@ -472,6 +534,7 @@ struct NativeRustChecks {
         model.mailPage = .null; model.mailCursors = [""]
         print("Native Rust: local connection refresh preserves settings edits, owner, mail paging and persisted state.")
         try await checkReloadOrdering(model)
+        try await checkManualSync(model)
 
         for owner in [first, "all"] {
             try await model.selectAccount(owner, folder: "inbox")
@@ -499,6 +562,7 @@ struct NativeRustChecks {
         }
         try await checkPreparedDrafts(model, sources: duplicates)
         let older = try await model.request("/messages/" + encodedPath("google:fixture-064"), mailbox: first)
+        try await checkOutlookReadPermission(model, source: duplicates[0])
         try await checkSourceNavigation(model, sources: duplicates + [older["message"]])
         let opened = duplicates.first { $0["accountId"].string == first }!
         model.selectedMessage = opened.viewID

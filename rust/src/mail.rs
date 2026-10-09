@@ -346,6 +346,18 @@ pub fn import_messages(db: &Store, mail: &Value, messages: &[Value]) -> Result<V
         }
         if mail["provider"]=="google"{value=merge(value,&google_import_state(message,existing.as_ref()));}
         import_read_state(message, existing.as_ref(), &mut value);
+        if mail["provider"] == "microsoft" {
+            if !value["providerSnapshot"].is_object() { value["providerSnapshot"] = json!({}); }
+            let mut overrides = existing.as_ref().and_then(|m| m["localOverrides"].as_object()).cloned().unwrap_or_default();
+            for key in ["read", "starred"] {
+                if let Some(remote) = message[key].as_bool() {
+                    value[key] = remote.into();
+                    value["providerSnapshot"][key] = remote.into();
+                    overrides.remove(key);
+                }
+            }
+            value["localOverrides"] = json!(overrides);
+        }
         db.upsert(account,&value)?;
     }Ok(())})?;
     Ok(new_ids)
@@ -688,6 +700,7 @@ fn sync_failure(owner: &str, error: &Error, previous: &Value) -> Value {
         "oauth_reconnect_required",
         "oauth_configuration",
         "oauth_refresh_failed",
+        "outlook_sync_invalid",
     ]
     .contains(&string(&error.body, "code"))
     {
@@ -703,7 +716,12 @@ fn sync_warning(page: &Value) -> Option<&'static str> {
         && page["messages"].as_array().is_some_and(|rows| rows.len() < 50))
     .then_some("This sparse IMAP mailbox exceeded the scan limit. Mail sync is incomplete; enable history import in Settings to continue from saved checkpoints.")
 }
-async fn commit_sync_page(app: &App, owner: &str, mail: &Value, page: &Value) -> Result<()> {
+pub(crate) async fn commit_sync_page(
+    app: &App,
+    owner: &str,
+    mail: &Value,
+    page: &Value,
+) -> Result<()> {
     let messages = page["messages"]
         .as_array()
         .ok_or_else(providers::remote_error)?
@@ -756,6 +774,20 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
         }
         let work = async {
             let mail = current_mail(app, owner).await?;
+            if mail["provider"] == "microsoft" {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(45),
+                    crate::outlook::sync(app, &mail),
+                )
+                .await
+                .map_err(|_| {
+                    Error::new(
+                        502,
+                        "Outlook sync timed out. Saved checkpoints are retained; try again.",
+                    )
+                })??;
+                return Ok(None);
+            }
             let config = app.settings().await?;
             let job = &config["imports"][owner];
             let options = &job["options"];
@@ -816,6 +848,23 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
     let path = parts.iter().map(String::as_str).collect::<Vec<_>>();
     let body = ctx.body.clone();
     let owner = ctx.owner.clone();
+    if ctx.method == "PATCH"
+        && matches!(path.as_slice(), ["messages", _])
+        && (body.get("read").is_some() || body.get("starred").is_some())
+        && connections(&app.settings().await?)
+            .get(&owner)
+            .is_some_and(|mail| mail["provider"] == "microsoft")
+    {
+        let (bound_owner, id) = (owner.clone(), ctx.path[1].clone());
+        let message = app.db(move |db| get_message(db, &bound_owner, &id)).await?;
+        if string(&message, "id").starts_with("microsoft:")
+            || string(&message, "remoteId").starts_with("microsoft:")
+        {
+            return Ok(Some(
+                Json(crate::outlook::patch(app, ctx).await?).into_response(),
+            ));
+        }
+    }
     let result = match (ctx.method.as_str(), path.as_slice()) {
         ("POST", ["send"]) => send(app, ctx).await?,
         ("POST", ["drafts", "prepare"]) => {

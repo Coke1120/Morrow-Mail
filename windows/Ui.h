@@ -42,7 +42,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     xaml::FrameworkElement sidebarDivider{nullptr};
     controls::ComboBox sorting{nullptr};
     controls::CheckBox unreadFilter{nullptr};
-    controls::Button composeButton{nullptr};
+    controls::Button composeButton{nullptr}, syncButton{nullptr};
     controls::Button previous{nullptr}, next{nullptr};
     controls::TextBlock pageLabel{nullptr};
     xaml::DispatcherTimer timer{nullptr};
@@ -67,7 +67,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     Json pendingRead; // Owned metadata for a detail read interrupted by a local patch.
     uint64_t readerImageGeneration = 0, readerImageSelection = 0;
     std::optional<bool> readerImageOverride;
-    bool loading = false, closing = false, dialogOpen = false, selectingNavigation = false;
+    bool syncing = false, loading = false, closing = false, dialogOpen = false, selectingNavigation = false;
     bool closeReady = false;
     bool checkingUpdates = false, includePrereleases = true;
     uint64_t lastUpdateCheck = 0;

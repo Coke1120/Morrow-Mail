@@ -163,6 +163,7 @@ fn saved_sync_failures_survive_runtime_restart_and_clear_after_recovery() {
     let before = config.clone();
     for (code, expected) in [
         ("oauth_reconnect_required", "Reconnect"),
+        ("outlook_sync_invalid", "Reconnect"),
         ("oauth_configuration", "OAuth client settings"),
         ("oauth_refresh_failed", "authorization"),
         ("mail_sync_failed", "connection"),
