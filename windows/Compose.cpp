@@ -473,7 +473,12 @@ IAsyncAction closeComposer(std::shared_ptr<Composer> state) {
             if (shell->current(version, state->screenOwner) && shell->section == L"mail") {
                 shell->root.UpdateLayout();
                 auto focus = state->returnFocus.get();
-                if (!focus || !focus.IsLoaded() || !focus.Focus(xaml::FocusState::Programmatic)) shell->focusMail();
+                // The reader is rebuilt above. A retained peer can still report
+                // IsLoaded while its old Back button is leaving the visual tree.
+                bool mounted = false;
+                for (auto node = focus.try_as<xaml::DependencyObject>(); node; node = xaml::Media::VisualTreeHelper::GetParent(node))
+                    if (node == shell->page) { mounted = true; break; }
+                if (!mounted || !focus.IsLoaded() || !focus.Focus(xaml::FocusState::Programmatic)) shell->focusMail();
             }
         } else co_await shell->navigate(state->returnSection.empty() ? L"mail" : state->returnSection,
             state->screenOwner, state->returnFolder.empty() ? L"inbox" : state->returnFolder);
@@ -815,8 +820,20 @@ IAsyncAction composerReturnChecks(std::shared_ptr<Shell> shell) {
         require(close.Focus(xaml::FocusState::Keyboard), L"The composer fixture could not focus Close.");
         auto peer = xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(close);
         peer.GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).as<xaml::Automation::Provider::IInvokeProvider>().Invoke();
+        auto returnedFocus = [&] {
+            auto focus = xaml::Input::FocusManager::GetFocusedElement(shell->root.XamlRoot());
+            if (interrupted) {
+                auto node = focus.try_as<xaml::DependencyObject>();
+                while (node && node != shell->rows) node = xaml::Media::VisualTreeHelper::GetParent(node);
+                return bool(node);
+            }
+            auto target = std::wstring_view(layout) == L"focus" ? shell->readerBack.get().try_as<Control>() : sourceRow().try_as<Control>();
+            return target && focus == target;
+        };
         auto deadline = GetTickCount64() + 5000;
-        while ((shell->section == L"compose" || shell->loading) && GetTickCount64() < deadline) {
+        // loadPage clears loading before closeComposer's await continuation
+        // restores focus. Observe that completion, using the same bounded wait.
+        while ((shell->section == L"compose" || shell->loading || !returnedFocus()) && GetTickCount64() < deadline) {
             co_await resume_after(std::chrono::milliseconds(10)); co_await ui;
         }
         if (opening) co_await opening;
@@ -826,13 +843,11 @@ IAsyncAction composerReturnChecks(std::shared_ptr<Shell> shell) {
         require(interrupted ? !shell->selected.Size() && shell->rows.SelectedItems().Size() == 0
             : text(shell->selected, L"viewId") == text(message, L"viewId"),
             L"Composer return paired a stale reader with another selected row.");
-        auto focus = xaml::Input::FocusManager::GetFocusedElement(shell->root.XamlRoot());
-        if (interrupted) {
-            auto node = focus.try_as<xaml::DependencyObject>();
-            while (node && node != shell->rows) node = xaml::Media::VisualTreeHelper::GetParent(node);
-            require(bool(node), L"Closing an interrupted reader's composer did not return keyboard focus to the mail list.");
-        } else require(focus == (std::wstring_view(layout) == L"focus" ? shell->readerBack.get().as<Control>() : sourceRow().as<Control>()),
-            L"Closing the composer did not restore a visible mail control's keyboard focus.");
+        if (!returnedFocus()) {
+            auto focus = xaml::Input::FocusManager::GetFocusedElement(shell->root.XamlRoot());
+            throw hresult_error(E_FAIL, L"Closing the composer did not restore keyboard focus. Layout: " + hstring(layout)
+                + L"; interrupted: " + to_hstring(interrupted) + L"; focused type: " + (focus ? get_class_name(focus) : hstring(L"none")));
+        }
     }
     shell->mailLayout = previousLayout; shell->applyMailLayout();
 }
