@@ -38,6 +38,10 @@ public:
     winrt::Windows::Foundation::IAsyncOperation<Json> request(
         winrt::hstring path, winrt::hstring owner = {}, winrt::hstring method = L"GET",
         Json body = Json(), bool hostOperation = false);
+    // HTTP status/body as data survive the WinRT async ABI. Transport errors
+    // still throw; this method does not retry or change authorization.
+    winrt::Windows::Foundation::IAsyncOperation<Json> requestWithStatus(
+        winrt::hstring path, winrt::hstring owner, winrt::hstring method, Json body);
     bool alive() const;
     bool writing() const { return writes_.load() != 0; }
     std::filesystem::path const& directory() const { return directory_; }
@@ -61,6 +65,6 @@ private:
     mutable std::mutex stateMutex_;
     void close();
     Json requestBlocking(winrt::hstring const& path, winrt::hstring const& owner,
-        winrt::hstring const& method, Json const& body, bool hostOperation);
+        winrt::hstring const& method, Json const& body, bool hostOperation, unsigned* responseStatus = nullptr);
 };
 }

@@ -232,7 +232,22 @@ IAsyncOperation<Json> Service::request(hstring path, hstring owner, hstring meth
     co_await resume_background();
     co_return requestBlocking(path, owner, method, body, hostOperation);
 }
-Json Service::requestBlocking(hstring const& path, hstring const& owner, hstring const& method, Json const& body, bool hostOperation) {
+IAsyncOperation<Json> Service::requestWithStatus(hstring path, hstring owner, hstring method, Json body) {
+    auto lifetime = shared_from_this();
+    bool mutation = method != L"GET";
+    struct Write { std::atomic_uint& value; bool active; ~Write() { if (active) --value; } } writing{writes_, mutation};
+    if (mutation) ++writes_;
+    require(!closing_, L"Morrow Mail is closing.");
+    co_await resume_background();
+    Json result; unsigned status = 0;
+    try { result = requestBlocking(path, owner, method, body, false, &status); }
+    // ApiError's C++ fields would be lost if thrown through GetResults' HRESULT
+    // boundary. Preserve only HTTP responses here, before crossing that boundary.
+    catch (ApiError const& failure) { status = failure.status; result = failure.body; }
+    Json response; response.Insert(L"status", Value::CreateNumberValue(status)); response.Insert(L"body", result);
+    co_return response;
+}
+Json Service::requestBlocking(hstring const& path, hstring const& owner, hstring const& method, Json const& body, bool hostOperation, unsigned* responseStatus) {
     require(alive(), L"The private service stopped. Close and reopen Morrow Mail.");
     require(port_ && path.size() && path[0] == L'/' && path.size() <= 32768 && std::wstring_view(path).find_first_of(L"\r\n#") == std::wstring_view::npos,
         L"Invalid private API request.");
@@ -268,6 +283,7 @@ Json Service::requestBlocking(hstring const& path, hstring const& owner, hstring
     }
     Json result;
     require(Json::TryParse(to_hstring(response), result), L"The private service returned an invalid response.");
+    if (responseStatus) *responseStatus = status;
     if (status < 200 || status >= 300) throw ApiError(status, result);
     return result;
 }

@@ -846,14 +846,13 @@ IAsyncAction Shell::loadPage(int pageDelta, bool refreshReader, bool reset) {
         hstring path = L"/mail/page";
         bool searching = !search.Text().empty();
         if (searching) { path = L"/search"; options.Remove(L"unreadOnly"); if (options.HasKey(L"offset")) options.Remove(L"offset"); put(options, L"query", search.Text()); put(options, L"scope", L"folder"); put(options, L"sort", L"relevance"); options.Insert(L"page",Value::CreateNumberValue(static_cast<double>(requested.size()-1))); }
-        Json result; bool expired = false;
-        try { result = co_await service->request(path, captured, L"POST", options); }
-        catch (ApiError const& failure) {
-            expired = !requested.back().empty() && failure.status == 409
-                && text(failure.body, L"error") == (searching ? L"Search changed or the cursor expired. Search again." : L"Mail changed or the cursor expired. Refresh the list.");
-            if (!expired) throw;
-        }
+        auto response = co_await service->requestWithStatus(path, captured, L"POST", options);
         if (!currentPage()) { releaseAbandonedPage(); co_return; }
+        auto status = static_cast<unsigned>(response.GetNamedNumber(L"status", 0));
+        auto result = object(response, L"body");
+        bool expired = !requested.back().empty() && status == 409
+            && text(result, L"error") == (searching ? L"Search changed or the cursor expired. Search again." : L"Mail changed or the cursor expired. Refresh the list.");
+        if (!expired && (status < 200 || status >= 300)) throw ApiError(status, result);
         if (expired) {
             // A signed cursor belongs to an older revision. Retry this read once
             // at the same bounded position; never weaken the service's validation.

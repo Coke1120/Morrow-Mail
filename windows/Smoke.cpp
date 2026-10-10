@@ -136,6 +136,16 @@ IAsyncAction mailRevisionChecks(std::shared_ptr<Shell> shell) {
         }
         return Json();
     };
+    auto samePage = [&](Json const& expected) {
+        auto messages = array(expected, L"messages");
+        if (messages.Size() != shell->rows.Items().Size()) return false;
+        for (uint32_t i = 0; i < messages.Size(); ++i) {
+            auto actual = rowMessage(shell->rows.Items().GetAt(i).as<controls::ListViewItem>());
+            if (text(actual, L"viewId") != text(messages.GetAt(i).GetObject(), L"viewId")
+                || text(actual, L"accountId") != shell->owner) return false;
+        }
+        return true;
+    };
     co_await shell->navigate(L"mail", L"one@fixture.invalid");
     auto owner = shell->owner;
     auto arrival = rowMessage(shell->rows.Items().GetAt(0).as<controls::ListViewItem>());
@@ -218,9 +228,17 @@ IAsyncAction mailRevisionChecks(std::shared_ptr<Shell> shell) {
         co_await shell->loadPage(-1); co_await shell->loadPage(1);
         check(!shell->cursors.back().empty(), L"Cursor recovery requires a signed page-two cursor.");
         co_await shell->service->request(watchedPath, owner, L"PATCH", unread);
+        Json cursorRequest; put(cursorRequest, L"folder", shell->folder); put(cursorRequest, L"cursor", shell->cursors.back());
+        put(cursorRequest, L"sort", L"newest"); put(cursorRequest, L"locale", L"en");
+        auto expiredResponse = co_await shell->service->requestWithStatus(L"/mail/page", owner, L"POST", cursorRequest);
+        check(expiredResponse.GetNamedNumber(L"status", 0) == 409
+            && text(object(expiredResponse, L"body"), L"error") == L"Mail changed or the cursor expired. Refresh the list.",
+            L"The async transport lost the expired mail cursor's HTTP status/body.");
+        put(cursorRequest, L"cursor", L""); cursorRequest.Insert(L"offset", Value::CreateNumberValue(50));
+        auto expectedPage = co_await shell->service->request(L"/mail/page", owner, L"POST", cursorRequest);
         co_await shell->loadPage();
         check(shell->cursors.size() == 2 && shell->rows.Items().Size() == 15
-            && shell->previous.IsEnabled() && !shell->next.IsEnabled() && shell->cursors.back().empty(),
+            && shell->previous.IsEnabled() && !shell->next.IsEnabled() && shell->cursors.back().empty() && samePage(expectedPage),
             L"Expired current-page cursor did not recover at its numeric offset.");
         co_await shell->loadPage(-1);
         co_await shell->service->request(watchedPath, owner, L"PATCH", read);
@@ -231,6 +249,11 @@ IAsyncAction mailRevisionChecks(std::shared_ptr<Shell> shell) {
         // An ordinary failed read must not move the committed pager state.
         auto cursors = shell->cursors; auto pageLabel = shell->pageLabel.Text(); auto firstRow = shell->rows.Items().GetAt(0);
         auto folder = shell->folder; shell->folder = L"invalid-native-fixture-folder";
+        Json invalidRequest; put(invalidRequest, L"folder", shell->folder);
+        auto invalidResponse = co_await shell->service->requestWithStatus(L"/mail/page", owner, L"POST", invalidRequest);
+        check(invalidResponse.GetNamedNumber(L"status", 0) == 400
+            && text(object(invalidResponse, L"body"), L"error") == L"Invalid mail folder, sorting or page size.",
+            L"The async transport lost an ordinary HTTP error's status/body.");
         co_await shell->loadPage(-1); shell->folder = folder;
         check(shell->cursors == cursors && shell->pageLabel.Text() == pageLabel && shell->rows.Items().GetAt(0) == firstRow
             && shell->previous.IsEnabled() && shell->search.IsEnabled() && !shell->loading,
@@ -239,9 +262,18 @@ IAsyncAction mailRevisionChecks(std::shared_ptr<Shell> shell) {
         shell->search.Text(L"Native fixture"); co_await shell->loadPage(0, false, true);
         check(shell->rows.Items().Size() == 30 && !shell->nextCursor.empty(), L"Search cursor fixture did not produce multiple pages.");
         co_await shell->service->request(watchedPath, owner, L"PATCH", unread);
+        Json searchRequest; put(searchRequest, L"folder", shell->folder); put(searchRequest, L"query", L"Native fixture");
+        put(searchRequest, L"scope", L"folder"); put(searchRequest, L"sort", L"relevance"); put(searchRequest, L"locale", L"en");
+        put(searchRequest, L"cursor", shell->nextCursor);
+        expiredResponse = co_await shell->service->requestWithStatus(L"/search", owner, L"POST", searchRequest);
+        check(expiredResponse.GetNamedNumber(L"status", 0) == 409
+            && text(object(expiredResponse, L"body"), L"error") == L"Search changed or the cursor expired. Search again.",
+            L"The async transport lost the expired search cursor's HTTP status/body.");
+        put(searchRequest, L"cursor", L""); searchRequest.Insert(L"page", Value::CreateNumberValue(1));
+        expectedPage = co_await shell->service->request(L"/search", owner, L"POST", searchRequest);
         co_await shell->loadPage(1);
         check(shell->cursors.size() == 2 && shell->rows.Items().Size() == 30 && shell->previous.IsEnabled()
-            && shell->next.IsEnabled() && shell->cursors.back().empty(), L"Search stale cursor did not recover its numeric page.");
+            && shell->next.IsEnabled() && shell->cursors.back().empty() && samePage(expectedPage), L"Search stale cursor did not recover its numeric page.");
         revision = shell->mailRevision;
         shell->search.Text(L"Unsubmitted query");
         co_await shell->service->request(watchedPath, owner, L"PATCH", read);
