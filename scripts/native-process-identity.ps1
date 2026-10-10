@@ -1,5 +1,5 @@
 #requires -Version 7.2
-# Read-only, fixture-side process identity proof. No collector integration yet.
+# Read-only, fixture-side process identity proof for the observation collector.
 # The caller must separately validate ownership, the current parent's CIM
 # identity, and its retained live handle. An exited proof cannot authorize a
 # descendant or provide a counter sample.

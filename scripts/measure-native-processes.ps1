@@ -3,6 +3,7 @@
 param([switch] $SelfTest)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'native-process-identity.ps1')
 
 # Fixture-only observer, never packaged. The caller owns the UI and this child.
 # No CIM, sampler pipe or sampler wait runs in the UI stderr drain loop.
@@ -141,6 +142,18 @@ function Add-NativeObservationFailure($Sample, $Row, [uint32] $Root, [string] $S
         reason = $Reason; stage = $Stage; errorKind = $kind; errorCode = $code; exitCode = $ExitCode })
 }
 
+function Get-NativeProofParentState($Parent, [uint32] $ParentId, [long] $ParentTicks,
+    [Collections.IDictionary] $Cache, [Collections.IDictionary] $Rejected, [Collections.IDictionary] $Rows) {
+    if (-not $Cache.ContainsKey($ParentId) -or -not [object]::ReferenceEquals($Cache[$ParentId], $Parent) -or
+        -not $Parent.seen -or $Rejected.ContainsKey($ParentId) -or -not $Rows.ContainsKey($ParentId)) { return 'parentUnavailable' }
+    $parentRow = $Rows[$ParentId]
+    if ($Parent.ticks -ne $ParentTicks -or $Parent.process.Id -ne $ParentId -or
+        $Parent.parentPid -ne [uint32] $parentRow.ParentProcessId -or
+        -not (Test-NativeCreation $Parent.process.StartTime.ToUniversalTime().Ticks $ParentTicks $parentRow.CreationDate.ToUniversalTime().Ticks)) { return 'identityMismatch' }
+    if ($Parent.process.HasExited) { return 'parentExited' }
+    return 'valid'
+}
+
 function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]] $SnapshotRows = $null,
     [scriptblock] $ObservationBarrier = $null, [scriptblock] $ReadCounters = $null,
     [Collections.IDictionary] $State = $null) {
@@ -238,7 +251,42 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
                     if ($parent.process.HasExited) { throw 'Parent exited before child admission.' }
                     if ($cache.Count -ge 64) { $failureStage = 'inventory'; $skipReason = 'counterReadFailed'; throw 'Handle cache limit.' }
                     $failureStage = 'lookup'; $skipReason = 'processUnavailable'
-                    $newProcess = [Diagnostics.Process]::GetProcessById($id)
+                    try { $newProcess = [Diagnostics.Process]::GetProcessById($id) }
+                    catch {
+                        $lookupFailure = $_.Exception
+                        while ($lookupFailure.InnerException) { $lookupFailure = $lookupFailure.InnerException }
+                        if ($lookupFailure -isnot [ArgumentException] -or $candidate.source -ne 'cim' -or $id -eq $Root) { throw }
+                        # .NET rejects an already-exited process even while a
+                        # native limited handle can still prove its identity.
+                        # This narrow fallback never hides handle/counter errors.
+                        $parentTicks = [long] $parent.ticks
+                        $failureStage = 'parent'; $skipReason = 'parentUnavailable'
+                        $parentState = Get-NativeProofParentState $parent $parentId $parentTicks $cache $rejected $byId
+                        if ($parentState -ne 'valid') { $skipReason = $parentState; throw 'Exit proof parent is not live and verified.' }
+                        $failureStage = 'nativeProof'; $skipReason = 'processUnavailable'
+                        $proof = Get-NativeProcessExitProof $id $row.CreationDate.ToUniversalTime().Ticks $parentTicks
+                        if ($ObservationBarrier) { [void] (& $ObservationBarrier 'exitProof' $parent.process) }
+                        if ($proof.ProvenZero) {
+                            $failureStage = 'parent'; $skipReason = 'parentUnavailable'
+                            $parentState = Get-NativeProofParentState $parent $parentId $parentTicks $cache $rejected $byId
+                            if ($parentState -ne 'valid') { $skipReason = $parentState; throw 'Exit proof parent changed during proof.' }
+                            $sample.lifecycleEvents.Add([ordered]@{ pid = $id; parentPid = $parentId; startUtcTicks = [long] $proof.StartUtcTicks
+                                role = 'other'; exitCode = 0; phase = 'beforeCounters'; source = 'cim'; identitySource = 'nativeLookupFallback' })
+                            # No live cache entry, counter, or descendant-root
+                            # authority is created for this already-exited PID.
+                            continue
+                        }
+                        $failureStage = switch ($proof.Stage) {
+                            'open' { 'nativeOpen' }; 'pid' { 'nativePid' }; 'creation' { 'nativeCreation' }
+                            'wait' { 'nativeWait' }; 'exit' { 'nativeExit' }; default { 'nativeProof' }
+                        }
+                        $skipReason = if ($proof.Outcome -eq 'identityMismatch') { 'identityMismatch' }
+                            elseif ($proof.Outcome -eq 'nonzeroExit') { 'processExited' } else { 'processUnavailable' }
+                        $nativeFailure = if ($null -ne $proof.NativeError) { [ComponentModel.Win32Exception]::new($proof.NativeError) } else { $null }
+                        $rejected[$id] = $true
+                        Add-NativeObservationFailure $sample $row $Root $candidate.source $skipReason $failureStage $nativeFailure $proof.ExitCode
+                        continue
+                    }
                     $failureStage = 'handle'; [void] $newProcess.Handle
                     $failureStage = 'identity'; $skipReason = 'counterReadFailed'
                     $ticks = $newProcess.StartTime.ToUniversalTime().Ticks
@@ -361,6 +409,7 @@ function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
     $peakWs = 0L; $peakPrivate = 0L; $lastElapsed = -1.0; $gaps = $false
     $skipTotals = New-NativeSkipReasonCounts; $rootSkippedTotal = 0L; $unknownRootSkips = $false
     $normalExitObservations = 0L; $modernRecords = $false; $measuredRoot = $false
+    $uiPids = @{}; $nativeLookupPids = @{}
     $extendedSampleKeys = (@('elapsedMs', 'kind', 'processes', 'queryMs', 'rootExitedDuringSample', 'rootSkipped', 'skipped', 'skipReasonCounts') | Sort-Object) -join ','
     $lifecycleSampleKeys = (@('elapsedMs', 'failedRecords', 'kind', 'lifecycleEvents', 'processes', 'queryMs', 'rootExitedDuringSample', 'rootSkipped', 'skipped', 'skipReasonCounts') | Sort-Object) -join ','
     try {
@@ -419,7 +468,7 @@ function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
                     if ($item.pid -le 1 -or $item.pid -gt [uint32]::MaxValue -or $item.parentPid -gt [uint32]::MaxValue -or $item.startUtcTicks -le 0 -or $item.startUtcTicks -gt [DateTime]::MaxValue.Ticks -or
                         $item.workingSetBytes -gt 1PB -or $item.privateBytes -gt 1PB -or $item.cpuMs -isnot [ValueType] -or $item.cpuMs -is [bool] -or -not [double]::IsFinite($item.cpuMs) -or $item.cpuMs -lt 0 -or $item.cpuMs -gt 1e15 -or $identities.ContainsKey($item.pid)) { throw 'Invalid process observation.' }
                     $identities[$item.pid] = $item.startUtcTicks; $sumWs += $item.workingSetBytes; $sumPrivate += $item.privateBytes
-                    if ($item.role -eq 'ui') { $measuredRoot = $true }
+                    if ($item.role -eq 'ui') { $measuredRoot = $true; $uiPids[$item.pid] = $true }
                 }
                 $events = @(); $failures = @()
                 if ($row.ContainsKey('lifecycleEvents')) {
@@ -429,14 +478,21 @@ function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
                     foreach ($event in $events) {
                         if (($event.Keys | Sort-Object) -join ',' -cne 'exitCode,identitySource,parentPid,phase,pid,role,source,startUtcTicks' -or
                             $event.role -cnotin @('ui', 'service', 'webview', 'other') -or
-                            $event.source -cnotin @('cim', 'retained') -or $event.identitySource -cnotin @('currentSnapshot', 'priorSnapshot') -or
+                            $event.source -cnotin @('cim', 'retained') -or $event.identitySource -cnotin @('currentSnapshot', 'priorSnapshot', 'nativeLookupFallback') -or
                             $event.phase -cnotin @('beforeCounters', 'afterCounters', 'afterSnapshot') -or
                             $event.exitCode -isnot [long] -or $event.exitCode -ne 0) { throw 'Invalid lifecycle event.' }
+                        if ($event.identitySource -eq 'nativeLookupFallback' -and
+                            ($event.source -ne 'cim' -or $event.role -ne 'other' -or $event.phase -ne 'beforeCounters')) { throw 'Invalid native lookup proof event.' }
                         foreach ($key in @('pid', 'parentPid', 'startUtcTicks')) {
                             if ($event[$key] -isnot [long] -or $event[$key] -lt 0) { throw 'Invalid lifecycle identity.' }
                         }
                         if ($event.pid -le 1 -or $event.pid -gt [uint32]::MaxValue -or $event.parentPid -gt [uint32]::MaxValue -or
                             $event.startUtcTicks -le 0 -or $event.startUtcTicks -gt [DateTime]::MaxValue.Ticks -or $exited.ContainsKey($event.pid)) { throw 'Invalid lifecycle identity.' }
+                        if ($event.role -eq 'ui') { $uiPids[$event.pid] = $true }
+                        if ($event.identitySource -eq 'nativeLookupFallback') {
+                            if ($event.parentPid -le 1 -or $event.pid -eq $event.parentPid) { throw 'Invalid lookup parent.' }
+                            $nativeLookupPids[$event.pid] = $true
+                        }
                         if ($event.phase -eq 'beforeCounters') {
                             if ($identities.ContainsKey($event.pid)) { throw 'Exited process has unexpected counters.' }
                         } elseif (-not $identities.ContainsKey($event.pid) -or $identities[$event.pid] -ne $event.startUtcTicks -or
@@ -446,7 +502,8 @@ function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
                     foreach ($failure in $failures) {
                         if (($failure.Keys | Sort-Object) -join ',' -cne 'cimStartUtcTicks,errorCode,errorKind,exitCode,parentPid,pid,reason,source,stage' -or
                             $failure.source -cnotin @('cim', 'retained') -or -not $recordReasons.ContainsKey($failure.reason) -or
-                            $failure.stage -cnotin @('inventory', 'parent', 'lookup', 'handle', 'identity', 'role', 'counters', 'exit') -or
+                            $failure.stage -cnotin @('inventory', 'parent', 'lookup', 'handle', 'identity', 'role', 'counters', 'exit',
+                                'nativeProof', 'nativeOpen', 'nativePid', 'nativeCreation', 'nativeWait', 'nativeExit') -or
                             $failure.errorKind -cnotin @('none', 'accessDenied', 'native', 'argument', 'invalidOperation', 'other')) { throw 'Invalid failure record.' }
                         foreach ($key in @('pid', 'parentPid', 'cimStartUtcTicks')) {
                             if ($failure[$key] -isnot [long] -or $failure[$key] -lt 0) { throw 'Invalid failure identity.' }
@@ -477,13 +534,14 @@ function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
                 $samples.Add($row)
             }
         }
+        foreach ($id in $nativeLookupPids.Keys) { if ($uiPids.ContainsKey($id)) { throw 'A root cannot use a lookup fallback.' } }
     } catch { $invalid = $true } # Fixed status only; never retain raw CIM/JSON errors.
     return [ordered]@{ schemaVersion = 3; incomplete = ($invalid -or $partial -or $gaps -or $Stop.forced -or -not $Stop.reaped -or $Stop.exitCode -ne 0 -or $null -eq $footer -or $footer.reason -ne 0 -or $samples.Count -eq 0 -or ($modernRecords -and -not $measuredRoot))
         collector = $Stop; invalidRecords = $invalid; partialLine = $partial; sampleGaps = $gaps; footer = $footer
         skipReasonCounts = $skipTotals; rootSkipped = $(if ($unknownRootSkips) { $null } else { $rootSkippedTotal }); normalExitObservations = $normalExitObservations
         firstSampleLagMs = $(if ($samples.Count) { $samples[0].elapsedMs + $samples[0].queryMs } else { $null }); milestonesMs = $Milestones
         sampledPeakWorkingSetSumBytes = $peakWs; sampledPeakPrivateBytesSum = $peakPrivate; samples = @($samples.ToArray())
-        method = 'Approximately one snapshot/second during the owned UI lifetime; verified descendants retain their original process handles and UTC creation identities. Explicit zero exits without an earlier read failure are lifecycle events, not fabricated zero counters. Unverified/acquisition/read failures remain gaps. The observer is excluded from these sums, but its CPU/query overhead can affect the run. Working-set sums can double-count shared pages; they are not private working set. Private bytes are process-private committed memory, not macOS footprint. CPU is cumulative per process identity, not a whole-run total. Sampled maxima can miss startup peaks and short-lived processes. First-sample lag runs from before Process.Start to completion of the first snapshot; elapsedMs and queryMs retain its acquisition interval. Milestones are launch-to-stderr-receipt, not first paint. No beta16 comparison, steady-idle or complete N0 claim.' }
+        method = 'Approximately one snapshot/second during the owned UI lifetime; verified descendants retain their original process handles and UTC creation identities. A first-seen .NET lookup rejection can also be proved by a limited native handle, with the current parent verified and live before and after that proof. Explicit zero exits without an earlier read failure are lifecycle events, not fabricated zero counters or live descendant roots. Unverified/acquisition/read failures remain gaps. The observer is excluded from these sums, but its CPU/query overhead can affect the run. Working-set sums can double-count shared pages; they are not private working set. Private bytes are process-private committed memory, not macOS footprint. CPU is cumulative per process identity, not a whole-run total. Sampled maxima can miss startup peaks and short-lived processes. First-sample lag runs from before Process.Start to completion of the first snapshot; elapsedMs and queryMs retain its acquisition interval. Milestones are launch-to-stderr-receipt, not first paint. No beta16 comparison, steady-idle or complete N0 claim.' }
 }
 
 function Get-NativeObservationSummary([Collections.IDictionary] $Report, [ValidateRange(1, 3)] [int] $Run,
@@ -604,11 +662,41 @@ function Test-NativeResourceObservation {
         $report = Read-ObservationFixture @($modern, $footer) $stop $markers
         Check (-not $report.incomplete -and $report.normalExitObservations -eq 1 -and -not $report.sampleGaps)
         Check ($report.samples[0].lifecycleEvents[0].startUtcTicks -eq $ticks + 10L)
+        $nativeExit = $exit.Clone(); $nativeExit.source = 'cim'; $nativeExit.identitySource = 'nativeLookupFallback'
+        $nativeSample = $modern.Clone(); $nativeSample.lifecycleEvents = @($nativeExit)
+        $report = Read-ObservationFixture @($nativeSample, $footer)
+        Check (-not $report.incomplete -and $report.normalExitObservations -eq 1 -and -not $report.invalidRecords)
+        $nativeOnly = $nativeSample.Clone(); $nativeOnly.processes = @()
+        $report = Read-ObservationFixture @($nativeOnly, $footer)
+        Check ($report.incomplete -and -not $report.invalidRecords) # An exit proof is not a measured UI sample.
+        foreach ($case in @('source', 'role', 'phase', 'counter', 'root', 'parent')) {
+            $bad = $nativeSample.Clone(); $bad.lifecycleEvents = @($nativeExit.Clone())
+            switch ($case) {
+                'source' { $bad.lifecycleEvents[0].source = 'retained' }
+                'role' { $bad.lifecycleEvents[0].role = 'ui' }
+                'phase' { $bad.lifecycleEvents[0].phase = 'afterCounters' }
+                'counter' { $extra = $sample.processes[0].Clone(); $extra.pid = 21L; $extra.role = 'other'; $extra.startUtcTicks = $ticks + 10L; $bad.processes = @($sample.processes[0], $extra) }
+                'root' { $bad.lifecycleEvents[0].pid = 20L; $bad.lifecycleEvents[0].parentPid = 19L; $bad.processes = @() }
+                'parent' { $bad.lifecycleEvents[0].parentPid = 21L }
+            }
+            $prior = $detailed.Clone(); $prior.elapsedMs = 0.0
+            $two = $footer.Clone(); $two.samples = 2
+            $report = Read-ObservationFixture @($prior, $bad, $two)
+            Check ($report.incomplete -and $report.invalidRecords)
+        }
         $failure = @{ pid = 21L; parentPid = 20L; cimStartUtcTicks = $ticks + 3L; source = 'cim'
             reason = 'processUnavailable'; stage = 'lookup'; errorKind = 'argument'; errorCode = $null; exitCode = $null }
         $modernGap = $modern.Clone(); $modernGap.lifecycleEvents = @(); $modernGap.failedRecords = @($failure)
         $modernGap.skipped = 1L; $modernGap.skipReasonCounts = New-NativeSkipReasonCounts; $modernGap.skipReasonCounts.processUnavailable = 1L
         $report = Read-ObservationFixture @($modernGap, $footer) $stop $markers
+        Check ($report.incomplete -and -not $report.invalidRecords -and $report.normalExitObservations -eq 0)
+        $nativeDenied = $failure.Clone(); $nativeDenied.stage = 'nativeOpen'; $nativeDenied.errorKind = 'accessDenied'; $nativeDenied.errorCode = 5L
+        $nativeGap = $modernGap.Clone(); $nativeGap.failedRecords = @($nativeDenied)
+        $report = Read-ObservationFixture @($nativeGap, $footer)
+        Check ($report.incomplete -and -not $report.invalidRecords -and $report.skipReasonCounts.processUnavailable -eq 1)
+        $nativeMissing = $nativeDenied.Clone(); $nativeMissing.errorKind = 'native'; $nativeMissing.errorCode = 87L
+        $nativeGap.failedRecords = @($nativeMissing)
+        $report = Read-ObservationFixture @($nativeGap, $footer)
         Check ($report.incomplete -and -not $report.invalidRecords -and $report.normalExitObservations -eq 0)
         $denied = $failure.Clone(); $denied.reason = 'counterReadFailed'; $denied.stage = 'counters'
         $denied.errorKind = 'accessDenied'; $denied.errorCode = 5L; $denied.exitCode = 0L

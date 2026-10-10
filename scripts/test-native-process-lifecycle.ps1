@@ -53,7 +53,8 @@ exit 9
         # The worker launches no children and emits only three numeric rows.
         $source = '$wanted = @(' + ($Wanted -join ',') + "); `$ErrorActionPreference = 'Stop'`n" + @'
 try {
-    $rows = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate -OperationTimeoutSec 2 -ErrorAction Stop |
+    $filter = ($wanted | ForEach-Object { 'ProcessId = ' + $_ }) -join ' OR '
+    $rows = @(Get-CimInstance Win32_Process -Filter $filter -Property ProcessId, ParentProcessId, CreationDate -OperationTimeoutSec 2 -ErrorAction Stop |
         Where-Object { $wanted -contains [uint32] $_.ProcessId } | ForEach-Object {
             @{ ProcessId = [uint32] $_.ProcessId; ParentProcessId = [uint32] $_.ParentProcessId
                 creationUtcTicks = $_.CreationDate.ToUniversalTime().Ticks }
@@ -147,32 +148,47 @@ namespace MorrowObservationFixture {
     $path = Join-Path ([IO.Path]::GetTempPath()) ('morrow-resource-lifecycle-' + [Guid]::NewGuid().ToString('N') + '.jsonl')
     try {
         $control = Start-LifecycleChild
-        foreach ($case in @('alive-control', 'verified-exit-zero', 'exit-before-identity', 'stale-identity', 'counter-access-denied',
-            'denied-then-exit', 'verified-exit-nonzero', 'forced-collector', 'cached-exit-zero', 'cached-identity-change', 'cached-first-seen-exit',
+        foreach ($case in @('alive-control', 'verified-exit-zero', 'lookup-held-exit-zero', 'stale-identity', 'counter-access-denied',
+            'denied-then-exit', 'verified-exit-nonzero', 'forced-collector', 'cached-exit-zero', 'cached-identity-change', 'cached-lookup-held-exit-zero',
             'cached-root-exit-zero', 'cached-root-exit-nonzero', 'retained-descendant-new-child', 'retained-descendant-changed-parent',
-            'retained-descendant-parent-nonzero', 'retained-descendant-child-nonzero')) {
+            'retained-descendant-parent-nonzero', 'retained-descendant-child-nonzero', 'lookup-held-exit-nonzero',
+            'lookup-held-identity-change', 'lookup-parent-exit-during-proof', 'lookup-parent-identity-during-proof', 'lookup-exited-parent-no-adoption')) {
             $graphCase = $case -like 'retained-descendant-*'
-            if ($graphCase) { $ancestor = Start-LifecycleChild }
+            $proofParentCase = $case -in @('lookup-parent-exit-during-proof', 'lookup-parent-identity-during-proof')
+            $proofNoAdoptionCase = $case -eq 'lookup-exited-parent-no-adoption'
+            $ancestryProjected = $graphCase -or $proofParentCase -or $proofNoAdoptionCase
+            if ($graphCase -or $proofParentCase) { $ancestor = Start-LifecycleChild }
             $child = Start-LifecycleChild; $childId = $child.Id
+            if ($proofNoAdoptionCase) { $descendant = Start-LifecycleChild }
             $rootCase = $case -like 'cached-root-*'; $sampleRoot = if ($rootCase) { $child } else { $self }
             $sampleRootId = [uint32] $sampleRoot.Id; $sampleRootTicks = $sampleRoot.StartTime.ToUniversalTime().Ticks
             $state = New-NativeObservationState $sampleRootId $sampleRootTicks
-            $wanted = @([uint32] $self.Id, [uint32] $(if ($graphCase) { $ancestor.Id } else { $control.Id }), [uint32] $childId)
+            $wanted = @([uint32] $self.Id, [uint32] $(if ($graphCase -or $proofParentCase) { $ancestor.Id } elseif ($proofNoAdoptionCase) { $descendant.Id } else { $control.Id }), [uint32] $childId)
             # Real Windows CIM snapshot, projected to the fixed fields used by
             # production. Only the owned fixture processes participate.
             $rows = @(Read-LifecycleInventory $wanted)
             Check ($rows.Count -eq 3 -and -not $child.HasExited -and -not $control.HasExited) ('cim-' + $case)
             if ($rootCase) { $rows = @($rows | Where-Object { $_.ProcessId -eq $childId }) }
-            if ($graphCase) {
+            if ($graphCase -or $proofParentCase) {
                 # Deterministic ancestry projection U -> P -> C, backed by real
                 # owned handles, CIM creation times and counters. All actual OS
                 # children remain owned by this fixture; this is not an actual
                 # orphan/PID-reuse test. Only ParentProcessId is projected.
                 ($rows | Where-Object { $_.ProcessId -eq $childId }).ParentProcessId = [uint32] $ancestor.Id
             }
+            if ($proofNoAdoptionCase) {
+                # Only ancestry is projected: the real owned C exits while D
+                # remains alive. An exit proof for C must not authorize D.
+                ($rows | Where-Object { $_.ProcessId -eq $descendant.Id }).ParentProcessId = [uint32] $childId
+            }
+            if ($case -in @('lookup-held-exit-zero', 'cached-lookup-held-exit-zero')) {
+                $actualRow = $rows | Where-Object { $_.ProcessId -eq $childId }
+                Check ($actualRow.ParentProcessId -eq $self.Id -and
+                    (Test-NativeCreation $child.StartTime.ToUniversalTime().Ticks $child.StartTime.ToUniversalTime().Ticks $actualRow.CreationDate.ToUniversalTime().Ticks)) 'real-cim-child-identity'
+            }
             $firstSample = $null; $middleSample = $null; $measurementStart = [Diagnostics.Stopwatch]::GetTimestamp()
             if ($case -like 'cached-*' -or $graphCase) {
-                $firstRows = if ($case -eq 'cached-first-seen-exit') { @($rows | Where-Object { $_.ProcessId -ne $childId }) } else { $rows }
+                $firstRows = if ($case -eq 'cached-lookup-held-exit-zero') { @($rows | Where-Object { $_.ProcessId -ne $childId }) } else { $rows }
                 $first = Get-NativeProcessSnapshot $sampleRootId $sampleRootTicks $firstRows -State $state
                 Check ($null -eq $first.terminalReason -and $first.skipped -eq 0 -and $first.lifecycleEvents.Count -eq 0) ('first-snapshot-' + $case)
                 $firstSample = @{ kind = 0; elapsedMs = 0.0
@@ -180,7 +196,7 @@ namespace MorrowObservationFixture {
                     skipped = $first.skipped; rootSkipped = $first.rootSkipped; rootExitedDuringSample = $first.rootExitedDuringSample
                     skipReasonCounts = $first.skipReasonCounts; processes = $first.processes
                     lifecycleEvents = $first.lifecycleEvents; failedRecords = $first.failedRecords }
-                Check ($state.handles.Count -eq $(if ($rootCase) { 1 } elseif ($case -eq 'cached-first-seen-exit') { 2 } else { 3 })) 'cache-admission'
+                Check ($state.handles.Count -eq $(if ($rootCase) { 1 } elseif ($case -eq 'cached-lookup-held-exit-zero') { 2 } else { 3 })) 'cache-admission'
                 if ($graphCase) {
                     Check ($state.handles[[uint32] $childId].parentPid -eq $ancestor.Id) 'retained-parent-admitted'
                     $ancestor.StandardInput.WriteLine($(if ($case -eq 'retained-descendant-parent-nonzero') { 'exit7' } else { 'exit0' }))
@@ -194,7 +210,8 @@ namespace MorrowObservationFixture {
                 } else { $rows = @(Read-LifecycleInventory $wanted) }
                 if ($rootCase) { $rows = @($rows | Where-Object { $_.ProcessId -eq $childId }) }
             }
-            if ($case -in @('stale-identity', 'cached-identity-change', 'retained-descendant-changed-parent')) {
+            $creationProjected = $case -in @('stale-identity', 'cached-identity-change', 'retained-descendant-changed-parent', 'lookup-held-identity-change', 'lookup-parent-identity-during-proof')
+            if ($creationProjected -and $case -ne 'lookup-parent-identity-during-proof') {
                 # Deterministic stale snapshot, not a claim of actual PID reuse.
                 $staleRow = $rows | Where-Object { $_.ProcessId -eq $childId }
                 $staleRow.CreationDate = $child.StartTime.AddSeconds(1)
@@ -211,15 +228,32 @@ namespace MorrowObservationFixture {
                     skipReasonCounts = $middle.skipReasonCounts; processes = $middle.processes
                     lifecycleEvents = $middle.lifecycleEvents; failedRecords = $middle.failedRecords }
             }
-            $facts = @{ snapshot = $false; identified = $false; released = $false; denied = $false }
+            $facts = @{ snapshot = $false; identified = $false; released = $false; denied = $false; exitProofs = 0; parentReleased = $false; parentIdentityChanged = $false }
             $barrier = {
                 param($Phase, $Process)
                 if ($Phase -eq 'snapshot') { $facts.snapshot = $true }
                 if ($Phase -eq 'identified' -and $Process.Id -eq $childId) { $facts.identified = $true }
-                $release = (($case -in @('exit-before-identity', 'cached-exit-zero', 'cached-first-seen-exit') -or $rootCase) -and $Phase -eq 'snapshot') -or
+                if ($Phase -eq 'exitProof') {
+                    $facts.exitProofs++
+                    if ($proofParentCase) {
+                        if ($Process.Id -ne $ancestor.Id) { throw 'Unexpected proof parent.' }
+                        if ($case -eq 'lookup-parent-identity-during-proof') {
+                            # Project only a changed inventory identity after
+                            # the native child proof; this is not OS PID reuse.
+                            ($rows | Where-Object { $_.ProcessId -eq $ancestor.Id }).CreationDate = $ancestor.StartTime.AddSeconds(1)
+                            $facts.parentIdentityChanged = $true
+                        } else {
+                            $ancestor.StandardInput.WriteLine('exit0'); $ancestor.StandardInput.Flush()
+                            if (-not $ancestor.WaitForExit(5000)) { throw 'Proof parent did not exit at its barrier.' }
+                            $facts.parentReleased = $true
+                        }
+                    }
+                }
+                $release = (($case -in @('lookup-held-exit-zero', 'cached-exit-zero', 'cached-lookup-held-exit-zero',
+                    'lookup-held-exit-nonzero', 'lookup-held-identity-change', 'lookup-parent-exit-during-proof', 'lookup-parent-identity-during-proof', 'lookup-exited-parent-no-adoption') -or $rootCase) -and $Phase -eq 'snapshot') -or
                     ($case -in @('verified-exit-zero', 'verified-exit-nonzero') -and $Phase -eq 'identified' -and $Process.Id -eq $childId)
                 if ($release) {
-                    $child.StandardInput.WriteLine($(if ($case -in @('verified-exit-nonzero', 'cached-root-exit-nonzero')) { 'exit7' } else { 'exit0' }))
+                    $child.StandardInput.WriteLine($(if ($case -in @('verified-exit-nonzero', 'cached-root-exit-nonzero', 'lookup-held-exit-nonzero')) { 'exit7' } else { 'exit0' }))
                     $child.StandardInput.Flush()
                     if (-not $child.WaitForExit(5000)) { throw 'Lifecycle child did not exit at its barrier.' }
                     $facts.released = $true
@@ -275,25 +309,57 @@ namespace MorrowObservationFixture {
             # Emit only the parsed, validated numeric sample, before checking
             # expectations so a classification failure has evidence.
             Write-Host ('Native observation lifecycle: ' + (@{ case = $case; native = $true; baseline = $false
-                ancestryProjected = $graphCase
+                ancestryProjected = $ancestryProjected; creationProjected = $creationProjected; inventorySource = 'native-cim-filtered-owned-pids'
                 barrier = $facts; incomplete = $report.incomplete; reasons = $report.skipReasonCounts; collector = $stop
                 rootAlive = (-not $sampleRoot.HasExited); controlAlive = (-not $control.HasExited) } | ConvertTo-Json -Compress -Depth 4))
             foreach ($record in $report.samples) { Write-Host ('Native observation lifecycle sample: ' + ($record | ConvertTo-Json -Compress -Depth 5)) }
             if ($case -eq 'alive-control') { Check (-not $report.incomplete -and $snapshot.processes.Count -eq 3) }
-            elseif ($case -in @('verified-exit-zero', 'cached-exit-zero', 'cached-root-exit-zero', 'retained-descendant-new-child')) { Check (-not $report.incomplete -and $report.normalExitObservations -eq 1) }
+            elseif ($case -in @('verified-exit-zero', 'cached-exit-zero', 'cached-root-exit-zero', 'retained-descendant-new-child',
+                'lookup-held-exit-zero', 'cached-lookup-held-exit-zero')) { Check (-not $report.incomplete -and $report.normalExitObservations -eq 1) }
             else { Check $report.incomplete }
             switch ($case) {
                 'verified-exit-zero' { Check ($facts.identified -and $facts.released -and $child.ExitCode -eq 0 -and $report.skipReasonCounts.processExited -eq 0 -and $snapshot.lifecycleEvents[0].identitySource -eq 'currentSnapshot') }
                 'verified-exit-nonzero' { Check ($facts.identified -and $facts.released -and $child.ExitCode -eq 7 -and $report.skipReasonCounts.processExited -eq 1) }
-                'exit-before-identity' { Check ($facts.released -and -not $facts.identified -and $report.sampleGaps) }
+                { $_ -in @('lookup-held-exit-zero', 'cached-lookup-held-exit-zero') } {
+                    Check ($facts.released -and -not $facts.identified -and $facts.exitProofs -eq 1 -and -not $report.sampleGaps -and
+                        $snapshot.lifecycleEvents[0].pid -eq $childId -and $snapshot.lifecycleEvents[0].identitySource -eq 'nativeLookupFallback' -and
+                        $snapshot.lifecycleEvents[0].startUtcTicks -eq $child.StartTime.ToUniversalTime().Ticks -and
+                        -not $state.handles.ContainsKey([uint32] $childId) -and @($snapshot.processes | Where-Object { $_.pid -eq $childId }).Count -eq 0) 'lookup-zero-not-cached-or-measured'
+                }
                 'stale-identity' { Check (-not $facts.identified -and -not $child.HasExited -and $report.skipReasonCounts.identityMismatch -eq 1) }
-                'counter-access-denied' { Check ($facts.denied -and -not $child.HasExited -and $report.skipReasonCounts.counterReadFailed -eq 1) }
+                'counter-access-denied' { Check ($facts.denied -and -not $child.HasExited -and $facts.exitProofs -eq 0 -and $report.skipReasonCounts.counterReadFailed -eq 1) }
                 'denied-then-exit' { Check ($facts.denied -and $facts.identified -and $facts.released -and $child.ExitCode -eq 0 -and
-                    $report.skipReasonCounts.counterReadFailed -eq 1 -and $snapshot.failedRecords[0].errorKind -eq 'accessDenied' -and $report.normalExitObservations -eq 0) }
+                    $facts.exitProofs -eq 0 -and $report.skipReasonCounts.counterReadFailed -eq 1 -and $snapshot.failedRecords[0].errorKind -eq 'accessDenied' -and $report.normalExitObservations -eq 0) }
                 'cached-exit-zero' { Check ($facts.released -and $child.ExitCode -eq 0 -and $snapshot.lifecycleEvents[0].pid -eq $childId -and
                     $snapshot.lifecycleEvents[0].identitySource -eq 'priorSnapshot' -and $snapshot.failedRecords.Count -eq 0) }
                 'cached-identity-change' { Check (-not $facts.identified -and -not $child.HasExited -and $report.skipReasonCounts.identityMismatch -eq 1) }
-                'cached-first-seen-exit' { Check ($facts.released -and -not $facts.identified -and $report.skipReasonCounts.processUnavailable -eq 1 -and $report.normalExitObservations -eq 0) }
+                'lookup-held-exit-nonzero' {
+                    Check ($facts.released -and -not $facts.identified -and $facts.exitProofs -eq 1 -and $report.skipReasonCounts.processExited -eq 1 -and
+                        $snapshot.failedRecords[0].stage -eq 'nativeExit' -and $snapshot.failedRecords[0].exitCode -eq 7 -and $report.normalExitObservations -eq 0) 'lookup-nonzero-remains-gap'
+                }
+                'lookup-held-identity-change' {
+                    Check ($facts.released -and -not $facts.identified -and $facts.exitProofs -eq 1 -and $report.skipReasonCounts.identityMismatch -eq 1 -and
+                        $snapshot.failedRecords[0].stage -eq 'nativeCreation' -and $report.normalExitObservations -eq 0) 'lookup-changed-identity-remains-gap'
+                }
+                'lookup-parent-exit-during-proof' {
+                    Check ($facts.released -and $facts.parentReleased -and $facts.exitProofs -eq 1 -and $ancestor.ExitCode -eq 0 -and
+                        $report.skipReasonCounts.parentExited -eq 1 -and $snapshot.failedRecords[0].pid -eq $childId -and
+                        $snapshot.failedRecords[0].stage -eq 'parent' -and -not $state.handles.ContainsKey([uint32] $childId) -and
+                        @($snapshot.lifecycleEvents | Where-Object { $_.pid -eq $childId }).Count -eq 0) 'proof-parent-exit-invalidates-child'
+                }
+                'lookup-parent-identity-during-proof' {
+                    Check ($facts.released -and $facts.parentIdentityChanged -and $facts.exitProofs -eq 1 -and -not $ancestor.HasExited -and
+                        $report.skipReasonCounts.identityMismatch -eq 1 -and $snapshot.failedRecords[0].pid -eq $childId -and
+                        $snapshot.failedRecords[0].stage -eq 'parent' -and -not $state.handles.ContainsKey([uint32] $childId) -and
+                        @($snapshot.lifecycleEvents | Where-Object { $_.pid -eq $childId }).Count -eq 0) 'proof-parent-identity-invalidates-child'
+                }
+                'lookup-exited-parent-no-adoption' {
+                    Check ($facts.released -and $facts.exitProofs -eq 1 -and -not $descendant.HasExited -and
+                        $report.normalExitObservations -eq 1 -and $snapshot.lifecycleEvents[0].pid -eq $childId -and
+                        $snapshot.lifecycleEvents[0].identitySource -eq 'nativeLookupFallback' -and $report.skipReasonCounts.parentUnavailable -eq 1 -and
+                        $snapshot.failedRecords[0].pid -eq $descendant.Id -and -not $state.handles.ContainsKey([uint32] $descendant.Id) -and
+                        @($snapshot.processes | Where-Object { $_.pid -eq $descendant.Id }).Count -eq 0) 'exit-proof-does-not-authorize-descendants'
+                }
                 'cached-root-exit-zero' { Check ($snapshot.rootExitedDuringSample -and $report.footer.reason -eq 0 -and
                     $snapshot.lifecycleEvents[0].role -eq 'ui' -and $snapshot.lifecycleEvents[0].identitySource -eq 'priorSnapshot') }
                 'cached-root-exit-nonzero' { Check ($snapshot.rootExitedDuringSample -and $report.footer.reason -eq 3 -and
