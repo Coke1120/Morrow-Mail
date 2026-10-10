@@ -3,8 +3,27 @@
 import argparse
 import os
 from pathlib import Path
+import signal
 import subprocess
 import tempfile
+
+
+def bounded(arguments, *, cwd, env, timeout):
+    process = subprocess.Popen(arguments, cwd=cwd, env=env, start_new_session=True)
+    try:
+        status = process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # This group was created by this driver, not discovered from system data.
+        # Kill before reaping its leader so compiler children cannot outlive a
+        # timed-out compile, then bound the leader's cleanup wait as well.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=5)
+        raise
+    if status:
+        raise subprocess.CalledProcessError(status, arguments)
 
 
 def main():
@@ -38,11 +57,11 @@ def main():
         executable = fixture / "mail-flow-checks"
         environment = os.environ.copy()
         environment["MORROW_DATA_DIR"] = str(fixture / "fictional-workspace")
-        subprocess.run(["swiftc", "-D", "MORROW_WINDOW_CHECKS", "-parse-as-library",
+        bounded(["swiftc", "-D", "MORROW_WINDOW_CHECKS", "-parse-as-library",
                         *inputs, "-o", str(executable)],
-                       cwd=root, env=environment, check=True, timeout=180)
-        subprocess.run([str(executable), *(["--expect-baseline-reset"] if args.baseline_search else [])],
-                       cwd=fixture, env=environment, check=True, timeout=30)
+                cwd=root, env=environment, timeout=180)
+        bounded([str(executable), *(["--expect-baseline-reset"] if args.baseline_search else [])],
+                cwd=fixture, env=environment, timeout=30)
 
 
 if __name__ == "__main__":

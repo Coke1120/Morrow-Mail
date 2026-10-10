@@ -118,16 +118,19 @@ struct MailFlowAssertions {
     @MainActor static func views<T: NSView>(_ root: NSView, _ type: T.Type) -> [T] {
         (root as? T).map { [$0] } ?? root.subviews.flatMap { views($0, type) }
     }
-    @MainActor static func accessibility(_ root: Any, depth: Int = 0) -> [NSAccessibilityProtocol] {
-        guard depth < 20, let element = root as? NSAccessibilityProtocol else { return [] }
-        return [element] + (element.accessibilityChildren() ?? []).prefix(100).flatMap { accessibility($0, depth: depth + 1) }
+    @MainActor static func accessibility(_ root: Any, depth: Int = 0) -> [AnyObject] {
+        guard depth < 20 else { return [] }
+        // AppKit/SwiftUI peers can implement the Objective-C accessibility
+        // selectors without declaring conformance to the full Swift protocol.
+        let element = root as AnyObject
+        return [element] + (element.accessibilityChildren?() ?? []).prefix(100).flatMap { accessibility($0, depth: depth + 1) }
     }
     @MainActor static func press(_ name: String, in root: NSView) async throws {
-        var button: NSAccessibilityProtocol?
+        var button: AnyObject?
         let deadline = Date().addingTimeInterval(5)
         repeat {
             root.layoutSubtreeIfNeeded()
-            button = accessibility(root).first { $0.accessibilityRole() == .button && ($0.accessibilityLabel() == name || $0.accessibilityTitle() == name) }
+            button = accessibility(root).first { $0.accessibilityRole?() == .button && ($0.accessibilityLabel?() == name || $0.accessibilityTitle?() == name) }
             if button != nil { break }
             try await Task.sleep(nanoseconds: 10_000_000)
         } while Date() < deadline
@@ -135,18 +138,23 @@ struct MailFlowAssertions {
             // This tree contains only the fictional fixture; bound diagnostic
             // output and avoid descriptions/paths or general process metadata.
             for element in accessibility(root).prefix(40) {
-                print("Fixture AX: role=\(element.accessibilityRole()?.rawValue ?? "nil") label=\(element.accessibilityLabel() ?? "") title=\(element.accessibilityTitle() ?? "")")
+                trace("Fixture AX: role=\(element.accessibilityRole?()?.rawValue ?? "nil") label=\(element.accessibilityLabel?() ?? "") title=\(element.accessibilityTitle?() ?? "")")
             }
-            print("Fixture native buttons: \(views(root, NSButton.self).map(\.title))")
+            trace("Fixture native buttons: \(views(root, NSButton.self).map(\.title))")
         }
-        try require(button?.accessibilityPerformPress() == true, "Missing native action: " + name)
+        try require(button?.accessibilityPerformPress?() == true, "Missing native action: " + name)
     }
     @MainActor static func query(_ value: String, in root: NSView) throws {
         guard let field = views(root, NSTextField.self).first(where: { $0.placeholderString?.hasPrefix("Search mail") == true }) else { throw APIError("Native search field is missing.") }
         field.stringValue = value
         field.delegate?.controlTextDidChange?(Notification(name: NSControl.textDidChangeNotification, object: field))
     }
-    @MainActor static func main() async throws {
+    static func trace(_ message: String) { FileHandle.standardError.write(Data((message + "\n").utf8)) }
+    @MainActor static func main() async {
+        do { try await run() }
+        catch { trace(error.localizedDescription); exit(1) }
+    }
+    @MainActor static func run() async throws {
         let app = NSApplication.shared; app.setActivationPolicy(.regular)
         let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [MailFlowProtocol.self]
         let model = AppModel(session: URLSession(configuration: config))
@@ -190,10 +198,10 @@ struct MailFlowAssertions {
         try await wait("Reply sheet did not mount.") { window.attachedSheet?.contentView != nil && model.unsavedForms.contains("compose") }
         let sheet = window.attachedSheet!, sheetRoot = sheet.contentView!
         try await wait("Composer accessibility controls did not mount.") {
-            accessibility(sheetRoot).contains { $0.accessibilityLabel() == "Remove attachment one.txt" }
+            accessibility(sheetRoot).contains { $0.accessibilityLabel?() == "Remove attachment one.txt" }
         }
         for name in ["Remove attachment one.txt", "Remove attachment two.txt", "Remove email footer"] {
-            try require(accessibility(sheetRoot).contains { $0.accessibilityRole() == .button && $0.accessibilityLabel() == name }, "Ambiguous removal label: " + name)
+            try require(accessibility(sheetRoot).contains { $0.accessibilityRole?() == .button && $0.accessibilityLabel?() == name }, "Ambiguous removal label: " + name)
         }
         var sawDiscardReview = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
