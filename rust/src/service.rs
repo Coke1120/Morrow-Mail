@@ -392,7 +392,7 @@ pub fn state(db: &Store, selected: &str, paged: bool, secret: &[u8; 32]) -> Resu
     let mut counted = ids.clone();
     counted.push("demo".into());
     let stats = pages::stats(db, &counted)?;
-    let metadata=ids.iter().map(|id| merge(json!({"id":id,"email":id,"mode":"live","provider":accounts[id].get("provider").unwrap_or(&json!("imap")),"name":id.split('@').next().unwrap_or(""),"settings":safe_mail(&accounts[id]),"import":crate::background::import_status_from(&config,id)}),&stats[id])).collect::<Vec<_>>();
+    let metadata=ids.iter().map(|id| Ok(merge(merge(json!({"id":id,"email":id,"mode":"live","provider":accounts[id].get("provider").unwrap_or(&json!("imap")),"name":id.split('@').next().unwrap_or(""),"settings":safe_mail(&accounts[id]),"import":crate::background::import_status_from(&config,id)}),&stats[id]), &crate::background::content_status(db,id)?))).collect::<Result<Vec<_>>>()?;
     let owners = if view == "all" {
         ids
     } else {

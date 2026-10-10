@@ -62,8 +62,27 @@ fn network_error() -> Error {
 pub async fn request(request: RequestBuilder, limit: usize) -> Result<Value> {
     request_kind(request, limit, false).await
 }
+// Graph limits concurrent requests per app/mailbox to four. A process-wide
+// bound is deliberately conservative and also covers calendar reads and writes.
+static GRAPH_REQUESTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+async fn limited_send(
+    request: RequestBuilder,
+) -> Result<(
+    reqwest::Response,
+    Option<tokio::sync::SemaphorePermit<'static>>,
+)> {
+    let (client, request) = request.build_split();
+    let request = request.map_err(|_| remote_error())?;
+    let permit = if request.url().host_str() == Some("graph.microsoft.com") {
+        Some(GRAPH_REQUESTS.acquire().await.map_err(|_| remote_error())?)
+    } else {
+        None
+    };
+    let response = client.execute(request).await.map_err(|_| network_error())?;
+    Ok((response, permit))
+}
 async fn request_kind(request: RequestBuilder, limit: usize, oauth: bool) -> Result<Value> {
-    let response = request.send().await.map_err(|_| network_error())?;
+    let (response, _permit) = limited_send(request).await?;
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let mut error = Error::new(
@@ -153,20 +172,19 @@ fn retry_after(value: &str, timestamp: i64) -> Option<i64> {
         .filter(|date| retry >= timestamp && date.year() <= 9999)?;
     Some(retry)
 }
+fn response_too_large() -> Error {
+    let mut error = Error::new(502, "The provider response exceeds the size limit.");
+    error.body["code"] = "provider_response_too_large".into();
+    error
+}
 async fn response_json(mut response: reqwest::Response, limit: usize) -> Result<Value> {
     if response.content_length().is_some_and(|n| n > limit as u64) {
-        return Err(Error::new(
-            502,
-            "The provider response exceeds the size limit.",
-        ));
+        return Err(response_too_large());
     }
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| network_error())? {
         if bytes.len() + chunk.len() > limit {
-            return Err(Error::new(
-                502,
-                "The provider response exceeds the size limit.",
-            ));
+            return Err(response_too_large());
         }
         bytes.extend_from_slice(&chunk);
     }
@@ -247,16 +265,16 @@ pub async fn raw_message(client: &Client, mail: &Value, message: &Value) -> Resu
     if provider != "microsoft" {
         return Err(Error::invalid("Unsupported mailbox provider."));
     }
-    let mut response = api(
-        client,
-        mail,
-        reqwest::Method::GET,
-        &format!("/messages/{}/$value", component(id)),
-    )?
-    .header("Prefer", "IdType=\"ImmutableId\"")
-    .send()
-    .await
-    .map_err(|_| network_error())?;
+    let (mut response, _permit) = limited_send(
+        api(
+            client,
+            mail,
+            reqwest::Method::GET,
+            &format!("/messages/{}/$value", component(id)),
+        )?
+        .header("Prefer", "IdType=\"ImmutableId\""),
+    )
+    .await?;
     if !response.status().is_success() {
         let mut error = remote_error();
         error.provider_status = Some(response.status().as_u16());
@@ -497,6 +515,19 @@ pub fn iso(value: &str) -> String {
         .unwrap_or_else(|_| DateTime::<Utc>::from_timestamp(0, 0).unwrap())
         .to_rfc3339_opts(SecondsFormat::Millis, true)
 }
+pub(crate) fn microsoft_date(value: &str) -> Result<String> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|date| date.with_timezone(&Utc))
+        .filter(|date| (0..=9999).contains(&date.year()))
+        .map(|date| date.to_rfc3339_opts(SecondsFormat::Millis, true))
+        .ok_or_else(|| {
+            let mut error = Error::new(502, "Outlook returned a missing or invalid message date. Saved mail and this page's checkpoint were retained. Try again after the provider data is corrected.");
+            error.body["code"] = "provider_invalid_date".into();
+            error.body["recoveryAction"] = "resume".into();
+            error
+        })
+}
 pub fn preview(value: &str) -> String {
     value
         .split_whitespace()
@@ -629,7 +660,9 @@ pub fn normalize_google(message: &Value) -> Result<Value> {
         }
         count += 1;
         if count > 2000 {
-            return Err(remote_error());
+            let mut error = Error::new(502, "This message exceeds the MIME part limit.");
+            error.body["code"] = "google_mime_limit".into();
+            return Err(error);
         }
         if !string(part, "filename").is_empty()
             || !string(&part["body"], "attachmentId").is_empty()
@@ -697,6 +730,8 @@ pub fn normalize_google(message: &Value) -> Result<Value> {
     result["bodyHtml"] = crate::message_html::sanitize(&formatted.join("\n")).into();
     result["preview"] = preview(&body).into();
     result["automated"] = automated(&json!(headers)).into();
+    result["contentIncomplete"] = false.into();
+    result["contentErrorCode"] = Value::Null;
     google_metadata(message, result)
 }
 fn google_metadata(message: &Value, mut result: Value) -> Result<Value> {
@@ -714,7 +749,7 @@ fn google_metadata(message: &Value, mut result: Value) -> Result<Value> {
     }
     let labels = message["labelIds"].as_array().cloned().unwrap_or_default();
     if message.get("labelIds").is_some_and(|v| !v.is_array())
-        || labels.len() > 1000
+        || labels.len() > 10000
         || labels.iter().any(|v| v.as_str().is_none_or(str::is_empty))
     {
         return Err(remote_error());
@@ -727,6 +762,10 @@ fn google_metadata(message: &Value, mut result: Value) -> Result<Value> {
     Ok(result)
 }
 pub fn normalize_microsoft(message: &Value) -> Result<Value> {
+    let date = microsoft_date(string(message, "receivedDateTime"))?;
+    normalize_microsoft_at(message, &date)
+}
+pub(crate) fn normalize_microsoft_at(message: &Value, date: &str) -> Result<Value> {
     let from = message.get("from").unwrap_or(&message["sender"]);
     let from = &from["emailAddress"];
     let body = string(&message["body"], "content");
@@ -750,7 +789,7 @@ pub fn normalize_microsoft(message: &Value) -> Result<Value> {
         .as_str()
         .filter(|s| !s.is_empty())
         .unwrap_or("(No subject)");
-    let mut result = json!({"id":format!("microsoft:{}",string(message,"id")),"fromName":from["name"].as_str().filter(|s|!s.is_empty()).or(from["address"].as_str()).unwrap_or("Unknown sender"),"fromEmail":string(from,"address"),"subject":subject,"body":body,"preview":preview(&body),"date":iso(string(message,"receivedDateTime")),"folder":"inbox","read":message["isRead"]==true,"starred":message["flag"]["flagStatus"]=="flagged","category":category(subject,&message["internetMessageHeaders"]),"automated":automated(&message["internetMessageHeaders"]),"labels":[],"messageId":string(message,"internetMessageId")});
+    let mut result = json!({"id":format!("microsoft:{}",string(message,"id")),"fromName":from["name"].as_str().filter(|s|!s.is_empty()).or(from["address"].as_str()).unwrap_or("Unknown sender"),"fromEmail":string(from,"address"),"subject":subject,"body":body,"preview":preview(&body),"date":date,"folder":"inbox","read":message["isRead"]==true,"starred":message["flag"]["flagStatus"]=="flagged","category":category(subject,&message["internetMessageHeaders"]),"automated":automated(&message["internetMessageHeaders"]),"labels":[],"messageId":string(message,"internetMessageId")});
     for (field, source) in [
         ("to", "toRecipients"),
         ("cc", "ccRecipients"),
@@ -771,6 +810,9 @@ pub fn normalize_microsoft(message: &Value) -> Result<Value> {
     }
     result["bodyHtml"] = body_html.into();
     result["bodyTruncated"] = truncated.into();
+    result["contentIncomplete"] = false.into();
+    result["contentErrorCode"] = Value::Null;
+    result["providerDraft"] = (message["isDraft"] == true).into();
     result["hasAttachments"] =
         (message["hasAttachments"] == true || string(&result, "bodyHtml").contains("cid:")).into();
     Ok(result)
@@ -829,6 +871,65 @@ pub(crate) async fn google_list(client: &Client, mail: &Value, options: &Value) 
     Ok(list)
 }
 
+async fn google_detail(
+    client: &Client,
+    mail: &Value,
+    id: &str,
+    format: &str,
+) -> Result<(Value, Option<&'static str>)> {
+    let result = get(
+        client,
+        mail,
+        &format!("/messages/{}?format={format}", component(id)),
+    )
+    .await;
+    match result {
+        Err(error)
+            if format == "full"
+                && error.provider_status.is_none()
+                && error.body["code"] == "provider_response_too_large" =>
+        {
+            // The oversized response has not been decoded. Retrieve independent,
+            // bounded metadata before saving an owned, recoverable placeholder.
+            let metadata = get(
+                client,
+                mail,
+                &format!("/messages/{}?format=metadata", component(id)),
+            )
+            .await?;
+            Ok((metadata, Some("google_size_limit")))
+        }
+        result => result.map(|raw| (raw, None)),
+    }
+}
+
+fn google_incomplete(raw: &Value, code: &str) -> Result<Value> {
+    let internal_date = raw["internalDate"]
+        .as_str()
+        .and_then(|value| value.parse::<i64>().ok())
+        .or(raw["internalDate"].as_i64())
+        .filter(|value| *value != 0)
+        .and_then(DateTime::<Utc>::from_timestamp_millis)
+        .filter(|date| (1..=9999).contains(&date.year()));
+    if !["google_size_limit", "google_mime_limit"].contains(&code)
+        || internal_date.is_none()
+        || !raw["payload"]["headers"].is_array()
+        || !raw["labelIds"].is_array()
+    {
+        return Err(remote_error());
+    }
+    let metadata = json!({"id":raw["id"],"internalDate":raw["internalDate"],"labelIds":raw["labelIds"],"payload":{"headers":raw["payload"]["headers"]}});
+    let mut value = normalize_google(&metadata)?;
+    let body = "This message was saved with its sender, subject and date, but its content exceeded the download or MIME processing limit. Use Load attachments to try loading the original message, or open it in your original mailbox.";
+    value["body"] = body.into();
+    value["preview"] = preview(body).into();
+    value["bodyTruncated"] = true.into();
+    value["hasAttachments"] = true.into();
+    value["contentIncomplete"] = true.into();
+    value["contentErrorCode"] = code.into();
+    Ok(value)
+}
+
 pub(crate) async fn google_fetch_page(
     client: &Client,
     mail: &Value,
@@ -846,7 +947,7 @@ pub(crate) async fn google_fetch_page(
         google_labels(client, mail)
             .await?
             .iter()
-            .filter(|label| label["type"] == "user")
+            .filter(|label| label["type"] == "user" && !string(label, "name").is_empty())
             .map(|label| {
                 (
                     string(label, "id").to_owned(),
@@ -868,13 +969,7 @@ pub(crate) async fn google_fetch_page(
             } else {
                 "full"
             };
-            let mut raw = match get(
-                client,
-                mail,
-                &format!("/messages/{}?format={format}", component(id)),
-            )
-            .await
-            {
+            let (mut raw, mut limited) = match google_detail(client, mail, id, format).await {
                 Ok(raw) => raw,
                 Err(error) if error.provider_status == Some(404) => return Ok(None),
                 Err(error) => return Err(error),
@@ -887,13 +982,7 @@ pub(crate) async fn google_fetch_page(
                 .as_array()
                 .is_some_and(|labels| labels.contains(&json!("DRAFT")));
             if existing.is_some() && draft {
-                raw = match get(
-                    client,
-                    mail,
-                    &format!("/messages/{}?format=full", component(id)),
-                )
-                .await
-                {
+                (raw, limited) = match google_detail(client, mail, id, "full").await {
                     Ok(raw) => raw,
                     Err(error) if error.provider_status == Some(404) => return Ok(None),
                     Err(error) => return Err(error),
@@ -902,12 +991,21 @@ pub(crate) async fn google_fetch_page(
                     return Err(remote_error());
                 }
             }
-            let mut value = if let Some(existing) = existing.filter(|_| !draft) {
-                google_metadata(&raw, existing.clone())?
-            } else {
-                tokio::task::spawn_blocking(move || normalize_google(&raw))
+            let mut value = if let Some(code) = limited {
+                tokio::task::spawn_blocking(move || google_incomplete(&raw, code))
                     .await
                     .map_err(|_| remote_error())??
+            } else if let Some(existing) = existing.filter(|_| !draft) {
+                google_metadata(&raw, existing.clone())?
+            } else {
+                tokio::task::spawn_blocking(move || match normalize_google(&raw) {
+                    Err(error) if error.body["code"] == "google_mime_limit" => {
+                        google_incomplete(&raw, "google_mime_limit")
+                    }
+                    result => result,
+                })
+                .await
+                .map_err(|_| remote_error())??
             };
             value["labels"] = value["providerLabelIds"]
                 .as_array()
@@ -933,6 +1031,69 @@ pub(crate) async fn google_fetch_page(
         }
     }
     Ok(json!({"messages":messages,"nextCursor":list.get("nextPageToken").unwrap_or(&Value::Null)}))
+}
+
+pub(crate) const MICROSOFT_METADATA_FIELDS: &str = "id,hasAttachments,from,sender,replyTo,toRecipients,ccRecipients,bccRecipients,subject,receivedDateTime,sentDateTime,createdDateTime,parentFolderId,isDraft,isRead,flag,internetMessageId,internetMessageHeaders";
+
+// The list page stays small; a single oversized body remains a visible,
+// explicitly incomplete message that the owned raw-download action can repair.
+pub(crate) async fn microsoft_message(
+    client: &Client,
+    mail: &Value,
+    metadata: &Value,
+    date: &str,
+) -> Result<Option<Value>> {
+    let id = string(metadata, "id");
+    if id.is_empty() || id.len() > 4096 {
+        return Err(remote_error());
+    }
+    let mut raw = metadata.clone();
+    let incomplete = if raw["body"]["content"].is_string() {
+        false
+    } else {
+        match request(
+            api(
+                client,
+                mail,
+                reqwest::Method::GET,
+                &format!("/messages/{}?$select=id,body", component(id)),
+            )?
+            .header(
+                "Prefer",
+                "outlook.body-content-type=\"html\", IdType=\"ImmutableId\"",
+            ),
+            8 * 1024 * 1024,
+        )
+        .await
+        {
+            Ok(body) => {
+                if body["id"] != id || !body["body"]["content"].is_string() {
+                    return Err(remote_error());
+                }
+                raw["body"] = body["body"].clone();
+                false
+            }
+            Err(error) if error.provider_status == Some(404) => return Ok(None),
+            Err(error) if error.body["code"] == "provider_response_too_large" => {
+                raw["body"] = json!({"contentType":"text","content":"This message exceeds the automatic body download limit. Load attachments and inline images to download the full message."});
+                true
+            }
+            Err(error) => return Err(error),
+        }
+    };
+    let date = date.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let mut message = normalize_microsoft_at(&raw, &date)?;
+        if incomplete {
+            message["contentIncomplete"] = true.into();
+            message["contentErrorCode"] = "microsoft_size_limit".into();
+            message["bodyTruncated"] = true.into();
+            message["hasAttachments"] = true.into();
+        }
+        Ok(Some(message))
+    })
+    .await
+    .map_err(|_| remote_error())?
 }
 
 pub async fn fetch_page(client: &Client, mail: &Value, options: &Value) -> Result<Value> {
@@ -982,7 +1143,11 @@ pub async fn fetch_page(client: &Client, mail: &Value, options: &Value) -> Resul
         });
     let path = format!("/v1.0/me/mailFolders/{}/messages", component(identity));
     let mut url = url::Url::parse(&format!("https://graph.microsoft.com{path}")).unwrap();
-    url.query_pairs_mut().extend_pairs([("$top","50"),("$orderby",&format!("{date} desc")),("$select","id,hasAttachments,from,sender,replyTo,toRecipients,ccRecipients,bccRecipients,subject,body,receivedDateTime,sentDateTime,createdDateTime,isDraft,isRead,flag,internetMessageId,internetMessageHeaders")]);
+    url.query_pairs_mut().extend_pairs([
+        ("$top", "50"),
+        ("$orderby", &format!("{date} desc")),
+        ("$select", MICROSOFT_METADATA_FIELDS),
+    ]);
     let mut filters = Vec::new();
     for (key, operator) in [("since", "ge"), ("before", "lt")] {
         if !string(options, key).is_empty() {
@@ -1016,53 +1181,64 @@ pub async fn fetch_page(client: &Client, mail: &Value, options: &Value) -> Resul
             ),
         8 * 1024 * 1024,
     )
-    .await?;
-    let folder = folder.to_owned();
-    let current_folder = current_folder.cloned();
-    tokio::task::spawn_blocking(move || {
-        let entries = result["value"].as_array().ok_or_else(remote_error)?;
-        if entries.len() > 50
-            || result.get("@odata.nextLink").is_some_and(|v| {
-                !v.is_null() && (!v.is_string() || v.as_str().unwrap().len() > 8192)
-            })
-        {
-            return Err(remote_error());
-        }
-        let mut messages = Vec::new();
-        for raw in entries {
-            let mut value = normalize_microsoft(raw)?;
-            value["folder"] = folder.clone().into();
-            value["date"] = iso(string(raw, date)).into();
-            if let Some(current) = &current_folder {
-                value["providerFolderId"] = current["id"].clone();
-                value["providerFolderName"] = current["name"].clone();
-                value["providerSent"] = (folder == "sent").into();
-                value["providerDraft"] = (folder == "drafts" || raw["isDraft"] == true).into();
-                if raw["isDraft"] == true {
-                    value["folder"] = "drafts".into();
-                }
-            }
-            messages.push(value);
-        }
-        let mut next = result
-            .get("@odata.nextLink")
-            .cloned()
-            .filter(|v| v != "")
-            .unwrap_or(Value::Null);
-        if let Some(mut traversal) = traversal {
-            let index = traversal["index"].as_u64().unwrap() as usize + usize::from(next.is_null());
-            if index < traversal["folders"].as_array().unwrap().len() {
-                traversal["index"] = index.into();
-                traversal["next"] = next;
-                next = traversal;
-            } else {
-                next = Value::Null;
-            }
-        }
-        Ok(json!({"messages":messages,"nextCursor":next}))
-    })
     .await
-    .map_err(|_| remote_error())?
+    .map_err(|mut error| {
+        if error.body["code"] == "provider_response_too_large" {
+            // In particular, old full-body nextLinks must remain opaque. Never
+            // rewrite their query or skip the page to evade the response limit.
+            error.body["code"] = "provider_page_too_large".into();
+            error.body["recoveryAction"] = "restart".into();
+        }
+        error
+    })?;
+    let entries = result["value"].as_array().ok_or_else(remote_error)?;
+    if entries.len() > 50
+        || result
+            .get("@odata.nextLink")
+            .is_some_and(|v| !v.is_null() && (!v.is_string() || v.as_str().unwrap().len() > 8192))
+    {
+        return Err(remote_error());
+    }
+    let mut messages = Vec::new();
+    for chunk in entries.chunks(4) {
+        for message in futures_util::future::join_all(chunk.iter().map(|raw| async move {
+            let instant = microsoft_date(string(raw, date))?;
+            microsoft_message(client, mail, raw, &instant).await
+        }))
+        .await
+        {
+            if let Some(mut value) = message? {
+                value["folder"] = folder.into();
+                if let Some(current) = current_folder {
+                    value["providerFolderId"] = current["id"].clone();
+                    value["providerFolderName"] = current["name"].clone();
+                    value["providerSent"] = (folder == "sent").into();
+                    value["providerDraft"] =
+                        (folder == "drafts" || value["providerDraft"] == true).into();
+                    if value["providerDraft"] == true {
+                        value["folder"] = "drafts".into();
+                    }
+                }
+                messages.push(value);
+            }
+        }
+    }
+    let mut next = result
+        .get("@odata.nextLink")
+        .cloned()
+        .filter(|v| v != "")
+        .unwrap_or(Value::Null);
+    if let Some(mut traversal) = traversal {
+        let index = traversal["index"].as_u64().unwrap() as usize + usize::from(next.is_null());
+        if index < traversal["folders"].as_array().unwrap().len() {
+            traversal["index"] = index.into();
+            traversal["next"] = next;
+            next = traversal;
+        } else {
+            next = Value::Null;
+        }
+    }
+    Ok(json!({"messages":messages,"nextCursor":next}))
 }
 fn valid_microsoft_folder_id(id: &str) -> bool {
     !id.is_empty()
@@ -1386,12 +1562,9 @@ async fn google_labels(client: &Client, mail: &Value) -> Result<Vec<Value>> {
     let result = get(client, mail, "/labels").await?;
     let labels = result["labels"]
         .as_array()
-        .filter(|labels| labels.len() <= 1000)
+        .filter(|labels| labels.len() <= 10000)
         .ok_or_else(remote_error)?;
-    if labels
-        .iter()
-        .any(|label| string(label, "id").is_empty() || string(label, "name").is_empty())
-    {
+    if labels.iter().any(|label| string(label, "id").is_empty()) {
         return Err(remote_error());
     }
     Ok(labels.clone())
@@ -1400,6 +1573,16 @@ async fn google_labels(client: &Client, mail: &Value) -> Result<Vec<Value>> {
 pub async fn folders(client: &Client, mail: &Value) -> Result<Vec<Value>> {
     if mail["provider"] == "google" {
         let labels = google_labels(client, mail).await?;
+        // Organization destinations are bounded separately from read ingestion:
+        // Gmail supports up to 10,000 labels, even when the picker cannot show all.
+        if labels.len() > 1000 {
+            return Err(Error::conflict(
+                "This mailbox has more than 1,000 labels. Mail can still sync, but its organization destinations cannot be listed.",
+            ));
+        }
+        if labels.iter().any(|label| string(label, "name").is_empty()) {
+            return Err(remote_error());
+        }
         let mut folders = vec![
             json!({"id":"INBOX","name":"Inbox","kind":"inbox"}),
             json!({"id":"__archive","name":"Archive (remove Inbox)","kind":"archive"}),

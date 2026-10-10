@@ -9,10 +9,11 @@ struct WindowAssertions {
     @MainActor static func main() {
         let app = NSApplication.shared
         app.setActivationPolicy(.regular)
-        if CommandLine.arguments.contains("--mail-only") { checkMailDrop(); return }
+        if CommandLine.arguments.contains("--mail-only") { checkMailDrop(); checkReaderBack(); return }
         checkRestoredListWidth()
         if CommandLine.arguments.contains("--list-width-only") { return }
         checkMailDrop()
+        checkReaderBack()
         checkFolderLayouts()
         checkComposeLayout()
         checkCalendarLayout()
@@ -155,6 +156,47 @@ struct WindowAssertions {
         model.selectMailMessages([messages[1].viewID])
         assert(model.selectedMailRows == [messages[1]] && model.current?["accountId"] == messages[1]["accountId"])
         print("Native clicks on the production draggable mail list select each duplicate-ID message's own reader identity.")
+    }
+
+    @MainActor static func checkReaderBack() {
+        let defaults = UserDefaults.standard
+        let previousLayout = defaults.object(forKey: "mailReaderLayout")
+        let previousSidebar = defaults.object(forKey: "mailSidebarVisible")
+        defaults.set("focus", forKey: "mailReaderLayout")
+        defaults.set(false, forKey: "mailSidebarVisible")
+        defer {
+            if let previousLayout { defaults.set(previousLayout, forKey: "mailReaderLayout") } else { defaults.removeObject(forKey: "mailReaderLayout") }
+            if let previousSidebar { defaults.set(previousSidebar, forKey: "mailSidebarVisible") } else { defaults.removeObject(forKey: "mailSidebarVisible") }
+        }
+        let model = AppModel(), owner = "reader-back@example.invalid"
+        let message: JSON = .object(["id": .string("fixture-reader"), "viewId": .string(owner + ":fixture-reader"), "accountId": .string(owner), "folder": .string("inbox"), "subject": .string("Reader recovery fixture")])
+        model.state = .object(["account": .object(["id": .string(owner)]), "accounts": .array([.object(["id": .string(owner)])]), "messages": .array([message])])
+        model.starting = false; model.selectedMessage = message.viewID
+        let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 1040, height: 700), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: MailWorkspace().environmentObject(model))
+        window.contentView = host; window.makeKeyAndOrderFront(nil)
+        defer { window.close(); window.contentView = nil }
+        // No service is started: the production detail request fails locally.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.4)); host.layoutSubtreeIfNeeded()
+        assert(!model.messageError.isEmpty && model.current?.viewID == message.viewID && model.messageDetail.isNull, "Fixture did not reach the Focus reader's failed-load state")
+        func press(_ characters: String, keyCode: UInt16) {
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                        windowNumber: window.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: keyCode)!
+            NSApp.postEvent(event, atStart: false)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.stopModal() }
+            NSApp.runModal(for: window)
+            host.layoutSubtreeIfNeeded()
+        }
+        press("\u{1b}", keyCode: 53)
+        assert(model.selectedMessage == nil && model.selectedMessages.isEmpty && model.messageDetail.isNull && model.messageError.isEmpty, "Escape did not return from failed loading to the message list")
+        func lists(_ view: NSView) -> [NSTableView] {
+            ((view as? NSTableView).map { [$0] } ?? []) + view.subviews.flatMap(lists)
+        }
+        assert(lists(host).contains { $0.numberOfRows == 1 && $0.frame.width > 250 }, "Back did not restore the Focus layout's native message list")
+        press("\u{f701}", keyCode: 125)
+        assert(model.selectedMessage == message.viewID, "The restored message list did not receive keyboard navigation after Back")
+        print("Focus reader failure exposes Escape/Back, clears detail/error and restores keyboard navigation to the native message list.")
     }
 
     @MainActor static func checkFolderLayouts() {

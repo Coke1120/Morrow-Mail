@@ -43,6 +43,8 @@ Browser sign-in uses the desktop registration included in the build; custom regi
 
 Detailed behavior and limits are in [feature coverage](FEATURE_COVERAGE.md) and the [user guide](docs/USER_GUIDE.md).
 
+Unreleased [fetch recovery changes](docs/FETCH_RECOVERY.md) address IMAP date gaps, Outlook delta catch-up, Gmail label limits, incomplete content and Windows refresh recovery. Native and live-account validation remain separate gates.
+
 ## New in 0.7.1
 
 Fetched server Read/Unread values now repair stale local states even when the server flag has not changed since the last sync. Missing IMAP folders no longer block the rest of a cached-message reconciliation batch; cached mail is retained. Larger mailboxes may need multiple sync rounds. See the [0.7.1 release notes](docs/releases/v0.7.1.md).
@@ -102,6 +104,8 @@ Scheduled mail and background jobs require Morrow to remain running. See [data a
 ## Build from source
 
 Use **Rust 1.98+** with rustfmt/clippy, plus Apple's Swift command-line tools on macOS or the [pinned Windows prerequisites](windows/README.md). Node/npm is not used.
+
+Unreleased source work improves Windows return focus and failed-preference retry controls, and adds macOS reader loading/error recovery with stale-response protection. The new native checks still require macOS and Windows execution; Linux checks do not establish UI acceptance. See [cloud verification](VERIFICATION.md#cloud-native-recovery-follow-up--unreleased).
 
 ```sh
 # macOS

@@ -41,7 +41,11 @@ async fn refused_imap_connection_is_a_provider_failure_not_a_workspace_error() {
     ] {
         let error = result.unwrap_err();
         assert_eq!(error.status, 502);
-        assert_eq!(error.body, morrow_search::providers::remote_error().body);
+        assert_eq!(error.body["code"], "provider_network");
+        assert_eq!(
+            error.body["error"],
+            morrow_search::providers::remote_error().body["error"]
+        );
     }
 }
 
@@ -235,6 +239,14 @@ struct ImapScenario {
     remote_starred: bool,
     missing_uid: Option<u32>,
     raw_message: Option<String>,
+    internal_date: &'static str,
+    omitted_metadata_uid: Option<u32>,
+    absent_body_uid: Option<u32>,
+    nil_body_uid: Option<u32>,
+    expunged_uid: Option<u32>,
+    recheck_failure: bool,
+    disconnect_on_body: bool,
+    truncated_body: bool,
 }
 impl Default for ImapScenario {
     fn default() -> Self {
@@ -269,6 +281,14 @@ impl Default for ImapScenario {
             remote_starred: true,
             missing_uid: None,
             raw_message: None,
+            internal_date: "23-Sep-2026 12:00:00 +0000",
+            omitted_metadata_uid: None,
+            absent_body_uid: None,
+            nil_body_uid: None,
+            expunged_uid: None,
+            recheck_failure: false,
+            disconnect_on_body: false,
+            truncated_body: false,
         }
     }
 }
@@ -345,6 +365,18 @@ impl ImapFixture {
             &self.connector,
         )
         .await
+    }
+}
+fn fixture_message(scenario: &ImapScenario, uid: &str) -> String {
+    if let Some(raw) = &scenario.raw_message {
+        raw.clone()
+    } else if scenario.body_size > 0 {
+        format!(
+            "{HEADER}\r\n{{536870912}}\r\n{}",
+            "x".repeat(scenario.body_size)
+        )
+    } else {
+        format!("{HEADER}\r\nFixture body for UID {uid}.\r\n")
     }
 }
 async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
@@ -455,8 +487,43 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                     .search_ids
                     .unwrap_or_else(|| (lower..=upper.min(scenario.count)).collect())
             };
+            // SEARCH dates are calendar days, independent of the Date header
+            // and its normalized UTC instant (RFC 9051 section 6.4.4).
+            let internal =
+                chrono::DateTime::parse_from_str(scenario.internal_date, "%d-%b-%Y %H:%M:%S %z")
+                    .unwrap()
+                    .date_naive();
+            let parsed = mail_parser::MessageParser::default()
+                .parse(scenario.raw_message.as_deref().unwrap_or(HEADER).as_bytes());
+            let sent = parsed
+                .as_ref()
+                .and_then(|message| message.date())
+                .and_then(|date| {
+                    chrono::NaiveDate::from_ymd_opt(
+                        i32::from(date.year),
+                        u32::from(date.month),
+                        u32::from(date.day),
+                    )
+                });
+            let terms: Vec<_> = command.split_whitespace().collect();
+            let date_matches = terms.windows(2).all(|term| match term[0] {
+                "SINCE" => {
+                    internal >= chrono::NaiveDate::parse_from_str(term[1], "%d-%b-%Y").unwrap()
+                }
+                "BEFORE" => {
+                    internal < chrono::NaiveDate::parse_from_str(term[1], "%d-%b-%Y").unwrap()
+                }
+                "SENTSINCE" => sent.is_some_and(|date| {
+                    date >= chrono::NaiveDate::parse_from_str(term[1], "%d-%b-%Y").unwrap()
+                }),
+                "SENTBEFORE" => sent.is_some_and(|date| {
+                    date < chrono::NaiveDate::parse_from_str(term[1], "%d-%b-%Y").unwrap()
+                }),
+                _ => true,
+            });
             let ids = ids
                 .into_iter()
+                .filter(|_| date_matches)
                 .filter(|id| scenario.search_outside || (*id >= lower && *id <= upper))
                 .map(|id| id.to_string())
                 .collect::<Vec<_>>()
@@ -526,6 +593,9 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                     HEADER.to_owned()
                 };
                 for (index, uid) in selected.split(',').enumerate() {
+                    if scenario.omitted_metadata_uid == uid.parse().ok() {
+                        continue;
+                    }
                     let uid = if scenario.wrong_uid {
                         "99999"
                     } else if scenario.duplicate_uid {
@@ -533,9 +603,24 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                     } else {
                         uid
                     };
-                    write(&mut stream,&format!("* {} FETCH (UID {uid} FLAGS (\\Seen \\Flagged) RFC822.SIZE {} INTERNALDATE \"23-Sep-2026 12:00:00 +0000\" BODY[HEADER] {{{}}}\r\n{header})\r\n",index+1,if scenario.large{6*1024*1024}else{HEADER.len()+50},header.len())).await?;
+                    write(&mut stream,&format!("* {} FETCH (UID {uid} FLAGS (\\Seen \\Flagged) RFC822.SIZE {} INTERNALDATE \"{}\" BODY[HEADER] {{{}}}\r\n{header})\r\n",index+1,if scenario.large{6*1024*1024}else{fixture_message(&scenario,uid).len()},scenario.internal_date,header.len())).await?;
                 }
             } else if fields.contains("BODY.PEEK[]") {
+                if scenario.disconnect_on_body {
+                    return Ok(());
+                }
+                if scenario.absent_body_uid == selected.parse().ok() {
+                    write(&mut stream, &format!("{tag} OK fetch\r\n")).await?;
+                    continue;
+                }
+                if scenario.nil_body_uid == selected.parse().ok() {
+                    write(
+                        &mut stream,
+                        &format!("* 1 FETCH (UID {selected} BODY[] NIL)\r\n{tag} OK fetch\r\n"),
+                    )
+                    .await?;
+                    continue;
+                }
                 if let Some(size) = scenario.announced_body {
                     write(&mut stream, &format!("* 1 FETCH (UID {selected} BODY[] {{")).await?;
                     write(&mut stream, size).await?;
@@ -547,7 +632,7 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                     assert!(line(&mut stream).await?.is_none());
                     return Ok(());
                 }
-                let body = if let Some(raw) = scenario.raw_message {
+                let mut body = if let Some(raw) = &scenario.raw_message {
                     let range = fields.split('<').nth(1).unwrap().split('>').next().unwrap();
                     let (start, count) = range.split_once('.').unwrap();
                     let start: usize = start.parse().unwrap();
@@ -555,14 +640,12 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                     raw[start..raw.len().min(start + count)].to_owned()
                 } else if scenario.oversized_body {
                     "x".repeat(5 * 1024 * 1024 + 1)
-                } else if scenario.body_size > 0 {
-                    format!(
-                        "{HEADER}\r\n{{536870912}}\r\n{}",
-                        "x".repeat(scenario.body_size)
-                    )
                 } else {
-                    format!("{HEADER}\r\nFixture body for UID {selected}.\r\n")
+                    fixture_message(&scenario, selected)
                 };
+                if scenario.truncated_body {
+                    body.truncate(body.len().saturating_sub(2));
+                }
                 write(
                     &mut stream,
                     &format!(
@@ -572,18 +655,26 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                 )
                 .await?;
             } else {
-                let uid = if selected == "*" {
+                let sequence = if selected == "*" {
                     scenario.count.to_string()
                 } else {
                     selected.to_owned()
                 };
-                write(&mut stream, &format!("* 1 FETCH (UID {uid})\r\n")).await?;
+                for uid in sequence.split(',') {
+                    if scenario.expunged_uid != uid.parse().ok() {
+                        write(&mut stream, &format!("* 1 FETCH (UID {uid})\r\n")).await?;
+                    }
+                }
             }
             write(
                 &mut stream,
                 &format!(
                     "{tag} {} fetch\r\n",
-                    if scenario.fetch_failure { "NO" } else { "OK" }
+                    if scenario.fetch_failure || (scenario.recheck_failure && fields == "UID") {
+                        "NO"
+                    } else {
+                        "OK"
+                    }
                 ),
             )
             .await?;
@@ -708,7 +799,8 @@ async fn imap_sparse_history_checkpoints_ranges_and_rejects_provider_bounds_viol
     fixture.update(|state| {
         state.search_outside = true;
     });
-    assert!(fixture.fetch(json!({})).await.is_err());
+    let error = fixture.fetch(json!({})).await.unwrap_err();
+    assert_ne!(error.body["code"], "provider_network");
     fixture.update(|state| {
         state.search_outside = false;
         state.omit_uidnext = true;
@@ -799,7 +891,7 @@ async fn imap_tls_history_has_fifty_message_pages_unicode_sent_ids_and_validity_
     assert!(
         commands
             .iter()
-            .any(|line| line.contains("SENTSINCE 01-Jun-2026 SENTBEFORE 25-Sep-2026"))
+            .any(|line| line.contains("SINCE 31-May-2026 BEFORE 25-Sep-2026"))
     );
     assert!(commands.iter().any(|line| line.contains("UID 1:10")));
     assert!(
@@ -1066,7 +1158,8 @@ async fn imap_platform_tls_and_authentication_fail_closed_without_plaintext_fall
         ..Default::default()
     })
     .await;
-    assert!(fixture.fetch(json!({})).await.is_err());
+    let error = fixture.fetch(json!({})).await.unwrap_err();
+    assert_ne!(error.body["code"], "provider_network");
     assert!(
         !fixture
             .commands()
@@ -1074,7 +1167,10 @@ async fn imap_platform_tls_and_authentication_fail_closed_without_plaintext_fall
             .any(|line| line.starts_with("EXAMINE"))
     );
     let before = fixture.commands().len();
-    assert!(imap::fetch_page(&fixture.mail, &json!({})).await.is_err());
+    let error = imap::fetch_page(&fixture.mail, &json!({}))
+        .await
+        .unwrap_err();
+    assert_ne!(error.body["code"], "provider_network");
     assert_eq!(fixture.commands().len(), before);
 }
 
@@ -1617,5 +1713,186 @@ async fn failed_fetch_completion_never_means_success_or_deleted_mail() {
             .commands()
             .iter()
             .any(|c| c.starts_with("UID STORE"))
+    );
+}
+
+#[tokio::test]
+async fn imap_history_uses_internaldate_across_recent_and_older_windows() {
+    use morrow_search::{background, store::Store};
+    for folder in ["inbox", "sent", "all"] {
+        let fixture = ImapFixture::new(ImapScenario {
+            count: 1,
+            raw_message: Some(format!(
+                "{}\r\nBackdated fixture body.\r\n",
+                HEADER.replace("Wed, 23 Sep 2026", "Sun, 23 Aug 2026")
+            )),
+            ..Default::default()
+        })
+        .await;
+        let root = std::env::temp_dir().join(format!("morrow-imap-dates-{}", uuid::Uuid::new_v4()));
+        let db = Store::open(&root).unwrap();
+        let mut mail = fixture.mail.clone();
+        mail["connectionId"] = "date-fixture".into();
+        db.set_settings(&json!({"mailAccounts":{OWNER:mail},"preferences":{"syncInterval":0}}))
+            .unwrap();
+        background::start_import(&db, OWNER, &json!({"months":0,"inbox":folder=="inbox","sent":folder=="sent","allMail":folder=="all"})).unwrap();
+        let mut imports = db.settings().unwrap()["imports"].clone();
+        imports[OWNER]["before"] = "2026-09-27T00:00:00.000Z".into();
+        imports[OWNER]["recentSince"] = "2026-09-20T00:00:00.000Z".into();
+        db.set_settings(&json!({"imports":imports})).unwrap();
+        for _ in 0..6 {
+            let job = db.settings().unwrap()["imports"][OWNER].clone();
+            if job["status"] == "complete" {
+                break;
+            }
+            let (since, before) = if job["recentComplete"] == true {
+                (&job["since"], &job["recentSince"])
+            } else {
+                (&job["recentSince"], &job["before"])
+            };
+            let page = fixture
+                .fetch(
+                    json!({"folder":folder,"since":since,"before":before,"cursor":job["cursor"]}),
+                )
+                .await
+                .unwrap();
+            background::apply_import_page(&db, OWNER, &job, &page).unwrap();
+        }
+        let saved = db.settings().unwrap()["imports"][OWNER].clone();
+        let mut query = db
+            .conn
+            .prepare("SELECT data FROM messages WHERE account=?")
+            .unwrap();
+        let messages = query
+            .query_map([OWNER], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|row| serde_json::from_str::<Value>(&row.unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        drop(query);
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(saved["status"], "complete", "{folder}");
+        assert_eq!(
+            messages.len(),
+            if folder == "all" { 3 } else { 1 },
+            "{folder}"
+        );
+        for message in messages {
+            assert_eq!(message["date"], "2026-09-23T12:00:00.000Z");
+            assert_eq!(message["senderDate"], "2026-08-23T12:00:00.000Z");
+        }
+    }
+}
+
+#[tokio::test]
+async fn imap_import_dates_cover_missing_headers_and_timezone_day_boundaries() {
+    for folder in ["inbox", "sent"] {
+        for header_date in ["", "Date: not a date\r\n"] {
+            let header = HEADER.replace("Date: Wed, 23 Sep 2026 12:00:00 +0000\r\n", header_date);
+            for (internal_date, expected) in [
+                ("22-Sep-2026 23:30:00 -0200", "2026-09-23T01:30:00.000Z"),
+                ("24-Sep-2026 00:30:00 +0200", "2026-09-23T22:30:00.000Z"),
+            ] {
+                let fixture = ImapFixture::new(ImapScenario {
+                    count: 1,
+                    internal_date,
+                    raw_message: Some(format!("{header}\r\nSynthetic body\r\n")),
+                    ..Default::default()
+                })
+                .await;
+                let page = fixture.fetch(json!({"folder":folder,"since":"2026-09-23T00:00:00.000Z","before":"2026-09-24T00:00:00.000Z"})).await.unwrap();
+                assert_eq!(
+                    page["messages"].as_array().unwrap().len(),
+                    1,
+                    "{folder} {internal_date}"
+                );
+                assert_eq!(page["messages"][0]["date"], expected);
+                assert!(page["messages"][0]["senderDate"].is_null());
+                let excluded = fixture.fetch(json!({"folder":folder,"since":"2026-09-24T00:00:00.000Z","before":"2026-09-25T00:00:00.000Z"})).await.unwrap();
+                assert!(excluded["messages"].as_array().unwrap().is_empty());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn imap_incomplete_success_retries_existing_uids_and_confirms_real_expunges() {
+    for kind in ["metadata", "absent", "nil"] {
+        let scenario = ImapScenario {
+            count: 60,
+            omitted_metadata_uid: (kind == "metadata").then_some(60),
+            absent_body_uid: (kind == "absent").then_some(60),
+            nil_body_uid: (kind == "nil").then_some(60),
+            ..Default::default()
+        };
+        let fixture = ImapFixture::new(scenario).await;
+        let failed = fixture.fetch(json!({})).await.unwrap_err();
+        assert_eq!(failed.body["code"], "provider_incomplete_read", "{kind}");
+        assert!(
+            fixture
+                .commands()
+                .iter()
+                .any(|command| command == "UID FETCH 60 UID")
+        );
+        fixture.update(|state| {
+            state.omitted_metadata_uid = None;
+            state.absent_body_uid = None;
+            state.nil_body_uid = None;
+        });
+        let recovered = fixture.fetch(json!({})).await.unwrap();
+        assert_eq!(recovered["messages"].as_array().unwrap().len(), 50);
+        assert!(
+            recovered["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|m| m["remoteId"] == "imap:55:60")
+        );
+        assert_eq!(recovered["nextCursor"]["uid"], 11);
+        fixture.update(|state| {
+            state.omitted_metadata_uid = (kind == "metadata").then_some(60);
+            state.absent_body_uid = (kind == "absent").then_some(60);
+            state.nil_body_uid = (kind == "nil").then_some(60);
+            state.expunged_uid = Some(60);
+            state.recheck_failure = true;
+        });
+        assert!(
+            fixture.fetch(json!({})).await.is_err(),
+            "A failed absence check is not proof of deletion"
+        );
+        fixture.update(|state| state.recheck_failure = false);
+        let expunged = fixture.fetch(json!({})).await.unwrap();
+        assert_eq!(expunged["messages"].as_array().unwrap().len(), 49, "{kind}");
+        assert_eq!(expunged["nextCursor"]["uid"], 11);
+    }
+}
+
+#[tokio::test]
+async fn imap_truncated_success_is_not_committed_and_disconnects_remain_retryable() {
+    let fixture = ImapFixture::new(ImapScenario {
+        count: 1,
+        truncated_body: true,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(
+        fixture.fetch(json!({})).await.unwrap_err().body["code"],
+        "provider_incomplete_read"
+    );
+    fixture.update(|state| {
+        state.truncated_body = false;
+        state.disconnect_on_body = true;
+    });
+    assert_eq!(
+        fixture.fetch(json!({})).await.unwrap_err().body["code"],
+        "provider_network"
+    );
+    fixture.update(|state| state.disconnect_on_body = false);
+    assert_eq!(
+        fixture.fetch(json!({})).await.unwrap()["messages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
     );
 }

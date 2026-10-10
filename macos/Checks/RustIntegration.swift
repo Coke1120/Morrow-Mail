@@ -9,7 +9,7 @@ final class RustStopOAuthRedirects: NSObject, URLSessionTaskDelegate {
     }
 }
 
-// Only the next explicitly armed localhost read/selection is held. All other
+// Only the next explicitly armed localhost workspace/message request is held. All other
 // requests reach the packaged service; these checks never use provider traffic.
 final class HeldWorkspaceResponse: URLProtocol {
     final class Hold {
@@ -36,7 +36,7 @@ final class HeldWorkspaceResponse: URLProtocol {
     private static var next: Hold?
     static func arm(_ path: String) -> Hold {
         lock.lock(); defer { lock.unlock() }
-        precondition(next == nil && ["/api/state", "/api/account/select", "/api/sync"].contains(path))
+        precondition(next == nil && (["/api/state", "/api/account/select", "/api/sync"].contains(path) || path.hasPrefix("/api/messages/")))
         let hold = Hold(path); next = hold; return hold
     }
     override class func canInit(with request: URLRequest) -> Bool {
@@ -177,6 +177,95 @@ struct NativeRustChecks {
         try check(model.account == second && model.selectedMessage == nil && model.mailPage.isNull, "fresh service account selection was rejected or retained old mail")
         try await model.selectAccount(first, folder: "inbox")
         print("Native Rust: actual AppModel rejects held stale/cancelled reloads, retains read paging and follows new service account selection; GUI race is not asserted.")
+    }
+
+    @MainActor static func checkMessageRecovery(_ model: AppModel) async throws {
+        try await model.selectAccount(first, folder: "inbox")
+        try check(await model.loadMailPage(), "message recovery fixture page did not load")
+        await model.turnMailPage(next: true)
+        guard let row = model.listedMessages.first else { throw APIError("Message recovery fixture has no second page.") }
+        let page = model.mailPage, cursors = model.mailCursors
+        let path = "/messages/" + encodedPath(row.id)
+        let heldPath = URL(string: "/api" + path, relativeTo: model.baseURL!)!.path
+        try check(path.contains("%") && heldPath == "/api/messages/" + row.id, "held reader fixture must match decoded URL paths for encoded provider IDs")
+        let response = try await model.request(path, mailbox: first)
+        let originalMarkRead = model.preferences["markReadOnOpen"]
+        model.state["settings"]["preferences"]["markReadOnOpen"] = .bool(false)
+        defer {
+            model.state["settings"]["preferences"]["markReadOnOpen"] = originalMarkRead
+            model.selectedMessage = nil; model.messageDetail = .null; model.error = ""
+        }
+        model.selectedMessage = row.viewID; model.messageDetail = .null
+        model.error = "Unrelated workspace notice"
+        let failure = HeldWorkspaceResponse.arm(heldPath)
+        let failedLoad = Task { @MainActor in await model.loadMessage() }
+        try await waitUntil("failed message read did not start") { failure.request != nil }
+        try check(failure.request?.value(forHTTPHeaderField: "X-Genmail-Account") == first, "message recovery lost its captured owner")
+        try failure.complete(.object(["error": .string("Fixture message unavailable")]), status: 502)
+        await failedLoad.value
+        try check(model.messageError == "Fixture message unavailable" && model.messageDetail.isNull && model.selectedMessage == row.viewID, "failed read did not preserve selection and expose its own retry error")
+        try check(model.error == "Unrelated workspace notice", "message failure replaced an unrelated workspace notice")
+
+        let retry = HeldWorkspaceResponse.arm(heldPath)
+        let retryLoad = Task { @MainActor in await model.loadMessage() }
+        try await waitUntil("retry read did not start") { retry.request != nil }
+        try check(model.messageError.isEmpty && model.selectedMessage == row.viewID, "retry kept the previous error instead of showing loading")
+        try retry.complete(response); await retryLoad.value
+        try check(model.messageDetail == response["message"] && model.messageError.isEmpty, "successful retry did not recover the selected detail")
+
+        // A second request for the same viewId must win even when the first finishes last.
+        for fails in [false, true] {
+            let old = HeldWorkspaceResponse.arm(heldPath)
+            let oldLoad = Task { @MainActor in await model.loadMessage() }
+            try await waitUntil("old message request did not start") { old.request != nil }
+            let latest = HeldWorkspaceResponse.arm(heldPath)
+            let latestLoad = Task { @MainActor in await model.loadMessage() }
+            try await waitUntil("latest message request did not start") { latest.request != nil }
+            try latest.complete(response); await latestLoad.value
+            var stale = response; stale["message"]["body"] = .string("Obsolete fixture detail")
+            try old.complete(fails ? .object(["error": .string("Obsolete fixture failure")]) : stale, status: fails ? 502 : 200)
+            await oldLoad.value
+            try check(model.messageDetail == response["message"] && model.messageError.isEmpty, "late same-message success/failure replaced the latest detail")
+        }
+
+        // Returning to the list and reopening the same row invalidates its old request.
+        for fails in [false, true] {
+            let old = HeldWorkspaceResponse.arm(heldPath)
+            let oldLoad = Task { @MainActor in await model.loadMessage() }
+            try await waitUntil("return-to-list request did not start") { old.request != nil }
+            model.selectedMessage = nil; model.messageDetail = .null
+            try check(model.selectedMessages.isEmpty && model.messageError.isEmpty, "Back retained message selection or a retry error")
+            model.selectedMessage = row.viewID
+            try old.complete(fails ? .object(["error": .string("Obsolete reopened failure")]) : response, status: fails ? 502 : 200)
+            await oldLoad.value
+            try check(model.messageDetail.isNull && model.messageError.isEmpty, "reopening the same row revived the read cancelled by Back")
+        }
+        let cancelled = HeldWorkspaceResponse.arm(heldPath)
+        let cancelledLoad = Task { @MainActor in await model.loadMessage() }
+        try await waitUntil("cancelled message read did not start") { cancelled.request != nil }
+        try cancelled.complete(response); cancelledLoad.cancel(); await cancelledLoad.value
+        try check(model.messageDetail.isNull && model.messageError.isEmpty, "cancelled read applied detail or exposed an error")
+
+        // A pending mark-read response must not replace a newer read of the same message.
+        model.selectedMessage = nil; model.selectedMessage = row.viewID
+        model.state["settings"]["preferences"]["markReadOnOpen"] = .bool(true)
+        var unread = response; unread["message"]["read"] = .bool(false)
+        let read = HeldWorkspaceResponse.arm(heldPath)
+        let opening = Task { @MainActor in await model.loadMessage() }
+        try await waitUntil("mark-on-open read did not start") { read.request != nil }
+        let markRead = HeldWorkspaceResponse.arm(heldPath)
+        try read.complete(unread)
+        try await waitUntil("mark-on-open write did not start") { markRead.request != nil }
+        try check(markRead.request?.httpMethod == "PATCH" && markRead.request?.value(forHTTPHeaderField: "X-Genmail-Account") == first, "mark-on-open lost its message owner")
+        let newest = HeldWorkspaceResponse.arm(heldPath)
+        let newestLoad = Task { @MainActor in await model.loadMessage() }
+        try await waitUntil("read during mark-on-open did not start") { newest.request != nil }
+        try newest.complete(response); await newestLoad.value
+        var oldMarked = response; oldMarked["message"]["body"] = .string("Obsolete mark-read detail")
+        try markRead.complete(oldMarked); await opening.value
+        try check(model.messageDetail == response["message"] && model.messageError.isEmpty && model.error == "Unrelated workspace notice", "late mark-read completion replaced the newest reader or notice")
+        try check(model.mailPage == page && model.mailCursors == cursors, "read recovery or Back reset page two")
+        print("Native Rust: held reader failure/retry, same-message response ordering, Back/reopen, cancellation and mark-read ordering retain owner and page two; native UI/focus is separate.")
     }
 
     @MainActor static func checkManualSync(_ model: AppModel) async throws {
@@ -537,6 +626,7 @@ struct NativeRustChecks {
         model.mailPage = .null; model.mailCursors = [""]
         print("Native Rust: local connection refresh preserves settings edits, owner, mail paging and persisted state.")
         try await checkReloadOrdering(model)
+        try await checkMessageRecovery(model)
         try await checkManualSync(model)
 
         for owner in [first, "all"] {

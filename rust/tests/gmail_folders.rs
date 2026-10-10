@@ -252,8 +252,8 @@ async fn google_pages_bound_lists_and_reject_label_redirects_before_reading_mess
             }
             if url.path().ends_with("/labels") {
                 return match mode {
-                    "label-limit" => (200, json!({"labels":(0..1001).map(|id| json!({"id":id.to_string(),"name":"Label","type":"user"})).collect::<Vec<_>>()})),
-                    "invalid-label" => (200, json!({"labels":[{"id":"Label_1","name":null,"type":"user"}]})),
+                    "label-limit" => (200, json!({"labels":(0..10001).map(|id| json!({"id":id.to_string(),"name":"Label","type":"user"})).collect::<Vec<_>>()})),
+                    "invalid-label" => (200, json!({"labels":[{"id":null,"name":"Label","type":"user"}]})),
                     "redirect" => (302, json!({})),
                     _ => panic!("Oversized page must stop before labels"),
                 };
@@ -269,4 +269,60 @@ async fn google_pages_bound_lists_and_reject_label_redirects_before_reading_mess
         }
         assert_eq!(*details.lock().unwrap(), 0);
     }
+}
+
+#[tokio::test]
+async fn gmail_reads_supported_label_catalogs_without_expanding_destination_limit() {
+    for count in [1000usize, 1001, 10000] {
+        let fixture = Fixture::new(move |url| {
+            if url.path().ends_with("/messages") {
+                return (200, json!({"messages":[{"id":"healthy"}]}));
+            }
+            if url.path().ends_with("/labels") {
+                return (200, json!({"labels":(0..count).map(|index| json!({"id":format!("Label_{index}"),"name":format!("Project {index}"),"type":"user"})).collect::<Vec<_>>()}));
+            }
+            (200, json!({"id":"healthy","labelIds":["INBOX","Label_0","unknownlabel"],"internalDate":"1790553600000","payload":{"mimeType":"text/plain","body":{"data":"SGVhbHRoeSBtYWls"}}}))
+        }).await;
+        let page = providers::fetch_page(&fixture.client, &mail(), &json!({"folder":"inbox"}))
+            .await
+            .unwrap();
+        assert_eq!(page["messages"][0]["body"], "Healthy mail");
+        assert_eq!(page["messages"][0]["labels"], json!(["Project 0"]));
+        assert_eq!(
+            page["messages"][0]["providerLabelIds"],
+            json!(["INBOX", "Label_0", "unknownlabel"])
+        );
+        let destinations = providers::folders(&fixture.client, &mail()).await;
+        if count > 1000 {
+            assert_eq!(destinations.unwrap_err().status, 409);
+        } else {
+            assert!(destinations.is_ok());
+        }
+    }
+}
+
+#[tokio::test]
+async fn gmail_read_preserves_label_ids_when_a_friendly_name_is_unavailable() {
+    let fixture = Fixture::new(|url| {
+        if url.path().ends_with("/messages") {
+            return (200, json!({"messages":[{"id":"healthy"}]}));
+        }
+        if url.path().ends_with("/labels") {
+            return (200, json!({"labels":[{"id":"missingname","type":"user"}]}));
+        }
+        (
+            200,
+            json!({"id":"healthy","labelIds":["INBOX","missingname"],"payload":{"headers":[]}}),
+        )
+    })
+    .await;
+    let page = providers::fetch_page(&fixture.client, &mail(), &json!({"folder":"inbox"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        page["messages"][0]["providerLabelIds"],
+        json!(["INBOX", "missingname"])
+    );
+    assert_eq!(page["messages"][0]["labels"], json!([]));
+    assert!(providers::folders(&fixture.client, &mail()).await.is_err());
 }

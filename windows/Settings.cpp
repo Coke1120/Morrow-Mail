@@ -3,6 +3,7 @@
 #include <winrt/Windows.System.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
 #include <map>
 #include <cmath>
 
@@ -77,6 +78,7 @@ struct SettingsPage : std::enable_shared_from_this<SettingsPage> {
     std::map<std::wstring, StackPanel> calendarStatus;
     Expander mailDisclosure{nullptr};
     TextBlock notice{nullptr};
+    Button retryPreferences{nullptr};
     xaml::DispatcherTimer timer{nullptr}, autosave{nullptr};
     std::vector<Form> forms;
     Json searchState, updateState, release;
@@ -85,7 +87,12 @@ struct SettingsPage : std::enable_shared_from_this<SettingsPage> {
     // Navigation changes generation. OAuth/background owner changes must keep
     // this page and its edits alive; requests retain the captured owner.
     bool current() const { return live && !shell->closing && shell->generation == generation; }
-    void tell(hstring const& value) { if (current() && notice) notice.Text(value); }
+    void updateRetry() {
+        if (!current() || !retryPreferences) return;
+        retryPreferences.Visibility(saveFailed ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
+        retryPreferences.IsEnabled(saveFailed && !saving && !busy);
+    }
+    void tell(hstring const& value) { if (current() && notice) notice.Text(value); updateRetry(); }
     void dispose() {
         if (!live) return;
         live = false;
@@ -100,7 +107,7 @@ struct SettingsPage : std::enable_shared_from_this<SettingsPage> {
         }
         // An in-flight request retains its own busy marker until it finishes.
         forms.clear(); importOptions.reset(); calendarStatus.clear(); connectionsPanel = nullptr;
-        body = nullptr; mailDisclosure = nullptr; notice = nullptr; timer = nullptr; autosave = nullptr;
+        body = nullptr; mailDisclosure = nullptr; notice = nullptr; retryPreferences = nullptr; timer = nullptr; autosave = nullptr;
     }
 };
 IAsyncAction refreshConnections(Page p, bool automatic = false);
@@ -235,6 +242,7 @@ fire_and_forget run(Page p, std::function<IAsyncAction()> action) {
     catch (hresult_error const& error) { p->tell(error.message()); }
     catch (...) { p->tell(L"The operation could not finish. Your saved data is retained. Try again."); }
     p->shell->dirty.erase(p->busyKey); p->busy = false;
+    p->updateRetry();
     if (!p->shell->closing) p->shell->navigation.IsEnabled(true);
     if (p->current()) for (auto const& f : p->forms) f->container.IsEnabled(!f->locked);
 }
@@ -262,7 +270,7 @@ IAsyncAction savePreferences(Page p, Form f) {
     p->autosave.Stop();
     auto sent = patch(f);
     if (!sent.Size()) co_return;
-    p->saving = true; p->shell->navigation.IsEnabled(false); p->shell->dirty.insert(p->busyKey); p->tell(L"Saving preferences…");
+    p->saving = true; p->saveFailed = false; p->shell->navigation.IsEnabled(false); p->shell->dirty.insert(p->busyKey); p->tell(L"Saving preferences…");
     try {
         auto result = co_await p->shell->service->request(L"/settings/preferences", p->owner, L"POST", sent);
         if (p->current()) {
@@ -287,6 +295,7 @@ IAsyncAction savePreferences(Page p, Form f) {
     } catch (hresult_error const& error) { p->saveFailed = true; p->tell(error.message() + L" Your edits are retained. Retry saving."); }
     catch (...) { p->saveFailed = true; p->tell(L"Preferences were not saved. Your edits are retained. Retry saving."); }
     p->saving = false; p->shell->dirty.erase(p->busyKey);
+    p->updateRetry();
     if (!p->shell->closing) p->shell->navigation.IsEnabled(true);
     if (p->current() && f->changed() && !p->saveFailed) p->autosave.Start();
 }
@@ -373,7 +382,8 @@ void general(Page const& p) {
     p->autosave = xaml::DispatcherTimer(); p->autosave.Interval(std::chrono::milliseconds(500));
     p->autosave.Tick([weak, f](auto const&, auto const&) { if (auto page = weak.lock()) savePreferences(page, f); });
     p->shell->saveGeneralBeforeLeave = [weak] { return flushGeneral(weak); };
-    p->body.Children().Append(button(L"Retry saving preferences", [weak, f] { if (auto page = weak.lock()) savePreferences(page, f); }));
+    p->retryPreferences = button(L"Retry saving preferences", [weak, f] { if (auto page = weak.lock()) savePreferences(page, f); });
+    p->body.Children().Append(p->retryPreferences);
     p->tell(L"Preferences saved automatically.");
 }
 
@@ -463,6 +473,8 @@ void accounts(Page const& p, StackPanel const& panel, Json const& state, Form co
         if (owner == L"demo" || owner == L"all" || owner.empty()) continue;
         auto job = object(account, L"import"); auto status = text(job, L"status");
         title(panel, text(account, L"email") + L" · " + text(account, L"provider"));
+        if (account.GetNamedNumber(L"incompleteMessages", 0) > 0)
+            help(panel, number(account, L"incompleteMessages") + L" message(s) with incomplete content. " + text(account, L"contentWarning"));
         help(panel, status.empty() ? L"History import has not started." : L"History: " + status + L" · " + (text(job, L"downloadStage") == L"recent" ? L"Latest seven days first" : L"Older history") + L" · " + text(job, L"phase") + L" · " + number(job, L"imported") + L" imported · " + number(job, L"processed") + L" checked · " + number(job, L"pages") + L" pages");
         if (!text(job, L"error").empty()) help(panel, text(job, L"error"));
         if (!text(job, L"nextRetryAt").empty()) help(panel, L"Next retry: " + text(job, L"nextRetryAt") + L" · retry " + number(job, L"retryCount"));
@@ -1078,6 +1090,8 @@ IAsyncAction settingsNavigationChecks(std::shared_ptr<Shell> shell) {
         return p;
     };
     auto p = mount(); auto f = p->forms.front();
+    check(p->retryPreferences.Visibility() == xaml::Visibility::Collapsed && !p->retryPreferences.IsEnabled(),
+        L"General showed Retry before a failed save.");
     put(f->value, L"displayName", L"First edit"); f->edit();
     auto leaving = shell->navigate(L"today");
     check(p->saving && !shell->navigation.IsEnabled(), L"Leaving General did not flush its pending debounce.");
@@ -1093,10 +1107,24 @@ IAsyncAction settingsNavigationChecks(std::shared_ptr<Shell> shell) {
     p = mount(); f = p->forms.front(); put(f->value, L"theme", L"invalid-fixture-theme"); f->edit();
     co_await shell->navigate(L"today");
     check(p->current() && p->saveFailed && f->changed() && shell->dirty.contains(f->key)
-        && shell->navigation.IsEnabled() && !shell->dialogOpen, L"A failed preference save discarded edits or opened Discard.");
+        && shell->navigation.IsEnabled() && !shell->dialogOpen
+        && p->retryPreferences.Visibility() == xaml::Visibility::Visible && p->retryPreferences.IsEnabled(),
+        L"A failed preference save discarded edits, opened Discard or hid Retry.");
+    shell->root.UpdateLayout();
+    auto peer = xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(p->retryPreferences);
+    peer.GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).as<xaml::Automation::Provider::IInvokeProvider>().Invoke();
+    check(p->saving && p->retryPreferences.Visibility() == xaml::Visibility::Collapsed && !p->retryPreferences.IsEnabled(),
+        L"Retry did not start saving or remained available during the request.");
+    apartment_context ui; auto deadline = GetTickCount64() + 5000;
+    while (p->saving && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+    check(!p->saving && p->saveFailed && f->changed() && p->retryPreferences.Visibility() == xaml::Visibility::Visible
+        && p->retryPreferences.IsEnabled(), L"A failed Retry lost its retained edits or recovery control.");
     f->value = copy(f->saved); put(f->value, L"displayName", L"Retried edit"); f->edit();
+    check(p->retryPreferences.Visibility() == xaml::Visibility::Collapsed && !p->retryPreferences.IsEnabled(),
+        L"Editing preferences for another autosave retained the previous Retry control.");
     co_await shell->navigate(L"today");
-    check(shell->section == L"today" && !f->changed() && shell->dirty.empty(), L"Preference retry could not complete navigation.");
+    check(shell->section == L"today" && !f->changed() && shell->dirty.empty()
+        && p->retryPreferences.Visibility() == xaml::Visibility::Collapsed, L"Preference retry could not complete navigation or left Retry visible.");
     p->dispose();
     auto result = co_await shell->service->request(L"/settings/preferences", shell->owner, L"POST", original);
     shell->state.Insert(L"settings", object(result, L"settings"));

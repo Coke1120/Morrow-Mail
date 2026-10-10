@@ -2,6 +2,7 @@
 #include "Ui.h"
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
+#include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Windows.ApplicationModel.DataTransfer.h>
 #include <winrt/Microsoft.UI.Xaml.Media.Imaging.h>
 #include <winrt/Windows.Graphics.Imaging.h>
@@ -103,6 +104,199 @@ void mailDragChecks(std::shared_ptr<Service> const& service) {
             && shell->mailDropDestination(L"drag@example.invalid", L"archive").empty(), L"Outlook/IMAP drop routing or unavailable Archive failed.");
     }
 }
+void readerRefreshChecks(std::shared_ptr<Shell> const& shell) {
+    auto check = [](bool condition, wchar_t const* message) { if (!condition) throw hresult_error(E_FAIL, message); };
+    auto stored = Json::Parse(LR"({"accountId":"reader@fixture.invalid","id":"local","folder":"inbox","attachmentsLoaded":true,"body":"Inline fixture","bodyHtml":"<img src=\"cid:fixture\">","attachments":[],"read":true})");
+    auto previous = Json::Parse(stored.Stringify());
+    put(previous, L"bodyHtml", L"<img src=\"data:image/png;base64,fixture\">");
+    previous.Insert(L"inlineImages", Value::CreateBooleanValue(true)); previous.Insert(L"read", Value::CreateBooleanValue(false));
+    auto refreshed = refreshedReaderMessage(previous, stored);
+    check(flag(refreshed, L"inlineImages") && flag(refreshed, L"read") && text(refreshed, L"bodyHtml") == text(previous, L"bodyHtml")
+        && !flag(stored, L"inlineImages") && text(stored, L"bodyHtml") != text(previous, L"bodyHtml"),
+        L"Reader refresh lost the explicit inline copy or modified stored message JSON.");
+    for (auto field : {L"accountId", L"remoteId", L"providerFolderId", L"messageId", L"body", L"bodyTruncated", L"attachmentsLoaded", L"contentIncomplete", L"providerDraft", L"folder"}) {
+        auto changed = Json::Parse(previous.Stringify());
+        if (field == std::wstring_view(L"bodyTruncated") || field == std::wstring_view(L"contentIncomplete") || field == std::wstring_view(L"providerDraft")) changed.Insert(field, Value::CreateBooleanValue(true));
+        else if (field == std::wstring_view(L"attachmentsLoaded")) changed.Insert(field, Value::CreateBooleanValue(false));
+        else put(changed, field, field == std::wstring_view(L"folder") ? L"drafts" : L"changed");
+        check(!flag(refreshedReaderMessage(changed, stored), L"inlineImages"), L"Reader refresh reused an inline copy after its content/owner became ineligible.");
+    }
+    auto incomplete = Json::Parse(LR"({"id":"local","hasAttachments":false,"attachmentsLoaded":true,"contentIncomplete":true})");
+    auto panel = stack(); appendAttachmentControls(shell, panel, incomplete);
+    check(panel.Children().Size() && unbox_value<hstring>(panel.Children().GetAt(0).as<controls::Button>().Content()) == L"Load message content and attachments…",
+        L"Incomplete content has no explicit recovery entry when attachment metadata is empty.");
+}
+IAsyncAction mailRevisionChecks(std::shared_ptr<Shell> shell) {
+    auto check = [](bool condition, wchar_t const* message) { if (!condition) throw hresult_error(E_FAIL, message); };
+    auto rowMessage = [](controls::ListViewItem const& row) { return row.Tag().as<Json>(); };
+    auto visible = [&](hstring const& id) {
+        for (auto const& value : shell->rows.Items()) {
+            auto message = rowMessage(value.as<controls::ListViewItem>());
+            if (text(message, L"viewId") == id) return message;
+        }
+        return Json();
+    };
+    auto samePage = [&](Json const& expected) {
+        auto messages = array(expected, L"messages");
+        if (messages.Size() != shell->rows.Items().Size()) return false;
+        for (uint32_t i = 0; i < messages.Size(); ++i) {
+            auto actual = rowMessage(shell->rows.Items().GetAt(i).as<controls::ListViewItem>());
+            if (text(actual, L"viewId") != text(messages.GetAt(i).GetObject(), L"viewId")
+                || text(actual, L"accountId") != shell->owner) return false;
+        }
+        return true;
+    };
+    co_await shell->navigate(L"mail", L"one@fixture.invalid");
+    auto owner = shell->owner;
+    auto arrival = rowMessage(shell->rows.Items().GetAt(0).as<controls::ListViewItem>());
+    auto arrivalPath = L"/messages/" + escaped(text(arrival, L"id"));
+    auto arrivalOriginal = object(co_await shell->service->request(arrivalPath, owner), L"message");
+    auto markRead = flag(object(object(shell->state, L"settings"), L"preferences"), L"markReadOnOpen");
+    Json watchedOriginal; hstring watchedPath;
+    std::exception_ptr failure;
+    try {
+        // Make an existing fictional row newly enter the mounted inbox using
+        // the service writer. No provider operation or second DB writer runs.
+        Json moved; put(moved, L"folder", L"archive");
+        co_await shell->service->request(arrivalPath, owner, L"PATCH", moved);
+        co_await shell->loadPage(0, false, true);
+        check(!visible(text(arrival, L"viewId")).Size(), L"Background-arrival fixture did not leave the inbox.");
+        put(moved, L"folder", L"inbox");
+        co_await shell->service->request(arrivalPath, owner, L"PATCH", moved);
+        co_await shell->refresh(false);
+        check(visible(text(arrival, L"viewId")).Size() && shell->rows.Items().Size() == 50,
+            L"A background revision did not refresh the mounted inbox.");
+
+        co_await shell->loadPage(1);
+        check(shell->cursors.size() == 2 && shell->rows.Items().Size() == 15,
+            L"Revision checks did not reach page two.");
+        auto watched = shell->rows.Items().GetAt(0).as<controls::ListViewItem>();
+        auto metadata = rowMessage(watched); auto viewId = text(metadata, L"viewId");
+        watchedPath = L"/messages/" + escaped(text(metadata, L"id"));
+        watchedOriginal = object(co_await shell->service->request(watchedPath, owner), L"message");
+        shell->loading = true; shell->rows.SelectedItem(watched); shell->loading = false;
+        co_await shell->read(metadata, false);
+        shell->readerFocused = false; shell->applyMailLayout();
+        auto sequence = shell->selectionGeneration;
+        Json preference; preference.Insert(L"markReadOnOpen", Value::CreateBooleanValue(true));
+        shell->state = co_await shell->service->request(L"/settings/preferences", owner, L"POST", preference);
+        Json unread; unread.Insert(L"read", Value::CreateBooleanValue(false));
+        co_await shell->service->request(watchedPath, owner, L"PATCH", unread);
+        co_await shell->refresh(false);
+        check(shell->cursors.size() == 2 && shell->selectionGeneration == sequence
+            && text(shell->selected, L"viewId") == viewId && !flag(shell->selected, L"read")
+            && !flag(visible(viewId), L"read") && !shell->readerFocused,
+            L"Background refresh lost page/selection/reader layout or re-marked mail read.");
+        auto persisted = object(co_await shell->service->request(watchedPath, owner), L"message");
+        check(!flag(persisted, L"read"), L"A revision refresh wrote mark-on-open to the service.");
+
+        auto revision = shell->mailRevision;
+        Json read; read.Insert(L"read", Value::CreateBooleanValue(true));
+        co_await shell->service->request(watchedPath, owner, L"PATCH", read);
+        shell->dirty.insert(L"revision-fixture"); co_await shell->refresh(false);
+        check(shell->mailRevision == revision && !flag(shell->selected, L"read"), L"Refresh replaced dirty foreground work.");
+        shell->dirty.erase(L"revision-fixture"); shell->dialogOpen = true;
+        co_await shell->refresh(false);
+        check(shell->mailRevision == revision, L"Refresh ran behind a foreground dialog.");
+        shell->dialogOpen = false; shell->navigation.IsEnabled(false);
+        co_await shell->refresh(false);
+        check(shell->mailRevision == revision, L"Refresh ignored the foreground navigation guard.");
+        shell->navigation.IsEnabled(true);
+        auto firstRefresh = shell->refresh(false);
+        check(shell->refreshing, L"Workspace refresh has no in-flight guard.");
+        co_await shell->refresh(false); co_await firstRefresh;
+        check(!shell->refreshing && flag(shell->selected, L"read") && shell->mailRevision != revision,
+            L"Deferred/coalesced refresh did not apply the latest revision.");
+
+        // Read-state updates from another client keep the active unread row in
+        // place without performing mark-on-open again.
+        co_await shell->service->request(watchedPath, owner, L"PATCH", unread);
+        shell->unreadFilter.IsChecked(true); co_await shell->loadPage(0, false, true);
+        shell->loading = true;
+        for (auto const& value : shell->rows.Items())
+            if (text(rowMessage(value.as<controls::ListViewItem>()), L"viewId") == viewId) shell->rows.SelectedItem(value);
+        shell->loading = false;
+        co_await shell->read(visible(viewId), false);
+        co_await shell->service->request(watchedPath, owner, L"PATCH", read);
+        co_await shell->refresh(false);
+        check(flag(shell->selected, L"read") && flag(visible(viewId), L"read") && shell->retainedUnread.Size()
+            && shell->rows.SelectedItem() && text(rowMessage(shell->rows.SelectedItem().as<controls::ListViewItem>()), L"viewId") == viewId,
+            L"A background read-state change discarded the active unread-filter row.");
+        shell->unreadFilter.IsChecked(false); co_await shell->loadPage(0, false, true); co_await shell->loadPage(1);
+
+        // Page two's signed cursor expires after an unrelated successful write.
+        co_await shell->loadPage(-1); co_await shell->loadPage(1);
+        check(!shell->cursors.back().empty(), L"Cursor recovery requires a signed page-two cursor.");
+        co_await shell->service->request(watchedPath, owner, L"PATCH", unread);
+        Json cursorRequest; put(cursorRequest, L"folder", shell->folder); put(cursorRequest, L"cursor", shell->cursors.back());
+        put(cursorRequest, L"sort", L"newest"); put(cursorRequest, L"locale", L"en");
+        auto expiredResponse = co_await shell->service->requestWithStatus(L"/mail/page", owner, L"POST", cursorRequest);
+        check(expiredResponse.GetNamedNumber(L"status", 0) == 409
+            && text(object(expiredResponse, L"body"), L"error") == L"Mail changed or the cursor expired. Refresh the list.",
+            L"The async transport lost the expired mail cursor's HTTP status/body.");
+        put(cursorRequest, L"cursor", L""); cursorRequest.Insert(L"offset", Value::CreateNumberValue(50));
+        auto expectedPage = co_await shell->service->request(L"/mail/page", owner, L"POST", cursorRequest);
+        co_await shell->loadPage();
+        check(shell->cursors.size() == 2 && shell->rows.Items().Size() == 15
+            && shell->previous.IsEnabled() && !shell->next.IsEnabled() && shell->cursors.back().empty() && samePage(expectedPage),
+            L"Expired current-page cursor did not recover at its numeric offset.");
+        co_await shell->loadPage(-1);
+        co_await shell->service->request(watchedPath, owner, L"PATCH", read);
+        co_await shell->loadPage(1);
+        check(shell->cursors.size() == 2 && shell->rows.Items().Size() == 15 && shell->previous.IsEnabled(),
+            L"Next after a background revision left the old page or disabled recovery.");
+
+        // An ordinary failed read must not move the committed pager state.
+        auto cursors = shell->cursors; auto pageLabel = shell->pageLabel.Text(); auto firstRow = shell->rows.Items().GetAt(0);
+        auto folder = shell->folder; shell->folder = L"invalid-native-fixture-folder";
+        Json invalidRequest; put(invalidRequest, L"folder", shell->folder);
+        auto invalidResponse = co_await shell->service->requestWithStatus(L"/mail/page", owner, L"POST", invalidRequest);
+        check(invalidResponse.GetNamedNumber(L"status", 0) == 400
+            && text(object(invalidResponse, L"body"), L"error") == L"Invalid mail folder, sorting or page size.",
+            L"The async transport lost an ordinary HTTP error's status/body.");
+        co_await shell->loadPage(-1); shell->folder = folder;
+        check(shell->cursors == cursors && shell->pageLabel.Text() == pageLabel && shell->rows.Items().GetAt(0) == firstRow
+            && shell->previous.IsEnabled() && shell->search.IsEnabled() && !shell->loading,
+            L"A page failure changed committed position/rows or left controls disabled.");
+
+        shell->search.Text(L"Native fixture"); co_await shell->loadPage(0, false, true);
+        check(shell->rows.Items().Size() == 30 && !shell->nextCursor.empty(), L"Search cursor fixture did not produce multiple pages.");
+        co_await shell->service->request(watchedPath, owner, L"PATCH", unread);
+        Json searchRequest; put(searchRequest, L"folder", shell->folder); put(searchRequest, L"query", L"Native fixture");
+        put(searchRequest, L"scope", L"folder"); put(searchRequest, L"sort", L"relevance"); put(searchRequest, L"locale", L"en");
+        put(searchRequest, L"cursor", shell->nextCursor);
+        expiredResponse = co_await shell->service->requestWithStatus(L"/search", owner, L"POST", searchRequest);
+        check(expiredResponse.GetNamedNumber(L"status", 0) == 409
+            && text(object(expiredResponse, L"body"), L"error") == L"Search changed or the cursor expired. Search again.",
+            L"The async transport lost the expired search cursor's HTTP status/body.");
+        put(searchRequest, L"cursor", L""); searchRequest.Insert(L"page", Value::CreateNumberValue(1));
+        expectedPage = co_await shell->service->request(L"/search", owner, L"POST", searchRequest);
+        co_await shell->loadPage(1);
+        check(shell->cursors.size() == 2 && shell->rows.Items().Size() == 30 && shell->previous.IsEnabled()
+            && shell->next.IsEnabled() && shell->cursors.back().empty() && samePage(expectedPage), L"Search stale cursor did not recover its numeric page.");
+        revision = shell->mailRevision;
+        shell->search.Text(L"Unsubmitted query");
+        co_await shell->service->request(watchedPath, owner, L"PATCH", read);
+        co_await shell->refresh(false);
+        check(shell->mailRevision == revision && shell->cursors.size() == 2,
+            L"Background refresh submitted an unfinished search edit.");
+        shell->search.Text(L"Native fixture"); co_await shell->refresh(false);
+        check(shell->mailRevision != revision && shell->cursors.size() == 2 && shell->rows.Items().Size() == 30,
+            L"Background refresh did not retain the current search page.");
+    } catch (...) { failure = std::current_exception(); }
+    shell->dirty.erase(L"revision-fixture"); shell->dialogOpen = false; shell->loading = false; shell->navigation.IsEnabled(true);
+    shell->unreadFilter.IsChecked(false);
+    if (watchedOriginal.Size()) {
+        Json restore; restore.Insert(L"read", Value::CreateBooleanValue(flag(watchedOriginal, L"read")));
+        co_await shell->service->request(watchedPath, owner, L"PATCH", restore);
+    }
+    Json restoreFolder; put(restoreFolder, L"folder", text(arrivalOriginal, L"folder"));
+    co_await shell->service->request(arrivalPath, owner, L"PATCH", restoreFolder);
+    Json preference; preference.Insert(L"markReadOnOpen", Value::CreateBooleanValue(markRead));
+    shell->state = co_await shell->service->request(L"/settings/preferences", owner, L"POST", preference);
+    co_await shell->navigate(L"mail", owner);
+    if (failure) std::rethrow_exception(failure);
+}
 IAsyncAction Shell::smoke() {
     auto lifetime = shared_from_this();
     auto check = [](bool condition, wchar_t const* message) { if (!condition) throw hresult_error(E_FAIL, message); };
@@ -115,6 +309,7 @@ IAsyncAction Shell::smoke() {
     Json readerEvidence;
     try {
         readerSecurityChecks();
+        readerRefreshChecks(lifetime);
         check(mailDateLabel(L"2026-09-28T12:00:00.000Z") == mailDateLabel(L"2026-09-28T20:00:00+08:00")
             && std::wstring_view(mailDateLabel(L"2026-09-28T12:00:00.000Z")).find(L"T12:") == std::wstring_view::npos
             && mailDateLabel(L"invalid") == L"invalid", L"Mail dates did not preserve the instant while formatting local time.");
@@ -295,6 +490,8 @@ IAsyncAction Shell::smoke() {
                 cursors = {L""}; co_await loadPage();
                 check(rows.Items().Size() == 50, L"A supported sort could not load.");
             }
+            enter("mail-background-revision-and-cursor-recovery");
+            co_await mailRevisionChecks(lifetime);
             enter("mail-reader");
             auto response = co_await service->request(L"/messages/mail-000", owner);
             auto source = object(response,L"message");
@@ -352,12 +549,16 @@ IAsyncAction Shell::smoke() {
                     auto panel = readerNotice.Content().as<controls::StackPanel>();
                     auto back = panel.Children().GetAt(panel.Children().Size() - 1).as<controls::Button>();
                     root.UpdateLayout();
+                    check(back.Focus(xaml::FocusState::Keyboard), L"Back cancellation could not focus its reader control.");
                     auto backPeer = xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(back);
                     auto invoke = backPeer.GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).as<xaml::Automation::Provider::IInvokeProvider>();
                     invoke.Invoke(); auto noticeAfterBack = status.Text(); co_await opening;
                     auto after = object(co_await service->request(cancelPath, cancelOwner), L"message");
                     check(!readerFocused && !pendingRead.Size() && !selected.Size() && rows.SelectedItems().Size() == 0 && status.Text() == noticeAfterBack
                         && !flag(after, L"read"), L"A late read result after Back reopened the reader, marked mail or replaced status.");
+                    auto focus = xaml::Input::FocusManager::GetFocusedElement(root.XamlRoot()).try_as<xaml::DependencyObject>();
+                    while (focus && focus != rows) focus = xaml::Media::VisualTreeHelper::GetParent(focus);
+                    check(bool(focus), L"Back cancellation did not return keyboard focus to the mail list.");
                 }
             } catch (...) {
                 cancellationFailure = std::current_exception();

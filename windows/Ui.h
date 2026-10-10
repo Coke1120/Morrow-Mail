@@ -36,6 +36,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     controls::ContentControl reader{nullptr};
     controls::Grid readerPane{nullptr};
     controls::ContentControl readerNotice{nullptr};
+    controls::Button readerBack{nullptr}; // Keep the current native peer alive for focus restoration.
     controls::Grid mailBody{nullptr};
     controls::Grid mailList{nullptr};
     xaml::FrameworkElement mailDivider{nullptr};
@@ -56,7 +57,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     uint32_t retainedUnreadIndex = 0;
     Json mailDrag;
     Json updateResult;
-    winrt::hstring owner, folder = L"inbox", section = L"mail", nextCursor;
+    winrt::hstring owner, folder = L"inbox", section = L"mail", nextCursor, mailRevision, mailSearchQuery;
     winrt::hstring todaySummaryOwner;
     winrt::hstring mailLayout = L"right";
     winrt::hstring mailDragToken, mailDragOwner;
@@ -70,7 +71,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     uint64_t readerImageGeneration = 0, readerImageSelection = 0;
     std::optional<bool> readerImageOverride;
     bool restartingForUpdate = false;
-    bool syncing = false, loading = false, closing = false, dialogOpen = false, selectingNavigation = false;
+    bool syncing = false, refreshing = false, loading = false, closing = false, dialogOpen = false, selectingNavigation = false;
     bool closeReady = false;
     bool checkingUpdates = false, includePrereleases = false;
     uint64_t lastUpdateCheck = 0;
@@ -79,8 +80,10 @@ struct Shell : std::enable_shared_from_this<Shell> {
     winrt::Windows::Foundation::IAsyncAction start();
     winrt::Windows::Foundation::IAsyncAction refresh(bool rebuildNavigation = false);
     winrt::Windows::Foundation::IAsyncAction navigate(winrt::hstring target, winrt::hstring account = {}, winrt::hstring mailFolder = L"inbox");
-    winrt::Windows::Foundation::IAsyncAction loadPage();
+    winrt::Windows::Foundation::IAsyncAction loadPage(int pageDelta = 0, bool refreshReader = false, bool reset = false);
+    winrt::Windows::Foundation::IAsyncAction refreshMailReader();
     winrt::Windows::Foundation::IAsyncAction read(Json metadata, bool markOnOpen = true);
+    void focusMail();
     winrt::Windows::Foundation::IAsyncAction openSource(Json metadata);
     winrt::Windows::Foundation::IAsyncAction patch(Json message, Json changes);
     winrt::Windows::Foundation::IAsyncAction patchMessages(std::vector<Json> messages, Json changes);
@@ -129,6 +132,7 @@ winrt::Windows::Foundation::IAsyncOperation<Json> uploadAttachment(std::shared_p
 winrt::Windows::Foundation::IAsyncAction saveAttachment(std::shared_ptr<Shell> shell, winrt::hstring owner, Json item);
 void appendAttachmentControls(std::shared_ptr<Shell> shell, controls::StackPanel const& panel, Json const& message);
 void appendReader(std::shared_ptr<Shell> shell, controls::StackPanel const& container, Json message);
+Json refreshedReaderMessage(Json const& previous, Json message);
 winrt::Windows::Foundation::IAsyncAction folderPickerChecks(controls::Grid root);
 void readerSecurityChecks();
 winrt::Windows::Foundation::IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell);
