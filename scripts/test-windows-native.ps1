@@ -511,12 +511,12 @@ try {
                 $crashCapture = New-CrashCapture
             }
             $sampleFile = New-NativeSampleFile $case.path
-            $collector = $null; $completion = $null
+            $collector = $null; $completion = $null; $collectorStarted = $false
             $launch = [Diagnostics.Stopwatch]::GetTimestamp()
             $process = [Diagnostics.Process]::Start($ui)
             try {
                 # Process.Start/StartTime only; all CIM runs in the owned child.
-                try { $collector = Start-NativeResourceCollector $process $sampleFile $launch }
+                try { $collector = Start-NativeResourceCollector $process $sampleFile $launch; $collectorStarted = $null -ne $collector }
                 catch { Write-Warning 'Native resource collector could not start; evidence will be incomplete.' }
                 $completion = Wait-NativeUi $process 180000 $launch
             } finally {
@@ -534,9 +534,17 @@ try {
                     $evidence = Join-Path $root 'test-results'
                     [void] (New-Item -ItemType Directory -Force $evidence)
                     [IO.File]::WriteAllText((Join-Path $evidence "windows-native-resource-$caseIndex.json"), ($resource | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+                    $summary = Get-NativeObservationSummary $resource $caseIndex $case.mode $resource.uiCompleted $collectorStarted
+                    Write-Host ('Native observation: ' + ($summary | ConvertTo-Json -Compress -Depth 8))
+                    foreach ($sample in @(Get-NativeObservationSamples $resource $caseIndex $case.mode)) {
+                        Write-Host ('Native observation sample: ' + ($sample | ConvertTo-Json -Compress -Depth 6))
+                    }
                     if ($resource.incomplete) { Write-Warning 'Native resource observation is incomplete; inspect its separate evidence report.' }
                 } catch {
                     # Optional observation must not replace an original UI error.
+                    $summary = @{ run = $caseIndex; mode = $case.mode; reportUnavailable = $true; incomplete = $true
+                        collectorStarted = $collectorStarted; collector = $collectorStop }
+                    Write-Host ('Native observation: ' + ($summary | ConvertTo-Json -Compress -Depth 4))
                     Write-Warning 'Native resource report is missing or incomplete; no complete measurement is claimed. The UI acceptance result is unchanged.'
                 }
             }

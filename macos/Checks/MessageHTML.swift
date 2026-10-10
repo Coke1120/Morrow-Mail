@@ -2,6 +2,92 @@ import AppKit
 import SwiftUI
 import WebKit
 
+// Fixture-only telemetry. Every mutable field is protected by lock; the timer
+// never reads AppKit/WebKit objects. Logs contain only fixture labels and counts.
+private final class ReaderFixtureTrace: @unchecked Sendable {
+    struct Operation {
+        let id: Int
+        let name: String
+        let started: TimeInterval
+    }
+    private let started = ProcessInfo.processInfo.systemUptime
+    private let lock = NSLock()
+    private var phaseName = "setup"
+    private var operationCount = 0
+    private var findCount = 0
+    private var active: Operation?
+    private var lastMainAck = ProcessInfo.processInfo.systemUptime
+    private var pendingHeartbeat: TimeInterval?
+    private var maxMainAckDelay = 0
+
+    private func milliseconds(_ interval: TimeInterval) -> Int { Int(interval * 1000) }
+    private func write(_ message: String) {
+        let elapsed = milliseconds(ProcessInfo.processInfo.systemUptime - started)
+        // Do not hold the state lock during I/O, including on the timer queue.
+        FileHandle.standardError.write(Data("Native macOS reader: \(message) +\(elapsed) ms\n".utf8))
+    }
+    func phase(_ name: String) {
+        lock.lock(); phaseName = name; lock.unlock()
+        write(name)
+    }
+    func event(_ message: String) {
+        lock.lock(); let phase = phaseName; lock.unlock()
+        write("trace phase=\(phase) \(message)")
+    }
+    func begin(_ name: String, detail: String = "") -> Operation {
+        lock.lock()
+        operationCount += 1
+        if name == "find" { findCount += 1 }
+        let operation = Operation(id: operationCount, name: name, started: ProcessInfo.processInfo.systemUptime)
+        active = operation
+        let count = findCount
+        lock.unlock()
+        event("\(name)-begin id=\(operation.id) findCount=\(count) \(detail)")
+        return operation
+    }
+    func end(_ operation: Operation, detail: String = "") {
+        let elapsed = milliseconds(ProcessInfo.processInfo.systemUptime - operation.started)
+        lock.lock()
+        if active?.id == operation.id { active = nil }
+        lock.unlock()
+        event("\(operation.name)-end id=\(operation.id) durationMs=\(elapsed) \(detail)")
+    }
+    func summary() {
+        lock.lock()
+        let operations = operationCount, finds = findCount, delay = maxMainAckDelay
+        lock.unlock()
+        event("summary operations=\(operations) findCount=\(finds) maxMainAckDelayMs=\(delay)")
+    }
+    func heartbeat() {
+        let now = ProcessInfo.processInfo.systemUptime
+        lock.lock()
+        let phase = phaseName
+        // "none" means between measured calls, not that the main thread is idle.
+        let operation = active.map { "\($0.name)#\($0.id) ageMs=\(milliseconds(now - $0.started))" } ?? "none"
+        let pendingAge = pendingHeartbeat.map { milliseconds(now - $0) } ?? 0
+        let ackAge = milliseconds(now - lastMainAck)
+        let maxDelay = maxMainAckDelay
+        let count = findCount
+        let enqueue = pendingHeartbeat == nil
+        if enqueue { pendingHeartbeat = now }
+        lock.unlock()
+        // A blocked main queue leaves one outstanding probe, never a growing queue.
+        if enqueue {
+            DispatchQueue.main.async { [self] in
+                let acknowledged = ProcessInfo.processInfo.systemUptime
+                lock.lock()
+                let delay = milliseconds(acknowledged - (pendingHeartbeat ?? acknowledged))
+                maxMainAckDelay = max(maxMainAckDelay, delay)
+                lastMainAck = acknowledged
+                pendingHeartbeat = nil
+                lock.unlock()
+                if delay >= 250 { event("main-heartbeat-recovered delayMs=\(delay)") }
+            }
+        }
+        write("heartbeat phase=\(phase) active=\(operation) findCount=\(count) mainAckAgeMs=\(ackAge) pendingAgeMs=\(pendingAge) maxAckDelayMs=\(maxDelay)")
+    }
+}
+
 @MainActor final class ReaderFixtureState: ObservableObject {
     @Published var html: String
     @Published var autoLoadExternalImages = false
@@ -24,11 +110,12 @@ struct ReaderFixture: View {
 
 @main struct MessageHTMLChecks {
     @MainActor static func main() {
-        let started = ProcessInfo.processInfo.systemUptime
-        func phase(_ name: String) {
-            let elapsed = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
-            FileHandle.standardError.write(Data("Native macOS reader: \(name) +\(elapsed) ms\n".utf8))
-        }
+        let trace = ReaderFixtureTrace()
+        func phase(_ name: String) { trace.phase(name) }
+        let heartbeat = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "morrow.reader-fixture-heartbeat", qos: .utility))
+        heartbeat.schedule(deadline: .now() + 1, repeating: 1, leeway: .milliseconds(50))
+        heartbeat.setEventHandler { trace.heartbeat() }
+        heartbeat.resume()
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
         let port = CommandLine.arguments[1]
@@ -40,16 +127,30 @@ struct ReaderFixture: View {
         window.contentView = host
         window.orderBack(nil)
         func findWeb(_ view: NSView) -> WKWebView? { (view as? WKWebView) ?? view.subviews.lazy.compactMap { findWeb($0) }.first }
+        var navigationObservations: [NSKeyValueObservation] = []
+        @MainActor func observeNavigation(_ web: WKWebView, reader: String) {
+            trace.event("navigation-observe reader=\(reader) width=\(Int(web.bounds.width)) height=\(Int(web.bounds.height))")
+            // These signals describe navigation, not completion of WebKit layout.
+            // Preserve the production delegate and consume only KVO's value here.
+            navigationObservations.append(web.observe(\.isLoading, options: [.initial, .new]) { _, change in
+                trace.event("navigation-loading reader=\(reader) value=\(change.newValue ?? false)")
+            })
+            navigationObservations.append(web.observe(\.estimatedProgress, options: [.initial, .new]) { _, change in
+                trace.event("navigation-progress reader=\(reader) percent=\(Int((change.newValue ?? 0) * 100))")
+            })
+        }
         Task { @MainActor in
             do {
                 phase("initial-load")
                 var web: WKWebView?
                 for _ in 0..<200 {
                     web = findWeb(host)
+                    if let web, navigationObservations.isEmpty { observeNavigation(web, reader: "initial") }
                     if let web, !web.isLoading, web.url != nil { break }
                     try await Task.sleep(nanoseconds: 50_000_000)
                 }
                 guard let web, web.url != nil else { fatalError("Formatted reader did not load") }
+                trace.event("initial-navigation-poll-end loading=\(web.isLoading)")
                 assert(MessageHTMLView.document("", images: false, inlineImages: true).contains("img-src data: ;"))
                 assert(!MessageHTMLView.document("", images: false).contains("img-src data:"))
                 assert(!web.configuration.defaultWebpagePreferences.allowsContentJavaScript)
@@ -61,20 +162,47 @@ struct ReaderFixture: View {
                 assert(!MessageHTMLView.allowedLink(URL(string: "https://user:password@example.invalid")!))
                 @MainActor func find(_ text: String) async throws -> Bool {
                     // WebKit selects and scrolls the match through its native API.
-                    try await web.find(text, configuration: WKFindConfiguration()).matchFound
+                    let operation = trace.begin("find", detail: "marker=\(text) loading=\(web.isLoading)")
+                    do {
+                        let found = try await web.find(text, configuration: WKFindConfiguration()).matchFound
+                        trace.end(operation, detail: "found=\(found) loading=\(web.isLoading)")
+                        return found
+                    } catch {
+                        let failure = error as NSError
+                        trace.end(operation, detail: "errorDomain=\(failure.domain) errorCode=\(failure.code)")
+                        throw error
+                    }
                 }
                 @MainActor func loaded(_ marker: String) async throws {
-                    for _ in 0..<400 {
-                        if !web.isLoading, try await find(marker) { return }
+                    let began = ProcessInfo.processInfo.systemUptime
+                    trace.event("marker-wait-begin marker=\(marker) loading=\(web.isLoading)")
+                    for attempt in 0..<400 {
+                        if !web.isLoading, try await find(marker) {
+                            trace.event("marker-wait-end marker=\(marker) polls=\(attempt + 1) durationMs=\(Int((ProcessInfo.processInfo.systemUptime - began) * 1000)) width=\(Int(web.bounds.width)) height=\(Int(web.bounds.height))")
+                            return
+                        }
                         try await Task.sleep(nanoseconds: 50_000_000)
                     }
                     phase("fixture-marker-timeout")
                     fatalError("Reader did not load its fixture marker: \(marker)")
                 }
                 @MainActor func snapshot() async throws -> Data {
+                    trace.event("snapshot-settle-begin")
                     try await Task.sleep(nanoseconds: 100_000_000)
-                    let image = try await web.takeSnapshot(configuration: nil)
+                    trace.event("snapshot-settle-end")
+                    let operation = trace.begin("snapshot")
+                    let image: NSImage
+                    do {
+                        image = try await web.takeSnapshot(configuration: nil)
+                    } catch {
+                        let failure = error as NSError
+                        trace.end(operation, detail: "errorDomain=\(failure.domain) errorCode=\(failure.code)")
+                        throw error
+                    }
+                    trace.end(operation)
+                    let encoding = trace.begin("snapshot-tiff")
                     guard let bytes = image.tiffRepresentation else { fatalError("Reader snapshot unavailable") }
+                    trace.end(encoding, detail: "bytes=\(bytes.count)")
                     return bytes
                 }
                 @MainActor func wheel(_ delta: Int32) {
@@ -173,7 +301,9 @@ struct ReaderFixture: View {
                 assert(web.bounds.height == MessageHTMLView.viewportHeight, "Long HTML expanded the native allocation")
 
                 phase("adversarial-text")
+                trace.event("fixture-update-request begin textCharacters=180000 columnWidthPx=1 viewportWidth=\(Int(web.bounds.width)) viewportHeight=\(Int(web.bounds.height)) windowWidth=\(Int(window.contentLayoutRect.width))")
                 state.html = "<div style='width:1px'>" + String(repeating: "x", count: 180000) + "</div><p>Bounded adversarial tail</p>"
+                trace.event("fixture-update-request end; SwiftUI navigation/layout may still be pending")
                 try await loaded("Bounded adversarial tail")
                 assert(web.bounds.height == MessageHTMLView.viewportHeight, "Narrow-column HTML escaped the viewport bound")
 
@@ -210,13 +340,19 @@ struct ReaderFixture: View {
                 state.autoLoadExternalImages = false
                 state.messageID = "reader-after-failure"
                 for _ in 0..<100 {
-                    if let next = findWeb(host), !next.isLoading, next.url != nil { break }
+                    if let next = findWeb(host) {
+                        if navigationObservations.count == 2 { observeNavigation(next, reader: "recovered") }
+                        if !next.isLoading, next.url != nil { break }
+                    }
                     try await Task.sleep(nanoseconds: 20_000_000)
                 }
                 guard let next = findWeb(host), let nextDelegate = next.navigationDelegate as? MessageHTMLView.Coordinator else { fatalError("Next message did not recover its HTML reader") }
                 assert(next !== web && !next.configuration.defaultWebpagePreferences.allowsContentJavaScript)
                 assert(nextDelegate.document.contains("img-src 'none'"), "Recovery enabled external images")
                 phase("done")
+                trace.summary()
+                withExtendedLifetime(navigationObservations) {}
+                heartbeat.cancel()
                 print("Native email reader: bounded viewport, bidirectional native scrolling, selectable/revealed long tail, adversarial layout, replacement/reflow, scripts/resources blocked and link protocols checked without host script execution.")
                 window.orderOut(nil)
                 exit(0)

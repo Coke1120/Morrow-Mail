@@ -1,5 +1,11 @@
 # Verification — 10 October 2026
 
+## Reader timing and Windows observation — follow-up in progress
+
+This separate draft-PR follow-up starts from main `052643dcf9046419b93248b73dbc69dfdae72cb4`, after v0.7.2 publication. The first stage adds fixture-only telemetry while retaining existing behavior: macOS records navigation, native-find/snapshot durations and bounded main-thread heartbeat observations; Windows records validated collector skip reasons, exit/identity evidence, milestones and selected raw sample neighborhoods in CI logs. Original Windows skipped-sample/incomplete classification remains in this measurement stage. The 180,000-character/1-pixel reader input, its 30-second process gate, existing recovery/isolation assertions and release gates remain unchanged.
+
+Instrumentation alone does not establish a root cause or resolve either intermittent problem. Native baseline measurements, targeted correction, negative-control regression checks, independent review and repeated complete paired CI on the final source are pending. Local Linux PowerShell parser/report fixtures are separate from Windows CIM/process and native UI execution. The v0.7.2 tag and published assets are unchanged; no merge or new release is part of this follow-up.
+
 ## 0.7.2 — published paired native release
 
 [v0.7.2](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.7.2) was published at **2026-10-10 12:58:18 UTC** from `b93dbfc842ce00f3a459ebe9affe770dd23df90b` as a normal public release (`draft=false`, `prerelease=false`); GitHub's Latest endpoint resolves to it. [Tagged CI 38051962275, attempt 1](https://github.com/Coke1120/Morrow-Mail/actions/runs/38051962275/attempts/1) passed both native jobs and the existing publisher. The remote annotated tag resolves to that exact commit. The publisher verified same-run/same-attempt platform jobs and candidate bytes before signing with the existing pinned key and publishing both platforms. No waiver, workflow change or replacement of public assets applied.
