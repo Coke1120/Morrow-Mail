@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.2 — 2026-10-10
+
+- Repair IMAP recent/history date gaps and unresolved FETCH checkpoint handling; persist backoff for recognized transient reads.
+- Recover Outlook delta catch-up within approved import ranges, use bounded individual bodies and a shared Graph request limit, and retain checkpoints for invalid provider dates.
+- Support Gmail read catalogs of up to 10,000 labels; repair legacy content/Reply-To and expose account-owned incomplete-content counts with explicit recovery.
+- Preserve downloaded immutable content through provider placeholders and retain native mailbox/page/selection context, stale-response guards, reader Back, composer focus and General failed-save retry.
+- Recover expired Windows mail/search cursors once through numeric positions while preserving HTTP status/body across the async boundary.
+- Report existing backup destinations as conflicts; add optional manual local build-output cleanup. Preserve cached mail, backups and uncertain-send protections.
+- Require fresh paired tagged native checks and the pinned-key publisher. Keep signing, manual/live-account, resource-observation and intermittent-reader limits explicit; see [release notes](docs/releases/v0.7.2.md) and [verification](VERIFICATION.md).
+
 ## 0.7.1 — 2026-10-10
 
 - Repair stale Gmail/IMAP Read/Unread flags using fetched server values, including unchanged provider snapshots and caches reopened after restart. Confirmed star writes also reconcile the returned read state.

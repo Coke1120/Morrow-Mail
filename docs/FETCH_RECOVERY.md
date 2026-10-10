@@ -1,6 +1,6 @@
-# Fetch recovery changes — unreleased
+# Fetch recovery — 0.7.2
 
-These source changes repair omissions found in the October 2026 fetch review. They do not turn bounded Sync into a complete mailbox mirror or establish native/live-account acceptance. See [verification](../VERIFICATION.md).
+These source changes repair omissions found in the October 2026 fetch review. They do not turn bounded Sync into a complete mailbox mirror. Native source CI has passed; real-account acceptance remains separate. See [verification](../VERIFICATION.md).
 
 ## Dates and catch-up
 
@@ -36,4 +36,4 @@ IMAP cache identity uses account, folder, UIDVALIDITY and UID; it has no server-
 
 Windows observes service revisions, refreshes mounted mail/search and the selected reader, and retains the bounded page position and selection where possible. Revision-invalidated cursors recover through the existing numeric page/offset contract. Failed navigation restores usable paging controls. macOS remains the behavioral reference; both account settings views expose incomplete-content warnings.
 
-New Windows smoke assertions and macOS source changes must still be compiled and executed on their respective platforms. Linux Rust fixtures verify backend behavior only. Clean-machine, accessibility, signing, installed-updater and real-account acceptance remain separate gates.
+The new Windows smoke assertions and macOS changes passed native source CI on both platforms. Each release tag still requires fresh paired checks. Windows owned/restart resource observation was incomplete, and passing Mac reader checks do not resolve its recorded intermittent timeout. Linux Rust fixtures verify backend behavior only. Manual cross-platform UX, clean-machine, accessibility, signing, installed-updater and real-account acceptance remain separate gates. The Windows status-preserving response path is limited to mail/search paging; other callers' custom async error classification remains outside this fix.

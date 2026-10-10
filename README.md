@@ -43,9 +43,11 @@ Browser sign-in uses the desktop registration included in the build; custom regi
 
 Detailed behavior and limits are in [feature coverage](FEATURE_COVERAGE.md) and the [user guide](docs/USER_GUIDE.md).
 
-Unreleased [fetch recovery changes](docs/FETCH_RECOVERY.md) address IMAP date gaps, Outlook delta catch-up, Gmail label limits, incomplete content and Windows refresh recovery. Native and live-account validation remain separate gates.
+## New in 0.7.2
 
-## New in 0.7.1
+[Fetch recovery changes](docs/FETCH_RECOVERY.md) address IMAP date gaps, Outlook delta catch-up, Gmail label limits and incomplete content. Native reader recovery, Windows composer focus and expired mail/search cursors retain their account and page context. The paired source CI passed on both platforms; each release tag requires fresh paired checks before publication. See the [0.7.2 release notes](docs/releases/v0.7.2.md) for fixes and remaining limits.
+
+### Included since 0.7.1
 
 Fetched server Read/Unread values now repair stale local states even when the server flag has not changed since the last sync. Missing IMAP folders no longer block the rest of a cached-message reconciliation batch; cached mail is retained. Larger mailboxes may need multiple sync rounds. See the [0.7.1 release notes](docs/releases/v0.7.1.md).
 
@@ -105,7 +107,7 @@ Scheduled mail and background jobs require Morrow to remain running. See [data a
 
 Use **Rust 1.98+** with rustfmt/clippy, plus Apple's Swift command-line tools on macOS or the [pinned Windows prerequisites](windows/README.md). Node/npm is not used.
 
-Unreleased source work improves Windows return focus and failed-preference retry controls, and adds macOS reader loading/error recovery with stale-response protection. The new native checks still require macOS and Windows execution; Linux checks do not establish UI acceptance. See [cloud verification](VERIFICATION.md#cloud-native-recovery-follow-up--unreleased).
+The 0.7.2 native recovery checks passed in hosted macOS and Windows CI, including Windows return focus and General retry plus macOS loading/error Back and stale-response protection. Linux checks alone do not establish UI acceptance. See [verification](VERIFICATION.md).
 
 ```sh
 # macOS
@@ -119,7 +121,7 @@ Unreleased source work improves Windows return focus and failed-preference retry
 
 For checks, source layout and release rules, see [AGENTS.md](AGENTS.md). Platform details are in the [macOS guide](docs/USER_GUIDE.md#native-macos-app) and [Windows README](windows/README.md). Use an isolated absolute `MORROW_DATA_DIR` for fixtures; never test against a real mailbox workspace.
 
-Unreleased changes improve Windows navigation/recovery and the error for an existing backup destination. Windows build and native acceptance remain pending; see the [local verification record](VERIFICATION.md#local-native-readiness-work--unreleased).
+An existing backup destination reports a conflict without overwriting it. Manual same-source Mac/Windows UX, real-account, clean-machine, accessibility and installed-updater acceptance remain separate gates; see [verification](VERIFICATION.md).
 
 ### Local cleanup after a release (macOS)
 
