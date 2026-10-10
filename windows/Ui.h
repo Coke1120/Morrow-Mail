@@ -34,6 +34,8 @@ struct Shell : std::enable_shared_from_this<Shell> {
     uint64_t trashBatch = 0;
     controls::ListView rows{nullptr};
     controls::ContentControl reader{nullptr};
+    controls::Grid readerPane{nullptr};
+    controls::ContentControl readerNotice{nullptr};
     controls::Grid mailBody{nullptr};
     controls::Grid mailList{nullptr};
     xaml::FrameworkElement mailDivider{nullptr};
@@ -73,6 +75,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     bool checkingUpdates = false, includePrereleases = false;
     uint64_t lastUpdateCheck = 0;
     std::set<std::wstring> dirty;
+    std::function<winrt::Windows::Foundation::IAsyncOperation<bool>()> saveGeneralBeforeLeave;
     winrt::Windows::Foundation::IAsyncAction start();
     winrt::Windows::Foundation::IAsyncAction refresh(bool rebuildNavigation = false);
     winrt::Windows::Foundation::IAsyncAction navigate(winrt::hstring target, winrt::hstring account = {}, winrt::hstring mailFolder = L"inbox");
@@ -113,6 +116,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     void mailPage();
     void applyMailLayout();
     void renderReader(Json const& message);
+    void showReaderStatus(Json const& metadata, bool failed);
 };
 winrt::Windows::Foundation::IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft = Json());
 winrt::Windows::Foundation::IAsyncAction scheduledPage(std::shared_ptr<Shell> shell);

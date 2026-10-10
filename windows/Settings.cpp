@@ -291,12 +291,22 @@ IAsyncAction savePreferences(Page p, Form f) {
     if (p->current() && f->changed() && !p->saveFailed) p->autosave.Start();
 }
 
+IAsyncOperation<bool> flushPreferences(Page p) {
+    if (!p->current() || p->busy || p->saving) co_return false;
+    while (p->current() && !p->forms.empty() && p->forms.front()->changed()) {
+        co_await savePreferences(p, p->forms.front());
+        if (!p->current() || p->saveFailed) co_return false;
+    }
+    co_return p->current();
+}
+IAsyncOperation<bool> flushGeneral(std::weak_ptr<SettingsPage> weak) {
+    auto p = weak.lock();
+    if (!p || !p->current()) co_return true;
+    co_return co_await flushPreferences(p);
+}
 IAsyncAction changeTab(Page p, hstring next) {
     if (!p->current() || p->busy || p->saving) co_return;
-    if (p->tab == L"general" && !p->forms.empty()) {
-        co_await savePreferences(p, p->forms.front());
-        if (!p->current() || p->forms.front()->changed()) co_return;
-    }
+    if (p->tab == L"general" && !(co_await flushPreferences(p))) co_return;
     bool dirty = std::any_of(p->forms.begin(), p->forms.end(), [](auto const& f) { return f->changed(); });
     if (dirty && !(co_await p->shell->confirm(L"Discard unsaved settings?", L"Only saved settings take effect. Entered keys and unsaved edits will be discarded.", L"Discard"))) co_return;
     if (!p->current()) co_return;
@@ -362,6 +372,7 @@ void general(Page const& p) {
     std::weak_ptr<SettingsPage> weak = p;
     p->autosave = xaml::DispatcherTimer(); p->autosave.Interval(std::chrono::milliseconds(500));
     p->autosave.Tick([weak, f](auto const&, auto const&) { if (auto page = weak.lock()) savePreferences(page, f); });
+    p->shell->saveGeneralBeforeLeave = [weak] { return flushGeneral(weak); };
     p->body.Children().Append(button(L"Retry saving preferences", [weak, f] { if (auto page = weak.lock()) savePreferences(page, f); }));
     p->tell(L"Preferences saved automatically.");
 }
@@ -965,6 +976,7 @@ void about(Page const& p) {
 } // namespace
 
 IAsyncAction settingsPage(std::shared_ptr<Shell> shell, hstring tab) {
+    shell->saveGeneralBeforeLeave = {};
     if (tab == L"learning") { co_await workspacePage(shell, L"learning"); co_return; }
     auto p = std::make_shared<SettingsPage>(); p->shell = shell; p->owner = shell->owner; p->tab = tab;
     p->generation = ++shell->generation; p->busyKey = L"settings-request:" + std::to_wstring(p->generation);
@@ -1052,5 +1064,41 @@ IAsyncAction settingsPage(std::shared_ptr<Shell> shell, hstring tab) {
         p->tell(error.message());
         if (p->current()) action(p, p->body, L"Retry loading settings", [tab](Page page) -> IAsyncAction { auto owner = page->shell; page->dispose(); co_await settingsPage(owner, tab); });
     } catch (...) { p->tell(L"Settings could not load. Return to Settings to retry."); }
+}
+IAsyncAction settingsNavigationChecks(std::shared_ptr<Shell> shell) {
+    auto check = [](bool value, wchar_t const* message) { if (!value) throw hresult_error(E_FAIL, message); };
+    check(std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos,
+        L"Preference checks require the disposable native fixture.");
+    auto original = copy(object(object(shell->state, L"settings"), L"preferences"));
+    auto mount = [&] {
+        auto p = std::make_shared<SettingsPage>(); p->shell = shell; p->owner = shell->owner; p->tab = L"general";
+        shell->section = L"preferences"; p->generation = ++shell->generation;
+        p->busyKey = L"settings-request:" + std::to_wstring(p->generation);
+        p->body = stack(); p->notice = label(L""); general(p); shell->show(scroll(p->body));
+        return p;
+    };
+    auto p = mount(); auto f = p->forms.front();
+    put(f->value, L"displayName", L"First edit"); f->edit();
+    auto leaving = shell->navigate(L"today");
+    check(p->saving && !shell->navigation.IsEnabled(), L"Leaving General did not flush its pending debounce.");
+    put(f->value, L"displayName", L"Newer edit"); put(f->value, L"signature", L"Paired footer");
+    put(f->value, L"signatureFormat", L"plain"); f->edit();
+    co_await shell->navigate(L"calendar");
+    co_await leaving;
+    auto saved = object(object(shell->state, L"settings"), L"preferences");
+    check(shell->section == L"today" && shell->dirty.empty() && !f->changed()
+        && text(saved, L"displayName") == L"Newer edit" && text(saved, L"signature") == L"Paired footer"
+        && text(saved, L"signatureFormat") == L"plain", L"General navigation lost an in-flight edit or allowed duplicate navigation.");
+    p->dispose();
+    p = mount(); f = p->forms.front(); put(f->value, L"theme", L"invalid-fixture-theme"); f->edit();
+    co_await shell->navigate(L"today");
+    check(p->current() && p->saveFailed && f->changed() && shell->dirty.contains(f->key)
+        && shell->navigation.IsEnabled() && !shell->dialogOpen, L"A failed preference save discarded edits or opened Discard.");
+    f->value = copy(f->saved); put(f->value, L"displayName", L"Retried edit"); f->edit();
+    co_await shell->navigate(L"today");
+    check(shell->section == L"today" && !f->changed() && shell->dirty.empty(), L"Preference retry could not complete navigation.");
+    p->dispose();
+    auto result = co_await shell->service->request(L"/settings/preferences", shell->owner, L"POST", original);
+    shell->state.Insert(L"settings", object(result, L"settings"));
 }
 } // namespace morrow

@@ -501,7 +501,7 @@ fn cli_sync_plan_status_and_owned_attachments_work_with_the_running_service() {
     assert_eq!(status["data"]["accounts"].as_array().unwrap().len(), 1);
     assert!(!status.to_string().contains("fixture-secret"));
     assert!(!status.to_string().contains("b@example.invalid"));
-    let file = fixture.0.join("fictional.bin");
+    let file = fixture.0.join("報告📎.bin");
     fs::write(&file, b"fictional attachment").unwrap();
     let item = fixture.cli(
         &[
@@ -515,6 +515,7 @@ fn cli_sync_plan_status_and_owned_attachments_work_with_the_running_service() {
         0,
     )["data"]["attachment"]
         .clone();
+    assert_eq!(item["name"], "報告📎.bin");
     let data = fixture.cli(
         &[
             "attachment-read",
@@ -559,6 +560,47 @@ fn cli_sync_plan_status_and_owned_attachments_work_with_the_running_service() {
             || removed["data"]["message"]["attachments"] == json!([])
     );
     server.stop();
+    for running in [false, true] {
+        let mut restarted = running.then(|| Server::start(&fixture.0));
+        let download = fixture.cli(
+            &[
+                "attachment-read",
+                "--account",
+                "a@example.invalid",
+                "--id",
+                item["id"].as_str().unwrap(),
+            ],
+            None,
+            0,
+        );
+        assert_eq!(
+            download, data,
+            "Removing a draft reference must retain its owned attachment after restart."
+        );
+        let reopened = fixture.cli(
+            &[
+                "read",
+                "--account",
+                "a@example.invalid",
+                "--id",
+                draft["id"].as_str().unwrap(),
+            ],
+            None,
+            0,
+        );
+        assert_eq!(reopened["data"]["message"]["id"], draft["id"]);
+        assert_eq!(
+            reopened["data"]["message"]["accountId"],
+            "a@example.invalid"
+        );
+        assert!(
+            reopened["data"]["message"]["attachments"].is_null()
+                || reopened["data"]["message"]["attachments"] == json!([])
+        );
+        if let Some(server) = restarted.as_mut() {
+            server.stop();
+        }
+    }
     fixture.cli(&["sync", "--account", "demo"], None, 0);
 }
 

@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "Ui.h"
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
 #include <winrt/Windows.Globalization.h>
 #include <winrt/Windows.Globalization.DateTimeFormatting.h>
 #include <winrt/Windows.System.h>
@@ -123,6 +125,10 @@ struct Composer {
     std::weak_ptr<Shell> shell;
     uint64_t generation{};
     hstring screenOwner, owner, requestId, baseline, baselineOwner;
+    hstring returnSection, returnFolder;
+    IInspectable returnPage{nullptr};
+    Json returnMessage;
+    std::optional<bool> returnImages;
     Json message, scheduleAttempt;
     bool busy = false, uncertain = false, bound = false, initializing = false;
     bool historyLoading = false;
@@ -446,7 +452,23 @@ IAsyncAction closeComposer(std::shared_ptr<Composer> state) {
             if (!approved || !state->live(shell)) co_return;
         }
         shell->dirty.erase(L"compose");
-        co_await shell->navigate(scheduled ? L"scheduled" : L"mail", state->owner, L"drafts");
+        if (scheduled) co_await shell->navigate(L"scheduled", state->owner);
+        else if (state->returnPage) {
+            shell->section = L"mail";
+            ++shell->generation; ++shell->selectionGeneration; ++shell->readGeneration;
+            shell->pendingRead = Json(); shell->selected = state->returnMessage;
+            if (!shell->selected.Size()) {
+                shell->loading = true; shell->rows.SelectedItems().Clear(); shell->loading = false;
+            }
+            shell->readerImageOverride = state->returnImages;
+            shell->readerImageGeneration = shell->generation; shell->readerImageSelection = shell->selectionGeneration;
+            shell->show(state->returnPage.as<xaml::UIElement>()); shell->rebuildNavigation();
+            shell->renderReader(shell->selected);
+            // Draft saves invalidate signed cursors; keep their bounded page offset.
+            for (auto& cursor : shell->cursors) cursor = L"";
+            co_await shell->loadPage();
+        } else co_await shell->navigate(state->returnSection.empty() ? L"mail" : state->returnSection,
+            state->screenOwner, state->returnFolder.empty() ? L"inbox" : state->returnFolder);
     } catch (hresult_error const& error) { if (state->live(shell)) state->say(error.message()); }
 }
 
@@ -489,6 +511,9 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
     auto generation = shell->generation;
     auto screenOwner = shell->owner;
     try {
+        auto saveGeneral = shell->saveGeneralBeforeLeave;
+        if (saveGeneral && !(co_await saveGeneral())) co_return;
+        if (shell->closing || shell->generation != generation || shell->owner != screenOwner) co_return;
         require(!flag(draft, L"providerDraft"), L"Prepare a local copy before opening a provider draft.");
         if (!shell->dirty.empty()) {
             bool approved = co_await shell->confirm(L"Open another draft?", L"Discard the current page’s unsaved changes? Save them first to keep them.", L"Discard Changes");
@@ -496,6 +521,17 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         }
         auto state = std::make_shared<Composer>(); state->shell = shell;
         state->message = copy(draft); state->screenOwner = screenOwner;
+        state->returnSection = shell->section == L"compose" ? L"mail" : shell->section;
+        state->returnFolder = shell->folder;
+        if (shell->section == L"mail") {
+            state->returnPage = shell->page.Content();
+            auto chosen = shell->selectedMessages();
+            if (chosen.size() == 1 && text(chosen[0], L"viewId") == text(shell->selected, L"viewId")
+                && (text(shell->selected, L"folder") != L"drafts" || flag(shell->selected, L"providerDraft")))
+                state->returnMessage = copy(shell->selected);
+            if (shell->readerImageGeneration == shell->generation && shell->readerImageSelection == shell->selectionGeneration)
+                state->returnImages = shell->readerImageOverride;
+        }
         state->owner = text(draft, L"accountId");
         state->bound = !text(draft, L"id").empty() || !text(draft, L"replyToId").empty()
             || flag(draft, L"forwarding") || flag(draft, L"sourceDraft") || text(draft, L"deliveryStatus") == L"unconfirmed";
@@ -636,7 +672,9 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         require(!state->uncertain || !text(draft, L"deliveryRequestId").empty(), L"This unconfirmed delivery has no request ID. Reopen its saved draft; do not start a replacement send.");
         state->baseline = state->payload().Stringify(); state->baselineOwner = state->owner;
         shell->dirty.clear();
+        shell->saveGeneralBeforeLeave = {};
         shell->section = L"compose"; state->generation = ++shell->generation; ++shell->selectionGeneration;
+        ++shell->readGeneration; shell->pendingRead = Json();
         // Retain TextBlock peers for this page, including while the AI expander is collapsed.
         panel.Unloaded([state](auto const&, auto const&) { state->notice = nullptr; state->footer = nullptr; state->aiResult = nullptr; });
         Grid columns; columns.ColumnDefinitions().Append(ColumnDefinition());
@@ -712,6 +750,54 @@ IAsyncAction composerWriteGuardChecks(std::shared_ptr<Shell> shell) {
     co_await shell->navigate(L"today", state->owner);
     require(shell->section == L"today" && shell->owner == state->owner && shell->navigation.IsEnabled(),
         L"Composer completion could not navigate after releasing its write guard.");
+}
+
+IAsyncAction composerReturnChecks(std::shared_ptr<Shell> shell) {
+    require(std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos,
+        L"Composer return checks require the disposable native fixture.");
+    co_await shell->navigate(L"mail", L"all");
+    shell->search.Text(L"Native fixture"); co_await shell->loadPage();
+    shell->cursors.push_back(shell->nextCursor); co_await shell->loadPage();
+    require(shell->cursors.size() == 2 && shell->rows.Items().Size() > 1, L"Composer fixture needs a combined second page.");
+    auto first = shell->rows.Items().GetAt(0).as<ListViewItem>();
+    shell->loading = true; shell->rows.SelectedItem(first); shell->loading = false;
+    auto source = first.Tag().as<Json>(); co_await shell->read(source, false);
+    auto previous = shell->page.Content(); auto message = copy(shell->selected);
+    std::function<Button(xaml::DependencyObject)> findClose = [&](xaml::DependencyObject node) -> Button {
+        if (auto b = node.try_as<Button>(); b && b.Content().try_as<IPropertyValue>()
+            && unbox_value<hstring>(b.Content()) == L"Close") return b;
+        for (int i = 0; i < xaml::Media::VisualTreeHelper::GetChildrenCount(node); ++i)
+            if (auto b = findClose(xaml::Media::VisualTreeHelper::GetChild(node, i))) return b;
+        return nullptr;
+    };
+    apartment_context ui;
+    for (bool interrupted : {false, true}) {
+        IAsyncAction opening{nullptr};
+        if (interrupted) {
+            auto second = shell->rows.Items().GetAt(1).as<ListViewItem>();
+            shell->loading = true; shell->rows.SelectedItem(second); shell->loading = false;
+            opening = shell->read(second.Tag().as<Json>(), false);
+        }
+        Json draft; put(draft, L"accountId", text(message, L"accountId"));
+        if (!interrupted) put(draft, L"replyToId", text(message, L"id"));
+        co_await compose(shell, draft);
+        shell->root.UpdateLayout();
+        auto close = findClose(shell->page.Content().as<xaml::DependencyObject>());
+        require(close && shell->dirty.empty(), L"The unchanged fictional composer cannot close without a dialog.");
+        auto peer = xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(close);
+        peer.GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).as<xaml::Automation::Provider::IInvokeProvider>().Invoke();
+        auto deadline = GetTickCount64() + 5000;
+        while ((shell->section == L"compose" || shell->loading) && GetTickCount64() < deadline) {
+            co_await resume_after(std::chrono::milliseconds(10)); co_await ui;
+        }
+        if (opening) co_await opening;
+        require(shell->section == L"mail" && shell->owner == L"all" && shell->cursors.size() == 2
+            && shell->page.Content() == previous && shell->search.Text() == L"Native fixture",
+            L"Closing the composer lost the combined mailbox, query or second page.");
+        require(interrupted ? !shell->selected.Size() && shell->rows.SelectedItems().Size() == 0
+            : text(shell->selected, L"viewId") == text(message, L"viewId"),
+            L"Composer return paired a stale reader with another selected row.");
+    }
 }
 
 namespace {

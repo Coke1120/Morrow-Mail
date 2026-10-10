@@ -464,7 +464,13 @@ impl Store {
             .parent()
             .ok_or_else(|| Error::invalid("Choose a backup destination."))?;
         fs::create_dir_all(parent)?;
-        fs::create_dir(destination)?;
+        fs::create_dir(destination).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                Error::conflict("The backup destination already exists. Choose a new folder.")
+            } else {
+                error.into()
+            }
+        })?;
         private(destination, true)?;
         let work = || -> Result<()> {
             let path = destination.join("genmail.sqlite");

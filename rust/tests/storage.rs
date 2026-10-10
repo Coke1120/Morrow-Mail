@@ -98,8 +98,17 @@ fn transactions_lock_backup_and_recovery() {
     let backup = root.join("backup");
     store.backup(&backup).unwrap();
     let snapshot = fs::read(backup.join("genmail.sqlite")).unwrap();
-    assert!(store.backup(&backup).is_err());
+    let occupied = store.backup(&backup).unwrap_err();
+    assert_eq!(occupied.status, 409);
+    assert_eq!(
+        occupied.body["error"],
+        "The backup destination already exists. Choose a new folder."
+    );
     assert_eq!(snapshot, fs::read(backup.join("genmail.sqlite")).unwrap());
+    let existing_file = root.join("existing-file");
+    fs::write(&existing_file, b"keep this file").unwrap();
+    assert_eq!(store.backup(&existing_file).unwrap_err().status, 409);
+    assert_eq!(fs::read(&existing_file).unwrap(), b"keep this file");
     let restored = Store::open(&backup).unwrap();
     assert_eq!(restored.settings().unwrap(), store.settings().unwrap());
     assert_eq!(

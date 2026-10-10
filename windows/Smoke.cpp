@@ -17,6 +17,8 @@ using namespace winrt;
 using namespace Windows::Foundation;
 using namespace Windows::Data::Json;
 IAsyncAction nativeInteractionChecks(std::shared_ptr<Shell> shell);
+IAsyncAction settingsNavigationChecks(std::shared_ptr<Shell> shell);
+IAsyncAction composerReturnChecks(std::shared_ptr<Shell> shell);
 IAsyncAction captureMailList(std::shared_ptr<Shell> shell, hstring name) {
     xaml::Media::Imaging::RenderTargetBitmap bitmap;
     co_await bitmap.RenderAsync(shell->root);
@@ -232,6 +234,8 @@ IAsyncAction Shell::smoke() {
         co_await folderPickerChecks(root);
         enter("interaction-guards");
         co_await nativeInteractionChecks(lifetime);
+        enter("general-navigation-save");
+        co_await settingsNavigationChecks(lifetime);
         enter("sidebar-settings-click");
         root.UpdateLayout();
         auto settingsItem = navigation.SettingsItem().as<controls::NavigationViewItem>();
@@ -265,6 +269,8 @@ IAsyncAction Shell::smoke() {
                     + L"; maximum track size " + to_hstring(GetSystemMetrics(SM_CXMAXTRACK)) + L"x" + to_hstring(GetSystemMetrics(SM_CYMAXTRACK)) + L".";
                 throw hresult_error(E_FAIL, detail);
             }
+            enter("composer-return-context");
+            co_await composerReturnChecks(lifetime);
             enter("mail-first-page");
             co_await navigate(L"mail", L"one@fixture.invalid");
             check(rows.Items().Size() == 50 && !nextCursor.empty(), L"First mail page is incomplete.");
@@ -315,6 +321,54 @@ IAsyncAction Shell::smoke() {
             auto readerLayout = reader.Content().try_as<controls::Grid>();
             check(readerLayout && readerLayout.RowDefinitions().Size() == 2,
                 L"The message actions are not kept above the scrolling reader.");
+            enter("reader-load-recovery");
+            auto missing = Json::Parse(source.Stringify()); put(missing, L"id", L"missing-native-fixture");
+            auto mounted = reader.Content();
+            co_await read(missing);
+            check(reader.Content() == mounted && !reader.IsEnabled() && readerNotice.Content()
+                && text(selected, L"viewId") == text(source, L"viewId"), L"Failed detail loading lost the retained message or its retry state.");
+            auto staleFailure = read(missing);
+            co_await read(source, false); auto currentNotice = status.Text(); co_await staleFailure;
+            check(reader.IsEnabled() && !readerNotice.Content() && status.Text() == currentNotice,
+                L"An obsolete detail failure replaced the newer reader status.");
+            auto cancelMessage = rows.Items().GetAt(0).as<controls::ListViewItem>().Tag().as<Json>();
+            auto cancelOwner = text(cancelMessage, L"accountId");
+            auto cancelPath = L"/messages/" + escaped(text(cancelMessage, L"id"));
+            auto originalCancel = object(co_await service->request(cancelPath, cancelOwner), L"message");
+            check(cancelOwner == owner && text(originalCancel, L"accountId") == cancelOwner
+                && text(originalCancel, L"viewId") == text(cancelMessage, L"viewId"), L"Back cancellation requires an owned fixture message.");
+            auto preferences = object(object(state, L"settings"), L"preferences");
+            bool originalMarkRead = flag(preferences, L"markReadOnOpen");
+            std::exception_ptr cancellationFailure;
+            try {
+                Json unreadFixture; unreadFixture.Insert(L"read", Value::CreateBooleanValue(false));
+                cancelMessage = object(co_await service->request(cancelPath, cancelOwner, L"PATCH", unreadFixture), L"message");
+                check(!flag(cancelMessage, L"read") && text(cancelMessage, L"accountId") == cancelOwner
+                    && text(cancelMessage, L"viewId") == text(originalCancel, L"viewId"),
+                    L"Back cancellation could not prepare its unread fixture.");
+                preferences.Insert(L"markReadOnOpen", Value::CreateBooleanValue(true));
+                for (auto const& metadata : {cancelMessage, missing}) {
+                    auto opening = read(metadata);
+                    auto panel = readerNotice.Content().as<controls::StackPanel>();
+                    auto back = panel.Children().GetAt(panel.Children().Size() - 1).as<controls::Button>();
+                    root.UpdateLayout();
+                    auto backPeer = xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(back);
+                    auto invoke = backPeer.GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).as<xaml::Automation::Provider::IInvokeProvider>();
+                    invoke.Invoke(); auto noticeAfterBack = status.Text(); co_await opening;
+                    auto after = object(co_await service->request(cancelPath, cancelOwner), L"message");
+                    check(!readerFocused && !pendingRead.Size() && !selected.Size() && rows.SelectedItems().Size() == 0 && status.Text() == noticeAfterBack
+                        && !flag(after, L"read"), L"A late read result after Back reopened the reader, marked mail or replaced status.");
+                }
+            } catch (...) {
+                cancellationFailure = std::current_exception();
+                ++readGeneration; pendingRead = Json();
+            }
+            preferences.Insert(L"markReadOnOpen", Value::CreateBooleanValue(originalMarkRead));
+            Json restoreCancel; restoreCancel.Insert(L"read", Value::CreateBooleanValue(flag(originalCancel, L"read")));
+            auto restoredCancel = object(co_await service->request(cancelPath, cancelOwner, L"PATCH", restoreCancel), L"message");
+            check(flag(restoredCancel, L"read") == flag(originalCancel, L"read"), L"Back cancellation did not restore the fixture read flag.");
+            if (cancellationFailure) std::rethrow_exception(cancellationFailure);
+            co_await read(source, false);
             enter("mail-patches");
             auto markerSelection = selectionGeneration;
             auto markerReadGeneration = readGeneration;

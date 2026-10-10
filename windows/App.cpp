@@ -187,7 +187,7 @@ void setupKeyboardAccelerators(std::shared_ptr<Shell> const& shell) {
                     && self->search && self->search.IsLoaded() && self->search.IsEnabled()) self->search.Focus(FocusState::Keyboard);
             } else if (key == Key::R && modifiers == (Modifiers::Control | Modifiers::Shift)) {
                 auto message = self->selected; auto account = text(message, L"accountId");
-                if (self->section == L"mail" && !text(message, L"id").empty() && self->connected(account)
+                if (self->section == L"mail" && self->reader && self->reader.IsEnabled() && !text(message, L"id").empty() && self->connected(account)
                     && (captured == L"all" || captured == account) && !flag(message, L"providerDraft") && text(message, L"folder") != L"drafts")
                     co_await self->prepare(message, L"reply");
             } else if (key == Key::R) co_await self->sync();
@@ -594,10 +594,14 @@ void Shell::rebuildNavigation() {
 }
 IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder) {
     auto lifetime = shared_from_this();
-    if (closing || loading) co_return;
-    if (section == L"compose" && !navigation.IsEnabled()) co_return;
+    if (closing || loading || !navigation.IsEnabled()) co_return;
+    auto beforeSave = generation;
+    auto saveGeneral = saveGeneralBeforeLeave;
+    if (saveGeneral && !(co_await saveGeneral())) co_return;
+    if (closing || generation != beforeSave) co_return;
     if (!dirty.empty() && !(co_await confirm(L"Discard unsaved changes?", L"Your current edits have not been saved.", L"Discard"))) co_return;
     dirty.clear();
+    saveGeneralBeforeLeave = {};
     ++generation; ++selectionGeneration; ++readGeneration; pendingRead = Json(); selected = Json(); retainedUnread = Json(); readerFocused = false;
     auto version = generation;
     if (!account.empty()) owner = account;
@@ -723,10 +727,11 @@ void Shell::mailPage() {
     rows.SelectionChanged([weak](auto const&, SelectionChangedEventArgs const&) {
         if (auto self = weak.lock(); self && !self->loading && !self->dialogOpen && self->dirty.empty()) {
             auto messages = self->selectedMessages();
-            if (self->pendingRead.Size() && (messages.size() != 1
+            if ((self->pendingRead.Size() || (self->reader && !self->reader.IsEnabled())) && (messages.size() != 1
                 || text(messages[0], L"viewId") != text(self->pendingRead, L"viewId"))) {
                 self->pendingRead = Json();
                 ++self->readGeneration;
+                if (messages.size() != 1) self->renderReader(self->selected);
             }
             // The displayed row may match again while a different detail is pending.
             if (messages.size() == 1) self->read(messages[0]);
@@ -763,17 +768,22 @@ void Shell::mailPage() {
     });
     Grid::SetColumn(resize, 1); body.Children().Append(resize);
     reader = ContentControl(); reader.HorizontalContentAlignment(HorizontalAlignment::Stretch); reader.VerticalContentAlignment(VerticalAlignment::Stretch);
-    reader.Content(emptyMailReader()); Grid::SetColumn(reader, 2); body.Children().Append(reader);
+    reader.Content(emptyMailReader());
+    readerPane = Grid(); readerNotice = ContentControl();
+    readerNotice.HorizontalContentAlignment(HorizontalAlignment::Center); readerNotice.VerticalContentAlignment(VerticalAlignment::Center);
+    readerNotice.Visibility(Visibility::Collapsed);
+    readerPane.Children().Append(reader); readerPane.Children().Append(readerNotice);
+    Grid::SetColumn(readerPane, 2); body.Children().Append(readerPane);
     applyMailLayout(); Grid::SetRow(body, 1); layout.Children().Append(body); show(layout);
 }
 void Shell::applyMailLayout() {
-    if (!mailBody || !mailList || !reader || !mailDivider) return;
+    if (!mailBody || !mailList || !readerPane || !mailDivider) return;
     mailBody.RowDefinitions().Clear(); mailBody.ColumnDefinitions().Clear();
-    Grid::SetRow(mailList, 0); Grid::SetColumn(mailList, 0); Grid::SetRow(reader, 0); Grid::SetColumn(reader, 0);
+    Grid::SetRow(mailList, 0); Grid::SetColumn(mailList, 0); Grid::SetRow(readerPane, 0); Grid::SetColumn(readerPane, 0);
     Grid::SetRow(mailDivider, 0); Grid::SetColumn(mailDivider, 0);
     bool focus = mailLayout == L"focus", bottom = mailLayout == L"bottom";
     mailList.Visibility(focus && readerFocused ? Visibility::Collapsed : Visibility::Visible);
-    reader.Visibility(focus && !readerFocused ? Visibility::Collapsed : Visibility::Visible);
+    readerPane.Visibility(focus && !readerFocused ? Visibility::Collapsed : Visibility::Visible);
     mailDivider.Visibility(focus ? Visibility::Collapsed : Visibility::Visible);
     if (focus) return;
     if (bottom) {
@@ -783,13 +793,13 @@ void Shell::applyMailLayout() {
         RowDefinition divider; divider.Height(GridLengthHelper::FromPixels(8));
         RowDefinition detail; detail.Height(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); detail.MinHeight(200);
         mailBody.RowDefinitions().Append(list); mailBody.RowDefinitions().Append(divider); mailBody.RowDefinitions().Append(detail);
-        Grid::SetRow(mailDivider, 1); Grid::SetRow(reader, 2);
+        Grid::SetRow(mailDivider, 1); Grid::SetRow(readerPane, 2);
     } else {
         ColumnDefinition list; list.Width(GridLengthHelper::FromPixels(listWidth)); list.MinWidth(260);
         ColumnDefinition divider; divider.Width(GridLengthHelper::FromPixels(8));
         ColumnDefinition detail; detail.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); detail.MinWidth(320);
         mailBody.ColumnDefinitions().Append(list); mailBody.ColumnDefinitions().Append(divider); mailBody.ColumnDefinitions().Append(detail);
-        Grid::SetColumn(mailDivider, 1); Grid::SetColumn(reader, 2);
+        Grid::SetColumn(mailDivider, 1); Grid::SetColumn(readerPane, 2);
     }
 }
 IAsyncAction Shell::loadPage() {
@@ -941,6 +951,9 @@ IAsyncAction Shell::read(Json metadata, bool markOnOpen) {
         readerImageSelection = sequence;
     }
     pendingRead = metadata;
+    error(L"");
+    showReaderStatus(metadata, false);
+    bool detailLoaded = false;
     struct Reading {
         Shell& shell; uint64_t request;
         ~Reading() { if (shell.readGeneration == request) shell.pendingRead = Json(); }
@@ -952,6 +965,7 @@ IAsyncAction Shell::read(Json metadata, bool markOnOpen) {
         auto message = object(result, L"message");
         if (text(message, L"accountId") != account || text(message, L"id") != id) throw hresult_error(E_FAIL, L"The message owner changed. Open it again.");
         selected = message;
+        detailLoaded = true;
         bool hadRetained = retainedUnread.Size() && text(retainedUnread, L"viewId") != text(message, L"viewId");
         if (hadRetained) retainedUnread = Json();
         if (text(message, L"folder") == L"drafts" && !flag(message, L"providerDraft")) { co_await compose(lifetime, message); co_return; }
@@ -970,9 +984,39 @@ IAsyncAction Shell::read(Json metadata, bool markOnOpen) {
             for (auto& cursor : cursors) cursor = L"";
             co_await loadPage(); // Refresh at the same bounded offset; old signed cursors have a different revision.
         } else if (hadRetained) co_await loadPage();
-    } catch (...) { error(errorText()); }
+    } catch (...) {
+        if (!current(version, captured) || sequence != selectionGeneration || requestGeneration != readGeneration) co_return;
+        error(errorText());
+        if (!detailLoaded) showReaderStatus(metadata, true);
+    }
+}
+void Shell::showReaderStatus(Json const& metadata, bool failed) {
+    if (!readerNotice) return;
+    // Keep the mounted message for interrupted-read reselection and image consent.
+    reader.IsEnabled(false); reader.Visibility(Visibility::Collapsed);
+    auto panel = stack(12); panel.Margin(ThicknessHelper::FromUniformLength(20)); panel.MaxWidth(420);
+    panel.Children().Append(label(failed ? L"Could not load this message" : L"Loading message…", 20));
+    panel.Children().Append(label(text(metadata, L"subject", L"(No subject)")));
+    auto weak = weak_from_this(); auto version = generation; auto captured = owner;
+    auto sequence = selectionGeneration; auto request = readGeneration;
+    if (failed) panel.Children().Append(button(L"Retry loading message", [weak, metadata, version, captured, sequence, request] {
+        if (auto self = weak.lock(); self && self->current(version, captured)
+            && self->selectionGeneration == sequence && self->readGeneration == request) self->read(metadata);
+    }));
+    panel.Children().Append(button(L"Back to list", [weak, version, captured, sequence, request] {
+        if (auto self = weak.lock(); self && self->current(version, captured)
+            && self->selectionGeneration == sequence && self->readGeneration == request) {
+            ++self->readGeneration; ++self->selectionGeneration;
+            self->loading = true; self->rows.SelectedItems().Clear(); self->loading = false;
+            self->pendingRead = Json(); self->selected = Json(); self->renderReader(self->selected);
+        }
+    }));
+    readerNotice.Content(panel); readerNotice.Visibility(Visibility::Visible);
+    readerFocused = true; applyMailLayout();
 }
 void Shell::renderReader(Json const& message) {
+    reader.IsEnabled(true); reader.Visibility(Visibility::Visible);
+    if (readerNotice) { readerNotice.Content(nullptr); readerNotice.Visibility(Visibility::Collapsed); }
     if (text(message, L"id").empty()) {
         readerFocused = false; applyMailLayout(); reader.Content(emptyMailReader()); return;
     }

@@ -115,6 +115,8 @@ Use **Rust 1.98+** with rustfmt/clippy, plus Apple's Swift command-line tools on
 
 For checks, source layout and release rules, see [AGENTS.md](AGENTS.md). Platform details are in the [macOS guide](docs/USER_GUIDE.md#native-macos-app) and [Windows README](windows/README.md). Use an isolated absolute `MORROW_DATA_DIR` for fixtures; never test against a real mailbox workspace.
 
+Unreleased changes improve Windows navigation/recovery and the error for an existing backup destination. Windows build and native acceptance remain pending; see the [local verification record](VERIFICATION.md#local-native-readiness-work--unreleased).
+
 ### Local cleanup after a release (macOS)
 
 After confirming that both platforms passed and their downloads are publicly available, stop local builds/tests and preview cleanup on your Mac (Python 3 required):
