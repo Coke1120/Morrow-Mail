@@ -80,12 +80,12 @@ fn location(raw: &Value, folders: &[Value]) -> Result<Value> {
     };
     Ok(merge(
         flags(raw)?,
-        &json!({"date":providers::iso(string(raw,date)),"folder":kind,"providerFolderId":id,"providerFolderName":folder.map(|f|string(f,"name")).unwrap_or("Outlook folder"),"providerFolderMissing":false,"providerDeleted":false,"providerSent":kind=="sent","providerDraft":raw["isDraft"]==true}),
+        &json!({"date":providers::microsoft_date(string(raw,date))?,"folder":kind,"providerFolderId":id,"providerFolderName":folder.map(|f|string(f,"name")).unwrap_or("Outlook folder"),"providerFolderMissing":false,"providerDeleted":false,"providerSent":kind=="sent","providerDraft":raw["isDraft"]==true}),
     ))
 }
-fn permitted(raw: &Value, folders: &[Value], job: &Value) -> bool {
+fn permitted(raw: &Value, folders: &[Value], job: &Value) -> Result<bool> {
     let Some(folder) = folders.iter().find(|f| f["id"] == raw["parentFolderId"]) else {
-        return false;
+        return Ok(false);
     };
     let kind = string(folder, "kind");
     let options = &job["options"];
@@ -96,17 +96,17 @@ fn permitted(raw: &Value, folders: &[Value], job: &Value) -> bool {
     } else {
         kind == "inbox"
     };
-    let date = providers::iso(string(
+    let date = providers::microsoft_date(string(
         raw,
-        if kind == "sent" {
-            "sentDateTime"
-        } else if kind == "drafts" {
+        if kind == "drafts" || (raw["isDraft"] == true && !["trash", "spam"].contains(&kind)) {
             "createdDateTime"
+        } else if kind == "sent" {
+            "sentDateTime"
         } else {
             "receivedDateTime"
         },
-    ));
-    scope && date.as_str() >= string(job, "since") && date.as_str() >= string(job, "syncSince")
+    ))?;
+    Ok(scope && date.as_str() >= string(job, "since") && date.as_str() >= string(job, "syncSince"))
 }
 
 // Read the current immutable item, since delta can replay old events or report moves as removals.
@@ -121,7 +121,13 @@ async fn resolve(
     let key = id.to_owned();
     let existing = app.db(move |db| cached(db, &owner, &key)).await?;
     let path = format!("/messages/{}", providers::component(id));
-    let raw = match get(app, connection, &format!("{path}?$select={METADATA}")).await {
+    let raw = match get(
+        app,
+        connection,
+        &format!("{path}?$select={}", providers::MICROSOFT_METADATA_FIELDS),
+    )
+    .await
+    {
         Ok(raw) => raw,
         Err(error) if error.provider_status == Some(404) => {
             return Ok(existing.map(|message| merge(message, &json!({"folder":"trash","providerDeleted":true,"providerFolderMissing":true,"providerFolderId":"","providerFolderName":"Deleted from Outlook (cached copy)","providerSent":false,"providerDraft":false}))));
@@ -132,18 +138,20 @@ async fn resolve(
         return Err(providers::remote_error());
     }
     let patch = location(&raw, folders)?;
-    if existing.is_none() && !permitted(&raw, folders, job) {
+    if existing.is_none() && !permitted(&raw, folders, job)? {
         return Ok(None);
     }
     let previous = existing.clone();
     let mut message = if let Some(existing) = existing.filter(|_| raw["isDraft"] != true) {
         existing
     } else {
-        let full = get(app, connection, &path).await?;
-        if full["id"] != id || !full["body"]["content"].is_string() {
-            return Err(providers::remote_error());
+        match providers::microsoft_message(&app.0.client, connection, &raw, string(&patch, "date"))
+            .await
+        {
+            Ok(Some(message)) => message,
+            Ok(None) => return Ok(None),
+            Err(error) => return mail::finish_read(app, connection, Err(error)).await,
         }
-        providers::normalize_microsoft(&full)?
     };
     message = merge(message, &patch);
     message["remoteId"] = format!("microsoft:{id}").into();
@@ -263,7 +271,19 @@ pub async fn sync(app: &App, connection: &Value) -> Result<()> {
     let mut work = app.0.activity.start(owner, "sync", "Outlook sync cycle", "Checking one change page and up to 25 downloaded messages. Further cycles may be needed; this is not a full-mailbox completion indicator.");
     let mut state = config["outlookSync"][owner].clone();
     if state["connection"] != connection_version(connection) {
-        state = json!({"connection":connection_version(connection),"checkpoints":{},"folderIndex":0,"reconcileAfter":""});
+        state = json!({"connection":connection_version(connection),"coverageVersion":2,"checkpoints":{},"folderIndex":0,"reconcileAfter":""});
+    } else if state["coverageVersion"] != 2 {
+        // Older baselines could advance past uncached mail. Rebuild once within the
+        // approved import window, retaining the original live-sync boundary.
+        if let Some(checkpoints) = state["checkpoints"].as_object_mut() {
+            for checkpoint in checkpoints.values_mut() {
+                if checkpoint["blocked"] != true {
+                    *checkpoint = json!({"before":checkpoint["before"],"initial":true});
+                }
+            }
+        }
+        state["coverageVersion"] = 2.into();
+        state["reconcileAfter"] = "".into();
     }
     if state["catalogAt"].as_i64().unwrap_or(0) + 300_000 < chrono::Utc::now().timestamp_millis() {
         let folders = providers::microsoft_sync_folders(&app.0.client, connection).await;
@@ -320,7 +340,7 @@ pub async fn sync(app: &App, connection: &Value) -> Result<()> {
                     && (error.provider_status == Some(410)
                         || error.body["code"] == "provider_sync_expired") =>
             {
-                state["checkpoints"][id] = json!({});
+                state["checkpoints"][id] = json!({"before":checkpoint["before"],"initial":true});
                 state["reconcileAfter"] = "".into();
                 persist(app, connection, &state, &[]).await?;
                 continue;
@@ -391,12 +411,21 @@ pub async fn sync(app: &App, connection: &Value) -> Result<()> {
         if !scope.is_object() {
             scope = json!({});
         }
-        // Initial history beyond the newest page belongs to the independently pausable importer.
+        // A completed import approves this whole date range. For an incomplete
+        // or paused import, only mail arriving after its original cutoff belongs
+        // to live sync; never move that boundary forward when a token expires.
         if !next.is_empty() && checkpoint["initial"] != false {
-            scope["syncSince"] = before.clone().into();
+            scope["syncSince"] = if job["options"].is_object() && job["status"] == "complete" {
+                string(&job, "since").to_owned()
+            } else if job["options"].is_object() && !string(&job, "before").is_empty() {
+                string(&job, "before").to_owned()
+            } else {
+                before.clone()
+            }
+            .into();
         }
         let mut messages = Vec::new();
-        for chunk in rows.chunks(5) {
+        for chunk in rows.chunks(4) {
             for result in futures_util::future::join_all(
                 chunk
                     .iter()
@@ -429,7 +458,7 @@ pub async fn sync(app: &App, connection: &Value) -> Result<()> {
         db.conn.prepare("SELECT data FROM messages WHERE account=? AND id>? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id) LIKE 'microsoft:%' ORDER BY id LIMIT 25")?
             .query_map(params![owner,after], |row| row.get::<_,String>(0))?.map(|row| Ok(serde_json::from_str::<Value>(&row?)?)).collect::<Result<Vec<_>>>()
     }).await?;
-    for chunk in rows.chunks(5) {
+    for chunk in rows.chunks(4) {
         let mut messages = Vec::new();
         for result in
             futures_util::future::join_all(chunk.iter().map(|row| async {

@@ -97,6 +97,7 @@ IAsyncAction saveAttachment(std::shared_ptr<Shell> shell, hstring owner, Json it
 }
 IAsyncAction loadAttachments(std::shared_ptr<Shell> shell, Json message, controls::Button button) {
     auto generation = shell->generation, selection = shell->selectionGeneration;
+    auto request = ++shell->readGeneration;
     auto owner = text(message, L"accountId");
     button.IsEnabled(false);
     try {
@@ -104,14 +105,19 @@ IAsyncAction loadAttachments(std::shared_ptr<Shell> shell, Json message, control
         auto loaded = object(response, L"message");
         if (text(loaded, L"accountId") != owner || text(loaded, L"id") != text(message, L"id"))
             throw hresult_error(E_FAIL, L"Attachment ownership could not be confirmed.");
-        if (!shell->closing && shell->generation == generation && shell->selectionGeneration == selection) shell->renderReader(loaded);
-    } catch (...) { if (!shell->closing) shell->error(errorText()); }
+        if (!shell->closing && shell->generation == generation && shell->selectionGeneration == selection
+            && shell->readGeneration == request) { shell->selected = loaded; shell->renderReader(loaded); }
+    } catch (...) {
+        if (!shell->closing && shell->generation == generation && shell->selectionGeneration == selection
+            && shell->readGeneration == request) shell->error(errorText());
+    }
     button.IsEnabled(true);
 }
 void appendAttachmentControls(std::shared_ptr<Shell> shell, controls::StackPanel const& panel, Json const& message) {
-    if (flag(message, L"hasAttachments") || array(message, L"attachments").Size()
+    if (flag(message, L"contentIncomplete") || flag(message, L"hasAttachments") || array(message, L"attachments").Size()
         || (!message.HasKey(L"hasAttachments") && !std::wstring_view(text(message, L"id")).starts_with(L"draft:"))) {
-        controls::Button load; load.Content(box_value(L"Load attachments and inline images…"));
+        controls::Button load; load.Content(box_value(flag(message, L"contentIncomplete")
+            ? L"Load message content and attachments…" : L"Load attachments and inline images…"));
         load.Click([shell, message](auto const& sender, auto const&) { loadAttachments(shell, message, sender.template as<controls::Button>()); });
         panel.Children().Append(load);
         for (auto const& value : array(message, L"attachments")) {

@@ -144,7 +144,7 @@ pub fn months_ago(months: u32, timestamp: i64) -> Result<String> {
 fn clear_import_failure() -> Value {
     json!({"error":"","errorCode":null,"recoveryAction":null,"nextRetryAt":null,"retryCount":0})
 }
-fn import_error_message(code: &str) -> Option<&'static str> {
+pub(crate) fn import_error_message(code: &str) -> Option<&'static str> {
     match code {
         "invalid_cursor" => Some(
             "The mailbox page changed or repeated. Start a new import; cached mail is retained.",
@@ -164,6 +164,15 @@ fn import_error_message(code: &str) -> Option<&'static str> {
             Some("The provider is temporarily unavailable. Saved progress is retained.")
         }
         "network_error" => Some("The provider could not be reached. Saved progress is retained."),
+        "incomplete_page" => Some(
+            "The provider did not return all requested message data. No messages were skipped. Resume to retry the same page.",
+        ),
+        "invalid_date" => Some(
+            "The provider returned a message without a valid mailbox date. No messages were skipped. Resume after the provider data is corrected.",
+        ),
+        "page_too_large" => Some(
+            "This saved provider page exceeds the download limit. Start a new import to use smaller message requests; cached mail is retained.",
+        ),
         "import_failed" => Some(
             "Import could not finish this page. Check the connection, then resume. Saved progress is retained.",
         ),
@@ -186,6 +195,12 @@ pub(crate) fn import_failure(error: &Error, stage: &str, job: &Value, timestamp:
         ("invalid_page", "restart", false)
     } else if stage == "commit" {
         ("storage_error", "resume", false)
+    } else if error.body["code"] == "provider_incomplete_read" {
+        ("incomplete_page", "resume", false)
+    } else if error.body["code"] == "provider_invalid_date" {
+        ("invalid_date", "resume", false)
+    } else if error.body["code"] == "provider_page_too_large" {
+        ("page_too_large", "restart", false)
     } else if quota_delay.is_some() {
         ("rate_limited", "retry", true)
     } else if [401, 403].contains(&status) {
@@ -268,7 +283,27 @@ pub fn control_import(db: &Store, account: &str, action: &str) -> Result<()> {
     )
 }
 pub fn import_status(db: &Store, account: &str) -> Result<Value> {
-    Ok(import_status_from(&db.settings()?, account))
+    let status = import_status_from(&db.settings()?, account);
+    Ok(if status.is_object() {
+        merge(status, &content_status(db, account)?)
+    } else {
+        status
+    })
+}
+/// Current account-owned incomplete records, independent of history job counters.
+/// Counting stored identities avoids double counting Gmail scopes and clears immediately
+/// after a successful explicit full-content download.
+pub fn content_status(db: &Store, account: &str) -> Result<Value> {
+    let count: i64 = db.conn.query_row(
+        "SELECT count(*) FROM messages WHERE account=? AND json_extract(data,'$.contentIncomplete')=1 AND COALESCE(json_extract(data,'$.providerDeleted'),0)=0",
+        [account],
+        |row| row.get(0),
+    )?;
+    Ok(
+        json!({"incompleteMessages":count,"contentWarning":if count > 0 {
+        "Some messages have incomplete content. Open them and choose Load attachments to retry the full download. Provider limits may still prevent loading; the original messages remain on the server."
+    } else { "" }}),
+    )
 }
 pub fn import_status_from(config: &Value, account: &str) -> Value {
     let live = connections(config);
@@ -300,9 +335,8 @@ pub fn import_status_from(config: &Value, account: &str) -> Value {
     } else if ["failed", "paused"].contains(&string(job, "status")) {
         Some(match code {
             "authorization" => "reconnect",
-            "invalid_cursor" | "invalid_page" | "sent_unavailable" | "connection_changed" => {
-                "restart"
-            }
+            "invalid_cursor" | "invalid_page" | "sent_unavailable" | "connection_changed"
+            | "page_too_large" => "restart",
             _ => "resume",
         })
     } else {
@@ -1444,6 +1478,35 @@ mod history_retry_tests {
                 seconds
             );
             assert_eq!(result["retryCount"], count.saturating_add(1));
+        }
+    }
+
+    #[test]
+    fn incomplete_provider_data_preserves_manual_recovery_without_leaking_details() {
+        for (provider_code, public_code, action) in [
+            ("provider_incomplete_read", "incomplete_page", "resume"),
+            ("provider_invalid_date", "invalid_date", "resume"),
+            ("provider_page_too_large", "page_too_large", "restart"),
+        ] {
+            let mut error = Error::new(502, "private provider payload and account detail");
+            error.body["code"] = provider_code.into();
+            let status = import_failure(&error, "fetch", &json!({"retryCount":2}), 0);
+            assert_eq!(status["status"], "failed");
+            assert_eq!(status["errorCode"], public_code);
+            assert_eq!(status["recoveryAction"], action);
+            assert_eq!(status["retryCount"], 2);
+            assert!(status["nextRetryAt"].is_null());
+            assert!(!status.to_string().contains("private provider"));
+            let config = json!({"mailAccounts":{"owner@example.invalid":{"email":"owner@example.invalid"}},"imports":{"owner@example.invalid":status}});
+            let public = import_status_from(&config, "owner@example.invalid");
+            assert_eq!(public["errorCode"], public_code);
+            assert_eq!(public["recoveryAction"], action);
+            assert!(!string(&public, "error").is_empty());
+            // Storage-stage failures are never reclassified as provider recovery.
+            assert_eq!(
+                import_failure(&error, "commit", &json!({}), 0)["errorCode"],
+                "storage_error"
+            );
         }
     }
 

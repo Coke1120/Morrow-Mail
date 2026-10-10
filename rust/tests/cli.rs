@@ -88,6 +88,45 @@ impl Drop for Fixture {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
+
+#[tokio::test]
+async fn status_exposes_owned_incomplete_content_without_a_history_job() {
+    let fixture = Fixture::new();
+    let app = App::open(&fixture.0, 0, "fixture-native-token".into(), String::new()).unwrap();
+    app.db(|db| {
+        db.update(
+            "a@example.invalid",
+            "same-0",
+            &json!({"contentIncomplete":true,"contentErrorCode":"google_mime_limit"}),
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let status = cli::execute(
+        &app,
+        CliCommand::Status {
+            account: "all".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let accounts = status["accounts"].as_array().unwrap();
+    let a = accounts
+        .iter()
+        .find(|a| a["accountId"] == "a@example.invalid")
+        .unwrap();
+    let b = accounts
+        .iter()
+        .find(|a| a["accountId"] == "b@example.invalid")
+        .unwrap();
+    assert!(a["history"].is_null());
+    assert_eq!(a["incompleteMessages"], 1);
+    assert!(!a["contentWarning"].as_str().unwrap().is_empty());
+    assert_eq!(b["incompleteMessages"], 0);
+    assert_eq!(b["contentWarning"], "");
+    assert!(!status.to_string().contains("fixture-secret"));
+}
 struct Server(Child);
 impl Server {
     fn start(path: &Path) -> Self {

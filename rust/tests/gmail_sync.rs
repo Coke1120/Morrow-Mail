@@ -145,6 +145,10 @@ impl Fixture {
                     let method = first[0].to_owned();
                     let url = url::Url::parse(&format!("https://gmail.googleapis.com{}", first[1]))
                         .unwrap();
+                    let path = percent_encoding::percent_decode_str(url.path())
+                        .decode_utf8()
+                        .unwrap()
+                        .into_owned();
                     let length = headers
                         .lines()
                         .find_map(|line| {
@@ -160,9 +164,9 @@ impl Fixture {
                         bytes.extend_from_slice(&buffer[..n]);
                     }
                     hits.lock().unwrap().push((method.clone(), url.clone()));
-                    let status = if url.path().ends_with("/messages") {
+                    let status = if path.as_str().ends_with("/messages") {
                         list_status.load(Ordering::SeqCst)
-                    } else if url.path().ends_with("/deleted") {
+                    } else if path.as_str().ends_with("/deleted") {
                         detail_status.load(Ordering::SeqCst)
                     } else {
                         200
@@ -179,18 +183,18 @@ impl Fixture {
                         stream.write_all(body).await.unwrap();
                         return;
                     }
-                    let result = if url.path().ends_with("/labels") {
+                    let result = if path.as_str().ends_with("/labels") {
                         json!({"labels":[{"id":"Label_1","name":"Old label","type":"user"},{"id":"Label_2","name":"New label","type":"user"}]})
-                    } else if method == "POST" && url.path().ends_with("/messages/send") {
+                    } else if method == "POST" && path.as_str().ends_with("/messages/send") {
                         json!({"id":"accepted"})
-                    } else if method == "POST" && url.path().ends_with("/modify") {
+                    } else if method == "POST" && path.as_str().ends_with("/modify") {
                         let change: Value =
                             serde_json::from_slice(&bytes[end..end + length]).unwrap();
                         let mut rows = rows.lock().unwrap();
                         let row = rows
                             .iter_mut()
                             .find(|row| {
-                                url.path()
+                                path.as_str()
                                     .ends_with(&format!("/{}/modify", string(row, "id")))
                             })
                             .unwrap();
@@ -204,7 +208,7 @@ impl Fixture {
                             }
                         }
                         json!({"id":row["id"],"labelIds":row["labelIds"]})
-                    } else if url.path().ends_with("/messages") {
+                    } else if path.as_str().ends_with("/messages") {
                         let label = url
                             .query_pairs()
                             .find(|(key, _)| key == "labelIds")
@@ -219,24 +223,33 @@ impl Fixture {
                             .lock()
                             .unwrap()
                             .iter()
-                            .find(|row| url.path().ends_with(&format!("/{}", string(row, "id"))))
+                            .find(|row| path.as_str().ends_with(&format!("/{}", string(row, "id"))))
                             .unwrap()
                             .clone();
                         if other_owner {
                             row["payload"]["body"]["data"] =
                                 URL_SAFE_NO_PAD.encode("Other account body").into();
                         }
-                        if url
+                        let format = url
                             .query_pairs()
-                            .any(|(key, value)| key == "format" && value == "minimal")
-                        {
-                            row.as_object_mut().unwrap().remove("payload");
+                            .find(|(key, _)| key == "format")
+                            .map(|(_, value)| value.into_owned())
+                            .unwrap_or_default();
+                        if format == "raw" {
+                            json!({"id":row["id"],"raw":row["raw"]})
+                        } else {
+                            row.as_object_mut().unwrap().remove("raw");
+                            if format == "minimal" {
+                                row.as_object_mut().unwrap().remove("payload");
+                            } else if format == "metadata" {
+                                row["payload"] = json!({"headers":row["payload"]["headers"]});
+                            }
+                            row
                         }
-                        row
                     };
                     let body = serde_json::to_vec(&result).unwrap();
                     stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await.unwrap();
-                    stream.write_all(&body).await.unwrap();
+                    let _ = stream.write_all(&body).await;
                     let _ = stream.shutdown().await;
                 });
             }
@@ -1092,4 +1105,143 @@ async fn old_cached_mail_reconciles_in_owned_resumable_batches_without_refetchin
             .all(|(method, url)| method == "GET"
                 && !url.query_pairs().any(|(k, v)| k == "format" && v == "full"))
     );
+}
+
+fn complex_message() -> Value {
+    let mut value = raw("complex", json!(["INBOX"]));
+    value["payload"]["headers"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name":"Reply-To","value":"support@example.invalid"}));
+    value["payload"]["mimeType"] = "multipart/mixed".into();
+    value["payload"]["body"] = json!({});
+    value["payload"]["parts"] = (0..2001)
+        .map(|_| json!({"mimeType":"text/plain","body":{"data":"eA"}}))
+        .collect::<Vec<_>>()
+        .into();
+    value
+}
+
+#[tokio::test]
+async fn content_limits_save_recoverable_records_without_blocking_healthy_scopes() {
+    let f = Fixture::new().await;
+    *f.rows.lock().unwrap() = vec![
+        raw("healthy", json!(["INBOX"])),
+        complex_message(),
+        raw("sent", json!(["SENT"])),
+    ];
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    assert_eq!(f.message(A, "google:healthy").await["body"], "Remote body");
+    assert_eq!(f.message(A, "google:sent").await["body"], "Remote body");
+    let saved = f.message(A, "google:complex").await;
+    assert_eq!(saved["contentIncomplete"], true);
+    assert_eq!(saved["contentErrorCode"], "google_mime_limit");
+    assert_eq!(saved["hasAttachments"], true);
+    assert_eq!(saved["bodyTruncated"], true);
+    assert_eq!(saved["replyTo"], "support@example.invalid");
+    assert_eq!(saved["fromEmail"], A);
+    assert_eq!(saved["date"], "2026-09-28T00:00:00.000Z");
+    assert!(saved["body"].as_str().unwrap().contains("Load attachments"));
+    assert!(f.message(B, "google:complex").await.is_null());
+    f.hits.lock().unwrap().clear();
+    f.rows.lock().unwrap()[1]["labelIds"] = json!(["INBOX", "UNREAD"]);
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    assert_eq!(
+        f.message(A, "google:complex").await["contentIncomplete"],
+        true
+    );
+    assert_eq!(f.message(A, "google:complex").await["read"], false);
+    let formats = f
+        .hits
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, url)| url.path().ends_with("/complex"))
+        .flat_map(|(_, url)| {
+            url.query_pairs()
+                .filter(|(key, _)| key == "format")
+                .map(|(_, value)| value.into_owned())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(formats, vec!["minimal"]);
+}
+
+#[tokio::test]
+async fn history_checkpoints_include_incomplete_messages_without_silent_loss() {
+    let f = Fixture::new().await;
+    *f.rows.lock().unwrap() = vec![raw("healthy", json!(["INBOX"])), complex_message()];
+    f.app
+        .db(|db| {
+            db.set_settings(&json!({"preferences":{"syncInterval":0}}))?;
+            background::start_import(db, A, &json!({"allMail":true,"months":0}))?;
+            let mut imports = db.settings()?["imports"].clone();
+            imports[A]["recentSince"] = Value::Null;
+            db.set_settings(&json!({"imports":imports}))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    background::tick(&f.app).await.unwrap();
+    let state = f.app.settings().await.unwrap()["imports"][A].clone();
+    assert_eq!(state["pages"], 1);
+    assert_eq!(state["imported"], 2);
+    assert_eq!(state["cursor"], "historical-page");
+    assert_eq!(
+        f.message(A, "google:complex").await["contentIncomplete"],
+        true
+    );
+    background::tick(&f.app).await.unwrap();
+    assert_eq!(
+        f.app.settings().await.unwrap()["imports"][A]["status"],
+        "complete"
+    );
+}
+
+#[tokio::test]
+async fn oversized_gmail_content_keeps_metadata_and_explicit_raw_loading_recovers() {
+    let f = Fixture::new().await;
+    let text = "x".repeat(7 * 1024 * 1024);
+    let mut large = raw("large", json!(["INBOX"]));
+    large["payload"]["body"]["data"] = URL_SAFE_NO_PAD.encode(&text).into();
+    large["raw"] = URL_SAFE_NO_PAD.encode(format!("From: {A}\r\nTo: recipient@example.invalid\r\nReply-To: support@example.invalid\r\nSubject: Subject\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{text}")).into();
+    *f.rows.lock().unwrap() = vec![large, raw("healthy", json!(["INBOX"]))];
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    let limited = f.message(A, "google:large").await;
+    assert_eq!(limited["contentErrorCode"], "google_size_limit");
+    assert_eq!(limited["date"], "2026-09-28T00:00:00.000Z");
+    assert_eq!(f.message(A, "google:healthy").await["body"], "Remote body");
+    assert!(f.hits.lock().unwrap().iter().any(|(_, url)| {
+        url.path().ends_with("/large")
+            && url
+                .query_pairs()
+                .any(|(key, value)| key == "format" && value == "metadata")
+    }));
+    morrow_search::attachments::download(&f.app, A, "google:large")
+        .await
+        .unwrap();
+    let loaded = f.message(A, "google:large").await;
+    assert_eq!(loaded["contentIncomplete"], false);
+    assert!(loaded["contentErrorCode"].is_null());
+    assert_eq!(loaded["replyTo"], "support@example.invalid");
+    assert_eq!(loaded["body"], "x".repeat(100000));
+    f.hits.lock().unwrap().clear();
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    assert_eq!(f.message(A, "google:large").await["body"], loaded["body"]);
+    assert!(f.hits.lock().unwrap().iter().all(|(method, url)| {
+        method == "GET"
+            && !url
+                .query_pairs()
+                .any(|(key, value)| key == "format" && value == "full")
+    }));
+}
+
+#[tokio::test]
+async fn incomplete_placeholder_requires_valid_provider_metadata() {
+    let f = Fixture::new().await;
+    let mut invalid = complex_message();
+    invalid["internalDate"] = "invalid".into();
+    *f.rows.lock().unwrap() = vec![invalid, raw("healthy", json!(["INBOX"]))];
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 502);
+    assert!(f.message(A, "google:complex").await.is_null());
+    assert!(f.message(A, "google:healthy").await.is_null());
 }

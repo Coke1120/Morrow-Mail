@@ -17,6 +17,7 @@ struct MailWorkspace: View {
     @State private var dropTarget = ""
     @State private var selectionClick: (modifiers: NSEvent.ModifierFlags, ids: Set<String>, anchor: String?) = ([], [], nil)
     @State private var selectionMonitor: Any?
+    @FocusState private var messageListFocused: Bool
     @EnvironmentObject var model: AppModel
     private var layout: String { expandedReader ? "focus" : ["right", "bottom", "focus"].contains(readerLayout) ? readerLayout : "right" }
     var filtered: [JSON] {
@@ -136,14 +137,30 @@ struct MailWorkspace: View {
     }
     @ViewBuilder private var readerPane: some View {
         if let message = model.current {
-            if model.messageDetail.viewID == message.viewID { MessageReader(message: message, expanded: expandedReader, focused: layout == "focus", onExpand: toggleExpandedReader, onBack: { leaveExpandedReader(); model.selectedMessage = nil; model.messageDetail = .null }) }
+            if model.messageDetail.viewID == message.viewID { MessageReader(message: message, expanded: expandedReader, focused: layout == "focus", onExpand: toggleExpandedReader, onBack: backToMessages) }
             else {
-                VStack {
-                    if model.error.isEmpty { ProgressView("Loading message…") }
-                    else { Button("Retry loading message") { Task { await model.loadMessage() } } }
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                VStack(spacing: 0) {
+                    HStack {
+                        Button(action: backToMessages) { Label("Back to Messages", systemImage: "chevron.left") }
+                            .keyboardShortcut(.cancelAction).disabled(!model.canNavigate).accessibilityIdentifier("reader.back")
+                        Spacer()
+                    }.buttonStyle(.borderless).padding(.horizontal, 16).padding(.vertical, 10)
+                    Divider()
+                    VStack(spacing: 12) {
+                        if model.messageError.isEmpty { ProgressView("Loading message…") }
+                        else {
+                            Text(model.messageError).foregroundStyle(.secondary).textSelection(.enabled)
+                            Button("Retry loading message") { Task { await model.loadMessage() } }.disabled(!model.canNavigate)
+                        }
+                    }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
             }
         } else { EmptyPane(title: "A little room to think", detail: "Choose a message to read, or compose something new.", symbol: "envelope.open") }
+    }
+    private func backToMessages() {
+        leaveExpandedReader(); model.selectedMessage = nil; model.messageDetail = .null
+        // Focus after the Focus layout has restored its native message list.
+        DispatchQueue.main.async { messageListFocused = true }
     }
     private func toggleExpandedReader() {
         if expandedReader { leaveExpandedReader() }
@@ -377,7 +394,7 @@ struct MailWorkspace: View {
                             selectionClick.modifiers = []
                         }
                     }.tag(message.viewID)
-                }.listStyle(.inset).disabled(!model.canNavigate)
+                }.listStyle(.inset).focused($messageListFocused).disabled(!model.canNavigate)
                 .contextMenu(forSelectionType: String.self) { ids in
                     let messages = filtered.filter { ids.contains($0.viewID) }
                     if messages.count == 1, let message = messages.first, model.canOrganize(message) { MessageOrganizationActions(message: message) }
@@ -474,7 +491,7 @@ struct MessageReader: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                if focused { Button(action: onBack) { Label("Back to Messages", systemImage: "chevron.left") }.labelStyle(.iconOnly).help("Back to Messages").disabled(!model.canNavigate) }
+                if focused { Button(action: onBack) { Label("Back to Messages", systemImage: "chevron.left") }.labelStyle(.iconOnly).help("Back to Messages").keyboardShortcut(.cancelAction).disabled(!model.canNavigate).accessibilityIdentifier("reader.back") }
                 if message["folder"].string == "drafts" {
                     Button(["scheduled", "sending"].contains(message["scheduledSend"]["status"].string) ? "Manage Schedule" : message["providerDraft"].bool ? "Copy to Local Draft" : "Edit Draft") {
                         if message["providerDraft"].bool { Task { await model.openDraft(message: message, mode: "copy") } }

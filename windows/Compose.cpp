@@ -3,6 +3,7 @@
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
+#include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Windows.Globalization.h>
 #include <winrt/Windows.Globalization.DateTimeFormatting.h>
 #include <winrt/Windows.System.h>
@@ -127,6 +128,7 @@ struct Composer {
     hstring screenOwner, owner, requestId, baseline, baselineOwner;
     hstring returnSection, returnFolder;
     IInspectable returnPage{nullptr};
+    weak_ref<Control> returnFocus;
     Json returnMessage;
     std::optional<bool> returnImages;
     Json message, scheduleAttempt;
@@ -466,7 +468,13 @@ IAsyncAction closeComposer(std::shared_ptr<Composer> state) {
             shell->renderReader(shell->selected);
             // Draft saves invalidate signed cursors; keep their bounded page offset.
             for (auto& cursor : shell->cursors) cursor = L"";
+            auto version = shell->generation;
             co_await shell->loadPage();
+            if (shell->current(version, state->screenOwner) && shell->section == L"mail") {
+                shell->root.UpdateLayout();
+                auto focus = state->returnFocus.get();
+                if (!focus || !focus.IsLoaded() || !focus.Focus(xaml::FocusState::Programmatic)) shell->focusMail();
+            }
         } else co_await shell->navigate(state->returnSection.empty() ? L"mail" : state->returnSection,
             state->screenOwner, state->returnFolder.empty() ? L"inbox" : state->returnFolder);
     } catch (hresult_error const& error) { if (state->live(shell)) state->say(error.message()); }
@@ -525,6 +533,8 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         state->returnFolder = shell->folder;
         if (shell->section == L"mail") {
             state->returnPage = shell->page.Content();
+            if (auto focus = xaml::Input::FocusManager::GetFocusedElement(shell->root.XamlRoot()).try_as<Control>())
+                state->returnFocus = make_weak(focus);
             auto chosen = shell->selectedMessages();
             if (chosen.size() == 1 && text(chosen[0], L"viewId") == text(shell->selected, L"viewId")
                 && (text(shell->selected, L"folder") != L"drafts" || flag(shell->selected, L"providerDraft")))
@@ -763,6 +773,13 @@ IAsyncAction composerReturnChecks(std::shared_ptr<Shell> shell) {
     shell->loading = true; shell->rows.SelectedItem(first); shell->loading = false;
     auto source = first.Tag().as<Json>(); co_await shell->read(source, false);
     auto previous = shell->page.Content(); auto message = copy(shell->selected);
+    auto sourceRow = [&]() -> ListViewItem {
+        for (auto const& item : shell->rows.Items()) {
+            auto row = item.as<ListViewItem>();
+            if (text(row.Tag().as<Json>(), L"viewId") == text(source, L"viewId")) return row;
+        }
+        return nullptr;
+    };
     std::function<Button(xaml::DependencyObject)> findClose = [&](xaml::DependencyObject node) -> Button {
         if (auto b = node.try_as<Button>(); b && b.Content().try_as<IPropertyValue>()
             && unbox_value<hstring>(b.Content()) == L"Close") return b;
@@ -771,19 +788,31 @@ IAsyncAction composerReturnChecks(std::shared_ptr<Shell> shell) {
         return nullptr;
     };
     apartment_context ui;
-    for (bool interrupted : {false, true}) {
+    auto previousLayout = shell->mailLayout;
+    for (auto const& [layout, interrupted] : {std::pair{L"right", false}, {L"right", true}, {L"focus", false}, {L"focus", true}}) {
+        shell->mailLayout = layout;
+        auto currentRow = sourceRow(); require(bool(currentRow), L"The composer return fixture lost its owned source row.");
+        shell->loading = true; shell->rows.SelectedItem(currentRow); shell->loading = false;
+        co_await shell->read(source, false);
+        shell->root.UpdateLayout();
+        Control returnFocus = std::wstring_view(layout) == L"focus" ? shell->readerBack.get().as<Control>() : currentRow.as<Control>();
         IAsyncAction opening{nullptr};
         if (interrupted) {
             auto second = shell->rows.Items().GetAt(1).as<ListViewItem>();
             shell->loading = true; shell->rows.SelectedItem(second); shell->loading = false;
             opening = shell->read(second.Tag().as<Json>(), false);
+            auto notice = shell->readerNotice.Content().as<StackPanel>();
+            returnFocus = notice.Children().GetAt(notice.Children().Size() - 1).as<Control>();
         }
+        shell->root.UpdateLayout();
+        require(returnFocus.Focus(xaml::FocusState::Keyboard), L"The composer fixture could not focus its originating mail control.");
         Json draft; put(draft, L"accountId", text(message, L"accountId"));
         if (!interrupted) put(draft, L"replyToId", text(message, L"id"));
         co_await compose(shell, draft);
         shell->root.UpdateLayout();
         auto close = findClose(shell->page.Content().as<xaml::DependencyObject>());
         require(close && shell->dirty.empty(), L"The unchanged fictional composer cannot close without a dialog.");
+        require(close.Focus(xaml::FocusState::Keyboard), L"The composer fixture could not focus Close.");
         auto peer = xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(close);
         peer.GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).as<xaml::Automation::Provider::IInvokeProvider>().Invoke();
         auto deadline = GetTickCount64() + 5000;
@@ -797,7 +826,15 @@ IAsyncAction composerReturnChecks(std::shared_ptr<Shell> shell) {
         require(interrupted ? !shell->selected.Size() && shell->rows.SelectedItems().Size() == 0
             : text(shell->selected, L"viewId") == text(message, L"viewId"),
             L"Composer return paired a stale reader with another selected row.");
+        auto focus = xaml::Input::FocusManager::GetFocusedElement(shell->root.XamlRoot());
+        if (interrupted) {
+            auto node = focus.try_as<xaml::DependencyObject>();
+            while (node && node != shell->rows) node = xaml::Media::VisualTreeHelper::GetParent(node);
+            require(bool(node), L"Closing an interrupted reader's composer did not return keyboard focus to the mail list.");
+        } else require(focus == (std::wstring_view(layout) == L"focus" ? shell->readerBack.get().as<Control>() : sourceRow().as<Control>()),
+            L"Closing the composer did not restore a visible mail control's keyboard focus.");
     }
+    shell->mailLayout = previousLayout; shell->applyMailLayout();
 }
 
 namespace {

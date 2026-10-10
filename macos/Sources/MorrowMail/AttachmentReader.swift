@@ -11,7 +11,7 @@ struct AttachmentReader: View {
     private var current: JSON { downloaded.isNull ? message : downloaded }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if message["hasAttachments"].isNull || message["hasAttachments"].bool || !current["attachments"].array.isEmpty || message["bodyHtml"].string.contains("cid:") {
+            if message["hasAttachments"].isNull || message["hasAttachments"].bool || current["contentIncomplete"].bool || !current["attachments"].array.isEmpty || message["bodyHtml"].string.contains("cid:") {
                 Button("Load attachments and inline images…") { load() }.disabled(busy || model.busy)
                 ForEach(current["attachments"].array) { item in
                     HStack {

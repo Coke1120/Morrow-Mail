@@ -56,9 +56,11 @@ pub async fn sync(
                 .strip_prefix("google:")
                 .filter(|s| !s.is_empty())
                 .ok_or_else(providers::remote_error)?;
-            let mut value = message.clone();
-            value["id"] = format!("google:{id}").into();
-            cached.insert(id.to_owned(), value);
+            if mail::reusable_google_body(message) {
+                let mut value = message.clone();
+                value["id"] = format!("google:{id}").into();
+                cached.insert(id.to_owned(), value);
+            }
             ids.push(json!({"id":id}));
         }
         providers::google_fetch_page(

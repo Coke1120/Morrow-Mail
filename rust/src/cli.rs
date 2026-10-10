@@ -208,15 +208,23 @@ async fn sync_status(app: &App, accounts: Vec<String>) -> Result<Value> {
     let config = app.settings().await?;
     let activity = app.0.activity.snapshot(&config);
     let connections = service::connections(&config);
-    let statuses: Vec<_> = accounts
-        .iter()
-        .map(|account| {
-            json!({
-                "accountId":account, "provider":connections[account]["provider"],
-                "history":crate::background::import_status_from(&config,account)
-            })
+    let status_accounts = accounts.clone();
+    let statuses = app
+        .db(move |db| {
+            status_accounts
+                .iter()
+                .map(|account| {
+                    Ok(store::merge(
+                        json!({
+                            "accountId":account, "provider":connections[account]["provider"],
+                            "history":crate::background::import_status_from(&config,account)
+                        }),
+                        &crate::background::content_status(db, account)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()
         })
-        .collect();
+        .await?;
     let tasks: Vec<_> = activity["tasks"]
         .as_array()
         .into_iter()

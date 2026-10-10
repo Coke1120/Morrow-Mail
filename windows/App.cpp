@@ -438,10 +438,17 @@ IAsyncAction Shell::start() {
     } catch (...) { error(errorText()); }
 }
 IAsyncAction Shell::refresh(bool rebuild) {
+    if (closing || refreshing || (!rebuild && (loading || syncing || dialogOpen || !dirty.empty()
+        || service->writing() || !navigation.IsEnabled() || pendingRead.Size()))) co_return;
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
+    auto before = state.Stringify();
+    refreshing = true;
+    struct Refreshing { bool& value; ~Refreshing() { value = false; } } guard{refreshing};
     try {
         auto result = co_await service->request(L"/state", captured);
-        if (!current(version, captured)) co_return;
+        if (!current(version, captured) || state.Stringify() != before) co_return;
+        if (!rebuild && (loading || syncing || dialogOpen || !dirty.empty()
+            || service->writing() || !navigation.IsEnabled() || pendingRead.Size())) co_return;
         bool changedAccounts = array(result, L"accounts").Stringify() != array(state, L"accounts").Stringify();
         bool changedFolders = object(result, L"serverFolders").Stringify() != object(state, L"serverFolders").Stringify();
         state = result;
@@ -455,9 +462,13 @@ IAsyncAction Shell::refresh(bool rebuild) {
         }
         if (rebuild || changedAccounts || changedFolders) rebuildNavigation();
         if (!connected(owner) && owner != L"all") selected = Json();
-        if (section == L"activity" || section == L"today") co_await workspacePage(lifetime, section);
         error(L"");
-    } catch (...) { error(errorText()); }
+        if (section == L"activity" || section == L"today") co_await workspacePage(lifetime, section);
+        else if (section == L"mail" && owner == captured && rows && !loading && !dialogOpen
+            && dirty.empty() && navigation.IsEnabled() && !pendingRead.Size()
+            && search.Text() == mailSearchQuery
+            && (rebuild || mailRevision != text(state, L"revision"))) co_await loadPage(0, true);
+    } catch (...) { if (current(version, captured)) error(errorText()); }
 }
 void Shell::rebuildNavigation() {
     selectingNavigation = true;
@@ -658,6 +669,7 @@ IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder
     else co_await workspacePage(lifetime, target);
 }
 void Shell::mailPage() {
+    mailRevision = {}; mailSearchQuery = {};
     Grid layout; layout.Margin(ThicknessHelper::FromUniformLength(16));
     RowDefinition top; top.Height(GridLengthHelper::Auto()); layout.RowDefinitions().Append(top);
     layout.RowDefinitions().Append(RowDefinition());
@@ -666,12 +678,12 @@ void Shell::mailPage() {
     Grid searchBar; searchBar.ColumnSpacing(8); searchBar.ColumnDefinitions().Append(ColumnDefinition());
     ColumnDefinition searchActions; searchActions.Width(GridLengthHelper::Auto()); searchBar.ColumnDefinitions().Append(searchActions);
     searchBar.Children().Append(search);
-    auto submitSearch = [weak] { if (auto self = weak.lock(); self && !self->loading) { self->retainedUnread = Json(); self->cursors = {L""}; self->loadPage(); } };
+    auto submitSearch = [weak] { if (auto self = weak.lock(); self && !self->loading) self->loadPage(0, false, true); };
     search.KeyDown([weak](auto const&, Input::KeyRoutedEventArgs const& event) {
-        if (event.Key() == Windows::System::VirtualKey::Enter) if (auto self = weak.lock(); self && !self->loading) { self->retainedUnread = Json(); self->cursors = {L""}; self->loadPage(); event.Handled(true); }
+        if (event.Key() == Windows::System::VirtualKey::Enter) if (auto self = weak.lock(); self && !self->loading) { self->loadPage(0, false, true); event.Handled(true); }
     });
     auto searchButtons = actions(); searchButtons.Spacing(8);
-    searchButtons.Children().Append(button(L"Clear", [weak] { if (auto self = weak.lock(); self && !self->loading) { self->retainedUnread = Json(); self->search.Text(L""); self->cursors = {L""}; self->loadPage(); } }));
+    searchButtons.Children().Append(button(L"Clear", [weak] { if (auto self = weak.lock(); self && !self->loading) { self->search.Text(L""); self->loadPage(0, false, true); } }));
     searchButtons.Children().Append(button(L"Search", submitSearch));
     Grid::SetColumn(searchButtons, 1); searchBar.Children().Append(searchButtons); layout.Children().Append(searchBar);
     Grid body; mailBody = body; body.Margin(ThicknessHelper::FromLengths(0, 12, 0, 0));
@@ -718,7 +730,7 @@ void Shell::mailPage() {
     sorting.Width(100);
     for (auto sort : {L"Newest",L"Oldest",L"Sender",L"Subject",L"Unread first",L"Starred first"}) sorting.Items().Append(box_value(sort));
     sorting.SelectedIndex(0);
-    sorting.SelectionChanged([weak](auto const&, auto const&) { if (auto self = weak.lock(); self && !self->loading) { self->retainedUnread = Json(); self->cursors = {L""}; self->loadPage(); } });
+    sorting.SelectionChanged([weak](auto const&, auto const&) { if (auto self = weak.lock(); self && !self->loading) self->loadPage(0, false, true); });
     toolbar.Children().Append(sorting);
     toolbar.Children().Append(iconButton(L"\uE74D", L"Delete selected messages", [weak] { if (auto self = weak.lock()) self->trashMessages(self->selectedMessages()); }));
     heading.Children().Append(toolbar); list.Children().Append(heading);
@@ -742,8 +754,8 @@ void Shell::mailPage() {
     ColumnDefinition previousColumn; previousColumn.Width(GridLengthHelper::Auto()); footer.ColumnDefinitions().Append(previousColumn);
     footer.ColumnDefinitions().Append(ColumnDefinition());
     ColumnDefinition nextColumn; nextColumn.Width(GridLengthHelper::Auto()); footer.ColumnDefinitions().Append(nextColumn);
-    previous = button(L"Previous", [weak] { if (auto self = weak.lock(); self && !self->loading && self->cursors.size() > 1) { self->retainedUnread = Json(); self->cursors.pop_back(); self->loadPage(); } });
-    next = button(L"Next", [weak] { if (auto self = weak.lock(); self && !self->loading && !self->nextCursor.empty()) { self->retainedUnread = Json(); self->cursors.push_back(self->nextCursor); self->loadPage(); } });
+    previous = button(L"Previous", [weak] { if (auto self = weak.lock()) self->loadPage(-1); });
+    next = button(L"Next", [weak] { if (auto self = weak.lock()) self->loadPage(1); });
     pageLabel = label(L"", 11); pageLabel.HorizontalAlignment(HorizontalAlignment::Center); pageLabel.VerticalAlignment(VerticalAlignment::Center);
     Grid::SetColumn(pageLabel, 1); Grid::SetColumn(next, 2);
     footer.Children().Append(previous); footer.Children().Append(pageLabel); footer.Children().Append(next);
@@ -802,28 +814,71 @@ void Shell::applyMailLayout() {
         Grid::SetColumn(mailDivider, 1); Grid::SetColumn(readerPane, 2);
     }
 }
-IAsyncAction Shell::loadPage() {
+IAsyncAction Shell::loadPage(int pageDelta, bool refreshReader, bool reset) {
     auto lifetime = shared_from_this();
     auto weak = weak_from_this();
     if (loading || section != L"mail" || !rows) co_return;
-    loading = true; auto version = generation; auto captured = owner;
+    auto version = generation; auto captured = owner; auto targetRows = rows; auto query = search.Text();
+    if (refreshReader) {
+        // Capture a newly read selected row while the old unread page is still
+        // mounted; updating the filtered page first would discard its selection.
+        co_await refreshMailReader();
+        if (!current(version, captured) || section != L"mail" || rows != targetRows || loading
+            || dialogOpen || !dirty.empty() || !navigation.IsEnabled() || pendingRead.Size()
+            || service->writing() || search.Text() != query) co_return;
+    }
+    auto requested = reset ? std::vector<hstring>{L""} : cursors;
+    if (pageDelta < 0) { if (requested.size() < 2) co_return; requested.pop_back(); }
+    if (pageDelta > 0) { if (nextCursor.empty()) co_return; requested.push_back(nextCursor); }
+    if (refreshReader) for (auto& cursor : requested) cursor = L"";
+    loading = true;
+    auto currentPage = [&] { return current(version, captured) && section == L"mail" && rows == targetRows; };
+    auto releaseAbandonedPage = [&] { if (rows == targetRows) loading = false; };
     previous.IsEnabled(false); next.IsEnabled(false);
     search.IsEnabled(false); sorting.IsEnabled(false); unreadFilter.IsEnabled(false);
     try {
-        Json options; put(options, L"folder", folder); put(options, L"cursor", cursors.back());
-        if (cursors.back().empty()) options.Insert(L"offset", Value::CreateNumberValue(static_cast<double>((cursors.size() - 1) * 50)));
+        Json options; put(options, L"folder", folder); put(options, L"cursor", requested.back());
+        if (requested.back().empty()) options.Insert(L"offset", Value::CreateNumberValue(static_cast<double>((requested.size() - 1) * 50)));
         wchar_t const* sorts[] = {L"newest",L"oldest",L"sender",L"subject",L"unread",L"starred"};
         put(options, L"sort", sorts[std::clamp(sorting.SelectedIndex(), 0, 5)]);
         auto unread = unreadFilter.IsChecked(); options.Insert(L"unreadOnly", Value::CreateBooleanValue(unread && unread.Value()));
         put(options, L"locale", L"en");
         hstring path = L"/mail/page";
-        if (!search.Text().empty()) { path = L"/search"; options.Remove(L"unreadOnly"); put(options, L"query", search.Text()); put(options, L"scope", L"folder"); put(options, L"sort", L"relevance"); options.Insert(L"page",Value::CreateNumberValue(static_cast<double>(cursors.size()-1))); }
-        auto result = co_await service->request(path, captured, L"POST", options);
-        if (!current(version, captured)) { loading = false; co_return; }
+        bool searching = !search.Text().empty();
+        if (searching) { path = L"/search"; options.Remove(L"unreadOnly"); if (options.HasKey(L"offset")) options.Remove(L"offset"); put(options, L"query", search.Text()); put(options, L"scope", L"folder"); put(options, L"sort", L"relevance"); options.Insert(L"page",Value::CreateNumberValue(static_cast<double>(requested.size()-1))); }
+        Json result; bool expired = false;
+        try { result = co_await service->request(path, captured, L"POST", options); }
+        catch (ApiError const& failure) {
+            expired = !requested.back().empty() && failure.status == 409
+                && text(failure.body, L"error") == (searching ? L"Search changed or the cursor expired. Search again." : L"Mail changed or the cursor expired. Refresh the list.");
+            if (!expired) throw;
+        }
+        if (!currentPage()) { releaseAbandonedPage(); co_return; }
+        if (expired) {
+            // A signed cursor belongs to an older revision. Retry this read once
+            // at the same bounded position; never weaken the service's validation.
+            for (auto& cursor : requested) cursor = L"";
+            if (requested.size() > (searching ? 2001u : 4001u)) requested = {L""};
+            put(options, L"cursor", L"");
+            options.Insert(searching ? L"page" : L"offset", Value::CreateNumberValue(static_cast<double>((requested.size() - 1) * (searching ? 1 : 50))));
+            result = co_await service->request(path, captured, L"POST", options);
+        }
+        if (!currentPage()) { releaseAbandonedPage(); co_return; }
+        bool retain = !reset && pageDelta == 0 && !searching && unread && unread.Value()
+            && retainedUnread.Size() && text(retainedUnread, L"viewId") == text(selected, L"viewId");
+        if (array(result, L"messages").Size() == 0 && requested.size() > 1 && !retain) {
+            auto last = static_cast<size_t>(std::max(0.0, result.GetNamedNumber(L"total", 0) - 1)) / (searching ? 30 : 50);
+            if (last + 1 < requested.size()) {
+                requested.assign(last + 1, L""); put(options, L"cursor", L"");
+                options.Insert(searching ? L"page" : L"offset", Value::CreateNumberValue(static_cast<double>(last * (searching ? 1 : 50))));
+                result = co_await service->request(path, captured, L"POST", options);
+                if (!currentPage()) { releaseAbandonedPage(); co_return; }
+            }
+        }
         std::set<std::wstring> selectedIds;
         for (auto const& message : selectedMessages()) selectedIds.insert(std::wstring(text(message, L"viewId")));
         auto messages = array(result, L"messages");
-        if (search.Text().empty() && unread && unread.Value() && retainedUnread.Size() && text(retainedUnread, L"viewId") == text(selected, L"viewId")) {
+        if (retain) {
             bool present = false;
             for (auto const& value : messages) if (text(value.GetObject(), L"viewId") == text(retainedUnread, L"viewId")) present = true;
             if (!present) messages.InsertAt(std::min(retainedUnreadIndex, messages.Size()), retainedUnread);
@@ -915,16 +970,70 @@ IAsyncAction Shell::loadPage() {
             if (!preserve && selectedIds.contains(std::wstring(text(message, L"viewId")))) rows.SelectedItems().Append(entry);
             ++index;
         }
+        cursors = std::move(requested);
+        if (reset || pageDelta != 0) retainedUnread = Json();
         nextCursor = text(result, L"nextCursor");
+        mailRevision = text(result, L"revision");
+        mailSearchQuery = search.Text();
         previous.IsEnabled(cursors.size() > 1); next.IsEnabled(!nextCursor.empty());
         auto pageNumber = to_hstring(cursors.size());
         auto messageCount = to_hstring(static_cast<uint64_t>(result.GetNamedNumber(L"total", 0)));
         pageLabel.Text(L"Page " + pageNumber + L" · " + messageCount + L" messages");
         Automation::AutomationProperties::SetName(pageLabel, L"Page " + pageNumber + L", " + messageCount + L" messages");
         error(text(result, L"warning"));
-    } catch (...) { error(errorText()); }
+    } catch (...) { if (currentPage()) error(errorText()); }
+    if (!currentPage()) { releaseAbandonedPage(); co_return; }
+    previous.IsEnabled(cursors.size() > 1); next.IsEnabled(!nextCursor.empty());
     search.IsEnabled(true); sorting.IsEnabled(search.Text().empty()); unreadFilter.IsEnabled(search.Text().empty());
     loading = false;
+}
+Json refreshedReaderMessage(Json const& previous, Json message) {
+    // Raw downloads contain a reader-only CID copy. Keep that explicitly
+    // loaded copy while immutable inbound content/attachment identities match;
+    // it must never be written back to the service or reused for mutable drafts.
+    if (flag(previous, L"inlineImages") && flag(previous, L"attachmentsLoaded") && flag(message, L"attachmentsLoaded")
+        && !flag(previous, L"contentIncomplete") && !flag(message, L"contentIncomplete")
+        && !flag(previous, L"providerDraft") && !flag(message, L"providerDraft")
+        && text(previous, L"folder") != L"drafts" && text(message, L"folder") != L"drafts"
+        && text(message, L"accountId") == text(previous, L"accountId") && text(message, L"id") == text(previous, L"id")
+        && text(message, L"remoteId") == text(previous, L"remoteId")
+        && text(message, L"providerFolderId") == text(previous, L"providerFolderId")
+        && text(message, L"messageId") == text(previous, L"messageId")
+        && flag(message, L"bodyTruncated") == flag(previous, L"bodyTruncated")
+        && text(message, L"body") == text(previous, L"body")
+        && array(message, L"attachments").Stringify() == array(previous, L"attachments").Stringify()) {
+        message = Json::Parse(message.Stringify());
+        put(message, L"bodyHtml", text(previous, L"bodyHtml")); message.Insert(L"inlineImages", Value::CreateBooleanValue(true));
+    }
+    return message;
+}
+IAsyncAction Shell::refreshMailReader() {
+    if (closing || loading || dialogOpen || !dirty.empty() || !navigation.IsEnabled()
+        || service->writing() || section != L"mail" || pendingRead.Size() || !reader || !reader.IsEnabled() || !selected.Size()) co_return;
+    auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
+    auto sequence = selectionGeneration; auto request = ++readGeneration;
+    auto account = text(selected, L"accountId"), id = text(selected, L"id");
+    auto before = selected.Stringify();
+    if (!connected(account) || (captured != L"all" && account != captured)) {
+        selected = Json(); retainedUnread = Json(); renderReader(selected); co_return;
+    }
+    try {
+        auto result = co_await service->request(L"/messages/" + escaped(id), account);
+        if (!current(version, captured) || sequence != selectionGeneration || request != readGeneration
+            || selected.Stringify() != before || dialogOpen || !dirty.empty() || !navigation.IsEnabled() || service->writing()) co_return;
+        auto message = object(result, L"message");
+        if (text(message, L"accountId") != account || text(message, L"id") != id) throw hresult_error(E_FAIL, L"The message owner changed. Open it again.");
+        message = refreshedReaderMessage(selected, message);
+        if (message.Stringify() != selected.Stringify()) {
+            auto sameFolder = text(message, L"folder") == text(selected, L"folder");
+            selected = message;
+            if (sameFolder) retainReadRow(message); else retainedUnread = Json();
+            renderReader(message);
+        }
+        // A revision refresh never invokes mark-on-open or changes readerFocused.
+    } catch (...) {
+        if (current(version, captured) && sequence == selectionGeneration && request == readGeneration) error(errorText());
+    }
 }
 IAsyncAction Shell::openSource(Json metadata) {
     auto self = shared_from_this(); auto account = text(metadata,L"accountId"), id = text(metadata,L"id");
@@ -1003,18 +1112,32 @@ void Shell::showReaderStatus(Json const& metadata, bool failed) {
         if (auto self = weak.lock(); self && self->current(version, captured)
             && self->selectionGeneration == sequence && self->readGeneration == request) self->read(metadata);
     }));
-    panel.Children().Append(button(L"Back to list", [weak, version, captured, sequence, request] {
+    auto back = button(L"Back to list", [weak, version, captured, sequence, request] {
         if (auto self = weak.lock(); self && self->current(version, captured)
             && self->selectionGeneration == sequence && self->readGeneration == request) {
             ++self->readGeneration; ++self->selectionGeneration;
             self->loading = true; self->rows.SelectedItems().Clear(); self->loading = false;
             self->pendingRead = Json(); self->selected = Json(); self->renderReader(self->selected);
+            self->focusMail();
         }
-    }));
+    });
+    readerBack = make_weak(back); panel.Children().Append(back);
     readerNotice.Content(panel); readerNotice.Visibility(Visibility::Visible);
     readerFocused = true; applyMailLayout();
 }
+void Shell::focusMail() {
+    if (closing || section != L"mail" || !rows) return;
+    root.UpdateLayout();
+    if (mailLayout == L"focus" && readerFocused) {
+        if (auto back = readerBack.get(); back && back.IsLoaded() && back.Visibility() == Visibility::Visible)
+            back.Focus(FocusState::Programmatic);
+        return;
+    }
+    if (auto row = rows.SelectedItem().try_as<ListViewItem>(); row && row.Focus(FocusState::Programmatic)) return;
+    rows.Focus(FocusState::Programmatic);
+}
 void Shell::renderReader(Json const& message) {
+    readerBack = {};
     reader.IsEnabled(true); reader.Visibility(Visibility::Visible);
     if (readerNotice) { readerNotice.Content(nullptr); readerNotice.Visibility(Visibility::Collapsed); }
     if (text(message, L"id").empty()) {
@@ -1028,7 +1151,8 @@ void Shell::renderReader(Json const& message) {
     content.Children().Append(label(text(message, L"fromName") + L" <" + text(message, L"fromEmail") + L"> · " + mailDateLabel(text(message, L"date")), 12));
     content.Children().Append(label(L"To: " + text(message, L"to") + (text(message, L"cc").empty() ? L"" : L" · Cc: " + text(message, L"cc")), 12));
     auto weak = weak_from_this(); auto replies = actions(); replies.Spacing(8);
-    replies.Children().Append(button(L"Back to list", [weak] { if (auto self = weak.lock()) { self->readerFocused = false; self->applyMailLayout(); self->rows.Focus(FocusState::Programmatic); } }));
+    auto back = button(L"Back to list", [weak] { if (auto self = weak.lock()) { self->readerFocused = false; self->applyMailLayout(); self->focusMail(); } });
+    readerBack = make_weak(back); replies.Children().Append(back);
     if (flag(message, L"providerDraft")) replies.Children().Append(button(L"Copy to local draft", [weak, message] { if (auto self = weak.lock()) self->prepare(message, L"copy"); }));
     else for (auto const& option : {std::pair{L"Reply", L"reply"}, {L"Reply all",L"replyAll"}, {L"Forward",L"forward"}})
         replies.Children().Append(button(option.first, [weak, message, mode = hstring(option.second)] { if (auto self = weak.lock()) self->prepare(message, mode); }));
@@ -1288,7 +1412,7 @@ IAsyncAction Shell::sync() {
         auto result = co_await service->request(L"/sync", section == L"today" ? L"all" : captured, L"POST");
         if (!current(version, captured)) { syncing = false; syncButton.IsEnabled(array(state, L"accounts").Size() > 0); co_return; }
         state = result;
-        co_await refresh(true); if (section == L"mail") co_await loadPage();
+        co_await refresh(true);
     } catch (...) { error(errorText()); }
     syncing = false; syncButton.IsEnabled(array(state, L"accounts").Size() > 0);
 }

@@ -47,15 +47,78 @@ impl std::fmt::Display for ResponseLimit {
     }
 }
 impl std::error::Error for ResponseLimit {}
-fn imap_error(error: impl Into<async_imap::error::Error>) -> Error {
-    if let async_imap::error::Error::Io(error) = error.into()
-        && let Some(limit) = error
-            .get_ref()
-            .and_then(|error| error.downcast_ref::<ResponseLimit>())
-    {
-        return Error::new(502, &limit.to_string());
+fn network_error() -> Error {
+    let mut error = providers::remote_error();
+    error.body["code"] = "provider_network".into();
+    error
+}
+fn transient_io(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::NotConnected
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::TimedOut
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::Interrupted
+            | io::ErrorKind::WouldBlock
+            | io::ErrorKind::HostUnreachable
+            | io::ErrorKind::NetworkUnreachable
+            | io::ErrorKind::NetworkDown
+    )
+}
+fn io_error(error: io::Error) -> Error {
+    if transient_io(&error) {
+        network_error()
+    } else {
+        providers::remote_error()
+    }
+}
+fn connect_error(error: io::Error) -> Error {
+    // Host/port validation has already succeeded. getaddrinfo failures often
+    // have an unclassified/Other kind, so classify them only at this boundary.
+    if matches!(
+        error.kind(),
+        io::ErrorKind::InvalidInput
+            | io::ErrorKind::InvalidData
+            | io::ErrorKind::PermissionDenied
+            | io::ErrorKind::OutOfMemory
+            | io::ErrorKind::Unsupported
+    ) {
+        providers::remote_error()
+    } else {
+        network_error()
+    }
+}
+fn tls_error(error: native_tls::Error) -> Error {
+    // Certificate, protocol and trust failures must not become automatic retries.
+    // Only a typed transport cause in the platform TLS error chain is retryable.
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    while let Some(cause) = source {
+        if cause.downcast_ref::<io::Error>().is_some_and(transient_io) {
+            return network_error();
+        }
+        source = cause.source();
     }
     providers::remote_error()
+}
+fn imap_error(error: impl Into<async_imap::error::Error>) -> Error {
+    match error.into() {
+        async_imap::error::Error::Io(error) => {
+            if let Some(limit) = error
+                .get_ref()
+                .and_then(|error| error.downcast_ref::<ResponseLimit>())
+            {
+                Error::new(502, &limit.to_string())
+            } else {
+                io_error(error)
+            }
+        }
+        async_imap::error::Error::ConnectionLost => network_error(),
+        _ => providers::remote_error(),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -294,29 +357,29 @@ async fn connect(mail: &Value, connector: &native_tls::TlsConnector) -> Result<M
         tokio::net::TcpStream::connect((host.as_str(), port(mail, "imapPort", 993)?)),
     )
     .await
-    .map_err(|_| providers::remote_error())?
-    .map_err(|_| providers::remote_error())?;
+    .map_err(|_| network_error())?
+    .map_err(connect_error)?;
     let stream = tokio::time::timeout(
         Duration::from_secs(15),
         tokio_native_tls::TlsConnector::from(connector.clone()).connect(&host, stream),
     )
     .await
-    .map_err(|_| providers::remote_error())?
-    .map_err(|_| providers::remote_error())?;
+    .map_err(|_| network_error())?
+    .map_err(tls_error)?;
     let mut client = async_imap::Client::new(BoundedImap::new(stream));
     tokio::time::timeout(Duration::from_secs(30), async {
         client
             .read_response()
             .await
             .map_err(imap_error)?
-            .ok_or_else(providers::remote_error)?;
+            .ok_or_else(network_error)?;
         client
             .login(validation::email(&mail["email"])?, string(mail, "password"))
             .await
             .map_err(|(error, _)| imap_error(error))
     })
     .await
-    .map_err(|_| providers::remote_error())?
+    .map_err(|_| network_error())?
 }
 async fn names(session: &mut Mailbox) -> Result<Vec<(String, bool)>> {
     Ok(list_names(session)
@@ -347,7 +410,7 @@ async fn list_names(session: &mut Mailbox) -> Result<Vec<ImportFolder>> {
             .read_response()
             .await
             .map_err(imap_error)?
-            .ok_or_else(providers::remote_error)?;
+            .ok_or_else(network_error)?;
         let (attributes, delimiter, name) = match response.parsed() {
             Response::Done {
                 tag: finished,
@@ -538,7 +601,7 @@ async fn checked_fetch(
             .read_response()
             .await
             .map_err(imap_error)?
-            .ok_or_else(providers::remote_error)?;
+            .ok_or_else(network_error)?;
         match response.parsed() {
             Response::Done {
                 tag: finished,
@@ -601,6 +664,36 @@ async fn checked_fetch(
             } => return Err(providers::remote_error()),
             _ => {}
         }
+    }
+}
+fn incomplete_read() -> Error {
+    let mut error = Error::new(
+        502,
+        "The IMAP server returned incomplete message data. Saved progress is retained; try again.",
+    );
+    error.body["code"] = "provider_incomplete_read".into();
+    error
+}
+async fn confirm_expunged(session: &mut Mailbox, missing: &[u32]) -> Result<()> {
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let sequence = missing
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut seen = std::collections::HashSet::new();
+    for row in checked_fetch(session, sequence, "UID").await? {
+        let uid = row.uid.ok_or_else(providers::remote_error)?;
+        if !missing.contains(&uid) || !seen.insert(uid) {
+            return Err(providers::remote_error());
+        }
+    }
+    if seen.is_empty() {
+        Ok(())
+    } else {
+        Err(incomplete_read())
     }
 }
 pub async fn fetch_page(mail: &Value, options: &Value) -> Result<Value> {
@@ -823,7 +916,7 @@ pub async fn fetch_page_with_tls(
         fetch_inner(mail, options, connector),
     )
     .await
-    .map_err(|_| providers::remote_error())?
+    .map_err(|_| network_error())?
 }
 async fn fetch_inner(
     mail: &Value,
@@ -955,22 +1048,26 @@ async fn fetch_folder(
         let _ = session.logout().await;
         return Ok(json!({"messages":[],"nextCursor":null}));
     }
+    let parse_bound = |key| {
+        let value = string(options, key);
+        if value.is_empty() {
+            Ok(None)
+        } else {
+            DateTime::parse_from_rfc3339(value)
+                .map(|date| Some(date.with_timezone(&Utc)))
+                .map_err(|_| Error::invalid("Invalid import date."))
+        }
+    };
+    let (since, before) = (parse_bound("since")?, parse_bound("before")?);
     let mut query = Vec::new();
-    for (key, operator) in [("since", "SINCE"), ("before", "BEFORE")] {
-        if !string(options, key).is_empty() {
-            let date = DateTime::parse_from_rfc3339(string(options, key))
-                .map_err(|_| Error::invalid("Invalid import date."))?;
-            let date = if key == "before" {
-                date + chrono::Duration::days(1)
-            } else {
-                date
-            };
-            query.push(format!(
-                "{}{} {}",
-                if folder == "sent" { "SENT" } else { "" },
-                operator,
-                date.format("%d-%b-%Y")
-            ));
+    for (bound, operator, days) in [(since, "SINCE", -1), (before, "BEFORE", 1)] {
+        if let Some(date) = bound {
+            // IMAP searches calendar days without considering time or timezone.
+            // Widen both bounds, then filter the returned INTERNALDATE instants.
+            let date = date
+                .checked_add_signed(chrono::Duration::days(days))
+                .ok_or_else(|| Error::invalid("Invalid import date."))?;
+            query.push(format!("{operator} {}", date.format("%d-%b-%Y")));
         }
     }
     let mut upper = if let Some(uid) = cursor_uid {
@@ -1034,13 +1131,24 @@ async fn fetch_folder(
         )
         .await?;
     }
-    let mut messages = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for row in metadata {
+    for row in &metadata {
         let uid = row.uid.ok_or_else(providers::remote_error)?;
         if !selected.contains(&uid) || !seen.insert(uid) {
             return Err(providers::remote_error());
         }
+    }
+    let missing = selected
+        .iter()
+        .copied()
+        .filter(|uid| !seen.contains(uid))
+        .collect::<Vec<_>>();
+    confirm_expunged(&mut session, &missing).await?;
+    let mut messages = Vec::new();
+    for row in metadata {
+        let uid = row.uid.unwrap();
+        let date = row.date.ok_or_else(incomplete_read)?;
+        let size = row.size.ok_or_else(incomplete_read)?;
         if row
             .header
             .as_deref()
@@ -1048,9 +1156,9 @@ async fn fetch_folder(
         {
             return Err(providers::remote_error());
         }
-        let large = row.size.unwrap_or(u32::MAX) > 5 * 1024 * 1024;
+        let large = size > 5 * 1024 * 1024;
         let mut value = if large {
-            let mut bytes = row.header.as_deref().unwrap_or_default().to_vec();
+            let mut bytes = row.header.as_deref().ok_or_else(incomplete_read)?.to_vec();
             bytes.extend_from_slice(b"\r\n\r\nThis message exceeds the 5 MB import limit. Open it in your original mailbox to read it.");
             let mut value = parse_mime(bytes).await?;
             value["body"]="This message exceeds the 5 MB import limit. Open it in your original mailbox to read it.".into();
@@ -1060,16 +1168,21 @@ async fn fetch_folder(
         } else {
             let rows = checked_fetch(&mut session, uid, "(UID BODY.PEEK[]<0.5242881>)").await?;
             if rows.is_empty() {
+                confirm_expunged(&mut session, &[uid]).await?;
                 continue;
             }
             if rows.len() != 1 || rows[0].uid != Some(uid) {
                 return Err(providers::remote_error());
             }
             let Some(bytes) = rows[0].body.as_deref() else {
+                confirm_expunged(&mut session, &[uid]).await?;
                 continue;
             };
             if bytes.len() > 5 * 1024 * 1024 {
                 return Err(providers::remote_error());
+            }
+            if bytes.len() != size as usize {
+                return Err(incomplete_read());
             }
             parse_mime(bytes.to_vec()).await?
         };
@@ -1082,14 +1195,18 @@ async fn fetch_folder(
                 URL_SAFE_NO_PAD.encode(path.as_bytes())
             )
         };
-        if string(&value, "date").starts_with("1970-") {
-            value["date"] = row
-                .date
-                .map(|date| date.with_timezone(&Utc))
-                .unwrap_or_else(Utc::now)
-                .to_rfc3339_opts(SecondsFormat::Millis, true)
-                .into();
+        // Keep sender time as metadata; received/internal time must drive both
+        // SEARCH and the history commit filter, including in Sent folders.
+        if string(&value, "date") != "1970-01-01T00:00:00.000Z" {
+            value["senderDate"] = value["date"].clone();
         }
+        value["date"] = date.to_rfc3339_opts(SecondsFormat::Millis, true).into();
+        value["contentIncomplete"] = large.into();
+        value["contentErrorCode"] = if large {
+            json!("imap_size_limit")
+        } else {
+            Value::Null
+        };
         value = merge(
             value,
             &json!({"id":id,"remoteId":remote,"providerFolderId":path,"providerFolderName":path,"folder":folder,"read":row.read,"starred":row.starred}),
@@ -1102,11 +1219,7 @@ async fn fetch_folder(
             }
         }
         value["preview"] = providers::preview(string(&value, "body")).into();
-        if (string(options, "since").is_empty()
-            || string(&value, "date") >= string(options, "since"))
-            && (string(options, "before").is_empty()
-                || string(&value, "date") < string(options, "before"))
-        {
+        if since.is_none_or(|since| date >= since) && before.is_none_or(|before| date < before) {
             messages.push(value);
         }
     }
@@ -1306,4 +1419,47 @@ pub async fn organize_with_tls(
         let _ = session.logout().await;
         Ok(json!({"remoteId":remote,"providerFolderId":destination["id"],"providerFolderName":destination["name"],"folder":if destination["kind"]=="inbox"{"inbox"}else if destination["kind"]=="trash"{"trash"}else{"archive"}}))
     }).await.map_err(|_| providers::remote_error())?
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn transport_retry_classification_excludes_auth_protocol_and_response_limits() {
+        assert_eq!(
+            connect_error(io::Error::other("DNS unavailable")).body["code"],
+            "provider_network"
+        );
+        assert_ne!(
+            io_error(io::Error::other("Unknown read error")).body["code"],
+            "provider_network"
+        );
+        assert_ne!(
+            connect_error(io::Error::from(io::ErrorKind::InvalidInput)).body["code"],
+            "provider_network"
+        );
+        for kind in [
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::TimedOut,
+            io::ErrorKind::UnexpectedEof,
+        ] {
+            assert_eq!(
+                imap_error(io::Error::from(kind)).body["code"],
+                "provider_network"
+            );
+        }
+        assert_eq!(
+            imap_error(async_imap::error::Error::ConnectionLost).body["code"],
+            "provider_network"
+        );
+        for error in [
+            async_imap::error::Error::No("Authentication failed".into()),
+            async_imap::error::Error::Bad("Malformed command".into()),
+            async_imap::error::Error::Io(io::Error::from(io::ErrorKind::InvalidData)),
+            async_imap::error::Error::Io(io::Error::other(ResponseLimit(COMMAND_LIMIT))),
+        ] {
+            assert_ne!(imap_error(error).body["code"], "provider_network");
+        }
+    }
 }

@@ -1265,7 +1265,9 @@ impl Fixture {
                         while bytes.len()<end+length{let n=stream.read(&mut chunk).await.unwrap();assert!(n>0);bytes.extend_from_slice(&chunk[..n]);}
                         let request=Request{method,path,headers,body:bytes[end..end+length].to_vec()};
                         let(status,body)=match handler(request).await{Reply::Json(status,value)=>(status,serde_json::to_vec(&value).unwrap()),Reply::Empty(status)=>(status,vec![]),Reply::Lost=>return};
-                        let header=format!("HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len());stream.write_all(header.as_bytes()).await.unwrap();stream.write_all(&body).await.unwrap();let _=stream.shutdown().await;
+                        let header=format!("HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len());if stream.write_all(header.as_bytes()).await.is_err(){return;}
+                        if stream.write_all(&body).await.is_err(){return;}
+                        let _=stream.shutdown().await;
                     });},
                     finished=children.join_next(),if !children.is_empty()=>{finished.unwrap().unwrap();}
                 }
@@ -3297,4 +3299,495 @@ async fn flag_writes_preserve_local_stars_but_reconcile_legacy_read_overrides() 
         assert!(changed.1["message"]["localOverrides"]["read"].is_null());
         server.shutdown().await;
     }
+}
+
+#[tokio::test]
+async fn outlook_expired_delta_catches_all_unseen_pages() {
+    let mode = Arc::new(AtomicUsize::new(0));
+    let phase = mode.clone();
+    let date = (chrono::Utc::now() - chrono::Duration::days(1)).to_rfc3339();
+    let rows = (0..51)
+        .map(|i| {
+            let mut row = microsoft_message(
+                &format!("unseen-{i:02}"),
+                A,
+                "Synthetic mail received during offline interval",
+            );
+            row["receivedDateTime"] = date.clone().into();
+            row
+        })
+        .collect::<Vec<_>>();
+    let data = Arc::new(rows);
+    let copied = data.clone();
+    let fixture=Fixture::new(Arc::new(move |request| {
+        let phase=phase.clone(); let data=copied.clone(); async move {
+            assert_eq!(request.host(),"graph.microsoft.com");
+            assert_eq!(request.method,"GET");
+            let url=url::Url::parse(&format!("https://graph.microsoft.com{}",request.path)).unwrap();
+            if url.path()=="/v1.0/me/mailFolders/inbox/messages" {
+                return Reply::Json(200,json!({"value":if phase.load(Ordering::SeqCst)==0 {vec![]} else {data[..50].to_vec()}}));
+            }
+            if let Some(reply)=outlook_catalog(&request) { return reply; }
+            if url.path().ends_with("/messages/delta") {
+                let query=url.query().unwrap_or("");
+                if phase.load(Ordering::SeqCst)==0 { return outlook_delta("inbox-id",json!([])); }
+                if query.contains("deltatoken=fixture") { return Reply::Json(410,json!({"error":{"code":"syncStateNotFound"}})); }
+                if query.contains("skiptoken=second") { return Reply::Json(200,json!({"value":[{"id":"unseen-50"}],"@odata.deltaLink":"https://graph.microsoft.com/v1.0/me/mailFolders/inbox-id/messages/delta?$deltatoken=recovered"})); }
+                if query.contains("deltatoken=recovered") { return Reply::Json(200,json!({"value":[],"@odata.deltaLink":"https://graph.microsoft.com/v1.0/me/mailFolders/inbox-id/messages/delta?$deltatoken=recovered"})); }
+                return Reply::Json(200,json!({"value":data[..50].iter().map(|m|json!({"id":m["id"]})).collect::<Vec<_>>(),"@odata.nextLink":"https://graph.microsoft.com/v1.0/me/mailFolders/inbox-id/messages/delta?$skiptoken=second"}));
+            }
+            let id=percent_encoding::percent_decode_str(url.path().rsplit('/').next().unwrap()).decode_utf8().unwrap();
+            Reply::Json(200,data.iter().find(|m|m["id"]==id.as_ref()).unwrap().clone())
+        }.boxed()
+    })).await;
+    let server = fixture.start().await;
+    let mut settings = config(&[(A, "microsoft")]);
+    settings["imports"] = json!({A:{"id":"completed-fixture","connectionId":format!("connection-{A}"),"options":{"inbox":true,"sent":false,"allMail":false},"status":"complete","since":"","before":(chrono::Utc::now()-chrono::Duration::days(2)).to_rfc3339(),"folderIndex":1,"cursor":null}});
+    set(&server.app, settings).await;
+    assert_eq!(server.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    mode.store(1, Ordering::SeqCst);
+    for _ in 0..4 {
+        let response = server.call("POST", "/api/sync", A, json!({})).await;
+        assert_eq!(response.0, 200, "{}", response.1);
+    }
+    let state = server.app.settings().await.unwrap();
+    assert!(
+        string(&state["outlookSync"][A]["checkpoints"]["inbox-id"], "url")
+            .contains("deltatoken=recovered")
+    );
+    assert_eq!(state["imports"][A]["status"], "complete");
+    server
+        .app
+        .db(|db| {
+            let count: i64 = db.conn.query_row(
+                "SELECT count(*) FROM messages WHERE account=? AND id LIKE 'microsoft:unseen-%'",
+                [A],
+                |r| r.get(0),
+            )?;
+            assert_eq!(count, 51);
+            assert!(db.get(A, "microsoft:unseen-50")?.is_some());
+            eprintln!(
+                "Recovered all 51 messages after expired delta; approved history remains complete"
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn outlook_legacy_baselines_keep_approved_windows_and_blocked_checkpoints() {
+    for status in [
+        "complete",
+        "running",
+        "paused",
+        "failed",
+        "none",
+        "blocked",
+        "fetch-failed",
+    ] {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let delta_calls = calls.clone();
+        let fixture = Fixture::new(Arc::new(move |request| {
+            let delta_calls = delta_calls.clone();
+            async move {
+                assert_eq!(request.method, "GET");
+                if let Some(reply) = outlook_catalog(&request) { return reply; }
+                let url = url::Url::parse(&format!("https://graph.microsoft.com{}", request.path)).unwrap();
+                if url.path().ends_with("/messages/delta") {
+                    delta_calls.fetch_add(1, Ordering::SeqCst);
+                    assert!(!url.query().unwrap_or("").contains("old-checkpoint"), "legacy coverage must be rebuilt");
+                    if status == "fetch-failed" { return Reply::Json(503, json!({"error":{"code":"Unavailable"}})); }
+                    if url.query().unwrap_or("").contains("skiptoken=page2") {
+                        return outlook_delta("inbox-id", json!([{"id":"new"},{"id":"historical"},{"id":"outside"},{"id":"unapproved"}]));
+                    }
+                    return Reply::Json(200, json!({"value":[],"@odata.nextLink":"https://graph.microsoft.com/v1.0/me/mailFolders/inbox-id/messages/delta?$skiptoken=page2"}));
+                }
+                let id = percent_encoding::percent_decode_str(url.path().rsplit('/').next().unwrap()).decode_utf8().unwrap();
+                let mut message = microsoft_message(&id, A, "Approved-window fixture");
+                message["receivedDateTime"] = match id.as_ref() { "historical" => "2000-01-01T00:00:00Z", "outside" => "1990-01-01T00:00:00Z", _ => "2026-09-25T00:00:00Z" }.into();
+                if id == "unapproved" { message["parentFolderId"] = "sent-id".into(); }
+                Reply::Json(200, message)
+            }.boxed()
+        })).await;
+        let server = fixture.start().await;
+        let mut settings = config(&[(A, "microsoft"), (B, "microsoft")]);
+        let mail = settings["mailAccounts"][A].clone();
+        let version = json!([
+            mail["connectionId"],
+            mail["authorizationId"],
+            mail["provider"],
+            mail["email"],
+            mail["clientId"],
+            mail["imapHost"],
+            mail["imapPort"]
+        ]);
+        let checkpoint = json!({"url":"https://graph.microsoft.com/v1.0/me/mailFolders/inbox-id/messages/delta?$deltatoken=old-checkpoint","initial":false,"before":"2025-01-01T00:00:00.000Z","blocked":status=="blocked"});
+        let legacy = json!({"connection":version,"checkpoints":{"inbox-id":checkpoint},"folderIndex":0,"reconcileAfter":""});
+        settings["outlookSync"] = json!({A:legacy,B:{"keep":"other owner"}});
+        if status != "none" {
+            settings["imports"] = json!({A:{"id":"window-fixture","status":status,"options":{"inbox":true,"sent":false,"allMail":false},"since":"1995-01-01T00:00:00.000Z","before":"2020-01-01T00:00:00.000Z","connectionId":mail["connectionId"]}});
+        }
+        set(&server.app, settings).await;
+        let first = server.call("POST", "/api/sync", A, json!({})).await;
+        if ["blocked", "fetch-failed"].contains(&status) {
+            assert_eq!(first.0, 502);
+            assert_eq!(
+                server.app.settings().await.unwrap()["outlookSync"][A],
+                legacy,
+                "failed reads do not commit migration checkpoints"
+            );
+            if status == "blocked" {
+                assert_eq!(calls.load(Ordering::SeqCst), 0);
+            }
+            server.shutdown().await;
+            continue;
+        }
+        assert_eq!(first.0, 200, "{}", first.1);
+        assert_eq!(
+            server.app.settings().await.unwrap()["outlookSync"][A]["coverageVersion"],
+            2
+        );
+        server.shutdown().await;
+        let server = fixture.start().await;
+        let second = server.call("POST", "/api/sync", A, json!({})).await;
+        assert_eq!(second.0, 200, "{}", second.1);
+        server
+            .app
+            .db(move |db| {
+                assert!(
+                    db.get(A, "microsoft:new")?.is_some(),
+                    "new mail must catch up for {status}"
+                );
+                assert_eq!(
+                    db.get(A, "microsoft:historical")?.is_some(),
+                    status == "complete"
+                );
+                assert!(db.get(A, "microsoft:outside")?.is_none());
+                assert!(db.get(A, "microsoft:unapproved")?.is_none());
+                assert!(db.get(B, "microsoft:new")?.is_none());
+                assert_eq!(
+                    db.settings()?["outlookSync"][B],
+                    json!({"keep":"other owner"})
+                );
+                Ok(())
+            })
+            .await
+            .unwrap();
+        server.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn outlook_metadata_pages_isolate_large_bodies_and_preserve_opaque_cursors() {
+    let next =
+        "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$skiptoken=opaque-page-2";
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorded = seen.clone();
+    let fixture = Fixture::new(Arc::new(move |request| {
+        let recorded = recorded.clone();
+        async move {
+            assert_eq!(request.method, "GET");
+            let url =
+                url::Url::parse(&format!("https://graph.microsoft.com{}", request.path)).unwrap();
+            recorded.lock().unwrap().push(url.to_string());
+            if url.path() == "/v1.0/me/mailFolders/inbox/messages" {
+                if url
+                    .query()
+                    .unwrap_or("")
+                    .contains("skiptoken=opaque-page-2")
+                {
+                    assert_eq!(url.as_str(), next);
+                    return Reply::Json(200, json!({"value":[]}));
+                }
+                let fields = url
+                    .query_pairs()
+                    .find(|(key, _)| key == "$select")
+                    .unwrap()
+                    .1;
+                assert!(!fields.split(',').any(|field| field == "body"));
+                let rows = (0..50)
+                    .map(|index| {
+                        let mut raw =
+                            microsoft_message(&format!("large-{index}"), A, "metadata only");
+                        raw.as_object_mut().unwrap().remove("body");
+                        raw
+                    })
+                    .collect::<Vec<_>>();
+                return Reply::Json(200, json!({"value":rows,"@odata.nextLink":next}));
+            }
+            let id = percent_encoding::percent_decode_str(url.path().rsplit('/').next().unwrap())
+                .decode_utf8()
+                .unwrap();
+            assert_eq!(
+                url.query_pairs()
+                    .find(|(key, _)| key == "$select")
+                    .unwrap()
+                    .1,
+                "id,body"
+            );
+            Reply::Json(
+                200,
+                microsoft_message(
+                    &id,
+                    A,
+                    &"x".repeat(if id == "large-0" {
+                        9 * 1024 * 1024
+                    } else {
+                        180_000
+                    }),
+                ),
+            )
+        }
+        .boxed()
+    }))
+    .await;
+    let mail = connection("microsoft", A);
+    let page = providers::fetch_page(&fixture.client, &mail, &json!({}))
+        .await
+        .unwrap();
+    let rows = page["messages"].as_array().unwrap();
+    assert_eq!(rows.len(), 50);
+    assert_eq!(rows[0]["id"], "microsoft:large-0");
+    assert_eq!(rows[0]["contentIncomplete"], true);
+    assert_eq!(rows[0]["contentErrorCode"], "microsoft_size_limit");
+    assert_eq!(rows[0]["hasAttachments"], true);
+    assert_eq!(rows[0]["bodyTruncated"], true);
+    for row in &rows[1..] {
+        assert_eq!(row["contentIncomplete"], false);
+        assert!(row["body"].as_str().unwrap().starts_with("xxxx"));
+    }
+    assert_eq!(page["nextCursor"], next);
+    let tail = providers::fetch_page(
+        &fixture.client,
+        &mail,
+        &json!({"cursor":page["nextCursor"]}),
+    )
+    .await
+    .unwrap();
+    assert!(tail["nextCursor"].is_null());
+    assert_eq!(seen.lock().unwrap().len(), 52);
+}
+
+#[tokio::test]
+async fn outlook_legacy_oversized_cursor_requires_explicit_restart_without_rewrite() {
+    let cursor = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$skiptoken=legacy&$select=id,body";
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    let fixture = Fixture::new(Arc::new(move |request| {
+        let counted = counted.clone();
+        async move {
+            counted.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(
+                format!("https://graph.microsoft.com{}", request.path),
+                cursor
+            );
+            Reply::Json(
+                200,
+                json!({"value":[microsoft_message("huge",A,&"x".repeat(9*1024*1024))]}),
+            )
+        }
+        .boxed()
+    }))
+    .await;
+    let input = json!({"cursor":cursor});
+    let result = providers::fetch_page(&fixture.client, &connection("microsoft", A), &input)
+        .await
+        .unwrap_err();
+    assert_eq!(result.body["code"], "provider_page_too_large");
+    assert_eq!(result.body["recoveryAction"], "restart");
+    assert_eq!(input["cursor"], cursor);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn outlook_dates_use_the_selected_folder_and_never_guess_missing_dates() {
+    for (folder, field) in [
+        ("inbox", "receivedDateTime"),
+        ("sent", "sentDateTime"),
+        ("drafts", "createdDateTime"),
+    ] {
+        for date in [
+            "2026-09-25T00:00:00Z",
+            "",
+            "invalid",
+            "9999-12-31T23:59:59-01:00",
+            "0000-01-01T00:00:00+01:00",
+        ] {
+            let fixture = Fixture::new(Arc::new(move |_request| {
+                async move {
+                    let mut raw = microsoft_message("dated", A, "Folder date fixture");
+                    for key in ["receivedDateTime", "sentDateTime", "createdDateTime"] {
+                        raw.as_object_mut().unwrap().remove(key);
+                    }
+                    raw[field] = date.into();
+                    raw["isDraft"] = (folder == "drafts").into();
+                    Reply::Json(200, json!({"value":[raw]}))
+                }
+                .boxed()
+            }))
+            .await;
+            let input = if folder == "drafts" {
+                json!({"folder":"all","cursor":{"version":1,"folders":[{"id":"draft-id","name":"Drafts","kind":"drafts"}],"index":0,"next":null}})
+            } else {
+                json!({"folder":folder})
+            };
+            let result =
+                providers::fetch_page(&fixture.client, &connection("microsoft", A), &input).await;
+            if date == "2026-09-25T00:00:00Z" {
+                assert_eq!(
+                    result.unwrap()["messages"][0]["date"],
+                    "2026-09-25T00:00:00.000Z"
+                );
+            } else {
+                assert_eq!(result.unwrap_err().body["code"], "provider_invalid_date");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn outlook_graph_gate_bounds_independent_requests_and_raw_downloads() {
+    let active = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let (pending, highest) = (active.clone(), peak.clone());
+    let fixture = Fixture::new(Arc::new(move |request| {
+        let (pending, highest) = (pending.clone(), highest.clone());
+        async move {
+            assert_eq!(request.host(), "graph.microsoft.com");
+            let count = pending.fetch_add(1, Ordering::SeqCst) + 1;
+            highest.fetch_max(count, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            pending.fetch_sub(1, Ordering::SeqCst);
+            if count > 4 {
+                Reply::Json(429, json!({"error":{"code":"TooManyRequests"}}))
+            } else {
+                Reply::Json(200, json!({"id":"fixture"}))
+            }
+        }
+        .boxed()
+    }))
+    .await;
+    let mail = connection("microsoft", A);
+    let results = futures_util::future::join_all((0..8).map(|index| {
+        let mail = &mail;
+        let client = &fixture.client;
+        async move {
+            if index % 2 == 0 {
+                providers::get(client, mail, "/messages/fixture")
+                    .await
+                    .map(|_| ())
+            } else {
+                providers::raw_message(client, mail, &json!({"id":"microsoft:fixture"}))
+                    .await
+                    .map(|_| ())
+            }
+        }
+    }))
+    .await;
+    assert!(results.iter().all(Result::is_ok));
+    assert!((1..=4).contains(&peak.load(Ordering::SeqCst)));
+}
+
+#[tokio::test]
+async fn outlook_custom_folder_drafts_retain_mutability_and_query_date() {
+    let fixture = Fixture::new(Arc::new(move |_request| {
+        async move {
+            let mut raw = microsoft_message("mutable", A, "Draft body");
+            raw["isDraft"] = true.into();
+            raw["createdDateTime"] = "2026-09-24T00:00:00Z".into();
+            Reply::Json(200, json!({"value":[raw]}))
+        }
+        .boxed()
+    }))
+    .await;
+    let page = providers::fetch_page(&fixture.client, &connection("microsoft", A), &json!({"folder":"all","cursor":{"version":1,"folders":[{"id":"custom-id","name":"Projects","kind":"archive"}],"index":0,"next":null}})).await.unwrap();
+    assert_eq!(page["messages"][0]["providerDraft"], true);
+    assert_eq!(page["messages"][0]["folder"], "drafts");
+    assert_eq!(page["messages"][0]["date"], "2026-09-25T00:00:00.000Z");
+}
+
+#[tokio::test]
+async fn outlook_invalid_delta_date_keeps_the_whole_page_checkpoint_until_repaired() {
+    let repaired = Arc::new(AtomicUsize::new(0));
+    let mode = repaired.clone();
+    let fixture = Fixture::new(Arc::new(move |request| {
+        let mode = mode.clone();
+        async move {
+            if let Some(reply) = outlook_catalog(&request) {
+                return reply;
+            }
+            let url =
+                url::Url::parse(&format!("https://graph.microsoft.com{}", request.path)).unwrap();
+            if url.path().ends_with("/messages/delta") {
+                assert_eq!(url.query().unwrap(), "$deltatoken=before-invalid-date");
+                return outlook_delta("inbox-id", json!([{"id":"valid"},{"id":"invalid"}]));
+            }
+            let id = percent_encoding::percent_decode_str(url.path().rsplit('/').next().unwrap())
+                .decode_utf8()
+                .unwrap();
+            let mut row = microsoft_message(&id, A, "Recoverable date fixture");
+            if id == "invalid" && mode.load(Ordering::SeqCst) == 0 {
+                row.as_object_mut().unwrap().remove("receivedDateTime");
+            }
+            Reply::Json(200, row)
+        }
+        .boxed()
+    }))
+    .await;
+    let server = fixture.start().await;
+    let mut settings = config(&[(A, "microsoft")]);
+    let mail = &settings["mailAccounts"][A];
+    let version = json!([
+        mail["connectionId"],
+        mail["authorizationId"],
+        mail["provider"],
+        mail["email"],
+        mail["clientId"],
+        mail["imapHost"],
+        mail["imapPort"]
+    ]);
+    let state = json!({"connection":version,"coverageVersion":2,"checkpoints":{"inbox-id":{"url":"https://graph.microsoft.com/v1.0/me/mailFolders/inbox-id/messages/delta?$deltatoken=before-invalid-date","initial":false,"before":"2020-01-01T00:00:00.000Z"}},"folderIndex":0,"reconcileAfter":""});
+    settings["outlookSync"] = json!({A:state});
+    set(&server.app, settings).await;
+    let failure = server.call("POST", "/api/sync", A, json!({})).await;
+    assert_eq!(failure.0, 502);
+    assert_eq!(failure.1["code"], "invalid_date");
+    assert_eq!(failure.1["recoveryAction"], "resume");
+    assert_eq!(
+        server.app.settings().await.unwrap()["outlookSync"][A],
+        state
+    );
+    server
+        .app
+        .db(|db| {
+            assert!(db.get(A, "microsoft:valid")?.is_none());
+            assert!(db.get(A, "microsoft:invalid")?.is_none());
+            Ok(())
+        })
+        .await
+        .unwrap();
+    server.shutdown().await;
+    repaired.store(1, Ordering::SeqCst);
+    let server = fixture.start().await;
+    let success = server.call("POST", "/api/sync", A, json!({})).await;
+    assert_eq!(success.0, 200, "{}", success.1);
+    server
+        .app
+        .db(|db| {
+            assert!(db.get(A, "microsoft:valid")?.is_some());
+            assert!(db.get(A, "microsoft:invalid")?.is_some());
+            assert!(
+                string(
+                    &db.settings()?["outlookSync"][A]["checkpoints"]["inbox-id"],
+                    "url"
+                )
+                .contains("deltatoken=fixture")
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    server.shutdown().await;
 }

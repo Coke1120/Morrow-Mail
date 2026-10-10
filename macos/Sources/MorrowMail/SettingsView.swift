@@ -383,6 +383,10 @@ struct NativeSettingsView: View {
                         if account["import"]["recoveryAction"].string == "reconnect" { Text("Use Reconnect (or Edit for IMAP), then start a new import.").font(.caption) }
                         if account["import"]["recoveryAction"].string == "restart" { Text("Start a new import below to replace the unusable checkpoint. Downloaded mail is retained.").font(.caption) }
                     } else { Text("History import has not started.").font(.caption).foregroundStyle(.secondary) }
+                    if account["incompleteMessages"].number > 0 {
+                        Text("\(Int(account["incompleteMessages"].number)) messages need full content. \(account["contentWarning"].string)")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
                     HStack {
                         if account["import"]["status"].string != "running" {
                             Button(account["import"].isNull ? "Start History Import…" : "Start New Import…") {

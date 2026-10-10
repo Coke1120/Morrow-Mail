@@ -12,7 +12,7 @@ fn provider_text_limits_report_truncation_at_the_actual_boundary() {
         .unwrap();
         let google = providers::normalize_google(&json!({"id":"long","payload":{"mimeType":"text/plain","body":{"data":URL_SAFE_NO_PAD.encode(body.as_bytes())}}})).unwrap();
         let microsoft = providers::normalize_microsoft(
-            &json!({"id":"long","body":{"contentType":"text","content":body}}),
+            &json!({"id":"long","receivedDateTime":"2026-09-25T00:00:00Z","body":{"contentType":"text","content":body}}),
         )
         .unwrap();
         for message in [mime, google, microsoft] {

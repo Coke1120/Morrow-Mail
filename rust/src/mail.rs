@@ -171,6 +171,33 @@ pub(crate) async fn finish_read<T: Send + 'static>(
 pub async fn fetch_page(app: &App, mail: &Value, options: &Value) -> Result<Value> {
     fetch_page_cached(app, mail, options, &mut HashMap::new()).await
 }
+fn body_fields_present(message: &Value) -> bool {
+    message["body"].is_string()
+        && message["bodyHtml"].is_string()
+        && message["bodyTruncated"].is_boolean()
+}
+pub(crate) fn cached_body_available(message: &Value) -> bool {
+    // Recognize pre-marker IMAP placeholders too, so affected caches can recover.
+    message["contentIncomplete"] != true
+        && message["body"].as_str().is_some_and(|body| {
+            body != "This message exceeds the 5 MB import limit. Open it in your original mailbox to read it."
+        })
+        && body_fields_present(message)
+}
+pub(crate) fn reusable_google_body(message: &Value) -> bool {
+    // Known content limits retain explicit placeholders until the user requests raw MIME.
+    // Missing legacy fields and unrecognized incomplete states still need a full fetch.
+    let known_limit = message["contentIncomplete"] == true
+        && ["google_mime_limit", "google_size_limit"]
+            .contains(&string(message, "contentErrorCode"))
+        && message["bodyTruncated"] == true
+        && message["hasAttachments"] == true;
+    message["providerSnapshot"].is_object()
+        && body_fields_present(message)
+        && (message["contentIncomplete"] != true || known_limit)
+        && message["replyTo"].is_string()
+        && message["providerDraft"] != true
+}
 async fn fetch_page_cached(
     app: &App,
     mail: &Value,
@@ -204,7 +231,7 @@ async fn fetch_page_cached(
                     let raw: Option<String> = db.conn.query_row("SELECT data FROM messages WHERE account=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id)=? LIMIT 1", params![owner, format!("google:{id}")], |row| row.get(0)).optional()?;
                     if let Some(raw) = raw {
                         let value: Value = serde_json::from_str(&raw)?;
-                        if value["providerSnapshot"].is_object() && value["body"].is_string() && value["bodyHtml"].is_string() && value["replyTo"].is_string() && value["bodyTruncated"].is_boolean() && value["providerDraft"] != true {
+                        if reusable_google_body(&value) {
                             cached.insert(id, value);
                         }
                     }
@@ -349,8 +376,18 @@ pub fn import_messages(db: &Store, mail: &Value, messages: &[Value]) -> Result<V
                 }
             }
         }
-        if message["providerDraft"] != true && let Some(previous)=existing.as_ref().filter(|m|m["attachmentsLoaded"]==true) {
-            value["attachments"] = previous["attachments"].clone(); value["attachmentsLoaded"] = true.into();
+        // A reconnected IMAP server can reuse UID tuples; conflicting Message-IDs cannot share downloaded content.
+        if message["providerDraft"] != true && let Some(previous)=existing.as_ref().filter(|m|m["attachmentsLoaded"]==true && m["providerDraft"]!=true && (string(m,"messageId").is_empty() || string(message,"messageId").is_empty() || m["messageId"]==message["messageId"])) {
+            if message["contentIncomplete"]==true && cached_body_available(previous) {
+                // Refresh flags/location without replacing a downloaded immutable body with a size-limit placeholder.
+                for key in ["body", "bodyHtml", "bodyTruncated", "preview", "hasAttachments"] {
+                    if let Some(entry) = previous.get(key) { value[key] = entry.clone(); }
+                }
+                value["contentIncomplete"] = false.into();
+                value["contentErrorCode"] = Value::Null;
+            }
+            value["attachments"] = previous["attachments"].clone();
+            value["attachmentsLoaded"] = cached_body_available(&value).into();
         }
         if mail["provider"]=="google"{value=merge(value,&google_import_state(message,existing.as_ref()));}
         import_read_state(message, existing.as_ref(), &mut value);
@@ -732,6 +769,15 @@ fn sync_failure(owner: &str, error: &Error, previous: &Value) -> Value {
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         return json!({"accountId":owner,"code":"rate_limited","recoveryAction":"retry","error":"The provider request limit was reached. Morrow will retry automatically while the app is open.","nextRetryAt":next,"retryCount":count.saturating_add(1)});
     }
+    for (provider_code, code, recovery) in [
+        ("provider_incomplete_read", "incomplete_page", "resume"),
+        ("provider_invalid_date", "invalid_date", "resume"),
+        ("provider_page_too_large", "page_too_large", "restart"),
+    ] {
+        if error.body["code"] == provider_code {
+            return json!({"accountId":owner,"code":code,"recoveryAction":recovery,"error":crate::background::import_error_message(code).unwrap_or("Sync could not finish. Saved mail is retained.")});
+        }
+    }
     if [
         "oauth_reconnect_required",
         "oauth_configuration",
@@ -934,9 +980,13 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                 let key = validation::text(&body["messageId"], "Message ID", 8192, false)?;
                 let (account, id) = (owner.clone(), key.to_owned());
                 let message = app.db(move |db| get_message(db, &account, &id)).await?;
+                let needs_body = !cached_body_available(&message);
                 if (message["hasAttachments"] != false
-                    || string(&message, "bodyHtml").contains("cid:"))
-                    && message["attachmentsLoaded"] != true
+                    || string(&message, "bodyHtml").contains("cid:")
+                    || needs_body)
+                    && (message["attachmentsLoaded"] != true
+                        || needs_body
+                        || message["providerDraft"] == true)
                     && ["google:", "microsoft:", "imap:"].iter().any(|prefix| {
                         string(&message, "remoteId").starts_with(prefix)
                             || string(&message, "id").starts_with(prefix)
@@ -1528,6 +1578,22 @@ mod tests {
             sync_failure("one@example.com", &quota, &Value::Null)["recoveryAction"],
             "reconnect"
         );
+    }
+    #[test]
+    fn manual_sync_reports_safe_nonretrying_page_failures() {
+        for (provider_code, public_code, recovery) in [
+            ("provider_incomplete_read", "incomplete_page", "resume"),
+            ("provider_invalid_date", "invalid_date", "resume"),
+            ("provider_page_too_large", "page_too_large", "restart"),
+        ] {
+            let mut error = Error::new(502, "PRIVATE-PROVIDER-MESSAGE");
+            error.body["code"] = provider_code.into();
+            let failure = sync_failure("fixture@example.invalid", &error, &Value::Null);
+            assert_eq!(failure["code"], public_code);
+            assert_eq!(failure["recoveryAction"], recovery);
+            assert!(failure["nextRetryAt"].is_null());
+            assert!(!failure.to_string().contains("PRIVATE-PROVIDER-MESSAGE"));
+        }
     }
     #[test]
     fn sparse_imap_scan_never_reports_complete_sync() {

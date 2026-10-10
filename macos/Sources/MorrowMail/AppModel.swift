@@ -36,7 +36,7 @@ final class AppModel: ObservableObject {
     @Published var scheduledAccount = ""
     @Published var serverFolders: [String: [JSON]] = [:]
     @Published var selectedMessage: String? {
-        didSet { if selectedMessage != oldValue { openedMessage = nil; retainedUnread = nil; selectedMessages = selectedMessage.map { [$0] } ?? []; draftGeneration += 1 } }
+        didSet { if selectedMessage != oldValue { openedMessage = nil; retainedUnread = nil; selectedMessages = selectedMessage.map { [$0] } ?? []; draftGeneration += 1; messageGeneration += 1; messageError = "" } }
     }
     @Published var selectedMessages: Set<String> = []
     @Published private var retainedUnread: (message: JSON, index: Int, scope: String, page: Int)?
@@ -52,8 +52,10 @@ final class AppModel: ObservableObject {
     @Published var mailLoading = false
     @Published var unreadOnly = false
     @Published var messageDetail: JSON = .null { didSet { if messageDetail != oldValue { draftGeneration += 1 } } }
+    @Published private(set) var messageError = ""
     @Published var mailCursors = [""]
     private var mailGeneration = 0
+    private var messageGeneration = 0
     private var mailPageKey = ""
     private var openedMessage: String?
     @Published var showSettings = false { didSet { if showSettings != oldValue { draftGeneration += 1 } } }
@@ -405,11 +407,14 @@ final class AppModel: ObservableObject {
         }
     }
     func loadMessage() async {
+        messageGeneration += 1
+        let ticket = messageGeneration
+        messageError = ""
         guard let row = current else { return }
-        let id = row.viewID, view = account
+        let id = row.viewID, view = account, folder = section
         do {
             let result = try await request("/messages/" + encodedPath(row.id), mailbox: row["accountId"].string)
-            guard !Task.isCancelled, selectedMessage == id, account == view else { return }
+            guard !Task.isCancelled, ticket == messageGeneration, selectedMessage == id, account == view, section == folder else { return }
             messageDetail = result["message"]
             if !messageMatchesFolder(messageDetail, folder: section) { retainedUnread = nil }
             else { retainReadRow(messageDetail) }
@@ -420,11 +425,12 @@ final class AppModel: ObservableObject {
             if firstOpen && canMarkRead && !messageDetail["providerDeleted"].bool && preferences["markReadOnOpen"].bool && !messageDetail["read"].bool && messageDetail["folder"].string != "drafts" {
                 do {
                     let updated = try await request("/messages/" + encodedPath(row.id), method: "PATCH", body: .object(["read": .bool(true)]), mailbox: row["accountId"].string)
-                    if selectedMessage == id { retainReadRow(updated["message"]); messageDetail = updated["message"] }
+                    guard !Task.isCancelled, ticket == messageGeneration, selectedMessage == id, account == view, section == folder else { return }
+                    retainReadRow(updated["message"]); messageDetail = updated["message"]
                     try await reload()
-                } catch { if selectedMessage == id { self.error = error.localizedDescription } }
+                } catch { if !Task.isCancelled, ticket == messageGeneration, selectedMessage == id, account == view, section == folder { self.error = error.localizedDescription } }
             }
-        } catch { if !Task.isCancelled, selectedMessage == id { messageDetail = .null; self.error = error.localizedDescription } }
+        } catch { if !Task.isCancelled, ticket == messageGeneration, selectedMessage == id, account == view, section == folder { messageDetail = .null; messageError = error.localizedDescription } }
     }
     func refreshWhenActive() {
         guard !starting, baseURL != nil, !busy, compose == nil else { return }

@@ -41,6 +41,62 @@ fn start_legacy_import(
 }
 
 #[test]
+fn incomplete_content_status_is_owned_deduplicated_and_clears_after_recovery() {
+    let root = directory();
+    let db = Store::open(&root).unwrap();
+    configure(&db);
+    let placeholder = json!({"id":"same","folder":"inbox","date":now(),"contentIncomplete":true,"contentErrorCode":"google_mime_limit","body":"Full content needs an explicit download."});
+    for owner in [A, B, "disconnected@example.invalid"] {
+        db.upsert(owner, &placeholder).unwrap();
+    }
+    // Repeat visits from multiple scopes do not accumulate job counters.
+    db.upsert(A, &placeholder).unwrap();
+    let state = morrow_search::service::state(&db, "all", true, &[7; 32]).unwrap();
+    assert_eq!(state["accounts"].as_array().unwrap().len(), 2);
+    for account in state["accounts"].as_array().unwrap() {
+        assert_eq!(account["incompleteMessages"], 1);
+        assert!(!account["contentWarning"].as_str().unwrap().is_empty());
+        assert!(account["import"].is_null());
+    }
+    start_legacy_import(&db, A, &json!({"months":0,"inbox":true,"sent":false})).unwrap();
+    let job = db.settings().unwrap()["imports"][A].clone();
+    jobs::apply_import_page(&db, A, &job, &json!({"messages":[],"nextCursor":null})).unwrap();
+    assert_eq!(jobs::import_status(&db, A).unwrap()["status"], "complete");
+    assert_eq!(
+        jobs::import_status(&db, A).unwrap()["incompleteMessages"],
+        1
+    );
+    // Same writer update used by completed raw-content recovery.
+    db.update(
+        A,
+        "same",
+        &json!({"contentIncomplete":false,"contentErrorCode":null,"body":"Restored content"}),
+    )
+    .unwrap();
+    assert_eq!(
+        jobs::content_status(&db, A).unwrap()["incompleteMessages"],
+        0
+    );
+    assert_eq!(jobs::content_status(&db, A).unwrap()["contentWarning"], "");
+    assert_eq!(
+        jobs::content_status(&db, B).unwrap()["incompleteMessages"],
+        1
+    );
+    drop(db);
+    let db = Store::open(&root).unwrap();
+    assert_eq!(
+        jobs::import_status(&db, A).unwrap()["incompleteMessages"],
+        0
+    );
+    assert_eq!(
+        jobs::content_status(&db, B).unwrap()["incompleteMessages"],
+        1
+    );
+    drop(db);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn new_import_finishes_recent_folders_before_old_history_and_retains_boundary_on_restart() {
     let root = directory();
     let db = Store::open(&root).unwrap();

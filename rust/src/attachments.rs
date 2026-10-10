@@ -249,6 +249,8 @@ pub async fn download(app: &App, owner: &str, id: &str) -> Result<Value> {
     let (account, key) = (owner.to_owned(), id.to_owned());
     let message = app.db(move |db| get_message(db, &account, &key)).await?;
     if message["attachmentsLoaded"] == true
+        && message["providerDraft"] != true
+        && crate::mail::cached_body_available(&message)
         || message["folder"] == "drafts" && message["providerDraft"] != true
     {
         let account = owner.to_owned();
@@ -282,8 +284,9 @@ pub async fn download(app: &App, owner: &str, id: &str) -> Result<Value> {
             }
             let attachments = import(db, &account, &raw)?;
             let parsed=crate::providers::mime(&raw)?;
-            let mut patch=json!({"attachments":attachments,"attachmentsLoaded":true,"hasAttachments":!attachments.as_array().unwrap().is_empty()});
-            for key in ["body","bodyHtml","bodyTruncated","preview"] {if let Some(value)=parsed.get(key){patch[key]=value.clone();}}
+            let mut patch=json!({"attachments":attachments,"attachmentsLoaded":true,"hasAttachments":!attachments.as_array().unwrap().is_empty(),"contentIncomplete":false,"contentErrorCode":null});
+            for key in ["body","bodyHtml","bodyTruncated","preview","replyTo"] {if let Some(value)=parsed.get(key){patch[key]=value.clone();}}
+            for key in ["to","cc","bcc"] {if !current[key].is_string() && let Some(value)=parsed.get(key){patch[key]=value.clone();}}
             let updated = db.update(&account,&key,&patch)?
                 .ok_or_else(|| Error::conflict("This message is unavailable."))?;
             reader_copy(db, &account, updated)

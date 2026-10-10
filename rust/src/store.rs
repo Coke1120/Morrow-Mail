@@ -312,6 +312,7 @@ impl Store {
             CREATE INDEX IF NOT EXISTS mail_metadata ON messages(account,COALESCE(json_extract(data,'$.folder'),''),COALESCE(json_extract(data,'$.date'),'') DESC,id,NOT COALESCE(json_extract(data,'$.read'),0),COALESCE(json_extract(data,'$.starred'),0),COALESCE(json_extract(data,'$.category'),''));
             CREATE INDEX IF NOT EXISTS mail_message_id ON messages(account,json_extract(data,'$.messageId'));")?;
         store.conn.execute_batch("CREATE INDEX IF NOT EXISTS mail_pending ON messages(account) WHERE json_extract(data,'$.pending')=1; CREATE INDEX IF NOT EXISTS mail_later ON messages(account) WHERE json_extract(data,'$.lowPriority')=1;")?;
+        store.conn.execute_batch("CREATE INDEX IF NOT EXISTS mail_content_incomplete ON messages(account) WHERE json_extract(data,'$.contentIncomplete')=1;")?;
         store.transaction(|store| {
             create_index(&store.conn)?;
             create_provider_memberships(&store.conn)?;
