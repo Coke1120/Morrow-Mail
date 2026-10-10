@@ -46,8 +46,11 @@ and empty displayed rows after an actual AppModel read/mark/reload sequence;
 an unrelated crash is not accepted as a reproduction. Candidate checks exercise
 native search controls and the reply sheet, held refreshes, Keep Editing after
 cancel, captured draft owner/text/attachment IDs on save, last-page fallback,
-obsolete-account cancellation with colliding provider IDs, and native AX removal
-names. Fictional save responses verify submitted content, not durable storage;
+obsolete-account cancellation with colliding provider IDs. Hosted SwiftUI peers
+did not expose their virtual AX button names in the in-process traversal; this
+fixture uses mounted NSButton action rows and checks the resulting page/write.
+The Mac name changes are compiled, not AX/VoiceOver-validated. Fictional save
+responses verify submitted content, not durable storage;
 the unmodified service's persistence/account contracts stay in native acceptance.
 The Windows fixture checks names on rendered removal controls using fictional
 metadata, without file access/upload/save.
