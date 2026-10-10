@@ -269,6 +269,23 @@ const READER_WRAP_POLICIES: [(&str, &str); 2] = [
     ("break-word", "READER_DIAGNOSTIC_BREAK_WORD"),
     ("normal", "READER_DIAGNOSTIC_NORMAL"),
 ];
+const READER_VISIBILITY_PAIRS: usize = 3;
+const READER_VISIBILITY_POLICIES: [(&str, &str); 2] = [
+    (
+        "baseline-presentation",
+        "READER_DIAGNOSTIC_BASELINE_PRESENTATION",
+    ),
+    (
+        "foreground-prepared",
+        "READER_DIAGNOSTIC_FOREGROUND_PRESENTATION",
+    ),
+];
+
+#[derive(Clone, Copy)]
+enum ReaderDiagnostic<'a> {
+    Wrap(&'a str),
+    Visibility(&'a str),
+}
 
 #[derive(Default)]
 struct SampleLog {
@@ -554,16 +571,18 @@ fn reader_sample_prefix(sequence: usize, diagnostic_policy: Option<&str>) -> Str
 }
 
 fn reader_diagnostic_policy_observed(stderr: &[u8], policy: &str) -> bool {
+    reader_diagnostic_control_observed(stderr, policy, "wrapping")
+}
+
+fn reader_diagnostic_control_observed(stderr: &[u8], policy: &str, control: &str) -> bool {
     let text = String::from_utf8_lossy(stderr);
+    let marker = format!("diagnostic-{control}-control");
     let markers: Vec<_> = text
         .lines()
-        .filter(|line| {
-            line.starts_with("Native macOS reader: ")
-                && line.contains("diagnostic-wrapping-control")
-        })
+        .filter(|line| line.starts_with("Native macOS reader: ") && line.contains(&marker))
         .collect();
     let prefix = format!(
-        "Native macOS reader: trace phase=setup diagnostic-wrapping-control policy={policy} acceptance=false textCharacters=180000 columnWidthPx=1 +"
+        "Native macOS reader: trace phase=setup diagnostic-{control}-control policy={policy} acceptance=false textCharacters=180000 columnWidthPx=1 +"
     );
     markers.len() == 1
         && markers[0]
@@ -574,6 +593,104 @@ fn reader_diagnostic_policy_observed(stderr: &[u8], policy: &str) -> bool {
             })
 }
 
+fn reader_visibility_evidence(stderr: &[u8], policy: &str) -> Result<Value> {
+    check(
+        READER_VISIBILITY_POLICIES
+            .iter()
+            .any(|(expected, _)| *expected == policy),
+        "Unknown visibility policy.",
+    )?;
+    check(
+        reader_diagnostic_control_observed(stderr, policy, "visibility"),
+        "Missing or conflicting visibility control marker.",
+    )?;
+    let text = std::str::from_utf8(stderr)?;
+    let marker = |name: &str| -> Result<(usize, &str)> {
+        let matches: Vec<_> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.starts_with("Native macOS reader: ") && line.contains(name))
+            .collect();
+        check(
+            matches.len() == 1,
+            "Missing or duplicate visibility preparation/publication marker.",
+        )?;
+        Ok(matches[0])
+    };
+    let (startup_index, startup) = marker("diagnostic-visibility-control")?;
+    let (state_index, state) = marker("visibility-state")?;
+    let (publish_index, publish) = marker("visibility-adversarial-publish")?;
+    let (request_index, request) = marker("fixture-update-request begin")?;
+    let (request_end_index, request_end) = marker("fixture-update-request end")?;
+    check(
+        startup_index < state_index
+            && state_index < publish_index
+            && publish_index < request_index
+            && request_index < request_end_index,
+        "Visibility preparation must precede the actual adversarial update request.",
+    )?;
+    let escaped_policy = regex::escape(policy);
+    let state_pattern = Regex::new(&format!(
+        "^Native macOS reader: trace phase=focused-warmup visibility-state policy={escaped_policy} stage=before-adversarial attached=(true|false) hidden=(true|false) positiveBounds=(true|false) appActive=(true|false) windowKey=(true|false) windowVisible=(true|false) occlusionVisible=(true|false) sameWebView=(true|false) \\+([0-9]+) ms$"
+    ))?;
+    let state = state_pattern
+        .captures(state)
+        .ok_or("Invalid visibility state flags or policy.")?;
+    let publish_pattern = Regex::new(&format!(
+        "^Native macOS reader: trace phase=adversarial-text visibility-adversarial-publish policy={escaped_policy} \\+([0-9]+) ms$"
+    ))?;
+    let publish = publish_pattern
+        .captures(publish)
+        .ok_or("Invalid visibility publication policy.")?;
+    let request_pattern = Regex::new(
+        r"^Native macOS reader: trace phase=adversarial-text fixture-update-request begin textCharacters=180000 columnWidthPx=1 viewportWidth=([0-9]+) viewportHeight=([0-9]+) windowWidth=([0-9]+) \+([0-9]+) ms$",
+    )?;
+    let request = request_pattern
+        .captures(request)
+        .ok_or("Invalid adversarial update request trace.")?;
+    let request_end_pattern = Regex::new(
+        r"^Native macOS reader: trace phase=adversarial-text fixture-update-request end; SwiftUI navigation/layout may still be pending \+([0-9]+) ms$",
+    )?;
+    let request_end = request_end_pattern
+        .captures(request_end)
+        .ok_or("Invalid adversarial update completion trace.")?;
+    let startup_ms = startup
+        .rsplit_once(" +")
+        .and_then(|(_, tail)| tail.strip_suffix(" ms"))
+        .ok_or("Invalid visibility startup timestamp.")?
+        .parse::<u64>()?;
+    let state_ms = state[9].parse::<u64>()?;
+    let publish_ms = publish[1].parse::<u64>()?;
+    let request_ms = request[4].parse::<u64>()?;
+    let request_end_ms = request_end[1].parse::<u64>()?;
+    check(
+        startup_ms <= state_ms
+            && state_ms <= publish_ms
+            && publish_ms <= request_ms
+            && request_ms <= request_end_ms,
+        "Visibility timestamps are not monotonic.",
+    )?;
+    let keys = [
+        "attached",
+        "hidden",
+        "positiveBounds",
+        "appActive",
+        "windowKey",
+        "windowVisible",
+        "occlusionVisible",
+        "sameWebView",
+    ];
+    let mut evidence = json!({"startupElapsedMs":startup_ms,"stateElapsedMs":state_ms,"publishElapsedMs":publish_ms,
+        "requestElapsedMs":request_ms,"requestEndElapsedMs":request_end_ms,
+        "viewportWidth":request[1].parse::<u64>()?,"viewportHeight":request[2].parse::<u64>()?,"windowWidth":request[3].parse::<u64>()?});
+    for (index, key) in keys.iter().enumerate() {
+        evidence[*key] = json!(&state[index + 1] == "true");
+    }
+    evidence["foregroundReady"] =
+        json!(keys.iter().all(|key| evidence[*key] == (*key != "hidden")));
+    Ok(evidence)
+}
+
 fn save_reader_sample_with_policy(
     directory: &Path,
     sequence: usize,
@@ -581,6 +698,24 @@ fn save_reader_sample_with_policy(
     process: Result<SampleProcess>,
     network: Result<()>,
     diagnostic_policy: Option<&str>,
+) -> Result<Value> {
+    save_reader_sample_with_diagnostic(
+        directory,
+        sequence,
+        mode,
+        process,
+        network,
+        diagnostic_policy.map(ReaderDiagnostic::Wrap),
+    )
+}
+
+fn save_reader_sample_with_diagnostic(
+    directory: &Path,
+    sequence: usize,
+    mode: &str,
+    process: Result<SampleProcess>,
+    network: Result<()>,
+    diagnostic: Option<ReaderDiagnostic<'_>>,
 ) -> Result<Value> {
     let mut errors = Vec::new();
     let (stdout, stderr, parent) = match process {
@@ -614,22 +749,60 @@ fn save_reader_sample_with_policy(
     if let Err(error) = network {
         errors.push(format!("network: {error}"));
     }
-    let diagnostic_policy_observed =
-        diagnostic_policy.map(|policy| reader_diagnostic_policy_observed(&stderr, policy));
+    let diagnostic_policy_observed = diagnostic.map(|diagnostic| match diagnostic {
+        ReaderDiagnostic::Wrap(policy) => reader_diagnostic_policy_observed(&stderr, policy),
+        ReaderDiagnostic::Visibility(policy) => {
+            reader_diagnostic_control_observed(&stderr, policy, "visibility")
+        }
+    });
     if diagnostic_policy_observed == Some(false) {
         errors.push("diagnostic: missing or conflicting compiled-policy trace".to_owned());
     }
+    let visibility_evidence = if let Some(ReaderDiagnostic::Visibility(policy)) = diagnostic {
+        if mode != "warm-view" {
+            errors.push("diagnostic: visibility controls require warm-view".to_owned());
+        }
+        match reader_visibility_evidence(&stderr, policy) {
+            Ok(evidence) => {
+                if evidence["sameWebView"] != true {
+                    errors.push(
+                        "diagnostic: visibility control replaced its warmup WebView".to_owned(),
+                    );
+                }
+                if policy == "foreground-prepared" && evidence["foregroundReady"] != true {
+                    errors.push(
+                        "diagnostic: foreground preparation conditions were not met".to_owned(),
+                    );
+                }
+                Some(evidence)
+            }
+            Err(error) => {
+                errors.push(format!("diagnostic visibility: {error}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
     write_sample_file(&directory.join("stdout.log"), &stdout)?;
     write_sample_file(&directory.join("stderr.log"), &stderr)?;
     let mut result = json!({"schemaVersion":1, "kind":"reader-adversarial-sample",
         "sequence":sequence, "mode":mode, "status":if errors.is_empty() {"passed"} else {"failed"},
         "parent":parent, "networkZero":network_zero,
         "childResult":serde_json::from_slice::<Value>(&stdout).ok(), "errors":errors});
-    if let Some(policy) = diagnostic_policy {
-        result["kind"] = json!("reader-wrap-diagnostic-sample");
+    if let Some(diagnostic) = diagnostic {
+        let (policy, kind) = match diagnostic {
+            ReaderDiagnostic::Wrap(policy) => (policy, "reader-wrap-diagnostic-sample"),
+            ReaderDiagnostic::Visibility(policy) => (policy, "reader-visibility-diagnostic-sample"),
+        };
+        result["kind"] = json!(kind);
         result["diagnosticPolicy"] = json!(policy);
         result["diagnosticPolicyObserved"] = json!(diagnostic_policy_observed);
         result["productionAcceptance"] = json!(false);
+        if matches!(diagnostic, ReaderDiagnostic::Visibility(_)) {
+            result["visibilityEvidence"] = json!(visibility_evidence);
+            result["pair"] = json!(sequence.div_ceil(2));
+        }
     }
     write_sample_file(
         &directory.join("result.json"),
@@ -637,7 +810,13 @@ fn save_reader_sample_with_policy(
     )?;
     // Public fixture-only traces survive in the terminal CI log even when the
     // artifact download is unavailable. Prefix each line, bound individual lines.
-    let prefix = reader_sample_prefix(sequence, diagnostic_policy);
+    let prefix = match diagnostic {
+        Some(ReaderDiagnostic::Wrap(policy)) => reader_sample_prefix(sequence, Some(policy)),
+        Some(ReaderDiagnostic::Visibility(policy)) => {
+            format!("Reader visibility diagnostic {policy} sample {sequence:02}")
+        }
+        None => reader_sample_prefix(sequence, None),
+    };
     for line in String::from_utf8_lossy(&stderr)
         .lines()
         .filter(|line| line.starts_with("Native macOS reader: "))
@@ -903,6 +1082,139 @@ fn reader_wrap_diagnostic(root: &Path, output: &Path) -> Result<()> {
     check(
         passed,
         "Reader wrapping diagnostic failed; all attempted control samples and logs retained.",
+    )
+}
+
+fn reader_visibility_evidence_complete(output: &Path, samples: &[Value]) -> bool {
+    samples.len() == READER_VISIBILITY_PAIRS * READER_VISIBILITY_POLICIES.len()
+        && samples.iter().enumerate().all(|(index, sample)| {
+            let sequence = index + 1;
+            let (policy, _) = READER_VISIBILITY_POLICIES[index % READER_VISIBILITY_POLICIES.len()];
+            let directory = output
+                .join(policy)
+                .join(format!("sample-{sequence:02}-warm-view"));
+            sample["sequence"] == sequence
+                && sample["pair"] == index / 2 + 1
+                && sample["mode"] == "warm-view"
+                && sample["kind"] == "reader-visibility-diagnostic-sample"
+                && sample["diagnosticPolicy"] == policy
+                && sample["productionAcceptance"] == false
+                && ["result.json", "stdout.log", "stderr.log"]
+                    .iter()
+                    .all(|name| directory.join(name).is_file())
+                && fs::read(directory.join("result.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .as_ref()
+                    == Some(sample)
+        })
+}
+
+fn reader_visibility_diagnostic(root: &Path, output: &Path) -> Result<()> {
+    check(
+        output.is_absolute(),
+        "Reader visibility diagnostic requires an absolute new output directory.",
+    )?;
+    fs::create_dir(output)?;
+    let fixture = Fixture::new()?;
+    let mut readers = Vec::new();
+    let mut policies = Vec::new();
+    for (policy, define) in READER_VISIBILITY_POLICIES {
+        fs::create_dir(output.join(policy))?;
+        let executable = format!("reader-visibility-{policy}");
+        let reader = compile_check(
+            root,
+            &fixture.0,
+            &executable,
+            &[
+                "-parse-as-library",
+                "-D",
+                define,
+                "macos/Sources/MorrowMail/Models.swift",
+                "macos/Sources/MorrowMail/MessageBodyView.swift",
+                "macos/Checks/MessageHTML.swift",
+            ],
+        );
+        policies.push(
+            json!({"schemaVersion":1,"kind":"reader-visibility-diagnostic-policy",
+            "diagnosticPolicy":policy,"compileDefine":define,"compiledExecutable":executable,
+            "compileSucceeded":reader.is_ok(),"productionAcceptance":false,
+            "expectedSamples":READER_VISIBILITY_PAIRS,"mode":"warm-view"}),
+        );
+        readers.push(reader);
+    }
+    let expected_samples = READER_VISIBILITY_PAIRS * READER_VISIBILITY_POLICIES.len();
+    let mut samples = Vec::new();
+    for index in 0..expected_samples {
+        let sequence = index + 1;
+        let policy_index = index % READER_VISIBILITY_POLICIES.len();
+        let (policy, _) = READER_VISIBILITY_POLICIES[policy_index];
+        let directory = output
+            .join(policy)
+            .join(format!("sample-{sequence:02}-warm-view"));
+        fs::create_dir(&directory)?;
+        let (process, network) = match &readers[policy_index] {
+            Ok(reader) => collect_reader_sample(root, reader, "warm-view"),
+            Err(error) => (
+                Err(format!("Diagnostic fixture compile failed: {error}").into()),
+                Err("Network sentinel was not started.".into()),
+            ),
+        };
+        samples.push(save_reader_sample_with_diagnostic(
+            &directory,
+            sequence,
+            "warm-view",
+            process,
+            network,
+            Some(ReaderDiagnostic::Visibility(policy)),
+        )?);
+    }
+    let complete = reader_visibility_evidence_complete(output, &samples);
+    for (summary, (policy, _)) in policies.iter_mut().zip(READER_VISIBILITY_POLICIES) {
+        let policy_samples: Vec<_> = samples
+            .iter()
+            .filter(|sample| sample["diagnosticPolicy"] == policy)
+            .cloned()
+            .collect();
+        let passed = policy_samples
+            .iter()
+            .filter(|sample| sample["status"] == "passed")
+            .count();
+        summary["completedSamples"] = json!(policy_samples.len());
+        summary["passedSamples"] = json!(passed);
+        summary["failedSamples"] = json!(policy_samples.len() - passed);
+        summary["status"] = json!(if complete && passed == READER_VISIBILITY_PAIRS {
+            "passed"
+        } else {
+            "failed"
+        });
+        summary["samples"] = json!(policy_samples);
+        write_sample_file(
+            &output.join(policy).join("policy.json"),
+            &serde_json::to_vec_pretty(summary)?,
+        )?;
+    }
+    let passed = samples
+        .iter()
+        .filter(|sample| sample["status"] == "passed")
+        .count();
+    let summary = json!({"schemaVersion":1,"kind":"reader-visibility-diagnostic",
+        "productionAcceptance":false,"status":if complete && passed == expected_samples {"passed"} else {"failed"},
+        "expectedPairs":READER_VISIBILITY_PAIRS,"expectedSamples":expected_samples,"mode":"warm-view",
+        "completedSamples":samples.len(),"passedSamples":passed,"failedSamples":samples.len()-passed,
+        "wholeProcessDeadlineMs":30_000,"textCharacters":180_000,"columnWidthPx":1,
+        "complete":complete,"policies":policies,"samples":samples});
+    write_sample_file(
+        &output.join("diagnostic.json"),
+        &serde_json::to_vec_pretty(&summary)?,
+    )?;
+    println!(
+        "Reader visibility diagnostic completed: {passed}/{expected_samples} passed; complete={complete}; productionAcceptance=false; {}",
+        output.display()
+    );
+    check(
+        complete && passed == expected_samples,
+        "Reader visibility diagnostic failed; all attempted control samples and logs retained.",
     )
 }
 
@@ -1193,13 +1505,18 @@ fn run() -> Result<()> {
     {
         return reader_wrap_diagnostic(root, Path::new(path));
     }
+    if let [flag, path] = arguments.as_slice()
+        && flag == "--reader-visibility-diagnostic"
+    {
+        return reader_visibility_diagnostic(root, Path::new(path));
+    }
     let existing = match arguments.as_slice() {
         [] => None,
         [flag, path] if flag == "--service" && Path::new(path).is_absolute() => {
             Some(Path::new(path))
         }
         _ => {
-            return Err("Usage: morrow-native-check [--service ABSOLUTE_PRODUCTION_BINARY | --reader-adversarial-batch ABSOLUTE_NEW_DIRECTORY | --reader-wrap-diagnostic ABSOLUTE_NEW_DIRECTORY]".into());
+            return Err("Usage: morrow-native-check [--service ABSOLUTE_PRODUCTION_BINARY | --reader-adversarial-batch ABSOLUTE_NEW_DIRECTORY | --reader-wrap-diagnostic ABSOLUTE_NEW_DIRECTORY | --reader-visibility-diagnostic ABSOLUTE_NEW_DIRECTORY]".into());
         }
     };
     let package = fs::read(root.join("package.json"))?;
@@ -1403,6 +1720,182 @@ mod tests {
             stdout_truncated: false,
             stderr_truncated: false,
         }
+    }
+
+    fn visibility_trace(policy: &str, foreground_ready: bool) -> String {
+        let active = if foreground_ready { "true" } else { "false" };
+        format!(
+            "Native macOS reader: trace phase=setup diagnostic-visibility-control policy={policy} acceptance=false textCharacters=180000 columnWidthPx=1 +0 ms\nNative macOS reader: trace phase=focused-warmup visibility-state policy={policy} stage=before-adversarial attached=true hidden=false positiveBounds=true appActive={active} windowKey={active} windowVisible=true occlusionVisible={active} sameWebView=true +5 ms\nNative macOS reader: trace phase=adversarial-text visibility-adversarial-publish policy={policy} +6 ms\nNative macOS reader: trace phase=adversarial-text fixture-update-request begin textCharacters=180000 columnWidthPx=1 viewportWidth=690 viewportHeight=440 windowWidth=720 +6 ms\nNative macOS reader: trace phase=adversarial-text fixture-update-request end; SwiftUI navigation/layout may still be pending +7 ms\n"
+        )
+    }
+
+    #[test]
+    fn reader_visibility_requires_ordered_exact_state_and_foreground_readiness() {
+        let fixture = Fixture::new().unwrap();
+        let foreground = visibility_trace("foreground-prepared", true);
+        let background = visibility_trace("baseline-presentation", false);
+        let evidence =
+            reader_visibility_evidence(background.as_bytes(), "baseline-presentation").unwrap();
+        assert_eq!(evidence["windowVisible"], true);
+        assert_eq!(evidence["appActive"], false);
+        assert_eq!(evidence["foregroundReady"], false);
+        assert_eq!(
+            reader_visibility_evidence(foreground.as_bytes(), "foreground-prepared").unwrap()["foregroundReady"],
+            true
+        );
+        let lines: Vec<_> = foreground.lines().collect();
+        for invalid in [
+            foreground.replace("foreground-prepared", "baseline-presentation"),
+            foreground.replace(
+                "diagnostic-visibility-control",
+                "diagnostic-wrapping-control",
+            ),
+            foreground.replace("windowKey=true", "windowKey=unknown"),
+            foreground.replace("+6 ms", "+4 ms"),
+            format!("{}\n{}\n{}\n", lines[0], lines[2], lines[1]),
+            format!(
+                "{}\n{}\n{}\n{}\n{}\n",
+                lines[0], lines[3], lines[1], lines[2], lines[4]
+            ),
+            format!(
+                "{}\n{}\n{}\n{}\n{}\n",
+                lines[0], lines[1], lines[2], lines[4], lines[3]
+            ),
+            format!("{foreground}{}\n", lines[1]),
+            format!("{}\n{}\n", lines[0], lines[2]),
+        ] {
+            assert!(reader_visibility_evidence(invalid.as_bytes(), "foreground-prepared").is_err());
+        }
+        for (index, (policy, trace, mode, expected)) in [
+            (
+                "foreground-prepared",
+                foreground.clone(),
+                "warm-view",
+                "passed",
+            ),
+            ("baseline-presentation", background, "warm-view", "passed"),
+            (
+                "foreground-prepared",
+                visibility_trace("foreground-prepared", false),
+                "warm-view",
+                "failed",
+            ),
+            (
+                "foreground-prepared",
+                foreground.clone(),
+                "cold-view",
+                "failed",
+            ),
+            (
+                "foreground-prepared",
+                foreground.replace("sameWebView=true", "sameWebView=false"),
+                "warm-view",
+                "failed",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let directory = fixture.0.join(format!("sample-{index}"));
+            fs::create_dir(&directory).unwrap();
+            let mut process =
+                completed_reader_process(serde_json::to_vec(&reader_child_result(mode)).unwrap());
+            process.stderr = trace.into_bytes();
+            let record = save_reader_sample_with_diagnostic(
+                &directory,
+                1,
+                mode,
+                Ok(process),
+                Ok(()),
+                Some(ReaderDiagnostic::Visibility(policy)),
+            )
+            .unwrap();
+            assert_eq!(record["status"], expected);
+            assert!(
+                record["visibilityEvidence"].is_object(),
+                "Keep observed flags even for failed preparation"
+            );
+            assert_eq!(record["productionAcceptance"], false);
+        }
+    }
+
+    #[test]
+    fn reader_visibility_retains_six_warm_pairs_and_rejects_other_evidence_families() {
+        let fixture = Fixture::new().unwrap();
+        for (policy, _) in READER_VISIBILITY_POLICIES {
+            fs::create_dir(fixture.0.join(policy)).unwrap();
+        }
+        let mut samples = Vec::new();
+        for index in 0..READER_VISIBILITY_PAIRS * READER_VISIBILITY_POLICIES.len() {
+            let sequence = index + 1;
+            let (policy, _) = READER_VISIBILITY_POLICIES[index % READER_VISIBILITY_POLICIES.len()];
+            let directory = fixture
+                .0
+                .join(policy)
+                .join(format!("sample-{sequence:02}-warm-view"));
+            fs::create_dir(&directory).unwrap();
+            let mut process = completed_reader_process(
+                serde_json::to_vec(&reader_child_result("warm-view")).unwrap(),
+            );
+            process.stderr = visibility_trace(policy, policy == "foreground-prepared").into_bytes();
+            if index == 0 {
+                process.outcome = "timeout";
+            }
+            samples.push(
+                save_reader_sample_with_diagnostic(
+                    &directory,
+                    sequence,
+                    "warm-view",
+                    Ok(process),
+                    Ok(()),
+                    Some(ReaderDiagnostic::Visibility(policy)),
+                )
+                .unwrap(),
+            );
+        }
+        assert_eq!(samples.len(), 6);
+        assert_eq!(samples[0]["status"], "failed");
+        assert_eq!(samples[5]["status"], "passed");
+        assert!(samples.iter().all(|sample| sample["mode"] == "warm-view"));
+        assert!(reader_visibility_evidence_complete(&fixture.0, &samples));
+        assert!(!reader_visibility_evidence_complete(
+            &fixture.0,
+            &samples[..5]
+        ));
+        assert!(!reader_batch_evidence_complete(&fixture.0, &samples));
+        assert!(!reader_series_evidence_complete(
+            &fixture.0,
+            &samples,
+            6,
+            Some("break-word")
+        ));
+        let first_result = fixture
+            .0
+            .join("baseline-presentation/sample-01-warm-view/result.json");
+        for (field, invalid) in [
+            ("mode", json!("cold-view")),
+            ("pair", json!(2)),
+            ("diagnosticPolicy", json!("foreground-prepared")),
+            ("kind", json!("reader-wrap-diagnostic-sample")),
+            ("kind", json!("reader-adversarial-sample")),
+        ] {
+            let original = samples[0][field].clone();
+            samples[0][field] = invalid;
+            fs::write(&first_result, serde_json::to_vec(&samples[0]).unwrap()).unwrap();
+            assert!(!reader_visibility_evidence_complete(&fixture.0, &samples));
+            samples[0][field] = original;
+            fs::write(&first_result, serde_json::to_vec(&samples[0]).unwrap()).unwrap();
+        }
+        assert!(reader_visibility_evidence_complete(&fixture.0, &samples));
+        fs::remove_file(
+            fixture
+                .0
+                .join("foreground-prepared/sample-06-warm-view/stderr.log"),
+        )
+        .unwrap();
+        assert!(!reader_visibility_evidence_complete(&fixture.0, &samples));
+        assert!(reader_visibility_diagnostic(&fixture.0, &fixture.0).is_err());
+        assert!(reader_visibility_diagnostic(&fixture.0, Path::new("relative-output")).is_err());
     }
 
     #[test]

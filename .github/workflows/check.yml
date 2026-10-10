@@ -63,6 +63,12 @@ jobs:
         run: |
           mkdir -p "$PWD/test-results"
           cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-native-check -- --reader-wrap-diagnostic "$PWD/test-results/macos-reader-wrap-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}"
+      - name: Diagnose reader window visibility
+        if: ${{ !cancelled() && env.SKIP_TESTS != 'true' }}
+        shell: bash
+        run: |
+          mkdir -p "$PWD/test-results"
+          cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-native-check -- --reader-visibility-diagnostic "$PWD/test-results/macos-reader-visibility-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}"
       - name: Repeat adversarial reader on fresh and reused views
         if: ${{ !cancelled() && env.SKIP_TESTS != 'true' }}
         shell: bash
@@ -77,6 +83,7 @@ jobs:
           path: |
             test-results/macos-reader-batch-*
             test-results/macos-reader-wrap-diagnostic-*
+            test-results/macos-reader-visibility-diagnostic-*
           if-no-files-found: warn
           retention-days: 14
       - name: Retain macOS candidate
@@ -136,7 +143,7 @@ jobs:
       - name: Native fixture walkthrough
         if: env.SKIP_TESTS != 'true'
         shell: pwsh
-        run: ./scripts/test-windows-native.ps1 -UiSmoke
+        run: ./scripts/test-windows-native.ps1 -UiSmoke -RequireCompleteObservation
       - name: Verify relocated package with Windows PowerShell 5.1
         if: env.SKIP_TESTS != 'true'
         shell: powershell

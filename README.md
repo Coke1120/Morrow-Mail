@@ -43,6 +43,8 @@ Browser sign-in uses the desktop registration included in the build; custom regi
 
 Detailed behavior and limits are in [feature coverage](FEATURE_COVERAGE.md) and the [user guide](docs/USER_GUIDE.md).
 
+The unreleased [native reader and resource-observation follow-up](VERIFICATION.md#reader-timing-and-windows-observation--follow-up-in-progress) records fixture measurements and strict observation checks. Its diagnostic controls do not establish production readiness; exact draft-PR commits and native results remain separate from the published release.
+
 ## New in 0.7.2
 
 [Fetch recovery changes](docs/FETCH_RECOVERY.md) address IMAP date gaps, Outlook delta catch-up, Gmail label limits and incomplete content. Native reader recovery, Windows composer focus and expired mail/search cursors retain their account and page context. The paired source CI passed on both platforms; each release tag requires fresh paired checks before publication. See the [0.7.2 release notes](docs/releases/v0.7.2.md) for fixes and remaining limits.
