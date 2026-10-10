@@ -123,7 +123,8 @@ struct MailFlowAssertions {
         // AppKit/SwiftUI peers can implement the Objective-C accessibility
         // selectors without declaring conformance to the full Swift protocol.
         let element = root as AnyObject
-        return [element] + (element.accessibilityChildren?() ?? []).prefix(100).flatMap { accessibility($0, depth: depth + 1) }
+        let children = (element.accessibilityChildren?() ?? []) + ((root as? NSView)?.subviews ?? [])
+        return [element] + children.prefix(100).flatMap { accessibility($0, depth: depth + 1) }
     }
     @MainActor static func press(_ name: String, in root: NSView) async throws {
         var button: AnyObject?
@@ -140,7 +141,9 @@ struct MailFlowAssertions {
             for element in accessibility(root).prefix(40) {
                 trace("Fixture AX: role=\(element.accessibilityRole?()?.rawValue ?? "nil") label=\(element.accessibilityLabel?() ?? "") title=\(element.accessibilityTitle?() ?? "")")
             }
-            trace("Fixture native buttons: \(views(root, NSButton.self).map(\.title))")
+            for native in views(root, NSButton.self).prefix(20) {
+                trace("Fixture native button: title=\(native.title) label=\(native.accessibilityLabel() ?? "") AXtitle=\(native.accessibilityTitle() ?? "")")
+            }
         }
         try require(button?.accessibilityPerformPress?() == true, "Missing native action: " + name)
     }
