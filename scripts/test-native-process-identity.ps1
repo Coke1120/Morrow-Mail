@@ -116,7 +116,7 @@ $child = $null; $fixtureHandle = $null; $currentCase = 'setup'; $self = [Diagnos
 $failureSeen = $false; $operation = 'start'; $watch = [Diagnostics.Stopwatch]::StartNew()
 try {
     foreach ($currentCase in @('live-control', 'held-exit-zero', 'held-exit-zero-cim-precision', 'held-exit-nonzero',
-        'released-handles', 'projected-pid-mismatch', 'projected-creation-mismatch', 'projected-parent-start',
+        'released-fixture-handles', 'disposed-owned-handle', 'projected-pid-mismatch', 'projected-creation-mismatch', 'projected-parent-start',
         'query-without-rights', 'wait-without-rights')) {
         $operation = 'wall-budget'
         Check ($watch.ElapsedMilliseconds -lt 60000) 'fixture-wall-budget'
@@ -126,18 +126,28 @@ try {
         $childId = [uint32] $child.Id; $ticks = $child.StartTime.ToUniversalTime().Ticks
         $parentTicks = $self.StartTime.ToUniversalTime().Ticks
         $cimTicks = if ($currentCase -eq 'held-exit-zero-cim-precision') { $ticks - $ticks % 10L } else { $ticks }
-        $lookupArgument = $false; $released = $false; $projection = 'none'
-        if ($currentCase -notin @('live-control', 'query-without-rights', 'wait-without-rights')) {
+        $lookupArgument = $false; $released = $false; $projection = 'none'; $probeSource = 'native-open-process'
+        if ($currentCase -notin @('live-control', 'disposed-owned-handle', 'query-without-rights', 'wait-without-rights')) {
             $operation = 'child-exit-barrier'
             $child.StandardInput.WriteLine($(if ($currentCase -eq 'held-exit-nonzero') { 'exit7' } else { 'exit0' }))
             $child.StandardInput.Flush(); Check ($child.WaitForExit(5000)) 'child-exit-barrier'
-            if ($currentCase -eq 'released-handles') { $child.Dispose(); $child = $null; $released = $true }
+            if ($currentCase -eq 'released-fixture-handles') { $child.Dispose(); $child = $null; $released = $true }
             $operation = 'dotnet-lookup'
             $lookupArgument = Read-LookupRejection $childId
         }
         $operation = 'native-proof'
         switch ($currentCase) {
+            'disposed-owned-handle' {
+                # A closed borrowed handle must not prove an exit even while
+                # its owned child is alive. This is handle validation, not a
+                # missing-PID/OpenProcess-unavailable fixture.
+                $probeSource = 'disposed-owned-handle'
+                $fixtureHandle = [MorrowObservationIdentityFixture.Handles]::Open($childId, 'limited')
+                $fixtureHandle.Dispose()
+                $proof = [MorrowObservationIdentity.ExitProof]::ReadHandle($fixtureHandle, $childId, $cimTicks, $parentTicks)
+            }
             'projected-pid-mismatch' {
+                $probeSource = 'borrowed-owned-handle'
                 $projection = 'expected-pid-only'
                 $fixtureHandle = [MorrowObservationIdentityFixture.Handles]::Open($childId, 'limited')
                 $proof = [MorrowObservationIdentity.ExitProof]::ReadHandle($fixtureHandle, ([uint32]($childId -bxor 1)), $cimTicks, $parentTicks)
@@ -151,20 +161,22 @@ try {
                 $proof = Get-NativeProcessExitProof $childId $cimTicks ($ticks + 1L)
             }
             'query-without-rights' {
+                $probeSource = 'borrowed-owned-handle'
                 $projection = 'synchronize-only-handle-rights'
                 $fixtureHandle = [MorrowObservationIdentityFixture.Handles]::Open($childId, 'synchronize-only')
                 $proof = [MorrowObservationIdentity.ExitProof]::ReadHandle($fixtureHandle, $childId, $cimTicks, $parentTicks)
             }
             'wait-without-rights' {
+                $probeSource = 'borrowed-owned-handle'
                 $projection = 'query-only-handle-rights'
                 $fixtureHandle = [MorrowObservationIdentityFixture.Handles]::Open($childId, 'query-only')
                 $proof = [MorrowObservationIdentity.ExitProof]::ReadHandle($fixtureHandle, $childId, $cimTicks, $parentTicks)
             }
             default { $proof = Get-NativeProcessExitProof $childId $cimTicks $parentTicks }
         }
-        $record = [ordered]@{ case = $currentCase; native = $true; projection = $projection
+        $record = [ordered]@{ case = $currentCase; native = $true; projection = $projection; probeSource = $probeSource
             cimPrecisionProjected = ($currentCase -eq 'held-exit-zero-cim-precision'); fixtureHandlesReleased = $released
-            lookupArgumentException = $lookupArgument; proof = (Convert-Proof $proof); passed = $false }
+            postReleaseObservation = $null; lookupArgumentException = $lookupArgument; proof = (Convert-Proof $proof); passed = $false }
         $records.Add($record)
         $operation = 'case-assertion'
         switch ($currentCase) {
@@ -173,11 +185,23 @@ try {
                 Check ($lookupArgument -and $proof.ProvenZero -and $proof.ActualPid -eq $childId -and $proof.StartUtcTicks -eq $ticks) 'held-zero-lookup-vs-native'
             }
             'held-exit-nonzero' { Check ($lookupArgument -and -not $proof.ProvenZero -and $proof.Outcome -ceq 'nonzeroExit' -and $proof.ExitCode -eq 7) 'nonzero-is-not-zero' }
-            'released-handles' {
-                # If another observer still retains the kernel object, this
-                # fixture has not established unavailability and must fail.
-                # Do not retry until green or pretend that proof was absent.
-                Check (-not $proof.ProvenZero -and (($proof.Stage -ceq 'open' -and $proof.Outcome -ceq 'unavailable') -or $proof.Outcome -ceq 'identityMismatch')) 'released-object-unavailable'
+            'released-fixture-handles' {
+                # Releasing this fixture's handles does not establish global
+                # kernel-object lifetime. Record exactly one probe, without
+                # retrying or treating a valid exit proof as unavailable.
+                if ($proof.ProvenZero) {
+                    Check ($lookupArgument -and $proof.Stage -ceq 'exit' -and $proof.ActualPid -eq $childId -and $proof.StartUtcTicks -eq $ticks) 'released-still-verifiable-zero'
+                    $record.postReleaseObservation = 'verified-zero-exit'
+                } elseif ($proof.Outcome -ceq 'identityMismatch') {
+                    Check ($proof.Stage -in @('pid', 'creation') -and $proof.HandleOpened -and -not $proof.IdentityMatched -and -not $proof.Signaled -and $null -eq $proof.ExitCode) 'released-identity-rejected'
+                    $record.postReleaseObservation = 'identity-mismatch'
+                } else {
+                    Check ($proof.Stage -ceq 'open' -and $proof.Outcome -ceq 'unavailable' -and -not $proof.HandleOpened -and -not $proof.IdentityMatched -and -not $proof.Signaled -and $null -eq $proof.ExitCode -and $proof.NativeError -gt 0) 'released-open-unavailable'
+                    $record.postReleaseObservation = 'open-unavailable'
+                }
+            }
+            'disposed-owned-handle' {
+                Check (-not $child.HasExited -and $fixtureHandle.IsClosed -and -not $proof.ProvenZero -and $proof.Outcome -ceq 'unavailable' -and $proof.Stage -ceq 'handle' -and -not $proof.HandleOpened -and -not $proof.IdentityMatched -and -not $proof.Signaled -and $null -eq $proof.ActualPid -and $null -eq $proof.StartUtcTicks -and $null -eq $proof.ExitCode -and $null -eq $proof.NativeError) 'disposed-handle-no-proof'
             }
             { $_ -like 'projected-*' } { Check (-not $proof.ProvenZero -and $proof.Outcome -ceq 'identityMismatch') 'projected-identity-rejected' }
             'query-without-rights' { Check (-not $proof.ProvenZero -and $proof.Outcome -ceq 'accessDenied' -and $proof.Stage -ceq 'pid' -and $proof.NativeError -eq 5) 'native-query-denial' }
