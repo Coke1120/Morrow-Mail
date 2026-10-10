@@ -4,10 +4,14 @@ param(
     [string] $PackageDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) 'build/windows-native/Morrow Mail-win32-x64'),
     [switch] $LayoutOnly,
     [switch] $UiSmoke,
+    [switch] $RequireCompleteObservation,
     [switch] $ObservationsSelfTest
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+if ($RequireCompleteObservation -and (-not $UiSmoke -or $LayoutOnly -or $ObservationsSelfTest)) {
+    throw 'Complete observations require -UiSmoke without -LayoutOnly or -ObservationsSelfTest.'
+}
 if (-not $ObservationsSelfTest -and -not $IsWindows) { throw 'Run Windows native acceptance on Windows.' }
 $directory = if ($ObservationsSelfTest) { '' } else { (Resolve-Path -LiteralPath $PackageDirectory).Path }
 . (Join-Path $PSScriptRoot 'measure-native-processes.ps1')
@@ -494,7 +498,7 @@ try {
         $owned = New-Fixture
         & $helper seed $owned
         Require ($LASTEXITCODE -eq 0) 'Could not seed the isolated native mailbox.'
-        $caseIndex = 0
+        $caseIndex = 0; $observationFailures = [Collections.Generic.List[int]]::new()
         foreach ($case in @(@{ path = $fixture; mode = 'fresh' }, @{ path = $owned; mode = 'owned' }, @{ path = $owned; mode = 'owned' })) {
             $caseIndex++
             $resultFile = Join-Path $case.path 'native-smoke-result.json'
@@ -511,12 +515,12 @@ try {
                 $crashCapture = New-CrashCapture
             }
             $sampleFile = New-NativeSampleFile $case.path
-            $collector = $null; $completion = $null
+            $collector = $null; $completion = $null; $collectorStarted = $false; $observationComplete = $false
             $launch = [Diagnostics.Stopwatch]::GetTimestamp()
             $process = [Diagnostics.Process]::Start($ui)
             try {
                 # Process.Start/StartTime only; all CIM runs in the owned child.
-                try { $collector = Start-NativeResourceCollector $process $sampleFile $launch }
+                try { $collector = Start-NativeResourceCollector $process $sampleFile $launch; $collectorStarted = $null -ne $collector }
                 catch { Write-Warning 'Native resource collector could not start; evidence will be incomplete.' }
                 $completion = Wait-NativeUi $process 180000 $launch
             } finally {
@@ -534,11 +538,21 @@ try {
                     $evidence = Join-Path $root 'test-results'
                     [void] (New-Item -ItemType Directory -Force $evidence)
                     [IO.File]::WriteAllText((Join-Path $evidence "windows-native-resource-$caseIndex.json"), ($resource | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+                    $summary = Get-NativeObservationSummary $resource $caseIndex $case.mode $resource.uiCompleted $collectorStarted
+                    Write-Host ('Native observation: ' + ($summary | ConvertTo-Json -Compress -Depth 8))
+                    foreach ($sample in @(Get-NativeObservationSamples $resource $caseIndex $case.mode)) {
+                        Write-Host ('Native observation sample: ' + ($sample | ConvertTo-Json -Compress -Depth 6))
+                    }
+                    $observationComplete = -not $resource.incomplete
                     if ($resource.incomplete) { Write-Warning 'Native resource observation is incomplete; inspect its separate evidence report.' }
                 } catch {
                     # Optional observation must not replace an original UI error.
+                    $summary = @{ run = $caseIndex; mode = $case.mode; reportUnavailable = $true; incomplete = $true
+                        collectorStarted = $collectorStarted; collector = $collectorStop }
+                    Write-Host ('Native observation: ' + ($summary | ConvertTo-Json -Compress -Depth 4))
                     Write-Warning 'Native resource report is missing or incomplete; no complete measurement is claimed. The UI acceptance result is unchanged.'
                 }
+                if (-not $observationComplete) { $observationFailures.Add($caseIndex) }
             }
             $completed = $completion.Completed
             $diagnostics = $completion.Diagnostics
@@ -585,6 +599,12 @@ try {
                 & $helper verify $case.path
                 Require ($LASTEXITCODE -eq 0) 'Native UI fixture ownership or persisted records failed verification.'
             }
+        }
+        # Preserve the original UI/result/persistence error, if any. Only after
+        # all normal cases and their evidence have completed does this opt-in
+        # gate fail incomplete observations. Negative self-tests stay separate.
+        if ($RequireCompleteObservation) {
+            Require ($observationFailures.Count -eq 0) ('Native observation evidence is incomplete for fixture cases: ' + ($observationFailures -join ',') + '.')
         }
         Write-Host 'Native fresh/owned/restart UI smoke passed; no live providers or sending were exercised.'
     }

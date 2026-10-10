@@ -1,0 +1,41 @@
+name: Native observer diagnostics
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/observer-diagnostics.yml
+      - scripts/native-process-identity.ps1
+      - scripts/test-native-process-identity.ps1
+      - scripts/measure-native-processes.ps1
+      - scripts/test-native-process-lifecycle.ps1
+permissions:
+  contents: read
+jobs:
+  process-identity-proof:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Check owned native process identity evidence
+        shell: pwsh
+        run: |
+          $output = Join-Path $PWD "test-results/process-identity-${{ github.run_id }}-${{ github.run_attempt }}"
+          & "$PWD/scripts/test-native-process-identity.ps1" -OutputDirectory $output
+      - name: Check native collector admission and lifecycle evidence
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $output = Join-Path $PWD "test-results/observer-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}"
+          if (Test-Path -LiteralPath $output) { throw 'Diagnostic output already exists.' }
+          New-Item -ItemType Directory -Path $output | Out-Null
+          & "$PWD/scripts/measure-native-processes.ps1" -SelfTest *>&1 | Tee-Object -FilePath (Join-Path $output 'lifecycle.log')
+      - name: Retain diagnostic evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: observer-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            test-results/process-identity-*
+            test-results/observer-lifecycle-*
+          if-no-files-found: warn
+          retention-days: 14

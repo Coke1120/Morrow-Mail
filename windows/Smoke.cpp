@@ -126,6 +126,98 @@ void readerRefreshChecks(std::shared_ptr<Shell> const& shell) {
     check(panel.Children().Size() && unbox_value<hstring>(panel.Children().GetAt(0).as<controls::Button>().Content()) == L"Load message content and attachments…",
         L"Incomplete content has no explicit recovery entry when attachment metadata is empty.");
 }
+IAsyncAction mailSelectionMenuChecks(std::shared_ptr<Shell> shell, std::vector<Json> batch, Json evidence) {
+    auto check = [](bool condition, wchar_t const* message) { if (!condition) throw hresult_error(E_FAIL, message); };
+    apartment_context ui;
+    auto rows = shell->rows; auto anchor = rows.Items().GetAt(0).as<controls::ListViewItem>();
+    auto menu = anchor.ContextFlyout().as<controls::MenuFlyout>();
+    auto owner = shell->owner; auto generation = shell->generation;
+    std::set<std::wstring> expectedIds;
+    for (auto const& message : batch) expectedIds.insert(std::wstring(text(message, L"viewId")));
+    auto sameContext = [&] {
+        if (!shell->current(generation, owner) || shell->section != L"mail" || shell->rows != rows
+            || !rows.Items().Size() || rows.Items().GetAt(0) != anchor || anchor.ContextFlyout() != menu
+            || shell->loading || shell->dialogOpen || shell->closing || !shell->dirty.empty() || shell->service->writing()) return false;
+        std::set<std::wstring> selectedIds;
+        auto messages = shell->selectedMessages();
+        for (auto const& message : messages) {
+            if (text(message, L"accountId") != owner) return false;
+            selectedIds.insert(std::wstring(text(message, L"viewId")));
+        }
+        return messages.size() == 2 && selectedIds == expectedIds;
+    };
+    auto mounted = [&](controls::ListViewItem const& target) {
+        auto ancestor = target.try_as<xaml::DependencyObject>();
+        while (ancestor && ancestor != shell->root) ancestor = xaml::Media::VisualTreeHelper::GetParent(ancestor);
+        return bool(ancestor);
+    };
+    auto liveTarget = [&](controls::ListViewItem const& target) {
+        return target.IsLoaded() && target.IsEnabled() && target.Visibility() == xaml::Visibility::Visible
+            && target.ActualWidth() > 0 && target.ActualHeight() > 0 && mounted(target);
+    };
+    struct MenuEvents { bool opening = false, opened = false, closed = false; };
+    auto events = std::make_shared<MenuEvents>();
+    auto opening = menu.Opening(auto_revoke, [events](auto const&, auto const&) { events->opening = true; });
+    auto opened = menu.Opened(auto_revoke, [events](auto const&, auto const&) { events->opened = true; });
+    auto closed = menu.Closed(auto_revoke, [events](auto const&, auto const&) { events->closed = true; });
+    struct CloseMenu {
+        controls::MenuFlyout menu; bool requested = false, finished = false;
+        ~CloseMenu() { if (requested && !finished) try { menu.Hide(); } catch (...) {} }
+    } cleanup{menu};
+    unsigned showCalls = 0; bool rejectedDetached = false;
+    evidence.Insert(L"initialLoaded", Value::CreateBooleanValue(anchor.IsLoaded()));
+    evidence.Insert(L"initialMounted", Value::CreateBooleanValue(mounted(anchor)));
+    auto showOnce = [&](controls::ListViewItem const& target) {
+        if (!liveTarget(target)) return false;
+        check(sameContext() && target == anchor, L"The selection menu target no longer belongs to its owned selection.");
+        check(showCalls == 0, L"The selection menu fixture attempted to retry ShowAt.");
+        ++showCalls; cleanup.requested = true; menu.ShowAt(target); return true;
+    };
+    auto diagnostic = [&] {
+        for (auto const& [key, value] : {std::pair{L"loaded", anchor.IsLoaded()}, {L"mounted", mounted(anchor)},
+            {L"current", sameContext()}, {L"opening", events->opening}, {L"opened", events->opened},
+            {L"closed", events->closed}, {L"open", menu.IsOpen()}, {L"detachedRejected", rejectedDetached}})
+            evidence.Insert(key, Value::CreateBooleanValue(value));
+        evidence.Insert(L"items", Value::CreateNumberValue(menu.Items().Size()));
+        evidence.Insert(L"showCalls", Value::CreateNumberValue(showCalls));
+    };
+    try {
+        // The same guard must refuse an unmounted target, even with owned row
+        // metadata. WinUI ShowAt otherwise silently ignores a non-live target;
+        // sleeping afterward cannot cause that discarded request to open.
+        controls::ListViewItem detached; detached.Tag(anchor.Tag());
+        check(!detached.IsLoaded() && !mounted(detached), L"The negative selection menu fixture unexpectedly became live.");
+        rejectedDetached = !showOnce(detached);
+        check(rejectedDetached && showCalls == 0 && !events->opening && !menu.IsOpen(),
+            L"The selection menu accepted an unattached fixture target.");
+        // Realize this exact current row before the single ShowAt. A bounded
+        // event wait observes UI completion, not an assumed 50 ms render time.
+        auto deadline = GetTickCount64() + 5000;
+        rows.ScrollIntoView(anchor); shell->root.UpdateLayout();
+        while (sameContext() && !liveTarget(anchor) && GetTickCount64() < deadline) {
+            co_await resume_after(std::chrono::milliseconds(10)); co_await ui; shell->root.UpdateLayout();
+        }
+        check(sameContext() && liveTarget(anchor), L"The selection menu row did not become live in its owned mailbox.");
+        check(showOnce(anchor), L"The selection menu target changed before ShowAt.");
+        while (!events->opened && sameContext() && GetTickCount64() < deadline) {
+            co_await resume_after(std::chrono::milliseconds(10)); co_await ui;
+        }
+        check(events->opening && events->opened && menu.IsOpen() && menu.Target() == anchor && sameContext(),
+            L"The selection menu did not open on its current owned two-row selection.");
+        check(menu.Items().Size() >= 9, L"The selection context menu has no batch actions.");
+        std::vector<hstring> actions;
+        for (auto const& value : menu.Items()) if (auto item = value.try_as<controls::MenuFlyoutItem>()) actions.push_back(item.Text());
+        check(actions == std::vector<hstring>{L"Delete", L"Mark read", L"Mark unread", L"Star", L"Unstar", L"Mark Pending", L"Clear Pending", L"Archive locally", L"Move to local Trash"},
+            L"The owned two-row selection menu lost or changed its batch actions.");
+        menu.Hide();
+        while (!events->closed && GetTickCount64() < deadline) {
+            co_await resume_after(std::chrono::milliseconds(10)); co_await ui;
+        }
+        check(events->closed && !menu.IsOpen() && sameContext(), L"The selection menu did not close while preserving its owned selection.");
+        cleanup.finished = true; diagnostic();
+        std::fprintf(stderr, "Native smoke: mail-selection-menu-events-passed\n"); std::fflush(stderr);
+    } catch (...) { try { diagnostic(); } catch (...) {} throw; }
+}
 IAsyncAction mailRevisionChecks(std::shared_ptr<Shell> shell) {
     auto check = [](bool condition, wchar_t const* message) { if (!condition) throw hresult_error(E_FAIL, message); };
     auto rowMessage = [](controls::ListViewItem const& row) { return row.Tag().as<Json>(); };
@@ -306,7 +398,7 @@ IAsyncAction Shell::smoke() {
         phase = std::move(next);
         std::fprintf(stderr, "Native smoke: %s\n", phase.c_str()); std::fflush(stderr);
     };
-    Json readerEvidence;
+    Json readerEvidence, selectionMenuEvidence;
     try {
         readerSecurityChecks();
         readerRefreshChecks(lifetime);
@@ -727,10 +819,7 @@ IAsyncAction Shell::smoke() {
             check(batch.size() == 2 && text(batch[0],L"viewId") != text(batch[1],L"viewId"), L"Multiple selection lost owned row identities.");
             auto outside = rows.Items().GetAt(2).as<controls::ListViewItem>().Tag().as<Json>();
             check(selectedMessages(outside).size() == 1, L"Right-click outside selection acts on unrelated mail.");
-            auto menu = rows.Items().GetAt(0).as<controls::ListViewItem>().ContextFlyout().as<controls::MenuFlyout>();
-            menu.ShowAt(rows.Items().GetAt(0).as<controls::ListViewItem>());
-            co_await resume_after(std::chrono::milliseconds(50)); co_await ui;
-            check(menu.Items().Size() >= 9, L"The selection context menu has no batch actions."); menu.Hide();
+            co_await mailSelectionMenuChecks(lifetime, batch, selectionMenuEvidence);
             Json stars; stars.Insert(L"starred",Value::CreateBooleanValue(true)); co_await patchMessages(batch,stars);
             for (auto const& message : batch) check(flag(object(co_await service->request(L"/messages/"+escaped(text(message,L"id")),text(message,L"accountId")),L"message"),L"starred"), L"Batch patch lost an owning mailbox.");
             check(selectedMessages().size() == 2, L"Refreshing a batch discarded multi-selection.");
@@ -1064,6 +1153,7 @@ IAsyncAction Shell::smoke() {
         check(!closeReady && IsWindow(handle), L"A second close destroyed the window before the service drained.");
         Json result; result.Insert(L"ok", Value::CreateBooleanValue(true)); put(result, L"mode", seeded ? L"owned" : L"fresh");
         if (seeded) result.Insert(L"reader", readerEvidence);
+        if (selectionMenuEvidence.Size()) result.Insert(L"selectionMenu", selectionMenuEvidence);
         std::ofstream(service->directory()/L"native-smoke-result.json",std::ios::binary) << to_string(result.Stringify());
         co_await draining;
         co_return;
@@ -1071,6 +1161,7 @@ IAsyncAction Shell::smoke() {
     catch (...) { failure="Native acceptance failed."; }
     if (!failure.empty()) {
         Json result; result.Insert(L"ok",Value::CreateBooleanValue(false)); put(result,L"error",to_hstring(failure)); put(result,L"phase",to_hstring(phase));
+        if (selectionMenuEvidence.Size()) result.Insert(L"selectionMenu", selectionMenuEvidence);
         std::ofstream(service->directory()/L"native-smoke-result.json",std::ios::binary) << to_string(result.Stringify());
     }
     // Failed fixture assertions must not wait for an unsaved-edit confirmation.
