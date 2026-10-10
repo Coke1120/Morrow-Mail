@@ -1,0 +1,30 @@
+name: Native Instruments capability preflight
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/reader-instruments-preflight.yml
+      - scripts/probe-macos-instruments.py
+      - scripts/test-probe-macos-instruments.py
+permissions:
+  contents: read
+jobs:
+  instruments-capabilities:
+    runs-on: macos-15
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Read installed Instruments capabilities without recording
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          mkdir -p "$PWD/test-results"
+          python3 -I -B scripts/probe-macos-instruments.py --output "$PWD/test-results/macos-instruments-${{ github.run_id }}-${{ github.run_attempt }}"
+      - name: Retain capability evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: instruments-capabilities-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/macos-instruments-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 14

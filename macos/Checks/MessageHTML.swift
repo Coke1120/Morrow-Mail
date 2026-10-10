@@ -11,6 +11,15 @@ import WebKit
 #if (READER_DIAGNOSTIC_BASELINE_PRESENTATION || READER_DIAGNOSTIC_FOREGROUND_PRESENTATION) && (READER_DIAGNOSTIC_BREAK_WORD || READER_DIAGNOSTIC_NORMAL)
 #error("Do not combine reader visibility and wrapping controls")
 #endif
+#if READER_DIAGNOSTIC_BASELINE_STRUCTURE && READER_DIAGNOSTIC_NESTED_INLINE
+#error("Choose only one reader diagnostic structure policy")
+#endif
+#if (READER_DIAGNOSTIC_BASELINE_STRUCTURE || READER_DIAGNOSTIC_NESTED_INLINE) && (READER_DIAGNOSTIC_BREAK_WORD || READER_DIAGNOSTIC_NORMAL || READER_DIAGNOSTIC_BASELINE_PRESENTATION || READER_DIAGNOSTIC_FOREGROUND_PRESENTATION)
+#error("Do not combine reader structure controls with other diagnostics")
+#endif
+#if (READER_DIAGNOSTIC_BASELINE_RENDERING || READER_DIAGNOSTIC_SUPPRESSED_RENDERING) && (READER_DIAGNOSTIC_BREAK_WORD || READER_DIAGNOSTIC_NORMAL || READER_DIAGNOSTIC_BASELINE_PRESENTATION || READER_DIAGNOSTIC_FOREGROUND_PRESENTATION || READER_DIAGNOSTIC_BASELINE_STRUCTURE || READER_DIAGNOSTIC_NESTED_INLINE)
+#error("Do not combine reader rendering controls with other diagnostics")
+#endif
 
 // Fixture-only telemetry. Every mutable field is protected by lock; the timer
 // never reads AppKit/WebKit objects. Logs contain only fixture labels and counts.
@@ -228,10 +237,21 @@ private enum ReaderFixtureMode: String {
         #endif
     }
     private static var measuredAdversarialHTML: String {
-        // Separate diagnostic binaries change only this fixture's wrapping
-        // policy. The default full check and 40-sample baseline stay exact.
-        guard let policy = diagnosticWrappingPolicy else { return adversarialHTML }
-        return adversarialHTML.replacingOccurrences(of: "<div style='width:1px'>", with: "<div style='width:1px;overflow-wrap:\(policy)'>")
+        // Separate diagnostic binaries explicitly alter one fixture policy.
+        // The default full check and 40-sample baseline stay byte-for-byte exact.
+        if let policy = diagnosticWrappingPolicy {
+            return adversarialHTML.replacingOccurrences(of: "<div style='width:1px'>", with: "<div style='width:1px;overflow-wrap:\(policy)'>")
+        }
+        if diagnosticStructurePolicy == "nested-inline" {
+            // Two neutral wrappers surround the complete original text. No
+            // characters, whitespace, styles, break opportunities, or width
+            // changes are inserted within that text or its trailing paragraph.
+            // This probes a layout-path hypothesis; it is not a product fix.
+            return adversarialHTML
+                .replacingOccurrences(of: "<div style='width:1px'>", with: "<div style='width:1px'><span><span>")
+                .replacingOccurrences(of: "</div>", with: "</span></span></div>")
+        }
+        return adversarialHTML
     }
     private static var diagnosticVisibilityPolicy: String? {
         #if READER_DIAGNOSTIC_BASELINE_PRESENTATION
@@ -242,6 +262,26 @@ private enum ReaderFixtureMode: String {
         return nil
         #endif
     }
+    private static var diagnosticStructurePolicy: String? {
+        #if READER_DIAGNOSTIC_BASELINE_STRUCTURE
+        return "baseline-structure"
+        #elseif READER_DIAGNOSTIC_NESTED_INLINE
+        return "nested-inline"
+        #else
+        return nil
+        #endif
+    }
+    private static var diagnosticWrapperDepth: Int { diagnosticStructurePolicy == "nested-inline" ? 2 : 0 }
+    private static var diagnosticRenderingPolicy: String? {
+        #if READER_DIAGNOSTIC_BASELINE_RENDERING
+        return "baseline-rendering"
+        #elseif READER_DIAGNOSTIC_SUPPRESSED_RENDERING
+        return "suppressed-rendering"
+        #else
+        return nil
+        #endif
+    }
+    private static var diagnosticSuppressesIncrementalRendering: Bool { diagnosticRenderingPolicy == "suppressed-rendering" }
 
     @MainActor static func main() {
         let processStarted = ProcessInfo.processInfo.systemUptime
@@ -268,12 +308,26 @@ private enum ReaderFixtureMode: String {
             FileHandle.standardError.write(Data("Diagnostic visibility controls require --adversarial warm-view; they are not full reader acceptance.\n".utf8))
             usage()
         }
+        if Self.diagnosticStructurePolicy != nil, mode != .warmView {
+            FileHandle.standardError.write(Data("Diagnostic structure controls require --adversarial warm-view; they are not full reader acceptance.\n".utf8))
+            usage()
+        }
+        if Self.diagnosticRenderingPolicy != nil, mode != .warmView {
+            FileHandle.standardError.write(Data("Diagnostic rendering controls require --adversarial warm-view; they are not full reader acceptance.\n".utf8))
+            usage()
+        }
         let trace = ReaderFixtureTrace()
         if let policy = Self.diagnosticWrappingPolicy {
             trace.event("diagnostic-wrapping-control policy=\(policy) acceptance=false textCharacters=180000 columnWidthPx=1")
         }
         if let policy = Self.diagnosticVisibilityPolicy {
             trace.event("diagnostic-visibility-control policy=\(policy) acceptance=false textCharacters=180000 columnWidthPx=1")
+        }
+        if let policy = Self.diagnosticStructurePolicy {
+            trace.event("diagnostic-structure-control policy=\(policy) acceptance=false textCharacters=180000 columnWidthPx=1 wrapperDepth=\(Self.diagnosticWrapperDepth)")
+        }
+        if let policy = Self.diagnosticRenderingPolicy {
+            trace.event("diagnostic-rendering-control policy=\(policy) acceptance=false textCharacters=180000 columnWidthPx=1 requestedSuppressesIncrementalRendering=\(Self.diagnosticSuppressesIncrementalRendering)")
         }
         func phase(_ name: String) { trace.phase(name) }
         var adversarialStarted: TimeInterval?
@@ -392,6 +446,20 @@ private enum ReaderFixtureMode: String {
                         && !web.configuration.preferences.javaScriptCanOpenWindowsAutomatically
                         && !web.configuration.websiteDataStore.isPersistent
                 }
+                @MainActor func observeRenderingConfiguration(_ stage: String) throws {
+                    guard let policy = Self.diagnosticRenderingPolicy else { return }
+                    // This is an initialization-configuration readback, not a
+                    // live rendering-suppression state. The policy also applies
+                    // to warmup because WKWebView copies it during creation.
+                    let actual = web.configuration.suppressesIncrementalRendering
+                    let originalView = firstWeb === web && findWeb(host) === web
+                    trace.event("rendering-configuration policy=\(policy) stage=\(stage) suppressesIncrementalRendering=\(actual) sameWebView=\(originalView)")
+                    guard actual == Self.diagnosticSuppressesIncrementalRendering else {
+                        throw fixtureFailure("Reader rendering configuration does not match the diagnostic policy")
+                    }
+                    guard originalView else { throw fixtureFailure("Rendering diagnostic replaced the original reader view") }
+                }
+                try observeRenderingConfiguration("first-view-discovered")
                 if mode != .full, !isolationIsConfigured() { throw fixtureFailure("Reader isolation configuration changed") }
                 assert(MessageHTMLView.document("", images: false, inlineImages: true).contains("img-src data: ;"))
                 assert(!MessageHTMLView.document("", images: false).contains("img-src data:"))
@@ -501,9 +569,14 @@ private enum ReaderFixtureMode: String {
                         if let policy = Self.diagnosticVisibilityPolicy {
                             trace.event("visibility-adversarial-publish policy=\(policy)")
                         }
+                        if let policy = Self.diagnosticStructurePolicy {
+                            trace.event("structure-adversarial-publish policy=\(policy) wrapperDepth=\(Self.diagnosticWrapperDepth)")
+                        }
+                        try observeRenderingConfiguration("before-adversarial")
                         publishAdversarial()
                     }
                     guard try await adversarialIsBounded() else { throw fixtureFailure("Narrow-column HTML escaped the viewport bound") }
+                    try observeRenderingConfiguration("after-adversarial-marker")
                     adversarialElapsed = Int((ProcessInfo.processInfo.systemUptime - (adversarialStarted ?? processStarted)) * 1000)
                     sameWebView = findWeb(host) === web
                     guard sameWebView == true else { throw fixtureFailure("Adversarial content replaced the original reader view") }

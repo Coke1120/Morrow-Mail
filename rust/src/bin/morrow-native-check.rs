@@ -280,11 +280,36 @@ const READER_VISIBILITY_POLICIES: [(&str, &str); 2] = [
         "READER_DIAGNOSTIC_FOREGROUND_PRESENTATION",
     ),
 ];
+const READER_STRUCTURE_PAIRS: usize = 3;
+const READER_STRUCTURE_POLICIES: [(&str, &str, u8); 2] = [
+    (
+        "baseline-structure",
+        "READER_DIAGNOSTIC_BASELINE_STRUCTURE",
+        0,
+    ),
+    ("nested-inline", "READER_DIAGNOSTIC_NESTED_INLINE", 2),
+];
+const READER_RENDERING_PAIRS: usize = 3;
+const READER_RENDERING_POLICIES: [(&str, &str, bool); 2] = [
+    (
+        "baseline-rendering",
+        "READER_DIAGNOSTIC_BASELINE_RENDERING",
+        false,
+    ),
+    (
+        "suppressed-rendering",
+        "READER_DIAGNOSTIC_SUPPRESSED_RENDERING",
+        true,
+    ),
+];
 
 #[derive(Clone, Copy)]
 enum ReaderDiagnostic<'a> {
     Wrap(&'a str),
     Visibility(&'a str),
+    Structure(&'a str),
+    Rendering(&'a str),
+    OwnershipPreflight,
 }
 
 #[derive(Default)]
@@ -363,11 +388,162 @@ struct SampleProcess {
     stderr_truncated: bool,
 }
 
+struct ReaderOwnershipProbe {
+    root: PathBuf,
+    directory: PathBuf,
+    reader_pid: Option<u32>,
+    cancelled: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<std::result::Result<SampleProcess, String>>>,
+    result: Option<std::result::Result<SampleProcess, String>>,
+}
+
+const READER_PREFLIGHT_ENVIRONMENT: [&str; 16] = [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "LC_COLLATE",
+    "LC_MONETARY",
+    "LC_NUMERIC",
+    "LC_TIME",
+    "SECURITYSESSIONID",
+    "__CF_USER_TEXT_ENCODING",
+    "LC_PAPER",
+];
+
+fn isolate_reader_preflight_environment(command: &mut Command) -> &mut Command {
+    command.env_clear();
+    for name in READER_PREFLIGHT_ENVIRONMENT {
+        if let Some(value) = env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    command
+}
+
+impl ReaderOwnershipProbe {
+    fn new(root: &Path, directory: &Path) -> Self {
+        Self {
+            root: root.to_owned(),
+            directory: directory.to_owned(),
+            reader_pid: None,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            worker: None,
+            result: None,
+        }
+    }
+
+    fn observe(&mut self, reader_pid: u32, stderr: &[u8]) {
+        self.reader_pid = Some(reader_pid);
+        if self.worker.is_some()
+            || self.result.is_some()
+            || !reader_adversarial_loading_observed(stderr)
+        {
+            return;
+        }
+        let root = self.root.clone();
+        let output = self.directory.join("ownership.json");
+        let cancelled = self.cancelled.clone();
+        self.worker = Some(thread::spawn(move || {
+            reader_sample_process_controlled(
+                isolate_reader_preflight_environment(&mut command(&root, "python3"))
+                    .args(["-I", "-B", "scripts/probe-macos-reader-processes.py"])
+                    .arg("--reader-pid")
+                    .arg(reader_pid.to_string())
+                    .arg("--output")
+                    .arg(output),
+                Duration::from_secs(8),
+                128 * 1024,
+                Some(cancelled),
+                None,
+            )
+            .map_err(|error| error.to_string())
+        }));
+    }
+
+    fn finish(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            self.result = Some(
+                worker
+                    .join()
+                    .unwrap_or_else(|_| Err("Ownership probe worker failed.".to_owned())),
+            );
+        }
+    }
+}
+
+impl Drop for ReaderOwnershipProbe {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+fn reader_adversarial_loading_observed(stderr: &[u8]) -> bool {
+    let prefix = "Native macOS reader: trace phase=adversarial-text ";
+    let mut update_end_ms = None;
+    // A pipe snapshot can end partway through a trace. Only complete newline
+    // frames may establish the update boundary or trigger the one-shot observer.
+    for frame in String::from_utf8_lossy(stderr).split_inclusive('\n') {
+        let Some(line) = frame.strip_suffix('\n') else {
+            continue;
+        };
+        let Some(event) = line.strip_prefix(prefix) else {
+            continue;
+        };
+        let Some((event, elapsed)) = event.rsplit_once(" +") else {
+            continue;
+        };
+        let Some(elapsed) = elapsed.strip_suffix(" ms") else {
+            continue;
+        };
+        if elapsed.is_empty() || !elapsed.bytes().all(|byte| byte.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(elapsed) = elapsed.parse::<u64>() else {
+            continue;
+        };
+        if event == "fixture-update-request end; SwiftUI navigation/layout may still be pending" {
+            update_end_ms = Some(elapsed);
+        } else if update_end_ms.is_some_and(|end| elapsed >= end)
+            && matches!(
+                event,
+                "navigation-loading reader=initial value=true"
+                    | "marker-wait-begin marker=Bounded adversarial tail loading=true"
+            )
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn reader_sample_process(
     command: &mut Command,
     duration: Duration,
     limit: usize,
 ) -> Result<SampleProcess> {
+    reader_sample_process_controlled(command, duration, limit, None, None)
+}
+
+fn reader_sample_process_controlled(
+    command: &mut Command,
+    duration: Duration,
+    limit: usize,
+    cancelled: Option<Arc<AtomicBool>>,
+    mut observer: Option<&mut ReaderOwnershipProbe>,
+) -> Result<SampleProcess> {
+    check(
+        !cancelled
+            .as_ref()
+            .is_some_and(|cancelled| cancelled.load(Ordering::Acquire)),
+        "Ownership probe cancelled before startup.",
+    )?;
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -402,13 +578,27 @@ fn reader_sample_process(
     let stopped = Arc::new(AtomicBool::new(false));
     let (stdout, stdout_worker) = sample_log_reader(stdout, limit, stopped.clone());
     let (stderr, stderr_worker) = sample_log_reader(stderr, limit, stopped.clone());
+    if let Some(observer) = observer.as_deref_mut() {
+        observer.reader_pid = Some(running.child.id());
+    }
     let mut exit_status = None;
     let mut outcome = loop {
+        if cancelled
+            .as_ref()
+            .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
+        {
+            break "cancelled";
+        }
         if exit_status.is_none() {
             match running.child.try_wait() {
                 Ok(status) => exit_status = status,
                 Err(_) => break "wait-failed",
             }
+        }
+        if exit_status.is_none()
+            && let Some(observer) = observer.as_deref_mut()
+        {
+            observer.observe(running.child.id(), &stderr.lock().unwrap().bytes);
         }
         let out = stdout.lock().unwrap();
         let err = stderr.lock().unwrap();
@@ -437,6 +627,11 @@ fn reader_sample_process(
     // Kill/reap this process group before a caller stops its network sentinel.
     // This also closes inherited pipes after a timeout or failed child.
     drop(running);
+    // The reader's deadline has already been decided and its process reaped.
+    // Cancel/reap the separate metadata worker before ending the network sentinel.
+    if let Some(observer) = observer {
+        observer.finish();
+    }
     stopped.store(true, Ordering::Release);
     let drain_deadline = Instant::now() + Duration::from_secs(1);
     while !(stdout_worker.is_finished() && stderr_worker.is_finished())
@@ -591,6 +786,241 @@ fn reader_diagnostic_control_observed(stderr: &[u8], policy: &str, control: &str
             .is_some_and(|elapsed| {
                 !elapsed.is_empty() && elapsed.bytes().all(|byte| byte.is_ascii_digit())
             })
+}
+
+fn reader_structure_depth(policy: &str) -> Option<u8> {
+    READER_STRUCTURE_POLICIES
+        .iter()
+        .find(|(expected, _, _)| *expected == policy)
+        .map(|(_, _, depth)| *depth)
+}
+
+fn reader_structure_control_observed(stderr: &[u8], policy: &str) -> bool {
+    let Some(depth) = reader_structure_depth(policy) else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(stderr);
+    let markers: Vec<_> = text
+        .lines()
+        .filter(|line| {
+            line.starts_with("Native macOS reader: ")
+                && line.contains("diagnostic-structure-control")
+        })
+        .collect();
+    let prefix = format!(
+        "Native macOS reader: trace phase=setup diagnostic-structure-control policy={policy} acceptance=false textCharacters=180000 columnWidthPx=1 wrapperDepth={depth} +"
+    );
+    markers.len() == 1
+        && markers[0]
+            .strip_prefix(&prefix)
+            .and_then(|tail| tail.strip_suffix(" ms"))
+            .is_some_and(|elapsed| {
+                !elapsed.is_empty() && elapsed.bytes().all(|byte| byte.is_ascii_digit())
+            })
+}
+
+fn reader_structure_evidence(stderr: &[u8], policy: &str) -> Result<Value> {
+    let depth = reader_structure_depth(policy).ok_or("Unknown structure policy.")?;
+    check(
+        reader_structure_control_observed(stderr, policy),
+        "Missing or conflicting structure control marker.",
+    )?;
+    let text = std::str::from_utf8(stderr)?;
+    let marker = |name: &str| -> Result<(usize, &str)> {
+        let matches: Vec<_> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.starts_with("Native macOS reader: ") && line.contains(name))
+            .collect();
+        check(
+            matches.len() == 1,
+            "Missing or duplicate structure publication/update marker.",
+        )?;
+        Ok(matches[0])
+    };
+    let (startup_index, startup) = marker("diagnostic-structure-control")?;
+    let (publish_index, publish) = marker("structure-adversarial-publish")?;
+    let (request_index, request) = marker("fixture-update-request begin")?;
+    let (request_end_index, request_end) = marker("fixture-update-request end")?;
+    check(
+        startup_index < publish_index
+            && publish_index < request_index
+            && request_index < request_end_index,
+        "Structure policy publication must precede the actual adversarial update request.",
+    )?;
+    let publish_pattern = Regex::new(&format!(
+        r"^Native macOS reader: trace phase=adversarial-text structure-adversarial-publish policy={} wrapperDepth={depth} \+([0-9]+) ms$",
+        regex::escape(policy)
+    ))?;
+    let publish = publish_pattern
+        .captures(publish)
+        .ok_or("Invalid structure publication policy or wrapper depth.")?;
+    let request_pattern = Regex::new(
+        r"^Native macOS reader: trace phase=adversarial-text fixture-update-request begin textCharacters=180000 columnWidthPx=1 viewportWidth=([0-9]+) viewportHeight=([0-9]+) windowWidth=([0-9]+) \+([0-9]+) ms$",
+    )?;
+    let request = request_pattern
+        .captures(request)
+        .ok_or("Invalid structure adversarial request trace.")?;
+    let request_end_pattern = Regex::new(
+        r"^Native macOS reader: trace phase=adversarial-text fixture-update-request end; SwiftUI navigation/layout may still be pending \+([0-9]+) ms$",
+    )?;
+    let request_end = request_end_pattern
+        .captures(request_end)
+        .ok_or("Invalid structure update completion trace.")?;
+    let startup_ms = startup
+        .rsplit_once(" +")
+        .and_then(|(_, tail)| tail.strip_suffix(" ms"))
+        .ok_or("Invalid structure startup timestamp.")?
+        .parse::<u64>()?;
+    let publish_ms = publish[1].parse::<u64>()?;
+    let request_ms = request[4].parse::<u64>()?;
+    let request_end_ms = request_end[1].parse::<u64>()?;
+    check(
+        startup_ms <= publish_ms && publish_ms <= request_ms && request_ms <= request_end_ms,
+        "Structure timestamps are not monotonic.",
+    )?;
+    Ok(
+        json!({"wrapperDepth":depth,"startupElapsedMs":startup_ms,"publishElapsedMs":publish_ms,
+        "requestElapsedMs":request_ms,"requestEndElapsedMs":request_end_ms,
+        "viewportWidth":request[1].parse::<u64>()?,"viewportHeight":request[2].parse::<u64>()?,
+        "windowWidth":request[3].parse::<u64>()?}),
+    )
+}
+
+fn reader_rendering_setting(policy: &str) -> Option<bool> {
+    READER_RENDERING_POLICIES
+        .iter()
+        .find(|(expected, _, _)| *expected == policy)
+        .map(|(_, _, setting)| *setting)
+}
+
+fn reader_rendering_control_observed(stderr: &[u8], policy: &str) -> bool {
+    let Some(setting) = reader_rendering_setting(policy) else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(stderr);
+    let markers: Vec<_> = text
+        .lines()
+        .filter(|line| {
+            line.starts_with("Native macOS reader: ")
+                && line.contains("diagnostic-rendering-control")
+        })
+        .collect();
+    let prefix = format!(
+        "Native macOS reader: trace phase=setup diagnostic-rendering-control policy={policy} acceptance=false textCharacters=180000 columnWidthPx=1 requestedSuppressesIncrementalRendering={setting} +"
+    );
+    markers.len() == 1
+        && markers[0]
+            .strip_prefix(&prefix)
+            .and_then(|tail| tail.strip_suffix(" ms"))
+            .is_some_and(|elapsed| {
+                !elapsed.is_empty() && elapsed.bytes().all(|byte| byte.is_ascii_digit())
+            })
+}
+
+fn reader_rendering_evidence(stderr: &[u8], policy: &str) -> Result<Value> {
+    let setting = reader_rendering_setting(policy).ok_or("Unknown rendering policy.")?;
+    check(
+        reader_rendering_control_observed(stderr, policy),
+        "Missing or conflicting rendering control marker.",
+    )?;
+    let text = std::str::from_utf8(stderr)?;
+    let marker = |name: &str| -> Result<(usize, &str)> {
+        let matches: Vec<_> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.starts_with("Native macOS reader: ") && line.contains(name))
+            .collect();
+        check(
+            matches.len() == 1,
+            "Missing or duplicate rendering configuration/update marker.",
+        )?;
+        Ok(matches[0])
+    };
+    check(
+        text.lines()
+            .filter(|line| {
+                line.starts_with("Native macOS reader: ")
+                    && line.contains("rendering-configuration")
+            })
+            .count()
+            == 3,
+        "Expected exactly three actual rendering configuration readbacks.",
+    )?;
+    let (startup_index, startup) = marker("diagnostic-rendering-control")?;
+    let startup_ms = startup
+        .rsplit_once(" +")
+        .and_then(|(_, tail)| tail.strip_suffix(" ms"))
+        .ok_or("Invalid rendering startup timestamp.")?
+        .parse::<u64>()?;
+    let mut readbacks = Vec::new();
+    let mut positions = Vec::new();
+    for (stage, phase) in [
+        ("first-view-discovered", "initial-load"),
+        ("before-adversarial", "adversarial-text"),
+        ("after-adversarial-marker", "adversarial-text"),
+    ] {
+        let (index, line) = marker(&format!(
+            "rendering-configuration policy={policy} stage={stage} "
+        ))?;
+        let pattern = Regex::new(&format!(
+            r"^Native macOS reader: trace phase={phase} rendering-configuration policy={} stage={stage} suppressesIncrementalRendering=(true|false) sameWebView=(true|false) \+([0-9]+) ms$",
+            regex::escape(policy)
+        ))?;
+        let captured = pattern
+            .captures(line)
+            .ok_or("Invalid actual rendering configuration readback.")?;
+        let elapsed = captured[3].parse::<u64>()?;
+        positions.push((index, elapsed));
+        readbacks.push(json!({"stage":stage,"elapsedMs":elapsed,"suppressesIncrementalRendering":&captured[1] == "true", "sameWebView":&captured[2] == "true"}));
+    }
+    let (request_index, request) = marker("fixture-update-request begin")?;
+    let (request_end_index, request_end) = marker("fixture-update-request end")?;
+    let (marker_index, marker_end) = marker("marker-wait-end marker=Bounded adversarial tail ")?;
+    let request_pattern = Regex::new(
+        r"^Native macOS reader: trace phase=adversarial-text fixture-update-request begin textCharacters=180000 columnWidthPx=1 viewportWidth=([0-9]+) viewportHeight=([0-9]+) windowWidth=([0-9]+) \+([0-9]+) ms$",
+    )?;
+    let request = request_pattern
+        .captures(request)
+        .ok_or("Invalid rendering adversarial request trace.")?;
+    let request_end_pattern = Regex::new(
+        r"^Native macOS reader: trace phase=adversarial-text fixture-update-request end; SwiftUI navigation/layout may still be pending \+([0-9]+) ms$",
+    )?;
+    let request_end = request_end_pattern
+        .captures(request_end)
+        .ok_or("Invalid rendering update completion trace.")?;
+    let marker_pattern = Regex::new(
+        r"^Native macOS reader: trace phase=adversarial-text marker-wait-end marker=Bounded adversarial tail polls=([0-9]+) durationMs=([0-9]+) width=([0-9]+) height=([0-9]+) \+([0-9]+) ms$",
+    )?;
+    let marker_end = marker_pattern
+        .captures(marker_end)
+        .ok_or("Invalid rendering adversarial marker completion.")?;
+    let request_ms = request[4].parse::<u64>()?;
+    let request_end_ms = request_end[1].parse::<u64>()?;
+    let marker_ms = marker_end[5].parse::<u64>()?;
+    let ordered = [
+        (startup_index, startup_ms),
+        positions[0],
+        positions[1],
+        (request_index, request_ms),
+        (request_end_index, request_end_ms),
+        (marker_index, marker_ms),
+        positions[2],
+    ];
+    check(
+        ordered
+            .windows(2)
+            .all(|pair| pair[0].0 < pair[1].0 && pair[0].1 <= pair[1].1),
+        "Rendering readbacks must bracket the actual adversarial update and marker completion.",
+    )?;
+    Ok(
+        json!({"requestedConfig":setting,"configurationProperty":"suppressesIncrementalRendering",
+        "configurationForced":true,"readbackScope":"WKWebView.configuration",
+        "actualConfigurationMatchesRequested":readbacks.iter().all(|readback| readback["suppressesIncrementalRendering"] == setting),
+        "sameWebView":readbacks.iter().all(|readback| readback["sameWebView"] == true),
+        "startupElapsedMs":startup_ms,"requestElapsedMs":request_ms,"requestEndElapsedMs":request_end_ms,
+        "markerElapsedMs":marker_ms,"readbacks":readbacks}),
+    )
 }
 
 fn reader_visibility_evidence(stderr: &[u8], policy: &str) -> Result<Value> {
@@ -754,9 +1184,15 @@ fn save_reader_sample_with_diagnostic(
         ReaderDiagnostic::Visibility(policy) => {
             reader_diagnostic_control_observed(&stderr, policy, "visibility")
         }
+        ReaderDiagnostic::OwnershipPreflight => reader_adversarial_loading_observed(&stderr),
+        ReaderDiagnostic::Structure(policy) => reader_structure_control_observed(&stderr, policy),
+        ReaderDiagnostic::Rendering(policy) => reader_rendering_control_observed(&stderr, policy),
     });
     if diagnostic_policy_observed == Some(false) {
         errors.push("diagnostic: missing or conflicting compiled-policy trace".to_owned());
+    }
+    if matches!(diagnostic, Some(ReaderDiagnostic::OwnershipPreflight)) && mode != "warm-view" {
+        errors.push("diagnostic: ownership preflight requires warm-view".to_owned());
     }
     let visibility_evidence = if let Some(ReaderDiagnostic::Visibility(policy)) = diagnostic {
         if mode != "warm-view" {
@@ -784,6 +1220,44 @@ fn save_reader_sample_with_diagnostic(
     } else {
         None
     };
+    let structure_evidence = if let Some(ReaderDiagnostic::Structure(policy)) = diagnostic {
+        if mode != "warm-view" {
+            errors.push("diagnostic: structure controls require warm-view".to_owned());
+        }
+        match reader_structure_evidence(&stderr, policy) {
+            Ok(evidence) => Some(evidence),
+            Err(error) => {
+                errors.push(format!("diagnostic structure: {error}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let rendering_evidence = if let Some(ReaderDiagnostic::Rendering(policy)) = diagnostic {
+        if mode != "warm-view" {
+            errors.push("diagnostic: rendering controls require warm-view".to_owned());
+        }
+        match reader_rendering_evidence(&stderr, policy) {
+            Ok(evidence) => {
+                if evidence["actualConfigurationMatchesRequested"] != true
+                    || evidence["sameWebView"] != true
+                {
+                    errors.push(
+                        "diagnostic: actual rendering configuration or WebView identity changed"
+                            .to_owned(),
+                    );
+                }
+                Some(evidence)
+            }
+            Err(error) => {
+                errors.push(format!("diagnostic rendering: {error}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
     write_sample_file(&directory.join("stdout.log"), &stdout)?;
     write_sample_file(&directory.join("stderr.log"), &stderr)?;
     let mut result = json!({"schemaVersion":1, "kind":"reader-adversarial-sample",
@@ -794,6 +1268,11 @@ fn save_reader_sample_with_diagnostic(
         let (policy, kind) = match diagnostic {
             ReaderDiagnostic::Wrap(policy) => (policy, "reader-wrap-diagnostic-sample"),
             ReaderDiagnostic::Visibility(policy) => (policy, "reader-visibility-diagnostic-sample"),
+            ReaderDiagnostic::Structure(policy) => (policy, "reader-structure-diagnostic-sample"),
+            ReaderDiagnostic::Rendering(policy) => (policy, "reader-rendering-diagnostic-sample"),
+            ReaderDiagnostic::OwnershipPreflight => {
+                ("ownership-preflight", "reader-ownership-preflight-sample")
+            }
         };
         result["kind"] = json!(kind);
         result["diagnosticPolicy"] = json!(policy);
@@ -801,6 +1280,22 @@ fn save_reader_sample_with_diagnostic(
         result["productionAcceptance"] = json!(false);
         if matches!(diagnostic, ReaderDiagnostic::Visibility(_)) {
             result["visibilityEvidence"] = json!(visibility_evidence);
+            result["pair"] = json!(sequence.div_ceil(2));
+        }
+        if matches!(diagnostic, ReaderDiagnostic::OwnershipPreflight) {
+            result["environmentIsolated"] = json!(true);
+            result["baselineEnvironmentEquivalent"] = json!(false);
+        }
+        if let ReaderDiagnostic::Structure(policy) = diagnostic {
+            result["wrapperDepth"] = json!(reader_structure_depth(policy));
+            result["structureEvidence"] = json!(structure_evidence);
+            result["pair"] = json!(sequence.div_ceil(2));
+        }
+        if let ReaderDiagnostic::Rendering(policy) = diagnostic {
+            result["requestedConfig"] = json!(reader_rendering_setting(policy));
+            result["configurationForced"] = json!(true);
+            result["readbackScope"] = json!("WKWebView.configuration");
+            result["renderingEvidence"] = json!(rendering_evidence);
             result["pair"] = json!(sequence.div_ceil(2));
         }
     }
@@ -814,6 +1309,15 @@ fn save_reader_sample_with_diagnostic(
         Some(ReaderDiagnostic::Wrap(policy)) => reader_sample_prefix(sequence, Some(policy)),
         Some(ReaderDiagnostic::Visibility(policy)) => {
             format!("Reader visibility diagnostic {policy} sample {sequence:02}")
+        }
+        Some(ReaderDiagnostic::OwnershipPreflight) => {
+            format!("Reader ownership preflight sample {sequence:02}")
+        }
+        Some(ReaderDiagnostic::Structure(policy)) => {
+            format!("Reader structure diagnostic {policy} sample {sequence:02}")
+        }
+        Some(ReaderDiagnostic::Rendering(policy)) => {
+            format!("Reader rendering diagnostic {policy} sample {sequence:02}")
         }
         None => reader_sample_prefix(sequence, None),
     };
@@ -1218,6 +1722,488 @@ fn reader_visibility_diagnostic(root: &Path, output: &Path) -> Result<()> {
     )
 }
 
+fn reader_structure_evidence_complete(output: &Path, samples: &[Value]) -> bool {
+    samples.len() == READER_STRUCTURE_PAIRS * READER_STRUCTURE_POLICIES.len()
+        && samples.iter().enumerate().all(|(index, sample)| {
+            let sequence = index + 1;
+            let (policy, _, depth) =
+                READER_STRUCTURE_POLICIES[index % READER_STRUCTURE_POLICIES.len()];
+            let directory = output
+                .join(policy)
+                .join(format!("sample-{sequence:02}-warm-view"));
+            sample["sequence"] == sequence
+                && sample["pair"] == index / 2 + 1
+                && sample["mode"] == "warm-view"
+                && sample["kind"] == "reader-structure-diagnostic-sample"
+                && sample["diagnosticPolicy"] == policy
+                && sample["wrapperDepth"] == depth
+                && sample["productionAcceptance"] == false
+                && ["result.json", "stdout.log", "stderr.log"]
+                    .iter()
+                    .all(|name| directory.join(name).is_file())
+                && fs::read(directory.join("result.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .as_ref()
+                    == Some(sample)
+        })
+}
+
+fn reader_structure_diagnostic(root: &Path, output: &Path) -> Result<()> {
+    check(
+        output.is_absolute(),
+        "Reader structure diagnostic requires an absolute new output directory.",
+    )?;
+    fs::create_dir(output)?;
+    let fixture = Fixture::new()?;
+    let mut readers = Vec::new();
+    let mut policies = Vec::new();
+    for (policy, define, depth) in READER_STRUCTURE_POLICIES {
+        fs::create_dir(output.join(policy))?;
+        let executable = format!("reader-structure-{policy}");
+        let reader = compile_check(
+            root,
+            &fixture.0,
+            &executable,
+            &[
+                "-parse-as-library",
+                "-D",
+                define,
+                "macos/Sources/MorrowMail/Models.swift",
+                "macos/Sources/MorrowMail/MessageBodyView.swift",
+                "macos/Checks/MessageHTML.swift",
+            ],
+        );
+        policies.push(json!({"schemaVersion":1,"kind":"reader-structure-diagnostic-policy",
+            "diagnosticPolicy":policy,"wrapperDepth":depth,"compileDefine":define,"compiledExecutable":executable,
+            "compileSucceeded":reader.is_ok(),"productionAcceptance":false,
+            "expectedSamples":READER_STRUCTURE_PAIRS,"mode":"warm-view"}));
+        readers.push(reader);
+    }
+    let expected_samples = READER_STRUCTURE_PAIRS * READER_STRUCTURE_POLICIES.len();
+    let mut samples = Vec::new();
+    for index in 0..expected_samples {
+        let sequence = index + 1;
+        let policy_index = index % READER_STRUCTURE_POLICIES.len();
+        let (policy, _, _) = READER_STRUCTURE_POLICIES[policy_index];
+        let directory = output
+            .join(policy)
+            .join(format!("sample-{sequence:02}-warm-view"));
+        fs::create_dir(&directory)?;
+        let (process, network) = match &readers[policy_index] {
+            Ok(reader) => collect_reader_sample(root, reader, "warm-view"),
+            Err(error) => (
+                Err(format!("Diagnostic fixture compile failed: {error}").into()),
+                Err("Network sentinel was not started.".into()),
+            ),
+        };
+        samples.push(save_reader_sample_with_diagnostic(
+            &directory,
+            sequence,
+            "warm-view",
+            process,
+            network,
+            Some(ReaderDiagnostic::Structure(policy)),
+        )?);
+    }
+    let complete = reader_structure_evidence_complete(output, &samples);
+    for (summary, (policy, _, _)) in policies.iter_mut().zip(READER_STRUCTURE_POLICIES) {
+        let policy_samples: Vec<_> = samples
+            .iter()
+            .filter(|sample| sample["diagnosticPolicy"] == policy)
+            .cloned()
+            .collect();
+        let passed = policy_samples
+            .iter()
+            .filter(|sample| sample["status"] == "passed")
+            .count();
+        summary["completedSamples"] = json!(policy_samples.len());
+        summary["passedSamples"] = json!(passed);
+        summary["failedSamples"] = json!(policy_samples.len() - passed);
+        summary["status"] = json!(if complete && passed == READER_STRUCTURE_PAIRS {
+            "passed"
+        } else {
+            "failed"
+        });
+        summary["samples"] = json!(policy_samples);
+        write_sample_file(
+            &output.join(policy).join("policy.json"),
+            &serde_json::to_vec_pretty(summary)?,
+        )?;
+    }
+    let passed = samples
+        .iter()
+        .filter(|sample| sample["status"] == "passed")
+        .count();
+    let summary = json!({"schemaVersion":1,"kind":"reader-structure-diagnostic",
+        "productionAcceptance":false,"status":if complete && passed == expected_samples {"passed"} else {"failed"},
+        "expectedPairs":READER_STRUCTURE_PAIRS,"expectedSamples":expected_samples,"mode":"warm-view",
+        "completedSamples":samples.len(),"passedSamples":passed,"failedSamples":samples.len()-passed,
+        "wholeProcessDeadlineMs":30_000,"textCharacters":180_000,"columnWidthPx":1,
+        "complete":complete,"policies":policies,"samples":samples});
+    write_sample_file(
+        &output.join("diagnostic.json"),
+        &serde_json::to_vec_pretty(&summary)?,
+    )?;
+    println!(
+        "Reader structure diagnostic completed: {passed}/{expected_samples} passed; complete={complete}; productionAcceptance=false; {}",
+        output.display()
+    );
+    check(
+        complete && passed == expected_samples,
+        "Reader structure diagnostic failed; all attempted control samples and logs retained.",
+    )
+}
+
+fn reader_rendering_evidence_complete(output: &Path, samples: &[Value]) -> bool {
+    samples.len() == READER_RENDERING_PAIRS * READER_RENDERING_POLICIES.len()
+        && samples.iter().enumerate().all(|(index, sample)| {
+            let sequence = index + 1;
+            let (policy, _, setting) =
+                READER_RENDERING_POLICIES[index % READER_RENDERING_POLICIES.len()];
+            let directory = output
+                .join(policy)
+                .join(format!("sample-{sequence:02}-warm-view"));
+            sample["sequence"] == sequence
+                && sample["pair"] == index / 2 + 1
+                && sample["mode"] == "warm-view"
+                && sample["kind"] == "reader-rendering-diagnostic-sample"
+                && sample["diagnosticPolicy"] == policy
+                && sample["requestedConfig"] == setting
+                && sample["configurationForced"] == true
+                && sample["readbackScope"] == "WKWebView.configuration"
+                && sample["productionAcceptance"] == false
+                && ["result.json", "stdout.log", "stderr.log"]
+                    .iter()
+                    .all(|name| directory.join(name).is_file())
+                && fs::read(directory.join("result.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .as_ref()
+                    == Some(sample)
+        })
+}
+
+fn reader_rendering_diagnostic(root: &Path, output: &Path) -> Result<()> {
+    check(
+        output.is_absolute(),
+        "Reader rendering diagnostic requires an absolute new output directory.",
+    )?;
+    fs::create_dir(output)?;
+    let fixture = Fixture::new()?;
+    let mut readers = Vec::new();
+    let mut policies = Vec::new();
+    for (policy, define, setting) in READER_RENDERING_POLICIES {
+        fs::create_dir(output.join(policy))?;
+        let executable = format!("reader-rendering-{policy}");
+        let reader = compile_check(
+            root,
+            &fixture.0,
+            &executable,
+            &[
+                "-parse-as-library",
+                "-D",
+                define,
+                "macos/Sources/MorrowMail/Models.swift",
+                "macos/Sources/MorrowMail/MessageBodyView.swift",
+                "macos/Checks/MessageHTML.swift",
+            ],
+        );
+        policies.push(json!({"schemaVersion":1,"kind":"reader-rendering-diagnostic-policy",
+            "diagnosticPolicy":policy,"requestedConfig":setting,"configurationForced":true,
+            "configurationProperty":"suppressesIncrementalRendering","readbackScope":"WKWebView.configuration",
+            "compileDefine":define,"compiledExecutable":executable,"compileSucceeded":reader.is_ok(),
+            "productionAcceptance":false,"expectedSamples":READER_RENDERING_PAIRS,"mode":"warm-view"}));
+        readers.push(reader);
+    }
+    let expected_samples = READER_RENDERING_PAIRS * READER_RENDERING_POLICIES.len();
+    let mut samples = Vec::new();
+    for index in 0..expected_samples {
+        let sequence = index + 1;
+        let policy_index = index % READER_RENDERING_POLICIES.len();
+        let (policy, _, _) = READER_RENDERING_POLICIES[policy_index];
+        let directory = output
+            .join(policy)
+            .join(format!("sample-{sequence:02}-warm-view"));
+        fs::create_dir(&directory)?;
+        let (process, network) = match &readers[policy_index] {
+            Ok(reader) => collect_reader_sample(root, reader, "warm-view"),
+            Err(error) => (
+                Err(format!("Diagnostic fixture compile failed: {error}").into()),
+                Err("Network sentinel was not started.".into()),
+            ),
+        };
+        samples.push(save_reader_sample_with_diagnostic(
+            &directory,
+            sequence,
+            "warm-view",
+            process,
+            network,
+            Some(ReaderDiagnostic::Rendering(policy)),
+        )?);
+    }
+    let complete = reader_rendering_evidence_complete(output, &samples);
+    for (summary, (policy, _, _)) in policies.iter_mut().zip(READER_RENDERING_POLICIES) {
+        let policy_samples: Vec<_> = samples
+            .iter()
+            .filter(|sample| sample["diagnosticPolicy"] == policy)
+            .cloned()
+            .collect();
+        let passed = policy_samples
+            .iter()
+            .filter(|sample| sample["status"] == "passed")
+            .count();
+        summary["completedSamples"] = json!(policy_samples.len());
+        summary["passedSamples"] = json!(passed);
+        summary["failedSamples"] = json!(policy_samples.len() - passed);
+        summary["status"] = json!(if complete && passed == READER_RENDERING_PAIRS {
+            "passed"
+        } else {
+            "failed"
+        });
+        summary["samples"] = json!(policy_samples);
+        write_sample_file(
+            &output.join(policy).join("policy.json"),
+            &serde_json::to_vec_pretty(summary)?,
+        )?;
+    }
+    let passed = samples
+        .iter()
+        .filter(|sample| sample["status"] == "passed")
+        .count();
+    let summary = json!({"schemaVersion":1,"kind":"reader-rendering-diagnostic",
+        "productionAcceptance":false,"configurationProperty":"suppressesIncrementalRendering",
+        "configurationForced":true,"readbackScope":"WKWebView.configuration",
+        "status":if complete && passed == expected_samples {"passed"} else {"failed"},
+        "expectedPairs":READER_RENDERING_PAIRS,"expectedSamples":expected_samples,"mode":"warm-view",
+        "completedSamples":samples.len(),"passedSamples":passed,"failedSamples":samples.len()-passed,
+        "wholeProcessDeadlineMs":30_000,"textCharacters":180_000,"columnWidthPx":1,
+        "complete":complete,"policies":policies,"samples":samples});
+    write_sample_file(
+        &output.join("diagnostic.json"),
+        &serde_json::to_vec_pretty(&summary)?,
+    )?;
+    println!(
+        "Reader rendering diagnostic completed: {passed}/{expected_samples} passed; complete={complete}; productionAcceptance=false; {}",
+        output.display()
+    );
+    check(
+        complete && passed == expected_samples,
+        "Reader rendering diagnostic failed; all attempted control samples and logs retained.",
+    )
+}
+
+fn read_ownership_preflight_report(path: &Path, reader_pid: u32) -> Result<Value> {
+    check(
+        fs::symlink_metadata(path)?.file_type().is_file(),
+        "Ownership report must be a regular file.",
+    )?;
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(128 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    check(
+        bytes.len() <= 128 * 1024,
+        "Ownership report exceeded its size limit.",
+    )?;
+    #[derive(serde::Deserialize, serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Report {
+        schema_version: u32,
+        kind: String,
+        reader_pid: u32,
+        production_acceptance: bool,
+        attachment_attempted: bool,
+        status: String,
+        ownership_status: String,
+        reason: String,
+        elapsed_ms: f64,
+        #[serde(flatten)]
+        evidence: serde_json::Map<String, Value>,
+    }
+    let report: Report = serde_json::from_slice(&bytes)?;
+    check(
+        report.schema_version == 1
+            && report.kind == "reader-ownership-preflight"
+            && report.reader_pid > 0
+            && report.reader_pid == reader_pid
+            && !report.production_acceptance
+            && !report.attachment_attempted
+            && report.ownership_status == "unresolved"
+            && matches!(
+                report.status.as_str(),
+                "completed" | "budget-exhausted" | "metadata-unavailable"
+            )
+            && matches!(
+                report.reason.as_str(),
+                "preflight-observed"
+                    | "unsupported-platform"
+                    | "reader-metadata-unavailable"
+                    | "reader-identity-changed"
+                    | "no-canonical-webcontent-candidate"
+                    | "candidate-limit"
+                    | "budget-exhausted"
+                    | "tool-metadata-unavailable"
+            )
+            && report.elapsed_ms.is_finite()
+            && report.elapsed_ms >= 0.0
+            && report.elapsed_ms <= 8_000.0
+            && report.evidence.keys().all(|key| {
+                matches!(
+                    key.as_str(),
+                    "tools"
+                        | "platform"
+                        | "webKit"
+                        | "reader"
+                        | "candidates"
+                        | "candidateCount"
+                        | "candidatesTruncated"
+                )
+            }),
+        "Ownership report does not match the metadata-only preflight contract.",
+    )?;
+    serde_json::to_value(report).map_err(Into::into)
+}
+
+fn save_reader_ownership_probe(probe: &mut ReaderOwnershipProbe) -> Result<Value> {
+    probe.finish();
+    let mut errors = Vec::new();
+    let (parent, stdout, stderr) = match probe.result.take() {
+        Some(Ok(process)) => {
+            if process.outcome != "exited" || !process.capture_complete {
+                errors.push(format!("probe:{}", process.outcome));
+            }
+            (
+                json!({"outcome":process.outcome,"elapsedMs":process.elapsed_ms,"exitCode":process.exit_code,
+                "captureComplete":process.capture_complete,"stdoutTruncated":process.stdout_truncated,
+                "stderrTruncated":process.stderr_truncated}),
+                process.stdout,
+                process.stderr,
+            )
+        }
+        Some(Err(error)) => {
+            errors.push(format!("probe startup: {error}"));
+            (json!({"outcome":"setup-failed"}), Vec::new(), Vec::new())
+        }
+        None => {
+            errors.push("probe: adversarial loading trigger was not observed".to_owned());
+            (json!({"outcome":"not-started"}), Vec::new(), Vec::new())
+        }
+    };
+    write_sample_file(&probe.directory.join("stdout.log"), &stdout)?;
+    write_sample_file(&probe.directory.join("stderr.log"), &stderr)?;
+    let report = match probe.reader_pid {
+        Some(reader_pid) => match read_ownership_preflight_report(
+            &probe.directory.join("ownership.json"),
+            reader_pid,
+        ) {
+            Ok(report) => {
+                if report["status"] != "completed" {
+                    errors.push("probe: metadata observation incomplete".to_owned());
+                }
+                Some(report)
+            }
+            Err(error) => {
+                errors.push(format!("probe report: {error}"));
+                None
+            }
+        },
+        None => {
+            errors.push("probe: reader process was not started".to_owned());
+            None
+        }
+    };
+    let result = json!({"schemaVersion":1,"kind":"reader-ownership-preflight-observation",
+        "productionAcceptance":false,"attachmentAttempted":false,"ownershipStatus":"unresolved",
+        "environmentIsolated":true,"readerPid":probe.reader_pid,
+        "status":if errors.is_empty() {"completed"} else {"failed"},"parent":parent,"report":report,"errors":errors});
+    write_sample_file(
+        &probe.directory.join("result.json"),
+        &serde_json::to_vec_pretty(&result)?,
+    )?;
+    for (stream, bytes) in [("stdout", stdout), ("stderr", stderr)] {
+        for line in String::from_utf8_lossy(&bytes).lines().take(40) {
+            println!(
+                "Reader ownership preflight {stream}: {}",
+                line.chars().take(512).collect::<String>()
+            );
+        }
+    }
+    println!("Reader ownership preflight observation: {result}");
+    Ok(result)
+}
+
+fn reader_ownership_preflight(root: &Path, output: &Path) -> Result<()> {
+    check(
+        output.is_absolute(),
+        "Reader ownership preflight requires an absolute new output directory.",
+    )?;
+    fs::create_dir(output)?;
+    let fixture = Fixture::new()?;
+    let reader_directory = output.join("reader");
+    let probe_directory = output.join("probe");
+    fs::create_dir(&reader_directory)?;
+    fs::create_dir(&probe_directory)?;
+    let mut probe = ReaderOwnershipProbe::new(root, &probe_directory);
+    let mut network_result = Err("Network sentinel was not started.".into());
+    let process = (|| {
+        let reader = compile_check(
+            root,
+            &fixture.0,
+            "reader-checks",
+            &[
+                "-parse-as-library",
+                "macos/Sources/MorrowMail/Models.swift",
+                "macos/Sources/MorrowMail/MessageBodyView.swift",
+                "macos/Checks/MessageHTML.swift",
+            ],
+        )?;
+        let workspace = Fixture::new()?;
+        let network = ReaderNetwork::start()?;
+        let process = reader_sample_process_controlled(
+            isolate_reader_preflight_environment(&mut command(root, reader))
+                .arg(network.port.to_string())
+                .args(["--adversarial", "warm-view"])
+                .env("MORROW_DATA_DIR", &workspace.0),
+            Duration::from_secs(30),
+            READER_SAMPLE_LOG_LIMIT,
+            None,
+            Some(&mut probe),
+        );
+        probe.finish();
+        network_result = network.finish();
+        process
+    })();
+    let reader = save_reader_sample_with_diagnostic(
+        &reader_directory,
+        1,
+        "warm-view",
+        process,
+        network_result,
+        Some(ReaderDiagnostic::OwnershipPreflight),
+    )?;
+    let observation = save_reader_ownership_probe(&mut probe)?;
+    let completed = reader["status"] == "passed" && observation["status"] == "completed";
+    let summary = json!({"schemaVersion":1,"kind":"reader-ownership-preflight-run",
+        "productionAcceptance":false,"attachmentAttempted":false,"ownershipStatus":"unresolved",
+        "environmentIsolated":true,"baselineEnvironmentEquivalent":false,
+        "status":if completed {"completed"} else {"failed"},"reader":reader,"observation":observation,
+        "wholeReaderDeadlineMs":30_000,"wholeProbeDeadlineMs":8_000,"mode":"warm-view",
+        "textCharacters":180_000,"columnWidthPx":1});
+    write_sample_file(
+        &output.join("preflight.json"),
+        &serde_json::to_vec_pretty(&summary)?,
+    )?;
+    println!(
+        "Reader ownership preflight completed: completed={completed}; ownershipStatus=unresolved; productionAcceptance=false; {}",
+        output.display()
+    );
+    check(
+        completed,
+        "Reader ownership preflight incomplete; reader and metadata findings retained separately.",
+    )
+}
+
 fn existing_native_checks(root: &Path, fixture: &Path) -> Result<()> {
     let workspace = fixture.join("auxiliary-workspace");
     let models = compile_check(
@@ -1510,13 +2496,28 @@ fn run() -> Result<()> {
     {
         return reader_visibility_diagnostic(root, Path::new(path));
     }
+    if let [flag, path] = arguments.as_slice()
+        && flag == "--reader-ownership-preflight"
+    {
+        return reader_ownership_preflight(root, Path::new(path));
+    }
+    if let [flag, path] = arguments.as_slice()
+        && flag == "--reader-structure-diagnostic"
+    {
+        return reader_structure_diagnostic(root, Path::new(path));
+    }
+    if let [flag, path] = arguments.as_slice()
+        && flag == "--reader-rendering-diagnostic"
+    {
+        return reader_rendering_diagnostic(root, Path::new(path));
+    }
     let existing = match arguments.as_slice() {
         [] => None,
         [flag, path] if flag == "--service" && Path::new(path).is_absolute() => {
             Some(Path::new(path))
         }
         _ => {
-            return Err("Usage: morrow-native-check [--service ABSOLUTE_PRODUCTION_BINARY | --reader-adversarial-batch ABSOLUTE_NEW_DIRECTORY | --reader-wrap-diagnostic ABSOLUTE_NEW_DIRECTORY | --reader-visibility-diagnostic ABSOLUTE_NEW_DIRECTORY]".into());
+            return Err("Usage: morrow-native-check [--service ABSOLUTE_PRODUCTION_BINARY | --reader-adversarial-batch ABSOLUTE_NEW_DIRECTORY | --reader-wrap-diagnostic ABSOLUTE_NEW_DIRECTORY | --reader-visibility-diagnostic ABSOLUTE_NEW_DIRECTORY | --reader-ownership-preflight ABSOLUTE_NEW_DIRECTORY | --reader-structure-diagnostic ABSOLUTE_NEW_DIRECTORY | --reader-rendering-diagnostic ABSOLUTE_NEW_DIRECTORY]".into());
         }
     };
     let package = fs::read(root.join("package.json"))?;
@@ -1720,6 +2721,609 @@ mod tests {
             stdout_truncated: false,
             stderr_truncated: false,
         }
+    }
+
+    fn structure_trace(policy: &str) -> String {
+        let depth = reader_structure_depth(policy).unwrap();
+        format!(
+            "Native macOS reader: trace phase=setup diagnostic-structure-control policy={policy} acceptance=false textCharacters=180000 columnWidthPx=1 wrapperDepth={depth} +0 ms\nNative macOS reader: trace phase=adversarial-text structure-adversarial-publish policy={policy} wrapperDepth={depth} +5 ms\nNative macOS reader: trace phase=adversarial-text fixture-update-request begin textCharacters=180000 columnWidthPx=1 viewportWidth=690 viewportHeight=440 windowWidth=720 +5 ms\nNative macOS reader: trace phase=adversarial-text fixture-update-request end; SwiftUI navigation/layout may still be pending +6 ms\n"
+        )
+    }
+
+    #[test]
+    fn reader_structure_requires_matching_policy_depth_and_actual_update_order() {
+        let fixture = Fixture::new().unwrap();
+        for (policy, _, depth) in READER_STRUCTURE_POLICIES {
+            let trace = structure_trace(policy);
+            assert!(reader_structure_control_observed(trace.as_bytes(), policy));
+            assert_eq!(
+                reader_structure_evidence(trace.as_bytes(), policy).unwrap()["wrapperDepth"],
+                depth
+            );
+            let lines: Vec<_> = trace.lines().collect();
+            for invalid in [
+                trace.replace(policy, "other-policy"),
+                trace.replace(&format!("wrapperDepth={depth}"), "wrapperDepth=1"),
+                trace.replace("180000", "18000"),
+                trace.replace("columnWidthPx=1", "columnWidthPx=2"),
+                trace.replace(
+                    "diagnostic-structure-control",
+                    "diagnostic-wrapping-control",
+                ),
+                trace.replace("+6 ms", "+4 ms"),
+                format!("{}\n{}\n{}\n{}\n", lines[0], lines[2], lines[1], lines[3]),
+                format!("{}\n{}\n{}\n{}\n", lines[0], lines[1], lines[3], lines[2]),
+                format!("{}\n{}\n{}\n", lines[0], lines[2], lines[3]),
+                format!("{trace}{}\n", lines[0]),
+                format!("{trace}{}\n", lines[2]),
+            ] {
+                assert!(reader_structure_evidence(invalid.as_bytes(), policy).is_err());
+            }
+            for mode in ["cold-view", "warm-view"] {
+                let directory = fixture.0.join(format!("{policy}-{mode}"));
+                fs::create_dir(&directory).unwrap();
+                let mut process = completed_reader_process(
+                    serde_json::to_vec(&reader_child_result(mode)).unwrap(),
+                );
+                process.stderr = trace.as_bytes().to_vec();
+                let sample = save_reader_sample_with_diagnostic(
+                    &directory,
+                    1,
+                    mode,
+                    Ok(process),
+                    Ok(()),
+                    Some(ReaderDiagnostic::Structure(policy)),
+                )
+                .unwrap();
+                assert_eq!(
+                    sample["status"],
+                    if mode == "warm-view" {
+                        "passed"
+                    } else {
+                        "failed"
+                    }
+                );
+                assert_eq!(sample["structureEvidence"]["wrapperDepth"], depth);
+                assert_eq!(sample["productionAcceptance"], false);
+            }
+        }
+    }
+
+    #[test]
+    fn reader_structure_retains_six_warm_pairs_without_other_diagnostic_evidence() {
+        let fixture = Fixture::new().unwrap();
+        for (policy, _, _) in READER_STRUCTURE_POLICIES {
+            fs::create_dir(fixture.0.join(policy)).unwrap();
+        }
+        let mut samples = Vec::new();
+        for index in 0..READER_STRUCTURE_PAIRS * READER_STRUCTURE_POLICIES.len() {
+            let sequence = index + 1;
+            let (policy, _, _) = READER_STRUCTURE_POLICIES[index % READER_STRUCTURE_POLICIES.len()];
+            let directory = fixture
+                .0
+                .join(policy)
+                .join(format!("sample-{sequence:02}-warm-view"));
+            fs::create_dir(&directory).unwrap();
+            let mut process = completed_reader_process(
+                serde_json::to_vec(&reader_child_result("warm-view")).unwrap(),
+            );
+            process.stderr = structure_trace(policy).into_bytes();
+            if index == 0 {
+                process.outcome = "timeout";
+            }
+            samples.push(
+                save_reader_sample_with_diagnostic(
+                    &directory,
+                    sequence,
+                    "warm-view",
+                    Ok(process),
+                    Ok(()),
+                    Some(ReaderDiagnostic::Structure(policy)),
+                )
+                .unwrap(),
+            );
+        }
+        assert_eq!(samples.len(), 6);
+        assert_eq!(samples[0]["status"], "failed");
+        assert_eq!(samples[5]["status"], "passed");
+        assert!(samples.iter().all(|sample| sample["mode"] == "warm-view"
+            && sample["childResult"].as_object().unwrap().len() == 11));
+        assert!(reader_structure_evidence_complete(&fixture.0, &samples));
+        assert!(!reader_structure_evidence_complete(
+            &fixture.0,
+            &samples[..5]
+        ));
+        assert!(!reader_batch_evidence_complete(&fixture.0, &samples));
+        assert!(!reader_series_evidence_complete(
+            &fixture.0, &samples, 6, None
+        ));
+        assert!(!reader_series_evidence_complete(
+            &fixture.0,
+            &samples,
+            6,
+            Some("break-word")
+        ));
+        assert!(!reader_visibility_evidence_complete(&fixture.0, &samples));
+        let first_result = fixture
+            .0
+            .join("baseline-structure/sample-01-warm-view/result.json");
+        for (field, invalid) in [
+            ("mode", json!("cold-view")),
+            ("pair", json!(2)),
+            ("wrapperDepth", json!(2)),
+            ("diagnosticPolicy", json!("nested-inline")),
+            ("kind", json!("reader-wrap-diagnostic-sample")),
+            ("kind", json!("reader-visibility-diagnostic-sample")),
+            ("kind", json!("reader-adversarial-sample")),
+        ] {
+            let original = samples[0][field].clone();
+            samples[0][field] = invalid;
+            fs::write(&first_result, serde_json::to_vec(&samples[0]).unwrap()).unwrap();
+            assert!(!reader_structure_evidence_complete(&fixture.0, &samples));
+            samples[0][field] = original;
+            fs::write(&first_result, serde_json::to_vec(&samples[0]).unwrap()).unwrap();
+        }
+        assert!(reader_structure_evidence_complete(&fixture.0, &samples));
+        fs::remove_file(
+            fixture
+                .0
+                .join("nested-inline/sample-06-warm-view/stderr.log"),
+        )
+        .unwrap();
+        assert!(!reader_structure_evidence_complete(&fixture.0, &samples));
+        assert!(reader_structure_diagnostic(&fixture.0, &fixture.0).is_err());
+        assert!(reader_structure_diagnostic(&fixture.0, Path::new("relative-output")).is_err());
+    }
+
+    fn rendering_trace(policy: &str) -> String {
+        let setting = reader_rendering_setting(policy).unwrap();
+        format!(
+            "Native macOS reader: trace phase=setup diagnostic-rendering-control policy={policy} acceptance=false textCharacters=180000 columnWidthPx=1 requestedSuppressesIncrementalRendering={setting} +0 ms\n\
+Native macOS reader: trace phase=initial-load rendering-configuration policy={policy} stage=first-view-discovered suppressesIncrementalRendering={setting} sameWebView=true +1 ms\n\
+Native macOS reader: trace phase=adversarial-text rendering-configuration policy={policy} stage=before-adversarial suppressesIncrementalRendering={setting} sameWebView=true +5 ms\n\
+Native macOS reader: trace phase=adversarial-text fixture-update-request begin textCharacters=180000 columnWidthPx=1 viewportWidth=690 viewportHeight=440 windowWidth=720 +5 ms\n\
+Native macOS reader: trace phase=adversarial-text fixture-update-request end; SwiftUI navigation/layout may still be pending +6 ms\n\
+Native macOS reader: trace phase=adversarial-text marker-wait-end marker=Bounded adversarial tail polls=100 durationMs=1000 width=690 height=440 +10 ms\n\
+Native macOS reader: trace phase=adversarial-text rendering-configuration policy={policy} stage=after-adversarial-marker suppressesIncrementalRendering={setting} sameWebView=true +10 ms\n"
+        )
+    }
+
+    #[test]
+    fn reader_rendering_requires_three_actual_readbacks_bracketing_update_and_marker() {
+        let fixture = Fixture::new().unwrap();
+        for (policy, _, setting) in READER_RENDERING_POLICIES {
+            let trace = rendering_trace(policy);
+            assert!(reader_rendering_control_observed(trace.as_bytes(), policy));
+            let evidence = reader_rendering_evidence(trace.as_bytes(), policy).unwrap();
+            assert_eq!(evidence["requestedConfig"], setting);
+            assert_eq!(evidence["configurationForced"], true);
+            assert_eq!(evidence["readbackScope"], "WKWebView.configuration");
+            assert_eq!(evidence["actualConfigurationMatchesRequested"], true);
+            assert_eq!(evidence["sameWebView"], true);
+            assert_eq!(evidence["readbacks"].as_array().unwrap().len(), 3);
+            let lines: Vec<_> = trace.lines().collect();
+            for invalid in [
+                trace.replace(policy, "other-policy"),
+                trace.replace(
+                    &format!("requestedSuppressesIncrementalRendering={setting}"),
+                    &format!("requestedSuppressesIncrementalRendering={}", !setting),
+                ),
+                trace.replace("180000", "18000"),
+                trace.replace("columnWidthPx=1", "columnWidthPx=2"),
+                trace.replace(
+                    "diagnostic-rendering-control",
+                    "diagnostic-structure-control",
+                ),
+                trace.replace(
+                    "phase=initial-load rendering-configuration",
+                    "phase=focused-warmup rendering-configuration",
+                ),
+                trace.replace("+6 ms", "+4 ms"),
+                trace.replace("marker=Bounded adversarial tail", "marker=Ordinary warmup"),
+                trace.replace("sameWebView=true", "sameWebView=unknown"),
+                format!("{trace}{}\n", lines[0]),
+                format!("{trace}{}\n", lines[1]),
+                format!("{trace}{}\n", lines[3]),
+                format!("{trace}{}\n", lines[5]),
+                lines
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| *index != 1)
+                    .map(|(_, line)| format!("{line}\n"))
+                    .collect::<String>(),
+                [0, 1, 3, 2, 4, 5, 6].map(|index| lines[index]).join("\n"),
+                [0, 1, 2, 4, 3, 5, 6].map(|index| lines[index]).join("\n"),
+                [0, 1, 2, 3, 4, 6, 5].map(|index| lines[index]).join("\n"),
+            ] {
+                assert!(reader_rendering_evidence(invalid.as_bytes(), policy).is_err());
+            }
+            for (index, stage) in [
+                "first-view-discovered",
+                "before-adversarial",
+                "after-adversarial-marker",
+            ]
+            .iter()
+            .enumerate()
+            {
+                for (changed_field, changed_value, evidence_field) in [
+                    (
+                        "suppressesIncrementalRendering",
+                        (!setting).to_string(),
+                        "actualConfigurationMatchesRequested",
+                    ),
+                    ("sameWebView", "false".to_owned(), "sameWebView"),
+                ] {
+                    let mut changed_lines = lines
+                        .iter()
+                        .map(|line| (*line).to_owned())
+                        .collect::<Vec<_>>();
+                    let line = changed_lines
+                        .iter_mut()
+                        .find(|line| line.contains(&format!("stage={stage} ")))
+                        .unwrap();
+                    let original_value = if changed_field == "sameWebView" {
+                        true
+                    } else {
+                        setting
+                    };
+                    *line = line.replace(
+                        &format!("{changed_field}={original_value}"),
+                        &format!("{changed_field}={changed_value}"),
+                    );
+                    let changed_trace = changed_lines.join("\n");
+                    let evidence =
+                        reader_rendering_evidence(changed_trace.as_bytes(), policy).unwrap();
+                    assert_eq!(evidence[evidence_field], false);
+                    let directory = fixture.0.join(format!("{policy}-{index}-{changed_field}"));
+                    fs::create_dir(&directory).unwrap();
+                    let mut process = completed_reader_process(
+                        serde_json::to_vec(&reader_child_result("warm-view")).unwrap(),
+                    );
+                    process.stderr = changed_trace.into_bytes();
+                    let sample = save_reader_sample_with_diagnostic(
+                        &directory,
+                        1,
+                        "warm-view",
+                        Ok(process),
+                        Ok(()),
+                        Some(ReaderDiagnostic::Rendering(policy)),
+                    )
+                    .unwrap();
+                    assert_eq!(sample["status"], "failed");
+                    assert_eq!(sample["renderingEvidence"], evidence);
+                }
+            }
+            for mode in ["cold-view", "warm-view"] {
+                let directory = fixture.0.join(format!("{policy}-{mode}"));
+                fs::create_dir(&directory).unwrap();
+                let mut process = completed_reader_process(
+                    serde_json::to_vec(&reader_child_result(mode)).unwrap(),
+                );
+                process.stderr = trace.as_bytes().to_vec();
+                let sample = save_reader_sample_with_diagnostic(
+                    &directory,
+                    1,
+                    mode,
+                    Ok(process),
+                    Ok(()),
+                    Some(ReaderDiagnostic::Rendering(policy)),
+                )
+                .unwrap();
+                assert_eq!(
+                    sample["status"],
+                    if mode == "warm-view" {
+                        "passed"
+                    } else {
+                        "failed"
+                    }
+                );
+                assert_eq!(sample["requestedConfig"], setting);
+                assert_eq!(sample["productionAcceptance"], false);
+            }
+            assert!(reader_structure_evidence(trace.as_bytes(), "baseline-structure").is_err());
+            assert!(reader_visibility_evidence(trace.as_bytes(), "baseline-presentation").is_err());
+            assert!(!reader_diagnostic_policy_observed(
+                trace.as_bytes(),
+                "break-word"
+            ));
+            assert!(
+                reader_rendering_evidence(structure_trace("baseline-structure").as_bytes(), policy)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn reader_rendering_retains_six_forced_configuration_warm_pairs_as_separate_evidence() {
+        let fixture = Fixture::new().unwrap();
+        assert_eq!(READER_BATCH_SAMPLES, 40);
+        assert_eq!(
+            READER_RENDERING_POLICIES[0],
+            (
+                "baseline-rendering",
+                "READER_DIAGNOSTIC_BASELINE_RENDERING",
+                false
+            )
+        );
+        assert_eq!(
+            READER_RENDERING_POLICIES[1],
+            (
+                "suppressed-rendering",
+                "READER_DIAGNOSTIC_SUPPRESSED_RENDERING",
+                true
+            )
+        );
+        for (policy, _, _) in READER_RENDERING_POLICIES {
+            fs::create_dir(fixture.0.join(policy)).unwrap();
+        }
+        let mut samples = Vec::new();
+        for index in 0..READER_RENDERING_PAIRS * READER_RENDERING_POLICIES.len() {
+            let sequence = index + 1;
+            let (policy, _, _) = READER_RENDERING_POLICIES[index % READER_RENDERING_POLICIES.len()];
+            let directory = fixture
+                .0
+                .join(policy)
+                .join(format!("sample-{sequence:02}-warm-view"));
+            fs::create_dir(&directory).unwrap();
+            let mut process = completed_reader_process(
+                serde_json::to_vec(&reader_child_result("warm-view")).unwrap(),
+            );
+            process.stderr = rendering_trace(policy).into_bytes();
+            if index == 0 {
+                process.outcome = "timeout";
+            }
+            samples.push(
+                save_reader_sample_with_diagnostic(
+                    &directory,
+                    sequence,
+                    "warm-view",
+                    Ok(process),
+                    Ok(()),
+                    Some(ReaderDiagnostic::Rendering(policy)),
+                )
+                .unwrap(),
+            );
+        }
+        assert_eq!(samples.len(), 6);
+        assert_eq!(samples[0]["status"], "failed");
+        assert_eq!(samples[0]["parent"]["outcome"], "timeout");
+        assert_eq!(samples[5]["status"], "passed");
+        assert!(samples.iter().all(|sample| sample["mode"] == "warm-view"
+            && sample["childResult"].as_object().unwrap().len() == 11));
+        assert!(reader_rendering_evidence_complete(&fixture.0, &samples));
+        assert!(!reader_rendering_evidence_complete(
+            &fixture.0,
+            &samples[..5]
+        ));
+        assert!(!reader_batch_evidence_complete(&fixture.0, &samples));
+        assert!(!reader_series_evidence_complete(
+            &fixture.0, &samples, 6, None
+        ));
+        assert!(!reader_series_evidence_complete(
+            &fixture.0,
+            &samples,
+            6,
+            Some("break-word")
+        ));
+        assert!(!reader_visibility_evidence_complete(&fixture.0, &samples));
+        assert!(!reader_structure_evidence_complete(&fixture.0, &samples));
+        let first_result = fixture
+            .0
+            .join("baseline-rendering/sample-01-warm-view/result.json");
+        for (field, invalid) in [
+            ("mode", json!("cold-view")),
+            ("pair", json!(2)),
+            ("requestedConfig", json!(true)),
+            ("configurationForced", json!(false)),
+            ("readbackScope", json!("live-renderer-state")),
+            ("diagnosticPolicy", json!("suppressed-rendering")),
+            ("productionAcceptance", json!(true)),
+            ("kind", json!("reader-wrap-diagnostic-sample")),
+            ("kind", json!("reader-visibility-diagnostic-sample")),
+            ("kind", json!("reader-structure-diagnostic-sample")),
+            ("kind", json!("reader-adversarial-sample")),
+        ] {
+            let original = samples[0][field].clone();
+            samples[0][field] = invalid;
+            fs::write(&first_result, serde_json::to_vec(&samples[0]).unwrap()).unwrap();
+            assert!(!reader_rendering_evidence_complete(&fixture.0, &samples));
+            samples[0][field] = original;
+            fs::write(&first_result, serde_json::to_vec(&samples[0]).unwrap()).unwrap();
+        }
+        assert!(reader_rendering_evidence_complete(&fixture.0, &samples));
+        fs::remove_file(
+            fixture
+                .0
+                .join("suppressed-rendering/sample-06-warm-view/stderr.log"),
+        )
+        .unwrap();
+        assert!(!reader_rendering_evidence_complete(&fixture.0, &samples));
+        assert!(reader_rendering_diagnostic(&fixture.0, &fixture.0).is_err());
+        assert!(reader_rendering_diagnostic(&fixture.0, Path::new("relative-output")).is_err());
+    }
+
+    #[test]
+    fn reader_ownership_preflight_requires_bounded_metadata_only_report() {
+        let fixture = Fixture::new().unwrap();
+        let report_path = fixture.0.join("report.json");
+        let valid = json!({"schemaVersion":1,"kind":"reader-ownership-preflight","readerPid":42,
+            "productionAcceptance":false,"attachmentAttempted":false,"status":"completed",
+            "ownershipStatus":"unresolved","reason":"preflight-observed","elapsedMs":1,
+            "candidateCount":0,"candidates":[]});
+        fs::write(&report_path, serde_json::to_vec(&valid).unwrap()).unwrap();
+        assert_eq!(
+            read_ownership_preflight_report(&report_path, 42).unwrap()["ownershipStatus"],
+            "unresolved"
+        );
+        for (field, wrong) in [
+            ("readerPid", json!(43)),
+            ("attachmentAttempted", json!(true)),
+            ("productionAcceptance", json!(true)),
+            ("ownershipStatus", json!("verified")),
+            ("status", json!("passed")),
+            ("elapsedMs", json!(8_001)),
+            ("elapsedMs", json!(-1)),
+            ("reason", json!("unvalidated-tool-output")),
+            ("environment", json!("unapproved-field")),
+        ] {
+            let mut report = valid.clone();
+            report[field] = wrong;
+            fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
+            assert!(read_ownership_preflight_report(&report_path, 42).is_err());
+        }
+        fs::write(
+            &report_path,
+            format!("{{\"attachmentAttempted\":true,{}", &valid.to_string()[1..]),
+        )
+        .unwrap();
+        assert!(read_ownership_preflight_report(&report_path, 42).is_err());
+        fs::write(&report_path, vec![b' '; 128 * 1024 + 1]).unwrap();
+        assert!(read_ownership_preflight_report(&report_path, 42).is_err());
+        assert!(read_ownership_preflight_report(&fixture.0, 42).is_err());
+        assert!(reader_ownership_preflight(&fixture.0, &fixture.0).is_err());
+        assert!(reader_ownership_preflight(&fixture.0, Path::new("relative-output")).is_err());
+    }
+
+    #[test]
+    fn reader_ownership_trigger_and_environment_are_scoped() {
+        let update = "Native macOS reader: trace phase=adversarial-text fixture-update-request end; SwiftUI navigation/layout may still be pending +122 ms\n";
+        let marker = "Native macOS reader: trace phase=adversarial-text marker-wait-begin marker=Bounded adversarial tail loading=true +123 ms\n";
+        let trace = format!("{update}{marker}");
+        assert!(reader_adversarial_loading_observed(trace.as_bytes()));
+        assert!(!reader_adversarial_loading_observed(marker.as_bytes()));
+        for invalid in [
+            trace.replace("loading=true", "loading=false"),
+            trace.replace("adversarial-text", "focused-warmup"),
+            trace.replace("Bounded adversarial tail", "warmup marker"),
+            trace.replace("123 ms", "unknown ms"),
+        ] {
+            assert!(!reader_adversarial_loading_observed(invalid.as_bytes()));
+        }
+        let mut child = Command::new("fixture");
+        child.env("MORROW_PREFLIGHT_TEST_SECRET", "fictional-do-not-inherit");
+        isolate_reader_preflight_environment(&mut child).env("MORROW_DATA_DIR", "/fixture-only");
+        assert!(child.get_envs().all(|(key, _)| {
+            key == "MORROW_DATA_DIR"
+                || READER_PREFLIGHT_ENVIRONMENT
+                    .iter()
+                    .any(|allowed| key == *allowed)
+        }));
+        assert!(
+            !child
+                .get_envs()
+                .any(|(key, _)| key == "MORROW_PREFLIGHT_TEST_SECRET")
+        );
+    }
+
+    #[test]
+    fn reader_ownership_trigger_handles_native_false_then_true_and_partial_frames() {
+        // Native PR25 job 114241956649: SwiftUI has not started navigation at
+        // marker-wait-begin (+1832); KVO reports real loading seven ms later.
+        let before = concat!(
+            "Native macOS reader: trace phase=initial-load navigation-loading reader=initial value=true +643 ms\n",
+            "Native macOS reader: trace phase=focused-warmup marker-wait-begin marker=Focused reader warmup loading=true +645 ms\n",
+            "Native macOS reader: trace phase=focused-warmup navigation-loading reader=initial value=false +1760 ms\n",
+            "Native macOS reader: trace phase=adversarial-text fixture-update-request begin textCharacters=180000 columnWidthPx=1 viewportWidth=705 viewportHeight=480 windowWidth=720 +1830 ms\n",
+            "Native macOS reader: trace phase=adversarial-text fixture-update-request end; SwiftUI navigation/layout may still be pending +1832 ms\n",
+            "Native macOS reader: trace phase=adversarial-text marker-wait-begin marker=Bounded adversarial tail loading=false +1832 ms\n",
+        );
+        let loading = "Native macOS reader: trace phase=adversarial-text navigation-loading reader=initial value=true +1839 ms\n";
+        let trace = format!("{before}{loading}");
+        for length in 0..trace.len() {
+            assert!(
+                !reader_adversarial_loading_observed(&trace.as_bytes()[..length]),
+                "Premature trigger at partial byte {length}"
+            );
+        }
+        assert!(reader_adversarial_loading_observed(trace.as_bytes()));
+        for invalid_loading in [
+            loading.replace("reader=initial", "reader=replacement"),
+            loading.replace("adversarial-text", "focused-warmup"),
+            loading.replace("value=true", "value=false"),
+            loading.replace("1839 ms", "1831 ms"),
+            loading.replace("1839 ms", "incomplete"),
+        ] {
+            assert!(!reader_adversarial_loading_observed(
+                format!("{before}{invalid_loading}").as_bytes()
+            ));
+        }
+        assert!(!reader_adversarial_loading_observed(
+            format!("{loading}{before}").as_bytes()
+        ));
+        let incomplete_update = before.replace(
+            "+1832 ms\nNative macOS reader: trace phase=adversarial-text marker",
+            "+1832 msNative macOS reader: trace phase=adversarial-text marker",
+        );
+        assert!(!reader_adversarial_loading_observed(
+            format!("{incomplete_update}{loading}").as_bytes()
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reader_ownership_probe_is_single_shot_and_cancelled_without_masking_reader() {
+        let fixture = Fixture::new().unwrap();
+        fs::create_dir(fixture.0.join("scripts")).unwrap();
+        fs::write(
+            fixture.0.join("scripts/probe-macos-reader-processes.py"),
+            r#"import pathlib, sys, time
+output = pathlib.Path(sys.argv[sys.argv.index('--output') + 1])
+with output.with_name('started.txt').open('x') as started:
+    started.write('one owned probe')
+print('fixture metadata probe started', flush=True)
+time.sleep(10)
+"#,
+        )
+        .unwrap();
+        let probe_directory = fixture.0.join("probe");
+        fs::create_dir(&probe_directory).unwrap();
+        let mut probe = ReaderOwnershipProbe::new(&fixture.0, &probe_directory);
+        let script = "printf 'Native macOS reader: trace phase=adversarial-text fixture-update-request end; SwiftUI navigation/layout may still be pending +1832 ms\\nNative macOS reader: trace phase=adversarial-text marker-wait-begin marker=Bounded adversarial tail loading=false +1832 ms\\nNative macOS reader: trace phase=adversarial-text navigation-loading reader=initial value=' >&2; sleep 0.05; printf 'true +1839 ms\\nNative macOS reader: trace phase=adversarial-text navigation-loading reader=initial value=true +1840 ms\\n' >&2; sleep 0.5; printf '%s\\n' \"$1\"";
+        let process = reader_sample_process_controlled(
+            command(&fixture.0, "/bin/sh").args([
+                "-c",
+                script,
+                "fixture",
+                &reader_child_result("warm-view").to_string(),
+            ]),
+            Duration::from_secs(2),
+            4096,
+            None,
+            Some(&mut probe),
+        )
+        .unwrap();
+        assert_eq!(process.outcome, "exited");
+        assert!(
+            process.elapsed_ms < 2_000,
+            "Probe cancellation extended the reader gate"
+        );
+        assert!(probe.worker.is_none(), "Probe worker was not joined/reaped");
+        assert_eq!(
+            fs::read_to_string(probe_directory.join("started.txt")).unwrap(),
+            "one owned probe"
+        );
+        let reader_directory = fixture.0.join("reader");
+        fs::create_dir(&reader_directory).unwrap();
+        let reader = save_reader_sample_with_diagnostic(
+            &reader_directory,
+            1,
+            "warm-view",
+            Ok(process),
+            Ok(()),
+            Some(ReaderDiagnostic::OwnershipPreflight),
+        )
+        .unwrap();
+        let observation = save_reader_ownership_probe(&mut probe).unwrap();
+        assert_eq!(reader["status"], "passed");
+        assert_eq!(reader["environmentIsolated"], true);
+        assert_eq!(observation["status"], "failed");
+        assert_eq!(observation["parent"]["outcome"], "cancelled");
+        assert_eq!(observation["ownershipStatus"], "unresolved");
+        assert!(
+            !fs::read(probe_directory.join("stdout.log"))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     fn visibility_trace(policy: &str, foreground_ready: bool) -> String {
