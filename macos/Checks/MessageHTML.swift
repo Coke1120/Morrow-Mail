@@ -2,6 +2,10 @@ import AppKit
 import SwiftUI
 import WebKit
 
+#if READER_DIAGNOSTIC_BREAK_WORD && READER_DIAGNOSTIC_NORMAL
+#error("Choose only one reader diagnostic wrapping policy")
+#endif
+
 // Fixture-only telemetry. Every mutable field is protected by lock; the timer
 // never reads AppKit/WebKit objects. Logs contain only fixture labels and counts.
 private final class ReaderFixtureTrace: @unchecked Sendable {
@@ -117,6 +121,21 @@ private enum ReaderFixtureMode: String {
 @main struct MessageHTMLChecks {
     private static let adversarialMarker = "Bounded adversarial tail"
     private static let adversarialHTML = "<div style='width:1px'>" + String(repeating: "x", count: 180000) + "</div><p>Bounded adversarial tail</p>"
+    private static var diagnosticWrappingPolicy: String? {
+        #if READER_DIAGNOSTIC_BREAK_WORD
+        return "break-word"
+        #elseif READER_DIAGNOSTIC_NORMAL
+        return "normal"
+        #else
+        return nil
+        #endif
+    }
+    private static var measuredAdversarialHTML: String {
+        // Separate diagnostic binaries change only this fixture's wrapping
+        // policy. The default full check and 40-sample baseline stay exact.
+        guard let policy = diagnosticWrappingPolicy else { return adversarialHTML }
+        return adversarialHTML.replacingOccurrences(of: "<div style='width:1px'>", with: "<div style='width:1px;overflow-wrap:\(policy)'>")
+    }
 
     @MainActor static func main() {
         let processStarted = ProcessInfo.processInfo.systemUptime
@@ -135,7 +154,14 @@ private enum ReaderFixtureMode: String {
             guard arguments[1] == "--adversarial", let requested = ReaderFixtureMode(rawValue: arguments[2]), requested != .full else { usage() }
             mode = requested
         }
+        if Self.diagnosticWrappingPolicy != nil, mode == .full {
+            FileHandle.standardError.write(Data("Diagnostic wrapping controls require --adversarial; they are not full reader acceptance.\n".utf8))
+            usage()
+        }
         let trace = ReaderFixtureTrace()
+        if let policy = Self.diagnosticWrappingPolicy {
+            trace.event("diagnostic-wrapping-control policy=\(policy) acceptance=false textCharacters=180000 columnWidthPx=1")
+        }
         func phase(_ name: String) { trace.phase(name) }
         var adversarialStarted: TimeInterval?
         var adversarialElapsed: Int?
@@ -177,7 +203,8 @@ private enum ReaderFixtureMode: String {
         if mode != .full {
             trace.event("focused-begin mode=\(mode.rawValue) scope=fresh-process-fresh-view-not-OS-cold")
         }
-        // Cold-view's first app-supplied document is the exact adversarial input.
+        // Cold-view's first app-supplied document is the selected adversarial
+        // input; without a diagnostic define it is the exact original fixture.
         // Warm-view uses this same state/view later; neither mode clears OS caches.
         let initialRequested = ProcessInfo.processInfo.systemUptime
         if mode == .coldView {
@@ -187,7 +214,7 @@ private enum ReaderFixtureMode: String {
         } else if mode == .warmView {
             trace.event("warmup-initial-request")
         }
-        let initialHTML = mode == .coldView ? Self.adversarialHTML : mode == .warmView ? "<p>\(warmupMarker)</p>" : content
+        let initialHTML = mode == .coldView ? Self.measuredAdversarialHTML : mode == .warmView ? "<p>\(warmupMarker)</p>" : content
         let state = ReaderFixtureState(initialHTML)
         let host = NSHostingView(rootView: ReaderFixture(state: state))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
@@ -274,7 +301,7 @@ private enum ReaderFixtureMode: String {
                 }
                 @MainActor func publishAdversarial() {
                     trace.event("fixture-update-request begin textCharacters=180000 columnWidthPx=1 viewportWidth=\(Int(web.bounds.width)) viewportHeight=\(Int(web.bounds.height)) windowWidth=\(Int(window.contentLayoutRect.width))")
-                    state.html = Self.adversarialHTML
+                    state.html = Self.measuredAdversarialHTML
                     trace.event("fixture-update-request end; SwiftUI navigation/layout may still be pending")
                 }
                 @MainActor func adversarialIsBounded() async throws -> Bool {

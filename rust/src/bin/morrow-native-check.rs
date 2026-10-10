@@ -264,6 +264,11 @@ fn compile_check(root: &Path, fixture: &Path, name: &str, arguments: &[&str]) ->
 
 const READER_BATCH_SAMPLES: usize = 40;
 const READER_SAMPLE_LOG_LIMIT: usize = 1024 * 1024;
+const READER_WRAP_SAMPLES_PER_POLICY: usize = 6;
+const READER_WRAP_POLICIES: [(&str, &str); 2] = [
+    ("break-word", "READER_DIAGNOSTIC_BREAK_WORD"),
+    ("normal", "READER_DIAGNOSTIC_NORMAL"),
+];
 
 #[derive(Default)]
 struct SampleLog {
@@ -538,6 +543,45 @@ fn save_reader_sample(
     process: Result<SampleProcess>,
     network: Result<()>,
 ) -> Result<Value> {
+    save_reader_sample_with_policy(directory, sequence, mode, process, network, None)
+}
+
+fn reader_sample_prefix(sequence: usize, diagnostic_policy: Option<&str>) -> String {
+    match diagnostic_policy {
+        Some(policy) => format!("Reader wrap diagnostic {policy} sample {sequence:02}"),
+        None => format!("Reader batch sample {sequence:02}"),
+    }
+}
+
+fn reader_diagnostic_policy_observed(stderr: &[u8], policy: &str) -> bool {
+    let text = String::from_utf8_lossy(stderr);
+    let markers: Vec<_> = text
+        .lines()
+        .filter(|line| {
+            line.starts_with("Native macOS reader: ")
+                && line.contains("diagnostic-wrapping-control")
+        })
+        .collect();
+    let prefix = format!(
+        "Native macOS reader: trace phase=setup diagnostic-wrapping-control policy={policy} acceptance=false textCharacters=180000 columnWidthPx=1 +"
+    );
+    markers.len() == 1
+        && markers[0]
+            .strip_prefix(&prefix)
+            .and_then(|suffix| suffix.strip_suffix(" ms"))
+            .is_some_and(|elapsed| {
+                !elapsed.is_empty() && elapsed.bytes().all(|byte| byte.is_ascii_digit())
+            })
+}
+
+fn save_reader_sample_with_policy(
+    directory: &Path,
+    sequence: usize,
+    mode: &str,
+    process: Result<SampleProcess>,
+    network: Result<()>,
+    diagnostic_policy: Option<&str>,
+) -> Result<Value> {
     let mut errors = Vec::new();
     let (stdout, stderr, parent) = match process {
         Ok(process) => {
@@ -570,34 +614,52 @@ fn save_reader_sample(
     if let Err(error) = network {
         errors.push(format!("network: {error}"));
     }
+    let diagnostic_policy_observed =
+        diagnostic_policy.map(|policy| reader_diagnostic_policy_observed(&stderr, policy));
+    if diagnostic_policy_observed == Some(false) {
+        errors.push("diagnostic: missing or conflicting compiled-policy trace".to_owned());
+    }
     write_sample_file(&directory.join("stdout.log"), &stdout)?;
     write_sample_file(&directory.join("stderr.log"), &stderr)?;
-    let result = json!({"schemaVersion":1, "kind":"reader-adversarial-sample",
+    let mut result = json!({"schemaVersion":1, "kind":"reader-adversarial-sample",
         "sequence":sequence, "mode":mode, "status":if errors.is_empty() {"passed"} else {"failed"},
         "parent":parent, "networkZero":network_zero,
         "childResult":serde_json::from_slice::<Value>(&stdout).ok(), "errors":errors});
+    if let Some(policy) = diagnostic_policy {
+        result["kind"] = json!("reader-wrap-diagnostic-sample");
+        result["diagnosticPolicy"] = json!(policy);
+        result["diagnosticPolicyObserved"] = json!(diagnostic_policy_observed);
+        result["productionAcceptance"] = json!(false);
+    }
     write_sample_file(
         &directory.join("result.json"),
         &serde_json::to_vec_pretty(&result)?,
     )?;
     // Public fixture-only traces survive in the terminal CI log even when the
     // artifact download is unavailable. Prefix each line, bound individual lines.
+    let prefix = reader_sample_prefix(sequence, diagnostic_policy);
     for line in String::from_utf8_lossy(&stderr)
         .lines()
         .filter(|line| line.starts_with("Native macOS reader: "))
         .take(120)
     {
-        println!(
-            "Reader batch sample {sequence:02}: {}",
-            line.chars().take(1024).collect::<String>()
-        );
+        println!("{prefix}: {}", line.chars().take(1024).collect::<String>());
     }
-    println!("Reader batch sample {sequence:02} result: {result}");
+    println!("{prefix} result: {result}");
     Ok(result)
 }
 
 fn reader_batch_evidence_complete(output: &Path, samples: &[Value]) -> bool {
-    samples.len() == READER_BATCH_SAMPLES
+    reader_series_evidence_complete(output, samples, READER_BATCH_SAMPLES, None)
+}
+
+fn reader_series_evidence_complete(
+    output: &Path,
+    samples: &[Value],
+    expected_samples: usize,
+    diagnostic_policy: Option<&str>,
+) -> bool {
+    samples.len() == expected_samples
         && samples.iter().enumerate().all(|(index, sample)| {
             let sequence = index + 1;
             let mode = if index % 2 == 0 {
@@ -608,6 +670,17 @@ fn reader_batch_evidence_complete(output: &Path, samples: &[Value]) -> bool {
             let directory = output.join(format!("sample-{sequence:02}-{mode}"));
             sample["sequence"] == sequence
                 && sample["mode"] == mode
+                && match diagnostic_policy {
+                    Some(policy) => {
+                        sample["kind"] == "reader-wrap-diagnostic-sample"
+                            && sample["diagnosticPolicy"] == policy
+                            && sample["productionAcceptance"] == false
+                    }
+                    None => {
+                        sample["kind"] == "reader-adversarial-sample"
+                            && sample.get("diagnosticPolicy").is_none()
+                    }
+                }
                 && ["result.json", "stdout.log", "stderr.log"]
                     .iter()
                     .all(|name| directory.join(name).is_file())
@@ -617,6 +690,31 @@ fn reader_batch_evidence_complete(output: &Path, samples: &[Value]) -> bool {
                     .as_ref()
                     == Some(sample)
         })
+}
+
+fn collect_reader_sample(
+    root: &Path,
+    reader: &Path,
+    mode: &str,
+) -> (Result<SampleProcess>, Result<()>) {
+    let mut network_result = Err("Network sentinel was not started.".into());
+    let process = (|| {
+        // Fresh private path, process and sentinel for every attempt. A warm
+        // sample only warms its own WebView; no process is reused across samples.
+        let workspace = Fixture::new()?;
+        let network = ReaderNetwork::start()?;
+        let process = reader_sample_process(
+            command(root, reader)
+                .arg(network.port.to_string())
+                .args(["--adversarial", mode])
+                .env("MORROW_DATA_DIR", &workspace.0),
+            Duration::from_secs(30),
+            READER_SAMPLE_LOG_LIMIT,
+        );
+        network_result = network.finish();
+        process
+    })();
+    (process, network_result)
 }
 
 fn reader_adversarial_batch(root: &Path, output: &Path) -> Result<()> {
@@ -649,23 +747,7 @@ fn reader_adversarial_batch(root: &Path, output: &Path) -> Result<()> {
         };
         let directory = output.join(format!("sample-{sequence:02}-{mode}"));
         fs::create_dir(&directory)?;
-        let mut network_result = Err("Network sentinel was not started.".into());
-        let process = (|| {
-            // Fresh private path, process and sentinel for every attempt. A warm
-            // sample only warms its own WebView; no process is reused across samples.
-            let workspace = Fixture::new()?;
-            let network = ReaderNetwork::start()?;
-            let process = reader_sample_process(
-                command(root, &reader)
-                    .arg(network.port.to_string())
-                    .args(["--adversarial", mode])
-                    .env("MORROW_DATA_DIR", &workspace.0),
-                Duration::from_secs(30),
-                READER_SAMPLE_LOG_LIMIT,
-            );
-            network_result = network.finish();
-            process
-        })();
+        let (process, network_result) = collect_reader_sample(root, &reader, mode);
         samples.push(save_reader_sample(
             &directory,
             sequence,
@@ -695,6 +777,132 @@ fn reader_adversarial_batch(root: &Path, output: &Path) -> Result<()> {
     check(
         complete && passed == READER_BATCH_SAMPLES,
         "Reader adversarial batch failed; all attempted samples and logs retained.",
+    )
+}
+
+fn reader_wrap_diagnostic(root: &Path, output: &Path) -> Result<()> {
+    check(
+        output.is_absolute(),
+        "Reader wrapping diagnostic requires an absolute new output directory.",
+    )?;
+    fs::create_dir(output)?;
+    let fixture = Fixture::new()?;
+    let mut policies = Vec::new();
+    for (policy, define) in READER_WRAP_POLICIES {
+        let directory = output.join(policy);
+        fs::create_dir(&directory)?;
+        let executable = format!("reader-wrap-{policy}");
+        let reader = compile_check(
+            root,
+            &fixture.0,
+            &executable,
+            &[
+                "-parse-as-library",
+                "-D",
+                define,
+                "macos/Sources/MorrowMail/Models.swift",
+                "macos/Sources/MorrowMail/MessageBodyView.swift",
+                "macos/Checks/MessageHTML.swift",
+            ],
+        );
+        let mut samples = Vec::new();
+        for index in 0..READER_WRAP_SAMPLES_PER_POLICY {
+            let sequence = index + 1;
+            let mode = if index % 2 == 0 {
+                "cold-view"
+            } else {
+                "warm-view"
+            };
+            let sample_directory = directory.join(format!("sample-{sequence:02}-{mode}"));
+            fs::create_dir(&sample_directory)?;
+            let (process, network) = match &reader {
+                Ok(reader) => collect_reader_sample(root, reader, mode),
+                Err(error) => (
+                    Err(format!("Diagnostic fixture compile failed: {error}").into()),
+                    Err("Network sentinel was not started.".into()),
+                ),
+            };
+            samples.push(save_reader_sample_with_policy(
+                &sample_directory,
+                sequence,
+                mode,
+                process,
+                network,
+                Some(policy),
+            )?);
+        }
+        let complete = reader_series_evidence_complete(
+            &directory,
+            &samples,
+            READER_WRAP_SAMPLES_PER_POLICY,
+            Some(policy),
+        );
+        let passed = samples
+            .iter()
+            .filter(|sample| sample["status"] == "passed")
+            .count();
+        let summary = json!({"schemaVersion":1,"kind":"reader-wrap-diagnostic-policy",
+            "diagnosticPolicy":policy,"compileDefine":define,"compiledExecutable":executable,
+            "compileSucceeded":reader.is_ok(),"productionAcceptance":false,
+            "status":if complete && passed == READER_WRAP_SAMPLES_PER_POLICY {"passed"} else {"failed"},
+            "expectedSamples":READER_WRAP_SAMPLES_PER_POLICY,"completedSamples":samples.len(),
+            "passedSamples":passed,"failedSamples":samples.len()-passed,"complete":complete,
+            "wholeProcessDeadlineMs":30_000,"textCharacters":180_000,"columnWidthPx":1,"samples":samples});
+        write_sample_file(
+            &directory.join("policy.json"),
+            &serde_json::to_vec_pretty(&summary)?,
+        )?;
+        println!(
+            "Reader wrap diagnostic {policy} completed: {passed}/{READER_WRAP_SAMPLES_PER_POLICY} passed; complete={complete}; productionAcceptance=false"
+        );
+        policies.push(summary);
+    }
+    let complete = policies.len() == READER_WRAP_POLICIES.len()
+        && policies
+            .iter()
+            .zip(READER_WRAP_POLICIES)
+            .all(|(summary, (policy, _))| {
+                let directory = output.join(policy);
+                summary["complete"] == true
+                    && summary["samples"].as_array().is_some_and(|samples| {
+                        reader_series_evidence_complete(
+                            &directory,
+                            samples,
+                            READER_WRAP_SAMPLES_PER_POLICY,
+                            Some(policy),
+                        )
+                    })
+                    && fs::read(directory.join("policy.json"))
+                        .ok()
+                        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                        .as_ref()
+                        == Some(summary)
+            });
+    let passed = complete && policies.iter().all(|policy| policy["status"] == "passed");
+    let completed_samples: u64 = policies
+        .iter()
+        .filter_map(|policy| policy["completedSamples"].as_u64())
+        .sum();
+    let passed_samples: u64 = policies
+        .iter()
+        .filter_map(|policy| policy["passedSamples"].as_u64())
+        .sum();
+    let summary = json!({"schemaVersion":1,"kind":"reader-wrap-diagnostic",
+        "productionAcceptance":false,"status":if passed {"passed"} else {"failed"},
+        "expectedSamples":READER_WRAP_POLICIES.len()*READER_WRAP_SAMPLES_PER_POLICY,
+        "completedSamples":completed_samples,"passedSamples":passed_samples,"failedSamples":completed_samples-passed_samples,
+        "complete":complete,"policies":policies});
+    write_sample_file(
+        &output.join("diagnostic.json"),
+        &serde_json::to_vec_pretty(&summary)?,
+    )?;
+    println!(
+        "Reader wrap diagnostic completed: passed={passed}; complete={complete}; productionAcceptance=false; {}",
+        output.display()
+    );
+    check(
+        passed,
+        "Reader wrapping diagnostic failed; all attempted control samples and logs retained.",
     )
 }
 
@@ -980,13 +1188,18 @@ fn run() -> Result<()> {
     {
         return reader_adversarial_batch(root, Path::new(path));
     }
+    if let [flag, path] = arguments.as_slice()
+        && flag == "--reader-wrap-diagnostic"
+    {
+        return reader_wrap_diagnostic(root, Path::new(path));
+    }
     let existing = match arguments.as_slice() {
         [] => None,
         [flag, path] if flag == "--service" && Path::new(path).is_absolute() => {
             Some(Path::new(path))
         }
         _ => {
-            return Err("Usage: morrow-native-check [--service ABSOLUTE_PRODUCTION_BINARY | --reader-adversarial-batch ABSOLUTE_NEW_DIRECTORY]".into());
+            return Err("Usage: morrow-native-check [--service ABSOLUTE_PRODUCTION_BINARY | --reader-adversarial-batch ABSOLUTE_NEW_DIRECTORY | --reader-wrap-diagnostic ABSOLUTE_NEW_DIRECTORY]".into());
         }
     };
     let package = fs::read(root.join("package.json"))?;
@@ -1190,6 +1403,150 @@ mod tests {
             stdout_truncated: false,
             stderr_truncated: false,
         }
+    }
+
+    #[test]
+    fn reader_wrap_diagnostic_requires_unambiguous_compiled_policy_trace() {
+        let fixture = Fixture::new().unwrap();
+        let marker = "Native macOS reader: trace phase=setup diagnostic-wrapping-control policy=break-word acceptance=false textCharacters=180000 columnWidthPx=1 +0 ms\n";
+        let cases = [
+            (marker.to_owned(), true),
+            (String::new(), false),
+            (marker.replace("break-word", "normal"), false),
+            (marker.replace("acceptance=false", "acceptance=true"), false),
+            (marker.replace("180000", "18000"), false),
+            (format!("{marker}{marker}"), false),
+            (
+                format!("{marker}{}", marker.replace("break-word", "normal")),
+                false,
+            ),
+        ];
+        for (index, (stderr, observed)) in cases.into_iter().enumerate() {
+            let directory = fixture.0.join(format!("sample-{index}"));
+            fs::create_dir(&directory).unwrap();
+            let mut process = completed_reader_process(
+                serde_json::to_vec(&reader_child_result("cold-view")).unwrap(),
+            );
+            process.stderr = stderr.into_bytes();
+            let result = save_reader_sample_with_policy(
+                &directory,
+                1,
+                "cold-view",
+                Ok(process),
+                Ok(()),
+                Some("break-word"),
+            )
+            .unwrap();
+            assert_eq!(result["diagnosticPolicyObserved"], observed);
+            assert_eq!(result["status"], if observed { "passed" } else { "failed" });
+            assert_eq!(result["productionAcceptance"], false);
+        }
+    }
+
+    #[test]
+    fn reader_wrap_diagnostic_retains_twelve_controls_without_baseline_contamination() {
+        let fixture = Fixture::new().unwrap();
+        let mut records = 0;
+        let mut terminal_lines = format!("{} result: baseline\n", reader_sample_prefix(1, None));
+        for (policy, _) in READER_WRAP_POLICIES {
+            let directory = fixture.0.join(policy);
+            fs::create_dir(&directory).unwrap();
+            let mut samples = Vec::new();
+            for index in 0..READER_WRAP_SAMPLES_PER_POLICY {
+                let sequence = index + 1;
+                let mode = if index % 2 == 0 {
+                    "cold-view"
+                } else {
+                    "warm-view"
+                };
+                let sample_directory = directory.join(format!("sample-{sequence:02}-{mode}"));
+                fs::create_dir(&sample_directory).unwrap();
+                let mut process = completed_reader_process(
+                    serde_json::to_vec(&reader_child_result(mode)).unwrap(),
+                );
+                process.stderr = format!("Native macOS reader: trace phase=setup diagnostic-wrapping-control policy={policy} acceptance=false textCharacters=180000 columnWidthPx=1 +1 ms\n").into_bytes();
+                if index == 0 {
+                    process.outcome = "timeout";
+                }
+                let result = save_reader_sample_with_policy(
+                    &sample_directory,
+                    sequence,
+                    mode,
+                    Ok(process),
+                    Ok(()),
+                    Some(policy),
+                )
+                .unwrap();
+                assert_eq!(result["kind"], "reader-wrap-diagnostic-sample");
+                assert_eq!(result["diagnosticPolicy"], policy);
+                assert_eq!(result["childResult"].as_object().unwrap().len(), 11);
+                samples.push(result);
+                records += 1;
+                terminal_lines.push_str(&format!(
+                    "{} result: control\n",
+                    reader_sample_prefix(sequence, Some(policy))
+                ));
+            }
+            assert_eq!(samples[0]["status"], "failed");
+            assert_eq!(samples.last().unwrap()["status"], "passed");
+            assert!(reader_series_evidence_complete(
+                &directory,
+                &samples,
+                READER_WRAP_SAMPLES_PER_POLICY,
+                Some(policy)
+            ));
+            assert!(!reader_series_evidence_complete(
+                &directory,
+                &samples,
+                READER_WRAP_SAMPLES_PER_POLICY,
+                Some("other-policy")
+            ));
+            assert!(!reader_series_evidence_complete(
+                &directory,
+                &samples,
+                READER_WRAP_SAMPLES_PER_POLICY,
+                None
+            ));
+            assert!(!reader_batch_evidence_complete(&directory, &samples));
+            samples[0]
+                .as_object_mut()
+                .unwrap()
+                .remove("diagnosticPolicy");
+            fs::write(
+                directory.join("sample-01-cold-view/result.json"),
+                serde_json::to_vec(&samples[0]).unwrap(),
+            )
+            .unwrap();
+            assert!(!reader_series_evidence_complete(
+                &directory,
+                &samples,
+                READER_WRAP_SAMPLES_PER_POLICY,
+                Some(policy)
+            ));
+            samples[0]["diagnosticPolicy"] = json!(policy);
+            fs::write(
+                directory.join("sample-01-cold-view/result.json"),
+                serde_json::to_vec(&samples[0]).unwrap(),
+            )
+            .unwrap();
+            fs::remove_file(directory.join("sample-06-warm-view/stderr.log")).unwrap();
+            assert!(!reader_series_evidence_complete(
+                &directory,
+                &samples,
+                READER_WRAP_SAMPLES_PER_POLICY,
+                Some(policy)
+            ));
+        }
+        assert_eq!(records, 12);
+        assert_eq!(
+            terminal_lines
+                .lines()
+                .filter(|line| line.starts_with("Reader batch sample "))
+                .count(),
+            1
+        );
+        assert!(reader_wrap_diagnostic(&fixture.0, &fixture.0).is_err());
+        assert!(reader_wrap_diagnostic(&fixture.0, Path::new("relative-output")).is_err());
     }
 
     #[test]
