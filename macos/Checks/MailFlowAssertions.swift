@@ -120,7 +120,7 @@ struct MailFlowAssertions {
     }
     @MainActor static func press(_ name: String, fromEnd: Int, in root: NSView, expectedCount: Int? = nil) async throws {
         // Hosted SwiftUI buttons expose native action peers here, but their
-        // virtual AX names are unavailable without an accessibility client.
+        // virtual AX names were unavailable in our in-process traversal.
         // Use the existing ordered action rows and reject changed structure;
         // the resulting page/write assertions verify which action ran.
         try await wait("Native action row did not mount: " + name) {
@@ -159,6 +159,7 @@ struct MailFlowAssertions {
         try await wait("Initial search did not finish.") { model.searchResponse["total"].number == 65 }
         try await press("Next", fromEnd: 1, in: host, expectedCount: 7)
         try await wait("Search did not reach page two.") { model.searchResponse["page"].number == 1 }
+        trace("Fixture phase: search-page-two")
         let secondPage = model.searchResponse
         model.selectedMessage = secondPage["messages"].array.first!.viewID
         MailFlowProtocol.holdNext()
@@ -178,6 +179,7 @@ struct MailFlowAssertions {
                     "Read refresh lost page two or its displayed reader identity.")
         MailFlowProtocol.release()
         try await wait("Read refresh did not settle on page two.") { model.searchResponse["page"].number == 1 && model.searchResponse != secondPage }
+        trace("Fixture phase: read-refresh-retained")
         // Carry two distinct attachment identities through Keep Editing/save.
         var draft = Draft(); draft.accountID = MailFlowProtocol.owner; draft.replyToID = "fixture:30"
         draft.to = "recipient@example.invalid"; draft.subject = "Fictional reply"; draft.body = "Keep these unsaved edits."
@@ -186,27 +188,48 @@ struct MailFlowAssertions {
         model.newDraft(draft)
         try await wait("Reply sheet did not mount.") { window.attachedSheet?.contentView != nil && model.unsavedForms.contains("compose") }
         let sheet = window.attachedSheet!, sheetRoot = sheet.contentView!
-        var sawDiscardReview = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            sawDiscardReview = NSApp.modalWindow != nil
-            NSApp.stopModal(withCode: .alertFirstButtonReturn)
+        trace("Fixture phase: reply-mounted")
+        try await wait("Native draft editor did not mount.") {
+            views(sheetRoot, NSTextView.self).contains { $0.isEditable && !$0.isFieldEditor && $0.string == draft.body }
         }
+        let editor = views(sheetRoot, NSTextView.self).first { $0.isEditable && !$0.isFieldEditor && $0.string == draft.body }!
+        draft.body = "Edited after opening; Keep Editing must retain this text."
+        editor.string = draft.body; editor.didChangeText()
+        trace("Fixture phase: native-edit-applied")
+        var reviewWindow: NSWindow?
+        let reviewDeadline = Date().addingTimeInterval(5)
+        let reviewTimer = Timer(timeInterval: 0.01, repeats: true) { timer in
+            if let modal = NSApp.modalWindow, modal !== sheet {
+                reviewWindow = modal; trace("Fixture phase: discard-review-observed")
+                NSApp.stopModal(withCode: .alertFirstButtonReturn); timer.invalidate()
+            } else if Date() >= reviewDeadline { timer.invalidate() }
+        }
+        // A nested synchronous AppKit modal loop cannot reliably drain a
+        // callback enqueued behind this async main-actor task on the main queue.
+        RunLoop.main.add(reviewTimer, forMode: .modalPanel)
+        RunLoop.main.add(reviewTimer, forMode: .common)
+        defer { reviewTimer.invalidate() }
+        trace("Fixture phase: cancel-invoked")
         try await press("Cancel", fromEnd: 3, in: sheetRoot)
-        try await wait("Cancel did not present and finish its unsaved-edit review.") { sawDiscardReview && NSApp.modalWindow == nil }
+        try await wait("Cancel did not present and finish its unsaved-edit review.") { reviewWindow != nil && NSApp.modalWindow !== reviewWindow }
         try require(model.compose != nil && model.unsavedForms.contains("compose") && window.attachedSheet === sheet,
                     "Keep Editing discarded the mounted reply.")
+        trace("Fixture phase: kept-editing")
         MailFlowProtocol.holdNext()
         try await press("Save Draft", fromEnd: 2, in: sheetRoot)
+        trace("Fixture phase: save-invoked")
         try await wait("Saved reply did not return to search.") { model.compose == nil && MailFlowProtocol.snapshot().2 }
         let saved = MailFlowProtocol.snapshot().1.last!
         try require(saved.0 == draft.accountID && saved.1["body"].string == draft.body && saved.1["attachments"].array == draft.attachments,
                     "Cancellation or save changed draft owner, edits or attachment identities.")
         try require(MailFlowProtocol.snapshot().0.last!.1["page"].number == 1 && model.searchResponse["page"].number == 1,
                     "Saving a reply reset the original search page.")
+        trace("Fixture phase: saved-page-retained")
         MailFlowProtocol.release()
         try await Task.sleep(nanoseconds: 100_000_000)
         MailFlowProtocol.shrink(); model.state = MailFlowProtocol.state()
         try await wait("An emptied last search page did not fall back to the last valid page.") { model.searchResponse["page"].number == 0 && model.searchResponse["total"].number == 30 }
+        trace("Fixture phase: last-page-fallback")
         MailFlowProtocol.holdNext(); model.state["revision"] = .string("held-owner-refresh")
         try await wait("Stale-owner search was not held.") { MailFlowProtocol.snapshot().2 }
         model.state["account"]["id"] = .string(MailFlowProtocol.other)
