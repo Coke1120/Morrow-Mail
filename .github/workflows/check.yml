@@ -42,6 +42,7 @@ jobs:
         shell: bash
         run: |
           if command -v node || command -v npm; then exit 1; fi
+          python3 -B scripts/test-clean-local-release.py
           cargo fmt --manifest-path rust/Cargo.toml --all -- --check
           cargo clippy --manifest-path rust/Cargo.toml --locked --all-targets -- -D warnings
           cargo test --manifest-path rust/Cargo.toml --locked

@@ -115,6 +115,20 @@ Use **Rust 1.98+** with rustfmt/clippy, plus Apple's Swift command-line tools on
 
 For checks, source layout and release rules, see [AGENTS.md](AGENTS.md). Platform details are in the [macOS guide](docs/USER_GUIDE.md#native-macos-app) and [Windows README](windows/README.md). Use an isolated absolute `MORROW_DATA_DIR` for fixtures; never test against a real mailbox workspace.
 
+### Local cleanup after a release (macOS)
+
+After confirming that both platforms passed and their downloads are publicly available, stop local builds/tests and preview cleanup on your Mac (Python 3 required):
+
+```sh
+python3 scripts/clean-local-release.py
+# Review the list, then delete those generated outputs:
+python3 scripts/clean-local-release.py --apply
+```
+
+This removes checkout-local `rust/target`, `macos/.build`, `build/swift-cache` and `build/swift-module-cache`. It also removes recognized Morrow ZIP/DMG files and extracted `Morrow Mail.app` bundles older than seven days within `build/` and `test-results/`'s `release`, `releases` and `release-*` directories, plus old recognized archives directly in `dist/`. Age uses modification times, including bundle contents. Current native candidate directories, installed-app backups, reports, screenshots, checksums and manifests stay in place. Symlink targets and detected private workspaces are skipped; tracked cleanup targets cause refusal.
+
+Run it manually after each successful paired release; it does not contact GitHub or verify publication. The process check is best effort, so do not start builds/tests while it runs. Clearing compiler outputs makes the next build slower. Shared/global caches, custom external Cargo target directories and app data are outside its scope. Reported savings are estimates; APFS clones/snapshots can affect reclaimed space. GitHub-hosted CI cleanup does not free local Mac storage.
+
 ## Documentation
 
 | Document | Contents |

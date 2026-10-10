@@ -1,5 +1,11 @@
 # Verification — 10 October 2026
 
+## Local post-release cleanup
+
+`python3 -B scripts/test-clean-local-release.py` passes six tests in isolated temporary Git repositories: preview versus apply, repeat execution, seven-day artifact retention, current-candidate/backup/report preservation, private-workspace exclusion, symlink and tracked-file protection, scan-error handling, and refusal during builds or while an extracted app is running. The same fixture check is included in the macOS CI tooling step. No production app code or paired-release publication rules changed.
+
+The real checkout was previewed only; no existing local outputs were deleted. Full native builds and Windows acceptance were not rerun for this maintenance-only change. The command relies on the operator to verify release publication and stop concurrent builds/tests; process detection is not a shared build lock. APFS reclaimable space may differ from its allocated-byte estimate.
+
 ## 0.7.1 — read-state reconciliation repair
 
 The review found that Gmail/IMAP could retain a legacy local Read/Unread value indefinitely when the fetched provider flag matched the previous snapshot. Imports now accept each fetched read value, and confirmed flag-write responses clear obsolete read overrides. Local-only stars, Pending, folders and account ownership remain protected. Unavailable results retain cached flags/snapshots. An IMAP EXAMINE rejection no longer blocks other folders when a complete successful LIST confirms the folder is absent; later rounds can recheck it. Tagged LIST failures are explicitly rejected because the dependency's streaming adapter otherwise discards them.

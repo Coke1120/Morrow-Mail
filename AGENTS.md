@@ -116,6 +116,20 @@ plutil -lint 'build/macos-native/Morrow Mail.app/Contents/Info.plist'
 
 Avoid parallel builds targeting the same output. Inspect free disk space before full builds; `CARGO_INCREMENTAL=0` reduces local accumulation. Generated build cleanup must never touch private workspaces.
 
+The owner chose manual local cleanup after successful paired releases. Once both
+platforms have passed and their downloads are publicly available, use
+`python3 scripts/clean-local-release.py` to preview eligible outputs and estimated
+savings; `--apply` is the manual deletion step. Do not schedule cleanup or attach
+automatic deletion to builds/releases. The script does not verify publication.
+Stop local builds/tests and candidate apps before applying; its process check is
+not a shared build lock. Reuse its fixed scope: checkout-local compiler caches and
+recognized release copies older than seven days, preserving current native
+candidates, backups, evidence and private workspaces. Do not replace it with broad
+`rm -rf` or `git clean` commands, or extend it to shared/global caches. See
+[cleanup usage and limits](README.md#local-cleanup-after-a-release-macos).
+When changing cleanup behavior, run `python3 -B scripts/test-clean-local-release.py`;
+deletion tests must use isolated temporary fixtures, never the owner's outputs.
+
 Native candidates use `/bin/sh scripts/build-macos-native.sh`, Rust `morrow-native-check --service <candidate-service>`, and Windows `scripts/build-windows-native.ps1 -Zip` / `test-windows-native.ps1 -UiSmoke`. Rust/resource/notice/native checks must work without Node on PATH. The owner explicitly retired the historical Node CI, archived harness retrieval and Node oracle calls. Keep native sanitizer, persistence, signed updater, installer/rollback and reader isolation checks. Old-client interoperability is historical evidence only, not a current CI claim. See the retirement guide for scope.
 
 Account-routing changes need coverage for duplicate IDs, combined views,
