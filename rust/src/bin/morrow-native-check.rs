@@ -280,11 +280,21 @@ const READER_VISIBILITY_POLICIES: [(&str, &str); 2] = [
         "READER_DIAGNOSTIC_FOREGROUND_PRESENTATION",
     ),
 ];
+const READER_STRUCTURE_PAIRS: usize = 3;
+const READER_STRUCTURE_POLICIES: [(&str, &str, u8); 2] = [
+    (
+        "baseline-structure",
+        "READER_DIAGNOSTIC_BASELINE_STRUCTURE",
+        0,
+    ),
+    ("nested-inline", "READER_DIAGNOSTIC_NESTED_INLINE", 2),
+];
 
 #[derive(Clone, Copy)]
 enum ReaderDiagnostic<'a> {
     Wrap(&'a str),
     Visibility(&'a str),
+    Structure(&'a str),
     OwnershipPreflight,
 }
 
@@ -461,14 +471,42 @@ impl Drop for ReaderOwnershipProbe {
 }
 
 fn reader_adversarial_loading_observed(stderr: &[u8]) -> bool {
-    let prefix = "Native macOS reader: trace phase=adversarial-text marker-wait-begin marker=Bounded adversarial tail loading=true +";
-    String::from_utf8_lossy(stderr).lines().any(|line| {
-        line.strip_prefix(prefix)
-            .and_then(|tail| tail.strip_suffix(" ms"))
-            .is_some_and(|elapsed| {
-                !elapsed.is_empty() && elapsed.bytes().all(|byte| byte.is_ascii_digit())
-            })
-    })
+    let prefix = "Native macOS reader: trace phase=adversarial-text ";
+    let mut update_end_ms = None;
+    // A pipe snapshot can end partway through a trace. Only complete newline
+    // frames may establish the update boundary or trigger the one-shot observer.
+    for frame in String::from_utf8_lossy(stderr).split_inclusive('\n') {
+        let Some(line) = frame.strip_suffix('\n') else {
+            continue;
+        };
+        let Some(event) = line.strip_prefix(prefix) else {
+            continue;
+        };
+        let Some((event, elapsed)) = event.rsplit_once(" +") else {
+            continue;
+        };
+        let Some(elapsed) = elapsed.strip_suffix(" ms") else {
+            continue;
+        };
+        if elapsed.is_empty() || !elapsed.bytes().all(|byte| byte.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(elapsed) = elapsed.parse::<u64>() else {
+            continue;
+        };
+        if event == "fixture-update-request end; SwiftUI navigation/layout may still be pending" {
+            update_end_ms = Some(elapsed);
+        } else if update_end_ms.is_some_and(|end| elapsed >= end)
+            && matches!(
+                event,
+                "navigation-loading reader=initial value=true"
+                    | "marker-wait-begin marker=Bounded adversarial tail loading=true"
+            )
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn reader_sample_process(
@@ -736,6 +774,105 @@ fn reader_diagnostic_control_observed(stderr: &[u8], policy: &str, control: &str
             })
 }
 
+fn reader_structure_depth(policy: &str) -> Option<u8> {
+    READER_STRUCTURE_POLICIES
+        .iter()
+        .find(|(expected, _, _)| *expected == policy)
+        .map(|(_, _, depth)| *depth)
+}
+
+fn reader_structure_control_observed(stderr: &[u8], policy: &str) -> bool {
+    let Some(depth) = reader_structure_depth(policy) else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(stderr);
+    let markers: Vec<_> = text
+        .lines()
+        .filter(|line| {
+            line.starts_with("Native macOS reader: ")
+                && line.contains("diagnostic-structure-control")
+        })
+        .collect();
+    let prefix = format!(
+        "Native macOS reader: trace phase=setup diagnostic-structure-control policy={policy} acceptance=false textCharacters=180000 columnWidthPx=1 wrapperDepth={depth} +"
+    );
+    markers.len() == 1
+        && markers[0]
+            .strip_prefix(&prefix)
+            .and_then(|tail| tail.strip_suffix(" ms"))
+            .is_some_and(|elapsed| {
+                !elapsed.is_empty() && elapsed.bytes().all(|byte| byte.is_ascii_digit())
+            })
+}
+
+fn reader_structure_evidence(stderr: &[u8], policy: &str) -> Result<Value> {
+    let depth = reader_structure_depth(policy).ok_or("Unknown structure policy.")?;
+    check(
+        reader_structure_control_observed(stderr, policy),
+        "Missing or conflicting structure control marker.",
+    )?;
+    let text = std::str::from_utf8(stderr)?;
+    let marker = |name: &str| -> Result<(usize, &str)> {
+        let matches: Vec<_> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| line.starts_with("Native macOS reader: ") && line.contains(name))
+            .collect();
+        check(
+            matches.len() == 1,
+            "Missing or duplicate structure publication/update marker.",
+        )?;
+        Ok(matches[0])
+    };
+    let (startup_index, startup) = marker("diagnostic-structure-control")?;
+    let (publish_index, publish) = marker("structure-adversarial-publish")?;
+    let (request_index, request) = marker("fixture-update-request begin")?;
+    let (request_end_index, request_end) = marker("fixture-update-request end")?;
+    check(
+        startup_index < publish_index
+            && publish_index < request_index
+            && request_index < request_end_index,
+        "Structure policy publication must precede the actual adversarial update request.",
+    )?;
+    let publish_pattern = Regex::new(&format!(
+        r"^Native macOS reader: trace phase=adversarial-text structure-adversarial-publish policy={} wrapperDepth={depth} \+([0-9]+) ms$",
+        regex::escape(policy)
+    ))?;
+    let publish = publish_pattern
+        .captures(publish)
+        .ok_or("Invalid structure publication policy or wrapper depth.")?;
+    let request_pattern = Regex::new(
+        r"^Native macOS reader: trace phase=adversarial-text fixture-update-request begin textCharacters=180000 columnWidthPx=1 viewportWidth=([0-9]+) viewportHeight=([0-9]+) windowWidth=([0-9]+) \+([0-9]+) ms$",
+    )?;
+    let request = request_pattern
+        .captures(request)
+        .ok_or("Invalid structure adversarial request trace.")?;
+    let request_end_pattern = Regex::new(
+        r"^Native macOS reader: trace phase=adversarial-text fixture-update-request end; SwiftUI navigation/layout may still be pending \+([0-9]+) ms$",
+    )?;
+    let request_end = request_end_pattern
+        .captures(request_end)
+        .ok_or("Invalid structure update completion trace.")?;
+    let startup_ms = startup
+        .rsplit_once(" +")
+        .and_then(|(_, tail)| tail.strip_suffix(" ms"))
+        .ok_or("Invalid structure startup timestamp.")?
+        .parse::<u64>()?;
+    let publish_ms = publish[1].parse::<u64>()?;
+    let request_ms = request[4].parse::<u64>()?;
+    let request_end_ms = request_end[1].parse::<u64>()?;
+    check(
+        startup_ms <= publish_ms && publish_ms <= request_ms && request_ms <= request_end_ms,
+        "Structure timestamps are not monotonic.",
+    )?;
+    Ok(
+        json!({"wrapperDepth":depth,"startupElapsedMs":startup_ms,"publishElapsedMs":publish_ms,
+        "requestElapsedMs":request_ms,"requestEndElapsedMs":request_end_ms,
+        "viewportWidth":request[1].parse::<u64>()?,"viewportHeight":request[2].parse::<u64>()?,
+        "windowWidth":request[3].parse::<u64>()?}),
+    )
+}
+
 fn reader_visibility_evidence(stderr: &[u8], policy: &str) -> Result<Value> {
     check(
         READER_VISIBILITY_POLICIES
@@ -898,6 +1035,7 @@ fn save_reader_sample_with_diagnostic(
             reader_diagnostic_control_observed(&stderr, policy, "visibility")
         }
         ReaderDiagnostic::OwnershipPreflight => reader_adversarial_loading_observed(&stderr),
+        ReaderDiagnostic::Structure(policy) => reader_structure_control_observed(&stderr, policy),
     });
     if diagnostic_policy_observed == Some(false) {
         errors.push("diagnostic: missing or conflicting compiled-policy trace".to_owned());
@@ -931,6 +1069,20 @@ fn save_reader_sample_with_diagnostic(
     } else {
         None
     };
+    let structure_evidence = if let Some(ReaderDiagnostic::Structure(policy)) = diagnostic {
+        if mode != "warm-view" {
+            errors.push("diagnostic: structure controls require warm-view".to_owned());
+        }
+        match reader_structure_evidence(&stderr, policy) {
+            Ok(evidence) => Some(evidence),
+            Err(error) => {
+                errors.push(format!("diagnostic structure: {error}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
     write_sample_file(&directory.join("stdout.log"), &stdout)?;
     write_sample_file(&directory.join("stderr.log"), &stderr)?;
     let mut result = json!({"schemaVersion":1, "kind":"reader-adversarial-sample",
@@ -941,6 +1093,7 @@ fn save_reader_sample_with_diagnostic(
         let (policy, kind) = match diagnostic {
             ReaderDiagnostic::Wrap(policy) => (policy, "reader-wrap-diagnostic-sample"),
             ReaderDiagnostic::Visibility(policy) => (policy, "reader-visibility-diagnostic-sample"),
+            ReaderDiagnostic::Structure(policy) => (policy, "reader-structure-diagnostic-sample"),
             ReaderDiagnostic::OwnershipPreflight => {
                 ("ownership-preflight", "reader-ownership-preflight-sample")
             }
@@ -957,6 +1110,11 @@ fn save_reader_sample_with_diagnostic(
             result["environmentIsolated"] = json!(true);
             result["baselineEnvironmentEquivalent"] = json!(false);
         }
+        if let ReaderDiagnostic::Structure(policy) = diagnostic {
+            result["wrapperDepth"] = json!(reader_structure_depth(policy));
+            result["structureEvidence"] = json!(structure_evidence);
+            result["pair"] = json!(sequence.div_ceil(2));
+        }
     }
     write_sample_file(
         &directory.join("result.json"),
@@ -971,6 +1129,9 @@ fn save_reader_sample_with_diagnostic(
         }
         Some(ReaderDiagnostic::OwnershipPreflight) => {
             format!("Reader ownership preflight sample {sequence:02}")
+        }
+        Some(ReaderDiagnostic::Structure(policy)) => {
+            format!("Reader structure diagnostic {policy} sample {sequence:02}")
         }
         None => reader_sample_prefix(sequence, None),
     };
@@ -1372,6 +1533,139 @@ fn reader_visibility_diagnostic(root: &Path, output: &Path) -> Result<()> {
     check(
         complete && passed == expected_samples,
         "Reader visibility diagnostic failed; all attempted control samples and logs retained.",
+    )
+}
+
+fn reader_structure_evidence_complete(output: &Path, samples: &[Value]) -> bool {
+    samples.len() == READER_STRUCTURE_PAIRS * READER_STRUCTURE_POLICIES.len()
+        && samples.iter().enumerate().all(|(index, sample)| {
+            let sequence = index + 1;
+            let (policy, _, depth) =
+                READER_STRUCTURE_POLICIES[index % READER_STRUCTURE_POLICIES.len()];
+            let directory = output
+                .join(policy)
+                .join(format!("sample-{sequence:02}-warm-view"));
+            sample["sequence"] == sequence
+                && sample["pair"] == index / 2 + 1
+                && sample["mode"] == "warm-view"
+                && sample["kind"] == "reader-structure-diagnostic-sample"
+                && sample["diagnosticPolicy"] == policy
+                && sample["wrapperDepth"] == depth
+                && sample["productionAcceptance"] == false
+                && ["result.json", "stdout.log", "stderr.log"]
+                    .iter()
+                    .all(|name| directory.join(name).is_file())
+                && fs::read(directory.join("result.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .as_ref()
+                    == Some(sample)
+        })
+}
+
+fn reader_structure_diagnostic(root: &Path, output: &Path) -> Result<()> {
+    check(
+        output.is_absolute(),
+        "Reader structure diagnostic requires an absolute new output directory.",
+    )?;
+    fs::create_dir(output)?;
+    let fixture = Fixture::new()?;
+    let mut readers = Vec::new();
+    let mut policies = Vec::new();
+    for (policy, define, depth) in READER_STRUCTURE_POLICIES {
+        fs::create_dir(output.join(policy))?;
+        let executable = format!("reader-structure-{policy}");
+        let reader = compile_check(
+            root,
+            &fixture.0,
+            &executable,
+            &[
+                "-parse-as-library",
+                "-D",
+                define,
+                "macos/Sources/MorrowMail/Models.swift",
+                "macos/Sources/MorrowMail/MessageBodyView.swift",
+                "macos/Checks/MessageHTML.swift",
+            ],
+        );
+        policies.push(json!({"schemaVersion":1,"kind":"reader-structure-diagnostic-policy",
+            "diagnosticPolicy":policy,"wrapperDepth":depth,"compileDefine":define,"compiledExecutable":executable,
+            "compileSucceeded":reader.is_ok(),"productionAcceptance":false,
+            "expectedSamples":READER_STRUCTURE_PAIRS,"mode":"warm-view"}));
+        readers.push(reader);
+    }
+    let expected_samples = READER_STRUCTURE_PAIRS * READER_STRUCTURE_POLICIES.len();
+    let mut samples = Vec::new();
+    for index in 0..expected_samples {
+        let sequence = index + 1;
+        let policy_index = index % READER_STRUCTURE_POLICIES.len();
+        let (policy, _, _) = READER_STRUCTURE_POLICIES[policy_index];
+        let directory = output
+            .join(policy)
+            .join(format!("sample-{sequence:02}-warm-view"));
+        fs::create_dir(&directory)?;
+        let (process, network) = match &readers[policy_index] {
+            Ok(reader) => collect_reader_sample(root, reader, "warm-view"),
+            Err(error) => (
+                Err(format!("Diagnostic fixture compile failed: {error}").into()),
+                Err("Network sentinel was not started.".into()),
+            ),
+        };
+        samples.push(save_reader_sample_with_diagnostic(
+            &directory,
+            sequence,
+            "warm-view",
+            process,
+            network,
+            Some(ReaderDiagnostic::Structure(policy)),
+        )?);
+    }
+    let complete = reader_structure_evidence_complete(output, &samples);
+    for (summary, (policy, _, _)) in policies.iter_mut().zip(READER_STRUCTURE_POLICIES) {
+        let policy_samples: Vec<_> = samples
+            .iter()
+            .filter(|sample| sample["diagnosticPolicy"] == policy)
+            .cloned()
+            .collect();
+        let passed = policy_samples
+            .iter()
+            .filter(|sample| sample["status"] == "passed")
+            .count();
+        summary["completedSamples"] = json!(policy_samples.len());
+        summary["passedSamples"] = json!(passed);
+        summary["failedSamples"] = json!(policy_samples.len() - passed);
+        summary["status"] = json!(if complete && passed == READER_STRUCTURE_PAIRS {
+            "passed"
+        } else {
+            "failed"
+        });
+        summary["samples"] = json!(policy_samples);
+        write_sample_file(
+            &output.join(policy).join("policy.json"),
+            &serde_json::to_vec_pretty(summary)?,
+        )?;
+    }
+    let passed = samples
+        .iter()
+        .filter(|sample| sample["status"] == "passed")
+        .count();
+    let summary = json!({"schemaVersion":1,"kind":"reader-structure-diagnostic",
+        "productionAcceptance":false,"status":if complete && passed == expected_samples {"passed"} else {"failed"},
+        "expectedPairs":READER_STRUCTURE_PAIRS,"expectedSamples":expected_samples,"mode":"warm-view",
+        "completedSamples":samples.len(),"passedSamples":passed,"failedSamples":samples.len()-passed,
+        "wholeProcessDeadlineMs":30_000,"textCharacters":180_000,"columnWidthPx":1,
+        "complete":complete,"policies":policies,"samples":samples});
+    write_sample_file(
+        &output.join("diagnostic.json"),
+        &serde_json::to_vec_pretty(&summary)?,
+    )?;
+    println!(
+        "Reader structure diagnostic completed: {passed}/{expected_samples} passed; complete={complete}; productionAcceptance=false; {}",
+        output.display()
+    );
+    check(
+        complete && passed == expected_samples,
+        "Reader structure diagnostic failed; all attempted control samples and logs retained.",
     )
 }
 
@@ -1883,13 +2177,18 @@ fn run() -> Result<()> {
     {
         return reader_ownership_preflight(root, Path::new(path));
     }
+    if let [flag, path] = arguments.as_slice()
+        && flag == "--reader-structure-diagnostic"
+    {
+        return reader_structure_diagnostic(root, Path::new(path));
+    }
     let existing = match arguments.as_slice() {
         [] => None,
         [flag, path] if flag == "--service" && Path::new(path).is_absolute() => {
             Some(Path::new(path))
         }
         _ => {
-            return Err("Usage: morrow-native-check [--service ABSOLUTE_PRODUCTION_BINARY | --reader-adversarial-batch ABSOLUTE_NEW_DIRECTORY | --reader-wrap-diagnostic ABSOLUTE_NEW_DIRECTORY | --reader-visibility-diagnostic ABSOLUTE_NEW_DIRECTORY | --reader-ownership-preflight ABSOLUTE_NEW_DIRECTORY]".into());
+            return Err("Usage: morrow-native-check [--service ABSOLUTE_PRODUCTION_BINARY | --reader-adversarial-batch ABSOLUTE_NEW_DIRECTORY | --reader-wrap-diagnostic ABSOLUTE_NEW_DIRECTORY | --reader-visibility-diagnostic ABSOLUTE_NEW_DIRECTORY | --reader-ownership-preflight ABSOLUTE_NEW_DIRECTORY | --reader-structure-diagnostic ABSOLUTE_NEW_DIRECTORY]".into());
         }
     };
     let package = fs::read(root.join("package.json"))?;
@@ -2095,6 +2394,158 @@ mod tests {
         }
     }
 
+    fn structure_trace(policy: &str) -> String {
+        let depth = reader_structure_depth(policy).unwrap();
+        format!(
+            "Native macOS reader: trace phase=setup diagnostic-structure-control policy={policy} acceptance=false textCharacters=180000 columnWidthPx=1 wrapperDepth={depth} +0 ms\nNative macOS reader: trace phase=adversarial-text structure-adversarial-publish policy={policy} wrapperDepth={depth} +5 ms\nNative macOS reader: trace phase=adversarial-text fixture-update-request begin textCharacters=180000 columnWidthPx=1 viewportWidth=690 viewportHeight=440 windowWidth=720 +5 ms\nNative macOS reader: trace phase=adversarial-text fixture-update-request end; SwiftUI navigation/layout may still be pending +6 ms\n"
+        )
+    }
+
+    #[test]
+    fn reader_structure_requires_matching_policy_depth_and_actual_update_order() {
+        let fixture = Fixture::new().unwrap();
+        for (policy, _, depth) in READER_STRUCTURE_POLICIES {
+            let trace = structure_trace(policy);
+            assert!(reader_structure_control_observed(trace.as_bytes(), policy));
+            assert_eq!(
+                reader_structure_evidence(trace.as_bytes(), policy).unwrap()["wrapperDepth"],
+                depth
+            );
+            let lines: Vec<_> = trace.lines().collect();
+            for invalid in [
+                trace.replace(policy, "other-policy"),
+                trace.replace(&format!("wrapperDepth={depth}"), "wrapperDepth=1"),
+                trace.replace("180000", "18000"),
+                trace.replace("columnWidthPx=1", "columnWidthPx=2"),
+                trace.replace(
+                    "diagnostic-structure-control",
+                    "diagnostic-wrapping-control",
+                ),
+                trace.replace("+6 ms", "+4 ms"),
+                format!("{}\n{}\n{}\n{}\n", lines[0], lines[2], lines[1], lines[3]),
+                format!("{}\n{}\n{}\n{}\n", lines[0], lines[1], lines[3], lines[2]),
+                format!("{}\n{}\n{}\n", lines[0], lines[2], lines[3]),
+                format!("{trace}{}\n", lines[0]),
+                format!("{trace}{}\n", lines[2]),
+            ] {
+                assert!(reader_structure_evidence(invalid.as_bytes(), policy).is_err());
+            }
+            for mode in ["cold-view", "warm-view"] {
+                let directory = fixture.0.join(format!("{policy}-{mode}"));
+                fs::create_dir(&directory).unwrap();
+                let mut process = completed_reader_process(
+                    serde_json::to_vec(&reader_child_result(mode)).unwrap(),
+                );
+                process.stderr = trace.as_bytes().to_vec();
+                let sample = save_reader_sample_with_diagnostic(
+                    &directory,
+                    1,
+                    mode,
+                    Ok(process),
+                    Ok(()),
+                    Some(ReaderDiagnostic::Structure(policy)),
+                )
+                .unwrap();
+                assert_eq!(
+                    sample["status"],
+                    if mode == "warm-view" {
+                        "passed"
+                    } else {
+                        "failed"
+                    }
+                );
+                assert_eq!(sample["structureEvidence"]["wrapperDepth"], depth);
+                assert_eq!(sample["productionAcceptance"], false);
+            }
+        }
+    }
+
+    #[test]
+    fn reader_structure_retains_six_warm_pairs_without_other_diagnostic_evidence() {
+        let fixture = Fixture::new().unwrap();
+        for (policy, _, _) in READER_STRUCTURE_POLICIES {
+            fs::create_dir(fixture.0.join(policy)).unwrap();
+        }
+        let mut samples = Vec::new();
+        for index in 0..READER_STRUCTURE_PAIRS * READER_STRUCTURE_POLICIES.len() {
+            let sequence = index + 1;
+            let (policy, _, _) = READER_STRUCTURE_POLICIES[index % READER_STRUCTURE_POLICIES.len()];
+            let directory = fixture
+                .0
+                .join(policy)
+                .join(format!("sample-{sequence:02}-warm-view"));
+            fs::create_dir(&directory).unwrap();
+            let mut process = completed_reader_process(
+                serde_json::to_vec(&reader_child_result("warm-view")).unwrap(),
+            );
+            process.stderr = structure_trace(policy).into_bytes();
+            if index == 0 {
+                process.outcome = "timeout";
+            }
+            samples.push(
+                save_reader_sample_with_diagnostic(
+                    &directory,
+                    sequence,
+                    "warm-view",
+                    Ok(process),
+                    Ok(()),
+                    Some(ReaderDiagnostic::Structure(policy)),
+                )
+                .unwrap(),
+            );
+        }
+        assert_eq!(samples.len(), 6);
+        assert_eq!(samples[0]["status"], "failed");
+        assert_eq!(samples[5]["status"], "passed");
+        assert!(samples.iter().all(|sample| sample["mode"] == "warm-view"
+            && sample["childResult"].as_object().unwrap().len() == 11));
+        assert!(reader_structure_evidence_complete(&fixture.0, &samples));
+        assert!(!reader_structure_evidence_complete(
+            &fixture.0,
+            &samples[..5]
+        ));
+        assert!(!reader_batch_evidence_complete(&fixture.0, &samples));
+        assert!(!reader_series_evidence_complete(
+            &fixture.0, &samples, 6, None
+        ));
+        assert!(!reader_series_evidence_complete(
+            &fixture.0,
+            &samples,
+            6,
+            Some("break-word")
+        ));
+        assert!(!reader_visibility_evidence_complete(&fixture.0, &samples));
+        let first_result = fixture
+            .0
+            .join("baseline-structure/sample-01-warm-view/result.json");
+        for (field, invalid) in [
+            ("mode", json!("cold-view")),
+            ("pair", json!(2)),
+            ("wrapperDepth", json!(2)),
+            ("diagnosticPolicy", json!("nested-inline")),
+            ("kind", json!("reader-wrap-diagnostic-sample")),
+            ("kind", json!("reader-visibility-diagnostic-sample")),
+            ("kind", json!("reader-adversarial-sample")),
+        ] {
+            let original = samples[0][field].clone();
+            samples[0][field] = invalid;
+            fs::write(&first_result, serde_json::to_vec(&samples[0]).unwrap()).unwrap();
+            assert!(!reader_structure_evidence_complete(&fixture.0, &samples));
+            samples[0][field] = original;
+            fs::write(&first_result, serde_json::to_vec(&samples[0]).unwrap()).unwrap();
+        }
+        assert!(reader_structure_evidence_complete(&fixture.0, &samples));
+        fs::remove_file(
+            fixture
+                .0
+                .join("nested-inline/sample-06-warm-view/stderr.log"),
+        )
+        .unwrap();
+        assert!(!reader_structure_evidence_complete(&fixture.0, &samples));
+        assert!(reader_structure_diagnostic(&fixture.0, &fixture.0).is_err());
+        assert!(reader_structure_diagnostic(&fixture.0, Path::new("relative-output")).is_err());
+    }
+
     #[test]
     fn reader_ownership_preflight_requires_bounded_metadata_only_report() {
         let fixture = Fixture::new().unwrap();
@@ -2139,13 +2590,16 @@ mod tests {
 
     #[test]
     fn reader_ownership_trigger_and_environment_are_scoped() {
+        let update = "Native macOS reader: trace phase=adversarial-text fixture-update-request end; SwiftUI navigation/layout may still be pending +122 ms\n";
         let marker = "Native macOS reader: trace phase=adversarial-text marker-wait-begin marker=Bounded adversarial tail loading=true +123 ms\n";
-        assert!(reader_adversarial_loading_observed(marker.as_bytes()));
+        let trace = format!("{update}{marker}");
+        assert!(reader_adversarial_loading_observed(trace.as_bytes()));
+        assert!(!reader_adversarial_loading_observed(marker.as_bytes()));
         for invalid in [
-            marker.replace("loading=true", "loading=false"),
-            marker.replace("adversarial-text", "focused-warmup"),
-            marker.replace("Bounded adversarial tail", "warmup marker"),
-            marker.replace("123 ms", "unknown ms"),
+            trace.replace("loading=true", "loading=false"),
+            trace.replace("adversarial-text", "focused-warmup"),
+            trace.replace("Bounded adversarial tail", "warmup marker"),
+            trace.replace("123 ms", "unknown ms"),
         ] {
             assert!(!reader_adversarial_loading_observed(invalid.as_bytes()));
         }
@@ -2163,6 +2617,50 @@ mod tests {
                 .get_envs()
                 .any(|(key, _)| key == "MORROW_PREFLIGHT_TEST_SECRET")
         );
+    }
+
+    #[test]
+    fn reader_ownership_trigger_handles_native_false_then_true_and_partial_frames() {
+        // Native PR25 job 114241956649: SwiftUI has not started navigation at
+        // marker-wait-begin (+1832); KVO reports real loading seven ms later.
+        let before = concat!(
+            "Native macOS reader: trace phase=initial-load navigation-loading reader=initial value=true +643 ms\n",
+            "Native macOS reader: trace phase=focused-warmup marker-wait-begin marker=Focused reader warmup loading=true +645 ms\n",
+            "Native macOS reader: trace phase=focused-warmup navigation-loading reader=initial value=false +1760 ms\n",
+            "Native macOS reader: trace phase=adversarial-text fixture-update-request begin textCharacters=180000 columnWidthPx=1 viewportWidth=705 viewportHeight=480 windowWidth=720 +1830 ms\n",
+            "Native macOS reader: trace phase=adversarial-text fixture-update-request end; SwiftUI navigation/layout may still be pending +1832 ms\n",
+            "Native macOS reader: trace phase=adversarial-text marker-wait-begin marker=Bounded adversarial tail loading=false +1832 ms\n",
+        );
+        let loading = "Native macOS reader: trace phase=adversarial-text navigation-loading reader=initial value=true +1839 ms\n";
+        let trace = format!("{before}{loading}");
+        for length in 0..trace.len() {
+            assert!(
+                !reader_adversarial_loading_observed(&trace.as_bytes()[..length]),
+                "Premature trigger at partial byte {length}"
+            );
+        }
+        assert!(reader_adversarial_loading_observed(trace.as_bytes()));
+        for invalid_loading in [
+            loading.replace("reader=initial", "reader=replacement"),
+            loading.replace("adversarial-text", "focused-warmup"),
+            loading.replace("value=true", "value=false"),
+            loading.replace("1839 ms", "1831 ms"),
+            loading.replace("1839 ms", "incomplete"),
+        ] {
+            assert!(!reader_adversarial_loading_observed(
+                format!("{before}{invalid_loading}").as_bytes()
+            ));
+        }
+        assert!(!reader_adversarial_loading_observed(
+            format!("{loading}{before}").as_bytes()
+        ));
+        let incomplete_update = before.replace(
+            "+1832 ms\nNative macOS reader: trace phase=adversarial-text marker",
+            "+1832 msNative macOS reader: trace phase=adversarial-text marker",
+        );
+        assert!(!reader_adversarial_loading_observed(
+            format!("{incomplete_update}{loading}").as_bytes()
+        ));
     }
 
     #[cfg(unix)]
@@ -2184,7 +2682,7 @@ time.sleep(10)
         let probe_directory = fixture.0.join("probe");
         fs::create_dir(&probe_directory).unwrap();
         let mut probe = ReaderOwnershipProbe::new(&fixture.0, &probe_directory);
-        let script = "printf 'Native macOS reader: trace phase=adversarial-text marker-wait-begin marker=Bounded adversarial tail loading=true +1 ms\\n' >&2; printf 'Native macOS reader: trace phase=adversarial-text marker-wait-begin marker=Bounded adversarial tail loading=true +2 ms\\n' >&2; sleep 0.5; printf '%s\\n' \"$1\"";
+        let script = "printf 'Native macOS reader: trace phase=adversarial-text fixture-update-request end; SwiftUI navigation/layout may still be pending +1832 ms\\nNative macOS reader: trace phase=adversarial-text marker-wait-begin marker=Bounded adversarial tail loading=false +1832 ms\\nNative macOS reader: trace phase=adversarial-text navigation-loading reader=initial value=' >&2; sleep 0.05; printf 'true +1839 ms\\nNative macOS reader: trace phase=adversarial-text navigation-loading reader=initial value=true +1840 ms\\n' >&2; sleep 0.5; printf '%s\\n' \"$1\"";
         let process = reader_sample_process_controlled(
             command(&fixture.0, "/bin/sh").args([
                 "-c",

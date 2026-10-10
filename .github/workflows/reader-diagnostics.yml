@@ -41,11 +41,20 @@ jobs:
           if command -v node || command -v npm; then exit 1; fi
           mkdir -p "$PWD/test-results"
           cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-native-check -- --reader-ownership-preflight "$PWD/test-results/macos-reader-ownership-${{ github.run_id }}-${{ github.run_attempt }}"
+      - name: Compare native reader inline structure
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          if command -v node || command -v npm; then exit 1; fi
+          mkdir -p "$PWD/test-results"
+          cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-native-check -- --reader-structure-diagnostic "$PWD/test-results/macos-reader-structure-${{ github.run_id }}-${{ github.run_attempt }}"
       - name: Retain diagnostic evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: reader-ownership-${{ github.run_id }}-${{ github.run_attempt }}
-          path: test-results/macos-reader-ownership-*
+          name: reader-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            test-results/macos-reader-ownership-*
+            test-results/macos-reader-structure-*
           if-no-files-found: warn
           retention-days: 14
