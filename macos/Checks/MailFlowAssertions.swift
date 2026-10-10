@@ -122,8 +122,23 @@ struct MailFlowAssertions {
         guard depth < 20, let element = root as? NSAccessibilityProtocol else { return [] }
         return [element] + (element.accessibilityChildren() ?? []).prefix(100).flatMap { accessibility($0, depth: depth + 1) }
     }
-    @MainActor static func press(_ name: String, in root: NSView) throws {
-        let button = accessibility(root).first { $0.accessibilityRole() == .button && ($0.accessibilityLabel() == name || $0.accessibilityTitle() == name) }
+    @MainActor static func press(_ name: String, in root: NSView) async throws {
+        var button: NSAccessibilityProtocol?
+        let deadline = Date().addingTimeInterval(5)
+        repeat {
+            root.layoutSubtreeIfNeeded()
+            button = accessibility(root).first { $0.accessibilityRole() == .button && ($0.accessibilityLabel() == name || $0.accessibilityTitle() == name) }
+            if button != nil { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        } while Date() < deadline
+        if button == nil {
+            // This tree contains only the fictional fixture; bound diagnostic
+            // output and avoid descriptions/paths or general process metadata.
+            for element in accessibility(root).prefix(40) {
+                print("Fixture AX: role=\(element.accessibilityRole()?.rawValue ?? "nil") label=\(element.accessibilityLabel() ?? "") title=\(element.accessibilityTitle() ?? "")")
+            }
+            print("Fixture native buttons: \(views(root, NSButton.self).map(\.title))")
+        }
         try require(button?.accessibilityPerformPress() == true, "Missing native action: " + name)
     }
     @MainActor static func query(_ value: String, in root: NSView) throws {
@@ -145,7 +160,7 @@ struct MailFlowAssertions {
         try await wait("Search view did not mount.") { !views(host, NSTextField.self).isEmpty }
         try query("fictional", in: host)
         try await wait("Initial search did not finish.") { model.searchResponse["total"].number == 65 }
-        try press("Next", in: host)
+        try await press("Next", in: host)
         try await wait("Search did not reach page two.") { model.searchResponse["page"].number == 1 }
         let secondPage = model.searchResponse
         model.selectedMessage = secondPage["messages"].array.first!.viewID
@@ -185,12 +200,12 @@ struct MailFlowAssertions {
             sawDiscardReview = NSApp.modalWindow != nil
             NSApp.stopModal(withCode: .alertFirstButtonReturn)
         }
-        try press("Cancel", in: sheetRoot)
+        try await press("Cancel", in: sheetRoot)
         try await wait("Cancel did not present and finish its unsaved-edit review.") { sawDiscardReview && NSApp.modalWindow == nil }
         try require(model.compose != nil && model.unsavedForms.contains("compose") && window.attachedSheet === sheet,
                     "Keep Editing discarded the mounted reply.")
         MailFlowProtocol.holdNext()
-        try press("Save Draft", in: sheetRoot)
+        try await press("Save Draft", in: sheetRoot)
         try await wait("Saved reply did not return to search.") { model.compose == nil && MailFlowProtocol.snapshot().2 }
         let saved = MailFlowProtocol.snapshot().1.last!
         try require(saved.0 == draft.accountID && saved.1["body"].string == draft.body && saved.1["attachments"].array == draft.attachments,
