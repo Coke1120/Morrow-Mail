@@ -250,6 +250,7 @@ void renderComposerAttachments(std::shared_ptr<Composer> const& state) {
             state->message.Insert(L"attachments", remaining); state->requestId = Service::uuid();
             renderComposerAttachments(state); state->update();
         });
+        xaml::Automation::AutomationProperties::SetName(remove, L"Remove attachment " + text(item, L"name"));
         remove.IsEnabled(!state->frozen()); state->attachmentRemovals.push_back(make_weak(remove));
         row.Children().Append(remove);
         panel.Children().Append(row);

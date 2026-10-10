@@ -957,6 +957,7 @@ struct ComposeView: View {
                         Text(ByteCountFormatter.string(fromByteCount: Int64(item["size"].number), countStyle: .file)).foregroundStyle(.secondary)
                         Spacer()
                         Button("Remove") { draft.attachments.removeAll { $0.id == item.id } }.disabled(frozen)
+                            .accessibilityLabel("Remove attachment " + item["name"].string)
                     }
                 }
                 Text("Choose From before attaching files. Up to 100 files / 50 MiB total. Provider send limits also apply. Files are not sent to AI.").font(.caption).foregroundStyle(.secondary)
@@ -967,6 +968,7 @@ struct ComposeView: View {
                         Label("Email footer", systemImage: "signature").font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Button("Remove") { draft.footer = .object(["text": .string(""), "html": .string("")]) }.buttonStyle(.borderless).disabled(frozen)
+                            .accessibilityLabel("Remove email footer")
                     }
                     FooterPreview(footer: draft.footer)
                 }.padding(12).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
