@@ -5,6 +5,7 @@ on:
     paths:
       - .github/workflows/reader-diagnostics.yml
       - macos/Checks/MessageHTML.swift
+      - macos/Sources/MorrowMail/MessageBodyView.swift
       - rust/src/bin/morrow-native-check.rs
       - scripts/probe-macos-reader-processes.py
       - scripts/test-probe-macos-reader-processes.py
@@ -41,13 +42,13 @@ jobs:
           if command -v node || command -v npm; then exit 1; fi
           mkdir -p "$PWD/test-results"
           cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-native-check -- --reader-ownership-preflight "$PWD/test-results/macos-reader-ownership-${{ github.run_id }}-${{ github.run_attempt }}"
-      - name: Compare native reader inline structure
+      - name: Compare native reader incremental rendering
         if: ${{ !cancelled() }}
         shell: bash
         run: |
           if command -v node || command -v npm; then exit 1; fi
           mkdir -p "$PWD/test-results"
-          cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-native-check -- --reader-structure-diagnostic "$PWD/test-results/macos-reader-structure-${{ github.run_id }}-${{ github.run_attempt }}"
+          cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-native-check -- --reader-rendering-diagnostic "$PWD/test-results/macos-reader-rendering-${{ github.run_id }}-${{ github.run_attempt }}"
       - name: Retain diagnostic evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -55,6 +56,6 @@ jobs:
           name: reader-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             test-results/macos-reader-ownership-*
-            test-results/macos-reader-structure-*
+            test-results/macos-reader-rendering-*
           if-no-files-found: warn
           retention-days: 14

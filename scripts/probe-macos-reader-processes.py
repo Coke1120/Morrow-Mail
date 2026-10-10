@@ -46,6 +46,22 @@ def cancel_probe(_signum, _frame):
     raise ProbeCancelled()
 
 
+def diagnostic_categories(raw):
+    """Fixed categories only; never retain a diagnostic's variable text."""
+    lowered = raw.lower()
+    requires_root = any(phrase in lowered for phrase in (b"requires root", b"must be run as root"))
+    denied = any(phrase in lowered for phrase in (b"operation not permitted", b"permission denied"))
+    category = ("multiple-permission-diagnostics" if requires_root and denied else
+                "requires-root" if requires_root else "permission-denied" if denied else "none")
+    return {
+        "permissionDiagnosticObserved": requires_root or denied,
+        "permissionDiagnosticCategory": category,
+        "commandTimeoutPolicyRejected": any(phrase in lowered for phrase in (
+            b"not allowed set a command timeout", b"not allowed to set a command timeout",
+        )),
+    }
+
+
 def run_tool(arguments, deadline, timeout=0.8):
     """No shell, inherited helper group, capped pipes, bounded kill/reap.
 
@@ -57,6 +73,7 @@ def run_tool(arguments, deadline, timeout=0.8):
     global _ACTIVE_CHILD
     stop_at = min(deadline, time.monotonic() + timeout)
     info = {"exitCode": None, "timedOut": False, "truncated": False, "spawnFailed": False, "reaped": False}
+    info.update(diagnostic_categories(b""))
     streams = {"stdout": bytearray(), "stderr": bytearray()}
     if time.monotonic() >= stop_at:
         info["timedOut"] = True
@@ -115,17 +132,45 @@ def run_tool(arguments, deadline, timeout=0.8):
         _ACTIVE_CHILD = None
     info["stdoutBytes"] = len(streams["stdout"])
     info["stderrBytes"] = len(streams["stderr"])
-    diagnostic = bytes(streams["stdout"]) + bytes(streams["stderr"])
-    info["permissionDiagnosticObserved"] = any(phrase in diagnostic.lower() for phrase in (
-        b"requires root", b"must be run as root", b"operation not permitted", b"permission denied",
-    ))
+    info.update(diagnostic_categories(bytes(streams["stdout"]) + bytes(streams["stderr"])))
     # stderr is never returned, printed, or persisted: tool errors can contain
-    # untrusted process text. Only its bounded byte count is evidence.
+    # untrusted process text. Only fixed categories and bounded counts survive.
     return info, bytes(streams["stdout"])
 
 
 def successful(info):
     return info["exitCode"] == 0 and info["reaped"] and not any(info[key] for key in ("timedOut", "truncated", "spawnFailed"))
+
+
+def sudo_timeout_true_capability(deadline):
+    """Probe only a fixed no-work command, never a privileged metadata query.
+
+    A successful sudo exit establishes this command's policy acceptance only.
+    On cancellation/timeout, the existing runner can reap its direct sudo child;
+    it cannot certify cleanup of an arbitrary privileged descendant. This sole
+    permitted descendant is /usr/bin/true, which exits without performing work.
+    Do not substitute launchctl, sample, a shell, or user-supplied arguments here.
+    """
+    result = {
+        "scope": "fixed-true-command-only", "timeoutSeconds": 1,
+        "metadataQueryAuthorized": False, "samplingAuthorized": False,
+        "attempted": False, "status": "not-attempted-budget", "tool": None,
+    }
+    # Leave the sudo timeout room to act plus bounded supervisor capture/reap;
+    # never reset the script's 7.25s or Rust's enclosing 8s/30s deadlines.
+    if deadline - time.monotonic() < 3.5:
+        return result
+    result["attempted"] = True
+    info, _raw = run_tool(["/usr/bin/sudo", "-n", "-T", "1", "/usr/bin/true"], deadline, 3.25)
+    result["tool"] = info
+    result["status"] = "inconclusive"
+    if successful(info):
+        result["status"] = "accepted-fixed-true"
+    elif (info["exitCode"] is not None and info["reaped"]
+          and not any(info[key] for key in ("timedOut", "truncated", "spawnFailed"))
+          and info["commandTimeoutPolicyRejected"]):
+        result["status"] = "timeout-policy-rejected"
+    return result
 
 
 def procinfo_shapes(raw):
@@ -341,6 +386,7 @@ def collect(reader_pid, deadline):
     result["tools"]["xcodeVersion"] = {"tool": version_tool}
     if successful(version_tool) and version:
         result["tools"]["xcodeVersion"].update({"version": version[1].decode(), "build": version[2].decode()})
+    result["tools"]["sudoTimeoutTrueCapability"] = sudo_timeout_true_capability(deadline)
     result["status"] = "completed"
     result["reason"] = "preflight-observed"
     if time.monotonic() >= deadline:

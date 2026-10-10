@@ -105,6 +105,15 @@ struct MessageHTMLView: NSViewRepresentable {
         configuration.websiteDataStore = .nonPersistent()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = false
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+        // Separate fixture binaries configure this before WKWebView copies it.
+        // Normal product builds leave the platform setting unchanged.
+        #if READER_DIAGNOSTIC_BASELINE_RENDERING && READER_DIAGNOSTIC_SUPPRESSED_RENDERING
+        #error("Choose only one reader diagnostic rendering policy")
+        #elseif READER_DIAGNOSTIC_BASELINE_RENDERING
+        configuration.suppressesIncrementalRendering = false
+        #elseif READER_DIAGNOSTIC_SUPPRESSED_RENDERING
+        configuration.suppressesIncrementalRendering = true
+        #endif
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = context.coordinator
         view.uiDelegate = context.coordinator

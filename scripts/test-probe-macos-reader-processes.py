@@ -58,7 +58,7 @@ class ReaderProbeTests(unittest.TestCase):
         self.assertNotIn("secret-reader-name", json.dumps(exported))
         self.assertEqual(len(exported["executablePathSha256"]), 64)
 
-    def test_preflight_only_queries_unique_new_candidate_without_sudo(self):
+    def test_preflight_only_queries_unique_new_candidate_without_privileged_metadata(self):
         reader = {"pid": 10, "uid": 501, "parentPid": 1, "startSeconds": 100,
                   "startMicroseconds": 20, "executablePath": "/tmp/reader-checks"}
         candidate = dict(reader, pid=11, startMicroseconds=21, executablePath=os.path.realpath(PROBE.WEB_CONTENT))
@@ -91,11 +91,62 @@ class ReaderProbeTests(unittest.TestCase):
             self.assertEqual(result["ownershipStatus"], "unresolved")
             self.assertFalse(result["attachmentAttempted"])
             self.assertEqual(result["candidateCount"], candidate_count)
-            self.assertFalse(any("sudo" in argument for call in calls for argument in call))
+            sudo_calls = [call for call in calls if call[0] == "/usr/bin/sudo"]
+            self.assertEqual(sudo_calls, [["/usr/bin/sudo", "-n", "-T", "1", "/usr/bin/true"]])
             queried = [call[-1] for call in calls if call[0] == "/bin/launchctl"]
             self.assertEqual(queried, ["10", "11"] if candidate_count == 1 else ["10"])
             if candidate_count == 2:
                 self.assertEqual(result["reason"], "candidate-limit")
+
+    def test_permission_categories_disambiguate_without_exporting_text(self):
+        cases = (
+            (b"private-value: procinfo requires root privileges", "requires-root", False),
+            (b"private-value: Permission denied", "permission-denied", False),
+            (b"requires root; Operation not permitted", "multiple-permission-diagnostics", False),
+            (b"sudo: sorry, you are not allowed set a command timeout", "none", True),
+            (b"sudo: sorry, you are not allowed to set a command timeout", "none", True),
+            (b"unknown private-value", "none", False),
+        )
+        for raw, category, rejected in cases:
+            with self.subTest(category=category, rejected=rejected):
+                result = PROBE.diagnostic_categories(raw)
+                self.assertEqual(result["permissionDiagnosticCategory"], category)
+                self.assertEqual(result["commandTimeoutPolicyRejected"], rejected)
+                self.assertNotIn("private-value", json.dumps(result))
+
+    def test_sudo_capability_is_fixed_true_only_and_not_query_authorization(self):
+        valid = {"exitCode": 0, "reaped": True, "timedOut": False, "truncated": False,
+                 "spawnFailed": False, "commandTimeoutPolicyRejected": False}
+        cases = (
+            ({}, "accepted-fixed-true"),
+            ({"exitCode": 1, "commandTimeoutPolicyRejected": True}, "timeout-policy-rejected"),
+            ({"timedOut": True}, "inconclusive"),
+            ({"truncated": True}, "inconclusive"),
+            ({"reaped": False}, "inconclusive"),
+            ({"spawnFailed": True}, "inconclusive"),
+            ({"exitCode": 1}, "inconclusive"),
+        )
+        for change, expected in cases:
+            with (self.subTest(change=change), mock.patch.object(PROBE.time, "monotonic", return_value=100),
+                  mock.patch.object(PROBE, "run_tool", return_value=(dict(valid, **change), b"")) as tool):
+                result = PROBE.sudo_timeout_true_capability(104)
+                self.assertEqual(result["status"], expected)
+                self.assertFalse(result["metadataQueryAuthorized"])
+                self.assertFalse(result["samplingAuthorized"])
+                self.assertEqual(result["scope"], "fixed-true-command-only")
+                tool.assert_called_once_with(["/usr/bin/sudo", "-n", "-T", "1", "/usr/bin/true"], 104, 3.25)
+
+    def test_sudo_capability_skips_insufficient_budget_and_propagates_cancel(self):
+        with (mock.patch.object(PROBE.time, "monotonic", return_value=100),
+              mock.patch.object(PROBE, "run_tool") as tool):
+            result = PROBE.sudo_timeout_true_capability(103.49)
+            self.assertFalse(result["attempted"])
+            self.assertEqual(result["status"], "not-attempted-budget")
+            tool.assert_not_called()
+        with (mock.patch.object(PROBE.time, "monotonic", return_value=100),
+              mock.patch.object(PROBE, "run_tool", side_effect=PROBE.ProbeCancelled)):
+            with self.assertRaises(PROBE.ProbeCancelled):
+                PROBE.sudo_timeout_true_capability(104)
 
     def test_report_never_overwrites_files_or_symlinks(self):
         with tempfile.TemporaryDirectory() as directory:
