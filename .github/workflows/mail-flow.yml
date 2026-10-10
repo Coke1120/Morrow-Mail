@@ -17,3 +17,11 @@ jobs:
         run: python3 -B scripts/test-macos-mail-flow.py --baseline-search
       - name: Verify the candidate with isolated native controls
         run: python3 -B scripts/test-macos-mail-flow.py
+  windows-compile:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Compile the native attachment labels and assertions
+        shell: pwsh
+        run: ./scripts/build-windows-native.ps1 -CompileOnly

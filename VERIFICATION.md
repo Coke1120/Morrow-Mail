@@ -1,5 +1,13 @@
 # Verification — 10 October 2026
 
+## Native mail flow follow-up — unreleased
+
+Separate branch `codex/mail-flow-review-20261010` starts from main `8159b9dda81a938cd2b51258351a69f064f68a7c`, after PR24/25 merged. The [review](docs/MAIL_FLOW_REVIEW.md) describes search-page/row retention and attachment/footer accessibility names, plus concrete prerequisites for future exact-target Mac profiling and pre-launch Windows lifecycle observation. Original HTML semantics, the 30-second reader gate, cancellation/Back and strict Windows observation stay in place. No new renderer or Windows lifecycle experiment is part of this review.
+
+[Initial focused run 38083551361](https://github.com/Coke1120/Morrow-Mail/actions/runs/38083551361), source `3b2403fa3cd533bd461dfc5f35fa21e49afb64d6`, failed compiling the new fixture's incorrectly named accessibility protocol; its pinned-main reproduction did not execute and the candidate stage was skipped. The fixture was corrected to AppKit's `NSAccessibilityProtocol`; the failed run remains evidence, not a reproduction or successful validation. Final focused and full native results are recorded separately after completion.
+
+The isolated Mac driver changes only AppModel's initial URL in private compiler input; all view logic stays as shipped source, while URLProtocol supplies fictional responses and rejects unexpected requests. It starts no service and establishes no provider or persistence acceptance. Existing full native checks supply their own unmodified-client/service evidence. VoiceOver/Narrator on real hardware, cross-platform manual UX, actual attachment-picker/download cancellation and live accounts remain unverified. The original Mac timeout and the baseline Windows case-3 first-acquire error 87/unknown-exit gap remain unresolved; a green fixture cannot overturn either.
+
 ## Reader timing and Windows observation — follow-up in progress
 
 This separate [draft PR #24](https://github.com/Coke1120/Morrow-Mail/pull/24) starts from main `052643dcf9046419b93248b73dbc69dfdae72cb4`, after v0.7.2 publication. The initial stages added fixture-only telemetry while retaining existing behavior: macOS records navigation, native-find/snapshot durations and bounded main-thread heartbeat observations; Windows records validated collector skip reasons, exit/identity evidence, milestones and selected raw sample neighborhoods in CI logs. The baseline commits retained the original skipped-sample/incomplete classification. The 180,000-character/1-pixel reader input, its 30-second process gate, existing recovery/isolation assertions and release gates remain unchanged.

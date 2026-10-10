@@ -118,8 +118,8 @@ struct MailFlowAssertions {
     @MainActor static func views<T: NSView>(_ root: NSView, _ type: T.Type) -> [T] {
         (root as? T).map { [$0] } ?? root.subviews.flatMap { views($0, type) }
     }
-    @MainActor static func accessibility(_ root: Any, depth: Int = 0) -> [NSAccessibility] {
-        guard depth < 20, let element = root as? NSAccessibility else { return [] }
+    @MainActor static func accessibility(_ root: Any, depth: Int = 0) -> [NSAccessibilityProtocol] {
+        guard depth < 20, let element = root as? NSAccessibilityProtocol else { return [] }
         return [element] + (element.accessibilityChildren() ?? []).prefix(100).flatMap { accessibility($0, depth: depth + 1) }
     }
     @MainActor static func press(_ name: String, in root: NSView) throws {
