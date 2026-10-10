@@ -182,6 +182,24 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
         # New descendants still need a current, live, verified parent admission.
         $candidates = [Collections.Generic.List[object]]::new(); $selected = @{}
         foreach ($row in $tree) { $candidates.Add(@{ row = $row; source = 'cim' }); $selected[[uint32] $row.ProcessId] = $true }
+        # A verified child may outlive its parent and then launch another child.
+        # Seed discovery from that child's current identity and retained live
+        # handle; a missing/reused PID or exited handle cannot authorize a tree.
+        foreach ($id in @($cache.Keys)) {
+            if ($selected.ContainsKey($id) -or -not $byId.ContainsKey($id)) { continue }
+            $known = $cache[$id]; $row = $byId[$id]; $parentId = [uint32] $row.ParentProcessId
+            if (-not $known.seen -or $known.parentPid -ne $parentId -or
+                -not (Test-NativeCreation $known.ticks $known.ticks $row.CreationDate.ToUniversalTime().Ticks) -or
+                ($id -ne $Root -and $byId.ContainsKey($parentId) -and
+                    -not (Test-NativeCreation $known.parentTicks $known.parentTicks $byId[$parentId].CreationDate.ToUniversalTime().Ticks)) -or
+                $known.process.HasExited) { continue }
+            foreach ($descendant in @(Get-NativeTree $rows $id $known.ticks)) {
+                $descendantId = [uint32] $descendant.ProcessId
+                if ($selected.ContainsKey($descendantId)) { continue }
+                if ($candidates.Count -ge 64) { throw 'Descendant limit.' }
+                $candidates.Add(@{ row = $descendant; source = 'cim' }); $selected[$descendantId] = $true
+            }
+        }
         foreach ($id in @($cache.Keys)) {
             if ($selected.ContainsKey($id)) { continue }
             $known = $cache[$id]

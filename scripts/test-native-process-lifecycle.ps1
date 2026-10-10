@@ -143,25 +143,35 @@ namespace MorrowObservationFixture {
 }
 '@
     }
-    $control = $null; $child = $null; $state = $null; $self = [Diagnostics.Process]::GetCurrentProcess()
+    $control = $null; $child = $null; $ancestor = $null; $descendant = $null; $state = $null; $self = [Diagnostics.Process]::GetCurrentProcess()
     $path = Join-Path ([IO.Path]::GetTempPath()) ('morrow-resource-lifecycle-' + [Guid]::NewGuid().ToString('N') + '.jsonl')
     try {
         $control = Start-LifecycleChild
         foreach ($case in @('alive-control', 'verified-exit-zero', 'exit-before-identity', 'stale-identity', 'counter-access-denied',
             'denied-then-exit', 'verified-exit-nonzero', 'forced-collector', 'cached-exit-zero', 'cached-identity-change', 'cached-first-seen-exit',
-            'cached-root-exit-zero', 'cached-root-exit-nonzero')) {
+            'cached-root-exit-zero', 'cached-root-exit-nonzero', 'retained-descendant-new-child', 'retained-descendant-changed-parent',
+            'retained-descendant-parent-nonzero', 'retained-descendant-child-nonzero')) {
+            $graphCase = $case -like 'retained-descendant-*'
+            if ($graphCase) { $ancestor = Start-LifecycleChild }
             $child = Start-LifecycleChild; $childId = $child.Id
             $rootCase = $case -like 'cached-root-*'; $sampleRoot = if ($rootCase) { $child } else { $self }
             $sampleRootId = [uint32] $sampleRoot.Id; $sampleRootTicks = $sampleRoot.StartTime.ToUniversalTime().Ticks
             $state = New-NativeObservationState $sampleRootId $sampleRootTicks
-            $wanted = @([uint32] $self.Id, [uint32] $control.Id, [uint32] $childId)
+            $wanted = @([uint32] $self.Id, [uint32] $(if ($graphCase) { $ancestor.Id } else { $control.Id }), [uint32] $childId)
             # Real Windows CIM snapshot, projected to the fixed fields used by
             # production. Only the owned fixture processes participate.
             $rows = @(Read-LifecycleInventory $wanted)
             Check ($rows.Count -eq 3 -and -not $child.HasExited -and -not $control.HasExited) ('cim-' + $case)
             if ($rootCase) { $rows = @($rows | Where-Object { $_.ProcessId -eq $childId }) }
-            $firstSample = $null; $measurementStart = [Diagnostics.Stopwatch]::GetTimestamp()
-            if ($case -like 'cached-*') {
+            if ($graphCase) {
+                # Deterministic ancestry projection U -> P -> C, backed by real
+                # owned handles, CIM creation times and counters. All actual OS
+                # children remain owned by this fixture; this is not an actual
+                # orphan/PID-reuse test. Only ParentProcessId is projected.
+                ($rows | Where-Object { $_.ProcessId -eq $childId }).ParentProcessId = [uint32] $ancestor.Id
+            }
+            $firstSample = $null; $middleSample = $null; $measurementStart = [Diagnostics.Stopwatch]::GetTimestamp()
+            if ($case -like 'cached-*' -or $graphCase) {
                 $firstRows = if ($case -eq 'cached-first-seen-exit') { @($rows | Where-Object { $_.ProcessId -ne $childId }) } else { $rows }
                 $first = Get-NativeProcessSnapshot $sampleRootId $sampleRootTicks $firstRows -State $state
                 Check ($null -eq $first.terminalReason -and $first.skipped -eq 0 -and $first.lifecycleEvents.Count -eq 0) ('first-snapshot-' + $case)
@@ -171,13 +181,35 @@ namespace MorrowObservationFixture {
                     skipReasonCounts = $first.skipReasonCounts; processes = $first.processes
                     lifecycleEvents = $first.lifecycleEvents; failedRecords = $first.failedRecords }
                 Check ($state.handles.Count -eq $(if ($rootCase) { 1 } elseif ($case -eq 'cached-first-seen-exit') { 2 } else { 3 })) 'cache-admission'
-                $rows = @(Read-LifecycleInventory $wanted)
+                if ($graphCase) {
+                    Check ($state.handles[[uint32] $childId].parentPid -eq $ancestor.Id) 'retained-parent-admitted'
+                    $ancestor.StandardInput.WriteLine($(if ($case -eq 'retained-descendant-parent-nonzero') { 'exit7' } else { 'exit0' }))
+                    $ancestor.StandardInput.Flush(); Check ($ancestor.WaitForExit(5000)) 'retained-parent-exit'
+                    $descendant = Start-LifecycleChild
+                    $rows = @(Read-LifecycleInventory @([uint32] $self.Id, [uint32] $childId, [uint32] $descendant.Id))
+                    # P is now genuinely exited and absent from this inventory.
+                    # Retain C's verified projected lineage; introduce C -> D.
+                    ($rows | Where-Object { $_.ProcessId -eq $childId }).ParentProcessId = [uint32] $ancestor.Id
+                    ($rows | Where-Object { $_.ProcessId -eq $descendant.Id }).ParentProcessId = [uint32] $childId
+                } else { $rows = @(Read-LifecycleInventory $wanted) }
                 if ($rootCase) { $rows = @($rows | Where-Object { $_.ProcessId -eq $childId }) }
             }
-            if ($case -in @('stale-identity', 'cached-identity-change')) {
+            if ($case -in @('stale-identity', 'cached-identity-change', 'retained-descendant-changed-parent')) {
                 # Deterministic stale snapshot, not a claim of actual PID reuse.
                 $staleRow = $rows | Where-Object { $_.ProcessId -eq $childId }
                 $staleRow.CreationDate = $child.StartTime.AddSeconds(1)
+            }
+            if ($case -eq 'retained-descendant-child-nonzero') {
+                $middleAt = [Diagnostics.Stopwatch]::GetTimestamp()
+                $middle = Get-NativeProcessSnapshot $sampleRootId $sampleRootTicks $rows -State $state
+                Check ($null -eq $middle.terminalReason -and $middle.skipped -eq 0 -and
+                    @($middle.processes | Where-Object { $_.pid -eq $descendant.Id }).Count -eq 1 -and
+                    $state.handles.ContainsKey([uint32] $descendant.Id)) 'retained-new-child-before-exit'
+                $middleSample = @{ kind = 0; elapsedMs = ($middleAt - $measurementStart) * 1000.0 / [Diagnostics.Stopwatch]::Frequency
+                    queryMs = ([Diagnostics.Stopwatch]::GetTimestamp() - $middleAt) * 1000.0 / [Diagnostics.Stopwatch]::Frequency
+                    skipped = $middle.skipped; rootSkipped = $middle.rootSkipped; rootExitedDuringSample = $middle.rootExitedDuringSample
+                    skipReasonCounts = $middle.skipReasonCounts; processes = $middle.processes
+                    lifecycleEvents = $middle.lifecycleEvents; failedRecords = $middle.failedRecords }
             }
             $facts = @{ snapshot = $false; identified = $false; released = $false; denied = $false }
             $barrier = {
@@ -190,6 +222,11 @@ namespace MorrowObservationFixture {
                     $child.StandardInput.WriteLine($(if ($case -in @('verified-exit-nonzero', 'cached-root-exit-nonzero')) { 'exit7' } else { 'exit0' }))
                     $child.StandardInput.Flush()
                     if (-not $child.WaitForExit(5000)) { throw 'Lifecycle child did not exit at its barrier.' }
+                    $facts.released = $true
+                }
+                if ($case -eq 'retained-descendant-child-nonzero' -and $Phase -eq 'snapshot') {
+                    $descendant.StandardInput.WriteLine('exit7'); $descendant.StandardInput.Flush()
+                    if (-not $descendant.WaitForExit(5000)) { throw 'Retained descendant did not exit at its barrier.' }
                     $facts.released = $true
                 }
             }.GetNewClosure()
@@ -221,26 +258,29 @@ namespace MorrowObservationFixture {
                 queryMs = $queryMs; skipped = $snapshot.skipped; rootSkipped = $snapshot.rootSkipped
                 rootExitedDuringSample = $snapshot.rootExitedDuringSample; skipReasonCounts = $snapshot.skipReasonCounts; processes = $snapshot.processes
                 lifecycleEvents = $snapshot.lifecycleEvents; failedRecords = $snapshot.failedRecords }
+            $sampleCount = 1 + [int] ($null -ne $firstSample) + [int] ($null -ne $middleSample)
             $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
             try {
                 if ($firstSample) { Check (Write-NativeSample $stream $firstSample) }
+                if ($middleSample) { Check (Write-NativeSample $stream $middleSample) }
                 Check (Write-NativeSample $stream $sample)
                 Check (Write-NativeSample $stream @{ kind = 1; reason = $(if ($null -eq $snapshot.terminalReason) { 0 } else { $snapshot.terminalReason })
-                    samples = $(if ($firstSample) { 2 } else { 1 }); failureStage = $snapshot.failureStage })
+                    samples = $sampleCount; failureStage = $snapshot.failureStage })
             } finally { $stream.Dispose() }
             $stop = @{ forced = $false; reaped = $true; exitCode = 0 }
             if ($case -eq 'forced-collector') { $stop = Stop-NativeResourceCollector $child; $child = $null; Check $stop.forced }
             $report = Read-NativeResourceReport $path $stop @{}
-            Check ($report.samples.Count -eq $(if ($firstSample) { 2 } else { 1 }) -and -not $report.invalidRecords -and
+            Check ($report.samples.Count -eq $sampleCount -and -not $report.invalidRecords -and
                 $report.rootSkipped -eq $(if ($case -eq 'cached-root-exit-nonzero') { 1 } else { 0 })) ('report-' + $case)
             # Emit only the parsed, validated numeric sample, before checking
             # expectations so a classification failure has evidence.
             Write-Host ('Native observation lifecycle: ' + (@{ case = $case; native = $true; baseline = $false
+                ancestryProjected = $graphCase
                 barrier = $facts; incomplete = $report.incomplete; reasons = $report.skipReasonCounts; collector = $stop
                 rootAlive = (-not $sampleRoot.HasExited); controlAlive = (-not $control.HasExited) } | ConvertTo-Json -Compress -Depth 4))
             foreach ($record in $report.samples) { Write-Host ('Native observation lifecycle sample: ' + ($record | ConvertTo-Json -Compress -Depth 5)) }
             if ($case -eq 'alive-control') { Check (-not $report.incomplete -and $snapshot.processes.Count -eq 3) }
-            elseif ($case -in @('verified-exit-zero', 'cached-exit-zero', 'cached-root-exit-zero')) { Check (-not $report.incomplete -and $report.normalExitObservations -eq 1) }
+            elseif ($case -in @('verified-exit-zero', 'cached-exit-zero', 'cached-root-exit-zero', 'retained-descendant-new-child')) { Check (-not $report.incomplete -and $report.normalExitObservations -eq 1) }
             else { Check $report.incomplete }
             switch ($case) {
                 'verified-exit-zero' { Check ($facts.identified -and $facts.released -and $child.ExitCode -eq 0 -and $report.skipReasonCounts.processExited -eq 0 -and $snapshot.lifecycleEvents[0].identitySource -eq 'currentSnapshot') }
@@ -258,16 +298,36 @@ namespace MorrowObservationFixture {
                     $snapshot.lifecycleEvents[0].role -eq 'ui' -and $snapshot.lifecycleEvents[0].identitySource -eq 'priorSnapshot') }
                 'cached-root-exit-nonzero' { Check ($snapshot.rootExitedDuringSample -and $report.footer.reason -eq 3 -and
                     $report.skipReasonCounts.processExited -eq 1 -and $snapshot.failedRecords[0].exitCode -eq 7) }
+                'retained-descendant-changed-parent' { Check (-not $facts.identified -and $report.skipReasonCounts.identityMismatch -eq 1 -and
+                    -not $state.handles.ContainsKey([uint32] $descendant.Id) -and
+                    @($snapshot.processes | Where-Object { $_.pid -eq $descendant.Id }).Count -eq 0) 'changed-parent-no-adoption' }
+                'retained-descendant-parent-nonzero' { Check ($ancestor.ExitCode -eq 7 -and $report.skipReasonCounts.processExited -eq 1 -and
+                    @($snapshot.failedRecords | Where-Object { $_.pid -eq $ancestor.Id -and $_.exitCode -eq 7 }).Count -eq 1) 'retained-parent-nonzero' }
+                'retained-descendant-child-nonzero' { Check ($facts.released -and $descendant.ExitCode -eq 7 -and
+                    $report.normalExitObservations -eq 1 -and $report.skipReasonCounts.processExited -eq 1 -and
+                    @($snapshot.failedRecords | Where-Object { $_.pid -eq $descendant.Id -and $_.exitCode -eq 7 }).Count -eq 1) 'retained-child-nonzero' }
+            }
+            if ($case -in @('retained-descendant-new-child', 'retained-descendant-parent-nonzero')) {
+                Check ($state.handles.ContainsKey([uint32] $descendant.Id) -and
+                    @($snapshot.processes | Where-Object { $_.pid -eq $descendant.Id -and $_.parentPid -eq $childId }).Count -eq 1) 'retained-new-child-measured'
             }
             Close-NativeObservationState $state; Check ($state.handles.Count -eq 0) 'cache-disposed'; $state = $null
+            Close-LifecycleChild $descendant; $descendant = $null
+            Close-LifecycleChild $ancestor; $ancestor = $null
             [IO.File]::Delete($path); Close-LifecycleChild $child; $child = $null
         }
     } finally {
         if ($state) { Close-NativeObservationState $state }
-        try { Close-LifecycleChild $child }
+        try { Close-LifecycleChild $descendant }
         finally {
-            try { Close-LifecycleChild $control }
-            finally { $self.Dispose(); if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) } }
+            try { Close-LifecycleChild $ancestor }
+            finally {
+                try { Close-LifecycleChild $child }
+                finally {
+                    try { Close-LifecycleChild $control }
+                    finally { $self.Dispose(); if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) } }
+                }
+            }
         }
     }
 }
