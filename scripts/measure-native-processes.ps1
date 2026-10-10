@@ -107,6 +107,75 @@ function New-NativeSkipReasonCounts {
         identityMismatch = 0L; counterReadFailed = 0L; unclassified = 0L }
 }
 
+function Read-NativeProcessCounters([Diagnostics.Process] $Process) {
+    return @{ workingSetBytes = $Process.WorkingSet64; privateBytes = $Process.PrivateMemorySize64
+        cpuMs = $Process.TotalProcessorTime.TotalMilliseconds }
+}
+
+function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]] $SnapshotRows = $null,
+    [scriptblock] $ObservationBarrier = $null, [scriptblock] $ReadCounters = $null) {
+    # Production and native lifecycle fixtures use the same handle/identity and
+    # counter path. The optional barriers are direct fixture arguments only;
+    # no environment variable or packaged-app switch can enable them.
+    $handles = @{}; $entries = [Collections.Generic.List[object]]::new(); $stage = 'root'
+    $sample = [ordered]@{ terminalReason = $null; failureStage = 'none'; skipped = 0; rootSkipped = 0
+        rootExitedDuringSample = $null; skipReasonCounts = (New-NativeSkipReasonCounts); processes = @() }
+    try {
+        try { $rootProcess = [Diagnostics.Process]::GetProcessById($Root) } catch { $sample.terminalReason = 0; return $sample }
+        $handles[$Root] = $rootProcess; [void] $rootProcess.Handle
+        if ($rootProcess.HasExited) { $sample.terminalReason = 0; return $sample }
+        if ($rootProcess.StartTime.ToUniversalTime().Ticks -ne $RootTicks) {
+            $sample.terminalReason = 4; $sample.failureStage = 'root'; return $sample
+        }
+        $stage = 'cim'
+        $rows = if ($null -eq $SnapshotRows) {
+            @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate -OperationTimeoutSec 2 -ErrorAction Stop)
+        } else { $SnapshotRows }
+        $stage = 'tree'; $tree = @(Get-NativeTree $rows $Root $RootTicks)
+        if (-not $tree.Count) { $sample.terminalReason = 0; return $sample }
+        if ($ObservationBarrier) { [void] (& $ObservationBarrier 'snapshot' $null) }
+        foreach ($row in $tree) {
+            $id = [uint32] $row.ProcessId; $parentId = [uint32] $row.ParentProcessId; $skipReason = 'counterReadFailed'
+            try {
+                if ($id -ne $Root) {
+                    if (-not $handles.ContainsKey($parentId)) { $sample.skipped++; $sample.skipReasonCounts.parentUnavailable++; continue }
+                    if ($handles[$parentId].HasExited) { $sample.skipped++; $sample.skipReasonCounts.parentExited++; continue }
+                    $skipReason = 'processUnavailable'; $handles[$id] = [Diagnostics.Process]::GetProcessById($id)
+                }
+                $process = $handles[$id]; [void] $process.Handle
+                $skipReason = 'counterReadFailed'; $process.Refresh()
+                $ticks = $process.StartTime.ToUniversalTime().Ticks
+                if (-not (Test-NativeCreation $ticks $(if ($id -eq $Root) { $RootTicks } else { $ticks }) $row.CreationDate.ToUniversalTime().Ticks) -or
+                    ($id -ne $Root -and $ticks -lt $handles[$parentId].StartTime.ToUniversalTime().Ticks)) {
+                    $skipReason = 'identityMismatch'; throw 'Changed process identity.'
+                }
+                if ($ObservationBarrier) { [void] (& $ObservationBarrier 'identified' $process) }
+                $role = if ($id -eq $Root) { 'ui' } elseif ($process.ProcessName -ieq 'morrow-service') { 'service' } elseif ($process.ProcessName -ieq 'msedgewebview2') { 'webview' } else { 'other' }
+                $counters = if ($ReadCounters) { & $ReadCounters $process } else { Read-NativeProcessCounters $process }
+                $entry = [ordered]@{ pid = $id; parentPid = $parentId; startUtcTicks = $ticks; role = $role
+                    workingSetBytes = $counters.workingSetBytes; privateBytes = $counters.privateBytes; cpuMs = $counters.cpuMs }
+                if ($process.HasExited) { $skipReason = 'processExited'; throw 'Process exited during observation.' }
+                if ($id -ne $Root -and $handles[$parentId].HasExited) { $skipReason = 'parentExited'; throw 'Parent exited during observation.' }
+                $entries.Add($entry)
+            } catch {
+                $sample.skipped++; if ($id -eq $Root) { $sample.rootSkipped++ }
+                if ($skipReason -eq 'counterReadFailed' -and $handles.ContainsKey($id)) {
+                    try { if ($handles[$id].HasExited) { $skipReason = 'processExited' } } catch { }
+                }
+                $sample.skipReasonCounts[$skipReason]++
+                if ($id -eq $Root -and $skipReason -eq 'processExited') { $sample.rootExitedDuringSample = $true }
+                if ($handles.ContainsKey($id)) { $handles[$id].Dispose(); [void] $handles.Remove($id) }
+            }
+        }
+        if ($handles.ContainsKey($Root)) {
+            try { $sample.rootExitedDuringSample = $handles[$Root].HasExited } catch { }
+        }
+        $sample.processes = @($entries.ToArray())
+    } catch { $sample.terminalReason = 3; $sample.failureStage = $stage }
+    finally { foreach ($process in $handles.Values) { $process.Dispose() } }
+    return $sample
+}
+
 function Invoke-NativeResourceCollector {
     if (-not $IsWindows) { throw 'Windows observation only.' }
     $root = [uint32]::Parse($env:MORROW_SAMPLE_PID, [Globalization.CultureInfo]::InvariantCulture)
@@ -127,68 +196,18 @@ function Invoke-NativeResourceCollector {
             $at = [Diagnostics.Stopwatch]::GetTimestamp()
             $elapsed = ($at - $launch) * 1000.0 / [Diagnostics.Stopwatch]::Frequency
             if ($elapsed -ge 180000) { break }
-            $handles = @{}; $entries = [Collections.Generic.List[object]]::new(); $skipped = 0; $rootSkipped = 0
-            $skipReasons = New-NativeSkipReasonCounts; $stage = 'root'; $rootExited = $null
+            $stage = 'sample'
             try {
-                try { $rootProcess = [Diagnostics.Process]::GetProcessById($root) } catch { $reason = 0; break }
-                $handles[$root] = $rootProcess
-                [void] $rootProcess.Handle
-                if ($rootProcess.HasExited) { $reason = 0; break }
-                if ($rootProcess.StartTime.ToUniversalTime().Ticks -ne $rootTicks) { $reason = 4; $failureStage = 'root'; break }
-                $stage = 'cim'
-                $rows = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate -OperationTimeoutSec 2 -ErrorAction Stop)
-                $stage = 'tree'
-                $tree = @(Get-NativeTree $rows $root $rootTicks)
-                if (-not $tree.Count) { $reason = 0; break }
-                foreach ($row in $tree) {
-                    $id = [uint32] $row.ProcessId; $parentId = [uint32] $row.ParentProcessId
-                    $skipReason = 'counterReadFailed'
-                    try {
-                        if ($id -ne $root) {
-                            if (-not $handles.ContainsKey($parentId)) { $skipped++; $skipReasons.parentUnavailable++; continue }
-                            if ($handles[$parentId].HasExited) { $skipped++; $skipReasons.parentExited++; continue }
-                            $skipReason = 'processUnavailable'
-                            $handles[$id] = [Diagnostics.Process]::GetProcessById($id)
-                        }
-                        $process = $handles[$id]; [void] $process.Handle
-                        $skipReason = 'counterReadFailed'; $process.Refresh()
-                        $ticks = $process.StartTime.ToUniversalTime().Ticks
-                        if (-not (Test-NativeCreation $ticks $(if ($id -eq $root) { $rootTicks } else { $ticks }) $row.CreationDate.ToUniversalTime().Ticks) -or
-                            ($id -ne $root -and $ticks -lt $handles[$parentId].StartTime.ToUniversalTime().Ticks)) {
-                            $skipReason = 'identityMismatch'; throw 'Changed process identity.'
-                        }
-                        $role = if ($id -eq $root) { 'ui' } elseif ($process.ProcessName -ieq 'morrow-service') { 'service' } elseif ($process.ProcessName -ieq 'msedgewebview2') { 'webview' } else { 'other' }
-                        $entry = [ordered]@{ pid = $id; parentPid = $parentId; startUtcTicks = $ticks; role = $role
-                            workingSetBytes = $process.WorkingSet64; privateBytes = $process.PrivateMemorySize64; cpuMs = $process.TotalProcessorTime.TotalMilliseconds }
-                        if ($process.HasExited) { $skipReason = 'processExited'; throw 'Process exited during observation.' }
-                        if ($id -ne $root -and $handles[$parentId].HasExited) { $skipReason = 'parentExited'; throw 'Parent exited during observation.' }
-                        $entries.Add($entry)
-                    } catch {
-                        $skipped++
-                        if ($id -eq $root) { $rootSkipped++ }
-                        # Confirm through the retained handle; do not infer exit
-                        # from exception text, access failure or a missing PID.
-                        if ($skipReason -eq 'counterReadFailed' -and $handles.ContainsKey($id)) {
-                            try { if ($handles[$id].HasExited) { $skipReason = 'processExited' } } catch { }
-                        }
-                        $skipReasons[$skipReason]++
-                        if ($id -eq $root -and $skipReason -eq 'processExited') { $rootExited = $true }
-                        if ($handles.ContainsKey($id)) { $handles[$id].Dispose(); [void] $handles.Remove($id) }
-                    }
-                }
-                if ($handles.ContainsKey($root)) {
-                    try { $rootExited = $handles[$root].HasExited } catch { }
-                }
+                $snapshot = Get-NativeProcessSnapshot $root $rootTicks
+                if ($null -ne $snapshot.terminalReason) { $reason = $snapshot.terminalReason; $failureStage = $snapshot.failureStage; break }
                 $finished = [Diagnostics.Stopwatch]::GetTimestamp()
                 if (($finished - $launch) * 1000.0 / [Diagnostics.Stopwatch]::Frequency -ge 180000) { break }
                 $sample = [ordered]@{ kind = 0; elapsedMs = $elapsed; queryMs = ($finished - $at) * 1000.0 / [Diagnostics.Stopwatch]::Frequency
-                    skipped = $skipped; rootSkipped = $rootSkipped; rootExitedDuringSample = $rootExited
-                    skipReasonCounts = $skipReasons; processes = @($entries.ToArray()) }
-                $stage = 'sample'
+                    skipped = $snapshot.skipped; rootSkipped = $snapshot.rootSkipped; rootExitedDuringSample = $snapshot.rootExitedDuringSample
+                    skipReasonCounts = $snapshot.skipReasonCounts; processes = $snapshot.processes }
                 if (-not (Write-NativeSample $stream $sample)) { $reason = 2; break }
                 $count++
             } catch { $reason = 3; $failureStage = $stage; break }
-            finally { foreach ($process in $handles.Values) { $process.Dispose() } }
             # Best effort, no overlapping queries or catch-up burst. A query's
             # operation timeout is not a wall deadline; the parent owns final kill.
             $delay = 1000 - ([Diagnostics.Stopwatch]::GetTimestamp() - $at) * 1000.0 / [Diagnostics.Stopwatch]::Frequency
@@ -442,6 +461,8 @@ function Test-NativeResourceObservation {
         Check (Read-NativeResourceReport $path $stop @{}).invalidRecords
         Write-Host 'Native observation identity, bounds, 64-bit counters and partial-record checks passed.'
     } finally { if ($stream) { $stream.Dispose() }; [IO.File]::Delete($path) }
+    . (Join-Path $PSScriptRoot 'test-native-process-lifecycle.ps1')
+    Test-NativeProcessLifecycle
 }
 
 if ($SelfTest) { Test-NativeResourceObservation; return }

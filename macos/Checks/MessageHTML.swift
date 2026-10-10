@@ -108,20 +108,87 @@ struct ReaderFixture: View {
     }
 }
 
+private enum ReaderFixtureMode: String {
+    case full
+    case coldView = "cold-view"
+    case warmView = "warm-view"
+}
+
 @main struct MessageHTMLChecks {
+    private static let adversarialMarker = "Bounded adversarial tail"
+    private static let adversarialHTML = "<div style='width:1px'>" + String(repeating: "x", count: 180000) + "</div><p>Bounded adversarial tail</p>"
+
     @MainActor static func main() {
+        let processStarted = ProcessInfo.processInfo.systemUptime
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        func usage() -> Never {
+            FileHandle.standardError.write(Data("Usage: reader-checks PORT [--adversarial cold-view|warm-view]\n".utf8))
+            exit(2)
+        }
+        guard arguments.count == 1 || arguments.count == 3,
+              !arguments[0].isEmpty, arguments[0].utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }),
+              let portNumber = UInt16(arguments[0]), portNumber > 0 else { usage() }
+        let mode: ReaderFixtureMode
+        if arguments.count == 1 {
+            mode = .full
+        } else {
+            guard arguments[1] == "--adversarial", let requested = ReaderFixtureMode(rawValue: arguments[2]), requested != .full else { usage() }
+            mode = requested
+        }
         let trace = ReaderFixtureTrace()
         func phase(_ name: String) { trace.phase(name) }
+        var adversarialStarted: TimeInterval?
+        var adversarialElapsed: Int?
+        var warmupElapsed: Int?
+        var sameWebView: Bool?
+        @MainActor func reportFocused(_ status: String, error: String? = nil) {
+            var result: [String: Any] = [
+                "schemaVersion": 1, "kind": "reader-adversarial", "mode": mode.rawValue,
+                "status": status, "textCharacters": 180000, "columnWidthPx": 1,
+                // Rust separately measures the entire child lifetime from spawn.
+                "processElapsedMs": Int((ProcessInfo.processInfo.systemUptime - processStarted) * 1000),
+                "adversarialElapsedMs": NSNull(), "warmupElapsedMs": NSNull(),
+                "sameWebView": NSNull(), "error": NSNull()
+            ]
+            if let adversarialElapsed { result["adversarialElapsedMs"] = adversarialElapsed }
+            if let warmupElapsed { result["warmupElapsedMs"] = warmupElapsed }
+            if let sameWebView { result["sameWebView"] = sameWebView }
+            if let error { result["error"] = error }
+            guard var data = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]) else {
+                fatalError("Could not encode the focused reader result")
+            }
+            data.append(10)
+            FileHandle.standardOutput.write(data)
+            trace.event("focused-result mode=\(mode.rawValue) status=\(status)")
+        }
+        func fixtureFailure(_ message: String) -> NSError {
+            NSError(domain: "MorrowReaderFixture", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+        }
         let heartbeat = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "morrow.reader-fixture-heartbeat", qos: .utility))
         heartbeat.schedule(deadline: .now() + 1, repeating: 1, leeway: .milliseconds(50))
         heartbeat.setEventHandler { trace.heartbeat() }
         heartbeat.resume()
         let app = NSApplication.shared
         app.setActivationPolicy(.prohibited)
-        let port = CommandLine.arguments[1]
+        let port = String(portNumber)
         // Deliberately hostile fixture text, never app-executed JavaScript.
         let content = "<p>Formatted mail fixture</p><script>document.body.append('Forbidden email script ran');fetch('http://127.0.0.1:\(port)/script')</script><img src='http://127.0.0.1:\(port)/image'><iframe src='http://127.0.0.1:\(port)/frame'></iframe>"
-        let state = ReaderFixtureState(content)
+        let warmupMarker = "Focused reader warmup"
+        if mode != .full {
+            trace.event("focused-begin mode=\(mode.rawValue) scope=fresh-process-fresh-view-not-OS-cold")
+        }
+        // Cold-view's first app-supplied document is the exact adversarial input.
+        // Warm-view uses this same state/view later; neither mode clears OS caches.
+        let initialRequested = ProcessInfo.processInfo.systemUptime
+        if mode == .coldView {
+            adversarialStarted = initialRequested
+            phase("adversarial-text")
+            trace.event("fixture-initial-request textCharacters=180000 columnWidthPx=1")
+        } else if mode == .warmView {
+            trace.event("warmup-initial-request")
+        }
+        let initialHTML = mode == .coldView ? Self.adversarialHTML : mode == .warmView ? "<p>\(warmupMarker)</p>" : content
+        let state = ReaderFixtureState(initialHTML)
         let host = NSHostingView(rootView: ReaderFixture(state: state))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 540), styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = host
@@ -141,16 +208,32 @@ struct ReaderFixture: View {
         }
         Task { @MainActor in
             do {
-                phase("initial-load")
+                phase(mode == .coldView ? "adversarial-text" : "initial-load")
                 var web: WKWebView?
-                for _ in 0..<200 {
+                var firstWeb: WKWebView?
+                var initialPoll = 0
+                // Focused modes are test-only children of the Rust batch runner.
+                // Its 30 s process deadline also bounds a non-returning native
+                // find. Do not add shorter poll-count deadlines to cold loads.
+                while mode != .full || initialPoll < 200 {
+                    initialPoll += 1
                     web = findWeb(host)
+                    if firstWeb == nil { firstWeb = web }
                     if let web, navigationObservations.isEmpty { observeNavigation(web, reader: "initial") }
-                    if let web, !web.isLoading, web.url != nil { break }
+                    if let web, mode != .full || (!web.isLoading && web.url != nil) { break }
                     try await Task.sleep(nanoseconds: 50_000_000)
                 }
-                guard let web, web.url != nil else { fatalError("Formatted reader did not load") }
-                trace.event("initial-navigation-poll-end loading=\(web.isLoading)")
+                guard let web, mode != .full || web.url != nil else {
+                    if mode != .full { throw fixtureFailure("Formatted reader did not load") }
+                    fatalError("Formatted reader did not load")
+                }
+                trace.event("\(mode == .full ? "initial-navigation-poll-end" : "focused-view-discovered") loading=\(web.isLoading)")
+                @MainActor func isolationIsConfigured() -> Bool {
+                    !web.configuration.defaultWebpagePreferences.allowsContentJavaScript
+                        && !web.configuration.preferences.javaScriptCanOpenWindowsAutomatically
+                        && !web.configuration.websiteDataStore.isPersistent
+                }
+                if mode != .full, !isolationIsConfigured() { throw fixtureFailure("Reader isolation configuration changed") }
                 assert(MessageHTMLView.document("", images: false, inlineImages: true).contains("img-src data: ;"))
                 assert(!MessageHTMLView.document("", images: false).contains("img-src data:"))
                 assert(!web.configuration.defaultWebpagePreferences.allowsContentJavaScript)
@@ -176,15 +259,27 @@ struct ReaderFixture: View {
                 @MainActor func loaded(_ marker: String) async throws {
                     let began = ProcessInfo.processInfo.systemUptime
                     trace.event("marker-wait-begin marker=\(marker) loading=\(web.isLoading)")
-                    for attempt in 0..<400 {
+                    var attempt = 0
+                    while mode != .full || attempt < 400 {
                         if !web.isLoading, try await find(marker) {
                             trace.event("marker-wait-end marker=\(marker) polls=\(attempt + 1) durationMs=\(Int((ProcessInfo.processInfo.systemUptime - began) * 1000)) width=\(Int(web.bounds.width)) height=\(Int(web.bounds.height))")
                             return
                         }
                         try await Task.sleep(nanoseconds: 50_000_000)
+                        attempt += 1
                     }
                     phase("fixture-marker-timeout")
+                    if mode != .full { throw fixtureFailure("Reader did not load its fixture marker: \(marker)") }
                     fatalError("Reader did not load its fixture marker: \(marker)")
+                }
+                @MainActor func publishAdversarial() {
+                    trace.event("fixture-update-request begin textCharacters=180000 columnWidthPx=1 viewportWidth=\(Int(web.bounds.width)) viewportHeight=\(Int(web.bounds.height)) windowWidth=\(Int(window.contentLayoutRect.width))")
+                    state.html = Self.adversarialHTML
+                    trace.event("fixture-update-request end; SwiftUI navigation/layout may still be pending")
+                }
+                @MainActor func adversarialIsBounded() async throws -> Bool {
+                    try await loaded(Self.adversarialMarker)
+                    return web.bounds.height == MessageHTMLView.viewportHeight
                 }
                 @MainActor func snapshot() async throws -> Data {
                     trace.event("snapshot-settle-begin")
@@ -215,6 +310,31 @@ struct ReaderFixture: View {
                     cg.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(window.windowNumber))
                     guard let event = NSEvent(cgEvent: cg) else { fatalError("Could not create wheel event") }
                     target.scrollWheel(with: event)
+                }
+                if mode != .full {
+                    guard firstWeb === web else { throw fixtureFailure("Initial navigation replaced the original reader view") }
+                    if mode == .warmView {
+                        phase("focused-warmup")
+                        try await loaded(warmupMarker)
+                        warmupElapsed = Int((ProcessInfo.processInfo.systemUptime - initialRequested) * 1000)
+                        trace.event("warmup-complete durationMs=\(warmupElapsed ?? 0)")
+                        guard findWeb(host) === web else { throw fixtureFailure("Warmup replaced the original reader view") }
+                        phase("adversarial-text")
+                        adversarialStarted = ProcessInfo.processInfo.systemUptime
+                        publishAdversarial()
+                    }
+                    guard try await adversarialIsBounded() else { throw fixtureFailure("Narrow-column HTML escaped the viewport bound") }
+                    adversarialElapsed = Int((ProcessInfo.processInfo.systemUptime - (adversarialStarted ?? processStarted)) * 1000)
+                    sameWebView = findWeb(host) === web
+                    guard sameWebView == true else { throw fixtureFailure("Adversarial content replaced the original reader view") }
+                    guard isolationIsConfigured() else { throw fixtureFailure("Reader isolation configuration changed") }
+                    phase("focused-done")
+                    trace.summary()
+                    withExtendedLifetime(navigationObservations) {}
+                    heartbeat.cancel()
+                    reportFocused("passed")
+                    window.orderOut(nil)
+                    exit(0)
                 }
                 try await loaded("Formatted mail fixture")
                 let scriptRan = try await find("Forbidden email script ran")
@@ -301,11 +421,9 @@ struct ReaderFixture: View {
                 assert(web.bounds.height == MessageHTMLView.viewportHeight, "Long HTML expanded the native allocation")
 
                 phase("adversarial-text")
-                trace.event("fixture-update-request begin textCharacters=180000 columnWidthPx=1 viewportWidth=\(Int(web.bounds.width)) viewportHeight=\(Int(web.bounds.height)) windowWidth=\(Int(window.contentLayoutRect.width))")
-                state.html = "<div style='width:1px'>" + String(repeating: "x", count: 180000) + "</div><p>Bounded adversarial tail</p>"
-                trace.event("fixture-update-request end; SwiftUI navigation/layout may still be pending")
-                try await loaded("Bounded adversarial tail")
-                assert(web.bounds.height == MessageHTMLView.viewportHeight, "Narrow-column HTML escaped the viewport bound")
+                publishAdversarial()
+                let adversarialBounded = try await adversarialIsBounded()
+                assert(adversarialBounded, "Narrow-column HTML escaped the viewport bound")
 
                 phase("replacement-reflow")
                 state.html = "<p>Replacement message</p>" + String(repeating: "<p>Formatted text wraps to the available native width.</p>", count: 30) + "<img src='https://example.invalid/giant.png' style='height:1000000px' width='2048' height='2048'><p>Replacement tail</p>"
@@ -356,7 +474,16 @@ struct ReaderFixture: View {
                 print("Native email reader: bounded viewport, bidirectional native scrolling, selectable/revealed long tail, adversarial layout, replacement/reflow, scripts/resources blocked and link protocols checked without host script execution.")
                 window.orderOut(nil)
                 exit(0)
-            } catch { fatalError("Reader check failed: \(error)") }
+            } catch {
+                if mode != .full {
+                    heartbeat.cancel()
+                    let failure = error as NSError
+                    reportFocused("failed", error: "\(failure.domain):\(failure.code): \(failure.localizedDescription)")
+                    window.orderOut(nil)
+                    exit(1)
+                }
+                fatalError("Reader check failed: \(error)")
+            }
         }
         app.run()
     }

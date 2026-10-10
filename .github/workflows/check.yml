@@ -57,6 +57,20 @@ jobs:
         if: env.SKIP_TESTS != 'true'
         shell: bash
         run: cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-native-check -- --service "$PWD/build/macos-native/Morrow Mail.app/Contents/Resources/morrow-service"
+      - name: Repeat adversarial reader on fresh and reused views
+        if: ${{ !cancelled() && env.SKIP_TESTS != 'true' }}
+        shell: bash
+        run: |
+          mkdir -p "$PWD/test-results"
+          cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-native-check -- --reader-adversarial-batch "$PWD/test-results/macos-reader-batch-${{ github.run_id }}-${{ github.run_attempt }}"
+      - name: Retain every reader sample including failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: macos-reader-observations-${{ github.sha }}-${{ github.run_attempt }}
+          path: test-results/macos-reader-batch-*
+          if-no-files-found: warn
+          retention-days: 14
       - name: Retain macOS candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
