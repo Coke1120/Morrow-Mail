@@ -6,6 +6,7 @@
 if (-not ('MorrowObservationIdentity.ExitProof' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
+using System.ComponentModel;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
@@ -54,6 +55,16 @@ namespace MorrowObservationIdentity {
         static Result NativeFailure(Result result, string stage, int error) {
             result.Stage = stage; result.Outcome = error == 5 ? "accessDenied" : "unavailable";
             result.NativeError = error; return result;
+        }
+        // Transfers this limited, non-inheritable handle to the caller. Keep
+        // it through managed admission or ReadHandle; reopening loses the pin.
+        public static SafeProcessHandle Acquire(uint pid) {
+            if (pid <= 1) throw new ArgumentOutOfRangeException(nameof(pid));
+            SafeProcessHandle handle = OpenProcess(QueryLimitedInformation | Synchronize, false, pid);
+            if (handle.IsInvalid) {
+                int error = Marshal.GetLastWin32Error(); handle.Dispose(); throw new Win32Exception(error);
+            }
+            return handle;
         }
         public static Result Probe(uint pid, long cimTicks, long parentTicks) {
             var result = new Result { ExpectedPid = pid };

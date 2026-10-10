@@ -35,8 +35,8 @@ exit 9
             return $child
         } catch { if (-not $child.HasExited) { $child.Kill(); [void] $child.WaitForExit(5000) }; $child.Dispose(); throw }
     }
-    function Close-LifecycleChild($Child) {
-        if (-not $Child) { return }
+    function Close-LifecycleChild($Child, [bool] $AlreadyDisposed = $false) {
+        if (-not $Child -or $AlreadyDisposed) { return }
         try {
             if (-not $Child.HasExited) {
                 # A failed child can close its pipe before HasExited changes.
@@ -145,6 +145,7 @@ namespace MorrowObservationFixture {
 '@
     }
     $control = $null; $child = $null; $ancestor = $null; $descendant = $null; $state = $null; $self = [Diagnostics.Process]::GetCurrentProcess()
+    $facts = @{ fixtureChildDisposed = $false }
     $path = Join-Path ([IO.Path]::GetTempPath()) ('morrow-resource-lifecycle-' + [Guid]::NewGuid().ToString('N') + '.jsonl')
     try {
         $control = Start-LifecycleChild
@@ -152,13 +153,18 @@ namespace MorrowObservationFixture {
             'denied-then-exit', 'verified-exit-nonzero', 'forced-collector', 'cached-exit-zero', 'cached-identity-change', 'cached-lookup-held-exit-zero',
             'cached-root-exit-zero', 'cached-root-exit-nonzero', 'retained-descendant-new-child', 'retained-descendant-changed-parent',
             'retained-descendant-parent-nonzero', 'retained-descendant-child-nonzero', 'lookup-held-exit-nonzero',
-            'lookup-held-identity-change', 'lookup-parent-exit-during-proof', 'lookup-parent-identity-during-proof', 'lookup-exited-parent-no-adoption')) {
+            'native-acquire-identity-change', 'lookup-parent-exit-during-proof', 'lookup-parent-identity-during-proof', 'lookup-exited-parent-no-adoption',
+            'pinned-exit-zero', 'pinned-exit-nonzero', 'projected-first-acquire-unavailable', 'projected-first-acquire-denied')) {
+            $facts = @{ snapshot = $false; identified = $false; released = $false; denied = $false; exitProofs = 0
+                parentReleased = $false; parentIdentityChanged = $false; acquireCalls = 0; identityProofs = 0; lookupCalls = 0
+                fixtureChildDisposed = $false; pinnedExitCode = $null }
             $graphCase = $case -like 'retained-descendant-*'
             $proofParentCase = $case -in @('lookup-parent-exit-during-proof', 'lookup-parent-identity-during-proof')
             $proofNoAdoptionCase = $case -eq 'lookup-exited-parent-no-adoption'
             $ancestryProjected = $graphCase -or $proofParentCase -or $proofNoAdoptionCase
             if ($graphCase -or $proofParentCase) { $ancestor = Start-LifecycleChild }
             $child = Start-LifecycleChild; $childId = $child.Id
+            $childTicks = $child.StartTime.ToUniversalTime().Ticks
             if ($proofNoAdoptionCase) { $descendant = Start-LifecycleChild }
             $rootCase = $case -like 'cached-root-*'; $sampleRoot = if ($rootCase) { $child } else { $self }
             $sampleRootId = [uint32] $sampleRoot.Id; $sampleRootTicks = $sampleRoot.StartTime.ToUniversalTime().Ticks
@@ -210,7 +216,7 @@ namespace MorrowObservationFixture {
                 } else { $rows = @(Read-LifecycleInventory $wanted) }
                 if ($rootCase) { $rows = @($rows | Where-Object { $_.ProcessId -eq $childId }) }
             }
-            $creationProjected = $case -in @('stale-identity', 'cached-identity-change', 'retained-descendant-changed-parent', 'lookup-held-identity-change', 'lookup-parent-identity-during-proof')
+            $creationProjected = $case -in @('stale-identity', 'cached-identity-change', 'retained-descendant-changed-parent', 'native-acquire-identity-change', 'lookup-parent-identity-during-proof')
             if ($creationProjected -and $case -ne 'lookup-parent-identity-during-proof') {
                 # Deterministic stale snapshot, not a claim of actual PID reuse.
                 $staleRow = $rows | Where-Object { $_.ProcessId -eq $childId }
@@ -228,11 +234,22 @@ namespace MorrowObservationFixture {
                     skipReasonCounts = $middle.skipReasonCounts; processes = $middle.processes
                     lifecycleEvents = $middle.lifecycleEvents; failedRecords = $middle.failedRecords }
             }
-            $facts = @{ snapshot = $false; identified = $false; released = $false; denied = $false; exitProofs = 0; parentReleased = $false; parentIdentityChanged = $false }
             $barrier = {
                 param($Phase, $Process)
                 if ($Phase -eq 'snapshot') { $facts.snapshot = $true }
                 if ($Phase -eq 'identified' -and $Process.Id -eq $childId) { $facts.identified = $true }
+                if ($Phase -eq 'identityProof' -and [uint32] $Process -eq $childId) { $facts.identityProofs++ }
+                if ($Phase -eq 'beforeLookup' -and [uint32] $Process -eq $childId) { $facts.lookupCalls++ }
+                if ($Phase -eq 'nativePinned' -and [uint32] $Process -eq $childId -and $case -in @('pinned-exit-zero', 'pinned-exit-nonzero')) {
+                    $child.StandardInput.WriteLine($(if ($case -eq 'pinned-exit-nonzero') { 'exit7' } else { 'exit0' }))
+                    $child.StandardInput.Flush()
+                    if (-not $child.WaitForExit(5000)) { throw 'Pinned child did not exit at its barrier.' }
+                    $facts.released = $true; $facts.pinnedExitCode = $child.ExitCode
+                    # Release the creator's handles. The collector's first
+                    # native handle remains held throughout the rejected .NET
+                    # lookup and the final identity/exit proof.
+                    $child.Dispose(); $facts.fixtureChildDisposed = $true
+                }
                 if ($Phase -eq 'exitProof') {
                     $facts.exitProofs++
                     if ($proofParentCase) {
@@ -250,7 +267,7 @@ namespace MorrowObservationFixture {
                     }
                 }
                 $release = (($case -in @('lookup-held-exit-zero', 'cached-exit-zero', 'cached-lookup-held-exit-zero',
-                    'lookup-held-exit-nonzero', 'lookup-held-identity-change', 'lookup-parent-exit-during-proof', 'lookup-parent-identity-during-proof', 'lookup-exited-parent-no-adoption') -or $rootCase) -and $Phase -eq 'snapshot') -or
+                    'lookup-held-exit-nonzero', 'native-acquire-identity-change', 'lookup-parent-exit-during-proof', 'lookup-parent-identity-during-proof', 'lookup-exited-parent-no-adoption') -or $rootCase) -and $Phase -eq 'snapshot') -or
                     ($case -in @('verified-exit-zero', 'verified-exit-nonzero') -and $Phase -eq 'identified' -and $Process.Id -eq $childId)
                 if ($release) {
                     $child.StandardInput.WriteLine($(if ($case -in @('verified-exit-nonzero', 'cached-root-exit-nonzero', 'lookup-held-exit-nonzero')) { 'exit7' } else { 'exit0' }))
@@ -263,6 +280,20 @@ namespace MorrowObservationFixture {
                     if (-not $descendant.WaitForExit(5000)) { throw 'Retained descendant did not exit at its barrier.' }
                     $facts.released = $true
                 }
+            }.GetNewClosure()
+            $acquiredPins = [Collections.Generic.List[object]]::new()
+            $acquire = {
+                param([uint32] $CandidateId)
+                if ($CandidateId -eq $childId) {
+                    $facts.acquireCalls++
+                    # Deterministic error-routing projections, not a claim
+                    # that this live fixture PID is missing or ACL-denied.
+                    if ($case -eq 'projected-first-acquire-unavailable') { throw [ComponentModel.Win32Exception]::new(87) }
+                    if ($case -eq 'projected-first-acquire-denied') { throw [ComponentModel.Win32Exception]::new(5) }
+                }
+                $handle = [MorrowObservationIdentity.ExitProof]::Acquire($CandidateId)
+                $acquiredPins.Add($handle)
+                return $handle
             }.GetNewClosure()
             $readActualCounters = ${function:Read-NativeProcessCounters}
             $counter = {
@@ -284,7 +315,10 @@ namespace MorrowObservationFixture {
                 return (& $readActualCounters $Process)
             }.GetNewClosure()
             $at = [Diagnostics.Stopwatch]::GetTimestamp()
-            $snapshot = Get-NativeProcessSnapshot $sampleRootId $sampleRootTicks $rows $barrier $counter $state
+            $snapshot = Get-NativeProcessSnapshot $sampleRootId $sampleRootTicks $rows $barrier $counter $state $acquire
+            $facts.pinsObserved = $acquiredPins.Count
+            $facts.pinsClosed = @($acquiredPins | Where-Object { $_.IsClosed }).Count
+            Check ($facts.pinsObserved -eq $facts.pinsClosed) 'temporary-pins-disposed'
             $queryMs = ([Diagnostics.Stopwatch]::GetTimestamp() - $at) * 1000.0 / [Diagnostics.Stopwatch]::Frequency
             $expectedTerminal = if ($case -eq 'cached-root-exit-zero') { 0 } elseif ($case -eq 'cached-root-exit-nonzero') { 3 } else { $null }
             Check ($facts.snapshot -and $snapshot.terminalReason -eq $expectedTerminal -and -not $self.HasExited -and -not $control.HasExited) ('snapshot-' + $case)
@@ -310,12 +344,13 @@ namespace MorrowObservationFixture {
             # expectations so a classification failure has evidence.
             Write-Host ('Native observation lifecycle: ' + (@{ case = $case; native = $true; baseline = $false
                 ancestryProjected = $ancestryProjected; creationProjected = $creationProjected; inventorySource = 'native-cim-filtered-owned-pids'
+                acquisitionFailureProjected = ($case -like 'projected-first-acquire-*')
                 barrier = $facts; incomplete = $report.incomplete; reasons = $report.skipReasonCounts; collector = $stop
                 rootAlive = (-not $sampleRoot.HasExited); controlAlive = (-not $control.HasExited) } | ConvertTo-Json -Compress -Depth 4))
             foreach ($record in $report.samples) { Write-Host ('Native observation lifecycle sample: ' + ($record | ConvertTo-Json -Compress -Depth 5)) }
             if ($case -eq 'alive-control') { Check (-not $report.incomplete -and $snapshot.processes.Count -eq 3) }
             elseif ($case -in @('verified-exit-zero', 'cached-exit-zero', 'cached-root-exit-zero', 'retained-descendant-new-child',
-                'lookup-held-exit-zero', 'cached-lookup-held-exit-zero')) { Check (-not $report.incomplete -and $report.normalExitObservations -eq 1) }
+                'lookup-held-exit-zero', 'cached-lookup-held-exit-zero', 'pinned-exit-zero')) { Check (-not $report.incomplete -and $report.normalExitObservations -eq 1) }
             else { Check $report.incomplete }
             switch ($case) {
                 'verified-exit-zero' { Check ($facts.identified -and $facts.released -and $child.ExitCode -eq 0 -and $report.skipReasonCounts.processExited -eq 0 -and $snapshot.lifecycleEvents[0].identitySource -eq 'currentSnapshot') }
@@ -337,9 +372,34 @@ namespace MorrowObservationFixture {
                     Check ($facts.released -and -not $facts.identified -and $facts.exitProofs -eq 1 -and $report.skipReasonCounts.processExited -eq 1 -and
                         $snapshot.failedRecords[0].stage -eq 'nativeExit' -and $snapshot.failedRecords[0].exitCode -eq 7 -and $report.normalExitObservations -eq 0) 'lookup-nonzero-remains-gap'
                 }
-                'lookup-held-identity-change' {
-                    Check ($facts.released -and -not $facts.identified -and $facts.exitProofs -eq 1 -and $report.skipReasonCounts.identityMismatch -eq 1 -and
+                'native-acquire-identity-change' {
+                    Check ($facts.released -and -not $facts.identified -and $facts.acquireCalls -eq 1 -and $facts.identityProofs -eq 1 -and
+                        $facts.lookupCalls -eq 0 -and $facts.exitProofs -eq 0 -and $report.skipReasonCounts.identityMismatch -eq 1 -and
                         $snapshot.failedRecords[0].stage -eq 'nativeCreation' -and $report.normalExitObservations -eq 0) 'lookup-changed-identity-remains-gap'
+                }
+                { $_ -in @('pinned-exit-zero', 'pinned-exit-nonzero') } {
+                    Check ($facts.fixtureChildDisposed -and $facts.released -and -not $facts.identified -and $facts.acquireCalls -eq 1 -and
+                        $facts.identityProofs -eq 1 -and $facts.lookupCalls -eq 1 -and $facts.exitProofs -eq 1 -and
+                        -not $state.handles.ContainsKey([uint32] $childId) -and @($snapshot.processes | Where-Object { $_.pid -eq $childId }).Count -eq 0) 'single-pin-through-rejected-lookup'
+                    if ($case -eq 'pinned-exit-zero') {
+                        Check ($facts.pinnedExitCode -eq 0 -and $snapshot.lifecycleEvents[0].pid -eq $childId -and
+                            $snapshot.lifecycleEvents[0].startUtcTicks -eq $childTicks -and $snapshot.lifecycleEvents[0].identitySource -eq 'nativeLookupFallback' -and
+                            $snapshot.failedRecords.Count -eq 0) 'pinned-zero-proof'
+                    } else {
+                        Check ($facts.pinnedExitCode -eq 7 -and $report.skipReasonCounts.processExited -eq 1 -and
+                            $snapshot.failedRecords[0].stage -eq 'nativeExit' -and $snapshot.failedRecords[0].exitCode -eq 7 -and
+                            $report.normalExitObservations -eq 0) 'pinned-nonzero-gap'
+                    }
+                }
+                { $_ -like 'projected-first-acquire-*' } {
+                    $expectedCode = if ($case -eq 'projected-first-acquire-denied') { 5 } else { 87 }
+                    $expectedKind = if ($expectedCode -eq 5) { 'accessDenied' } else { 'native' }
+                    Check (-not $child.HasExited -and $facts.acquireCalls -eq 1 -and $facts.identityProofs -eq 0 -and $facts.lookupCalls -eq 0 -and
+                        $facts.exitProofs -eq 0 -and $report.skipReasonCounts.processUnavailable -eq 1 -and $report.normalExitObservations -eq 0 -and
+                        $snapshot.failedRecords[0].pid -eq $childId -and $snapshot.failedRecords[0].stage -eq 'nativeAcquire' -and
+                        $snapshot.failedRecords[0].errorKind -eq $expectedKind -and $snapshot.failedRecords[0].errorCode -eq $expectedCode -and
+                        $null -eq $snapshot.failedRecords[0].exitCode -and -not $state.handles.ContainsKey([uint32] $childId) -and
+                        @($snapshot.processes | Where-Object { $_.pid -eq $childId }).Count -eq 0) 'first-acquire-failure-no-retry-or-proof'
                 }
                 'lookup-parent-exit-during-proof' {
                     Check ($facts.released -and $facts.parentReleased -and $facts.exitProofs -eq 1 -and $ancestor.ExitCode -eq 0 -and
@@ -380,7 +440,7 @@ namespace MorrowObservationFixture {
             Close-NativeObservationState $state; Check ($state.handles.Count -eq 0) 'cache-disposed'; $state = $null
             Close-LifecycleChild $descendant; $descendant = $null
             Close-LifecycleChild $ancestor; $ancestor = $null
-            [IO.File]::Delete($path); Close-LifecycleChild $child; $child = $null
+            [IO.File]::Delete($path); Close-LifecycleChild $child $facts.fixtureChildDisposed; $child = $null
         }
     } finally {
         if ($state) { Close-NativeObservationState $state }
@@ -388,7 +448,7 @@ namespace MorrowObservationFixture {
         finally {
             try { Close-LifecycleChild $ancestor }
             finally {
-                try { Close-LifecycleChild $child }
+                try { Close-LifecycleChild $child $facts.fixtureChildDisposed }
                 finally {
                     try { Close-LifecycleChild $control }
                     finally { $self.Dispose(); if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) } }

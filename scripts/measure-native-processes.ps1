@@ -156,10 +156,10 @@ function Get-NativeProofParentState($Parent, [uint32] $ParentId, [long] $ParentT
 
 function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]] $SnapshotRows = $null,
     [scriptblock] $ObservationBarrier = $null, [scriptblock] $ReadCounters = $null,
-    [Collections.IDictionary] $State = $null) {
+    [Collections.IDictionary] $State = $null, [scriptblock] $AcquireIdentity = $null) {
     # A collector owns this bounded cache until its finally block. Retaining the
     # original handle preserves exit evidence; a missing PID is never that proof.
-    # Fixture barriers are direct arguments, never environment/app switches.
+    # Fixture barriers/acquisition faults are direct arguments, never environment/app switches.
     $ownsState = $null -eq $State
     if ($ownsState) { $State = New-NativeObservationState $Root $RootTicks }
     $cache = $State.handles; $entries = [Collections.Generic.List[object]]::new(); $stage = 'root'
@@ -235,7 +235,7 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
         foreach ($candidate in $candidates) {
             $row = $candidate.row; $id = [uint32] $row.ProcessId; $parentId = [uint32] $row.ParentProcessId
             if ($rejected.ContainsKey($id)) { continue }
-            $skipReason = 'counterReadFailed'; $failureStage = 'identity'; $newProcess = $null
+            $skipReason = 'counterReadFailed'; $failureStage = 'identity'; $newProcess = $null; $identityHandle = $null
             try {
                 if ($cache.ContainsKey($id)) {
                     $known = $cache[$id]
@@ -250,21 +250,45 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
                     $parent = $cache[$parentId]; $skipReason = 'parentExited'
                     if ($parent.process.HasExited) { throw 'Parent exited before child admission.' }
                     if ($cache.Count -ge 64) { $failureStage = 'inventory'; $skipReason = 'counterReadFailed'; throw 'Handle cache limit.' }
+                    $failureStage = 'parent'; $skipReason = 'parentUnavailable'; $parentTicks = [long] $parent.ticks
+                    if ($candidate.source -ne 'cim') { throw 'New child requires current inventory.' }
+                    $parentState = Get-NativeProofParentState $parent $parentId $parentTicks $cache $rejected $byId
+                    if ($parentState -ne 'valid') { $skipReason = $parentState; throw 'Acquisition parent is not live and verified.' }
+                    # Pin once before .NET's temporary IsProcessRunning handle.
+                    # The first native open failure stays a gap, with no retry.
+                    $failureStage = 'nativeAcquire'; $skipReason = 'processUnavailable'
+                    $identityHandle = if ($AcquireIdentity) { & $AcquireIdentity $id } else { [MorrowObservationIdentity.ExitProof]::Acquire($id) }
+                    if ($ObservationBarrier) { [void] (& $ObservationBarrier 'identityProof' $id) }
+                    $pin = [MorrowObservationIdentity.ExitProof]::ReadHandle($identityHandle, $id, $row.CreationDate.ToUniversalTime().Ticks, $parentTicks)
+                    if (-not $pin.IdentityMatched -or $pin.Outcome -notin @('alive', 'zeroExit', 'nonzeroExit')) {
+                        $failureStage = switch ($pin.Stage) {
+                            'pid' { 'nativePid' }; 'creation' { 'nativeCreation' }; 'wait' { 'nativeWait' }; 'exit' { 'nativeExit' }; default { 'nativeProof' }
+                        }
+                        $skipReason = if ($pin.Outcome -eq 'identityMismatch') { 'identityMismatch' } else { 'processUnavailable' }
+                        $nativeFailure = if ($null -ne $pin.NativeError) { [ComponentModel.Win32Exception]::new($pin.NativeError) } else { $null }
+                        $rejected[$id] = $true
+                        Add-NativeObservationFailure $sample $row $Root $candidate.source $skipReason $failureStage $nativeFailure $pin.ExitCode
+                        continue
+                    }
+                    $failureStage = 'parent'; $skipReason = 'parentUnavailable'
+                    $parentState = Get-NativeProofParentState $parent $parentId $parentTicks $cache $rejected $byId
+                    if ($parentState -ne 'valid') { $skipReason = $parentState; throw 'Acquisition parent changed during identity proof.' }
+                    if ($ObservationBarrier) { [void] (& $ObservationBarrier 'nativePinned' $id) }
                     $failureStage = 'lookup'; $skipReason = 'processUnavailable'
+                    if ($ObservationBarrier) { [void] (& $ObservationBarrier 'beforeLookup' $id) }
                     try { $newProcess = [Diagnostics.Process]::GetProcessById($id) }
                     catch {
                         $lookupFailure = $_.Exception
                         while ($lookupFailure.InnerException) { $lookupFailure = $lookupFailure.InnerException }
                         if ($lookupFailure -isnot [ArgumentException] -or $candidate.source -ne 'cim' -or $id -eq $Root) { throw }
-                        # .NET rejects an already-exited process even while a
-                        # native limited handle can still prove its identity.
+                        # .NET rejects an already-exited process. The original
+                        # pinned native handle still proves its exact identity.
                         # This narrow fallback never hides handle/counter errors.
-                        $parentTicks = [long] $parent.ticks
                         $failureStage = 'parent'; $skipReason = 'parentUnavailable'
                         $parentState = Get-NativeProofParentState $parent $parentId $parentTicks $cache $rejected $byId
                         if ($parentState -ne 'valid') { $skipReason = $parentState; throw 'Exit proof parent is not live and verified.' }
                         $failureStage = 'nativeProof'; $skipReason = 'processUnavailable'
-                        $proof = Get-NativeProcessExitProof $id $row.CreationDate.ToUniversalTime().Ticks $parentTicks
+                        $proof = [MorrowObservationIdentity.ExitProof]::ReadHandle($identityHandle, $id, $row.CreationDate.ToUniversalTime().Ticks, $parentTicks)
                         if ($ObservationBarrier) { [void] (& $ObservationBarrier 'exitProof' $parent.process) }
                         if ($proof.ProvenZero) {
                             $failureStage = 'parent'; $skipReason = 'parentUnavailable'
@@ -290,7 +314,7 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
                     $failureStage = 'handle'; [void] $newProcess.Handle
                     $failureStage = 'identity'; $skipReason = 'counterReadFailed'
                     $ticks = $newProcess.StartTime.ToUniversalTime().Ticks
-                    if (-not (Test-NativeCreation $ticks $ticks $row.CreationDate.ToUniversalTime().Ticks) -or $ticks -lt $parent.ticks) {
+                    if ($ticks -ne $pin.StartUtcTicks -or -not (Test-NativeCreation $ticks $ticks $row.CreationDate.ToUniversalTime().Ticks) -or $ticks -lt $parentTicks) {
                         $skipReason = 'identityMismatch'; throw 'Changed process identity.'
                     }
                     $failureStage = 'role'
@@ -310,7 +334,10 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
             } catch {
                 $rejected[$id] = $true
                 Add-NativeObservationFailure $sample $row $Root $candidate.source $skipReason $failureStage $_.Exception
-            } finally { if ($newProcess) { $newProcess.Dispose() } }
+            } finally {
+                try { if ($newProcess) { $newProcess.Dispose() } }
+                finally { if ($identityHandle) { $identityHandle.Dispose() } }
+            }
         }
         foreach ($item in $admitted) {
             $known = $item.entry; $process = $known.process; $row = $item.row; $id = [uint32] $row.ProcessId
@@ -503,7 +530,7 @@ function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
                         if (($failure.Keys | Sort-Object) -join ',' -cne 'cimStartUtcTicks,errorCode,errorKind,exitCode,parentPid,pid,reason,source,stage' -or
                             $failure.source -cnotin @('cim', 'retained') -or -not $recordReasons.ContainsKey($failure.reason) -or
                             $failure.stage -cnotin @('inventory', 'parent', 'lookup', 'handle', 'identity', 'role', 'counters', 'exit',
-                                'nativeProof', 'nativeOpen', 'nativePid', 'nativeCreation', 'nativeWait', 'nativeExit') -or
+                                'nativeProof', 'nativeOpen', 'nativeAcquire', 'nativePid', 'nativeCreation', 'nativeWait', 'nativeExit') -or
                             $failure.errorKind -cnotin @('none', 'accessDenied', 'native', 'argument', 'invalidOperation', 'other')) { throw 'Invalid failure record.' }
                         foreach ($key in @('pid', 'parentPid', 'cimStartUtcTicks')) {
                             if ($failure[$key] -isnot [long] -or $failure[$key] -lt 0) { throw 'Invalid failure identity.' }
@@ -698,6 +725,11 @@ function Test-NativeResourceObservation {
         $nativeGap.failedRecords = @($nativeMissing)
         $report = Read-ObservationFixture @($nativeGap, $footer)
         Check ($report.incomplete -and -not $report.invalidRecords -and $report.normalExitObservations -eq 0)
+        foreach ($openFailure in @($nativeDenied, $nativeMissing)) {
+            $firstOpen = $openFailure.Clone(); $firstOpen.stage = 'nativeAcquire'; $nativeGap.failedRecords = @($firstOpen)
+            $report = Read-ObservationFixture @($nativeGap, $footer)
+            Check ($report.incomplete -and -not $report.invalidRecords -and $report.skipReasonCounts.processUnavailable -eq 1 -and $report.normalExitObservations -eq 0)
+        }
         $denied = $failure.Clone(); $denied.reason = 'counterReadFailed'; $denied.stage = 'counters'
         $denied.errorKind = 'accessDenied'; $denied.errorCode = 5L; $denied.exitCode = 0L
         $deniedGap = $modernGap.Clone(); $deniedGap.failedRecords = @($denied)
