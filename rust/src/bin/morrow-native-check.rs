@@ -285,6 +285,7 @@ const READER_VISIBILITY_POLICIES: [(&str, &str); 2] = [
 enum ReaderDiagnostic<'a> {
     Wrap(&'a str),
     Visibility(&'a str),
+    OwnershipPreflight,
 }
 
 #[derive(Default)]
@@ -363,11 +364,134 @@ struct SampleProcess {
     stderr_truncated: bool,
 }
 
+struct ReaderOwnershipProbe {
+    root: PathBuf,
+    directory: PathBuf,
+    reader_pid: Option<u32>,
+    cancelled: Arc<AtomicBool>,
+    worker: Option<thread::JoinHandle<std::result::Result<SampleProcess, String>>>,
+    result: Option<std::result::Result<SampleProcess, String>>,
+}
+
+const READER_PREFLIGHT_ENVIRONMENT: [&str; 16] = [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "LC_COLLATE",
+    "LC_MONETARY",
+    "LC_NUMERIC",
+    "LC_TIME",
+    "SECURITYSESSIONID",
+    "__CF_USER_TEXT_ENCODING",
+    "LC_PAPER",
+];
+
+fn isolate_reader_preflight_environment(command: &mut Command) -> &mut Command {
+    command.env_clear();
+    for name in READER_PREFLIGHT_ENVIRONMENT {
+        if let Some(value) = env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    command
+}
+
+impl ReaderOwnershipProbe {
+    fn new(root: &Path, directory: &Path) -> Self {
+        Self {
+            root: root.to_owned(),
+            directory: directory.to_owned(),
+            reader_pid: None,
+            cancelled: Arc::new(AtomicBool::new(false)),
+            worker: None,
+            result: None,
+        }
+    }
+
+    fn observe(&mut self, reader_pid: u32, stderr: &[u8]) {
+        self.reader_pid = Some(reader_pid);
+        if self.worker.is_some()
+            || self.result.is_some()
+            || !reader_adversarial_loading_observed(stderr)
+        {
+            return;
+        }
+        let root = self.root.clone();
+        let output = self.directory.join("ownership.json");
+        let cancelled = self.cancelled.clone();
+        self.worker = Some(thread::spawn(move || {
+            reader_sample_process_controlled(
+                isolate_reader_preflight_environment(&mut command(&root, "python3"))
+                    .args(["-I", "-B", "scripts/probe-macos-reader-processes.py"])
+                    .arg("--reader-pid")
+                    .arg(reader_pid.to_string())
+                    .arg("--output")
+                    .arg(output),
+                Duration::from_secs(8),
+                128 * 1024,
+                Some(cancelled),
+                None,
+            )
+            .map_err(|error| error.to_string())
+        }));
+    }
+
+    fn finish(&mut self) {
+        self.cancelled.store(true, Ordering::Release);
+        if let Some(worker) = self.worker.take() {
+            self.result = Some(
+                worker
+                    .join()
+                    .unwrap_or_else(|_| Err("Ownership probe worker failed.".to_owned())),
+            );
+        }
+    }
+}
+
+impl Drop for ReaderOwnershipProbe {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+fn reader_adversarial_loading_observed(stderr: &[u8]) -> bool {
+    let prefix = "Native macOS reader: trace phase=adversarial-text marker-wait-begin marker=Bounded adversarial tail loading=true +";
+    String::from_utf8_lossy(stderr).lines().any(|line| {
+        line.strip_prefix(prefix)
+            .and_then(|tail| tail.strip_suffix(" ms"))
+            .is_some_and(|elapsed| {
+                !elapsed.is_empty() && elapsed.bytes().all(|byte| byte.is_ascii_digit())
+            })
+    })
+}
+
 fn reader_sample_process(
     command: &mut Command,
     duration: Duration,
     limit: usize,
 ) -> Result<SampleProcess> {
+    reader_sample_process_controlled(command, duration, limit, None, None)
+}
+
+fn reader_sample_process_controlled(
+    command: &mut Command,
+    duration: Duration,
+    limit: usize,
+    cancelled: Option<Arc<AtomicBool>>,
+    mut observer: Option<&mut ReaderOwnershipProbe>,
+) -> Result<SampleProcess> {
+    check(
+        !cancelled
+            .as_ref()
+            .is_some_and(|cancelled| cancelled.load(Ordering::Acquire)),
+        "Ownership probe cancelled before startup.",
+    )?;
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -402,13 +526,27 @@ fn reader_sample_process(
     let stopped = Arc::new(AtomicBool::new(false));
     let (stdout, stdout_worker) = sample_log_reader(stdout, limit, stopped.clone());
     let (stderr, stderr_worker) = sample_log_reader(stderr, limit, stopped.clone());
+    if let Some(observer) = observer.as_deref_mut() {
+        observer.reader_pid = Some(running.child.id());
+    }
     let mut exit_status = None;
     let mut outcome = loop {
+        if cancelled
+            .as_ref()
+            .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
+        {
+            break "cancelled";
+        }
         if exit_status.is_none() {
             match running.child.try_wait() {
                 Ok(status) => exit_status = status,
                 Err(_) => break "wait-failed",
             }
+        }
+        if exit_status.is_none()
+            && let Some(observer) = observer.as_deref_mut()
+        {
+            observer.observe(running.child.id(), &stderr.lock().unwrap().bytes);
         }
         let out = stdout.lock().unwrap();
         let err = stderr.lock().unwrap();
@@ -437,6 +575,11 @@ fn reader_sample_process(
     // Kill/reap this process group before a caller stops its network sentinel.
     // This also closes inherited pipes after a timeout or failed child.
     drop(running);
+    // The reader's deadline has already been decided and its process reaped.
+    // Cancel/reap the separate metadata worker before ending the network sentinel.
+    if let Some(observer) = observer {
+        observer.finish();
+    }
     stopped.store(true, Ordering::Release);
     let drain_deadline = Instant::now() + Duration::from_secs(1);
     while !(stdout_worker.is_finished() && stderr_worker.is_finished())
@@ -754,9 +897,13 @@ fn save_reader_sample_with_diagnostic(
         ReaderDiagnostic::Visibility(policy) => {
             reader_diagnostic_control_observed(&stderr, policy, "visibility")
         }
+        ReaderDiagnostic::OwnershipPreflight => reader_adversarial_loading_observed(&stderr),
     });
     if diagnostic_policy_observed == Some(false) {
         errors.push("diagnostic: missing or conflicting compiled-policy trace".to_owned());
+    }
+    if matches!(diagnostic, Some(ReaderDiagnostic::OwnershipPreflight)) && mode != "warm-view" {
+        errors.push("diagnostic: ownership preflight requires warm-view".to_owned());
     }
     let visibility_evidence = if let Some(ReaderDiagnostic::Visibility(policy)) = diagnostic {
         if mode != "warm-view" {
@@ -794,6 +941,9 @@ fn save_reader_sample_with_diagnostic(
         let (policy, kind) = match diagnostic {
             ReaderDiagnostic::Wrap(policy) => (policy, "reader-wrap-diagnostic-sample"),
             ReaderDiagnostic::Visibility(policy) => (policy, "reader-visibility-diagnostic-sample"),
+            ReaderDiagnostic::OwnershipPreflight => {
+                ("ownership-preflight", "reader-ownership-preflight-sample")
+            }
         };
         result["kind"] = json!(kind);
         result["diagnosticPolicy"] = json!(policy);
@@ -802,6 +952,10 @@ fn save_reader_sample_with_diagnostic(
         if matches!(diagnostic, ReaderDiagnostic::Visibility(_)) {
             result["visibilityEvidence"] = json!(visibility_evidence);
             result["pair"] = json!(sequence.div_ceil(2));
+        }
+        if matches!(diagnostic, ReaderDiagnostic::OwnershipPreflight) {
+            result["environmentIsolated"] = json!(true);
+            result["baselineEnvironmentEquivalent"] = json!(false);
         }
     }
     write_sample_file(
@@ -814,6 +968,9 @@ fn save_reader_sample_with_diagnostic(
         Some(ReaderDiagnostic::Wrap(policy)) => reader_sample_prefix(sequence, Some(policy)),
         Some(ReaderDiagnostic::Visibility(policy)) => {
             format!("Reader visibility diagnostic {policy} sample {sequence:02}")
+        }
+        Some(ReaderDiagnostic::OwnershipPreflight) => {
+            format!("Reader ownership preflight sample {sequence:02}")
         }
         None => reader_sample_prefix(sequence, None),
     };
@@ -1218,6 +1375,217 @@ fn reader_visibility_diagnostic(root: &Path, output: &Path) -> Result<()> {
     )
 }
 
+fn read_ownership_preflight_report(path: &Path, reader_pid: u32) -> Result<Value> {
+    check(
+        fs::symlink_metadata(path)?.file_type().is_file(),
+        "Ownership report must be a regular file.",
+    )?;
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(128 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    check(
+        bytes.len() <= 128 * 1024,
+        "Ownership report exceeded its size limit.",
+    )?;
+    #[derive(serde::Deserialize, serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Report {
+        schema_version: u32,
+        kind: String,
+        reader_pid: u32,
+        production_acceptance: bool,
+        attachment_attempted: bool,
+        status: String,
+        ownership_status: String,
+        reason: String,
+        elapsed_ms: f64,
+        #[serde(flatten)]
+        evidence: serde_json::Map<String, Value>,
+    }
+    let report: Report = serde_json::from_slice(&bytes)?;
+    check(
+        report.schema_version == 1
+            && report.kind == "reader-ownership-preflight"
+            && report.reader_pid > 0
+            && report.reader_pid == reader_pid
+            && !report.production_acceptance
+            && !report.attachment_attempted
+            && report.ownership_status == "unresolved"
+            && matches!(
+                report.status.as_str(),
+                "completed" | "budget-exhausted" | "metadata-unavailable"
+            )
+            && matches!(
+                report.reason.as_str(),
+                "preflight-observed"
+                    | "unsupported-platform"
+                    | "reader-metadata-unavailable"
+                    | "reader-identity-changed"
+                    | "no-canonical-webcontent-candidate"
+                    | "candidate-limit"
+                    | "budget-exhausted"
+                    | "tool-metadata-unavailable"
+            )
+            && report.elapsed_ms.is_finite()
+            && report.elapsed_ms >= 0.0
+            && report.elapsed_ms <= 8_000.0
+            && report.evidence.keys().all(|key| {
+                matches!(
+                    key.as_str(),
+                    "tools"
+                        | "platform"
+                        | "webKit"
+                        | "reader"
+                        | "candidates"
+                        | "candidateCount"
+                        | "candidatesTruncated"
+                )
+            }),
+        "Ownership report does not match the metadata-only preflight contract.",
+    )?;
+    serde_json::to_value(report).map_err(Into::into)
+}
+
+fn save_reader_ownership_probe(probe: &mut ReaderOwnershipProbe) -> Result<Value> {
+    probe.finish();
+    let mut errors = Vec::new();
+    let (parent, stdout, stderr) = match probe.result.take() {
+        Some(Ok(process)) => {
+            if process.outcome != "exited" || !process.capture_complete {
+                errors.push(format!("probe:{}", process.outcome));
+            }
+            (
+                json!({"outcome":process.outcome,"elapsedMs":process.elapsed_ms,"exitCode":process.exit_code,
+                "captureComplete":process.capture_complete,"stdoutTruncated":process.stdout_truncated,
+                "stderrTruncated":process.stderr_truncated}),
+                process.stdout,
+                process.stderr,
+            )
+        }
+        Some(Err(error)) => {
+            errors.push(format!("probe startup: {error}"));
+            (json!({"outcome":"setup-failed"}), Vec::new(), Vec::new())
+        }
+        None => {
+            errors.push("probe: adversarial loading trigger was not observed".to_owned());
+            (json!({"outcome":"not-started"}), Vec::new(), Vec::new())
+        }
+    };
+    write_sample_file(&probe.directory.join("stdout.log"), &stdout)?;
+    write_sample_file(&probe.directory.join("stderr.log"), &stderr)?;
+    let report = match probe.reader_pid {
+        Some(reader_pid) => match read_ownership_preflight_report(
+            &probe.directory.join("ownership.json"),
+            reader_pid,
+        ) {
+            Ok(report) => {
+                if report["status"] != "completed" {
+                    errors.push("probe: metadata observation incomplete".to_owned());
+                }
+                Some(report)
+            }
+            Err(error) => {
+                errors.push(format!("probe report: {error}"));
+                None
+            }
+        },
+        None => {
+            errors.push("probe: reader process was not started".to_owned());
+            None
+        }
+    };
+    let result = json!({"schemaVersion":1,"kind":"reader-ownership-preflight-observation",
+        "productionAcceptance":false,"attachmentAttempted":false,"ownershipStatus":"unresolved",
+        "environmentIsolated":true,"readerPid":probe.reader_pid,
+        "status":if errors.is_empty() {"completed"} else {"failed"},"parent":parent,"report":report,"errors":errors});
+    write_sample_file(
+        &probe.directory.join("result.json"),
+        &serde_json::to_vec_pretty(&result)?,
+    )?;
+    for (stream, bytes) in [("stdout", stdout), ("stderr", stderr)] {
+        for line in String::from_utf8_lossy(&bytes).lines().take(40) {
+            println!(
+                "Reader ownership preflight {stream}: {}",
+                line.chars().take(512).collect::<String>()
+            );
+        }
+    }
+    println!("Reader ownership preflight observation: {result}");
+    Ok(result)
+}
+
+fn reader_ownership_preflight(root: &Path, output: &Path) -> Result<()> {
+    check(
+        output.is_absolute(),
+        "Reader ownership preflight requires an absolute new output directory.",
+    )?;
+    fs::create_dir(output)?;
+    let fixture = Fixture::new()?;
+    let reader_directory = output.join("reader");
+    let probe_directory = output.join("probe");
+    fs::create_dir(&reader_directory)?;
+    fs::create_dir(&probe_directory)?;
+    let mut probe = ReaderOwnershipProbe::new(root, &probe_directory);
+    let mut network_result = Err("Network sentinel was not started.".into());
+    let process = (|| {
+        let reader = compile_check(
+            root,
+            &fixture.0,
+            "reader-checks",
+            &[
+                "-parse-as-library",
+                "macos/Sources/MorrowMail/Models.swift",
+                "macos/Sources/MorrowMail/MessageBodyView.swift",
+                "macos/Checks/MessageHTML.swift",
+            ],
+        )?;
+        let workspace = Fixture::new()?;
+        let network = ReaderNetwork::start()?;
+        let process = reader_sample_process_controlled(
+            isolate_reader_preflight_environment(&mut command(root, reader))
+                .arg(network.port.to_string())
+                .args(["--adversarial", "warm-view"])
+                .env("MORROW_DATA_DIR", &workspace.0),
+            Duration::from_secs(30),
+            READER_SAMPLE_LOG_LIMIT,
+            None,
+            Some(&mut probe),
+        );
+        probe.finish();
+        network_result = network.finish();
+        process
+    })();
+    let reader = save_reader_sample_with_diagnostic(
+        &reader_directory,
+        1,
+        "warm-view",
+        process,
+        network_result,
+        Some(ReaderDiagnostic::OwnershipPreflight),
+    )?;
+    let observation = save_reader_ownership_probe(&mut probe)?;
+    let completed = reader["status"] == "passed" && observation["status"] == "completed";
+    let summary = json!({"schemaVersion":1,"kind":"reader-ownership-preflight-run",
+        "productionAcceptance":false,"attachmentAttempted":false,"ownershipStatus":"unresolved",
+        "environmentIsolated":true,"baselineEnvironmentEquivalent":false,
+        "status":if completed {"completed"} else {"failed"},"reader":reader,"observation":observation,
+        "wholeReaderDeadlineMs":30_000,"wholeProbeDeadlineMs":8_000,"mode":"warm-view",
+        "textCharacters":180_000,"columnWidthPx":1});
+    write_sample_file(
+        &output.join("preflight.json"),
+        &serde_json::to_vec_pretty(&summary)?,
+    )?;
+    println!(
+        "Reader ownership preflight completed: completed={completed}; ownershipStatus=unresolved; productionAcceptance=false; {}",
+        output.display()
+    );
+    check(
+        completed,
+        "Reader ownership preflight incomplete; reader and metadata findings retained separately.",
+    )
+}
+
 fn existing_native_checks(root: &Path, fixture: &Path) -> Result<()> {
     let workspace = fixture.join("auxiliary-workspace");
     let models = compile_check(
@@ -1510,13 +1878,18 @@ fn run() -> Result<()> {
     {
         return reader_visibility_diagnostic(root, Path::new(path));
     }
+    if let [flag, path] = arguments.as_slice()
+        && flag == "--reader-ownership-preflight"
+    {
+        return reader_ownership_preflight(root, Path::new(path));
+    }
     let existing = match arguments.as_slice() {
         [] => None,
         [flag, path] if flag == "--service" && Path::new(path).is_absolute() => {
             Some(Path::new(path))
         }
         _ => {
-            return Err("Usage: morrow-native-check [--service ABSOLUTE_PRODUCTION_BINARY | --reader-adversarial-batch ABSOLUTE_NEW_DIRECTORY | --reader-wrap-diagnostic ABSOLUTE_NEW_DIRECTORY | --reader-visibility-diagnostic ABSOLUTE_NEW_DIRECTORY]".into());
+            return Err("Usage: morrow-native-check [--service ABSOLUTE_PRODUCTION_BINARY | --reader-adversarial-batch ABSOLUTE_NEW_DIRECTORY | --reader-wrap-diagnostic ABSOLUTE_NEW_DIRECTORY | --reader-visibility-diagnostic ABSOLUTE_NEW_DIRECTORY | --reader-ownership-preflight ABSOLUTE_NEW_DIRECTORY]".into());
         }
     };
     let package = fs::read(root.join("package.json"))?;
@@ -1720,6 +2093,143 @@ mod tests {
             stdout_truncated: false,
             stderr_truncated: false,
         }
+    }
+
+    #[test]
+    fn reader_ownership_preflight_requires_bounded_metadata_only_report() {
+        let fixture = Fixture::new().unwrap();
+        let report_path = fixture.0.join("report.json");
+        let valid = json!({"schemaVersion":1,"kind":"reader-ownership-preflight","readerPid":42,
+            "productionAcceptance":false,"attachmentAttempted":false,"status":"completed",
+            "ownershipStatus":"unresolved","reason":"preflight-observed","elapsedMs":1,
+            "candidateCount":0,"candidates":[]});
+        fs::write(&report_path, serde_json::to_vec(&valid).unwrap()).unwrap();
+        assert_eq!(
+            read_ownership_preflight_report(&report_path, 42).unwrap()["ownershipStatus"],
+            "unresolved"
+        );
+        for (field, wrong) in [
+            ("readerPid", json!(43)),
+            ("attachmentAttempted", json!(true)),
+            ("productionAcceptance", json!(true)),
+            ("ownershipStatus", json!("verified")),
+            ("status", json!("passed")),
+            ("elapsedMs", json!(8_001)),
+            ("elapsedMs", json!(-1)),
+            ("reason", json!("unvalidated-tool-output")),
+            ("environment", json!("unapproved-field")),
+        ] {
+            let mut report = valid.clone();
+            report[field] = wrong;
+            fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
+            assert!(read_ownership_preflight_report(&report_path, 42).is_err());
+        }
+        fs::write(
+            &report_path,
+            format!("{{\"attachmentAttempted\":true,{}", &valid.to_string()[1..]),
+        )
+        .unwrap();
+        assert!(read_ownership_preflight_report(&report_path, 42).is_err());
+        fs::write(&report_path, vec![b' '; 128 * 1024 + 1]).unwrap();
+        assert!(read_ownership_preflight_report(&report_path, 42).is_err());
+        assert!(read_ownership_preflight_report(&fixture.0, 42).is_err());
+        assert!(reader_ownership_preflight(&fixture.0, &fixture.0).is_err());
+        assert!(reader_ownership_preflight(&fixture.0, Path::new("relative-output")).is_err());
+    }
+
+    #[test]
+    fn reader_ownership_trigger_and_environment_are_scoped() {
+        let marker = "Native macOS reader: trace phase=adversarial-text marker-wait-begin marker=Bounded adversarial tail loading=true +123 ms\n";
+        assert!(reader_adversarial_loading_observed(marker.as_bytes()));
+        for invalid in [
+            marker.replace("loading=true", "loading=false"),
+            marker.replace("adversarial-text", "focused-warmup"),
+            marker.replace("Bounded adversarial tail", "warmup marker"),
+            marker.replace("123 ms", "unknown ms"),
+        ] {
+            assert!(!reader_adversarial_loading_observed(invalid.as_bytes()));
+        }
+        let mut child = Command::new("fixture");
+        child.env("MORROW_PREFLIGHT_TEST_SECRET", "fictional-do-not-inherit");
+        isolate_reader_preflight_environment(&mut child).env("MORROW_DATA_DIR", "/fixture-only");
+        assert!(child.get_envs().all(|(key, _)| {
+            key == "MORROW_DATA_DIR"
+                || READER_PREFLIGHT_ENVIRONMENT
+                    .iter()
+                    .any(|allowed| key == *allowed)
+        }));
+        assert!(
+            !child
+                .get_envs()
+                .any(|(key, _)| key == "MORROW_PREFLIGHT_TEST_SECRET")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reader_ownership_probe_is_single_shot_and_cancelled_without_masking_reader() {
+        let fixture = Fixture::new().unwrap();
+        fs::create_dir(fixture.0.join("scripts")).unwrap();
+        fs::write(
+            fixture.0.join("scripts/probe-macos-reader-processes.py"),
+            r#"import pathlib, sys, time
+output = pathlib.Path(sys.argv[sys.argv.index('--output') + 1])
+with output.with_name('started.txt').open('x') as started:
+    started.write('one owned probe')
+print('fixture metadata probe started', flush=True)
+time.sleep(10)
+"#,
+        )
+        .unwrap();
+        let probe_directory = fixture.0.join("probe");
+        fs::create_dir(&probe_directory).unwrap();
+        let mut probe = ReaderOwnershipProbe::new(&fixture.0, &probe_directory);
+        let script = "printf 'Native macOS reader: trace phase=adversarial-text marker-wait-begin marker=Bounded adversarial tail loading=true +1 ms\\n' >&2; printf 'Native macOS reader: trace phase=adversarial-text marker-wait-begin marker=Bounded adversarial tail loading=true +2 ms\\n' >&2; sleep 0.5; printf '%s\\n' \"$1\"";
+        let process = reader_sample_process_controlled(
+            command(&fixture.0, "/bin/sh").args([
+                "-c",
+                script,
+                "fixture",
+                &reader_child_result("warm-view").to_string(),
+            ]),
+            Duration::from_secs(2),
+            4096,
+            None,
+            Some(&mut probe),
+        )
+        .unwrap();
+        assert_eq!(process.outcome, "exited");
+        assert!(
+            process.elapsed_ms < 2_000,
+            "Probe cancellation extended the reader gate"
+        );
+        assert!(probe.worker.is_none(), "Probe worker was not joined/reaped");
+        assert_eq!(
+            fs::read_to_string(probe_directory.join("started.txt")).unwrap(),
+            "one owned probe"
+        );
+        let reader_directory = fixture.0.join("reader");
+        fs::create_dir(&reader_directory).unwrap();
+        let reader = save_reader_sample_with_diagnostic(
+            &reader_directory,
+            1,
+            "warm-view",
+            Ok(process),
+            Ok(()),
+            Some(ReaderDiagnostic::OwnershipPreflight),
+        )
+        .unwrap();
+        let observation = save_reader_ownership_probe(&mut probe).unwrap();
+        assert_eq!(reader["status"], "passed");
+        assert_eq!(reader["environmentIsolated"], true);
+        assert_eq!(observation["status"], "failed");
+        assert_eq!(observation["parent"]["outcome"], "cancelled");
+        assert_eq!(observation["ownershipStatus"], "unresolved");
+        assert!(
+            !fs::read(probe_directory.join("stdout.log"))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     fn visibility_trace(policy: &str, foreground_ready: bool) -> String {

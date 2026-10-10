@@ -1,0 +1,51 @@
+name: Native reader diagnostics
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/reader-diagnostics.yml
+      - macos/Checks/MessageHTML.swift
+      - rust/src/bin/morrow-native-check.rs
+      - scripts/probe-macos-reader-processes.py
+      - scripts/test-probe-macos-reader-processes.py
+permissions:
+  contents: read
+jobs:
+  reader-ownership-preflight:
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Restore Rust build cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: native-rust-${{ runner.os }}-${{ runner.arch }}-1.98.0-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml') }}
+      - name: Prepare Node-free diagnostic tools
+        shell: bash
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup default 1.98.0
+          mkdir "$RUNNER_TEMP/reader-diagnostic-tools"
+          for tool in cmake ninja zstd zstdmt unzstd; do
+            if command -v "$tool" >/dev/null; then ln -s "$(command -v "$tool")" "$RUNNER_TEMP/reader-diagnostic-tools/$tool"; fi
+          done
+          echo "PATH=$HOME/.cargo/bin:$RUNNER_TEMP/reader-diagnostic-tools:/usr/bin:/bin:/usr/sbin:/sbin" >> "$GITHUB_ENV"
+      - name: Observe native reader process ownership
+        shell: bash
+        run: |
+          if command -v node || command -v npm; then exit 1; fi
+          mkdir -p "$PWD/test-results"
+          cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-native-check -- --reader-ownership-preflight "$PWD/test-results/macos-reader-ownership-${{ github.run_id }}-${{ github.run_attempt }}"
+      - name: Retain diagnostic evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: reader-ownership-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/macos-reader-ownership-*
+          if-no-files-found: warn
+          retention-days: 14
