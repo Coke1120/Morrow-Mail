@@ -36,7 +36,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     controls::ContentControl reader{nullptr};
     controls::Grid readerPane{nullptr};
     controls::ContentControl readerNotice{nullptr};
-    winrt::weak_ref<controls::Button> readerBack;
+    controls::Button readerBack{nullptr}; // Keep the current native peer alive for focus restoration.
     controls::Grid mailBody{nullptr};
     controls::Grid mailList{nullptr};
     xaml::FrameworkElement mailDivider{nullptr};

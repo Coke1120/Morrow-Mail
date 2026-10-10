@@ -800,7 +800,7 @@ IAsyncAction composerReturnChecks(std::shared_ptr<Shell> shell) {
         shell->loading = true; shell->rows.SelectedItem(currentRow); shell->loading = false;
         co_await shell->read(source, false);
         shell->root.UpdateLayout();
-        Control returnFocus = std::wstring_view(layout) == L"focus" ? shell->readerBack.get().as<Control>() : currentRow.as<Control>();
+        Control returnFocus = std::wstring_view(layout) == L"focus" ? shell->readerBack.as<Control>() : currentRow.as<Control>();
         IAsyncAction opening{nullptr};
         if (interrupted) {
             auto second = shell->rows.Items().GetAt(1).as<ListViewItem>();
@@ -827,7 +827,7 @@ IAsyncAction composerReturnChecks(std::shared_ptr<Shell> shell) {
                 while (node && node != shell->rows) node = xaml::Media::VisualTreeHelper::GetParent(node);
                 return bool(node);
             }
-            auto target = std::wstring_view(layout) == L"focus" ? shell->readerBack.get().try_as<Control>() : sourceRow().try_as<Control>();
+            auto target = std::wstring_view(layout) == L"focus" ? shell->readerBack.try_as<Control>() : sourceRow().try_as<Control>();
             return target && focus == target;
         };
         auto deadline = GetTickCount64() + 5000;
@@ -845,8 +845,14 @@ IAsyncAction composerReturnChecks(std::shared_ptr<Shell> shell) {
             L"Composer return paired a stale reader with another selected row.");
         if (!returnedFocus()) {
             auto focus = xaml::Input::FocusManager::GetFocusedElement(shell->root.XamlRoot());
+            auto back = shell->readerBack; bool mounted = false;
+            for (auto node = back.try_as<xaml::DependencyObject>(); node; node = xaml::Media::VisualTreeHelper::GetParent(node))
+                if (node == shell->page) { mounted = true; break; }
             throw hresult_error(E_FAIL, L"Closing the composer did not restore keyboard focus. Layout: " + hstring(layout)
-                + L"; interrupted: " + to_hstring(interrupted) + L"; focused type: " + (focus ? get_class_name(focus) : hstring(L"none")));
+                + L"; interrupted: " + to_hstring(interrupted) + L"; focused type: " + (focus ? get_class_name(focus) : hstring(L"none"))
+                + L"; readerFocused: " + to_hstring(shell->readerFocused) + L"; back: " + to_hstring(bool(back))
+                + L"; loaded: " + to_hstring(back && back.IsLoaded()) + L"; enabled: " + to_hstring(back && back.IsEnabled())
+                + L"; visible: " + to_hstring(back && back.Visibility() == xaml::Visibility::Visible) + L"; mounted: " + to_hstring(mounted));
         }
     }
     shell->mailLayout = previousLayout; shell->applyMailLayout();

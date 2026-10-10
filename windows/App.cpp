@@ -1121,7 +1121,7 @@ void Shell::showReaderStatus(Json const& metadata, bool failed) {
             self->focusMail();
         }
     });
-    readerBack = make_weak(back); panel.Children().Append(back);
+    readerBack = back; panel.Children().Append(back);
     readerNotice.Content(panel); readerNotice.Visibility(Visibility::Visible);
     readerFocused = true; applyMailLayout();
 }
@@ -1129,15 +1129,41 @@ void Shell::focusMail() {
     if (closing || section != L"mail" || !rows) return;
     root.UpdateLayout();
     if (mailLayout == L"focus" && readerFocused) {
-        if (auto back = readerBack.get(); back && back.IsLoaded() && back.Visibility() == Visibility::Visible)
-            back.Focus(FocusState::Programmatic);
+        auto back = readerBack;
+        if (!back) return;
+        auto weak = weak_from_this(); auto target = make_weak(back);
+        auto pageTarget = make_weak(page);
+        auto version = generation, selection = selectionGeneration, request = readGeneration; auto captured = owner;
+        auto focusBack = [weak, target, pageTarget, version, selection, request, captured] {
+            auto self = weak.lock(); auto back = target.get(); auto currentPage = pageTarget.get();
+            if (!self || !self->current(version, captured) || self->section != L"mail"
+                || self->dialogOpen || !self->navigation.IsEnabled()
+                || self->selectionGeneration != selection || self->readGeneration != request
+                || self->mailLayout != L"focus" || !self->readerFocused || !back || self->readerBack != back
+                || !currentPage || self->page != currentPage || !back.IsLoaded() || !back.IsEnabled()
+                || back.Visibility() != Visibility::Visible) return;
+            bool mounted = false;
+            for (DependencyObject node = back; node; node = Media::VisualTreeHelper::GetParent(node))
+                if (node == currentPage) { mounted = true; break; }
+            if (mounted) back.Focus(FocusState::Programmatic);
+        };
+        if (back.IsLoaded()) focusBack();
+        else {
+            // Only an explicit return-to-mail request installs this one-shot.
+            // UpdateLayout need not have delivered the new reader's Loaded yet.
+            auto token = std::make_shared<event_token>();
+            *token = back.Loaded([target, token, focusBack](auto const&, auto const&) {
+                if (auto back = target.get()) back.Loaded(*token);
+                focusBack();
+            });
+        }
         return;
     }
     if (auto row = rows.SelectedItem().try_as<ListViewItem>(); row && row.Focus(FocusState::Programmatic)) return;
     rows.Focus(FocusState::Programmatic);
 }
 void Shell::renderReader(Json const& message) {
-    readerBack = {};
+    readerBack = nullptr;
     reader.IsEnabled(true); reader.Visibility(Visibility::Visible);
     if (readerNotice) { readerNotice.Content(nullptr); readerNotice.Visibility(Visibility::Collapsed); }
     if (text(message, L"id").empty()) {
@@ -1152,7 +1178,7 @@ void Shell::renderReader(Json const& message) {
     content.Children().Append(label(L"To: " + text(message, L"to") + (text(message, L"cc").empty() ? L"" : L" · Cc: " + text(message, L"cc")), 12));
     auto weak = weak_from_this(); auto replies = actions(); replies.Spacing(8);
     auto back = button(L"Back to list", [weak] { if (auto self = weak.lock()) { self->readerFocused = false; self->applyMailLayout(); self->focusMail(); } });
-    readerBack = make_weak(back); replies.Children().Append(back);
+    readerBack = back; replies.Children().Append(back);
     if (flag(message, L"providerDraft")) replies.Children().Append(button(L"Copy to local draft", [weak, message] { if (auto self = weak.lock()) self->prepare(message, L"copy"); }));
     else for (auto const& option : {std::pair{L"Reply", L"reply"}, {L"Reply all",L"replyAll"}, {L"Forward",L"forward"}})
         replies.Children().Append(button(option.first, [weak, message, mode = hstring(option.second)] { if (auto self = weak.lock()) self->prepare(message, mode); }));
