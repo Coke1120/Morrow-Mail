@@ -225,7 +225,7 @@ IAsyncAction Service::stop() {
 IAsyncOperation<Json> Service::request(hstring path, hstring owner, hstring method, Json body, bool hostOperation) {
     auto lifetime = shared_from_this();
     // Increment before yielding, so close/update cannot race an accepted write.
-    bool mutation = method != L"GET";
+    bool mutation = method != L"GET" && path != L"/sync/priority"; // Expiring view hints carry no durable write.
     struct Write { std::atomic_uint& value; bool active; ~Write() { if (active) --value; } } writing{writes_, mutation};
     if (mutation) ++writes_;
     require(!closing_, L"Morrow Mail is closing.");
@@ -234,7 +234,7 @@ IAsyncOperation<Json> Service::request(hstring path, hstring owner, hstring meth
 }
 IAsyncOperation<Json> Service::requestWithStatus(hstring path, hstring owner, hstring method, Json body) {
     auto lifetime = shared_from_this();
-    bool mutation = method != L"GET";
+    bool mutation = method != L"GET" && path != L"/sync/priority";
     struct Write { std::atomic_uint& value; bool active; ~Write() { if (active) --value; } } writing{writes_, mutation};
     if (mutation) ++writes_;
     require(!closing_, L"Morrow Mail is closing.");

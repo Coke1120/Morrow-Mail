@@ -67,6 +67,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     std::vector<winrt::hstring> cursors{L""};
     uint64_t generation = 0, selectionGeneration = 0;
     uint64_t readGeneration = 0; // Metadata writes invalidate reads, not the mounted selection.
+    uint64_t syncPriorityGeneration = 0;
     Json pendingRead; // Owned metadata for a detail read interrupted by a local patch.
     uint64_t readerImageGeneration = 0, readerImageSelection = 0;
     std::optional<bool> readerImageOverride;
@@ -105,6 +106,8 @@ struct Shell : std::enable_shared_from_this<Shell> {
     winrt::Windows::Foundation::IAsyncAction undoTrash();
     void updateTrashUndo();
     winrt::Windows::Foundation::IAsyncAction sync();
+    winrt::Windows::Data::Json::JsonArray syncPriorityMessages() const;
+    winrt::Windows::Foundation::IAsyncAction publishSyncPriority(bool clear = false);
     winrt::Windows::Foundation::IAsyncAction checkUpdates(bool force = false);
     void updateBadge();
     winrt::Windows::Foundation::IAsyncAction shutdown();

@@ -1043,9 +1043,29 @@ pub(crate) async fn microsoft_message(
     metadata: &Value,
     date: &str,
 ) -> Result<Option<Value>> {
+    microsoft_message_cached(client, mail, metadata, date, None).await
+}
+async fn microsoft_message_cached(
+    client: &Client,
+    mail: &Value,
+    metadata: &Value,
+    date: &str,
+    cached: Option<&Value>,
+) -> Result<Option<Value>> {
     let id = string(metadata, "id");
     if id.is_empty() || id.len() > 4096 {
         return Err(remote_error());
+    }
+    if !metadata["body"]["content"].is_string()
+        && metadata["isDraft"] == false
+        && let Some(cached) = cached.filter(|old| {
+            !string(old, "messageId").is_empty()
+                && old["messageId"] == metadata["internetMessageId"]
+        })
+    {
+        let mut message = normalize_microsoft_at(metadata, date)?;
+        crate::mail::copy_cached_body(cached, &mut message);
+        return Ok(Some(message));
     }
     let mut raw = metadata.clone();
     let incomplete = if raw["body"]["content"].is_string() {
@@ -1082,8 +1102,12 @@ pub(crate) async fn microsoft_message(
         }
     };
     let date = date.to_owned();
+    let version = crate::folders::connection_version(mail);
     tokio::task::spawn_blocking(move || {
         let mut message = normalize_microsoft_at(&raw, &date)?;
+        if !incomplete {
+            message["bodyConnection"] = version;
+        }
         if incomplete {
             message["contentIncomplete"] = true.into();
             message["contentErrorCode"] = "microsoft_size_limit".into();
@@ -1097,6 +1121,21 @@ pub(crate) async fn microsoft_message(
 }
 
 pub async fn fetch_page(client: &Client, mail: &Value, options: &Value) -> Result<Value> {
+    fetch_page_inner(client, mail, options, None).await
+}
+pub(crate) async fn fetch_page_cached(
+    app: &crate::service::App,
+    mail: &Value,
+    options: &Value,
+) -> Result<Value> {
+    fetch_page_inner(&app.0.client, mail, options, Some(app)).await
+}
+async fn fetch_page_inner(
+    client: &Client,
+    mail: &Value,
+    options: &Value,
+    cache: Option<&crate::service::App>,
+) -> Result<Value> {
     let folder = options["folder"].as_str().unwrap_or("inbox");
     let provider = string(mail, "provider");
     let supported = if provider == "google" {
@@ -1200,10 +1239,27 @@ pub async fn fetch_page(client: &Client, mail: &Value, options: &Value) -> Resul
         return Err(remote_error());
     }
     let mut messages = Vec::new();
+    let cached = if let Some(app) = cache {
+        crate::mail::cached_page_bodies(
+            app,
+            mail,
+            entries
+                .iter()
+                .map(|row| format!("microsoft:{}", string(row, "id")))
+                .collect(),
+            None,
+        )
+        .await?
+    } else {
+        HashMap::new()
+    };
     for chunk in entries.chunks(4) {
-        for message in futures_util::future::join_all(chunk.iter().map(|raw| async move {
+        for message in futures_util::future::join_all(chunk.iter().map(|raw| async {
             let instant = microsoft_date(string(raw, date))?;
-            microsoft_message(client, mail, raw, &instant).await
+            let previous = cached
+                .get(&format!("microsoft:{}", string(raw, "id")))
+                .filter(|_| folder != "drafts");
+            microsoft_message_cached(client, mail, raw, &instant, previous).await
         }))
         .await
         {

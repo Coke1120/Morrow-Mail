@@ -227,7 +227,7 @@ struct MailWorkspace: View {
     private var syncButton: some View {
         Button { model.perform { try await model.sync() } } label: { Label("Sync", systemImage: model.syncing ? "hourglass" : "arrow.clockwise") }
             .fixedSize().disabled(!model.canNavigate || !model.hasMailbox)
-            .help("Sync recent mail in the current account view (⌘R); Today syncs all accounts. New mail is fetched first; saved checkpoints reconcile older cached messages.").accessibilityIdentifier("mail.sync")
+            .help("Sync mail in the current account view (⌘R); Today syncs all accounts. The selected message and current mail page are checked first, followed by recent mail and older downloaded messages.").accessibilityIdentifier("mail.sync")
     }
     private var composeButton: some View {
         Button { model.newDraft() } label: { Label("Compose", systemImage: "square.and.pencil").frame(maxWidth: sidebarVisible ? .infinity : nil) }

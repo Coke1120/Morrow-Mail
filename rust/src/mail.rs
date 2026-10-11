@@ -198,6 +198,84 @@ pub(crate) fn reusable_google_body(message: &Value) -> bool {
         && message["replyTo"].is_string()
         && message["providerDraft"] != true
 }
+pub(crate) fn retain_reviewed_sent(metadata: &Value, reviewed: &Value) -> Value {
+    let mut message = reviewed.clone();
+    // Provider observations cannot rewrite the frozen delivery payload or attach
+    // a fresh-body proof to its locally reviewed representation.
+    for key in [
+        "date",
+        "folder",
+        "read",
+        "starred",
+        "remoteId",
+        "providerFolderId",
+        "providerFolderName",
+        "providerFolderMissing",
+        "providerDeleted",
+        "providerSent",
+        "providerDraft",
+        "providerSnapshot",
+        "localOverrides",
+    ] {
+        if let Some(value) = metadata.get(key) {
+            message[key] = value.clone();
+        }
+    }
+    message
+}
+pub(crate) fn copy_cached_body(cached: &Value, message: &mut Value) {
+    for key in [
+        "body",
+        "bodyHtml",
+        "bodyTruncated",
+        "preview",
+        "hasAttachments",
+        "contentIncomplete",
+        "contentErrorCode",
+        "bodyConnection",
+        "bodySize",
+    ] {
+        if let Some(value) = cached.get(key) {
+            message[key] = value.clone();
+        }
+    }
+}
+pub(crate) fn reusable_immutable_body(message: &Value, connection: &Value) -> bool {
+    message["bodyConnection"] == crate::folders::connection_version(connection)
+        && cached_body_available(message)
+        && message["providerDraft"] != true
+        && message["folder"] != "drafts"
+        && message["providerDeleted"] != true
+        && message["providerFolderMissing"] != true
+}
+pub(crate) async fn cached_page_bodies(
+    app: &App,
+    connection: &Value,
+    remote_ids: Vec<String>,
+    folder: Option<String>,
+) -> Result<HashMap<String, Value>> {
+    if remote_ids.len() > 50 {
+        return Err(providers::remote_error());
+    }
+    let connection = connection.clone();
+    app.db(move |db| {
+        let owner = string(&connection, "email");
+        let mut cached = HashMap::new();
+        // Unsaved connection checks and replaced connections have no reusable body proof.
+        if connections(&db.settings()?).get(owner) != Some(&connection) { return Ok(cached); }
+        for remote in remote_ids {
+            let row: Option<String> = db.conn.query_row(
+                "SELECT data FROM messages WHERE account=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id)=? AND (? IS NULL OR COALESCE(NULLIF(json_extract(data,'$.providerFolderId'),''),'INBOX')=?) ORDER BY rowid DESC LIMIT 1",
+                params![owner, remote, folder, folder], |row| row.get(0)).optional()?;
+            if let Some(row) = row {
+                let message: Value = serde_json::from_str(&row)?;
+                if reusable_immutable_body(&message, &connection)
+                { cached.insert(remote, message); }
+            }
+        }
+        Ok(cached)
+    }).await
+}
 async fn fetch_page_cached(
     app: &App,
     mail: &Value,
@@ -241,9 +319,9 @@ async fn fetch_page_cached(
             let page = providers::google_fetch_page(&app.0.client, mail, &list, &cached, fetched).await?;
             Ok(page)
         } else if ["", "imap"].contains(&string(mail, "provider")) {
-            imap::fetch_page(mail, options).await
+            imap::fetch_page_cached(app, mail, options).await
         } else {
-            providers::fetch_page(&app.0.client, mail, options).await
+            providers::fetch_page_cached(app, mail, options).await
         }
     }.await;
     // Initial IMAP connection checks are not yet a saved account.
@@ -366,7 +444,7 @@ pub fn import_messages(db: &Store, mail: &Value, messages: &[Value]) -> Result<V
         let mut existing=existing.map(|s|serde_json::from_str::<Value>(&s)).transpose()?;
         if existing.is_none()&&(message["folder"]=="sent"||(mail["provider"]=="google"&&message["providerSent"]==true))&&string(message,"fromEmail").eq_ignore_ascii_case(account)&&!string(message,"messageId").is_empty(){let local:Option<String>=db.conn.query_row("SELECT data FROM messages WHERE account=? AND id LIKE 'sent:%' AND COALESCE(json_extract(data,'$.remoteId'),'')='' AND json_extract(data,'$.messageId')=? LIMIT 1",params![account,string(message,"messageId")],|row|row.get(0)).optional()?;existing=local.map(|s|serde_json::from_str(&s)).transpose()?;}
         if existing.is_none()&&db.get(account,string(message,"id"))?.is_none(){new_ids.push(string(message,"id").to_owned());}
-        let mut value=message.clone();if let Some(existing)=&existing{if string(existing,"id").starts_with("sent:"){value=merge(value,existing);}for key in ["id","folder","read","starred","labels","pending","lowPriority"]{if let Some(entry)=existing.get(key){value[key]=entry.clone();}}value["remoteId"]=existing["remoteId"].as_str().filter(|s|!s.is_empty()).unwrap_or(remote).into();
+        let mut value=message.clone();if let Some(existing)=&existing{if string(existing,"id").starts_with("sent:"){value=merge(value,existing);for key in ["bodyConnection","bodySize"]{if value.get(key).is_some(){value[key]=existing[key].clone();}}}for key in ["id","folder","read","starred","labels","pending","lowPriority"]{if let Some(entry)=existing.get(key){value[key]=entry.clone();}}value["remoteId"]=existing["remoteId"].as_str().filter(|s|!s.is_empty()).unwrap_or(remote).into();
             // Provider locations describe the fetched message, independently of local folder overrides.
             // Bounded refreshes that omit location metadata retain the last known provider location.
             for key in ["providerFolderId", "providerFolderName"] {
@@ -392,6 +470,14 @@ pub fn import_messages(db: &Store, mail: &Value, messages: &[Value]) -> Result<V
         if mail["provider"]=="google"{value=merge(value,&google_import_state(message,existing.as_ref()));}
         import_read_state(message, existing.as_ref(), &mut value);
         if mail["provider"] == "microsoft" {
+            if message["providerDraft"] == false
+                && existing.as_ref().is_some_and(|old| old["providerDraft"] == true && old["localOverrides"]["folder"] != true)
+            {
+                // A sent provider draft must not become an apparent local draft
+                // just because imports normally retain the local folder.
+                value["folder"] = message["folder"].clone();
+                value["providerSent"] = (message["folder"] == "sent").into();
+            }
             if !value["providerSnapshot"].is_object() { value["providerSnapshot"] = json!({}); }
             let mut overrides = existing.as_ref().and_then(|m| m["localOverrides"].as_object()).cloned().unwrap_or_default();
             for key in ["read", "starred"] {
@@ -898,6 +984,7 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
             };
             let mut warning = None;
             let mut fetched = HashMap::new();
+            crate::reconcile::priority(app, &mail, &mut fetched).await?;
             for folder in folders {
                 let mut input = json!({"folder":folder});
                 if !string(job, "since").is_empty() {
@@ -1178,6 +1265,7 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             .await?;
             app.state(&select, ctx.paged).await?
         }
+        ("POST", ["sync", "priority"]) => crate::sync_priority::publish(app, ctx).await?,
         ("POST", ["sync"]) => {
             let _gate = app
                 .0
