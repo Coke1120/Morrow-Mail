@@ -20,9 +20,10 @@ struct Handle {
     Handle(const Handle&) = delete;
     Handle& operator=(const Handle&) = delete;
     ~Handle() { reset(); }
-    void reset(HANDLE h = nullptr) {
-        if (value && value != INVALID_HANDLE_VALUE) CloseHandle(value);
+    bool reset(HANDLE h = nullptr) {
+        const bool closed = !value || value == INVALID_HANDLE_VALUE || CloseHandle(value);
         value = h;
+        return closed;
     }
 };
 inline long long Ticks(FILETIME t) {
@@ -48,14 +49,14 @@ using QueryBasic = LONG (NTAPI*)(HANDLE, ULONG, void*, ULONG, ULONG*);
 struct Row {
     DWORD pid{}, parent{}; long long ticks{}, parentTicks{}, exitTicks{};
     HANDLE pin{}; unsigned birthSeq{}, exitSeq{};
-    bool exitSeen{}, exitProven{}, proofFailed{}, initialBreak{};
+    bool exitSeen{}, exitProven{}, proofFailed{}, initialBreak{}, inJob{};
     DWORD eventCode{}, exitCode{}, waitResult{WAIT_TIMEOUT}, waitError{};
     const char* outcome{"alive"}; const char* role{"other"};
 };
 struct Event { unsigned seq{}, row{}; bool birth{}; };
 enum class Fault {
     None, DropBirth, DropExit, ParentIdentity, CreationIdentity, WrongJob,
-    ClosedHandle, UnknownWait, ExitCode, Bound, Timeout, CounterDenied
+    ClosedHandle, UnknownWait, ExitCode, Bound, Timeout, CounterDenied, DelayExit
 };
 struct Options {
     std::wstring exe, arguments;
@@ -64,7 +65,7 @@ struct Options {
 };
 struct Result {
     std::vector<Row> rows; std::vector<Event> ledger; std::vector<const char*> failures;
-    unsigned births{}, exits{}, sequence{}, events{}, duplicates{}, closed{}, samples{};
+    unsigned births{}, exits{}, sequence{}, events{}, duplicates{}, closed{}, samples{}, pendingExitWaits{};
     DWORD rootPid{}, rootCode{}, jobTotal{}, jobActive{};
     long long rootTicks{}, launcherTicks{}, launch{};
     bool ready{}, normalDrain{}, cleanup{}, forced{}, rootProven{}, faultUsed{};
@@ -78,10 +79,11 @@ inline bool ParentMatches(const Row& child, const Row& parent) {
         parent.ticks <= child.ticks && Times(parent.pin, born, terminal) && born == parent.ticks &&
         (!terminal || terminal >= child.ticks) && parent.birthSeq < child.birthSeq;
 }
-inline bool BirthMatches(const Row& row, HANDLE job) {
+inline bool BirthMatches(Row& row, HANDLE job) {
     long long born{}, terminal{}; BOOL member{};
+    row.inJob = IsProcessInJob(row.pin, job, &member) && member;
     return GetProcessId(row.pin) == row.pid && Times(row.pin, born, terminal) && born == row.ticks &&
-        !terminal && IsProcessInJob(row.pin, job, &member) && member;
+        !terminal && row.inJob;
 }
 inline const char* WaitOutcome(DWORD wait) {
     return wait == WAIT_OBJECT_0 ? "signaled" : wait == WAIT_TIMEOUT ? "alive" :
@@ -93,8 +95,11 @@ inline bool ProveExit(Row& row, Result& result, Fault fault) {
     if (fault == Fault::UnknownWait && row.pid != result.rootPid && !result.faultUsed) {
         row.waitResult = WAIT_ABANDONED; row.waitError = 0; result.faultUsed = true;
     }
+    if (fault == Fault::DelayExit && row.pid != result.rootPid && !result.faultUsed) {
+        row.waitResult = WAIT_TIMEOUT; row.waitError = 0; result.faultUsed = true;
+    }
     row.outcome = WaitOutcome(row.waitResult);
-    if (row.waitResult == WAIT_TIMEOUT) return false;
+    if (row.waitResult == WAIT_TIMEOUT) { ++result.pendingExitWaits; return false; }
     if (row.waitResult != WAIT_OBJECT_0) { row.proofFailed = true; result.Fail("native-wait"); return false; }
     long long born{};
     if (!GetExitCodeProcess(row.pin, &row.exitCode) || !Times(row.pin, born, row.exitTicks) ||
@@ -136,13 +141,19 @@ inline void Sample(Result& r, const Options& options) {
         // this exact lifetime. No counters are invented for a terminated pin.
         if (wait == WAIT_OBJECT_0) continue;
         DWORD error{}; const char* stage = "counters";
+        Handle denied; HANDLE memoryPin = row.pin;
+        if (options.fault == Fault::CounterDenied && row.pid != r.rootPid) {
+            HANDLE restricted{};
+            if (!DuplicateHandle(GetCurrentProcess(), row.pin, GetCurrentProcess(), &restricted, SYNCHRONIZE, FALSE, 0)) r.Fail("counter-fixture");
+            else { denied.reset(restricted); memoryPin = restricted; r.faultUsed = true; }
+        }
         PROCESS_MEMORY_COUNTERS_EX memory{}; memory.cb = sizeof(memory);
         FILETIME born{}, end{}, kernel{}, user{};
         const bool identity = GetProcessId(row.pin) == row.pid &&
             GetProcessTimes(row.pin, &born, &end, &kernel, &user) && Ticks(born) == row.ticks;
         if (wait != WAIT_TIMEOUT) { error = waitError; stage = "nativeWait"; }
         else if (!identity) { error = GetLastError(); stage = "identity"; }
-        else if (!GetProcessMemoryInfo(row.pin, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory), sizeof(memory))) error = GetLastError();
+        else if (!GetProcessMemoryInfo(memoryPin, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory), sizeof(memory))) error = GetLastError();
         else {
             if (!processes.empty()) processes += ',';
             processes += "{\"pid\":"; Number(processes, row.pid);
@@ -158,6 +169,7 @@ inline void Sample(Result& r, const Options& options) {
             continue;
         }
         ++skipped; if (row.pid == r.rootPid) ++rootSkipped;
+        if (!denied.reset()) r.Fail("counter-fixture");
         r.Fail("counter-read");
         if (!failures.empty()) failures += ',';
         failures += "{\"pid\":"; Number(failures, row.pid);
@@ -197,6 +209,7 @@ inline void ValidateLedger(Result& r) {
 }
 inline Result Run(const Options& options) {
     Result r; r.rows.reserve(64); r.ledger.reserve(128); r.launch = options.launch;
+    auto Close = [&](Handle& handle, const char* reason) { if (!handle.reset()) r.Fail(reason); };
     Handle job(CreateJobObjectW(nullptr, nullptr)); JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     if (!job.value || !SetInformationJobObject(job.value, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) { r.Fail("job-create"); return r; }
@@ -228,10 +241,11 @@ inline Result Run(const Options& options) {
     Handle root(pi.hProcess), thread(pi.hThread); r.rootPid = pi.dwProcessId;
     long long rootExit{};
     if (!AssignProcessToJobObject(job.value, root.value) || !Times(root.value, r.rootTicks, rootExit)) {
-        r.Fail("root-admission"); TerminateProcess(root.value, 96);
+        r.Fail("root-admission");
+        if (!TerminateProcess(root.value, 96)) { r.Fail("root-cleanup"); return r; }
     } else r.ready = true;
-    if (ResumeThread(thread.value) == static_cast<DWORD>(-1)) r.Fail("root-resume");
-    thread.reset(); input.reset(); output.reset(); error.reset();
+    if (r.ready && ResumeThread(thread.value) == static_cast<DWORD>(-1)) r.Fail("root-resume");
+    Close(thread, "launch-close"); Close(input, "launch-close"); Close(output, "launch-close"); Close(error, "launch-close");
     auto lastSample = options.launch; long long rootExitAt{};
     bool finished{};
     while (Elapsed(Stamp(), options.launch) < options.deadlineMs) {
@@ -271,11 +285,12 @@ inline Result Run(const Options& options) {
                 row.role = Role(row.pin, row.pid == r.rootPid);
                 if (!row.role) { r.Fail("role-read"); row.role = "other"; }
                 if (r.rows.size() >= (options.fault == Fault::Bound ? 1ULL : 64ULL)) {
-                    r.Fail("identity-bound"); if (row.pin) { CloseHandle(row.pin); ++r.closed; }
+                    r.Fail("identity-bound"); if (row.pin) { if (CloseHandle(row.pin)) ++r.closed; else r.Fail("pin-close"); }
                 } else {
                     const auto index = static_cast<unsigned>(r.rows.size()); r.rows.push_back(row);
                     if (options.fault != Fault::DropBirth || row.pid == r.rootPid) r.ledger.push_back({r.sequence, index, true});
                 }
+                Close(image, "image-close"); Close(wrongJob, "job-cleanup");
             } else if (event.dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT) {
                 ++r.exits; ++r.sequence;
                 if (found == r.rows.end()) r.Fail("exit-without-birth");
@@ -283,7 +298,8 @@ inline Result Run(const Options& options) {
                     found->exitSeen = true; found->exitSeq = r.sequence; found->eventCode = event.u.ExitProcess.dwExitCode;
                     if (options.fault == Fault::ExitCode && found->pid != r.rootPid) ++found->eventCode;
                     if (options.fault == Fault::ClosedHandle && found->pid != r.rootPid) {
-                        CloseHandle(found->pin); found->pin = nullptr; ++r.closed;
+                        if (CloseHandle(found->pin)) ++r.closed; else r.Fail("pin-close");
+                        found->pin = nullptr;
                     }
                     if (options.fault != Fault::DropExit || found->pid == r.rootPid)
                         r.ledger.push_back({r.sequence, static_cast<unsigned>(found - r.rows.begin()), false});
@@ -291,6 +307,7 @@ inline Result Run(const Options& options) {
                 }
             } else if (event.dwDebugEventCode == LOAD_DLL_DEBUG_EVENT) {
                 Handle image(event.u.LoadDll.hFile);
+                Close(image, "image-close");
             } else if (event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT) {
                 if (found != r.rows.end() && !found->initialBreak && event.u.Exception.dwFirstChance &&
                     event.u.Exception.ExceptionRecord.ExceptionCode == EXCEPTION_BREAKPOINT) found->initialBreak = true;
@@ -303,7 +320,12 @@ inline Result Run(const Options& options) {
             }
         } else if (GetLastError() != ERROR_SEM_TIMEOUT) { r.Fail("debug-wait"); break; }
         for (auto& row : r.rows) if (row.exitSeen && !row.exitProven && !row.proofFailed) ProveExit(row, r, options.fault);
-        if (r.rootProven && r.births == r.exits) { finished = true; break; }
+        if (r.rootProven && r.births == r.exits && std::all_of(r.rows.begin(), r.rows.end(),
+            [](const Row& row) { return row.exitProven || row.proofFailed; })) {
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION drain{};
+            if (!QueryInformationJobObject(job.value, JobObjectBasicAccountingInformation, &drain, sizeof(drain), nullptr)) r.Fail("job-accounting");
+            else if (!drain.ActiveProcesses) { finished = true; break; }
+        }
         if (rootExitAt && Elapsed(Stamp(), rootExitAt) >= 2000) { r.Fail("descendant-drain"); break; }
         if (options.samples && Elapsed(Stamp(), lastSample) >= 1000) {
             if (r.samples == 180) { r.Fail("sample-bound"); break; }
@@ -320,20 +342,26 @@ inline Result Run(const Options& options) {
     const auto cleanupAt = Stamp();
     while (Elapsed(Stamp(), cleanupAt) < 2000) {
         JOBOBJECT_BASIC_ACCOUNTING_INFORMATION cleanupAccounting{};
-        bool done = QueryInformationJobObject(job.value, JobObjectBasicAccountingInformation, &cleanupAccounting, sizeof(cleanupAccounting), nullptr) &&
-            !cleanupAccounting.ActiveProcesses && WaitForSingleObject(root.value, 0) == WAIT_OBJECT_0;
-        for (const auto& row : r.rows) if (row.pin && WaitForSingleObject(row.pin, 0) != WAIT_OBJECT_0) done = false;
+        const bool queried = QueryInformationJobObject(job.value, JobObjectBasicAccountingInformation, &cleanupAccounting, sizeof(cleanupAccounting), nullptr) != FALSE;
+        if (!queried) r.Fail("job-cleanup");
+        auto signaled = [&](HANDLE pin) {
+            const auto wait = WaitForSingleObject(pin, 0);
+            if (wait != WAIT_OBJECT_0 && wait != WAIT_TIMEOUT) r.Fail("cleanup-wait");
+            return wait == WAIT_OBJECT_0;
+        };
+        bool done = queried && !cleanupAccounting.ActiveProcesses && signaled(root.value);
+        for (const auto& row : r.rows) if (row.pin && !signaled(row.pin)) done = false;
         if (done) { r.cleanup = true; break; }
         DEBUG_EVENT event{};
         if (WaitForDebugEvent(&event, 10)) {
-            if (event.dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT) { Handle image(event.u.CreateProcessInfo.hFile); }
-            if (event.dwDebugEventCode == LOAD_DLL_DEBUG_EVENT) { Handle image(event.u.LoadDll.hFile); }
+            if (event.dwDebugEventCode == CREATE_PROCESS_DEBUG_EVENT) { Handle image(event.u.CreateProcessInfo.hFile); Close(image, "image-close"); }
+            if (event.dwDebugEventCode == LOAD_DLL_DEBUG_EVENT) { Handle image(event.u.LoadDll.hFile); Close(image, "image-close"); }
             if (!ContinueDebugEvent(event.dwProcessId, event.dwThreadId,
-                event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT ? DBG_EXCEPTION_NOT_HANDLED : DBG_CONTINUE)) break;
-        }
+                event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT ? DBG_EXCEPTION_NOT_HANDLED : DBG_CONTINUE)) { r.Fail("debug-continue"); break; }
+        } else if (GetLastError() != ERROR_SEM_TIMEOUT) { r.Fail("debug-wait"); break; }
     }
-    job.reset();
-    for (auto& row : r.rows) if (row.pin) { CloseHandle(row.pin); row.pin = nullptr; ++r.closed; }
+    Close(job, "root-cleanup"); Close(root, "root-cleanup");
+    for (auto& row : r.rows) if (row.pin) { if (CloseHandle(row.pin)) ++r.closed; else r.Fail("pin-close"); row.pin = nullptr; }
     if (!r.cleanup || r.closed != r.duplicates) r.Fail("cleanup");
     if (options.samples) {
         const auto reason = r.failures.empty() ? 0 : 3;
@@ -353,7 +381,7 @@ inline std::string Ledger(const Result& r) {
         out += "{\"kind\":" + std::to_string(event.birth ? 1 : 2) + ",\"seq\":" + std::to_string(event.seq) +
             ",\"pid\":" + std::to_string(row.pid) + ",\"ticks\":" + std::to_string(row.ticks);
         if (event.birth) out += ",\"parentPid\":" + std::to_string(row.parent) + ",\"parentTicks\":" + std::to_string(row.parentTicks) +
-            ",\"role\":\"" + row.role + "\"";
+            ",\"role\":\"" + row.role + "\",\"inJob\":" + (row.inJob ? "true" : "false");
         else out += ",\"exitTicks\":" + std::to_string(row.exitTicks) + ",\"eventCode\":" + std::to_string(static_cast<LONG>(row.eventCode)) +
             ",\"exitCode\":" + (row.exitProven ? std::to_string(static_cast<LONG>(row.exitCode)) : "null") +
             ",\"waitResult\":" + std::to_string(row.waitResult) + ",\"outcome\":\"" + row.outcome +

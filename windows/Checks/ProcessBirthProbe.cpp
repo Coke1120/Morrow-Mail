@@ -21,6 +21,7 @@ static int Fixture(const std::wstring& mode) {
     if (mode == L"leaf0") return 0;
     if (mode == L"leaf7") return 7;
     if (mode == L"leaf-late") { Sleep(100); return 0; }
+    if (mode == L"leaf-sample") { Sleep(2300); return 0; }
     if (mode == L"leaf-handled") return HandledException();
     if (mode == L"leaf-crash" || mode == L"leaf-breakpoint") {
         RaiseException(mode == L"leaf-crash" ? EXCEPTION_ACCESS_VIOLATION : EXCEPTION_BREAKPOINT,
@@ -28,7 +29,7 @@ static int Fixture(const std::wstring& mode) {
         return 99;
     }
     if (mode == L"fixture-timeout") { Sleep(20000); return 0; }
-    const auto child = mode == L"parent" ? L"leaf-late" : mode == L"fixture-orphan" ? L"parent" :
+    const auto child = mode == L"parent" ? L"leaf-late" : mode == L"fixture-counters" ? L"leaf-sample" : mode == L"fixture-orphan" ? L"parent" :
         mode == L"fixture-nonzero" ? L"leaf7" : mode == L"fixture-crash" ? L"leaf-crash" :
         mode == L"fixture-breakpoint" ? L"leaf-breakpoint" : mode == L"fixture-handled" ? L"leaf-handled" : L"leaf0";
     auto pi = Spawn(child);
@@ -40,7 +41,7 @@ static int Fixture(const std::wstring& mode) {
     CloseHandle(pi.hProcess); return 0;
 }
 int wmain(int argc, wchar_t** argv) {
-    if (argc != 2) return 93;
+    if (argc != 2 && argc != 3) return 93;
     const std::wstring mode = argv[1];
     if (mode.starts_with(L"fixture-") || mode.starts_with(L"leaf") || mode == L"parent") return Fixture(mode);
     owned::Options options; options.exe = Self(); options.launch = owned::Stamp(); options.deadlineMs = 12000;
@@ -48,6 +49,13 @@ int wmain(int argc, wchar_t** argv) {
     if (mode == L"zero" || mode == L"acquire-zero") { options.arguments = L"fixture-zero"; negative = false; }
     else if (mode == L"orphan") { options.arguments = L"fixture-orphan"; negative = false; }
     else if (mode == L"handled-exception") { options.arguments = L"fixture-handled"; negative = false; }
+    else if (mode == L"counters" || mode == L"counter-denied") {
+        options.arguments = L"fixture-counters"; negative = mode != L"counters";
+        if (negative) options.fault = owned::Fault::CounterDenied;
+    }
+    else if (mode == L"pending-exit-wait") {
+        options.arguments = L"fixture-zero"; negative = false; options.fault = owned::Fault::DelayExit;
+    }
     else if (mode == L"nonzero" || mode == L"acquire-nonzero") options.arguments = L"fixture-nonzero";
     else if (mode == L"crash" || mode == L"acquire-crash") options.arguments = L"fixture-crash";
     else if (mode == L"user-breakpoint") options.arguments = L"fixture-breakpoint";
@@ -65,7 +73,21 @@ int wmain(int argc, wchar_t** argv) {
         else if (mode == L"timeout") { options.arguments = L"fixture-timeout"; options.deadlineMs = 1500; }
         else return 94;
     }
+    FILE* samples{};
+    if (argc == 3 && (mode == L"counters" || mode == L"counter-denied")) {
+        const auto path = std::wstring(argv[2]) + L".samples";
+        if (_wfopen_s(&samples, path.c_str(), L"wb") || !samples) return 95;
+        options.samples = samples;
+    }
     auto result = owned::Run(options);
+    if (samples && std::fclose(samples)) result.Fail("sample-footer");
+    if (argc == 3) {
+        FILE* ledger{};
+        if (_wfopen_s(&ledger, argv[2], L"wb") || !ledger) return 95;
+        const auto text = owned::Ledger(result);
+        const auto written = owned::WriteBounded(ledger, text, true);
+        if (std::fclose(ledger) || !written) return 95;
+    }
     DWORD acquireError{}; bool acquireEvidence = !acquire;
     if (acquire && result.rows.size() == 2 && result.rows[1].exitProven) {
         // After all original handles close, try the prior snapshot PID once.
@@ -81,12 +103,13 @@ int wmain(int argc, wchar_t** argv) {
         result.jobTotal, result.normalDrain ? "true" : "false", result.cleanup ? "true" : "false", result.duplicates, result.closed,
         acquireError, acquireEvidence ? "true" : "false");
     for (size_t i = 0; i < result.failures.size(); ++i) std::printf("%s\"%s\"", i ? "," : "", result.failures[i]);
-    std::printf("],\"lifetimes\":[");
+    std::printf("],\"samples\":%u,\"pendingExitWaits\":%u,\"faultUsed\":%s,\"lifetimes\":[", result.samples, result.pendingExitWaits, result.faultUsed ? "true" : "false");
     for (size_t i = 0; i < result.rows.size(); ++i) {
         const auto& row = result.rows[i];
-        std::printf("%s{\"pid\":%u,\"parent\":%u,\"ticks\":%lld,\"parentTicks\":%lld,\"exited\":%s,\"exitCode\":%ld,\"waitResult\":%u,\"outcome\":\"%s\",\"nativeError\":%u}",
+        const auto exitCode = row.exitProven ? std::to_string(static_cast<LONG>(row.exitCode)) : "null";
+        std::printf("%s{\"pid\":%u,\"parent\":%u,\"ticks\":%lld,\"parentTicks\":%lld,\"exited\":%s,\"exitCode\":%s,\"waitResult\":%u,\"outcome\":\"%s\",\"nativeError\":%u}",
             i ? "," : "", row.pid, row.parent, row.ticks, row.parentTicks, row.exitProven ? "true" : "false",
-            static_cast<LONG>(row.exitCode), row.waitResult, row.outcome, row.waitError);
+            exitCode.c_str(), row.waitResult, row.outcome, row.waitError);
     }
     std::printf("]}\n");
     return result.ready && result.cleanup && acquireEvidence && (accepted != negative) ? 0 : 1;
