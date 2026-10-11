@@ -11,6 +11,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
       - name: Reproduce pinned merged-main sidebar selection defect
         if: github.ref == 'refs/heads/codex/sidebar-selection-20261011'
         shell: pwsh
