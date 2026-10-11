@@ -46,11 +46,12 @@ function Read-NativeBirthLedger([string] $Path, [long] $ExpectedLaunch = 0,
             Integer $row.kind 0 3
             if ($null -eq $header) {
                 $stage = 'header'
-                Keys $row 'kind,launchTimestamp,launcherPid,launcherTicks,readyBeforeResume,rootPid,rootTicks,schemaVersion'
+                Keys $row 'kind,launchTimestamp,launcherPid,launcherTicks,readyBeforeResume,rootPid,rootTicks,schemaVersion,tokenElevated,debugPrivilegeEnabled'
                 if ($row.kind -ne 0 -or $row.schemaVersion -isnot [long] -or $row.schemaVersion -ne 1) { throw 'Invalid lifetime header.' }
                 Integer $row.rootPid 2 ([uint32]::MaxValue); Integer $row.launcherPid 2 ([uint32]::MaxValue)
                 Integer $row.rootTicks 1 ([DateTime]::MaxValue.Ticks); Integer $row.launcherTicks 1 ([DateTime]::MaxValue.Ticks)
                 Integer $row.launchTimestamp 1 ([long]::MaxValue); Boolean $row.readyBeforeResume
+                Boolean $row.tokenElevated; Boolean $row.debugPrivilegeEnabled
                 if ($row.rootPid -eq $row.launcherPid -or $row.rootTicks -lt $row.launcherTicks -or
                     ($ExpectedLaunch -and $row.launchTimestamp -ne $ExpectedLaunch) -or
                     ($LauncherPid -and $row.launcherPid -ne $LauncherPid) -or
@@ -62,6 +63,10 @@ function Read-NativeBirthLedger([string] $Path, [long] $ExpectedLaunch = 0,
                 Keys $row 'inJob,kind,parentPid,parentTicks,pid,role,seq,ticks'
                 Integer $row.seq 1 128; $sequence++; if ($row.seq -ne $sequence) { throw 'Lifetime event loss.' }
                 $identity = Identity $row
+                foreach ($prior in @($births.Values | Where-Object { $_.pid -eq $row.pid })) {
+                    $priorIdentity = $prior.pid.ToString([Globalization.CultureInfo]::InvariantCulture) + ':' + $prior.ticks.ToString([Globalization.CultureInfo]::InvariantCulture)
+                    if (-not $exits.ContainsKey($priorIdentity) -or $exits[$priorIdentity].exitTicks -gt $row.ticks) { throw 'Overlapping reused PID lifetime.' }
+                }
                 Integer $row.parentPid 2 ([uint32]::MaxValue); Integer $row.parentTicks 1 ([DateTime]::MaxValue.Ticks)
                 Boolean $row.inJob; if (-not $row.inJob) { $proofIncomplete = $true }
                 if ($births.Count -eq 64 -or $births.ContainsKey($identity) -or $row.parentTicks -gt $row.ticks -or
@@ -102,18 +107,21 @@ function Read-NativeBirthLedger([string] $Path, [long] $ExpectedLaunch = 0,
                 $exits[$identity] = $row
             } elseif ($row.kind -eq 3) {
                 $stage = 'footer'
-                Keys $row 'births,cleanup,closed,debugEvents,duplicates,exits,failures,forced,jobActive,jobTotal,kind,normalDrain,rootExitCode,sequence'
+                Keys $row 'births,cleanup,closed,debugEvents,duplicates,exits,failures,forced,jobActive,jobTotal,kind,normalDrain,rootExitCode,rootExitElapsedMs,sequence'
                 foreach ($key in @('births', 'exits', 'duplicates', 'closed', 'jobTotal', 'jobActive')) { Integer $row[$key] 0 64 }
                 Integer $row.sequence 0 128; Integer $row.debugEvents 0 8192
                 foreach ($key in @('cleanup', 'forced', 'normalDrain')) { Boolean $row[$key] }
                 if ($null -ne $row.rootExitCode) { Integer $row.rootExitCode ([int]::MinValue) ([int]::MaxValue) }
+                if ($null -ne $row.rootExitElapsedMs -and ($row.rootExitElapsedMs -isnot [ValueType] -or $row.rootExitElapsedMs -is [bool] -or
+                    -not [double]::IsFinite($row.rootExitElapsedMs) -or $row.rootExitElapsedMs -lt 0 -or $row.rootExitElapsedMs -gt 180000)) { throw 'Invalid root exit wall time.' }
+                if (($null -eq $row.rootExitCode) -ne ($null -eq $row.rootExitElapsedMs)) { throw 'Missing root exit time proof.' }
                 $reasons = @('job-create', 'parent-api', 'stderr-handle', 'launch-attributes', 'root-launch', 'root-admission',
                     'root-resume', 'birth-identity', 'birth-pin', 'root-identity', 'parent-identity', 'birth-proof', 'role-read',
                     'identity-bound', 'exit-without-birth', 'debug-rip', 'debug-continue', 'event-bound', 'debug-wait',
                     'native-wait', 'exit-proof', 'nonzero-exit', 'descendant-drain', 'sample-bound', 'counter-read',
                     'deadline', 'job-accounting', 'event-loss', 'ledger-sequence', 'ledger-birth', 'ledger-exit',
                     'missing-lifetime', 'duplicate-identity', 'job-cleanup', 'cleanup', 'sample-footer',
-                    'root-cleanup', 'launch-close', 'pin-close', 'image-close', 'cleanup-wait', 'counter-fixture')
+                    'root-cleanup', 'launch-close', 'pin-close', 'image-close', 'cleanup-wait', 'counter-fixture', 'token-query')
                 if ($row.failures -isnot [array] -or $row.failures.Count -gt $reasons.Count -or
                     @($row.failures | Where-Object { $_ -isnot [string] -or $_ -cnotin $reasons }).Count -or
                     @($row.failures | Sort-Object -Unique).Count -ne $row.failures.Count) { throw 'Invalid lifetime failure vocabulary.' }

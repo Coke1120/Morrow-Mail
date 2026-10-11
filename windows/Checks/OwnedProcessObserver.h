@@ -5,6 +5,7 @@
 #include <psapi.h>
 #include <algorithm>
 #include <cstdint>
+#include <cstddef>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -68,7 +69,8 @@ struct Result {
     unsigned births{}, exits{}, sequence{}, events{}, duplicates{}, closed{}, samples{}, pendingExitWaits{};
     DWORD rootPid{}, rootCode{}, jobTotal{}, jobActive{};
     long long rootTicks{}, launcherTicks{}, launch{};
-    bool ready{}, normalDrain{}, cleanup{}, forced{}, rootProven{}, faultUsed{};
+    double rootExitElapsedMs{};
+    bool ready{}, normalDrain{}, cleanup{}, forced{}, rootProven{}, faultUsed{}, tokenElevated{}, debugPrivilegeEnabled{};
     void Fail(const char* reason) {
         if (std::find(failures.begin(), failures.end(), reason) == failures.end()) failures.push_back(reason);
     }
@@ -110,7 +112,10 @@ inline bool ProveExit(Row& row, Result& result, Fault fault) {
     row.exitProven = true;
     row.outcome = row.exitCode == 0 ? "zero" : "nonzero";
     if (row.exitCode != 0) result.Fail("nonzero-exit");
-    if (row.pid == result.rootPid) { result.rootProven = true; result.rootCode = row.exitCode; }
+    if (row.pid == result.rootPid) {
+        result.rootProven = true; result.rootCode = row.exitCode;
+        result.rootExitElapsedMs = Elapsed(Stamp(), result.launch);
+    }
     return true;
 }
 inline const char* Role(HANDLE pin, bool root) {
@@ -210,6 +215,28 @@ inline void ValidateLedger(Result& r) {
 inline Result Run(const Options& options) {
     Result r; r.rows.reserve(64); r.ledger.reserve(128); r.launch = options.launch;
     auto Close = [&](Handle& handle, const char* reason) { if (!handle.reset()) r.Fail(reason); };
+    // Only two metadata booleans from this helper's own token. Never enable a
+    // privilege, read account/SID data, or silently call an elevated mechanism.
+    Handle token; HANDLE tokenValue{}; TOKEN_ELEVATION elevation{}; DWORD needed{};
+    LUID debugLuid{};
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tokenValue)) { r.Fail("token-query"); return r; }
+    token.reset(tokenValue);
+    if (!GetTokenInformation(token.value, TokenElevation, &elevation, sizeof(elevation), &needed) ||
+        !LookupPrivilegeValueW(nullptr, SE_DEBUG_NAME, &debugLuid)) { r.Fail("token-query"); return r; }
+    r.tokenElevated = elevation.TokenIsElevated != 0;
+    needed = 0;
+    if (GetTokenInformation(token.value, TokenPrivileges, nullptr, 0, &needed) || GetLastError() != ERROR_INSUFFICIENT_BUFFER ||
+        needed < sizeof(TOKEN_PRIVILEGES) || needed > 16384) { r.Fail("token-query"); return r; }
+    std::vector<unsigned char> privileges(needed);
+    if (!GetTokenInformation(token.value, TokenPrivileges, privileges.data(), needed, &needed)) { r.Fail("token-query"); return r; }
+    const auto view = reinterpret_cast<const TOKEN_PRIVILEGES*>(privileges.data());
+    if (view->PrivilegeCount > (needed - offsetof(TOKEN_PRIVILEGES, Privileges)) / sizeof(LUID_AND_ATTRIBUTES)) { r.Fail("token-query"); return r; }
+    for (DWORD i = 0; i < view->PrivilegeCount; ++i) {
+        const auto& privilege = view->Privileges[i];
+        if (privilege.Luid.LowPart == debugLuid.LowPart && privilege.Luid.HighPart == debugLuid.HighPart)
+            r.debugPrivilegeEnabled = (privilege.Attributes & SE_PRIVILEGE_ENABLED) != 0;
+    }
+    Close(token, "token-query");
     Handle job(CreateJobObjectW(nullptr, nullptr)); JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     if (!job.value || !SetInformationJobObject(job.value, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) { r.Fail("job-create"); return r; }
@@ -375,7 +402,8 @@ inline std::string Ledger(const Result& r) {
     std::string out = "{\"kind\":0,\"schemaVersion\":1,\"rootPid\":" + std::to_string(r.rootPid) +
         ",\"rootTicks\":" + std::to_string(r.rootTicks) + ",\"launcherPid\":" + std::to_string(GetCurrentProcessId()) +
         ",\"launcherTicks\":" + std::to_string(r.launcherTicks) + ",\"launchTimestamp\":" + std::to_string(r.launch) +
-        ",\"readyBeforeResume\":" + (r.ready ? "true" : "false") + "}\n";
+        ",\"readyBeforeResume\":" + (r.ready ? "true" : "false") + ",\"tokenElevated\":" + (r.tokenElevated ? "true" : "false") +
+        ",\"debugPrivilegeEnabled\":" + (r.debugPrivilegeEnabled ? "true" : "false") + "}\n";
     for (const auto& event : r.ledger) {
         const auto& row = r.rows[event.row];
         out += "{\"kind\":" + std::to_string(event.birth ? 1 : 2) + ",\"seq\":" + std::to_string(event.seq) +
@@ -393,7 +421,8 @@ inline std::string Ledger(const Result& r) {
         ",\"jobTotal\":" + std::to_string(r.jobTotal) + ",\"jobActive\":" + std::to_string(r.jobActive) +
         ",\"normalDrain\":" + (r.normalDrain ? "true" : "false") + ",\"cleanup\":" + (r.cleanup ? "true" : "false") +
         ",\"forced\":" + (r.forced ? "true" : "false") + ",\"duplicates\":" + std::to_string(r.duplicates) + ",\"closed\":" + std::to_string(r.closed) +
-        ",\"rootExitCode\":" + (r.rootProven ? std::to_string(static_cast<LONG>(r.rootCode)) : "null") + ",\"failures\":[";
+        ",\"rootExitCode\":" + (r.rootProven ? std::to_string(static_cast<LONG>(r.rootCode)) : "null") +
+        ",\"rootExitElapsedMs\":" + (r.rootProven ? std::to_string(r.rootExitElapsedMs) : "null") + ",\"failures\":[";
     for (size_t i = 0; i < r.failures.size(); ++i) out += (i ? ",\"" : "\"") + std::string(r.failures[i]) + "\"";
     return out + "]}\n";
 }

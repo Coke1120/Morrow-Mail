@@ -1,6 +1,7 @@
 #include "OwnedProcessObserver.h"
 #include <fcntl.h>
 #include <io.h>
+#pragma comment(lib, "advapi32.lib")
 
 // The caller creates two protected, empty regular files inside its marked
 // disposable fixture. This helper never creates/truncates or follows a reparse.

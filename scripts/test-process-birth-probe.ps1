@@ -5,6 +5,7 @@ if (-not $IsWindows) { throw 'This owned process discriminator requires Windows.
 $root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot 'native-process-birth-ledger.ps1')
 . (Join-Path $PSScriptRoot 'measure-native-processes.ps1')
+. (Join-Path $PSScriptRoot 'test-native-birth-ledger.ps1')
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ('morrow-birth-probe-' + [Guid]::NewGuid().ToString('N'))
 $compiler = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find 'VC\Auxiliary\Build\vcvars64.bat'
 if (-not $compiler) { throw 'Pinned runner native compiler is unavailable.' }
@@ -64,6 +65,7 @@ try {
                 if ($case -eq 'counter-denied' -and -not @($report.samples.failedRecords | Where-Object { $_.stage -eq 'counters' -and $_.errorCode -eq 5 -and $_.errorKind -eq 'accessDenied' }).Count) { throw 'Real limited-handle counter denial was not retained.' }
                 $bound = Read-NativeBirthLedger $ledgerPath 0 $launcherId $launcherTicks $report.samples
                 if ($case -eq 'counters' -and $bound.incomplete) { throw 'Native counters did not join their exact lifetimes.' }
+                if ($case -eq 'counters') { Test-NativeBirthLedgerVerifier $ledgerPath $temporary $launcherId $launcherTicks $report.samples }
             }
         } finally { $process.Dispose() }
     }

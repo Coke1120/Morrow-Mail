@@ -1,4 +1,5 @@
 #include "OwnedProcessObserver.h"
+#pragma comment(lib, "advapi32.lib")
 
 static std::wstring Self() {
     wchar_t value[32768]{};
