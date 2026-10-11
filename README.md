@@ -14,6 +14,8 @@ Morrow is a local, single-user app: **SwiftUI on macOS**, **WinUI 3 on Windows**
 
 Unreleased native review: search-page retention across reading/reply saves and clearer attachment removal names are covered in the [mail flow review](docs/MAIL_FLOW_REVIEW.md). Native CI does not complete manual accessibility/live-account acceptance; the extreme Mac HTML timeout and Windows first-acquire observation gap remain open.
 
+The [attachment follow-up](docs/ATTACHMENT_FLOW_REVIEW.md) keeps Windows on the current account/page during an attachment save. Its isolated download checks cover ownership, repeated operations and saved-file security metadata; interactive picker cancellation remains unverified.
+
 ## Download
 
 Get a release package and its SHA-256 checksum from [GitHub Releases](https://github.com/Coke1120/Morrow-Mail/releases).

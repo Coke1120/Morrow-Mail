@@ -1,4 +1,14 @@
-# Verification — 10 October 2026
+# Verification — 11 October 2026
+
+## Attachment state follow-up — unreleased
+
+Branch `codex/attachment-state-safety-20261011` starts from PR26's merged main `654be0d7c65f4e76f8642f1cddf0ee7a4725c0a3`. [Main CI 38108994176](https://github.com/Coke1120/Morrow-Mail/actions/runs/38108994176) passed Mac acceptance, including the 24.723-second original reader phase and 40/40 complete network-zero extreme-reader samples. Windows build/UI operations/26 lifecycle controls/benchmark passed, but strict observation failed in cases 2 and 3 at first `nativeAcquire`, error 87, unknown/null exit. Relocation and release were skipped. The matching baseline evidence gap is unresolved; this result is not a demonstrated attachment regression or normal-exit proof, and was not retried.
+
+[The bounded attachment review](docs/ATTACHMENT_FLOW_REVIEW.md) records three failed fixture-only modal-cancellation attempts and their stop condition: a visible owned dialog's `Close` returned success but `Show` did not return within 30 seconds. No production cancellation fix or acceptance is claimed. That experiment is removed from the independent download-state fixture; it uses a scripted accepted destination and synthetic transport, never a real mailbox/service.
+
+[Pinned-main native reproduction 38112026674](https://github.com/Coke1120/Morrow-Mail/actions/runs/38112026674), fixture head `1dfa0b314aaf000e74b6df913637f2fc939574dd`, proved account/page/cursor/selection replacement during a held attachment save before production changes. The candidate adds the missing existing foreground guard to `Shell::navigate`, plus a real-popup navigation assertion in the regular native smoke. Focused candidate and full native CI outcomes are reported on the draft PR after their respective runs; this checked-in record does not predeclare their outcome.
+
+Native picker cancellation, Mac attachment panels, physical keyboard/VoiceOver/Narrator, cross-platform manual UX and real accounts remain unverified. The original Mac HTML timeout and Windows first-acquire observation gap remain open. Original HTML semantics, isolation, cancellation/Back, the 30-second reader deadline and strict Windows gates are unchanged; there is no new renderer or lifecycle tracing experiment.
 
 ## Native mail flow follow-up — unreleased
 
