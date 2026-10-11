@@ -1,12 +1,15 @@
 // Compiled only by test-windows-attachment-flow.ps1 in its private source copy.
 #include "pch.h"
 #include "Ui.h"
+#include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
 #include <fstream>
 #include <cstdio>
 
 namespace morrow {
 using namespace winrt;
 using namespace Windows::Foundation;
+void attachmentFixtureNavigationHandler(std::shared_ptr<Shell>);
 namespace {
 std::filesystem::path fixture, selectedPath;
 unsigned requests = 0, selections = 0;
@@ -18,6 +21,33 @@ void require(bool value, wchar_t const* message) {
 std::string contents(std::filesystem::path const& path) {
     std::ifstream file(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+}
+controls::NavigationViewItem mailboxItem(std::shared_ptr<Shell> const& shell, hstring owner, hstring folder) {
+    for (auto const& entry : shell->navigation.MenuItems()) if (auto group = entry.try_as<controls::NavigationViewItem>())
+        for (auto const& child : group.MenuItems()) if (auto item = child.try_as<controls::NavigationViewItem>(); item && item.Tag()) {
+            auto tag = item.Tag().as<Json>();
+            if (text(tag, L"section") == L"mail" && text(tag, L"owner") == owner && text(tag, L"folder") == folder) return item;
+        }
+    throw hresult_error(E_FAIL, L"Missing mounted fixture mailbox item.");
+}
+Json sidebarSelection(std::shared_ptr<Shell> const& shell) {
+    auto item = shell->navigation.SelectedItem().try_as<controls::NavigationViewItem>();
+    require(item && item.Tag(), L"The native sidebar lost its selected item.");
+    return item.Tag().as<Json>();
+}
+IAsyncAction invokeSidebar(std::shared_ptr<Shell> shell, controls::NavigationViewItem item) {
+    namespace peers = xaml::Automation::Peers;
+    auto peer = peers::FrameworkElementAutomationPeer::CreatePeerForElement(item);
+    auto action = peer.GetPattern(peers::PatternInterface::SelectionItem).try_as<xaml::Automation::Provider::ISelectionItemProvider>();
+    require(bool(action), L"The native sidebar item did not expose its selection action.");
+    action.Select();
+    require(shell->navigation.SelectedItem() == item, L"WinUI did not select the invoked sidebar item.");
+    auto drained = std::make_shared<bool>(false);
+    require(shell->root.DispatcherQueue().TryEnqueue([drained] { *drained = true; }), L"Could not drain the native invocation queue.");
+    apartment_context ui;
+    auto deadline = GetTickCount64() + 1000;
+    while (!*drained && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+    require(*drained, L"The native invocation queue exceeded its bound.");
 }
 }
 
@@ -75,6 +105,17 @@ fire_and_forget startAttachmentFlowChecks(std::shared_ptr<Shell> shell) {
                 && shell->nextCursor == L"third-page" && shell->selected.Stringify() == draft
                 && shell->page.Content() == page && shell->generation == 0 && shell->selectionGeneration == 0;
         };
+        bool oldNavigation = std::wstring_view(GetCommandLineW()).find(L"--expect-navigation-defect") != std::wstring_view::npos;
+        bool oldSidebar = std::wstring_view(GetCommandLineW()).find(L"--expect-sidebar-defect") != std::wstring_view::npos;
+        auto invocations = std::make_shared<unsigned>(0);
+        if (!oldNavigation) {
+            shell->state = Json::Parse(LR"({"accounts":[{"id":"first@attachment.invalid","email":"first@attachment.invalid"},{"id":"sidebar@attachment.invalid","email":"sidebar@attachment.invalid"}]})");
+            attachmentFixtureNavigationHandler(shell);
+            shell->navigation.ItemInvoked([invocations](auto const&, auto const&) { ++*invocations; });
+            shell->rebuildNavigation(); shell->root.UpdateLayout();
+            require(text(sidebarSelection(shell), L"owner") == shell->owner && text(sidebarSelection(shell), L"folder") == L"drafts",
+                L"The mounted sidebar did not start on the actual mailbox.");
+        }
         selectedPath = fixture / L"download.txt";
         { std::ofstream(selectedPath, std::ios::binary) << "original"; }
         holdDownload = true;
@@ -85,10 +126,31 @@ fire_and_forget startAttachmentFlowChecks(std::shared_ptr<Shell> shell) {
         auto duplicateUpload = co_await uploadAttachment(shell, shell->owner);
         require(requests == 1 && selections == 1 && duplicateUpload.Size() == 0 && shell->dialogOpen,
             L"Repeated attachment activation bypassed the active download guard.");
+        if (!oldNavigation) {
+            auto beforeState = shell->state.Stringify();
+            co_await invokeSidebar(shell, mailboxItem(shell, L"sidebar@attachment.invalid", L"inbox"));
+            require(*invocations == 1 && unchanged() && shell->state.Stringify() == beforeState && requests == 1,
+                L"The real sidebar invocation changed mailbox data, failed to fire, or escaped the download guard.");
+            auto selection = sidebarSelection(shell);
+            if (oldSidebar) {
+                require(text(selection, L"owner") == L"sidebar@attachment.invalid" && text(selection, L"folder") == L"inbox",
+                    L"Pinned merged main did not reproduce the expected sidebar/content mismatch.");
+                std::fprintf(stderr, "Attachment check: pinned merged main reproduced sidebar/account selection mismatch through real ItemInvoked\n");
+            } else {
+                require(text(selection, L"owner") == shell->owner && text(selection, L"folder") == shell->folder,
+                    L"Blocked native invocation left the sidebar on another mailbox.");
+                auto activity = shell->navigation.FooterMenuItems().GetAt(0).as<controls::NavigationViewItem>();
+                co_await invokeSidebar(shell, activity);
+                require(*invocations == 2 && text(sidebarSelection(shell), L"owner") == shell->owner
+                    && text(sidebarSelection(shell), L"folder") == shell->folder && unchanged() && requests == 1,
+                    L"Blocked native page invocation left the sidebar inconsistent with the retained mailbox.");
+                std::fprintf(stderr, "Attachment check: real account/page invocation restored sidebar and retained owner/page/selection\n");
+            }
+        }
         auto other = Json::Parse(LR"({"accountId":"second@attachment.invalid","id":"same-id","viewId":"second:same-id"})");
         co_await shell->read(other, false);
         require(unchanged() && requests == 1, L"Reading another owner's duplicate ID bypassed the active download guard.");
-        // This is the same entry point as sidebar page/account activation.
+        // Also retain the original direct navigation guard regression.
         // A disconnected destination renders onboarding and makes no request.
         co_await shell->navigate(L"mail", L"second@attachment.invalid", L"inbox");
         bool retained = unchanged();
@@ -97,7 +159,7 @@ fire_and_forget startAttachmentFlowChecks(std::shared_ptr<Shell> shell) {
             && contents(selectedPath) == "fictional"
             && contents(std::filesystem::path(selectedPath.wstring() + L":Zone.Identifier")).find("ZoneId=3") != std::string::npos,
             L"Download lost its owner, bytes, security marker or completion guard release.");
-        bool baseline = std::wstring_view(GetCommandLineW()).find(L"--expect-navigation-defect") != std::wstring_view::npos;
+        bool baseline = oldNavigation;
         if (baseline) {
             require(!retained && shell->owner == L"second@attachment.invalid" && shell->cursors.size() == 1
                 && shell->selected.Size() == 0 && shell->page.Content() != page && shell->generation == 1,

@@ -1,9 +1,10 @@
 #requires -Version 7.2
 [CmdletBinding()]
-param([switch] $BaselineNavigation)
+param([switch] $BaselineNavigation, [switch] $BaselineSidebar)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if (-not $IsWindows) { throw 'These are Windows native control checks.' }
+if ($BaselineNavigation -and $BaselineSidebar) { throw 'Choose only one pinned negative control.' }
 $root = Split-Path $PSScriptRoot -Parent
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ('morrow-attachment-flow-' + [guid]::NewGuid().ToString())
 $process = $null
@@ -23,11 +24,26 @@ try {
     Copy-Item -LiteralPath (Join-Path $root 'package.json') -Destination $temporary
     $native = Join-Path $temporary 'windows'
     $app = Join-Path $native 'App.cpp'
-    if ($BaselineNavigation) {
-        $baseline = & git -C $root show '654be0d7c65f4e76f8642f1cddf0ee7a4725c0a3:windows/App.cpp'
+    if ($BaselineNavigation -or $BaselineSidebar) {
+        $baselineSha = if ($BaselineSidebar) { '982384388097aabb710ca5f146d7ed07290bb597' } else { '654be0d7c65f4e76f8642f1cddf0ee7a4725c0a3' }
+        $baseline = & git -C $root show ($baselineSha + ':windows/App.cpp')
         if ($LASTEXITCODE -ne 0) { throw 'Pinned main source is unavailable.' }
         [IO.File]::WriteAllText($app, ($baseline -join "`n") + "`n", [Text.UTF8Encoding]::new($false))
     }
+    # Exercise the actual production registration on the mounted fixture control.
+    # Extract it verbatim from the chosen candidate or pinned-main compiler input;
+    # the test does not fabricate ItemInvoked or call navigate for this assertion.
+    $source = [IO.File]::ReadAllText($app)
+    $handlerStart = $source.IndexOf('    navigation.ItemInvoked([weak]')
+    if ($handlerStart -lt 0) { throw 'Navigation event fixture seam changed.' }
+    $handlerStop = $source.IndexOf('    window.Activate();', $handlerStart)
+    if ($handlerStart -lt 0 -or $handlerStop -le $handlerStart) { throw 'Navigation event fixture seam changed.' }
+    $handler = $source.Substring($handlerStart, $handlerStop - $handlerStart).Replace('navigation.ItemInvoked', 'self->navigation.ItemInvoked')
+    $fixtureHandler = 'namespace morrow { void attachmentFixtureNavigationHandler(std::shared_ptr<Shell> self) { auto weak = self->weak_from_this();
+' + $handler + '
+} }
+'
+    [IO.File]::WriteAllText($app, $source + "`n" + $fixtureHandler, [Text.UTF8Encoding]::new($false))
     # Only private compiler inputs change. The normal application and package
     # never contain a fixture transport, picker hook or alternate startup.
     Copy-Item -LiteralPath (Join-Path $native 'Checks/AttachmentFlowAssertions.cpp') -Destination $native
@@ -67,6 +83,7 @@ std::filesystem::path attachmentFixtureSelection(bool);'
     $startInfo.Environment['MORROW_DATA_DIR'] = $workspace
     $startInfo.ArgumentList.Add('--native-smoke')
     if ($BaselineNavigation) { $startInfo.ArgumentList.Add('--expect-navigation-defect') }
+    if ($BaselineSidebar) { $startInfo.ArgumentList.Add('--expect-sidebar-defect') }
     $process = [Diagnostics.Process]::Start($startInfo)
     $stderr = $process.StandardError.ReadToEndAsync()
     if (-not $process.WaitForExit(30000)) { throw 'Attachment native checks exceeded their 30-second bound.' }

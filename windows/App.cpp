@@ -380,7 +380,7 @@ IAsyncAction Shell::start() {
         if (auto self = weak.lock(); self && !self->closeReady) { event.Cancel(true); if (!self->closing) self->shutdown(); }
     });
     navigation.ItemInvoked([weak](auto const&, NavigationViewItemInvokedEventArgs const& event) {
-        auto self = weak.lock(); if (!self || self->selectingNavigation || self->loading) return;
+        auto self = weak.lock(); if (!self || self->selectingNavigation) return;
         hstring target, account, folder = L"inbox";
         if (event.IsSettingsInvoked()) target = flag(self->updateResult, L"updateAvailable") ? L"about" : L"preferences";
         else {
@@ -393,6 +393,12 @@ IAsyncAction Shell::start() {
         auto version = self->generation; auto captured = self->owner;
         self->root.DispatcherQueue().TryEnqueue([weak, version, captured, target, account, folder] {
             if (auto self = weak.lock(); self && self->current(version, captured)) {
+                if (self->loading || self->dialogOpen || !self->navigation.IsEnabled()) {
+                    // WinUI has already selected the invoked item. Restore the
+                    // displayed mailbox only after its invocation has finished.
+                    self->rebuildNavigation();
+                    return;
+                }
                 if (target == L"manage-folders") self->manageFolders(account);
                 else self->navigate(target, account, folder);
             }
