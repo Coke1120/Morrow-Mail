@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.3 — 2026-10-11
+
+- Prioritize the selected message and visible mail page during sync with expiring account/connection-bound hints, while preserving the existing background reconciliation quotas and checkpoints (PR29).
+- Reuse complete immutable IMAP/Outlook bodies only when their owner, connection and provider identity still match. Refresh drafts and uncertain content; retain reviewed sent payloads and owned downloaded attachment bytes.
+- Restore the actual Windows sidebar selection after blocked native invocations, matching the retained mailbox/account/page during attachment saves (PR28). Keep the captured attachment owner, file integrity and quarantine checks.
+- Preserve macOS search pages and rows through reading/reply saves, and give native attachment-removal controls clearer names.
+- Retain strict process-observation and reader gates, including the narrow original-pin zero-exit proof. Windows first-acquire native error 87/unknown-exit failures, intermittent reader timeouts and incomplete Parallels/manual acceptance remain disclosed.
+- Require fresh paired tagged checks and the existing pinned-key publisher before publication. See [release notes](docs/releases/v0.7.3.md) and [verification](VERIFICATION.md) for validation, signing and live-account limits.
+
 ## 0.7.2 — 2026-10-10
 
 - Repair IMAP recent/history date gaps and unresolved FETCH checkpoint handling; persist backoff for recognized transient reads.

@@ -12,11 +12,11 @@
 
 Morrow is a local, single-user app: **SwiftUI on macOS**, **WinUI 3 on Windows**, and a shared **Rust service**. Desktop packages include their runtime; no Node, Electron or Rust installation is needed to use them.
 
-Unreleased native review: search-page retention across reading/reply saves and clearer attachment removal names are covered in the [mail flow review](docs/MAIL_FLOW_REVIEW.md). Native CI does not complete manual accessibility/live-account acceptance; the extreme Mac HTML timeout and Windows first-acquire observation gap remain open.
+Version 0.7.3 includes search-page retention across reading/reply saves and clearer attachment removal names, covered in the [mail flow review](docs/MAIL_FLOW_REVIEW.md). Native CI does not complete manual accessibility/live-account acceptance; the extreme Mac HTML timeout and Windows first-acquire observation gap remain open.
 
 The [attachment follow-up](docs/ATTACHMENT_FLOW_REVIEW.md) keeps Windows on the current account/page during an attachment save. The subsequent sidebar correction restores WinUI's actual selected item when a guarded invocation is rejected, so its account/folder label matches the retained mailbox. Isolated native checks cover real `ItemInvoked` events, ownership, repeated operations and saved-file security metadata; interactive picker cancellation remains unverified.
 
-Unreleased [current-page synchronization](docs/SYNC_PRIORITY_AND_INCREMENTAL.md) prioritizes the selected message and visible page while retaining older-cache checks. Recent IMAP/Outlook pages reuse proven immutable cached bodies; drafts and uncertain content still fetch normally. Sync preserves reviewed sent payloads and owned downloaded attachments. Incremental/notification work is a separate staged design, and these changes are not in the published v0.7.2 packages.
+[Current-page synchronization](docs/SYNC_PRIORITY_AND_INCREMENTAL.md) in the 0.7.3 source prioritizes the selected message and visible page while retaining older-cache checks. Recent IMAP/Outlook pages reuse proven immutable cached bodies; drafts and uncertain content still fetch normally. Sync preserves reviewed sent payloads and owned downloaded attachments. Incremental/notification work is a separate staged design. Publication requires fresh paired tagged checks; see the [0.7.3 release notes](docs/releases/v0.7.3.md).
 
 ## Download
 
@@ -49,9 +49,13 @@ Browser sign-in uses the desktop registration included in the build; custom regi
 
 Detailed behavior and limits are in [feature coverage](FEATURE_COVERAGE.md) and the [user guide](docs/USER_GUIDE.md).
 
-The unreleased [native reader and resource-observation follow-up](VERIFICATION.md#reader-timing-and-windows-observation--follow-up-in-progress) records fixture measurements and strict observation checks. Its diagnostic controls do not establish production readiness; exact draft-PR commits and native results remain separate from the published release.
+The [native reader and resource-observation follow-up](VERIFICATION.md#reader-timing-and-windows-observation--follow-up-in-progress) records fixture measurements and strict observation checks. Windows first-acquire native error 87 remains unresolved, and Mac mini Parallels acceptance is incomplete. Diagnostic controls do not establish production readiness; the latest tagged outcome is recorded in [verification](VERIFICATION.md).
 
-## New in 0.7.2
+## New in 0.7.3
+
+Merged [PR28](https://github.com/Coke1120/Morrow-Mail/pull/28) restores the actual Windows sidebar selection after blocked attachment-save navigation. Merged [PR29](https://github.com/Coke1120/Morrow-Mail/pull/29) prioritizes visible-mail synchronization and conservatively reuses immutable bodies. macOS search retains its page through reading/reply saves. The release retains strict paired native checks and signed update provenance; known observer, reader, signing and manual-acceptance limits remain in the [release notes](docs/releases/v0.7.3.md).
+
+### Included since 0.7.2
 
 [Fetch recovery changes](docs/FETCH_RECOVERY.md) address IMAP date gaps, Outlook delta catch-up, Gmail label limits and incomplete content. Native reader recovery, Windows composer focus and expired mail/search cursors retain their account and page context. The paired source CI passed on both platforms; each release tag requires fresh paired checks before publication. See the [0.7.2 release notes](docs/releases/v0.7.2.md) for fixes and remaining limits.
 
