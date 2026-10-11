@@ -4,6 +4,7 @@ param([switch] $SelfTest)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'native-process-identity.ps1')
+. (Join-Path $PSScriptRoot 'native-process-birth-ledger.ps1')
 
 # Fixture-only observer, never packaged. The caller owns the UI and this child.
 # No CIM, sampler pipe or sampler wait runs in the UI stderr drain loop.
@@ -44,7 +45,7 @@ function Start-NativeResourceCollector([Diagnostics.Process] $Ui, [string] $Path
     return [Diagnostics.Process]::Start($start)
 }
 
-function Stop-NativeResourceCollector([Diagnostics.Process] $Collector) {
+function Stop-NativeResourceCollector([Diagnostics.Process] $Collector, [switch] $KeepHandle) {
     $forced = $false; $reaped = $true; $exitCode = $null
     if ($Collector) {
         try {
@@ -55,7 +56,7 @@ function Stop-NativeResourceCollector([Diagnostics.Process] $Collector) {
             }
             if ($reaped) { $exitCode = $Collector.ExitCode }
         } catch { $reaped = $false }
-        finally { $Collector.Dispose() }
+        finally { if (-not $KeepHandle) { $Collector.Dispose() } }
     }
     return @{ forced = $forced; reaped = $reaped; exitCode = $exitCode }
 }
@@ -431,7 +432,8 @@ function Invoke-NativeResourceCollector {
     } finally { Close-NativeObservationState $state; $stream.Dispose() }
 }
 
-function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
+function Read-NativeResourceReport([string] $Path, $Stop, $Milestones,
+    [string] $BirthLedgerPath = '', [long] $ExpectedLaunch = 0, [uint32] $LauncherPid = 0, [long] $LauncherTicks = 0) {
     $samples = [Collections.Generic.List[object]]::new(); $footer = $null; $invalid = $false; $partial = $false
     $peakWs = 0L; $peakPrivate = 0L; $lastElapsed = -1.0; $gaps = $false
     $skipTotals = New-NativeSkipReasonCounts; $rootSkippedTotal = 0L; $unknownRootSkips = $false
@@ -563,12 +565,19 @@ function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
         }
         foreach ($id in $nativeLookupPids.Keys) { if ($uiPids.ContainsKey($id)) { throw 'A root cannot use a lookup fallback.' } }
     } catch { $invalid = $true } # Fixed status only; never retain raw CIM/JSON errors.
-    return [ordered]@{ schemaVersion = 3; incomplete = ($invalid -or $partial -or $gaps -or $Stop.forced -or -not $Stop.reaped -or $Stop.exitCode -ne 0 -or $null -eq $footer -or $footer.reason -ne 0 -or $samples.Count -eq 0 -or ($modernRecords -and -not $measuredRoot))
+    $lifetime = if ($BirthLedgerPath) { Read-NativeBirthLedger $BirthLedgerPath $ExpectedLaunch $LauncherPid $LauncherTicks @($samples.ToArray()) } else { $null }
+    $report = [ordered]@{ schemaVersion = $(if ($lifetime) { 4 } else { 3 }); incomplete = ($invalid -or $partial -or $gaps -or $Stop.forced -or -not $Stop.reaped -or $Stop.exitCode -ne 0 -or $null -eq $footer -or $footer.reason -ne 0 -or $samples.Count -eq 0 -or ($modernRecords -and -not $measuredRoot) -or ($lifetime -and $lifetime.incomplete))
         collector = $Stop; invalidRecords = $invalid; partialLine = $partial; sampleGaps = $gaps; footer = $footer
         skipReasonCounts = $skipTotals; rootSkipped = $(if ($unknownRootSkips) { $null } else { $rootSkippedTotal }); normalExitObservations = $normalExitObservations
         firstSampleLagMs = $(if ($samples.Count) { $samples[0].elapsedMs + $samples[0].queryMs } else { $null }); milestonesMs = $Milestones
         sampledPeakWorkingSetSumBytes = $peakWs; sampledPeakPrivateBytesSum = $peakPrivate; samples = @($samples.ToArray())
         method = 'Approximately one snapshot/second during the owned UI lifetime; verified descendants retain their original process handles and UTC creation identities. A first-seen .NET lookup rejection can also be proved by a limited native handle, with the current parent verified and live before and after that proof. Explicit zero exits without an earlier read failure are lifecycle events, not fabricated zero counters or live descendant roots. Unverified/acquisition/read failures remain gaps. The observer is excluded from these sums, but its CPU/query overhead can affect the run. Working-set sums can double-count shared pages; they are not private working set. Private bytes are process-private committed memory, not macOS footprint. CPU is cumulative per process identity, not a whole-run total. Sampled maxima can miss startup peaks and short-lived processes. First-sample lag runs from before Process.Start to completion of the first snapshot; elapsedMs and queryMs retain its acquisition interval. Milestones are launch-to-stderr-receipt, not first paint. No beta16 comparison, steady-idle or complete N0 claim.' }
+    if ($lifetime) {
+        $report['lifetimeSource'] = $lifetime
+        $report.normalExitObservations = @($lifetime.lifetimes | Where-Object { $_.kind -eq 2 -and $_.outcome -ceq 'zero' }).Count
+        $report.method = 'Fixture-only debug launch establishes the owned Job before root user code; synchronous birth handles bind PID, integer UTC creation and original parent lifetimes. Native EXIT events must match signaled original pins and native exit codes; strict birth/exit sequence and Job accounting must drain before cleanup. Approximately 1 Hz native memory/CPU counters use those same pins, independently joined to the complete metadata ledger. Unknown exits, nonzero exits, counter failures, losses, overflow and forced cleanup stay incomplete. No process inventory, memory/string reads, elevation or real accounts. The launcher is excluded from sums; debug event pauses and observer overhead affect these instrumented runs. Working-set sums can double-count shared pages; private bytes are process-private commitment, not macOS footprint. CPU is cumulative per identity. Point samples miss between-sample peaks and may have no counters for short-lived children. Original launch-to-stderr milestones, wall deadlines and reader gates remain; no steady-idle, beta16 comparison or complete N0 claim.'
+    }
+    return $report
 }
 
 function Get-NativeObservationSummary([Collections.IDictionary] $Report, [ValidateRange(1, 3)] [int] $Run,
@@ -601,12 +610,19 @@ function Get-NativeObservationSummary([Collections.IDictionary] $Report, [Valida
                 skipReasonCounts = $sample.skipReasonCounts; lifecycleEvents = $sample.lifecycleEvents; failedRecords = $sample.failedRecords }
         }
     )
-    return [ordered]@{ schemaVersion = 2; run = $Run; mode = $Mode; uiCompleted = $UiCompleted; collectorStarted = $CollectorStarted
+    $summary = [ordered]@{ schemaVersion = 2; run = $Run; mode = $Mode; uiCompleted = $UiCompleted; collectorStarted = $CollectorStarted
         incomplete = ($Report.incomplete -or $missing.Count -gt 0); invalidRecords = $Report.invalidRecords; partialLine = $Report.partialLine; sampleGaps = $Report.sampleGaps
         collector = @{ forced = [bool] $Report.collector.forced; reaped = [bool] $Report.collector.reaped; exitCode = $Report.collector.exitCode }
         footer = $Report.footer; sampleCount = $samples.Count; skipReasonCounts = $Report.skipReasonCounts; rootSkipped = $Report.rootSkipped
         normalExitObservations = $Report.normalExitObservations
         milestonesMs = $milestones; missingMilestones = @($missing.ToArray()); timeline = $timeline }
+    if ($Report.Contains('lifetimeSource')) {
+        $lifetime = $Report.lifetimeSource
+        $summary['lifetimeSource'] = @{ source = $lifetime.source; incomplete = $lifetime.incomplete
+            invalidRecords = $lifetime.invalidRecords; partialLine = $lifetime.partialLine; failureStage = $lifetime.failureStage
+            births = $lifetime.births; exits = $lifetime.exits; header = $lifetime.header; footer = $lifetime.footer }
+    }
+    return $summary
 }
 
 function Get-NativeObservationSamples([Collections.IDictionary] $Report, [ValidateRange(1, 3)] [int] $Run,

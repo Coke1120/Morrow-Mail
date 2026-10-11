@@ -14,3 +14,44 @@ jobs:
       - name: Verify prelaunch identity exit loss and cleanup controls
         shell: pwsh
         run: ./scripts/test-process-birth-probe.ps1
+  owned-webview:
+    needs: birth-controls
+    runs-on: windows-2022
+    timeout-minutes: 25
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Restore existing native Rust cache
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: native-rust-${{ runner.os }}-${{ runner.arch }}-1.98.0-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml') }}
+      - name: Prepare existing native toolchain without Node
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup default 1.98.0
+          $env:PATH = (($env:PATH -split ';') | Where-Object {
+            $_ -and -not (Test-Path -LiteralPath (Join-Path $_ 'node.exe')) -and -not (Test-Path -LiteralPath (Join-Path $_ 'npm.cmd'))
+          }) -join ';'
+          if (Get-Command node,npm -ErrorAction SilentlyContinue) { throw 'Native fixture requires the existing Node-free path.' }
+          "PATH=$env:PATH" >> $env:GITHUB_ENV
+      - name: Build unchanged native product with fixture-only observer source
+        shell: pwsh
+        run: ./scripts/build-windows-native.ps1 -Zip
+      - name: Verify isolated WinUI WebView births exits counters and bounded teardown
+        shell: pwsh
+        run: ./scripts/test-windows-native.ps1 -UiSmoke -RequireCompleteObservation
+      - name: Retain synthetic native evidence including failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: owned-prelaunch-webview-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            test-results/windows-native-resource-*.json
+            test-results/windows-native-ui-*.json
+          if-no-files-found: warn
+          retention-days: 14

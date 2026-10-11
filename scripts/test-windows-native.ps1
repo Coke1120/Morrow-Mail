@@ -475,6 +475,9 @@ try {
     if ($UiSmoke) {
         Test-NativeUiDrain
         Test-NativeResourceObservation
+        & (Join-Path $PSScriptRoot 'test-process-birth-probe.ps1')
+        Require ($?) 'Owned prelaunch lifecycle controls failed.'
+        $observerExe = New-NativeProcessObserver $fixture
         $root = Split-Path $PSScriptRoot -Parent
         # Fixed package identity outside launch timing and the stderr drain.
         $resourceIdentity = [ordered]@{
@@ -503,8 +506,8 @@ try {
             $caseIndex++
             $resultFile = Join-Path $case.path 'native-smoke-result.json'
             if (Test-Path -LiteralPath $resultFile) { Remove-Item -LiteralPath $resultFile }
-            $ui = [Diagnostics.ProcessStartInfo]::new($exe)
-            $ui.ArgumentList.Add('--native-smoke')
+            $ui = [Diagnostics.ProcessStartInfo]::new($observerExe)
+            $ui.ArgumentList.Add($exe)
             $ui.UseShellExecute = $false
             $ui.RedirectStandardError = $true
             $ui.WorkingDirectory = $directory
@@ -515,21 +518,26 @@ try {
                 $crashCapture = New-CrashCapture
             }
             $sampleFile = New-NativeSampleFile $case.path
+            $birthFile = New-NativeSampleFile $case.path
             $collector = $null; $completion = $null; $collectorStarted = $false; $observationComplete = $false
             $launch = [Diagnostics.Stopwatch]::GetTimestamp()
+            foreach ($argument in @($sampleFile, $birthFile, $launch.ToString([Globalization.CultureInfo]::InvariantCulture))) { $ui.ArgumentList.Add($argument) }
             $process = [Diagnostics.Process]::Start($ui)
+            $launcherId = $process.Id; $launcherTicks = $process.StartTime.ToUniversalTime().Ticks
             try {
-                # Process.Start/StartTime only; all CIM runs in the owned child.
-                try { $collector = Start-NativeResourceCollector $process $sampleFile $launch; $collectorStarted = $null -ne $collector }
-                catch { Write-Warning 'Native resource collector could not start; evidence will be incomplete.' }
+                # The launcher is also the owned sampler. Its synchronous debug
+                # source and Job are ready before UI user code is resumed. The
+                # UI stderr is inherited directly; no sampler pipe/JSON/file
+                # work runs inside the existing continuous stderr drain.
+                $collector = $process; $collectorStarted = $true
                 $completion = Wait-NativeUi $process 180000 $launch
             } finally {
                 # No sampler wait/read inside Wait-NativeUi. Separate evidence
                 # has a 2 MiB input cap, independent of the UI result's 16 KiB cap.
-                $collectorStop = Stop-NativeResourceCollector $collector
+                $collectorStop = Stop-NativeResourceCollector $collector -KeepHandle
                 try {
                     $milestones = if ($completion) { $completion.MilestonesMs } else { @{} }
-                    $resource = Read-NativeResourceReport $sampleFile $collectorStop $milestones
+                    $resource = Read-NativeResourceReport $sampleFile $collectorStop $milestones $birthFile $launch $launcherId $launcherTicks
                     $resource['candidate'] = $resourceIdentity
                     $resource['run'] = $caseIndex; $resource['mode'] = $case.mode
                     $resource['uiCompleted'] = [bool] ($completion -and $completion.Completed)
