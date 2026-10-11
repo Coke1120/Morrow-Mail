@@ -142,7 +142,13 @@ async fn resolve(
         return Ok(None);
     }
     let previous = existing.clone();
-    let mut message = if let Some(existing) = existing.filter(|_| raw["isDraft"] != true) {
+    let mut message = if let Some(existing) = existing.filter(|old| {
+        raw["isDraft"] == false
+            && (string(old, "id").starts_with("sent:")
+                || mail::reusable_immutable_body(old, connection))
+            && !string(old, "messageId").is_empty()
+            && old["messageId"] == raw["internetMessageId"]
+    }) {
         existing
     } else {
         match providers::microsoft_message(&app.0.client, connection, &raw, string(&patch, "date"))
@@ -205,17 +211,29 @@ fn save(db: &Store, connection: &Value, messages: &[Value]) -> Result<()> {
                 }
                 message["localOverrides"]["folder"] = true.into();
             }
-            for key in [
-                "id",
-                "pending",
-                "lowPriority",
-                "labels",
-                "deliveryStatus",
-                "messageId",
-            ] {
+            if existing["attachmentsLoaded"] == true
+                && existing["providerDraft"] != true
+                && message["providerDraft"] != true
+                && !string(&message, "messageId").is_empty()
+                && existing["messageId"] == message["messageId"]
+            {
+                if message["contentIncomplete"] == true && mail::cached_body_available(&existing) {
+                    mail::copy_cached_body(&existing, &mut message);
+                    message["contentIncomplete"] = false.into();
+                    message["contentErrorCode"] = Value::Null;
+                }
+                message["attachments"] = existing["attachments"].clone();
+                message["attachmentsLoaded"] = mail::cached_body_available(&message).into();
+            }
+            for key in ["id", "pending", "lowPriority", "labels", "deliveryStatus"] {
                 if let Some(value) = existing.get(key) {
                     message[key] = value.clone();
                 }
+            }
+            // Local sent records retain the complete reviewed delivery payload;
+            // provider drafts use their current Message-ID and fresh body proof.
+            if string(&existing, "id").starts_with("sent:") {
+                message = mail::retain_reviewed_sent(&message, &existing);
             }
         }
         if db.get(owner, string(&message, "id"))?.as_ref() != Some(&message) {

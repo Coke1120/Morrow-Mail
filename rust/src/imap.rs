@@ -787,6 +787,29 @@ pub async fn write_flags_with_tls(
 pub async fn reconcile(mail: &Value, messages: &[Value]) -> Result<Vec<Value>> {
     reconcile_with_tls(mail, messages, &connector()?).await
 }
+pub(crate) async fn reconcile_priority(mail: &Value, messages: &[Value]) -> Result<Vec<Value>> {
+    reconcile_priority_with_tls(mail, messages, &connector()?).await
+}
+pub async fn reconcile_priority_with_tls(
+    mail: &Value,
+    messages: &[Value],
+    connector: &native_tls::TlsConnector,
+) -> Result<Vec<Value>> {
+    if messages.len() > crate::sync_priority::LIMIT {
+        return Err(Error::invalid("The mail view exceeds its message limit."));
+    }
+    // A retained reader can add one row to a 50-row page. Keep the existing
+    // per-request limit and overall read deadline; return no partial batch.
+    tokio::time::timeout(Duration::from_secs(45), async {
+        let mut result = Vec::new();
+        for chunk in messages.chunks(50) {
+            result.extend(reconcile_with_tls(mail, chunk, connector).await?);
+        }
+        Ok(result)
+    })
+    .await
+    .map_err(|_| providers::remote_error())?
+}
 pub async fn reconcile_with_tls(
     mail: &Value,
     messages: &[Value],
@@ -1199,7 +1222,9 @@ async fn fetch_folder(
             .get(&remote)
             .filter(|old| !large && !row.draft && folder != "drafts" && old["bodySize"] == size);
         let header = if previous.is_some() {
-            if let Some(bytes) = row.header.as_deref() {
+            if let Some(bytes) = row.header.as_deref().filter(|bytes| {
+                bytes.len() < 65536 && (bytes.ends_with(b"\r\n\r\n") || bytes.ends_with(b"\n\n"))
+            }) {
                 parse_mime(bytes.to_vec()).await.ok()
             } else {
                 None

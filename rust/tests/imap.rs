@@ -569,6 +569,49 @@ async fn imap_body_reuse_requires_account_folder_uidvalidity_connection_size_and
     assert!(string(&larger["messages"][0], "body").contains("Longer body"));
     assert_eq!(body_requests(&fixture), 7);
 }
+#[tokio::test]
+async fn priority_body_proof_requires_complete_imap_headers_before_reusing_cached_content() {
+    let raw = format!(
+        "Message-ID: <fixture@example.invalid>\r\n{}{}\r\nFull body after a long header.",
+        format!("X-Padding: {}\r\n", "x".repeat(120)).repeat(520),
+        HEADER.replace("Message-ID: <fixture@example.invalid>\r\n", "")
+    );
+    let fixture = ImapFixture::new(ImapScenario {
+        count: 1,
+        raw_message: Some(raw),
+        ..Default::default()
+    })
+    .await;
+    let workspace = CacheWorkspace::new(&fixture.mail).await;
+    let first = workspace.page(&fixture, &fixture.mail, "inbox").await;
+    assert_eq!(first["messages"][0]["subject"], "Fixture message");
+    assert_eq!(first["messages"][0]["fromEmail"], OWNER);
+    let second = workspace.page(&fixture, &fixture.mail, "inbox").await;
+    for field in [
+        "subject",
+        "fromName",
+        "fromEmail",
+        "senderDate",
+        "messageId",
+        "body",
+    ] {
+        assert_eq!(
+            second["messages"][0][field], first["messages"][0][field],
+            "Truncated headers cannot replace complete {field}"
+        );
+    }
+    assert_eq!(
+        body_requests(&fixture),
+        2,
+        "A truncated header cannot prove reusable current metadata"
+    );
+    let header_commands = fixture
+        .commands()
+        .into_iter()
+        .filter(|command| command.contains("BODY.PEEK[HEADER]<0.65536>"))
+        .count();
+    assert_eq!(header_commands, 2);
+}
 fn fixture_message(scenario: &ImapScenario, uid: &str) -> String {
     if let Some(raw) = &scenario.raw_message {
         raw.clone()
@@ -789,15 +832,18 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                     .await?;
                 }
             } else if fields.contains("RFC822.SIZE") {
-                let header = if scenario.oversized_header {
+                let mut header = if scenario.oversized_header {
                     "x".repeat(65537)
                 } else if let Some(raw) = &scenario.raw_message {
                     raw.split_once("\r\n\r\n")
-                        .map(|(header, _)| format!("{header}\r\n"))
-                        .unwrap_or_else(|| HEADER.to_owned())
+                        .map(|(header, _)| format!("{header}\r\n\r\n"))
+                        .unwrap_or_else(|| format!("{HEADER}\r\n"))
                 } else {
-                    HEADER.to_owned()
+                    format!("{HEADER}\r\n")
                 };
+                if !scenario.oversized_header && header.len() > 65536 {
+                    header.truncate(65536); // The long-header fixture uses ASCII.
+                }
                 let flags = [
                     scenario.remote_read.then_some("\\Seen"),
                     scenario.remote_starred.then_some("\\Flagged"),
@@ -1676,6 +1722,97 @@ async fn full_history_imap_persists_folder_and_uid_checkpoints_excluding_special
             .iter()
             .filter(|s| s.starts_with("UID SEARCH "))
             .all(|s| !s.contains("SINCE"))
+    );
+}
+
+#[tokio::test]
+async fn imap_priority_checks_a_retained_reader_plus_fifty_rows_within_existing_batch_bounds() {
+    let fixture = ImapFixture::new(ImapScenario::default()).await;
+    let mut messages = vec![
+        json!({"id":"imap:55:60","providerFolderId":"INBOX","body":"selected cache","read":false}),
+    ];
+    messages.extend((1..=50).map(|uid| json!({"id":format!("imap:55:{uid}"),"providerFolderId":"INBOX","body":"page cache","read":false})));
+    assert_eq!(
+        imap::reconcile_with_tls(&fixture.mail, &messages, &fixture.connector)
+            .await
+            .unwrap_err()
+            .status,
+        400,
+        "The ordinary reconciliation limit must remain 50"
+    );
+    let result = imap::reconcile_priority_with_tls(&fixture.mail, &messages, &fixture.connector)
+        .await
+        .unwrap();
+    assert_eq!(result.len(), 51);
+    assert!(result.iter().all(|row| row["read"] == true));
+    assert!(
+        result
+            .iter()
+            .any(|row| row["id"] == "imap:55:60" && row["body"] == "selected cache")
+    );
+    let requests: Vec<_> = fixture
+        .commands()
+        .into_iter()
+        .filter(|command| command.starts_with("UID FETCH "))
+        .collect();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0]
+            .split_whitespace()
+            .nth(2)
+            .unwrap()
+            .split(',')
+            .count(),
+        50
+    );
+    assert_eq!(
+        requests[1]
+            .split_whitespace()
+            .nth(2)
+            .unwrap()
+            .split(',')
+            .count(),
+        1
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|command| command.ends_with("(UID FLAGS)"))
+    );
+    assert!(
+        !fixture
+            .commands()
+            .iter()
+            .any(|command| command.starts_with("UID STORE "))
+    );
+
+    let before = fixture.commands().len();
+    let mut oversized = messages.clone();
+    oversized.push(json!({"id":"imap:55:59"}));
+    assert_eq!(
+        imap::reconcile_priority_with_tls(&fixture.mail, &oversized, &fixture.connector)
+            .await
+            .unwrap_err()
+            .status,
+        400
+    );
+    assert_eq!(
+        fixture.commands().len(),
+        before,
+        "Oversized hints make no provider request"
+    );
+
+    fixture.update(|scenario| {
+        scenario.examine_failure = Some(("INBOX", "NO [UNAVAILABLE] Try later"))
+    });
+    for message in messages.iter_mut().take(50) {
+        message["providerFolderId"] = SENT.into();
+    }
+    assert!(
+        imap::reconcile_priority_with_tls(&fixture.mail, &messages, &fixture.connector)
+            .await
+            .is_err(),
+        "A second-chunk failure must not return partially refreshed rows"
     );
 }
 

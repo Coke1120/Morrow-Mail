@@ -16,6 +16,11 @@ restart forgets it. Sync intervals remain user-controlled and require the app
 to be running. This does not create a push subscription or promise immediate
 server notifications.
 
+IMAP checks the selected message plus a full 50-row page as two batches of at
+most 50 messages under the existing overall 45-second read deadline. A failure
+in either batch returns no partial priority result. Ordinary reconciliation
+retains its 50-message limit.
+
 Read/unread writes remain explicit, owner-bound and provider-confirmed. A failed
 write does not become an automatic retry. The native page, cursor and selected
 message are not changed by hint publication. Account-specific and combined views
@@ -30,21 +35,28 @@ message. Legacy bodies without a server-written connection marker fetch once.
 
 IMAP additionally requires the same provider folder, UIDVALIDITY and UID, current
 non-draft flags, matching nonempty Message-ID and RFC822.SIZE. Current headers
-are parsed for metadata; only cached body fields are copied, preserving current
-internal/sender dates and flags. Unknown identity, changed size/epoch/connection,
+must end with the complete header separator below the 64 KiB partial-header
+limit before reuse; otherwise the normal body fetch supplies all metadata.
+Only cached body fields are copied, preserving current internal/sender dates
+and flags. Unknown identity, changed size/epoch/connection,
 incomplete content and mutable drafts use the normal body path. The existing
 large-message placeholder and import bounds remain.
 
-Graph requires a matching nonempty internetMessageId and current non-draft
-metadata. Drafts fetch their body on every page. Connection changes, missing
-identity/markers and incomplete content also fetch normally. Existing Gmail
-minimal metadata and immutable body reuse remain unchanged. Explicit attachment
-downloads, downloaded-content preservation and file quarantine are unchanged.
+Graph requires a matching nonempty internetMessageId and both current and
+cached non-draft metadata. A provider draft becoming Sent fetches its final
+body before recent-page reuse and adopts the provider folder when no explicit
+local folder override exists. Drafts fetch their body on every page. Connection
+changes, missing identity/markers and incomplete content also fetch normally.
+Downloaded attachment bytes survive a bounded large-body placeholder for the
+same immutable identity. Local `sent:` records retain the reviewed body,
+footer, recipients, attachments and delivery fingerprint; provider metadata
+does not give that local representation a fresh server-body marker. Existing
+Gmail minimal metadata/body reuse and attachment quarantine remain unchanged.
 
 ## Isolated verification
 
 Linux Cloud Rust 1.98.0 locked formatting, strict all-target Clippy and all
-300 tests passed on 11 October 2026. Exact committed heads and subsequent native
+304 tests passed on 11 October 2026. Exact committed heads and subsequent native
 results are recorded on the independent draft PR.
 
 Rust fixtures cover the 50/25 background boundaries, selected older messages
@@ -52,6 +64,12 @@ outside the import date window, both read directions, duplicate owner IDs,
 background fairness, monotonic/expired hints and connection replacement. They
 count actual IMAP BODY and Graph body HTTP requests across repeated pages and
 exercise draft, incomplete, changed identity/size, folder and epoch cases.
+Additional boundary controls cover a retained reader plus 50 rows, second-batch
+failure, truncated headers, same-ID draft-to-Sent transitions with and without
+priority, and oversized-body fallback after an actual attachment download.
+An owned synthetic send replay retains its reviewed fingerprint and attachment
+bytes across two syncs, returns confirmed without a provider send, and rejects
+cross-owner attachment reads.
 Cancellation/reconnect during a held Graph priority response cannot commit flags
 or checkpoints. Gmail/Graph quota responses preserve checkpoints and persisted
 backoff. Provider fixture networking is restricted to loopback with generated,

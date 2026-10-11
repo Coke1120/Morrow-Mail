@@ -94,7 +94,7 @@ async fn fetch(
     } else if messages.is_empty() {
         Ok(vec![])
     } else {
-        crate::imap::reconcile(connection, messages).await
+        crate::imap::reconcile_priority(connection, messages).await
     };
     mail::finish_read(app, connection, result).await
 }
