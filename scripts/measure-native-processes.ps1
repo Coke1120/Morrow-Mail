@@ -123,7 +123,7 @@ function Close-NativeObservationState([Collections.IDictionary] $State) {
 }
 
 function Add-NativeObservationFailure($Sample, $Row, [uint32] $Root, [string] $Source,
-    [string] $Reason, [string] $Stage, $Failure = $null, $ExitCode = $null) {
+    [string] $Reason, [string] $Stage, $Failure = $null, $ExitCode = $null, $NativeProof = $null) {
     $kind = 'none'; $code = $null
     if ($Failure) {
         while ($Failure.InnerException) { $Failure = $Failure.InnerException }
@@ -137,9 +137,29 @@ function Add-NativeObservationFailure($Sample, $Row, [uint32] $Root, [string] $S
     }
     $Sample.skipped++; $Sample.skipReasonCounts[$Reason]++
     if ([uint32] $Row.ProcessId -eq $Root) { $Sample.rootSkipped++ }
-    $Sample.failedRecords.Add([ordered]@{ pid = [uint32] $Row.ProcessId; parentPid = [uint32] $Row.ParentProcessId
+    $record = [ordered]@{ pid = [uint32] $Row.ProcessId; parentPid = [uint32] $Row.ParentProcessId
         cimStartUtcTicks = $Row.CreationDate.ToUniversalTime().Ticks; source = $Source
-        reason = $Reason; stage = $Stage; errorKind = $kind; errorCode = $code; exitCode = $ExitCode })
+        reason = $Reason; stage = $Stage; errorKind = $kind; errorCode = $code; exitCode = $ExitCode }
+    if ($null -ne $NativeProof) { $record.nativeProof = $NativeProof }
+    $Sample.failedRecords.Add($record)
+}
+
+function ConvertTo-NativeProofRead($Result) {
+    if ($null -eq $Result) { return $null }
+    return [ordered]@{ actualPid = $Result.ActualPid; startUtcTicks = $Result.StartUtcTicks
+        identityMatched = $Result.IdentityMatched; signaled = $Result.Signaled; waitStatus = $Result.WaitStatus
+        exitCode = $Result.ExitCode; nativeError = $Result.NativeError; stage = $Result.Stage; outcome = $Result.Outcome }
+}
+
+function ConvertTo-NativeLookupProof($Result, [long] $ParentTicks, [long] $SampleAt,
+    [long] $AdmissionAt, [long] $CollectorDeadline) {
+    return [ordered]@{ pinnedStartUtcTicks = $Result.PinnedStartUtcTicks; parentStartUtcTicks = $ParentTicks
+        parentBefore = 'valid'; parentAfter = 'parentUnavailable'; clockFrequency = $Result.ClockFrequency
+        sampleStartedAtQpc = $SampleAt; admissionStartedAtQpc = $AdmissionAt; collectorDeadlineAtQpc = $CollectorDeadline
+        startedAtQpc = $Result.StartedAtQpc; completedAtQpc = $Result.CompletedAtQpc; deadlineAtQpc = $Result.DeadlineAtQpc
+        durationMs = $Result.DurationMs; waitAttempted = $Result.WaitAttempted; settlingWait = $Result.SettlingWait
+        settlingError = $Result.SettlingError; deadlineExceeded = $Result.DeadlineExceeded; outcome = $Result.Outcome
+        projection = $Result.Projection; initial = (ConvertTo-NativeProofRead $Result.Initial); final = (ConvertTo-NativeProofRead $Result.Final) }
 }
 
 function Get-NativeProofParentState($Parent, [uint32] $ParentId, [long] $ParentTicks,
@@ -156,10 +176,13 @@ function Get-NativeProofParentState($Parent, [uint32] $ParentId, [long] $ParentT
 
 function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]] $SnapshotRows = $null,
     [scriptblock] $ObservationBarrier = $null, [scriptblock] $ReadCounters = $null,
-    [Collections.IDictionary] $State = $null, [scriptblock] $AcquireIdentity = $null) {
+    [Collections.IDictionary] $State = $null, [scriptblock] $AcquireIdentity = $null,
+    [long] $CollectorDeadlineAtQpc = 0, [scriptblock] $LookupProcess = $null, [scriptblock] $ReadLookupProof = $null) {
     # A collector owns this bounded cache until its finally block. Retaining the
     # original handle preserves exit evidence; a missing PID is never that proof.
-    # Fixture barriers/acquisition faults are direct arguments, never environment/app switches.
+    # Fixture faults/projections are direct arguments, never environment/app switches.
+    $sampleAt = [Diagnostics.Stopwatch]::GetTimestamp(); $frequency = [Diagnostics.Stopwatch]::Frequency
+    if ($CollectorDeadlineAtQpc -eq 0) { $CollectorDeadlineAtQpc = $sampleAt + 180L * $frequency }
     $ownsState = $null -eq $State
     if ($ownsState) { $State = New-NativeObservationState $Root $RootTicks }
     $cache = $State.handles; $entries = [Collections.Generic.List[object]]::new(); $stage = 'root'
@@ -230,12 +253,18 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
         }
         if ($ObservationBarrier) { [void] (& $ObservationBarrier 'snapshot' $null) }
         $admitted = [Collections.Generic.List[object]]::new()
+        # Fixed once for the whole admission loop, never reset per PID. Pending
+        # exit-zero settling is clipped to this sample and original collector.
+        $admissionAt = [Diagnostics.Stopwatch]::GetTimestamp()
+        $admissionDeadline = [Math]::Min($admissionAt + [long] [Math]::Floor($frequency / 4.0),
+            [Math]::Min($sampleAt + $frequency, $CollectorDeadlineAtQpc))
         # Admit every handle before reading any counters, reducing the CIM-to-
         # handle race without weakening failures for a first-seen missing child.
         foreach ($candidate in $candidates) {
             $row = $candidate.row; $id = [uint32] $row.ProcessId; $parentId = [uint32] $row.ParentProcessId
             if ($rejected.ContainsKey($id)) { continue }
             $skipReason = 'counterReadFailed'; $failureStage = 'identity'; $newProcess = $null; $identityHandle = $null
+            $proofDiagnostics = $null; $proofExitCode = $null
             try {
                 if ($cache.ContainsKey($id)) {
                     $known = $cache[$id]
@@ -276,39 +305,59 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
                     if ($ObservationBarrier) { [void] (& $ObservationBarrier 'nativePinned' $id) }
                     $failureStage = 'lookup'; $skipReason = 'processUnavailable'
                     if ($ObservationBarrier) { [void] (& $ObservationBarrier 'beforeLookup' $id) }
-                    try { $newProcess = [Diagnostics.Process]::GetProcessById($id) }
+                    try { $newProcess = if ($LookupProcess) { & $LookupProcess $id } else { [Diagnostics.Process]::GetProcessById($id) } }
                     catch {
                         $lookupFailure = $_.Exception
                         while ($lookupFailure.InnerException) { $lookupFailure = $lookupFailure.InnerException }
                         if ($lookupFailure -isnot [ArgumentException] -or $candidate.source -ne 'cim' -or $id -eq $Root) { throw }
-                        # .NET rejects an already-exited process. The original
-                        # pinned native handle still proves its exact identity.
+                        # .NET can reject an exit-zero process before its native
+                        # handle signals. Only initial native code zero permits
+                        # bounded settling through the same original pin.
                         # This narrow fallback never hides handle/counter errors.
                         $failureStage = 'parent'; $skipReason = 'parentUnavailable'
                         $parentState = Get-NativeProofParentState $parent $parentId $parentTicks $cache $rejected $byId
                         if ($parentState -ne 'valid') { $skipReason = $parentState; throw 'Exit proof parent is not live and verified.' }
                         $failureStage = 'nativeProof'; $skipReason = 'processUnavailable'
-                        $proof = [MorrowObservationIdentity.ExitProof]::ReadHandle($identityHandle, $id, $row.CreationDate.ToUniversalTime().Ticks, $parentTicks)
+                        $proof = if ($ReadLookupProof) {
+                            & $ReadLookupProof $identityHandle $id $row.CreationDate.ToUniversalTime().Ticks $parentTicks $pin.StartUtcTicks $admissionDeadline
+                        } else {
+                            [MorrowObservationIdentity.ExitProof]::ReadLookupHandle($identityHandle, $id,
+                                $row.CreationDate.ToUniversalTime().Ticks, $parentTicks, $pin.StartUtcTicks, $admissionDeadline)
+                        }
+                        $proofExitCode = $proof.ExitCode
+                        $proofDiagnostics = ConvertTo-NativeLookupProof $proof $parentTicks $sampleAt $admissionAt $CollectorDeadlineAtQpc
                         if ($ObservationBarrier) { [void] (& $ObservationBarrier 'exitProof' $parent.process) }
-                        if ($proof.ProvenZero) {
-                            $failureStage = 'parent'; $skipReason = 'parentUnavailable'
-                            $parentState = Get-NativeProofParentState $parent $parentId $parentTicks $cache $rejected $byId
-                            if ($parentState -ne 'valid') { $skipReason = $parentState; throw 'Exit proof parent changed during proof.' }
-                            $sample.lifecycleEvents.Add([ordered]@{ pid = $id; parentPid = $parentId; startUtcTicks = [long] $proof.StartUtcTicks
-                                role = 'other'; exitCode = 0; phase = 'beforeCounters'; source = 'cim'; identitySource = 'nativeLookupFallback' })
+                        $parentState = Get-NativeProofParentState $parent $parentId $parentTicks $cache $rejected $byId
+                        $proofDiagnostics.parentAfter = $parentState
+                        if ($proof.WaitAttempted) {
+                            # The parent recheck belongs to the same admission,
+                            # and cannot extend its absolute settling budget.
+                            $proofDiagnostics.completedAtQpc = [Math]::Max($proof.CompletedAtQpc, [Diagnostics.Stopwatch]::GetTimestamp())
+                            $proofDiagnostics.durationMs = ($proofDiagnostics.completedAtQpc - $proof.StartedAtQpc) * 1000.0 / $frequency
+                            $proofDiagnostics.deadlineExceeded = $proofDiagnostics.completedAtQpc -ge $admissionDeadline
+                            if ($proofDiagnostics.deadlineExceeded -and $proof.ProvenZero) { $proofDiagnostics.outcome = 'deadlineExpired' }
+                        }
+                        if ($parentState -ne 'valid') {
+                            $failureStage = 'parent'; $skipReason = $parentState
+                            throw 'Exit proof parent changed during proof.'
+                        }
+                        if ($proof.ProvenZero -and -not $proofDiagnostics.deadlineExceeded) {
+                            $sample.lifecycleEvents.Add([ordered]@{ pid = $id; parentPid = $parentId; startUtcTicks = [long] $proof.Final.StartUtcTicks
+                                role = 'other'; exitCode = 0; phase = 'beforeCounters'; source = 'cim'; identitySource = 'nativeLookupFallback'
+                                nativeProof = $proofDiagnostics })
                             # No live cache entry, counter, or descendant-root
                             # authority is created for this already-exited PID.
                             continue
                         }
-                        $failureStage = switch ($proof.Stage) {
+                        $failureStage = switch ($(if ($proofDiagnostics.outcome -eq 'deadlineExpired') { 'wait' } else { $proof.Stage })) {
                             'open' { 'nativeOpen' }; 'pid' { 'nativePid' }; 'creation' { 'nativeCreation' }
                             'wait' { 'nativeWait' }; 'exit' { 'nativeExit' }; default { 'nativeProof' }
                         }
-                        $skipReason = if ($proof.Outcome -eq 'identityMismatch') { 'identityMismatch' }
-                            elseif ($proof.Outcome -eq 'nonzeroExit') { 'processExited' } else { 'processUnavailable' }
+                        $skipReason = if ($proofDiagnostics.outcome -eq 'identityMismatch') { 'identityMismatch' }
+                            elseif ($proofDiagnostics.outcome -eq 'nonzeroExit') { 'processExited' } else { 'processUnavailable' }
                         $nativeFailure = if ($null -ne $proof.NativeError) { [ComponentModel.Win32Exception]::new($proof.NativeError) } else { $null }
                         $rejected[$id] = $true
-                        Add-NativeObservationFailure $sample $row $Root $candidate.source $skipReason $failureStage $nativeFailure $proof.ExitCode
+                        Add-NativeObservationFailure $sample $row $Root $candidate.source $skipReason $failureStage $nativeFailure $proof.ExitCode $proofDiagnostics
                         continue
                     }
                     $failureStage = 'handle'; [void] $newProcess.Handle
@@ -333,7 +382,7 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
                 $known.seen = $true; $admitted.Add(@{ row = $row; source = $candidate.source; identitySource = $identitySource; entry = $known })
             } catch {
                 $rejected[$id] = $true
-                Add-NativeObservationFailure $sample $row $Root $candidate.source $skipReason $failureStage $_.Exception
+                Add-NativeObservationFailure $sample $row $Root $candidate.source $skipReason $failureStage $_.Exception $proofExitCode $proofDiagnostics
             } finally {
                 try { if ($newProcess) { $newProcess.Dispose() } }
                 finally { if ($identityHandle) { $identityHandle.Dispose() } }
@@ -410,11 +459,11 @@ function Invoke-NativeResourceCollector {
             if ($elapsed -ge 180000) { break }
             $stage = 'sample'
             try {
-                $snapshot = Get-NativeProcessSnapshot $root $rootTicks -State $state
+                $snapshot = Get-NativeProcessSnapshot $root $rootTicks -State $state -CollectorDeadlineAtQpc ($launch + 180L * [Diagnostics.Stopwatch]::Frequency)
                 if (-not $snapshot.hasSnapshot) { $reason = $snapshot.terminalReason; $failureStage = $snapshot.failureStage; break }
                 $finished = [Diagnostics.Stopwatch]::GetTimestamp()
                 if (($finished - $launch) * 1000.0 / [Diagnostics.Stopwatch]::Frequency -ge 180000) { break }
-                $sample = [ordered]@{ kind = 0; elapsedMs = $elapsed; queryMs = ($finished - $at) * 1000.0 / [Diagnostics.Stopwatch]::Frequency
+                $sample = [ordered]@{ kind = 0; nativeProofVersion = 1; elapsedMs = $elapsed; queryMs = ($finished - $at) * 1000.0 / [Diagnostics.Stopwatch]::Frequency
                     skipped = $snapshot.skipped; rootSkipped = $snapshot.rootSkipped; rootExitedDuringSample = $snapshot.rootExitedDuringSample
                     skipReasonCounts = $snapshot.skipReasonCounts; processes = $snapshot.processes
                     lifecycleEvents = $snapshot.lifecycleEvents; failedRecords = $snapshot.failedRecords }
@@ -431,6 +480,122 @@ function Invoke-NativeResourceCollector {
     } finally { Close-NativeObservationState $state; $stream.Dispose() }
 }
 
+function Assert-NativeLookupProof($Proof, $Record, [bool] $IsExitEvent) {
+    $proofKeys = 'admissionStartedAtQpc,clockFrequency,collectorDeadlineAtQpc,completedAtQpc,deadlineAtQpc,deadlineExceeded,durationMs,final,initial,outcome,parentAfter,parentBefore,parentStartUtcTicks,pinnedStartUtcTicks,projection,sampleStartedAtQpc,settlingError,settlingWait,startedAtQpc,waitAttempted'
+    if ($Proof -isnot [Collections.IDictionary] -or (($Proof.Keys | Sort-Object) -join ',') -cne $proofKeys -or
+        $Record.source -cne 'cim' -or $Record.parentPid -le 1 -or $Record.parentPid -eq $Record.pid -or
+        $Proof.parentBefore -cne 'valid' -or $Proof.parentAfter -cnotin @('valid', 'parentUnavailable', 'parentExited', 'identityMismatch')) { throw 'Invalid native proof fields.' }
+    foreach ($key in @('pinnedStartUtcTicks', 'parentStartUtcTicks', 'clockFrequency', 'sampleStartedAtQpc',
+            'admissionStartedAtQpc', 'collectorDeadlineAtQpc', 'startedAtQpc', 'completedAtQpc', 'deadlineAtQpc')) {
+        if ($Proof[$key] -isnot [long] -or $Proof[$key] -le 0) { throw 'Invalid native proof integer.' }
+    }
+    foreach ($key in @('waitAttempted', 'deadlineExceeded', 'projection')) {
+        if ($Proof[$key] -isnot [bool]) { throw 'Invalid native proof boolean.' }
+    }
+    # A fixture projection demonstrates the validator, never native collector
+    # acceptance. Production has no switch that can produce this flag.
+    if ($Proof.projection -or $Proof.clockFrequency -gt 10000000000L -or
+        $Proof.parentStartUtcTicks -gt $Proof.pinnedStartUtcTicks -or $Proof.pinnedStartUtcTicks -gt [DateTime]::MaxValue.Ticks -or
+        $Proof.sampleStartedAtQpc -gt $Proof.admissionStartedAtQpc -or $Proof.admissionStartedAtQpc -gt $Proof.startedAtQpc -or
+        $Proof.startedAtQpc -gt $Proof.completedAtQpc) { throw 'Invalid native proof identity or clock.' }
+    $frequency = [decimal] $Proof.clockFrequency
+    $deadlineLimit = [Math]::Min([decimal] $Proof.admissionStartedAtQpc + [decimal]::Floor($frequency / 4),
+        [Math]::Min([decimal] $Proof.sampleStartedAtQpc + $frequency, [decimal] $Proof.collectorDeadlineAtQpc))
+    if ($Proof.deadlineAtQpc -gt $deadlineLimit -or
+        [decimal] $Proof.collectorDeadlineAtQpc - $Proof.sampleStartedAtQpc -gt 180 * $frequency -or
+        $Proof.durationMs -isnot [ValueType] -or $Proof.durationMs -is [bool] -or -not [double]::IsFinite($Proof.durationMs) -or
+        $Proof.durationMs -lt 0 -or $Proof.durationMs -gt 180000 -or
+        [Math]::Abs($Proof.durationMs - [double](1000 * ([decimal] $Proof.completedAtQpc - $Proof.startedAtQpc) / $frequency)) -gt 0.001) { throw 'Invalid native proof deadline.' }
+    foreach ($key in @('settlingWait', 'settlingError')) {
+        if ($null -ne $Proof[$key] -and ($Proof[$key] -isnot [long] -or $Proof[$key] -lt 0 -or
+            $Proof[$key] -gt $(if ($key -eq 'settlingWait') { [uint32]::MaxValue } else { [int]::MaxValue }))) { throw 'Invalid native settling status.' }
+    }
+    $reads = @($Proof.initial)
+    if ($null -ne $Proof.final) { $reads += $Proof.final }
+    foreach ($read in $reads) {
+        if ($read -isnot [Collections.IDictionary] -or (($read.Keys | Sort-Object) -join ',') -cne
+            'actualPid,exitCode,identityMatched,nativeError,outcome,signaled,stage,startUtcTicks,waitStatus' -or
+            $read.identityMatched -isnot [bool] -or $read.signaled -isnot [bool] -or
+            $read.stage -cnotin @('input', 'handle', 'pid', 'creation', 'wait', 'exit') -or
+            $read.outcome -cnotin @('invalidInput', 'unavailable', 'accessDenied', 'identityMismatch', 'invalidIdentity',
+                'alive', 'invalidWait', 'pendingZero', 'zeroExit', 'nonzeroExit')) { throw 'Invalid native proof read.' }
+        foreach ($key in @('actualPid', 'startUtcTicks', 'waitStatus', 'nativeError', 'exitCode')) {
+            if ($null -ne $read[$key] -and $read[$key] -isnot [long]) { throw 'Invalid native proof read integer.' }
+        }
+        if (($null -ne $read.actualPid -and ($read.actualPid -le 1 -or $read.actualPid -gt [uint32]::MaxValue)) -or
+            ($null -ne $read.startUtcTicks -and ($read.startUtcTicks -le 0 -or $read.startUtcTicks -gt [DateTime]::MaxValue.Ticks)) -or
+            ($null -ne $read.waitStatus -and ($read.waitStatus -lt 0 -or $read.waitStatus -gt [uint32]::MaxValue)) -or
+            ($null -ne $read.nativeError -and ($read.nativeError -lt 0 -or $read.nativeError -gt [int]::MaxValue)) -or
+            ($null -ne $read.exitCode -and ($read.exitCode -lt [int]::MinValue -or $read.exitCode -gt [int]::MaxValue))) { throw 'Invalid native proof read range.' }
+        if ($read.identityMatched -and ($read.actualPid -ne $Record.pid -or $read.startUtcTicks -ne $Proof.pinnedStartUtcTicks)) { throw 'Native pin changed.' }
+        if (($read.signaled -and $read.waitStatus -ne 0) -or
+            ($null -ne $read.waitStatus -and (($read.waitStatus -eq 0) -ne $read.signaled))) { throw 'Native wait and signal disagree.' }
+        if ($read.waitStatus -eq 4294967295L -and ($null -eq $read.nativeError -or $read.stage -ne 'wait' -or $null -ne $read.exitCode)) { throw 'Missing WAIT_FAILED error.' }
+        if ($null -ne $read.nativeError -and ($read.outcome -notin @('accessDenied', 'unavailable') -or
+            $read.stage -notin @('pid', 'creation', 'wait', 'exit') -or $null -ne $read.exitCode -or
+            (($read.nativeError -eq 5) -ne ($read.outcome -eq 'accessDenied')) -or
+            ($read.stage -eq 'wait' -and $read.waitStatus -ne 4294967295L) -or
+            ($read.stage -eq 'exit' -and $read.waitStatus -notin @(0L, 258L)))) { throw 'Invalid native API error.' }
+        switch ($read.outcome) {
+            'zeroExit' { if (-not $read.identityMatched -or $read.waitStatus -ne 0 -or $read.exitCode -ne 0 -or $null -ne $read.nativeError) { throw 'Invalid native zero exit.' } }
+            'pendingZero' { if (-not $read.identityMatched -or $read.waitStatus -ne 258 -or $read.exitCode -ne 0 -or $null -ne $read.nativeError) { throw 'Invalid native pending zero.' } }
+            'nonzeroExit' { if ($read.waitStatus -notin @(0L, 258L) -or $null -eq $read.exitCode -or $read.exitCode -eq 0 -or $null -ne $read.nativeError) { throw 'Invalid native nonzero exit.' } }
+            'alive' { if ($read.waitStatus -ne 258 -or ($null -ne $read.exitCode -and $read.exitCode -ne 259) -or $null -ne $read.nativeError) { throw 'Invalid native live status.' } }
+            'invalidWait' { if ($null -eq $read.waitStatus -or $read.waitStatus -in @(0L, 258L, 4294967295L) -or $null -ne $read.exitCode -or $null -ne $read.nativeError) { throw 'Invalid unexpected wait.' } }
+        }
+    }
+    $initial = $Proof.initial; $final = $Proof.final
+    if ($null -ne $final -and ($final.outcome -eq 'pendingZero' -or ($final.waitStatus -eq 258 -and $null -ne $final.exitCode))) { throw 'Final proof must be a native read.' }
+    if ($Proof.waitAttempted) {
+        if ($initial.outcome -ne 'pendingZero' -or $initial.waitStatus -ne 258 -or $initial.exitCode -ne 0 -or
+            $null -ne $initial.nativeError -or $null -eq $Proof.settlingWait -or $Proof.startedAtQpc -ge $Proof.deadlineAtQpc -or
+            (($Proof.settlingWait -eq 4294967295L) -ne ($null -ne $Proof.settlingError)) -or
+            (($Proof.settlingWait -eq 0) -ne ($null -ne $final)) -or
+            ($Proof.deadlineExceeded -ne ($Proof.completedAtQpc -ge $Proof.deadlineAtQpc))) { throw 'Invalid settling qualification.' }
+    } elseif ($null -ne $Proof.settlingWait -or $null -ne $Proof.settlingError -or
+        ($null -ne $final -and $initial.outcome -ne 'zeroExit') -or
+        ($Proof.deadlineExceeded -and ($initial.outcome -ne 'pendingZero' -or $Proof.completedAtQpc -lt $Proof.deadlineAtQpc))) { throw 'Invalid no-wait proof.' }
+    if ($Proof.outcome -cnotin @('invalidInput', 'unavailable', 'accessDenied', 'identityMismatch', 'invalidIdentity',
+        'alive', 'invalidWait', 'zeroExit', 'nonzeroExit', 'deadlineExpired')) { throw 'Invalid native lookup outcome.' }
+    $expectedOutcome = if ($null -ne $final) {
+        if ($final.outcome -eq 'zeroExit' -and $Proof.deadlineExceeded) { 'deadlineExpired' } else { $final.outcome }
+    } elseif ($Proof.waitAttempted) {
+        if ($Proof.settlingWait -eq 258) { 'alive' } elseif ($Proof.settlingWait -eq 4294967295L) {
+            if ($Proof.settlingError -eq 5) { 'accessDenied' } else { 'unavailable' }
+        } else { 'invalidWait' }
+    } elseif ($initial.outcome -eq 'pendingZero') { 'deadlineExpired' } else { $initial.outcome }
+    if ($Proof.outcome -cne $expectedOutcome) { throw 'Native lookup outcome does not match raw evidence.' }
+    $childZero = $null -ne $final -and $final.outcome -eq 'zeroExit' -and $final.identityMatched -and
+        $final.actualPid -eq $Record.pid -and $final.startUtcTicks -eq $Proof.pinnedStartUtcTicks -and
+        $final.waitStatus -eq 0 -and $final.exitCode -eq 0 -and $null -eq $final.nativeError
+    if ($Proof.outcome -eq 'zeroExit' -and (-not $childZero -or $Proof.deadlineExceeded -or
+        ($Proof.waitAttempted -and ($Proof.settlingWait -ne 0 -or $Proof.completedAtQpc -ge $Proof.deadlineAtQpc)))) { throw 'Unproven native zero exit.' }
+    if ($Proof.outcome -eq 'deadlineExpired' -and (-not $Proof.deadlineExceeded -or
+        ($null -ne $final -and -not $childZero) -or $initial.outcome -ne 'pendingZero')) { throw 'Invalid expired native proof.' }
+    $accepted = $Proof.outcome -eq 'zeroExit' -and $childZero -and $Proof.parentAfter -eq 'valid'
+    if ($IsExitEvent) {
+        if (-not $accepted -or $Record.identitySource -ne 'nativeLookupFallback' -or $Record.startUtcTicks -ne $Proof.pinnedStartUtcTicks) { throw 'Invalid native proof event.' }
+    } else {
+        if ($accepted -or -not [MorrowObservationIdentity.ExitProof]::MatchesCreation($Proof.pinnedStartUtcTicks,
+            $Record.cimStartUtcTicks, $Proof.parentStartUtcTicks) -or $Record.stage -notin @('parent', 'nativeProof', 'nativePid', 'nativeCreation', 'nativeWait', 'nativeExit')) { throw 'Invalid native proof failure.' }
+        $expectedExit = if ($null -ne $final) { $final.exitCode } elseif (-not $Proof.waitAttempted -and $Proof.outcome -ne 'deadlineExpired') { $initial.exitCode } else { $null }
+        if ($Record.exitCode -ne $expectedExit) { throw 'Native failure exit does not match.' }
+        if ($Record.stage -ne 'parent') {
+            $expectedError = if ($null -ne $Proof.settlingError) { $Proof.settlingError } elseif ($null -ne $final) { $final.nativeError } else { $initial.nativeError }
+            if ($Record.errorCode -ne $expectedError -or
+                ($null -eq $expectedError -and $Record.errorKind -ne 'none') -or
+                ($null -ne $expectedError -and $Record.errorKind -ne $(if ($expectedError -eq 5) { 'accessDenied' } else { 'native' }))) { throw 'Native failure error does not match.' }
+        }
+    }
+}
+
+function Get-NativeProofClock($Proof) {
+    # Called only after strict Int64 validation. These values are fixed before
+    # admission and must be identical across successes AND failures in a sample.
+    return (@('clockFrequency', 'sampleStartedAtQpc', 'admissionStartedAtQpc', 'collectorDeadlineAtQpc', 'deadlineAtQpc') |
+        ForEach-Object { $Proof[$_].ToString([Globalization.CultureInfo]::InvariantCulture) }) -join ','
+}
+
 function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
     $samples = [Collections.Generic.List[object]]::new(); $footer = $null; $invalid = $false; $partial = $false
     $peakWs = 0L; $peakPrivate = 0L; $lastElapsed = -1.0; $gaps = $false
@@ -439,6 +604,7 @@ function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
     $uiPids = @{}; $nativeLookupPids = @{}
     $extendedSampleKeys = (@('elapsedMs', 'kind', 'processes', 'queryMs', 'rootExitedDuringSample', 'rootSkipped', 'skipped', 'skipReasonCounts') | Sort-Object) -join ','
     $lifecycleSampleKeys = (@('elapsedMs', 'failedRecords', 'kind', 'lifecycleEvents', 'processes', 'queryMs', 'rootExitedDuringSample', 'rootSkipped', 'skipped', 'skipReasonCounts') | Sort-Object) -join ','
+    $pinnedSampleKeys = (@('elapsedMs', 'failedRecords', 'kind', 'lifecycleEvents', 'nativeProofVersion', 'processes', 'queryMs', 'rootExitedDuringSample', 'rootSkipped', 'skipped', 'skipReasonCounts') | Sort-Object) -join ','
     try {
         $file = Get-Item -LiteralPath $Path
         if ($file.PSIsContainer -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Invalid observation file.' }
@@ -461,7 +627,8 @@ function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
                     $footer = @{ reason = $row.reason; samples = $row.samples; failureStage = $failureStage }; continue
                 }
                 $keys = ($row.Keys | Sort-Object) -join ','
-                if ($samples.Count -eq 180 -or $row.kind -ne 0 -or $keys -cnotin @('elapsedMs,kind,processes,queryMs,skipped', $extendedSampleKeys, $lifecycleSampleKeys)) { throw 'Invalid observation sample.' }
+                if ($samples.Count -eq 180 -or $row.kind -ne 0 -or $keys -cnotin @('elapsedMs,kind,processes,queryMs,skipped', $extendedSampleKeys, $lifecycleSampleKeys, $pinnedSampleKeys) -or
+                    ($row.ContainsKey('nativeProofVersion') -and ($row.nativeProofVersion -isnot [long] -or $row.nativeProofVersion -ne 1))) { throw 'Invalid observation sample.' }
                 foreach ($key in @('elapsedMs', 'queryMs', 'skipped')) {
                     if ($row[$key] -isnot [ValueType] -or $row[$key] -is [bool] -or -not [double]::IsFinite($row[$key]) -or $row[$key] -lt 0 -or $row[$key] -gt 180000) { throw 'Invalid observation number.' }
                 }
@@ -501,9 +668,10 @@ function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
                 if ($row.ContainsKey('lifecycleEvents')) {
                     $modernRecords = $true; $events = $row.lifecycleEvents; $failures = $row.failedRecords
                     if ($events -isnot [array] -or $events.Count -gt 64 -or $failures -isnot [array] -or $failures.Count -ne $row.skipped) { throw 'Invalid lifecycle records.' }
-                    $exited = @{}; $failed = @{}; $recordReasons = New-NativeSkipReasonCounts
+                    $exited = @{}; $failed = @{}; $recordReasons = New-NativeSkipReasonCounts; $proofClock = $null
                     foreach ($event in $events) {
-                        if (($event.Keys | Sort-Object) -join ',' -cne 'exitCode,identitySource,parentPid,phase,pid,role,source,startUtcTicks' -or
+                        if (($event.Keys | Sort-Object) -join ',' -cnotin @('exitCode,identitySource,parentPid,phase,pid,role,source,startUtcTicks',
+                                'exitCode,identitySource,nativeProof,parentPid,phase,pid,role,source,startUtcTicks') -or
                             $event.role -cnotin @('ui', 'service', 'webview', 'other') -or
                             $event.source -cnotin @('cim', 'retained') -or $event.identitySource -cnotin @('currentSnapshot', 'priorSnapshot', 'nativeLookupFallback') -or
                             $event.phase -cnotin @('beforeCounters', 'afterCounters', 'afterSnapshot') -or
@@ -518,7 +686,14 @@ function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
                         if ($event.role -eq 'ui') { $uiPids[$event.pid] = $true }
                         if ($event.identitySource -eq 'nativeLookupFallback') {
                             if ($event.parentPid -le 1 -or $event.pid -eq $event.parentPid) { throw 'Invalid lookup parent.' }
+                            if ($row.ContainsKey('nativeProofVersion') -and -not $event.ContainsKey('nativeProof')) { throw 'Missing native lookup metadata.' }
                             $nativeLookupPids[$event.pid] = $true
+                        }
+                        if ($event.ContainsKey('nativeProof')) {
+                            Assert-NativeLookupProof $event.nativeProof $event $true
+                            $clock = Get-NativeProofClock $event.nativeProof
+                            if ($null -ne $proofClock -and $proofClock -cne $clock) { throw 'Native admission deadline changed within a sample.' }
+                            $proofClock = $clock
                         }
                         if ($event.phase -eq 'beforeCounters') {
                             if ($identities.ContainsKey($event.pid)) { throw 'Exited process has unexpected counters.' }
@@ -527,7 +702,8 @@ function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
                         $exited[$event.pid] = $true
                     }
                     foreach ($failure in $failures) {
-                        if (($failure.Keys | Sort-Object) -join ',' -cne 'cimStartUtcTicks,errorCode,errorKind,exitCode,parentPid,pid,reason,source,stage' -or
+                        if (($failure.Keys | Sort-Object) -join ',' -cnotin @('cimStartUtcTicks,errorCode,errorKind,exitCode,parentPid,pid,reason,source,stage',
+                                'cimStartUtcTicks,errorCode,errorKind,exitCode,nativeProof,parentPid,pid,reason,source,stage') -or
                             $failure.source -cnotin @('cim', 'retained') -or -not $recordReasons.ContainsKey($failure.reason) -or
                             $failure.stage -cnotin @('inventory', 'parent', 'lookup', 'handle', 'identity', 'role', 'counters', 'exit',
                                 'nativeProof', 'nativeOpen', 'nativeAcquire', 'nativePid', 'nativeCreation', 'nativeWait', 'nativeExit') -or
@@ -544,6 +720,12 @@ function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
                             ($failure.errorKind -eq 'accessDenied' -and $failure.errorCode -ne 5) -or
                             ($failure.errorKind -eq 'native' -and $null -eq $failure.errorCode) -or
                             ($failure.errorKind -in @('none', 'argument', 'invalidOperation', 'other') -and $null -ne $failure.errorCode)) { throw 'Invalid failure evidence.' }
+                        if ($failure.ContainsKey('nativeProof')) {
+                            Assert-NativeLookupProof $failure.nativeProof $failure $false
+                            $clock = Get-NativeProofClock $failure.nativeProof
+                            if ($null -ne $proofClock -and $proofClock -cne $clock) { throw 'Native admission deadline changed within a sample.' }
+                            $proofClock = $clock
+                        }
                         $failed[$failure.pid] = $true; $recordReasons[$failure.reason]++
                     }
                     foreach ($key in @($skipCounts.Keys)) {
@@ -814,6 +996,8 @@ function Test-NativeResourceObservation {
         Check (Read-NativeResourceReport $path $stop @{}).invalidRecords
         Write-Host 'Native observation identity, bounds, 64-bit counters and partial-record checks passed.'
     } finally { if ($stream) { $stream.Dispose() }; [IO.File]::Delete($path) }
+    . (Join-Path $PSScriptRoot 'test-native-pinned-exit.ps1')
+    Test-NativePinnedExitSchema
     . (Join-Path $PSScriptRoot 'test-native-process-lifecycle.ps1')
     Test-NativeProcessLifecycle
 }

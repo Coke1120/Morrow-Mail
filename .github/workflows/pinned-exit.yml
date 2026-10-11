@@ -1,0 +1,37 @@
+name: Focused original-pin exit proof and mail flow
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/pinned-exit-wait-20261011]
+permissions:
+  contents: read
+jobs:
+  pinned-exit:
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+      - name: Record fixture runtime version
+        shell: pwsh
+        run: |
+          Write-Host ('PowerShell=' + $PSVersionTable.PSVersion.ToString())
+          Write-Host ('Runtime=' + [Runtime.InteropServices.RuntimeInformation]::FrameworkDescription)
+      - name: Verify strict parser, original 26 lifecycle cases and same-pin controls
+        shell: pwsh
+        run: ./scripts/test-windows-native.ps1 -ObservationsSelfTest
+      - name: Verify combined candidate native sidebar and attachment flow
+        shell: pwsh
+        run: ./scripts/test-windows-attachment-flow.ps1
+      - name: Verify pinned sidebar negative control with its original API surface
+        shell: pwsh
+        run: ./scripts/test-windows-attachment-flow.ps1 -BaselineSidebar
+  macos-flow:
+    needs: pinned-exit
+    runs-on: macos-15
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Verify retained search page and current-view hints
+        run: python3 -B scripts/test-macos-mail-flow.py

@@ -380,7 +380,7 @@ IAsyncAction Shell::start() {
         if (auto self = weak.lock(); self && !self->closeReady) { event.Cancel(true); if (!self->closing) self->shutdown(); }
     });
     navigation.ItemInvoked([weak](auto const&, NavigationViewItemInvokedEventArgs const& event) {
-        auto self = weak.lock(); if (!self || self->selectingNavigation || self->loading) return;
+        auto self = weak.lock(); if (!self || self->selectingNavigation) return;
         hstring target, account, folder = L"inbox";
         if (event.IsSettingsInvoked()) target = flag(self->updateResult, L"updateAvailable") ? L"about" : L"preferences";
         else {
@@ -393,6 +393,12 @@ IAsyncAction Shell::start() {
         auto version = self->generation; auto captured = self->owner;
         self->root.DispatcherQueue().TryEnqueue([weak, version, captured, target, account, folder] {
             if (auto self = weak.lock(); self && self->current(version, captured)) {
+                if (self->loading || self->dialogOpen || !self->navigation.IsEnabled()) {
+                    // WinUI has already selected the invoked item. Restore the
+                    // displayed mailbox only after its invocation has finished.
+                    self->rebuildNavigation();
+                    return;
+                }
                 if (target == L"manage-folders") self->manageFolders(account);
                 else self->navigate(target, account, folder);
             }
@@ -473,6 +479,7 @@ IAsyncAction Shell::refresh(bool rebuild) {
 }
 void Shell::rebuildNavigation() {
     selectingNavigation = true;
+    NavigationViewItem selectedItem{nullptr};
     Json desktopState;
     try { desktopState = service->clientState(); } catch (...) { error(errorText()); }
     navigation.MenuItems().Clear();
@@ -518,7 +525,8 @@ void Shell::rebuildNavigation() {
         {L"Out of Office", L"out-of-office", L"\uE708"}, {L"AI Studio", L"studio", L"\uE734"},
         {L"Calendar", L"calendar", L"\uE787"}, {L"Outbox", L"scheduled", L"\uE823"}}) {
         auto item = navItem(entry.title, entry.id, {}, L"inbox", entry.glyph);
-        item.IsSelected(section == entry.id); navigation.MenuItems().Append(item);
+        item.IsSelected(section == entry.id); if (item.IsSelected()) selectedItem = item;
+        navigation.MenuItems().Append(item);
     }
     std::vector<Json> accounts;
     for (auto const& value : array(state, L"accounts")) {
@@ -555,12 +563,14 @@ void Shell::rebuildNavigation() {
                 InfoBadge badge; badge.Value(static_cast<int32_t>(std::min<uint64_t>(count, INT32_MAX))); child.InfoBadge(badge);
             }
             child.IsSelected(section == L"mail" && owner == id && folder == mailbox.id);
+            if (child.IsSelected()) selectedItem = child;
             folderDrop(child, id, mailDropDestination(id, mailbox.id));
             item.MenuItems().Append(child);
         }
         if (id != L"all") {
             auto outbox = navItem(L"Outbox", L"scheduled", id, L"inbox", L"\uE823");
-            outbox.IsSelected(section == L"scheduled" && owner == id); item.MenuItems().Append(outbox);
+            outbox.IsSelected(section == L"scheduled" && owner == id); if (outbox.IsSelected()) selectedItem = outbox;
+            item.MenuItems().Append(outbox);
             auto provider = text(object(serverFolders, id.c_str()), L"provider");
             if (provider.empty()) for (auto const& account : accounts) if (text(account, L"id") == id) provider = text(account, L"provider");
             auto remote = navItem(provider == L"google" ? L"Gmail labels" : L"Server folders", L"server-folders", id, L"inbox", L"\uE8B7");
@@ -574,7 +584,8 @@ void Shell::rebuildNavigation() {
                     auto child = navItem(text(entry, L"name"), L"mail", id, key, L"\uE8B7");
                     folderActions(child, id, text(entry,L"id"));
                     folderDrop(child, id, text(entry,L"id"));
-                    child.IsSelected(section == L"mail" && owner == id && folder == key); remote.MenuItems().Append(child);
+                    child.IsSelected(section == L"mail" && owner == id && folder == key); if (child.IsSelected()) selectedItem = child;
+                    remote.MenuItems().Append(child);
                 }
                 remote.IsExpanded((folderFilter && !folderFilter.Text().empty()) || section == L"mail" && owner == id && std::wstring_view(folder).starts_with(L"provider:"));
             }
@@ -595,12 +606,17 @@ void Shell::rebuildNavigation() {
     }
     navigation.FooterMenuItems().Clear();
     auto activity = navItem(L"Activity", L"activity", {}, L"inbox", L"\uE9D9"); activity.IsSelected(section == L"activity");
+    if (activity.IsSelected()) selectedItem = activity;
     navigation.FooterMenuItems().Append(activity);
     navigation.FooterMenuItems().Append(navItem(L"Add account", L"settings", {}, L"inbox", L"\uE710"));
     if (auto settings = navigation.SettingsItem().try_as<NavigationViewItem>()) {
         settings.Content(box_value(L"Settings & connections"));
         settings.IsSelected(section == L"settings" || section == L"preferences" || section == L"policy" || section == L"about");
+        if (settings.IsSelected()) selectedItem = settings;
     }
+    // Child IsSelected set before insertion is not sufficient for WinUI's
+    // selection model; restore the canonical item after all groups exist.
+    navigation.SelectedItem(selectedItem);
     updateBadge();
     selectingNavigation = false;
 }

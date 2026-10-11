@@ -26,6 +26,7 @@ function Test-NativeProcessLifecycle {
 $command = [Console]::ReadLine()
 if ($command -ceq 'exit0') { exit 0 }
 if ($command -ceq 'exit7') { exit 7 }
+if ($command -ceq 'exitCrashCode') { exit -1073741819 } # Explicit exit-code projection, not an actual crash.
 exit 9
 '@
         $child = [Diagnostics.Process]::Start((New-LifecycleProcessStart $source))
@@ -442,6 +443,7 @@ namespace MorrowObservationFixture {
             Close-LifecycleChild $ancestor; $ancestor = $null
             [IO.File]::Delete($path); Close-LifecycleChild $child $facts.fixtureChildDisposed; $child = $null
         }
+        Test-NativePinnedExitWait $control $self
     } finally {
         if ($state) { Close-NativeObservationState $state }
         try { Close-LifecycleChild $descendant }

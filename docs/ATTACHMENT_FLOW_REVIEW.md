@@ -26,6 +26,52 @@ path, so navigation resumes afterwards. The file-writing, account capture,
 attachment validation and quarantine paths remain unchanged. Full native smoke
 also exercises the shared entry while a real reader popup owns the guard.
 
+## Real sidebar invocation after PR27
+
+PR27 added the shared navigation guard, but its fixture called `navigate`
+directly. The [postmerge review](https://github.com/Coke1120/Morrow-Mail/pull/27#discussion_r4240386164)
+identified that WinUI can select a different account/folder before that guard
+returns. This leaves the visible sidebar label inconsistent with the retained
+mailbox; it does not demonstrate an attachment request through the wrong owner.
+
+The separate `codex/sidebar-selection-20261011` branch starts from merged main
+`982384388097aabb710ca5f146d7ed07290bb597`. Its production handler defers the
+blocked-state check until the actual invocation finishes, then rebuilds from
+the retained canonical state. The rebuild explicitly assigns `SelectedItem`
+after all groups exist, under the existing `selectingNavigation` guard. Setting
+a child's `IsSelected` before insertion does not reliably update WinUI's
+selection model. Allowed navigation still uses the existing generation/owner
+check and shared navigation path.
+
+The private fixture extracts the production event registration verbatim from
+the chosen compiler input and mounts a real NavigationView. It waits for the
+target to load, invokes its native selection automation peer, requires an
+independent actual `ItemInvoked` event, and waits for the dispatcher callback.
+It checks an account/folder and footer activation during a held attachment
+response, preserving mailbox owner, page/cursors, selected draft, generation,
+request count, saved bytes and quarantine metadata. It neither fabricates the
+event nor substitutes a direct `navigate` call for these new assertions.
+
+[38119005419](https://github.com/Coke1120/Morrow-Mail/actions/runs/38119005419),
+attempt 1 at `d81d7861f4f85293ffc1f2518682b1568ca7e89e`, passed both stages:
+the pinned merged-main source reproduces the actual sidebar/account mismatch;
+the candidate restores the original selection. Earlier attempts
+[38118278693](https://github.com/Coke1120/Morrow-Mail/actions/runs/38118278693),
+[38118329288](https://github.com/Coke1120/Morrow-Mail/actions/runs/38118329288),
+[38118637695](https://github.com/Coke1120/Morrow-Mail/actions/runs/38118637695)
+and [38118866577](https://github.com/Coke1120/Morrow-Mail/actions/runs/38118866577)
+failed before establishing the required real-event assertion: unavailable
+shallow-checkout baseline history, unseeded initial selection, or fixture
+assumptions about asynchronous invocation/target realization. They remain
+failed fixture evidence. The 30-second process bound and exact-owned cleanup
+remain unchanged. Independent source review at the passing source head found
+no additional blocker; full paired native CI is recorded on the draft PR.
+
+This proves the native event/state route with synthetic data. Physical keyboard
+and Narrator operation, picker cancellation and live accounts remain unverified.
+It adds no lifecycle tracing and does not repair the strict Windows observation
+failure in postmerge main CI 38114776594.
+
 ## Bounded native evidence
 
 `scripts/test-windows-attachment-flow.ps1` compiles WinUI and the real attachment
