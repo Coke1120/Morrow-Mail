@@ -1,0 +1,27 @@
+name: Focused native mail flow
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/mail-flow-review-20261010]
+permissions:
+  contents: read
+jobs:
+  mail-flow:
+    runs-on: macos-15
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Fetch pinned main for the negative control
+        run: git fetch --depth=1 origin 8159b9dda81a938cd2b51258351a69f064f68a7c
+      - name: Reproduce the pinned search page reset
+        run: python3 -B scripts/test-macos-mail-flow.py --baseline-search
+      - name: Verify the candidate with isolated native controls
+        run: python3 -B scripts/test-macos-mail-flow.py
+  windows-compile:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Compile the native attachment labels and assertions
+        shell: pwsh
+        run: ./scripts/build-windows-native.ps1 -CompileOnly

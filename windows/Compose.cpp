@@ -250,6 +250,7 @@ void renderComposerAttachments(std::shared_ptr<Composer> const& state) {
             state->message.Insert(L"attachments", remaining); state->requestId = Service::uuid();
             renderComposerAttachments(state); state->update();
         });
+        xaml::Automation::AutomationProperties::SetName(remove, L"Remove attachment " + text(item, L"name"));
         remove.IsEnabled(!state->frozen()); state->attachmentRemovals.push_back(make_weak(remove));
         row.Children().Append(remove);
         panel.Children().Append(row);
@@ -736,6 +737,20 @@ IAsyncAction composerWriteGuardChecks(std::shared_ptr<Shell> shell) {
     auto previousPage = shell->page.Content();
     apartment_context ui;
     auto originalState = copy(shell->state);
+    // Fictional metadata only; exercise the rendered removal controls without
+    // reading a file, uploading an attachment or saving a draft.
+    auto attachmentPanel = stack(4); state->attachmentPanel = make_weak(attachmentPanel);
+    Array attachments;
+    for (auto name : {L"one.txt", L"two.txt"}) {
+        Json item; put(item, L"id", name); put(item, L"name", name); attachments.Append(item);
+    }
+    state->message.Insert(L"attachments", attachments); renderComposerAttachments(state);
+    require(state->attachmentRemovals.size() == 2, L"Attachment removal controls did not render.");
+    for (size_t index = 0; index < state->attachmentRemovals.size(); ++index)
+        require(xaml::Automation::AutomationProperties::GetName(state->attachmentRemovals[index].get())
+            == L"Remove attachment " + text(attachments.GetAt(static_cast<uint32_t>(index)).GetObject(), L"name"),
+            L"Attachment removal controls do not identify their filenames.");
+    state->message.Remove(L"attachments"); renderComposerAttachments(state); state->attachmentPanel = {};
     auto settings = object(shell->state, L"settings"), preferences = object(settings, L"preferences");
     preferences.Insert(L"sendDelayHours", Value::CreateNumberValue(6)); settings.Insert(L"preferences", preferences); shell->state.Insert(L"settings", settings);
     Button sendReview; state->send = make_weak(sendReview); state->update();

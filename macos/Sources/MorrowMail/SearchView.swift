@@ -55,7 +55,7 @@ struct NativeMailSearch: View {
             if !result["total"].isNull { resultStatus }
         }.padding(12).background(.bar)
         .onChange(of: options) { _ in schedule() }
-        .onChange(of: model.state) { _ in if smart && !result["total"].isNull { run(page: Int(result["page"].number), cachedOnly: true) } else { schedule() } }
+        .onChange(of: model.state) { _ in refresh() }
         .onChange(of: model.searchFocus) { _ in focused = true }
         .task { model.searchResponse = .null; history = (try? await model.request("/search/preferences")) ?? .null }
         .onDisappear { operation?.cancel(); ticket = UUID(); model.searchResponse = .null }
@@ -105,16 +105,32 @@ struct NativeMailSearch: View {
         if smart { return }
         operation = Task { do { try await Task.sleep(nanoseconds: 250_000_000); guard !Task.isCancelled else { return }; run() } catch {} }
     }
-    func run(page: Int = 0, record: Bool = false, cachedOnly: Bool = false) {
+    func refresh() {
+        guard active, !result["total"].isNull else { schedule(); return }
+        // Read-state and draft saves refresh this search, keeping its page and
+        // displayed rows while the same query is in flight. Smart refreshes may
+        // only reuse cached matching; they never submit another model request.
+        run(page: Int(result["page"].number), cachedOnly: smart, retainingResults: true)
+    }
+    func run(page: Int = 0, record: Bool = false, cachedOnly: Bool = false, retainingResults: Bool = false) {
         operation?.cancel(); let current = UUID(); ticket = current
         let owner = model.account, section = model.section; var payload = options
         payload["page"] = .number(Double(page)); payload["cachedOnly"] = .bool(cachedOnly)
-        searching = true; error = ""; model.searchResponse = .object(["messages": .array([]), "loading": .bool(true)])
+        searching = true; error = ""
+        if !retainingResults { model.searchResponse = .object(["messages": .array([]), "loading": .bool(true)]) }
         operation = Task {
             defer { if ticket == current { searching = false } }
             do {
-                let next = try await model.request("/search", method: "POST", body: payload, mailbox: owner)
+                var next = try await model.request("/search", method: "POST", body: payload, mailbox: owner)
                 guard !Task.isCancelled, ticket == current, model.account == owner, model.section == section else { return }
+                if page > 0, !next["total"].isNull, next["messages"].array.isEmpty {
+                    let last = max(0, (Int(next["total"].number) - 1) / 30)
+                    if last < page {
+                        payload["page"] = .number(Double(last))
+                        next = try await model.request("/search", method: "POST", body: payload, mailbox: owner)
+                        guard !Task.isCancelled, ticket == current, model.account == owner, model.section == section else { return }
+                    }
+                }
                 model.searchResponse = next
                 if record { remember("recent", value: payload) }
             } catch { if !Task.isCancelled && ticket == current { self.error = error.localizedDescription } }

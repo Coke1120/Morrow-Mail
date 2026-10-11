@@ -53,6 +53,10 @@ jobs:
         shell: bash
         run: |
           /bin/sh scripts/build-macos-native.sh --zip
+      - name: Native search read and reply presentation
+        if: env.SKIP_TESTS != 'true'
+        shell: bash
+        run: python3 -B scripts/test-macos-mail-flow.py
       - name: Native macOS acceptance
         if: env.SKIP_TESTS != 'true'
         shell: bash
