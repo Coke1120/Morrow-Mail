@@ -605,7 +605,7 @@ void Shell::rebuildNavigation() {
 }
 IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder) {
     auto lifetime = shared_from_this();
-    if (closing || loading || !navigation.IsEnabled()) co_return;
+    if (closing || loading || dialogOpen || !navigation.IsEnabled()) co_return;
     auto beforeSave = generation;
     auto saveGeneral = saveGeneralBeforeLeave;
     if (saveGeneral && !(co_await saveGeneral())) co_return;
@@ -1515,6 +1515,12 @@ IAsyncAction nativeInteractionChecks(std::shared_ptr<Shell> shell) {
             lateRelease(); // An older model completion arrives while the next popup is visible.
             check(shell->dialogOpen, L"An older reader popup cleared the new dialog guard.");
         }
+        auto pageBefore = shell->page.Content(); auto generationBefore = shell->generation;
+        auto ownerBefore = shell->owner; auto sectionBefore = shell->section;
+        co_await shell->navigate(L"mail", L"blocked-navigation@fixture.invalid", L"drafts");
+        check(shell->dialogOpen && shell->current(generationBefore, ownerBefore)
+            && shell->section == sectionBefore && shell->page.Content() == pageBefore,
+            L"A foreground dialog/download guard allowed sidebar navigation.");
         dialog.Hide();
         while (display.Status() == AsyncStatus::Started && GetTickCount64() < deadline) {
             co_await resume_after(std::chrono::milliseconds(20)); co_await ui;

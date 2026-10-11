@@ -85,6 +85,9 @@ fire_and_forget startAttachmentFlowChecks(std::shared_ptr<Shell> shell) {
         auto duplicateUpload = co_await uploadAttachment(shell, shell->owner);
         require(requests == 1 && selections == 1 && duplicateUpload.Size() == 0 && shell->dialogOpen,
             L"Repeated attachment activation bypassed the active download guard.");
+        auto other = Json::Parse(LR"({"accountId":"second@attachment.invalid","id":"same-id","viewId":"second:same-id"})");
+        co_await shell->read(other, false);
+        require(unchanged() && requests == 1, L"Reading another owner's duplicate ID bypassed the active download guard.");
         // This is the same entry point as sidebar page/account activation.
         // A disconnected destination renders onboarding and makes no request.
         co_await shell->navigate(L"mail", L"second@attachment.invalid", L"inbox");
