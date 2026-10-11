@@ -7,6 +7,8 @@ if (-not $IsWindows) { throw 'These are Windows native control checks.' }
 $root = Split-Path $PSScriptRoot -Parent
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ('morrow-attachment-flow-' + [guid]::NewGuid().ToString())
 $process = $null
+$stderr = $null
+$reported = $false
 function Replace-Once([string] $Path, [string] $Before, [string] $After) {
     $source = [IO.File]::ReadAllText($Path)
     if (($source.Split(@($Before), [StringSplitOptions]::None)).Count -ne 2) { throw "Fixture seam changed: $Before" }
@@ -72,12 +74,17 @@ void attachmentFixturePicker(IFileDialog*);'
     $stderr = $process.StandardError.ReadToEndAsync()
     if (-not $process.WaitForExit(30000)) { throw 'Attachment native checks exceeded their 30-second bound.' }
     Write-Host $stderr.GetAwaiter().GetResult()
+    $reported = $true
     if ($process.ExitCode -ne 0 -or [IO.File]::ReadAllText((Join-Path $workspace 'attachment-result.txt')) -cne 'passed') {
         throw 'Attachment native assertions failed.'
     }
 } finally {
     if ($process) {
         if (-not $process.HasExited) { $process.Kill($true); if (-not $process.WaitForExit(5000)) { throw 'Owned fixture did not terminate.' } }
+        if ($stderr -and -not $reported) {
+            if (-not $stderr.Wait(5000)) { throw 'Owned fixture stderr did not finish draining.' }
+            Write-Host $stderr.GetAwaiter().GetResult()
+        }
         $process.Dispose()
     }
     if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Recurse -Force }

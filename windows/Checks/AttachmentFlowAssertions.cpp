@@ -13,6 +13,7 @@ std::filesystem::path fixture, selectedPath;
 com_ptr<IFileDialog> activeDialog;
 UINT_PTR cancelTimer = 0;
 unsigned dialogs = 0, cancelledDialogs = 0, requests = 0, selections = 0;
+unsigned pickerTicks = 0;
 bool holdDownload = false, invalidDownload = false;
 hstring requestedOwner;
 void require(bool value, wchar_t const* message) {
@@ -25,8 +26,14 @@ std::string contents(std::filesystem::path const& path) {
 void CALLBACK cancelPicker(HWND, UINT, UINT_PTR timer, DWORD) noexcept {
     com_ptr<IOleWindow> window;
     HWND handle{};
-    if (activeDialog && SUCCEEDED(activeDialog->QueryInterface(IID_PPV_ARGS(window.put())))
-        && SUCCEEDED(window->GetWindow(&handle)) && IsWindowVisible(handle)) {
+    auto query = activeDialog ? activeDialog->QueryInterface(IID_PPV_ARGS(window.put())) : E_POINTER;
+    auto getWindow = window ? window->GetWindow(&handle) : E_POINTER;
+    if (++pickerTicks == 1) {
+        std::fprintf(stderr, "Attachment fixture: picker timer query=0x%08X window=0x%08X visible=%d\n",
+            static_cast<unsigned>(query), static_cast<unsigned>(getWindow), int(IsWindowVisible(handle)));
+        std::fflush(stderr);
+    }
+    if (SUCCEEDED(query) && SUCCEEDED(getWindow) && IsWindowVisible(handle)) {
         KillTimer(nullptr, timer); cancelTimer = 0;
         if (SUCCEEDED(activeDialog->Close(HRESULT_FROM_WIN32(ERROR_CANCELLED)))) ++cancelledDialogs;
     }
@@ -41,12 +48,13 @@ std::filesystem::path attachmentFixtureSelection(bool save) {
 }
 void attachmentFixturePicker(IFileDialog* dialog) {
     require(!cancelTimer, L"A previous picker cancellation timer survived.");
-    activeDialog.copy_from(dialog); ++dialogs;
+    activeDialog.copy_from(dialog); ++dialogs; pickerTicks = 0;
     com_ptr<IShellItem> folder;
     check_hresult(SHCreateItemFromParsingName(fixture.c_str(), nullptr, IID_PPV_ARGS(folder.put())));
     check_hresult(dialog->SetFolder(folder.get()));
     cancelTimer = SetTimer(nullptr, 0, 50, cancelPicker);
     require(cancelTimer != 0, L"Could not schedule the owned picker cancellation.");
+    std::fprintf(stderr, "Attachment fixture: picker %u entering Show\n", dialogs); std::fflush(stderr);
 }
 IAsyncOperation<Json> attachmentFixtureRequest(hstring path, hstring owner, hstring method, Json body) {
     require(path == L"/attachments/fictional" && owner == L"first@attachment.invalid"
@@ -79,6 +87,10 @@ fire_and_forget startAttachmentFlowChecks(std::shared_ptr<Shell> shell) {
         shell->composeButton = controls::Button(); shell->syncButton = controls::Button();
         shell->navigation.Content(shell->page); shell->root.Children().Append(shell->navigation);
         shell->window.Content(shell->root); shell->window.Activate();
+        // Return from OnLaunched before entering the common dialog's modal loop.
+        apartment_context ui;
+        co_await resume_after(std::chrono::milliseconds(50)); co_await ui;
+        std::fprintf(stderr, "Attachment fixture: native window ready\n"); std::fflush(stderr);
         shell->owner = L"first@attachment.invalid"; shell->folder = L"drafts";
         shell->cursors = {L"", L"second-page"}; shell->nextCursor = L"third-page";
         shell->selected = Json::Parse(LR"({"accountId":"first@attachment.invalid","id":"same-id","viewId":"first:same-id","body":"Unsaved fictional text","attachments":[{"id":"fictional","name":"fixture.txt"}]})");
