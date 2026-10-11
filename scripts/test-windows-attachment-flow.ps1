@@ -47,6 +47,10 @@ try {
     # Only private compiler inputs change. The normal application and package
     # never contain a fixture transport, picker hook or alternate startup.
     Copy-Item -LiteralPath (Join-Path $native 'Checks/AttachmentFlowAssertions.cpp') -Destination $native
+    if (-not $BaselineNavigation) {
+        $checks = Join-Path $native 'AttachmentFlowAssertions.cpp'
+        [IO.File]::WriteAllText($checks, "#define MORROW_SYNC_PRIORITY_CHECKS`n" + [IO.File]::ReadAllText($checks), [Text.UTF8Encoding]::new($false))
+    }
     Replace-Once $app 'shell = std::make_shared<morrow::Shell>(); shell->start();' 'shell = std::make_shared<morrow::Shell>(); morrow::startAttachmentFlowChecks(shell);'
     Replace-Once $app 'struct MorrowApplication :' 'namespace morrow { winrt::fire_and_forget startAttachmentFlowChecks(std::shared_ptr<Shell>); }
 struct MorrowApplication :'

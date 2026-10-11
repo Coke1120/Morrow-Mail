@@ -9,6 +9,7 @@ final class MailFlowProtocol: URLProtocol {
     static let lock = NSLock()
     static var searches: [(String, JSON)] = []
     static var drafts: [(String, JSON)] = []
+    static var priorities: [(String, JSON)] = []
     static var holdSearch = false
     static var held: MailFlowProtocol?
     static var total = 65
@@ -46,7 +47,7 @@ final class MailFlowProtocol: URLProtocol {
         do {
             let body = try Self.body(request), owner = request.value(forHTTPHeaderField: "X-Genmail-Account") ?? ""
             guard request.url?.host == "127.0.0.1", request.url?.port == 18484,
-                  [Self.owner, Self.other, ""].contains(owner) else { throw APIError("Unexpected fixture destination or owner.") }
+                  ([Self.owner, Self.other, ""].contains(owner) || (owner == "all" && request.url?.path == "/api/sync/priority")) else { throw APIError("Unexpected fixture destination or owner.") }
             Self.lock.lock(); defer { Self.lock.unlock() }
             switch request.url!.path {
             case "/api/search/preferences": response = .object(["saved": .array([]), "recent": .array([])])
@@ -57,6 +58,10 @@ final class MailFlowProtocol: URLProtocol {
                                     "messages": .array(start < end ? (start..<end).map { Self.row($0, owner: owner) } : [])])
                 if Self.holdSearch { Self.holdSearch = false; Self.held = self; return }
             case "/api/state": response = Self.state()
+            case "/api/sync/priority":
+                guard request.httpMethod == "POST", body["generation"].number > 0, body["messages"].array.count <= 51,
+                      body["messages"].array.allSatisfy({ [Self.owner, Self.other].contains($0["accountId"].string) && (owner == "all" || $0["accountId"].string == owner) && !$0.id.isEmpty }) else { throw APIError("Invalid current mail view hint.") }
+                Self.priorities.append((owner, body)); response = .object(["accepted": .bool(true)])
             case "/api/drafts":
                 Self.drafts.append((owner, body)); Self.revision += 1
                 var saved = body; saved["id"] = .string("fixture-saved"); saved["accountId"] = .string(owner)
@@ -94,6 +99,7 @@ final class MailFlowProtocol: URLProtocol {
         lock.lock(); defer { lock.unlock() }; return (searches, drafts, held != nil, failures)
     }
     static func holdNext() { lock.lock(); holdSearch = true; lock.unlock() }
+    static func prioritySnapshot() -> [(String, JSON)] { lock.lock(); defer { lock.unlock() }; return priorities }
     static func shrink() { lock.lock(); total = 30; revision += 1; lock.unlock() }
 }
 
@@ -180,6 +186,13 @@ struct MailFlowAssertions {
         MailFlowProtocol.release()
         try await wait("Read refresh did not settle on page two.") { model.searchResponse["page"].number == 1 && model.searchResponse != secondPage }
         trace("Fixture phase: read-refresh-retained")
+        let retainedSelection = model.selectedMessage, retainedPage = model.searchResponse
+        await model.publishSyncPriority()
+        let priority = MailFlowProtocol.prioritySnapshot().last!
+        try require(priority.0 == MailFlowProtocol.owner && priority.1["messages"].array.count == 30
+                    && priority.1["messages"].array.first?.id == model.current?.id
+                    && model.searchResponse == retainedPage && model.selectedMessage == retainedSelection,
+                    "Publishing the current page changed its selection/pagination or omitted visible mail.")
         // Carry two distinct attachment identities through Keep Editing/save.
         var draft = Draft(); draft.accountID = MailFlowProtocol.owner; draft.replyToID = "fixture:30"
         draft.to = "recipient@example.invalid"; draft.subject = "Fictional reply"; draft.body = "Keep these unsaved edits."
@@ -240,6 +253,20 @@ struct MailFlowAssertions {
         try await wait("New-owner search did not complete.") { model.searchResponse["total"].number == 30 }
         try require(model.searchResponse["messages"].array.allSatisfy { $0["accountId"].string == MailFlowProtocol.other }
                     && MailFlowProtocol.snapshot().3.isEmpty, "Unexpected request or account-owned result.")
+        let combinedModel = AppModel(session: URLSession(configuration: config))
+        defer { combinedModel.stop(); combinedModel.session.invalidateAndCancel() }
+        combinedModel.state = MailFlowProtocol.state(); combinedModel.state["account"]["id"] = .string("all")
+        let selectedOther = MailFlowProtocol.row(7, owner: MailFlowProtocol.other)
+        combinedModel.searchResponse = .object(["messages": .array([MailFlowProtocol.row(7, owner: MailFlowProtocol.owner), selectedOther]
+            + (10..<80).map { MailFlowProtocol.row($0, owner: MailFlowProtocol.owner) })])
+        combinedModel.selectedMessage = selectedOther.viewID
+        let combinedPage = combinedModel.searchResponse
+        await combinedModel.publishSyncPriority()
+        let combinedHint = MailFlowProtocol.prioritySnapshot().filter { $0.0 == "all" }.max { $0.1["generation"].number < $1.1["generation"].number }!.1["messages"].array
+        try require(combinedHint.count == 51 && combinedHint.first?["accountId"].string == MailFlowProtocol.other
+                    && combinedHint.filter { $0.id == "fixture:7" }.count == 2
+                    && combinedModel.searchResponse == combinedPage && combinedModel.selectedMessage == selectedOther.viewID,
+                    "Combined priority hints lost a duplicate ID's owner, selected-first order, bound or visible state.")
         print("Native search/read/reply: page retention, rows during held refresh, Keep Editing, owner/attachment-preserving Save, last-page fallback and stale-account cancellation passed. Fictional transport only; Mac AX names, VoiceOver and persistence are not asserted.")
     }
 }

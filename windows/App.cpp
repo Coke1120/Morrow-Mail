@@ -335,7 +335,7 @@ IAsyncAction Shell::start() {
     syncButton = button(L"Sync", [weak = weak_from_this()] { if (auto self = weak.lock()) self->sync(); });
     syncButton.IsEnabled(false);
     Automation::AutomationProperties::SetAutomationId(syncButton, L"mail.sync");
-    ToolTipService::SetToolTip(syncButton, box_value(L"Sync recent mail in the current account view (Ctrl+R); Today syncs all accounts. New mail is fetched first; saved checkpoints reconcile older cached messages."));
+    ToolTipService::SetToolTip(syncButton, box_value(L"Sync mail in the current account view (Ctrl+R); Today syncs all accounts. The selected message and current mail page are checked first, followed by recent mail and older downloaded messages."));
     Grid::SetColumn(syncButton, 1); mailboxActions.Children().Append(syncButton);
     brand.Children().Append(mailboxActions); navigation.PaneHeader(brand);
     folderFilter = field(L"Filter labels / folders"); folderFilter.Header(nullptr); folderFilter.PlaceholderText(L"Filter labels / folders");
@@ -451,6 +451,7 @@ IAsyncAction Shell::refresh(bool rebuild) {
     refreshing = true;
     struct Refreshing { bool& value; ~Refreshing() { value = false; } } guard{refreshing};
     try {
+        co_await publishSyncPriority();
         auto result = co_await service->request(L"/state", captured);
         if (!current(version, captured) || state.Stringify() != before) co_return;
         if (!rebuild && (loading || syncing || dialogOpen || !dirty.empty()
@@ -634,6 +635,7 @@ IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder
     if (!account.empty()) owner = account;
     auto captured = owner;
     section = target; folder = mailFolder; cursors = {L""}; nextCursor = L"";
+    publishSyncPriority(true);
     rebuildNavigation();
     error(L"");
     if (target == L"mail") {
@@ -1001,6 +1003,7 @@ IAsyncAction Shell::loadPage(int pageDelta, bool refreshReader, bool reset) {
     previous.IsEnabled(cursors.size() > 1); next.IsEnabled(!nextCursor.empty());
     search.IsEnabled(true); sorting.IsEnabled(search.Text().empty()); unreadFilter.IsEnabled(search.Text().empty());
     loading = false;
+    publishSyncPriority();
 }
 Json refreshedReaderMessage(Json const& previous, Json message) {
     // Raw downloads contain a reader-only CID copy. Keep that explicitly
@@ -1090,6 +1093,7 @@ IAsyncAction Shell::read(Json metadata, bool markOnOpen) {
         if (text(message, L"accountId") != account || text(message, L"id") != id) throw hresult_error(E_FAIL, L"The message owner changed. Open it again.");
         selected = message;
         detailLoaded = true;
+        publishSyncPriority();
         bool hadRetained = retainedUnread.Size() && text(retainedUnread, L"viewId") != text(message, L"viewId");
         if (hadRetained) retainedUnread = Json();
         if (text(message, L"folder") == L"drafts" && !flag(message, L"providerDraft")) { co_await compose(lifetime, message); co_return; }
@@ -1444,12 +1448,37 @@ IAsyncAction Shell::messageAI(Json message, hstring action, bool history) {
     if (!failed && !dialogOpen && choice == ContentDialogResult::Primary && current(version, captured) && sequence == selectionGeneration)
         co_await prepare(message, L"reply", text(result, L"text"));
 }
+JsonArray Shell::syncPriorityMessages() const {
+    JsonArray messages;
+    if (section != L"mail" || !rows || (owner != L"all" && !connected(owner))) return messages;
+    std::set<std::pair<std::wstring, std::wstring>> seen;
+    auto append = [&](Json const& message) {
+        auto account = text(message, L"accountId"), id = text(message, L"id");
+        if (messages.Size() >= 51 || id.empty() || !connected(account) || (owner != L"all" && account != owner)
+            || !seen.emplace(std::wstring(account), std::wstring(id)).second) return;
+        Json entry; put(entry, L"accountId", account); put(entry, L"id", id); messages.Append(entry);
+    };
+    append(selected);
+    for (auto const& item : rows.Items()) append(item.as<ListViewItem>().Tag().as<Json>());
+    return messages;
+}
+IAsyncAction Shell::publishSyncPriority(bool clear) {
+    auto lifetime = shared_from_this();
+    if (closing || !service) co_return;
+    Json body;
+    body.Insert(L"generation", Value::CreateNumberValue(static_cast<double>(++syncPriorityGeneration)));
+    body.Insert(L"messages", clear ? JsonArray() : syncPriorityMessages());
+    auto scope = owner == L"all" || connected(owner) ? owner : hstring(L"all");
+    try { co_await service->request(L"/sync/priority", scope, L"POST", body); }
+    catch (...) {} // The hint expires; a failed hint does not alter mail or its current view.
+}
 IAsyncAction Shell::sync() {
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
     if ((!connected(captured) && captured != L"all") || service->writing() || syncing || dialogOpen || !dirty.empty()) co_return;
     syncing = true; syncButton.IsEnabled(false);
     error(L"Syncing mail… See Activity for progress.");
     try {
+        co_await publishSyncPriority();
         auto result = co_await service->request(L"/sync", section == L"today" ? L"all" : captured, L"POST");
         if (!current(version, captured)) { syncing = false; syncButton.IsEnabled(array(state, L"accounts").Size() > 0); co_return; }
         state = result;
