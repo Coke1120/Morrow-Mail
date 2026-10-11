@@ -1,5 +1,20 @@
 # Verification — 11 October 2026
 
+## v0.7.3 published and public downloads verified — 11 October 2026
+
+[v0.7.3](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.7.3) was published at **2026-10-11T18:40:11Z** from `1f9306e0a177cd9892e23641e9b86b41b682df0f`, whose parent is merged main `277c9ccf17b285587ec07be8fc77729d418d904e`. Local ancestry and the remote annotated tag confirm inclusion of PR28 and PR29. Release author, committer and tagger email is `howailok1120@hotmail.com`.
+
+[Tagged CI 38162326664](https://github.com/Coke1120/Morrow-Mail/actions/runs/38162326664), **attempt 1**, completed success without rerun or waiver. macOS job **114537655251** passed 304 Rust tests, Node-free formatting/strict Clippy, SwiftUI packaging, native search/read/reply and full acceptance, wrapping/visibility diagnostics, and **40/40 complete network-zero adversarial-reader samples**. Windows job **114537655039** passed 300 Rust tests, WinUI packaging, fresh/owned/restart UI and strict observation (4/44/32 point samples), relocated PowerShell 5.1 acceptance and the 1,000/10,000/50,000-message fictional-mail benchmark. Rust results have zero failed or ignored tests. Release job **114544231420** verified same-run/same-attempt platform identities and artifact provenance, then used the existing publisher and pinned signing key. All required steps and all three jobs completed success.
+
+Public verification on the Mac mini used unauthenticated HTTPS requests: the release page returned **HTTP 200**, all **six assets** downloaded, both ZIPs passed CRC/path-integrity checks, all bundled product metadata and the macOS plist report **0.7.3**, and exact SHA-256 files match the downloaded bytes and signed manifest sizes/hashes. The **Ed25519 signature verified against the unchanged `rust/resources/update-public-key.pem`**. Public release notes match the tagged notes, including the known limitations. Previously published binaries and tags were not replaced.
+
+| Platform | ZIP bytes | SHA-256 |
+| --- | ---: | --- |
+| macos-arm64 | 14,410,828 | `aab03cf28010aa808c90b3437d6b525931ec3870580c6d7513ed5912f9239d03` |
+| windows-x64 | 39,087,311 | `e59d1376a2ee23816f1b29e0e26e7d671f2e98fe9f92ec20eb32036c251fad10` |
+
+This successful attempt does not establish that historical Windows first-acquire native error 87/unknown exits or intermittent reader timeouts are repaired. Mac mini Parallels acceptance, native picker cancellation, full manual accessibility/live-account and clean-machine/updater acceptance remain incomplete as disclosed. macOS is ad-hoc signed without notarization and Windows is unsigned. The original checkout and real mailbox/account workspaces remained untouched; testing used isolated fictional fixtures.
+
 ## v0.7.3 release preparation — 11 October 2026
 
 The isolated release checkout on the owner's Mac mini starts from fetched main `277c9ccf17b285587ec07be8fc77729d418d904e`. It contains merged [PR28](https://github.com/Coke1120/Morrow-Mail/pull/28), including the reviewed sidebar correction and [bounded original-pin proof](docs/WINDOWS_PINNED_EXIT_SETTLING.md), and merged [PR29](https://github.com/Coke1120/Morrow-Mail/pull/29) at `b833ba0b9d2c958552dd272404708654a612ea55`. Git ancestry checks passed for both merge commits. GitHub had no v0.7.3 tag or release at preparation time; the latest public release was v0.7.2 at `b93dbfc842ce00f3a459ebe9affe770dd23df90b`.
