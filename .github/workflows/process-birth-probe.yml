@@ -3,6 +3,15 @@ on:
   push:
     branches: [codex/observer-birth-ledger-20261011]
   workflow_dispatch:
+    inputs:
+      run_owned_ui:
+        description: Run the bounded UI experiment only for a new reviewed hypothesis
+        type: boolean
+        default: false
+      hypothesis:
+        description: State the new finding that distinguishes this experiment
+        type: string
+        default: ''
 permissions:
   contents: read
 jobs:
@@ -14,7 +23,13 @@ jobs:
       - name: Verify prelaunch identity exit loss and cleanup controls
         shell: pwsh
         run: ./scripts/test-process-birth-probe.ps1
+      - name: Verify bounded stderr and existing owned lifecycle controls
+        shell: pwsh
+        run: ./scripts/test-windows-native.ps1 -ObservationsSelfTest
   owned-webview:
+    # The rejected UI candidate must not run again on an unchanged branch push.
+    # This research switch never changes the canonical paired release gates.
+    if: github.event_name == 'workflow_dispatch' && inputs.run_owned_ui && inputs.hypothesis != ''
     needs: birth-controls
     runs-on: windows-2022
     timeout-minutes: 25

@@ -270,7 +270,7 @@ function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMillisecond
     $safeStartup += '|^Native reader: nav-uri empty=[01] dataHtml=[01] dataHtmlBase64=[01] aboutBlankPrefix=[01] other=[01] length=[0-9]{1,10}$'
     $safeStartup += '|^Native observer: events=[0-9]{1,5} births=[0-9]{1,3} exits=[0-9]{1,3} jobTotal=[0-9]{1,5} jobActive=[0-9]{1,5} firstChance=[0-9]{1,5} secondChance=[0-9]{1,5} lastException=0x[0-9A-F]{8} debugStrings=[0-9]{1,5} accounting=[01]$'
     $safeLines = [Collections.Generic.Queue[string]]::new()
-    $state = @{ phase = ''; characters = 0; milestones = @{} }
+    $state = @{ phase = ''; shutdown = ''; characters = 0; milestones = @{} }
     function Keep-Line([string] $Value) {
         # Receipt time only, with the clock captured before Process.Start. The
         # exact fixed markers survive diagnostic-tail trimming. No CIM or file
@@ -284,6 +284,10 @@ function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMillisecond
         }
         if ($Value -cnotmatch $safeStartup) { return }
         if ($Value -cmatch '^Native smoke: [a-z-]{1,64}$') { $state.phase = $Value }
+        if ($Value -cmatch '^Native startup: (shutdown (service drain starting|service drained|window close starting|window closed|application exit returned)|XAML application stopped)$') {
+            # Preserve one fixed teardown marker independently of tail trimming.
+            $state.shutdown = $Value
+        }
         $safeLines.Enqueue($Value); $state.characters += $Value.Length + 1
         while ($safeLines.Count -gt 20 -or $state.characters -gt 1025) {
             $state.characters -= $safeLines.Dequeue().Length + 1
@@ -334,7 +338,7 @@ function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMillisecond
         } catch { $readFailed = $true; $eof = $true }
     }
     if ($readFailed) { Write-Warning 'Fixture stderr collection was incomplete; only validated phases are retained.' }
-    return @{ Completed = $completed; Diagnostics = ($safeLines -join "`n"); LastSmokePhase = $state.phase; MilestonesMs = $state.milestones }
+    return @{ Completed = $completed; Diagnostics = ($safeLines -join "`n"); LastSmokePhase = $state.phase; LastShutdownPhase = $state.shutdown; MilestonesMs = $state.milestones }
 }
 function Test-NativeUiDrain {
     # Real pipes, fixed fictional text only: no app, workspace or network access.
@@ -354,6 +358,8 @@ function Test-NativeUiDrain {
 [Console]::Error.WriteLine('Native milestone: html-ready secret-token')
 [Console]::Error.WriteLine('native milestone: html-ready')
 [Console]::Error.WriteLine('Native smoke: reader-isolation')
+[Console]::Error.WriteLine('Native startup: shutdown window close starting')
+[Console]::Error.WriteLine('Native startup: shutdown secret-token-do-not-retain')
 for ($i = 0; $i -lt 4000; $i++) { [Console]::Error.WriteLine('Native reader: csp-settle +12345 ms') }
 [Console]::Error.WriteLine('secret-token-do-not-retain')
 [Console]::Error.Write('Native smoke: ' + ('x' * 262144))
@@ -367,6 +373,7 @@ exit 0
         Require ($result.Diagnostics.Length -le 1024 -and @($result.Diagnostics -split "`n").Count -le 20) 'Drain self-check exceeded its retention limit.'
         Require ($result.Diagnostics -cnotmatch 'secret|xxx' -and $result.Diagnostics -cmatch 'render-returned') 'Drain self-check retained unsafe data or lost its tail.'
         Require ($result.LastSmokePhase -ceq 'Native smoke: reader-isolation') 'Drain self-check lost its last smoke phase.'
+        Require ($result.LastShutdownPhase -ceq 'Native startup: shutdown window close starting') 'Drain self-check lost its fixed shutdown phase.'
         Require ($result.MilestonesMs.Count -eq 1 -and $result.MilestonesMs['first-page-ready'] -gt 0) 'Exact milestone collection failed.'
         $child.Dispose(); $child = $null
         $launch = [Diagnostics.Stopwatch]::GetTimestamp()
@@ -567,12 +574,13 @@ try {
             $diagnostics = $completion.Diagnostics
             if ($diagnostics) { Write-Host $diagnostics }
             if (-not $completed) {
+                Write-Host ('Native shutdown phase: ' + $completion.LastShutdownPhase)
                 try {
                     Require (Test-Path -LiteralPath (Join-Path $case.path 'disposable-native-fixture')) 'Timeout evidence requires a marked fixture.'
                     $evidence = Join-Path $root 'test-results'
                     [void] (New-Item -ItemType Directory -Force $evidence)
                     $phase = $completion.LastSmokePhase
-                    $timeout = @{ ok = $false; mode = $case.mode; timedOut = $true; phase = $phase; diagnostics = $diagnostics } | ConvertTo-Json -Compress
+                    $timeout = @{ ok = $false; mode = $case.mode; timedOut = $true; phase = $phase; shutdownPhase = $completion.LastShutdownPhase; diagnostics = $diagnostics } | ConvertTo-Json -Compress
                     [IO.File]::WriteAllText((Join-Path $evidence "windows-native-ui-$caseIndex-timeout.json"), $timeout, [Text.UTF8Encoding]::new($false))
                     if (Test-Path -LiteralPath $resultFile -PathType Leaf) {
                         $record = Get-Item -LiteralPath $resultFile

@@ -18,6 +18,8 @@ The [attachment follow-up](docs/ATTACHMENT_FLOW_REVIEW.md) keeps Windows on the 
 
 Unreleased [current-page synchronization](docs/SYNC_PRIORITY_AND_INCREMENTAL.md) prioritizes the selected message and visible page while retaining older-cache checks. Recent IMAP/Outlook pages reuse proven immutable cached bodies; drafts and uncertain content still fetch normally. Sync preserves reviewed sent payloads and owned downloaded attachments. Incremental/notification work is a separate staged design, and these changes are not in the published v0.7.2 packages.
 
+The [fixture-only Windows observer experiment](docs/WINDOWS_OWNED_PROCESS_OBSERVATION.md) retains native handles from process birth instead of acquiring them after a snapshot. Synthetic controls pass, but actual WinUI shutdown times out and Job accounting does not close against the birth ledger. The experiment is rejected for integration; the document records the supported-source requirements for further work. No observer fix or new release is claimed.
+
 ## Download
 
 Get a release package and its SHA-256 checksum from [GitHub Releases](https://github.com/Coke1120/Morrow-Mail/releases).
