@@ -138,9 +138,9 @@ function Test-NativePinnedSnapshot($Control, $Self) {
         foreach ($case in $cases) {
             $facts = @{ pins = [Collections.Generic.List[object]]::new(); proofs = [Collections.Generic.List[object]]::new()
                 deadlines = [Collections.Generic.List[long]]::new(); lookups = 0; countersDenied = 0 }
-            $child = Start-LifecycleChild; $childId = [uint32] $child.Id
             $parentCase = $case -like 'projected-parent-*'; $shared = $case -eq 'projected-shared-deadline'
             if ($parentCase -or $shared) { $ancestor = Start-LifecycleChild }
+            $child = Start-LifecycleChild; $childId = [uint32] $child.Id
             $parentId = if ($parentCase) { [uint32] $ancestor.Id } else { $root }
             $wanted = @($root, [uint32] $(if ($parentCase -or $shared) { $ancestor.Id } else { $Control.Id }), $childId)
             $rows = @(Read-LifecycleInventory $wanted)
