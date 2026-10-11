@@ -17,10 +17,10 @@ function New-NativeProcessObserver([string] $Fixture) {
 
 function Read-NativeBirthLedger([string] $Path, [long] $ExpectedLaunch = 0,
     [uint32] $LauncherPid = 0, [long] $LauncherTicks = 0, [object[]] $Samples = @()) {
-    $header = $null; $footer = $null; $invalid = $false; $partial = $false; $proofIncomplete = $false
+    $header = $null; $footer = $null; $invalid = $false; $partial = $false; $proofIncomplete = $false; $stage = 'file'
     $births = @{}; $exits = @{}; $sequence = 0L; $rows = [Collections.Generic.List[object]]::new()
     function Keys($Row, [string] $Expected) {
-        if ($Row -isnot [Collections.IDictionary] -or (($Row.Keys | Sort-Object) -join ',') -cne $Expected) { throw 'Unexpected lifetime fields.' }
+        if ($Row -isnot [Collections.IDictionary] -or (($Row.Keys | Sort-Object) -join ',') -cne (($Expected.Split(',') | Sort-Object) -join ',')) { throw 'Unexpected lifetime fields.' }
     }
     function Integer($Value, [long] $Minimum, [long] $Maximum) {
         if ($Value -isnot [long] -or $Value -lt $Minimum -or $Value -gt $Maximum) { throw 'Invalid lifetime integer.' }
@@ -45,6 +45,7 @@ function Read-NativeBirthLedger([string] $Path, [long] $ExpectedLaunch = 0,
             $row = ConvertFrom-Json -InputObject $line -AsHashtable
             Integer $row.kind 0 3
             if ($null -eq $header) {
+                $stage = 'header'
                 Keys $row 'kind,launchTimestamp,launcherPid,launcherTicks,readyBeforeResume,rootPid,rootTicks,schemaVersion'
                 if ($row.kind -ne 0 -or $row.schemaVersion -isnot [long] -or $row.schemaVersion -ne 1) { throw 'Invalid lifetime header.' }
                 Integer $row.rootPid 2 ([uint32]::MaxValue); Integer $row.launcherPid 2 ([uint32]::MaxValue)
@@ -57,6 +58,7 @@ function Read-NativeBirthLedger([string] $Path, [long] $ExpectedLaunch = 0,
                 if (-not $row.readyBeforeResume) { $proofIncomplete = $true }
                 $header = $row
             } elseif ($row.kind -eq 1) {
+                $stage = 'birth'
                 Keys $row 'inJob,kind,parentPid,parentTicks,pid,role,seq,ticks'
                 Integer $row.seq 1 128; $sequence++; if ($row.seq -ne $sequence) { throw 'Lifetime event loss.' }
                 $identity = Identity $row
@@ -73,6 +75,7 @@ function Read-NativeBirthLedger([string] $Path, [long] $ExpectedLaunch = 0,
                 }
                 $births[$identity] = $row
             } elseif ($row.kind -eq 2) {
+                $stage = 'exit'
                 Keys $row 'eventCode,exitCode,exitTicks,kind,nativeError,outcome,pid,seq,ticks,waitResult'
                 Integer $row.seq 1 128; $sequence++; if ($row.seq -ne $sequence) { throw 'Lifetime event loss.' }
                 $identity = Identity $row
@@ -98,6 +101,7 @@ function Read-NativeBirthLedger([string] $Path, [long] $ExpectedLaunch = 0,
                 }
                 $exits[$identity] = $row
             } elseif ($row.kind -eq 3) {
+                $stage = 'footer'
                 Keys $row 'births,cleanup,closed,debugEvents,duplicates,exits,failures,forced,jobActive,jobTotal,kind,normalDrain,rootExitCode,sequence'
                 foreach ($key in @('births', 'exits', 'duplicates', 'closed', 'jobTotal', 'jobActive')) { Integer $row[$key] 0 64 }
                 Integer $row.sequence 0 128; Integer $row.debugEvents 0 8192
@@ -122,6 +126,7 @@ function Read-NativeBirthLedger([string] $Path, [long] $ExpectedLaunch = 0,
             $rows.Add($row)
         }
         if ($null -eq $footer -or $null -eq $header -or -not $births.Count) { $proofIncomplete = $true }
+        $stage = 'parent'
         foreach ($identity in $births.Keys) {
             $birth = $births[$identity]
             if (-not $exits.ContainsKey($identity)) { $proofIncomplete = $true; continue }
@@ -136,6 +141,7 @@ function Read-NativeBirthLedger([string] $Path, [long] $ExpectedLaunch = 0,
         }
         $rootIdentity = $header.rootPid.ToString([Globalization.CultureInfo]::InvariantCulture) + ':' + $header.rootTicks.ToString([Globalization.CultureInfo]::InvariantCulture)
         if (-not $exits.ContainsKey($rootIdentity) -or $null -eq $footer -or $exits[$rootIdentity].exitCode -ne $footer.rootExitCode) { $proofIncomplete = $true }
+        $stage = 'counters'
         foreach ($sample in $Samples) {
             foreach ($process in $sample.processes) {
                 $identity = $process.pid.ToString([Globalization.CultureInfo]::InvariantCulture) + ':' + $process.startUtcTicks.ToString([Globalization.CultureInfo]::InvariantCulture)
@@ -146,5 +152,6 @@ function Read-NativeBirthLedger([string] $Path, [long] $ExpectedLaunch = 0,
     } catch { $invalid = $true } # Do not emit raw file/JSON/OS text.
     return [ordered]@{ source = 'owned-prelaunch-debug-job'; schemaVersion = 1
         incomplete = ($invalid -or $partial -or $proofIncomplete); invalidRecords = $invalid; partialLine = $partial
+        failureStage = $(if ($invalid) { $stage } else { 'none' })
         header = $header; footer = $footer; births = $births.Count; exits = $exits.Count; lifetimes = @($rows.ToArray()) }
 }

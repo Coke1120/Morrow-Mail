@@ -54,6 +54,7 @@ try {
             if ($case -in @('nonzero', 'acquire-nonzero') -and -not @($result.lifetimes | Where-Object { $_.exited -and $_.exitCode -eq 7 }).Count) { throw 'Native nonzero exit was lost.' }
             if ($case -in @('crash', 'acquire-crash') -and -not @($result.lifetimes | Where-Object { $_.exited -and $_.exitCode -eq -1073741819 }).Count) { throw 'Native crash status was lost.' }
             $ledger = Read-NativeBirthLedger $ledgerPath 0 $launcherId $launcherTicks
+            Write-Host ('Independent lifetime case ' + $case + ': ' + (@{ incomplete = $ledger.incomplete; invalidRecords = $ledger.invalidRecords; partialLine = $ledger.partialLine; failureStage = $ledger.failureStage; births = $ledger.births; exits = $ledger.exits } | ConvertTo-Json -Compress))
             if ($ledger.incomplete -ne $result.expectedNegative) { throw 'Independent lifetime parser disagrees with expected completeness.' }
             if ($case -in @('counters', 'counter-denied')) {
                 $stop = @{ forced = $false; reaped = $true; exitCode = 0 }
