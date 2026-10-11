@@ -113,6 +113,9 @@ fire_and_forget startAttachmentFlowChecks(std::shared_ptr<Shell> shell) {
             attachmentFixtureNavigationHandler(shell);
             shell->navigation.ItemInvoked([invocations](auto const&, auto const&) { ++*invocations; });
             shell->rebuildNavigation(); shell->root.UpdateLayout();
+            // Seed the mounted control's initial selection without invocation;
+            // the regression below must originate from its automation action.
+            shell->navigation.SelectedItem(mailboxItem(shell, shell->owner, shell->folder));
             require(text(sidebarSelection(shell), L"owner") == shell->owner && text(sidebarSelection(shell), L"folder") == L"drafts",
                 L"The mounted sidebar did not start on the actual mailbox.");
         }
