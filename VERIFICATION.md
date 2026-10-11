@@ -1,6 +1,6 @@
 # Verification — 11 October 2026
 
-Local merge preparation `codex/sidebar-main-prep-20261011` combines reviewed PR28 `ddac0031776281e46f7b5631b7c5c40b457a3735` with main `b833ba0b9d2c958552dd272404708654a612ea55`. Only documentation conflicts were resolved; production and fixture code merged automatically without further behavior changes. This combined source has not received native checks or final acceptance. The rejected observer experiment remains in its isolated research branch, and the existing strict observation gap still blocks PR28 integration and release. This preparation is local; remote PR28 remains at its reviewed sidebar head.
+Branch `codex/pinned-exit-wait-20261011` starts from local merge preparation `08911df548fc2c616d05958ad616fe511c615374`, which combines reviewed PR28 `ddac0031776281e46f7b5631b7c5c40b457a3735` with main `b833ba0b9d2c958552dd272404708654a612ea55`. Its new [bounded original-pin proof](docs/WINDOWS_PINNED_EXIT_SETTLING.md) addresses only a distinguishable lookup-fallback hypothesis in the existing strict point sampler. The rejected debugger/Job research is excluded and does not redefine that gate. Initial native verification of this combined candidate is pending; first-acquire and unknown/nonzero failures remain gaps. Remote PR28 stays at its reviewed sidebar head until the narrow candidate is verified. No new tag or release exists; the latest publication remains v0.7.2.
 
 ## Current-page synchronization — merged, unreleased
 

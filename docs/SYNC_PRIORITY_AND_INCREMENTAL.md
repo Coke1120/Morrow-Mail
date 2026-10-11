@@ -57,7 +57,12 @@ Gmail minimal metadata/body reuse and attachment quarantine remain unchanged.
 
 Linux Cloud Rust 1.98.0 locked formatting, strict all-target Clippy and all
 304 tests passed on 11 October 2026. Exact committed heads and subsequent native
-results are recorded on the independent draft PR.
+results are recorded in [VERIFICATION.md](../VERIFICATION.md). Reviewed head
+`43d443fc25f74ceae099156e20f64908f0706f84` passed focused
+[38121254196](https://github.com/Coke1120/Morrow-Mail/actions/runs/38121254196)
+and paired [38121493085](https://github.com/Coke1120/Morrow-Mail/actions/runs/38121493085),
+both attempt 1. Their tree `2d4d8b1b71f274e174b0c4ff0838ee5226cd93d7`
+matches merged PR29 main `b833ba0b9d2c958552dd272404708654a612ea55`.
 
 Rust fixtures cover the 50/25 background boundaries, selected older messages
 outside the import date window, both read directions, duplicate owner IDs,
@@ -75,9 +80,13 @@ or checkpoints. Gmail/Graph quota responses preserve checkpoints and persisted
 backoff. Provider fixture networking is restricted to loopback with generated,
 explicitly trusted certificates; no live mailbox is involved.
 
-Native fixtures check selected-first/current-page payload bounds and owner
-identity while retaining search page/selection. Full native CI results belong
-to the exact draft PR candidate; these statements do not predeclare a pass.
+Native fixtures passed selected-first/current-page payload bounds and owner
+identity while retaining search page/selection on that exact candidate.
+PR29 merged after explicit owner authorization. Postmerge main
+[38128187209](https://github.com/Coke1120/Morrow-Mail/actions/runs/38128187209),
+attempt 1, passed Mac but failed Windows strict observation at one case-3
+nativeWait/no-error/unknown-exit record; relocation/publication were skipped.
+Candidate success is not main acceptance, and no new release was published.
 Physical VoiceOver/Narrator, manual cross-platform interaction, real accounts,
 and live latency/load acceptance remain unverified.
 
