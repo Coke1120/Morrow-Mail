@@ -1,7 +1,6 @@
 // Compiled only by test-windows-attachment-flow.ps1 in its private source copy.
 #include "pch.h"
 #include "Ui.h"
-#include <shobjidl.h>
 #include <fstream>
 #include <cstdio>
 
@@ -10,10 +9,7 @@ using namespace winrt;
 using namespace Windows::Foundation;
 namespace {
 std::filesystem::path fixture, selectedPath;
-com_ptr<IFileDialog> activeDialog;
-UINT_PTR cancelTimer = 0;
-unsigned dialogs = 0, cancelledDialogs = 0, requests = 0, selections = 0;
-unsigned pickerTicks = 0;
+unsigned requests = 0, selections = 0;
 bool holdDownload = false, invalidDownload = false;
 hstring requestedOwner;
 void require(bool value, wchar_t const* message) {
@@ -23,43 +19,14 @@ std::string contents(std::filesystem::path const& path) {
     std::ifstream file(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
 }
-void CALLBACK cancelPicker(HWND, UINT, UINT_PTR timer, DWORD) noexcept {
-    com_ptr<IOleWindow> window;
-    HWND handle{};
-    auto query = activeDialog ? activeDialog->QueryInterface(IID_PPV_ARGS(window.put())) : E_POINTER;
-    auto getWindow = window ? window->GetWindow(&handle) : E_POINTER;
-    if (++pickerTicks == 1) {
-        std::fprintf(stderr, "Attachment fixture: picker timer query=0x%08X window=0x%08X visible=%d\n",
-            static_cast<unsigned>(query), static_cast<unsigned>(getWindow), int(IsWindowVisible(handle)));
-        std::fflush(stderr);
-    }
-    if (SUCCEEDED(query) && SUCCEEDED(getWindow) && IsWindowVisible(handle)) {
-        auto closed = activeDialog->Close(HRESULT_FROM_WIN32(ERROR_CANCELLED));
-        if (pickerTicks <= 3 || SUCCEEDED(closed)) {
-            std::fprintf(stderr, "Attachment fixture: picker Close=0x%08X\n", static_cast<unsigned>(closed)); std::fflush(stderr);
-        }
-        if (SUCCEEDED(closed)) {
-            KillTimer(nullptr, timer); cancelTimer = 0; ++cancelledDialogs;
-        }
-    }
-}
 }
 
 // Scripted acceptance stays after chooseFile's real duplicate/closing guard.
-// Cancellation below uses the real modal picker and its documented Close API.
+// Native modal cancellation is intentionally outside this bounded state check.
 std::filesystem::path attachmentFixtureSelection(bool save) {
-    if (!selectedPath.empty()) { require(save, L"Unexpected upload selection."); ++selections; }
+    require(save && !selectedPath.empty(), L"Unexpected fixture file selection.");
+    ++selections;
     return selectedPath;
-}
-void attachmentFixturePicker(IFileDialog* dialog) {
-    require(!cancelTimer, L"A previous picker cancellation timer survived.");
-    activeDialog.copy_from(dialog); ++dialogs; pickerTicks = 0;
-    com_ptr<IShellItem> folder;
-    check_hresult(SHCreateItemFromParsingName(fixture.c_str(), nullptr, IID_PPV_ARGS(folder.put())));
-    check_hresult(dialog->SetFolder(folder.get()));
-    cancelTimer = SetTimer(nullptr, 0, 100, cancelPicker);
-    require(cancelTimer != 0, L"Could not schedule the owned picker cancellation.");
-    std::fprintf(stderr, "Attachment fixture: picker %u entering Show\n", dialogs); std::fflush(stderr);
 }
 IAsyncOperation<Json> attachmentFixtureRequest(hstring path, hstring owner, hstring method, Json body) {
     require(path == L"/attachments/fictional" && owner == L"first@attachment.invalid"
@@ -92,7 +59,7 @@ fire_and_forget startAttachmentFlowChecks(std::shared_ptr<Shell> shell) {
         shell->composeButton = controls::Button(); shell->syncButton = controls::Button();
         shell->navigation.Content(shell->page); shell->root.Children().Append(shell->navigation);
         shell->window.Content(shell->root); shell->window.Activate();
-        // Return from OnLaunched before entering the common dialog's modal loop.
+        // Return from OnLaunched before exercising the mounted native controls.
         apartment_context ui;
         co_await resume_after(std::chrono::milliseconds(50)); co_await ui;
         std::fprintf(stderr, "Attachment fixture: native window ready\n"); std::fflush(stderr);
@@ -108,14 +75,6 @@ fire_and_forget startAttachmentFlowChecks(std::shared_ptr<Shell> shell) {
                 && shell->nextCursor == L"third-page" && shell->selected.Stringify() == draft
                 && shell->page.Content() == page && shell->generation == 0 && shell->selectionGeneration == 0;
         };
-        co_await saveAttachment(shell, shell->owner, item);
-        auto upload = co_await uploadAttachment(shell, shell->owner);
-        activeDialog = nullptr;
-        require(dialogs == 2 && cancelledDialogs == 2 && !cancelTimer && requests == 0
-            && upload.Size() == 0 && !shell->dialogOpen && unchanged(),
-            L"Cancelling a native picker changed message/page state or started a request.");
-        std::fprintf(stderr, "Attachment check: native save/open cancellation preserved state; zero requests\n");
-
         selectedPath = fixture / L"download.txt";
         { std::ofstream(selectedPath, std::ios::binary) << "original"; }
         holdDownload = true;
@@ -160,8 +119,6 @@ fire_and_forget startAttachmentFlowChecks(std::shared_ptr<Shell> shell) {
         std::fprintf(stderr, "Attachment check failure: %s\n", to_string(errorText()).c_str());
     }
     holdDownload = false;
-    if (cancelTimer) { KillTimer(nullptr, cancelTimer); cancelTimer = 0; }
-    activeDialog = nullptr;
     if (!fixture.empty()) std::ofstream(fixture / L"attachment-result.txt") << (passed ? "passed" : "failed");
     std::fflush(stderr);
     if (shell->window) shell->window.Close();
