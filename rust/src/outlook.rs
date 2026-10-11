@@ -252,22 +252,6 @@ pub async fn sync(app: &App, connection: &Value) -> Result<()> {
     let owner = string(connection, "email");
     let config = app.settings().await?;
     let job = config["imports"][owner].clone();
-    // Keep the newest Inbox/Sent responsive while the initial delta baseline is still paging.
-    for folder in ["inbox", "sent"] {
-        let selected = if job["options"].is_object() {
-            job["options"]["allMail"] == true || job["options"][folder] == true
-        } else {
-            folder == "inbox"
-        };
-        if selected {
-            let mut options = json!({"folder":folder});
-            if !string(&job, "since").is_empty() {
-                options["since"] = job["since"].clone();
-            }
-            let page = mail::fetch_page(app, connection, &options).await?;
-            mail::commit_sync_page(app, owner, connection, &page).await?;
-        }
-    }
     let mut work = app.0.activity.start(owner, "sync", "Outlook sync cycle", "Checking one change page and up to 25 downloaded messages. Further cycles may be needed; this is not a full-mailbox completion indicator.");
     let mut state = config["outlookSync"][owner].clone();
     if state["connection"] != connection_version(connection) {
@@ -294,6 +278,40 @@ pub async fn sync(app: &App, connection: &Value) -> Result<()> {
         .as_array()
         .ok_or_else(providers::remote_error)?
         .clone();
+    let priority = crate::sync_priority::messages(app, connection).await?;
+    for chunk in priority.chunks(4) {
+        let mut messages = Vec::new();
+        for result in
+            futures_util::future::join_all(chunk.iter().map(|row| async {
+                resolve(app, connection, &folders, &job, remote_id(row)?).await
+            }))
+            .await
+        {
+            if let Some(message) = result? {
+                messages.push(message);
+            }
+        }
+        let saved = connection.clone();
+        // A current-view refresh does not move the delta or background rotation checkpoints.
+        app.db(move |db| db.transaction(|db| save(db, &saved, &messages)))
+            .await?;
+    }
+    // Keep the newest Inbox/Sent responsive while the initial delta baseline is still paging.
+    for folder in ["inbox", "sent"] {
+        let selected = if job["options"].is_object() {
+            job["options"]["allMail"] == true || job["options"][folder] == true
+        } else {
+            folder == "inbox"
+        };
+        if selected {
+            let mut options = json!({"folder":folder});
+            if !string(&job, "since").is_empty() {
+                options["since"] = job["since"].clone();
+            }
+            let page = mail::fetch_page(app, connection, &options).await?;
+            mail::commit_sync_page(app, owner, connection, &page).await?;
+        }
+    }
     let selected: Vec<_> = folders
         .iter()
         .filter(|folder| {

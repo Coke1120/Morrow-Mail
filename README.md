@@ -16,6 +16,8 @@ Unreleased native review: search-page retention across reading/reply saves and c
 
 The [attachment follow-up](docs/ATTACHMENT_FLOW_REVIEW.md) keeps Windows on the current account/page during an attachment save. Its isolated download checks cover ownership, repeated operations and saved-file security metadata; interactive picker cancellation remains unverified.
 
+Unreleased [current-page synchronization](docs/SYNC_PRIORITY_AND_INCREMENTAL.md) prioritizes the selected message and visible page while retaining older-cache checks. Recent IMAP/Outlook pages reuse proven immutable cached bodies; drafts and uncertain content still fetch normally. Incremental/notification work is a separate staged design, and these changes are not in the published v0.7.2 packages.
+
 ## Download
 
 Get a release package and its SHA-256 checksum from [GitHub Releases](https://github.com/Coke1120/Morrow-Mail/releases).

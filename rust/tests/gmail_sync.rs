@@ -1107,6 +1107,153 @@ async fn old_cached_mail_reconciles_in_owned_resumable_batches_without_refetchin
     );
 }
 
+#[tokio::test]
+async fn current_view_prioritizes_old_flags_without_starving_owned_background_rotation() {
+    let f = Fixture::new().await;
+    let mut rows = (0..60)
+        .map(|i| raw(&format!("view-{i:02}"), json!(["INBOX", "UNREAD"])))
+        .collect::<Vec<_>>();
+    rows[59]["internalDate"] = "946684800000".into(); // Outside the recent import window.
+    let cached = rows
+        .iter()
+        .map(|row| providers::normalize_google(row).unwrap())
+        .collect::<Vec<_>>();
+    *f.rows.lock().unwrap() = rows;
+    f.app
+        .db(move |db| {
+            mail::import_messages(db, &connection(A), &cached)?;
+            db.upsert(B, &remote("view-59", json!(["INBOX", "UNREAD"])))?;
+            db.set_settings(&json!({"imports":{A:{"since":"2020-01-01T00:00:00.000Z"}}}))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    for row in f.rows.lock().unwrap().iter_mut() {
+        row["labelIds"] = json!(["INBOX"]);
+    }
+    let hint = json!({"generation":2,"messages":[{"accountId":A,"id":"google:view-59"},{"accountId":A,"id":"google:view-59"}]});
+    let revision = f.app.db(|db| db.revision()).await.unwrap();
+    assert_eq!(
+        f.call("POST", "/api/sync/priority", A, hint).await,
+        (200, json!({"accepted":true}))
+    );
+    assert_eq!(f.app.db(|db| db.revision()).await.unwrap(), revision);
+    assert_eq!(
+        f.call(
+            "POST",
+            "/api/sync/priority",
+            A,
+            json!({"generation":1,"messages":[]})
+        )
+        .await,
+        (200, json!({"accepted":false}))
+    );
+    assert_eq!(
+        f.call(
+            "POST",
+            "/api/sync/priority",
+            A,
+            json!({"generation":3,"messages":[{"accountId":B,"id":"google:view-59"}]})
+        )
+        .await
+        .0,
+        409
+    );
+    assert!(f.hits.lock().unwrap().is_empty()); // A view hint itself makes no provider request.
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    assert_eq!(f.message(A, "google:view-59").await["read"], true);
+    assert_eq!(f.message(A, "google:view-49").await["read"], true);
+    assert_eq!(f.message(A, "google:view-55").await["read"], false);
+    assert_eq!(f.message(B, "google:view-59").await["read"], false);
+    assert!(
+        f.app.settings().await.unwrap()["mailReconcile"][A]["after"]
+            .as_i64()
+            .unwrap()
+            > 0
+    );
+    let hits = f.hits.lock().unwrap().clone();
+    let decoded_path = |url: &url::Url| {
+        percent_encoding::percent_decode_str(url.path())
+            .decode_utf8()
+            .unwrap()
+            .into_owned()
+    };
+    assert!(
+        decoded_path(
+            &hits
+                .iter()
+                .find(|(_, url)| url.path().contains("/messages"))
+                .unwrap()
+                .1
+        )
+        .ends_with("/view-59")
+    );
+    assert_eq!(
+        hits.iter()
+            .filter(|(_, url)| decoded_path(url).ends_with("/view-59"))
+            .count(),
+        1
+    );
+    assert!(hits.iter().all(|(method, url)| method == "GET"
+        && !url.query_pairs().any(|(k, v)| k == "format" && v == "full")));
+    f.rows.lock().unwrap()[59]["labelIds"] = json!(["INBOX", "UNREAD"]);
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    assert_eq!(f.message(A, "google:view-59").await["read"], false);
+    assert_eq!(f.message(A, "google:view-55").await["read"], true);
+    assert_eq!(
+        f.app.settings().await.unwrap()["mailReconcile"][A]["after"],
+        0
+    );
+}
+
+#[tokio::test]
+async fn priority_quota_failure_preserves_flags_and_background_checkpoint() {
+    let f = Fixture::new().await;
+    *f.rows.lock().unwrap() = vec![raw("deleted", json!(["INBOX"]))];
+    f.app
+        .db(|db| {
+            mail::import_messages(
+                db,
+                &connection(A),
+                &[remote("deleted", json!(["INBOX", "UNREAD"]))],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        f.call(
+            "POST",
+            "/api/sync/priority",
+            A,
+            json!({"generation":1,"messages":[{"accountId":A,"id":"google:deleted"}]})
+        )
+        .await
+        .0,
+        200
+    );
+    let checkpoint = f.app.settings().await.unwrap()["mailReconcile"][A].clone();
+    f.detail_status.store(429, Ordering::SeqCst);
+    *f.retry_after.lock().unwrap() = Some("120".into());
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 502);
+    assert_eq!(f.message(A, "google:deleted").await["read"], false);
+    assert_eq!(
+        f.app.settings().await.unwrap()["mailReconcile"][A],
+        checkpoint
+    );
+    let count = f.hits.lock().unwrap().len();
+    assert_eq!(count, 2); // The existing label catalog read precedes the failed detail read.
+    assert!(
+        f.hits
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, url)| url.path().ends_with("/labels") || url.path().ends_with("/deleted"))
+    );
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 502);
+    assert_eq!(f.hits.lock().unwrap().len(), count);
+}
+
 fn complex_message() -> Value {
     let mut value = raw("complex", json!(["INBOX"]));
     value["payload"]["headers"]

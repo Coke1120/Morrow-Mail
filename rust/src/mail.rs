@@ -198,6 +198,54 @@ pub(crate) fn reusable_google_body(message: &Value) -> bool {
         && message["replyTo"].is_string()
         && message["providerDraft"] != true
 }
+pub(crate) fn copy_cached_body(cached: &Value, message: &mut Value) {
+    for key in [
+        "body",
+        "bodyHtml",
+        "bodyTruncated",
+        "preview",
+        "hasAttachments",
+        "contentIncomplete",
+        "contentErrorCode",
+        "bodyConnection",
+        "bodySize",
+    ] {
+        if let Some(value) = cached.get(key) {
+            message[key] = value.clone();
+        }
+    }
+}
+pub(crate) async fn cached_page_bodies(
+    app: &App,
+    connection: &Value,
+    remote_ids: Vec<String>,
+    folder: Option<String>,
+) -> Result<HashMap<String, Value>> {
+    if remote_ids.len() > 50 {
+        return Err(providers::remote_error());
+    }
+    let connection = connection.clone();
+    app.db(move |db| {
+        let owner = string(&connection, "email");
+        let mut cached = HashMap::new();
+        // Unsaved connection checks and replaced connections have no reusable body proof.
+        if connections(&db.settings()?).get(owner) != Some(&connection) { return Ok(cached); }
+        let version = crate::folders::connection_version(&connection);
+        for remote in remote_ids {
+            let row: Option<String> = db.conn.query_row(
+                "SELECT data FROM messages WHERE account=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id)=? AND (? IS NULL OR COALESCE(NULLIF(json_extract(data,'$.providerFolderId'),''),'INBOX')=?) ORDER BY rowid DESC LIMIT 1",
+                params![owner, remote, folder, folder], |row| row.get(0)).optional()?;
+            if let Some(row) = row {
+                let message: Value = serde_json::from_str(&row)?;
+                if message["bodyConnection"] == version && cached_body_available(&message)
+                    && message["providerDraft"] != true && message["folder"] != "drafts"
+                    && message["providerDeleted"] != true && message["providerFolderMissing"] != true
+                { cached.insert(remote, message); }
+            }
+        }
+        Ok(cached)
+    }).await
+}
 async fn fetch_page_cached(
     app: &App,
     mail: &Value,
@@ -241,9 +289,9 @@ async fn fetch_page_cached(
             let page = providers::google_fetch_page(&app.0.client, mail, &list, &cached, fetched).await?;
             Ok(page)
         } else if ["", "imap"].contains(&string(mail, "provider")) {
-            imap::fetch_page(mail, options).await
+            imap::fetch_page_cached(app, mail, options).await
         } else {
-            providers::fetch_page(&app.0.client, mail, options).await
+            providers::fetch_page_cached(app, mail, options).await
         }
     }.await;
     // Initial IMAP connection checks are not yet a saved account.
@@ -898,6 +946,7 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
             };
             let mut warning = None;
             let mut fetched = HashMap::new();
+            crate::reconcile::priority(app, &mail, &mut fetched).await?;
             for folder in folders {
                 let mut input = json!({"folder":folder});
                 if !string(job, "since").is_empty() {
@@ -1178,6 +1227,7 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             .await?;
             app.state(&select, ctx.paged).await?
         }
+        ("POST", ["sync", "priority"]) => crate::sync_priority::publish(app, ctx).await?,
         ("POST", ["sync"]) => {
             let _gate = app
                 .0

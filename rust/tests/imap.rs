@@ -237,6 +237,7 @@ struct ImapScenario {
     fetch_failure: bool,
     remote_read: bool,
     remote_starred: bool,
+    remote_draft: bool,
     missing_uid: Option<u32>,
     raw_message: Option<String>,
     internal_date: &'static str,
@@ -279,6 +280,7 @@ impl Default for ImapScenario {
             fetch_failure: false,
             remote_read: true,
             remote_starred: true,
+            remote_draft: false,
             missing_uid: None,
             raw_message: None,
             internal_date: "23-Sep-2026 12:00:00 +0000",
@@ -366,6 +368,206 @@ impl ImapFixture {
         )
         .await
     }
+}
+
+struct CacheWorkspace {
+    root: std::path::PathBuf,
+    app: Option<morrow_search::service::App>,
+}
+impl Drop for CacheWorkspace {
+    fn drop(&mut self) {
+        drop(self.app.take());
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+impl CacheWorkspace {
+    async fn new(mail: &Value) -> Self {
+        let root = std::env::temp_dir().join(format!("morrow-imap-cache-{}", uuid::Uuid::new_v4()));
+        let app = morrow_search::service::App::open(&root, 0, "fictional-cache".into(), "".into())
+            .unwrap();
+        let saved = mail.clone();
+        app.db(move |db| db.set_settings(&json!({"mailAccounts":{OWNER:saved}})))
+            .await
+            .unwrap();
+        Self {
+            root,
+            app: Some(app),
+        }
+    }
+    fn app(&self) -> &morrow_search::service::App {
+        self.app.as_ref().unwrap()
+    }
+    async fn page(&self, fixture: &ImapFixture, mail: &Value, folder: &str) -> Value {
+        let page = imap::fetch_page_cached_with_tls(
+            self.app(),
+            mail,
+            &json!({"folder":folder}),
+            &fixture.connector,
+        )
+        .await
+        .unwrap();
+        let rows = page["messages"].as_array().unwrap().clone();
+        let mail = mail.clone();
+        self.app()
+            .db(move |db| morrow_search::mail::import_messages(db, &mail, &rows))
+            .await
+            .unwrap();
+        page
+    }
+}
+fn body_requests(fixture: &ImapFixture) -> usize {
+    fixture
+        .commands()
+        .iter()
+        .filter(|command| command.contains("BODY.PEEK[]"))
+        .count()
+}
+
+#[tokio::test]
+async fn cached_imap_recent_pages_refresh_both_flag_directions_without_redownloading_bodies() {
+    let fixture = ImapFixture::new(ImapScenario {
+        count: 1,
+        ..Default::default()
+    })
+    .await;
+    let workspace = CacheWorkspace::new(&fixture.mail).await;
+    let first = workspace.page(&fixture, &fixture.mail, "inbox").await;
+    assert_eq!(body_requests(&fixture), 1);
+    let original = &first["messages"][0];
+    assert_eq!(original["read"], true);
+    fixture.update(|scenario| {
+        scenario.remote_read = false;
+        scenario.remote_starred = false;
+    });
+    let next = workspace.page(&fixture, &fixture.mail, "inbox").await;
+    assert_eq!(body_requests(&fixture), 1);
+    assert_eq!(next["messages"][0]["read"], false);
+    assert_eq!(next["messages"][0]["starred"], false);
+    for key in [
+        "body",
+        "bodyHtml",
+        "bodyTruncated",
+        "date",
+        "senderDate",
+        "bodyConnection",
+        "bodySize",
+    ] {
+        assert_eq!(next["messages"][0][key], original[key], "{key}");
+    }
+    fixture.update(|scenario| scenario.remote_read = true);
+    let again = workspace.page(&fixture, &fixture.mail, "inbox").await;
+    assert_eq!(body_requests(&fixture), 1);
+    assert_eq!(again["messages"][0]["read"], true);
+    for patch in [
+        json!({"bodyConnection":null}),
+        json!({"contentIncomplete":true}),
+        json!({"bodySize":0}),
+        json!({"providerDraft":true}),
+    ] {
+        workspace
+            .app()
+            .db(move |db| {
+                db.update(OWNER, "imap:55:1", &patch)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let before = body_requests(&fixture);
+        workspace.page(&fixture, &fixture.mail, "inbox").await;
+        assert_eq!(
+            body_requests(&fixture),
+            before + 1,
+            "Unknown, incomplete or draft bodies must fetch again"
+        );
+    }
+    fixture.update(|scenario| scenario.remote_draft = true);
+    let before = body_requests(&fixture);
+    for _ in 0..2 {
+        let draft = workspace.page(&fixture, &fixture.mail, "inbox").await;
+        assert_eq!(draft["messages"][0]["providerDraft"], true);
+    }
+    assert_eq!(body_requests(&fixture), before + 2);
+}
+
+#[tokio::test]
+async fn imap_body_reuse_requires_account_folder_uidvalidity_connection_size_and_header_identity() {
+    let fixture = ImapFixture::new(ImapScenario {
+        count: 1,
+        raw_message: Some(format!("{HEADER}\r\nFirst body.")),
+        ..Default::default()
+    })
+    .await;
+    let workspace = CacheWorkspace::new(&fixture.mail).await;
+    workspace.page(&fixture, &fixture.mail, "inbox").await;
+    workspace.page(&fixture, &fixture.mail, "inbox").await;
+    assert_eq!(body_requests(&fixture), 1);
+    let mut other = fixture.mail.clone();
+    other["email"] = "other-cache@example.invalid".into();
+    let second = other.clone();
+    let primary = fixture.mail.clone();
+    workspace
+        .app()
+        .db(move |db| {
+            db.set_settings(
+                &json!({"mailAccounts":{OWNER:primary,"other-cache@example.invalid":second}}),
+            )
+        })
+        .await
+        .unwrap();
+    workspace.page(&fixture, &other, "inbox").await;
+    assert_eq!(
+        body_requests(&fixture),
+        2,
+        "A colliding UID from another account must fetch its own body"
+    );
+    workspace.page(&fixture, &fixture.mail, "sent").await;
+    assert_eq!(
+        body_requests(&fixture),
+        3,
+        "A colliding UID in Sent must fetch its own body"
+    );
+    workspace.page(&fixture, &fixture.mail, "sent").await;
+    assert_eq!(body_requests(&fixture), 3);
+    fixture.update(|scenario| scenario.validity = 56);
+    let new_epoch = workspace.page(&fixture, &fixture.mail, "inbox").await;
+    assert_eq!(new_epoch["messages"][0]["id"], "imap:56:1");
+    assert_eq!(body_requests(&fixture), 4);
+    let mut reconnected = fixture.mail.clone();
+    reconnected["connectionId"] = "new-connection".into();
+    let saved = reconnected.clone();
+    workspace
+        .app()
+        .db(move |db| db.set_settings(&json!({"mailAccounts":{OWNER:saved}})))
+        .await
+        .unwrap();
+    workspace.page(&fixture, &reconnected, "inbox").await;
+    assert_eq!(body_requests(&fixture), 5);
+    fixture.update(|scenario| {
+        scenario.raw_message = Some(format!(
+            "{}\r\nFirst body.",
+            HEADER.replace("fixture@example", "changed@example")
+        ))
+    });
+    let changed = workspace.page(&fixture, &reconnected, "inbox").await;
+    assert_eq!(
+        changed["messages"][0]["messageId"],
+        "<changed@example.invalid>"
+    );
+    assert_eq!(
+        body_requests(&fixture),
+        6,
+        "Even equal-sized body identities must be proven by current headers"
+    );
+    fixture.update(|scenario| {
+        scenario
+            .raw_message
+            .as_mut()
+            .unwrap()
+            .push_str(" Longer body.")
+    });
+    let larger = workspace.page(&fixture, &reconnected, "inbox").await;
+    assert!(string(&larger["messages"][0], "body").contains("Longer body"));
+    assert_eq!(body_requests(&fixture), 7);
 }
 fn fixture_message(scenario: &ImapScenario, uid: &str) -> String {
     if let Some(raw) = &scenario.raw_message {
@@ -589,9 +791,22 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
             } else if fields.contains("RFC822.SIZE") {
                 let header = if scenario.oversized_header {
                     "x".repeat(65537)
+                } else if let Some(raw) = &scenario.raw_message {
+                    raw.split_once("\r\n\r\n")
+                        .map(|(header, _)| format!("{header}\r\n"))
+                        .unwrap_or_else(|| HEADER.to_owned())
                 } else {
                     HEADER.to_owned()
                 };
+                let flags = [
+                    scenario.remote_read.then_some("\\Seen"),
+                    scenario.remote_starred.then_some("\\Flagged"),
+                    scenario.remote_draft.then_some("\\Draft"),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" ");
                 for (index, uid) in selected.split(',').enumerate() {
                     if scenario.omitted_metadata_uid == uid.parse().ok() {
                         continue;
@@ -603,7 +818,7 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                     } else {
                         uid
                     };
-                    write(&mut stream,&format!("* {} FETCH (UID {uid} FLAGS (\\Seen \\Flagged) RFC822.SIZE {} INTERNALDATE \"{}\" BODY[HEADER] {{{}}}\r\n{header})\r\n",index+1,if scenario.large{6*1024*1024}else{fixture_message(&scenario,uid).len()},scenario.internal_date,header.len())).await?;
+                    write(&mut stream,&format!("* {} FETCH (UID {uid} FLAGS ({flags}) RFC822.SIZE {} INTERNALDATE \"{}\" BODY[HEADER] {{{}}}\r\n{header})\r\n",index+1,if scenario.large{6*1024*1024}else{fixture_message(&scenario,uid).len()},scenario.internal_date,header.len())).await?;
                 }
             } else if fields.contains("BODY.PEEK[]") {
                 if scenario.disconnect_on_body {

@@ -199,6 +199,136 @@ async fn closing_uncertain_delivery_is_owned_durable_and_never_submits_again() {
 }
 
 #[tokio::test]
+async fn outlook_current_view_updates_beyond_twenty_five_and_preserves_background_fairness() {
+    let target_read = Arc::new(AtomicUsize::new(1));
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (remote_read, requests) = (target_read.clone(), seen.clone());
+    let fixture = Fixture::new(Arc::new(move |request| {
+        let (remote_read, requests) = (remote_read.clone(), requests.clone());
+        async move {
+            assert_eq!(request.method, "GET");
+            assert_eq!(request.owner(), A);
+            if let Some(reply) = outlook_catalog(&request) {
+                return reply;
+            }
+            let url =
+                url::Url::parse(&format!("https://graph.microsoft.com{}", request.path)).unwrap();
+            if url.path().ends_with("/messages/delta") {
+                return outlook_delta("inbox-id", json!([]));
+            }
+            let path = percent_encoding::percent_decode_str(url.path())
+                .decode_utf8()
+                .unwrap()
+                .into_owned();
+            requests.lock().unwrap().push(path.clone());
+            let id = path.rsplit('/').next().unwrap();
+            let mut row = microsoft_message(id, A, "Immutable fictional body");
+            row["receivedDateTime"] = "2000-01-01T00:00:00Z".into();
+            row["isRead"] = (id != "old-29" || remote_read.load(Ordering::SeqCst) == 1).into();
+            Reply::Json(200, row)
+        }
+        .boxed()
+    }))
+    .await;
+    let server = fixture.start().await;
+    set(&server.app, config(&[(A, "microsoft"), (B, "microsoft")])).await;
+    server
+        .app
+        .db(|db| {
+            for index in 0..30 {
+                let mut row = providers::normalize_microsoft(&microsoft_message(
+                    &format!("old-{index:02}"),
+                    A,
+                    "Immutable fictional body",
+                ))?;
+                row["date"] = "2000-01-01T00:00:00.000Z".into();
+                morrow_search::mail::import_messages(db, &connection("microsoft", A), &[row])?;
+            }
+            db.upsert(B, &cached("microsoft:old-29", B, "inbox"))?;
+            db.set_settings(&json!({"imports":{A:{"since":"2020-01-01T00:00:00.000Z"}}}))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        server
+            .call(
+                "POST",
+                "/api/sync/priority",
+                A,
+                json!({"generation":1,"messages":[{"accountId":A,"id":"microsoft:old-29"}]})
+            )
+            .await
+            .0,
+        200
+    );
+    assert_eq!(server.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    server
+        .app
+        .db(|db| {
+            assert_eq!(db.get(A, "microsoft:old-29")?.unwrap()["read"], true);
+            assert_eq!(db.get(A, "microsoft:old-24")?.unwrap()["read"], true);
+            assert_eq!(db.get(A, "microsoft:old-27")?.unwrap()["read"], false);
+            assert_eq!(db.get(B, "microsoft:old-29")?.unwrap()["read"], false);
+            assert_eq!(
+                db.settings()?["outlookSync"][A]["reconcileAfter"],
+                "microsoft:old-24"
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(seen.lock().unwrap()[0].ends_with("/old-29"));
+    target_read.store(0, Ordering::SeqCst);
+    assert_eq!(server.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    server
+        .app
+        .db(|db| {
+            assert_eq!(db.get(A, "microsoft:old-29")?.unwrap()["read"], false);
+            assert_eq!(db.get(A, "microsoft:old-27")?.unwrap()["read"], true);
+            assert_eq!(db.settings()?["outlookSync"][A]["reconcileAfter"], "");
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        server
+            .call(
+                "POST",
+                "/api/sync/priority",
+                A,
+                json!({"generation":2,"messages":[]})
+            )
+            .await
+            .0,
+        200
+    );
+    assert_eq!(
+        server
+            .call(
+                "POST",
+                "/api/sync/priority",
+                A,
+                json!({"generation":1,"messages":[{"accountId":A,"id":"microsoft:old-29"}]})
+            )
+            .await
+            .1,
+        json!({"accepted":false})
+    );
+    target_read.store(1, Ordering::SeqCst);
+    assert_eq!(server.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    assert_eq!(
+        server
+            .app
+            .db(|db| Ok(db.get(A, "microsoft:old-29")?.unwrap()["read"].clone()))
+            .await
+            .unwrap(),
+        false
+    );
+    server.shutdown().await;
+}
+
+#[tokio::test]
 async fn outlook_delta_resumes_and_reconciles_moves_deletions_old_flags_and_owned_writes() {
     let remote = Arc::new(Mutex::new(std::collections::HashMap::<
         (String, String),
@@ -1431,6 +1561,271 @@ async fn wait_for(gate: &Semaphore) {
         .unwrap()
         .unwrap()
         .forget();
+}
+
+async fn imported_graph_page(app: &App, connection: &Value) -> Value {
+    let page = morrow_search::mail::fetch_page(app, connection, &json!({"folder":"inbox"}))
+        .await
+        .unwrap();
+    let rows = page["messages"].as_array().unwrap().clone();
+    let connection = connection.clone();
+    app.db(move |db| morrow_search::mail::import_messages(db, &connection, &rows))
+        .await
+        .unwrap();
+    page
+}
+
+#[tokio::test]
+async fn graph_recent_page_reuses_owned_immutable_body_and_refetches_unknown_draft_or_reconnected_content()
+ {
+    let state = Arc::new(Mutex::new(
+        json!({"read":false,"draft":false,"body":"First body","messageId":"<stable@example.invalid>"}),
+    ));
+    let body_count = Arc::new(AtomicUsize::new(0));
+    let (saved, count) = (state.clone(), body_count.clone());
+    let fixture = Fixture::new(Arc::new(move |request| {
+        let (saved, count) = (saved.clone(), count.clone());
+        async move {
+            assert_eq!(request.method, "GET");
+            let owner = request.owner();
+            assert!([A, B].contains(&owner));
+            let state = saved.lock().unwrap().clone();
+            let mut raw = microsoft_message(
+                "cachedone",
+                owner,
+                &format!("{owner}: {}", string(&state, "body")),
+            );
+            raw["isRead"] = state["read"].clone();
+            raw["isDraft"] = state["draft"].clone();
+            raw["internetMessageId"] = state["messageId"].clone();
+            if request
+                .path
+                .starts_with("/v1.0/me/mailFolders/inbox/messages?")
+            {
+                raw.as_object_mut().unwrap().remove("body");
+                Reply::Json(200, json!({"value":[raw]}))
+            } else {
+                assert!(request.path.starts_with("/v1.0/me/messages/cachedone?"));
+                count.fetch_add(1, Ordering::SeqCst);
+                Reply::Json(200, json!({"id":"cachedone","body":raw["body"]}))
+            }
+        }
+        .boxed()
+    }))
+    .await;
+    let server = fixture.start().await;
+    set(&server.app, config(&[(A, "microsoft"), (B, "microsoft")])).await;
+    // Use the exact saved connection (including its expiry timestamp).
+    let mail = server.app.settings().await.unwrap()["mailAccounts"][A].clone();
+    let original = imported_graph_page(&server.app, &mail).await;
+    assert_eq!(body_count.load(Ordering::SeqCst), 1);
+    for read in [true, false] {
+        state.lock().unwrap()["read"] = read.into();
+        let page = imported_graph_page(&server.app, &mail).await;
+        assert_eq!(page["messages"][0]["read"], read);
+        assert_eq!(page["messages"][0]["body"], original["messages"][0]["body"]);
+        assert_eq!(body_count.load(Ordering::SeqCst), 1);
+    }
+    let other = server.app.settings().await.unwrap()["mailAccounts"][B].clone();
+    let second = imported_graph_page(&server.app, &other).await;
+    assert_eq!(body_count.load(Ordering::SeqCst), 2);
+    assert!(string(&second["messages"][0], "body").starts_with(B));
+    for patch in [
+        json!({"bodyConnection":null}),
+        json!({"contentIncomplete":true}),
+        json!({"providerDraft":true}),
+        json!({"providerDeleted":true}),
+        json!({"providerFolderMissing":true}),
+    ] {
+        server
+            .app
+            .db(move |db| {
+                db.update(A, "microsoft:cachedone", &patch)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let before = body_count.load(Ordering::SeqCst);
+        imported_graph_page(&server.app, &mail).await;
+        assert_eq!(body_count.load(Ordering::SeqCst), before + 1);
+    }
+    state.lock().unwrap()["draft"] = true.into();
+    let before = body_count.load(Ordering::SeqCst);
+    for body in ["Draft edit one", "Draft edit two"] {
+        state.lock().unwrap()["body"] = body.into();
+        let page = imported_graph_page(&server.app, &mail).await;
+        assert!(string(&page["messages"][0], "body").contains(body));
+    }
+    assert_eq!(body_count.load(Ordering::SeqCst), before + 2);
+    state.lock().unwrap()["draft"] = false.into();
+    imported_graph_page(&server.app, &mail).await; // The previous draft is never reused.
+    let before = body_count.load(Ordering::SeqCst);
+    for identity in ["", "<changed@example.invalid>"] {
+        state.lock().unwrap()["messageId"] = identity.into();
+        imported_graph_page(&server.app, &mail).await;
+    }
+    assert_eq!(body_count.load(Ordering::SeqCst), before + 2);
+    server
+        .app
+        .db(|db| {
+            let mut config = db.settings()?;
+            config["mailAccounts"][A]["connectionId"] = "reconnected-cache".into();
+            db.set_settings(&json!({"mailAccounts":config["mailAccounts"]}))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let reconnected = server.app.settings().await.unwrap()["mailAccounts"][A].clone();
+    let before = body_count.load(Ordering::SeqCst);
+    imported_graph_page(&server.app, &reconnected).await;
+    assert_eq!(body_count.load(Ordering::SeqCst), before + 1);
+    imported_graph_page(&server.app, &reconnected).await;
+    assert_eq!(body_count.load(Ordering::SeqCst), before + 1);
+    assert_eq!(
+        server.app.settings().await.unwrap()["mailAccounts"][B],
+        other
+    );
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn priority_graph_fetch_cancellation_or_reconnect_never_commits_flags_or_checkpoints() {
+    for reconnect in [false, true] {
+        let entered = Arc::new(Semaphore::new(0));
+        let release = Arc::new(Semaphore::new(0));
+        let (arrived, ready) = (entered.clone(), release.clone());
+        let fixture = Fixture::new(Arc::new(move |request| {
+            let (arrived, ready) = (arrived.clone(), ready.clone());
+            async move {
+                if let Some(reply) = outlook_catalog(&request) {
+                    return reply;
+                }
+                assert!(request.path.starts_with("/v1.0/me/messages/priorityheld?"));
+                arrived.add_permits(1);
+                ready.acquire().await.unwrap().forget();
+                let mut raw = microsoft_message("priorityheld", A, "Unchanged cached body");
+                raw["isRead"] = true.into();
+                Reply::Json(200, raw)
+            }
+            .boxed()
+        }))
+        .await;
+        let server = fixture.start().await;
+        set(&server.app, config(&[(A, "microsoft"), (B, "microsoft")])).await;
+        server
+            .app
+            .db(|db| {
+                db.upsert(A, &cached("microsoft:priorityheld", A, "inbox"))?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(server.call("POST","/api/sync/priority",A,json!({"generation":1,"messages":[{"accountId":A,"id":"microsoft:priorityheld"}]})).await.0,200);
+        let app = server.app.clone();
+        let pending = tokio::spawn(async move {
+            let _gate = app.0.mailbox.lock().await;
+            morrow_search::mail::sync(&app, &[A.into()]).await
+        });
+        wait_for(&entered).await;
+        if reconnect {
+            server
+                .app
+                .db(|db| {
+                    let mut config = db.settings()?;
+                    config["mailAccounts"][A]["connectionId"] = "changed-inflight".into();
+                    db.set_settings(&json!({"mailAccounts":config["mailAccounts"]}))?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            release.add_permits(1);
+            let _ = tokio::time::timeout(Duration::from_secs(5), pending)
+                .await
+                .unwrap()
+                .unwrap();
+        } else {
+            pending.abort();
+            assert!(pending.await.unwrap_err().is_cancelled());
+            release.add_permits(1);
+        }
+        assert_eq!(
+            server
+                .app
+                .db(|db| Ok(db.get(A, "microsoft:priorityheld")?.unwrap()["read"].clone()))
+                .await
+                .unwrap(),
+            false
+        );
+        let config = server.app.settings().await.unwrap();
+        assert!(config["outlookSync"][A].is_null() && config["outlookSync"][B].is_null());
+        assert!(server.app.0.mailbox.try_lock().is_ok());
+        server.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn priority_graph_rate_limit_preserves_flags_checkpoints_and_persisted_backoff() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let fixture = Fixture::new(Arc::new(move |request| {
+        let count = count.clone();
+        async move {
+            count.fetch_add(1, Ordering::SeqCst);
+            if let Some(reply) = outlook_catalog(&request) {
+                return reply;
+            }
+            assert!(request.path.starts_with("/v1.0/me/messages/priorityquota?"));
+            Reply::Json(
+                429,
+                json!({"error":{"code":"TooManyRequests","message":"Synthetic quota"}}),
+            )
+        }
+        .boxed()
+    }))
+    .await;
+    let server = fixture.start().await;
+    set(&server.app, config(&[(A, "microsoft"), (B, "microsoft")])).await;
+    server
+        .app
+        .db(|db| {
+            db.upsert(A, &cached("microsoft:priorityquota", A, "inbox"))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        server
+            .call(
+                "POST",
+                "/api/sync/priority",
+                A,
+                json!({"generation":1,"messages":[{"accountId":A,"id":"microsoft:priorityquota"}]})
+            )
+            .await
+            .0,
+        200
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let _ = morrow_search::mail::sync(&server.app, &[A.into()])
+        .await
+        .unwrap();
+    let before = calls.load(Ordering::SeqCst);
+    assert!(before > 0);
+    let _ = morrow_search::mail::sync(&server.app, &[A.into()])
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), before);
+    assert_eq!(
+        server
+            .app
+            .db(|db| Ok(db.get(A, "microsoft:priorityquota")?.unwrap()["read"].clone()))
+            .await
+            .unwrap(),
+        false
+    );
+    let settings = server.app.settings().await.unwrap();
+    assert!(settings["outlookSync"][A].is_null() && settings["outlookSync"][B].is_null());
+    server.shutdown().await;
 }
 
 #[tokio::test]

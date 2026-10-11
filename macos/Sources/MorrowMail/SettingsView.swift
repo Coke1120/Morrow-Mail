@@ -194,7 +194,8 @@ struct NativeSettingsView: View {
             }.padding(8) }
             GroupBox("Mail sync") { VStack(alignment: .leading, spacing: 8) {
             Picker("Sync all accounts while Morrow is open", selection: number("preferences", "syncInterval")) { Text("Manually").tag(0); ForEach([1, 5, 15, 30], id: \.self) { Text("Every \($0) minutes").tag($0) } }
-                Text("Checks a limited set of recent messages. Older downloaded messages may still have an earlier read/unread state. Marking mail read or unread in Morrow does not change the server.").font(.caption).foregroundStyle(.secondary)
+                Text("Gmail, Outlook and IMAP read/star changes sync to the server. Gmail/Outlook require mail organization permission. Pending/Read Later stay local. Failed provider writes are not retried automatically.").font(.caption).foregroundStyle(.secondary)
+                Text("Each sync prioritizes the current mail page, fetches recent messages, and continues a bounded check of older downloaded mail. Large caches take multiple cycles.").font(.caption).foregroundStyle(.secondary)
                 Text("Automatic AI actions are controlled separately in AI & privacy.").font(.caption).foregroundStyle(.secondary)
             }.padding(8) }
             GroupBox("Sending") { VStack(alignment: .leading, spacing: 8) {

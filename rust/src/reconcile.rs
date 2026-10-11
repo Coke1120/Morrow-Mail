@@ -36,18 +36,16 @@ fn batch(db: &Store, connection: &Value) -> Result<Vec<(i64, Value)>> {
         })
         .collect()
 }
-pub async fn sync(
+async fn fetch(
     app: &App,
     connection: &Value,
+    messages: &[Value],
     fetched: &mut HashMap<String, Value>,
-) -> Result<()> {
-    let saved = connection.clone();
-    let rows = app.db(move |db| batch(db, &saved)).await?;
-    let messages: Vec<_> = rows.iter().map(|(_, m)| m.clone()).collect();
+) -> Result<Vec<Value>> {
     let result = if connection["provider"] == "google" {
         let mut cached = HashMap::new();
         let mut ids = Vec::new();
-        for message in &messages {
+        for message in messages {
             let remote = message["remoteId"]
                 .as_str()
                 .filter(|s| !s.is_empty())
@@ -96,19 +94,60 @@ pub async fn sync(
     } else if messages.is_empty() {
         Ok(vec![])
     } else {
-        crate::imap::reconcile(connection, &messages).await
+        crate::imap::reconcile(connection, messages).await
     };
-    let result = mail::finish_read(app, connection, result).await?;
+    mail::finish_read(app, connection, result).await
+}
+fn save(db: &Store, connection: &Value, result: &[Value]) -> Result<()> {
+    let owner = string(connection, "email");
+    if connections(&db.settings()?).get(owner) != Some(connection) {
+        return Err(Error::conflict(
+            "This mailbox changed during reconciliation.",
+        ));
+    }
+    let available: Vec<_> = result
+        .iter()
+        .filter(|m| m["providerDeleted"] != true && m["providerFolderMissing"] != true)
+        .cloned()
+        .collect();
+    mail::import_messages(db, connection, &available)?;
+    for message in result
+        .iter()
+        .filter(|m| m["providerDeleted"] == true || m["providerFolderMissing"] == true)
+    {
+        // Keep cached content and the user's local folder; never bind old UIDs to a new mailbox generation.
+        db.update(owner, string(message, "id"), &json!({"providerDeleted":message["providerDeleted"]==true,"providerFolderMissing":true}))?;
+    }
+    Ok(())
+}
+pub(crate) async fn priority(
+    app: &App,
+    connection: &Value,
+    fetched: &mut HashMap<String, Value>,
+) -> Result<()> {
+    let messages = crate::sync_priority::messages(app, connection).await?;
+    if messages.is_empty() {
+        return Ok(());
+    }
+    let result = fetch(app, connection, &messages, fetched).await?;
+    let connection = connection.clone();
+    // Priority work never consumes or advances the background rotation's checkpoint.
+    app.db(move |db| db.transaction(|db| save(db, &connection, &result)))
+        .await
+}
+pub async fn sync(
+    app: &App,
+    connection: &Value,
+    fetched: &mut HashMap<String, Value>,
+) -> Result<()> {
+    let saved = connection.clone();
+    let rows = app.db(move |db| batch(db, &saved)).await?;
+    let messages: Vec<_> = rows.iter().map(|(_, m)| m.clone()).collect();
+    let result = fetch(app, connection, &messages, fetched).await?;
     let connection = connection.clone();
     app.db(move|db| db.transaction(|db| {
+        save(db, &connection, &result)?;
         let owner=string(&connection,"email");
-        if connections(&db.settings()?).get(owner)!=Some(&connection) {return Err(Error::conflict("This mailbox changed during reconciliation."));}
-        let available: Vec<_> = result.iter().filter(|m| m["providerDeleted"] != true && m["providerFolderMissing"] != true).cloned().collect();
-        mail::import_messages(db,&connection,&available)?;
-        for message in result.iter().filter(|m|m["providerDeleted"]==true || m["providerFolderMissing"]==true) {
-            // Keep cached content and the user's local folder; never bind old UIDs to a new mailbox generation.
-            db.update(owner,string(message,"id"),&json!({"providerDeleted":message["providerDeleted"]==true,"providerFolderMissing":true}))?;
-        }
         let after=if rows.len()==50 { rows.last().unwrap().0 } else {0};
         write_owner(db,"mailReconcile",owner,json!({"connection":connection_version(&connection),"after":after,"checkedAt":crate::store::now()}))
     })).await

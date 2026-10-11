@@ -29,6 +29,11 @@ std::filesystem::path attachmentFixtureSelection(bool save) {
     return selectedPath;
 }
 IAsyncOperation<Json> attachmentFixtureRequest(hstring path, hstring owner, hstring method, Json body) {
+    if (path == L"/sync/priority") {
+        require(method == L"POST" && owner == L"all" && array(body, L"messages").Size() == 0
+            && body.GetNamedNumber(L"generation", 0) > 0, L"Unexpected fixture view hint.");
+        co_return Json::Parse(LR"({"accepted":true})");
+    }
     require(path == L"/attachments/fictional" && owner == L"first@attachment.invalid"
         && method == L"GET" && body.Size() == 0, L"Unexpected request or attachment owner.");
     ++requests; requestedOwner = owner;
@@ -117,6 +122,25 @@ fire_and_forget startAttachmentFlowChecks(std::shared_ptr<Shell> shell) {
         }
         for (auto const& entry : std::filesystem::directory_iterator(fixture))
             require(!entry.path().filename().wstring().starts_with(L".morrow-"), L"Attachment temporary file survived completion.");
+#ifdef MORROW_SYNC_PRIORITY_CHECKS
+        auto combined = std::make_shared<Shell>();
+        combined->owner = L"all"; combined->rows = controls::ListView();
+        combined->state = Json::Parse(LR"({"accounts":[{"id":"first@attachment.invalid"},{"id":"second@attachment.invalid"}]})");
+        combined->cursors = {L"", L"second-page"};
+        for (unsigned index = 0; index < 55; ++index) {
+            Json message; put(message, L"accountId", L"first@attachment.invalid"); put(message, L"id", L"row-" + to_hstring(index));
+            controls::ListViewItem row; row.Tag(message); combined->rows.Items().Append(row);
+        }
+        combined->selected = Json::Parse(LR"({"accountId":"second@attachment.invalid","id":"row-0"})");
+        auto priority = combined->syncPriorityMessages();
+        require(priority.Size() == 51 && text(priority.GetAt(0).GetObject(), L"accountId") == L"second@attachment.invalid"
+            && text(priority.GetAt(1).GetObject(), L"accountId") == L"first@attachment.invalid"
+            && text(priority.GetAt(0).GetObject(), L"id") == text(priority.GetAt(1).GetObject(), L"id")
+            && combined->cursors.size() == 2 && text(combined->selected, L"accountId") == L"second@attachment.invalid",
+            L"Current-view hints lost owner identity, selected-first order, bounds or page state.");
+        combined->owner = L"second@attachment.invalid";
+        require(combined->syncPriorityMessages().Size() == 1, L"An account-specific hint included another mailbox's rows.");
+#endif
         passed = true;
     } catch (...) {
         std::fprintf(stderr, "Attachment check failure: %s\n", to_string(errorText()).c_str());
