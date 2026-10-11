@@ -53,6 +53,9 @@ function Test-NativePinnedExitSchema {
         $p.initial.waitStatus = 4294967295L; $p.initial.nativeError = 5L; $p.initial.exitCode = $null; $p.initial.outcome = 'accessDenied'
         $p.waitAttempted = $false; $p.settlingWait = $null; $p.settlingError = $null
         Check (-not (Read-ProofFixture @($initialDenied)).invalidRecords) 'initial-wait-failed-valid-gap'
+        $queryDenied = Copy-ProofFixture $initialDenied; $p = $queryDenied.failedRecords[0].nativeProof
+        $p.initial.waitStatus = 258L; $p.initial.stage = 'exit'
+        Check (-not (Read-ProofFixture @($queryDenied)).invalidRecords) 'initial-query-denied-valid-gap'
         $before = Copy-ProofFixture $denied; $before.failedRecords[0].Remove('nativeProof'); $before.failedRecords[0].stage = 'counters'
         $before.failedRecords[0].reason = 'counterReadFailed'; $before.skipReasonCounts.processUnavailable = 0L; $before.skipReasonCounts.counterReadFailed = 1L
         $later = Copy-ProofFixture $sample; $later.elapsedMs = 10.0
@@ -66,6 +69,21 @@ function Test-NativePinnedExitSchema {
         $report = Read-ProofFixture @($parentFailure)
         Check ($report.incomplete -and -not $report.invalidRecords -and
             $report.samples[0].failedRecords[0].nativeProof.final.exitCode -eq 0) 'parent-failure-retains-child-zero-proof'
+        $two = Copy-ProofFixture $sample; $secondEvent = Copy-ProofFixture $two.lifecycleEvents[0]
+        $secondEvent.pid = 22L; $secondEvent.startUtcTicks = $ticks + 10L
+        $p = $secondEvent.nativeProof; $p.pinnedStartUtcTicks = $ticks + 10L
+        $p.initial.actualPid = 22L; $p.initial.startUtcTicks = $ticks + 10L
+        $p.final.actualPid = 22L; $p.final.startUtcTicks = $ticks + 10L
+        $two.lifecycleEvents += $secondEvent
+        $report = Read-ProofFixture @($two)
+        Check (-not $report.incomplete -and $report.normalExitObservations -eq 2) 'two-zero-events-share-one-clock'
+        $mixed = Copy-ProofFixture $sample; $secondFailure = Copy-ProofFixture $denied.failedRecords[0]
+        $secondFailure.pid = 22L; $secondFailure.cimStartUtcTicks = $ticks + 10L
+        $p = $secondFailure.nativeProof; $p.pinnedStartUtcTicks = $ticks + 10L
+        $p.initial.actualPid = 22L; $p.initial.startUtcTicks = $ticks + 10L
+        $mixed.failedRecords = @($secondFailure); $mixed.skipped = 1L; $mixed.skipReasonCounts.processUnavailable = 1L
+        $report = Read-ProofFixture @($mixed)
+        Check ($report.incomplete -and -not $report.invalidRecords -and $report.normalExitObservations -eq 1) 'success-and-failure-share-one-clock'
 
         $negativeCases = @('missing-metadata', 'missing-initial', 'extra-field', 'wait-string', 'wait-float', 'wait-bool',
             'wait-negative', 'wait-overflow', 'initial-259', 'initial-7', 'initial-crash-code', 'initial-code-missing',
@@ -123,7 +141,28 @@ function Test-NativePinnedExitSchema {
         }
         $bad = Copy-ProofFixture $denied; $bad.failedRecords[0].nativeProof.settlingWait = -1L
         Check (Read-ProofFixture @($bad)).invalidRecords 'wait-failed-not-signed-exit-minus-one'
-        Write-Host ('Pinned exit schema controls passed: 6 positive/history controls, ' + ($negativeCases.Count + 1) + ' strict negative controls; synthetic parser evidence only.')
+        $bad = Copy-ProofFixture $queryDenied; $bad.failedRecords[0].nativeProof.initial.stage = 'wait'
+        Check (Read-ProofFixture @($bad)).invalidRecords 'undefined-error-on-successful-wait'
+        foreach ($base in @($two, $mixed)) {
+            foreach ($field in @('admissionStartedAtQpc', 'sampleStartedAtQpc', 'collectorDeadlineAtQpc', 'clockFrequency', 'deadlineAtQpc')) {
+                $bad = Copy-ProofFixture $base
+                $p = if ($bad.failedRecords.Count) { $bad.failedRecords[0].nativeProof } else { $bad.lifecycleEvents[1].nativeProof }
+                switch ($field) {
+                    'admissionStartedAtQpc' {
+                        # Each record alone remains valid; the second illegally
+                        # resets admission after the first shared deadline.
+                        $p.admissionStartedAtQpc = 100251L; $p.startedAtQpc = 100252L
+                        $p.deadlineAtQpc = 100501L; $p.completedAtQpc = 100254L
+                    }
+                    'sampleStartedAtQpc' { $p.sampleStartedAtQpc = 99999L; $p.collectorDeadlineAtQpc = 279999L }
+                    'collectorDeadlineAtQpc' { $p.collectorDeadlineAtQpc = 279999L }
+                    'clockFrequency' { $p.clockFrequency = 2000L; $p.durationMs = 1.0 }
+                    'deadlineAtQpc' { $p.deadlineAtQpc = 100250L }
+                }
+                Check (Read-ProofFixture @($bad)).invalidRecords ('per-record-clock-reset-' + $field)
+            }
+        }
+        Write-Host ('Pinned exit schema controls passed: 9 positive/history controls, ' + ($negativeCases.Count + 12) + ' strict negative controls; synthetic parser evidence only.')
     } finally { if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) } }
 }
 

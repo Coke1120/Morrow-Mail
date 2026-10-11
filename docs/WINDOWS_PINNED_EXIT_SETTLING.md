@@ -13,7 +13,7 @@ Earlier main runs also recorded independent first-acquire error 87 gaps.
 The historical record lacks a raw WAIT value and initial exit code; it cannot
 establish a kernel race or the cause of the lookup rejection.
 
-[Official .NET source](https://github.com/dotnet/runtime/blob/60629d14374c56f1cb51819049ad1fa529307f8d/src/libraries/System.Diagnostics.Process/src/System/Diagnostics/ProcessManager.Windows.cs#L285-L319)
+[Official .NET source](https://github.com/dotnet/runtime/blob/60629d14374c56f1cb51819049ad1fa529307f8d/src/libraries/System.Diagnostics.Process/src/System/Diagnostics/ProcessManager.Windows.cs#L259-L291)
 checks an exit code before the process signal. That supports testing a pending
 zero-exit/signal transition on an already-pinned process. The old CI runtime was
 not fingerprinted; source inspection is not proof of its exact assembly or cause.
@@ -50,7 +50,7 @@ New records preserve raw uint32 WAIT statuses (including 4294967295), initial
 and final native reads, errors, exact identity, parent states, duration and
 absolute deadlines. GetLastError is captured only immediately after a failed
 native call; it is undefined for successful waits. Strict parser validation
-rejects contradictions, expired success, changed full ticks and projected
+rejects contradictions, per-PID deadline resets, undefined wait errors, expired success, changed full ticks and projected
 native acceptance. Older records remain readable without inventing missing data.
 
 ## Verification scope

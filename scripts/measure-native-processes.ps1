@@ -533,7 +533,9 @@ function Assert-NativeLookupProof($Proof, $Record, [bool] $IsExitEvent) {
         if ($read.waitStatus -eq 4294967295L -and ($null -eq $read.nativeError -or $read.stage -ne 'wait' -or $null -ne $read.exitCode)) { throw 'Missing WAIT_FAILED error.' }
         if ($null -ne $read.nativeError -and ($read.outcome -notin @('accessDenied', 'unavailable') -or
             $read.stage -notin @('pid', 'creation', 'wait', 'exit') -or $null -ne $read.exitCode -or
-            (($read.nativeError -eq 5) -ne ($read.outcome -eq 'accessDenied')))) { throw 'Invalid native API error.' }
+            (($read.nativeError -eq 5) -ne ($read.outcome -eq 'accessDenied')) -or
+            ($read.stage -eq 'wait' -and $read.waitStatus -ne 4294967295L) -or
+            ($read.stage -eq 'exit' -and $read.waitStatus -notin @(0L, 258L)))) { throw 'Invalid native API error.' }
         switch ($read.outcome) {
             'zeroExit' { if (-not $read.identityMatched -or $read.waitStatus -ne 0 -or $read.exitCode -ne 0 -or $null -ne $read.nativeError) { throw 'Invalid native zero exit.' } }
             'pendingZero' { if (-not $read.identityMatched -or $read.waitStatus -ne 258 -or $read.exitCode -ne 0 -or $null -ne $read.nativeError) { throw 'Invalid native pending zero.' } }
@@ -585,6 +587,13 @@ function Assert-NativeLookupProof($Proof, $Record, [bool] $IsExitEvent) {
                 ($null -ne $expectedError -and $Record.errorKind -ne $(if ($expectedError -eq 5) { 'accessDenied' } else { 'native' }))) { throw 'Native failure error does not match.' }
         }
     }
+}
+
+function Get-NativeProofClock($Proof) {
+    # Called only after strict Int64 validation. These values are fixed before
+    # admission and must be identical across successes AND failures in a sample.
+    return (@('clockFrequency', 'sampleStartedAtQpc', 'admissionStartedAtQpc', 'collectorDeadlineAtQpc', 'deadlineAtQpc') |
+        ForEach-Object { $Proof[$_].ToString([Globalization.CultureInfo]::InvariantCulture) }) -join ','
 }
 
 function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
@@ -659,7 +668,7 @@ function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
                 if ($row.ContainsKey('lifecycleEvents')) {
                     $modernRecords = $true; $events = $row.lifecycleEvents; $failures = $row.failedRecords
                     if ($events -isnot [array] -or $events.Count -gt 64 -or $failures -isnot [array] -or $failures.Count -ne $row.skipped) { throw 'Invalid lifecycle records.' }
-                    $exited = @{}; $failed = @{}; $recordReasons = New-NativeSkipReasonCounts
+                    $exited = @{}; $failed = @{}; $recordReasons = New-NativeSkipReasonCounts; $proofClock = $null
                     foreach ($event in $events) {
                         if (($event.Keys | Sort-Object) -join ',' -cnotin @('exitCode,identitySource,parentPid,phase,pid,role,source,startUtcTicks',
                                 'exitCode,identitySource,nativeProof,parentPid,phase,pid,role,source,startUtcTicks') -or
@@ -680,7 +689,12 @@ function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
                             if ($row.ContainsKey('nativeProofVersion') -and -not $event.ContainsKey('nativeProof')) { throw 'Missing native lookup metadata.' }
                             $nativeLookupPids[$event.pid] = $true
                         }
-                        if ($event.ContainsKey('nativeProof')) { Assert-NativeLookupProof $event.nativeProof $event $true }
+                        if ($event.ContainsKey('nativeProof')) {
+                            Assert-NativeLookupProof $event.nativeProof $event $true
+                            $clock = Get-NativeProofClock $event.nativeProof
+                            if ($null -ne $proofClock -and $proofClock -cne $clock) { throw 'Native admission deadline changed within a sample.' }
+                            $proofClock = $clock
+                        }
                         if ($event.phase -eq 'beforeCounters') {
                             if ($identities.ContainsKey($event.pid)) { throw 'Exited process has unexpected counters.' }
                         } elseif (-not $identities.ContainsKey($event.pid) -or $identities[$event.pid] -ne $event.startUtcTicks -or
@@ -706,7 +720,12 @@ function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
                             ($failure.errorKind -eq 'accessDenied' -and $failure.errorCode -ne 5) -or
                             ($failure.errorKind -eq 'native' -and $null -eq $failure.errorCode) -or
                             ($failure.errorKind -in @('none', 'argument', 'invalidOperation', 'other') -and $null -ne $failure.errorCode)) { throw 'Invalid failure evidence.' }
-                        if ($failure.ContainsKey('nativeProof')) { Assert-NativeLookupProof $failure.nativeProof $failure $false }
+                        if ($failure.ContainsKey('nativeProof')) {
+                            Assert-NativeLookupProof $failure.nativeProof $failure $false
+                            $clock = Get-NativeProofClock $failure.nativeProof
+                            if ($null -ne $proofClock -and $proofClock -cne $clock) { throw 'Native admission deadline changed within a sample.' }
+                            $proofClock = $clock
+                        }
                         $failed[$failure.pid] = $true; $recordReasons[$failure.reason]++
                     }
                     foreach ($key in @($skipCounts.Keys)) {
