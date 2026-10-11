@@ -13,7 +13,14 @@ try {
     $command = 'call "' + $compiler + '" >nul && cl /nologo /std:c++20 /EHsc /W4 /WX /DUNICODE /D_UNICODE "' + $source + '" /Fe:"' + $exe + '" /Fo:"' + $temporary + '\probe.obj"'
     & $env:ComSpec /d /c $command
     if ($LASTEXITCODE -ne 0) { throw 'Process birth discriminator did not compile.' }
-    foreach ($case in @('zero', 'orphan', 'nonzero', 'crash', 'loss-birth', 'loss-exit', 'identity-mismatch', 'wait-failed', 'wait-unknown', 'timeout')) {
+    $adapter = Join-Path $root 'windows/Checks/NativeProcessObserver.cpp'
+    $command = 'call "' + $compiler + '" >nul && cl /nologo /std:c++20 /EHsc /W4 /WX /DUNICODE /D_UNICODE "' + $adapter + '" /Fe:"' + $temporary + '\native-process-observer.exe" /Fo:"' + $temporary + '\observer.obj"'
+    & $env:ComSpec /d /c $command
+    if ($LASTEXITCODE -ne 0) { throw 'Owned process observer adapter did not compile.' }
+    foreach ($case in @('zero', 'orphan', 'handled-exception', 'nonzero', 'crash', 'user-breakpoint',
+        'loss-birth', 'loss-exit', 'identity-mismatch', 'creation-mismatch', 'wrong-job',
+        'wait-failed', 'wait-unknown', 'exit-mismatch', 'overflow', 'timeout',
+        'acquire-zero', 'acquire-nonzero', 'acquire-crash')) {
         $start = [Diagnostics.ProcessStartInfo]::new($exe)
         $start.UseShellExecute = $false; $start.CreateNoWindow = $true
         $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
@@ -27,7 +34,8 @@ try {
             Write-Host ('Process birth case ' + $case + ': ' + $text.Trim())
             if ($process.ExitCode -ne 0) { throw ('Process birth control rejected its expected outcome: ' + $case + '; ' + $errors) }
             $result = $text | ConvertFrom-Json
-            if (-not $result.readyBeforeResume -or -not $result.cleanup -or $result.closed -ne $result.duplicates) { throw 'Probe lifecycle cleanup failed.' }
+            if (-not $result.readyBeforeResume -or -not $result.cleanup -or $result.closed -ne $result.duplicates -or
+                -not $result.firstAcquireEvidence) { throw 'Probe lifecycle cleanup or first-acquisition evidence failed.' }
             if ($result.accepted -eq $result.expectedNegative) { throw 'Probe confused normal exit and unavailable evidence.' }
         } finally { $process.Dispose() }
     }
