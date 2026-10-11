@@ -37,13 +37,16 @@ Json sidebarSelection(std::shared_ptr<Shell> const& shell) {
 }
 IAsyncAction invokeSidebar(std::shared_ptr<Shell> shell, controls::NavigationViewItem item, std::shared_ptr<unsigned> invocations) {
     namespace peers = xaml::Automation::Peers;
+    apartment_context ui;
+    auto deadline = GetTickCount64() + 1000;
+    while (!item.IsLoaded() && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+    require(item.IsLoaded(), L"The native invocation target was not realized in the mounted sidebar.");
     auto peer = peers::FrameworkElementAutomationPeer::CreatePeerForElement(item);
     auto action = peer.GetPattern(peers::PatternInterface::SelectionItem).try_as<xaml::Automation::Provider::ISelectionItemProvider>();
     require(bool(action), L"The native sidebar item did not expose its selection action.");
     auto expected = *invocations + 1;
     action.Select();
-    apartment_context ui;
-    auto deadline = GetTickCount64() + 1000;
+    deadline = GetTickCount64() + 1000;
     while (*invocations < expected && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
     require(*invocations == expected, L"The native sidebar action did not raise its actual ItemInvoked event.");
     auto drained = std::make_shared<bool>(false);
@@ -91,7 +94,9 @@ fire_and_forget startAttachmentFlowChecks(std::shared_ptr<Shell> shell) {
         shell->page = controls::ContentControl(); shell->status = controls::TextBlock();
         shell->composeButton = controls::Button(); shell->syncButton = controls::Button();
         shell->navigation.Content(shell->page); shell->root.Children().Append(shell->navigation);
+        shell->navigation.PaneDisplayMode(controls::NavigationViewPaneDisplayMode::Left);
         shell->window.Content(shell->root); shell->window.Activate();
+        shell->window.AppWindow().Resize({1220, 800});
         // Return from OnLaunched before exercising the mounted native controls.
         apartment_context ui;
         co_await resume_after(std::chrono::milliseconds(50)); co_await ui;
@@ -134,6 +139,15 @@ fire_and_forget startAttachmentFlowChecks(std::shared_ptr<Shell> shell) {
             L"Repeated attachment activation bypassed the active download guard.");
         if (!oldNavigation) {
             auto beforeState = shell->state.Stringify();
+            // Keep the target account's native children visible. Expanding an
+            // unrelated group is fixture layout, not a mailbox navigation.
+            shell->selectingNavigation = true;
+            for (auto const& entry : shell->navigation.MenuItems())
+                if (auto group = entry.try_as<controls::NavigationViewItem>(); group && group.Tag()) {
+                    auto owner = text(group.Tag().as<Json>(), L"owner");
+                    if (!owner.empty()) group.IsExpanded(owner == L"sidebar@attachment.invalid");
+                }
+            shell->selectingNavigation = false; shell->root.UpdateLayout();
             co_await invokeSidebar(shell, mailboxItem(shell, L"sidebar@attachment.invalid", L"inbox"), invocations);
             require(*invocations == 1 && unchanged() && shell->state.Stringify() == beforeState && requests == 1,
                 L"The real sidebar invocation changed mailbox data, failed to fire, or escaped the download guard.");
