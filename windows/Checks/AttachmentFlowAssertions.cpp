@@ -35,17 +35,20 @@ Json sidebarSelection(std::shared_ptr<Shell> const& shell) {
     require(item && item.Tag(), L"The native sidebar lost its selected item.");
     return item.Tag().as<Json>();
 }
-IAsyncAction invokeSidebar(std::shared_ptr<Shell> shell, controls::NavigationViewItem item) {
+IAsyncAction invokeSidebar(std::shared_ptr<Shell> shell, controls::NavigationViewItem item, std::shared_ptr<unsigned> invocations) {
     namespace peers = xaml::Automation::Peers;
     auto peer = peers::FrameworkElementAutomationPeer::CreatePeerForElement(item);
     auto action = peer.GetPattern(peers::PatternInterface::SelectionItem).try_as<xaml::Automation::Provider::ISelectionItemProvider>();
     require(bool(action), L"The native sidebar item did not expose its selection action.");
+    auto expected = *invocations + 1;
     action.Select();
-    require(shell->navigation.SelectedItem() == item, L"WinUI did not select the invoked sidebar item.");
-    auto drained = std::make_shared<bool>(false);
-    require(shell->root.DispatcherQueue().TryEnqueue([drained] { *drained = true; }), L"Could not drain the native invocation queue.");
     apartment_context ui;
     auto deadline = GetTickCount64() + 1000;
+    while (*invocations < expected && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+    require(*invocations == expected, L"The native sidebar action did not raise its actual ItemInvoked event.");
+    auto drained = std::make_shared<bool>(false);
+    require(shell->root.DispatcherQueue().TryEnqueue([drained] { *drained = true; }), L"Could not drain the native invocation queue.");
+    deadline = GetTickCount64() + 1000;
     while (!*drained && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
     require(*drained, L"The native invocation queue exceeded its bound.");
 }
@@ -131,7 +134,7 @@ fire_and_forget startAttachmentFlowChecks(std::shared_ptr<Shell> shell) {
             L"Repeated attachment activation bypassed the active download guard.");
         if (!oldNavigation) {
             auto beforeState = shell->state.Stringify();
-            co_await invokeSidebar(shell, mailboxItem(shell, L"sidebar@attachment.invalid", L"inbox"));
+            co_await invokeSidebar(shell, mailboxItem(shell, L"sidebar@attachment.invalid", L"inbox"), invocations);
             require(*invocations == 1 && unchanged() && shell->state.Stringify() == beforeState && requests == 1,
                 L"The real sidebar invocation changed mailbox data, failed to fire, or escaped the download guard.");
             auto selection = sidebarSelection(shell);
@@ -143,7 +146,7 @@ fire_and_forget startAttachmentFlowChecks(std::shared_ptr<Shell> shell) {
                 require(text(selection, L"owner") == shell->owner && text(selection, L"folder") == shell->folder,
                     L"Blocked native invocation left the sidebar on another mailbox.");
                 auto activity = shell->navigation.FooterMenuItems().GetAt(0).as<controls::NavigationViewItem>();
-                co_await invokeSidebar(shell, activity);
+                co_await invokeSidebar(shell, activity, invocations);
                 require(*invocations == 2 && text(sidebarSelection(shell), L"owner") == shell->owner
                     && text(sidebarSelection(shell), L"folder") == shell->folder && unchanged() && requests == 1,
                     L"Blocked native page invocation left the sidebar inconsistent with the retained mailbox.");
