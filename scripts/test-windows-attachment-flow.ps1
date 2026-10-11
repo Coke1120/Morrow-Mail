@@ -47,7 +47,8 @@ try {
     # Only private compiler inputs change. The normal application and package
     # never contain a fixture transport, picker hook or alternate startup.
     Copy-Item -LiteralPath (Join-Path $native 'Checks/AttachmentFlowAssertions.cpp') -Destination $native
-    if (-not $BaselineNavigation) {
+    # Both pinned baselines predate the sync-priority API.
+    if (-not ($BaselineNavigation -or $BaselineSidebar)) {
         $checks = Join-Path $native 'AttachmentFlowAssertions.cpp'
         [IO.File]::WriteAllText($checks, "#define MORROW_SYNC_PRIORITY_CHECKS`n" + [IO.File]::ReadAllText($checks), [Text.UTF8Encoding]::new($false))
     }

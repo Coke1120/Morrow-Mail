@@ -11,6 +11,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
       - name: Record fixture runtime version
         shell: pwsh
         run: |
@@ -22,6 +24,9 @@ jobs:
       - name: Verify combined candidate native sidebar and attachment flow
         shell: pwsh
         run: ./scripts/test-windows-attachment-flow.ps1
+      - name: Verify pinned sidebar negative control with its original API surface
+        shell: pwsh
+        run: ./scripts/test-windows-attachment-flow.ps1 -BaselineSidebar
   macos-flow:
     needs: pinned-exit
     runs-on: macos-15
