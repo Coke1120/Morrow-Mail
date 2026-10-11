@@ -42,7 +42,8 @@ void attachmentFixturePicker(IFileDialog*);'
     Replace-Once $attachments '    if (shell->dialogOpen || shell->closing) return {};' '    if (shell->dialogOpen || shell->closing) return {};
     if (auto path = attachmentFixtureSelection(save); !path.empty()) return path;'
     Replace-Once $attachments '    auto result = dialog->Show(hwnd);' '    attachmentFixturePicker(dialog.get());
-    auto result = dialog->Show(hwnd);'
+    auto result = dialog->Show(hwnd);
+    std::fprintf(stderr, "Attachment fixture: picker Show returned 0x%08X\n", static_cast<unsigned>(result)); std::fflush(stderr);'
     $service = Join-Path $native 'Service.cpp'
     $signature = 'IAsyncOperation<Json> Service::request(hstring path, hstring owner, hstring method, Json body, bool hostOperation) {'
     $end = 'IAsyncOperation<Json> Service::requestWithStatus('

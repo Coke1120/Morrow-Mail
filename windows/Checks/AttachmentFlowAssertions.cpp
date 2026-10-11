@@ -34,8 +34,13 @@ void CALLBACK cancelPicker(HWND, UINT, UINT_PTR timer, DWORD) noexcept {
         std::fflush(stderr);
     }
     if (SUCCEEDED(query) && SUCCEEDED(getWindow) && IsWindowVisible(handle)) {
-        KillTimer(nullptr, timer); cancelTimer = 0;
-        if (SUCCEEDED(activeDialog->Close(HRESULT_FROM_WIN32(ERROR_CANCELLED)))) ++cancelledDialogs;
+        auto closed = activeDialog->Close(HRESULT_FROM_WIN32(ERROR_CANCELLED));
+        if (pickerTicks <= 3 || SUCCEEDED(closed)) {
+            std::fprintf(stderr, "Attachment fixture: picker Close=0x%08X\n", static_cast<unsigned>(closed)); std::fflush(stderr);
+        }
+        if (SUCCEEDED(closed)) {
+            KillTimer(nullptr, timer); cancelTimer = 0; ++cancelledDialogs;
+        }
     }
 }
 }
@@ -52,7 +57,7 @@ void attachmentFixturePicker(IFileDialog* dialog) {
     com_ptr<IShellItem> folder;
     check_hresult(SHCreateItemFromParsingName(fixture.c_str(), nullptr, IID_PPV_ARGS(folder.put())));
     check_hresult(dialog->SetFolder(folder.get()));
-    cancelTimer = SetTimer(nullptr, 0, 50, cancelPicker);
+    cancelTimer = SetTimer(nullptr, 0, 100, cancelPicker);
     require(cancelTimer != 0, L"Could not schedule the owned picker cancellation.");
     std::fprintf(stderr, "Attachment fixture: picker %u entering Show\n", dialogs); std::fflush(stderr);
 }
