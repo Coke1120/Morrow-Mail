@@ -63,6 +63,7 @@ struct Options {
     std::wstring exe, arguments;
     long long launch{}; DWORD deadlineMs{180000}; Fault fault{Fault::None};
     FILE* samples{};
+    bool diagnostics{};
 };
 struct Result {
     std::vector<Row> rows; std::vector<Event> ledger; std::vector<const char*> failures;
@@ -274,6 +275,8 @@ inline Result Run(const Options& options) {
     if (r.ready && ResumeThread(thread.value) == static_cast<DWORD>(-1)) r.Fail("root-resume");
     Close(thread, "launch-close"); Close(input, "launch-close"); Close(output, "launch-close"); Close(error, "launch-close");
     auto lastSample = options.launch; long long rootExitAt{};
+    unsigned firstChance{}, secondChance{}, debugStrings{}; DWORD lastException{};
+    auto diagnosticAt = options.launch;
     bool finished{};
     while (Elapsed(Stamp(), options.launch) < options.deadlineMs) {
         DEBUG_EVENT event{};
@@ -336,10 +339,13 @@ inline Result Run(const Options& options) {
                 Handle image(event.u.LoadDll.hFile);
                 Close(image, "image-close");
             } else if (event.dwDebugEventCode == EXCEPTION_DEBUG_EVENT) {
+                if (event.u.Exception.dwFirstChance) ++firstChance; else ++secondChance;
+                lastException = event.u.Exception.ExceptionRecord.ExceptionCode;
                 if (found != r.rows.end() && !found->initialBreak && event.u.Exception.dwFirstChance &&
                     event.u.Exception.ExceptionRecord.ExceptionCode == EXCEPTION_BREAKPOINT) found->initialBreak = true;
                 else continuation = DBG_EXCEPTION_NOT_HANDLED;
-            } else if (event.dwDebugEventCode == RIP_EVENT) r.Fail("debug-rip");
+            } else if (event.dwDebugEventCode == OUTPUT_DEBUG_STRING_EVENT) ++debugStrings;
+            else if (event.dwDebugEventCode == RIP_EVENT) r.Fail("debug-rip");
             if (!ContinueDebugEvent(event.dwProcessId, event.dwThreadId, continuation)) { r.Fail("debug-continue"); break; }
             if (r.events >= 8192 || r.sequence > 128 ||
                 std::find(r.failures.begin(), r.failures.end(), "identity-bound") != r.failures.end()) {
@@ -357,6 +363,17 @@ inline Result Run(const Options& options) {
         if (options.samples && Elapsed(Stamp(), lastSample) >= 1000) {
             if (r.samples == 180) { r.Fail("sample-bound"); break; }
             Sample(r, options); lastSample = Stamp();
+        }
+        if (options.diagnostics && Elapsed(Stamp(), diagnosticAt) >= 30000) {
+            JOBOBJECT_BASIC_ACCOUNTING_INFORMATION state{};
+            const bool queried = QueryInformationJobObject(job.value, JobObjectBasicAccountingInformation, &state, sizeof(state), nullptr) != FALSE;
+            if (!queried) r.Fail("job-accounting");
+            // Fixed metadata from this exact owned Job/debug source only. Do
+            // not inspect debug strings, thread contexts or process memory.
+            std::fprintf(stderr, "Native observer: events=%u births=%u exits=%u jobTotal=%u jobActive=%u firstChance=%u secondChance=%u lastException=0x%08X debugStrings=%u accounting=%u\n",
+                r.events, r.births, r.exits, state.TotalProcesses, state.ActiveProcesses,
+                firstChance, secondChance, lastException, debugStrings, unsigned(queried));
+            std::fflush(stderr); diagnosticAt = Stamp();
         }
     }
     if (!finished) r.Fail("deadline");

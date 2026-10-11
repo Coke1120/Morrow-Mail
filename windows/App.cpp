@@ -1526,9 +1526,15 @@ IAsyncAction Shell::shutdown() {
         }
     } catch (...) { error(L"The window size could not be saved. Mail and settings are retained."); }
     closing = true; ++generation; if (timer) timer.Stop(); navigation.IsEnabled(false); error(L"Closing the private service…");
+    startupTrace("shutdown service drain starting");
     try { if (service) co_await service->stop(); } catch (...) {}
+    startupTrace("shutdown service drained");
     closeReady = true;
-    window.Close(); Application::Current().Exit();
+    startupTrace("shutdown window close starting");
+    window.Close();
+    startupTrace("shutdown window closed");
+    Application::Current().Exit();
+    startupTrace("shutdown application exit returned");
 }
 IAsyncAction composerWriteGuardChecks(std::shared_ptr<Shell> shell);
 
@@ -1802,6 +1808,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         SetCurrentProcessExplicitAppUserModelID(L"org.morrowmail.desktop");
         startupTrace("starting XAML application");
         winrt::Microsoft::UI::Xaml::Application::Start([](auto const&) { winrt::make<MorrowApplication>(); });
+        startupTrace("XAML application stopped");
     } catch (...) {
         if (std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos) {
             std::fprintf(stderr, "Native startup HRESULT: 0x%08X\n", static_cast<unsigned>(winrt::to_hresult())); std::fflush(stderr);

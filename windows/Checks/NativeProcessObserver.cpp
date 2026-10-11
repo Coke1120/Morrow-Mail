@@ -26,6 +26,7 @@ int wmain(int argc, wchar_t** argv) {
     auto sample = OpenReport(argv[2]); auto ledger = OpenReport(argv[3]);
     if (!sample || !ledger) { if (sample) std::fclose(sample); if (ledger) std::fclose(ledger); return 98; }
     owned::Options options; options.exe = argv[1]; options.arguments = L"--native-smoke"; options.launch = launch; options.samples = sample;
+    options.diagnostics = true;
     auto result = owned::Run(options);
     const auto text = owned::Ledger(result);
     const bool written = text.size() <= 32768 && owned::WriteBounded(ledger, text, true);

@@ -268,6 +268,7 @@ function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMillisecond
     $safeStartup += '|^Native reader: nav-completed id=[0-9]{1,20} success=[01] error=-?[0-9]{1,10} live=[01] tracked=[0-9]{1,20}$'
     $safeStartup += '|^Native reader: (render-request|render-returned|initial-document-state|initial-document-failed) active=[01] ready=[01] live=[01] expected=[01] core=[01] view=[01] loaded=[01] visible=[01] id=[0-9]{1,20} completed=[0-9]{1,20} epoch=[0-9]{1,20}$'
     $safeStartup += '|^Native reader: nav-uri empty=[01] dataHtml=[01] dataHtmlBase64=[01] aboutBlankPrefix=[01] other=[01] length=[0-9]{1,10}$'
+    $safeStartup += '|^Native observer: events=[0-9]{1,5} births=[0-9]{1,3} exits=[0-9]{1,3} jobTotal=[0-9]{1,5} jobActive=[0-9]{1,5} firstChance=[0-9]{1,5} secondChance=[0-9]{1,5} lastException=0x[0-9A-F]{8} debugStrings=[0-9]{1,5} accounting=[01]$'
     $safeLines = [Collections.Generic.Queue[string]]::new()
     $state = @{ phase = ''; characters = 0; milestones = @{} }
     function Keep-Line([string] $Value) {
