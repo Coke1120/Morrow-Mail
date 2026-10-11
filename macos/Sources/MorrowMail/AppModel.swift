@@ -13,6 +13,7 @@ final class AppModel: ObservableObject {
             if state["account"]["id"] != oldValue["account"]["id"] || state["settings"] != oldValue["settings"] ||
                 accounts.map({ $0.picking(["id", "settings"]) }) != oldValue["accounts"].array.map({ $0.picking(["id", "settings"]) }) ||
                 state["workspace"].picking(["brain", "styleLearning"]) != oldValue["workspace"].picking(["brain", "styleLearning"]) { draftGeneration += 1 }
+            if state["account"] != oldValue["account"] || state["accounts"] != oldValue["accounts"] { queueSyncPriority() }
         }
     }
     @Published var busy = false
@@ -31,12 +32,13 @@ final class AppModel: ObservableObject {
             draftGeneration += 1
             if section != "studio" { selectedMessage = nil; messageDetail = .null }
             mailPage = .null
+            queueSyncPriority()
         }
     }
     @Published var scheduledAccount = ""
     @Published var serverFolders: [String: [JSON]] = [:]
     @Published var selectedMessage: String? {
-        didSet { if selectedMessage != oldValue { openedMessage = nil; retainedUnread = nil; selectedMessages = selectedMessage.map { [$0] } ?? []; draftGeneration += 1; messageGeneration += 1; messageError = "" } }
+        didSet { if selectedMessage != oldValue { openedMessage = nil; retainedUnread = nil; selectedMessages = selectedMessage.map { [$0] } ?? []; draftGeneration += 1; messageGeneration += 1; messageError = ""; queueSyncPriority() } }
     }
     @Published var selectedMessages: Set<String> = []
     @Published private var retainedUnread: (message: JSON, index: Int, scope: String, page: Int)?
@@ -47,8 +49,8 @@ final class AppModel: ObservableObject {
     @Published var managingFolders: JSON?
     private var mailDrag: JSON = .null
     @Published var searchFocus = 0
-    @Published var searchResponse: JSON = .null
-    @Published var mailPage: JSON = .null
+    @Published var searchResponse: JSON = .null { didSet { if searchResponse != oldValue { queueSyncPriority() } } }
+    @Published var mailPage: JSON = .null { didSet { if mailPage != oldValue { queueSyncPriority() } } }
     @Published var mailLoading = false
     @Published var unreadOnly = false
     @Published var messageDetail: JSON = .null { didSet { if messageDetail != oldValue { draftGeneration += 1 } } }
@@ -58,7 +60,7 @@ final class AppModel: ObservableObject {
     private var messageGeneration = 0
     private var mailPageKey = ""
     private var openedMessage: String?
-    @Published var showSettings = false { didSet { if showSettings != oldValue { draftGeneration += 1 } } }
+    @Published var showSettings = false { didSet { if showSettings != oldValue { draftGeneration += 1; queueSyncPriority() } } }
     @Published var settingsTab = "start"
     @Published private(set) var updateResult: JSON = .null
     @Published private(set) var updateCheckError = ""
@@ -84,6 +86,8 @@ final class AppModel: ObservableObject {
     private(set) var baseURL: URL?
     private var periodic: Task<Void, Never>?
     private var activityPolling: Task<Void, Never>?
+    private var syncPriorityTask: Task<Void, Never>?
+    private var syncPriorityGeneration: UInt64 = 0
     private var refreshing = false
     private var stateGeneration = 0
     private var shuttingDown = false
@@ -261,6 +265,7 @@ final class AppModel: ObservableObject {
                     // The service syncs all accounts and schedules AI; this only refreshes visible state.
                     if self.canNavigate && NSApp?.isActive == true {
                         self.perform {
+                            await self.publishSyncPriority()
                             let stamp = try await self.request("/state/revision", mailbox: "")
                             if stamp["revision"] != self.state["revision"] || stamp["accountId"].string != self.account { try await self.reload() }
                         }
@@ -275,7 +280,7 @@ final class AppModel: ObservableObject {
     func stop() {
         if let trashUndoKeyMonitor { NSEvent.removeMonitor(trashUndoKeyMonitor); self.trashUndoKeyMonitor = nil }
         trashUndos = []
-        shuttingDown = true; periodic?.cancel(); activityPolling?.cancel()
+        shuttingDown = true; periodic?.cancel(); activityPolling?.cancel(); syncPriorityTask?.cancel()
         try? input?.fileHandleForWriting.close()
         if process?.isRunning == true { process?.terminate() }
         baseURL = nil
@@ -497,12 +502,48 @@ final class AppModel: ObservableObject {
               let owner = accounts.first(where: { $0.id == request["message"]["accountId"].string }) else { return false }
         return owner["settings"] == request["connection"]
     }
+    var syncPriorityMessages: [JSON] {
+        guard isMailSection, !showSettings, hasMailbox else { return [] }
+        var seen = Set<String>(), result: [JSON] = []
+        let selected = current.map { [$0] } ?? []
+        for message in selected + visibleMailRows {
+            let owner = message["accountId"].string
+            guard !message.id.isEmpty, accounts.contains(where: { $0.id == owner }),
+                  combined || owner == account,
+                  seen.insert(owner + "\u{0}" + message.id).inserted else { continue }
+            result.append(message.picking(["accountId", "id"]))
+            if result.count == 51 { break }
+        }
+        return result
+    }
+    private func syncPriorityRequest() -> (JSON, String) {
+        syncPriorityGeneration += 1
+        let scope = account == "all" || accounts.contains(where: { $0.id == account }) ? account : "all"
+        return (.object(["generation": .number(Double(syncPriorityGeneration)), "messages": .array(syncPriorityMessages)]), scope)
+    }
+    private func queueSyncPriority() {
+        guard baseURL != nil, !shuttingDown else { return }
+        syncPriorityTask?.cancel()
+        let (body, scope) = syncPriorityRequest()
+        syncPriorityTask = Task { [weak self] in
+            guard !Task.isCancelled, let self else { return }
+            _ = try? await self.request("/sync/priority", method: "POST", body: body, mailbox: scope)
+        }
+    }
+    func publishSyncPriority() async {
+        guard baseURL != nil, !shuttingDown else { return }
+        syncPriorityTask?.cancel()
+        let (body, scope) = syncPriorityRequest()
+        // This expiring scheduling hint does not mutate visible mail or its pagination.
+        _ = try? await request("/sync/priority", method: "POST", body: body, mailbox: scope)
+    }
     func sync() async throws {
         guard hasMailbox, !syncing else { return }
         let view = account, scope = section == "today" ? "all" : account
         let generation = stateGeneration
         syncing = true; notice = "Syncing mail…"
         defer { syncing = false; if notice == "Syncing mail…" { notice = "" } }
+        await publishSyncPriority()
         let result = try await request("/sync", method: "POST", body: .object([:]), mailbox: scope)
         guard !Task.isCancelled, generation == stateGeneration else { return }
         var next = result

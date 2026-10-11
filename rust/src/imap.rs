@@ -699,6 +699,13 @@ async fn confirm_expunged(session: &mut Mailbox, missing: &[u32]) -> Result<()> 
 pub async fn fetch_page(mail: &Value, options: &Value) -> Result<Value> {
     fetch_page_with_tls(mail, options, &connector()?).await
 }
+pub(crate) async fn fetch_page_cached(
+    app: &crate::service::App,
+    mail: &Value,
+    options: &Value,
+) -> Result<Value> {
+    fetch_page_cached_with_tls(app, mail, options, &connector()?).await
+}
 pub async fn write_flags(mail: &Value, message: &Value, patch: &Value) -> Result<Value> {
     write_flags_with_tls(mail, message, patch, &connector()?).await
 }
@@ -779,6 +786,29 @@ pub async fn write_flags_with_tls(
 }
 pub async fn reconcile(mail: &Value, messages: &[Value]) -> Result<Vec<Value>> {
     reconcile_with_tls(mail, messages, &connector()?).await
+}
+pub(crate) async fn reconcile_priority(mail: &Value, messages: &[Value]) -> Result<Vec<Value>> {
+    reconcile_priority_with_tls(mail, messages, &connector()?).await
+}
+pub async fn reconcile_priority_with_tls(
+    mail: &Value,
+    messages: &[Value],
+    connector: &native_tls::TlsConnector,
+) -> Result<Vec<Value>> {
+    if messages.len() > crate::sync_priority::LIMIT {
+        return Err(Error::invalid("The mail view exceeds its message limit."));
+    }
+    // A retained reader can add one row to a 50-row page. Keep the existing
+    // per-request limit and overall read deadline; return no partial batch.
+    tokio::time::timeout(Duration::from_secs(45), async {
+        let mut result = Vec::new();
+        for chunk in messages.chunks(50) {
+            result.extend(reconcile_with_tls(mail, chunk, connector).await?);
+        }
+        Ok(result)
+    })
+    .await
+    .map_err(|_| providers::remote_error())?
 }
 pub async fn reconcile_with_tls(
     mail: &Value,
@@ -913,7 +943,20 @@ pub async fn fetch_page_with_tls(
 ) -> Result<Value> {
     tokio::time::timeout(
         Duration::from_secs(120),
-        fetch_inner(mail, options, connector),
+        fetch_inner(mail, options, connector, None),
+    )
+    .await
+    .map_err(|_| network_error())?
+}
+pub async fn fetch_page_cached_with_tls(
+    app: &crate::service::App,
+    mail: &Value,
+    options: &Value,
+    connector: &native_tls::TlsConnector,
+) -> Result<Value> {
+    tokio::time::timeout(
+        Duration::from_secs(120),
+        fetch_inner(mail, options, connector, Some(app)),
     )
     .await
     .map_err(|_| network_error())?
@@ -922,9 +965,10 @@ async fn fetch_inner(
     mail: &Value,
     options: &Value,
     connector: &native_tls::TlsConnector,
+    cache: Option<&crate::service::App>,
 ) -> Result<Value> {
     if options["folder"] != "all" {
-        return fetch_folder(mail, options, connector, None).await;
+        return fetch_folder(mail, options, connector, None, cache).await;
     }
     let mut traversal = options["cursor"].clone();
     if traversal.is_null() {
@@ -990,6 +1034,7 @@ async fn fetch_inner(
         &page_options,
         connector,
         Some(string(current, "path")),
+        cache,
     )
     .await?;
     let index = index + usize::from(page["nextCursor"].is_null());
@@ -1005,6 +1050,7 @@ async fn fetch_folder(
     options: &Value,
     connector: &native_tls::TlsConnector,
     selected_path: Option<&str>,
+    cache: Option<&crate::service::App>,
 ) -> Result<Value> {
     let folder = options["folder"].as_str().unwrap_or("inbox");
     if selected_path.is_none() && !["inbox", "sent"].contains(&folder) {
@@ -1144,6 +1190,20 @@ async fn fetch_folder(
         .filter(|uid| !seen.contains(uid))
         .collect::<Vec<_>>();
     confirm_expunged(&mut session, &missing).await?;
+    let cached = if let Some(app) = cache {
+        crate::mail::cached_page_bodies(
+            app,
+            mail,
+            metadata
+                .iter()
+                .map(|row| format!("imap:{validity}:{}", row.uid.unwrap()))
+                .collect(),
+            Some(path.clone()),
+        )
+        .await?
+    } else {
+        std::collections::HashMap::new()
+    };
     let mut messages = Vec::new();
     for row in metadata {
         let uid = row.uid.unwrap();
@@ -1157,7 +1217,28 @@ async fn fetch_folder(
             return Err(providers::remote_error());
         }
         let large = size > 5 * 1024 * 1024;
-        let mut value = if large {
+        let remote = format!("imap:{validity}:{uid}");
+        let previous = cached
+            .get(&remote)
+            .filter(|old| !large && !row.draft && folder != "drafts" && old["bodySize"] == size);
+        let header = if previous.is_some() {
+            if let Some(bytes) = row.header.as_deref().filter(|bytes| {
+                bytes.len() < 65536 && (bytes.ends_with(b"\r\n\r\n") || bytes.ends_with(b"\n\n"))
+            }) {
+                parse_mime(bytes.to_vec()).await.ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let reuse = previous.zip(header).filter(|(old, header)| {
+            !string(old, "messageId").is_empty() && old["messageId"] == header["messageId"]
+        });
+        let mut value = if let Some((previous, mut value)) = reuse {
+            crate::mail::copy_cached_body(previous, &mut value);
+            value
+        } else if large {
             let mut bytes = row.header.as_deref().ok_or_else(incomplete_read)?.to_vec();
             bytes.extend_from_slice(b"\r\n\r\nThis message exceeds the 5 MB import limit. Open it in your original mailbox to read it.");
             let mut value = parse_mime(bytes).await?;
@@ -1186,7 +1267,10 @@ async fn fetch_folder(
             }
             parse_mime(bytes.to_vec()).await?
         };
-        let remote = format!("imap:{validity}:{uid}");
+        if !large {
+            value["bodyConnection"] = crate::folders::connection_version(mail);
+            value["bodySize"] = size.into();
+        }
         let id = if path.eq_ignore_ascii_case("INBOX") {
             remote.clone()
         } else {
@@ -1211,7 +1295,7 @@ async fn fetch_folder(
             value,
             &json!({"id":id,"remoteId":remote,"providerFolderId":path,"providerFolderName":path,"folder":folder,"read":row.read,"starred":row.starred}),
         );
-        if selected_path.is_some() {
+        if selected_path.is_some() || row.draft {
             value["providerSent"] = (folder == "sent").into();
             value["providerDraft"] = (folder == "drafts" || row.draft).into();
             if value["providerDraft"] == true {

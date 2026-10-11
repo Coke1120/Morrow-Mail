@@ -142,7 +142,13 @@ async fn resolve(
         return Ok(None);
     }
     let previous = existing.clone();
-    let mut message = if let Some(existing) = existing.filter(|_| raw["isDraft"] != true) {
+    let mut message = if let Some(existing) = existing.filter(|old| {
+        raw["isDraft"] == false
+            && (string(old, "id").starts_with("sent:")
+                || mail::reusable_immutable_body(old, connection))
+            && !string(old, "messageId").is_empty()
+            && old["messageId"] == raw["internetMessageId"]
+    }) {
         existing
     } else {
         match providers::microsoft_message(&app.0.client, connection, &raw, string(&patch, "date"))
@@ -205,17 +211,29 @@ fn save(db: &Store, connection: &Value, messages: &[Value]) -> Result<()> {
                 }
                 message["localOverrides"]["folder"] = true.into();
             }
-            for key in [
-                "id",
-                "pending",
-                "lowPriority",
-                "labels",
-                "deliveryStatus",
-                "messageId",
-            ] {
+            if existing["attachmentsLoaded"] == true
+                && existing["providerDraft"] != true
+                && message["providerDraft"] != true
+                && !string(&message, "messageId").is_empty()
+                && existing["messageId"] == message["messageId"]
+            {
+                if message["contentIncomplete"] == true && mail::cached_body_available(&existing) {
+                    mail::copy_cached_body(&existing, &mut message);
+                    message["contentIncomplete"] = false.into();
+                    message["contentErrorCode"] = Value::Null;
+                }
+                message["attachments"] = existing["attachments"].clone();
+                message["attachmentsLoaded"] = mail::cached_body_available(&message).into();
+            }
+            for key in ["id", "pending", "lowPriority", "labels", "deliveryStatus"] {
                 if let Some(value) = existing.get(key) {
                     message[key] = value.clone();
                 }
+            }
+            // Local sent records retain the complete reviewed delivery payload;
+            // provider drafts use their current Message-ID and fresh body proof.
+            if string(&existing, "id").starts_with("sent:") {
+                message = mail::retain_reviewed_sent(&message, &existing);
             }
         }
         if db.get(owner, string(&message, "id"))?.as_ref() != Some(&message) {
@@ -252,22 +270,6 @@ pub async fn sync(app: &App, connection: &Value) -> Result<()> {
     let owner = string(connection, "email");
     let config = app.settings().await?;
     let job = config["imports"][owner].clone();
-    // Keep the newest Inbox/Sent responsive while the initial delta baseline is still paging.
-    for folder in ["inbox", "sent"] {
-        let selected = if job["options"].is_object() {
-            job["options"]["allMail"] == true || job["options"][folder] == true
-        } else {
-            folder == "inbox"
-        };
-        if selected {
-            let mut options = json!({"folder":folder});
-            if !string(&job, "since").is_empty() {
-                options["since"] = job["since"].clone();
-            }
-            let page = mail::fetch_page(app, connection, &options).await?;
-            mail::commit_sync_page(app, owner, connection, &page).await?;
-        }
-    }
     let mut work = app.0.activity.start(owner, "sync", "Outlook sync cycle", "Checking one change page and up to 25 downloaded messages. Further cycles may be needed; this is not a full-mailbox completion indicator.");
     let mut state = config["outlookSync"][owner].clone();
     if state["connection"] != connection_version(connection) {
@@ -294,6 +296,40 @@ pub async fn sync(app: &App, connection: &Value) -> Result<()> {
         .as_array()
         .ok_or_else(providers::remote_error)?
         .clone();
+    let priority = crate::sync_priority::messages(app, connection).await?;
+    for chunk in priority.chunks(4) {
+        let mut messages = Vec::new();
+        for result in
+            futures_util::future::join_all(chunk.iter().map(|row| async {
+                resolve(app, connection, &folders, &job, remote_id(row)?).await
+            }))
+            .await
+        {
+            if let Some(message) = result? {
+                messages.push(message);
+            }
+        }
+        let saved = connection.clone();
+        // A current-view refresh does not move the delta or background rotation checkpoints.
+        app.db(move |db| db.transaction(|db| save(db, &saved, &messages)))
+            .await?;
+    }
+    // Keep the newest Inbox/Sent responsive while the initial delta baseline is still paging.
+    for folder in ["inbox", "sent"] {
+        let selected = if job["options"].is_object() {
+            job["options"]["allMail"] == true || job["options"][folder] == true
+        } else {
+            folder == "inbox"
+        };
+        if selected {
+            let mut options = json!({"folder":folder});
+            if !string(&job, "since").is_empty() {
+                options["since"] = job["since"].clone();
+            }
+            let page = mail::fetch_page(app, connection, &options).await?;
+            mail::commit_sync_page(app, owner, connection, &page).await?;
+        }
+    }
     let selected: Vec<_> = folders
         .iter()
         .filter(|folder| {

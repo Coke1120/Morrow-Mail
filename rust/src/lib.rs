@@ -34,3 +34,4 @@ pub mod workflows;
 
 pub mod mail_flags;
 pub mod reconcile;
+mod sync_priority;
