@@ -1,5 +1,28 @@
 # Verification — 12 October 2026
 
+## Pre-row native capture window — cloud follow-up
+
+[PR36 paired38308442440](https://github.com/Coke1120/Morrow-Mail/actions/runs/38308442440)
+passed both platforms at exact head484a65e, attempt1; normal merge is0b14ed77.
+Windows observations4/47/34 were complete, relocation/benchmark passed, and Mac
+40/40 reader samples were complete/network-zero. Diagnostics38308442445 passed
+32 native lifecycle cases and13 identity controls.
+
+Combined [PR35 run38308902187](https://github.com/Coke1120/Morrow-Mail/actions/runs/38308902187)
+used identical observer source but failed owned case2/sample11: PID6268 and5316,
+parent3172, firstnativeAcquire87 with unknown exits. All UI cases passed; Windows
+job115009555495 failed and remains failed. Its123.744ms query shows why a row
+callback cannot establish an earlier acquisition. [The additional correction](docs/WINDOWS_INVENTORY_WINDOW.md)
+keeps bounded native provisional pins during CIM delivery, preserving all final
+admission/identity/parent/counter/exit/deadline gates and each first failure.
+
+Linux PowerShell compilation, pure64-bit/input bounds,9 positive/history plus52
+strict negative schema controls and script parsing passed. Five additional native
+lifecycle controls and a real born-during-window control await fresh native CI;
+no Win32 success is inferred from Linux. No rerun, tag replacement or gate waiver.
+The previous v0.7.5/v0.7.6 candidates are unpublished and immutable. Next unused
+version requires normal tested merges, coherent tagged gates and existing publisher.
+
 ## Inventory-delivery observer follow-up
 
 Actual main/tagged logs retained the first-acquire87/unknown-exit failures after

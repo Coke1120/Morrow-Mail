@@ -1,5 +1,13 @@
 # Morrow Mail feature coverage
 
+**Current source — fixture resource observation:** new children of retained live
+owned parents are provisionally pinned during CIM delivery, before tree and
+managed admission. First native87/5 errors remain unknown strict gaps; final CIM,
+parent/creation, counter and same-handle exit gates remain. The successful PR36
+run and separate failed combined run are retained in the
+[capture-window evidence and limits](docs/WINDOWS_INVENTORY_WINDOW.md). This does
+not establish complete process-lifetime or live-account acceptance.
+
 **0.7.6 source — Windows observation correction:** current children of already-verified live parents are pinned before earlier siblings' managed admission. Exact identity/parent/exit/counter gates remain; first-acquire 87/unknown exits still fail and complete process-lifetime coverage is not claimed. See [scope and controls](docs/WINDOWS_EARLY_ADMISSION_PINS.md). The failed v0.7.5 tag is preserved. The 0.7.6 preparation includes the tested correction and still requires fresh paired tagged gates.
 
 **0.7.6 source — Today and reply review workspace:** native SwiftUI/WinUI pages share All/account tabs without changing the global mailbox, retain account-owned drafts, selections, scroll positions and unsaved automatic-check budgets for the current app session, and show loading/retry errors without discarding edits. Today initially shows three decisions and three reply shortcuts; waiting/completed/information and full summaries are folded. Original messages use the existing isolated native reader; reply text is edited in place and requires facts/commitment review before opening the normal explicit composer. Below 780 units of review content width, list and detail switch to one pane. New saved summaries can include quote-validated decision states, literal deadlines and unresolved questions; legacy summaries remain uncertain. Provider/RFC/owned reply relationships group downloaded conversations within an account. Whole-conversation source versions withdraw old and in-flight suggestions on later arrivals, departures or source edits; latest evidence reopens/updates events, while missing or truncated context stays uncertain. See [contracts, safety and limits](docs/REVIEW_WORKSPACE.md) and [validation](VERIFICATION.md#unreleased-today-and-reply-review-workspace). This source is not in v0.7.4.
