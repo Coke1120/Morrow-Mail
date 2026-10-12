@@ -871,8 +871,10 @@ IAsyncAction Shell::smoke() {
             mailLayout = L"right";
             auto readerFits = [&] {
                 auto origin = readerPane.TransformToVisual(mailBody).TransformPoint(Point{});
+                auto windowOrigin = readerPane.TransformToVisual(root).TransformPoint(Point{});
                 return readerPane.ActualWidth() >= 320 && origin.X >= 0
-                    && origin.X + readerPane.ActualWidth() <= mailBody.ActualWidth() + 1;
+                    && origin.X + readerPane.ActualWidth() <= mailBody.ActualWidth() + 1
+                    && windowOrigin.X + readerPane.ActualWidth() <= root.ActualWidth() + 1;
             };
             for (auto density : {L"compact", L"comfortable", L"spacious"}) {
                 Json preference; put(preference, L"density", density);
