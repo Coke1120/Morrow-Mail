@@ -22,6 +22,8 @@ The [attachment follow-up](docs/ATTACHMENT_FLOW_REVIEW.md) keeps Windows on the 
 
 The 0.7.4 source adds persisted Gmail history, connection/folder/UIDVALIDITY-bound IMAP UID progression and capability-gated flag/deletion reads, plus Graph overlap/folder fairness improvements. Unchanged mail skips database writes, and flag-only changes avoid full-text reindexing. See [synthetic measurements and protocol limits](docs/SYNC_PERFORMANCE.md). [v0.7.4](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.7.4) passed the paired tagged checks; these measurements do not establish live-account or UI latency acceptance.
 
+The [Thunderbird-informed IMAP follow-up](docs/THUNDERBIRD_IMAP_SYNC.md) discovers changed cached UIDs in bounded MODSEQ windows, prioritizes their flags within the existing 50-message background budget, and commits pending work with message updates. Unchanged MODSEQ reads use the provider snapshot, preserving local-only stars; missing snapshots reread flags. Legacy proof migration, capability fallback and UIDVALIDITY resets retain cached content. This source change does not create a release or establish live-account/native UI acceptance.
+
 [Current-page synchronization](docs/SYNC_PRIORITY_AND_INCREMENTAL.md) in the 0.7.3 source prioritizes the selected message and visible page while retaining older-cache checks. Recent IMAP/Outlook pages reuse proven immutable cached bodies; drafts and uncertain content still fetch normally. Sync preserves reviewed sent payloads and owned downloaded attachments. The 0.7.4 follow-up implements bounded incremental polling; push/IDLE remain future work. Publication requires fresh paired tagged checks; see the [0.7.3 release notes](docs/releases/v0.7.3.md).
 
 ## Download

@@ -209,6 +209,11 @@ async fn write<S: AsyncRead + AsyncWrite + Unpin>(
 
 #[derive(Clone)]
 struct ImapScenario {
+    changed_uids: Option<Vec<u32>>,
+    ignore_changed_since: bool,
+    omit_changed_modseq: bool,
+    pause_discovery: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
+    pause_flags: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
     highest_modseq: Option<u64>,
     changed_modseq: Option<u64>,
     extension_rejected: bool,
@@ -257,6 +262,11 @@ struct ImapScenario {
 impl Default for ImapScenario {
     fn default() -> Self {
         Self {
+            changed_uids: None,
+            ignore_changed_since: false,
+            omit_changed_modseq: false,
+            pause_discovery: None,
+            pause_flags: None,
             highest_modseq: None,
             changed_modseq: None,
             extension_rejected: false,
@@ -847,10 +857,61 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                     &format!("* 1 FETCH (UID {selected} RFC822.SIZE {})\r\n", raw.len()),
                 )
                 .await?;
+            } else if fields.starts_with("(UID MODSEQ)") {
+                if scenario.extension_rejected {
+                    write(&mut stream, &format!("{tag} BAD unsupported\r\n")).await?;
+                    continue;
+                }
+                if let Some((entered, resume)) = &scenario.pause_discovery {
+                    entered.notify_one();
+                    resume.notified().await;
+                }
+                let (lower, upper) = selected.split_once(':').unwrap();
+                let (lower, upper) = (lower.parse::<u32>().unwrap(), upper.parse::<u32>().unwrap());
+                assert!(upper >= lower && upper - lower < 1000);
+                let since = fields
+                    .split("CHANGEDSINCE ")
+                    .nth(1)
+                    .unwrap()
+                    .trim_end_matches(')')
+                    .parse::<u64>()
+                    .unwrap();
+                let modseq = scenario.changed_modseq.or(scenario.highest_modseq).unwrap();
+                for uid in lower..=upper.min(scenario.count) {
+                    let changed = scenario
+                        .changed_uids
+                        .as_ref()
+                        .is_none_or(|ids| ids.contains(&uid));
+                    let seq = if changed {
+                        modseq
+                    } else {
+                        modseq.saturating_sub(1)
+                    };
+                    if (seq <= since && !scenario.ignore_changed_since)
+                        || scenario.expunged_uid == Some(uid)
+                    {
+                        continue;
+                    }
+                    let uid = if scenario.wrong_uid { upper + 1 } else { uid };
+                    let suffix = if scenario.omit_changed_modseq {
+                        String::new()
+                    } else {
+                        format!(" MODSEQ ({seq})")
+                    };
+                    let row = format!("* 1 FETCH (UID {uid}{suffix})\r\n");
+                    write(&mut stream, &row).await?;
+                    if scenario.duplicate_uid {
+                        write(&mut stream, &row).await?;
+                    }
+                }
             } else if fields.starts_with("(UID FLAGS") && !fields.contains("RFC822.SIZE") {
                 if scenario.extension_rejected && fields.contains("MODSEQ") {
                     write(&mut stream, &format!("{tag} BAD unsupported\r\n")).await?;
                     continue;
+                }
+                if let Some((entered, resume)) = &scenario.pause_flags {
+                    entered.notify_one();
+                    resume.notified().await;
                 }
                 let since = fields
                     .split("CHANGEDSINCE ")
@@ -862,19 +923,27 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                 {
                     write(&mut stream, &format!("* VANISHED (EARLIER) {uid}\r\n")).await?;
                 }
-                let modseq = scenario.changed_modseq.or(scenario.highest_modseq);
+                let highest = scenario.changed_modseq.or(scenario.highest_modseq);
                 for (index, uid) in selected.split(',').enumerate() {
                     if scenario.missing_uid == uid.parse().ok() {
                         continue;
                     }
-                    if since.is_some_and(|since| modseq.is_some_and(|v| v <= since)) {
+                    let changed = scenario
+                        .changed_uids
+                        .as_ref()
+                        .is_none_or(|ids| ids.contains(&uid.parse().unwrap()));
+                    let modseq =
+                        highest.map(|seq| if changed { seq } else { seq.saturating_sub(1) });
+                    if since.is_some_and(|since| modseq.is_some_and(|v| v <= since))
+                        && !scenario.ignore_changed_since
+                    {
                         continue;
                     }
                     let mut flags = vec!["\\Answered"];
-                    if scenario.remote_read {
+                    if scenario.remote_read && changed {
                         flags.push("\\Seen");
                     }
-                    if scenario.remote_starred {
+                    if scenario.remote_starred && changed {
                         flags.push("\\Flagged");
                     }
                     write(
@@ -2407,6 +2476,15 @@ async fn capability_gated_modseq_and_vanished_do_not_treat_unchanged_omissions_a
             .await
             .unwrap();
         assert!(first.iter().all(|m| m["imapModseq"] == 10));
+        // Persisted imports record this remote snapshot. Raw reconcile output
+        // alone is not a provider snapshot and must never authorize omissions.
+        let first: Vec<_> = first
+            .into_iter()
+            .map(|mut row| {
+                row["providerSnapshot"] = json!({"read":row["read"],"starred":row["starred"]});
+                row
+            })
+            .collect();
         let unchanged = imap::reconcile_with_tls(&fixture.mail, &first, &fixture.connector)
             .await
             .unwrap();
@@ -2471,6 +2549,738 @@ async fn optional_extensions_fall_back_when_rejected_ignored_or_nomodseq() {
     }
 }
 
+async fn seed_changed_cache(
+    fixture: &ImapFixture,
+    cache: &CacheWorkspace,
+    count: u32,
+    warm_modseq: u64,
+) -> Value {
+    let proof = imap::reconcile_with_tls(
+        &fixture.mail,
+        &[json!({"id":"imap:55:1"})],
+        &fixture.connector,
+    )
+    .await
+    .unwrap()[0]["imapSyncConnection"]
+        .clone();
+    let saved_proof = proof.clone();
+    let body = if count > 1000 {
+        "Owned synthetic body ".repeat(100)
+    } else {
+        "Owned synthetic body".to_owned()
+    };
+    cache.app().db(move |db| db.transaction(|db| {
+        if count>1000 {
+            // Memoize identical fixture text during setup only. Timed sync uses
+            // the restored production functions and all normal SQLite triggers.
+            let flags=rusqlite::functions::FunctionFlags::SQLITE_UTF8|rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC|rusqlite::functions::FunctionFlags::SQLITE_INNOCUOUS;
+            for (name, transform) in [("mail_normalize",morrow_search::normalize::normalize as fn(&str)->String),("mail_tokens",morrow_search::normalize::tokens)] {
+                let cached=std::cell::RefCell::new(std::collections::HashMap::<String,String>::new());
+                db.conn.create_scalar_function(name,1,flags,move |context| {
+                    let mut cached=cached.borrow_mut();
+                    let text=context.get::<Option<String>>(0)?.unwrap_or_default();
+                    if let Some(value)=cached.get(&text) {return Ok(value.clone());}
+                    let value=transform(&text);
+                    if cached.len()<8 {cached.insert(text,value.clone());}
+                    Ok(value)
+                })?;
+            }
+        }
+        let mut insert=db.conn.prepare("INSERT INTO messages(account,id,data) VALUES(?,?,?)")?;
+        for uid in 1..=count {
+            let row=json!({"id":format!("imap:55:{uid}"),"folder":"inbox","providerFolderId":"INBOX",
+                "read":false,"starred":false,"pending":true,"body":body,"bodyHtml":"","labels":[],
+                "providerSnapshot":{"read":false,"starred":false},"imapModseq":warm_modseq,"imapSyncConnection":saved_proof});
+            insert.execute(rusqlite::params![OWNER,string(&row,"id"),serde_json::to_string(&row)?])?;
+            if count>1000 && uid%10000==0 {eprintln!("synthetic_changed_flags_seed rows={uid}");}
+        }
+        drop(insert);
+        if count>1000 {morrow_search::store::register_functions(&db.conn)?;}
+        db.set_settings(&json!({"mailReconcile":{OWNER:{"connection":saved_proof,"after":0,"folder":"", "folders":{
+            "INBOX":{"connection":saved_proof,"validity":55,"modseq":warm_modseq,"pending":[],"scan":null}}}}}))?;
+        Ok(())
+    })).await.unwrap();
+    proof
+}
+async fn changed_sync(
+    fixture: &ImapFixture,
+    cache: &CacheWorkspace,
+) -> morrow_search::error::Result<()> {
+    morrow_search::reconcile::sync_with_tls(
+        cache.app(),
+        &fixture.mail,
+        &mut Default::default(),
+        &fixture.connector,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn unchanged_modseq_uses_remote_snapshot_and_legacy_or_invalid_proofs_reread_flags() {
+    for qresync in [false, true] {
+        let fixture = ImapFixture::new(ImapScenario {
+            capabilities: if qresync {
+                "IMAP4rev1 ENABLE CONDSTORE QRESYNC"
+            } else {
+                "IMAP4rev1 CONDSTORE"
+            },
+            highest_modseq: Some(10),
+            remote_read: false,
+            remote_starred: false,
+            ..Default::default()
+        })
+        .await;
+        let cache = CacheWorkspace::new(&fixture.mail).await;
+        seed_changed_cache(&fixture, &cache, 1, 10).await;
+        cache
+            .app()
+            .db(|db| {
+                db.update(
+                    OWNER,
+                    "imap:55:1",
+                    &json!({"read":true,"starred":true,"localOverrides":{"starred":true}}),
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            let row = cache
+                .app()
+                .db(|db| db.get(OWNER, "imap:55:1"))
+                .await
+                .unwrap()
+                .unwrap();
+            let result = imap::reconcile_with_tls(&fixture.mail, &[row], &fixture.connector)
+                .await
+                .unwrap();
+            assert_eq!(result[0]["read"], false);
+            assert_eq!(result[0]["starred"], false);
+            let connection = fixture.mail.clone();
+            cache
+                .app()
+                .db(move |db| {
+                    morrow_search::mail::import_messages(db, &connection, &result)?;
+                    let saved = db.get(OWNER, "imap:55:1")?.unwrap();
+                    assert_eq!(saved["read"], false);
+                    assert_eq!(saved["starred"], true);
+                    assert_eq!(
+                        saved["providerSnapshot"],
+                        json!({"read":false,"starred":false})
+                    );
+                    assert_eq!(saved["localOverrides"]["starred"], true);
+                    Ok(())
+                })
+                .await
+                .unwrap();
+        }
+        for invalid in ["legacy", "connection", "rollback", "capability"] {
+            let mut row = cache
+                .app()
+                .db(|db| db.get(OWNER, "imap:55:1"))
+                .await
+                .unwrap()
+                .unwrap();
+            match invalid {
+                "legacy" => {
+                    row.as_object_mut().unwrap().remove("providerSnapshot");
+                }
+                "connection" => row["imapSyncConnection"] = json!(["replaced"]),
+                "rollback" => row["imapModseq"] = json!(11),
+                _ => fixture.update(|s| s.capabilities = "IMAP4rev1"),
+            }
+            let before = fixture.commands().len();
+            let result = imap::reconcile_with_tls(&fixture.mail, &[row], &fixture.connector)
+                .await
+                .unwrap();
+            assert_eq!(result[0]["read"], false);
+            assert_eq!(result[0]["starred"], false);
+            assert!(
+                fixture.commands()[before..]
+                    .iter()
+                    .any(|c| c.ends_with("(UID FLAGS MODSEQ)") || c.ends_with("(UID FLAGS)"))
+            );
+            assert!(
+                !fixture.commands()[before..]
+                    .iter()
+                    .any(|c| c.contains("CHANGEDSINCE"))
+            );
+            if invalid == "capability" {
+                assert!(result[0]["imapModseq"].is_null());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn legacy_folder_progress_uses_only_complete_valid_cached_modseq_proofs() {
+    for valid in [true, false] {
+        let fixture = ImapFixture::new(ImapScenario {
+            capabilities: "IMAP4rev1 CONDSTORE",
+            count: 500,
+            highest_modseq: Some(11),
+            changed_uids: Some(vec![400]),
+            ..Default::default()
+        })
+        .await;
+        let cache = CacheWorkspace::new(&fixture.mail).await;
+        seed_changed_cache(&fixture, &cache, 500, 10).await;
+        cache
+            .app()
+            .db(move |db| {
+                db.set_settings(&json!({"mailReconcile":{OWNER:{"folders":null}}}))?;
+                if !valid {
+                    db.update(
+                        OWNER,
+                        "imap:55:400",
+                        &json!({"imapSyncConnection":["replaced"]}),
+                    )?;
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        changed_sync(&fixture, &cache).await.unwrap();
+        let row = cache
+            .app()
+            .db(|db| db.get(OWNER, "imap:55:400"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row["read"], valid);
+        let state =
+            cache.app().settings().await.unwrap()["mailReconcile"][OWNER]["folders"]["INBOX"]
+                .clone();
+        assert_eq!(state["modseq"], if valid { 11 } else { 0 });
+        assert_eq!(body_requests(&fixture), 0);
+    }
+}
+
+#[tokio::test]
+async fn restored_modseq_support_cannot_reuse_unvisited_flags_from_the_old_generation() {
+    for capability_loss in [false, true] {
+        let fixture = ImapFixture::new(ImapScenario {
+            capabilities: "IMAP4rev1 CONDSTORE",
+            count: 120,
+            highest_modseq: Some(11),
+            changed_uids: Some(vec![]),
+            ..Default::default()
+        })
+        .await;
+        let cache = CacheWorkspace::new(&fixture.mail).await;
+        seed_changed_cache(&fixture, &cache, 120, 10).await;
+        fixture.update(|s| {
+            if capability_loss {
+                s.capabilities = "IMAP4rev1";
+            } else {
+                s.nomodseq = true;
+            }
+        });
+        changed_sync(&fixture, &cache).await.unwrap();
+        let old = cache
+            .app()
+            .db(|db| db.get(OWNER, "imap:55:100"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            old["imapModseq"], 10,
+            "unvisited cache retains old physical metadata"
+        );
+        fixture.update(|s| {
+            s.capabilities = "IMAP4rev1 CONDSTORE";
+            s.nomodseq = false;
+            s.highest_modseq = Some(20);
+            s.changed_modseq = Some(8);
+            s.changed_uids = Some(vec![100]);
+        });
+        // New namespace is numerically below the old per-message watermark,
+        // even though the current mailbox HIGHESTMODSEQ is larger.
+        for _ in 0..2 {
+            changed_sync(&fixture, &cache).await.unwrap();
+        }
+        let current = cache
+            .app()
+            .db(|db| db.get(OWNER, "imap:55:100"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current["read"], true);
+        assert_eq!(current["starred"], true);
+        assert_ne!(current["imapSyncEpoch"], old["imapSyncEpoch"]);
+        assert_eq!(current["body"], old["body"]);
+        assert_eq!(body_requests(&fixture), 0);
+    }
+}
+
+#[tokio::test]
+async fn changed_uid_queue_is_bounded_atomic_and_resumes_after_restart() {
+    let fixture = ImapFixture::new(ImapScenario {
+        capabilities: "IMAP4rev1 CONDSTORE",
+        count: 120,
+        highest_modseq: Some(11),
+        ..Default::default()
+    })
+    .await;
+    let mut cache = CacheWorkspace::new(&fixture.mail).await;
+    seed_changed_cache(&fixture, &cache, 120, 10).await;
+    let (result, profile) =
+        morrow_search::sync_profile::capture(changed_sync(&fixture, &cache)).await;
+    result.unwrap();
+    assert!(profile["counters"]["messageWrites"].as_u64().unwrap() <= 50);
+    let state = cache.app().settings().await.unwrap()["mailReconcile"][OWNER].clone();
+    assert_eq!(
+        state["folders"]["INBOX"]["pending"]
+            .as_array()
+            .unwrap()
+            .len(),
+        70
+    );
+    assert_eq!(state["folders"]["INBOX"]["modseq"], 10);
+    let last = cache
+        .app()
+        .db(|db| {
+            Ok(db.conn.query_row(
+                "SELECT rowid FROM messages WHERE account=? AND id='imap:55:50'",
+                [OWNER],
+                |row| row.get::<_, i64>(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(state["after"], last);
+    drop(cache.app.take());
+    cache.app = Some(
+        morrow_search::service::App::open(&cache.root, 0, "fictional-cache".into(), "".into())
+            .unwrap(),
+    );
+    for pending in [20, 0] {
+        changed_sync(&fixture, &cache).await.unwrap();
+        let state =
+            cache.app().settings().await.unwrap()["mailReconcile"][OWNER]["folders"]["INBOX"]
+                .clone();
+        assert_eq!(state["pending"].as_array().unwrap().len(), pending);
+        assert_eq!(state["modseq"], if pending == 0 { 11 } else { 10 });
+    }
+    let saved = cache.app().db(|db| db.list(OWNER)).await.unwrap();
+    assert_eq!(saved.len(), 120);
+    assert!(
+        saved.iter().all(|m| m["read"] == true
+            && m["pending"] == true
+            && m["body"] == "Owned synthetic body")
+    );
+    assert_eq!(body_requests(&fixture), 0);
+}
+
+#[tokio::test]
+async fn discovery_yields_across_sparse_uid_windows_and_limits_queued_uids() {
+    let fixture = ImapFixture::new(ImapScenario {
+        capabilities: "IMAP4rev1 CONDSTORE",
+        count: 100_000,
+        highest_modseq: Some(11),
+        changed_uids: Some(vec![]),
+        ..Default::default()
+    })
+    .await;
+    let proof = imap::reconcile_with_tls(
+        &fixture.mail,
+        &[json!({"id":"imap:55:1"})],
+        &fixture.connector,
+    )
+    .await
+    .unwrap()[0]["imapSyncConnection"]
+        .clone();
+    let mut checkpoint =
+        json!({"connection":proof,"validity":55,"modseq":10,"pending":[],"scan":null});
+    for after in [32_000, 64_000, 96_000] {
+        let before = fixture.commands().len();
+        checkpoint = imap::discover_changes_with_tls(
+            &fixture.mail,
+            "INBOX",
+            &checkpoint,
+            &fixture.connector,
+        )
+        .await
+        .unwrap();
+        assert_eq!(checkpoint["scan"]["after"], after);
+        assert_eq!(checkpoint["modseq"], 10);
+        assert!(checkpoint["pending"].as_array().unwrap().is_empty());
+        assert_eq!(
+            fixture.commands()[before..]
+                .iter()
+                .filter(|c| c.contains("(UID MODSEQ)"))
+                .count(),
+            32
+        );
+    }
+    fixture.update(|s| s.changed_uids = None);
+    checkpoint =
+        imap::discover_changes_with_tls(&fixture.mail, "INBOX", &checkpoint, &fixture.connector)
+            .await
+            .unwrap();
+    assert_eq!(checkpoint["pending"].as_array().unwrap().len(), 1000);
+    assert_eq!(checkpoint["scan"]["after"], 97_000);
+    let before = fixture.commands().len();
+    let same =
+        imap::discover_changes_with_tls(&fixture.mail, "INBOX", &checkpoint, &fixture.connector)
+            .await
+            .unwrap();
+    assert_eq!(same, checkpoint);
+    assert!(
+        !fixture.commands()[before..]
+            .iter()
+            .any(|c| c.starts_with("UID FETCH"))
+    );
+}
+
+#[tokio::test]
+async fn discovery_downgrades_and_generation_changes_discard_stale_queues() {
+    for mode in [
+        "capability",
+        "nomodseq",
+        "rejected",
+        "ignored",
+        "missing-modseq",
+        "rollback",
+        "validity",
+        "connection",
+    ] {
+        let fixture = ImapFixture::new(ImapScenario {
+            capabilities: "IMAP4rev1 CONDSTORE",
+            count: 120,
+            highest_modseq: Some(11),
+            ..Default::default()
+        })
+        .await;
+        let cache = CacheWorkspace::new(&fixture.mail).await;
+        seed_changed_cache(&fixture, &cache, 120, 10).await;
+        changed_sync(&fixture, &cache).await.unwrap();
+        let old = cache.app().settings().await.unwrap()["mailReconcile"][OWNER]["folders"]["INBOX"]
+            .clone();
+        let mut connection = fixture.mail.clone();
+        fixture.update(|s| match mode {
+            "capability" => s.capabilities = "IMAP4rev1",
+            "nomodseq" => s.nomodseq = true,
+            "rejected" => s.extension_rejected = true,
+            "ignored" => {
+                s.ignore_changed_since = true;
+                s.changed_uids = Some(vec![]);
+            }
+            "missing-modseq" => s.omit_changed_modseq = true,
+            "rollback" => s.highest_modseq = Some(5),
+            "validity" => s.validity = 66,
+            _ => {}
+        });
+        // Rejected/ignored modifiers are detected on the next discovery query.
+        let mut input = old.clone();
+        if ["ignored", "missing-modseq"].contains(&mode) {
+            input["pending"] = json!([]);
+            input["scan"] = Value::Null;
+        }
+        if mode == "connection" {
+            connection["connectionId"] = json!("replacement");
+        }
+        let state =
+            imap::discover_changes_with_tls(&connection, "INBOX", &input, &fixture.connector)
+                .await
+                .unwrap();
+        if [
+            "capability",
+            "nomodseq",
+            "rejected",
+            "ignored",
+            "missing-modseq",
+        ]
+        .contains(&mode)
+        {
+            assert!(state["modseq"].is_null(), "{mode}: {state}");
+            assert!(state["pending"].as_array().unwrap().is_empty());
+        } else {
+            assert_eq!(state["modseq"], 0);
+            assert_eq!(state["scan"]["since"], 0);
+            if mode == "validity" {
+                assert_eq!(state["validity"], 66);
+            }
+            if mode == "connection" {
+                assert_ne!(state["connection"], old["connection"]);
+            }
+        }
+        if mode == "validity" {
+            changed_sync(&fixture, &cache).await.unwrap();
+            let row = cache
+                .app()
+                .db(|db| db.get(OWNER, "imap:55:51"))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(row["read"], false);
+            assert_eq!(row["providerFolderMissing"], true);
+            assert_eq!(row["body"], "Owned synthetic body");
+        }
+    }
+}
+
+#[tokio::test]
+async fn failed_discovery_flag_reads_and_database_writes_retain_all_progress() {
+    for mode in ["wrong-uid", "duplicate-uid", "read-failure", "database"] {
+        let fixture = ImapFixture::new(ImapScenario {
+            capabilities: "IMAP4rev1 CONDSTORE",
+            count: 100,
+            highest_modseq: Some(11),
+            ..Default::default()
+        })
+        .await;
+        let cache = CacheWorkspace::new(&fixture.mail).await;
+        seed_changed_cache(&fixture, &cache, 100, 10).await;
+        let before = cache.app().settings().await.unwrap()["mailReconcile"][OWNER].clone();
+        fixture.update(|s| match mode {
+            "wrong-uid" => s.wrong_uid = true,
+            "duplicate-uid" => s.duplicate_uid = true,
+            "read-failure" => s.fetch_failure = true,
+            _ => {}
+        });
+        if mode == "database" {
+            cache.app().db(|db| {
+                db.conn.execute_batch("CREATE TEMP TABLE sync_write_count(n INTEGER); INSERT INTO sync_write_count VALUES(0); CREATE TEMP TRIGGER reject_sync BEFORE UPDATE ON messages BEGIN UPDATE sync_write_count SET n=n+1; SELECT CASE WHEN (SELECT n FROM sync_write_count)=2 THEN RAISE(ABORT,'synthetic write failure') END; END;")?;
+                Ok(())
+            }).await.unwrap();
+        }
+        assert!(changed_sync(&fixture, &cache).await.is_err(), "{mode}");
+        assert_eq!(
+            cache.app().settings().await.unwrap()["mailReconcile"][OWNER],
+            before
+        );
+        let rows = cache.app().db(|db| db.list(OWNER)).await.unwrap();
+        assert!(rows.iter().all(|row| row["read"] == false));
+    }
+}
+
+#[tokio::test]
+async fn changed_sync_rejects_concurrent_checkpoint_and_connection_replacement() {
+    for replace_connection in [false, true] {
+        let fixture = ImapFixture::new(ImapScenario {
+            capabilities: "IMAP4rev1 CONDSTORE",
+            count: 10,
+            highest_modseq: Some(11),
+            ..Default::default()
+        })
+        .await;
+        let cache = CacheWorkspace::new(&fixture.mail).await;
+        seed_changed_cache(&fixture, &cache, 10, 10).await;
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        fixture.update(|s| s.pause_discovery = Some((entered.clone(), resume.clone())));
+        let (app, connection, connector) = (
+            cache.app().clone(),
+            fixture.mail.clone(),
+            fixture.connector.clone(),
+        );
+        let task = tokio::spawn(async move {
+            morrow_search::reconcile::sync_with_tls(
+                &app,
+                &connection,
+                &mut Default::default(),
+                &connector,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        cache
+            .app()
+            .db(move |db| {
+                let mut config = db.settings()?;
+                if replace_connection {
+                    config["mailAccounts"][OWNER]["connectionId"] = json!("replaced");
+                } else {
+                    config["mailReconcile"][OWNER]["after"] = json!(123);
+                }
+                db.set_settings(&config)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        resume.notify_one();
+        assert_eq!(task.await.unwrap().unwrap_err().status, 409);
+        let rows = cache.app().db(|db| db.list(OWNER)).await.unwrap();
+        assert!(rows.iter().all(|row| row["read"] == false));
+    }
+}
+
+#[tokio::test]
+async fn capability_loss_between_discovery_and_flags_invalidates_modseq_progress() {
+    let fixture = ImapFixture::new(ImapScenario {
+        capabilities: "IMAP4rev1 CONDSTORE",
+        count: 10,
+        highest_modseq: Some(11),
+        ..Default::default()
+    })
+    .await;
+    let cache = CacheWorkspace::new(&fixture.mail).await;
+    seed_changed_cache(&fixture, &cache, 10, 10).await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
+    fixture.update(|s| s.pause_discovery = Some((entered.clone(), resume.clone())));
+    let (app, connection, connector) = (
+        cache.app().clone(),
+        fixture.mail.clone(),
+        fixture.connector.clone(),
+    );
+    let task = tokio::spawn(async move {
+        morrow_search::reconcile::sync_with_tls(
+            &app,
+            &connection,
+            &mut Default::default(),
+            &connector,
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .unwrap();
+    fixture.update(|s| {
+        s.capabilities = "IMAP4rev1";
+        s.pause_discovery = None;
+    });
+    resume.notify_one();
+    task.await.unwrap().unwrap();
+    let settings = cache.app().settings().await.unwrap();
+    assert!(settings["mailReconcile"][OWNER]["folders"]["INBOX"]["modseq"].is_null());
+    let rows = cache.app().db(|db| db.list(OWNER)).await.unwrap();
+    assert!(
+        rows.iter()
+            .all(|row| row["read"] == true && row["imapModseq"].is_null())
+    );
+}
+
+#[tokio::test]
+async fn in_flight_reconciliation_preserves_new_provider_locations_and_confirmed_flags() {
+    for moved in [false, true] {
+        let fixture = ImapFixture::new(ImapScenario {
+            capabilities: "IMAP4rev1 CONDSTORE",
+            count: 10,
+            highest_modseq: Some(11),
+            ..Default::default()
+        })
+        .await;
+        let cache = CacheWorkspace::new(&fixture.mail).await;
+        seed_changed_cache(&fixture, &cache, 10, 10).await;
+        let checkpoint = cache.app().settings().await.unwrap()["mailReconcile"][OWNER].clone();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        fixture.update(|s| s.pause_flags = Some((entered.clone(), resume.clone())));
+        let (app, connection, connector) = (
+            cache.app().clone(),
+            fixture.mail.clone(),
+            fixture.connector.clone(),
+        );
+        let task = tokio::spawn(async move {
+            morrow_search::reconcile::sync_with_tls(
+                &app,
+                &connection,
+                &mut Default::default(),
+                &connector,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        let patch = if moved {
+            json!({"remoteId":"imap:55:101","providerFolderId":"Other"})
+        } else {
+            json!({"read":true,"providerSnapshot":{"read":true,"starred":false}})
+        };
+        let saved = patch.clone();
+        cache
+            .app()
+            .db(move |db| {
+                db.update(OWNER, "imap:55:1", &saved)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        resume.notify_one();
+        assert_eq!(task.await.unwrap().unwrap_err().status, 409);
+        assert_eq!(
+            cache.app().settings().await.unwrap()["mailReconcile"][OWNER],
+            checkpoint
+        );
+        let row = cache
+            .app()
+            .db(|db| db.get(OWNER, "imap:55:1"))
+            .await
+            .unwrap()
+            .unwrap();
+        for (key, value) in patch.as_object().unwrap() {
+            assert_eq!(&row[key], value);
+        }
+    }
+}
+
+#[tokio::test]
+async fn incremental_changes_keep_folder_and_account_identity_and_use_bounded_sql() {
+    let fixture = ImapFixture::new(ImapScenario {
+        capabilities: "IMAP4rev1 CONDSTORE",
+        count: 500,
+        highest_modseq: Some(11),
+        changed_uids: Some(vec![400]),
+        ..Default::default()
+    })
+    .await;
+    let cache = CacheWorkspace::new(&fixture.mail).await;
+    seed_changed_cache(&fixture, &cache, 500, 10).await;
+    cache.app().db(|db| {
+        let row=db.get(OWNER,"imap:55:400")?.unwrap();
+        db.upsert("other@example.invalid",&row)?;
+        let mut moved=row.clone(); moved["id"]=json!("stable-local"); moved["remoteId"]=json!("imap:55:400");
+        moved["folder"]=json!("archive"); moved["providerFolderId"]=json!("Other");
+        db.upsert(OWNER,&moved)?;
+        let mut plan=db.conn.prepare("EXPLAIN QUERY PLAN SELECT rowid,data FROM messages WHERE account=? AND rowid>? ORDER BY rowid LIMIT 50")?;
+        let details:Vec<String>=plan.query_map(rusqlite::params![OWNER,0],|row|row.get(3))?.collect::<Result<_,_>>()?;
+        assert!(details.iter().any(|p|p.contains("mail_reconcile")&&p.contains("rowid>")),"{details:?}");
+        assert!(!details.iter().any(|p|p.contains("TEMP B-TREE")));
+        Ok(())
+    }).await.unwrap();
+    changed_sync(&fixture, &cache).await.unwrap();
+    cache
+        .app()
+        .db(|db| {
+            assert_eq!(db.get(OWNER, "imap:55:400")?.unwrap()["read"], true);
+            assert_eq!(
+                db.get("other@example.invalid", "imap:55:400")?.unwrap()["read"],
+                false
+            );
+            assert_eq!(db.get(OWNER, "stable-local")?.unwrap()["read"], false);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(body_requests(&fixture), 0);
+    fixture.update(|s| {
+        s.highest_modseq = Some(12);
+        s.remote_read = false;
+        s.remote_starred = false;
+    });
+    // Discovery fairly rotates the two cached provider folders. Other is
+    // checked next, then INBOX, independent of the ordinary row rotation.
+    changed_sync(&fixture, &cache).await.unwrap();
+    changed_sync(&fixture, &cache).await.unwrap();
+    let row = cache
+        .app()
+        .db(|db| db.get(OWNER, "imap:55:400"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row["read"], false);
+    assert_eq!(row["starred"], false);
+    assert_eq!(
+        row["providerSnapshot"],
+        json!({"read":false,"starred":false})
+    );
+}
+
 #[tokio::test]
 #[ignore = "Explicit synthetic sync benchmark; local TLS fixtures only"]
 async fn synthetic_imap_sync_benchmark() {
@@ -2528,4 +3338,74 @@ async fn synthetic_imap_sync_benchmark() {
     );
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "Explicit 50k synthetic flag benchmark; local TLS and temporary stores only"]
+async fn synthetic_changed_flags_benchmark() {
+    let fixture = ImapFixture::new(ImapScenario {
+        capabilities: "IMAP4rev1 CONDSTORE",
+        count: 50_000,
+        highest_modseq: Some(11),
+        changed_uids: Some(vec![25_000]),
+        remote_read: true,
+        remote_starred: true,
+        ..Default::default()
+    })
+    .await;
+    let cache = CacheWorkspace::new(&fixture.mail).await;
+    let start_seed = std::time::Instant::now();
+    seed_changed_cache(&fixture, &cache, 50_000, 10).await;
+    let seed_ms = start_seed.elapsed().as_secs_f64() * 1000.0;
+    cache.app().db(|db| {
+        db.conn.execute_batch("CREATE TEMP TABLE bench_counts(writes INTEGER,text_changes INTEGER); INSERT INTO bench_counts VALUES(0,0);
+            CREATE TEMP TRIGGER bench_message AFTER UPDATE ON messages BEGIN UPDATE bench_counts SET writes=writes+1; END;
+            CREATE TEMP TRIGGER bench_text AFTER UPDATE ON search_documents WHEN old.body IS NOT new.body OR old.subject IS NOT new.subject BEGIN UPDATE bench_counts SET text_changes=text_changes+1; END;")?;
+        Ok(())
+    }).await.unwrap();
+    let before = fixture.commands().len();
+    let (result, profile) = morrow_search::sync_profile::capture(async {
+        for round in 1..=1000 {
+            changed_sync(&fixture, &cache).await?;
+            let row = cache
+                .app()
+                .db(|db| db.get(OWNER, "imap:55:25000"))
+                .await?
+                .unwrap();
+            if row["read"] == true && row["starred"] == true {
+                assert_eq!(row["providerSnapshot"], json!({"read":true,"starred":true}));
+                assert_eq!(row["pending"], true);
+                assert_eq!(row["body"].as_str().unwrap().len(), 2100);
+                return Ok::<_, morrow_search::error::Error>(round);
+            }
+            if round % 100 == 0 {
+                eprintln!("synthetic_changed_flags_progress rounds={round}");
+            }
+        }
+        panic!("synthetic flag change was not synchronized within 1000 rounds");
+    })
+    .await;
+    let rounds = result.unwrap();
+    let commands = fixture.commands();
+    let commands = &commands[before..];
+    let counts = cache
+        .app()
+        .db(|db| {
+            Ok(db
+                .conn
+                .query_row("SELECT writes,text_changes FROM bench_counts", [], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                })?)
+        })
+        .await
+        .unwrap();
+    let report = json!({"fixture":{"cachedMessages":50_000,"changedUid":25_000,"bodyBytes":2100,"initialModseq":10,"remoteModseq":11},
+        "rounds":rounds,"profile":profile,"commands":commands.len(),
+        "discoveryCommands":commands.iter().filter(|c|c.contains("(UID MODSEQ)")).count(),
+        "bodyRequests":body_requests(&fixture),"messageWrites":counts.0,"indexedTextChanges":counts.1,"seedMs":seed_ms,
+        "scope":"Warm synthetic cache/checkpoint, local TLS, debug build; excludes polling intervals, WAN, real accounts and native UI."});
+    println!("synthetic_changed_flags_benchmark {report}");
+    if let Some(path) = std::env::var_os("MORROW_IMAP_BENCH_OUTPUT") {
+        std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+    }
 }
