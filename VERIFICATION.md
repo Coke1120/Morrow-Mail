@@ -1,5 +1,41 @@
 # Verification — 12 October 2026
 
+## v0.7.5 release preparation — 12 October 2026
+
+The owner requested a new public release including PR #32. Fresh remote main
+was `aee70b6f65915c1af6702b924d9df6096769d5f3`; its parents are the previous
+main `537019b29f5b540fbea47c8461adfd4b969a6793` and tested PR head
+`a6628d2717de7f0b3c09507cd60ba78d160356f0`. The normal GitHub merge retained
+all ten PR commits, with no admin/force bypass or protection change.
+
+Remote tags and public/draft releases had no v0.7.5. Package.json is the common
+version source and now prepares 0.7.5; no existing tag/release is overwritten.
+Release notes preserve the supplemental ownership and manual/live-account limits.
+Only package metadata and documentation change after the tested merge.
+
+[PR run 38277421575](https://github.com/Coke1120/Morrow-Mail/actions/runs/38277421575),
+attempt 1, passed macOS 114906188070 and Windows 114906187687; release was
+skipped. Windows mounted review editing/facts reset/stale retention/A-B-A/budget/
+narrow-pane/placeholder checks passed. All three UI/resource observations were
+complete, without missing milestones/counter failures/skipped roots. macOS native
+acceptance and fictional review transport passed; retained reader adversarial
+40/40, wrapping 12/12 and visibility 6/6 samples were complete and passed.
+
+[Main run 38283121145](https://github.com/Coke1120/Morrow-Mail/actions/runs/38283121145), attempt 1, passed macOS 114924944945 and Windows 114924944578 at the merged commit; its release job was normally skipped.
+Fresh tagged macOS and Windows checks and the existing same-run/same-attempt
+pinned-key publisher are mandatory before publication. This entry does not
+claim tagged success, public downloads or signed-manifest verification.
+
+[Supplemental reader diagnostics 38277421581](https://github.com/Coke1120/Morrow-Mail/actions/runs/38277421581)
+failed ownership preflight with requires-root/tool-metadata-unavailable, unresolved
+ownership and attachmentAttempted=false; incremental rendering passed. No
+privileged capture, signing-key change, permission expansion, workflow waiver or
+reader deadline relaxation was used. Real model/provider quality, full manual
+VoiceOver/Narrator/keyboard/focus/large-text and installed/clean-machine acceptance
+remain incomplete. macOS is ad-hoc signed without notarization; Windows unsigned.
+No real mail, credentials or user database was used.
+
+
 ## Unreleased Today and reply review workspace
 
 The independent branch `codex/review-workspace-decisions` starts from main

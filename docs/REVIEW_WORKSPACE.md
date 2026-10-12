@@ -1,6 +1,6 @@
-# Today／Reply suggestions：帳戶分頁與就地檢閱（未發佈）
+# Today／Reply suggestions：帳戶分頁與就地檢閱（0.7.5 source）
 
-本分支保留 SwiftUI、WinUI 與 Rust service。只以虛構資料檢查，沒有讀取真實郵件、憑證或使用者資料庫；尚未合併，也沒有發佈新版。
+本改版保留 SwiftUI、WinUI 與 Rust service，已在 PR #32 合併到 main。只以虛構資料檢查，沒有讀取真實郵件、憑證或使用者資料庫。0.7.5 必須通過新 tag 的雙平台與既有簽署 publisher 檢查才可公開；發佈狀態見 release notes 與 VERIFICATION.md。
 
 ## 已觀察到的舊行為
 
