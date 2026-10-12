@@ -15,6 +15,7 @@ pub mod learning;
 pub mod local_rules;
 pub mod mail;
 pub mod mail_review;
+pub mod mail_threads;
 pub mod message_html;
 pub mod normalize;
 pub mod oauth;

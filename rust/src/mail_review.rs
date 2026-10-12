@@ -53,6 +53,10 @@ fn closure_supported(evidence: &Value, messages: &[Value]) -> bool {
         return false;
     };
     let body = string(message, "body");
+    if closure_quote(message).is_none() {
+        return false;
+    }
+    let body = authored_body(body);
     body.match_indices(quote).any(|(offset, _)| {
         let before = &body[..offset];
         let boundary = before
@@ -98,6 +102,16 @@ pub fn validate(value: &Value, messages: &[Value]) -> Result<Value> {
         .iter()
         .map(|v| evidence(v, messages))
         .collect::<Result<Vec<_>>>()?;
+    if ["waiting_on_user", "waiting_on_others", "completed"].contains(&state) {
+        let latest = messages.first().ok_or_else(invalid)?;
+        if !quotes.iter().any(|quote| {
+            quote["messageId"] == latest["id"]
+                && quote["field"] == "body"
+                && authored_body(string(latest, "body")).contains(string(quote, "quote"))
+        }) {
+            return Err(invalid());
+        }
+    }
     if state == "completed" && !quotes.iter().any(|v| closure_supported(v, messages)) {
         return Err(invalid());
     }
@@ -111,7 +125,13 @@ pub fn validate(value: &Value, messages: &[Value]) -> Result<Value> {
         static TIME: LazyLock<regex::Regex> = LazyLock::new(|| {
             regex::Regex::new(r"(?i)\b(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)\b|\d{1,2}:\d{2}|\d{1,2}\s*(?:am|pm)|\d{4}[-/]\d{1,2}[-/]\d{1,2}|今天|明天|今晚|星期|週|月\d{1,2}[日號]").unwrap()
         });
-        if deadline["field"] != "body" || !TIME.is_match(string(&deadline, "quote")) {
+        static DUE: LazyLock<regex::Regex> = LazyLock::new(|| {
+            regex::Regex::new(r"(?i)\b(?:by|before|due|deadline|no later than)\b|截止|限期|之前|以前|前完成|前回覆|前回復").unwrap()
+        });
+        if deadline["field"] != "body"
+            || !TIME.is_match(string(&deadline, "quote"))
+            || !DUE.is_match(string(&deadline, "quote"))
+        {
             return Err(invalid());
         }
         deadline
@@ -128,117 +148,213 @@ pub fn validate(value: &Value, messages: &[Value]) -> Result<Value> {
     )
 }
 
-fn conversation(message: &Value) -> String {
-    for field in ["threadId", "conversationId"] {
-        if !string(message, field).is_empty() {
-            return format!("{field}:{}", string(message, field));
-        }
-    }
-    if let Some(root) = message["references"]
-        .as_array()
-        .and_then(|v| v.first())
-        .and_then(Value::as_str)
-        .filter(|v| !v.is_empty())
-    {
-        return format!("rfc:{root}");
-    }
-    for field in ["inReplyTo", "messageId"] {
-        if !string(message, field).is_empty() {
-            return format!("rfc:{}", string(message, field));
-        }
-    }
-    if !string(message, "replyToId").is_empty() {
-        format!("message:{}", string(message, "replyToId"))
-    } else {
-        format!("message:{}", string(message, "id"))
-    }
+/// Only the author's current text can support closure, never quoted prior mail.
+fn authored_body(body: &str) -> &str {
+    static QUOTED: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?mi)^>.*$|^On .{1,200} wrote:\s*$|^-{2,}.*(?:Original Message|Forwarded message).*$",
+        )
+        .unwrap()
+    });
+    &body[..QUOTED.find(body).map_or(body.len(), |found| found.start())]
 }
-
-/// Historical summaries are preserved without inventing decision/closure evidence.
+fn closure_quote(message: &Value) -> Option<String> {
+    let body = authored_body(string(message, "body"));
+    static QUESTION: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?i)\b(?:not|never|if|unless|pending|might|could|will|reopen|need|require|approve)\b|[?？]|尚未|未完成|如果|可能|請|需要|重新").unwrap()
+    });
+    if body.len() > 20000 || QUESTION.is_match(body) {
+        return None;
+    }
+    body.split_inclusive(['.', '!', '\n', '。', '！'])
+        .map(str::trim)
+        .find(|sentence| explicit_closure(sentence))
+        .map(str::to_owned)
+}
+fn request_quote(message: &Value) -> Option<String> {
+    static REQUEST: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"(?i)\b(?:please|could you|can you|would you)\b|[?？]|請|能否|可否")
+            .unwrap()
+    });
+    authored_body(string(message, "body"))
+        .split_inclusive(['.', '!', '?', '\n', '。', '！', '？'])
+        .map(str::trim)
+        .find(|sentence| REQUEST.is_match(sentence) && sentence.encode_utf16().count() <= 600)
+        .map(str::to_owned)
+}
+fn recipients(message: &Value, owner: &str) -> Vec<String> {
+    let to = string(message, "to");
+    if to.len() > 10000 || to.contains(['\r', '\n', '\0']) {
+        return vec![];
+    }
+    let header = format!("To: {to}\r\n\r\n");
+    let Some(parsed) = mail_parser::MessageParser::default().parse(header.as_bytes()) else {
+        return vec![];
+    };
+    let mut result = std::collections::BTreeSet::new();
+    for address in parsed
+        .to()
+        .into_iter()
+        .flat_map(|list| list.iter())
+        .filter_map(|address| address.address())
+    {
+        if !address.eq_ignore_ascii_case(owner) && crate::validation::email(&json!(address)).is_ok()
+        {
+            result.insert(address.to_owned());
+        }
+    }
+    result.into_iter().collect()
+}
+/// Reconcile saved evidence against ALL indexed later arrivals/departures in its account.
+/// This is a read projection; it never generates mail, calls a model or marks a draft complete.
 pub fn events(db: &Store, owner: &str, reports: &Value) -> Result<Vec<Value>> {
-    let settings = db.settings()?;
-    let saved_policy = policy::resolve(&settings["policy"]);
-    let mut by_message = BTreeMap::<String, (String, Value, Value)>::new();
+    let saved_policy = policy::resolve(&db.settings()?["policy"]);
+    let index = crate::mail_threads::Index::load(db, owner)?;
+    let mut saved = BTreeMap::<String, (String, Value)>::new();
+    let mut groups = BTreeMap::<String, Vec<String>>::new();
     for report in reports.as_array().into_iter().flatten() {
-        let updated = if report["completedAt"].is_string() {
+        let updated = if !string(report, "completedAt").is_empty() {
             string(report, "completedAt")
+        } else if !string(report, "updatedAt").is_empty() {
+            string(report, "updatedAt")
         } else {
             string(report, "createdAt")
         };
         for item in report["items"].as_array().into_iter().flatten() {
             let id = string(item, "messageId");
-            let Some(message) = db.get(owner, id)? else {
+            if db.get(owner, id)?.is_none() {
                 continue;
-            };
-            let mut redacted = policy::redact(&message, &saved_policy);
-            // Thread routing metadata is used locally; it is never added to model context.
-            redacted["_reviewConversation"] = conversation(&message).into();
-            if by_message
+            }
+            if saved
                 .get(id)
-                .is_none_or(|(date, _, _)| updated > date.as_str())
+                .is_none_or(|(previous, _)| updated > previous.as_str())
             {
-                by_message.insert(id.to_owned(), (updated.to_owned(), item.clone(), redacted));
+                saved.insert(id.into(), (updated.into(), item.clone()));
             }
         }
     }
-    let sources: Vec<Value> = by_message.values().map(|(_, _, m)| m.clone()).collect();
-    let mut groups = BTreeMap::<String, Vec<(String, Value, Value)>>::new();
-    for (_, entry) in by_message {
-        groups
-            .entry(string(&entry.2, "_reviewConversation").to_owned())
-            .or_default()
-            .push(entry);
+    for id in saved.keys() {
+        let key = index
+            .thread(id)
+            .map(|thread| thread.key.clone())
+            .unwrap_or_else(|| format!("unavailable:{id}"));
+        groups.entry(key).or_default().push(id.clone());
     }
     let mut result = Vec::new();
-    for (key, mut entries) in groups {
-        // Latest message evidence wins. A later analysis of an older request cannot reopen a newer closure.
-        entries.sort_by(|a, b| {
-            string(&a.2, "date")
-                .cmp(string(&b.2, "date"))
-                .then_with(|| a.0.cmp(&b.0))
-                .then_with(|| string(&a.2, "id").cmp(string(&b.2, "id")))
-        });
-        let (updated, item, message) = entries.last().unwrap();
-        let review = if item["review"].is_object() {
-            validate(&item["review"], std::slice::from_ref(message)).ok()
+    for (key, ids) in groups {
+        let thread = index.thread(&ids[0]);
+        let latest = thread
+            .map(|thread| thread.latest.as_str())
+            .unwrap_or(&ids[0]);
+        let raw = db.get(owner, latest)?.unwrap_or(Value::Null);
+        let permitted = saved_policy["folders"][string(&raw, "folder")] == true
+            && !["drafts", "trash", "spam"].contains(&string(&raw, "folder"));
+        let message = if permitted {
+            policy::redact(&raw, &saved_policy)
         } else {
-            None
+            json!({"id":latest,"date":raw["date"],"folder":raw["folder"]})
         };
-        let reviewed = review.is_some();
-        let review = review.unwrap_or_else(|| json!({"title":if string(message,"subject").is_empty(){string(item,"summary")}else{string(message,"subject")},"action":"","state":"uncertain","replyNeeded":"uncertain","evidence":[],"deadline":null,"questions":[]}));
-        let source_ids: Vec<Value> = entries.iter().map(|(_, _, m)| m["id"].clone()).collect();
-        let mut event = review;
-        event["id"] = json!([owner, key]).to_string().into();
+        let cap = saved_policy["maxMessages"]
+            .as_u64()
+            .unwrap_or(8)
+            .clamp(1, 10) as usize;
+        let (sources, coverage) = index.context(db, owner, latest, &saved_policy, cap)?;
+        let partial = thread.is_none()
+            || !permitted
+            || raw.is_null()
+            || coverage["partial"] == true
+            || thread.is_some_and(|thread| thread.uncertain_delivery);
+        let bound = saved.get(latest).and_then(|(_, item)| {
+            (item["reviewSourceHash"] == crate::mail_threads::content_hash(&message))
+                .then_some(item)
+        });
+        let reviewed =
+            bound.and_then(|item| validate(&item["review"], std::slice::from_ref(&message)).ok());
+        let original = &saved[&ids[0]].1;
+        let mut event = json!({"title":if !string(&message,"subject").is_empty(){message["subject"].clone()}else{json!("Conversation needs review")},"action":"","state":"uncertain","replyNeeded":"uncertain","evidence":[],"deadline":null,"questions":["Check the latest conversation before deciding."],"grounded":false});
+        if !partial {
+            if let Some(review) = reviewed {
+                event = review;
+                event["grounded"] = true.into();
+            } else if let Some(quote) = closure_quote(&message) {
+                event["state"] = "completed".into();
+                event["replyNeeded"] = "no".into();
+                event["evidence"] = json!([{"messageId":latest,"field":"body","quote":quote}]);
+                event["questions"] = json!([]);
+                event["grounded"] = true.into();
+            } else if raw["folder"] == "sent"
+                && string(&raw, "fromEmail").eq_ignore_ascii_case(owner)
+                && let Some(quote) = request_quote(&message)
+            {
+                event["state"] = "waiting_on_others".into();
+                event["replyNeeded"] = "no".into();
+                event["action"] = "Wait for a response to the latest outgoing request.".into();
+                event["evidence"] = json!([{"messageId":latest,"field":"body","quote":quote}]);
+                event["grounded"] = true.into();
+            } else if raw["folder"] == "inbox"
+                && !string(&raw, "fromEmail").eq_ignore_ascii_case(owner)
+                && let Some(quote) = request_quote(&message)
+            {
+                event["state"] = "waiting_on_user".into();
+                event["replyNeeded"] = "yes".into();
+                event["action"] =
+                    "Review the latest explicit request and decide how to respond.".into();
+                event["evidence"] = json!([{"messageId":latest,"field":"body","quote":quote}]);
+                event["questions"] = json!(["What answer or decision do you want to give?"]);
+                event["grounded"] = true.into();
+            }
+        }
+        if event["state"] == "waiting_on_user"
+            && (raw["folder"] != "inbox" || string(&raw, "fromEmail").eq_ignore_ascii_case(owner))
+        {
+            event["state"] = "uncertain".into();
+            event["replyNeeded"] = "uncertain".into();
+            event["action"] = "".into();
+        }
+        event["waitingOn"] = if event["state"] == "waiting_on_user" {
+            json!("you")
+        } else if event["state"] == "waiting_on_others" && raw["folder"] == "sent" {
+            let people = recipients(&message, owner);
+            if people.len() == 1 {
+                json!(people[0])
+            } else {
+                Value::Null
+            }
+        } else {
+            Value::Null
+        };
+        if event["state"] == "waiting_on_others" && event["waitingOn"].is_null() {
+            event["questions"] = json!(["Who is expected to respond? Check the original message."]);
+        }
+        if partial {
+            event["questions"] = json!([
+                "Some conversation content is missing, withheld or ambiguous. Verify the latest original before deciding."
+            ]);
+        }
+        event["id"] = crate::ai::hash(&json!([owner, key])).into();
         event["accountId"] = owner.into();
-        event["messageId"] = message["id"].clone();
-        event["messageIds"] = source_ids.into();
-        event["priority"] = item["priority"].clone();
-        event["summary"] = item["summary"].clone();
-        event["updatedAt"] = updated.clone().into();
-        event["grounded"] = reviewed.into();
-        event["waitingOn"] = match string(&event, "state") {
-            "waiting_on_user" => json!("you"),
-            "waiting_on_others" => message["fromEmail"].clone(),
-            _ => Value::Null,
-        };
-        event["sources"] = entries.iter().map(|(_,_,m)| json!({"id":m["id"],"accountId":owner,"subject":m["subject"],"date":m["date"]})).collect::<Vec<_>>().into();
+        event["messageId"] = latest.into();
+        event["messageIds"] = thread
+            .map(|thread| json!(thread.ids))
+            .unwrap_or_else(|| json!(ids));
+        event["priority"] = original["priority"].clone();
+        event["summary"] = original["summary"].clone();
+        event["updatedAt"] = raw["date"].clone();
+        event["coverage"] = coverage;
+        event["sources"]=sources.iter().map(|message|json!({"id":message["id"],"accountId":owner,"subject":message["subject"],"date":message["date"]})).collect::<Vec<_>>().into();
         for quote in event["evidence"].as_array_mut().into_iter().flatten() {
             quote["accountId"] = owner.into();
         }
         if event["deadline"].is_object() {
             event["deadline"]["accountId"] = owner.into();
-            event["deadline"]["sourceDate"] = sources
-                .iter()
-                .find(|m| m["id"] == event["deadline"]["messageId"])
-                .map(|m| m["date"].clone())
-                .unwrap_or(Value::Null);
+            event["deadline"]["sourceDate"] = message["date"].clone();
         }
         result.push(event);
     }
     result.sort_by(|a, b| {
         string(a, "priority")
             .cmp(string(b, "priority"))
-            .then_with(|| string(b, "updatedAt").cmp(string(a, "updatedAt")))
+            .then_with(|| crate::mail_threads::instant(b).cmp(&crate::mail_threads::instant(a)))
     });
     Ok(result)
 }
@@ -270,7 +386,14 @@ mod tests {
             )
             .is_err()
         );
-        assert!(validate(&review("completed", "The request is completed."), &source()).is_ok());
+        assert!(
+            validate(
+                &review("completed", "The request is completed."),
+                &[json!({"id":"one","body":"The request is completed."})]
+            )
+            .is_ok()
+        );
+        assert!(validate(&review("completed", "The request is completed."), &source()).is_err());
         assert!(
             validate(
                 &review("completed", "The request is not completed."),

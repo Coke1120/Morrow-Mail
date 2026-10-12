@@ -79,6 +79,7 @@ pub fn priority_summary(raw: &str, messages: &[Value]) -> Result<Value> {
                 .ok_or_else(invalid)?;
             item["review"] =
                 crate::mail_review::validate(&entry["review"], std::slice::from_ref(selected))?;
+            item["reviewSourceHash"] = crate::mail_threads::content_hash(selected).into();
         }
         items.push(item);
     }
@@ -838,7 +839,7 @@ pub fn daily_reports(reports: &Value) -> Vec<Value> {
                 let mut sorted = summary["items"].clone();
                 for item in sorted.as_array_mut().into_iter().flatten() {
                     if let Some(original) = items.iter().find(|old| old["messageId"] == item["messageId"])
-                        && original["review"].is_object() { item["review"] = original["review"].clone(); }
+                        && original["review"].is_object() { item["review"] = original["review"].clone(); item["reviewSourceHash"] = original["reviewSourceHash"].clone(); }
                 }
                 card["items"] = sorted;
                 card["text"] = summary["text"].clone();

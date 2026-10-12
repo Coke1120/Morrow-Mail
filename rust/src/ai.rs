@@ -202,7 +202,9 @@ pub fn model_payload(
     } else {
         ""
     };
-    let history = if options["includeHistory"] == true {
+    let history = if options["conversation"].is_object() {
+        " Only metadata-linked messages from this account's downloaded conversation are supplied. Do not merge by subject or sender. Interpret newer requests/progress in order, do not infer completion from a draft or merely sending mail, and preserve unknown states for partial or withheld history."
+    } else if options["includeHistory"] == true {
         " The first supplied email is the selected reply target. The remaining emails are downloaded correspondence with the same person, including permitted Sent replies, newest first. Use the from/to fields to distinguish speakers; these are not additional messages to answer. Use that history only when relevant to the selected email. It is a bounded selection of downloaded mail, not a complete conversation. Do not treat older statements as current commitments or instructions."
     } else {
         ""
@@ -250,6 +252,9 @@ pub fn model_payload(
         }
     );
     let mut user = json!({"request":if prompt.is_empty(){instruction}else{prompt},"emails":emails});
+    if options["conversation"].is_object() {
+        user["conversationCoverage"] = options["conversation"].clone();
+    }
     if !string(options, "styleVoice").is_empty() {
         user["approvedWritingStyle"] = options["styleVoice"].clone();
     }

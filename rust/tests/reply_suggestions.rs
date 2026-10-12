@@ -17,6 +17,104 @@ use tokio::sync::{Mutex, Semaphore};
 const OWNER: &str = "owner@example.test";
 const OTHER: &str = "other@example.test";
 const REPLY: &str = r#"{"needsReply":true,"reason":"The sender asks for clarification.","reply":"Thank you. Could you clarify the proposed date?"}"#;
+
+#[tokio::test]
+async fn later_conversation_mail_withdraws_old_proposals_without_touching_owned_draft_and_can_revive_after_sent()
+ {
+    let model = Model::new(false, REPLY);
+    let server = serve(model.clone()).await;
+    let directory = Temporary::new();
+    let app = app_at(&directory, &server.url).await;
+    app.db(|db| {
+        enable(db);
+        db.update(
+            OWNER,
+            "target",
+            &json!({"threadId":"discussion","messageId":"root@thread.test"}),
+        )?;
+        queue(db, &["target"]);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    suggestions::tick(&app).await.unwrap();
+    let old = state(&app).await["proposals"][0]["id"].clone();
+    app.db(|db|{db.upsert(OWNER,&merge(message("retained-draft"),&json!({"folder":"drafts","replyToId":"target","threadId":"discussion","body":"User edited this. Preserve it."})))?;db.upsert(OWNER,&merge(message("later"),&json!({"threadId":"discussion","fromEmail":"new-participant@example.test","date":"2026-03-01T12:00:00Z","body":"Please confirm the revised date."})))?;Ok(())}).await.unwrap();
+    let changed = state(&app).await;
+    assert!(changed["proposals"].as_array().unwrap().is_empty());
+    assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(call(&app, "use", OWNER, json!({"id":old})).await.0, 409);
+    assert!(
+        changed["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["id"] == "later")
+    );
+    assert!(
+        !changed["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["id"] == "target")
+    );
+    app.db(|db| {
+        queue(db, &["later"]);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    suggestions::tick(&app).await.unwrap();
+    assert_eq!(state(&app).await["proposals"][0]["messageId"], "later");
+    app.db(|db|{db.upsert(OWNER,&merge(message("sent-update"),&json!({"threadId":"discussion","folder":"sent","fromEmail":OWNER,"to":"sender@example.test","replyToId":"later","date":"2026-03-02T12:00:00Z","body":"Thank you, received."})))?;Ok(())}).await.unwrap();
+    assert!(
+        state(&app).await["proposals"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    app.db(|db|{db.upsert(OWNER,&merge(message("revived"),&json!({"threadId":"discussion","date":"2026-03-03T12:00:00Z","body":"Please review a new revision."})))?;let draft=db.get(OWNER,"retained-draft")?.unwrap();assert_eq!(draft["body"],"User edited this. Preserve it.");Ok(())}).await.unwrap();
+    assert!(
+        state(&app).await["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["id"] == "revived")
+    );
+}
+#[tokio::test]
+async fn new_linked_arrival_discards_inflight_result_but_unrelated_same_sender_subject_does_not() {
+    for linked in [true, false] {
+        let model = Model::new(true, REPLY);
+        let server = serve(model.clone()).await;
+        let directory = Temporary::new();
+        let app = app_at(&directory, &server.url).await;
+        app.db(|db| {
+            enable(db);
+            db.update(OWNER, "target", &json!({"conversationId":"known"}))?;
+            queue(db, &["target"]);
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let work = tokio::spawn({
+            let app = app.clone();
+            async move {
+                suggestions::tick(&app).await.unwrap();
+            }
+        });
+        model.entered.acquire().await.unwrap().forget();
+        app.db(move|db|{db.upsert(OWNER,&merge(message("arrival"),&json!({"conversationId":if linked{"known"}else{"separate"},"date":"2026-03-04T12:00:00Z"})))?;Ok(())}).await.unwrap();
+        model.release.add_permits(1);
+        work.await.unwrap();
+        let current = state(&app).await;
+        assert_eq!(current["proposals"].as_array().unwrap().is_empty(), linked);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+        if linked {
+            assert_eq!(current["job"]["status"], "failed");
+        }
+    }
+}
 struct Temporary(PathBuf);
 impl Temporary {
     fn new() -> Self {
@@ -217,9 +315,9 @@ async fn owned_review_queues_without_model_then_runs_serial_bounded_context_and_
     assert_eq!(status, 200);
     assert_eq!(
         preview["job"]["samples"][0]["history"]["matchedMessages"],
-        15
+        1
     );
-    assert_eq!(preview["job"]["samples"][0]["history"]["usedMessages"], 10);
+    assert_eq!(preview["job"]["samples"][0]["history"]["usedMessages"], 1);
     for secret in [
         "OTHER OWNER PRIVATE",
         "TRASH PRIVATE",
@@ -264,7 +362,7 @@ async fn owned_review_queues_without_model_then_runs_serial_bounded_context_and_
     let requests = model.requests.lock().await;
     let content: Value =
         serde_json::from_str(requests[0]["messages"][1]["content"].as_str().unwrap()).unwrap();
-    assert_eq!(content["emails"].as_array().unwrap().len(), 10);
+    assert_eq!(content["emails"].as_array().unwrap().len(), 1);
     assert_eq!(content["emails"][0]["body"], "Please review target");
     assert!(
         content["request"]
@@ -405,6 +503,12 @@ async fn source_identity_generation_model_connection_and_style_changes_reject_in
         let app = app_at(&directory, &server.url).await;
         app.db(|db| {
             enable(db);
+            db.update(OWNER, "target", &json!({"threadId":"related"}))?;
+            db.update(
+                OWNER,
+                "second",
+                &json!({"threadId":"related","date":"2025-12-31T12:00:00Z"}),
+            )?;
             approve_style(db);
             queue(db, &["target"]);
             Ok(())
@@ -575,6 +679,12 @@ async fn ready_proposals_survive_restart_but_stale_preview_excerpts_and_drafts_a
     let app = app_at(&directory, &server.url).await;
     app.db(|db| {
         enable(db);
+        db.update(OWNER, "target", &json!({"threadId":"related"}))?;
+        db.update(
+            OWNER,
+            "second",
+            &json!({"threadId":"related","date":"2025-12-31T12:00:00Z"}),
+        )?;
         queue(db, &["target"]);
         Ok(())
     })
