@@ -176,12 +176,40 @@ function Get-NativeProofParentState($Parent, [uint32] $ParentId, [long] $ParentT
     return 'valid'
 }
 
+function Add-NativeInventoryPin($Row, [uint32] $Root, [Collections.IDictionary] $Cache,
+    [Collections.IDictionary] $Pins, [scriptblock] $AcquireIdentity) {
+    $id = [uint32] $Row.ProcessId; $parentId = [uint32] $Row.ParentProcessId
+    if ($id -le 1 -or $Cache.ContainsKey($id) -or $Pins.ContainsKey($id) -or
+        -not $Cache.ContainsKey($parentId)) { return $false }
+    $parent = $Cache[$parentId]
+    if (-not $parent.seen -and $parentId -ne $Root) { return $false }
+    # Provisional read-only pin: this retained, owned parent is exact and live.
+    # Its current CIM row is still mandatory at ordinary admission below.
+    try {
+        if ($parent.process.Id -ne $parentId -or $parent.process.StartTime.ToUniversalTime().Ticks -ne $parent.ticks -or
+            $parent.process.HasExited -or $null -eq $Row.CreationDate -or
+            $Row.CreationDate.ToUniversalTime().Ticks -lt $parent.ticks) { return $false }
+    } catch { return $false }
+    if ($Cache.Count + $Pins.Count -ge 64) { throw 'Pin inventory limit.' }
+    try {
+        $handle = if ($AcquireIdentity) { & $AcquireIdentity $id } else { [MorrowObservationIdentity.ExitProof]::Acquire($id) }
+        $Pins[$id] = @{ handle = $handle; failure = $null }
+        return $true
+    } catch {
+        # Store the FIRST result even while inventory is arriving. Nothing in
+        # tree building or admission may reopen it or infer a normal exit.
+        $Pins[$id] = @{ handle = $null; failure = $_.Exception }
+        return $false
+    }
+}
+
 function New-NativeAdmissionPins($Candidates, [uint32] $Root, [Collections.IDictionary] $Cache,
-    [Collections.IDictionary] $Rejected, [Collections.IDictionary] $Rows, [scriptblock] $AcquireIdentity) {
-    $pins = @{}; $parents = @{}; $wanted = [Collections.Generic.List[uint32]]::new()
+    [Collections.IDictionary] $Rejected, [Collections.IDictionary] $Rows, [scriptblock] $AcquireIdentity,
+    [Collections.IDictionary] $Pins) {
+    $pins = $Pins; $parents = @{}; $wanted = [Collections.Generic.List[uint32]]::new()
     foreach ($candidate in $Candidates) {
         $id = [uint32] $candidate.row.ProcessId; $parentId = [uint32] $candidate.row.ParentProcessId
-        if ($candidate.source -ne 'cim' -or $Cache.ContainsKey($id) -or -not $Cache.ContainsKey($parentId)) { continue }
+        if ($candidate.source -ne 'cim' -or $Cache.ContainsKey($id) -or $pins.ContainsKey($id) -or -not $Cache.ContainsKey($parentId)) { continue }
         if (-not $parents.ContainsKey($parentId)) {
             $parent = $Cache[$parentId]
             # The root's original managed pin is already exact. It need not
@@ -241,9 +269,24 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
         $rootEntry = $cache[$Root]; $rootExited = $rootEntry.process.HasExited
         $rootIdentitySource = if ($rootEntry.seen) { 'priorSnapshot' } else { 'currentSnapshot' }
         $stage = 'cim'
-        $rows = if ($rootExited) { @() } elseif ($null -eq $SnapshotRows) {
-            @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate -OperationTimeoutSec 2 -ErrorAction Stop)
-        } else { $SnapshotRows }
+        $inventory = [Collections.Generic.List[object]]::new()
+        $receive = {
+            param($Row)
+            if ($inventory.Count -ge 8192) { throw 'Process inventory limit.' }
+            $inventory.Add($Row)
+            if (Add-NativeInventoryPin $Row $Root $cache $earlyPins $AcquireIdentity) {
+                if ($ObservationBarrier) { [void] (& $ObservationBarrier 'inventoryPinned' ([uint32] $Row.ProcessId)) }
+            }
+        }
+        if (-not $rootExited) {
+            if ($null -eq $SnapshotRows) {
+                # Pin at row delivery, before collecting the remaining global
+                # inventory, tree construction or any managed sibling reads.
+                Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate -OperationTimeoutSec 2 -ErrorAction Stop |
+                    ForEach-Object { [void] (& $receive $_) }
+            } else { foreach ($row in $SnapshotRows) { [void] (& $receive $row) } }
+        }
+        $rows = @($inventory.ToArray())
         $stage = 'tree'; $byId = @{}
         if (@($rows).Count -gt 8192) { throw 'Process inventory limit.' }
         foreach ($row in $rows) {
@@ -293,7 +336,7 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
         # Preserve handles for current children of already-verified live parents
         # before any sibling's managed admission. A failed first open is retained
         # verbatim; it is never reopened or inferred to be a normal exit.
-        $earlyPins = New-NativeAdmissionPins $candidates $Root $cache $rejected $byId $AcquireIdentity
+        $earlyPins = New-NativeAdmissionPins $candidates $Root $cache $rejected $byId $AcquireIdentity $earlyPins
         if ($ObservationBarrier) { [void] (& $ObservationBarrier 'admissionPinned' $null) }
         $admitted = [Collections.Generic.List[object]]::new()
         # Fixed once for the whole admission loop, never reset per PID. Pending

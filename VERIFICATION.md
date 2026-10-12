@@ -1,5 +1,18 @@
 # Verification — 12 October 2026
 
+## Inventory-delivery observer follow-up
+
+Actual main/tagged logs retained the first-acquire87/unknown-exit failures after
+PR33, showing that moving pins ahead of siblings did not remove inventory/tree
+collection latency. [The focused row-delivery correction](docs/WINDOWS_INVENTORY_PINS.md)
+attempts its original pin as each current child row arrives under an owned live
+parent, then keeps all original current-CIM identity/parent/counter/exit/deadline
+checks at admission. Every failed first open remains a gap without retry.
+New controls release creator handles before later rows/tree processing and
+require exact zero/nonzero/changed-identity outcomes. Linux parser/bounds/64-bit/
+partial-record and9 positive/history+52 negative schema checks passed; actual
+Win32 and paired acceptance remain pending and are not predeclared.
+
 ## v0.7.6 release preparation — Codex Cloud, 12 October 2026
 
 The authorized cloud continuation preserved v0.7.5 and investigated the actual
