@@ -60,3 +60,9 @@ UI/resource acceptance require fresh Windows CI. After normal merges of tested
 observer/review fixes, the next unused release version must run fresh coherent
 tagged Mac/Windows gates and the existing publisher. Thunderbird sync is excluded.
 Ad-hoc Mac/unsigned Windows and manual/real-account limits remain unchanged.
+
+The exact-head paired check passed and PR36 merged, but combined PR35 still
+failed before first acquisition on the identical observer source. See the
+[native capture-window follow-up](WINDOWS_INVENTORY_WINDOW.md) for exact failed
+PIDs, scope and the additional correction; the row-delivery check alone does
+not establish resolution of pre-row acquisition gaps.

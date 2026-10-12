@@ -25,6 +25,17 @@ if ($SchemaSelfTest) {
         catch { $rejected = $_.Exception.InnerException -is [ArgumentException] }
         Check $rejected 'invalid-pin-batch-no-native'
     }
+    foreach ($case in @(0, 1, 2)) {
+        $rejected = $false
+        try {
+            $ids = if ($case -eq 1) { [uint32[]] @(2) } else { [uint32[]] @() }
+            $ticksInput = if ($case -eq 1) { [long[]] @(1) } else { [long[]] @() }
+            $knownInput = if ($case -eq 2) { [uint32[]] @(2..66) } else { [uint32[]] @(2) }
+            [void] [MorrowObservationIdentity.InventoryPinWindow]::Start($ids, $ticksInput,
+                [Microsoft.Win32.SafeHandles.SafeProcessHandle[]] @(), $knownInput, 63)
+        } catch { $rejected = $_.Exception.InnerException -is [ArgumentException] }
+        Check $rejected 'invalid-inventory-window-no-native'
+    }
     Write-Host 'Native identity pure integer/input checks passed; Windows proof was not run.'
     return
 }

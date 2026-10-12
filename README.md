@@ -16,6 +16,11 @@ The [Today and reply review workspace](docs/REVIEW_WORKSPACE.md) adds shared acc
 
 Version 0.7.3 includes search-page retention across reading/reply saves and clearer attachment removal names, covered in the [mail flow review](docs/MAIL_FLOW_REVIEW.md). Native CI does not complete manual accessibility/live-account acceptance; the extreme Mac HTML timeout and Windows first-acquire observation gap remain open.
 
+The cloud observer follow-up retains provisional handles during delayed CIM
+delivery while preserving every strict final admission and exit gate. Successful
+and failed runs are both recorded in [evidence and scope](docs/WINDOWS_INVENTORY_WINDOW.md);
+new native/paired validation is required before publication.
+
 Version 0.7.4 keeps the side-by-side reading pane inside the mail view when the window or sidebar changes width, restoring the requested list width when space returns. The separate Mac mini Parallels checks and tagged release status are recorded in [verification](VERIFICATION.md#windows-reading-pane-fit--mac-mini-parallels-12-october-2026).
 
 The [attachment follow-up](docs/ATTACHMENT_FLOW_REVIEW.md) keeps Windows on the current account/page during an attachment save. The subsequent sidebar correction restores WinUI's actual selected item when a guarded invocation is rejected, so its account/folder label matches the retained mailbox. Isolated native checks cover real `ItemInvoked` events, ownership, repeated operations and saved-file security metadata; interactive picker cancellation remains unverified.
