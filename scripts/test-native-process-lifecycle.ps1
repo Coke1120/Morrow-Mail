@@ -324,24 +324,28 @@ namespace MorrowObservationFixture {
                 }
             }.GetNewClosure()
             $acquiredPins = [Collections.Generic.List[object]]::new()
-            $windowHolder = @{ window = $null }
+            $windowHolder = @{ window = $null; failure = $null }
+            # GetNewClosure uses a dynamic module: capture script-local helpers
+            # explicitly, just like the existing counter-reader callback.
+            $startWindow = ${function:Start-NativeInventoryWindow}; $fixtureCheck = ${function:Check}
             $windowFactory = if ($case -like 'query-window-*') {
                 {
                     param($Owner, $Cache)
                     $code = if ($case -eq 'query-window-first-acquire-unavailable') { 87 } elseif ($case -eq 'query-window-first-acquire-denied') { 5 } else { 0 }
-                    $window = if ($code) { Start-NativeInventoryWindow $Owner $Cache $childId $code } else { Start-NativeInventoryWindow $Owner $Cache }
+                    try { $window = if ($code) { & $startWindow $Owner $Cache $childId $code } else { & $startWindow $Owner $Cache } }
+                    catch { $windowHolder.failure = $_.Exception.GetBaseException().GetType().Name; throw }
                     $windowHolder.window = $window
                     $item = @($window.BorrowForFixture() | Where-Object { $_.Pid -eq $childId })
-                    Check ($item.Count -eq 1) 'native-pin-before-first-cim-row'
+                    & $fixtureCheck ($item.Count -eq 1) 'native-pin-before-first-cim-row'
                     $facts.acquireCalls = 1
-                    Check ([object]::ReferenceEquals($item[0], $window.AcquireForRow($childId, $Owner)) -and
+                    & $fixtureCheck ([object]::ReferenceEquals($item[0], $window.AcquireForRow($childId, $Owner)) -and
                         [object]::ReferenceEquals($item[0], $window.AcquireForRow($childId, $Owner))) 'native-window-first-result-never-reopened'
                     foreach ($pin in $window.BorrowForFixture()) { if ($pin.Handle) { $acquiredPins.Add($pin.Handle) } }
                     if ($case -eq 'query-window-identity-change') {
                         ($rows | Where-Object { $_.ProcessId -eq $childId }).CreationDate = $child.StartTime.AddSeconds(1)
                     } elseif ($case -in @('query-window-exit-zero', 'query-window-exit-nonzero')) {
                         $child.StandardInput.WriteLine($(if ($case -eq 'query-window-exit-nonzero') { 'exit7' } else { 'exit0' }))
-                        $child.StandardInput.Flush(); Check ($child.WaitForExit(5000)) 'native-window-child-exit'
+                        $child.StandardInput.Flush(); & $fixtureCheck ($child.WaitForExit(5000)) 'native-window-child-exit'
                         $facts.released = $true; $facts.pinnedExitCode = $child.ExitCode
                         $child.Dispose(); $facts.fixtureChildDisposed = $true
                     }
@@ -382,7 +386,10 @@ namespace MorrowObservationFixture {
             }.GetNewClosure()
             $at = [Diagnostics.Stopwatch]::GetTimestamp()
             $snapshot = Get-NativeProcessSnapshot $sampleRootId $sampleRootTicks $rows $barrier $counter $state $(if ($windowFactory) { $null } else { $acquire }) -InventoryWindowFactory $windowFactory
-            if ($windowFactory) { $facts.windowStopped = $windowHolder.window.WorkerStopped; Check $facts.windowStopped 'native-window-joined-before-admission' }
+            if ($windowFactory) {
+                Check ($null -ne $windowHolder.window) ('native-window-factory-start-' + $windowHolder.failure)
+                $facts.windowStopped = $windowHolder.window.WorkerStopped; Check $facts.windowStopped 'native-window-joined-before-admission'
+            }
             $facts.pinsObserved = $acquiredPins.Count
             $facts.pinsClosed = @($acquiredPins | Where-Object { $_.IsClosed }).Count
             Check ($facts.pinsObserved -eq $facts.pinsClosed) 'temporary-pins-disposed'
