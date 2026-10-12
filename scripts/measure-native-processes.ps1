@@ -4,6 +4,7 @@ param([switch] $SelfTest)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'native-process-identity.ps1')
+. (Join-Path $PSScriptRoot 'native-process-inventory.ps1')
 
 # Fixture-only observer, never packaged. The caller owns the UI and this child.
 # No CIM, sampler pipe or sampler wait runs in the UI stderr drain loop.
@@ -177,7 +178,7 @@ function Get-NativeProofParentState($Parent, [uint32] $ParentId, [long] $ParentT
 }
 
 function Add-NativeInventoryPin($Row, [uint32] $Root, [Collections.IDictionary] $Cache,
-    [Collections.IDictionary] $Pins, [scriptblock] $AcquireIdentity) {
+    [Collections.IDictionary] $Pins, [scriptblock] $AcquireIdentity, $NativeWindow = $null) {
     $id = [uint32] $Row.ProcessId; $parentId = [uint32] $Row.ParentProcessId
     if ($id -le 1 -or $Cache.ContainsKey($id) -or $Pins.ContainsKey($id) -or
         -not $Cache.ContainsKey($parentId)) { return $false }
@@ -192,7 +193,11 @@ function Add-NativeInventoryPin($Row, [uint32] $Root, [Collections.IDictionary] 
     } catch { return $false }
     if ($Cache.Count + $Pins.Count -ge 64) { throw 'Pin inventory limit.' }
     try {
-        $handle = if ($AcquireIdentity) { & $AcquireIdentity $id } else { [MorrowObservationIdentity.ExitProof]::Acquire($id) }
+        $handle = if ($NativeWindow) {
+            $item = $NativeWindow.AcquireForRow($id, $parentId)
+            if ($null -ne $item.NativeError) { throw [ComponentModel.Win32Exception]::new($item.NativeError) }
+            $item.Handle
+        } elseif ($AcquireIdentity) { & $AcquireIdentity $id } else { [MorrowObservationIdentity.ExitProof]::Acquire($id) }
         $Pins[$id] = @{ handle = $handle; failure = $null }
         return $true
     } catch {
@@ -243,7 +248,8 @@ function New-NativeAdmissionPins($Candidates, [uint32] $Root, [Collections.IDict
 function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]] $SnapshotRows = $null,
     [scriptblock] $ObservationBarrier = $null, [scriptblock] $ReadCounters = $null,
     [Collections.IDictionary] $State = $null, [scriptblock] $AcquireIdentity = $null,
-    [long] $CollectorDeadlineAtQpc = 0, [scriptblock] $LookupProcess = $null, [scriptblock] $ReadLookupProof = $null) {
+    [long] $CollectorDeadlineAtQpc = 0, [scriptblock] $LookupProcess = $null, [scriptblock] $ReadLookupProof = $null,
+    [scriptblock] $InventoryWindowFactory = $null) {
     # A collector owns this bounded cache until its finally block. Retaining the
     # original handle preserves exit evidence; a missing PID is never that proof.
     # Fixture faults/projections are direct arguments, never environment/app switches.
@@ -251,7 +257,7 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
     if ($CollectorDeadlineAtQpc -eq 0) { $CollectorDeadlineAtQpc = $sampleAt + 180L * $frequency }
     $ownsState = $null -eq $State
     if ($ownsState) { $State = New-NativeObservationState $Root $RootTicks }
-    $cache = $State.handles; $entries = [Collections.Generic.List[object]]::new(); $stage = 'root'; $earlyPins = @{}
+    $cache = $State.handles; $entries = [Collections.Generic.List[object]]::new(); $stage = 'root'; $earlyPins = @{}; $nativeWindow = $null
     $sample = [ordered]@{ terminalReason = $null; failureStage = 'none'; hasSnapshot = $false; skipped = 0; rootSkipped = 0
         rootExitedDuringSample = $null; skipReasonCounts = (New-NativeSkipReasonCounts); processes = @()
         lifecycleEvents = [Collections.Generic.List[object]]::new(); failedRecords = [Collections.Generic.List[object]]::new() }
@@ -269,12 +275,15 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
         $rootEntry = $cache[$Root]; $rootExited = $rootEntry.process.HasExited
         $rootIdentitySource = if ($rootEntry.seen) { 'priorSnapshot' } else { 'currentSnapshot' }
         $stage = 'cim'
+        if (-not $rootExited -and ($null -eq $SnapshotRows -or $InventoryWindowFactory)) {
+            $nativeWindow = if ($InventoryWindowFactory) { & $InventoryWindowFactory $Root $cache } else { Start-NativeInventoryWindow $Root $cache }
+        }
         $inventory = [Collections.Generic.List[object]]::new()
         $receive = {
             param($Row)
             if ($inventory.Count -ge 8192) { throw 'Process inventory limit.' }
             $inventory.Add($Row)
-            if (Add-NativeInventoryPin $Row $Root $cache $earlyPins $AcquireIdentity) {
+            if (Add-NativeInventoryPin $Row $Root $cache $earlyPins $AcquireIdentity $nativeWindow) {
                 if ($ObservationBarrier) { [void] (& $ObservationBarrier 'inventoryPinned' ([uint32] $Row.ProcessId)) }
             }
         }
@@ -285,6 +294,20 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
                 Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate -OperationTimeoutSec 2 -ErrorAction Stop |
                     ForEach-Object { [void] (& $receive $_) }
             } else { foreach ($row in $SnapshotRows) { [void] (& $receive $row) } }
+        }
+        if ($nativeWindow) {
+            # Stop before tree/admission. This bounded join cannot extend the
+            # original sample/collector deadline or create later exit grace.
+            $stopDeadline = [Math]::Min($sampleAt + $frequency, $CollectorDeadlineAtQpc)
+            $remaining = [Math]::Max(0L, $stopDeadline - [Diagnostics.Stopwatch]::GetTimestamp())
+            $budget = [int] [Math]::Min(250L, [long] [Math]::Floor($remaining * 1000.0 / $frequency))
+            foreach ($item in $nativeWindow.Complete($budget)) {
+                if (-not $earlyPins.ContainsKey($item.Pid)) {
+                    $earlyPins[$item.Pid] = @{ handle = $item.Handle; failure = $(if ($null -ne $item.NativeError) {
+                        [ComponentModel.Win32Exception]::new($item.NativeError)
+                    } else { $null }) }
+                }
+            }
         }
         $rows = @($inventory.ToArray())
         $stage = 'tree'; $byId = @{}
@@ -523,6 +546,7 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
         $sample.processes = @($entries.ToArray())
     } catch { $sample.terminalReason = 3; $sample.failureStage = $stage }
     finally {
+        if ($nativeWindow) { $nativeWindow.Dispose() }
         foreach ($pin in $earlyPins.Values) { if ($pin.handle) { $pin.handle.Dispose() } }
         $sample.lifecycleEvents = @($sample.lifecycleEvents.ToArray()); $sample.failedRecords = @($sample.failedRecords.ToArray())
         if ($ownsState) { Close-NativeObservationState $State }

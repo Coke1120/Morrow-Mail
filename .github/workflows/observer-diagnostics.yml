@@ -5,6 +5,7 @@ on:
     paths:
       - .github/workflows/observer-diagnostics.yml
       - scripts/native-process-identity.ps1
+      - scripts/native-process-inventory.ps1
       - scripts/test-native-process-identity.ps1
       - scripts/measure-native-processes.ps1
       - scripts/test-native-process-lifecycle.ps1

@@ -10,6 +10,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Microsoft.Win32.SafeHandles;
 
 namespace MorrowObservationIdentity {
@@ -66,6 +67,208 @@ namespace MorrowObservationIdentity {
         public uint? SettlingWait { get; set; }
         public int? SettlingError { get; set; }
         public bool CompleteAfterDeadline { get; set; }
+    }
+
+    public sealed class InventoryAcquisition {
+        public uint Pid { get; internal set; }
+        public SafeProcessHandle Handle { get; internal set; }
+        public int? NativeError { get; internal set; }
+    }
+    public sealed class InventoryPinWindow : IDisposable {
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        struct ProcessEntry {
+            public uint Size, Usage, Pid;
+            public UIntPtr DefaultHeap;
+            public uint Module, Threads, ParentPid;
+            public int Priority;
+            public uint Flags;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string Name;
+        }
+        sealed class SnapshotHandle : SafeHandleZeroOrMinusOneIsInvalid {
+            public SnapshotHandle() : base(true) { }
+            protected override bool ReleaseHandle() { return CloseHandle(handle); }
+        }
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern SnapshotHandle CreateToolhelp32Snapshot(uint flags, uint pid);
+        [DllImport("kernel32.dll", EntryPoint = "Process32FirstW", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        static extern bool Process32First(SnapshotHandle snapshot, ref ProcessEntry entry);
+        [DllImport("kernel32.dll", EntryPoint = "Process32NextW", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        static extern bool Process32Next(SnapshotHandle snapshot, ref ProcessEntry entry);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        static extern bool CloseHandle(IntPtr handle);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern uint GetProcessId(SafeProcessHandle handle);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        static extern bool GetProcessTimes(SafeProcessHandle handle, out long created, out long exited, out long kernel, out long user);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern uint WaitForSingleObject(SafeProcessHandle handle, uint milliseconds);
+
+        readonly object gate = new object();
+        readonly Dictionary<uint, int> parents = new Dictionary<uint, int>();
+        readonly Dictionary<uint, InventoryAcquisition> pins = new Dictionary<uint, InventoryAcquisition>();
+        readonly HashSet<uint> known;
+        readonly uint[] parentIds;
+        readonly long[] parentTicks;
+        readonly SafeProcessHandle[] parentHandles;
+        readonly bool[] parentRefs;
+        readonly int limit;
+        readonly uint projectedPid;
+        readonly int projectedError;
+        readonly ManualResetEventSlim stop = new ManualResetEventSlim(false);
+        Thread worker;
+        Exception failure;
+        bool transferred;
+        int closing, cleaned;
+
+        InventoryPinWindow(uint[] ids, long[] ticks, SafeProcessHandle[] handles, uint[] knownIds,
+            int maximum, uint fixturePid, int fixtureError) {
+            if (ids == null || ticks == null || handles == null || knownIds == null || ids.Length == 0 ||
+                ids.Length > 64 || ids.Length != ticks.Length || ids.Length != handles.Length ||
+                knownIds.Length > 64 || maximum < 0 || maximum > 64 - knownIds.Length ||
+                ((fixturePid == 0) != (fixtureError == 0)) || (fixtureError != 0 && fixtureError != 5 && fixtureError != 87))
+                throw new ArgumentException("Invalid inventory pin bounds.");
+            known = new HashSet<uint>();
+            foreach (uint id in knownIds)
+                if (id <= 1 || !known.Add(id)) throw new ArgumentException("Invalid known identity.");
+            for (int i = 0; i < ids.Length; i++) {
+                if (ids[i] <= 1 || !known.Contains(ids[i]) || parents.ContainsKey(ids[i]) ||
+                    ticks[i] <= 0 || ticks[i] > DateTime.MaxValue.Ticks || handles[i] == null || handles[i].IsInvalid || handles[i].IsClosed)
+                    throw new ArgumentException("Invalid parent identity.");
+                parents.Add(ids[i], i);
+            }
+            parentIds = (uint[])ids.Clone(); parentTicks = (long[])ticks.Clone();
+            parentHandles = (SafeProcessHandle[])handles.Clone(); parentRefs = new bool[ids.Length];
+            limit = maximum; projectedPid = fixturePid; projectedError = fixtureError;
+            try {
+                // Borrow these original retained parent objects, never reopen a
+                // PID or adopt/dispose the caller's managed process handles.
+                for (int i = 0; i < parentHandles.Length; i++) parentHandles[i].DangerousAddRef(ref parentRefs[i]);
+                Capture(); // Cover children already live before slow CIM starts.
+                worker = new Thread(Run) { IsBackground = true, Name = "Morrow inventory pins" };
+                worker.Start();
+            } catch { closing = 1; Cleanup(); throw; }
+        }
+        public static InventoryPinWindow Start(uint[] ids, long[] ticks, SafeProcessHandle[] handles, uint[] knownIds, int maximum) {
+            return new InventoryPinWindow(ids, ticks, handles, knownIds, maximum, 0, 0);
+        }
+        // Direct deterministic native-error routing control, never an app or
+        // environment switch. All successful handles/parent reads remain native.
+        public static InventoryPinWindow StartForFixture(uint[] ids, long[] ticks, SafeProcessHandle[] handles,
+            uint[] knownIds, int maximum, uint pid, int error) {
+            if (pid <= 1 || (error != 5 && error != 87)) throw new ArgumentException("Invalid fixture error.");
+            return new InventoryPinWindow(ids, ticks, handles, knownIds, maximum, pid, error);
+        }
+        bool LiveParent(int index) {
+            uint actual = GetProcessId(parentHandles[index]);
+            if (actual == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (actual != parentIds[index]) return false;
+            long created, exited, kernel, user;
+            if (!GetProcessTimes(parentHandles[index], out created, out exited, out kernel, out user))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (DateTime.FromFileTimeUtc(created).Ticks != parentTicks[index]) return false;
+            uint wait = WaitForSingleObject(parentHandles[index], 0);
+            if (wait == 0xffffffff) throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (wait != 0 && wait != 258) throw new InvalidOperationException("Invalid parent wait.");
+            return wait == 258;
+        }
+        InventoryAcquisition AcquireOnce(uint id) {
+            InventoryAcquisition existing;
+            if (pins.TryGetValue(id, out existing)) return existing;
+            if (pins.Count >= limit) throw new InvalidOperationException("Pin inventory limit.");
+            var item = new InventoryAcquisition { Pid = id };
+            try {
+                if (id == projectedPid) throw new Win32Exception(projectedError);
+                item.Handle = ExitProof.Acquire(id);
+            } catch (Win32Exception error) { item.NativeError = error.NativeErrorCode; }
+            pins.Add(id, item); Monitor.PulseAll(gate); return item;
+        }
+        void Capture() {
+            using (SnapshotHandle snapshot = CreateToolhelp32Snapshot(2, 0)) {
+                if (snapshot.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+                var entry = new ProcessEntry { Size = (uint)Marshal.SizeOf<ProcessEntry>() };
+                var seen = new HashSet<uint>();
+                bool available = Process32First(snapshot, ref entry);
+                if (!available && Marshal.GetLastWin32Error() != 18) throw new Win32Exception(Marshal.GetLastWin32Error());
+                while (available && !stop.IsSet) {
+                    if (seen.Count >= 8192 || !seen.Add(entry.Pid)) throw new InvalidOperationException("Process inventory limit or duplicate.");
+                    int parent;
+                    if (entry.Pid > 1 && !known.Contains(entry.Pid) && parents.TryGetValue(entry.ParentPid, out parent)) {
+                        lock (gate) {
+                            if (!pins.ContainsKey(entry.Pid) && LiveParent(parent)) AcquireOnce(entry.Pid);
+                        }
+                    }
+                    available = Process32Next(snapshot, ref entry);
+                    if (!available && Marshal.GetLastWin32Error() != 18) throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+            }
+        }
+        void Run() {
+            try { while (!stop.Wait(10)) Capture(); }
+            catch (Exception error) { lock (gate) failure = error; stop.Set(); }
+            finally { if (Volatile.Read(ref closing) != 0) Cleanup(); }
+        }
+        // Borrow until Complete transfers ALL pins. The first result, including
+        // 87/5, is retained under one lock across native scan and CIM delivery.
+        public InventoryAcquisition AcquireForRow(uint id, uint parentId) {
+            if (id <= 1 || known.Contains(id)) throw new ArgumentException("Invalid child identity.");
+            lock (gate) {
+                if (failure != null) throw new InvalidOperationException("Native inventory failed.", failure);
+                if (transferred || Volatile.Read(ref closing) != 0) throw new ObjectDisposedException(nameof(InventoryPinWindow));
+                InventoryAcquisition existing;
+                if (pins.TryGetValue(id, out existing)) return existing;
+                int parent;
+                if (!parents.TryGetValue(parentId, out parent) || !LiveParent(parent)) throw new InvalidOperationException("Parent is not live and owned.");
+                return AcquireOnce(id);
+            }
+        }
+        public InventoryAcquisition[] BorrowForFixture() {
+            lock (gate) { var result = new InventoryAcquisition[pins.Count]; pins.Values.CopyTo(result, 0); return result; }
+        }
+        public bool WaitForPinForFixture(uint id, int milliseconds) {
+            if (id <= 1 || milliseconds < 0 || milliseconds > 5000) throw new ArgumentException("Invalid fixture wait.");
+            long deadline = Stopwatch.GetTimestamp() + milliseconds * Stopwatch.Frequency / 1000L;
+            lock (gate) {
+                while (!pins.ContainsKey(id) && failure == null && !stop.IsSet) {
+                    long remaining = deadline - Stopwatch.GetTimestamp();
+                    if (remaining <= 0) break;
+                    Monitor.Wait(gate, (int)Math.Min(milliseconds, Math.Max(1L, remaining * 1000L / Stopwatch.Frequency)));
+                }
+                return pins.ContainsKey(id);
+            }
+        }
+        public bool WorkerStopped => worker == null || !worker.IsAlive;
+        public InventoryAcquisition[] Complete(int milliseconds) {
+            if (milliseconds < 0 || milliseconds > 250) throw new ArgumentException("Invalid inventory join budget.");
+            stop.Set();
+            if (!worker.Join(milliseconds)) { Interlocked.Exchange(ref closing, 1); throw new TimeoutException("Inventory pin window did not stop."); }
+            lock (gate) {
+                if (failure != null) throw new InvalidOperationException("Native inventory failed.", failure);
+                if (transferred || Volatile.Read(ref closing) != 0) throw new ObjectDisposedException(nameof(InventoryPinWindow));
+                var result = new InventoryAcquisition[pins.Count]; pins.Values.CopyTo(result, 0);
+                transferred = true; return result;
+            }
+        }
+        void Cleanup() {
+            if (Interlocked.Exchange(ref cleaned, 1) != 0) return;
+            lock (gate) {
+                if (!transferred) foreach (var item in pins.Values) item.Handle?.Dispose();
+                pins.Clear();
+            }
+            for (int i = 0; i < parentRefs.Length; i++) if (parentRefs[i]) parentHandles[i].DangerousRelease();
+            stop.Dispose();
+        }
+        public void Dispose() {
+            bool first = Interlocked.Exchange(ref closing, 1) == 0;
+            if (Volatile.Read(ref cleaned) != 0) return;
+            try { stop.Set(); } catch (ObjectDisposedException) { if (Volatile.Read(ref cleaned) == 0) throw; }
+            if (worker == null || worker.Join(first ? 250 : 0)) Cleanup();
+            // A timed-out native worker keeps its own parent refs/pins until its
+            // finally block. Never dispose a parent object while it is borrowed.
+        }
     }
 
     public static class ExitProof {
