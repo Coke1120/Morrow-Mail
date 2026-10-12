@@ -1,5 +1,34 @@
 # Verification — 12 October 2026
 
+## v0.7.5 failed candidate and early observer pins
+
+The immutable v0.7.5 tag points to `966823b948e923df1b7a587c0d08876dee8e9773`
+with annotated tag object `37f49dd518db64457c5539f7e861187c98034e75`.
+[Tagged run 38287540112](https://github.com/Coke1120/Morrow-Mail/actions/runs/38287540112)
+failed strict Windows observation in attempts 1 and 2. The former failed owned
+case 2/sample 12 (PID 2400 / parent 6200); the latter failed restart case 3/sample
+5 (PID 1544 / parent 1244). Both were first nativeAcquire error 87 with unknown
+exit. All three UI cases passed each time, but resource observation did not.
+Both macOS attempts passed. The publisher was skipped and no draft/public
+v0.7.5 release existed when the cloud continuation inspected the repository.
+Failed-attempt Windows artifacts do not establish release eligibility.
+
+The focused [early-pin correction](docs/WINDOWS_EARLY_ADMISSION_PINS.md) removes
+earlier siblings' managed admission from the later child's first-open window.
+The first failed open, identity/parent/counter failures, nonzero/unknown exits
+and existing deadlines remain strict failures. The native batch only pins
+current children of already-verified live parents and grants no admission or
+descendant authority itself. Added sibling and native batch controls exercise
+original-handle retention, exact zero/nonzero evidence and changed identities.
+
+Cloud Linux PowerShell 7.6.6 compiled the helper and passed integer/input checks,
+observation parser/bounds/64-bit counter/partial-record checks, and the existing
+9 positive/history + 52 negative pinned-exit schema controls. All changed
+PowerShell files parsed. Win32 lifecycle proofs were explicitly skipped on Linux;
+their CI and tagged release results are separate. The cloud checkout uses no real
+mail data, credentials or Thunderbird work. A new unused version must replace
+the failed candidate; the v0.7.5 tag will not be moved.
+
 ## v0.7.5 release preparation — 12 October 2026
 
 The owner requested a new public release including PR #32. Fresh remote main

@@ -55,7 +55,7 @@ Browser sign-in uses the desktop registration included in the build; custom regi
 
 Detailed behavior and limits are in [feature coverage](FEATURE_COVERAGE.md) and the [user guide](docs/USER_GUIDE.md).
 
-The [native reader and resource-observation follow-up](VERIFICATION.md#reader-timing-and-windows-observation--follow-up-in-progress) records fixture measurements and strict observation checks. Windows first-acquire native error 87 remains unresolved, and Mac mini Parallels acceptance is incomplete. Diagnostic controls do not establish production readiness; the latest tagged outcome is recorded in [verification](VERIFICATION.md).
+The [native reader and resource-observation follow-up](VERIFICATION.md#reader-timing-and-windows-observation--follow-up-in-progress) records fixture measurements and strict observation checks. The [early Windows child pins](docs/WINDOWS_EARLY_ADMISSION_PINS.md) remove serial sibling-admission delay while preserving first-acquire failure gates; error 87 before a first pin remains unresolved. Mac mini Parallels acceptance is incomplete. Diagnostic controls do not establish production readiness; the latest tagged outcome is recorded in [verification](VERIFICATION.md).
 
 ## New in 0.7.3
 
