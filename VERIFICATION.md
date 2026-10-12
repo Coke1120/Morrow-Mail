@@ -1,5 +1,63 @@
 # Verification — 12 October 2026
 
+## v0.7.4 published and public downloads verified — 12 October 2026
+
+[v0.7.4](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.7.4) published at **2026-10-12T11:05:52Z** from
+`bb72a4fa1d127e9d2d374b3d50476b97a215ed41`. Its ancestry contains PR30 head
+`0a0fa2ba808f032c8a14dcfa89d67b63c6d90a16` / merge
+`aeb66b1bf8108f4c28dc6564da9083a14304d997` and PR31 head
+`77e85046470c44cdef8ab3d2565b9972a5f9f9f8` / merge
+`e2e745d5539613839b051431f27774958ee4b2d9`. Normal pushes preserved both
+code trees; release author, committer and tagger email is
+`howailok1120@hotmail.com`. No protection, admin bypass or force push was used.
+
+[Tagged CI 38236883045](https://github.com/Coke1120/Morrow-Mail/actions/runs/38236883045),
+**attempt 1**, passed all required steps and all three jobs without rerun or
+waiver. macOS job **114769625036** passed Node-free formatting/strict Clippy,
+315 Rust tests, SwiftUI packaging, native search/read/reply and full acceptance,
+wrap/visibility diagnostics and **40/40 complete network-zero reader samples**.
+Windows job **114769624670** passed 311 Rust tests, WinUI packaging, all
+fresh/owned/restart UI and persistence checks, strict observation (4/43/34
+complete samples), relocated PowerShell 5.1 acceptance and the 1k/10k/50k
+fictional-mail benchmark. Three explicit provider benchmark cases are ignored
+in ordinary cargo tests and were separately executed locally; complete numeric
+results remain in [the report](docs/SYNC_PERFORMANCE.md). Publisher job
+**114780209036** verified actual same-run/same-attempt platform identities and
+artifact provenance before publishing paired archives and the signed manifest.
+
+Unauthenticated HTTPS returned release-page **HTTP200** and all **six assets**.
+Both downloaded ZIPs passed CRC/path checks, all bundled metadata/plist versions
+report 0.7.4, executable architectures match, and exact SHA-256 files match the
+bytes and signed manifest sizes/hashes. **Ed25519 verified with the unchanged
+`rust/resources/update-public-key.pem`**. The downloaded Mac app passed
+deep/strict code-signature verification and plist lint; it remains ad-hoc signed,
+without notarization. Windows remains unsigned. Original tagged notes matched
+exactly before this verified result and the final candidate failure were appended.
+Existing tags and published binaries were not replaced.
+
+| Platform | ZIP bytes | SHA-256 |
+| --- | ---: | --- |
+| macos-arm64 | 14,909,630 | `7f9eaa09e6be9fe69ad83e3bf73824822127ac1b7d351d62aabdd4b09d998689` |
+| windows-x64 | 39,450,242 | `51fe29f89fb178905a74655beed23e7b651d54be10911c1888a686529635acc0` |
+
+Final PR31 [run 38235241039](https://github.com/Coke1120/Morrow-Mail/actions/runs/38235241039),
+head `77e8504`, attempt 1, completed **failure**: Mac passed all 315 tests and 40/40
+reader samples; Windows failed strict restart case 3/sample 4 with PID 7360 /
+parent 7708, first nativeAcquire/error 87 and unknown exit. All three UI and
+persistence cases, Rust/build and benchmark passed; relocation was skipped.
+The always-run benchmark success does not replace failed strict observation. Corrected functional
+head `34a9545` separately passed both complete platform jobs in run 38233076840,
+attempt 1 (315/311 Rust tests and 40/40 Mac reader samples). Neither its pass nor
+this tagged pass erases the retained PR30 or final-PR31 failures, or establishes
+a repair of intermittent observer/reader problems.
+
+PR30's separate layout candidate passed direct Parallels fresh/owned/restart
+fixtures. Those are not strict collector, final combined package, clean-machine
+or full manual accessibility/live-account acceptance. This task used synthetic
+stores, mock providers and public artifacts; it never opened real mail/account
+workspaces, launched the downloaded app against user data or changed Parallels
+configuration. Later source-stage entries retain their historical status.
+
 ## 0.7.4 combined merge and release preparation — 12 October 2026
 
 The owner explicitly instructed merging both PR30/31 now and publishing the next
@@ -16,7 +74,7 @@ retain both source-stage records below. Merge author/committer emails are
 
 PR30's [38231339110](https://github.com/Coke1120/Morrow-Mail/actions/runs/38231339110),
 attempt 1, remains Windows failure despite all UI/persistence cases passing.
-Owned case 2/sample index 12 records PID4616/parent7140, `nativeAcquire` error87
+Owned case 2/sample index 12 records PID4616/parent7140, `nativeAcquire` error 87
 and unknown exit, after 12,929.1355 ms with a 54.489 ms sample query. Cases1/3
 were complete; relocation was skipped. Its other worker separately completed
 fresh/owned/restart Parallels UI/resize/persistence checks, without claiming the
@@ -24,7 +82,7 @@ strict collector passed or modifying VM policy. No failed run was retried.
 
 PR31 corrected functional source `34a9545` passed both Rust suites and the complete
 Windows native job in [38233076840](https://github.com/Coke1120/Morrow-Mail/actions/runs/38233076840),
-attempt1; its macOS adversarial batch and final documentation-head
+attempt 1; its macOS adversarial batch and final documentation-head
 [38235241039](https://github.com/Coke1120/Morrow-Mail/actions/runs/38235241039)
 remain pending at preparation. Candidate passes do not erase the first CLI
 stack-overflow failure or historical observer/reader failures.
@@ -114,7 +172,7 @@ The development entries below retain their recorded branch-stage evidence. This 
 
 Branch `codex/priority-mail-sync-20261011` starts from merged PR27 main `982384388097aabb710ca5f146d7ed07290bb597`. The [bounded synchronization change](docs/SYNC_PRIORITY_AND_INCREMENTAL.md) adds expiring owner/connection-bound current-page hints, retains background quotas/checkpoints, and conservatively reuses immutable IMAP/Graph bodies. Linux Cloud Rust 1.98.0 locked verification passed formatting, strict all-target Clippy and all 304 tests across 38 test targets, including synthetic request-count, 51-row/second-batch failure, complete-header, draft-to-Sent, downloaded-attachment/send-replay, identity, quota, cancellation and reconnect cases. Independent exact-head review accepted `43d443fc25f74ceae099156e20f64908f0706f84`. Final [focused run 38121254196](https://github.com/Coke1120/Morrow-Mail/actions/runs/38121254196) and [full paired run 38121493085](https://github.com/Coke1120/Morrow-Mail/actions/runs/38121493085), both attempt 1, passed that source tree on both platforms. The full Mac run passed the original reader in 23.044 seconds and 40/40 complete network-zero samples. Windows passed all three UI cases, 26 lifecycle controls, strict observation, relocation and benchmark. The CI merge tree `2d4d8b1b71f274e174b0c4ff0838ee5226cd93d7` equals the reviewed head tree. The owner explicitly authorized merging PR29 first when ready; [PR29](https://github.com/Coke1120/Morrow-Mail/pull/29) merged at `b833ba0b9d2c958552dd272404708654a612ea55`. [Main postmerge run 38128187209](https://github.com/Coke1120/Morrow-Mail/actions/runs/38128187209), attempt 1, completed failure without retry. Mac job 114436822466 passed: original reader 24.952 seconds, 40/40 complete untruncated network-zero samples (20 cold/20 warm), native exit zero, parent elapsed 16.369–20.887 seconds. Windows job 114436822291 passed Rust/build, all three UI operations, 26 lifecycle controls and benchmark; strict observation failed one case-3 sample-4 record, PID 1644/parent 3148, nativeWait/no error code/unknown exit. Observation counts were 4/44/33; all collectors reaped without force with exit zero. Relocation and release job 114442679674 were skipped. The unknown remains unknown; this does not prove a synchronization regression, a normal exit, or a fixed first-acquire gap. Individual checks do not replace final combined PR28/observer-source acceptance.
 
-The baseline [postmerge main run 38114776594](https://github.com/Coke1120/Morrow-Mail/actions/runs/38114776594) completed failure without retry: Mac passed (21.644-second original reader; 40/40 complete network-zero samples), and Windows build/UI/26 lifecycle controls/benchmark passed. Windows strict observation case 2 had two nativeAcquire/error87/unknown-exit records and a separate nativeWait/no-error-code/unknown-exit record. Relocation/release were skipped. This is a pre-existing baseline for this branch, not evidence that the new synchronization caused it or that the observation issue is solved.
+The baseline [postmerge main run 38114776594](https://github.com/Coke1120/Morrow-Mail/actions/runs/38114776594) completed failure without retry: Mac passed (21.644-second original reader; 40/40 complete network-zero samples), and Windows build/UI/26 lifecycle controls/benchmark passed. Windows strict observation case 2 had two nativeAcquire/error 87/unknown-exit records and a separate nativeWait/no-error-code/unknown-exit record. Relocation/release were skipped. This is a pre-existing baseline for this branch, not evidence that the new synchronization caused it or that the observation issue is solved.
 
 PR27's [postmerge sidebar review](https://github.com/Coke1120/Morrow-Mail/pull/27#discussion_r4240386164) concerns the real NavigationView invocation route. The separate sidebar branch reproduced pinned main and passed candidate restoration in [focused run 38119005419](https://github.com/Coke1120/Morrow-Mail/actions/runs/38119005419) at `d81d7861f4f85293ffc1f2518682b1568ca7e89e`. The merged PR29 source does not include that sidebar fix or resolve/close that discussion. Physical screen readers, real accounts, clean-machine interaction and extreme-reader timeout/lifecycle profiling remain unverified or unresolved as previously recorded.
 
@@ -122,7 +180,7 @@ PR27's [postmerge sidebar review](https://github.com/Coke1120/Morrow-Mail/pull/2
 
 Branch `codex/sidebar-selection-20261011` starts from merged PR27 main `982384388097aabb710ca5f146d7ed07290bb597`. The [postmerge review](https://github.com/Coke1120/Morrow-Mail/pull/27#discussion_r4240386164) identified a route absent from the original direct-navigation fixture: WinUI can change its selected item before the attachment guard rejects navigation. The follow-up restores the canonical selection after the real invocation completes, without changing the retained mailbox/page/draft or captured attachment owner. It also assigns `NavigationView.SelectedItem` after child items are inserted; their pre-insertion `IsSelected` flags do not reliably restore the native selection model.
 
-[Focused native run 38119005419](https://github.com/Coke1120/Morrow-Mail/actions/runs/38119005419), attempt 1, passed both the pinned-main negative control and candidate checks at source `d81d7861f4f85293ffc1f2518682b1568ca7e89e`. The mounted, loaded NavigationView receives the native selection automation action; an independent event counter requires actual `ItemInvoked` before assertions. Main reproduces the sidebar/account mismatch, and the candidate restores account/folder selection and a footer invocation while retaining owner/page/cursors/selection/generation. The private fixture uses fictional accounts, scripted accepted file selection and an in-memory attachment transport. Earlier focused attempts failed fixture setup/history availability or asynchronous event assumptions and are not product reproductions; the [attachment review](docs/ATTACHMENT_FLOW_REVIEW.md#real-sidebar-invocation-after-pr27) retains their exact runs. Final reviewed sidebar head `ddac0031776281e46f7b5631b7c5c40b457a3735` had the same production/fixture source. Its full [run 38119590098](https://github.com/Coke1120/Morrow-Mail/actions/runs/38119590098), attempt 1, passed Mac (19.209-second original reader; 40/40 complete network-zero samples) and Windows build/three UI operations/26 controls/benchmark, but failed strict observation at case 2 sample 11, PID 6444/parent 1668, nativeAcquire/error87/unknown exit. Relocation/release were skipped without retry. That result does not validate this newly combined source tree.
+[Focused native run 38119005419](https://github.com/Coke1120/Morrow-Mail/actions/runs/38119005419), attempt 1, passed both the pinned-main negative control and candidate checks at source `d81d7861f4f85293ffc1f2518682b1568ca7e89e`. The mounted, loaded NavigationView receives the native selection automation action; an independent event counter requires actual `ItemInvoked` before assertions. Main reproduces the sidebar/account mismatch, and the candidate restores account/folder selection and a footer invocation while retaining owner/page/cursors/selection/generation. The private fixture uses fictional accounts, scripted accepted file selection and an in-memory attachment transport. Earlier focused attempts failed fixture setup/history availability or asynchronous event assumptions and are not product reproductions; the [attachment review](docs/ATTACHMENT_FLOW_REVIEW.md#real-sidebar-invocation-after-pr27) retains their exact runs. Final reviewed sidebar head `ddac0031776281e46f7b5631b7c5c40b457a3735` had the same production/fixture source. Its full [run 38119590098](https://github.com/Coke1120/Morrow-Mail/actions/runs/38119590098), attempt 1, passed Mac (19.209-second original reader; 40/40 complete network-zero samples) and Windows build/three UI operations/26 controls/benchmark, but failed strict observation at case 2 sample 11, PID 6444/parent 1668, nativeAcquire/error 87/unknown exit. Relocation/release were skipped without retry. That result does not validate this newly combined source tree.
 
 The unchanged baseline [main CI 38114776594](https://github.com/Coke1120/Morrow-Mail/actions/runs/38114776594) failed its Windows strict observation gate: two `nativeAcquire`/error 87/unknown-exit samples and one separate `nativeWait`/no-error-code/unknown-exit sample in case 2. Mac, Windows build/UI/lifecycle controls and benchmark passed; relocation/release were skipped. This sidebar correction does not fix that observer evidence gap. Release remains gated on fresh paired native acceptance and the existing signed publisher; no tag or release is created by this draft branch. Physical keyboard/VoiceOver/Narrator, interactive picker cancellation, manual cross-platform UX and real accounts remain unverified. Original extreme HTML timing, HTML semantics, network isolation/cancellation/Back and the 30-second gate remain unchanged.
 
@@ -170,7 +228,7 @@ The first short Windows proof [38064564565](https://github.com/Coke1120/Morrow-M
 
 The collector now acquires one limited native handle for each new current-CIM candidate before managed lookup, validates its PID and integer creation identity, and retains that same handle through managed admission or exit proof. The same admitted parent must match current CIM identity and exact creation time and remain live around the child proof. Only managed lookup ArgumentException can enter the zero-exit fallback, which reads the retained handle without reopening it. A proven child records only a `nativeLookupFallback` event; it gets no counters, live cache entry or descendant admission authority. The temporary handle is disposed on every path. First acquisition errors, denied reads, nonzero exits, mismatched identities, changed/exited parents and later handle/counter failures remain gaps. Normal managed admission also requires its exact creation time to equal the pinned identity. Report validation still requires measured UI data and reads earlier nativeOpen failures as well as the new nativeAcquire stage. The original 64-identity, 180-sample, approximately 1 Hz limits and collector deadlines remain unchanged.
 
-The fixed head `901424d5265c471224230df9aabd9157bfbec40f` passed [paired run 38065690692](https://github.com/Coke1120/Morrow-Mail/actions/runs/38065690692), but [the second fixed-source run 38065862519](https://github.com/Coke1120/Morrow-Mail/actions/runs/38065862519) failed strict owned observation after every UI case and all 22 lifecycle controls passed. Owned sample12 could not open PID3704 / parent8012 (nativeOpen error87, exit code unknown); it remains incomplete. All six actual short/paired checkout logs report c04ce3dff144bc53bcf4c90696bceb14b79ba610 with the same base/head/tree. Both Mac full gates and original40 batches passed, which does not repair the historical Mac timeout. This source did not meet the two-run acceptance goal.
+The fixed head `901424d5265c471224230df9aabd9157bfbec40f` passed [paired run 38065690692](https://github.com/Coke1120/Morrow-Mail/actions/runs/38065690692), but [the second fixed-source run 38065862519](https://github.com/Coke1120/Morrow-Mail/actions/runs/38065862519) failed strict owned observation after every UI case and all 22 lifecycle controls passed. Owned sample12 could not open PID3704 / parent8012 (nativeOpen error 87, exit code unknown); it remains incomplete. All six actual short/paired checkout logs report c04ce3dff144bc53bcf4c90696bceb14b79ba610 with the same base/head/tree. Both Mac full gates and original40 batches passed, which does not repair the historical Mac timeout. This source did not meet the two-run acceptance goal.
 
 The current native-first retention removes an avoidable acquire/dispose/reopen window: the [.NET release source](https://github.com/dotnet/runtime/blob/60629d14374c56f1cb51819049ad1fa529307f8d/src/libraries/System.Diagnostics.Process/src/System/Diagnostics/ProcessManager.Windows.cs#L29-L56) uses a temporary limited handle when checking whether a process is running, then disposes it before GetProcessById returns or throws. That source inspection is not a fingerprint of the runner assembly and does not establish why PID3704 became unavailable. Two new real-owned barriers obtain the collector pin, exit the child with zero/nonzero status, close the creator handles, and require proof through the same pin after managed lookup rejection. Two explicitly projected first-acquisition errors (87/5) verify no lookup, proof, counter or cache admission follows the failure; they do not claim actual OS missing-PID or ACL-denial reproduction. Every observed temporary pin must be closed. A process already unavailable at the first native acquisition still cannot be recovered; no retry, faster polling or relaxed completeness definition is used. Native verification of this narrow follow-up is pending.
 
