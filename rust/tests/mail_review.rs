@@ -26,6 +26,52 @@ fn mail(db: &Store, owner: &str, id: &str, thread: &str, body: &str, date: &str)
     db.upsert(owner,&json!({"id":id,"threadId":thread,"subject":"Same subject","body":body,"date":date,"fromEmail":"sender@review.invalid","folder":"inbox","read":true})).unwrap();
 }
 #[test]
+fn empty_review_state_does_not_require_conversation_index_metadata() {
+    let fixture = Fixture::new();
+    let db = Store::open(&fixture.0).unwrap();
+    setup(&db);
+    mail(
+        &db,
+        A,
+        "cached",
+        "thread-a",
+        "Please review.",
+        "2026-10-12T08:00:00Z",
+    );
+    // Isolated fixture trap: normal messages/settings stay available, while an
+    // attempted conversation index read fails. No second writer or user store.
+    db.conn
+        .execute_batch("DROP TABLE mail_review_deleted")
+        .unwrap();
+    assert!(morrow_search::mail_threads::Index::load(&db, A).is_err());
+    for reports in [
+        json!([]),
+        Value::Null,
+        json!([{"items":[]}]),
+        json!([{"items":[{"messageId":"no-longer-cached"}]}]),
+    ] {
+        assert!(mail_review::events(&db, A, &reports).unwrap().is_empty());
+    }
+    let state = morrow_search::service::state(&db, A, false, &[0; 32]).unwrap();
+    assert!(state["today"]["events"].as_array().unwrap().is_empty());
+    assert!(
+        state["today"]["replySuggestions"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        db.get(A, "cached").unwrap().unwrap()["body"],
+        "Please review."
+    );
+    // A real saved projection must still require the index and its coverage.
+    let reports = json!([report(
+        vec![decision("cached", "Please review.", "waiting_on_user")],
+        "2026-10-12T09:00:00Z"
+    )]);
+    assert!(mail_review::events(&db, A, &reports).is_err());
+}
+#[test]
 fn latest_thread_evidence_wins_and_older_analysis_cannot_reopen_closure() {
     let fixture = Fixture::new();
     let db = Store::open(&fixture.0).unwrap();

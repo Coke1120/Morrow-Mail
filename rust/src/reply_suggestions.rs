@@ -403,6 +403,9 @@ pub(crate) fn reviewed(db: &Store, owner: &str) -> Result<(Vec<Value>, Vec<Value
     let settings = db.settings()?;
     connected(&settings, owner)?;
     let current = read(&settings, owner);
+    if current["proposals"].as_array().is_none_or(Vec::is_empty) {
+        return Ok((Vec::new(), Vec::new()));
+    }
     let p = policy::resolve(&settings["policy"]);
     let mut proposals = Vec::new();
     let mut assessments = Vec::new();

@@ -1,5 +1,33 @@
 # Verification — 12 October 2026
 
+## Delayed PR32 workspace lifecycle findings
+
+The owner added review comments4250639082,4250639092 and4250639096 to the release
+completion scope. Full comment bodies and current Rust/Swift/C++ handlers were
+read. [Focused scope and controls](docs/REVIEW_STATE_LIFECYCLE.md) distinguish the
+review defects from the Windows observer and Thunderbird work.
+
+The isolated Rust index-read trap failed on immutable v0.7.6 source during an
+empty projection. After moving Today index loading below nonempty cached saved
+items and short-circuiting empty reviewed proposals, the same test passed,
+including the real service `/state` path and nonempty-index negative control.
+Locked/offline all-target Clippy passed. Native baseline/candidate controls are
+required to verify full Mac Skip and retarget/save behavior and Windows workspace
+movement; Linux does not predeclare these platform results.
+
+v0.7.6 remains unpublished and its annotated tag is preserved. Tagged
+[run38301621120](https://github.com/Coke1120/Morrow-Mail/actions/runs/38301621120),
+attempt1, passed Mac but failed Windows strict observation: owned case2/sample13,
+PID1464 / parent900, first nativeAcquire87 and unknown exit. All three UI cases
+passed; resource observation did not. Publisher was skipped.
+Merged-main [run38301357952](https://github.com/Coke1120/Morrow-Mail/actions/runs/38301357952)
+also passed Mac but failed owned case2/sample14 (PID3172 / parent3568) and restart
+case3/sample4 (PID4788 / parent8152), likewise first nativeAcquire87 / unknown
+exit. No rerun or tag replacement occurred. These failures show that sibling
+early pins did not remove the inventory-to-first-pin gap. Their actual failure
+records remain failures; further observer work and a new unused version are
+required before publication.
+
 ## v0.7.6 release preparation — Codex Cloud, 12 October 2026
 
 The authorized cloud continuation preserved v0.7.5 and investigated the actual

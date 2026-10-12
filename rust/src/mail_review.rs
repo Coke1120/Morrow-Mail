@@ -208,8 +208,6 @@ fn recipients(message: &Value, owner: &str) -> Vec<String> {
 /// Reconcile saved evidence against ALL indexed later arrivals/departures in its account.
 /// This is a read projection; it never generates mail, calls a model or marks a draft complete.
 pub fn events(db: &Store, owner: &str, reports: &Value) -> Result<Vec<Value>> {
-    let saved_policy = policy::resolve(&db.settings()?["policy"]);
-    let index = crate::mail_threads::Index::load(db, owner)?;
     let mut saved = BTreeMap::<String, (String, Value)>::new();
     let mut groups = BTreeMap::<String, Vec<String>>::new();
     for report in reports.as_array().into_iter().flatten() {
@@ -233,6 +231,11 @@ pub fn events(db: &Store, owner: &str, reports: &Value) -> Result<Vec<Value>> {
             }
         }
     }
+    if saved.is_empty() {
+        return Ok(Vec::new());
+    }
+    let saved_policy = policy::resolve(&db.settings()?["policy"]);
+    let index = crate::mail_threads::Index::load(db, owner)?;
     for id in saved.keys() {
         let key = index
             .thread(id)
