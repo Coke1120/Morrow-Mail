@@ -485,7 +485,10 @@ struct NativeRustChecks {
             let office = try await model.request("/out-of-office", mailbox: owner)
             try check(office["accountId"].string == owner && office["supported"].bool && office["requiresReconnect"].bool && !office["canRead"].bool && !office["canWrite"].bool && office["settings"].isNull, "Out of Office tab bypassed explicit permission or lost its owner")
         }
-        for route in ["/scheduled", "/reply-suggestions", "/out-of-office"] { try await expectFailure(model, path: route, method: "GET", owner: "all") }
+        for route in ["/scheduled", "/out-of-office"] { try await expectFailure(model, path: route, method: "GET", owner: "all") }
+        let combinedReplies=try await model.request("/reply-suggestions",mailbox:"all")
+        try check(combinedReplies["owner"].string=="all" && combinedReplies["proposals"].array.allSatisfy { !["all","demo",""].contains($0["accountId"].string) && $0["message"]["accountId"]==$0["accountId"] },"Combined replies lost individual ownership")
+        try await expectFailure(model,path:"/reply-suggestions/preview",method:"POST",owner:"all")
         try await model.selectAccount(second, folder: "inbox")
         try check(!model.policy["enabled"].bool && model.preferences["syncInterval"].number == 0, "New tabs enabled background provider or AI work")
         print("Native Rust: new workspace tab contracts and permission gates passed without AI/provider calls.")
