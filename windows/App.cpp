@@ -360,7 +360,12 @@ IAsyncAction Shell::start() {
         }
     });
     root.Children().Append(sidebarResize);
-    auto updateSidebar = [weak = weak_from_this()](auto const&, auto const&) { if (auto self = weak.lock()) self->resizeSidebar(self->navigation.OpenPaneLength(), false); };
+    auto updateSidebar = [weak = weak_from_this()](auto const&, auto const&) {
+        if (auto self = weak.lock()) {
+            self->resizeSidebar(self->navigation.OpenPaneLength(), false);
+            if (self->mailBody && self->mailBody.IsLoaded()) self->applyMailLayout();
+        }
+    };
     root.SizeChanged(updateSidebar); navigation.PaneOpened(updateSidebar); navigation.PaneClosed(updateSidebar); navigation.DisplayModeChanged(updateSidebar);
     resizeSidebar(230, false);
     status = label(L"Opening your private workspace…"); status.Margin(ThicknessHelper::FromLengths(16, 6, 16, 8));
@@ -804,6 +809,10 @@ void Shell::mailPage() {
     readerNotice.Visibility(Visibility::Collapsed);
     readerPane.Children().Append(reader); readerPane.Children().Append(readerNotice);
     Grid::SetColumn(readerPane, 2); body.Children().Append(readerPane);
+    body.SizeChanged([weak](auto const& sender, auto const& args) {
+        if (auto self = weak.lock(); self && self->mailBody == sender && self->mailBody.IsLoaded()
+            && args.NewSize().Width != args.PreviousSize().Width) self->applyMailLayout();
+    });
     applyMailLayout(); Grid::SetRow(body, 1); layout.Children().Append(body); show(layout);
 }
 void Shell::applyMailLayout() {
@@ -825,7 +834,13 @@ void Shell::applyMailLayout() {
         mailBody.RowDefinitions().Append(list); mailBody.RowDefinitions().Append(divider); mailBody.RowDefinitions().Append(detail);
         Grid::SetRow(mailDivider, 1); Grid::SetRow(readerPane, 2);
     } else {
-        ColumnDefinition list; list.Width(GridLengthHelper::FromPixels(listWidth)); list.MinWidth(260);
+        auto available = mailBody.ActualWidth();
+        if (mailBody.IsLoaded()) {
+            auto rightMargin = mailBody.Parent().as<FrameworkElement>().Margin().Right;
+            available = std::min(available, root.ActualWidth() - mailBody.TransformToVisual(root).TransformPoint(Point{}).X - rightMargin);
+        }
+        auto width = available > 0 ? std::clamp(listWidth, 260.0, std::max(260.0, available - 328.0)) : listWidth;
+        ColumnDefinition list; list.Width(GridLengthHelper::FromPixels(width)); list.MinWidth(260);
         ColumnDefinition divider; divider.Width(GridLengthHelper::FromPixels(8));
         ColumnDefinition detail; detail.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); detail.MinWidth(320);
         mailBody.ColumnDefinitions().Append(list); mailBody.ColumnDefinitions().Append(divider); mailBody.ColumnDefinitions().Append(detail);
@@ -1344,10 +1359,14 @@ void Shell::resizeSidebar(double width, bool save) {
     if (!navigation || !std::isfinite(width)) return;
     auto maximum = root && root.ActualWidth() > 0 ? std::clamp(root.ActualWidth() - 640.0, 180.0, 600.0) : 600.0;
     width = std::clamp(width, 180.0, maximum);
+    auto previous = navigation.OpenPaneLength();
     navigation.OpenPaneLength(width);
     if (sidebarDivider) {
         sidebarDivider.Margin(ThicknessHelper::FromLengths(width - 3, 0, 0, 0));
         sidebarDivider.Visibility(navigation.IsPaneOpen() && navigation.DisplayMode() == NavigationViewDisplayMode::Expanded ? Visibility::Visible : Visibility::Collapsed);
+    }
+    if (width != previous && mailBody && mailBody.IsLoaded()) {
+        root.UpdateLayout(); applyMailLayout();
     }
     if (save && service && !closing) try { service->saveClientState(L"morrow.sidebar.width", to_hstring(width)); } catch (...) { error(errorText()); }
 }

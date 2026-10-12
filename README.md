@@ -14,6 +14,8 @@ Morrow is a local, single-user app: **SwiftUI on macOS**, **WinUI 3 on Windows**
 
 Version 0.7.3 includes search-page retention across reading/reply saves and clearer attachment removal names, covered in the [mail flow review](docs/MAIL_FLOW_REVIEW.md). Native CI does not complete manual accessibility/live-account acceptance; the extreme Mac HTML timeout and Windows first-acquire observation gap remain open.
 
+The unreleased Windows layout candidate keeps the side-by-side reading pane inside the mail view when the window or sidebar changes width, restoring the requested list width when space returns. The Mac mini Parallels checks and candidate status are recorded in [verification](VERIFICATION.md#windows-reading-pane-fit--mac-mini-parallels-12-october-2026).
+
 The [attachment follow-up](docs/ATTACHMENT_FLOW_REVIEW.md) keeps Windows on the current account/page during an attachment save. The subsequent sidebar correction restores WinUI's actual selected item when a guarded invocation is rejected, so its account/folder label matches the retained mailbox. Isolated native checks cover real `ItemInvoked` events, ownership, repeated operations and saved-file security metadata; interactive picker cancellation remains unverified.
 
 [Current-page synchronization](docs/SYNC_PRIORITY_AND_INCREMENTAL.md) in the 0.7.3 source prioritizes the selected message and visible page while retaining older-cache checks. Recent IMAP/Outlook pages reuse proven immutable cached bodies; drafts and uncertain content still fetch normally. Sync preserves reviewed sent payloads and owned downloaded attachments. Incremental/notification work is a separate staged design. Publication requires fresh paired tagged checks; see the [0.7.3 release notes](docs/releases/v0.7.3.md).

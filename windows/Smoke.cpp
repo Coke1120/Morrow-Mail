@@ -869,6 +869,13 @@ IAsyncAction Shell::smoke() {
             auto originalLayout = mailLayout; auto originalWidth = listWidth; auto originalTheme = root.RequestedTheme();
             auto originalDensity = text(object(object(state, L"settings"), L"preferences"), L"density");
             mailLayout = L"right";
+            auto readerFits = [&] {
+                auto origin = readerPane.TransformToVisual(mailBody).TransformPoint(Point{});
+                auto windowOrigin = readerPane.TransformToVisual(root).TransformPoint(Point{});
+                return readerPane.ActualWidth() >= 320 && origin.X >= 0
+                    && origin.X + readerPane.ActualWidth() <= mailBody.ActualWidth() + 1
+                    && windowOrigin.X + readerPane.ActualWidth() <= root.ActualWidth() + 1;
+            };
             for (auto density : {L"compact", L"comfortable", L"spacious"}) {
                 Json preference; put(preference, L"density", density);
                 state = co_await service->request(L"/settings/preferences", L"", L"POST", preference);
@@ -879,7 +886,9 @@ IAsyncAction Shell::smoke() {
                     auto item = rows.Items().GetAt(0).as<controls::ListViewItem>(); rows.ScrollIntoView(item);
                     auto deadline = GetTickCount64() + 2000;
                     do { co_await resume_after(std::chrono::milliseconds(20)); co_await ui; root.UpdateLayout(); }
-                    while ((!item.ActualHeight() || std::abs(mailList.ActualWidth() - width) > 1) && GetTickCount64() < deadline);
+                    while ((!item.ActualHeight() || !readerFits()
+                        || (width + 328 <= mailBody.ActualWidth() && std::abs(mailList.ActualWidth() - width) > 1)) && GetTickCount64() < deadline);
+                    check(readerFits(), L"The reading pane extends beyond the mail page.");
                     auto listHeading = mailList.Children().GetAt(0).as<controls::StackPanel>();
                     auto toolbar = listHeading.Children().GetAt(listHeading.Children().Size() - 1).as<controls::StackPanel>();
                     auto deleteButton = toolbar.Children().GetAt(2).as<controls::Button>();
@@ -902,7 +911,9 @@ IAsyncAction Shell::smoke() {
                     auto account = identity.Children().GetAt(1).as<controls::TextBlock>();
                     auto date = heading.Children().GetAt(1).as<controls::TextBlock>();
                     auto origin = [&](xaml::UIElement const& element) { return element.TransformToVisual(heading).TransformPoint(Point{}); };
-                    check(std::abs(mailList.ActualWidth() - width) < 1 && sender.ActualWidth() > 20 && account.ActualWidth() > 20 && date.ActualWidth() > 20,
+                    check(mailList.ActualWidth() >= 260 && mailList.ActualWidth() <= width + 1
+                        && (width + 328 > mailBody.ActualWidth() || std::abs(mailList.ActualWidth() - width) < 1)
+                        && sender.ActualWidth() > 20 && account.ActualWidth() > 20 && date.ActualWidth() > 20,
                         L"A narrow mail header lost its sender, mailbox or date.");
                     check(origin(account).X >= origin(sender).X + sender.ActualWidth() - 1 && origin(date).X >= origin(account).X + account.ActualWidth() - 1
                         && origin(date).X + date.ActualWidth() <= heading.ActualWidth() + 1, L"Mail header fields overlap or overflow.");
@@ -912,6 +923,36 @@ IAsyncAction Shell::smoke() {
                     if (width == 320 || density == std::wstring_view(L"comfortable"))
                         co_await captureMailList(lifetime, L"mail-list-" + hstring(density) + (dark ? L"-dark-" : L"-light-") + to_hstring(static_cast<int>(width)) + L".png");
                 }
+            }
+            auto originalSize = window.AppWindow().Size();
+            auto scale = root.XamlRoot().RasterizationScale();
+            auto wideWidth = std::min(originalSize.Width + static_cast<int32_t>(std::lround(300 * scale)), GetSystemMetrics(SM_CXMAXTRACK));
+            auto narrowWidth = std::min(originalSize.Width, wideWidth - static_cast<int32_t>(std::lround(100 * scale)));
+            for (auto width : {wideWidth, narrowWidth, wideWidth, narrowWidth, originalSize.Width}) {
+                window.AppWindow().Resize({width, originalSize.Height});
+                auto deadline = GetTickCount64() + 2000;
+                do { co_await resume_after(std::chrono::milliseconds(20)); co_await ui; root.UpdateLayout(); }
+                while ((window.AppWindow().Size().Width != width || !readerFits()
+                    || (mailBody.ActualWidth() >= 828 && std::abs(mailList.ActualWidth() - 500) > 1)) && GetTickCount64() < deadline);
+                check(readerFits() && listWidth == 500
+                    && window.AppWindow().Size().Width == width
+                    && (mailBody.ActualWidth() < 828 || std::abs(mailList.ActualWidth() - 500) <= 1),
+                    (L"Window resizing clipped the reader or lost the requested list width: requested window " + to_hstring(width)
+                        + L", actual " + to_hstring(window.AppWindow().Size().Width) + L", client " + to_hstring(root.ActualWidth())
+                        + L", body " + to_hstring(mailBody.ActualWidth()) + L", list " + to_hstring(mailList.ActualWidth())
+                        + L", reader " + to_hstring(readerPane.ActualWidth()) + L".").c_str());
+            }
+            auto originalSidebar = navigation.OpenPaneLength();
+            auto originalOrigin = mailBody.TransformToVisual(root).TransformPoint(Point{}).X;
+            for (auto width : {originalSidebar + 60, originalSidebar, originalSidebar + 60, originalSidebar}) {
+                resizeSidebar(width, false);
+                auto deadline = GetTickCount64() + 2000;
+                do { co_await resume_after(std::chrono::milliseconds(20)); co_await ui; root.UpdateLayout(); }
+                while ((!readerFits() || std::abs(mailBody.TransformToVisual(root).TransformPoint(Point{}).X - originalOrigin - width + originalSidebar) > 1)
+                    && GetTickCount64() < deadline);
+                check(readerFits() && listWidth == 500 && navigation.OpenPaneLength() == width
+                    && std::abs(mailBody.TransformToVisual(root).TransformPoint(Point{}).X - originalOrigin - width + originalSidebar) <= 1,
+                    L"Sidebar resizing clipped the reader or lost the requested list width.");
             }
             Json preference; put(preference, L"density", originalDensity);
             state = co_await service->request(L"/settings/preferences", L"", L"POST", preference);
