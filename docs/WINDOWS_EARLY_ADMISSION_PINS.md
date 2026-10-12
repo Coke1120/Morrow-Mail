@@ -1,5 +1,9 @@
 # Early pins for current Windows children
 
+Subsequent main/v0.7.6 attempts still failed first nativeAcquire87 with unknown
+exit. This sibling-only correction did not remove inventory/tree latency and
+does not establish repair of those gaps. See the [row-delivery follow-up](WINDOWS_INVENTORY_PINS.md).
+
 The v0.7.5 tagged [run 38287540112](https://github.com/Coke1120/Morrow-Mail/actions/runs/38287540112)
 failed strict Windows resource observation in both attempts. Attempt 1 recorded
 first `nativeAcquire` error 87 / unknown exit in owned case 2, sample 12, PID

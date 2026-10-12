@@ -156,10 +156,11 @@ namespace MorrowObservationFixture {
             'retained-descendant-parent-nonzero', 'retained-descendant-child-nonzero', 'lookup-held-exit-nonzero',
             'native-acquire-identity-change', 'lookup-parent-exit-during-proof', 'lookup-parent-identity-during-proof', 'lookup-exited-parent-no-adoption',
             'pinned-exit-zero', 'pinned-exit-nonzero', 'projected-first-acquire-unavailable', 'projected-first-acquire-denied',
-            'sibling-pinned-exit-zero', 'sibling-pinned-exit-nonzero', 'sibling-pinned-identity-change')) {
+            'sibling-pinned-exit-zero', 'sibling-pinned-exit-nonzero', 'sibling-pinned-identity-change',
+            'inventory-pinned-exit-zero', 'inventory-pinned-exit-nonzero', 'inventory-pinned-identity-change')) {
             $facts = @{ snapshot = $false; identified = $false; released = $false; denied = $false; exitProofs = 0
                 parentReleased = $false; parentIdentityChanged = $false; acquireCalls = 0; identityProofs = 0; lookupCalls = 0
-                fixtureChildDisposed = $false; pinnedExitCode = $null }
+                fixtureChildDisposed = $false; pinnedExitCode = $null; inventoryPins = 0 }
             $graphCase = $case -like 'retained-descendant-*'
             $proofParentCase = $case -in @('lookup-parent-exit-during-proof', 'lookup-parent-identity-during-proof')
             $proofNoAdoptionCase = $case -eq 'lookup-exited-parent-no-adoption'
@@ -218,8 +219,8 @@ namespace MorrowObservationFixture {
                 } else { $rows = @(Read-LifecycleInventory $wanted) }
                 if ($rootCase) { $rows = @($rows | Where-Object { $_.ProcessId -eq $childId }) }
             }
-            $creationProjected = $case -in @('stale-identity', 'cached-identity-change', 'retained-descendant-changed-parent', 'native-acquire-identity-change', 'lookup-parent-identity-during-proof', 'sibling-pinned-identity-change')
-            if ($creationProjected -and $case -notin @('lookup-parent-identity-during-proof', 'sibling-pinned-identity-change')) {
+            $creationProjected = $case -in @('stale-identity', 'cached-identity-change', 'retained-descendant-changed-parent', 'native-acquire-identity-change', 'lookup-parent-identity-during-proof', 'sibling-pinned-identity-change', 'inventory-pinned-identity-change')
+            if ($creationProjected -and $case -notin @('lookup-parent-identity-during-proof', 'sibling-pinned-identity-change', 'inventory-pinned-identity-change')) {
                 # Deterministic stale snapshot, not a claim of actual PID reuse.
                 $staleRow = $rows | Where-Object { $_.ProcessId -eq $childId }
                 $staleRow.CreationDate = $child.StartTime.AddSeconds(1)
@@ -230,6 +231,13 @@ namespace MorrowObservationFixture {
                 $rows = @(@($rows | Where-Object { $_.ProcessId -eq $self.Id })[0],
                     @($rows | Where-Object { $_.ProcessId -eq $control.Id })[0],
                     @($rows | Where-Object { $_.ProcessId -eq $childId })[0])
+            }
+            if ($case -like 'inventory-pinned-*') {
+                # The later control row has not arrived when the child's
+                # creator is released. Full inventory/tree admission is later.
+                $rows = @(@($rows | Where-Object { $_.ProcessId -eq $self.Id })[0],
+                    @($rows | Where-Object { $_.ProcessId -eq $childId })[0],
+                    @($rows | Where-Object { $_.ProcessId -eq $control.Id })[0])
             }
             if ($case -eq 'retained-descendant-child-nonzero') {
                 $middleAt = [Diagnostics.Stopwatch]::GetTimestamp()
@@ -249,6 +257,18 @@ namespace MorrowObservationFixture {
                 if ($Phase -eq 'identified' -and $Process.Id -eq $childId) { $facts.identified = $true }
                 if ($Phase -eq 'identityProof' -and [uint32] $Process -eq $childId) { $facts.identityProofs++ }
                 if ($Phase -eq 'beforeLookup' -and [uint32] $Process -eq $childId) { $facts.lookupCalls++ }
+                if ($case -like 'inventory-pinned-*' -and $Phase -eq 'inventoryPinned' -and [uint32] $Process -eq $childId) {
+                    $facts.inventoryPins++
+                    if ($case -eq 'inventory-pinned-identity-change') {
+                        ($rows | Where-Object { $_.ProcessId -eq $childId }).CreationDate = $child.StartTime.AddSeconds(1)
+                    } else {
+                        $child.StandardInput.WriteLine($(if ($case -eq 'inventory-pinned-exit-nonzero') { 'exit7' } else { 'exit0' }))
+                        $child.StandardInput.Flush()
+                        if (-not $child.WaitForExit(5000)) { throw 'Inventory child did not exit at its barrier.' }
+                        $facts.released = $true; $facts.pinnedExitCode = $child.ExitCode
+                        $child.Dispose(); $facts.fixtureChildDisposed = $true
+                    }
+                }
                 if ($case -like 'sibling-pinned-*' -and $Phase -eq 'identified' -and $Process.Id -eq $control.Id) {
                     if ($case -eq 'sibling-pinned-identity-change') {
                         ($rows | Where-Object { $_.ProcessId -eq $childId }).CreationDate = $child.StartTime.AddSeconds(1)
@@ -370,15 +390,15 @@ namespace MorrowObservationFixture {
             foreach ($record in $report.samples) { Write-Host ('Native observation lifecycle sample: ' + ($record | ConvertTo-Json -Compress -Depth 5)) }
             if ($case -eq 'alive-control') { Check (-not $report.incomplete -and $snapshot.processes.Count -eq 3) }
             elseif ($case -in @('verified-exit-zero', 'cached-exit-zero', 'cached-root-exit-zero', 'retained-descendant-new-child',
-                'lookup-held-exit-zero', 'cached-lookup-held-exit-zero', 'pinned-exit-zero', 'sibling-pinned-exit-zero')) { Check (-not $report.incomplete -and $report.normalExitObservations -eq 1) }
+                'lookup-held-exit-zero', 'cached-lookup-held-exit-zero', 'pinned-exit-zero', 'sibling-pinned-exit-zero', 'inventory-pinned-exit-zero')) { Check (-not $report.incomplete -and $report.normalExitObservations -eq 1) }
             else { Check $report.incomplete }
             switch ($case) {
-                { $_ -in @('sibling-pinned-exit-zero', 'sibling-pinned-exit-nonzero') } {
+                { $_ -in @('sibling-pinned-exit-zero', 'sibling-pinned-exit-nonzero', 'inventory-pinned-exit-zero', 'inventory-pinned-exit-nonzero') } {
                     Check ($facts.fixtureChildDisposed -and $facts.released -and $facts.acquireCalls -eq 1 -and
                         $facts.identityProofs -eq 1 -and $facts.lookupCalls -eq 1 -and $facts.exitProofs -eq 1 -and
                         -not $facts.identified -and -not $state.handles.ContainsKey([uint32] $childId) -and
                         @($snapshot.processes | Where-Object { $_.pid -eq $childId }).Count -eq 0) 'early-pin-survives-earlier-sibling-admission'
-                    if ($case -eq 'sibling-pinned-exit-zero') {
+                    if ($case -in @('sibling-pinned-exit-zero', 'inventory-pinned-exit-zero')) {
                         Check ($facts.pinnedExitCode -eq 0 -and $snapshot.failedRecords.Count -eq 0 -and
                             $snapshot.lifecycleEvents[0].pid -eq $childId -and
                             $snapshot.lifecycleEvents[0].startUtcTicks -eq $childTicks) 'early-pin-exact-zero-proof'
@@ -388,7 +408,7 @@ namespace MorrowObservationFixture {
                             $snapshot.failedRecords[0].stage -eq 'nativeExit') 'early-pin-nonzero-stays-gap'
                     }
                 }
-                'sibling-pinned-identity-change' {
+                { $_ -in @('sibling-pinned-identity-change', 'inventory-pinned-identity-change') } {
                     Check ($facts.acquireCalls -eq 1 -and $facts.identityProofs -eq 1 -and $facts.lookupCalls -eq 0 -and
                         $report.skipReasonCounts.identityMismatch -eq 1 -and $report.normalExitObservations -eq 0 -and
                         $snapshot.failedRecords[0].stage -eq 'nativeCreation' -and -not $child.HasExited) 'early-pin-changed-identity-stays-gap'
@@ -473,6 +493,7 @@ namespace MorrowObservationFixture {
                     $report.normalExitObservations -eq 1 -and $report.skipReasonCounts.processExited -eq 1 -and
                     @($snapshot.failedRecords | Where-Object { $_.pid -eq $descendant.Id -and $_.exitCode -eq 7 }).Count -eq 1) 'retained-child-nonzero' }
             }
+            if ($case -like 'inventory-pinned-*') { Check ($facts.inventoryPins -eq 1 -and $facts.acquireCalls -eq 1) 'single-pin-before-inventory-completes' }
             if ($case -in @('retained-descendant-new-child', 'retained-descendant-parent-nonzero')) {
                 Check ($state.handles.ContainsKey([uint32] $descendant.Id) -and
                     @($snapshot.processes | Where-Object { $_.pid -eq $descendant.Id -and $_.parentPid -eq $childId }).Count -eq 1) 'retained-new-child-measured'
