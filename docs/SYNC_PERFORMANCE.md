@@ -115,7 +115,55 @@ remain required. Native and paired CI results are recorded in
 [VERIFICATION.md](../VERIFICATION.md); a fixture pass does not certify live mail
 or resolve pre-existing Windows observation/reader issues.
 
+## Final provider comparisons
+
+Measured functional head `8fce7fd3d64b912d344cc5762a119f89c06b4c2b` passed
+all 314 locked Rust tests, formatting and strict all-target Clippy. The three
+explicit benchmark cases are ignored during ordinary test runs and were run
+separately on the same Mac mini. Medians exclude the bootstrap round and retain
+all five following samples; provider-specific workloads differ and cannot be
+compared against each other.
+
+| Local TLS workload | Before median ms | After median ms | Before requests/commands | After requests/commands | Before response bytes | After response bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Gmail, 150 cached rows including 50 mutable drafts | 2,572.14 | 181.37 | 158 | 53–104 | 173,996 | 163,107–167,109 |
+| IMAP, 50 immutable cached rows plus 50-row flag reconciliation | 592.88 | 15.09 | 9 | 8 | 18,200 | 3,153 |
+| Graph, 20 rows overlapping priority/recent/delta/rolling work | 426.63 | 119.14 | 62 | 42 | 33,195 | 25,015 |
+
+Gmail still fetches all 50 mutable draft bodies on every round. Its request
+variation follows the preserved 50-row cache rotation and in-cycle reuse,
+rather than dropping background coverage. Graph still resolves every delta ID;
+the 20 saved requests are redundant rolling reads after full priority/delta
+resolution. Recent generic metadata alone is deliberately insufficient to skip
+location repair, with a regression for an owned Inbox-to-Sent move.
+
+IMAP still makes two TLS connections in this no-priority workload. The new UID
+checkpoint removes an unchanged recent-page SEARCH/metadata fetch, and the
+unchanged 50-row flag result skips writes/FTS. Its byte count is application
+protocol bytes; HTTP counts above are JSON response bodies. These localhost
+timings primarily show removed backend work, not Internet latency improvement.
+
+Raw reports retain bootstrap cost, all samples, cache/write/FTS counters and
+phase/queue timing:
+[baseline Gmail](performance/baseline-gmail-benchmark.json),
+[baseline IMAP/Graph](performance/baseline-imap-graph.json), and
+[final provider benchmarks](performance/final-provider-benchmarks.json).
+The original-main comparison contains only fixture/aggregate instrumentation,
+with its synchronization implementation unchanged. No production mailbox,
+native UI timing or live-provider acceptance is part of these measurements.
+
 Provider benchmark cases are explicit ignored tests named
 `synthetic_provider_sync_benchmark`, `synthetic_imap_sync_benchmark` and
 `synthetic_graph_sync_benchmark`. They use only their generated local TLS mocks.
-Before/after request/byte/timing reports will be retained with final validation.
+The reports above record their before/after request/byte/timing observations.
+
+### Windows poll-stack follow-up
+
+The first PR Windows check failed with a CLI main-stack overflow (0xC00000FD).
+The provider sync future is subsequently heap allocated. Construct-only probes
+shrunk the sync frame from 11,176 to 344 bytes and CLI main from 16,344 to 8,640
+bytes on the same Mac compiler; Windows-specific acceptance remains a fresh CI
+gate. `sync_future_sizes` opens only an isolated synthetic store and never polls
+a provider future. Its regression bounds the sync frame to 4 KiB. Existing
+Windows stack/timeout/exit checks are unchanged. The measurements above retain
+their original source SHA rather than being relabeled as the follow-up head.

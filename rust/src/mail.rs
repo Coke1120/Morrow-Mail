@@ -988,7 +988,7 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
         let work = async {
             let mail = current_mail(app, owner).await?;
             if mail["provider"] == "google" {
-                crate::google_sync::sync(app, &mail).await?;
+                Box::pin(crate::google_sync::sync(app, &mail)).await?;
                 return Ok(None);
             }
             if mail["provider"] == "microsoft" {
@@ -1039,7 +1039,9 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
             crate::reconcile::sync(app, &mail, &mut fetched).await?;
             Ok(warning)
         };
-        let (result, mut profile) = crate::sync_profile::capture(work).await;
+        // Keep the provider state machine off nested CLI/router poll stacks.
+        // Windows' existing main-thread stack remains unchanged.
+        let (result, mut profile) = crate::sync_profile::capture(Box::pin(work)).await;
         profile["ok"] = result.is_ok().into();
         profile["provider"] = match string(&config["mailAccounts"][owner], "provider") {
             "google" => "google",
