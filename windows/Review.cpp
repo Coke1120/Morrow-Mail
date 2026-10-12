@@ -39,10 +39,12 @@ struct Page : std::enable_shared_from_this<Page> {
     void say(hstring const& value) { if (current()) notice.Text(value); }
 };
 using P=std::shared_ptr<Page>;
+std::weak_ptr<Page> mountedReview;
 IAsyncAction refresh(P page);
 IAsyncAction selectReply(P page,Json proposal);
 IAsyncAction selectOriginal(P page,Json metadata);
 IAsyncAction replaceReply(P page);
+IAsyncAction keepEdits(P page);
 IAsyncAction saveDraft(P page);
 IAsyncAction reviewSend(P page);
 IAsyncAction saveOptions(P page,Json model);
@@ -130,6 +132,7 @@ void paintEditor(P const& p,hstring const& key) {
     evidence.Content(quotes); content.Children().Append(evidence);
     auto warning=label(entry.stale ? L"Sources changed. Your draft is retained; review a fresh suggestion before sending.":L"Edits stay with this mailbox. Sending still requires the normal recipient and delivery confirmation.",12); p->detailNotice=warning; content.Children().Append(warning);
     auto replace=button(L"Load latest suggestion…",[weak=std::weak_ptr<Page>(p)]{ if(auto page=weak.lock();page && page->current()) replaceReply(page); }); p->replace=replace; replace.Visibility(entry.stale ? xaml::Visibility::Visible:xaml::Visibility::Collapsed); content.Children().Append(replace);
+    content.Children().Append(button(L"Keep edits and refresh evidence",[weak=std::weak_ptr<Page>(p)]{if(auto page=weak.lock();page && page->current())keepEdits(page);}));
     p->detailHost.Content(rememberScroll(p,content,L"reply-detail:"+key));
     auto buttons=stack(8); p->actions=buttons; buttons.Orientation(p->compact ? Orientation::Vertical:Orientation::Horizontal); buttons.Margin(ThicknessHelper::FromUniformLength(12));
     buttons.Children().Append(button(L"Back to suggestions",[weak=std::weak_ptr<Page>(p)]{ if(auto page=weak.lock();page && page->current()){ page->shell->review->details[std::wstring(page->scope)]=false; reflow(page); page->listScroll.Focus(xaml::FocusState::Programmatic); } }));
@@ -202,9 +205,29 @@ IAsyncAction selectOriginal(P p,Json metadata) {
 }
 struct WriteGuard {
     std::shared_ptr<Shell> shell;
-    explicit WriteGuard(P const& p):shell(p->shell) { shell->review->writing=true; shell->navigation.IsEnabled(false); }
-    ~WriteGuard(){ shell->review->writing=false; if(!shell->closing) shell->navigation.IsEnabled(true); }
+    P page;
+    explicit WriteGuard(P const& p):shell(p->shell),page(p) { shell->review->writing=true; shell->navigation.IsEnabled(false);if(p->body)p->body.IsEnabled(false);if(p->facts)p->facts.IsEnabled(false);if(p->send)p->send.IsEnabled(false); }
+    ~WriteGuard(){ shell->review->writing=false; if(!shell->closing) shell->navigation.IsEnabled(true);if(page->current()){if(page->body)page->body.IsEnabled(true);auto found=shell->review->entries.find(std::wstring(page->selectedKey));if(found!=shell->review->entries.end()){auto const& entry=found->second;if(page->facts)page->facts.IsEnabled(!entry.stale);if(page->send)page->send.IsEnabled(entry.reviewed&&!entry.stale&&!needsDecision(entry.draft));}} }
 };
+IAsyncAction keepEdits(P p) {
+    if(!p->current()||p->busy||p->shell->review->writing||p->selectedKey.empty())co_return;
+    auto oldKey=p->selectedKey;auto old=p->shell->review->entries[std::wstring(oldKey)];auto owner=ownerOf(old.proposal);if(!old.draft.Size()||!p->shell->connected(owner))co_return;
+    WriteGuard guard(p);
+    try{
+        auto response=co_await p->shell->service->request(L"/reply-suggestions",owner);if(!p->current())co_return;
+        require(text(response,L"owner")==owner,L"The refreshed mailbox changed.");Json fresh;bool found=false;
+        for(auto const& value:array(response,L"proposals")){auto row=value.GetObject();if(ownerOf(row)==owner&&(text(row,L"messageId")==text(old.proposal,L"messageId")||(!text(old.proposal,L"conversationKey").empty()&&text(row,L"conversationKey")==text(old.proposal,L"conversationKey")))){fresh=copy(row);found=true;break;}}
+        require(found,L"No current reply is suggested for this conversation. Your edits can still be saved.");auto id=text(fresh,L"messageId"),key=keyOf(fresh);
+        auto original=co_await p->shell->service->request(L"/messages/"+escaped(id),owner);if(!p->current())co_return;auto message=object(original,L"message");owned(message,owner,id);
+        Json input;put(input,L"messageId",id);put(input,L"mode",L"reply");put(input,L"body",text(old.draft,L"body"));auto prepared=co_await p->shell->service->request(L"/drafts/prepare",owner,L"POST",input);if(!p->current())co_return;auto draft=object(prepared,L"draft");
+        require(text(draft,L"accountId")==owner&&text(draft,L"replyToId")==id&&text(draft,L"body")==text(old.draft,L"body")&&text(draft,L"bcc").empty(),L"The refreshed reply owner could not be verified.");
+        auto latest=co_await p->shell->service->request(L"/reply-suggestions",owner);require(p->current()&&validProposal(latest,fresh),L"The conversation changed again. Your original edits remain intact.");
+        for(auto field:{L"footer",L"attachments"})if(old.draft.HasKey(field))draft.Insert(field,old.draft.GetNamedValue(field));if(id==text(old.draft,L"replyToId")&&!text(old.draft,L"id").empty())put(draft,L"id",text(old.draft,L"id"));
+        auto& updated=p->shell->review->entries[std::wstring(key)];updated.proposal=copy(fresh);updated.message=copy(message);updated.draft=copy(draft);updated.reviewed=false;updated.stale=false;
+        if(key!=oldKey){updated.saved=copy(draft);put(updated.saved,L"body",text(fresh,L"text"));}else updated.saved=copy(old.saved);
+        p->selectedKey=key;p->shell->review->selections[std::wstring(p->scope)]=key;p->shell->review->values[std::wstring(p->scope)]=copy(latest);++p->shell->selectionGeneration;paintEditor(p,key);p->say(L"Latest evidence loaded. Your text is preserved; check the new recipient, facts and commitments again.");
+    }catch(hresult_error const& error){p->say(error.message());}
+}
 IAsyncAction saveDraft(P p) {
     if(!p->current() || p->busy || p->shell->review->writing || p->selectedKey.empty()) co_return;
     auto key=p->selectedKey; auto& entry=p->shell->review->entries[std::wstring(key)]; auto owner=text(entry.draft,L"accountId");
@@ -385,6 +408,8 @@ IAsyncAction reviewPage(std::shared_ptr<Shell> shell,hstring kind) {
     for(auto const& owner:owners) {
         controls::Primitives::ToggleButton tab; tab.Content(box_value(owner==L"all" ? hstring(L"All accounts"):owner)); tab.IsChecked(owner==p->scope); tab.IsTabStop(owner==p->scope);
         xaml::Automation::AutomationProperties::SetAutomationId(tab,L"review.scope."+owner);
+        tab.Checked([weak=std::weak_ptr<Page>(p),owner](auto const&,auto const&){if(auto page=weak.lock();page&&page->current()&&!page->shell->review->writing&&page->scope!=owner){page->shell->review->scope=owner;reviewPage(page->shell,page->kind);}});
+        tab.Unchecked([weak=std::weak_ptr<Page>(p),owner](auto const& sender,auto const&){if(auto page=weak.lock();page&&page->current()&&page->scope==owner)sender.template as<controls::Primitives::ToggleButton>().IsChecked(true);});
         tab.KeyDown([weak=std::weak_ptr<Page>(p),owners,owner](auto const&,xaml::Input::KeyRoutedEventArgs const& args){
             if(auto page=weak.lock();page && page->current() && !page->shell->review->writing) {
                 auto found=std::find(owners.begin(),owners.end(),owner); auto index=static_cast<int>(found-owners.begin());
@@ -393,7 +418,7 @@ IAsyncAction reviewPage(std::shared_ptr<Shell> shell,hstring kind) {
             }
         });
         if(owner==p->scope) tab.Loaded([weak=std::weak_ptr<Page>(p)](auto const& sender,auto const&){ if(auto page=weak.lock();page && page->current()) sender.template as<controls::Primitives::ToggleButton>().Focus(xaml::FocusState::Programmatic); });
-        xaml::Automation::AutomationProperties::SetName(tab,L"Review mailbox: "+owner); tab.Click([weak=std::weak_ptr<Page>(p),owner](auto const&,auto const&) { if(auto page=weak.lock();page && page->current() && !page->shell->review->writing){ page->shell->review->scope=owner; reviewPage(page->shell,page->kind); } }); tabs.Children().Append(tab);
+        xaml::Automation::AutomationProperties::SetName(tab,L"Review mailbox: "+owner); tabs.Children().Append(tab);
     }
     ScrollViewer tabScroll; tabScroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto); tabScroll.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled); tabScroll.Content(tabs); Grid::SetRow(tabScroll,1); root.Children().Append(tabScroll);
     auto notice=label(L"Loading saved results…",12); p->notice=notice; Grid::SetRow(notice,2); root.Children().Append(notice);
@@ -410,7 +435,7 @@ IAsyncAction reviewPage(std::shared_ptr<Shell> shell,hstring kind) {
     root.KeyDown([weak=std::weak_ptr<Page>(p)](auto const&,xaml::Input::KeyRoutedEventArgs const& args){if(auto page=weak.lock();page && page->current() && args.Key()==VirtualKey::Escape && page->compact){ page->shell->review->details[std::wstring(page->scope)]=false; reflow(page); args.Handled(true); }});
     std::weak_ptr<Page> weak=p;
     shell->refreshReview=[weak] { if(auto page=weak.lock()) return refresh(page); return completed(); };
-    shell->show(root); reflow(p);
+    mountedReview=p;shell->show(root); reflow(p);
     if(kind==L"reply-suggestions") paintQueue(p); else paintToday(p);
     co_await refresh(p); if(!p->current()) co_return;
     if(kind==L"reply-suggestions" && !p->selectedKey.empty()) {
@@ -419,5 +444,34 @@ IAsyncAction reviewPage(std::shared_ptr<Shell> shell,hstring kind) {
     } else if(kind==L"today") {
         if(auto found=shell->review->originals.find(std::wstring(p->scope));found!=shell->review->originals.end() && shell->review->details[std::wstring(p->scope)]) co_await selectOriginal(p,found->second);
     }
+}
+
+IAsyncAction reviewWorkspaceChecks(std::shared_ptr<Shell> shell) {
+    require(std::wstring_view(GetCommandLineW()).find(L"--native-smoke")!=std::wstring_view::npos,L"Review checks require the isolated native smoke fixture.");
+    auto accounts=array(shell->state,L"accounts");if(accounts.Size()<2)co_return;
+    auto owner=text(accounts.GetAt(0).GetObject(),L"id"),other=text(accounts.GetAt(1).GetObject(),L"id");
+    require(std::wstring_view(owner).ends_with(L"@fixture.invalid")&&std::wstring_view(other).ends_with(L"@fixture.invalid"),L"Review checks require owned fictional accounts.");
+    auto saved=shell->review;auto globalOwner=shell->owner;shell->review=std::make_shared<ReviewMemory>();shell->review->scope=owner;
+    struct Restore {std::shared_ptr<Shell> shell;std::shared_ptr<ReviewMemory> saved;~Restore(){shell->review=saved;}} restore{shell,saved};
+    apartment_context ui;co_await reviewPage(shell,L"reply-suggestions");co_await ui;
+    auto page=mountedReview.lock();require(page&&page->current(),L"The review page did not mount.");
+    Json proposal,message,draft;put(proposal,L"id",L"fixture-proposal");put(proposal,L"proposalId",L"fixture-proposal");put(proposal,L"accountId",owner);put(proposal,L"messageId",L"same-id");put(proposal,L"text",L"Original proposed text");
+    put(message,L"id",L"same-id");put(message,L"accountId",owner);put(message,L"subject",L"Fictional review subject");put(message,L"fromEmail",L"sender@fixture.invalid");put(message,L"body",L"Please review the fictional decision.");message.Insert(L"hasAttachments",Value::CreateBooleanValue(false));proposal.Insert(L"message",message);
+    put(draft,L"accountId",owner);put(draft,L"replyToId",L"same-id");put(draft,L"to",L"sender@fixture.invalid");put(draft,L"body",L"Original proposed text");
+    auto key=keyOf(proposal);auto memory=shell->review;memory->entries[std::wstring(key)]={copy(proposal),copy(message),copy(draft),copy(draft),true,false};
+    co_await selectReply(page,proposal);co_await ui;require(page->body&&page->facts&&page->send,L"The original/reply editor did not mount.");page->body.Text(L"User edit preserved across accounts.");
+    co_await resume_after(std::chrono::milliseconds(40));co_await ui;
+    require(text(memory->entries[std::wstring(key)].draft,L"body")==L"User edit preserved across accounts."&&!memory->entries[std::wstring(key)].reviewed&&!page->send.IsEnabled(),L"Native editing lost text or retained old approval.");
+    Json changed=copy(proposal);put(changed,L"id",L"new-fixture-proposal");put(changed,L"proposalId",L"new-fixture-proposal");put(changed,L"text",L"New proposed text");Json response;put(response,L"owner",owner);JsonArray rows;rows.Append(changed);response.Insert(L"proposals",rows);memory->values[std::wstring(owner)]=response;page->queuePaint=L"force-refresh";paintQueue(page);
+    require(memory->entries[std::wstring(key)].stale&&text(memory->entries[std::wstring(key)].draft,L"body")==L"User edit preserved across accounts."&&!page->send.IsEnabled(),L"A newer suggestion replaced an edit or retained approval.");
+    page->columns.Width(500);shell->root.UpdateLayout();reflow(page);require(page->compact&&page->detail.Visibility()==Visibility::Visible&&page->listScroll.Visibility()==Visibility::Collapsed,L"Narrow review must show one pane.");
+    memory->options[std::wstring(owner)]=Json::Parse(L"{\"dailyTokenBudget\":200000}");memory->savedOptions[std::wstring(owner)]=Json::Parse(L"{\"dailyTokenBudget\":100000}");
+    auto root=shell->page.Content().as<Grid>();auto tabs=root.Children().GetAt(1).as<ScrollViewer>().Content().as<StackPanel>();
+    for(auto const& tab:tabs.Children())if(xaml::Automation::AutomationProperties::GetAutomationId(tab)==L"review.scope."+other)tab.as<controls::Primitives::ToggleButton>().IsChecked(true);
+    co_await resume_after(std::chrono::milliseconds(100));co_await ui;require(memory->scope==other,L"Native account selection did not change the shared scope.");
+    co_await reviewPage(shell,L"today");co_await ui;require(memory->scope==other&&shell->owner==globalOwner,L"Today and Reply lost shared scope or changed the global sending mailbox.");
+    memory->scope=owner;co_await reviewPage(shell,L"reply-suggestions");co_await ui;
+    require(text(memory->entries[std::wstring(key)].draft,L"body")==L"User edit preserved across accounts."&&memory->selections[std::wstring(owner)]==key&&memory->options[std::wstring(owner)].GetNamedNumber(L"dailyTokenBudget")==200000&&memory->hasEdits(),L"A/B/A lost retained draft, selection or dirty budget.");
+    auto back=mountedReview.lock();require(back&&back->current(),L"The returned review page did not mount.");auto& entry=memory->entries[std::wstring(key)];entry.stale=false;put(entry.draft,L"body",L"[decision needed: choose an answer]");paintEditor(back,key);back->facts.IsChecked(true);require(!back->send.IsEnabled(),L"Unanswered decision entered sending review.");
 }
 }

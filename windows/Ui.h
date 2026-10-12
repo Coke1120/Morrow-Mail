@@ -148,6 +148,7 @@ winrt::Windows::Foundation::IAsyncAction scheduledPage(std::shared_ptr<Shell> sh
 winrt::Windows::Foundation::IAsyncAction settingsPage(std::shared_ptr<Shell> shell, winrt::hstring tab = L"mail");
 winrt::Windows::Foundation::IAsyncAction workspacePage(std::shared_ptr<Shell> shell, winrt::hstring kind);
 winrt::Windows::Foundation::IAsyncAction reviewPage(std::shared_ptr<Shell> shell, winrt::hstring kind);
+winrt::Windows::Foundation::IAsyncAction reviewWorkspaceChecks(std::shared_ptr<Shell> shell);
 winrt::Windows::Foundation::IAsyncAction summarizeNow(std::shared_ptr<Shell> shell, winrt::hstring mailbox);
 winrt::Windows::Foundation::IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, winrt::hstring kind);
 winrt::Windows::Foundation::IAsyncAction outOfOfficePage(std::shared_ptr<Shell> shell);

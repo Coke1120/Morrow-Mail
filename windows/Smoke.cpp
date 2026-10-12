@@ -981,6 +981,7 @@ IAsyncAction Shell::smoke() {
                 co_await navigate(target);
                 check(page.Content() && page.Content() != previousPage, L"A native workspace page failed to open.");
                 check(dirty.empty(), L"Opening a saved page incorrectly created unsaved edits.");
+                if(std::wstring_view(target)==L"reply-suggestions"){enter("review-workspace-ownership-and-retention");co_await reviewWorkspaceChecks(lifetime);}
                 if (std::wstring_view(target) == L"today") {
                     auto today = page.Content().as<controls::Grid>();
                     check(today.RowDefinitions().Size()==4,L"Today must keep account tabs and status outside the scrolling content.");

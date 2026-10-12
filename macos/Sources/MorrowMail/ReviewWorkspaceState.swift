@@ -123,6 +123,25 @@ import AppKit
             } catch { self.errors[key] = error.localizedDescription }
         }
     }
+    func refreshKeepingEdits(_ previous: JSON, fresh: JSON, model: AppModel) async {
+        let oldKey=key(previous), newKey=key(fresh), owner=owner(previous), id=fresh["messageId"].string
+        guard let old=drafts[oldKey], owner==self.owner(fresh), !writing, !preparing.contains(newKey), model.accounts.contains(where:{$0.id==owner}) else{return}
+        preparing.insert(newKey);defer{preparing.remove(newKey)}
+        do{
+            let original=try await model.request("/messages/"+encodedPath(id),mailbox:owner)
+            guard original["message"]["accountId"].string==owner,original["message"].id==id else{throw APIError("The latest original message owner changed.")}
+            let response=try await model.request("/drafts/prepare",method:"POST",body:.object(["messageId":.string(id),"mode":.string("reply"),"body":.string(old.body)]),mailbox:owner)
+            var updated=try Draft(prepared:response["draft"])
+            guard updated.accountID==owner,updated.replyToID==id,updated.body==old.body,updated.bcc.isEmpty else{throw APIError("The refreshed reply owner changed.")}
+            let latest=try await model.request("/reply-suggestions",mailbox:owner)
+            guard !Task.isCancelled,latest["owner"].string==owner,latest["proposals"].array.contains(where:{proposalID($0)==proposalID(fresh)&&$0["messageId"].string==id&&$0["text"]==fresh["text"]&&self.owner($0)==owner}) else{throw APIError("The latest conversation changed again. Your edits are retained.")}
+            updated.footer=old.footer;updated.attachments=old.attachments
+            if old.replyToID==id{updated.savedID=old.savedID}
+            drafts[newKey]=updated;messages[newKey]=original["message"];proposals[newKey]=fresh
+            if newKey != oldKey{var baseline=updated;baseline.body=fresh["text"].string;savedPayloads[newKey]=baseline.payload}
+            reviewedFacts.remove(newKey);stale.remove(newKey);errors[newKey]=nil;selection[scope]=newKey;detailVisible[scope]=true
+        }catch{errors[oldKey]=error.localizedDescription}
+    }
     func reviewSending(_ proposal: JSON, model: AppModel) async {
         let key = key(proposal), owner = owner(proposal)
         guard let draft = drafts[key], !writing, !preparing.contains(key), !stale.contains(key), reviewedFacts.contains(key), !draft.body.lowercased().contains("[decision needed"), model.accounts.contains(where: { $0.id == owner }) else { return }

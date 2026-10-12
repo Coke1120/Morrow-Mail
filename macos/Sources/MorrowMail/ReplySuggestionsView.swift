@@ -97,7 +97,8 @@ private struct ReplyReviewWorkspace: View {
                     if let error = review.errors[key] { Text(error).foregroundStyle(.red); Button("Reload original and suggestion") { Task { await review.inspect(proposal, model: model, replace: review.drafts[key] == nil) } } }
                     if review.stale.contains(key) {
                         Text("The suggestion or its evidence changed. Your draft is retained. Recheck the original before reviewing a send.").foregroundStyle(.orange)
-                        if let fresh = value["proposals"].array.first(where: { review.key($0) == key }) {
+                        if let fresh = value["proposals"].array.first(where: { review.key($0) == key || (proposal["conversationKey"].nonempty && $0["conversationKey"] == proposal["conversationKey"]) }) {
+                            Button("Keep edits and refresh evidence") { Task { await review.refreshKeepingEdits(proposal, fresh: fresh, model: model) } }
                             Button("Review updated suggestion…") {
                                 if review.savedPayloads[key] == review.drafts[key]?.payload || model.confirmDiscard("Replace this draft with the updated suggestion?") { Task { await review.inspect(fresh, model: model, replace: true) } }
                             }
