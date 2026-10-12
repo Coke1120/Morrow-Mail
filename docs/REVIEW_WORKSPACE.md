@@ -26,9 +26,17 @@ Today 先顯示決策、待檢閱回覆、已下載未讀數，再顯示最多�
 
 新摘要可包含 `title/action/state/replyNeeded/evidence/deadline/questions`。service 檢查來源 ID、允許欄位、逐字引文及長度；deadline 保留來源文字和郵件日期，不猜測時區或承諾時間。`completed` 需要正文中明確的完成／取消陳述，並拒絕被截去條件的句子、否定、疑問、未來承諾等。這是保守的格式及來源檢查，仍需本人判斷上下文。
 
-Today 用帳戶內已知 provider thread/conversation ID 或 RFC References/In-Reply-To 分組已儲存摘要，較新來源優先；同寄件人或同主旨不構成同一討論。每帳戶投影仍受最新二十個有效摘要工作限制。舊摘要沒有新結構時標為 uncertain，不補造 action、deadline 或完成狀態。
+討論索引只在同一帳戶內使用 provider thread/conversation ID、RFC References/In-Reply-To 或已核實的本地 replyToId；不按主旨或寄件人推測關聯。不同 provider 討論 ID 衝突時保持分開並標未知；缺少共同 RFC root 的子郵件可以去重，但仍標部分脈絡。時間以 RFC3339 的實際 instant 排序，不用不同時區的字串大小。
 
-回覆生成仍以最近二百封已下載 Inbox 和最多十封有權限的同聯絡人往來為基礎；本分支加入待回答問題／來源引文及避免未確認承諾的指示，並檢查引文。**尚未實作完整討論脈絡的回覆去重、所有後續信件到達時自動撤回舊建議，以及真實模型品質評估。** 原先的已寄回覆排除只依明確 `replyToId`。因此不能宣稱已消除所有過時、重複或已解決的回覆建議。All 結果最多二百項並明示截斷；切換單一帳戶可查看該帳戶結果。
+每個已下載來源有內容版本；讀取／星號／pending 及一般草稿不推進版本。新來信、實際寄出、正文／關係變更及來源刪除會改變整段討論簽章，撤回舊提議及分析途中的舊結果。刪除只留無正文的識別／版本記錄，不能因最新來源消失而倒退為舊請求；重新出現的同內容也不會復用舊核對。新明確請求可以重開先前已結束的事件。
+
+Today 以最新已下載來源重新檢查已儲存摘要的事件。未摘要的明確完成／取消、直接來信請求及本人的寄出請求也能更新狀態；一般寄出確認、開啟或儲存草稿都不能當作完成。未核實的寄出、截斷正文、缺少歷史、禁止的資料夾或有界索引／模型脈絡截斷，保守標 uncertain。等待對象只有可核實的本人或單一收件人；第三方不明時問使用者。引用過往郵件、條件／疑問及互相矛盾的完成語句不能當作最新完成依據。
+
+回覆候選只取最新二百個已下載 Inbox 討論，每個討論最多一個最新候選；模型只能取得該帳戶、該討論中有權限的最多十封郵件。最新來源為已寄出的郵件時不重複提議舊來信；未確認寄出會阻擋新提議。部分脈絡的模型結果包含需決定占位文字與問題，不能直接進入送出檢閱。All 結果最多二百項並明示截斷。
+
+使用者文字不隨撤回而刪除。Keep edits and refresh evidence 可取得最新原信及重新準備的收件資料，同時保留本文、自己的附件／頁尾並重設事實核對；討論有新來信时可把修改帶到最新回覆，原本的本地草稿仍保留。更換為新的 AI 文字才需要確認捨棄。
+
+索引最多一萬個最新已下載來源／移除記錄；AI 脈絡最多十封，Today 仍從最新二十個有效儲存摘要工作建立事件入口。這不是完整 provider mirror，也不保證所有自然語言被正確理解；看不到的郵件、無法可靠連結的討論及真實模型品質仍需本人核對。測試沒有使用實際郵件或付費模型。
 
 ## 鍵盤、窄版與驗證
 
@@ -38,4 +46,4 @@ macOS 合成檢查編譯實際 production views，只在暫存編譯副本初始
 
 Windows source 已有相同檢閱頁面，但本機 Parallels Standard 不支援 CLI 執行；編譯與既有 native acceptance 交由 PR CI。VoiceOver／Narrator、實際鍵盤與焦點切換、窄視窗大字體、輪詢時的焦點穩定性和真實帳戶／模型品質仍需驗收。合成截圖與 state assertions 不等同這些手動驗收。
 
-主要來源：`rust/src/mail_review.rs`、`reply_suggestions.rs`、`background.rs`、`providers.rs`、`service.rs`；`macos/Sources/MorrowMail/ReviewWorkspace.swift`、`TodayView.swift`、`ReplySuggestionsView.swift`；`windows/Review.cpp`、`Reader.cpp`、`Ui.h`。檢查記錄見 [VERIFICATION.md](../VERIFICATION.md#unreleased-today-and-reply-review-workspace)。
+主要來源：`rust/src/mail_review.rs`、`mail_threads.rs`、`reply_suggestions.rs`、`background.rs`、`providers.rs`、`service.rs`；`macos/Sources/MorrowMail/ReviewWorkspaceState.swift`、`ReviewWorkspace.swift`、`TodayView.swift`、`ReplySuggestionsView.swift`；`windows/Review.cpp`、`Reader.cpp`、`Ui.h`。檢查記錄見 [VERIFICATION.md](../VERIFICATION.md#unreleased-today-and-reply-review-workspace)。

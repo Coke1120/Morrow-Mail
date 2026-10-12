@@ -8,9 +8,9 @@ its tag, release artifacts or the original release checkout. See
 [behavior and known limits](docs/REVIEW_WORKSPACE.md).
 
 Local `cargo clippy --locked --offline --all-targets -- -D warnings` passed.
-The full locked/offline Rust suite passed **321 tests, 0 failed, 3 existing
+The full locked/offline Rust suite passed **331 tests, 0 failed, 3 existing
 ignored tests**. The focused background/reply/decision integration suites
-passed 17 + 8 + 4 tests. An earlier updater fixture failure was a sandbox
+passed background 17 + reply 10 + decisions 6 + thread index 6 tests. An earlier updater fixture failure was a sandbox
 denial of the Swift module cache; the full suite passed with the required
 compiler-cache and ephemeral-localhost permissions. No check was weakened.
 
@@ -19,14 +19,17 @@ with a private initialization seam and an intercepted fictional transport,
 never a service or user database. Its assertions cover combined reads,
 colliding IDs, per-owner preparation/save/composer review, A/B/A retention,
 original ownership, load failure, newer-proposal approval reset, rejected
-foreign drafts, dirty-budget retention and unanswered-decision blocking.
+foreign drafts, dirty-budget retention, unanswered-decision blocking and preserving text when refreshing original evidence.
 It can capture the actual views at 1140×720 and 720×720 using
 `REVIEW_EVIDENCE_DIR`; screenshots are synthetic UI evidence, not model-quality
 or live-account acceptance. The workflow runs this check and retains its PNGs.
 
 The local Windows VM runs Parallels Standard, which rejects `prlctl exec`;
 Windows compilation and native acceptance therefore require the PR workflow.
-New review-page keyboard/UIA behavior, screen-reader announcements, very narrow
+Windows native smoke now checks mounted original/reply editing, approval reset,
+newer-suggestion retention, A/B/A scope/draft/selection/budget retention and the
+narrow single pane. These additions require the latest PR CI; they do not
+establish screen-reader announcements, very narrow
 widths/large text, focus retention under polling, installed-app interaction and
 live model/provider quality remain manual acceptance items. Existing native
 smoke checks do not automatically establish those new review-page cases.
