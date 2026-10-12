@@ -360,7 +360,12 @@ IAsyncAction Shell::start() {
         }
     });
     root.Children().Append(sidebarResize);
-    auto updateSidebar = [weak = weak_from_this()](auto const&, auto const&) { if (auto self = weak.lock()) self->resizeSidebar(self->navigation.OpenPaneLength(), false); };
+    auto updateSidebar = [weak = weak_from_this()](auto const&, auto const&) {
+        if (auto self = weak.lock()) {
+            self->resizeSidebar(self->navigation.OpenPaneLength(), false);
+            if (self->mailBody && self->mailBody.IsLoaded()) self->applyMailLayout();
+        }
+    };
     root.SizeChanged(updateSidebar); navigation.PaneOpened(updateSidebar); navigation.PaneClosed(updateSidebar); navigation.DisplayModeChanged(updateSidebar);
     resizeSidebar(230, false);
     status = label(L"Opening your private workspace…"); status.Margin(ThicknessHelper::FromLengths(16, 6, 16, 8));
@@ -804,8 +809,9 @@ void Shell::mailPage() {
     readerNotice.Visibility(Visibility::Collapsed);
     readerPane.Children().Append(reader); readerPane.Children().Append(readerNotice);
     Grid::SetColumn(readerPane, 2); body.Children().Append(readerPane);
-    body.SizeChanged([weak](auto const& sender, auto const&) {
-        if (auto self = weak.lock(); self && self->mailBody == sender) self->applyMailLayout();
+    body.SizeChanged([weak](auto const& sender, auto const& args) {
+        if (auto self = weak.lock(); self && self->mailBody == sender && self->mailBody.IsLoaded()
+            && args.NewSize().Width != args.PreviousSize().Width) self->applyMailLayout();
     });
     applyMailLayout(); Grid::SetRow(body, 1); layout.Children().Append(body); show(layout);
 }
@@ -829,6 +835,10 @@ void Shell::applyMailLayout() {
         Grid::SetRow(mailDivider, 1); Grid::SetRow(readerPane, 2);
     } else {
         auto available = mailBody.ActualWidth();
+        if (mailBody.IsLoaded()) {
+            auto rightMargin = mailBody.Parent().as<FrameworkElement>().Margin().Right;
+            available = std::min(available, root.ActualWidth() - mailBody.TransformToVisual(root).TransformPoint(Point{}).X - rightMargin);
+        }
         auto width = available > 0 ? std::clamp(listWidth, 260.0, std::max(260.0, available - 328.0)) : listWidth;
         ColumnDefinition list; list.Width(GridLengthHelper::FromPixels(width)); list.MinWidth(260);
         ColumnDefinition divider; divider.Width(GridLengthHelper::FromPixels(8));
