@@ -1,5 +1,58 @@
 # Verification — 12 October 2026
 
+## v0.7.7 release preparation — Codex Cloud, 12 October 2026
+
+The final observer [PR37](https://github.com/Coke1120/Morrow-Mail/pull/37) normally
+merged at78e742f9e3d5b841ca10b23a3ce42a87d644703b after exact-head
+[paired38314176365](https://github.com/Coke1120/Morrow-Mail/actions/runs/38314176365),
+attempt1, passed both platforms. Mac331 / Windows327 Rust tests passed with0
+failures and3 existing ignored benchmarks each. Windows4/41/33 observations were
+complete, all skip counts/root skips/missing milestones0, collector0/reaped/notforced,
+PS5.1 relocation and1k/10k/50k benchmarks passed. Mac native acceptance/review,
+wrapping/visibility and40/40 complete/network-zero reader samples passed.
+
+[Diagnostics38314176522](https://github.com/Coke1120/Morrow-Mail/actions/runs/38314176522)
+passed37 native lifecycle cases,13 identity,24 pinned-helper and9 snapshot controls.
+Exact same-pin zero passed while7/changed creation/first87/5 remained gaps, without
+new counters/cache; all temporary pins closed and workers stopped. A real child
+born after the window began proved native background capture and same-pin zero.
+Initial6ba/b11 diagnostics38313728903/38313790700 failed fixture callback helper
+scope before new window controls; explicit function capture fixed wiring at7f07695.
+Both initial failures remain failures and were not rerun.
+
+Review [PR35](https://github.com/Coke1120/Morrow-Mail/pull/35) normally merged at
+7c2f2cf252024258b22a8daf09221c45dcc1314f after final combined
+[paired38314182628](https://github.com/Coke1120/Morrow-Mail/actions/runs/38314182628),
+attempt1, passed BOTH platforms at1cb36f49cbf757af516b0b59ad9f6b90b7bf293a.
+Mac332 / Windows328 Rust tests passed,0 failed and3 old ignored each. Windows
+4/46/35 strict observations were complete with all skips/missing milestones0,
+collectors0/reaped/notforced, relocation and benchmarks passed. Mac40/40 reader
+samples were complete/network-zero plus full native/review/wrapping/visibility pass.
+[Focused Mac38314182626](https://github.com/Coke1120/Morrow-Mail/actions/runs/38314182626)
+again reproduced immutable v0.7.6 full Skip/second404 and retarget/save ghost guards,
+then passed candidate full handlers, polling, account isolation, same-key/failed
+transfers, update/exit guards and retained saved drafts. Linux locked/offline332
+tests and23 focused tests passed; all-target Clippy/rustfmt passed. Windows controls
+exercise the workspace commit operation, not the full network refresh handler.
+
+The final merged tree exactly matches that tested combined candidate. Thunderbird
+PR34 is not an ancestor and no related runtime diff is included. Only common
+version metadata and documentation prepare0.7.7 afterward; local author/committer
+and tagger usehowailok1120@hotmail.com. Published v0.7.4 metadata/body/all six asset
+IDs/sizes/digests/times match the saved baseline. Failed v0.7.5/v0.7.6 annotated
+objects37f49dd518db64457c5539f7e861187c98034e75 and97aa4d9566d4e4728643b13d4034b864fe5d0194
+remain unchanged and unpublished. Historical unknown87 records remain failures.
+
+This preparation uses the existing release-on-tag policy: its metadata main push
+does not duplicate native jobs, while the fresh v0.7.7 tagged run MUST complete
+both full native jobs and the same-run/same-attempt Rust publisher before either
+download is public. The workflow, publisher and pinned Ed25519 key are unchanged.
+No tag is replaced, no failed artifact reused and no acceptance gate waived.
+After publication all six public assets require download/hash/version/architecture,
+production manifest/signature and old-release preservation checks. See
+[release notes and coverage limits](docs/releases/v0.7.7.md). Ad-hoc Mac/unsigned
+Windows, manual/clean-machine/installed-app and real-account/model limits remain.
+
 ## Pre-row native capture window — cloud follow-up
 
 [PR36 paired38308442440](https://github.com/Coke1120/Morrow-Mail/actions/runs/38308442440)

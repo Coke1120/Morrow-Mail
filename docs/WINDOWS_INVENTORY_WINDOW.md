@@ -66,3 +66,15 @@ script is not packaged. Review-state fixes remain separate PR35; Thunderbird PR3
 is excluded. A fresh unused version with same-attempt tagged gates and the existing
 publisher is required. Ad-hoc Mac/unsigned Windows, manual and real-account
 limitations remain.
+
+Final source7f07695 passed [diagnostics38314176522](https://github.com/Coke1120/Morrow-Mail/actions/runs/38314176522)
+with37 native lifecycle cases and the born-during-window control; all new pins
+closed and workers stopped. [Paired38314176365](https://github.com/Coke1120/Morrow-Mail/actions/runs/38314176365)
+attempt1 passed both complete platforms, Windows4/41/33 observations and Mac40/40
+complete/network-zero samples. PR37 normally merged at78e742f9. The initial6ba/b11
+new-control diagnostics failed fixture callback helper scope before window checks;
+explicit capture corrected test wiring at7f07695. Those failures remain retained.
+Combined [PR35 paired38314182628](https://github.com/Coke1120/Morrow-Mail/actions/runs/38314182628)
+also passed both platforms with Windows4/46/35 and Mac40/40 complete samples.
+These are successful current samples, not repaired historical failures. Fresh
+version0.7.7 tagged gates and public-asset verification are still mandatory.

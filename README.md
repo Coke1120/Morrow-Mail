@@ -12,14 +12,15 @@
 
 Morrow is a local, single-user app: **SwiftUI on macOS**, **WinUI 3 on Windows**, and a shared **Rust service**. Desktop packages include their runtime; no Node, Electron or Rust installation is needed to use them.
 
-The [Today and reply review workspace](docs/REVIEW_WORKSPACE.md) adds shared account tabs, compact saved decisions, inline original messages and editable account-owned replies. All accounts is a read-only aggregate. Downloaded conversations use account-scoped provider/RFC/reply relationships; new sources withdraw stale suggestions while retaining user edits. Decisions remain AI suggestions with checked source quotations; historical summaries and incomplete conversations require review. Saving or opening a suggestion never sends mail. The v0.7.5 and v0.7.6 candidates remain unpublished after failed Windows observation. The [workspace lifecycle follow-up](docs/REVIEW_STATE_LIFECYCLE.md) addresses delayed review findings; publication still requires fresh paired tagged checks. See [validation](VERIFICATION.md).
+The 0.7.7 [Today and reply review workspace](docs/REVIEW_WORKSPACE.md) adds shared account tabs, compact saved decisions, inline original messages and editable account-owned replies. All accounts is a read-only aggregate. Downloaded conversations use account-scoped provider/RFC/reply relationships; new sources withdraw stale suggestions while retaining user edits. Decisions remain AI suggestions with checked source quotations; historical summaries and incomplete conversations require review. Saving or opening a suggestion never sends mail. Skip now clears only its dismissed ephemeral state, source refresh moves edits without ghost unsaved guards, and empty projections avoid redundant index loads; saved mailbox drafts remain. See [release notes and limits](docs/releases/v0.7.7.md), [workspace lifecycle](docs/REVIEW_STATE_LIFECYCLE.md) and [validation](VERIFICATION.md#v077-release-preparation--codex-cloud-12-october-2026). The unpublished failed v0.7.5/v0.7.6 tags are preserved; fresh paired tagged gates are required before publication.
 
 Version 0.7.3 includes search-page retention across reading/reply saves and clearer attachment removal names, covered in the [mail flow review](docs/MAIL_FLOW_REVIEW.md). Native CI does not complete manual accessibility/live-account acceptance; the extreme Mac HTML timeout and Windows first-acquire observation gap remain open.
 
 The cloud observer follow-up retains provisional handles during delayed CIM
 delivery while preserving every strict final admission and exit gate. Successful
-and failed runs are both recorded in [evidence and scope](docs/WINDOWS_INVENTORY_WINDOW.md);
-new native/paired validation is required before publication.
+and failed runs are both recorded in [evidence and scope](docs/WINDOWS_INVENTORY_WINDOW.md).
+Final observer and combined review PR checks passed both platforms; the release
+still requires its own fresh same-attempt tagged checks and existing publisher.
 
 Version 0.7.4 keeps the side-by-side reading pane inside the mail view when the window or sidebar changes width, restoring the requested list width when space returns. The separate Mac mini Parallels checks and tagged release status are recorded in [verification](VERIFICATION.md#windows-reading-pane-fit--mac-mini-parallels-12-october-2026).
 

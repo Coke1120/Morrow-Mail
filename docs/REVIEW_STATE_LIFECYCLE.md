@@ -57,3 +57,13 @@ authenticated refresh handler. They check moved entry/text, obsolete key removal
 scope selections/scroll, dirty-to-saved transition and same-key behavior. These
 controls do not establish live-account/manual acceptance. Both platform builds
 and the existing paired release gates remain mandatory.
+
+Final [paired38314182628](https://github.com/Coke1120/Morrow-Mail/actions/runs/38314182628),
+attempt1, passed both platforms at1cb36f4 after the separate final observer fix.
+Mac332 / Windows328 Rust tests passed (0 failed,3 existing ignored each), native
+acceptance/review, Windows complete4/46/35 observations/relocation/benchmarks and
+Mac40/40 complete/network-zero reader samples. [Focused38314182626](https://github.com/Coke1120/Morrow-Mail/actions/runs/38314182626)
+passed immutable baseline and candidate full lifecycle again. PR35 normally merged
+at7c2f2cf2; its tree exactly matches the combined tested candidate. The earlier
+review-only/combined unknown87 observation failures remain failures. New tagged
+paired publication and manual/live-account limits remain separate requirements.
