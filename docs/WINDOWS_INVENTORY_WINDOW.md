@@ -78,3 +78,9 @@ Combined [PR35 paired38314182628](https://github.com/Coke1120/Morrow-Mail/action
 also passed both platforms with Windows4/46/35 and Mac40/40 complete samples.
 These are successful current samples, not repaired historical failures. Fresh
 version0.7.7 tagged gates and public-asset verification are still mandatory.
+
+The final v0.7.7 tagged attempt passed4/42/34 complete Windows observations and
+both platform/publisher gates, with verified public bytes. Later available logs
+also preserve preceding main acquisition87 and root shutdown-inventory failures.
+The correction does not establish universal resolution; see
+[exact publication and residual evidence](releases/v0.7.7-verification.md).

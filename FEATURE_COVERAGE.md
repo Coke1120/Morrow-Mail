@@ -1,13 +1,13 @@
 # Morrow Mail feature coverage
 
-**0.7.7 preparation — review lifecycle:** empty Today/reply projections avoid
+**0.7.7 — review lifecycle:** empty Today/reply projections avoid
 redundant conversation-index reads. Successful Mac Skip removes only dismissed
 ephemeral state; refresh moves edited target state on both platforms, redirecting
 selection/scroll and removing the obsolete unsaved guard. Saved mailbox drafts
 remain; failed transfers preserve edits and same-key refresh retains saved identity.
 Focused immutable-baseline/candidate and final combined paired PR checks passed.
 See [scope](docs/REVIEW_STATE_LIFECYCLE.md) and [release validation](VERIFICATION.md#v077-release-preparation--codex-cloud-12-october-2026).
-Fresh tagged paired validation is still required before public downloads.
+The tagged pair/publisher and six public-asset/production-signature checks passed; [publication evidence](docs/releases/v0.7.7-verification.md) retains preceding main observation failures and manual/live-account limits.
 
 **Current source — fixture resource observation:** new children of retained live
 owned parents are provisionally pinned during CIM delivery, before tree and

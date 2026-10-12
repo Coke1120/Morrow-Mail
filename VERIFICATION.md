@@ -1,5 +1,21 @@
 # Verification — 12 October 2026
 
+## v0.7.7 published — exact tagged attempt and public bytes
+
+[v0.7.7](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.7.7) published
+at23:20:35UTC fromaeec364f, annotated objected0b9fd. Tagged38318144951 attempt1
+passed Windows115039607315,Mac115039607627 and publisher115049780298. Public
+six-asset downloads/digests,ZIP CRC/paths/0.7.7 versions/ARM64+x64 architectures,
+production updater pinned signature/checksums/archive/stable-channel negatives
+passed; oldv0.7.4 and tags5/6 preserved. See [full evidence and hashes](docs/releases/v0.7.7-verification.md).
+
+Preceding main38317496182 and38317725083 remain Windows failures: first87/unknown
+ownedcase2/sample13 PID3648/parent5412, and shutdown root inventory gap in restart
+case3/sample28 PID4564/parent1536. Both Mac/allUI cases passed, but strict resource
+observation did not. Successful tagged samples do not repair these records or
+establish all mainCI green/universal87 resolution. Exact causes/limits are recorded
+in the linked evidence. Gates were not weakened; no rerun or duplicate publication.
+
 ## v0.7.7 release preparation — Codex Cloud, 12 October 2026
 
 The final observer [PR37](https://github.com/Coke1120/Morrow-Mail/pull/37) normally
