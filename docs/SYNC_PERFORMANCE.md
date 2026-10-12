@@ -4,8 +4,9 @@ The 0.7.4 work starts from remote main `5438edf9cd1b04578744edd1b5110c178372bb1f
 on 12 October 2026. The published 0.7.3 commit is
 `1f9306e0a177cd9892e23641e9b86b41b682df0f`. Local development uses isolated
 checkouts, synthetic SQLite stores and generated-certificate loopback mocks.
-The original checkout, production mailbox/database, accounts and credentials
-were never opened. No Parallels changes were made.
+The original source checkout remained unmodified by this synchronization task.
+Production mailbox/database, accounts and credentials were never opened.
+No Parallels changes were made by this task.
 
 ## Initial storage measurements
 
@@ -35,7 +36,8 @@ the same Mac mini with Rust 1.99.0; other developer/compiler activity and warm
 filesystem caches affect timing. New/text-change samples retain all 50 FTS
 updates and do not demonstrate a speed gain. New-mail regressions in these
 samples are retained, not hidden. FTS timing measures tokenization, rather than
-every internal SQLite FTS cost. The benchmark excludes network, native UI,+cold-cache behavior, production 2 GB databases and real-account acceptance.
+every internal SQLite FTS cost. The benchmark excludes network, native UI,
+cold-cache behavior, production 2 GB databases and real-account acceptance.
 
 The observed avoidable work is concrete: before the change, an unchanged
 50-row import still updates 50 message rows and rebuilds all 50 FTS rows.
@@ -46,6 +48,35 @@ Provider memberships change only when their account/folder/label IDs change.
 Startup transactionally replaces trigger definitions without rebuilding existing
 rows or changing schema-version/remote-ID-index contracts. A missing search
 document can still be inserted by a real message update.
+
+## Final storage measurements
+
+The final storage run uses functional head
+`34a95459e627ff01e2db22ca8dd507e6819831da`, including lazy reuse of one prepared
+write statement per changed batch and the provider future allocation correction.
+The baseline, fixture sizes, five-sample warm method and observation wrappers are
+unchanged. This run is separate from the initial samples above; those observations
+and regressions remain available.
+
+| Total cached rows | Scenario | Before median ms | Final median ms | Final message writes | Final FTS rows |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 1,000 | unchanged, 50 rows | 316.32 | 5.18 | 0 | 0 |
+| 10,000 | unchanged, 50 rows | 415.56 | 4.84 | 0 | 0 |
+| 50,000 | unchanged, 50 rows | 337.47 | 4.86 | 0 | 0 |
+| 1,000 | flags only, 50 rows | 315.70 | 19.46 | 50 updates | 0 |
+| 10,000 | flags only, 50 rows | 384.94 | 19.26 | 50 updates | 0 |
+| 50,000 | flags only, 50 rows | 341.58 | 19.43 | 50 updates | 0 |
+| 50,000 | unchanged, two owners/100 rows | 665.67 | 9.89 | 0 | 0 |
+| 50,000 | 50 new rows | 323.24 | 319.20 | 50 inserts | 50 |
+| 50,000 | indexed subject changes, 50 rows | 335.65 | 323.21 | 50 updates | 50 |
+
+[The complete final storage report](performance/final-storage-benchmark.json)
+retains all 15 mailbox/scenario combinations, seed times and five samples.
+At 1,000 rows, new-mail median is still 312.41→319.42 ms; therefore these results
+do not establish an improvement in every workload. New mail and searchable text
+changes retain all required FTS work. Warm debug timings with scalar observation
+overhead measure removed backend work; they do not diagnose UI blocking or
+predict real-account performance. No additional production data was inspected.
 
 ## Protocol behavior and limits
 
@@ -99,7 +130,8 @@ limit changed. See [Microsoft's per-folder delta guide](https://learn.microsoft.
 ## Diagnostics and verification
 
 `sync_profile` logs contain a fixed provider name, success flag, aggregate
-microsecond timings and counts only. They never contain owners, message IDs,+URLs, cursors, subjects, bodies, label names or secrets. HTTP bytes count JSON
+microsecond timings and counts only. They never contain owners, message IDs,
+URLs, cursors, subjects, bodies, label names or secrets. HTTP bytes count JSON
 response bodies; IMAP bytes count application-protocol bytes, excluding TLS.
 Phases can overlap and are not additive. Database queue timing measures waiting
 for the blocking worker/store, rather than native main-thread blocking. Failed
@@ -107,7 +139,8 @@ cycles can include attempted writes/FTS work that later rolled back; only
 successful cycles establish committed progress.
 
 New fixtures exercise semantic no-ops, all indexed fields, flag filters, trigger
-replacement, rollback, Gmail 120-ID restart/pagination, explicit deletion,+transaction failure, cursor expiry/cycles, IMAP 120-UID bursts, generation and
+replacement, rollback, Gmail 120-ID restart/pagination, explicit deletion,
+transaction failure, cursor expiry/cycles, IMAP 120-UID bursts, generation and
 connection changes, QRESYNC/CONDSTORE deletion/unchanged cases, rejected/ignored
 extensions and NOMODSEQ, and Graph healthy-folder progress past a blocked one.
 Existing sent/draft/attachment/priority/quota/reconnect/unknown-exit regressions
