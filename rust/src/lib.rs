@@ -14,6 +14,7 @@ pub mod imap;
 pub mod learning;
 pub mod local_rules;
 pub mod mail;
+pub mod mail_review;
 pub mod message_html;
 pub mod normalize;
 pub mod oauth;

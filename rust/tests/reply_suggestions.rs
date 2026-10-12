@@ -187,9 +187,19 @@ async fn owned_review_queues_without_model_then_runs_serial_bounded_context_and_
     let server = serve(model.clone()).await;
     let directory = Temporary::new();
     let app = app_at(&directory, &server.url).await;
-    for owner in ["", "all", "demo", "absent@example.test"] {
+    for owner in ["", "demo", "absent@example.test"] {
         assert_eq!(call(&app, "", owner, Value::Null).await.0, 409);
     }
+    let combined = call(&app, "", "all", Value::Null).await;
+    assert_eq!(combined.0, 200);
+    assert_eq!(combined.1["owner"], "all");
+    assert_eq!(model.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        call(&app, "preview", "all", json!({"messageIds":["target"]}))
+            .await
+            .0,
+        409
+    );
     assert_eq!(
         call(&app, "preview", OWNER, json!({"messageIds":["target"]}))
             .await

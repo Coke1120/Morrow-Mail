@@ -71,7 +71,16 @@ pub fn priority_summary(raw: &str, messages: &[Value]) -> Result<Value> {
         {
             return Err(invalid());
         }
-        items.push(json!({"messageId":id,"priority":priority,"summary":summary.trim()}));
+        let mut item = json!({"messageId":id,"priority":priority,"summary":summary.trim()});
+        if entry["review"].is_object() {
+            let selected = messages
+                .iter()
+                .find(|message| message["id"] == id)
+                .ok_or_else(invalid)?;
+            item["review"] =
+                crate::mail_review::validate(&entry["review"], std::slice::from_ref(selected))?;
+        }
+        items.push(item);
     }
     items.sort_by(|a, b| string(a, "priority").cmp(string(b, "priority")));
     let text = ["P0", "P1", "P2", "P3", "P4"]
@@ -824,9 +833,14 @@ pub fn daily_reports(reports: &Value) -> Vec<Value> {
                 .map(|item| json!({"id":item["messageId"]}))
                 .collect();
             if !items.is_empty()
-                && let Ok(summary) = priority_summary(&json!({"items":items}).to_string(), &sources)
+                && let Ok(summary) = priority_summary(&json!({"items":items.iter().map(|item| json!({"messageId":item["messageId"],"priority":item["priority"],"summary":item["summary"]})).collect::<Vec<_>>()}).to_string(), &sources)
             {
-                card["items"] = summary["items"].clone();
+                let mut sorted = summary["items"].clone();
+                for item in sorted.as_array_mut().into_iter().flatten() {
+                    if let Some(original) = items.iter().find(|old| old["messageId"] == item["messageId"])
+                        && original["review"].is_object() { item["review"] = original["review"].clone(); }
+                }
+                card["items"] = sorted;
                 card["text"] = summary["text"].clone();
                 card["messageIds"] = sources.iter().map(|source| source["id"].clone()).collect();
             } else {

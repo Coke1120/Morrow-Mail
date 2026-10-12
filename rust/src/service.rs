@@ -377,8 +377,11 @@ pub fn state(db: &Store, selected: &str, paged: bool, secret: &[u8; 32]) -> Resu
     let mut today_reports = Vec::new();
     let mut today_overflow = 0;
     let mut today_replies = Vec::new();
+    let mut today_reply_counts = serde_json::Map::new();
+    let mut today_events = Vec::new();
     for owner in &ids {
         let reports = crate::background::reports(db, owner)?;
+        today_events.extend(crate::mail_review::events(db, owner, &reports)?);
         for mut report in crate::background::daily_reports(&reports) {
             report["reportId"] = report["id"].clone();
             report["id"] = json!([owner, report["id"]]).to_string().into();
@@ -386,12 +389,13 @@ pub fn state(db: &Store, selected: &str, paged: bool, secret: &[u8; 32]) -> Resu
             today_reports.push(report);
         }
         today_overflow += crate::background::overflow(db, owner)?;
-        for proposal in crate::reply_suggestions::reviewed(db, owner)?
+        let proposals = crate::reply_suggestions::reviewed(db, owner)?
             .0
-            .iter()
-            .filter(|p| p["status"] == "ready")
-            .take(5)
-        {
+            .into_iter()
+            .filter(|p| p["status"] == "ready" || p["status"] == "used")
+            .collect::<Vec<_>>();
+        today_reply_counts.insert(owner.clone(), json!(proposals.len()));
+        for proposal in proposals.iter().take(5) {
             let mut proposal = proposal.clone();
             proposal["accountId"] = owner.clone().into();
             proposal["proposalId"] = proposal["id"].clone();
@@ -453,7 +457,7 @@ pub fn state(db: &Store, selected: &str, paged: bool, secret: &[u8; 32]) -> Resu
     result["workspace"]["brainLearning"] = crate::brain::learning_state(db, &view)?;
     result["workspace"]["summaries"] = reports;
     result["workspace"]["summaryOverflow"] = overflow.into();
-    result["today"] = json!({"summaries":today_reports,"summaryOverflow":today_overflow,"replySuggestions":today_replies});
+    result["today"] = json!({"summaries":today_reports,"summaryOverflow":today_overflow,"replySuggestions":today_replies,"replySuggestionCounts":today_reply_counts,"events":today_events});
     if paged {
         result["mailPage"] = page;
     }
