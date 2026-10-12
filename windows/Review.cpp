@@ -375,13 +375,16 @@ IAsyncAction reviewPage(std::shared_ptr<Shell> shell,hstring kind) {
     auto reload=button(L"Reload",[weak=std::weak_ptr<Page>(p)]{ if(auto page=weak.lock();page && page->current()) refresh(page); }); header.Children().Append(reload);
     if(kind==L"today") {
         auto summarize=button(L"Summarize now…",[]{}); MenuFlyout mailboxes;
-        for(auto const& value:array(shell->state,L"accounts")){ auto account=value.GetObject(); auto owner=text(account,L"id"); MenuFlyoutItem item; item.Text(owner); item.Click([weak=shell->weak_from_this(),owner](auto const&,auto const&){ if(auto host=weak.lock()) summarizeNow(host,owner); }); mailboxes.Items().Append(item); }
+        xaml::Automation::AutomationProperties::SetAutomationId(summarize,L"review.summarize");
+        for(auto const& value:array(shell->state,L"accounts")){ auto account=value.GetObject(); auto owner=text(account,L"id"); if(!shell->connected(owner)) continue; MenuFlyoutItem item; item.Text(owner); item.Tag(box_value(owner)); item.Click([weak=shell->weak_from_this(),owner](auto const&,auto const&){ if(auto host=weak.lock()) summarizeNow(host,owner); }); mailboxes.Items().Append(item); }
         summarize.Flyout(mailboxes); header.Children().Append(summarize);
+        auto sync=button(L"Sync All",[weak=shell->weak_from_this()]{if(auto host=weak.lock())host->sync();});xaml::Automation::AutomationProperties::SetAutomationId(sync,L"mail.syncAll");header.Children().Append(sync);
     }
     root.Children().Append(header);
     auto tabs=stack(7); tabs.Orientation(Orientation::Horizontal); std::vector<hstring> owners{L"all"}; for(auto const& value:array(shell->state,L"accounts")) owners.push_back(text(value.GetObject(),L"id"));
     for(auto const& owner:owners) {
         controls::Primitives::ToggleButton tab; tab.Content(box_value(owner==L"all" ? hstring(L"All accounts"):owner)); tab.IsChecked(owner==p->scope); tab.IsTabStop(owner==p->scope);
+        xaml::Automation::AutomationProperties::SetAutomationId(tab,L"review.scope."+owner);
         tab.KeyDown([weak=std::weak_ptr<Page>(p),owners,owner](auto const&,xaml::Input::KeyRoutedEventArgs const& args){
             if(auto page=weak.lock();page && page->current() && !page->shell->review->writing) {
                 auto found=std::find(owners.begin(),owners.end(),owner); auto index=static_cast<int>(found-owners.begin());
