@@ -276,7 +276,7 @@ pub(crate) async fn cached_page_bodies(
         Ok(cached)
     }).await
 }
-async fn fetch_page_cached(
+pub(crate) async fn fetch_page_cached(
     app: &App,
     mail: &Value,
     options: &Value,
@@ -436,15 +436,16 @@ fn import_read_state(message: &Value, existing: Option<&Value>, imported: &mut V
 }
 
 pub fn import_messages(db: &Store, mail: &Value, messages: &[Value]) -> Result<Vec<String>> {
+    let _phase = crate::sync_profile::phase("importMerge");
     let account = string(mail, "email");
     let is_imap = ["", "imap"].contains(&string(mail, "provider"));
     let mut new_ids = Vec::new();
-    db.transaction(|db|{for message in messages{let remote=message["remoteId"].as_str().filter(|s|!s.is_empty()).unwrap_or(string(message,"id"));let folder=message["providerFolderId"].as_str().filter(|s|!s.is_empty()).unwrap_or("INBOX");
+    db.transaction(|db|{let mut statement=None;for message in messages{let remote=message["remoteId"].as_str().filter(|s|!s.is_empty()).unwrap_or(string(message,"id"));let folder=message["providerFolderId"].as_str().filter(|s|!s.is_empty()).unwrap_or("INBOX");
         let existing:Option<String>=db.conn.query_row("SELECT data FROM messages WHERE account=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id)=? AND (?=0 OR COALESCE(NULLIF(json_extract(data,'$.providerFolderId'),''),'INBOX')=?) ORDER BY rowid DESC LIMIT 1",params![account,remote,is_imap,folder],|row|row.get(0)).optional()?;
         let mut existing=existing.map(|s|serde_json::from_str::<Value>(&s)).transpose()?;
         if existing.is_none()&&(message["folder"]=="sent"||(mail["provider"]=="google"&&message["providerSent"]==true))&&string(message,"fromEmail").eq_ignore_ascii_case(account)&&!string(message,"messageId").is_empty(){let local:Option<String>=db.conn.query_row("SELECT data FROM messages WHERE account=? AND id LIKE 'sent:%' AND COALESCE(json_extract(data,'$.remoteId'),'')='' AND json_extract(data,'$.messageId')=? LIMIT 1",params![account,string(message,"messageId")],|row|row.get(0)).optional()?;existing=local.map(|s|serde_json::from_str(&s)).transpose()?;}
         if existing.is_none()&&db.get(account,string(message,"id"))?.is_none(){new_ids.push(string(message,"id").to_owned());}
-        let mut value=message.clone();if let Some(existing)=&existing{if string(existing,"id").starts_with("sent:"){value=merge(value,existing);for key in ["bodyConnection","bodySize"]{if value.get(key).is_some(){value[key]=existing[key].clone();}}}for key in ["id","folder","read","starred","labels","pending","lowPriority"]{if let Some(entry)=existing.get(key){value[key]=entry.clone();}}value["remoteId"]=existing["remoteId"].as_str().filter(|s|!s.is_empty()).unwrap_or(remote).into();
+        let mut value=message.clone();value["remoteId"]=remote.into();if let Some(existing)=&existing{if string(existing,"id").starts_with("sent:"){value=merge(value,existing);for key in ["bodyConnection","bodySize"]{if value.get(key).is_some(){value[key]=existing[key].clone();}}}for key in ["id","folder","read","starred","labels","pending","lowPriority"]{if let Some(entry)=existing.get(key){value[key]=entry.clone();}}value["remoteId"]=existing["remoteId"].as_str().filter(|s|!s.is_empty()).unwrap_or(remote).into();
             // Provider locations describe the fetched message, independently of local folder overrides.
             // Bounded refreshes that omit location metadata retain the last known provider location.
             for key in ["providerFolderId", "providerFolderName"] {
@@ -489,7 +490,16 @@ pub fn import_messages(db: &Store, mail: &Value, messages: &[Value]) -> Result<V
             }
             value["localOverrides"] = json!(overrides);
         }
-        db.upsert(account,&value)?;
+        for key in ["providerDeleted","providerFolderMissing"] {
+            if let Some(proof)=message.get(key).filter(|v|v.is_boolean()) {value[key]=proof.clone();}
+        }
+        if existing.as_ref() == Some(&value) {
+            crate::sync_profile::count("unchangedRows", 1);
+        } else {
+            if statement.is_none(){statement=Some(db.prepare_message_upsert()?);}
+            db.upsert_prepared(account,&value,statement.as_mut().unwrap())?;
+            crate::sync_profile::count(if existing.is_some() { "changedRows" } else { "newRows" }, 1);
+        }
     }Ok(())})?;
     Ok(new_ids)
 }
@@ -869,6 +879,7 @@ fn sync_failure(owner: &str, error: &Error, previous: &Value) -> Value {
         "oauth_configuration",
         "oauth_refresh_failed",
         "outlook_sync_invalid",
+        "gmail_sync_invalid",
     ]
     .contains(&string(&error.body, "code"))
     {
@@ -880,8 +891,8 @@ fn sync_failure(owner: &str, error: &Error, previous: &Value) -> Value {
     json!({"accountId":owner,"code":"mail_sync_failed","recoveryAction":"retry","error":"Sync could not finish. Saved mail and account credentials are retained. Check your connection and try again."})
 }
 fn sync_warning(page: &Value) -> Option<&'static str> {
-    (page["nextCursor"].is_object()
-        && page["messages"].as_array().is_some_and(|rows| rows.len() < 50))
+    (page["syncCheckpoint"]["bootstrapIncomplete"]==true || (page["nextCursor"].is_object()
+        && page["messages"].as_array().is_some_and(|rows| rows.len() < 50)))
     .then_some("This sparse IMAP mailbox exceeded the scan limit. Mail sync is incomplete; enable history import in Settings to continue from saved checkpoints.")
 }
 pub(crate) async fn commit_sync_page(
@@ -896,11 +907,23 @@ pub(crate) async fn commit_sync_page(
         .clone();
     let owner = owner.to_owned();
     let mail = mail.clone();
+    let checkpoint = page["syncCheckpoint"].clone();
+    let expected = page["expectedSyncCheckpoint"].clone();
     app.db(move |db| {
         if connections(&db.settings()?).get(&owner) != Some(&mail) {
             return Err(Error::conflict("This mailbox changed during sync."));
         }
         db.transaction(|db| {
+            if checkpoint.is_object() {
+                let config = db.settings()?;
+                let path = string(&checkpoint, "path");
+                if checkpoint["connection"] != crate::folders::connection_version(&mail)
+                    || path.is_empty()
+                    || config["imapSync"][&owner]["folders"][path] != expected
+                {
+                    return Err(Error::conflict("This IMAP checkpoint changed during sync."));
+                }
+            }
             let ids = import_messages(db, &mail, &messages)?;
             let config = db.settings()?;
             let job = &config["imports"][&owner];
@@ -913,7 +936,16 @@ pub(crate) async fn commit_sync_page(
                     })
                 })
                 .collect::<Vec<_>>();
-            crate::background::arrivals(db, &owner, &arrivals)
+            crate::background::arrivals(db, &owner, &arrivals)?;
+            if checkpoint.is_object() {
+                let mut state = merge(json!({}), &config["imapSync"][&owner]);
+                if !state["folders"].is_object() {
+                    state["folders"] = json!({});
+                }
+                state["folders"][string(&checkpoint, "path")] = checkpoint.clone();
+                crate::background::write_owner(db, "imapSync", &owner, state)?;
+            }
+            Ok(())
         })
     })
     .await
@@ -955,6 +987,10 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
         }
         let work = async {
             let mail = current_mail(app, owner).await?;
+            if mail["provider"] == "google" {
+                Box::pin(crate::google_sync::sync(app, &mail)).await?;
+                return Ok(None);
+            }
             if mail["provider"] == "microsoft" {
                 tokio::time::timeout(
                     std::time::Duration::from_secs(45),
@@ -987,6 +1023,9 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
             crate::reconcile::priority(app, &mail, &mut fetched).await?;
             for folder in folders {
                 let mut input = json!({"folder":folder});
+                input["incremental"] = true.into();
+                input["syncCheckpoints"] = config["imapSync"][owner]["folders"].clone();
+                input["historyComplete"] = (job["status"] == "complete").into();
                 if !string(job, "since").is_empty() {
                     input["since"] = job["since"].clone();
                 }
@@ -1000,7 +1039,19 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
             crate::reconcile::sync(app, &mail, &mut fetched).await?;
             Ok(warning)
         };
-        match work.await {
+        // Keep the provider state machine off nested CLI/router poll stacks.
+        // Windows' existing main-thread stack remains unchanged.
+        let (result, mut profile) = crate::sync_profile::capture(Box::pin(work)).await;
+        profile["ok"] = result.is_ok().into();
+        profile["provider"] = match string(&config["mailAccounts"][owner], "provider") {
+            "google" => "google",
+            "microsoft" => "microsoft",
+            "imap" | "" => "imap",
+            _ => "unknown",
+        }
+        .into();
+        eprintln!("sync_profile {profile}");
+        match result {
             Ok(None) => {}
             Ok(Some(warning)) => errors.push(json!({"accountId":owner,"error":warning})),
             Err(error) => errors.push(sync_failure(owner, &error, &previous)),

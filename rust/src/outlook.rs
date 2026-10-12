@@ -11,6 +11,7 @@ use reqwest::Method;
 use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 
 const PREFER: &str =
     "outlook.body-content-type=\"html\", IdType=\"ImmutableId\", odata.maxpagesize=50";
@@ -149,6 +150,7 @@ async fn resolve(
             && !string(old, "messageId").is_empty()
             && old["messageId"] == raw["internetMessageId"]
     }) {
+        crate::sync_profile::count("bodyCacheHits", 1);
         existing
     } else {
         match providers::microsoft_message(&app.0.client, connection, &raw, string(&patch, "date"))
@@ -267,6 +269,7 @@ fn digest(value: &str) -> Value {
 }
 
 pub async fn sync(app: &App, connection: &Value) -> Result<()> {
+    let _phase = crate::sync_profile::phase("graphSync");
     let owner = string(connection, "email");
     let config = app.settings().await?;
     let job = config["imports"][owner].clone();
@@ -297,6 +300,7 @@ pub async fn sync(app: &App, connection: &Value) -> Result<()> {
         .ok_or_else(providers::remote_error)?
         .clone();
     let priority = crate::sync_priority::messages(app, connection).await?;
+    let mut observed = HashSet::new();
     for chunk in priority.chunks(4) {
         let mut messages = Vec::new();
         for result in
@@ -310,9 +314,14 @@ pub async fn sync(app: &App, connection: &Value) -> Result<()> {
             }
         }
         let saved = connection.clone();
+        let ids = messages
+            .iter()
+            .map(|m| remote_id(m).map(str::to_owned))
+            .collect::<Result<Vec<_>>>()?;
         // A current-view refresh does not move the delta or background rotation checkpoints.
         app.db(move |db| db.transaction(|db| save(db, &saved, &messages)))
             .await?;
+        observed.extend(ids);
     }
     // Keep the newest Inbox/Sent responsive while the initial delta baseline is still paging.
     for folder in ["inbox", "sent"] {
@@ -328,6 +337,8 @@ pub async fn sync(app: &App, connection: &Value) -> Result<()> {
             }
             let page = mail::fetch_page(app, connection, &options).await?;
             mail::commit_sync_page(app, owner, connection, &page).await?;
+            // Recent generic imports can retain a local folder until resolve
+            // validates the current location. They are not a rolling-repair proof.
         }
     }
     let selected: Vec<_> = folders
@@ -345,13 +356,17 @@ pub async fn sync(app: &App, connection: &Value) -> Result<()> {
         .collect();
     // ponytail: one folder page per poll; the persisted rotation covers larger folder trees.
     let start = state["folderIndex"].as_u64().unwrap_or(0) as usize;
-    for offset in 0..selected.len().min(1) {
-        let index = (start + offset) % selected.len();
+    let next_folder = (0..selected.len())
+        .map(|offset| (start + offset) % selected.len())
+        .filter(|index| state["checkpoints"][string(selected[*index], "id")]["blocked"] != true)
+        .take(1)
+        .collect::<Vec<_>>();
+    if next_folder.is_empty() && !selected.is_empty() {
+        return Err(invalid_checkpoint());
+    }
+    for index in next_folder {
         let id = string(selected[index], "id");
         let checkpoint = state["checkpoints"][id].clone();
-        if checkpoint["blocked"] == true {
-            return Err(invalid_checkpoint());
-        }
         let next = string(&checkpoint, "url");
         let mut url = delta_url(id, next)?;
         if next.is_empty() {
@@ -433,8 +448,9 @@ pub async fn sync(app: &App, connection: &Value) -> Result<()> {
             Ok(value) => value,
             Err(_) => {
                 state["checkpoints"][id] = merge(checkpoint, &json!({"blocked":true}));
+                state["folderIndex"] = ((index + 1) % selected.len()).into();
                 persist(app, connection, &state, &[]).await?;
-                return Err(invalid_checkpoint());
+                continue;
             }
         };
         let before = checkpoint["before"].as_str().unwrap_or("");
@@ -461,6 +477,11 @@ pub async fn sync(app: &App, connection: &Value) -> Result<()> {
             .into();
         }
         let mut messages = Vec::new();
+        let mut unique = HashSet::new();
+        let rows = rows
+            .iter()
+            .filter(|row| unique.insert(string(row, "id")))
+            .collect::<Vec<_>>();
         for chunk in rows.chunks(4) {
             for result in futures_util::future::join_all(
                 chunk
@@ -485,7 +506,12 @@ pub async fn sync(app: &App, connection: &Value) -> Result<()> {
         }
         state["checkpoints"][id] = json!({"url":link,"visited":visited,"initial":more && checkpoint["initial"]!=false,"before":before});
         state["folderIndex"] = ((index + 1) % selected.len()).into();
+        let ids = messages
+            .iter()
+            .map(|m| remote_id(m).map(str::to_owned))
+            .collect::<Result<Vec<_>>>()?;
         persist(app, connection, &state, &messages).await?;
+        observed.extend(ids);
     }
     // Rolling checks also repair pre-checkpoint deletions and messages moved outside imported scopes.
     let owner = owner.to_owned();
@@ -496,11 +522,15 @@ pub async fn sync(app: &App, connection: &Value) -> Result<()> {
     }).await?;
     for chunk in rows.chunks(4) {
         let mut messages = Vec::new();
-        for result in
-            futures_util::future::join_all(chunk.iter().map(|row| async {
-                resolve(app, connection, &folders, &job, remote_id(row)?).await
-            }))
-            .await
+        for result in futures_util::future::join_all(chunk.iter().map(|row| async {
+            let id = remote_id(row)?;
+            if observed.contains(id) {
+                crate::sync_profile::count("graphOverlapSkipped", 1);
+                return Ok(None);
+            }
+            resolve(app, connection, &folders, &job, id).await
+        }))
+        .await
         {
             if let Some(message) = result? {
                 messages.push(message);
@@ -514,6 +544,12 @@ pub async fn sync(app: &App, connection: &Value) -> Result<()> {
     }
     state["updatedAt"] = now().into();
     persist(app, connection, &state, &[]).await?;
+    if selected
+        .iter()
+        .any(|folder| state["checkpoints"][string(folder, "id")]["blocked"] == true)
+    {
+        return Err(invalid_checkpoint());
+    }
     work.finish(true, None);
     Ok(())
 }

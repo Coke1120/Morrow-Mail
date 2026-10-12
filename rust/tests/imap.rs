@@ -209,6 +209,11 @@ async fn write<S: AsyncRead + AsyncWrite + Unpin>(
 
 #[derive(Clone)]
 struct ImapScenario {
+    highest_modseq: Option<u64>,
+    changed_modseq: Option<u64>,
+    extension_rejected: bool,
+    enable_ignored: bool,
+    nomodseq: bool,
     validity: u32,
     count: u32,
     capabilities: &'static str,
@@ -252,6 +257,11 @@ struct ImapScenario {
 impl Default for ImapScenario {
     fn default() -> Self {
         Self {
+            highest_modseq: None,
+            changed_modseq: None,
+            extension_rejected: false,
+            enable_ignored: false,
+            nomodseq: false,
             validity: 55,
             count: 60,
             capabilities: "IMAP4rev1 MOVE UIDPLUS",
@@ -654,6 +664,23 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                 ),
             )
             .await?;
+        } else if upper == "ENABLE QRESYNC" {
+            if scenario.extension_rejected {
+                write(&mut stream, &format!("{tag} BAD unsupported\r\n")).await?;
+            } else {
+                write(
+                    &mut stream,
+                    &format!(
+                        "{}\r\n{tag} OK enabled\r\n",
+                        if scenario.enable_ignored {
+                            "* ENABLED CONDSTORE"
+                        } else {
+                            "* ENABLED QRESYNC"
+                        }
+                    ),
+                )
+                .await?;
+            }
         } else if upper.starts_with("LIST ") {
             let sent = if scenario.sent {
                 format!("* LIST (\\Sent) \"/\" \"{SENT_WIRE}\"\r\n")
@@ -700,6 +727,18 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                 write(&mut stream, &format!("{tag} {response}\r\n")).await?;
                 continue;
             }
+            if scenario.extension_rejected && upper.ends_with("(CONDSTORE)") {
+                write(&mut stream, &format!("{tag} BAD unsupported\r\n")).await?;
+                continue;
+            }
+            let extension = if scenario.nomodseq {
+                "* OK [NOMODSEQ] unavailable\r\n".to_owned()
+            } else {
+                scenario
+                    .highest_modseq
+                    .map(|v| format!("* OK [HIGHESTMODSEQ {v}] stable\r\n"))
+                    .unwrap_or_default()
+            };
             let next = if scenario.omit_uidnext {
                 String::new()
             } else {
@@ -708,7 +747,7 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                     scenario.uidnext.unwrap_or(scenario.count + 1)
                 )
             };
-            write(&mut stream,&format!("* FLAGS (\\Seen \\Flagged)\r\n* {} EXISTS\r\n* OK [UIDVALIDITY {}] stable\r\n{next}{tag} OK selected\r\n",scenario.count,scenario.validity)).await?;
+            write(&mut stream,&format!("* FLAGS (\\Seen \\Flagged)\r\n* {} EXISTS\r\n* OK [UIDVALIDITY {}] stable\r\n{next}{extension}{tag} OK selected\r\n",scenario.count,scenario.validity)).await?;
         } else if upper.starts_with("UID SEARCH ") {
             if scenario.large_search {
                 write(&mut stream, "* SEARCH").await?;
@@ -808,9 +847,27 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                     &format!("* 1 FETCH (UID {selected} RFC822.SIZE {})\r\n", raw.len()),
                 )
                 .await?;
-            } else if fields == "(UID FLAGS)" {
+            } else if fields.starts_with("(UID FLAGS") && !fields.contains("RFC822.SIZE") {
+                if scenario.extension_rejected && fields.contains("MODSEQ") {
+                    write(&mut stream, &format!("{tag} BAD unsupported\r\n")).await?;
+                    continue;
+                }
+                let since = fields
+                    .split("CHANGEDSINCE ")
+                    .nth(1)
+                    .and_then(|v| v.split(|c: char| !c.is_ascii_digit()).next())
+                    .and_then(|v| v.parse::<u64>().ok());
+                if fields.contains("VANISHED")
+                    && let Some(uid) = scenario.missing_uid
+                {
+                    write(&mut stream, &format!("* VANISHED (EARLIER) {uid}\r\n")).await?;
+                }
+                let modseq = scenario.changed_modseq.or(scenario.highest_modseq);
                 for (index, uid) in selected.split(',').enumerate() {
                     if scenario.missing_uid == uid.parse().ok() {
+                        continue;
+                    }
+                    if since.is_some_and(|since| modseq.is_some_and(|v| v <= since)) {
                         continue;
                     }
                     let mut flags = vec!["\\Answered"];
@@ -823,10 +880,15 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                     write(
                         &mut stream,
                         &format!(
-                            "* {} FETCH (UID {} FLAGS ({}))\r\n",
+                            "* {} FETCH (UID {} FLAGS ({}){})\r\n",
                             index + 1,
                             uid,
-                            flags.join(" ")
+                            flags.join(" "),
+                            if fields.contains("MODSEQ") {
+                                modseq.map(|v| format!(" MODSEQ ({v})")).unwrap_or_default()
+                            } else {
+                                String::new()
+                            }
                         ),
                     )
                     .await?;
@@ -2247,4 +2309,223 @@ async fn imap_truncated_success_is_not_committed_and_disconnects_remain_retryabl
             .len(),
         1
     );
+}
+
+#[tokio::test]
+async fn incremental_uid_pages_cover_bursts_and_reset_only_on_connection_or_uidvalidity_change() {
+    let fixture = ImapFixture::new(ImapScenario::default()).await;
+    let first = imap::fetch_page_with_tls(
+        &fixture.mail,
+        &json!({"folder":"inbox","incremental":true}),
+        &fixture.connector,
+    )
+    .await
+    .unwrap();
+    let mut checkpoint = first["syncCheckpoint"].clone();
+    assert_eq!(checkpoint["uid"], 60);
+    fixture.update(|s| s.count = 180);
+    let mut added = Vec::new();
+    for (uid, more) in [(110, true), (160, true), (180, false)] {
+        let page = imap::fetch_page_with_tls(
+            &fixture.mail,
+            &json!({"folder":"inbox","incremental":true,"syncCheckpoints":{"INBOX":checkpoint}}),
+            &fixture.connector,
+        )
+        .await
+        .unwrap();
+        assert_eq!(page["syncCheckpoint"]["uid"], uid);
+        assert_eq!(page["syncCheckpoint"]["more"], more);
+        added.extend(
+            page["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| string(m, "id").to_owned()),
+        );
+        checkpoint = page["syncCheckpoint"].clone();
+    }
+    assert_eq!(added.len(), 120);
+    assert_eq!(
+        added.iter().collect::<std::collections::HashSet<_>>().len(),
+        120
+    );
+    let before = fixture.commands().len();
+    let page = imap::fetch_page_with_tls(
+        &fixture.mail,
+        &json!({"incremental":true,"syncCheckpoints":{"INBOX":checkpoint}}),
+        &fixture.connector,
+    )
+    .await
+    .unwrap();
+    assert!(page["messages"].as_array().unwrap().is_empty());
+    assert!(
+        !fixture.commands()[before..]
+            .iter()
+            .any(|c| c.starts_with("UID SEARCH") || c.starts_with("UID FETCH"))
+    );
+    fixture.update(|s| s.validity = 66);
+    let reset = imap::fetch_page_with_tls(
+        &fixture.mail,
+        &json!({"incremental":true,"syncCheckpoints":{"INBOX":checkpoint}}),
+        &fixture.connector,
+    )
+    .await
+    .unwrap();
+    assert_eq!(reset["syncCheckpoint"]["validity"], "66");
+    assert_eq!(reset["messages"].as_array().unwrap().len(), 50);
+    let mut mail = fixture.mail.clone();
+    mail["connectionId"] = "replacement".into();
+    let reset = imap::fetch_page_with_tls(
+        &mail,
+        &json!({"incremental":true,"syncCheckpoints":{"INBOX":reset["syncCheckpoint"]}}),
+        &fixture.connector,
+    )
+    .await
+    .unwrap();
+    assert_eq!(reset["messages"].as_array().unwrap().len(), 50);
+}
+
+#[tokio::test]
+async fn capability_gated_modseq_and_vanished_do_not_treat_unchanged_omissions_as_deleted() {
+    for qresync in [false, true] {
+        let fixture = ImapFixture::new(ImapScenario {
+            capabilities: if qresync {
+                "IMAP4rev1 ENABLE CONDSTORE QRESYNC"
+            } else {
+                "IMAP4rev1 CONDSTORE"
+            },
+            highest_modseq: Some(10),
+            remote_read: false,
+            ..Default::default()
+        })
+        .await;
+        let rows = vec![
+            json!({"id":"imap:55:2","body":"Owned synthetic cache","providerFolderId":"INBOX"}),
+            json!({"id":"imap:55:3","body":"Second owned cache","providerFolderId":"INBOX"}),
+        ];
+        let first = imap::reconcile_with_tls(&fixture.mail, &rows, &fixture.connector)
+            .await
+            .unwrap();
+        assert!(first.iter().all(|m| m["imapModseq"] == 10));
+        let unchanged = imap::reconcile_with_tls(&fixture.mail, &first, &fixture.connector)
+            .await
+            .unwrap();
+        assert!(
+            unchanged
+                .iter()
+                .all(|m| m["providerDeleted"] == false && m["read"] == false)
+        );
+        fixture.update(|s| {
+            s.highest_modseq = Some(11);
+            s.changed_modseq = Some(11);
+            s.remote_read = true;
+            s.missing_uid = Some(3);
+            s.expunged_uid = Some(3);
+        });
+        let result = imap::reconcile_with_tls(&fixture.mail, &unchanged, &fixture.connector)
+            .await
+            .unwrap();
+        assert!(
+            result
+                .iter()
+                .any(|m| m["id"] == "imap:55:2" && m["read"] == true && m["imapModseq"] == 11)
+        );
+        assert!(result.iter().any(|m| m["id"] == "imap:55:3"
+            && m["providerDeleted"] == true
+            && m["body"] == "Second owned cache"));
+        let commands = fixture.commands();
+        assert!(commands.iter().any(|c| c.contains("CHANGEDSINCE 10")));
+        assert_eq!(commands.iter().any(|c| c.contains("VANISHED")), qresync);
+        assert!(!commands.iter().any(|c| c.starts_with("SELECT")));
+    }
+}
+
+#[tokio::test]
+async fn optional_extensions_fall_back_when_rejected_ignored_or_nomodseq() {
+    for (reject, ignored, nomodseq) in [
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        let fixture = ImapFixture::new(ImapScenario {
+            capabilities: "IMAP4rev1 ENABLE CONDSTORE QRESYNC",
+            highest_modseq: Some(10),
+            extension_rejected: reject,
+            enable_ignored: ignored,
+            nomodseq,
+            ..Default::default()
+        })
+        .await;
+        let rows = vec![json!({"id":"imap:55:2","providerFolderId":"INBOX"})];
+        let result = imap::reconcile_with_tls(&fixture.mail, &rows, &fixture.connector)
+            .await
+            .unwrap_or_else(|error|panic!("reject={reject} ignored={ignored} nomodseq={nomodseq}: {error:?}; commands={:?}",fixture.commands().iter().filter(|c|!c.starts_with("LOGIN")).collect::<Vec<_>>()));
+        assert_eq!(result[0]["read"], true);
+        assert_ne!(result[0]["providerDeleted"], true);
+        if reject || nomodseq {
+            assert!(result[0]["imapModseq"].is_null());
+        }
+        if ignored {
+            assert!(!fixture.commands().iter().any(|c| c.contains("VANISHED")));
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "Explicit synthetic sync benchmark; local TLS fixtures only"]
+async fn synthetic_imap_sync_benchmark() {
+    let fixture = ImapFixture::new(ImapScenario {
+        body_size: 2048,
+        ..Default::default()
+    })
+    .await;
+    let root = std::env::temp_dir().join(format!("morrow-imap-bench-{}", uuid::Uuid::new_v4()));
+    let app = morrow_search::service::App::open(&root, 0, "fixture".into(), String::new()).unwrap();
+    let connection = fixture.mail.clone();
+    app.db(move |db| {
+        db.set_settings(&json!({"mailAccounts":{OWNER:connection}}))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let mut checkpoint = Value::Null;
+    let mut samples = Vec::new();
+    for round in 0..6 {
+        let before = fixture.commands().len();
+        let begin = std::time::Instant::now();
+        let (result, profile) = morrow_search::sync_profile::capture(async {
+            let page = imap::fetch_page_cached_with_tls(
+                &app,
+                &fixture.mail,
+                &json!({"incremental":true,"syncCheckpoints":{"INBOX":checkpoint}}),
+                &fixture.connector,
+            )
+            .await?;
+            let messages = page["messages"].as_array().unwrap().clone();
+            let connection = fixture.mail.clone();
+            app.db(move |db| {
+                morrow_search::mail::import_messages(db, &connection, &messages)?;
+                Ok(())
+            })
+            .await?;
+            let cached = app.db(|db| db.list(OWNER)).await?;
+            let rows = imap::reconcile_with_tls(&fixture.mail, &cached, &fixture.connector).await?;
+            let connection = fixture.mail.clone();
+            app.db(move |db| {
+                morrow_search::mail::import_messages(db, &connection, &rows)?;
+                Ok(())
+            })
+            .await?;
+            Ok::<_, morrow_search::error::Error>(page["syncCheckpoint"].clone())
+        })
+        .await;
+        checkpoint = result.unwrap();
+        samples.push(json!({"round":round,"wallMs":begin.elapsed().as_secs_f64()*1000.0,"commands":fixture.commands().len()-before,"profile":profile}));
+    }
+    println!(
+        "synthetic_imap_benchmark {}",
+        json!({"provider":"imap","samples":samples,"scope":"50 cached immutable rows and bounded flag reconciliation; local TLS fixture only, excludes native UI and real-provider latency."})
+    );
+    drop(app);
+    std::fs::remove_dir_all(root).unwrap();
 }

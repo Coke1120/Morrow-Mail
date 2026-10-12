@@ -10,7 +10,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU16, Ordering},
+        atomic::{AtomicU16, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -51,6 +51,9 @@ struct Fixture {
     client: reqwest::Client,
     rows: Arc<Mutex<Vec<Value>>>,
     hits: Arc<Mutex<Vec<(String, url::Url)>>>,
+    history_pages: Arc<Mutex<std::collections::HashMap<String, Value>>>,
+    history_status: Arc<AtomicU16>,
+    traffic: Arc<[AtomicU64; 2]>,
     list_status: Arc<AtomicU16>,
     detail_status: Arc<AtomicU16>,
     retry_after: Arc<Mutex<Option<String>>>,
@@ -65,10 +68,40 @@ impl Drop for Fixture {
     }
 }
 impl Fixture {
+    async fn restart(&mut self) {
+        self.server.abort();
+        let old_server = std::mem::replace(&mut self.server, tokio::spawn(async {}));
+        let _ = old_server.await;
+        let provider_client = self.app.0.client.clone();
+        let placeholder = App::open(
+            &self.root.join("restart-placeholder"),
+            0,
+            "fixture".into(),
+            String::new(),
+        )
+        .unwrap();
+        drop(std::mem::replace(&mut self.app, placeholder));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut app = App::open(&self.root, port, "native-fixture".into(), String::new()).unwrap();
+        Arc::get_mut(&mut app.0).unwrap().client = provider_client;
+        self.app = app;
+        self.base = format!("http://127.0.0.1:{port}");
+        let router = self.app.router();
+        self.server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+    }
     async fn new() -> Self {
         let root = std::env::temp_dir().join(format!("morrow-gmail-sync-{}", uuid::Uuid::new_v4()));
         let rows = Arc::new(Mutex::new(Vec::<Value>::new()));
         let hits = Arc::new(Mutex::new(Vec::new()));
+        let history_pages = Arc::new(Mutex::new(std::collections::HashMap::<String, Value>::new()));
+        let remote_history = history_pages.clone();
+        let history_status = Arc::new(AtomicU16::new(200));
+        let remote_history_status = history_status.clone();
+        let traffic = Arc::new([AtomicU64::new(0), AtomicU64::new(0)]);
+        let remote_traffic = traffic.clone();
         let remote_rows = rows.clone();
         let remote_hits = hits.clone();
         let list_status = Arc::new(AtomicU16::new(200));
@@ -107,6 +140,9 @@ impl Fixture {
             while let Ok((socket, _)) = listener.accept().await {
                 let tls = tls.clone();
                 let rows = remote_rows.clone();
+                let traffic = remote_traffic.clone();
+                let history_pages = remote_history.clone();
+                let history_status = remote_history_status.clone();
                 let hits = remote_hits.clone();
                 let list_status = remote_status.clone();
                 let detail_status = remote_detail_status.clone();
@@ -163,8 +199,13 @@ impl Fixture {
                         assert!(n > 0);
                         bytes.extend_from_slice(&buffer[..n]);
                     }
+                    traffic[0].fetch_add(bytes.len() as u64, Ordering::Relaxed);
                     hits.lock().unwrap().push((method.clone(), url.clone()));
-                    let status = if path.as_str().ends_with("/messages") {
+                    let status = if path.as_str().ends_with("/history") {
+                        history_status.load(Ordering::SeqCst)
+                    } else if path.as_str().ends_with("/messages")
+                        || path.as_str().ends_with("/profile")
+                    {
                         list_status.load(Ordering::SeqCst)
                     } else if path.as_str().ends_with("/deleted") {
                         detail_status.load(Ordering::SeqCst)
@@ -183,7 +224,24 @@ impl Fixture {
                         stream.write_all(body).await.unwrap();
                         return;
                     }
-                    let result = if path.as_str().ends_with("/labels") {
+                    let result = if path.as_str().ends_with("/profile") {
+                        json!({"historyId":"1"})
+                    } else if path.as_str().ends_with("/history") {
+                        let page = url
+                            .query_pairs()
+                            .find(|(k, _)| k == "pageToken")
+                            .map(|(_, v)| v.into_owned())
+                            .unwrap_or_default();
+                        let start = url
+                            .query_pairs()
+                            .find(|(k, _)| k == "startHistoryId")
+                            .map(|(_, v)| v.into_owned())
+                            .unwrap();
+                        history_pages.lock().unwrap().get(&page).cloned().unwrap_or_else(|| {
+                            if start=="1" {json!({"historyId":"2","history":[{"id":"2","messages":rows.lock().unwrap().iter().map(|r|json!({"id":r["id"]})).collect::<Vec<_>>()}]})}
+                            else {json!({"historyId":start})}
+                        })
+                    } else if path.as_str().ends_with("/labels") {
                         json!({"labels":[{"id":"Label_1","name":"Old label","type":"user"},{"id":"Label_2","name":"New label","type":"user"}]})
                     } else if method == "POST" && path.as_str().ends_with("/messages/send") {
                         json!({"id":"accepted"})
@@ -248,6 +306,7 @@ impl Fixture {
                         }
                     };
                     let body = serde_json::to_vec(&result).unwrap();
+                    traffic[1].fetch_add(body.len() as u64, Ordering::Relaxed);
                     stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await.unwrap();
                     let _ = stream.write_all(&body).await;
                     let _ = stream.shutdown().await;
@@ -283,6 +342,9 @@ impl Fixture {
             client,
             rows,
             hits,
+            traffic,
+            history_pages,
+            history_status,
             list_status,
             detail_status,
             retry_after,
@@ -894,6 +956,10 @@ async fn read_quota_wait_is_shared_by_sync_history_and_catalog_without_extending
 #[tokio::test]
 async fn refresh_deduplicates_scopes_reuses_bodies_and_keeps_drafts_and_owners_fresh() {
     let f = Fixture::new().await;
+    f.history_pages
+        .lock()
+        .unwrap()
+        .insert(String::new(), json!({"historyId":"2"}));
     for (prefix, labels) in [
         ("inbox", json!(["INBOX", "STARRED"])),
         ("sent", json!(["SENT"])),
@@ -912,15 +978,15 @@ async fn refresh_deduplicates_scopes_reuses_bodies_and_keeps_drafts_and_owners_f
             .iter()
             .filter(|(_, url)| url.path().contains("/messages/"))
             .collect::<Vec<_>>();
-        assert_eq!(hits.len(), 158);
-        assert_eq!(bodies.len(), 150);
+        assert_eq!(hits.len(), if expected_full == 150 { 159 } else { 104 });
+        assert_eq!(bodies.len(), if expected_full == 150 { 150 } else { 100 });
         assert_eq!(
             bodies
                 .iter()
                 .map(|(_, url)| url.path())
                 .collect::<std::collections::HashSet<_>>()
                 .len(),
-            150
+            if expected_full == 150 { 150 } else { 100 }
         );
         assert_eq!(
             bodies
@@ -964,7 +1030,11 @@ async fn refresh_deduplicates_scopes_reuses_bodies_and_keeps_drafts_and_owners_f
         .iter_mut()
         .find(|row| row["id"] == "draft0")
         .unwrap()["payload"]["body"]["data"] = URL_SAFE_NO_PAD.encode("Edited draft").into();
-    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    // Missing legacy fields heal through the fair rolling reconciliation;
+    // provider drafts are still refetched in every incremental cycle.
+    for _ in 0..3 {
+        assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    }
     assert_eq!(f.message(A, "google:draft0").await["body"], "Edited draft");
     assert_eq!(
         f.message(A, "google:inbox1").await["replyTo"],
@@ -1391,4 +1461,191 @@ async fn incomplete_placeholder_requires_valid_provider_metadata() {
     assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 502);
     assert!(f.message(A, "google:complex").await.is_null());
     assert!(f.message(A, "google:healthy").await.is_null());
+}
+
+#[tokio::test]
+#[ignore = "Explicit synthetic performance run; local TLS/DNS fixtures only"]
+async fn synthetic_provider_sync_benchmark() {
+    let f = Fixture::new().await;
+    for (prefix, labels) in [
+        ("inbox", json!(["INBOX", "STARRED"])),
+        ("sent", json!(["SENT"])),
+        ("draft", json!(["DRAFT"])),
+    ] {
+        f.rows.lock().unwrap().extend((0..50).map(|i| {
+            let mut row = raw(&format!("{prefix}{i}"), labels.clone());
+            row["payload"]["body"]["data"] = URL_SAFE_NO_PAD
+                .encode("Synthetic fixture only 發票. ".repeat(72))
+                .into();
+            row
+        }));
+    }
+    f.history_pages
+        .lock()
+        .unwrap()
+        .insert(String::new(), json!({"historyId":"2"}));
+    let mut samples = Vec::new();
+    for round in 0..6 {
+        f.hits.lock().unwrap().clear();
+        for count in f.traffic.iter() {
+            count.store(0, Ordering::Relaxed);
+        }
+        let begin = std::time::Instant::now();
+        assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+        let hits = f.hits.lock().unwrap();
+        samples.push(json!({"round":round,"wallMs":begin.elapsed().as_secs_f64()*1000.0,"requests":hits.len(),"requestBytes":f.traffic[0].load(Ordering::Relaxed),"responseBodyBytes":f.traffic[1].load(Ordering::Relaxed),"fullGets":hits.iter().filter(|(_,u)|u.query_pairs().any(|(k,v)|k=="format" && v=="full")).count(),"minimalGets":hits.iter().filter(|(_,u)|u.query_pairs().any(|(k,v)|k=="format" && v=="minimal")).count()}));
+    }
+    println!(
+        "synthetic_provider_benchmark {}",
+        json!({"provider":"gmail","mailboxRows":150,"samples":samples,"scope":"Local TLS fixture only; 50 mutable drafts intentionally refetched each cycle. HTTP request bytes include headers; response bytes include JSON bodies only. No UI/real-account claim."})
+    );
+}
+
+#[tokio::test]
+async fn gmail_history_pages_and_large_events_resume_after_restart_without_skipping_ids() {
+    let mut f = Fixture::new().await;
+    *f.rows.lock().unwrap() = vec![raw("old", json!(["INBOX", "UNREAD"]))];
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    f.rows
+        .lock()
+        .unwrap()
+        .extend((0..120).map(|i| raw(&format!("new{i:03}"), json!(["INBOX"]))));
+    f.history_pages.lock().unwrap().insert(String::new(),json!({"historyId":"20","history":[{"id":"10","messagesAdded":(0..120).map(|i|json!({"message":{"id":format!("new{i:03}")}})).collect::<Vec<_>>()}],"nextPageToken":"second"}));
+    f.history_pages.lock().unwrap().insert("second".into(),json!({"historyId":"20","history":[{"id":"11","labelsRemoved":[{"message":{"id":"old"},"labelIds":["UNREAD"]}]}]}));
+    f.rows.lock().unwrap()[0]["labelIds"] = json!(["INBOX"]);
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    let state = f.app.settings().await.unwrap()["gmailSync"][A].clone();
+    assert_eq!(state["historyId"], "1");
+    assert_eq!(state["pending"]["ids"].as_array().unwrap().len(), 70);
+    assert!(state["pageToken"].is_null());
+    f.restart().await;
+    assert_eq!(f.app.settings().await.unwrap()["gmailSync"][A], state);
+    for _ in 0..2 {
+        assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    }
+    let state = f.app.settings().await.unwrap()["gmailSync"][A].clone();
+    assert_eq!(state["historyId"], "1");
+    assert_eq!(state["pageToken"], "second");
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    assert_eq!(
+        f.app.settings().await.unwrap()["gmailSync"][A]["historyId"],
+        "20"
+    );
+    f.app
+        .db(|db| {
+            assert_eq!(
+                db.conn.query_row(
+                    "SELECT count(*) FROM messages WHERE account=? AND id LIKE 'google:new%'",
+                    [A],
+                    |r| r.get::<_, i64>(0)
+                )?,
+                120
+            );
+            assert!(db.get(B, "google:new000")?.is_none());
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(f.message(A, "google:old").await["read"], true);
+}
+
+#[tokio::test]
+async fn gmail_history_deletion_is_explicit_and_database_failure_cannot_advance_cursor() {
+    let f = Fixture::new().await;
+    *f.rows.lock().unwrap() = vec![
+        raw("kept", json!(["INBOX", "UNREAD"])),
+        raw("deleted", json!(["INBOX"])),
+    ];
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    let body = f.message(A, "google:deleted").await["body"].clone();
+    f.rows.lock().unwrap()[0]["labelIds"] = json!(["INBOX"]);
+    f.detail_status.store(404, Ordering::SeqCst);
+    f.history_pages.lock().unwrap().insert(String::new(),json!({"historyId":"9","history":[{"id":"8","labelsRemoved":[{"message":{"id":"kept"}}],"messagesDeleted":[{"message":{"id":"deleted"}}]}]}));
+    f.app.db(|db| {db.conn.execute_batch("CREATE TEMP TRIGGER reject_sync BEFORE UPDATE ON messages WHEN new.account='a@example.invalid' AND new.id='google:kept' BEGIN SELECT RAISE(ABORT,'synthetic transaction failure'); END;")?;Ok(())}).await.unwrap();
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 502);
+    assert_eq!(
+        f.app.settings().await.unwrap()["gmailSync"][A]["historyId"],
+        "1"
+    );
+    assert_ne!(
+        f.message(A, "google:deleted").await["providerDeleted"],
+        true
+    );
+    f.app
+        .db(|db| {
+            db.conn.execute_batch("DROP TRIGGER reject_sync")?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    assert_eq!(
+        f.app.settings().await.unwrap()["gmailSync"][A]["historyId"],
+        "9"
+    );
+    assert_eq!(
+        f.message(A, "google:deleted").await["providerDeleted"],
+        true
+    );
+    assert_eq!(f.message(A, "google:deleted").await["body"], body);
+    f.detail_status.store(200, Ordering::SeqCst);
+    f.history_pages.lock().unwrap().insert(String::new(),json!({"historyId":"11","history":[{"id":"10","messagesAdded":[{"message":{"id":"deleted"}}]}]}));
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    assert_eq!(
+        f.message(A, "google:deleted").await["providerDeleted"],
+        false
+    );
+    assert_eq!(
+        f.message(A, "google:deleted").await["providerFolderMissing"],
+        false
+    );
+    assert_eq!(f.message(A, "google:deleted").await["body"], body);
+}
+
+#[tokio::test]
+async fn gmail_expiry_reseeds_and_cyclic_pages_keep_the_last_committed_checkpoint() {
+    let f = Fixture::new().await;
+    *f.rows.lock().unwrap() = vec![raw("same", json!(["INBOX"]))];
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    let before = f.app.settings().await.unwrap()["gmailSync"][A]["liveSince"].clone();
+    f.history_status.store(404, Ordering::SeqCst);
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    let state = f.app.settings().await.unwrap()["gmailSync"][A].clone();
+    assert!(state["historyId"].is_null());
+    assert_eq!(state["liveSince"], before);
+    f.history_status.store(200, Ordering::SeqCst);
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    f.history_pages.lock().unwrap().insert(
+        String::new(),
+        json!({"historyId":"3","nextPageToken":"cycle"}),
+    );
+    f.history_pages.lock().unwrap().insert(
+        "cycle".into(),
+        json!({"historyId":"3","nextPageToken":"cycle"}),
+    );
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    let checkpoint = f.app.settings().await.unwrap()["gmailSync"][A].clone();
+    let response = f.call("POST", "/api/sync", A, json!({})).await;
+    assert_eq!(response.0, 502);
+    assert_eq!(response.1["code"], "gmail_sync_invalid");
+    let mut blocked = checkpoint.clone();
+    blocked["blocked"] = true.into();
+    assert_eq!(f.app.settings().await.unwrap()["gmailSync"][A], blocked);
+    let count = f
+        .hits
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, u)| u.path().ends_with("/history"))
+        .count();
+    assert_eq!(f.call("POST", "/api/sync", A, json!({})).await.0, 502);
+    assert_eq!(
+        f.hits
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, u)| u.path().ends_with("/history"))
+            .count(),
+        count
+    );
 }

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.4 — 2026-10-12
+
+- Skip unchanged message writes and full-text reindexing for flag-only updates; retain search metadata, real text changes, migration/rebuild behavior and atomic transactions.
+- Persist Gmail history IDs, bounded pending change IDs and page checkpoints; resolve current additions, deletions and labels, recover expired cursors within reviewed coverage, and retain progress across crashes/reconnects.
+- Advance IMAP new UIDs without skipping bursts larger than 50 messages. Bind checkpoints to connection, folder and UIDVALIDITY; use capability-gated CONDSTORE/QRESYNC for bounded known-UID flags/deletions and retain conservative fallback.
+- Avoid duplicate Graph rolling reads after current-view/recent/delta work, while keeping every delta resolution and fair folder progress past blocked checkpoints.
+- Add content-free phase/request/byte/cache/database/FTS diagnostics and reproducible synthetic mailbox/provider benchmarks. No claim that backend gains establish native UI or real-account latency gains.
+- Preserve drafts, reviewed sent payloads, owner-bound attachment bytes, priority TTL, background quotas and existing native/release/security gates. See [release notes](docs/releases/v0.7.4.md) and [performance evidence](docs/SYNC_PERFORMANCE.md).
+
 ## 0.7.3 — 2026-10-11
 
 - Prioritize the selected message and visible mail page during sync with expiring account/connection-bound hints, while preserving the existing background reconciliation quotas and checkpoints (PR29).

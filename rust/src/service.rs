@@ -157,6 +157,8 @@ impl App {
         &self,
         work: impl FnOnce(&Store) -> Result<T> + Send + 'static,
     ) -> Result<T> {
+        let queued = std::time::Instant::now();
+        let metrics = crate::sync_profile::current();
         let permit = self
             .0
             .db_slots
@@ -170,7 +172,13 @@ impl App {
             let db = store
                 .lock()
                 .map_err(|_| Error::new(503, "Restart Morrow Mail to reopen the workspace."))?;
-            work(&db)
+            crate::sync_profile::blocking(metrics.clone(), || {
+                if let Some(metrics) = metrics {
+                    metrics.add("dbQueueMicros", queued.elapsed().as_micros() as u64);
+                }
+                let _phase = crate::sync_profile::phase("database");
+                work(&db)
+            })
         })
         .await
         .map_err(|_| Error::new(500, "The database operation could not be completed."))?
