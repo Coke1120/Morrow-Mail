@@ -2,6 +2,7 @@
 
 ## 0.7.4 — 2026-10-12
 
+- Keep the Windows reading pane inside the visible client when resizing the window or sidebar; retain the requested list width when space returns (PR30). Native UI/persistence fixtures passed, while known strict resource observation error 87 remains disclosed.
 - Skip unchanged message writes and full-text reindexing for flag-only updates; retain search metadata, real text changes, migration/rebuild behavior and atomic transactions.
 - Persist Gmail history IDs, bounded pending change IDs and page checkpoints; resolve current additions, deletions and labels, recover expired cursors within reviewed coverage, and retain progress across crashes/reconnects.
 - Advance IMAP new UIDs without skipping bursts larger than 50 messages. Bind checkpoints to connection, folder and UIDVALIDITY; use capability-gated CONDSTORE/QRESYNC for bounded known-UID flags/deletions and retain conservative fallback.

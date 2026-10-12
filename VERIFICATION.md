@@ -1,5 +1,44 @@
 # Verification — 12 October 2026
 
+## 0.7.4 combined merge and release preparation — 12 October 2026
+
+The owner explicitly instructed merging both PR30/31 now and publishing the next
+release with known failed/pending verification disclosed, then debugging afterward.
+Both drafts were marked ready. Fresh main had no branch-protection configuration
+or active rulesets; no protection, admin bypass, force push or required-check
+configuration was changed. Ordinary two-parent merges preserve PR30 head
+`0a0fa2ba808f032c8a14dcfa89d67b63c6d90a16` at merge
+`aeb66b1bf8108f4c28dc6564da9083a14304d997`, and PR31 head
+`77e85046470c44cdef8ab3d2565b9972a5f9f9f8` at merge
+`e2e745d5539613839b051431f27774958ee4b2d9`. The two documentation conflicts
+retain both source-stage records below. Merge author/committer emails are
+`howailok1120@hotmail.com`. This task made no observer corrective code change.
+
+PR30's [38231339110](https://github.com/Coke1120/Morrow-Mail/actions/runs/38231339110),
+attempt 1, remains Windows failure despite all UI/persistence cases passing.
+Owned case 2/sample index 12 records PID4616/parent7140, `nativeAcquire` error87
+and unknown exit, after 12,929.1355 ms with a 54.489 ms sample query. Cases1/3
+were complete; relocation was skipped. Its other worker separately completed
+fresh/owned/restart Parallels UI/resize/persistence checks, without claiming the
+strict collector passed or modifying VM policy. No failed run was retried.
+
+PR31 corrected functional source `34a9545` passed both Rust suites and the complete
+Windows native job in [38233076840](https://github.com/Coke1120/Morrow-Mail/actions/runs/38233076840),
+attempt1; its macOS adversarial batch and final documentation-head
+[38235241039](https://github.com/Coke1120/Morrow-Mail/actions/runs/38235241039)
+remain pending at preparation. Candidate passes do not erase the first CLI
+stack-overflow failure or historical observer/reader failures.
+
+Package.json already reports 0.7.4; fresh remote had no v0.7.4 tag or release.
+The existing main `[release-on-tag]` preparation policy avoids a duplicate main
+build; the accompanying tag still runs all native/Rust/security checks on both
+platforms. Publication and usable public assets require that fresh paired run
+and the existing same-run/same-attempt pinned-key publisher. No gate, signing
+credential, workflow or fixture deadline was changed. Tagged CI/publisher and
+public ZIP/checksum/version/Ed25519 verification are pending at this preparation.
+The branch-stage entries below retain their original evidence, superseded only
+for merged/publication status by this combined record.
+
 ## Windows reading-pane fit — Mac mini Parallels, 12 October 2026
 
 The owner's Mac mini runs Parallels Windows 11 ARM64 (`10.0.26200.0`) with x64 emulation and WebView2 `154.0.4258.62`. The VM has no Rust, VS or PowerShell 7 tools on PATH. The public v0.7.3 Windows ZIP was downloaded and passed CRC/path/version, SHA-256 (`e59d1376a2ee23816f1b29e0e26e7d671f2e98fe9f92ec20eb32036c251fad10`) and pinned-key Ed25519 manifest verification. Its application source matches main `5438edf`; only verification documentation differs.
