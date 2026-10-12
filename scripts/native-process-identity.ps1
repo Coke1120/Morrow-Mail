@@ -8,10 +8,16 @@ if (-not ('MorrowObservationIdentity.ExitProof' -as [type])) {
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
 namespace MorrowObservationIdentity {
+    public sealed class Acquisition {
+        public uint Pid { get; internal set; }
+        public SafeProcessHandle Handle { get; internal set; }
+        public int? NativeError { get; internal set; }
+    }
     public sealed class Result {
         public string Outcome { get; internal set; } = "unavailable";
         public string Stage { get; internal set; } = "input";
@@ -102,6 +108,28 @@ namespace MorrowObservationIdentity {
                 int error = Marshal.GetLastWin32Error(); handle.Dispose(); throw new Win32Exception(error);
             }
             return handle;
+        }
+        // Pin a bounded set of current children before slower per-child managed
+        // admission. This does not validate identity/parentage or retry failures.
+        // The caller owns every returned handle, including on rejected admission.
+        public static Acquisition[] AcquireMany(uint[] pids) {
+            if (pids == null || pids.Length > 64) throw new ArgumentException("Pin inventory limit.");
+            var seen = new HashSet<uint>();
+            foreach (uint pid in pids)
+                if (pid <= 1 || !seen.Add(pid)) throw new ArgumentException("Invalid pin identity.");
+            var acquired = new List<Acquisition>();
+            try {
+                foreach (uint pid in pids) {
+                    var item = new Acquisition { Pid = pid };
+                    try { item.Handle = Acquire(pid); }
+                    catch (Win32Exception error) { item.NativeError = error.NativeErrorCode; }
+                    acquired.Add(item);
+                }
+                return acquired.ToArray();
+            } catch {
+                foreach (var item in acquired) item.Handle?.Dispose();
+                throw;
+            }
         }
         public static Result Probe(uint pid, long cimTicks, long parentTicks) {
             var result = new Result { ExpectedPid = pid };

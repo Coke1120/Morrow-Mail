@@ -18,6 +18,13 @@ if ($SchemaSelfTest) {
     Check (-not [MorrowObservationIdentity.ExitProof]::MatchesCreation($ticks, 0L, $ticks - 100L)) 'invalid-identity'
     $invalid = [MorrowObservationIdentity.ExitProof]::Probe(0, $ticks, $ticks - 100L)
     Check (-not $invalid.ProvenZero -and $invalid.Outcome -ceq 'invalidInput' -and -not $invalid.HandleOpened) 'invalid-input-no-native'
+    Check ([MorrowObservationIdentity.ExitProof]::AcquireMany([uint32[]] @()).Count -eq 0) 'empty-pin-batch'
+    foreach ($bad in @(@(0), @(2, 2), @(2..66))) {
+        $rejected = $false
+        try { [void] [MorrowObservationIdentity.ExitProof]::AcquireMany([uint32[]] $bad) }
+        catch { $rejected = $_.Exception.InnerException -is [ArgumentException] }
+        Check $rejected 'invalid-pin-batch-no-native'
+    }
     Write-Host 'Native identity pure integer/input checks passed; Windows proof was not run.'
     return
 }
@@ -116,6 +123,7 @@ $child = $null; $fixtureHandle = $null; $currentCase = 'setup'; $self = [Diagnos
 $failureSeen = $false; $operation = 'start'; $watch = [Diagnostics.Stopwatch]::StartNew()
 try {
     foreach ($currentCase in @('live-control', 'held-exit-zero', 'held-exit-zero-cim-precision', 'held-exit-nonzero',
+        'batch-held-exit-zero', 'batch-held-exit-nonzero',
         'released-fixture-handles', 'disposed-owned-handle', 'projected-pid-mismatch', 'projected-creation-mismatch', 'projected-parent-start',
         'query-without-rights', 'wait-without-rights')) {
         $operation = 'wall-budget'
@@ -127,16 +135,31 @@ try {
         $parentTicks = $self.StartTime.ToUniversalTime().Ticks
         $cimTicks = if ($currentCase -eq 'held-exit-zero-cim-precision') { $ticks - $ticks % 10L } else { $ticks }
         $lookupArgument = $false; $released = $false; $projection = 'none'; $probeSource = 'native-open-process'
+        if ($currentCase -like 'batch-*') {
+            $operation = 'early-pin-batch'
+            $batch = [MorrowObservationIdentity.ExitProof]::AcquireMany([uint32[]] @($childId, $self.Id))
+            try {
+                Check ($batch.Count -eq 2 -and $batch[0].Pid -eq $childId -and $batch[1].Pid -eq $self.Id -and
+                    $null -eq $batch[0].NativeError -and $null -eq $batch[1].NativeError) 'early-pin-batch-identities'
+                $fixtureHandle = $batch[0].Handle
+            } finally {
+                foreach ($item in $batch) { if ($item.Handle -and $item.Handle -ne $fixtureHandle) { $item.Handle.Dispose() } }
+            }
+            $probeSource = 'early-batch-owned-handle'
+        }
         if ($currentCase -notin @('live-control', 'disposed-owned-handle', 'query-without-rights', 'wait-without-rights')) {
             $operation = 'child-exit-barrier'
-            $child.StandardInput.WriteLine($(if ($currentCase -eq 'held-exit-nonzero') { 'exit7' } else { 'exit0' }))
+            $child.StandardInput.WriteLine($(if ($currentCase -in @('held-exit-nonzero', 'batch-held-exit-nonzero')) { 'exit7' } else { 'exit0' }))
             $child.StandardInput.Flush(); Check ($child.WaitForExit(5000)) 'child-exit-barrier'
-            if ($currentCase -eq 'released-fixture-handles') { $child.Dispose(); $child = $null; $released = $true }
+            if ($currentCase -eq 'released-fixture-handles' -or $currentCase -like 'batch-*') { $child.Dispose(); $child = $null; $released = $true }
             $operation = 'dotnet-lookup'
             $lookupArgument = Read-LookupRejection $childId
         }
         $operation = 'native-proof'
         switch ($currentCase) {
+            { $_ -like 'batch-*' } {
+                $proof = [MorrowObservationIdentity.ExitProof]::ReadHandle($fixtureHandle, $childId, $cimTicks, $parentTicks)
+            }
             'disposed-owned-handle' {
                 # A closed borrowed handle must not prove an exit even while
                 # its owned child is alive. This is handle validation, not a
@@ -185,6 +208,15 @@ try {
                 Check ($lookupArgument -and $proof.ProvenZero -and $proof.ActualPid -eq $childId -and $proof.StartUtcTicks -eq $ticks) 'held-zero-lookup-vs-native'
             }
             'held-exit-nonzero' { Check ($lookupArgument -and -not $proof.ProvenZero -and $proof.Outcome -ceq 'nonzeroExit' -and $proof.ExitCode -eq 7) 'nonzero-is-not-zero' }
+            { $_ -like 'batch-*' } {
+                Check ($released -and $lookupArgument -and $proof.IdentityMatched -and $proof.Signaled -and
+                    $proof.ActualPid -eq $childId -and $proof.StartUtcTicks -eq $ticks) 'batch-pin-survives-creator-release'
+                if ($currentCase -eq 'batch-held-exit-zero') {
+                    Check ($proof.ProvenZero -and $proof.ExitCode -eq 0) 'batch-exact-zero'
+                } else {
+                    Check (-not $proof.ProvenZero -and $proof.Outcome -ceq 'nonzeroExit' -and $proof.ExitCode -eq 7) 'batch-nonzero-stays-nonzero'
+                }
+            }
             'released-fixture-handles' {
                 # Releasing this fixture's handles does not establish global
                 # kernel-object lifetime. Record exactly one probe, without
