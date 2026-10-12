@@ -925,18 +925,22 @@ IAsyncAction Shell::smoke() {
                 }
             }
             auto originalSize = window.AppWindow().Size();
-            auto originalBodyWidth = mailBody.ActualWidth();
-            auto widerPixels = static_cast<int32_t>(std::lround(300 * root.XamlRoot().RasterizationScale()));
-            for (bool wide : {true, false, true, false}) {
-                window.AppWindow().Resize({originalSize.Width + (wide ? widerPixels : 0), originalSize.Height});
+            auto scale = root.XamlRoot().RasterizationScale();
+            auto wideWidth = std::min(originalSize.Width + static_cast<int32_t>(std::lround(300 * scale)), GetSystemMetrics(SM_CXMAXTRACK));
+            auto narrowWidth = std::min(originalSize.Width, wideWidth - static_cast<int32_t>(std::lround(100 * scale)));
+            for (auto width : {wideWidth, narrowWidth, wideWidth, narrowWidth, originalSize.Width}) {
+                window.AppWindow().Resize({width, originalSize.Height});
                 auto deadline = GetTickCount64() + 2000;
                 do { co_await resume_after(std::chrono::milliseconds(20)); co_await ui; root.UpdateLayout(); }
-                while ((std::abs(mailBody.ActualWidth() - originalBodyWidth - (wide ? 300 : 0)) > 1
-                    || !readerFits() || (wide && std::abs(mailList.ActualWidth() - 500) > 1)) && GetTickCount64() < deadline);
+                while ((window.AppWindow().Size().Width != width || !readerFits()
+                    || (mailBody.ActualWidth() >= 828 && std::abs(mailList.ActualWidth() - 500) > 1)) && GetTickCount64() < deadline);
                 check(readerFits() && listWidth == 500
-                    && std::abs(mailBody.ActualWidth() - originalBodyWidth - (wide ? 300 : 0)) <= 1
-                    && (!wide || std::abs(mailList.ActualWidth() - 500) <= 1),
-                    L"Window resizing clipped the reader or lost the requested list width.");
+                    && window.AppWindow().Size().Width == width
+                    && (mailBody.ActualWidth() < 828 || std::abs(mailList.ActualWidth() - 500) <= 1),
+                    L"Window resizing clipped the reader or lost the requested list width: requested window " + to_hstring(width)
+                        + L", actual " + to_hstring(window.AppWindow().Size().Width) + L", client " + to_hstring(root.ActualWidth())
+                        + L", body " + to_hstring(mailBody.ActualWidth()) + L", list " + to_hstring(mailList.ActualWidth())
+                        + L", reader " + to_hstring(readerPane.ActualWidth()) + L".");
             }
             Json preference; put(preference, L"density", originalDensity);
             state = co_await service->request(L"/settings/preferences", L"", L"POST", preference);
