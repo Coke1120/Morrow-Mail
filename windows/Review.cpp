@@ -451,17 +451,20 @@ IAsyncAction reviewWorkspaceChecks(std::shared_ptr<Shell> shell) {
     auto accounts=array(shell->state,L"accounts");if(accounts.Size()<2)co_return;
     auto owner=text(accounts.GetAt(0).GetObject(),L"id"),other=text(accounts.GetAt(1).GetObject(),L"id");
     require(std::wstring_view(owner).ends_with(L"@fixture.invalid")&&std::wstring_view(other).ends_with(L"@fixture.invalid"),L"Review checks require owned fictional accounts.");
-    auto saved=shell->review;auto globalOwner=shell->owner;shell->review=std::make_shared<ReviewMemory>();shell->review->scope=owner;
-    struct Restore {std::shared_ptr<Shell> shell;std::shared_ptr<ReviewMemory> saved;~Restore(){shell->review=saved;}} restore{shell,saved};
+    auto saved=shell->review;auto globalOwner=shell->owner;bool timerRunning=shell->timer&&shell->timer.IsEnabled();if(timerRunning)shell->timer.Stop();shell->review=std::make_shared<ReviewMemory>();shell->review->scope=owner;
+    struct Restore {std::shared_ptr<Shell> shell;std::shared_ptr<ReviewMemory> saved;bool timerRunning;~Restore(){shell->review=saved;if(timerRunning)shell->timer.Start();}} restore{shell,saved,timerRunning};
     apartment_context ui;co_await reviewPage(shell,L"reply-suggestions");co_await ui;
     auto page=mountedReview.lock();require(page&&page->current(),L"The review page did not mount.");
     Json proposal,message,draft;put(proposal,L"id",L"fixture-proposal");put(proposal,L"proposalId",L"fixture-proposal");put(proposal,L"accountId",owner);put(proposal,L"messageId",L"same-id");put(proposal,L"text",L"Original proposed text");
     put(message,L"id",L"same-id");put(message,L"accountId",owner);put(message,L"subject",L"Fictional review subject");put(message,L"fromEmail",L"sender@fixture.invalid");put(message,L"body",L"Please review the fictional decision.");message.Insert(L"hasAttachments",Value::CreateBooleanValue(false));proposal.Insert(L"message",message);
     put(draft,L"accountId",owner);put(draft,L"replyToId",L"same-id");put(draft,L"to",L"sender@fixture.invalid");put(draft,L"body",L"Original proposed text");
     auto key=keyOf(proposal);auto memory=shell->review;memory->entries[std::wstring(key)]={copy(proposal),copy(message),copy(draft),copy(draft),true,false};
-    co_await selectReply(page,proposal);co_await ui;require(page->body&&page->facts&&page->send,L"The original/reply editor did not mount.");page->body.Text(L"User edit preserved across accounts.");
-    co_await resume_after(std::chrono::milliseconds(40));co_await ui;
-    require(text(memory->entries[std::wstring(key)].draft,L"body")==L"User edit preserved across accounts."&&!memory->entries[std::wstring(key)].reviewed&&!page->send.IsEnabled(),L"Native editing lost text or retained old approval.");
+    co_await selectReply(page,proposal);co_await ui;require(page->body&&page->facts&&page->send,L"The original/reply editor did not mount.");
+    auto ready=GetTickCount64()+5000;shell->root.UpdateLayout();
+    while((!page->body.IsLoaded()||!page->body.ActualWidth())&&GetTickCount64()<ready){co_await resume_after(std::chrono::milliseconds(20));co_await ui;shell->root.UpdateLayout();}
+    require(page->current()&&page->body.IsLoaded()&&page->body.ActualWidth(),L"The owned review TextBox did not load for native input.");page->body.ApplyTemplate();page->body.Text(L"User edit preserved across accounts.");
+    ready=GetTickCount64()+5000;while(text(memory->entries[std::wstring(key)].draft,L"body")!=L"User edit preserved across accounts."&&GetTickCount64()<ready){co_await resume_after(std::chrono::milliseconds(20));co_await ui;}
+    require(page->current(),L"The review page became obsolete during native text input.");require(text(memory->entries[std::wstring(key)].draft,L"body")==L"User edit preserved across accounts.",L"Native TextChanged did not retain the owned review text.");require(!memory->entries[std::wstring(key)].reviewed&&!page->send.IsEnabled(),L"Native text editing retained old facts approval.");
     Json changed=copy(proposal);put(changed,L"id",L"new-fixture-proposal");put(changed,L"proposalId",L"new-fixture-proposal");put(changed,L"text",L"New proposed text");Json response;put(response,L"owner",owner);JsonArray rows;rows.Append(changed);response.Insert(L"proposals",rows);memory->values[std::wstring(owner)]=response;page->queuePaint=L"force-refresh";paintQueue(page);
     require(memory->entries[std::wstring(key)].stale&&text(memory->entries[std::wstring(key)].draft,L"body")==L"User edit preserved across accounts."&&!page->send.IsEnabled(),L"A newer suggestion replaced an edit or retained approval.");
     page->columns.Width(500);shell->root.UpdateLayout();reflow(page);require(page->compact&&page->detail.Visibility()==Visibility::Visible&&page->listScroll.Visibility()==Visibility::Collapsed,L"Narrow review must show one pane.");
