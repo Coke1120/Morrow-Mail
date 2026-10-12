@@ -955,7 +955,7 @@ void about(Page const& p) {
     action(p, p->body, L"Install & Restart…", [](Page page) -> IAsyncAction {
         if (text(page->updateState, L"phase") != L"ready" && text(page->updateState, L"phase") != L"installing") throw hresult_error(E_FAIL, L"Download and verify an update first.");
         auto dirty = page->shell->dirty; dirty.erase(page->busyKey);
-        if (!dirty.empty()) throw hresult_error(E_FAIL, L"Save or discard unsaved edits before restarting.");
+        if (!dirty.empty() || page->shell->review->hasEdits()) throw hresult_error(E_FAIL, L"Save or discard unsaved edits before restarting.");
         if (!(co_await page->shell->confirm(L"Install verified update and restart?", L"Morrow will restart now. Active requests finish saving before replacement; downloads and checkpointed indexing continue after restart. Uncertain sends are never replayed. The previous app and your workspace are retained.", L"Install & Restart")) || !page->current()) co_return;
         std::exception_ptr failed;
         try { co_await page->shell->service->request(L"/updates/install", {}, L"POST", Json(), true); }

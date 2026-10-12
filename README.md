@@ -12,6 +12,8 @@
 
 Morrow is a local, single-user app: **SwiftUI on macOS**, **WinUI 3 on Windows**, and a shared **Rust service**. Desktop packages include their runtime; no Node, Electron or Rust installation is needed to use them.
 
+The unreleased [Today and reply review workspace](docs/REVIEW_WORKSPACE.md) adds shared account tabs, compact saved decisions, inline original messages and editable account-owned replies. All accounts is a read-only aggregate. Decisions remain AI suggestions with checked source quotations; historical summaries and incomplete conversations require review. Saving or opening a suggestion never sends mail. Cross-platform validation and remaining limits are tracked in [verification](VERIFICATION.md#unreleased-today-and-reply-review-workspace).
+
 Version 0.7.3 includes search-page retention across reading/reply saves and clearer attachment removal names, covered in the [mail flow review](docs/MAIL_FLOW_REVIEW.md). Native CI does not complete manual accessibility/live-account acceptance; the extreme Mac HTML timeout and Windows first-acquire observation gap remain open.
 
 Version 0.7.4 keeps the side-by-side reading pane inside the mail view when the window or sidebar changes width, restoring the requested list width when space returns. The separate Mac mini Parallels checks and tagged release status are recorded in [verification](VERIFICATION.md#windows-reading-pane-fit--mac-mini-parallels-12-october-2026).

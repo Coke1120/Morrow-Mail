@@ -195,7 +195,7 @@ final class MorrowDelegate: NSObject, NSApplicationDelegate {
             alert.informativeText = "Morrow is saving or communicating with a provider. You can quit when it finishes."
             alert.runModal(); return .terminateCancel
         }
-        if !model.unsavedForms.isEmpty && !model.confirmDiscard("Quit with unsaved changes?") { return .terminateCancel }
+        if (!model.unsavedForms.isEmpty || model.review.hasEdits) && !model.confirmDiscard("Quit with unsaved changes?") { return .terminateCancel }
         model.stop(); return .terminateNow
     }
 }
