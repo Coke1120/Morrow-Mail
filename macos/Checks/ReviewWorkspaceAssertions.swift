@@ -80,7 +80,7 @@ import SwiftUI
             try await snapshot(AnyView(TodayView().environmentObject(model).tint(morrowGreen).preferredColorScheme(.light)),name:"implementation-today-narrow",width:720)
             let traffic=ReviewProtocol.recordedTraffic()
             try require(!traffic.contains { $0["path"]=="/api/send" || $0["path"]=="/api/ai" },"no send or model request is allowed by the fixture")
-            print("Review workspace: combined owner-bound reads, duplicate IDs, A/B/A draft/selection/scroll retention, inline original owner, load failure, stale proposal approval reset, owned Save and explicit sending review passed. Fictional transport only; VoiceOver and Windows are not established.")
+            print("Review workspace: combined owner-bound reads, duplicate IDs, A/B/A draft/selection/scroll retention, inline original owner, load failure, dirty-budget retention, foreign-draft rejection/retry, unanswered-decision blocking, stale proposal approval reset, owned Save and explicit sending review passed. Fictional transport only; VoiceOver and Windows are not established.")
         } catch { print(error.localizedDescription); exit(1) }
     }
 }

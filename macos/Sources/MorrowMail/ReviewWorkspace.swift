@@ -208,8 +208,7 @@ struct OriginalReviewMessage: View {
             Text("Original message").font(.headline)
             Text(message["subject"].nonempty ? message["subject"].string : "(No subject)").font(.callout.weight(.semibold))
             Text("\(message["fromName"].string) <\(message["fromEmail"].string)> · \(dateLabel(message["date"].string))").font(.caption).foregroundStyle(.secondary)
-            SecureMessageBody(message: message, autoLoadExternalImages: model.preferences["autoLoadExternalImages"].bool)
-            AttachmentReader(message: message)
+            ScrollView { AttachmentReader(message: message).frame(maxWidth: .infinity, alignment: .leading) }.frame(height: 200)
         }.textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
     }
 }

@@ -95,8 +95,8 @@ private struct TodayReviewWorkspace: View {
                 Button("View original message") { Task { await review.showOriginal(.object(["id": event["messageId"], "accountId": event["accountId"]]), model: model) } }.disabled(model.busy)
             }
             if event["deadline"].isObject { Text("Deadline, original wording: " + event["deadline"]["quote"].string).font(.caption).foregroundStyle(.secondary) }
-            ForEach(Array(event["questions"].array.enumerated()), id: \.offset) { _, question in Label(question.string, systemImage: "questionmark.circle").font(.caption) }
             DisclosureGroup(event["grounded"].bool ? "Evidence · \(event["messageIds"].array.count) message(s)" : "Older summary · decision status needs review") {
+                ForEach(Array(event["questions"].array.enumerated()), id: \.offset) { _, question in Label(question.string, systemImage: "questionmark.circle").font(.caption) }
                 ForEach(Array(event["evidence"].array.enumerated()), id: \.offset) { _, quote in
                     VStack(alignment: .leading, spacing: 4) { Text(quote["quote"].string).font(.callout).textSelection(.enabled); Button("View original message") { Task { await review.showOriginal(.object(["id": quote["messageId"], "accountId": event["accountId"]]), model: model) } } }
                 }

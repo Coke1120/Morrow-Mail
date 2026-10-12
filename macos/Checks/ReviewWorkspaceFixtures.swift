@@ -98,4 +98,3 @@ final class ReviewProtocol: URLProtocol {
         return data.isEmpty ? .null : try JSONDecoder().decode(JSON.self,from:data)
     }
 }
-

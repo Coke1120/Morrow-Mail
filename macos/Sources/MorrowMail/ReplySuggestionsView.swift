@@ -92,7 +92,7 @@ private struct ReplyReviewWorkspace: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if let message = review.messages[key] {
-                        OriginalReviewMessage(message: message).frame(minHeight: 120, maxHeight: 260)
+                        OriginalReviewMessage(message: message).frame(minHeight: 120)
                     } else if review.preparing.contains(key) { ProgressView("Loading original message…") }
                     if let error = review.errors[key] { Text(error).foregroundStyle(.red); Button("Reload original and suggestion") { Task { await review.inspect(proposal, model: model, replace: review.drafts[key] == nil) } } }
                     if review.stale.contains(key) {
