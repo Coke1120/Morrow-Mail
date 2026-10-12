@@ -16,7 +16,9 @@ Version 0.7.3 includes search-page retention across reading/reply saves and clea
 
 The [attachment follow-up](docs/ATTACHMENT_FLOW_REVIEW.md) keeps Windows on the current account/page during an attachment save. The subsequent sidebar correction restores WinUI's actual selected item when a guarded invocation is rejected, so its account/folder label matches the retained mailbox. Isolated native checks cover real `ItemInvoked` events, ownership, repeated operations and saved-file security metadata; interactive picker cancellation remains unverified.
 
-[Current-page synchronization](docs/SYNC_PRIORITY_AND_INCREMENTAL.md) in the 0.7.3 source prioritizes the selected message and visible page while retaining older-cache checks. Recent IMAP/Outlook pages reuse proven immutable cached bodies; drafts and uncertain content still fetch normally. Sync preserves reviewed sent payloads and owned downloaded attachments. Incremental/notification work is a separate staged design. Publication requires fresh paired tagged checks; see the [0.7.3 release notes](docs/releases/v0.7.3.md).
+The 0.7.4 source adds persisted Gmail history, connection/folder/UIDVALIDITY-bound IMAP UID progression and capability-gated flag/deletion reads, plus Graph overlap/folder fairness improvements. Unchanged mail skips database writes, and flag-only changes avoid full-text reindexing. See [synthetic measurements and protocol limits](docs/SYNC_PERFORMANCE.md). Publication requires the existing paired tagged checks; these measurements do not establish live-account or UI latency acceptance.
+
+[Current-page synchronization](docs/SYNC_PRIORITY_AND_INCREMENTAL.md) in the 0.7.3 source prioritizes the selected message and visible page while retaining older-cache checks. Recent IMAP/Outlook pages reuse proven immutable cached bodies; drafts and uncertain content still fetch normally. Sync preserves reviewed sent payloads and owned downloaded attachments. The 0.7.4 follow-up implements bounded incremental polling; push/IDLE remain future work. Publication requires fresh paired tagged checks; see the [0.7.3 release notes](docs/releases/v0.7.3.md).
 
 ## Download
 

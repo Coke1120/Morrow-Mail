@@ -1,5 +1,15 @@
 # Verification — 11 October 2026
 
+## 0.7.4 synchronization candidate — 12 October 2026
+
+Isolated branch `perf/incremental-mailbox-sync` starts from freshly verified main `5438edf9cd1b04578744edd1b5110c178372bb1f`, after the published 0.7.3 tag at `1f9306e0a177cd9892e23641e9b86b41b682df0f`. The owner approved the profiling/database/provider work, then explicitly authorized merge and the next paired release once ready. The original checkout, real approximately 2 GB mailbox, messages, accounts/tokens and Parallels were not opened or changed.
+
+The candidate implements semantic no-op imports, metadata-only search updates, one lazily prepared write statement per changed import batch, persisted Gmail history/expiry/restart/invalid-cursor gates, connection/folder/UIDVALIDITY-bound IMAP new UIDs and capability/enable-gated bounded CONDSTORE/QRESYNC, and conservative Graph overlap/folder fairness. [Measurements and remaining protocol/acceptance limits](docs/SYNC_PERFORMANCE.md) retain the complete baseline and initial-candidate samples; final provider timings and native/paired CI evidence follow on the PR. This is not a complete mailbox mirror, a new push/IDLE service, a UI-latency diagnosis or live-account acceptance.
+
+Local Rust 1.99.0 formatting, strict all-target Clippy and the complete locked suite passed (314 tests, three explicit synthetic benchmark cases ignored). A subsequent availability-replay correction is covered by the focused Gmail/storage regression before publishing the review head. The first sandbox unit attempt could not write the Apple compiler cache; the next cold-cache updater fixture exceeded its unchanged 60-second compile deadline. A compile-only AppKit/SwiftUI/WebKit prewarm returned success, and the original updater fixture then passed within its existing gate. Initial fixture revisions also exposed a metadata-FETCH response-shape mistake and an unclassified rejected MODSEQ FETCH; both were corrected and the complete suite passed. No deadline, TLS validation, native unknown-exit gate or release policy was weakened.
+
+Package metadata and release notes prepare 0.7.4. Draft PR, native acceptance, final paired CI/tag/publisher and public asset/signature verification are pending here; this entry does not declare merge or publication. macOS ad-hoc signing/no notarization, Windows unsigned distribution, pre-existing observer/reader gaps and outstanding manual/live-account/Parallels acceptance remain.
+
 ## v0.7.3 published and public downloads verified — 11 October 2026
 
 [v0.7.3](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.7.3) was published at **2026-10-11T18:40:11Z** from `1f9306e0a177cd9892e23641e9b86b41b682df0f`, whose parent is merged main `277c9ccf17b285587ec07be8fc77729d418d904e`. Local ancestry and the remote annotated tag confirm inclusion of PR28 and PR29. Release author, committer and tagger email is `howailok1120@hotmail.com`.

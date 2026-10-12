@@ -142,6 +142,7 @@ struct BoundedImap<S> {
     prefix: [u8; 16],
     prefix_len: usize,
     last_cr: bool,
+    write_cr: bool,
 }
 impl<S> BoundedImap<S> {
     fn new(inner: S) -> Self {
@@ -155,6 +156,7 @@ impl<S> BoundedImap<S> {
             prefix: [0; 16],
             prefix_len: 0,
             last_cr: false,
+            write_cr: false,
         }
     }
     fn set_limit(&mut self, limit: usize) {
@@ -243,6 +245,7 @@ impl<S: AsyncRead + Unpin> AsyncRead for BoundedImap<S> {
                     return Poll::Ready(Err(error));
                 }
                 output.put_slice(input.filled());
+                crate::sync_profile::count("imapResponseBytes", input.filled().len() as u64);
                 Poll::Ready(Ok(()))
             }
             result => result,
@@ -260,8 +263,17 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for BoundedImap<S> {
             return Poll::Ready(Err(io::Error::other(ResponseLimit(this.limit))));
         }
         let result = Pin::new(&mut this.inner).poll_write(cx, bytes);
-        if matches!(result, Poll::Ready(Ok(size)) if size > 0) {
+        if let Poll::Ready(Ok(size)) = &result
+            && *size > 0
+        {
             this.remaining = this.limit;
+            crate::sync_profile::count("imapRequestBytes", *size as u64);
+            for byte in &bytes[..*size] {
+                if this.write_cr && *byte == b'\n' {
+                    crate::sync_profile::count("imapCommands", 1);
+                }
+                this.write_cr = *byte == b'\r';
+            }
         }
         result
     }
@@ -351,6 +363,8 @@ fn connector() -> Result<native_tls::TlsConnector> {
     native_tls::TlsConnector::new().map_err(|_| providers::remote_error())
 }
 async fn connect(mail: &Value, connector: &native_tls::TlsConnector) -> Result<Mailbox> {
+    let _phase = crate::sync_profile::phase("imapConnect");
+    crate::sync_profile::count("imapConnections", 1);
     let host = validation::hostname(&mail["imapHost"], "IMAP host")?;
     let stream = tokio::time::timeout(
         Duration::from_secs(15),
@@ -583,6 +597,7 @@ struct Fetched {
     read: bool,
     starred: bool,
     draft: bool,
+    modseq: Option<u64>,
 }
 // async-imap 0.11's FETCH stream discards tagged NO/BAD; validate completion before using rows.
 async fn checked_fetch(
@@ -590,12 +605,21 @@ async fn checked_fetch(
     sequence: impl std::fmt::Display,
     query: impl std::fmt::Display,
 ) -> Result<Vec<Fetched>> {
+    Ok(checked_delta(session, sequence, query).await?.0)
+}
+async fn checked_delta(
+    session: &mut Mailbox,
+    sequence: impl std::fmt::Display,
+    query: impl std::fmt::Display,
+) -> Result<(Vec<Fetched>, Vec<std::ops::RangeInclusive<u32>>)> {
+    let _phase = crate::sync_profile::phase("imapFetch");
     use imap_proto::types::{AttributeValue, MessageSection, Response, SectionPath, Status};
     let tag = session
         .run_command(format!("UID FETCH {sequence} {query}"))
         .await
         .map_err(imap_error)?;
     let mut rows = Vec::new();
+    let mut vanished = Vec::new();
     loop {
         let response = session
             .read_response()
@@ -608,10 +632,17 @@ async fn checked_fetch(
                 status,
                 ..
             } => {
-                if *finished != tag || *status != Status::Ok {
+                if *finished != tag {
                     return Err(providers::remote_error());
                 }
-                return Ok(rows);
+                if *status != Status::Ok {
+                    let mut error = providers::remote_error();
+                    if matches!(status, Status::No | Status::Bad) {
+                        error.body["code"] = "provider_imap_command_rejected".into();
+                    }
+                    return Err(error);
+                }
+                return Ok((rows, vanished));
             }
             Response::Fetch(_, attrs) => {
                 if rows.len() >= 50 {
@@ -622,6 +653,7 @@ async fn checked_fetch(
                 for attr in attrs {
                     match attr {
                         AttributeValue::Uid(id) => row.uid = Some(*id),
+                        AttributeValue::ModSeq(value) => row.modseq = Some(*value),
                         AttributeValue::Rfc822Size(size) => row.size = Some(*size),
                         AttributeValue::Flags(flags) => {
                             has_flags = true;
@@ -657,6 +689,12 @@ async fn checked_fetch(
                     return Err(providers::remote_error());
                 }
                 rows.push(row);
+            }
+            Response::Vanished { uids, .. } => {
+                if vanished.len() + uids.len() > 50 {
+                    return Err(providers::remote_error());
+                }
+                vanished.extend(uids.iter().cloned());
             }
             Response::Data {
                 status: Status::Bye,
@@ -802,9 +840,14 @@ pub async fn reconcile_priority_with_tls(
     // per-request limit and overall read deadline; return no partial batch.
     tokio::time::timeout(Duration::from_secs(45), async {
         let mut result = Vec::new();
-        for chunk in messages.chunks(50) {
-            result.extend(reconcile_with_tls(mail, chunk, connector).await?);
+        if messages.is_empty() {
+            return Ok(result);
         }
+        let mut session = connect(mail, connector).await?;
+        for chunk in messages.chunks(50) {
+            result.extend(reconcile_session(&mut session, mail, chunk).await?);
+        }
+        let _ = session.logout().await;
         Ok(result)
     })
     .await
@@ -818,46 +861,337 @@ pub async fn reconcile_with_tls(
     if messages.len() > 50 {
         return Err(Error::invalid("Reconciliation batch exceeds 50 messages."));
     }
-    tokio::time::timeout(Duration::from_secs(45),async {
-        let mut session=connect(mail,connector).await?;
-        let mut result=Vec::new();
-        let mut folders=std::collections::BTreeMap::<String,Vec<&Value>>::new();
-        for message in messages { folders.entry(message["providerFolderId"].as_str().filter(|s|!s.is_empty()).unwrap_or("INBOX").to_owned()).or_default().push(message); }
-        for (folder, messages) in folders {
-            let mailbox = match session.examine(encode_folder(&folder)?).await {
+    tokio::time::timeout(Duration::from_secs(45), async {
+        let mut session = connect(mail, connector).await?;
+        let result = reconcile_session(&mut session, mail, messages).await?;
+        let _ = session.logout().await;
+        Ok(result)
+    })
+    .await
+    .map_err(|_| providers::remote_error())?
+}
+async fn sync_examine(
+    session: &mut Mailbox,
+    folder: &str,
+) -> Result<(async_imap::types::Mailbox, bool)> {
+    use imap_proto::types::{MailboxDatum, Response, ResponseCode, Status};
+    let capabilities = match session.capabilities().await {
+        Ok(caps) => caps,
+        Err(async_imap::error::Error::No(_) | async_imap::error::Error::Bad(_)) => {
+            return examine_read(session, folder).await.map(|m| (m, false));
+        }
+        Err(error) => return Err(imap_error(error)),
+    };
+    let mut qresync = false;
+    if capabilities.has_str("QRESYNC") {
+        qresync = enable_qresync(session).await?;
+    }
+    if qresync {
+        return examine_read(session, folder).await.map(|m| (m, true));
+    }
+    if !capabilities.has_str("CONDSTORE") {
+        return examine_read(session, folder).await.map(|m| (m, false));
+    }
+    // async-imap exposes SELECT CONDSTORE, but reading must remain EXAMINE.
+    let tag = session
+        .run_command(format!(
+            "EXAMINE {} (CONDSTORE)",
+            quoted(&encode_folder(folder)?)?
+        ))
+        .await
+        .map_err(imap_error)?;
+    let mut mailbox = async_imap::types::Mailbox::default();
+    loop {
+        let response = session
+            .read_response()
+            .await
+            .map_err(imap_error)?
+            .ok_or_else(network_error)?;
+        match response.parsed() {
+            Response::MailboxData(MailboxDatum::Exists(count)) => mailbox.exists = *count,
+            Response::Data {
+                status: Status::Ok,
+                code: Some(code),
+                ..
+            } => match code {
+                ResponseCode::UidValidity(v) => mailbox.uid_validity = Some(*v),
+                ResponseCode::UidNext(v) => mailbox.uid_next = Some(*v),
+                ResponseCode::HighestModSeq(v) => mailbox.highest_modseq = Some(*v),
+                _ => {}
+            },
+            Response::Done {
+                tag: done, status, ..
+            } => {
+                if *done != tag {
+                    return Err(providers::remote_error());
+                }
+                if *status == Status::Ok {
+                    return Ok((mailbox, false));
+                }
+                if matches!(status, Status::No | Status::Bad) {
+                    return examine_read(session, folder).await.map(|m| (m, false));
+                }
+                return Err(providers::remote_error());
+            }
+            Response::Data {
+                status: Status::Bye,
+                ..
+            } => return Err(network_error()),
+            _ => {}
+        }
+    }
+}
+async fn examine_read(session: &mut Mailbox, folder: &str) -> Result<async_imap::types::Mailbox> {
+    session
+        .examine(encode_folder(folder)?)
+        .await
+        .map_err(|error| {
+            let rejected = matches!(&error, async_imap::error::Error::No(_));
+            let mut error = imap_error(error);
+            if rejected {
+                error.body["code"] = "provider_imap_mailbox_rejected".into();
+            }
+            error
+        })
+}
+async fn enable_qresync(session: &mut Mailbox) -> Result<bool> {
+    use imap_proto::types::{Response, Status};
+    let tag = session
+        .run_command("ENABLE QRESYNC")
+        .await
+        .map_err(imap_error)?;
+    let mut enabled = false;
+    loop {
+        let response = session
+            .read_response()
+            .await
+            .map_err(imap_error)?
+            .ok_or_else(network_error)?;
+        match response.parsed() {
+            Response::Capabilities(caps) => {
+                if response.borrow_owner().starts_with(b"* ENABLED ") {
+                    enabled=caps.iter().any(|cap|matches!(cap,imap_proto::types::Capability::Atom(v) if v.eq_ignore_ascii_case("QRESYNC")));
+                }
+            }
+            Response::Done {
+                tag: done, status, ..
+            } => {
+                if *done != tag {
+                    return Err(providers::remote_error());
+                }
+                if matches!(status, Status::No | Status::Bad) {
+                    return Ok(false);
+                }
+                if *status != Status::Ok {
+                    return Err(providers::remote_error());
+                }
+                return Ok(enabled);
+            }
+            Response::Data {
+                status: Status::Bye,
+                ..
+            } => return Err(network_error()),
+            _ => {}
+        }
+    }
+}
+async fn reconcile_session(
+    session: &mut Mailbox,
+    mail: &Value,
+    messages: &[Value],
+) -> Result<Vec<Value>> {
+    let _phase = crate::sync_profile::phase("imapReconcile");
+    let mut result = Vec::new();
+    let mut folders = std::collections::BTreeMap::<String, Vec<&Value>>::new();
+    for message in messages {
+        folders
+            .entry(
+                message["providerFolderId"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("INBOX")
+                    .to_owned(),
+            )
+            .or_default()
+            .push(message);
+    }
+    for (folder, messages) in folders {
+        let (mailbox, qresync) =
+            match sync_examine(session, &folder).await {
                 Ok(mailbox) => mailbox,
-                Err(error @ async_imap::error::Error::No(_)) => {
-                    let names = list_names(&mut session).await?;
-                    if names.iter().any(|name| name.path == folder || name.path.eq_ignore_ascii_case("INBOX") && folder.eq_ignore_ascii_case("INBOX")) {
-                        return Err(imap_error(error));
+                Err(error) if error.body["code"] == "provider_imap_mailbox_rejected" => {
+                    let names = list_names(session).await?;
+                    if names.iter().any(|name| {
+                        name.path == folder
+                            || name.path.eq_ignore_ascii_case("INBOX")
+                                && folder.eq_ignore_ascii_case("INBOX")
+                    }) {
+                        return Err(error);
                     }
-                    result.extend(messages.into_iter().map(|message| merge(message.clone(), &json!({"providerFolderMissing":true}))));
+                    result.extend(messages.into_iter().map(|message| {
+                        merge(message.clone(), &json!({"providerFolderMissing":true}))
+                    }));
                     continue;
                 }
-                Err(error) => return Err(imap_error(error)),
+                Err(error) => return Err(error),
             };
-            let validity=mailbox.uid_validity.filter(|v|*v>0).ok_or_else(providers::remote_error)?;
-            let mut selected=std::collections::HashMap::new();
-            for message in messages {
-                let remote=message["remoteId"].as_str().filter(|s|!s.is_empty()).unwrap_or(string(message,"id"));
-                let parts:Vec<_>=remote.split(':').collect();
-                if parts.len()!=3 || parts[0]!="imap" { return Err(providers::remote_error()); }
-                let original=parts[1].parse::<u32>().map_err(|_|providers::remote_error())?;
-                let uid=parts[2].parse::<u32>().ok().filter(|id|*id>0).ok_or_else(providers::remote_error)?;
-                if validity!=original { result.push(merge(message.clone(),&json!({"providerFolderMissing":true}))); }
-                else if selected.insert(uid,message).is_some() {return Err(providers::remote_error());}
+        let validity = mailbox
+            .uid_validity
+            .filter(|v| *v > 0)
+            .ok_or_else(providers::remote_error)?;
+        let mut selected = std::collections::HashMap::new();
+        for message in messages {
+            let remote = message["remoteId"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(string(message, "id"));
+            let parts: Vec<_> = remote.split(':').collect();
+            if parts.len() != 3 || parts[0] != "imap" {
+                return Err(providers::remote_error());
             }
-            if selected.is_empty() {continue;}
-            let sequence=selected.keys().map(u32::to_string).collect::<Vec<_>>().join(",");
-            for row in checked_fetch(&mut session,sequence,"(UID FLAGS)").await? {
-                let uid=row.uid.ok_or_else(providers::remote_error)?;
-                let message=selected.remove(&uid).ok_or_else(providers::remote_error)?;
-                result.push(merge(message.clone(),&json!({"read":row.read,"starred":row.starred,"providerFolderMissing":false,"providerDeleted":false})));
+            let original = parts[1]
+                .parse::<u32>()
+                .map_err(|_| providers::remote_error())?;
+            let uid = parts[2]
+                .parse::<u32>()
+                .ok()
+                .filter(|id| *id > 0)
+                .ok_or_else(providers::remote_error)?;
+            if validity != original {
+                result.push(merge(
+                    message.clone(),
+                    &json!({"providerFolderMissing":true}),
+                ));
+            } else if selected.insert(uid, message).is_some() {
+                return Err(providers::remote_error());
             }
-            for message in selected.values() {result.push(merge((*message).clone(),&json!({"providerDeleted":true,"providerFolderMissing":true})));}
         }
-        let _=session.logout().await; Ok(result)
-    }).await.map_err(|_|providers::remote_error())?
+        if selected.is_empty() {
+            continue;
+        }
+        let sequence = selected
+            .keys()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let highest = mailbox.highest_modseq.filter(|v| *v > 0);
+        let minimum = selected
+            .values()
+            .map(|m| {
+                if m["imapSyncConnection"] == crate::folders::connection_version(mail) {
+                    m["imapModseq"].as_u64().unwrap_or(0)
+                } else {
+                    0
+                }
+            })
+            .min()
+            .unwrap_or(0);
+        let mut incremental = false;
+        let mut present = std::collections::HashSet::new();
+        let mut vanished = Vec::new();
+        let rows =
+            if let Some(highest) = highest.filter(|highest| minimum > 0 && minimum <= *highest) {
+                let delta = if qresync {
+                    checked_delta(
+                        session,
+                        &sequence,
+                        format!("(UID FLAGS MODSEQ) (CHANGEDSINCE {minimum} VANISHED)"),
+                    )
+                    .await
+                } else {
+                    for row in checked_fetch(session, &sequence, "UID").await? {
+                        let uid = row.uid.ok_or_else(providers::remote_error)?;
+                        if !selected.contains_key(&uid) || !present.insert(uid) {
+                            return Err(providers::remote_error());
+                        }
+                    }
+                    if highest == minimum {
+                        Ok((vec![], vec![]))
+                    } else {
+                        checked_delta(
+                            session,
+                            &sequence,
+                            format!("(UID FLAGS MODSEQ) (CHANGEDSINCE {minimum})"),
+                        )
+                        .await
+                    }
+                };
+                match delta {
+                    Ok((rows, removed)) => {
+                        incremental = true;
+                        vanished = removed;
+                        rows
+                    }
+                    Err(error) if error.body["code"] == "provider_imap_command_rejected" => {
+                        checked_fetch(session, &sequence, "(UID FLAGS)").await?
+                    }
+                    Err(error) => return Err(error),
+                }
+            } else {
+                match checked_fetch(
+                    session,
+                    &sequence,
+                    if highest.is_some() {
+                        "(UID FLAGS MODSEQ)"
+                    } else {
+                        "(UID FLAGS)"
+                    },
+                )
+                .await
+                {
+                    Err(error)
+                        if highest.is_some()
+                            && error.body["code"] == "provider_imap_command_rejected" =>
+                    {
+                        checked_fetch(session, &sequence, "(UID FLAGS)").await?
+                    }
+                    result => result?,
+                }
+            };
+        let mut removed = std::collections::HashSet::new();
+        for range in vanished {
+            // Intersect compact VANISHED sets without expanding arbitrary ranges.
+            for uid in selected.keys().filter(|uid| range.contains(uid)) {
+                removed.insert(*uid);
+            }
+        }
+        for row in rows {
+            let uid = row.uid.ok_or_else(providers::remote_error)?;
+            if incremental && row.modseq.is_none() {
+                return Err(incomplete_read());
+            }
+            let message = selected.remove(&uid).ok_or_else(providers::remote_error)?;
+            if removed.contains(&uid) {
+                return Err(providers::remote_error());
+            }
+            let mut value = merge(
+                message.clone(),
+                &json!({"read":row.read,"starred":row.starred,"providerFolderMissing":false,"providerDeleted":false}),
+            );
+            if let Some(highest) = highest.filter(|_| row.modseq.is_some()) {
+                value["imapModseq"] = highest.into();
+                value["imapSyncConnection"] = crate::folders::connection_version(mail);
+            }
+            result.push(value);
+        }
+        for (uid, message) in &selected {
+            if incremental && !removed.contains(uid) && (qresync || present.contains(uid)) {
+                let mut value = merge(
+                    (*message).clone(),
+                    &json!({"providerDeleted":false,"providerFolderMissing":false,"imapModseq":highest,"imapSyncConnection":crate::folders::connection_version(mail)}),
+                );
+                // CHANGEDSINCE omissions are unchanged, never deleted.
+                value["id"] = message["id"].clone();
+                result.push(value);
+            } else {
+                result.push(merge(
+                    (*message).clone(),
+                    &json!({"providerDeleted":true,"providerFolderMissing":true}),
+                ));
+            }
+        }
+    }
+    Ok(result)
 }
 pub async fn raw_message(mail: &Value, message: &Value) -> Result<Vec<u8>> {
     raw_message_with_tls(mail, message, &connector()?).await
@@ -1092,7 +1426,12 @@ async fn fetch_folder(
     };
     if mailbox.exists == 0 || cursor_uid == Some(1) {
         let _ = session.logout().await;
-        return Ok(json!({"messages":[],"nextCursor":null}));
+        let mut page = json!({"messages":[],"nextCursor":null});
+        if options["incremental"] == true {
+            page["syncCheckpoint"] = json!({"path":path,"validity":validity,"uid":mailbox.uid_next.unwrap_or(1).saturating_sub(1),"connection":crate::folders::connection_version(mail),"more":false});
+            page["expectedSyncCheckpoint"] = options["syncCheckpoints"][&path].clone();
+        }
+        return Ok(page);
     }
     let parse_bound = |key| {
         let value = string(options, key);
@@ -1131,31 +1470,87 @@ async fn fetch_folder(
             .filter(|uid| *uid > 0)
             .ok_or_else(providers::remote_error)?
     };
+    let observed_upper = upper;
+    let checkpoint = &options["syncCheckpoints"][&path];
+    let incremental = options["incremental"] == true;
+    let previous_uid = if incremental
+        && checkpoint["connection"] == crate::folders::connection_version(mail)
+        && checkpoint["validity"] == validity
+    {
+        checkpoint["uid"]
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+    } else {
+        None
+    };
     let mut ids = Vec::new();
     // ponytail: fixed UID windows bound SEARCH to 8192 IDs / 128 KiB per command.
     // Scan at most 32 windows per page; persist an advancing cursor across sparse gaps.
-    for _ in 0..32 {
-        if upper == 0 || ids.len() > 50 {
-            break;
+    let mut progressed = previous_uid.unwrap_or(observed_upper);
+    if let Some(previous) = previous_uid {
+        // Ascending windows preserve every newly assigned UID, even when more
+        // than one 50-message page arrives between polls. Do not use UID n:*:
+        // IMAP ranges reverse when n exceeds the highest UID.
+        let mut lower = previous.saturating_add(1);
+        for _ in 0..32 {
+            if previous == u32::MAX || lower > observed_upper || ids.len() > 50 {
+                break;
+            }
+            let end = lower.saturating_add(8191).min(observed_upper);
+            let mut terms = query.clone();
+            terms.push(format!("UID {lower}:{end}"));
+            session.get_mut().set_limit(128 * 1024);
+            let found = session
+                .uid_search(terms.join(" "))
+                .await
+                .map_err(imap_error)?;
+            session.get_mut().set_limit(COMMAND_LIMIT);
+            if found.len() > 8192 || found.iter().any(|uid| *uid < lower || *uid > end) {
+                return Err(providers::remote_error());
+            }
+            ids.extend(found);
+            ids.sort_unstable();
+            ids.truncate(51);
+            progressed = end;
+            if end == u32::MAX {
+                break;
+            }
+            lower = end + 1;
         }
-        let lower = upper.saturating_sub(8191).max(1);
-        let mut terms = query.clone();
-        terms.push(format!("UID {lower}:{upper}"));
-        session.get_mut().set_limit(128 * 1024);
-        let found = session
-            .uid_search(terms.join(" "))
-            .await
-            .map_err(imap_error)?;
-        session.get_mut().set_limit(COMMAND_LIMIT);
-        if found.len() > 8192 || found.iter().any(|uid| *uid < lower || *uid > upper) {
-            return Err(providers::remote_error());
+        if ids.len() > 50 {
+            progressed = ids[49];
         }
-        ids.extend(found);
-        ids.sort_unstable_by(|a, b| b.cmp(a));
-        ids.truncate(51);
-        upper = lower - 1;
+        upper = if progressed < observed_upper {
+            observed_upper
+        } else {
+            0
+        };
+    } else {
+        for _ in 0..32 {
+            if upper == 0 || ids.len() > 50 {
+                break;
+            }
+            let lower = upper.saturating_sub(8191).max(1);
+            let mut terms = query.clone();
+            terms.push(format!("UID {lower}:{upper}"));
+            session.get_mut().set_limit(128 * 1024);
+            let found = session
+                .uid_search(terms.join(" "))
+                .await
+                .map_err(imap_error)?;
+            session.get_mut().set_limit(COMMAND_LIMIT);
+            if found.len() > 8192 || found.iter().any(|uid| *uid < lower || *uid > upper) {
+                return Err(providers::remote_error());
+            }
+            ids.extend(found);
+            ids.sort_unstable_by(|a, b| b.cmp(a));
+            ids.truncate(51);
+            upper = lower - 1;
+        }
     }
-    let next_uid = if ids.len() > 50 {
+    let next_uid = if previous_uid.is_some() {
+        None
+    } else if ids.len() > 50 {
         ids.get(49).copied()
     } else if upper > 0 {
         Some(upper + 1)
@@ -1236,6 +1631,7 @@ async fn fetch_folder(
             !string(old, "messageId").is_empty() && old["messageId"] == header["messageId"]
         });
         let mut value = if let Some((previous, mut value)) = reuse {
+            crate::sync_profile::count("bodyCacheHits", 1);
             crate::mail::copy_cached_body(previous, &mut value);
             value
         } else if large {
@@ -1247,6 +1643,7 @@ async fn fetch_folder(
             value["hasAttachments"] = true.into();
             value
         } else {
+            crate::sync_profile::count("bodyFetches", 1);
             let rows = checked_fetch(&mut session, uid, "(UID BODY.PEEK[]<0.5242881>)").await?;
             if rows.is_empty() {
                 confirm_expunged(&mut session, &[uid]).await?;
@@ -1308,9 +1705,20 @@ async fn fetch_folder(
         }
     }
     let _ = session.logout().await;
-    Ok(
-        json!({"messages":messages,"nextCursor":if let Some(uid)=next_uid{json!({"path":path,"validity":validity,"uid":uid})}else{Value::Null}}),
-    )
+    let mut page = json!({"messages":messages,"nextCursor":if let Some(uid)=next_uid{json!({"path":path,"validity":validity,"uid":uid})}else{Value::Null}});
+    if incremental {
+        let incomplete = if previous_uid.is_some() {
+            checkpoint["bootstrapIncomplete"] == true && options["historyComplete"] != true
+        } else {
+            page["nextCursor"].is_object()
+                && page["messages"]
+                    .as_array()
+                    .is_some_and(|rows| rows.len() < 50)
+        };
+        page["syncCheckpoint"] = json!({"path":path,"validity":validity,"uid":progressed,"connection":crate::folders::connection_version(mail),"more":previous_uid.is_some() && upper>0,"bootstrapIncomplete":incomplete});
+        page["expectedSyncCheckpoint"] = checkpoint.clone();
+    }
+    Ok(page)
 }
 fn single_uid(values: &[imap_proto::types::UidSetMember]) -> Option<u32> {
     match values {

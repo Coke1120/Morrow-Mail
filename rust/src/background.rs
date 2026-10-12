@@ -254,6 +254,11 @@ pub fn start_import(db: &Store, account: &str, input: &Value) -> Result<()> {
             "DELETE FROM import_cursor_hashes WHERE account=?",
             [account],
         )?;
+        if connection["provider"] == "google" && config["gmailSync"][account]["blocked"] == true {
+            // An explicitly restarted reviewed import may repair a malformed
+            // incremental checkpoint; background retry never clears this gate.
+            write_owner(db, "gmailSync", account, Value::Null)?;
+        }
         write_owner(db, "imports", account, merge(job, &clear_import_failure()))
     })
 }

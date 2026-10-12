@@ -308,6 +308,7 @@ impl Store {
             CREATE TABLE IF NOT EXISTS messages(account TEXT NOT NULL,id TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(account,id));
             CREATE TABLE IF NOT EXISTS mail_attachments(account TEXT NOT NULL,id TEXT NOT NULL,metadata TEXT NOT NULL,bytes BLOB NOT NULL,PRIMARY KEY(account,id));
             CREATE TABLE IF NOT EXISTS import_cursor_hashes(account TEXT NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(account,digest));
+            CREATE TABLE IF NOT EXISTS mail_sync_cursor_hashes(provider TEXT NOT NULL,account TEXT NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(provider,account,digest));
             CREATE INDEX IF NOT EXISTS mail_remote ON messages(account,COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id));
             CREATE INDEX IF NOT EXISTS mail_metadata ON messages(account,COALESCE(json_extract(data,'$.folder'),''),COALESCE(json_extract(data,'$.date'),'') DESC,id,NOT COALESCE(json_extract(data,'$.read'),0),COALESCE(json_extract(data,'$.starred'),0),COALESCE(json_extract(data,'$.category'),''));
             CREATE INDEX IF NOT EXISTS mail_message_id ON messages(account,json_extract(data,'$.messageId'));")?;
@@ -375,12 +376,28 @@ impl Store {
         self.conn.prepare("SELECT data FROM messages WHERE account=? ORDER BY json_extract(data,'$.date') DESC,id")?.query_map([account], |row| row.get::<_, String>(0))?.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
     }
     pub fn upsert(&self, account: &str, message: &Value) -> Result<Value> {
+        let mut statement = self.prepare_message_upsert()?;
+        self.upsert_prepared(account, message, &mut statement)?;
+        Ok(message.clone())
+    }
+    pub(crate) fn prepare_message_upsert(&self) -> Result<rusqlite::Statement<'_>> {
+        let _phase = crate::sync_profile::phase("messagePrepare");
+        Ok(self.conn.prepare("INSERT INTO messages VALUES(?,?,?) ON CONFLICT(account,id) DO UPDATE SET data=excluded.data WHERE messages.data IS NOT excluded.data")?)
+    }
+    pub(crate) fn upsert_prepared(
+        &self,
+        account: &str,
+        message: &Value,
+        statement: &mut rusqlite::Statement<'_>,
+    ) -> Result<()> {
         let id = message["id"]
             .as_str()
             .filter(|id| !id.is_empty())
             .ok_or_else(|| Error::invalid("A message identity is required."))?;
-        self.conn.execute("INSERT INTO messages VALUES(?,?,?) ON CONFLICT(account,id) DO UPDATE SET data=excluded.data", params![account, id, serde_json::to_string(message)?])?;
-        Ok(message.clone())
+        let _phase = crate::sync_profile::phase("messageWrite");
+        let written = statement.execute(params![account, id, serde_json::to_string(message)?])?;
+        crate::sync_profile::count("messageWrites", written as u64);
+        Ok(())
     }
     pub fn update(&self, account: &str, id: &str, patch: &Value) -> Result<Option<Value>> {
         self.get(account, id)?
@@ -518,11 +535,14 @@ pub fn register_functions(conn: &Connection) -> Result<()> {
         | FunctionFlags::SQLITE_DETERMINISTIC
         | FunctionFlags::SQLITE_INNOCUOUS;
     conn.create_scalar_function("mail_normalize", 1, flags, |context| {
+        let _phase = crate::sync_profile::phase("searchNormalize");
         Ok(normalize::normalize(
             &context.get::<Option<String>>(0)?.unwrap_or_default(),
         ))
     })?;
     conn.create_scalar_function("mail_tokens", 1, flags, |context| {
+        let _phase = crate::sync_profile::phase("ftsTokenize");
+        crate::sync_profile::count("ftsTokenCalls", 1);
         Ok(normalize::tokens(
             &context.get::<Option<String>>(0)?.unwrap_or_default(),
         ))
@@ -553,7 +573,10 @@ fn create_provider_memberships(conn: &Connection) -> Result<()> {
         SELECT new.account,json_extract(new.data,'$.providerFolderId'),new.rowid WHERE json_type(new.data,'$.providerFolderId')='text'
         UNION SELECT new.account,value,new.rowid FROM json_each(new.data,'$.providerLabelIds') WHERE type='text';";
     conn.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS mail_provider_insert AFTER INSERT ON messages BEGIN {insert} END;
-        CREATE TRIGGER IF NOT EXISTS mail_provider_update AFTER UPDATE ON messages BEGIN DELETE FROM mail_provider_memberships WHERE message_rowid=old.rowid; {insert} END;
+        DROP TRIGGER IF EXISTS mail_provider_update;
+        CREATE TRIGGER mail_provider_update AFTER UPDATE ON messages
+        WHEN old.account IS NOT new.account OR json_extract(old.data,'$.providerFolderId') IS NOT json_extract(new.data,'$.providerFolderId') OR json_extract(old.data,'$.providerLabelIds') IS NOT json_extract(new.data,'$.providerLabelIds')
+        BEGIN DELETE FROM mail_provider_memberships WHERE message_rowid=old.rowid; {insert} END;
         CREATE TRIGGER IF NOT EXISTS mail_provider_delete AFTER DELETE ON messages BEGIN DELETE FROM mail_provider_memberships WHERE message_rowid=old.rowid; END;"))?;
     if !existed {
         conn.execute_batch("INSERT INTO mail_provider_memberships(account,folder_id,message_rowid)
@@ -576,7 +599,35 @@ fn create_index(conn: &Connection) -> Result<()> {
       INSERT INTO search_fts(rowid,subject,sender,recipients,body,labels) VALUES(new.rowid,mail_tokens(new.subject),mail_tokens(new.sender),mail_tokens(new.recipients),mail_tokens(new.body),mail_tokens(new.labels)); END;
     CREATE TRIGGER IF NOT EXISTS search_doc_delete AFTER DELETE ON search_documents BEGIN DELETE FROM search_fts WHERE rowid=old.rowid; END;
     CREATE TRIGGER IF NOT EXISTS search_message_delete AFTER DELETE ON messages BEGIN DELETE FROM search_documents WHERE rowid=old.rowid; DELETE FROM search_vectors WHERE account=old.account AND id=old.id; END;")?;
+    // Replace only trigger definitions, transactionally at open; existing rows,
+    // schema versions, rebuild progress and provider lookup indexes are retained.
+    let text_changed = [
+        "fromName",
+        "fromEmail",
+        "to",
+        "cc",
+        "bcc",
+        "subject",
+        "body",
+        "labels",
+    ]
+    .map(|field| {
+        format!("json_extract(old.data,'$.{field}') IS NOT json_extract(new.data,'$.{field}')")
+    })
+    .join(" OR ");
     conn.execute_batch(&format!("CREATE TRIGGER IF NOT EXISTS search_message_insert AFTER INSERT ON messages BEGIN INSERT INTO search_documents({COLUMNS}) VALUES({values}); END;
-        CREATE TRIGGER IF NOT EXISTS search_message_update AFTER UPDATE ON messages BEGIN DELETE FROM search_documents WHERE rowid=old.rowid; INSERT INTO search_documents({COLUMNS}) VALUES({values}); END;", values=index_values("new")))?;
+        DROP TRIGGER IF EXISTS search_message_update;
+        CREATE TRIGGER search_message_update AFTER UPDATE ON messages BEGIN
+          UPDATE search_documents SET date=COALESCE(json_extract(new.data,'$.date'),''),folder=COALESCE(json_extract(new.data,'$.folder'),''),unread=NOT COALESCE(json_extract(new.data,'$.read'),0),starred=COALESCE(json_extract(new.data,'$.starred'),0),category=COALESCE(json_extract(new.data,'$.category'),'')
+          WHERE rowid=new.rowid AND (date IS NOT COALESCE(json_extract(new.data,'$.date'),'') OR folder IS NOT COALESCE(json_extract(new.data,'$.folder'),'') OR unread IS NOT (NOT COALESCE(json_extract(new.data,'$.read'),0)) OR starred IS NOT COALESCE(json_extract(new.data,'$.starred'),0) OR category IS NOT COALESCE(json_extract(new.data,'$.category'),''));
+          UPDATE search_documents SET sender=mail_normalize(COALESCE(json_extract(new.data,'$.fromName'),'')||' '||COALESCE(json_extract(new.data,'$.fromEmail'),'')),recipients=mail_normalize(COALESCE(json_extract(new.data,'$.to'),'')||' '||COALESCE(json_extract(new.data,'$.cc'),'')||' '||COALESCE(json_extract(new.data,'$.bcc'),'')),subject=mail_normalize(json_extract(new.data,'$.subject')),body=mail_normalize(json_extract(new.data,'$.body')),labels=mail_normalize(json_extract(new.data,'$.labels'))
+          WHERE rowid=new.rowid AND ({text_changed});
+          INSERT INTO search_documents({COLUMNS}) SELECT {values} WHERE NOT EXISTS(SELECT 1 FROM search_documents WHERE rowid=new.rowid);
+        END;
+        CREATE TRIGGER IF NOT EXISTS search_doc_update AFTER UPDATE OF subject,sender,recipients,body,labels ON search_documents
+        WHEN old.subject IS NOT new.subject OR old.sender IS NOT new.sender OR old.recipients IS NOT new.recipients OR old.body IS NOT new.body OR old.labels IS NOT new.labels
+        BEGIN DELETE FROM search_fts WHERE rowid=old.rowid;
+          INSERT INTO search_fts(rowid,subject,sender,recipients,body,labels) VALUES(new.rowid,mail_tokens(new.subject),mail_tokens(new.sender),mail_tokens(new.recipients),mail_tokens(new.body),mail_tokens(new.labels));
+        END;", values=index_values("new")))?;
     Ok(())
 }

@@ -2920,7 +2920,9 @@ async fn sync_combined_owners_keep_local_patches_and_stable_ids_after_provider_m
     let fixture=Fixture::new(Arc::new(move|request|{let current=current.clone();let changed=changed.clone();let captured=captured.clone();async move{let owner=request.owner().to_owned();let path=url::Url::parse(&format!("https://{}{}",request.host(),request.path)).unwrap();captured.lock().unwrap().push(request.clone());let body=format!("Remote body {} for {owner}",current.load(Ordering::SeqCst));
         if request.host()=="gmail.googleapis.com"{
         if request.method=="POST" && path.path().ends_with("/modify") { assert_eq!(owner,A); assert_eq!(request.json(),json!({"addLabelIds":["STARRED"],"removeLabelIds":["UNREAD"]})); return Reply::Json(200,json!({"id":"same","labelIds":["INBOX","STARRED"]})); }
-        assert_eq!(request.method,"GET");if path.path().ends_with("/labels"){return Reply::Json(200,json!({"labels":[]}));}
+        assert_eq!(request.method,"GET");if path.path().ends_with("/profile"){return Reply::Json(200,json!({"historyId":"1"}));}
+        if path.path().ends_with("/history"){return Reply::Json(200,json!({"historyId":"1"}));}
+        if path.path().ends_with("/labels"){return Reply::Json(200,json!({"labels":[]}));}
         if path.path().ends_with("/messages"){return Reply::Json(200,json!({"messages":[{"id":"same"}]}));}
         // Gmail bodies stay immutable for a message ID; draft replacements use new IDs.
         let mut message=google_message("same",&owner,&format!("Remote body 0 for {owner}"));
@@ -3372,6 +3374,9 @@ async fn refresh_rotation_is_account_bound_and_changed_connection_discards_sync(
             if request.path.ends_with("/labels") {
                 assert_eq!(request.method, "GET");
                 return Reply::Json(200, json!({"labels":[]}));
+            }
+            if request.path.ends_with("/profile") || request.path.contains("/history?") {
+                return Reply::Json(200,json!({"historyId":"1"}));
             }
             if request.path.contains("/messages?") {
                 return Reply::Json(200, json!({"messages":[{"id":"fresh"}]}));
@@ -4488,6 +4493,187 @@ async fn outlook_invalid_delta_date_keeps_the_whole_page_checkpoint_until_repair
                 )
                 .contains("deltatoken=fixture")
             );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    server.shutdown().await;
+}
+
+#[tokio::test]
+#[ignore = "Explicit synthetic Graph overlap benchmark; local TLS fixtures only"]
+async fn synthetic_graph_sync_benchmark() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let bytes = Arc::new(AtomicUsize::new(0));
+    let captured = calls.clone();
+    let traffic = bytes.clone();
+    let fixture=Fixture::new(Arc::new(move|request| {
+        let calls=captured.clone();let bytes=traffic.clone();
+        async move {
+            calls.fetch_add(1,Ordering::Relaxed);
+            let url=url::Url::parse(&format!("https://{}{}",request.host(),request.path)).unwrap();
+            let reply=if url.path()=="/v1.0/me/mailFolders/inbox/messages" {
+                Reply::Json(200,json!({"value":(0..20).map(|i| {let mut raw=microsoft_message(&format!("item{i:02}"),A,&"Synthetic fixture only. ".repeat(96));raw.as_object_mut().unwrap().remove("body");raw}).collect::<Vec<_>>()}))
+            } else if let Some(reply)=outlook_catalog(&request) {reply}
+            else if url.path().ends_with("/messages/delta") {outlook_delta("inbox-id",json!((0..20).map(|i|json!({"id":format!("item{i:02}")})).collect::<Vec<_>>()))}
+            else {let id=url.path().rsplit('/').next().unwrap();let mut raw=microsoft_message(id,A,&"Synthetic fixture only. ".repeat(96));raw.as_object_mut().unwrap().remove("body");Reply::Json(200,raw)};
+            if let Reply::Json(_,value)=&reply {bytes.fetch_add(serde_json::to_vec(value).unwrap().len(),Ordering::Relaxed);}
+            reply
+        }.boxed()
+    })).await;
+    let server = fixture.start().await;
+    let settings = config(&[(A, "microsoft")]);
+    let connection = settings["mailAccounts"][A].clone();
+    let version = fixture_connection_version(&connection);
+    set(&server.app, settings).await;
+    server
+        .app
+        .db(move |db| {
+            for i in 0..20 {
+                let mut row = providers::normalize_microsoft(&microsoft_message(
+                    &format!("item{i:02}"),
+                    A,
+                    &"Synthetic fixture only. ".repeat(96),
+                ))?;
+                row["bodyConnection"] = version.clone();
+                morrow_search::mail::import_messages(db, &connection, &[row])?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(server.call("POST","/api/sync/priority",A,json!({"generation":1,"messages":(0..20).map(|i|json!({"accountId":A,"id":format!("microsoft:item{i:02}")})).collect::<Vec<_>>()})).await.0,200);
+    let mut samples = Vec::new();
+    for round in 0..6 {
+        calls.store(0, Ordering::Relaxed);
+        bytes.store(0, Ordering::Relaxed);
+        let begin = std::time::Instant::now();
+        assert_eq!(server.call("POST", "/api/sync", A, json!({})).await.0, 200);
+        samples.push(json!({"round":round,"wallMs":begin.elapsed().as_secs_f64()*1000.0,"requests":calls.load(Ordering::Relaxed),"responseBodyBytes":bytes.load(Ordering::Relaxed)}));
+    }
+    println!(
+        "synthetic_graph_benchmark {}",
+        json!({"provider":"graph","samples":samples,"scope":"20 owned cached rows overlap priority, recent Inbox, delta and rolling repair. Every delta ID is still resolved; only redundant rolling reads are skipped. Local TLS fixtures only; no UI claim."})
+    );
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn blocked_outlook_folder_still_allows_other_folders_to_make_durable_progress() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let fixture = Fixture::new(Arc::new(move |request| {
+        let count = count.clone();
+        async move {
+            if let Some(reply) = outlook_catalog(&request) {
+                return reply;
+            }
+            let url =
+                url::Url::parse(&format!("https://{}{}", request.host(), request.path)).unwrap();
+            if url.path().ends_with("/messages/delta") {
+                assert!(url.path().contains("sent"));
+                count.fetch_add(1, Ordering::Relaxed);
+                return outlook_delta("sent-id", json!([{"id":"healthy"}]));
+            }
+            let mut row = microsoft_message("healthy", A, "Healthy owned synthetic mail");
+            row["parentFolderId"] = "sent-id".into();
+            Reply::Json(200, row)
+        }
+        .boxed()
+    }))
+    .await;
+    let server = fixture.start().await;
+    let mut settings = config(&[(A, "microsoft"), (B, "microsoft")]);
+    let connection = settings["mailAccounts"][A].clone();
+    settings["imports"][A] = json!({"options":{"allMail":true},"status":"complete","since":""});
+    settings["outlookSync"] = json!({A:{"connection":fixture_connection_version(&connection),"coverageVersion":2,"catalogAt":chrono::Utc::now().timestamp_millis(),"folders":[{"id":"inbox-id","name":"Inbox","kind":"inbox"},{"id":"sent-id","name":"Sent","kind":"sent"}],"folderIndex":0,"checkpoints":{"inbox-id":{"blocked":true}},"reconcileAfter":""},B:{"untouched":true}});
+    set(&server.app, settings).await;
+    assert_eq!(server.call("POST", "/api/sync", A, json!({})).await.0, 502);
+    server
+        .app
+        .db(|db| {
+            assert!(db.get(A, "microsoft:healthy")?.is_some());
+            assert!(db.get(B, "microsoft:healthy")?.is_none());
+            assert_eq!(
+                db.settings()?["outlookSync"][A]["checkpoints"]["inbox-id"]["blocked"],
+                true
+            );
+            assert!(db.settings()?["outlookSync"][A]["checkpoints"]["sent-id"]["url"].is_string());
+            assert_eq!(db.settings()?["outlookSync"][B], json!({"untouched":true}));
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    server.shutdown().await;
+}
+
+fn fixture_connection_version(mail: &Value) -> Value {
+    json!([
+        mail["connectionId"],
+        mail["authorizationId"],
+        mail["provider"],
+        mail["email"],
+        mail["clientId"],
+        mail["imapHost"],
+        mail["imapPort"]
+    ])
+}
+
+#[tokio::test]
+async fn graph_recent_metadata_cannot_skip_the_location_repair_for_an_owned_move() {
+    let fixture = Fixture::new(Arc::new(|request| {
+        async move {
+            let url =
+                url::Url::parse(&format!("https://{}{}", request.host(), request.path)).unwrap();
+            let mut row = microsoft_message("moved", A, "Immutable owned move fixture");
+            row["parentFolderId"] = "sent-id".into();
+            if url.path() == "/v1.0/me/mailFolders/sentitems/messages" {
+                row.as_object_mut().unwrap().remove("body");
+                return Reply::Json(200, json!({"value":[row]}));
+            }
+            if let Some(reply) = outlook_catalog(&request) {
+                return reply;
+            }
+            if url.path().ends_with("/messages/delta") {
+                return outlook_delta("sent-id", json!([]));
+            }
+            Reply::Json(200, row)
+        }
+        .boxed()
+    }))
+    .await;
+    let server = fixture.start().await;
+    let mut settings = config(&[(A, "microsoft"), (B, "microsoft")]);
+    settings["imports"][A] = json!({"options":{"inbox":false,"sent":true},"since":""});
+    let connection = settings["mailAccounts"][A].clone();
+    let version = fixture_connection_version(&connection);
+    set(&server.app, settings).await;
+    server
+        .app
+        .db(move |db| {
+            let mut row = providers::normalize_microsoft(&microsoft_message(
+                "moved",
+                A,
+                "Immutable owned move fixture",
+            ))?;
+            row["folder"] = "inbox".into();
+            row["providerFolderId"] = "inbox-id".into();
+            row["bodyConnection"] = version;
+            morrow_search::mail::import_messages(db, &connection, &[row])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(server.call("POST", "/api/sync", A, json!({})).await.0, 200);
+    server
+        .app
+        .db(|db| {
+            let row = db.get(A, "microsoft:moved")?.unwrap();
+            assert_eq!(row["folder"], "sent");
+            assert_eq!(row["providerFolderId"], "sent-id");
+            assert_eq!(row["providerSent"], true);
+            assert!(db.get(B, "microsoft:moved")?.is_none());
             Ok(())
         })
         .await

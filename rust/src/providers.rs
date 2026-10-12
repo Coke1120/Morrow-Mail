@@ -82,6 +82,8 @@ async fn limited_send(
     Ok((response, permit))
 }
 async fn request_kind(request: RequestBuilder, limit: usize, oauth: bool) -> Result<Value> {
+    let _phase = crate::sync_profile::phase("httpRead");
+    crate::sync_profile::count("httpRequests", 1);
     let (response, _permit) = limited_send(request).await?;
     if !response.status().is_success() {
         let status = response.status().as_u16();
@@ -183,6 +185,7 @@ async fn response_json(mut response: reqwest::Response, limit: usize) -> Result<
     }
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| network_error())? {
+        crate::sync_profile::count("httpResponseBytes", chunk.len() as u64);
         if bytes.len() + chunk.len() > limit {
             return Err(response_too_large());
         }
@@ -996,8 +999,10 @@ pub(crate) async fn google_fetch_page(
                     .await
                     .map_err(|_| remote_error())??
             } else if let Some(existing) = existing.filter(|_| !draft) {
+                crate::sync_profile::count("bodyCacheHits", 1);
                 google_metadata(&raw, existing.clone())?
             } else {
+                crate::sync_profile::count("bodyFetches", 1);
                 tokio::task::spawn_blocking(move || match normalize_google(&raw) {
                     Err(error) if error.body["code"] == "google_mime_limit" => {
                         google_incomplete(&raw, "google_mime_limit")
@@ -1063,11 +1068,13 @@ async fn microsoft_message_cached(
                 && old["messageId"] == metadata["internetMessageId"]
         })
     {
+        crate::sync_profile::count("bodyCacheHits", 1);
         let mut message = normalize_microsoft_at(metadata, date)?;
         crate::mail::copy_cached_body(cached, &mut message);
         return Ok(Some(message));
     }
     let mut raw = metadata.clone();
+    crate::sync_profile::count("bodyFetches", 1);
     let incomplete = if raw["body"]["content"].is_string() {
         false
     } else {
@@ -1265,6 +1272,7 @@ async fn fetch_page_inner(
         {
             if let Some(mut value) = message? {
                 value["folder"] = folder.into();
+                value["providerSent"] = (folder == "sent").into();
                 if let Some(current) = current_folder {
                     value["providerFolderId"] = current["id"].clone();
                     value["providerFolderName"] = current["name"].clone();

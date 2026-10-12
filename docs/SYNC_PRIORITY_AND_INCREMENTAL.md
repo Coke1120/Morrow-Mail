@@ -1,6 +1,6 @@
 # Current-page synchronization and incremental follow-up
 
-This is an unreleased, bounded first batch. Native clients publish the selected
+The 0.7.3 first batch remains bounded. Native clients publish the selected
 message first, then the current page, as at most 51 account/local-ID pairs. The
 service resolves those local identities, binds each to its current connection,
 and expires hints after 90 seconds. New generations replace older ones; stale or
@@ -90,30 +90,21 @@ Candidate success is not main acceptance, and no new release was published.
 Physical VoiceOver/Narrator, manual cross-platform interaction, real accounts,
 and live latency/load acceptance remain unverified.
 
-## Subsequent incremental stages — design only
+## 0.7.4 incremental follow-up
 
-1. **Gmail history:** persist an owner/connection-bound history cursor only after
-   every bounded response page's owned changes commit. Coalesce message IDs and
-   reuse existing metadata/body rules. An expired history cursor requires a
-   bounded recovery import with a visible incomplete state; it must not erase
-   cached mail or silently declare a full mirror. Cancellation/quota/reconnect
-   retain the last committed cursor. See Google's [synchronization guide](https://developers.google.com/workspace/gmail/api/guides/sync).
-2. **Graph:** extend the existing per-folder delta worker incrementally. Preserve
-   opaque next/delta URLs, folder identity, deletion markers and atomic data/
-   checkpoint commits. Budget active folders first while retaining fairness for
-   other folders. Test multi-page catch-up, folder loss and connection changes
-   before changing any polling interval. Microsoft documents [per-folder message delta](https://learn.microsoft.com/en-us/graph/delta-query-messages).
-3. **IMAP differences/IDLE:** first establish a connection/UIDVALIDITY-bound
-   difference cursor and a bounded UID/FLAGS fallback. Capability-dependent
-   extensions require their own identity/deletion fixtures. Only then add one
-   supervised IDLE session for the active owner: treat its events as wake-ups,
-   coalesce them into the existing gated sync, exit IDLE before commands, and
-   bound cancellation/reconnect/cleanup. Unsupported servers retain bounded
-   polling. No background session may turn an unobserved event gap into deletion
-   or normal-exit proof. The protocol basis is [RFC 2177](https://www.rfc-editor.org/info/rfc2177/).
+The [performance report](SYNC_PERFORMANCE.md) records the implemented follow-up
+and isolated before/after measurements. Gmail history and IMAP UID/MODSEQ tracking
+now use atomic, owner/connection-bound checkpoints. Gmail still refreshes mutable
+drafts and rotates through 50 cached rows. IMAP still rotates through 50 cached
+rows, while its 51-row priority check shares one connection across both chunks.
+QRESYNC handles bounded known-UID VANISHED responses; unfiltered complete UID
+existence reads support CONDSTORE without QRESYNC. Partial or changed-only
+omissions never imply deletion. Unsupported/rejected/NOMODSEQ servers retain
+bounded flag polling. Graph still resolves all delta records and keeps its
+25-row rotation; only already-observed rolling IDs are skipped.
 
-Each stage needs synthetic failure/cancellation, request-count and owner tests,
-then native CI and separately approved live-account acceptance. It must preserve
-existing user-selected intervals, write confirmation and failure checkpoints.
-No provider notification architecture or extra system tracing is implemented in
-this first batch.
+User-selected polling intervals remain unchanged. Gmail push subscriptions,
+IMAP IDLE, global full-mailbox QRESYNC and a long-lived pooled connection are
+future work. The implemented connection reuse is limited to one bounded
+priority operation. No notification architecture, real-account latency or
+physical UI acceptance is claimed.
