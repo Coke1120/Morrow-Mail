@@ -14,6 +14,7 @@ using namespace winrt;
 using namespace Windows::Foundation;
 using namespace Windows::Data::Json;
 using namespace Windows::System;
+using namespace Microsoft::UI::Xaml;
 using namespace controls;
 namespace {
 Json copy(Json const& value) { return Json::Parse(value.Stringify()); }
