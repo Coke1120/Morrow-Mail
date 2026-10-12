@@ -1,4 +1,16 @@
-# Verification — 11 October 2026
+# Verification — 12 October 2026
+
+## Windows reading-pane fit — Mac mini Parallels, 12 October 2026
+
+The owner's Mac mini runs Parallels Windows 11 ARM64 (`10.0.26200.0`) with x64 emulation and WebView2 `154.0.4258.62`. The VM has no Rust, VS or PowerShell 7 tools on PATH. The public v0.7.3 Windows ZIP was downloaded and passed CRC/path/version, SHA-256 (`e59d1376a2ee23816f1b29e0e26e7d671f2e98fe9f92ec20eb32036c251fad10`) and pinned-key Ed25519 manifest verification. Its application source matches main `5438edf`; only verification documentation differs.
+
+Direct `--native-smoke` runs passed fresh onboarding, owned fictional mail and restart, each with exit 0 and a checked `ok:true` result under the original 180-second deadline. The separate QA helper comes from artifact `11603192938`, source `934297680fc261b8389287551d5e6aefca88613e`; its fixture source and the PowerShell 5.1 relocation script are unchanged. That earlier CI run failed and is not claimed as a successful run. Seeding and final persistence verification passed. The app and helper ran from disposable Windows temporary directories; the fixture stores were seeded and closed before the service launched. No installed app or real mailbox was used.
+
+The existing smoke assertions passed all three densities, light/dark themes and requested list widths 260/320/500, along with settings, composer, native popup and HTML-reader checks. Ten exported mail captures per owned/restart run show that the 500-unit list pushes the 320-unit reading pane beyond the 1024-unit client surface and clips its empty-state text. The existing row-width assertions did not check the reader's outer bounds.
+
+Branch `codex/windows-ui-fit-20261012` bounds the rendered list width using the existing splitter limits, responds to mounted mail-view size changes, and preserves the requested width. The native regression now checks the entire reader fits and performs actual DPI-aware window widen/shrink/widen/shrink without manually reapplying layout. Candidate Windows build and Parallels verification are pending.
+
+Local evidence is retained under ignored `test-results/windows-ui-20261012/`. Parallels guest input/clipboard automation was unreliable, and Windows policy blocked `.ps1` files; direct native command-line checks were used without changing that policy. These runs do not execute the strict resource collector or full relocated-package assertions, establish a clean VM, complete physical keyboard/Narrator or live-account acceptance, or resolve the known observer/signing/updater limits. The Jev review tool was unavailable because its API key was not configured.
 
 ## v0.7.3 published and public downloads verified — 11 October 2026
 

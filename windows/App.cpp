@@ -804,6 +804,9 @@ void Shell::mailPage() {
     readerNotice.Visibility(Visibility::Collapsed);
     readerPane.Children().Append(reader); readerPane.Children().Append(readerNotice);
     Grid::SetColumn(readerPane, 2); body.Children().Append(readerPane);
+    body.SizeChanged([weak](auto const& sender, auto const&) {
+        if (auto self = weak.lock(); self && self->mailBody == sender) self->applyMailLayout();
+    });
     applyMailLayout(); Grid::SetRow(body, 1); layout.Children().Append(body); show(layout);
 }
 void Shell::applyMailLayout() {
@@ -825,7 +828,9 @@ void Shell::applyMailLayout() {
         mailBody.RowDefinitions().Append(list); mailBody.RowDefinitions().Append(divider); mailBody.RowDefinitions().Append(detail);
         Grid::SetRow(mailDivider, 1); Grid::SetRow(readerPane, 2);
     } else {
-        ColumnDefinition list; list.Width(GridLengthHelper::FromPixels(listWidth)); list.MinWidth(260);
+        auto available = mailBody.ActualWidth();
+        auto width = available > 0 ? std::clamp(listWidth, 260.0, std::max(260.0, available - 328.0)) : listWidth;
+        ColumnDefinition list; list.Width(GridLengthHelper::FromPixels(width)); list.MinWidth(260);
         ColumnDefinition divider; divider.Width(GridLengthHelper::FromPixels(8));
         ColumnDefinition detail; detail.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); detail.MinWidth(320);
         mailBody.ColumnDefinitions().Append(list); mailBody.ColumnDefinitions().Append(divider); mailBody.ColumnDefinitions().Append(detail);
