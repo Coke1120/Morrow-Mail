@@ -1,5 +1,47 @@
 # Verification — 12 October 2026
 
+## v0.7.6 release preparation — Codex Cloud, 12 October 2026
+
+The authorized cloud continuation preserved v0.7.5 and investigated the actual
+first `nativeAcquire` 87 / unknown exit failures. [PR #33](https://github.com/Coke1120/Morrow-Mail/pull/33)
+pins current children of already-verified live parents before sibling managed
+admission. No first failure is retried or inferred to be zero; identity, parent,
+counter, exit and existing deadline gates remain strict. Its targeted scope and
+pre-pin/process-lifetime limitations are [documented](docs/WINDOWS_EARLY_ADMISSION_PINS.md).
+
+Tested head `1c218f11429ffe88005add18bde5334a7e3459c0` passed
+[observer diagnostics 38296886856](https://github.com/Coke1120/Morrow-Mail/actions/runs/38296886856),
+attempt 1, with 13 native identity and 29 lifecycle cases. Added sibling/batch
+zero controls retained exact original-handle evidence after creator release;
+nonzero/changed-identity controls stayed gaps and every pin was disposed.
+Existing native 87/5, parent/counter/unknown/deadline negative controls remain.
+
+[Paired PR CI 38296886924](https://github.com/Coke1120/Morrow-Mail/actions/runs/38296886924),
+attempt 1, passed Mac 114969999971 and Windows 114970000270. Rust results are
+331/327 passed respectively, zero failed, and three existing ignored provider
+benchmark cases per platform. Both packages and complete native acceptance
+passed. Mac review, 40/40 complete network-zero reader, 12/12 wrapping and 6/6
+visibility samples passed. Windows strict fresh/owned/restart observation
+(4/44/33 samples) had no gaps, skipped roots, failed counters, missing milestones,
+forced collectors or invalid records; relocation under PowerShell 5.1 and the
+1k/10k/50k fictional-mail benchmark passed. No rerun or waiver was used.
+
+The PR was normally merged at `6f5a3d0f753f09bd5c9bddec943f07ea314296d6`,
+whose parents include the immutable v0.7.5 source and the tested fix head.
+Package.json now prepares the next unused version 0.7.6. The release preparation
+changes metadata/documentation only after that merge, and uses the existing
+paired tagged workflow/publisher. The workflow, publisher and pinned update
+public key are byte-for-byte unchanged. New tagged results, public downloads and
+signed-manifest verification are not predeclared here.
+
+Cloud execution was checked after a reported disconnection; pushed code and
+saved evidence remained intact. No real mail database, credential change or
+Thunderbird sync work was used. macOS remains ad-hoc signed without notarization;
+Windows unsigned. Manual accessibility, clean-machine, installed-app and
+real-account/model/provider acceptance remain incomplete. Unresolved reader
+ownership profiling and historical failures remain explicitly disclosed in the
+[0.7.6 notes](docs/releases/v0.7.6.md).
+
 ## v0.7.5 failed candidate and early observer pins
 
 The immutable v0.7.5 tag points to `966823b948e923df1b7a587c0d08876dee8e9773`

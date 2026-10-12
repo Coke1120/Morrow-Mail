@@ -26,7 +26,7 @@ handle can provisionally permit these pins before its first counter sample.
 New parents still pass ordinary sequential admission before authorizing their
 children. No process outside the bounded current candidate tree is opened.
 
-The native batch validates at most 64 distinct non-system PIDs before opening
+The native batch validates at most 64 distinct PIDs greater than 1 before opening
 anything. It requests the same limited query/synchronize, non-inheritable rights
 once per PID. A native error is retained and surfaced at `nativeAcquire`; it is
 never retried. Each saved handle is transferred into ordinary admission, which
@@ -49,7 +49,7 @@ sibling barriers release the later child's creator handles while an earlier
 sibling is admitted: the saved pin must prove the exact zero exit, while a
 nonzero exit or changed creation time must remain a gap. Separate native batch
 controls release creator handles before reading zero/nonzero exits. Pure input
-controls reject duplicate/system PIDs and oversized batches before any Win32
+controls reject duplicate/invalid PIDs and oversized batches before any Win32
 call. Every temporary pin is checked for disposal.
 
 Linux PowerShell can compile the C# helper and run the integer/input/parser
