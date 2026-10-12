@@ -937,10 +937,10 @@ IAsyncAction Shell::smoke() {
                 check(readerFits() && listWidth == 500
                     && window.AppWindow().Size().Width == width
                     && (mailBody.ActualWidth() < 828 || std::abs(mailList.ActualWidth() - 500) <= 1),
-                    L"Window resizing clipped the reader or lost the requested list width: requested window " + to_hstring(width)
+                    (L"Window resizing clipped the reader or lost the requested list width: requested window " + to_hstring(width)
                         + L", actual " + to_hstring(window.AppWindow().Size().Width) + L", client " + to_hstring(root.ActualWidth())
                         + L", body " + to_hstring(mailBody.ActualWidth()) + L", list " + to_hstring(mailList.ActualWidth())
-                        + L", reader " + to_hstring(readerPane.ActualWidth()) + L".");
+                        + L", reader " + to_hstring(readerPane.ActualWidth()) + L".").c_str());
             }
             Json preference; put(preference, L"density", originalDensity);
             state = co_await service->request(L"/settings/preferences", L"", L"POST", preference);
