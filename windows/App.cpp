@@ -1359,10 +1359,14 @@ void Shell::resizeSidebar(double width, bool save) {
     if (!navigation || !std::isfinite(width)) return;
     auto maximum = root && root.ActualWidth() > 0 ? std::clamp(root.ActualWidth() - 640.0, 180.0, 600.0) : 600.0;
     width = std::clamp(width, 180.0, maximum);
+    auto previous = navigation.OpenPaneLength();
     navigation.OpenPaneLength(width);
     if (sidebarDivider) {
         sidebarDivider.Margin(ThicknessHelper::FromLengths(width - 3, 0, 0, 0));
         sidebarDivider.Visibility(navigation.IsPaneOpen() && navigation.DisplayMode() == NavigationViewDisplayMode::Expanded ? Visibility::Visible : Visibility::Collapsed);
+    }
+    if (width != previous && mailBody && mailBody.IsLoaded()) {
+        root.UpdateLayout(); applyMailLayout();
     }
     if (save && service && !closing) try { service->saveClientState(L"morrow.sidebar.width", to_hstring(width)); } catch (...) { error(errorText()); }
 }

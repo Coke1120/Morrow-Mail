@@ -942,6 +942,18 @@ IAsyncAction Shell::smoke() {
                         + L", body " + to_hstring(mailBody.ActualWidth()) + L", list " + to_hstring(mailList.ActualWidth())
                         + L", reader " + to_hstring(readerPane.ActualWidth()) + L".").c_str());
             }
+            auto originalSidebar = navigation.OpenPaneLength();
+            auto originalOrigin = mailBody.TransformToVisual(root).TransformPoint(Point{}).X;
+            for (auto width : {originalSidebar + 60, originalSidebar, originalSidebar + 60, originalSidebar}) {
+                resizeSidebar(width, false);
+                auto deadline = GetTickCount64() + 2000;
+                do { co_await resume_after(std::chrono::milliseconds(20)); co_await ui; root.UpdateLayout(); }
+                while ((!readerFits() || std::abs(mailBody.TransformToVisual(root).TransformPoint(Point{}).X - originalOrigin - width + originalSidebar) > 1)
+                    && GetTickCount64() < deadline);
+                check(readerFits() && listWidth == 500 && navigation.OpenPaneLength() == width
+                    && std::abs(mailBody.TransformToVisual(root).TransformPoint(Point{}).X - originalOrigin - width + originalSidebar) <= 1,
+                    L"Sidebar resizing clipped the reader or lost the requested list width.");
+            }
             Json preference; put(preference, L"density", originalDensity);
             state = co_await service->request(L"/settings/preferences", L"", L"POST", preference);
             mailLayout = originalLayout; listWidth = originalWidth; root.RequestedTheme(originalTheme); applyMailLayout(); co_await loadPage();
