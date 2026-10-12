@@ -4,6 +4,7 @@ import Security
 
 @MainActor
 final class AppModel: ObservableObject {
+    let review = ReviewWorkspaceState()
     @Published var state: JSON = .null {
         didSet {
             if state != oldValue { stateGeneration += 1 }
@@ -162,7 +163,7 @@ final class AppModel: ObservableObject {
     var colorScheme: ColorScheme? {
         switch preferences["theme"].string { case "light": return .light; case "dark": return .dark; default: return nil }
     }
-    var updateHasUnsavedChanges: Bool { !unsavedForms.subtracting(["search-request"]).isEmpty || compose != nil }
+    var updateHasUnsavedChanges: Bool { !unsavedForms.subtracting(["search-request"]).isEmpty || compose != nil || review.hasEdits }
     var canNavigate: Bool { !preparingUpdateRestart && !restartingForUpdate && !busy && unsavedForms.isEmpty && compose == nil && organizing == nil && managingFolders == nil && readerAssistant == nil && !showSettings }
 
     func start() async {

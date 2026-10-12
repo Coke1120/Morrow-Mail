@@ -475,7 +475,8 @@ IAsyncAction Shell::refresh(bool rebuild) {
         if (rebuild || changedAccounts || changedFolders) rebuildNavigation();
         if (!connected(owner) && owner != L"all") selected = Json();
         error(L"");
-        if (section == L"activity" || section == L"today") co_await workspacePage(lifetime, section);
+        if (section == L"activity") co_await workspacePage(lifetime, section);
+        else if ((section == L"today" || section == L"reply-suggestions") && refreshReview) co_await refreshReview();
         else if (section == L"mail" && owner == captured && rows && !loading && !dialogOpen
             && dirty.empty() && navigation.IsEnabled() && !pendingRead.Size()
             && search.Text() == mailSearchQuery
@@ -689,6 +690,7 @@ IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder
     else if (target == L"scheduled") co_await scheduledPage(lifetime);
     else if (target == L"out-of-office") co_await outOfOfficePage(lifetime);
     else if (target == L"calendar") co_await calendarPage(lifetime);
+    else if (target == L"today" || target == L"reply-suggestions") co_await reviewPage(lifetime,target);
     else co_await workspacePage(lifetime, target);
 }
 void Shell::mailPage() {
@@ -1533,7 +1535,7 @@ IAsyncAction Shell::shutdown() {
     auto lifetime = shared_from_this();
     if (closing || dialogOpen) co_return;
     if (!restartingForUpdate && service && service->writing()) { error(L"Wait for the current save or provider operation before closing."); co_return; }
-    if (!dirty.empty() && !co_await confirm(L"Discard unsaved changes and close?", L"Saved drafts and account data will stay on this device.", L"Discard and close")) co_return;
+    if ((!dirty.empty() || review->hasEdits()) && !co_await confirm(L"Discard unsaved changes and close?", L"Saved drafts and account data will stay on this device.", L"Discard and close")) co_return;
     try {
         auto presenter = window.AppWindow().Presenter().try_as<Microsoft::UI::Windowing::OverlappedPresenter>();
         if (service && presenter && presenter.State() == Microsoft::UI::Windowing::OverlappedPresenterState::Restored) {
@@ -1739,7 +1741,7 @@ IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
                 if (!text(report, L"text").empty()) item.Children().Append(label(text(report, L"text")));
                 for (auto const& entry : array(report,L"items")) {
                     auto source = entry.GetObject(); Json metadata; put(metadata,L"id",text(source,L"messageId")); put(metadata,L"accountId",text(report,L"accountId"));
-                    item.Children().Append(button(L"Open source · " + text(source,L"priority") + L" · " + text(source,L"summary"),[weak=self->weak_from_this(),metadata]{ if (auto shell=weak.lock()) shell->openSource(metadata); }));
+                    item.Children().Append(button(L"View original message · " + text(source,L"priority") + L" · " + text(source,L"summary"),[weak=self->weak_from_this(),metadata]{ if (auto shell=weak.lock()) shell->openSource(metadata); }));
                 }
                 if (!text(report, L"error").empty()) item.Children().Append(label(text(report, L"error")));
                 auto card = Markup::XamlReader::Load(L"<Border xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' Background='{ThemeResource CardBackgroundFillColorDefaultBrush}' BorderBrush='{ThemeResource CardStrokeColorDefaultBrush}' BorderThickness='1' CornerRadius='12'/>").as<Border>();

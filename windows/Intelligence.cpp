@@ -274,6 +274,7 @@ IAsyncAction changePage(Page p, hstring target) {
     if (p->edited() && !(co_await p->shell->confirm(L"Discard unsaved edits?", L"Only explicitly saved settings, styles and workspace notes take effect.", L"Discard"))) co_return;
     if (!p->current()) co_return;
     auto shell = p->shell; p->stop();
+    if(target==L"reply-suggestions"){shell->review->scope=p->owner;co_await shell->navigate(target);co_return;}
     co_await intelligencePage(shell, target);
 }
 void renderLearning(Page const& p);

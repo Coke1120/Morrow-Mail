@@ -981,20 +981,23 @@ IAsyncAction Shell::smoke() {
                 co_await navigate(target);
                 check(page.Content() && page.Content() != previousPage, L"A native workspace page failed to open.");
                 check(dirty.empty(), L"Opening a saved page incorrectly created unsaved edits.");
+                if(std::wstring_view(target)==L"reply-suggestions"){enter("review-workspace-ownership-and-retention");co_await reviewWorkspaceChecks(lifetime);}
                 if (std::wstring_view(target) == L"today") {
-                    auto today = page.Content().as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
-                    controls::Button generate{nullptr}, sync{nullptr}; controls::ComboBox mailbox{nullptr};
-                    for (auto const& child : today.Children()) if (auto actions = child.try_as<controls::StackPanel>()) {
-                        for (auto const& control : actions.Children()) {
-                            if (auto choice = control.try_as<controls::ComboBox>()) mailbox = choice;
-                            if (auto action = control.try_as<controls::Button>(); action && unbox_value<hstring>(action.Content()) == L"Summarize now") generate = action;
-                            if (auto action = control.try_as<controls::Button>(); action && xaml::Automation::AutomationProperties::GetAutomationId(action) == L"mail.syncAll") sync = action;
-                        }
+                    auto today = page.Content().as<controls::Grid>();
+                    check(today.RowDefinitions().Size()==4,L"Today must keep account tabs and status outside the scrolling content.");
+                    auto header=today.Children().GetAt(0).as<controls::StackPanel>();
+                    controls::Button generate{nullptr},sync{nullptr};
+                    for(auto const& child:header.Children())if(auto button=child.try_as<controls::Button>()){
+                        auto id=xaml::Automation::AutomationProperties::GetAutomationId(button);
+                        if(id==L"review.summarize")generate=button;if(id==L"mail.syncAll")sync=button;
                     }
-                    check(generate && generate.IsEnabled() && mailbox && mailbox.Items().Size() == array(state, L"accounts").Size(), L"Today lost its explicit summary action or mailbox scope.");
-                    check(sync && sync.IsEnabled() && unbox_value<hstring>(sync.Content()) == L"Sync All", L"Today lost its labeled Sync All button.");
-                    for (auto const& value : mailbox.Items()) check(connected(unbox_value<hstring>(value.as<controls::ComboBoxItem>().Tag())), L"Today offers a combined or internal Demo AI identity.");
-                    check(connected(todaySummaryOwner), L"Today did not retain an individual summary mailbox.");
+                    check(generate && generate.IsEnabled() && sync && sync.IsEnabled(),L"Today lost explicit summary or Sync All actions.");
+                    auto choices=generate.Flyout().as<controls::MenuFlyout>();
+                    check(choices.Items().Size()==array(state,L"accounts").Size(),L"Today summary review must list individual accounts.");
+                    for(auto const& item:choices.Items())check(connected(unbox_value<hstring>(item.as<controls::MenuFlyoutItem>().Tag())),L"Summary review offers an invalid writing identity.");
+                    auto tabs=today.Children().GetAt(1).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
+                    check(tabs.Children().Size()==array(state,L"accounts").Size()+1,L"Today lost the shared All/account tabs.");
+
                 }
                 if (std::wstring_view(target) == L"studio") {
                     auto studio = page.Content().as<controls::ScrollViewer>().Content().as<controls::StackPanel>();

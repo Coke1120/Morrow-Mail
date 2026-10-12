@@ -602,7 +602,33 @@ pub fn mime(raw: &[u8]) -> Result<Value> {
     result["bodyTruncated"] = truncated.into();
     result["replyTo"] = address_text(parsed.reply_to()).into();
     result["hasAttachments"] = (parsed.attachments().next().is_some()).into();
+    thread_headers(&mut result, &json!(headers));
     Ok(result)
+}
+fn thread_headers(message: &mut Value, headers: &Value) {
+    for header in headers.as_array().into_iter().flatten() {
+        let name = string(header, "name");
+        let value = string(header, "value");
+        if value.len() > 8192 {
+            continue;
+        }
+        let ids = value
+            .split_whitespace()
+            .filter(|v| {
+                v.starts_with('<')
+                    && v.ends_with('>')
+                    && v.len() <= 1000
+                    && !v.chars().any(char::is_control)
+            })
+            .map(|v| json!(v))
+            .take(50)
+            .collect::<Vec<_>>();
+        if name.eq_ignore_ascii_case("in-reply-to") {
+            message["inReplyTo"] = ids.first().cloned().unwrap_or(Value::Null);
+        } else if name.eq_ignore_ascii_case("references") {
+            message["references"] = ids.into();
+        }
+    }
 }
 fn bounded_body(body: &str) -> (String, bool) {
     let mut chars = body.chars();
@@ -739,6 +765,9 @@ pub fn normalize_google(message: &Value) -> Result<Value> {
 }
 fn google_metadata(message: &Value, mut result: Value) -> Result<Value> {
     result["id"] = format!("google:{}", string(message, "id")).into();
+    if !string(message, "threadId").is_empty() {
+        result["threadId"] = message["threadId"].clone();
+    }
     if let Some(ms) = message["internalDate"]
         .as_str()
         .and_then(|s| s.parse::<i64>().ok())
@@ -793,6 +822,10 @@ pub(crate) fn normalize_microsoft_at(message: &Value, date: &str) -> Result<Valu
         .filter(|s| !s.is_empty())
         .unwrap_or("(No subject)");
     let mut result = json!({"id":format!("microsoft:{}",string(message,"id")),"fromName":from["name"].as_str().filter(|s|!s.is_empty()).or(from["address"].as_str()).unwrap_or("Unknown sender"),"fromEmail":string(from,"address"),"subject":subject,"body":body,"preview":preview(&body),"date":date,"folder":"inbox","read":message["isRead"]==true,"starred":message["flag"]["flagStatus"]=="flagged","category":category(subject,&message["internetMessageHeaders"]),"automated":automated(&message["internetMessageHeaders"]),"labels":[],"messageId":string(message,"internetMessageId")});
+    if !string(message, "conversationId").is_empty() {
+        result["conversationId"] = message["conversationId"].clone();
+    }
+    thread_headers(&mut result, &message["internetMessageHeaders"]);
     for (field, source) in [
         ("to", "toRecipients"),
         ("cc", "ccRecipients"),
@@ -1038,7 +1071,7 @@ pub(crate) async fn google_fetch_page(
     Ok(json!({"messages":messages,"nextCursor":list.get("nextPageToken").unwrap_or(&Value::Null)}))
 }
 
-pub(crate) const MICROSOFT_METADATA_FIELDS: &str = "id,hasAttachments,from,sender,replyTo,toRecipients,ccRecipients,bccRecipients,subject,receivedDateTime,sentDateTime,createdDateTime,parentFolderId,isDraft,isRead,flag,internetMessageId,internetMessageHeaders";
+pub(crate) const MICROSOFT_METADATA_FIELDS: &str = "id,conversationId,hasAttachments,from,sender,replyTo,toRecipients,ccRecipients,bccRecipients,subject,receivedDateTime,sentDateTime,createdDateTime,parentFolderId,isDraft,isRead,flag,internetMessageId,internetMessageHeaders";
 
 // The list page stays small; a single oversized body remains a visible,
 // explicitly incomplete message that the owned raw-download action can repair.

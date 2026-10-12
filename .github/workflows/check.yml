@@ -61,6 +61,12 @@ jobs:
         if: env.SKIP_TESTS != 'true'
         shell: bash
         run: cargo run --manifest-path rust/Cargo.toml --locked --bin morrow-native-check -- --service "$PWD/build/macos-native/Morrow Mail.app/Contents/Resources/morrow-service"
+      - name: Native review workspace with fictional accounts only
+        if: env.SKIP_TESTS != 'true'
+        shell: bash
+        run: |
+          mkdir -p "$PWD/test-results/macos-review-workspace"
+          REVIEW_EVIDENCE_DIR="$PWD/test-results/macos-review-workspace" python3 -B scripts/test-macos-review-workspace.py
       - name: Diagnose narrow-column wrapping costs
         if: ${{ !cancelled() && env.SKIP_TESTS != 'true' }}
         shell: bash
@@ -88,6 +94,7 @@ jobs:
             test-results/macos-reader-batch-*
             test-results/macos-reader-wrap-diagnostic-*
             test-results/macos-reader-visibility-diagnostic-*
+            test-results/macos-review-workspace/*
           if-no-files-found: warn
           retention-days: 14
       - name: Retain macOS candidate

@@ -6,6 +6,7 @@
 #include <winrt/Windows.Graphics.h>
 #include <functional>
 #include <optional>
+#include <map>
 #include <set>
 
 namespace morrow {
@@ -22,7 +23,25 @@ winrt::hstring mailDateLabel(winrt::hstring const& value);
 double windowScale(xaml::Window const& window);
 winrt::Windows::Graphics::RectInt32 mailWindowBounds(xaml::Window const& window, double width, double height);
 
+struct ReviewEntry { Json proposal, message, draft, saved; bool reviewed = false, stale = false; };
+struct ReviewMemory {
+    winrt::hstring scope = L"all";
+    std::map<std::wstring, ReviewEntry> entries;
+    std::map<std::wstring, winrt::hstring> selections;
+    std::map<std::wstring, Json> values, options, savedOptions, originals;
+    std::map<std::wstring, double> scrolls;
+    std::map<std::wstring, bool> details;
+    bool writing = false;
+    bool hasEdits() const {
+        for (auto const& [_, entry] : entries) if (entry.draft.Size() && entry.draft.Stringify() != entry.saved.Stringify()) return true;
+        for (auto const& [owner, value] : options) if (auto saved=savedOptions.find(owner); saved!=savedOptions.end() && value.Stringify()!=saved->second.Stringify()) return true;
+        return false;
+    }
+};
+
 struct Shell : std::enable_shared_from_this<Shell> {
+    std::shared_ptr<ReviewMemory> review = std::make_shared<ReviewMemory>();
+    std::function<winrt::Windows::Foundation::IAsyncAction()> refreshReview;
     xaml::Window window{nullptr};
     controls::Grid root{nullptr};
     controls::NavigationView navigation{nullptr};
@@ -128,13 +147,16 @@ winrt::Windows::Foundation::IAsyncAction compose(std::shared_ptr<Shell> shell, J
 winrt::Windows::Foundation::IAsyncAction scheduledPage(std::shared_ptr<Shell> shell);
 winrt::Windows::Foundation::IAsyncAction settingsPage(std::shared_ptr<Shell> shell, winrt::hstring tab = L"mail");
 winrt::Windows::Foundation::IAsyncAction workspacePage(std::shared_ptr<Shell> shell, winrt::hstring kind);
+winrt::Windows::Foundation::IAsyncAction reviewPage(std::shared_ptr<Shell> shell, winrt::hstring kind);
+winrt::Windows::Foundation::IAsyncAction reviewWorkspaceChecks(std::shared_ptr<Shell> shell);
+winrt::Windows::Foundation::IAsyncAction summarizeNow(std::shared_ptr<Shell> shell, winrt::hstring mailbox);
 winrt::Windows::Foundation::IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, winrt::hstring kind);
 winrt::Windows::Foundation::IAsyncAction outOfOfficePage(std::shared_ptr<Shell> shell);
 winrt::Windows::Foundation::IAsyncAction calendarPage(std::shared_ptr<Shell> shell);
 winrt::Windows::Foundation::IAsyncOperation<Json> uploadAttachment(std::shared_ptr<Shell> shell, winrt::hstring owner);
 winrt::Windows::Foundation::IAsyncAction saveAttachment(std::shared_ptr<Shell> shell, winrt::hstring owner, Json item);
 void appendAttachmentControls(std::shared_ptr<Shell> shell, controls::StackPanel const& panel, Json const& message);
-void appendReader(std::shared_ptr<Shell> shell, controls::StackPanel const& container, Json message);
+void appendReader(std::shared_ptr<Shell> shell, controls::StackPanel const& container, Json message, double height = 480, std::function<bool()> reviewContext = {});
 Json refreshedReaderMessage(Json const& previous, Json message);
 winrt::Windows::Foundation::IAsyncAction folderPickerChecks(controls::Grid root);
 void readerSecurityChecks();

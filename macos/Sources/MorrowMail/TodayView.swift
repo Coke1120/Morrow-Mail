@@ -2,109 +2,125 @@ import SwiftUI
 
 struct TodayView: View {
     @EnvironmentObject var model: AppModel
+    var body: some View { TodayReviewWorkspace(review: model.review) }
+}
+
+private struct TodayReviewWorkspace: View {
+    @EnvironmentObject var model: AppModel
+    @ObservedObject var review: ReviewWorkspaceState
     @State private var showSummaryReview = false
-    @State private var reviewing = false
-    private var accounts: [JSON] { model.accounts }
+    private var accounts: [JSON] { model.accounts.filter { review.scope == "all" || $0.id == review.scope } }
+    private var events: [JSON] { model.state["today"]["events"].array.filter { review.scope == "all" || $0["accountId"].string == review.scope } }
+    private var replies: [JSON] { model.state["today"]["replySuggestions"].array.filter { review.scope == "all" || review.owner($0) == review.scope } }
+    private var replyCount: Int { let counts=model.state["today"]["replySuggestionCounts"]; return counts.isNull ? replies.count : review.scope == "all" ? counts.object.values.reduce(0) { $0 + Int($1.number) } : Int(counts[review.scope].number) }
+    private var source: JSON? { review.originalSelection[review.scope] }
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
-                    HStack(alignment: .top) {
-                        SectionHeading(title: "Today", detail: context.date.formatted(date: .complete, time: .omitted) + " · " + TimeZone.current.identifier)
-                        Button { model.perform { try await model.sync() } } label: { Label(model.syncing ? "Syncing…" : "Sync All", systemImage: "arrow.clockwise") }
-                            .disabled(!model.canNavigate || !model.hasMailbox).help("Sync recent mail from all connected accounts (⌘R)").accessibilityIdentifier("mail.syncAll")
-                    }
-                    Label("All connected accounts", systemImage: "person.2").font(.callout).foregroundStyle(.secondary)
-                    HStack(spacing: 14) {
-                        overview("Unread Inbox", symbol: "envelope.badge", count: accounts.reduce(0) { $0 + Int($1["unread"].number) }, folder: "inbox", unread: true)
-                        overview("Inbox", symbol: "tray", count: accounts.reduce(0) { $0 + Int($1["counts"]["inbox"].number) }, folder: "inbox")
-                        overview("Drafts", symbol: "doc", count: accounts.reduce(0) { $0 + Int($1["counts"]["drafts"].number) }, folder: "drafts")
-                    }
-                    Text("Downloaded mail, across all dates. Sync and AI progress appear in Activity below.").font(.caption).foregroundStyle(.secondary)
-                    HStack(alignment: .center, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text("Today’s summaries").font(.title2.weight(.semibold))
-                            Text("A clearer view of what needs your attention.").font(.callout).foregroundStyle(.secondary)
-                        }
+            GeometryReader { area in
+                VStack(spacing: 0) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) { Text("Today").font(.title.weight(.semibold)); Text(context.date.formatted(date: .complete, time: .omitted) + " · " + TimeZone.current.identifier).font(.callout).foregroundStyle(.secondary) }
                         Spacer()
-                        Button("Summary History") { model.studioTab = "summaries"; model.section = "studio" }.disabled(!model.canNavigate)
-                        Button { showSummaryReview = true } label: { Label("Summarize now", systemImage: "sparkles") }
-                            .buttonStyle(.borderedProminent).disabled(!model.canNavigate || accounts.isEmpty)
-                    }
-                    summaryContent(now: context.date)
-                    Text("Replies to review").font(.title2.weight(.semibold))
-                    Text("Up to five current suggestions per mailbox. Drafts wait for your review and are never sent here.").font(.caption).foregroundStyle(.secondary)
-                    ForEach(model.state["today"]["replySuggestions"].array) { proposal in
-                        GroupBox {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(proposal["accountId"].string).font(.caption).foregroundStyle(morrowGreen)
-                                Text(proposal["message"]["subject"].nonempty ? proposal["message"]["subject"].string : "(Subject withheld)").font(.headline)
-                                Text(proposal["reason"].string).foregroundStyle(.secondary)
-                                Text(proposal["text"].string).lineLimit(4)
-                                SourceLinksView(sources: proposal["sourceMessages"].array)
-                                Button("Review suggested reply") {
-                                    reviewing = true
-                                    Task { @MainActor in
-                                        defer { reviewing = false }
-                                        do { try await model.reviewReplySuggestion(owner: proposal["accountId"].string, id: proposal["proposalId"].string) }
-                                        catch is CancellationError { }
-                                        catch { model.error = error.localizedDescription }
-                                    }
-                                }.disabled(reviewing || !model.canNavigate)
-                            }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
-                        }
-                    }
-                    if model.state["today"]["replySuggestions"].array.isEmpty {
-                        Text("No current suggestions. Review reply suggestions for one mailbox to get started.").foregroundStyle(.secondary)
-                        Button("Review Reply Suggestions") { model.section = "reply-suggestions" }.disabled(!model.canNavigate)
-                    }
-                    Spacer(minLength: 0)
-                }.padding(28).frame(maxWidth: 1000, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading)
+                        Button("Summarize now…") { showSummaryReview = true }.buttonStyle(.borderedProminent).disabled(model.busy || accounts.isEmpty)
+                        Button { model.perform { try await model.sync() } } label: { Label(model.syncing ? "Syncing…" : "Sync all", systemImage: "arrow.clockwise") }.disabled(model.busy || !model.hasMailbox)
+                    }.padding(.horizontal, 24).padding(.vertical, 16)
+                    ReviewAccountTabs(review: review)
+                    Divider()
+                    if let source, area.size.width < 780 {
+                        VStack(spacing: 0) { Button("Back to Today") { review.originalSelection[review.scope] = nil }.keyboardShortcut(.cancelAction).padding(12); original(source) }
+                    } else if let source {
+                        HSplitView { content(context.date).frame(minWidth: 350); original(source).frame(minWidth: 320, idealWidth: 380) }
+                    } else { content(context.date) }
+                }
             }
-        }
-        .sheet(isPresented: $showSummaryReview) { TodaySummaryReview().environmentObject(model) }
+        }.sheet(isPresented: $showSummaryReview) { TodaySummaryReview().environmentObject(model) }
     }
-    private func overview(_ title: String, symbol: String, count: Int, folder: String, unread: Bool = false) -> some View {
-        Button {
-            model.perform {
-                try await model.selectAccount("all")
-                model.unreadOnly = unread; model.searchResponse = .null; model.section = folder
+    private func content(_ now: Date) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(spacing: 12) {
+                    metric("Decisions", count: events.filter { $0["state"].string == "waiting_on_user" }.count)
+                    metric("Replies to review", count: replyCount)
+                    metric("Downloaded unread", count: accounts.reduce(0) { $0 + Int($1["unread"].number) })
+                }
+                Text("Unread covers all dates. Decisions use the latest valid saved summaries; downloaded coverage can be incomplete.").font(.caption).foregroundStyle(.secondary)
+                let attention = events.filter { ["waiting_on_user", "uncertain"].contains($0["state"].string) }
+                Text("Your decisions").font(.headline)
+                if attention.isEmpty { Text(events.isEmpty ? "No saved decisions yet. Review one mailbox with Summarize now, or enable summaries in AI & Privacy." : "No saved items currently waiting on you.").foregroundStyle(.secondary) }
+                ForEach(Array(attention.prefix(3))) { event in eventRow(event) }
+                if attention.count > 3 { DisclosureGroup("More decisions (\(attention.count - 3))") { ForEach(Array(attention.dropFirst(3))) { event in eventRow(event) } } }
+                HStack { Text("Replies to review").font(.headline); Spacer(); Button("View all \(replyCount) →") { model.section = "reply-suggestions" }.disabled(!model.canNavigate) }
+                if replies.isEmpty { Text("No current suggestions for this scope. Automatic checks and setup live on Reply suggestions.").foregroundStyle(.secondary) }
+                ForEach(Array(replies.prefix(3)), id: \.viewID) { proposal in
+                    Button {
+                        review.show(proposal); model.section = "reply-suggestions"
+                    } label: {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(proposal["message"]["subject"].nonempty ? proposal["message"]["subject"].string : "(Subject withheld)").font(.system(size: 14, weight: .semibold))
+                            Text(review.owner(proposal) + " · " + proposal["reason"].string).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(.quaternary.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: 9))
+                    }.buttonStyle(.plain).disabled(model.busy).accessibilityLabel("Review suggested reply: " + proposal["message"]["subject"].string)
+                }
+                let waiting = events.filter { $0["state"].string == "waiting_on_others" }
+                if !waiting.isEmpty { DisclosureGroup("Waiting on others (\(waiting.count))") { ForEach(waiting) { eventRow($0) } } }
+                let completed = events.filter { $0["state"].string == "completed" }
+                if !completed.isEmpty { DisclosureGroup("Completed or cancelled with evidence (\(completed.count))") { ForEach(completed) { eventRow($0) } } }
+                let info = events.filter { $0["state"].string == "informational" }
+                if !info.isEmpty { DisclosureGroup("For information (\(info.count))") { ForEach(info) { eventRow($0) } } }
+                DisclosureGroup("Full summary details") {
+                    let reports = summariesForDay(model.state["today"]["summaries"].array, now: now).filter { review.scope == "all" || $0["accountId"].string == review.scope }
+                    ForEach(reports) { SummaryReportView(report: $0) }
+                    if reports.isEmpty { Text("No saved summary updated today in this scope.").foregroundStyle(.secondary) }
+                    if !model.policy["enabled"].bool { Text("AI is paused in your saved permissions.").foregroundStyle(.secondary) }
+                    Text("Latest 20 validated summary jobs per mailbox. The All tab aggregates results; AI context and identity remain separate.").font(.caption).foregroundStyle(.secondary)
+                    if model.state["today"]["summaryOverflow"].number > 0 { Text("Some summary jobs exceeded the queue limit. Review the remaining downloaded mail.").foregroundStyle(.orange) }
+                    Button("Summary history") { model.studioTab = "summaries"; model.section = "studio" }.disabled(!model.canNavigate)
+                }
+            }.padding(24).frame(maxWidth: 1000, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading)
+                .background(ReviewScrollMemory(key: "today:" + review.scope, review: review))
+        }
+    }
+    private func metric(_ title: String, count: Int) -> some View {
+        VStack(alignment: .leading, spacing: 4) { Text(title).font(.caption).foregroundStyle(.secondary); Text(count.formatted()).font(.title3.weight(.semibold)).monospacedDigit() }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(morrowGreen.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+    private func eventRow(_ event: JSON) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(event["title"].string).font(.system(size: 14, weight: .semibold)).lineLimit(2)
+                    Text(event["action"].nonempty ? event["action"].string : event["summary"].string).font(.callout).lineLimit(2)
+                    Text(event["accountId"].string + " · " + stateLabel(event["state"].string) + (event["waitingOn"].nonempty && event["waitingOn"].string != "you" ? " · " + event["waitingOn"].string : "")).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 6)
+                Button("View original message") { Task { await review.showOriginal(.object(["id": event["messageId"], "accountId": event["accountId"]]), model: model) } }.disabled(model.busy)
             }
-        } label: {
-            VStack(alignment: .leading, spacing: 10) {
-                Label(title, systemImage: symbol).font(.callout).foregroundStyle(.secondary)
-                Text(count.formatted()).font(.system(size: 28, weight: .semibold, design: .rounded)).monospacedDigit()
-            }.frame(maxWidth: .infinity, alignment: .leading).padding(18)
-                .background(morrowGreen.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(morrowGreen.opacity(0.12)))
-        }.buttonStyle(.plain).disabled(!model.canNavigate).accessibilityLabel("\(title), \(count) downloaded messages")
+            if event["deadline"].isObject { Text("Deadline, original wording: " + event["deadline"]["quote"].string).font(.caption).foregroundStyle(.secondary) }
+            DisclosureGroup(event["grounded"].bool ? "Evidence · \(event["messageIds"].array.count) message(s)" : "Older summary · decision status needs review") {
+                ForEach(Array(event["questions"].array.enumerated()), id: \.offset) { _, question in Label(question.string, systemImage: "questionmark.circle").font(.caption) }
+                ForEach(Array(event["evidence"].array.enumerated()), id: \.offset) { _, quote in
+                    VStack(alignment: .leading, spacing: 4) { Text(quote["quote"].string).font(.callout).textSelection(.enabled); Button("View original message") { Task { await review.showOriginal(.object(["id": quote["messageId"], "accountId": event["accountId"]]), model: model) } } }
+                }
+                SourceLinksView(sources: event["sources"].array)
+            }.font(.caption)
+        }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(.quaternary.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: 9))
     }
-    @ViewBuilder private func summaryContent(now: Date) -> some View {
-        let reports = summariesForDay(model.state["today"]["summaries"].array, now: now)
-        if !model.policy["enabled"].bool {
-            Label("AI is paused. Enable saved permissions to generate future summaries.", systemImage: "pause.circle").foregroundStyle(.secondary)
-        }
-        if model.policy["triggers"]["scheduledSummary"].bool {
-            let schedule = model.policy["summarySchedule"]
-            Text(schedule["cadence"].string == "daily" ? "Scheduled daily at \(schedule["time"].string) (\(schedule["timeZone"].string)), while Morrow is open." : "Scheduled every \(Int(schedule["everyHours"].number)) hours, while Morrow is open.").font(.callout).foregroundStyle(.secondary)
-        }
-        if model.policy["triggers"]["onArrival"].bool {
-            Text("New-mail summaries appear after newly synced mail is analyzed. Historical imports do not trigger them.").font(.callout).foregroundStyle(.secondary)
-        }
-        if reports.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                Label("A fresh start for today", systemImage: "sun.max").font(.headline)
-                Text(accounts.isEmpty ? "Connect a mailbox to see your mail and summaries here." : "Choose Summarize now to review downloaded mail from one mailbox. You can also enable scheduled or new-mail summaries in AI & privacy.").foregroundStyle(.secondary)
-                Button(accounts.isEmpty ? "Add account" : "AI & Privacy") { model.settings(accounts.isEmpty ? "mail" : "permissions") }.disabled(model.busy)
-            }.padding(18).frame(maxWidth: .infinity, alignment: .leading).background(.quaternary.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: 10))
-        }
-        ForEach(reports) { report in SummaryReportView(report: report) }
-        if model.state["today"]["summaryOverflow"].number > 0 {
-            Text("\(Int(model.state["today"]["summaryOverflow"].number)) summary jobs exceeded the queue limit. Review remaining mail in AI Studio.").foregroundStyle(.orange)
-        }
-        Text("One daily summary per mailbox, updated from its latest 20 validated jobs in your local time. Summary History keeps individual jobs.").font(.caption).foregroundStyle(.secondary)
+    private func stateLabel(_ state: String) -> String {
+        switch state { case "waiting_on_user": return "Waiting on you"; case "waiting_on_others": return "Waiting on others"; case "completed": return "Completed or cancelled"; case "informational": return "For information"; default: return "Needs review" }
+    }
+    private func original(_ source: JSON) -> some View {
+        let key = "original:" + source["accountId"].string + "\n" + source.id
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack { Text(source["accountId"].string).font(.caption).foregroundStyle(.secondary); Spacer(); Button("Close original") { review.originalSelection[review.scope] = nil }.keyboardShortcut(.cancelAction) }
+            if review.loading.contains(key) { ProgressView("Loading original message…") }
+            if let error = review.errors[key] { Text(error).foregroundStyle(.red); Button("Reload original") { Task { await review.showOriginal(source, model: model) } } }
+            if let message = review.originals[key] { OriginalReviewMessage(message: message) }
+            Spacer(minLength: 0)
+            Button("Open in mailbox…") { model.perform { try await model.openSource(source) } }.disabled(!model.canNavigate)
+        }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
+
+private extension JSON { var isObject: Bool { if case .object = self { return true }; return false } }
 
 struct SummaryReportView: View {
     @EnvironmentObject var model: AppModel
@@ -123,7 +139,7 @@ struct SummaryReportView: View {
                 Text(dateLabel(summaryReportTimestamp(report)) + " · \(report["messageIds"].array.count) messages" + (report["source"].string == "demo" ? " · Illustrative demo" : "")).font(.caption).foregroundStyle(.secondary)
                 if report["text"].nonempty { Text(report["text"].string).textSelection(.enabled).lineSpacing(5) }
                 ForEach(Array(report["items"].array.enumerated()), id: \.offset) { _, item in
-                    Button("Open source · " + item["priority"].string + " · " + item["summary"].string) { model.perform { try await model.openSource(.object(["id": item["messageId"], "accountId": report["accountId"].nonempty ? report["accountId"] : .string(model.account)])) } }.disabled(!model.canNavigate)
+                    Button("View original message · " + item["priority"].string + " · " + item["summary"].string) { model.perform { try await model.openSource(.object(["id": item["messageId"], "accountId": report["accountId"].nonempty ? report["accountId"] : .string(model.account)])) } }.disabled(!model.canNavigate)
                 }
                 if report["error"].nonempty { Text(report["error"].string).foregroundStyle(.orange) }
             }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
@@ -198,7 +214,7 @@ private struct TodaySummaryReview: View {
             }
         }.padding(28).frame(minWidth: 500, idealWidth: 600, maxWidth: 700, maxHeight: 650)
         .interactiveDismissDisabled(model.busy)
-        .onAppear { owner = model.accounts.contains { $0.id == model.account } ? model.account : model.accounts.first?.id ?? "" }
+        .onAppear { owner = model.accounts.contains { $0.id == model.review.scope } ? model.review.scope : model.accounts.first?.id ?? "" }
         .task(id: owner + "\n\(reviewRevision)") {
             preview = .null; error = ""
             guard !owner.isEmpty, ready else { return }

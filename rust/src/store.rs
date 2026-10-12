@@ -317,6 +317,7 @@ impl Store {
         store.transaction(|store| {
             create_index(&store.conn)?;
             create_provider_memberships(&store.conn)?;
+            crate::mail_threads::create_schema(&store.conn)?;
             store.conn.execute_batch("CREATE TABLE IF NOT EXISTS morrow_schema(version INTEGER PRIMARY KEY); INSERT OR IGNORE INTO morrow_schema VALUES(1);")?;
             let initialized: bool = store.conn.query_row("SELECT EXISTS(SELECT 1 FROM settings WHERE id=1)", [], |row| row.get(0))?;
             if !initialized {

@@ -191,8 +191,10 @@ struct Reader {
     xaml::DispatcherTimer startupTimer{nullptr};
     CoreWebView2 core{nullptr};
     CoreWebView2Environment environment{nullptr};
+    std::function<bool()> reviewContext;
     bool live() const {
         auto host = shell.lock();
+        if (reviewContext) return active && host && host->current(generation,viewOwner) && host->selectionGeneration == selection && host->connected(account) && reviewContext();
         return active && host && host->current(generation, viewOwner) && host->selectionGeneration == selection
             && host->section == L"mail" && text(host->selected, L"accountId") == account
             && text(host->selected, L"id") == messageId;
@@ -448,7 +450,7 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
     state->initializing = false;
 }
 
-std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel const& panel, Json const& message) {
+std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel const& panel, Json const& message, double height = 480, std::function<bool()> reviewContext = {}) {
     if (flag(message, L"bodyTruncated")) panel.Children().Append(label(L"Downloaded message text was truncated. Check the original mailbox for the complete message."));
     if (text(message, L"deliveryStatus") == L"resolved") panel.Children().Append(label(text(message, L"deliveryResolution") == L"sent"
         ? L"You marked this delivery as sent after checking your mailbox. Morrow did not send another copy."
@@ -458,6 +460,7 @@ std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel con
     if (html.empty() || html.size() > (flag(message, L"inlineImages") ? size_t(1536 * 1024) : size_t(512 * 1024))) { panel.Children().Append(plain); return {}; }
     try {
         auto state = std::make_shared<Reader>();
+        state->reviewContext=std::move(reviewContext);
         state->shell = shell; state->generation = shell->generation; state->selection = shell->selectionGeneration;
         state->viewOwner = shell->owner; state->account = text(message, L"accountId"); state->messageId = text(message, L"id");
         state->html = html; state->inlineImages = flag(message, L"inlineImages"); state->serviceOrigin = shell->service->origin();
@@ -480,7 +483,7 @@ std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel con
         reader.Children().Append(notice);
         // A bounded viewport lets the HTML surface itself scroll under the cursor.
         // No script bridge or injected measurement script is needed.
-        WebView2 web; web.Height(480); web.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
+        WebView2 web; web.Height(std::clamp(height, 200.0, 480.0)); web.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
         web.Visibility(xaml::Visibility::Collapsed);
         web.DefaultBackgroundColor(Windows::UI::Color{255, 255, 255, 255});
         xaml::Automation::AutomationProperties::SetName(web, L"Formatted email content");
@@ -500,9 +503,9 @@ std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel con
 }
 }
 
-void appendReader(std::shared_ptr<Shell> shell, StackPanel const& panel, Json message) {
+void appendReader(std::shared_ptr<Shell> shell, StackPanel const& panel, Json message, double height, std::function<bool()> reviewContext) {
     appendAttachmentControls(shell, panel, message);
-    mountReader(std::move(shell), panel, message);
+    mountReader(std::move(shell), panel, message, height, std::move(reviewContext));
 }
 
 namespace {
