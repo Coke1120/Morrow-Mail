@@ -8,6 +8,7 @@
 #include <optional>
 #include <map>
 #include <set>
+#include <utility>
 
 namespace morrow {
 namespace xaml = winrt::Microsoft::UI::Xaml;
@@ -32,6 +33,18 @@ struct ReviewMemory {
     std::map<std::wstring, double> scrolls;
     std::map<std::wstring, bool> details;
     bool writing = false;
+    void moveEntry(winrt::hstring const& oldKey, winrt::hstring const& newKey, ReviewEntry next) {
+        entries[std::wstring(newKey)] = std::move(next);
+        if (oldKey == newKey) return;
+        // Only scene-owned review state moves; no persisted mailbox draft is removed.
+        entries.erase(std::wstring(oldKey));
+        for (auto& [_, selected] : selections) if (selected == oldKey) selected = newKey;
+        auto oldScroll = scrolls.find(std::wstring(L"reply-detail:" + oldKey));
+        if (oldScroll != scrolls.end()) {
+            scrolls[std::wstring(L"reply-detail:" + newKey)] = oldScroll->second;
+            scrolls.erase(oldScroll);
+        }
+    }
     bool hasEdits() const {
         for (auto const& [_, entry] : entries) if (entry.draft.Size() && entry.draft.Stringify() != entry.saved.Stringify()) return true;
         for (auto const& [owner, value] : options) if (auto saved=savedOptions.find(owner); saved!=savedOptions.end() && value.Stringify()!=saved->second.Stringify()) return true;

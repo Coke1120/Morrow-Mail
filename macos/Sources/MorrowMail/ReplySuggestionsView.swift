@@ -125,8 +125,7 @@ private struct ReplyReviewWorkspace: View {
             HStack {
                 Button("Skip suggestion") {
                     model.perform {
-                        _ = try await model.request("/reply-suggestions/dismiss", method: "POST", body: .object(["id": .string(review.proposalID(proposal))]), mailbox: owner)
-                        await review.load(review.scope, model: model)
+                        await review.dismiss(proposal, model: model)
                     }
                 }.disabled(model.busy || review.writing)
                 Spacer()

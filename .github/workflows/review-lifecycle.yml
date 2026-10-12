@@ -1,0 +1,26 @@
+name: Focused review lifecycle
+on:
+  pull_request:
+    paths:
+      - .github/workflows/review-lifecycle.yml
+      - scripts/test-macos-review-workspace.py
+      - macos/Checks/ReviewWorkspace*.swift
+      - macos/Sources/MorrowMail/ReviewWorkspaceState.swift
+      - macos/Sources/MorrowMail/ReplySuggestionsView.swift
+      - windows/Ui.h
+      - windows/Review.cpp
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  macos-review-lifecycle:
+    runs-on: macos-15
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Fetch immutable failed candidate for negative controls
+        run: git fetch --depth=1 origin 8f9130737e297338abba1925db3453a30496bd68
+      - name: Reproduce full Skip and retarget ghost state in the pinned candidate
+        run: python3 -B scripts/test-macos-review-workspace.py --baseline-lifecycle
+      - name: Verify production handlers with fictional transport
+        run: python3 -B scripts/test-macos-review-workspace.py
