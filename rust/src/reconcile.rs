@@ -11,6 +11,8 @@ use rusqlite::{OptionalExtension, params};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 
+const BACKGROUND_BATCH: usize = 50;
+
 fn batch(db: &Store, connection: &Value) -> Result<Vec<(i64, Value)>> {
     let owner = string(connection, "email");
     let settings = db.settings()?;
@@ -47,6 +49,21 @@ fn message_folder(message: &Value) -> &str {
         .as_str()
         .filter(|s| !s.is_empty())
         .unwrap_or("INBOX")
+}
+fn obsolete_uid_validity(message: &Value, folder_state: &Value) -> bool {
+    let Some(live) = folder_state["validity"].as_u64().filter(|value| *value > 0) else {
+        return false;
+    };
+    let remote = message["remoteId"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| message["id"].as_str().unwrap_or(""));
+    let mut parts = remote.split(':');
+    parts.next() == Some("imap")
+        && parts
+            .next()
+            .and_then(|value| value.parse::<u64>().ok())
+            .is_some_and(|validity| validity > 0 && validity != live)
 }
 fn bind_flag_epochs(messages: &mut [Value], checkpoint: &Value) {
     for message in messages {
@@ -232,6 +249,18 @@ fn next_folder(db: &Store, connection: &Value, checkpoint: &Value) -> Result<Opt
     if folder.is_some() {
         return Ok(folder);
     }
+    let first: Option<String> = db.conn.query_row(
+        "SELECT folder_id FROM mail_provider_memberships WHERE account=? ORDER BY folder_id LIMIT 1",
+        params![owner],
+        |row| row.get(0),
+    ).optional()?;
+    if first.is_some() {
+        return Ok(first);
+    }
+    inbox_for_rows_missing_folder_index(db, owner)
+}
+
+fn inbox_for_rows_missing_folder_index(db: &Store, owner: &str) -> Result<Option<String>> {
     let cached: bool = db.conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM messages WHERE account=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id) LIKE 'imap:%')",
         [owner], |row| row.get(0),
@@ -274,21 +303,30 @@ fn legacy_folder_checkpoint(
     })
 }
 
+fn release_rotation_slot(rows: &mut Vec<(i64, Value)>, consumed: &mut usize, covered: bool) {
+    if !covered && rows.len() == BACKGROUND_BATCH {
+        rows.pop();
+        *consumed -= 1;
+    }
+}
+
 fn changed_rows(
     db: &Store,
     connection: &Value,
     folder: &str,
     state: &mut Value,
+    rotation_head: Option<i64>,
 ) -> Result<Vec<(i64, Value)>> {
     let validity = state["validity"].as_u64().unwrap();
     let pending = state["pending"].as_array().unwrap();
     let mut rows = Vec::new();
     let mut consumed = 0;
+    let mut rotation_covered = rotation_head.is_none();
     let mut query = db.conn.prepare(
         "SELECT rowid,data FROM messages WHERE account=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id)=? AND COALESCE(NULLIF(json_extract(data,'$.providerFolderId'),''),'INBOX')=? AND COALESCE(json_extract(data,'$.providerDeleted'),0)=0 ORDER BY rowid DESC LIMIT 1",
     )?;
     for uid in pending {
-        if rows.len() == 50 {
+        if rows.len() == BACKGROUND_BATCH && rotation_covered {
             break;
         }
         let remote = format!("imap:{validity}:{}", uid.as_u64().unwrap());
@@ -298,8 +336,21 @@ fn changed_rows(
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
+        if rows.len() == BACKGROUND_BATCH {
+            if row
+                .as_ref()
+                .is_some_and(|(id, _)| rotation_head == Some(*id))
+            {
+                rotation_covered = true;
+                break;
+            }
+            continue;
+        }
         consumed += 1;
         if let Some((id, value)) = row {
+            if rotation_head == Some(id) {
+                rotation_covered = true;
+            }
             let mut message: Value = serde_json::from_str(&value)?;
             // Discovery has selected this UID independently of its old per-row
             // watermark. Read authoritative flags, including after a reset.
@@ -307,6 +358,7 @@ fn changed_rows(
             rows.push((id, message));
         }
     }
+    release_rotation_slot(&mut rows, &mut consumed, rotation_covered);
     state["pending"] = json!(&pending[consumed..]);
     if state["pending"].as_array().unwrap().is_empty()
         && state["scan"].is_object()
@@ -384,9 +436,10 @@ async fn sync_inner(
             state["capabilityEpoch"] = checkpoint["capabilityEpoch"].clone();
             let saved = connection.clone();
             let path = folder.clone();
+            let rotation_head = rotation.first().map(|row| row.0);
             (rows, state) = app
                 .db(move |db| {
-                    let rows = changed_rows(db, &saved, &path, &mut state)?;
+                    let rows = changed_rows(db, &saved, &path, &mut state, rotation_head)?;
                     Ok((rows, state))
                 })
                 .await?;
@@ -405,7 +458,7 @@ async fn sync_inner(
     let mut consumed = 0;
     for row in &rotation {
         if !rows.iter().any(|(id, _)| *id == row.0) {
-            if rows.len() == 50 {
+            if rows.len() == BACKGROUND_BATCH {
                 break;
             }
             rows.push(row.clone());
@@ -413,7 +466,7 @@ async fn sync_inner(
         consumed += 1;
     }
     if consumed > 0 {
-        checkpoint["after"] = if consumed == rotation.len() && rotation.len() < 50 {
+        checkpoint["after"] = if consumed == rotation.len() && rotation.len() < BACKGROUND_BATCH {
             json!(0)
         } else {
             json!(rotation[consumed - 1].0)
@@ -433,8 +486,10 @@ async fn sync_inner(
             .as_str()
             .filter(|s| !s.is_empty())
             .unwrap_or("INBOX");
+        let obsolete = obsolete_uid_validity(message, &checkpoint["folders"][folder]);
         if checkpoint["folders"][folder].is_object()
             && message["providerDeleted"] != true
+            && !obsolete
             && (message["providerFolderMissing"] == true
                 || !message["imapModseq"].as_u64().is_some_and(|v| v > 0)
                 || message["imapSyncConnection"] != connection_version(connection))
