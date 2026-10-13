@@ -12,9 +12,16 @@
 
 Morrow is a local, single-user app: **SwiftUI on macOS**, **WinUI 3 on Windows**, and a shared **Rust service**. Desktop packages include their runtime; no Node, Electron or Rust installation is needed to use them.
 
-The 0.7.5 [Today and reply review workspace](docs/REVIEW_WORKSPACE.md) adds shared account tabs, compact saved decisions, inline original messages and editable account-owned replies. All accounts is a read-only aggregate. Downloaded conversations use account-scoped provider/RFC/reply relationships; new sources withdraw stale suggestions while retaining user edits. Decisions remain AI suggestions with checked source quotations; historical summaries and incomplete conversations require review. Saving or opening a suggestion never sends mail. See [release notes and distribution limits](docs/releases/v0.7.5.md) and [validation](VERIFICATION.md#v075-release-preparation--12-october-2026); publication requires fresh paired tagged checks.
+The 0.7.7 [Today and reply review workspace](docs/REVIEW_WORKSPACE.md) adds shared account tabs, compact saved decisions, inline original messages and editable account-owned replies. All accounts is a read-only aggregate. Downloaded conversations use account-scoped provider/RFC/reply relationships; new sources withdraw stale suggestions while retaining user edits. Decisions remain AI suggestions with checked source quotations; historical summaries and incomplete conversations require review. Saving or opening a suggestion never sends mail. Skip now clears only its dismissed ephemeral state, source refresh moves edits without ghost unsaved guards, and empty projections avoid redundant index loads; saved mailbox drafts remain. See [release notes and limits](docs/releases/v0.7.7.md), [workspace lifecycle](docs/REVIEW_STATE_LIFECYCLE.md) and [validation](VERIFICATION.md#v077-release-preparation--codex-cloud-12-october-2026). [v0.7.7 is published](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.7.7) after its exact paired tagged attempt and public-byte verification; the unpublished failed v0.7.5/v0.7.6 tags remain preserved. See [publication evidence and residual observation limits](docs/releases/v0.7.7-verification.md).
 
 Version 0.7.3 includes search-page retention across reading/reply saves and clearer attachment removal names, covered in the [mail flow review](docs/MAIL_FLOW_REVIEW.md). Native CI does not complete manual accessibility/live-account acceptance; the extreme Mac HTML timeout and Windows first-acquire observation gap remain open.
+
+The cloud observer follow-up retains provisional handles during delayed CIM
+delivery while preserving every strict final admission and exit gate. Successful
+and failed runs are both recorded in [evidence and scope](docs/WINDOWS_INVENTORY_WINDOW.md).
+Final PR and tagged checks passed both platforms and the existing publisher.
+Preceding main acquisition/shutdown-inventory failures remain failures; this does
+not establish universal observation-gap resolution. See the linked publication evidence.
 
 Version 0.7.4 keeps the side-by-side reading pane inside the mail view when the window or sidebar changes width, restoring the requested list width when space returns. The separate Mac mini Parallels checks and tagged release status are recorded in [verification](VERIFICATION.md#windows-reading-pane-fit--mac-mini-parallels-12-october-2026).
 
@@ -57,7 +64,7 @@ Browser sign-in uses the desktop registration included in the build; custom regi
 
 Detailed behavior and limits are in [feature coverage](FEATURE_COVERAGE.md) and the [user guide](docs/USER_GUIDE.md).
 
-The [native reader and resource-observation follow-up](VERIFICATION.md#reader-timing-and-windows-observation--follow-up-in-progress) records fixture measurements and strict observation checks. Windows first-acquire native error 87 remains unresolved, and Mac mini Parallels acceptance is incomplete. Diagnostic controls do not establish production readiness; the latest tagged outcome is recorded in [verification](VERIFICATION.md).
+The [native reader and resource-observation follow-up](VERIFICATION.md#reader-timing-and-windows-observation--follow-up-in-progress) records fixture measurements and strict observation checks. The [early Windows child pins](docs/WINDOWS_EARLY_ADMISSION_PINS.md) remove serial sibling-admission delay while preserving first-acquire failure gates; error 87 before a first pin remains unresolved. Mac mini Parallels acceptance is incomplete. Diagnostic controls do not establish production readiness; the latest tagged outcome is recorded in [verification](VERIFICATION.md).
 
 ## New in 0.7.3
 

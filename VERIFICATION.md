@@ -1,5 +1,209 @@
 # Verification — 12 October 2026
 
+## v0.7.7 published — exact tagged attempt and public bytes
+
+[v0.7.7](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.7.7) published
+at23:20:35UTC fromaeec364f, annotated objected0b9fd. Tagged38318144951 attempt1
+passed Windows115039607315,Mac115039607627 and publisher115049780298. Public
+six-asset downloads/digests,ZIP CRC/paths/0.7.7 versions/ARM64+x64 architectures,
+production updater pinned signature/checksums/archive/stable-channel negatives
+passed; oldv0.7.4 and tags5/6 preserved. See [full evidence and hashes](docs/releases/v0.7.7-verification.md).
+
+Preceding main38317496182 and38317725083 remain Windows failures: first87/unknown
+ownedcase2/sample13 PID3648/parent5412, and shutdown root inventory gap in restart
+case3/sample28 PID4564/parent1536. Both Mac/allUI cases passed, but strict resource
+observation did not. Successful tagged samples do not repair these records or
+establish all mainCI green/universal87 resolution. Exact causes/limits are recorded
+in the linked evidence. Gates were not weakened; no rerun or duplicate publication.
+
+## v0.7.7 release preparation — Codex Cloud, 12 October 2026
+
+The final observer [PR37](https://github.com/Coke1120/Morrow-Mail/pull/37) normally
+merged at78e742f9e3d5b841ca10b23a3ce42a87d644703b after exact-head
+[paired38314176365](https://github.com/Coke1120/Morrow-Mail/actions/runs/38314176365),
+attempt1, passed both platforms. Mac331 / Windows327 Rust tests passed with0
+failures and3 existing ignored benchmarks each. Windows4/41/33 observations were
+complete, all skip counts/root skips/missing milestones0, collector0/reaped/notforced,
+PS5.1 relocation and1k/10k/50k benchmarks passed. Mac native acceptance/review,
+wrapping/visibility and40/40 complete/network-zero reader samples passed.
+
+[Diagnostics38314176522](https://github.com/Coke1120/Morrow-Mail/actions/runs/38314176522)
+passed37 native lifecycle cases,13 identity,24 pinned-helper and9 snapshot controls.
+Exact same-pin zero passed while7/changed creation/first87/5 remained gaps, without
+new counters/cache; all temporary pins closed and workers stopped. A real child
+born after the window began proved native background capture and same-pin zero.
+Initial6ba/b11 diagnostics38313728903/38313790700 failed fixture callback helper
+scope before new window controls; explicit function capture fixed wiring at7f07695.
+Both initial failures remain failures and were not rerun.
+
+Review [PR35](https://github.com/Coke1120/Morrow-Mail/pull/35) normally merged at
+7c2f2cf252024258b22a8daf09221c45dcc1314f after final combined
+[paired38314182628](https://github.com/Coke1120/Morrow-Mail/actions/runs/38314182628),
+attempt1, passed BOTH platforms at1cb36f49cbf757af516b0b59ad9f6b90b7bf293a.
+Mac332 / Windows328 Rust tests passed,0 failed and3 old ignored each. Windows
+4/46/35 strict observations were complete with all skips/missing milestones0,
+collectors0/reaped/notforced, relocation and benchmarks passed. Mac40/40 reader
+samples were complete/network-zero plus full native/review/wrapping/visibility pass.
+[Focused Mac38314182626](https://github.com/Coke1120/Morrow-Mail/actions/runs/38314182626)
+again reproduced immutable v0.7.6 full Skip/second404 and retarget/save ghost guards,
+then passed candidate full handlers, polling, account isolation, same-key/failed
+transfers, update/exit guards and retained saved drafts. Linux locked/offline332
+tests and23 focused tests passed; all-target Clippy/rustfmt passed. Windows controls
+exercise the workspace commit operation, not the full network refresh handler.
+
+The final merged tree exactly matches that tested combined candidate. Thunderbird
+PR34 is not an ancestor and no related runtime diff is included. Only common
+version metadata and documentation prepare0.7.7 afterward; local author/committer
+and tagger usehowailok1120@hotmail.com. Published v0.7.4 metadata/body/all six asset
+IDs/sizes/digests/times match the saved baseline. Failed v0.7.5/v0.7.6 annotated
+objects37f49dd518db64457c5539f7e861187c98034e75 and97aa4d9566d4e4728643b13d4034b864fe5d0194
+remain unchanged and unpublished. Historical unknown87 records remain failures.
+
+This preparation uses the existing release-on-tag policy: its metadata main push
+does not duplicate native jobs, while the fresh v0.7.7 tagged run MUST complete
+both full native jobs and the same-run/same-attempt Rust publisher before either
+download is public. The workflow, publisher and pinned Ed25519 key are unchanged.
+No tag is replaced, no failed artifact reused and no acceptance gate waived.
+After publication all six public assets require download/hash/version/architecture,
+production manifest/signature and old-release preservation checks. See
+[release notes and coverage limits](docs/releases/v0.7.7.md). Ad-hoc Mac/unsigned
+Windows, manual/clean-machine/installed-app and real-account/model limits remain.
+
+## Pre-row native capture window — cloud follow-up
+
+[PR36 paired38308442440](https://github.com/Coke1120/Morrow-Mail/actions/runs/38308442440)
+passed both platforms at exact head484a65e, attempt1; normal merge is0b14ed77.
+Windows observations4/47/34 were complete, relocation/benchmark passed, and Mac
+40/40 reader samples were complete/network-zero. Diagnostics38308442445 passed
+32 native lifecycle cases and13 identity controls.
+
+Combined [PR35 run38308902187](https://github.com/Coke1120/Morrow-Mail/actions/runs/38308902187)
+used identical observer source but failed owned case2/sample11: PID6268 and5316,
+parent3172, firstnativeAcquire87 with unknown exits. All UI cases passed; Windows
+job115009555495 failed and remains failed. Its123.744ms query shows why a row
+callback cannot establish an earlier acquisition. [The additional correction](docs/WINDOWS_INVENTORY_WINDOW.md)
+keeps bounded native provisional pins during CIM delivery, preserving all final
+admission/identity/parent/counter/exit/deadline gates and each first failure.
+
+Linux PowerShell compilation, pure64-bit/input bounds,9 positive/history plus52
+strict negative schema controls and script parsing passed. Five additional native
+lifecycle controls and a real born-during-window control await fresh native CI;
+no Win32 success is inferred from Linux. No rerun, tag replacement or gate waiver.
+The previous v0.7.5/v0.7.6 candidates are unpublished and immutable. Next unused
+version requires normal tested merges, coherent tagged gates and existing publisher.
+
+## Inventory-delivery observer follow-up
+
+Actual main/tagged logs retained the first-acquire87/unknown-exit failures after
+PR33, showing that moving pins ahead of siblings did not remove inventory/tree
+collection latency. [The focused row-delivery correction](docs/WINDOWS_INVENTORY_PINS.md)
+attempts its original pin as each current child row arrives under an owned live
+parent, then keeps all original current-CIM identity/parent/counter/exit/deadline
+checks at admission. Every failed first open remains a gap without retry.
+New controls release creator handles before later rows/tree processing and
+require exact zero/nonzero/changed-identity outcomes. Linux parser/bounds/64-bit/
+partial-record and9 positive/history+52 negative schema checks passed; actual
+Win32 and paired acceptance remain pending and are not predeclared.
+
+## Delayed PR32 workspace lifecycle findings
+
+The owner added review comments4250639082,4250639092 and4250639096 to the release
+completion scope. Full comment bodies and current Rust/Swift/C++ handlers were
+read. [Focused scope and controls](docs/REVIEW_STATE_LIFECYCLE.md) distinguish the
+review defects from the Windows observer and Thunderbird work.
+
+The isolated Rust index-read trap failed on immutable v0.7.6 source during an
+empty projection. After moving Today index loading below nonempty cached saved
+items and short-circuiting empty reviewed proposals, the same test passed,
+including the real service `/state` path and nonempty-index negative control.
+Locked/offline all-target Clippy passed. Native baseline/candidate controls are
+required to verify full Mac Skip and retarget/save behavior and Windows workspace
+movement; Linux does not predeclare these platform results.
+
+v0.7.6 remains unpublished and its annotated tag is preserved. Tagged
+[run38301621120](https://github.com/Coke1120/Morrow-Mail/actions/runs/38301621120),
+attempt1, passed Mac but failed Windows strict observation: owned case2/sample13,
+PID1464 / parent900, first nativeAcquire87 and unknown exit. All three UI cases
+passed; resource observation did not. Publisher was skipped.
+Merged-main [run38301357952](https://github.com/Coke1120/Morrow-Mail/actions/runs/38301357952)
+also passed Mac but failed owned case2/sample14 (PID3172 / parent3568) and restart
+case3/sample4 (PID4788 / parent8152), likewise first nativeAcquire87 / unknown
+exit. No rerun or tag replacement occurred. These failures show that sibling
+early pins did not remove the inventory-to-first-pin gap. Their actual failure
+records remain failures; further observer work and a new unused version are
+required before publication.
+
+## v0.7.6 release preparation — Codex Cloud, 12 October 2026
+
+The authorized cloud continuation preserved v0.7.5 and investigated the actual
+first `nativeAcquire` 87 / unknown exit failures. [PR #33](https://github.com/Coke1120/Morrow-Mail/pull/33)
+pins current children of already-verified live parents before sibling managed
+admission. No first failure is retried or inferred to be zero; identity, parent,
+counter, exit and existing deadline gates remain strict. Its targeted scope and
+pre-pin/process-lifetime limitations are [documented](docs/WINDOWS_EARLY_ADMISSION_PINS.md).
+
+Tested head `1c218f11429ffe88005add18bde5334a7e3459c0` passed
+[observer diagnostics 38296886856](https://github.com/Coke1120/Morrow-Mail/actions/runs/38296886856),
+attempt 1, with 13 native identity and 29 lifecycle cases. Added sibling/batch
+zero controls retained exact original-handle evidence after creator release;
+nonzero/changed-identity controls stayed gaps and every pin was disposed.
+Existing native 87/5, parent/counter/unknown/deadline negative controls remain.
+
+[Paired PR CI 38296886924](https://github.com/Coke1120/Morrow-Mail/actions/runs/38296886924),
+attempt 1, passed Mac 114969999971 and Windows 114970000270. Rust results are
+331/327 passed respectively, zero failed, and three existing ignored provider
+benchmark cases per platform. Both packages and complete native acceptance
+passed. Mac review, 40/40 complete network-zero reader, 12/12 wrapping and 6/6
+visibility samples passed. Windows strict fresh/owned/restart observation
+(4/44/33 samples) had no gaps, skipped roots, failed counters, missing milestones,
+forced collectors or invalid records; relocation under PowerShell 5.1 and the
+1k/10k/50k fictional-mail benchmark passed. No rerun or waiver was used.
+
+The PR was normally merged at `6f5a3d0f753f09bd5c9bddec943f07ea314296d6`,
+whose parents include the immutable v0.7.5 source and the tested fix head.
+Package.json now prepares the next unused version 0.7.6. The release preparation
+changes metadata/documentation only after that merge, and uses the existing
+paired tagged workflow/publisher. The workflow, publisher and pinned update
+public key are byte-for-byte unchanged. New tagged results, public downloads and
+signed-manifest verification are not predeclared here.
+
+Cloud execution was checked after a reported disconnection; pushed code and
+saved evidence remained intact. No real mail database, credential change or
+Thunderbird sync work was used. macOS remains ad-hoc signed without notarization;
+Windows unsigned. Manual accessibility, clean-machine, installed-app and
+real-account/model/provider acceptance remain incomplete. Unresolved reader
+ownership profiling and historical failures remain explicitly disclosed in the
+[0.7.6 notes](docs/releases/v0.7.6.md).
+
+## v0.7.5 failed candidate and early observer pins
+
+The immutable v0.7.5 tag points to `966823b948e923df1b7a587c0d08876dee8e9773`
+with annotated tag object `37f49dd518db64457c5539f7e861187c98034e75`.
+[Tagged run 38287540112](https://github.com/Coke1120/Morrow-Mail/actions/runs/38287540112)
+failed strict Windows observation in attempts 1 and 2. The former failed owned
+case 2/sample 12 (PID 2400 / parent 6200); the latter failed restart case 3/sample
+5 (PID 1544 / parent 1244). Both were first nativeAcquire error 87 with unknown
+exit. All three UI cases passed each time, but resource observation did not.
+Both macOS attempts passed. The publisher was skipped and no draft/public
+v0.7.5 release existed when the cloud continuation inspected the repository.
+Failed-attempt Windows artifacts do not establish release eligibility.
+
+The focused [early-pin correction](docs/WINDOWS_EARLY_ADMISSION_PINS.md) removes
+earlier siblings' managed admission from the later child's first-open window.
+The first failed open, identity/parent/counter failures, nonzero/unknown exits
+and existing deadlines remain strict failures. The native batch only pins
+current children of already-verified live parents and grants no admission or
+descendant authority itself. Added sibling and native batch controls exercise
+original-handle retention, exact zero/nonzero evidence and changed identities.
+
+Cloud Linux PowerShell 7.6.6 compiled the helper and passed integer/input checks,
+observation parser/bounds/64-bit counter/partial-record checks, and the existing
+9 positive/history + 52 negative pinned-exit schema controls. All changed
+PowerShell files parsed. Win32 lifecycle proofs were explicitly skipped on Linux;
+their CI and tagged release results are separate. The cloud checkout uses no real
+mail data, credentials or Thunderbird work. A new unused version must replace
+the failed candidate; the v0.7.5 tag will not be moved.
+
 ## v0.7.5 release preparation — 12 October 2026
 
 The owner requested a new public release including PR #32. Fresh remote main

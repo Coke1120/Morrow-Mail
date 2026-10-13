@@ -4,6 +4,7 @@ param([switch] $SelfTest)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'native-process-identity.ps1')
+. (Join-Path $PSScriptRoot 'native-process-inventory.ps1')
 
 # Fixture-only observer, never packaged. The caller owns the UI and this child.
 # No CIM, sampler pipe or sampler wait runs in the UI stderr drain loop.
@@ -163,21 +164,92 @@ function ConvertTo-NativeLookupProof($Result, [long] $ParentTicks, [long] $Sampl
 }
 
 function Get-NativeProofParentState($Parent, [uint32] $ParentId, [long] $ParentTicks,
-    [Collections.IDictionary] $Cache, [Collections.IDictionary] $Rejected, [Collections.IDictionary] $Rows) {
+    [Collections.IDictionary] $Cache, [Collections.IDictionary] $Rejected, [Collections.IDictionary] $Rows,
+    [uint32] $UnseenRoot = 0) {
     if (-not $Cache.ContainsKey($ParentId) -or -not [object]::ReferenceEquals($Cache[$ParentId], $Parent) -or
-        -not $Parent.seen -or $Rejected.ContainsKey($ParentId) -or -not $Rows.ContainsKey($ParentId)) { return 'parentUnavailable' }
+        (-not $Parent.seen -and $ParentId -ne $UnseenRoot) -or
+        $Rejected.ContainsKey($ParentId) -or -not $Rows.ContainsKey($ParentId)) { return 'parentUnavailable' }
     $parentRow = $Rows[$ParentId]
     if ($Parent.ticks -ne $ParentTicks -or $Parent.process.Id -ne $ParentId -or
-        $Parent.parentPid -ne [uint32] $parentRow.ParentProcessId -or
+        (($Parent.seen -or $ParentId -ne $UnseenRoot) -and $Parent.parentPid -ne [uint32] $parentRow.ParentProcessId) -or
         -not (Test-NativeCreation $Parent.process.StartTime.ToUniversalTime().Ticks $ParentTicks $parentRow.CreationDate.ToUniversalTime().Ticks)) { return 'identityMismatch' }
     if ($Parent.process.HasExited) { return 'parentExited' }
     return 'valid'
 }
 
+function Add-NativeInventoryPin($Row, [uint32] $Root, [Collections.IDictionary] $Cache,
+    [Collections.IDictionary] $Pins, [scriptblock] $AcquireIdentity, $NativeWindow = $null) {
+    $id = [uint32] $Row.ProcessId; $parentId = [uint32] $Row.ParentProcessId
+    if ($id -le 1 -or $Cache.ContainsKey($id) -or $Pins.ContainsKey($id) -or
+        -not $Cache.ContainsKey($parentId)) { return $false }
+    $parent = $Cache[$parentId]
+    if (-not $parent.seen -and $parentId -ne $Root) { return $false }
+    # Provisional read-only pin: this retained, owned parent is exact and live.
+    # Its current CIM row is still mandatory at ordinary admission below.
+    try {
+        if ($parent.process.Id -ne $parentId -or $parent.process.StartTime.ToUniversalTime().Ticks -ne $parent.ticks -or
+            $parent.process.HasExited -or $null -eq $Row.CreationDate -or
+            $Row.CreationDate.ToUniversalTime().Ticks -lt $parent.ticks) { return $false }
+    } catch { return $false }
+    if ($Cache.Count + $Pins.Count -ge 64) { throw 'Pin inventory limit.' }
+    try {
+        $handle = if ($NativeWindow) {
+            $item = $NativeWindow.AcquireForRow($id, $parentId)
+            if ($null -ne $item.NativeError) { throw [ComponentModel.Win32Exception]::new($item.NativeError) }
+            $item.Handle
+        } elseif ($AcquireIdentity) { & $AcquireIdentity $id } else { [MorrowObservationIdentity.ExitProof]::Acquire($id) }
+        $Pins[$id] = @{ handle = $handle; failure = $null }
+        return $true
+    } catch {
+        # Store the FIRST result even while inventory is arriving. Nothing in
+        # tree building or admission may reopen it or infer a normal exit.
+        $Pins[$id] = @{ handle = $null; failure = $_.Exception }
+        return $false
+    }
+}
+
+function New-NativeAdmissionPins($Candidates, [uint32] $Root, [Collections.IDictionary] $Cache,
+    [Collections.IDictionary] $Rejected, [Collections.IDictionary] $Rows, [scriptblock] $AcquireIdentity,
+    [Collections.IDictionary] $Pins) {
+    $pins = $Pins; $parents = @{}; $wanted = [Collections.Generic.List[uint32]]::new()
+    foreach ($candidate in $Candidates) {
+        $id = [uint32] $candidate.row.ProcessId; $parentId = [uint32] $candidate.row.ParentProcessId
+        if ($candidate.source -ne 'cim' -or $Cache.ContainsKey($id) -or $pins.ContainsKey($id) -or -not $Cache.ContainsKey($parentId)) { continue }
+        if (-not $parents.ContainsKey($parentId)) {
+            $parent = $Cache[$parentId]
+            # The root's original managed pin is already exact. It need not
+            # have counter samples yet to permit provisional pinning. Actual
+            # admission still uses the original, stricter parent checks below.
+            try { $parents[$parentId] = (Get-NativeProofParentState $parent $parentId $parent.ticks $Cache $Rejected $Rows $Root) -eq 'valid' }
+            catch { $parents[$parentId] = $false }
+        }
+        if ($parents[$parentId]) { $wanted.Add($id) }
+    }
+    try {
+        if ($AcquireIdentity) {
+            foreach ($id in $wanted) {
+                try { $pins[$id] = @{ handle = (& $AcquireIdentity $id); failure = $null } }
+                catch { $pins[$id] = @{ handle = $null; failure = $_.Exception } }
+            }
+        } else {
+            foreach ($item in [MorrowObservationIdentity.ExitProof]::AcquireMany($wanted.ToArray())) {
+                $pins[$item.Pid] = @{ handle = $item.Handle; failure = $(if ($null -ne $item.NativeError) {
+                    [ComponentModel.Win32Exception]::new($item.NativeError)
+                } else { $null }) }
+            }
+        }
+        return $pins
+    } catch {
+        foreach ($pin in $pins.Values) { if ($pin.handle) { $pin.handle.Dispose() } }
+        throw
+    }
+}
+
 function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]] $SnapshotRows = $null,
     [scriptblock] $ObservationBarrier = $null, [scriptblock] $ReadCounters = $null,
     [Collections.IDictionary] $State = $null, [scriptblock] $AcquireIdentity = $null,
-    [long] $CollectorDeadlineAtQpc = 0, [scriptblock] $LookupProcess = $null, [scriptblock] $ReadLookupProof = $null) {
+    [long] $CollectorDeadlineAtQpc = 0, [scriptblock] $LookupProcess = $null, [scriptblock] $ReadLookupProof = $null,
+    [scriptblock] $InventoryWindowFactory = $null) {
     # A collector owns this bounded cache until its finally block. Retaining the
     # original handle preserves exit evidence; a missing PID is never that proof.
     # Fixture faults/projections are direct arguments, never environment/app switches.
@@ -185,7 +257,7 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
     if ($CollectorDeadlineAtQpc -eq 0) { $CollectorDeadlineAtQpc = $sampleAt + 180L * $frequency }
     $ownsState = $null -eq $State
     if ($ownsState) { $State = New-NativeObservationState $Root $RootTicks }
-    $cache = $State.handles; $entries = [Collections.Generic.List[object]]::new(); $stage = 'root'
+    $cache = $State.handles; $entries = [Collections.Generic.List[object]]::new(); $stage = 'root'; $earlyPins = @{}; $nativeWindow = $null
     $sample = [ordered]@{ terminalReason = $null; failureStage = 'none'; hasSnapshot = $false; skipped = 0; rootSkipped = 0
         rootExitedDuringSample = $null; skipReasonCounts = (New-NativeSkipReasonCounts); processes = @()
         lifecycleEvents = [Collections.Generic.List[object]]::new(); failedRecords = [Collections.Generic.List[object]]::new() }
@@ -203,9 +275,41 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
         $rootEntry = $cache[$Root]; $rootExited = $rootEntry.process.HasExited
         $rootIdentitySource = if ($rootEntry.seen) { 'priorSnapshot' } else { 'currentSnapshot' }
         $stage = 'cim'
-        $rows = if ($rootExited) { @() } elseif ($null -eq $SnapshotRows) {
-            @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate -OperationTimeoutSec 2 -ErrorAction Stop)
-        } else { $SnapshotRows }
+        if (-not $rootExited -and ($null -eq $SnapshotRows -or $InventoryWindowFactory)) {
+            $nativeWindow = if ($InventoryWindowFactory) { & $InventoryWindowFactory $Root $cache } else { Start-NativeInventoryWindow $Root $cache }
+        }
+        $inventory = [Collections.Generic.List[object]]::new()
+        $receive = {
+            param($Row)
+            if ($inventory.Count -ge 8192) { throw 'Process inventory limit.' }
+            $inventory.Add($Row)
+            if (Add-NativeInventoryPin $Row $Root $cache $earlyPins $AcquireIdentity $nativeWindow) {
+                if ($ObservationBarrier) { [void] (& $ObservationBarrier 'inventoryPinned' ([uint32] $Row.ProcessId)) }
+            }
+        }
+        if (-not $rootExited) {
+            if ($null -eq $SnapshotRows) {
+                # Pin at row delivery, before collecting the remaining global
+                # inventory, tree construction or any managed sibling reads.
+                Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CreationDate -OperationTimeoutSec 2 -ErrorAction Stop |
+                    ForEach-Object { [void] (& $receive $_) }
+            } else { foreach ($row in $SnapshotRows) { [void] (& $receive $row) } }
+        }
+        if ($nativeWindow) {
+            # Stop before tree/admission. This bounded join cannot extend the
+            # original sample/collector deadline or create later exit grace.
+            $stopDeadline = [Math]::Min($sampleAt + $frequency, $CollectorDeadlineAtQpc)
+            $remaining = [Math]::Max(0L, $stopDeadline - [Diagnostics.Stopwatch]::GetTimestamp())
+            $budget = [int] [Math]::Min(250L, [long] [Math]::Floor($remaining * 1000.0 / $frequency))
+            foreach ($item in $nativeWindow.Complete($budget)) {
+                if (-not $earlyPins.ContainsKey($item.Pid)) {
+                    $earlyPins[$item.Pid] = @{ handle = $item.Handle; failure = $(if ($null -ne $item.NativeError) {
+                        [ComponentModel.Win32Exception]::new($item.NativeError)
+                    } else { $null }) }
+                }
+            }
+        }
+        $rows = @($inventory.ToArray())
         $stage = 'tree'; $byId = @{}
         if (@($rows).Count -gt 8192) { throw 'Process inventory limit.' }
         foreach ($row in $rows) {
@@ -252,6 +356,11 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
             $rejected[$Root] = $true
         }
         if ($ObservationBarrier) { [void] (& $ObservationBarrier 'snapshot' $null) }
+        # Preserve handles for current children of already-verified live parents
+        # before any sibling's managed admission. A failed first open is retained
+        # verbatim; it is never reopened or inferred to be a normal exit.
+        $earlyPins = New-NativeAdmissionPins $candidates $Root $cache $rejected $byId $AcquireIdentity $earlyPins
+        if ($ObservationBarrier) { [void] (& $ObservationBarrier 'admissionPinned' $null) }
         $admitted = [Collections.Generic.List[object]]::new()
         # Fixed once for the whole admission loop, never reset per PID. Pending
         # exit-zero settling is clipped to this sample and original collector.
@@ -286,7 +395,13 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
                     # Pin once before .NET's temporary IsProcessRunning handle.
                     # The first native open failure stays a gap, with no retry.
                     $failureStage = 'nativeAcquire'; $skipReason = 'processUnavailable'
-                    $identityHandle = if ($AcquireIdentity) { & $AcquireIdentity $id } else { [MorrowObservationIdentity.ExitProof]::Acquire($id) }
+                    if ($earlyPins.ContainsKey($id)) {
+                        $earlyPin = $earlyPins[$id]; [void] $earlyPins.Remove($id)
+                        $identityHandle = $earlyPin.handle
+                        if ($earlyPin.failure) { throw $earlyPin.failure }
+                    } else {
+                        $identityHandle = if ($AcquireIdentity) { & $AcquireIdentity $id } else { [MorrowObservationIdentity.ExitProof]::Acquire($id) }
+                    }
                     if ($ObservationBarrier) { [void] (& $ObservationBarrier 'identityProof' $id) }
                     $pin = [MorrowObservationIdentity.ExitProof]::ReadHandle($identityHandle, $id, $row.CreationDate.ToUniversalTime().Ticks, $parentTicks)
                     if (-not $pin.IdentityMatched -or $pin.Outcome -notin @('alive', 'zeroExit', 'nonzeroExit')) {
@@ -431,6 +546,8 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
         $sample.processes = @($entries.ToArray())
     } catch { $sample.terminalReason = 3; $sample.failureStage = $stage }
     finally {
+        if ($nativeWindow) { $nativeWindow.Dispose() }
+        foreach ($pin in $earlyPins.Values) { if ($pin.handle) { $pin.handle.Dispose() } }
         $sample.lifecycleEvents = @($sample.lifecycleEvents.ToArray()); $sample.failedRecords = @($sample.failedRecords.ToArray())
         if ($ownsState) { Close-NativeObservationState $State }
     }

@@ -223,8 +223,9 @@ IAsyncAction keepEdits(P p) {
         require(text(draft,L"accountId")==owner&&text(draft,L"replyToId")==id&&text(draft,L"body")==text(old.draft,L"body")&&text(draft,L"bcc").empty(),L"The refreshed reply owner could not be verified.");
         auto latest=co_await p->shell->service->request(L"/reply-suggestions",owner);require(p->current()&&validProposal(latest,fresh),L"The conversation changed again. Your original edits remain intact.");
         for(auto field:{L"footer",L"attachments"})if(old.draft.HasKey(field))draft.Insert(field,old.draft.GetNamedValue(field));if(id==text(old.draft,L"replyToId")&&!text(old.draft,L"id").empty())put(draft,L"id",text(old.draft,L"id"));
-        auto& updated=p->shell->review->entries[std::wstring(key)];updated.proposal=copy(fresh);updated.message=copy(message);updated.draft=copy(draft);updated.reviewed=false;updated.stale=false;
+        ReviewEntry updated;updated.proposal=copy(fresh);updated.message=copy(message);updated.draft=copy(draft);updated.reviewed=false;updated.stale=false;
         if(key!=oldKey){updated.saved=copy(draft);put(updated.saved,L"body",text(fresh,L"text"));}else updated.saved=copy(old.saved);
+        p->shell->review->moveEntry(oldKey,key,std::move(updated));
         p->selectedKey=key;p->shell->review->selections[std::wstring(p->scope)]=key;p->shell->review->values[std::wstring(p->scope)]=copy(latest);++p->shell->selectionGeneration;paintEditor(p,key);p->say(L"Latest evidence loaded. Your text is preserved; check the new recipient, facts and commitments again.");
     }catch(hresult_error const& error){p->say(error.message());}
 }
@@ -476,5 +477,19 @@ IAsyncAction reviewWorkspaceChecks(std::shared_ptr<Shell> shell) {
     memory->scope=owner;co_await reviewPage(shell,L"reply-suggestions");co_await ui;
     require(text(memory->entries[std::wstring(key)].draft,L"body")==L"User edit preserved across accounts."&&memory->selections[std::wstring(owner)]==key&&memory->options[std::wstring(owner)].GetNamedNumber(L"dailyTokenBudget")==200000&&memory->hasEdits(),L"A/B/A lost retained draft, selection or dirty budget.");
     auto back=mountedReview.lock();require(back&&back->current(),L"The returned review page did not mount.");auto& entry=memory->entries[std::wstring(key)];entry.stale=false;put(entry.draft,L"body",L"[decision needed: choose an answer]");paintEditor(back,key);back->facts.IsChecked(true);require(!back->send.IsEnabled(),L"Unanswered decision entered sending review.");
+    // Synthetic transfer through the same commit operation used after the
+    // full authenticated refresh. Existing persisted draft data is a separate
+    // value and is never passed to the cleanup operation.
+    ReviewMemory moved;auto old=copy(draft);put(old,L"id",L"old-persisted-fixture-draft");auto persisted=copy(old);
+    auto edited=copy(old);put(edited,L"body",L"Retain this edit on the later message.");
+    moved.entries[std::wstring(key)]={copy(proposal),copy(message),copy(edited),copy(old),true,true};
+    moved.selections[std::wstring(owner)]=key;moved.selections[L"all"]=key;moved.scrolls[std::wstring(L"reply-detail:"+key)]=180;
+    auto fresh=copy(proposal);put(fresh,L"messageId",L"later-fixture-message");auto newKey=keyOf(fresh);auto newDraft=copy(edited);newDraft.Remove(L"id");put(newDraft,L"replyToId",L"later-fixture-message");
+    moved.moveEntry(key,newKey,{copy(fresh),copy(message),copy(newDraft),copy(draft),false,false});
+    require(!moved.entries.contains(std::wstring(key))&&moved.entries.size()==1&&moved.selections[std::wstring(owner)]==newKey&&moved.selections[L"all"]==newKey&&moved.scrolls[std::wstring(L"reply-detail:"+newKey)]==180,L"Refresh retained an obsolete workspace key or selection.");
+    require(moved.hasEdits()&&text(moved.entries[std::wstring(newKey)].draft,L"body")==L"Retain this edit on the later message.",L"Refresh lost the retained edit.");
+    moved.entries[std::wstring(newKey)].saved=copy(moved.entries[std::wstring(newKey)].draft);
+    require(!moved.hasEdits()&&persisted.Stringify()==old.Stringify(),L"Saving the moved entry left ghost edits or changed the old persisted draft.");
+    moved.moveEntry(newKey,newKey,moved.entries[std::wstring(newKey)]);require(moved.entries.size()==1&&!moved.hasEdits(),L"Same-key refresh erased its workspace.");
 }
 }

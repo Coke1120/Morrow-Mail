@@ -38,7 +38,15 @@ final class ReviewProtocol: URLProtocol {
     static var owner = ReviewFixture.owners[0]
     static var failReply = false
     static var wrongDraftOwner = false
+    static var dismissed = Set<String>()
+    static var proposalOverrides: [String: [JSON]] = [:]
+    static var savedDrafts: [String: JSON] = [:]
     static var traffic: [[String:String]] = []
+    private static func replyState(_ account: String) -> JSON {
+        var result = ReviewFixture.replyState(owner: account)
+        result["proposals"] = .array((proposalOverrides[account] ?? result["proposals"].array).filter { !dismissed.contains(account + "\n" + $0["proposalId"].string) })
+        return result
+    }
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -55,14 +63,21 @@ final class ReviewProtocol: URLProtocol {
             case "/api/reply-suggestions":
                 if Self.failReply { status=503; response = .object(["error":.string("Synthetic connection error. Try again.")]) }
                 else if account == "all" {
-                    let proposals=ReviewFixture.owners.flatMap { owner in ReviewFixture.replyState(owner:owner)["proposals"].array.map { p -> JSON in var p=p; p["id"] = .string(owner+"/"+p.id); return p } }
+                    let proposals=ReviewFixture.owners.flatMap { owner in Self.replyState(owner)["proposals"].array.map { p -> JSON in var p=p; p["id"] = .string(owner+"/"+p.id); return p } }
                     response = .object(["owner":.string("all"),"proposals":.array(proposals)])
-                } else { response=ReviewFixture.replyState(owner:account) }
+                } else { response=Self.replyState(account) }
+            case "/api/reply-suggestions/dismiss":
+                let id = body["id"].string
+                if Self.failReply { status=503; response = .object(["error":.string("Synthetic dismissal failure.")]) }
+                else if !Self.replyState(account)["proposals"].array.contains(where: { $0["proposalId"].string == id }) { status=404; response = .object(["error":.string("Suggestion not found.")]) }
+                else { Self.dismissed.insert(account + "\n" + id); response=Self.replyState(account) }
             case "/api/reply-suggestions/use":
                 let i = Int(body["id"].string.split(separator:"-").last ?? "0") ?? 0
                 response = .object(["message":ReviewFixture.message(i,owner:account),"text":.string(ReviewFixture.replies[i % 3])])
             case "/api/drafts":
-                var saved=body; saved["id"] = .string("saved-"+account); saved["accountId"] = .string(account); saved["folder"] = .string("drafts")
+                var saved=body
+                let id = body["id"].nonempty ? body["id"].string : "saved-" + account + (body["replyToId"].string == "mail-0" ? "" : "-" + body["replyToId"].string)
+                saved["id"] = .string(id); saved["accountId"] = .string(account); saved["folder"] = .string("drafts"); Self.savedDrafts[id] = saved
                 response = .object(["message":saved])
             case "/api/drafts/prepare":
                 let i = Int(body["messageId"].string.split(separator:"-").last ?? "0") ?? 0
@@ -88,6 +103,9 @@ final class ReviewProtocol: URLProtocol {
     static func setFailure(_ value: Bool) { lock.lock(); defer { lock.unlock() }; failReply=value }
     static func setWrongDraftOwner(_ value: Bool) { lock.lock(); defer { lock.unlock() }; wrongDraftOwner=value }
     static func recordedTraffic() -> [[String:String]] { lock.lock(); defer { lock.unlock() }; return traffic }
+    static func resetLifecycle() { lock.lock(); defer { lock.unlock() }; dismissed=[]; proposalOverrides=[:]; savedDrafts=[:]; traffic=[]; failReply=false; wrongDraftOwner=false }
+    static func setProposals(_ proposals: [JSON], owner: String) { lock.lock(); defer { lock.unlock() }; proposalOverrides[owner]=proposals }
+    static func persistedDraft(_ id: String) -> JSON? { lock.lock(); defer { lock.unlock() }; return savedDrafts[id] }
 
     static func body(_ request: URLRequest) throws -> JSON {
         if let data=request.httpBody { return try JSONDecoder().decode(JSON.self,from:data) }

@@ -123,6 +123,37 @@ import AppKit
             } catch { self.errors[key] = error.localizedDescription }
         }
     }
+    private func forget(_ key: String, replacingWith replacement: String? = nil) {
+        drafts[key] = nil; savedPayloads[key] = nil; messages[key] = nil; proposals[key] = nil; errors[key] = nil
+        reviewedFacts.remove(key); stale.remove(key); preparing.remove(key)
+        let scroll = scrollPositions.removeValue(forKey: "reply-detail:" + key)
+        if let replacement, let scroll { scrollPositions["reply-detail:" + replacement] = scroll }
+        for scope in Array(selection.keys) where selection[scope] == key {
+            selection[scope] = replacement
+            if replacement == nil { detailVisible[scope] = false }
+        }
+    }
+    func dismiss(_ proposal: JSON, model: AppModel) async {
+        let owner = owner(proposal), key = key(proposal), id = proposalID(proposal)
+        guard !writing, !preparing.contains(key), !id.isEmpty, model.accounts.contains(where: { $0.id == owner }) else { return }
+        writing = true; defer { writing = false }
+        do {
+            let next = try await model.request("/reply-suggestions/dismiss", method: "POST", body: .object(["id": .string(id)]), mailbox: owner)
+            guard next["owner"].string == owner, model.accounts.contains(where: { $0.id == owner }) else { throw APIError("The dismissed suggestion mailbox could not be verified.") }
+            // Invalidate older in-flight loads, then remove this one proposal
+            // from every local projection. Persisted mailbox drafts are untouched.
+            for scope in Set(Array(values.keys) + ["all", owner, self.scope]) {
+                revisions[scope] = (revisions[scope] ?? 0) + 1; loading.remove(scope)
+                if var value = values[scope] {
+                    value["proposals"] = .array(value["proposals"].array.filter { self.owner($0) != owner || proposalID($0) != id })
+                    values[scope] = value
+                }
+            }
+            model.state["today"]["replySuggestions"] = .array(model.state["today"]["replySuggestions"].array.filter { self.owner($0) != owner || proposalID($0) != id })
+            forget(key)
+            await load(scope, model: model)
+        } catch { errors[key] = error.localizedDescription }
+    }
     func refreshKeepingEdits(_ previous: JSON, fresh: JSON, model: AppModel) async {
         let oldKey=key(previous), newKey=key(fresh), owner=owner(previous), id=fresh["messageId"].string
         guard let old=drafts[oldKey], owner==self.owner(fresh), !writing, !preparing.contains(newKey), model.accounts.contains(where:{$0.id==owner}) else{return}
@@ -139,6 +170,7 @@ import AppKit
             if old.replyToID==id{updated.savedID=old.savedID}
             drafts[newKey]=updated;messages[newKey]=original["message"];proposals[newKey]=fresh
             if newKey != oldKey{var baseline=updated;baseline.body=fresh["text"].string;savedPayloads[newKey]=baseline.payload}
+            if newKey != oldKey { forget(oldKey, replacingWith: newKey) }
             reviewedFacts.remove(newKey);stale.remove(newKey);errors[newKey]=nil;selection[scope]=newKey;detailVisible[scope]=true
         }catch{errors[oldKey]=error.localizedDescription}
     }
