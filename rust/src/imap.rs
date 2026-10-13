@@ -612,14 +612,15 @@ async fn checked_delta(
     sequence: impl std::fmt::Display,
     query: impl std::fmt::Display,
 ) -> Result<(Vec<Fetched>, Vec<std::ops::RangeInclusive<u32>>)> {
-    checked_delta_bounded(session, sequence, query, 50).await
+    let (rows, vanished, _) = checked_delta_bounded(session, sequence, query, 50).await?;
+    Ok((rows, vanished))
 }
 async fn checked_delta_bounded(
     session: &mut Mailbox,
     sequence: impl std::fmt::Display,
     query: impl std::fmt::Display,
     limit: usize,
-) -> Result<(Vec<Fetched>, Vec<std::ops::RangeInclusive<u32>>)> {
+) -> Result<(Vec<Fetched>, Vec<std::ops::RangeInclusive<u32>>, bool)> {
     let _phase = crate::sync_profile::phase("imapFetch");
     use imap_proto::types::{AttributeValue, MessageSection, Response, SectionPath, Status};
     let tag = session
@@ -628,6 +629,7 @@ async fn checked_delta_bounded(
         .map_err(imap_error)?;
     let mut rows = Vec::new();
     let mut vanished = Vec::new();
+    let mut earlier_vanished = false;
     loop {
         let response = session
             .read_response()
@@ -650,7 +652,7 @@ async fn checked_delta_bounded(
                     }
                     return Err(error);
                 }
-                return Ok((rows, vanished));
+                return Ok((rows, vanished, earlier_vanished));
             }
             Response::Fetch(_, attrs) => {
                 if rows.len() >= limit {
@@ -698,10 +700,11 @@ async fn checked_delta_bounded(
                 }
                 rows.push(row);
             }
-            Response::Vanished { uids, .. } => {
+            Response::Vanished { earlier, uids } => {
                 if vanished.len() + uids.len() > limit {
                     return Err(providers::remote_error());
                 }
+                earlier_vanished |= *earlier;
                 vanished.extend(uids.iter().cloned());
             }
             Response::Data {
@@ -1107,7 +1110,7 @@ pub async fn discover_changes_with_tls(
                     CHANGE_QUEUE_LIMIT,
                 ).await;
                 session.get_mut().set_limit(COMMAND_LIMIT);
-                let (rows, vanished) = match delta {
+                let (rows, _vanished, earlier_vanished) = match delta {
                     Ok(delta) => delta,
                     Err(error) if error.body["code"] == "provider_imap_command_rejected" => {
                         state["modseq"] = Value::Null;
@@ -1121,7 +1124,10 @@ pub async fn discover_changes_with_tls(
                     }
                     Err(error) => return Err(error),
                 };
-                if !vanished.is_empty() {
+                // This fetch does not request VANISHED. EARLIER is not a legal
+                // unsolicited form. A concurrent expunge without EARLIER still
+                // belongs to a round that ends tagged OK.
+                if earlier_vanished {
                     return Err(incomplete_read());
                 }
                 let mut seen = std::collections::BTreeSet::new();

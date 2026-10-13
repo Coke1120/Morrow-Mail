@@ -35,14 +35,17 @@ The normal background round first discovers changed UIDs in a cached provider
 folder. Each numeric UID window spans at most 1,000 UIDs; a response is capped at
 128 KiB. Up to 32 empty windows are scanned in one round, stopping after a
 nonempty window. At most 1,000 UIDs are queued. Remaining scan bounds and pending
-UIDs survive restart. Completed folders rotate; an unfinished folder resumes.
-There is no unbounded UID SEARCH or whole-mailbox FLAGS/body fetch.
+UIDs survive restart. Completed folders rotate in folder-id order and wrap to the
+first cached folder, including a name that sorts before INBOX. An unfinished
+folder resumes. There is no unbounded UID SEARCH or whole-mailbox FLAGS/body fetch.
 
 Changed cached UIDs take priority within the existing 50-message background
 budget. Uncached UIDs are discarded from this metadata queue; the independent
-new-mail/history importer still discovers and downloads arrivals. Any remaining
-budget advances ordinary row rotation, preserving expunge checks and repair of
-legacy rows. Visible-page/retained-reader priority work remains separate.
+new-mail/history importer still discovers and downloads arrivals. When those
+changed rows do not include the rotation cursor, one batch slot stays with that
+cursor so a full queue cannot leave expunge checks stuck. Any further remaining
+budget also advances ordinary row rotation and repair of legacy rows.
+Visible-page/retained-reader priority work remains separate.
 
 For a legacy cache without folder progress, a one-time SQLite metadata aggregate
 can seed the minimum existing MODSEQ only if every applicable cached row has
@@ -58,10 +61,14 @@ Metadata imports, queue consumption, scan advancement and the background row
 cursor commit in one transaction. Connection and expected-checkpoint comparisons
 reject stale concurrent work. A failed read or SQLite write commits no partial
 message/checkpoint progress. UIDVALIDITY/connection changes or regressed MODSEQ
-discard prior incremental proof. Unsupported, rejected or ignored extensions
+discard prior incremental proof. A retained message whose UIDVALIDITY no longer
+matches the live folder generation does not clear that generation's MODSEQ,
+scan, or pending queue. Unsupported, rejected or ignored extensions
 fall back to ordinary flags; capabilities lost between discovery and retrieval
-also invalidate folder progress. TLS validation and provider write behavior are
-unchanged.
+also invalidate folder progress. During discovery UID FETCH, VANISHED (EARLIER)
+still fails the round because that fetch did not request it. VANISHED without
+EARLIER is a concurrent expunge and does not fail a round whose command ends
+tagged OK. TLS validation and provider write behavior are unchanged.
 Private capability/folder generation markers invalidate untouched per-message
 proofs lazily after loss of support or MODSEQ regression. Re-enabling support
 cannot reuse an old flag watermark even when the new mailbox maximum is higher.

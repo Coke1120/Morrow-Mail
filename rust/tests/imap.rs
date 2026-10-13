@@ -258,8 +258,12 @@ struct ImapScenario {
     recheck_failure: bool,
     disconnect_on_body: bool,
     truncated_body: bool,
-    /// `(EARLIER, uid)` injected during a discovery `UID FETCH (UID MODSEQ)`.
-    discovery_vanished: Option<(bool, u32)>,
+    discovery_vanished: Option<DiscoveryVanished>,
+}
+#[derive(Clone, Copy)]
+struct DiscoveryVanished {
+    earlier: bool,
+    uid: u32,
 }
 impl Default for ImapScenario {
     fn default() -> Self {
@@ -869,9 +873,13 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                     entered.notify_one();
                     resume.notified().await;
                 }
-                if let Some((earlier, uid)) = scenario.discovery_vanished {
-                    let marker = if earlier { "(EARLIER) " } else { "" };
-                    write(&mut stream, &format!("* VANISHED {marker}{uid}\r\n")).await?;
+                if let Some(vanished) = scenario.discovery_vanished {
+                    let marker = if vanished.earlier { "(EARLIER) " } else { "" };
+                    write(
+                        &mut stream,
+                        &format!("* VANISHED {marker}{}\r\n", vanished.uid),
+                    )
+                    .await?;
                 }
                 let (lower, upper) = selected.split_once(':').unwrap();
                 let (lower, upper) = (lower.parse::<u32>().unwrap(), upper.parse::<u32>().unwrap());
@@ -3362,7 +3370,7 @@ async fn discovery_accepts_async_vanished_expunge_and_still_rejects_earlier() {
             count: 20,
             highest_modseq: Some(11),
             changed_uids: Some(vec![5]),
-            discovery_vanished: Some((earlier, 4)),
+            discovery_vanished: Some(DiscoveryVanished { earlier, uid: 4 }),
             ..Default::default()
         })
         .await;
