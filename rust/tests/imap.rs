@@ -258,6 +258,8 @@ struct ImapScenario {
     recheck_failure: bool,
     disconnect_on_body: bool,
     truncated_body: bool,
+    /// `(EARLIER, uid)` injected during a discovery `UID FETCH (UID MODSEQ)`.
+    discovery_vanished: Option<(bool, u32)>,
 }
 impl Default for ImapScenario {
     fn default() -> Self {
@@ -311,6 +313,7 @@ impl Default for ImapScenario {
             recheck_failure: false,
             disconnect_on_body: false,
             truncated_body: false,
+            discovery_vanished: None,
         }
     }
 }
@@ -865,6 +868,10 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                 if let Some((entered, resume)) = &scenario.pause_discovery {
                     entered.notify_one();
                     resume.notified().await;
+                }
+                if let Some((earlier, uid)) = scenario.discovery_vanished {
+                    let marker = if earlier { "(EARLIER) " } else { "" };
+                    write(&mut stream, &format!("* VANISHED {marker}{uid}\r\n")).await?;
                 }
                 let (lower, upper) = selected.split_once(':').unwrap();
                 let (lower, upper) = (lower.parse::<u32>().unwrap(), upper.parse::<u32>().unwrap());
@@ -3016,6 +3023,31 @@ async fn discovery_downgrades_and_generation_changes_discard_stale_queues() {
             assert_eq!(row["read"], false);
             assert_eq!(row["providerFolderMissing"], true);
             assert_eq!(row["body"], "Owned synthetic body");
+            let progress = cache.app().settings().await.unwrap()["mailReconcile"][OWNER]["folders"]
+                ["INBOX"]
+                .clone();
+            assert_eq!(progress["validity"], 66, "new generation: {progress}");
+            assert_eq!(progress["modseq"], 11, "new generation: {progress}");
+            assert!(progress["pending"].as_array().unwrap().is_empty());
+            assert!(progress["scan"].is_null());
+            changed_sync(&fixture, &cache).await.unwrap();
+            let again =
+                cache.app().settings().await.unwrap()["mailReconcile"][OWNER]["folders"]["INBOX"]
+                    .clone();
+            assert_eq!(again["validity"], 66);
+            assert_eq!(
+                again["modseq"], 11,
+                "retained old mail reset progress: {again}"
+            );
+            assert!(again["pending"].as_array().unwrap().is_empty());
+            let kept = cache
+                .app()
+                .db(|db| db.get(OWNER, "imap:55:51"))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(kept["providerFolderMissing"], true);
+            assert_eq!(kept["body"], "Owned synthetic body");
         }
     }
 }
@@ -3278,6 +3310,155 @@ async fn incremental_changes_keep_folder_and_account_identity_and_use_bounded_sq
     assert_eq!(
         row["providerSnapshot"],
         json!({"read":false,"starred":false})
+    );
+}
+
+#[tokio::test]
+async fn folder_rotation_wraps_to_the_folder_that_sorts_before_inbox() {
+    let fixture = ImapFixture::new(ImapScenario {
+        capabilities: "IMAP4rev1 CONDSTORE",
+        count: 2,
+        highest_modseq: Some(11),
+        ..Default::default()
+    })
+    .await;
+    let cache = CacheWorkspace::new(&fixture.mail).await;
+    cache
+        .app()
+        .db(|db| {
+            for (uid, folder) in [(1, "Archive"), (2, "INBOX")] {
+                let row = json!({
+                    "id": format!("imap:55:{uid}"),
+                    "folder": if folder == "INBOX" { "inbox" } else { "archive" },
+                    "providerFolderId": folder,
+                    "read": false,
+                    "starred": false,
+                    "pending": true,
+                    "body": "Owned synthetic body",
+                    "bodyHtml": "",
+                    "labels": [],
+                    "providerSnapshot": {"read": false, "starred": false}
+                });
+                db.upsert(OWNER, &row)?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let mut seen = Vec::new();
+    for _ in 0..3 {
+        changed_sync(&fixture, &cache).await.unwrap();
+        let settings = cache.app().settings().await.unwrap();
+        seen.push(string(&settings["mailReconcile"][OWNER], "folder").to_owned());
+    }
+    assert_eq!(seen, ["Archive", "INBOX", "Archive"]);
+}
+
+#[tokio::test]
+async fn discovery_accepts_async_vanished_expunge_and_still_rejects_earlier() {
+    for earlier in [false, true] {
+        let fixture = ImapFixture::new(ImapScenario {
+            capabilities: "IMAP4rev1 ENABLE CONDSTORE QRESYNC",
+            count: 20,
+            highest_modseq: Some(11),
+            changed_uids: Some(vec![5]),
+            discovery_vanished: Some((earlier, 4)),
+            ..Default::default()
+        })
+        .await;
+        let proof = imap::reconcile_with_tls(
+            &fixture.mail,
+            &[json!({"id":"imap:55:1"})],
+            &fixture.connector,
+        )
+        .await
+        .unwrap()[0]["imapSyncConnection"]
+            .clone();
+        let checkpoint =
+            json!({"connection":proof,"validity":55,"modseq":10,"pending":[],"scan":null});
+        let result = imap::discover_changes_with_tls(
+            &fixture.mail,
+            "INBOX",
+            &checkpoint,
+            &fixture.connector,
+        )
+        .await;
+        if earlier {
+            assert_eq!(result.unwrap_err().body["code"], "provider_incomplete_read");
+        } else {
+            let state = result.unwrap();
+            assert!(
+                state["pending"].as_array().unwrap().contains(&json!(5)),
+                "async expunge must not abort discovery: {state}"
+            );
+            assert_eq!(state["modseq"], 10);
+            assert!(state["scan"].is_object());
+        }
+    }
+}
+
+#[tokio::test]
+async fn full_changed_queue_still_advances_nonoverlapping_rotation() {
+    let fixture = ImapFixture::new(ImapScenario {
+        capabilities: "IMAP4rev1 CONDSTORE",
+        count: 110,
+        highest_modseq: Some(11),
+        ..Default::default()
+    })
+    .await;
+    let cache = CacheWorkspace::new(&fixture.mail).await;
+    let proof = seed_changed_cache(&fixture, &cache, 110, 10).await;
+    let pending: Vec<_> = (51..=110).map(|uid| json!(uid)).collect();
+    cache
+        .app()
+        .db(move |db| {
+            let mut settings = db.settings()?;
+            settings["mailReconcile"][OWNER] = json!({
+                "connection": proof,
+                "after": 0,
+                "folder": "INBOX",
+                "capabilityEnabled": true,
+                "folders": {
+                    "INBOX": {
+                        "connection": proof,
+                        "validity": 55,
+                        "modseq": 10,
+                        "pending": pending,
+                        "scan": {"since": 10, "target": 11, "upper": 110, "after": 110},
+                        "enabled": true
+                    }
+                }
+            });
+            db.set_settings(&settings)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    changed_sync(&fixture, &cache).await.unwrap();
+    let state = cache.app().settings().await.unwrap()["mailReconcile"][OWNER].clone();
+    let head = cache
+        .app()
+        .db(|db| {
+            Ok(db.conn.query_row(
+                "SELECT rowid FROM messages WHERE account=? AND id='imap:55:1'",
+                [OWNER],
+                |row| row.get::<_, i64>(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    let message = |id: &str| {
+        let id = id.to_owned();
+        cache.app().db(move |db| db.get(OWNER, &id))
+    };
+    assert_eq!(state["after"], head);
+    assert_eq!(state["folders"]["INBOX"]["pending"][0], 100);
+    assert_eq!(message("imap:55:1").await.unwrap().unwrap()["read"], true);
+    assert_eq!(message("imap:55:2").await.unwrap().unwrap()["read"], false);
+    assert_eq!(message("imap:55:51").await.unwrap().unwrap()["read"], true);
+    assert_eq!(
+        message("imap:55:100").await.unwrap().unwrap()["read"],
+        false
     );
 }
 
