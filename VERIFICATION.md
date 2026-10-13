@@ -2096,3 +2096,54 @@ No real provider messages/calendar events were created and no paid model was con
 ## 0.6.0-beta.20 release candidate — native fixture layout ordering
 
 Beta.19 was not published. Its [tag run 36386216124](https://github.com/Coke1120/Morrow-Mail/actions/runs/36386216124) passed both platform Rust checks and macOS packaging/HTML isolation, then failed the same manual-divider fixture at a 1024×620 content size. The run was cancelled before publication. The fixture now re-resolves the displayed native split pane after layout instead of retaining a view that SwiftUI can replace. Manual-size assertions await the displayed pane within the existing three-second fixture deadline instead of relying only on a fixed 50 ms sample. Exact initial/manual sizes and programmatic resizing remain. Production window code is unchanged. The focused workflow now supplies its missing CalendarView compilation dependency and repeats the existing window suite ten times on macOS 15. Beta.20 retains all quota fixes and normal paired release gates.
+
+## Thunderbird-informed IMAP follow-up — saved Codex Cloud environment
+
+This independent branch starts from verified remote main
+`966823b948e923df1b7a587c0d08876dee8e9773`. The stopped Mac mini edits and
+results were not transferred or used as validation. The workspace's `.agents`
+and `.codex` directories contained no additional skills/instructions. Version
+metadata, tags, release workflows, candidate packages and the observer work are
+outside this branch's scope.
+
+Pinned Thunderbird source/license inspection and RFC references are retained in
+[the design notes](docs/THUNDERBIRD_IMAP_SYNC.md). The original Rust change adds
+bounded changed-UID discovery, a maximum 1,000-UID queue, a shared 50-message
+background budget and atomic message/scan/queue/row-cursor progress. Valid legacy
+proofs migrate once. Capability/folder generation markers invalidate untouched
+old proofs lazily after support loss/regression, including restored support with
+a larger mailbox maximum but smaller per-message MODSEQs. Queued UIDs read fresh
+flags. Unchanged omissions use provider snapshots; missing snapshots reread
+flags. Concurrent provider moves/confirmed writes cannot be overwritten by an
+older response. Existing Gmail/Graph/UID/body/attachment behavior is retained.
+
+Cloud Rust 1.98 checks passed on Linux x86_64 with Node/npm excluded from PATH:
+rustfmt, locked all-target Clippy with warnings denied, and the complete locked
+suite (342 passed, 0 failed; four explicit performance cases remain normally
+ignored). The new 50k performance case was executed separately against immutable
+baseline source and the final implementation. Functional checks use a separate
+Cargo target with debug symbols disabled; the recorded benchmark uses the normal
+debug profile. Generated-certificate loopback fixtures cover snapshot/override
+repair, sparse windows, queue bounds, restart, rollback, capability loss/restoration,
+UIDVALIDITY/connection replacement, checkpoint conflicts, provider-state races,
+duplicate owner/folder IDs, both flag directions and indexed row-cursor seeks.
+Static resources and Linux redistribution notices passed. Python mock probe
+checks also passed (7 instruments cases and 11 reader-process cases); these do
+not establish actual platform instrumentation or UI acceptance.
+
+[The paired synthetic report](docs/performance/thunderbird-imap-cloud.json)
+records 50,000 cached messages with 2,100-byte bodies and UID 25,000 changing read
+and star state. Baseline/new observations: 500/1 background rounds, 3,000/34 IMAP
+commands, 25,000/50 SQLite message updates, and 0/0 body requests or indexed-text
+changes. Single shared-cloud elapsed observations are 342.66/1.86 seconds, with
+setup excluded and concurrent verification affecting timing. Baseline setup
+preceded the fixture-only text memoization shortcut; timed work restores normal
+production functions. No seed-time, WAN, polling, cold-cache, UI or live-account
+speedup is claimed. The first new round applies the changed message and retains
+unfinished scan progress rather than claiming full mailbox completion.
+
+Native SwiftUI/WinUI packaging, signing and UI acceptance require their existing
+macOS/Windows PR jobs. Linux cannot run those checks. The standalone native
+resource/CPU sampler explicitly refused Linux without creating a report; no
+platform restriction was bypassed. No real accounts, credentials or user database
+were used. This phase opens a draft PR and does not authorize merge or release.

@@ -310,6 +310,8 @@ impl Store {
             CREATE TABLE IF NOT EXISTS import_cursor_hashes(account TEXT NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(account,digest));
             CREATE TABLE IF NOT EXISTS mail_sync_cursor_hashes(provider TEXT NOT NULL,account TEXT NOT NULL,digest TEXT NOT NULL,PRIMARY KEY(provider,account,digest));
             CREATE INDEX IF NOT EXISTS mail_remote ON messages(account,COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id));
+            CREATE INDEX IF NOT EXISTS mail_reconcile ON messages(account);
+            CREATE INDEX IF NOT EXISTS mail_provider_folder ON messages(account,COALESCE(NULLIF(json_extract(data,'$.providerFolderId'),''),'INBOX'));
             CREATE INDEX IF NOT EXISTS mail_metadata ON messages(account,COALESCE(json_extract(data,'$.folder'),''),COALESCE(json_extract(data,'$.date'),'') DESC,id,NOT COALESCE(json_extract(data,'$.read'),0),COALESCE(json_extract(data,'$.starred'),0),COALESCE(json_extract(data,'$.category'),''));
             CREATE INDEX IF NOT EXISTS mail_message_id ON messages(account,json_extract(data,'$.messageId'));")?;
         store.conn.execute_batch("CREATE INDEX IF NOT EXISTS mail_pending ON messages(account) WHERE json_extract(data,'$.pending')=1; CREATE INDEX IF NOT EXISTS mail_later ON messages(account) WHERE json_extract(data,'$.lowPriority')=1;")?;

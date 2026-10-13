@@ -612,6 +612,14 @@ async fn checked_delta(
     sequence: impl std::fmt::Display,
     query: impl std::fmt::Display,
 ) -> Result<(Vec<Fetched>, Vec<std::ops::RangeInclusive<u32>>)> {
+    checked_delta_bounded(session, sequence, query, 50).await
+}
+async fn checked_delta_bounded(
+    session: &mut Mailbox,
+    sequence: impl std::fmt::Display,
+    query: impl std::fmt::Display,
+    limit: usize,
+) -> Result<(Vec<Fetched>, Vec<std::ops::RangeInclusive<u32>>)> {
     let _phase = crate::sync_profile::phase("imapFetch");
     use imap_proto::types::{AttributeValue, MessageSection, Response, SectionPath, Status};
     let tag = session
@@ -645,7 +653,7 @@ async fn checked_delta(
                 return Ok((rows, vanished));
             }
             Response::Fetch(_, attrs) => {
-                if rows.len() >= 50 {
+                if rows.len() >= limit {
                     return Err(providers::remote_error());
                 }
                 let mut row = Fetched::default();
@@ -691,7 +699,7 @@ async fn checked_delta(
                 rows.push(row);
             }
             Response::Vanished { uids, .. } => {
-                if vanished.len() + uids.len() > 50 {
+                if vanished.len() + uids.len() > limit {
                     return Err(providers::remote_error());
                 }
                 vanished.extend(uids.iter().cloned());
@@ -873,12 +881,12 @@ pub async fn reconcile_with_tls(
 async fn sync_examine(
     session: &mut Mailbox,
     folder: &str,
-) -> Result<(async_imap::types::Mailbox, bool)> {
+) -> Result<(async_imap::types::Mailbox, bool, bool)> {
     use imap_proto::types::{MailboxDatum, Response, ResponseCode, Status};
     let capabilities = match session.capabilities().await {
         Ok(caps) => caps,
         Err(async_imap::error::Error::No(_) | async_imap::error::Error::Bad(_)) => {
-            return examine_read(session, folder).await.map(|m| (m, false));
+            return examine_basic(session, folder).await;
         }
         Err(error) => return Err(imap_error(error)),
     };
@@ -887,10 +895,10 @@ async fn sync_examine(
         qresync = enable_qresync(session).await?;
     }
     if qresync {
-        return examine_read(session, folder).await.map(|m| (m, true));
+        return examine_read(session, folder).await.map(|m| (m, true, true));
     }
     if !capabilities.has_str("CONDSTORE") {
-        return examine_read(session, folder).await.map(|m| (m, false));
+        return examine_basic(session, folder).await;
     }
     // async-imap exposes SELECT CONDSTORE, but reading must remain EXAMINE.
     let tag = session
@@ -926,10 +934,10 @@ async fn sync_examine(
                     return Err(providers::remote_error());
                 }
                 if *status == Status::Ok {
-                    return Ok((mailbox, false));
+                    return Ok((mailbox, false, true));
                 }
                 if matches!(status, Status::No | Status::Bad) {
-                    return examine_read(session, folder).await.map(|m| (m, false));
+                    return examine_basic(session, folder).await;
                 }
                 return Err(providers::remote_error());
             }
@@ -940,6 +948,15 @@ async fn sync_examine(
             _ => {}
         }
     }
+}
+async fn examine_basic(
+    session: &mut Mailbox,
+    folder: &str,
+) -> Result<(async_imap::types::Mailbox, bool, bool)> {
+    let mut mailbox = examine_read(session, folder).await?;
+    // An unsolicited HIGHESTMODSEQ is not proof that CONDSTORE was enabled.
+    mailbox.highest_modseq = None;
+    Ok((mailbox, false, false))
 }
 async fn examine_read(session: &mut Mailbox, folder: &str) -> Result<async_imap::types::Mailbox> {
     session
@@ -995,6 +1012,147 @@ async fn enable_qresync(session: &mut Mailbox) -> Result<bool> {
         }
     }
 }
+
+pub(crate) const CHANGE_QUEUE_LIMIT: usize = 1000;
+pub(crate) async fn discover_changes(
+    mail: &Value,
+    folder: &str,
+    checkpoint: &Value,
+) -> Result<Value> {
+    discover_changes_with_tls(mail, folder, checkpoint, &connector()?).await
+}
+/// Discover metadata changes without downloading bodies or an unbounded UID set.
+/// The caller persists this state together with the applied message updates.
+pub async fn discover_changes_with_tls(
+    mail: &Value,
+    folder: &str,
+    checkpoint: &Value,
+    connector: &native_tls::TlsConnector,
+) -> Result<Value> {
+    valid_folder(folder)?;
+    tokio::time::timeout(Duration::from_secs(45), async {
+        let mut session = connect(mail, connector).await?;
+        let (mailbox, _, enabled) = sync_examine(&mut session, folder).await?;
+        let validity = mailbox
+            .uid_validity
+            .filter(|v| *v > 0)
+            .ok_or_else(providers::remote_error)?;
+        let highest = mailbox.highest_modseq.filter(|v| *v > 0);
+        let connection = crate::folders::connection_version(mail);
+        let mut state = json!({"connection":connection,"validity":validity,"modseq":0,"pending":[],"scan":null});
+        let same = checkpoint["connection"] == connection
+            && checkpoint["validity"] == validity
+            && checkpoint["modseq"].as_u64().is_some()
+            && checkpoint["pending"].as_array().is_some_and(|uids| {
+                let mut seen = std::collections::HashSet::new();
+                uids.len() <= CHANGE_QUEUE_LIMIT
+                    && uids.iter().all(|uid| uid.as_u64().is_some_and(|uid| uid > 0 && uid <= u32::MAX as u64 && seen.insert(uid)))
+            });
+        if same && let Some(highest) = highest {
+            let scan = &checkpoint["scan"];
+            let scan_valid = (scan.is_null() && checkpoint["pending"].as_array().unwrap().is_empty())
+                || (scan["since"] == checkpoint["modseq"]
+                    && scan["target"].as_u64().is_some_and(|v| v <= highest && v > checkpoint["modseq"].as_u64().unwrap())
+                    && scan["upper"].as_u64().is_some_and(|v| v <= u32::MAX as u64)
+                    && scan["after"].as_u64().is_some_and(|v| v <= scan["upper"].as_u64().unwrap_or(0)));
+            if checkpoint["modseq"].as_u64().unwrap() <= highest && scan_valid {
+                state = checkpoint.clone();
+            }
+        }
+        let invalidated = checkpoint.is_object()
+            && (checkpoint["connection"] != connection
+                || checkpoint["validity"] != validity
+                || highest.is_some_and(|highest| checkpoint["modseq"].as_u64().is_some_and(|old| old > highest)));
+        state["enabled"] = enabled.into();
+        state["flagEpoch"] = if invalidated
+            || highest.is_none() && (!checkpoint.is_object() || !checkpoint["modseq"].is_null())
+        {
+            uuid::Uuid::new_v4().to_string().into()
+        } else { checkpoint["flagEpoch"].clone() };
+        if highest.is_none() {
+            state["modseq"] = Value::Null;
+        } else if state["scan"].is_null() && highest != state["modseq"].as_u64() {
+            let upper = if mailbox.exists == 0 {
+                0
+            } else if let Some(next) = mailbox.uid_next.filter(|v| *v > 0) {
+                if next == 1 { return Err(incomplete_read()); }
+                next - 1
+            } else {
+                let rows = checked_fetch(&mut session, "*", "UID").await?;
+                if rows.len() != 1 {
+                    return Err(incomplete_read());
+                }
+                rows[0].uid.filter(|v| *v > 0).ok_or_else(incomplete_read)?
+            };
+            state["scan"] = json!({"since":state["modseq"],"target":highest,"upper":upper,"after":0});
+        }
+        // Numeric windows cap even a server that ignores CHANGEDSINCE at 1000
+        // rows. At most 32 windows and 128 KiB per response, then yield durably.
+        if state["scan"].is_object() && state["pending"].as_array().unwrap().is_empty() {
+            let since = state["scan"]["since"].as_u64().unwrap();
+            let upper = state["scan"]["upper"].as_u64().unwrap() as u32;
+            let mut after = state["scan"]["after"].as_u64().unwrap() as u32;
+            let mut pending = Vec::new();
+            for _ in 0..32 {
+                if after >= upper || !pending.is_empty() {
+                    break;
+                }
+                let lower = after + 1;
+                let end = lower.saturating_add(CHANGE_QUEUE_LIMIT as u32 - 1).min(upper);
+                session.get_mut().set_limit(128 * 1024);
+                let delta = checked_delta_bounded(
+                    &mut session,
+                    format!("{lower}:{end}"),
+                    format!("(UID MODSEQ) (CHANGEDSINCE {since})"),
+                    CHANGE_QUEUE_LIMIT,
+                ).await;
+                session.get_mut().set_limit(COMMAND_LIMIT);
+                let (rows, vanished) = match delta {
+                    Ok(delta) => delta,
+                    Err(error) if error.body["code"] == "provider_imap_command_rejected" => {
+                        state["modseq"] = Value::Null;
+                        state["scan"] = Value::Null;
+                        state["pending"] = json!([]);
+                        if !checkpoint.is_object() || !checkpoint["modseq"].is_null() {
+                            state["flagEpoch"] = uuid::Uuid::new_v4().to_string().into();
+                        }
+                        let _ = session.logout().await;
+                        return Ok(state);
+                    }
+                    Err(error) => return Err(error),
+                };
+                if !vanished.is_empty() {
+                    return Err(incomplete_read());
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                for row in rows {
+                    let uid = row.uid.filter(|v| *v >= lower && *v <= end).ok_or_else(incomplete_read)?;
+                    if !seen.insert(uid) {
+                        return Err(incomplete_read());
+                    }
+                    if !row.modseq.is_some_and(|v| v > since) {
+                        // A server ignoring MODSEQ/CHANGEDSINCE has not supplied
+                        // incremental proof. Discard it and let flags rotate normally.
+                        state["modseq"] = Value::Null;
+                        state["scan"] = Value::Null;
+                        state["pending"] = json!([]);
+                        if !checkpoint.is_object() || !checkpoint["modseq"].is_null() {
+                            state["flagEpoch"] = uuid::Uuid::new_v4().to_string().into();
+                        }
+                        let _ = session.logout().await;
+                        return Ok(state);
+                    }
+                }
+                pending.extend(seen);
+                after = end;
+            }
+            state["scan"]["after"] = after.into();
+            state["pending"] = json!(pending);
+        }
+        let _ = session.logout().await;
+        Ok(state)
+    }).await.map_err(|_| network_error())?
+}
 async fn reconcile_session(
     session: &mut Mailbox,
     mail: &Value,
@@ -1016,7 +1174,7 @@ async fn reconcile_session(
             .push(message);
     }
     for (folder, messages) in folders {
-        let (mailbox, qresync) =
+        let (mailbox, qresync, _) =
             match sync_examine(session, &folder).await {
                 Ok(mailbox) => mailbox,
                 Err(error) if error.body["code"] == "provider_imap_mailbox_rejected" => {
@@ -1078,7 +1236,10 @@ async fn reconcile_session(
         let minimum = selected
             .values()
             .map(|m| {
-                if m["imapSyncConnection"] == crate::folders::connection_version(mail) {
+                if m["imapSyncConnection"] == crate::folders::connection_version(mail)
+                    && m["providerSnapshot"]["read"].is_boolean()
+                    && m["providerSnapshot"]["starred"].is_boolean()
+                {
                     m["imapModseq"].as_u64().unwrap_or(0)
                 } else {
                     0
@@ -1168,9 +1329,12 @@ async fn reconcile_session(
                 message.clone(),
                 &json!({"read":row.read,"starred":row.starred,"providerFolderMissing":false,"providerDeleted":false}),
             );
-            if let Some(highest) = highest.filter(|_| row.modseq.is_some()) {
+            if let Some(highest) = highest.filter(|_| row.modseq.is_some_and(|v| v > 0)) {
                 value["imapModseq"] = highest.into();
                 value["imapSyncConnection"] = crate::folders::connection_version(mail);
+            } else {
+                value["imapModseq"] = Value::Null;
+                value["imapSyncConnection"] = Value::Null;
             }
             result.push(value);
         }
@@ -1181,6 +1345,10 @@ async fn reconcile_session(
                     &json!({"providerDeleted":false,"providerFolderMissing":false,"imapModseq":highest,"imapSyncConnection":crate::folders::connection_version(mail)}),
                 );
                 // CHANGEDSINCE omissions are unchanged, never deleted.
+                // Only the saved provider snapshot is remote state. Local stars
+                // can intentionally differ; old rows without snapshots reread flags.
+                value["read"] = message["providerSnapshot"]["read"].clone();
+                value["starred"] = message["providerSnapshot"]["starred"].clone();
                 value["id"] = message["id"].clone();
                 result.push(value);
             } else {
