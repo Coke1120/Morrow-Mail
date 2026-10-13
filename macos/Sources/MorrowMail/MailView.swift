@@ -52,7 +52,7 @@ struct MailWorkspace: View {
                             TodayView()
                         } else if model.section == "studio" {
                             GeometryReader { area in
-                                StudioView().id(model.account)
+                                StudioView(review: model.review).id(model.account)
                                     .frame(width: area.size.width, height: area.size.height)
                             }
                         }
@@ -80,7 +80,7 @@ struct MailWorkspace: View {
                     }
                     if !model.error.isEmpty { statusBar(model.error, error: true) }
                     else if !model.notice.isEmpty { statusBar(model.notice, error: false) }
-                    else if model.busy || model.preparingDraft { HStack { ProgressView().controlSize(.small); Text(model.preparingDraft ? "Preparing draft…" : "Working…").foregroundStyle(.secondary); Spacer() }.padding(9).background(.bar) }
+                    else if model.busy || model.backgroundBusy || model.preparingDraft { HStack { ProgressView().controlSize(.small); Text(model.preparingDraft ? "Preparing draft…" : model.syncing ? "Syncing…" : model.busy ? "Working…" : "Working in the background…").foregroundStyle(.secondary); Spacer() }.padding(9).background(.bar) }
               }
             }
         }
@@ -225,8 +225,8 @@ struct MailWorkspace: View {
         }
     }
     private var syncButton: some View {
-        Button { model.perform { try await model.sync() } } label: { Label("Sync", systemImage: model.syncing ? "hourglass" : "arrow.clockwise") }
-            .fixedSize().disabled(!model.canNavigate || !model.hasMailbox)
+        Button { model.perform({ try await model.sync() }, blocksNavigation: false) } label: { Label("Sync", systemImage: model.syncing ? "hourglass" : "arrow.clockwise") }
+            .fixedSize().disabled(!model.canNavigate || model.backgroundBusy || model.syncing || !model.hasMailbox)
             .help("Sync mail in the current account view (⌘R); Today syncs all accounts. The selected message and current mail page are checked first, followed by recent mail and older downloaded messages.").accessibilityIdentifier("mail.sync")
     }
     private var composeButton: some View {

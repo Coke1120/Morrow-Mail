@@ -959,7 +959,7 @@ IAsyncAction Shell::smoke() {
             mailLayout = originalLayout; listWidth = originalWidth; root.RequestedTheme(originalTheme); applyMailLayout(); co_await loadPage();
             enter("studio-combined");
             co_await navigate(L"studio",L"all");
-            check(section==L"summaries" && owner==L"all" && page.Content(), L"Combined AI Studio did not show saved summaries.");
+            check(section==L"studio" && owner==L"all" && page.Content(), L"Combined AI Studio did not stay on Assistant.");
             co_await navigate(L"mail",L"all");
             auto other = object(co_await service->request(L"/messages/mail-000",L"two@fixture.invalid"),L"message");
             check(text(other,L"viewId") != text(source,L"viewId") && !flag(other,L"pending"),L"Same provider ID crossed owners.");
@@ -1001,9 +1001,11 @@ IAsyncAction Shell::smoke() {
                 }
                 if (std::wstring_view(target) == L"studio") {
                     auto studio = page.Content().as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
-                    auto tabs = studio.Children().GetAt(3).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
-                    check(tabs.Children().Size() == 3, L"AI Studio must show Assistant, Summaries and More.");
-                    auto more = tabs.Children().GetAt(2).as<controls::ComboBox>();
+                    auto accounts = studio.Children().GetAt(1).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
+                    check(accounts.Children().Size() == array(state, L"accounts").Size() + 1, L"AI Studio lost the All and per-account tabs.");
+                    auto tabs = studio.Children().GetAt(2).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
+                    check(tabs.Children().Size() == 2, L"AI Studio must show Assistant and More without a Summaries page.");
+                    auto more = tabs.Children().GetAt(1).as<controls::ComboBox>();
                     check(unbox_value<hstring>(more.Items().GetAt(0).as<controls::ComboBoxItem>().Tag()) == L"brain",
                         L"Writing style and notes is no longer reachable through More.");
                 }

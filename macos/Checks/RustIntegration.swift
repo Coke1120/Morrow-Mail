@@ -277,35 +277,35 @@ struct NativeRustChecks {
         for section in ["inbox", "today"] {
             model.section = section
             let hold = HeldWorkspaceResponse.arm("/api/sync")
-            model.perform { try await model.sync() }
+            model.perform({ try await model.sync() }, blocksNavigation: false)
             try await waitUntil("manual sync did not call the provider-sync route") { hold.request != nil }
             try check(hold.request?.httpMethod == "POST" && hold.request?.value(forHTTPHeaderField: "X-Genmail-Account") == (section == "today" ? "all" : first), "manual sync targeted the wrong mailbox scope")
-            try check(model.syncing && model.busy && !model.canNavigate, "manual sync lacked its busy/navigation guard")
+            try check(model.syncing && model.backgroundBusy && !model.busy && model.canNavigate, "manual sync blocked sidebar navigation")
             try await model.sync() // A repeated click must not start another provider request.
             var response = model.state
             if section == "today" { response["account"]["id"] = .string("all") }
             response["syncErrors"] = .array([])
             try hold.complete(response)
-            try await waitUntil("manual sync did not finish") { !model.busy }
+            try await waitUntil("manual sync did not finish") { !model.backgroundBusy }
             try check(!model.syncing && model.error.isEmpty && model.account == first && model.notice.contains("Sync cycle finished"), "manual sync changed the active account or left a stale status")
             if section == "inbox" {
                 try check(model.mailPage == page && model.mailCursors == cursors && model.selectedMessage == selected, "manual sync reset mail paging or selection")
             }
         }
         let failed = HeldWorkspaceResponse.arm("/api/sync")
-        model.perform { try await model.sync() }
+        model.perform({ try await model.sync() }, blocksNavigation: false)
         try await waitUntil("failed sync did not start") { failed.request != nil }
         try failed.complete(.object(["error": .string("Fixture offline")]), status: 502)
-        try await waitUntil("failed sync remained busy") { !model.busy }
+        try await waitUntil("failed sync remained busy") { !model.backgroundBusy }
         try check(!model.syncing && model.error == "Fixture offline" && model.notice.isEmpty, "sync failure was hidden or reported as success")
         model.error = ""; model.notice = ""
         let obsolete = HeldWorkspaceResponse.arm("/api/sync")
         let oldState = model.state
-        model.perform { try await model.sync() }
+        model.perform({ try await model.sync() }, blocksNavigation: false)
         try await waitUntil("obsolete sync did not start") { obsolete.request != nil }
         try await model.selectAccount(second, folder: "inbox")
         try obsolete.complete(oldState)
-        try await waitUntil("obsolete sync did not finish") { !model.busy }
+        try await waitUntil("obsolete sync did not finish") { !model.backgroundBusy }
         try check(model.account == second && !model.syncing && model.notice.isEmpty, "an obsolete sync replaced the new account or reported success")
         try await model.selectAccount(first, folder: "inbox")
         print("Native Rust: manual sync reaches the owned POST route, Today syncs all without switching accounts, repeated clicks coalesce, and failures remain visible.")

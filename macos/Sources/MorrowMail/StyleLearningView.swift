@@ -3,6 +3,9 @@ import SwiftUI
 struct StyleLearningView: View {
     @EnvironmentObject var model: AppModel
     @Binding var dirty: Bool
+    /// Studio passes the reviewed mailbox. Settings leaves this nil and keeps the global account.
+    var mailbox: String? = nil
+    var stateOverride: Binding<JSON>? = nil
     // The parent must route these links through its guarded selectTab.
     var onOpenSettings: ((String) -> Void)? = nil
     @State private var options: JSON = .null
@@ -11,14 +14,17 @@ struct StyleLearningView: View {
     @State private var identityName = ""
     @State private var identityAliases = ""
     @State private var identityConfirmed = false
-    var value: JSON { model.state["workspace"]["styleLearning"] }
+    var source: JSON { stateOverride?.wrappedValue ?? model.state }
+    var ownerID: String { mailbox ?? source["account"].id }
+    var operationBusy: Bool { model.busy || model.backgroundBusy }
+    var value: JSON { source["workspace"]["styleLearning"] }
     var preview: JSON { value["preview"] }
     var savedOptions: JSON { value["settings"].picking(["enabled", "weekly", "daily", "months", "maxSamples", "tokenBudget"]) }
     var savedIdentity: JSON { value["settings"]["identity"].isNull ? .object(["displayName": .string(""), "aliases": .array([]), "confirmed": .bool(false)]) : value["settings"]["identity"] }
     var identityValue: JSON { .object(["displayName": .string(identityName), "aliases": .array(identityAliases.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.map(JSON.string)), "confirmed": .bool(identityConfirmed)]) }
     var identityChanged: Bool { identityValue != savedIdentity }
     var changed: Bool { options != savedOptions || identityChanged || voice != preview["voice"].string }
-    var analysisBlocked: Bool { changed || !model.policy["enabled"].bool || !model.policy["behaviors"]["memory"].bool || !model.policy["folders"]["sent"].bool || !model.policy["content"]["body"].bool || !model.state["settings"]["ai"]["configured"].bool || preview["status"].string == "running" }
+    var analysisBlocked: Bool { changed || !model.policy["enabled"].bool || !model.policy["behaviors"]["memory"].bool || !model.policy["folders"]["sent"].bool || !model.policy["content"]["body"].bool || !source["settings"]["ai"]["configured"].bool || preview["status"].string == "running" }
     var statusSummary: String {
         if preview["status"].string == "ready" { return "Proposal ready · Not applied" }
         if !value["profile"].isNull {
@@ -27,7 +33,7 @@ struct StyleLearningView: View {
         return "Not learned"
     }
     var nextStep: String {
-        if model.busy { return "Next: wait for the current operation to finish, then review the result before continuing." }
+        if operationBusy { return "Next: wait for the current operation to finish, then review the result before continuing." }
         switch preview["status"].string {
         case "ready": return "Next: review and edit the proposal below, then choose Save Approved Style. Any previous approved style is retained until you explicitly save."
         case "prepared": return "Samples prepared · Next: review the sample text and token estimate below, then choose Analyze These Samples to generate a proposal."
@@ -35,10 +41,10 @@ struct StyleLearningView: View {
         case "interrupted": return "Analysis interrupted · Tokens may have been used. Next: prepare fresh samples with Preview Samples or Learn Now to retry explicitly. Any previous approved style is retained."
         case "failed": return "Analysis failed · Tokens may have been used. Next: check the error and settings, then prepare fresh samples with Preview Samples or Learn Now. Any previous approved style is retained."
         default:
-            if model.state["account"]["mode"].string != "live" { return "Next: choose an individual connected account in the sidebar." }
+            if source["account"]["mode"].string != "live" { return "Next: choose an individual connected account." }
             if !savedOptions["enabled"].bool { return "Choose Learn Now to review Sent samples and enable writing-style learning for this account." }
             if changed { return "Next: save or discard your unsaved changes before learning again." }
-            if !model.state["settings"]["ai"]["configured"].bool || !value["permitted"].bool { return "Next: resolve the model and permission requirements listed beside the learning buttons below." }
+            if !source["settings"]["ai"]["configured"].bool || !value["permitted"].bool { return "Next: resolve the model and permission requirements listed beside the learning buttons below." }
             if !value["profile"].isNull && !value["profile"]["active"].bool { return "Next: review learning permissions and cached Sent source mail; use Learn Now if fresh samples are needed. Your approved style is saved but currently inactive." }
             if value["profile"]["active"].bool { return "Your approved style is active. To update it, use Learn Now or Preview Samples; the current style is retained until you explicitly save a new proposal." }
             return "Next: use Learn Now to review samples and confirm AI analysis, or Preview Samples to inspect them without an AI call."
@@ -51,14 +57,14 @@ struct StyleLearningView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             SectionHeading(title: "Writing voice", detail: "Your own downloaded Sent text teaches a style for AI drafts and replies after you approve it.")
-            Text(model.state["account"]["mode"].string == "live" ? model.state["account"].id : "Choose an individual connected account in the sidebar.").font(.headline)
+            Text(source["account"]["mode"].string == "live" ? source["account"].id : "Choose an individual connected account.").font(.headline)
             HStack(alignment: .firstTextBaseline) {
                 Text(statusSummary).font(.headline)
                 if changed { Text("Unsaved changes").font(.caption).foregroundStyle(.secondary) }
             }
             Text(nextStep).font(.callout).foregroundStyle(.secondary)
-            if model.state["account"]["mode"].string != "live", let onOpenSettings {
-                Button("Connect a Mailbox in Mail") { onOpenSettings("mail") }.disabled(model.busy)
+            if source["account"]["mode"].string != "live", let onOpenSettings {
+                Button("Connect a Mailbox in Mail") { onOpenSettings("mail") }.disabled(operationBusy)
             }
             VStack(alignment: .leading, spacing: 16) {
                 if !preview.isNull { previewPanel }
@@ -110,10 +116,11 @@ struct StyleLearningView: View {
                     guard model.confirm("Delete this account’s learned style?", detail: "The style and sample preview will be deleted, and learning turned off. Mail and your confirmed identity are retained.") else { return }
                     action("profile", method: "DELETE")
                 } }
-            }.disabled(model.busy || model.state["account"]["mode"].string != "live")
+            }.disabled(operationBusy || source["account"]["mode"].string != "live")
         }
         .onAppear { load() }
-        .onChange(of: model.state["account"].id) { _ in load(); error = "" }
+        .onChange(of: ownerID) { _ in load(); error = "" }
+        .onChange(of: model.state["account"].id) { _ in if stateOverride == nil { load(); error = "" } }
         .onChange(of: value["settings"]) { _ in if !dirty { load() } }
         .onChange(of: preview.id) { _ in if !dirty { load() } }
         .onChange(of: preview["voice"]) { _ in if !dirty { load() } }
@@ -124,12 +131,12 @@ struct StyleLearningView: View {
     }
     var analysisRequirements: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if model.state["account"]["mode"].string != "live" { Text("Learning is unavailable in this view. Choose an individual connected account.") }
-            if model.busy { Text("An operation is in progress. Wait for it to finish before continuing.") }
+            if source["account"]["mode"].string != "live" { Text("Learning is unavailable in this view. Choose an individual connected account.") }
+            if operationBusy { Text("An operation is in progress. Wait for it to finish before continuing.") }
             if preview["status"].string == "running" { Text("Style analysis is running. Wait for the proposal before starting another analysis.") }
             if changed { Text("Unsaved changes: save identity or learning settings and save or discard proposal edits before learning again.") }
             if !savedOptions["enabled"].bool { Text("Learn Now will enable learning for this mailbox after confirmation.") }
-            if !model.state["settings"]["ai"]["configured"].bool {
+            if !source["settings"]["ai"]["configured"].bool {
                 HStack {
                     Text("Configure and save an AI model in Advanced setup → AI connection first.")
                     if let onOpenSettings { Button("Open AI Connection") { onOpenSettings("model") } }
@@ -198,8 +205,8 @@ struct StyleLearningView: View {
                     Button("Save Approved Style") { action("apply", body: .object(["previewId": .string(preview.id), "voice": .string(voice)])) }.buttonStyle(.borderedProminent).disabled(voice.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || voice.count > 2000 || options != savedOptions)
                     if options != savedOptions { Text("Save or discard learning settings changes first. Saving settings replaces this proposal after confirmation.").font(.caption).foregroundStyle(.secondary) }
                     if voice.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || voice.count > 2000 { Text("The approved style must contain 1–2,000 characters.").font(.caption).foregroundStyle(.secondary) }
-                    if model.busy { Text("Wait for the current operation before saving the approved style.").font(.caption).foregroundStyle(.secondary) }
-                    if model.state["account"]["mode"].string != "live" { Text("Choose the proposal’s connected account before saving.").font(.caption).foregroundStyle(.secondary) }
+                    if operationBusy { Text("Wait for the current operation before saving the approved style.").font(.caption).foregroundStyle(.secondary) }
+                    if source["account"]["mode"].string != "live" { Text("Choose the proposal’s connected account before saving.").font(.caption).foregroundStyle(.secondary) }
                 }
                 Text("Estimated tokens ≤ \(Int(preview["estimatedTokens"].number)) · Budget \(Int(preview["tokenBudget"].number)) · Effective sample cap \(Int(preview["effectiveCap"].number))").font(.caption)
                 Text("Quote/signature removal is heuristic. Review the exact text below.").font(.caption).foregroundStyle(.secondary)
@@ -218,30 +225,40 @@ struct StyleLearningView: View {
     func loadIdentity() { identityName = savedIdentity["displayName"].string; identityAliases = savedIdentity["aliases"].array.map(\.string).joined(separator: "\n"); identityConfirmed = savedIdentity["confirmed"].bool }
     func loadStyle() { options = savedOptions; voice = preview["voice"].string }
     func load() { loadStyle(); loadIdentity(); dirty = false }
+    func stillOwner(_ owner: String) -> Bool {
+        if stateOverride != nil { return model.review.scope == owner }
+        return model.account == owner
+    }
+    func adopt(_ next: JSON, owner: String) {
+        guard next["account"]["id"].string == owner, stillOwner(owner) else { return }
+        if owner == model.account { model.state = next }
+        if stateOverride != nil { stateOverride?.wrappedValue = next }
+    }
     func action(_ path: String, body: JSON = .object([:]), method: String = "POST", learnNow: Bool = false) {
-        guard !model.busy, model.state["account"]["mode"].string == "live" else { return }
+        guard !operationBusy, source["account"]["mode"].string == "live" else { return }
         if ["preview", "generate"].contains(path) && (analysisBlocked || path == "generate" && !savedOptions["enabled"].bool) { return }
-        let owner = model.state["account"].id
+        let owner = ownerID
         let identityOnly = path == "settings" && body.object.keys.allSatisfy { $0 == "identity" }
         if identityOnly && !preview.isNull && !model.confirm("Save identity and discard this style preview?", detail: "Pending AI results will be invalidated. Your approved style will be retained.") { return }
         if (path == "preview" || (path == "settings" && !identityOnly)) && preview["status"].string == "ready" && !model.confirm("Replace the current style proposal?", detail: "Your approved style will be retained.") { return }
-        if path == "settings" && !identityOnly && body["daily"].bool && !model.confirm("Enable daily Sent review?", detail: "\(owner) · \(model.state["settings"]["ai"]["model"].string)\nUp to \(Int(body["tokenBudget"].number)) estimated tokens per analysis. The first eligible analysis starts after enabling, then at most daily while Morrow is open. Provider charges may apply. Each proposal requires your review before application.") { return }
+        if path == "settings" && !identityOnly && body["daily"].bool && !model.confirm("Enable daily Sent review?", detail: "\(owner) · \(source["settings"]["ai"]["model"].string)\nUp to \(Int(body["tokenBudget"].number)) estimated tokens per analysis. The first eligible analysis starts after enabling, then at most daily while Morrow is open. Provider charges may apply. Each proposal requires your review before application.") { return }
         if learnNow && !savedOptions["enabled"].bool && !model.confirm("Enable writing-style learning?", detail: "\(owner) · Only downloaded Sent bodies are used. Review samples before the AI call; approve the proposed style before it affects drafts or replies. Provider charges may apply.") { return }
-        guard model.account == owner else { return }
+        guard stillOwner(owner), owner != "all" else { return }
         let keepIdentityEdits = identityChanged
+        let background = ["preview", "generate"].contains(path) || learnNow
         error = ""
-        model.perform {
+        model.perform({
             do {
                 if learnNow && !savedOptions["enabled"].bool {
                     var enabled = savedOptions
                     enabled["enabled"] = .bool(true)
                     let updated = try await model.request("/style/settings", method: "POST", body: enabled, mailbox: owner)
-                    guard model.account == owner else { return }
-                    model.state = updated; load()
+                    guard stillOwner(owner) else { return }
+                    adopt(updated, owner: owner); load()
                 }
                 let result = try await model.request("/style/\(path)", method: method, body: body, mailbox: owner)
-                guard model.account == owner else { return }
-                model.state = result
+                guard stillOwner(owner) else { return }
+                adopt(result, owner: owner)
                 if identityOnly { loadIdentity(); voice = preview["voice"].string } else { loadStyle(); if !keepIdentityEdits { loadIdentity() } }
                 dirty = changed
                 if learnNow {
@@ -253,16 +270,16 @@ struct StyleLearningView: View {
                     }.joined(separator: "\n\n")
                     let ai = result["settings"]["ai"]
                     let detail = "Account: \(owner) · Your Sent bodies only\nModel: \(ai["model"].string)\nEndpoint: \(ai["baseUrl"].string)\n\(Int(prepared["sampleCount"].number)) / \(Int(prepared["eligible"].number)) useful samples · Cap \(Int(prepared["effectiveCap"].number))\nEstimated tokens ≤ \(Int(prepared["estimatedTokens"].number)) · Budget \(Int(prepared["tokenBudget"].number))\n\nUp to 2 short excerpts; all selected samples will be analyzed:\n\(excerpts)\n\nCancel to review full samples below. Your approved style is retained until Save Approved Style. Continue with AI analysis?"
-                    guard model.confirm("Learn Now · Uses AI", detail: detail), model.account == owner, !analysisBlocked else { return }
+                    guard model.confirm("Learn Now · Uses AI", detail: detail), stillOwner(owner), !analysisBlocked else { return }
                     let generated = try await model.request("/style/generate", method: "POST", body: .object(["previewId": .string(prepared.id)]), mailbox: owner)
-                    guard model.account == owner else { return }
-                    model.state = generated; load()
+                    guard stillOwner(owner) else { return }
+                    adopt(generated, owner: owner); load()
                 }
             } catch {
-                guard model.account == owner else { return }
+                guard stillOwner(owner) else { return }
                 self.error = error.localizedDescription
-                if let refreshed = try? await model.request("/state", mailbox: owner), model.account == owner { model.state = refreshed }
+                if let refreshed = try? await model.request("/state", mailbox: owner), stillOwner(owner) { adopt(refreshed, owner: owner) }
             }
-        }
+        }, blocksNavigation: !background)
     }
 }

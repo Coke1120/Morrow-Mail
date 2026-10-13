@@ -105,6 +105,9 @@ struct Shell : std::enable_shared_from_this<Shell> {
     std::optional<bool> readerImageOverride;
     bool restartingForUpdate = false;
     bool syncing = false, refreshing = false, loading = false, closing = false, dialogOpen = false, selectingNavigation = false;
+    // Account selection and short mailbox writes. Page refresh, sync and AI do not set this.
+    bool navigationLocked = false;
+    uint64_t mailLoadTicket = 0;
     bool closeReady = false;
     bool checkingUpdates = false, includePrereleases = false;
     uint64_t lastUpdateCheck = 0;

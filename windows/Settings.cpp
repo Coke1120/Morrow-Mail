@@ -633,7 +633,7 @@ void permissions(Page const& p) {
     input(f, L"summarySchedule.time", L"Daily time (24-hour HH:mm)", 5);
     input(f, L"summarySchedule.timeZone", L"Time zone, e.g. Asia/Hong_Kong", 100);
     numeric(f, L"summarySchedule.everyHours", L"Interval in hours", 1, 168);
-    help(f->panel, L"Used only when scheduled inbox summaries are enabled. Runs while Morrow is open. Daily schedules catch up once; interval timing starts when enabled. Failed model jobs never replay automatically. Results appear in AI Studio → Summaries.");
+    help(f->panel, L"Used only when scheduled inbox summaries are enabled. Runs while Morrow is open. Daily schedules catch up once; interval timing starts when enabled. Failed model jobs never replay automatically. Results appear on Today.");
     section(main, L"Choose available AI tasks");
     for (auto const& entry : array(p->shell->state, L"features")) {
         auto feature = entry.GetObject(); auto id = text(feature, L"id");

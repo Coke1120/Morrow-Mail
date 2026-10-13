@@ -171,9 +171,10 @@ void setupKeyboardAccelerators(std::shared_ptr<Shell> const& shell) {
     auto invoked = [weak = std::weak_ptr<Shell>(shell)](Input::KeyboardAccelerator const& shortcut, Input::KeyboardAcceleratorInvokedEventArgs const& event) -> fire_and_forget {
         event.Handled(true);
         auto self = weak.lock();
-        if (!self || self->closing || self->dialogOpen || self->loading || !self->service
-            || self->service->writing() || !self->navigation.IsEnabled()) co_return;
+        if (!self || self->closing || self->dialogOpen || self->navigationLocked || !self->service || !self->navigation.IsEnabled()) co_return;
         auto key = shortcut.Key(); auto modifiers = shortcut.Modifiers();
+        bool sectionSwitch = key == Key::Number1 || key == Key::Number2 || key == Key::Number3 || key == Key::Number4;
+        if (!sectionSwitch && (self->loading || self->service->writing())) co_return;
         auto captured = self->owner; auto version = self->generation;
         try {
             if (key == Key::N) co_await compose(self);
@@ -398,7 +399,7 @@ IAsyncAction Shell::start() {
         auto version = self->generation; auto captured = self->owner;
         self->root.DispatcherQueue().TryEnqueue([weak, version, captured, target, account, folder] {
             if (auto self = weak.lock(); self && self->current(version, captured)) {
-                if (self->loading || self->dialogOpen || !self->navigation.IsEnabled()) {
+                if (self->navigationLocked || self->dialogOpen || !self->navigation.IsEnabled()) {
                     // WinUI has already selected the invoked item. Restore the
                     // displayed mailbox only after its invocation has finished.
                     self->rebuildNavigation();
@@ -628,7 +629,10 @@ void Shell::rebuildNavigation() {
 }
 IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder) {
     auto lifetime = shared_from_this();
-    if (closing || loading || dialogOpen || !navigation.IsEnabled()) co_return;
+    if (closing || navigationLocked || dialogOpen || !navigation.IsEnabled()) co_return;
+    if (loading) { ++mailLoadTicket; loading = false; }
+    navigationLocked = true;
+    struct NavigationHold { std::shared_ptr<Shell> shell; bool held = true; ~NavigationHold() { if (held) shell->navigationLocked = false; } void unlock() { if (held) { shell->navigationLocked = false; held = false; } } } hold{lifetime};
     auto beforeSave = generation;
     auto saveGeneral = saveGeneralBeforeLeave;
     if (saveGeneral && !(co_await saveGeneral())) co_return;
@@ -654,22 +658,24 @@ IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder
             add.Style(Application::Current().Resources().Lookup(box_value(L"AccentButtonStyle")).as<Style>());
             onboarding.Children().Append(add); show(onboarding); co_return;
         }
-        loading = true;
+        auto ticket = ++mailLoadTicket; loading = true;
         try {
             Json body; put(body, L"accountId", owner);
             auto result = co_await service->request(L"/account/select", owner, L"POST", body);
-            if (!current(version, captured)) { loading = false; co_return; }
+            if (!current(version, captured)) { if (mailLoadTicket == ticket) loading = false; co_return; }
             state = result;
             if (state.HasKey(L"serverFolders")) serverFolders = object(state, L"serverFolders");
-        } catch (...) { loading = false; error(errorText()); co_return; }
-        loading = false; mailPage(); co_await loadPage();
+        } catch (...) { if (mailLoadTicket == ticket) loading = false; error(errorText()); co_return; }
+        if (mailLoadTicket == ticket) loading = false;
+        hold.unlock(); mailPage(); co_await loadPage();
     } else if (target == L"server-folders") {
+        hold.unlock();
         auto panel = stack(12); panel.Children().Append(label(L"Server labels / folders", 26));
         panel.Children().Append(label(L"Labels and folders are saved locally and refresh automatically. Choose one to browse downloaded mail; import history to add older messages."));
-        show(scroll(panel)); loading = true;
+        show(scroll(panel)); auto ticket = ++mailLoadTicket; loading = true;
         try {
             auto result = co_await service->request(L"/mail/folders", captured);
-            if (!current(version, captured) || !connected(captured)) { loading = false; co_return; }
+            if (!current(version, captured) || !connected(captured)) { if (mailLoadTicket == ticket) loading = false; co_return; }
             if (text(result, L"accountId") != captured) throw hresult_error(E_FAIL, L"The server folder list could not be confirmed.");
             Json catalog; JsonArray entries;
             for (auto const& value : array(result, L"folders")) {
@@ -682,8 +688,8 @@ IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder
             catalog.Insert(L"folders", entries); put(catalog, L"provider", text(result, L"provider")); put(catalog, L"updatedAt", text(result, L"updatedAt"));
             serverFolders.Insert(captured, catalog); rebuildNavigation();
         } catch (...) { error(errorText()); }
-        loading = false;
-    } else if (target == L"settings") co_await settingsPage(lifetime, L"mail");
+        if (mailLoadTicket == ticket) loading = false;
+    } else if (hold.unlock(), target == L"settings") co_await settingsPage(lifetime, L"mail");
     else if (target == L"preferences") co_await settingsPage(lifetime, L"general");
     else if (target == L"policy") co_await settingsPage(lifetime, L"policy");
     else if (target == L"about") co_await settingsPage(lifetime, L"about");
@@ -852,7 +858,7 @@ void Shell::applyMailLayout() {
 IAsyncAction Shell::loadPage(int pageDelta, bool refreshReader, bool reset) {
     auto lifetime = shared_from_this();
     auto weak = weak_from_this();
-    if (loading || section != L"mail" || !rows) co_return;
+    if (navigationLocked || section != L"mail" || !rows) co_return;
     auto version = generation; auto captured = owner; auto targetRows = rows; auto query = search.Text();
     if (refreshReader) {
         // Capture a newly read selected row while the old unread page is still
@@ -866,9 +872,9 @@ IAsyncAction Shell::loadPage(int pageDelta, bool refreshReader, bool reset) {
     if (pageDelta < 0) { if (requested.size() < 2) co_return; requested.pop_back(); }
     if (pageDelta > 0) { if (nextCursor.empty()) co_return; requested.push_back(nextCursor); }
     if (refreshReader) for (auto& cursor : requested) cursor = L"";
-    loading = true;
-    auto currentPage = [&] { return current(version, captured) && section == L"mail" && rows == targetRows; };
-    auto releaseAbandonedPage = [&] { if (rows == targetRows) loading = false; };
+    auto ticket = ++mailLoadTicket; loading = true;
+    auto currentPage = [&] { return mailLoadTicket == ticket && current(version, captured) && section == L"mail" && rows == targetRows; };
+    auto releaseAbandonedPage = [&] { if (rows == targetRows && mailLoadTicket == ticket) loading = false; };
     previous.IsEnabled(false); next.IsEnabled(false);
     search.IsEnabled(false); sorting.IsEnabled(false); unreadFilter.IsEnabled(false);
     try {
@@ -1019,7 +1025,7 @@ IAsyncAction Shell::loadPage(int pageDelta, bool refreshReader, bool reset) {
     if (!currentPage()) { releaseAbandonedPage(); co_return; }
     previous.IsEnabled(cursors.size() > 1); next.IsEnabled(!nextCursor.empty());
     search.IsEnabled(true); sorting.IsEnabled(search.Text().empty()); unreadFilter.IsEnabled(search.Text().empty());
-    loading = false;
+    if (mailLoadTicket == ticket) loading = false;
     publishSyncPriority();
 }
 Json refreshedReaderMessage(Json const& previous, Json message) {
@@ -1320,7 +1326,8 @@ MenuFlyout Shell::mailActionsMenu(Json message) {
 }
 IAsyncAction Shell::patchMessages(std::vector<Json> messages, Json changes) {
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
-    if (dialogOpen || loading || closing || !dirty.empty() || service->writing() || messages.empty()) co_return;
+    if (dialogOpen || navigationLocked || loading || closing || !dirty.empty() || service->writing() || messages.empty()) co_return;
+    navigationLocked = true;
     // Refresh the currently selected row if the patch interrupts a detail read, retaining the
     // mounted reader's Load/Hide choice and interactions for metadata changes.
     auto interrupted = pendingRead; auto sequence = selectionGeneration;
@@ -1343,7 +1350,7 @@ IAsyncAction Shell::patchMessages(std::vector<Json> messages, Json changes) {
             }
         }
     } catch (...) { failure = L"Updated " + to_hstring(completed) + L" of " + to_hstring(messages.size()) + L" messages. " + errorText(); }
-    loading = false;
+    loading = false; navigationLocked = false;
     if (current(version, captured)) {
         for (auto& cursor : cursors) cursor = L"";
         co_await loadPage();
@@ -1382,9 +1389,9 @@ IAsyncAction Shell::trash(Json message) {
 }
 IAsyncAction Shell::trashMessages(std::vector<Json> messages) {
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
-    if (dialogOpen || loading || closing || !dirty.empty() || service->writing() || messages.empty()
+    if (dialogOpen || navigationLocked || loading || closing || !dirty.empty() || service->writing() || messages.empty()
         || !std::all_of(messages.begin(), messages.end(), [&](auto const& row) { return canTrash(row); })) co_return;
-    loading = true; auto batch = ++trashBatch; size_t completed = 0; hstring failure;
+    navigationLocked = true; loading = true; auto batch = ++trashBatch; size_t completed = 0; hstring failure;
     try {
         for (auto const& message : messages) {
             auto account = text(message, L"accountId");
@@ -1396,7 +1403,7 @@ IAsyncAction Shell::trashMessages(std::vector<Json> messages) {
             if (text(selected, L"accountId") == account && text(selected, L"id") == text(message, L"id")) { selected = Json(); retainedUnread = Json(); renderReader(selected); }
         }
     } catch (...) { failure = L"Moved " + to_hstring(completed) + L" of " + to_hstring(messages.size()) + L" messages. " + errorText(); }
-    loading = false; updateTrashUndo();
+    loading = false; navigationLocked = false; updateTrashUndo();
     if (current(version, captured)) {
         for (auto& cursor : cursors) cursor = L"";
         co_await loadPage();
@@ -1405,9 +1412,9 @@ IAsyncAction Shell::trashMessages(std::vector<Json> messages) {
 }
 IAsyncAction Shell::undoTrash() {
     auto lifetime = shared_from_this();
-    if (dialogOpen || loading || closing || !dirty.empty() || service->writing()) co_return;
+    if (dialogOpen || navigationLocked || loading || closing || !dirty.empty() || service->writing()) co_return;
     updateTrashUndo(); if (trashUndos.empty()) co_return;
-    auto batch = trashUndos.back().batch; loading = true; updateTrashUndo();
+    auto batch = trashUndos.back().batch; navigationLocked = true; loading = true; updateTrashUndo();
     auto version = generation; auto captured = owner;
     try {
         while (!trashUndos.empty() && trashUndos.back().batch == batch) {
@@ -1415,11 +1422,11 @@ IAsyncAction Shell::undoTrash() {
             Json body; put(body, L"undoToken", entry.token);
             co_await service->request(L"/messages/" + escaped(text(entry.message, L"id")) + L"/undo-trash", text(entry.message, L"accountId"), L"POST", body);
         }
-        loading = false; updateTrashUndo();
+        loading = false; navigationLocked = false; updateTrashUndo();
         if (!current(version, captured)) co_return;
         if (section == L"mail") { for (auto& cursor : cursors) cursor = L""; co_await loadPage(); }
         status.Text(L"Trash move undone. The message was restored.");
-    } catch (...) { loading = false; updateTrashUndo(); error(errorText()); }
+    } catch (...) { loading = false; navigationLocked = false; updateTrashUndo(); error(errorText()); }
 }
 IAsyncAction Shell::prepare(Json message, hstring mode, hstring body) {
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner; auto sequence = selectionGeneration;
@@ -1616,10 +1623,8 @@ IAsyncAction openTodayMailbox(std::shared_ptr<Shell> self, hstring folder, bool 
     }
 }
 IAsyncAction summarizeNow(std::shared_ptr<Shell> self, hstring mailbox) {
-    if (self->loading || self->dialogOpen || self->closing || !self->dirty.empty() || !self->connected(mailbox)) co_return;
+    if (self->navigationLocked || self->dialogOpen || self->closing || !self->dirty.empty() || !self->connected(mailbox)) co_return;
     auto version = self->generation; auto viewOwner = self->owner;
-    self->loading = true;
-    struct Done { std::shared_ptr<Shell> shell; ~Done() { shell->loading = false; } } done{self};
     try {
         self->error(L"Reviewing downloaded mail…");
         auto preview = co_await self->service->request(L"/summaries/preview", mailbox, L"POST", Json());
@@ -1723,7 +1728,6 @@ IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
             auto generate = button(L"Summarize now", [weak = self->weak_from_this()] { if (auto shell = weak.lock()) summarizeNow(shell, shell->todaySummaryOwner); });
             generate.Style(Application::Current().Resources().Lookup(box_value(L"AccentButtonStyle")).as<Style>());
             generate.IsEnabled(mailboxPicker.Items().Size() > 0); summaryActions.Children().Append(generate);
-            summaryActions.Children().Append(button(L"Summary History", [weak = self->weak_from_this()] { if (auto shell = weak.lock()) shell->navigate(L"summaries", L"all"); }));
             content.Children().Append(summaryActions);
             auto policy = object(object(self->state,L"settings"),L"policy"), triggers = object(policy,L"triggers"), schedule = object(policy,L"summarySchedule");
             if (flag(triggers,L"scheduledSummary")) content.Children().Append(label(text(schedule,L"cadence") == L"daily" ? L"Scheduled daily at " + text(schedule,L"time") + L" (" + text(schedule,L"timeZone") + L"), while Morrow is open." : L"Scheduled every " + to_hstring(static_cast<unsigned>(schedule.GetNamedNumber(L"everyHours",4))) + L" hours, while Morrow is open."));
@@ -1753,7 +1757,7 @@ IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
             }
             if (!flag(policy, L"enabled")) content.Children().Append(label(L"AI is paused in your saved permissions."));
             content.Children().Append(button(mailboxPicker.Items().Size() ? L"AI & Privacy" : L"Add account", [weak = self->weak_from_this(), hasAccounts = mailboxPicker.Items().Size() > 0] { if (auto shell = weak.lock()) shell->navigate(hasAccounts ? L"policy" : L"settings"); }));
-            content.Children().Append(label(L"One daily summary per mailbox, updated from its latest 20 validated jobs. Summary History keeps individual jobs.", 12));
+            content.Children().Append(label(L"One daily summary per mailbox, updated from its latest 20 validated jobs. Today keeps those saved summaries.", 12));
         }
         if (self->current(version, account)) self->show(scroll(content));
     } catch (...) { self->error(errorText()); }

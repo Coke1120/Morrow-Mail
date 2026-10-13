@@ -534,7 +534,7 @@ Pending formRequest(Page const& state) {
 IAsyncAction submit(Page state, std::optional<Pending> saved) {
     auto host = state->shell.lock(); if (!state->live(host) || state->creating || state->reading || state->pendingUnreadable || host->dialogOpen || host->loading) { if (state->reading) state->say(L"Wait for calendar reads to finish before reviewing an event."); co_return; }
     if (!saved && (!state->pendingRaw.empty() || !state->formOpen)) co_return;
-    state->creating = true; host->loading = true; updateControls(state); bool success = false;
+    state->creating = true; host->loading = true; host->navigationLocked = true; updateControls(state); bool success = false;
     try {
         auto pending = saved ? *saved : formRequest(state);
         auto detail = reviewText(pending) + (saved ? L"\n\nThe previous result was not confirmed. Check the provider calendar first. Retrying submits the original UUID and exact reviewed payload; it does not create a new request." : L"");
@@ -562,7 +562,7 @@ IAsyncAction submit(Page state, std::optional<Pending> saved) {
         }
     } catch (hresult_error const& error) { state->say(error.message() + (state->pendingRaw.empty() ? hstring{} : L" Your original reviewed request is retained. Check the provider calendar before retrying.")); }
     catch (...) { state->say(L"The event could not be confirmed. Any saved request is retained unchanged; check the provider calendar before retrying."); }
-    state->creating = false; host->loading = false;
+    state->creating = false; host->loading = false; host->navigationLocked = false;
     if (state->live(host)) { restorePending(state); renderRecovery(state); updateControls(state); if (success) queueRead(state, true); }
 }
 IAsyncAction connections(Page state) {
