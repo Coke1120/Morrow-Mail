@@ -46,6 +46,7 @@ enum JSON: Codable, Equatable, Hashable, Sendable, Identifiable {
     var id: String { self["id"].string }
     var viewID: String { self["viewId"].nonempty ? self["viewId"].string : id }
     var isNull: Bool { self == .null }
+    var isObject: Bool { if case .object = self { return true }; return false }
     var nonempty: Bool { !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     func picking(_ keys: [String]) -> JSON { .object(object.filter { keys.contains($0.key) }) }
     static func text(_ value: String) -> JSON { .string(value) }

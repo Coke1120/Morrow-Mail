@@ -154,8 +154,6 @@ private struct TodayReviewWorkspace: View {
     }
 }
 
-private extension JSON { var isObject: Bool { if case .object = self { return true }; return false } }
-
 struct SummaryReportView: View {
     @EnvironmentObject var model: AppModel
     let report: JSON
