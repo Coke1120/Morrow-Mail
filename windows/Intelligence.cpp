@@ -94,6 +94,12 @@ struct Editor {
         initializing = false;
     }
     void accept(Json const& next) { value = clone(next); saved = clone(next); show(); }
+    void acceptSubmitted(Json const& submitted, Json const& next) {
+        bool unchanged = value.Stringify() == submitted.Stringify();
+        saved = clone(next);
+        if (unchanged) value = clone(next);
+        show();
+    }
 };
 struct Intelligence : std::enable_shared_from_this<Intelligence> {
     std::shared_ptr<Shell> shell;
@@ -102,11 +108,11 @@ struct Intelligence : std::enable_shared_from_this<Intelligence> {
     bool live = true, busy = false, polling = false, cancelling = false, generatingStyle = false, selecting = false, agentRecovering = false;
     Json state, suggestions, workflow, output, outputMessage, outputSource, memoryPreview;
     std::set<std::wstring> selectedMemories;
-    weak_ref<StackPanel> memoryPanel;
+    weak_ref<StackPanel> memoryPanel, writingRuleList;
     hstring outputAction, outputContext, workflowContext, workflowOwner;
     std::map<std::wstring, Editor> forms;
     std::set<std::wstring> selectedCandidates;
-    weak_ref<StackPanel> body, previewPanel, proposalPanel, candidatePanel, jobPanel, resultPanel, skillList, recordList;
+    weak_ref<StackPanel> body, previewPanel, proposalPanel, candidatePanel, jobPanel, resultPanel, skillList, categoryList, recordList;
     weak_ref<StackPanel> toolPanel;
     weak_ref<ContentControl> editorHost, suggestionOptions;
     TextBlock notice{nullptr};
@@ -122,6 +128,10 @@ struct Intelligence : std::enable_shared_from_this<Intelligence> {
     bool current() const { return live && !shell->closing && generation == shell->generation && (owner == L"all" || shell->connected(owner)); }
     void tell(hstring const& value) { if (current()) if (auto control = notice) control.Text(value); }
     bool edited() const { for (auto const& [_, form] : forms) if (form.dirty()) return true; return false; }
+    bool writingRulesEdited() const {
+        for (auto const& [name, form] : forms) if (name.starts_with(L"writingRule:") && form.dirty()) return true;
+        return false;
+    }
     void dirty() {
         if (!live) return;
         if (busy || cancelling || edited()) shell->dirty.insert(key()); else shell->dirty.erase(key());
@@ -171,6 +181,7 @@ void acceptState(Page const& p, Json const& next) {
     if (!p->context.empty() && p->context != context) p->clearResult();
     p->state = clone(next); p->context = context; p->connection = connectionOf(next, p->owner);
     if (p->owner == p->shell->owner) p->shell->state = clone(next);
+    else if (next.HasKey(L"today")) p->shell->state.Insert(L"today", object(next, L"today"));
 }
 void validateContext(Page const& p, hstring const& captured) {
     auto const& source = p->owner == p->shell->owner ? p->shell->state : p->state;
@@ -493,6 +504,7 @@ void renderMemoryPreview(Page const& p) {
     }
     action(p, panel, L"Save selected memories", [](Page page) -> IAsyncAction {
         require(!page->forms[L"brain"].dirty(), L"Save or discard your notes first.");
+        require(!page->writingRulesEdited(), L"Save or discard writing rule edits before refreshing memories.");
         require(!page->selectedMemories.empty(), L"Select the memories you want to keep.");
         Json input; put(input, L"previewId", text(page->memoryPreview, L"id")); Array ids;
         for (auto const& id : page->selectedMemories) ids.Append(Value::CreateStringValue(hstring(id)));
@@ -511,15 +523,109 @@ void renderMemoryPreview(Page const& p) {
         page->clearResult();
     });
 }
+void renderWritingRules(Page const& p);
+IAsyncAction commitWritingRule(Page page, hstring method, hstring path, Json input, std::wstring formName = {}, Json submitted = Json()) {
+    auto state = co_await page->shell->service->request(path, page->owner, method, input);
+    if (!page->current()) co_return;
+    acceptState(page, state);
+    if (!formName.empty()) {
+        if (method == L"DELETE") page->forms.erase(formName);
+        else {
+            Json saved; put(saved, L"text", formName == L"writingRule:new" ? hstring() : text(input, L"text"));
+            page->forms.at(formName).acceptSubmitted(submitted, saved);
+        }
+    }
+    renderWritingRules(page); page->dirty(); page->tell(L"Writing rule saved. Other unsaved edits were retained.");
+}
+void buildWritingRules(Page const& p, StackPanel const& body) {
+    auto panel = group(body, L"How you write");
+    words(panel, L"Add short rules in your own words. Enabled rules guide Write, Reply, Rewrite and reply suggestions for this mailbox. They never send mail. Learn Now still reviews Sent mail separately and does not create or replace these rules.");
+    Json empty; put(empty, L"text", L""); editor(p, L"writingRule:new", empty);
+    auto add = editText(p, panel, L"writingRule:new", L"text", L"New writing rule", 500, true);
+    add.MinHeight(72); add.MaxHeight(120);
+    xaml::Automation::AutomationProperties::SetAutomationId(add, L"writing-rule.new");
+    auto addRule = action(p, panel, L"Add rule", [](Page page) -> IAsyncAction {
+        auto submitted = clone(page->forms[L"writingRule:new"].value);
+        auto value = trim(text(submitted, L"text"));
+        require(!value.empty() && value.size() <= 500, L"Enter a writing rule of at most 500 characters.");
+        Json input; put(input, L"text", value); truth(input, L"enabled", true); put(input, L"source", L"user");
+        co_await commitWritingRule(page, L"POST", L"/workspace/brain/writing-rules", input, L"writingRule:new", submitted);
+    });
+    xaml::Automation::AutomationProperties::SetAutomationId(addRule, L"writing-rule.add");
+    auto discardNew = action(p, panel, L"Discard new rule", [](Page page) -> IAsyncAction {
+        page->forms[L"writingRule:new"].accept(page->forms[L"writingRule:new"].saved); page->dirty(); co_return;
+    });
+    xaml::Automation::AutomationProperties::SetAutomationId(discardNew, L"writing-rule.discard-new");
+    auto list = stack(12); panel.Children().Append(list); p->writingRuleList = make_weak(list);
+    renderWritingRules(p);
+    words(panel, L"Up to 30 rules. Disabled rules stay saved and are left out of prompts.", 12);
+}
+void renderWritingRules(Page const& p) {
+    auto panel = p->writingRuleList.get(); if (!panel) return;
+    panel.Children().Clear();
+    auto rules = array(object(object(p->state, L"workspace"), L"brain"), L"writingRules");
+    if (!rules.Size()) words(panel, L"No writing rules yet. The approved Sent style stays separate.");
+    for (auto const& entry : rules) {
+        auto rule = entry.GetObject();
+        auto learned = text(rule, L"source") == L"learned";
+        auto row = stack(6);
+        hstring kind = learned ? hstring(L"Learned") : hstring(L"You wrote this");
+        words(row, kind + L" · " + text(rule, L"text"));
+        if (learned) words(row, L"Learned rules can be turned on or off, or deleted. Add your own rule to change the wording.", 12);
+        auto id = text(rule, L"id");
+        auto formName = L"writingRule:" + std::wstring(id);
+        CheckBox enabled; enabled.Content(box_value(L"Enabled")); enabled.IsChecked(flag(rule, L"enabled"));
+        xaml::Automation::AutomationProperties::SetAutomationId(enabled, L"writing-rule.enabled." + id);
+        std::weak_ptr<Intelligence> weak = p;
+        enabled.Click([weak, id](auto const& sender, auto const&) {
+            auto box = sender.template as<CheckBox>();
+            if (auto page = weak.lock(); page && page->current()) {
+                bool on = checked(box);
+                // Keep the saved state visible until the request succeeds, including on failure.
+                box.IsChecked(!on);
+                if (page->busy || page->cancelling) return;
+                perform(page, [id, on](Page page) -> IAsyncAction {
+                    Json input; truth(input, L"enabled", on);
+                    co_await commitWritingRule(page, L"POST", L"/workspace/brain/writing-rules/" + escaped(id), input);
+                });
+            }
+        });
+        row.Children().Append(enabled);
+        if (!learned) {
+            if (!p->forms.contains(formName)) editor(p, formName.c_str(), subset(rule, {L"text"}));
+            auto edit = editText(p, row, formName.c_str(), L"text", L"Edit writing rule", 500, true);
+            edit.MinHeight(72); edit.MaxHeight(120);
+            xaml::Automation::AutomationProperties::SetAutomationId(edit, L"writing-rule.text." + id);
+            auto save = action(p, row, L"Save rule", [id, formName](Page page) -> IAsyncAction {
+                auto submitted = clone(page->forms.at(formName).value);
+                auto value = trim(text(submitted, L"text"));
+                require(!value.empty() && value.size() <= 500, L"Enter a writing rule of at most 500 characters.");
+                Json input; put(input, L"text", value);
+                co_await commitWritingRule(page, L"POST", L"/workspace/brain/writing-rules/" + escaped(id), input, formName, submitted);
+            });
+            xaml::Automation::AutomationProperties::SetAutomationId(save, L"writing-rule.save." + id);
+            auto cancel = action(p, row, L"Discard rule edits", [formName](Page page) -> IAsyncAction {
+                page->forms.at(formName).accept(page->forms.at(formName).saved); page->dirty(); co_return;
+            });
+            xaml::Automation::AutomationProperties::SetAutomationId(cancel, L"writing-rule.discard." + id);
+        }
+        action(p, row, L"Delete rule", [id, formName](Page page) -> IAsyncAction {
+            if (!(co_await page->shell->confirm(L"Delete this writing rule?", L"It will stop guiding drafts and replies for this mailbox. Nothing is sent.", L"Delete rule")) || !page->current()) co_return;
+            co_await commitWritingRule(page, L"DELETE", L"/workspace/brain/writing-rules/" + escaped(id), Json(), formName);
+        });
+        panel.Children().Append(row);
+    }
+}
 void buildBrain(Page const& p, StackPanel const& body) {
     words(body, L"Writing style & notes", 24);
     buildLearning(p, body);
+    buildWritingRules(p, body);
     Expander details; details.Header(box_value(L"Notes and memory suggestions")); auto memory = stack(12); details.Content(memory); body.Children().Append(details);
     auto policy = object(object(p->state, L"settings"), L"policy");
     words(memory, flag(policy, L"enabled") && flag(object(policy, L"behaviors"), L"memory")
         ? L"Explicitly saved voice and notes may inform permitted AI requests. They remain local until included in an authorized model request."
         : L"Writing style and notes are disabled by your saved permissions. Saved notes will not inform AI requests.");
-    words(memory, L"Optional notes and memories provide extra context. Manual writing instructions override the approved Sent style.");
+    words(memory, L"Optional notes and memories provide extra context. Manual writing instructions override the approved Sent style. How-you-write rules above stay separate from this voice field.");
     auto automatic = object(object(p->state,L"workspace"),L"brainLearning");
     editor(p,L"memoryOptions",subset(automatic,{L"enabled",L"tokenBudget"}));
     auto automaticPanel = group(memory,L"Automatic memory suggestions");
@@ -557,13 +663,14 @@ void buildBrain(Page const& p, StackPanel const& body) {
         auto input = clone(page->forms[L"brain"].value);
         auto result = co_await page->shell->service->request(L"/workspace/brain", page->owner, L"POST", input);
         if (!page->current()) co_return;
-        acceptState(page, result); page->forms[L"brain"].accept(brainFields(result)); page->dirty(); page->tell(L"Notes saved for this account. Contacts and learned style were retained.");
+        acceptState(page, result); page->forms[L"brain"].accept(brainFields(result)); page->dirty(); page->tell(L"Notes saved for this account. Contacts, writing rules and learned style were retained.");
     });
     action(p, memory, L"Discard unsaved notes", [](Page page) -> IAsyncAction {
         page->forms[L"brain"].accept(brainFields(page->state)); page->dirty(); page->tell(L"Saved notes restored."); co_return;
     });
     action(p, memory, L"Clear notes & memories…", [](Page page) -> IAsyncAction {
-        if (!(co_await page->shell->confirm(L"Clear saved notes and memories?", page->owner + L"\nSaved manual voice, notes, memories and contacts will be removed. Confirmed identity and the separate learned style remain.", L"Clear notes & memories")) || !page->current()) co_return;
+        require(!page->writingRulesEdited(), L"Save or discard writing rule edits before clearing notes and refreshing this page.");
+        if (!(co_await page->shell->confirm(L"Clear saved notes and memories?", page->owner + L"\nRemoves saved voice, notes, memories and contacts for this mailbox. How-you-write rules, confirmed identity and the approved Sent style remain saved.", L"Clear notes & memories")) || !page->current()) co_return;
         auto result = co_await page->shell->service->request(L"/workspace/brain", page->owner, L"DELETE");
         if (!page->current()) co_return;
         acceptState(page, result); page->forms[L"brain"].accept(brainFields(result)); page->dirty();
@@ -576,6 +683,7 @@ void buildBrain(Page const& p, StackPanel const& body) {
         auto fact = entry.GetObject(); auto row = stack(6); words(row, text(fact, L"text")); memorySources(row, fact);
         action(p, row, L"Remove memory", [id = text(fact, L"id")](Page page) -> IAsyncAction {
             require(!page->forms[L"brain"].dirty(), L"Save or discard your notes first.");
+            require(!page->writingRulesEdited(), L"Save or discard writing rule edits before refreshing memories.");
             auto state = co_await page->shell->service->request(L"/workspace/brain/facts/" + escaped(id), page->owner, L"DELETE", Json());
             if (!page->current()) co_return; acceptState(page, state);
             auto shell = page->shell; page->stop(); co_await intelligencePage(shell, L"brain");
@@ -703,6 +811,13 @@ Json skillFields(Json const& value = Json()) {
     truth(result, L"enabled", !value.HasKey(L"enabled") || flag(value, L"enabled"));
     auto folders = object(value, L"folders");
     for (auto folder : {L"inbox", L"sent", L"drafts", L"archive", L"trash"}) truth(result, folder, folders.Size() ? flag(folders, folder) : std::wstring_view(folder) == L"inbox");
+    truth(result, L"autoExecute", flag(value, L"autoExecute"));
+    auto schedule = object(value, L"schedule");
+    truth(result, L"scheduleEnabled", flag(schedule, L"enabled"));
+    put(result, L"cadence", text(schedule, L"cadence", L"daily"));
+    put(result, L"time", text(schedule, L"time", L"09:00"));
+    put(result, L"timeZone", text(schedule, L"timeZone", L"UTC"));
+    result.Insert(L"intervalHours", Value::CreateNumberValue(schedule.Size() ? schedule.GetNamedNumber(L"intervalHours", 24) : 24));
     return result;
 }
 void renderSkills(Page const& p) {
@@ -715,6 +830,9 @@ void renderSkills(Page const& p) {
         words(item, text(skill, L"instructions")); hstring folders;
         for (auto const& folder : object(skill, L"folders")) if (folder.Value().ValueType() == JsonValueType::Boolean && folder.Value().GetBoolean()) folders = folders + (folders.empty() ? L"" : L", ") + folder.Key();
         words(item, L"Allowed folders: " + (folders.empty() ? hstring(L"none") : folders) + L". Global AI permissions still apply.");
+        auto schedule = object(skill, L"schedule");
+        if (schedule.Size()) words(item, L"Schedule: " + text(schedule, L"cadence") + L" " + text(schedule, L"time") + L" " + text(schedule, L"timeZone") + (flag(schedule, L"enabled") ? L" · on" : L" · off"));
+        words(item, flag(skill, L"autoExecute") ? L"When due, this skill joins the review queue. It does not send mail." : L"Manual only until you turn on review queueing.");
         action(p, item, L"Edit skill", [skill](Page page) -> IAsyncAction {
             if (page->forms[L"skill"].dirty() && !(co_await page->shell->confirm(L"Discard current skill edits?", L"Load this saved skill into the editor below.", L"Edit saved skill"))) co_return;
             if (!page->current()) co_return;
@@ -727,28 +845,96 @@ void renderSkills(Page const& p) {
             if (text(page->forms[L"skill"].value, L"id") == id) page->forms[L"skill"].accept(skillFields());
             renderSkills(page); page->dirty(); page->tell(L"Skill deleted.");
         });
+        if (flag(skill, L"enabled")) action(p, item, L"Queue review…", [id, name = text(skill, L"name")](Page page) -> IAsyncAction {
+            if (!(co_await page->shell->confirm(L"Queue this skill for review?", name + L"\nNothing is sent and Email Brain is not changed.", L"Queue review")) || !page->current()) co_return;
+            Json input; put(input, L"skillId", id); truth(input, L"confirm", true);
+            auto result = co_await page->shell->service->request(L"/workspace/skill-reviews", page->owner, L"POST", input);
+            if (!page->current()) co_return; acceptState(page, result); renderSkills(page); page->tell(L"Queued for review. Nothing was sent.");
+        });
+        action(p, item, flag(skill, L"autoExecute") ? L"Stop queueing when due" : L"Queue when due", [id, enabled = flag(skill, L"autoExecute")](Page page) -> IAsyncAction {
+            Json input; truth(input, L"enabled", !enabled); put(input, L"autoExecuteMode", L"review");
+            auto result = co_await page->shell->service->request(L"/skills/" + escaped(id) + L"/auto-execute", page->owner, L"POST", input);
+            if (!page->current()) co_return; acceptState(page, result); renderSkills(page);
+            page->tell(enabled ? L"Review queueing is off. Saved mail was not changed." : L"When the schedule is due, a review is queued. Nothing is sent.");
+        });
+    }
+    words(list, L"Skill library", 20);
+    words(list, L"Install a prepared instruction set for this mailbox. Installing does not run it.");
+    for (auto const& entry : array(object(p->state, L"workspace"), L"skillLibrary")) {
+        auto item = entry.GetObject(); auto row = group(list, text(item, L"name"));
+        words(row, text(item, L"instructions"));
+        if (flag(item, L"installed")) words(row, L"Installed");
+        else action(p, row, L"Install", [id = text(item, L"id")](Page page) -> IAsyncAction {
+            Json input; put(input, L"libraryId", id);
+            auto result = co_await page->shell->service->request(L"/skills/library", page->owner, L"POST", input);
+            if (!page->current()) co_return; acceptState(page, result); renderSkills(page); page->tell(L"Library skill installed. It stays manual until you queue a review.");
+        });
+    }
+    words(list, L"Review queue", 20);
+    words(list, L"Schedules and the queue button stop here. Opening a review does not send mail or update Email Brain.");
+    auto reviews = array(object(p->state, L"workspace"), L"skillReviews");
+    if (!reviews.Size()) words(list, L"Nothing is waiting for review.");
+    for (auto const& entry : reviews) {
+        auto review = entry.GetObject(); auto id = text(review, L"id");
+        auto row = group(list, text(review, L"skillName"));
+        words(row, text(review, L"kind") + L" · " + text(review, L"status") + L" · " + text(review, L"source"));
+        words(row, text(review, L"detail"));
+        action(p, row, L"Open review…", [id](Page page) -> IAsyncAction {
+            if (!(co_await page->shell->confirm(L"Open this review?", L"Opening it does not send mail or update Email Brain.", L"Open review")) || !page->current()) co_return;
+            Json input; truth(input, L"confirm", true);
+            auto result = co_await page->shell->service->request(L"/workspace/skill-reviews/" + escaped(id) + L"/open", page->owner, L"POST", input);
+            if (!page->current()) co_return; acceptState(page, result); renderSkills(page);
+        });
+        action(p, row, L"Dismiss…", [id](Page page) -> IAsyncAction {
+            if (!(co_await page->shell->confirm(L"Dismiss this review?", L"The skill stays saved. Nothing is sent.", L"Dismiss")) || !page->current()) co_return;
+            Json input; truth(input, L"confirm", true);
+            auto result = co_await page->shell->service->request(L"/workspace/skill-reviews/" + escaped(id) + L"/dismiss", page->owner, L"POST", input);
+            if (!page->current()) co_return; acceptState(page, result); renderSkills(page);
+        });
     }
 }
 void buildSkills(Page const& p, StackPanel const& body) {
     words(body, L"My email skills", 24);
-    words(body, L"Save reusable instructions, then choose Custom email skills in AI Studio to run one. Saving never calls AI; skills cannot send mail or execute external actions. Keep at most 20 skills.");
+    words(body, L"Save reusable instructions, then run one yourself or queue a review. A schedule never sends mail or updates Email Brain. Keep at most 20 skills.");
     editor(p, L"skill", skillFields()); auto list = stack(16); body.Children().Append(list); p->skillList = make_weak(list);
     auto fields = group(body, L"Create / edit skill");
     editText(p, fields, L"skill", L"name", L"Name", 80);
     editText(p, fields, L"skill", L"instructions", L"Instructions", 4000, true);
     editCheck(p, fields, L"skill", L"enabled", L"Enable this skill");
     for (auto folder : {L"inbox", L"sent", L"drafts", L"archive", L"trash"}) editCheck(p, fields, L"skill", folder, folder);
+    editCheck(p, fields, L"skill", L"autoExecute", L"Queue a review when the schedule is due");
+    editCheck(p, fields, L"skill", L"scheduleEnabled", L"Schedule enabled");
+    editChoice(p, fields, L"skill", L"cadence", L"Cadence", {{L"daily", L"Daily"}, {L"interval", L"Interval"}});
+    editText(p, fields, L"skill", L"time", L"Time (HH:MM)", 5);
+    editText(p, fields, L"skill", L"timeZone", L"IANA time zone", 100);
+    editNumber(p, fields, L"skill", L"intervalHours", L"Interval hours", 1, 168);
     action(p, fields, L"Save skill", [](Page page) -> IAsyncAction {
         auto value = page->forms[L"skill"].value;
         require(!trim(text(value, L"name")).empty() && !trim(text(value, L"instructions")).empty(), L"Enter a skill name and instructions.");
-        Json input, folders; for (auto key : {L"name", L"instructions"}) put(input, key, text(value, key));
+        Json input, folders, schedule; for (auto key : {L"name", L"instructions"}) put(input, key, text(value, key));
         if (!text(value, L"id").empty()) put(input, L"id", text(value, L"id"));
         truth(input, L"enabled", flag(value, L"enabled"));
+        truth(input, L"autoExecute", flag(value, L"autoExecute"));
+        put(input, L"autoExecuteMode", L"review");
         for (auto key : {L"inbox", L"sent", L"drafts", L"archive", L"trash"}) truth(folders, key, flag(value, key));
         input.Insert(L"folders", folders);
+        truth(schedule, L"enabled", flag(value, L"scheduleEnabled"));
+        put(schedule, L"cadence", text(value, L"cadence", L"daily"));
+        put(schedule, L"time", text(value, L"time", L"09:00"));
+        put(schedule, L"timeZone", text(value, L"timeZone", L"UTC"));
+        schedule.Insert(L"intervalHours", Value::CreateNumberValue(value.GetNamedNumber(L"intervalHours", 24)));
+        input.Insert(L"schedule", schedule);
         auto result = co_await page->shell->service->request(L"/skills", page->owner, L"POST", input);
         if (!page->current()) co_return; acceptState(page, result); page->forms[L"skill"].accept(skillFields());
-        renderSkills(page); page->dirty(); page->tell(L"Skill saved. Select it in AI Studio to review a model request.");
+        renderSkills(page); page->dirty(); page->tell(L"Skill saved. A due schedule only joins the review queue.");
+    });
+    action(p, fields, L"Remove schedule…", [](Page page) -> IAsyncAction {
+        auto id = text(page->forms[L"skill"].value, L"id");
+        require(!id.empty(), L"Save the skill before removing its schedule.");
+        if (!(co_await page->shell->confirm(L"Remove this schedule?", L"The skill stays saved. Nothing is sent.", L"Remove schedule")) || !page->current()) co_return;
+        auto result = co_await page->shell->service->request(L"/skills/" + escaped(id) + L"/schedule", page->owner, L"DELETE");
+        if (!page->current()) co_return; acceptState(page, result); page->forms[L"skill"].accept(skillFields());
+        renderSkills(page); page->dirty(); page->tell(L"Schedule removed.");
     });
     action(p, fields, L"New skill / discard edits…", [](Page page) -> IAsyncAction {
         if (page->forms[L"skill"].dirty() && !(co_await page->shell->confirm(L"Discard skill edits?", L"The saved skill is retained. Start a blank new skill.", L"Discard edits"))) co_return;
@@ -1157,6 +1343,105 @@ fire_and_forget refreshIntelligence(Page p) {
     } catch (...) { if (p->revision == revision && !p->busy) { p->clearResult(); p->tell(L"Status could not refresh. Review current account status before continuing."); } }
     p->polling = false;
 }
+Json blankCategory() {
+    Json value; put(value, L"id", L""); put(value, L"name", L""); put(value, L"description", L""); put(value, L"priority", L""); put(value, L"prompt", L"");
+    truth(value, L"enabled", true); return value;
+}
+void renderCategories(Page const& p) {
+    auto list = p->categoryList.get(); if (!list) return; list.Children().Clear();
+    auto categories = array(object(p->state, L"workspace"), L"categories");
+    if (!categories.Size()) words(list, L"No categories for this mailbox. Add one below or reset the suggested set.");
+    std::vector<hstring> ids;
+    for (auto const& entry : categories) ids.push_back(text(entry.GetObject(), L"id"));
+    for (uint32_t index = 0; index < categories.Size(); ++index) {
+        auto category = categories.GetAt(index).GetObject(); auto id = ids[index];
+        auto item = group(list, text(category, L"name") + (flag(category, L"enabled") ? L"" : L" — disabled"));
+        auto priority = text(category, L"priority");
+        words(item, (priority.empty() ? hstring(L"No priority") : priority) + L" · " + text(category, L"description"));
+        action(p, item, L"Edit", [category](Page page) -> IAsyncAction {
+            if (page->forms[L"category"].dirty() && !(co_await page->shell->confirm(L"Discard unsaved category edits?", L"Load this saved category into the editor below.", L"Edit saved category"))) co_return;
+            if (!page->current()) co_return;
+            Json value = blankCategory();
+            put(value, L"id", text(category, L"id")); put(value, L"name", text(category, L"name"));
+            put(value, L"description", text(category, L"description")); put(value, L"priority", text(category, L"priority"));
+            truth(value, L"enabled", flag(category, L"enabled"));
+            page->forms[L"category"].accept(value); page->dirty(); page->tell(L"Category loaded. Save to keep changes.");
+            co_return;
+        });
+        action(p, item, L"Delete…", [id, name = text(category, L"name")](Page page) -> IAsyncAction {
+            auto editing = text(page->forms[L"category"].value, L"id") == id;
+            auto detail = name + L"\nMail is not changed." + (editing && page->forms[L"category"].dirty() ? L" Unsaved edits to this category will be discarded." : L"");
+            if (!(co_await page->shell->confirm(L"Delete this category?", detail, L"Delete category")) || !page->current()) co_return;
+            auto result = co_await page->shell->service->request(L"/workspace/categories/" + escaped(id), page->owner, L"DELETE");
+            if (!page->current()) co_return; acceptState(page, result);
+            if (text(page->forms[L"category"].value, L"id") == id) page->forms[L"category"].accept(blankCategory());
+            renderCategories(page); page->dirty(); page->tell(L"Category deleted.");
+        });
+        if (index > 0) action(p, item, L"Move up", [ids, index](Page page) -> IAsyncAction {
+            auto order = ids; auto moved = order[index - 1]; order[index - 1] = order[index]; order[index] = moved;
+            Json input; Array values; for (auto const& saved : order) values.Append(Value::CreateStringValue(saved)); input.Insert(L"ids", values);
+            auto result = co_await page->shell->service->request(L"/workspace/categories/reorder", page->owner, L"POST", input);
+            if (!page->current()) co_return; acceptState(page, result); renderCategories(page);
+        });
+        if (index + 1 < ids.size()) action(p, item, L"Move down", [ids, index](Page page) -> IAsyncAction {
+            auto order = ids; auto moved = order[index + 1]; order[index + 1] = order[index]; order[index] = moved;
+            Json input; Array values; for (auto const& saved : order) values.Append(Value::CreateStringValue(saved)); input.Insert(L"ids", values);
+            auto result = co_await page->shell->service->request(L"/workspace/categories/reorder", page->owner, L"POST", input);
+            if (!page->current()) co_return; acceptState(page, result); renderCategories(page);
+        });
+    }
+}
+void buildCategories(Page const& p, StackPanel const& body) {
+    words(body, L"Mail categories", 24);
+    words(body, L"These labels order Today suggestions for this mailbox. Saving them does not call a model, send mail, or change Email Brain.");
+    auto list = stack(12); body.Children().Append(list); p->categoryList = make_weak(list);
+    auto fields = group(body, L"Add or edit a category");
+    editor(p, L"category", blankCategory());
+    editText(p, fields, L"category", L"name", L"Name", 80);
+    editText(p, fields, L"category", L"description", L"Description", 240);
+    editChoice(p, fields, L"category", L"priority", L"Priority", {{L"", L"None"}, {L"P0", L"P0"}, {L"P1", L"P1"}, {L"P2", L"P2"}, {L"P3", L"P3"}, {L"P4", L"P4"}});
+    editCheck(p, fields, L"category", L"enabled", L"Enabled");
+    editText(p, fields, L"category", L"prompt", L"Draft a name without calling a model", 80);
+    action(p, fields, L"Save category", [](Page page) -> IAsyncAction {
+        auto value = page->forms[L"category"].value;
+        require(!trim(text(value, L"name")).empty(), L"Enter a category name.");
+        Json input; put(input, L"name", trim(text(value, L"name"))); put(input, L"description", text(value, L"description")); put(input, L"priority", text(value, L"priority"));
+        truth(input, L"enabled", flag(value, L"enabled"));
+        auto id = text(value, L"id");
+        auto path = id.empty() ? hstring(L"/workspace/categories") : L"/workspace/categories/" + escaped(id);
+        auto result = co_await page->shell->service->request(path, page->owner, L"POST", input);
+        if (!page->current()) co_return; acceptState(page, result); page->forms[L"category"].accept(blankCategory());
+        renderCategories(page); page->dirty(); page->tell(L"Category saved for this mailbox.");
+    });
+    action(p, fields, L"Clear form", [](Page page) -> IAsyncAction {
+        if (page->forms[L"category"].dirty() && !(co_await page->shell->confirm(L"Discard unsaved category edits?", L"Clear the category form without saving it.", L"Clear form"))) co_return;
+        if (!page->current()) co_return;
+        page->forms[L"category"].accept(blankCategory()); page->dirty(); page->tell(L"Category form cleared."); co_return;
+    });
+    action(p, fields, L"Draft name", [](Page page) -> IAsyncAction {
+        auto prompt = trim(text(page->forms[L"category"].value, L"prompt"));
+        require(!prompt.empty(), L"Enter a category name to draft.");
+        auto& form = page->forms[L"category"];
+        auto fields = {L"id", L"name", L"description", L"priority", L"enabled"};
+        if (subset(form.value, fields).Stringify() != subset(form.saved, fields).Stringify() && !(co_await page->shell->confirm(L"Replace unsaved category edits?", L"The drafted name replaces the current category form without saving it.", L"Draft name"))) co_return;
+        if (!page->current()) co_return;
+        Json input; put(input, L"prompt", prompt);
+        auto result = co_await page->shell->service->request(L"/workspace/categories/suggest", page->owner, L"POST", input);
+        if (!page->current()) co_return;
+        require(flag(result, L"stub") && !flag(result, L"saved"), L"The draft was not saved.");
+        auto suggestion = object(result, L"suggestion");
+        Json value = blankCategory(); put(value, L"name", text(suggestion, L"name")); put(value, L"description", text(suggestion, L"description")); put(value, L"prompt", prompt);
+        form.accept(blankCategory()); form.value = value; form.show(); page->changed(L"category");
+        page->tell(L"Draft only. Save the category if you want to keep it. No model was called.");
+    });
+    action(p, fields, L"Reset suggested categories…", [](Page page) -> IAsyncAction {
+        if (!(co_await page->shell->confirm(L"Restore the suggested categories?", L"This replaces the saved list for this mailbox and discards unsaved category edits. Mail is not changed.", L"Reset categories")) || !page->current()) co_return;
+        auto result = co_await page->shell->service->request(L"/workspace/categories/reset", page->owner, L"POST", Json());
+        if (!page->current()) co_return; acceptState(page, result); page->forms[L"category"].accept(blankCategory());
+        renderCategories(page); page->dirty(); page->tell(L"Suggested categories restored.");
+    });
+    renderCategories(p);
+}
 
 void agentReload(Page const& page, Json const& result, hstring expected = {}) {
     require(text(result, L"accountId") == page->owner && text(result, L"transport") == L"local-byo" && !flag(result, L"cloud"), L"Inbox Agent returned an unexpected response.");
@@ -1460,7 +1745,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
         accountTabs.Children().Append(tab);
     }
     ScrollViewer accountScroll; accountScroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto); accountScroll.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled); accountScroll.Content(accountTabs); root.Children().Append(accountScroll);
-    bool accountPage = kind == L"brain" || kind == L"learning" || kind == L"skills" || kind == L"rules" || kind == L"records" || kind == L"agent";
+    bool accountPage = kind == L"brain" || kind == L"learning" || kind == L"skills" || kind == L"categories" || kind == L"rules" || kind == L"records" || kind == L"agent";
     auto tabs = stack(6); tabs.Orientation(Orientation::Horizontal); std::weak_ptr<Intelligence> weak = p; bool known = kind == L"learning";
     for (auto const& [id, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{
         {L"studio", L"Assistant"}}) {
@@ -1470,7 +1755,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
     ComboBox more; more.PlaceholderText(L"More");
     xaml::Automation::AutomationProperties::SetName(more, L"More AI Studio pages");
     for (auto const& [id, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{
-        {L"brain", L"Writing style & notes"}, {L"agent", L"Inbox Agent"}, {L"reply-suggestions", L"Reply suggestions"}, {L"rules",L"Local Inbox Rules"}, {L"skills", L"Reusable skills"}, {L"simulations", L"Local simulations"}, {L"records", L"Simulation history"}}) {
+        {L"brain", L"Writing style & notes"}, {L"agent", L"Inbox Agent"}, {L"reply-suggestions", L"Reply suggestions"}, {L"rules",L"Local Inbox Rules"}, {L"skills", L"Reusable skills"}, {L"categories", L"Mail categories"}, {L"simulations", L"Local simulations"}, {L"records", L"Simulation history"}}) {
         ComboBoxItem item; item.Content(box_value(caption)); item.Tag(box_value(hstring(id))); more.Items().Append(item);
         if (kind == id) { known = true; more.SelectedItem(item); }
     }
@@ -1480,6 +1765,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
     } }); tabs.Children().Append(more);
     ScrollViewer tabScroll; tabScroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto); tabScroll.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled); tabScroll.Content(tabs); root.Children().Append(tabScroll);
     auto notice = label(L"Loading this account’s saved context…"); root.Children().Append(notice); p->notice = notice;
+    xaml::Automation::AutomationProperties::SetAutomationId(notice, L"intelligence.notice");
     xaml::Automation::AutomationProperties::SetLiveSetting(notice, xaml::Automation::Peers::AutomationLiveSetting::Polite);
     if (kind == L"learning" || kind == L"brain") {
         auto cancel = button(L"Cancel current style analysis…", [weak] { if (auto page = weak.lock(); page && page->generatingStyle) revokeStyle(page); });
@@ -1501,6 +1787,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
         else if (kind == L"brain") buildBrain(p, body);
         else if (kind == L"rules") buildRules(p,body);
         else if (kind == L"skills") buildSkills(p, body);
+        else if (kind == L"categories") buildCategories(p, body);
         else if (kind == L"reply-suggestions") {
             auto result = co_await shell->service->request(L"/reply-suggestions", p->owner);
             if (!p->current()) co_return; require(text(result, L"owner") == p->owner, L"Suggestion mailbox changed.");

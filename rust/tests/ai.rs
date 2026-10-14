@@ -1603,3 +1603,371 @@ async fn manual_guardrails_are_separate_preserved_and_permission_gated() {
     .await
     .unwrap();
 }
+
+fn prompt_user(payload: &Value) -> Value {
+    serde_json::from_str(payload["messages"][1]["content"].as_str().unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn writing_rules_persist_per_account_and_enter_only_writing_prompts() {
+    const ALPHA: &str = "Always close with MORROW-RULE-ALPHA.";
+    const EDITED: &str = "Always close with MORROW-RULE-ALPHA-EDITED.";
+    const BETA: &str = "Disabled sentinel MORROW-RULE-BETA.";
+    const LEARNED: &str = "Learned sentinel MORROW-RULE-GAMMA.";
+    let directory = Temporary::new();
+    let model = Model::new(false, "Draft only. Nothing was sent.");
+    let server = model_server(model.clone()).await;
+    let app = app_at(&directory, &server.url).await;
+    let added = workflow(
+        &app,
+        "POST",
+        "workspace/brain/writing-rules",
+        OWNER,
+        json!({"text": format!("  {ALPHA}  "), "source": "user"}),
+    )
+    .await
+    .unwrap();
+    let alpha = added["workspace"]["brain"]["writingRules"][0].clone();
+    let alpha_id = string(&alpha, "id").to_owned();
+    assert_eq!(alpha["text"], ALPHA);
+    assert_eq!(alpha["enabled"], true);
+    assert_eq!(alpha["source"], "user");
+    assert!(!string(&alpha, "createdAt").is_empty());
+    assert_eq!(alpha["createdAt"], alpha["updatedAt"]);
+    let beta = workflow(
+        &app,
+        "POST",
+        "workspace/brain/writing-rules",
+        OWNER,
+        json!({"text": BETA, "enabled": false}),
+    )
+    .await
+    .unwrap();
+    let beta_id = string(&beta["workspace"]["brain"]["writingRules"][1], "id").to_owned();
+    assert_eq!(
+        beta["workspace"]["brain"]["writingRules"][1]["enabled"],
+        false
+    );
+    assert_eq!(
+        beta["workspace"]["brain"]["writingRules"][1]["source"],
+        "user"
+    );
+    let learned = workflow(
+        &app,
+        "POST",
+        "workspace/brain/writing-rules",
+        OWNER,
+        json!({"text": LEARNED, "enabled": true, "source": "learned"}),
+    )
+    .await
+    .unwrap();
+    let learned_id = string(&learned["workspace"]["brain"]["writingRules"][2], "id").to_owned();
+    assert_eq!(
+        workflow(
+            &app,
+            "POST",
+            "workspace/brain/writing-rules",
+            OWNER,
+            json!({"text": ALPHA})
+        )
+        .await
+        .unwrap_err()
+        .status,
+        400
+    );
+    assert_eq!(
+        workflow(
+            &app,
+            "POST",
+            "workspace/brain/writing-rules",
+            OWNER,
+            json!({"text": "   "})
+        )
+        .await
+        .unwrap_err()
+        .status,
+        400
+    );
+    assert_eq!(
+        workflow(
+            &app,
+            "POST",
+            "workspace/brain/writing-rules",
+            OWNER,
+            json!({"text": "Another rule", "source": "auto"})
+        )
+        .await
+        .unwrap_err()
+        .status,
+        400
+    );
+    assert_eq!(
+        workflow(
+            &app,
+            "POST",
+            &format!("workspace/brain/writing-rules/{learned_id}"),
+            OWNER,
+            json!({"text": "Rewritten learned rule"})
+        )
+        .await
+        .unwrap_err()
+        .status,
+        400
+    );
+    let edited = workflow(
+        &app,
+        "POST",
+        &format!("workspace/brain/writing-rules/{alpha_id}"),
+        OWNER,
+        json!({"text": EDITED}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        edited["workspace"]["brain"]["writingRules"][0]["text"],
+        EDITED
+    );
+    assert_eq!(
+        edited["workspace"]["brain"]["writingRules"][0]["createdAt"],
+        alpha["createdAt"]
+    );
+    assert!(
+        edited["workspace"]["brain"]["writingRules"][0]["updatedAt"]
+            .as_str()
+            .unwrap()
+            >= alpha["updatedAt"].as_str().unwrap()
+    );
+    let toggled = workflow(
+        &app,
+        "POST",
+        &format!("workspace/brain/writing-rules/{beta_id}"),
+        OWNER,
+        json!({"enabled": true}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        toggled["workspace"]["brain"]["writingRules"][1]["enabled"],
+        true
+    );
+    assert_eq!(
+        toggled["workspace"]["brain"]["writingRules"][1]["text"],
+        BETA
+    );
+    workflow(
+        &app,
+        "POST",
+        &format!("workspace/brain/writing-rules/{beta_id}"),
+        OWNER,
+        json!({"enabled": false}),
+    )
+    .await
+    .unwrap();
+    let noted = workflow(
+        &app,
+        "POST",
+        "workspace/brain",
+        OWNER,
+        json!({"voice": "Friendly voice", "notes": "Project note", "guardrails": "Do not invent a price."}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        noted["workspace"]["brain"]["writingRules"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(noted["workspace"]["brain"]["voice"], "Friendly voice");
+    assert_eq!(
+        noted["workspace"]["brain"]["writingRules"][2]["source"],
+        "learned"
+    );
+    assert_eq!(
+        workflow(
+            &app,
+            "DELETE",
+            &format!("workspace/brain/writing-rules/{alpha_id}"),
+            OTHER,
+            json!({}),
+        )
+        .await
+        .unwrap_err()
+        .status,
+        404
+    );
+    for index in 0..30 {
+        workflow(
+            &app,
+            "POST",
+            "workspace/brain/writing-rules",
+            OTHER,
+            json!({"text": format!("Other mailbox rule {index}"), "enabled": false}),
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        workflow(
+            &app,
+            "POST",
+            "workspace/brain/writing-rules",
+            OTHER,
+            json!({"text": "Other mailbox rule overflow"})
+        )
+        .await
+        .unwrap_err()
+        .status,
+        400
+    );
+    drop(app);
+    let app = App::open(&directory.0, 3001, "fixture-bearer".into(), "".into()).unwrap();
+    let persisted = app
+        .db(|db| Ok(db.settings()?["workspaces"][OWNER]["brain"]["writingRules"].clone()))
+        .await
+        .unwrap();
+    assert_eq!(persisted.as_array().unwrap().len(), 3);
+    assert_eq!(persisted[0]["text"], EDITED);
+    assert_eq!(persisted[1]["text"], BETA);
+    assert_eq!(persisted[1]["enabled"], false);
+    assert_eq!(persisted[2]["text"], LEARNED);
+    assert_eq!(persisted[2]["source"], "learned");
+    app.db(|db| {
+        let config = db.settings()?;
+        let brain = morrow_search::brain::context(db, &config, OWNER, &Value::Null)?;
+        assert_eq!(brain["writingRules"], json!([EDITED, LEARNED]));
+        assert!(!brain.to_string().contains(BETA));
+        assert!(
+            !morrow_search::brain::context(db, &config, OTHER, &Value::Null)?
+                .to_string()
+                .contains("Other mailbox rule 0")
+        );
+        let message = message("same", OWNER);
+        for action in ["write", "reply", "rewrite", "replyAssessment"] {
+            let payload = ai::model_payload(
+                &config["ai"],
+                action,
+                std::slice::from_ref(&message),
+                "Draft a note",
+                &json!({"brain": brain, "preferences": {"language": "English"}, "timeZone": "UTC"}),
+            )?;
+            let system = string(&payload["messages"][0], "content");
+            let user = prompt_user(&payload);
+            assert_eq!(
+                user["writingContext"]["writingRules"],
+                json!([EDITED, LEARNED])
+            );
+            assert!(system.contains("writingContext.writingRules"));
+            assert!(system.contains("never authorize sending mail"));
+            assert!(!system.contains(EDITED));
+        }
+        for action in ["ask", "briefing", "summary", "translate", "style", "skill"] {
+            let payload = ai::model_payload(
+                &config["ai"],
+                action,
+                std::slice::from_ref(&message),
+                "timetable",
+                &json!({"brain": brain, "preferences": {"language": "English"}, "timeZone": "UTC"}),
+            )?;
+            let raw = payload.to_string();
+            assert!(
+                !raw.contains(EDITED) && !raw.contains(BETA) && !raw.contains(LEARNED),
+                "{action}"
+            );
+            let user = prompt_user(&payload);
+            assert!(user["writingContext"].get("writingRules").is_none());
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
+    ai_request(
+        &app,
+        json!({"action": "write", "prompt": "Draft a short note"}),
+    )
+    .await
+    .unwrap();
+    ai_request(&app, json!({"action": "ask", "prompt": "timetable"}))
+        .await
+        .unwrap();
+    let requests = model.requests.lock().await;
+    let write_body = requests[0].to_string();
+    assert!(write_body.contains(EDITED) && write_body.contains(LEARNED));
+    assert!(!write_body.contains(BETA));
+    assert!(write_body.contains("never authorize sending mail"));
+    let ask_body = requests[1].to_string();
+    assert!(!ask_body.contains(EDITED) && !ask_body.contains(BETA) && !ask_body.contains(LEARNED));
+    drop(requests);
+    app.db(|db| {
+        let policy = policy::update(
+            &db.settings()?["policy"],
+            &json!({"behaviors": {"memory": false}}),
+        )?;
+        db.set_settings(&json!({"policy": policy}))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    ai_request(
+        &app,
+        json!({"action": "write", "prompt": "Draft without brain context"}),
+    )
+    .await
+    .unwrap();
+    let requests = model.requests.lock().await;
+    let withheld = requests[2].to_string();
+    assert!(!withheld.contains(EDITED) && !withheld.contains(LEARNED) && !withheld.contains(BETA));
+    drop(requests);
+    app.db(|db| {
+        let policy = policy::update(
+            &db.settings()?["policy"],
+            &json!({"behaviors": {"memory": true}}),
+        )?;
+        db.set_settings(&json!({"policy": policy}))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let cleared = workflow(&app, "DELETE", "workspace/brain", OWNER, json!({}))
+        .await
+        .unwrap();
+    assert!(cleared["workspace"]["brain"].get("voice").is_none());
+    assert!(cleared["workspace"]["brain"].get("notes").is_none());
+    assert!(cleared["workspace"]["brain"].get("facts").is_none());
+    assert_eq!(
+        cleared["workspace"]["brain"]["writingRules"][0]["text"],
+        EDITED
+    );
+    for id in [alpha_id, beta_id, learned_id] {
+        workflow(
+            &app,
+            "DELETE",
+            &format!("workspace/brain/writing-rules/{id}"),
+            OWNER,
+            json!({}),
+        )
+        .await
+        .unwrap();
+    }
+    let gone = app.state(OWNER, true).await.unwrap();
+    assert!(
+        gone["workspace"]["brain"]["writingRules"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        workflow(
+            &app,
+            "DELETE",
+            "workspace/brain/writing-rules/missing",
+            OWNER,
+            json!({}),
+        )
+        .await
+        .unwrap_err()
+        .status,
+        404
+    );
+}

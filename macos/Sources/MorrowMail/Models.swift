@@ -46,6 +46,7 @@ enum JSON: Codable, Equatable, Hashable, Sendable, Identifiable {
     var id: String { self["id"].string }
     var viewID: String { self["viewId"].nonempty ? self["viewId"].string : id }
     var isNull: Bool { self == .null }
+    var isObject: Bool { if case .object = self { return true }; return false }
     var nonempty: Bool { !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     func picking(_ keys: [String]) -> JSON { .object(object.filter { keys.contains($0.key) }) }
     static func text(_ value: String) -> JSON { .string(value) }
@@ -325,6 +326,30 @@ struct CalendarDraft: Codable, Identifiable, Equatable {
     }
 }
 
+
+/// Page-local buffers; a successful rule mutation may acknowledge only its own input.
+struct WritingRuleEdits: Equatable {
+    struct Row: Equatable {
+        var text: String
+        var savedText: String
+    }
+    var newText = ""
+    private(set) var rows: [String: Row] = [:]
+    var hasEdits: Bool { !newText.isEmpty || rows.values.contains { $0.text != $0.savedText } }
+    mutating func begin(_ id: String, savedText: String) {
+        if rows[id] == nil { rows[id] = Row(text: savedText, savedText: savedText) }
+    }
+    mutating func setText(_ text: String, for id: String) { rows[id]?.text = text }
+    mutating func cancel(_ id: String) { rows.removeValue(forKey: id) }
+    mutating func added(submitted: String) {
+        if newText == submitted { newText = "" }
+    }
+    mutating func saved(_ id: String, submitted: String, savedText: String) {
+        guard let current = rows[id] else { return }
+        if current.text == submitted { rows.removeValue(forKey: id) }
+        else { rows[id]?.savedText = savedText }
+    }
+}
 
 let mailSortOptions = [("newest", "Newest first"), ("oldest", "Oldest first"), ("sender", "Sender A–Z"), ("subject", "Subject A–Z"), ("unread", "Unread first"), ("starred", "Starred first")]
 func sortedMail(_ messages: [JSON], by order: String) -> [JSON] {

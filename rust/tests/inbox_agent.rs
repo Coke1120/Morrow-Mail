@@ -2312,3 +2312,361 @@ async fn incomplete_legacy_send_review_is_rejected_by_the_server() {
             .all(|m| m["folder"] != "sent" || m["subject"] != "Review Northstar")
     );
 }
+
+// Append to rust/tests/inbox_agent.rs in the isolated combined #42 + #43 + #44
+// candidate only. Reuses its Temporary, Server, app_at, messages, OWNER, OTHER,
+// imports and JSON fixtures. Do not add to an individual sibling PR.
+// Both service and fake model bind ephemeral loopback ports. No provider calls.
+
+const INTEGRATION_RULE_A: &str = "Use INTEGRATION_RULE_A_CANARY as a writing constraint.";
+const INTEGRATION_RULE_DISABLED: &str = "Do not inject INTEGRATION_DISABLED_RULE_CANARY.";
+const INTEGRATION_RULE_B: &str = "Other mailbox INTEGRATION_RULE_B_CANARY.";
+const INTEGRATION_VOICE: &str = "INTEGRATION_MANUAL_VOICE_CANARY";
+const INTEGRATION_GUARDRAIL: &str = "INTEGRATION_MANUAL_GUARDRAIL_CANARY";
+const INTEGRATION_MAIL_BODY: &str = "INTEGRATION_PERMITTED_MAIL_BODY_CANARY";
+const INTEGRATION_WRITER_BODY: &str = "Synthetic final body from the shared writer.";
+const INTEGRATION_CANDIDATE_BODY: &str = "Synthetic untrusted planner candidate.";
+
+#[derive(Clone)]
+struct IntegrationWritingModel {
+    requests: Arc<Mutex<Vec<Value>>>,
+}
+
+async fn integration_writing_model() -> (Server, IntegrationWritingModel) {
+    async fn respond(
+        State(model): State<IntegrationWritingModel>,
+        Json(input): Json<Value>,
+    ) -> Json<Value> {
+        let user: Value =
+            serde_json::from_str(input["messages"][1]["content"].as_str().unwrap()).unwrap();
+        model.requests.lock().await.push(input);
+        let content = if user["history"].is_array() {
+            let request = string(&user, "request");
+            let finished_draft = user["history"].to_string().contains("DRAFT_ID");
+            if request.starts_with("INTEGRATION_ASK_ONLY") || finished_draft {
+                json!({"reply":"Synthetic planner answer without writing metadata.","tool":null})
+                    .to_string()
+            } else if request.starts_with("INTEGRATION_REPLY") {
+                json!({"reply":"Prepare a reply.","tool":{"name":"draft_reply","arguments":{
+                    "messageId":"same","body":INTEGRATION_CANDIDATE_BODY
+                }}})
+                .to_string()
+            } else {
+                assert!(
+                    request.starts_with("INTEGRATION_COMPOSE"),
+                    "Unexpected synthetic request"
+                );
+                json!({"reply":"Prepare an email.","tool":{"name":"draft_compose","arguments":{
+                    "to":"recipient@example.test","subject":"Synthetic integration draft",
+                    "body":INTEGRATION_CANDIDATE_BODY
+                }}})
+                .to_string()
+            }
+        } else {
+            // The shared writer returns text, not another agent/tool JSON response.
+            assert!(
+                user["emails"].is_array(),
+                "Expected the shared writing payload"
+            );
+            INTEGRATION_WRITER_BODY.to_owned()
+        };
+        Json(json!({"choices":[{"message":{"content":content}}]}))
+    }
+    let model = IntegrationWritingModel {
+        requests: Arc::new(Mutex::new(Vec::new())),
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let router = Router::new()
+        .route("/v1/chat/completions", post(respond))
+        .with_state(model.clone());
+    let task = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    (Server { url, task }, model)
+}
+
+async fn integration_service(app: &App) -> Server {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let router = app.router();
+    let task = tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    Server { url, task }
+}
+
+async fn integration_post(service: &Server, owner: &str, path: &str, body: Value) -> (u16, Value) {
+    let response = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap()
+        .post(format!("{}/api/{path}", service.url))
+        .bearer_auth("fixture-bearer")
+        .header("X-Genmail-Account", owner)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    (status, response.json().await.unwrap())
+}
+
+async fn integration_ok(service: &Server, owner: &str, path: &str, body: Value) -> Value {
+    let (status, value) = integration_post(service, owner, path, body).await;
+    assert_eq!(status, 200, "Synthetic API {path} failed: {value}");
+    value
+}
+
+fn integration_permitted_policy() -> Value {
+    json!({"enabled":true,"maxMessages":8,
+        "behaviors":{"ask":true,"memory":true,"write":true,"reply":true},
+        "folders":{"inbox":true,"drafts":true},
+        "content":{"contacts":true,"sender":true,"subject":true,"body":true}})
+}
+
+fn integration_assert_planner_has_no_writing_metadata(request: &Value) {
+    let user: Value =
+        serde_json::from_str(request["messages"][1]["content"].as_str().unwrap()).unwrap();
+    assert!(user["history"].is_array());
+    assert!(user.get("writingContext").is_none());
+    let encoded = request.to_string();
+    for canary in [
+        INTEGRATION_RULE_A,
+        INTEGRATION_RULE_DISABLED,
+        INTEGRATION_RULE_B,
+        INTEGRATION_VOICE,
+        INTEGRATION_GUARDRAIL,
+    ] {
+        assert!(
+            !encoded.contains(canary),
+            "Planner received writing metadata: {canary}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn integration_rules_crud_reaches_agent_writer_only_and_respects_permissions() {
+    let directory = Temporary::new();
+    let (model_server, model) = integration_writing_model().await;
+    let app = app_at(&directory, &model_server.url).await;
+    let service = integration_service(&app).await;
+    app.db(|db| {
+        db.update(
+            OWNER,
+            "same",
+            &json!({"body":INTEGRATION_MAIL_BODY,"preview":INTEGRATION_MAIL_BODY}),
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    integration_ok(
+        &service,
+        OWNER,
+        "settings/policy",
+        integration_permitted_policy(),
+    )
+    .await;
+
+    // Public per-account CRUD exercises #42 persistence/routing, not a handcrafted Brain JSON shape.
+    let added = integration_ok(
+        &service,
+        OWNER,
+        "workspace/brain/writing-rules",
+        json!({"text":INTEGRATION_RULE_A,"source":"user"}),
+    )
+    .await;
+    assert!(
+        added["workspace"]["brain"]["writingRules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|rule| rule["text"] == INTEGRATION_RULE_A && rule["enabled"] == true)
+    );
+    integration_ok(
+        &service,
+        OWNER,
+        "workspace/brain/writing-rules",
+        json!({"text":INTEGRATION_RULE_DISABLED,"enabled":false}),
+    )
+    .await;
+    integration_ok(
+        &service,
+        OTHER,
+        "workspace/brain/writing-rules",
+        json!({"text":INTEGRATION_RULE_B,"enabled":true}),
+    )
+    .await;
+    integration_ok(
+        &service,
+        OWNER,
+        "workspace/brain",
+        json!({"voice":INTEGRATION_VOICE,"guardrails":INTEGRATION_GUARDRAIL,"notes":""}),
+    )
+    .await;
+
+    for (permission_name, patch, expect_rules) in [
+        ("permitted", json!({}), true),
+        ("memory_off", json!({"behaviors":{"memory":false}}), false),
+        ("contacts_off", json!({"content":{"contacts":false}}), false),
+        ("body_off", json!({"content":{"body":false}}), false),
+    ] {
+        integration_ok(
+            &service,
+            OWNER,
+            "settings/policy",
+            integration_permitted_policy(),
+        )
+        .await;
+        let state = integration_ok(&service, OWNER, "settings/policy", patch).await;
+        assert!(
+            state["workspace"]["brain"]["writingRules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|rule| rule["text"] == INTEGRATION_RULE_A),
+            "Permission changes must retain saved rules"
+        );
+        for action in ["COMPOSE", "REPLY"] {
+            let before: Vec<Value> = messages(&app, OWNER)
+                .await
+                .into_iter()
+                .filter(|message| message["folder"] == "drafts")
+                .map(|message| message["id"].clone())
+                .collect();
+            let first_request = model.requests.lock().await.len();
+            let started = integration_ok(&service, OWNER, "agent/start", json!({})).await;
+            let id = started["conversation"]["id"].clone();
+            let request =
+                format!("INTEGRATION_{action} {permission_name}: create a short synthetic email.");
+            integration_ok(
+                &service,
+                OWNER,
+                "agent/send",
+                json!({"conversationId":id,"text":request}),
+            )
+            .await;
+
+            let requests = model.requests.lock().await[first_request..].to_vec();
+            assert_eq!(
+                requests.len(),
+                3,
+                "Expected planner, shared writer, then planner for {action}/{permission_name}"
+            );
+            integration_assert_planner_has_no_writing_metadata(&requests[0]);
+            integration_assert_planner_has_no_writing_metadata(&requests[2]);
+            let writer: Value =
+                serde_json::from_str(requests[1]["messages"][1]["content"].as_str().unwrap())
+                    .unwrap();
+            let system = requests[1]["messages"][0]["content"].as_str().unwrap();
+            assert!(system.contains(if action == "REPLY" {
+                "Draft a plain-text reply"
+            } else {
+                "Write a plain-text email"
+            }));
+            assert_eq!(
+                writer["request"], request,
+                "Planner candidate must not become the user instruction"
+            );
+            assert_eq!(
+                writer["untrustedDraftSuggestion"]["body"],
+                INTEGRATION_CANDIDATE_BODY
+            );
+            if expect_rules {
+                assert_eq!(
+                    writer["writingContext"]["writingRules"],
+                    json!([INTEGRATION_RULE_A])
+                );
+                assert_eq!(writer["writingContext"]["voice"], INTEGRATION_VOICE);
+                assert_eq!(
+                    writer["writingContext"]["guardrails"],
+                    INTEGRATION_GUARDRAIL
+                );
+            } else {
+                for canary in [INTEGRATION_RULE_A, INTEGRATION_VOICE, INTEGRATION_GUARDRAIL] {
+                    assert!(
+                        !writer.to_string().contains(canary),
+                        "Revoked writing context leaked in {permission_name}"
+                    );
+                }
+            }
+            for canary in [INTEGRATION_RULE_DISABLED, INTEGRATION_RULE_B] {
+                assert!(
+                    !writer.to_string().contains(canary),
+                    "Disabled/other-account rule leaked"
+                );
+            }
+            if permission_name == "body_off" {
+                assert!(
+                    !requests
+                        .iter()
+                        .any(|request| request.to_string().contains(INTEGRATION_MAIL_BODY)),
+                    "Body access was disabled before this turn"
+                );
+            }
+            let created: Vec<Value> = messages(&app, OWNER)
+                .await
+                .into_iter()
+                .filter(|message| message["folder"] == "drafts" && !before.contains(&message["id"]))
+                .collect();
+            assert_eq!(created.len(), 1);
+            assert_eq!(
+                created[0]["body"], INTEGRATION_WRITER_BODY,
+                "Only the shared writer's result may become the draft body"
+            );
+
+            // Reuse this conversation to ensure writer-only context does not leak into later Ask.
+            let first_ask = model.requests.lock().await.len();
+            integration_ok(
+                &service,
+                OWNER,
+                "agent/send",
+                json!({"conversationId":id,
+                "text":"INTEGRATION_ASK_ONLY Give a brief answer without drafting."}),
+            )
+            .await;
+            let asks = model.requests.lock().await[first_ask..].to_vec();
+            assert_eq!(asks.len(), 1);
+            integration_assert_planner_has_no_writing_metadata(&asks[0]);
+        }
+    }
+
+    // Write and Reply permissions are independently enforced before the extra writer call.
+    for (action, denied_behavior) in [("COMPOSE", "write"), ("REPLY", "reply")] {
+        integration_ok(
+            &service,
+            OWNER,
+            "settings/policy",
+            integration_permitted_policy(),
+        )
+        .await;
+        let mut patch = json!({"behaviors":{}});
+        patch["behaviors"][denied_behavior] = false.into();
+        integration_ok(&service, OWNER, "settings/policy", patch).await;
+        let before = messages(&app, OWNER)
+            .await
+            .into_iter()
+            .filter(|message| message["folder"] == "drafts")
+            .count();
+        let first_request = model.requests.lock().await.len();
+        let started = integration_ok(&service, OWNER, "agent/start", json!({})).await;
+        let (status, _) = integration_post(&service, OWNER, "agent/send",
+            json!({"conversationId":started["conversation"]["id"],"text":format!("INTEGRATION_{action} denied action")})).await;
+        assert_eq!(status, 403);
+        let requests = model.requests.lock().await[first_request..].to_vec();
+        assert_eq!(
+            requests.len(),
+            1,
+            "Disabled {denied_behavior} must not call the writer"
+        );
+        integration_assert_planner_has_no_writing_metadata(&requests[0]);
+        let after = messages(&app, OWNER)
+            .await
+            .into_iter()
+            .filter(|message| message["folder"] == "drafts")
+            .count();
+        assert_eq!(after, before);
+    }
+}

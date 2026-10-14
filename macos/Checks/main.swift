@@ -220,6 +220,38 @@ expectEqual(messageMatchesFolder(.object(["folder": .string("trash"), "lowPriori
 expectEqual(messageMatchesFolder(.object(["folder": .string("inbox")]), folder: "later"), false)
 print("Native Later marker filtering checks passed.")
 
+var ruleEdits = WritingRuleEdits()
+ruleEdits.begin("a", savedText: "Original A")
+ruleEdits.begin("b", savedText: "Original B")
+assert(!ruleEdits.hasEdits)
+ruleEdits.setText("Edited A", for: "a")
+ruleEdits.setText("Edited B", for: "b")
+ruleEdits.newText = "Unsaved new rule"
+ruleEdits.begin("a", savedText: "Refreshed A")
+expectEqual(ruleEdits.rows["a"]?.text, "Edited A")
+ruleEdits.saved("b", submitted: "Edited B", savedText: "Edited B")
+expectNil(ruleEdits.rows["b"])
+expectEqual(ruleEdits.rows["a"]?.text, "Edited A")
+expectEqual(ruleEdits.newText, "Unsaved new rule")
+assert(ruleEdits.hasEdits)
+ruleEdits.setText("Typed during save", for: "a")
+ruleEdits.saved("a", submitted: "Edited A", savedText: "Edited A")
+expectEqual(ruleEdits.rows["a"]?.text, "Typed during save")
+expectEqual(ruleEdits.rows["a"]?.savedText, "Edited A")
+ruleEdits.added(submitted: "Older new rule")
+expectEqual(ruleEdits.newText, "Unsaved new rule")
+ruleEdits.added(submitted: "Unsaved new rule")
+assert(ruleEdits.hasEdits)
+ruleEdits.cancel("b")
+expectEqual(ruleEdits.rows["a"]?.text, "Typed during save")
+ruleEdits.cancel("a")
+assert(!ruleEdits.hasEdits && ruleEdits.newText.isEmpty)
+ruleEdits.newText = "New rule alone guards navigation and quit"
+assert(ruleEdits.hasEdits)
+ruleEdits = WritingRuleEdits() // Only an explicit discard/confirmed owner change resets the page.
+assert(!ruleEdits.hasEdits)
+print("Writing rule buffers retain unrelated rows/new text and in-flight edits; only matching save/cancel acknowledges them.")
+
 // The same formatter supplies the final send sheet; do not accept a chat excerpt.
 let agentOwner = "agent-owner@fixture.invalid"
 let agentBody = String(repeating: "完整 message\n", count: 9_000) + "BODY-TAIL-CANARY"
