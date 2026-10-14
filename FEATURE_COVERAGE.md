@@ -1,6 +1,6 @@
 # Morrow Mail feature coverage
 
-**Current source — Gmail reconnect recovery:** eligible Gmail mail reads may
+**0.8.0 — Gmail reconnect recovery:** eligible Gmail mail reads may
 refresh a rejected access token and retry once. Failed token exchanges and
 provider writes are not automatically replayed. Reconnect responses without a
 refresh token retain an existing token only for the same verified mailbox,
@@ -10,20 +10,22 @@ revocation and External/Testing expiry still require attention. See
 [validation](VERIFICATION.md#gmail-reconnect-recovery--14-october-2026); synthetic
 coverage does not establish live-account acceptance.
 
-**0.7.9 — writing rules, Today, skill reviews and Inbox Agent:** merged
-PRs #42–#45 passed the exact-main native checks. Writing edits survive unrelated
-saves, the agent revalidates account/permission/source scope and requires reviewed
-actions and complete send previews, and Windows retains bounded diagnostic
-evidence. Today still retains only 200 completion markers and shows the latest
-20 per mailbox; eviction can restore a suggestion, older retained completions
-cannot be reopened in the current view, and unread suggestions do not inherit
-category priority for final ordering. Separate Today and Gmail reconnect fixes
-are not included. Fresh paired tagged checks and the existing publisher govern
-publication. See [release notes and limits](docs/releases/v0.7.9.md) and
-[validation](VERIFICATION.md#v079-release-preparation--14-october-2026).
+**0.8.0 — writing rules, Today, skill reviews and Inbox Agent:** the combined
+PR #42–46 source passed the exact-head native checks and matches the main merge.
+Writing edits survive unrelated saves, the agent revalidates account/permission/
+source scope and requires reviewed actions and complete send previews, and
+Windows retains bounded diagnostic evidence. Today still retains only 200
+completion markers and shows the latest 20 per mailbox; eviction can restore a
+suggestion, older retained completions cannot be reopened in the current view,
+and unread suggestions do not inherit category priority for final ordering.
+The separate Today follow-up is excluded. Fresh paired tagged checks and the
+existing publisher govern publication. The intervening v0.7.9 tag failed its
+Windows reader initialization gate and was not published; it remains preserved.
+See [release notes and limits](docs/releases/v0.8.0.md) and
+[validation](VERIFICATION.md#v080-release-preparation--14-october-2026).
 Ad-hoc Mac signing, unsigned Windows, unresolved intermittent native observation
-failures and incomplete manual/live-account acceptance remain. The historical
-preparation records below describe their original checkpoints.
+failures and incomplete manual/live-account acceptance remain. Historical
+preparation records describe their original checkpoints.
 
 **Current source — categories, Today suggestions, and skill review queues:** each mailbox can save up to 20 ordered categories. Today builds suggested tasks from the latest validated summary items and unread Inbox mail already on this device; completing or reopening one asks for confirmation and does not mark mail read, send mail, or change Email Brain. AI Studio can install a small local skill library and save a daily or interval schedule. `autoExecute` only means a due skill may join that mailbox’s review queue (`propose-draft` or `propose-action`). Schedules do not call a model, send mail, or update Email Brain. This is not the P0 writing-rules work and not an inbox agent.
 

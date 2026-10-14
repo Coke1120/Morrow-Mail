@@ -1,4 +1,59 @@
-# Verification — 12 October 2026
+# Verification — 14 October 2026
+
+## v0.8.0 release preparation — 14 October 2026
+
+The owner requested merging PR #46 and releasing v0.8.0. PR #46 was normally
+merged at `258172e9199b6c296ae4a491ac581e81ab3d72d1` after successful native
+checks and exact-head/review verification. This main includes PRs #42–46; the
+uncommitted Today retention/history/priority follow-up is excluded. Release
+preparation changes only `package.json` to 0.8.0 and documentation.
+
+[PR #46 run 38607097601](https://github.com/Coke1120/Morrow-Mail/actions/runs/38607097601), attempt 1, passed both native platforms at head `897dbf717cc55c4be15c471f4388d4e9fdf31218`. macOS passed 409 Rust tests and 40/40 complete, network-zero reader samples. Windows passed 405 Rust tests, complete fresh/owned/restart process observations (4/44/34), complete owned/restart reader timelines, PowerShell 5.1 relocated-package acceptance and the fictional-mail benchmark. Both platforms had zero failures and four existing ignored benchmarks; all 15 new Gmail regression tests ran on each platform.
+
+The actual main merge `258172e9199b6c296ae4a491ac581e81ab3d72d1` has exactly the same full tree (`fcf1be36b41936a99c4c6affd119520e17459265`) as the tested PR head and synthetic merge. Its separate [main push run 38613427620](https://github.com/Coke1120/Morrow-Mail/actions/runs/38613427620) was in progress when these preparation notes were written. That status is not recorded as a pass. Fresh v0.8.0 tagged checks remain required.
+
+macOS job 116000672529 also passed build, mail/reply presentation, service
+acceptance, review workspace and wrapping/visibility diagnostics. All reader
+captures were complete with parent exit zero and no errors. Windows job
+116000672231 passed all strict observation gates with no skipped processes,
+sample gaps, acquisition failures or missing milestones; collectors exited zero,
+were reaped and were not forced. Both owned reader timelines had 22 complete
+phase records ending in passed, with no overflow/partial/read failure. No natural
+error 87 or actual ProcessFailed event occurred in this successful run.
+
+The earlier v0.7.9 tag remains at `36202133a13ee634b4eceb8a0dd2693c94ce8c7f`.
+[Its run 38606735489](https://github.com/Coke1120/Morrow-Mail/actions/runs/38606735489),
+attempt 1, ended failure at 2026-10-14T18:04:43Z: macOS job 115999438976 passed
+394 Rust tests and 40/40 complete network-zero reader samples; Windows job
+115999438199 passed 390 Rust tests, build/package and benchmark, but its owned
+reader failed initialization before html-ready. The timeline was complete and
+showed mount-loaded/environment/controller-ready only; that last phase precedes
+the readiness wait. No natural acquisition failure or ProcessFailed was recorded,
+but the exact initialization HRESULT was not retained. Plain fallback and closed
+HTML controls passed before the initialization failure was reported. Restart and
+PowerShell 5.1 relocation were not run. The cause remains unresolved; passing
+PR #46 does not reclassify this failed tag. Publisher job 116017726388 was skipped,
+no v0.7.9 release was published, and the old workflow is terminal before v0.8.0
+is triggered. Its tag and all older public releases/assets are preserved.
+
+The metadata commit uses the existing `[release-on-tag]` policy: its main push
+avoids duplicate builds, but the v0.8.0 tag must pass both complete native jobs
+and the existing same-run/same-attempt publisher. Source, workflow, publisher,
+builders, updater, security gates and pinned signing key are unchanged by release
+preparation; no test waiver applies. These notes do not predeclare tagged CI,
+publication or public-byte verification successful.
+
+Known Today capacity/history/priority limitations remain in the [release notes](docs/releases/v0.8.0.md).
+Gmail recovery has a one-refresh limit and can perform two bounded read rounds;
+provider writes are not replayed. Provider revocation/policy expiry, retained-token
+validity and abrupt termination before token persistence remain outside the fix.
+macOS is ad-hoc signed without Developer ID notarization; Windows is unsigned.
+Hosted fixtures do not complete manual accessibility, physical-device,
+clean-machine, live-account/model or installed-updater restart/rollback acceptance.
+No real mailbox, outgoing message, external AI or Google Console change was used.
+
+Earlier sections retain their original checkpoints and pending-at-the-time
+statements; the exact PR evidence above supersedes the Gmail native-CI status.
 
 ## Gmail reconnect recovery — 14 October 2026
 
