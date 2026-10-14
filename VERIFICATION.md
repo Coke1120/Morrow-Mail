@@ -1,5 +1,43 @@
 # Verification — 12 October 2026
 
+## v0.7.8 release preparation — 14 October 2026
+
+Product behavior on this branch is main
+`b5d049802b24bcd32397e4987f25038fc1924046`. The release commit changes
+`package.json` to 0.7.8 and documentation only. No v0.7.8 tag exists, and these
+notes do not claim that a tagged run of
+[Native checks and paired releases](https://github.com/Coke1120/Morrow-Mail/actions/workflows/check.yml)
+has passed. Publication still requires a fresh paired tag: both platform jobs
+and the same-run, same-attempt publisher, reading `docs/releases/v0.7.8.md`,
+before either download is public. The workflow, publisher, and pinned Ed25519
+key are unchanged. There is no gate waiver.
+
+Merged pull-request jobs are separate from that tag. [PR #34 run 38346545006](https://github.com/Coke1120/Morrow-Mail/actions/runs/38346545006),
+attempt 1, passed both platform jobs at `0fee5cd` (tree matches merge `973ebce`);
+the release job was skipped. Earlier PR attempt
+[38305777306](https://github.com/Coke1120/Morrow-Mail/actions/runs/38305777306)
+failed and stays a failure; later PR attempt
+[38318138779](https://github.com/Coke1120/Morrow-Mail/actions/runs/38318138779)
+and main push
+[38350446596](https://github.com/Coke1120/Morrow-Mail/actions/runs/38350446596)
+passed without reclassifying it. [PR #39 run 38361066616](https://github.com/Coke1120/Morrow-Mail/actions/runs/38361066616),
+attempt 1, passed both platform jobs at `d2c717a` (tree matches `cf8ce9b`); main
+push [38372551175](https://github.com/Coke1120/Morrow-Mail/actions/runs/38372551175)
+also passed; its release job was skipped. [PR #40 run 38445747986](https://github.com/Coke1120/Morrow-Mail/actions/runs/38445747986),
+attempt 2, passed both platform jobs at `2b1a652` (tree matches `b5d0498`).
+Attempt 1 of that run was cancelled. The release job was skipped. Focused review
+lifecycle [38445747941](https://github.com/Coke1120/Morrow-Mail/actions/runs/38445747941),
+attempt 1, passed. Main push
+[38497374718](https://github.com/Coke1120/Morrow-Mail/actions/runs/38497374718)
+of `b5d0498` was still running when these notes were written, so it is not
+recorded as passed or failed.
+
+macOS remains ad-hoc signed without Developer ID notarization. Windows remains
+unsigned. Residual native observation failures recorded for v0.7.7 stay failures.
+Manual VoiceOver/Narrator, keyboard/focus, clean-machine, installed-app, and
+real-device UI checks remain incomplete. Live-account, model, and provider
+acceptance is not claimed. See [release notes](docs/releases/v0.7.8.md).
+
 ## v0.7.7 published — exact tagged attempt and public bytes
 
 [v0.7.7](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.7.7) published
