@@ -27,7 +27,10 @@ also passed; its release job was skipped. [PR #40 run 38445747986](https://githu
 attempt 2, passed both platform jobs at `2b1a652` (tree matches `b5d0498`).
 Attempt 1 of that run was cancelled. The release job was skipped. Focused review
 lifecycle [38445747941](https://github.com/Coke1120/Morrow-Mail/actions/runs/38445747941),
-attempt 1, passed. These notes do not cite a finished main push of `b5d0498`.
+attempt 1, passed. Main push
+[38497374718](https://github.com/Coke1120/Morrow-Mail/actions/runs/38497374718)
+of `b5d0498` was still running when these notes were written, so it is not
+recorded as passed or failed.
 
 macOS remains ad-hoc signed without Developer ID notarization. Windows remains
 unsigned. Residual native observation failures recorded for v0.7.7 stay failures.
