@@ -1252,17 +1252,23 @@ void renderCategories(Page const& p) {
         auto priority = text(category, L"priority");
         words(item, (priority.empty() ? hstring(L"No priority") : priority) + L" · " + text(category, L"description"));
         action(p, item, L"Edit", [category](Page page) -> IAsyncAction {
+            if (page->forms[L"category"].dirty() && !(co_await page->shell->confirm(L"Discard unsaved category edits?", L"Load this saved category into the editor below.", L"Edit saved category"))) co_return;
+            if (!page->current()) co_return;
             Json value = blankCategory();
             put(value, L"id", text(category, L"id")); put(value, L"name", text(category, L"name"));
             put(value, L"description", text(category, L"description")); put(value, L"priority", text(category, L"priority"));
             truth(value, L"enabled", flag(category, L"enabled"));
-            page->forms[L"category"].accept(value); page->tell(L"Category loaded. Save to keep changes.");
+            page->forms[L"category"].accept(value); page->dirty(); page->tell(L"Category loaded. Save to keep changes.");
             co_return;
         });
         action(p, item, L"Delete…", [id, name = text(category, L"name")](Page page) -> IAsyncAction {
-            if (!(co_await page->shell->confirm(L"Delete this category?", name + L"\nMail is not changed.", L"Delete category")) || !page->current()) co_return;
+            auto editing = text(page->forms[L"category"].value, L"id") == id;
+            auto detail = name + L"\nMail is not changed." + (editing && page->forms[L"category"].dirty() ? L" Unsaved edits to this category will be discarded." : L"");
+            if (!(co_await page->shell->confirm(L"Delete this category?", detail, L"Delete category")) || !page->current()) co_return;
             auto result = co_await page->shell->service->request(L"/workspace/categories/" + escaped(id), page->owner, L"DELETE");
-            if (!page->current()) co_return; acceptState(page, result); renderCategories(page); page->tell(L"Category deleted.");
+            if (!page->current()) co_return; acceptState(page, result);
+            if (text(page->forms[L"category"].value, L"id") == id) page->forms[L"category"].accept(blankCategory());
+            renderCategories(page); page->dirty(); page->tell(L"Category deleted.");
         });
         if (index > 0) action(p, item, L"Move up", [ids, index](Page page) -> IAsyncAction {
             auto order = ids; auto moved = order[index - 1]; order[index - 1] = order[index]; order[index] = moved;
@@ -1301,21 +1307,28 @@ void buildCategories(Page const& p, StackPanel const& body) {
         renderCategories(page); page->dirty(); page->tell(L"Category saved for this mailbox.");
     });
     action(p, fields, L"Clear form", [](Page page) -> IAsyncAction {
+        if (page->forms[L"category"].dirty() && !(co_await page->shell->confirm(L"Discard unsaved category edits?", L"Clear the category form without saving it.", L"Clear form"))) co_return;
+        if (!page->current()) co_return;
         page->forms[L"category"].accept(blankCategory()); page->dirty(); page->tell(L"Category form cleared."); co_return;
     });
     action(p, fields, L"Draft name", [](Page page) -> IAsyncAction {
         auto prompt = trim(text(page->forms[L"category"].value, L"prompt"));
         require(!prompt.empty(), L"Enter a category name to draft.");
+        auto& form = page->forms[L"category"];
+        auto fields = {L"id", L"name", L"description", L"priority", L"enabled"};
+        if (subset(form.value, fields).Stringify() != subset(form.saved, fields).Stringify() && !(co_await page->shell->confirm(L"Replace unsaved category edits?", L"The drafted name replaces the current category form without saving it.", L"Draft name"))) co_return;
+        if (!page->current()) co_return;
         Json input; put(input, L"prompt", prompt);
         auto result = co_await page->shell->service->request(L"/workspace/categories/suggest", page->owner, L"POST", input);
         if (!page->current()) co_return;
         require(flag(result, L"stub") && !flag(result, L"saved"), L"The draft was not saved.");
         auto suggestion = object(result, L"suggestion");
         Json value = blankCategory(); put(value, L"name", text(suggestion, L"name")); put(value, L"description", text(suggestion, L"description")); put(value, L"prompt", prompt);
-        page->forms[L"category"].accept(value); page->tell(L"Draft only. Save the category if you want to keep it. No model was called.");
+        form.accept(blankCategory()); form.value = value; form.show(); page->changed(L"category");
+        page->tell(L"Draft only. Save the category if you want to keep it. No model was called.");
     });
     action(p, fields, L"Reset suggested categories…", [](Page page) -> IAsyncAction {
-        if (!(co_await page->shell->confirm(L"Restore the suggested categories?", L"This replaces the saved list for this mailbox. Mail is not changed.", L"Reset categories")) || !page->current()) co_return;
+        if (!(co_await page->shell->confirm(L"Restore the suggested categories?", L"This replaces the saved list for this mailbox and discards unsaved category edits. Mail is not changed.", L"Reset categories")) || !page->current()) co_return;
         auto result = co_await page->shell->service->request(L"/workspace/categories/reset", page->owner, L"POST", Json());
         if (!page->current()) co_return; acceptState(page, result); page->forms[L"category"].accept(blankCategory());
         renderCategories(page); page->dirty(); page->tell(L"Suggested categories restored.");

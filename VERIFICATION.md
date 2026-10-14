@@ -1,5 +1,44 @@
 # Verification — 12 October 2026
 
+## PR #43 Today and category follow-up — 14 October 2026
+
+Today now excludes completed suggestions and summary duplicates before selecting
+its eight unread Inbox candidates per mailbox. A partial SQLite index supplies
+that ordered window without scanning read/archive messages. Valid completed
+summary items remain available when a newer job is queued or failed; the existing
+source/permission validation still withdraws changed content. Todo identities are
+bounded hashes of the owner, original message ID and category ID. Existing
+completion records are read compatibly and can be reopened with the new identity;
+old short identities remain accepted for already rendered controls.
+
+Both category editors now guard loading another category, clearing edits and
+replacing edited fields with a drafted name. Drafted names remain unsaved. macOS
+also registers category edits and draft-name prompts with account/page navigation,
+quit and update guards. Reset confirms that it discards the editor. Categories
+remain labels selected by priority/order, and skill schedules remain review queues;
+this change introduces no classifier, model execution or provider action.
+
+Local Rust 1.98 formatting, strict all-target Clippy and the complete locked Rust
+suite passed: **357 passed, zero failed, four existing ignored tests**. Durable fictional
+fixtures in `rust/tests/home_regressions.rs` cover the four reproduced failures
+(completed-window starvation, newer queued/failed summaries and long IMAP IDs),
+plus source invalidation, restart persistence, duplicate IDs across accounts,
+legacy completion/reopen compatibility and unchanged mail state. The production
+SQL unit fixture covers 5,000 irrelevant read/archive messages, 40 unread rows and
+32 exclusions; it requires the partial index, no temporary sort, the next eight
+rows and a bounded SQLite VM step count. All six new integration cases and the
+indexed-query unit fixture passed within that complete suite.
+
+`python3 -B scripts/test-category-edit-guards.py` passed six source-contract checks
+of the actual SwiftUI/WinUI replacement and navigation handlers. Running it with
+`--source-ref e59d331ee61df0fbfb64517217404d5ce1d62053` reproduced eight failing
+assertions in the original PR; the existing Windows account/page navigation
+contract still passed. These are static checks, not native UI execution. This
+Linux host has neither macOS nor Windows SDKs. Native builds and interactive
+Cancel/Discard, account/page, quit/update and keyboard/accessibility checks remain
+required on those platforms. No real mailbox, provider send or model request was
+used. This entry does not claim paired release, live-account or signing acceptance.
+
 ## v0.7.8 release preparation — 14 October 2026
 
 Product behavior on this branch is main

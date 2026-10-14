@@ -17,6 +17,8 @@ and live-account limits remain.
 
 **Current source — categories, Today suggestions, and skill review queues:** each mailbox can save up to 20 ordered categories. Today builds suggested tasks from the latest validated summary items and unread Inbox mail already on this device; completing or reopening one asks for confirmation and does not mark mail read, send mail, or change Email Brain. AI Studio can install a small local skill library and save a daily or interval schedule. `autoExecute` only means a due skill may join that mailbox’s review queue (`propose-draft` or `propose-action`). Schedules do not call a model, send mail, or update Email Brain. This is not the P0 writing-rules work and not an inbox agent.
 
+Today selects up to eight eligible unread messages per mailbox after excluding completed suggestions and summary duplicates. A newer queued or failed summary keeps the latest valid completed summary suggestions visible; changed sources still withdraw them. Completion IDs remain bounded for long provider IDs, and older completion records remain reopenable. Both native category editors guard unsaved replacements; macOS category edits also join account/page navigation, quit and update guards. Categories label Today suggestions by their saved priority/order; their descriptions do not define classification rules. See [validation and native execution limits](VERIFICATION.md#pr-43-today-and-category-follow-up--14-october-2026).
+
 **0.7.7 — review lifecycle:** empty Today/reply projections avoid
 redundant conversation-index reads. Successful Mac Skip removes only dismissed
 ephemeral state; refresh moves edited target state on both platforms, redirecting

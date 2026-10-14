@@ -23,6 +23,9 @@ const MAX_SKILLS: usize = 20;
 const MAX_TODOS: usize = 20;
 const MAX_REVIEWS: usize = 30;
 const REVIEW_DETAIL: &str = "Queued for review. Nothing was sent and Email Brain was not changed.";
+// The partial index contains only unread Inbox metadata. Exclusions run before
+// LIMIT so completed/summary rows cannot occupy the next eight suggestion slots.
+const UNREAD_INBOX_SQL: &str = "SELECT id,json_extract(data,'$.subject') FROM messages INDEXED BY mail_unread_inbox WHERE account=?1 AND COALESCE(json_extract(data,'$.folder'),'')='inbox' AND NOT COALESCE(json_extract(data,'$.read'),0) AND id NOT IN (SELECT value FROM json_each(?2)) ORDER BY COALESCE(json_extract(data,'$.date'),'') DESC,id LIMIT 8";
 
 pub fn categories(config: &Value, owner: &str) -> Value {
     if !valid_account(config, owner) {
@@ -79,7 +82,23 @@ pub fn todos_from_reports(
         return Ok(Vec::new());
     }
     let summary_items = summary_items(reports);
-    let unread = unread_inbox(db, account)?;
+    let completed = completion_ids(config, account);
+    let unread_category = pick_category(&categories, "P2").unwrap();
+    let mut excluded: HashSet<String> = summary_items
+        .iter()
+        .take(40)
+        .map(|item| string(item, "messageId").to_owned())
+        .collect();
+    for entry in workspace(config, account)["todoCompletions"]
+        .as_object()
+        .into_iter()
+        .flat_map(|entries| entries.values())
+    {
+        if entry["categoryId"] == unread_category["id"] {
+            excluded.insert(string(entry, "messageId").to_owned());
+        }
+    }
+    let unread = unread_inbox(db, account, &excluded)?;
     let mut messages = HashMap::new();
     for item in &summary_items {
         let id = string(item, "messageId");
@@ -101,7 +120,7 @@ pub fn todos_from_reports(
         &summary_items,
         &unread,
         &messages,
-        &completion_ids(config, account),
+        &completed,
     ))
 }
 
@@ -564,29 +583,66 @@ fn suggest_category(input: &Value) -> Result<Value> {
 }
 
 fn summary_items(reports: &Value) -> Vec<Value> {
-    crate::background::daily_reports(reports)
+    // reports() already validates ownership, permissions and source digests.
+    // A daily card's status describes its newest job, not its retained content.
+    let completed: Vec<_> = reports
+        .as_array()
         .into_iter()
-        .find(|card| card["status"] == "completed")
+        .flatten()
+        .filter(|job| job["status"] == "completed")
+        .cloned()
+        .collect();
+    crate::background::daily_reports(&json!(completed))
+        .into_iter()
+        .next()
         .and_then(|card| card["items"].as_array().cloned())
         .unwrap_or_default()
 }
 
-fn unread_inbox(db: &Store, account: &str) -> Result<Vec<Value>> {
-    let mut statement = db.conn.prepare(
-        "SELECT data FROM messages WHERE account=?1 AND json_extract(data,'$.folder')='inbox' AND IFNULL(json_extract(data,'$.read'), 0)=0 ORDER BY json_extract(data,'$.date') DESC, id LIMIT 8",
-    )?;
-    let rows = statement.query_map([account], |row| row.get::<_, String>(0))?;
-    let mut messages = Vec::new();
-    for row in rows {
-        messages.push(serde_json::from_str(&row?)?);
+fn unread_inbox(db: &Store, account: &str, excluded: &HashSet<String>) -> Result<Vec<Value>> {
+    let excluded = serde_json::to_string(excluded)?;
+    let mut statement = db.conn.prepare(UNREAD_INBOX_SQL)?;
+    let rows = statement.query_map([account, &excluded], |row| {
+        Ok(json!({
+            "id": row.get::<_, String>(0)?,
+            "subject": row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            "folder": "inbox",
+            "read": false,
+        }))
+    })?;
+    rows.map(|row| row.map_err(Into::into)).collect()
+}
+
+fn todo_id(account: &str, message_id: &str, category_id: &str) -> String {
+    format!(
+        "todo:{}",
+        ai::hash(&json!([account, message_id, category_id]))
+    )
+}
+
+fn legacy_todo_id(account: &str, message_id: &str, category_id: &str) -> String {
+    format!("{account}\n{message_id}\n{category_id}")
+}
+
+fn completion_id(account: &str, saved_id: &str, entry: &Value) -> String {
+    let message_id = string(entry, "messageId");
+    let category_id = string(entry, "categoryId");
+    if message_id.is_empty() || category_id.is_empty() {
+        saved_id.to_owned()
+    } else {
+        todo_id(account, message_id, category_id)
     }
-    Ok(messages)
 }
 
 fn completion_ids(config: &Value, owner: &str) -> HashSet<String> {
     workspace(config, owner)["todoCompletions"]
         .as_object()
-        .map(|entries| entries.keys().cloned().collect())
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|(id, entry)| completion_id(owner, id, entry))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -694,7 +750,7 @@ fn push_todo(
     let can_mark_read =
         message.is_some_and(|message| message["folder"] == "inbox" && message["read"] != true);
     todos.push(json!({
-        "id": format!("{account}\n{message_id}\n{}", string(category, "id")),
+        "id": todo_id(account, message_id, string(category, "id")),
         "accountId": account,
         "messageId": message_id,
         "categoryId": category["id"],
@@ -752,14 +808,19 @@ fn complete_todo(db: &Store, owner: &str, input: &Value) -> Result<()> {
     let todos = todos_from_reports(db, &config, owner, &reports)?;
     let todo = todos
         .iter()
-        .find(|todo| todo["id"] == id && todo["accountId"] == owner)
+        .find(|todo| {
+            todo["accountId"] == owner
+                && (todo["id"] == id
+                    || legacy_todo_id(owner, string(todo, "messageId"), string(todo, "categoryId"))
+                        == id)
+        })
         .ok_or_else(|| Error::new(404, "Suggestion not found."))?;
     let mut completions = workspace(&config, owner)["todoCompletions"]
         .as_object()
         .cloned()
         .unwrap_or_default();
     completions.insert(
-        id.to_owned(),
+        string(todo, "id").to_owned(),
         json!({
             "completedAt": now(),
             "messageId": todo["messageId"],
@@ -779,7 +840,17 @@ fn reopen_todo(db: &Store, owner: &str, input: &Value) -> Result<()> {
         .as_object()
         .cloned()
         .unwrap_or_default();
-    if completions.remove(id).is_none() {
+    let before = completions.len();
+    completions.retain(|saved_id, entry| {
+        saved_id != id
+            && completion_id(owner, saved_id, entry) != id
+            && legacy_todo_id(
+                owner,
+                string(entry, "messageId"),
+                string(entry, "categoryId"),
+            ) != id
+    });
+    if completions.len() == before {
         return Err(Error::new(404, "Completed suggestion not found."));
     }
     save_workspace(db, owner, &json!({"todoCompletions": completions}))
@@ -796,7 +867,7 @@ pub fn completed_todos(db: &Store, config: &Value, account: &str) -> Result<Vec<
                 .iter()
                 .map(|(id, value)| {
                     json!({
-                        "id": id,
+                        "id": completion_id(account, id, value),
                         "accountId": account,
                         "messageId": value["messageId"],
                         "categoryId": value["categoryId"],
@@ -807,6 +878,8 @@ pub fn completed_todos(db: &Store, config: &Value, account: &str) -> Result<Vec<
         })
         .unwrap_or_default();
     items.sort_by(|left, right| string(right, "completedAt").cmp(string(left, "completedAt")));
+    let mut seen = HashSet::new();
+    items.retain(|item| seen.insert(string(item, "id").to_owned()));
     items.truncate(20);
     for item in &mut items {
         let message_id = string(item, "messageId");
@@ -1221,6 +1294,86 @@ fn schedule_due(schedule: &Value, last_queued_at: &str, now_ms: i64) -> bool {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[test]
+    fn unread_query_uses_a_bounded_index_window_before_loading_subjects() {
+        use rusqlite::StatementStatus;
+        let root = std::env::temp_dir().join(format!("morrow-home-index-{}", uuid::Uuid::new_v4()));
+        let db = Store::open(&root).unwrap();
+        let owner = "query@example.test";
+        db.transaction(|db| {
+            let mut statement = db.prepare_message_upsert()?;
+            for index in 0..5000 {
+                let message = json!({
+                    "id": format!("other-{index:05}"),
+                    "folder": if index < 4000 { "archive" } else { "inbox" },
+                    "date": "2026-10-14T11:00:00.000Z",
+                    "read": index >= 4000,
+                    "subject": "Fictional cached mail",
+                    "body": "Fictional body. ".repeat(100),
+                });
+                db.upsert_prepared(owner, &message, &mut statement)?;
+            }
+            for index in 0..40 {
+                db.upsert_prepared(
+                    owner,
+                    &json!({
+                        "id": format!("unread-{index:02}"), "folder": "inbox",
+                        "date": "2026-10-14T10:00:00.000Z", "read": false,
+                        "subject": "Fictional unread mail", "body": "Not projected"
+                    }),
+                    &mut statement,
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let excluded: HashSet<_> = (0..32).map(|index| format!("unread-{index:02}")).collect();
+        let excluded_json = serde_json::to_string(&excluded).unwrap();
+        {
+            let mut plan = db
+                .conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {UNREAD_INBOX_SQL}"))
+                .unwrap();
+            let details = plan
+                .query_map([owner, &excluded_json], |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap();
+            assert!(
+                details
+                    .iter()
+                    .any(|detail| detail.contains("mail_unread_inbox")),
+                "{details:?}"
+            );
+            assert!(
+                !details.iter().any(|detail| detail.contains("TEMP B-TREE")),
+                "{details:?}"
+            );
+            let mut query = db.conn.prepare(UNREAD_INBOX_SQL).unwrap();
+            let ids = query
+                .query_map([owner, &excluded_json], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(
+                ids,
+                (32..40)
+                    .map(|index| format!("unread-{index:02}"))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(query.get_status(StatementStatus::Sort), 0);
+            assert!(
+                query.get_status(StatementStatus::VmStep) < 2500,
+                "Work must depend on the bounded unread/excluded window, not the 5,000 cached read/archive bodies"
+            );
+        }
+        let messages = unread_inbox(&db, owner, &excluded).unwrap();
+        assert_eq!(messages.len(), 8);
+        assert!(messages.iter().all(|message| message.get("body").is_none()));
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn stamp(hour: u32) -> i64 {
         chrono_tz::UTC

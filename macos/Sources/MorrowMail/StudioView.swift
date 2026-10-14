@@ -33,7 +33,9 @@ struct StudioView: View {
     @State private var savedNotes = ""
     @State private var learningDirty = false
     @State private var skillEditor: SkillEdit?
-    @State private var categoryEditor: JSON = .object(["id": .string(""), "name": .string(""), "description": .string(""), "enabled": .bool(true), "priority": .string("")])
+    static var blankCategory: JSON { .object(["id": .string(""), "name": .string(""), "description": .string(""), "enabled": .bool(true), "priority": .string("")]) }
+    @State private var categoryEditor: JSON = StudioView.blankCategory
+    @State private var categoryBaseline: JSON = StudioView.blankCategory
     @State private var categoryPrompt = ""
     @State private var memoryPreview: JSON = .null
     @State private var memoryOptions: JSON = .null
@@ -82,6 +84,8 @@ struct StudioView: View {
     var savedMemoryOptions: JSON { workspace["brainLearning"].picking(["enabled", "tokenBudget"]) }
     var memoryOptionsDirty: Bool { !memoryOptions.isNull && memoryOptions != savedMemoryOptions }
     var brainDirty: Bool { voice != savedVoice || notes != savedNotes || guardrails != savedGuardrails || memoryOptionsDirty || learningDirty }
+    var categoryDirty: Bool { categoryEditor != categoryBaseline || !categoryPrompt.isEmpty }
+    var studioDirty: Bool { brainDirty || categoryDirty }
     var visibleMemoryPreview: JSON { memoryPreview.isNull ? workspace["brainLearning"]["preview"] : memoryPreview }
     var blocked: Bool {
         !model.allowed(action) || (feature["context"].string == "selected" && chosen.isNull) ||
@@ -98,7 +102,7 @@ struct StudioView: View {
                 Button("AI & Privacy") { model.settings("permissions") }
             }
             ReviewAccountTabs(review: review, canPick: { owner in
-                owner == review.scope || !brainDirty || model.confirmDiscard("Discard unsaved writing style and notes changes?")
+                owner == review.scope || !studioDirty || model.confirmDiscard("Discard unsaved Studio changes?")
             })
             HStack {
                 Button("Assistant") { navigate("tools") }.disabled(tab == "tools")
@@ -144,7 +148,7 @@ struct StudioView: View {
         .onChange(of: action) { _ in clearResult() }
         .onChange(of: messageID) { _ in clearResult() }
         .onChange(of: model.mailPage) { _ in if usesReadingList && contextSearch.isNull && !permitted.contains(where: { $0.viewID == messageID }) { messageID = permitted.first?.viewID ?? "" } }
-        .onChange(of: review.scope) { _ in skillEditor = nil; categoryEditor = .object(["id": .string(""), "name": .string(""), "description": .string(""), "enabled": .bool(true), "priority": .string("")]); categoryPrompt = ""; clearResult(); clearContextSearch(); memoryPreview = .null; selectedMemories = []; learningDirty = false; model.dirty("brain", false); loadBrain() }
+        .onChange(of: review.scope) { _ in skillEditor = nil; loadCategoryEditor(Self.blankCategory); clearResult(); clearContextSearch(); memoryPreview = .null; selectedMemories = []; learningDirty = false; model.dirty("brain", false); loadBrain() }
         .onChange(of: model.account) { _ in clearContextSearch() }
         .onChange(of: skillID) { _ in clearResult() }
         .onChange(of: prompt) { _ in clearResult() }
@@ -156,7 +160,9 @@ struct StudioView: View {
         .onChange(of: guardrails) { _ in model.dirty("brain", brainDirty) }
         .onChange(of: memoryOptions) { _ in model.dirty("brain", brainDirty) }
         .onChange(of: learningDirty) { _ in model.dirty("brain", brainDirty) }
-        .onDisappear { contextOperation?.cancel(); contextTicket = UUID(); contextSearching = false; model.dirty("brain", false) }
+        .onChange(of: categoryEditor) { _ in model.dirty("category", categoryDirty) }
+        .onChange(of: categoryPrompt) { _ in model.dirty("category", categoryDirty) }
+        .onDisappear { contextOperation?.cancel(); contextTicket = UUID(); contextSearching = false; model.dirty("brain", false); model.dirty("category", false) }
         .sheet(item: $skillEditor) { skill in SkillEditor(initial: skill.value, mailbox: scope, onSaved: { store($0, owner: scope) }).environmentObject(model) }
     }
     var toolsPage: some View {
@@ -379,15 +385,20 @@ struct StudioView: View {
                             Text(category["name"].string + (category["enabled"].bool ? "" : " — disabled")).font(.headline)
                             Text((category["priority"].nonempty ? category["priority"].string : "No priority") + " · " + category["description"].string).foregroundStyle(.secondary)
                             HStack {
-                                Button("Edit") { categoryEditor = category }
+                                Button("Edit") {
+                                    guard confirmCategoryDiscard() else { return }
+                                    loadCategoryEditor(category)
+                                }
                                 Button("Delete") {
-                                    guard model.confirm("Delete “\(category["name"].string)”?", detail: "Mail is not changed. Today rebuilds suggestions from the categories you keep.") else { return }
+                                    let editing = categoryEditor.id == category.id
+                                    guard model.confirm("Delete “\(category["name"].string)”?", detail: "Mail is not changed. Today rebuilds suggestions from the categories you keep." + (editing && categoryDirty ? " Unsaved edits to this category will be discarded." : "")) else { return }
                                     let owner = scope, id = category.id
                                     guard !operationBusy else { return }
                                     model.perform {
                                         let next = try await model.request("/workspace/categories/" + encodedPath(id), method: "DELETE", body: .object([:]), mailbox: owner)
                                         guard review.scope == owner else { return }
                                         store(next, owner: owner)
+                                        if categoryEditor.id == id { loadCategoryEditor(Self.blankCategory) }
                                     }
                                 }
                                 Button("Move Up") { reorderCategories(index, by: -1) }.disabled(index == 0)
@@ -408,18 +419,21 @@ struct StudioView: View {
                         Toggle("Enabled", isOn: Binding(get: { categoryEditor["enabled"].bool }, set: { categoryEditor["enabled"] = .bool($0) })).toggleStyle(.checkbox)
                         HStack {
                             Button(categoryEditor["id"].nonempty ? "Save Category" : "Add Category") { saveCategory() }.disabled(categoryEditor["name"].string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            Button("Clear") { categoryEditor = .object(["id": .string(""), "name": .string(""), "description": .string(""), "enabled": .bool(true), "priority": .string("")]) }
+                            Button("Clear") {
+                                guard confirmCategoryDiscard() else { return }
+                                loadCategoryEditor(Self.blankCategory)
+                            }
                         }
                         TextField("Draft a category name", text: $categoryPrompt)
                         Button("Draft Name") { draftCategory() }
                         Button("Reset Suggested Categories") {
-                            guard model.confirm("Restore the suggested categories?", detail: "This replaces the saved list for this mailbox. Mail is not changed.") else { return }
+                            guard model.confirm("Restore the suggested categories?", detail: "This replaces the saved list for this mailbox and discards unsaved category edits. Mail is not changed.") else { return }
                             let owner = scope
                             guard !operationBusy else { return }
                             model.perform {
                                 let next = try await model.request("/workspace/categories/reset", method: "POST", body: .object([:]), mailbox: owner)
                                 guard review.scope == owner else { return }
-                                store(next, owner: owner); model.notice = "Suggested categories restored."
+                                store(next, owner: owner); loadCategoryEditor(Self.blankCategory); model.notice = "Suggested categories restored."
                             }
                         }
                     }.padding(8)
@@ -427,6 +441,13 @@ struct StudioView: View {
                 Text("A drafted name is not saved until you add it. No model is called.").font(.caption).foregroundStyle(.secondary)
             }.padding(16).disabled(scopeAll || !scopeStateReady || operationBusy)
         }
+    }
+    func confirmCategoryDiscard() -> Bool {
+        !categoryDirty || model.confirmDiscard("Discard unsaved category changes?")
+    }
+    func loadCategoryEditor(_ value: JSON) {
+        categoryEditor = value; categoryBaseline = value; categoryPrompt = ""
+        model.dirty("category", false)
     }
     func saveCategory() {
         let owner = scope, editor = categoryEditor
@@ -437,17 +458,20 @@ struct StudioView: View {
             let next = try await model.request(path, method: "POST", body: editor, mailbox: owner)
             guard review.scope == owner else { return }
             store(next, owner: owner)
-            categoryEditor = .object(["id": .string(""), "name": .string(""), "description": .string(""), "enabled": .bool(true), "priority": .string("")])
+            loadCategoryEditor(Self.blankCategory)
             model.notice = "Category saved for this mailbox."
         }
     }
     func draftCategory() {
         let owner = scope, prompt = categoryPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty, !operationBusy else { return }
+        guard categoryEditor == categoryBaseline || model.confirmDiscard("Replace unsaved category changes with the drafted name?") else { return }
         model.perform {
             let response = try await model.request("/workspace/categories/suggest", method: "POST", body: .object(["prompt": .string(prompt)]), mailbox: owner)
             guard review.scope == owner, response["stub"].bool, !response["saved"].bool else { return }
+            loadCategoryEditor(Self.blankCategory)
             categoryEditor = .object(["id": .string(""), "name": response["suggestion"]["name"], "description": response["suggestion"]["description"], "enabled": .bool(true), "priority": .string("")])
+            model.dirty("category", categoryDirty)
             model.notice = "Draft only. Add the category if you want to keep it. No model was called."
         }
     }
@@ -606,8 +630,9 @@ struct StudioView: View {
         }
     }
     func navigate(_ destination: String) {
-        guard destination != tab, !brainDirty || model.confirmDiscard("Discard unsaved writing style and notes changes?") else { return }
+        guard destination != tab, !studioDirty || model.confirmDiscard("Discard unsaved Studio changes?") else { return }
         loadBrain()
+        loadCategoryEditor(Self.blankCategory)
         model.studioTab = destination
         if destination == "simulations" { action = model.features.first { $0["mock"].bool }?.id ?? "memory" }
         if destination == "tools" && feature["mock"].bool { action = "ask" }
