@@ -149,6 +149,36 @@ pub(crate) fn guard_review(db: &Store, owner: &str, input: &Value) -> Result<()>
     }
     Ok(())
 }
+/// Build the same reviewed send body the CLI uses, without sending it.
+pub(crate) fn reviewed_send_body(db: &Store, account: &str, id: &str) -> Result<Value> {
+    let config = db.settings()?;
+    let account = owner(&config, account, false)?;
+    let draft = service::get_message(db, &account, id)?;
+    if draft["providerDraft"] == true {
+        return Err(Error::conflict(
+            "This is a read-only provider draft. Copy it to a local draft before sending.",
+        ));
+    }
+    if draft["deliveryStatus"] == "unconfirmed" {
+        return Err(Error::conflict(
+            "This draft has an unconfirmed delivery. Review it in the app before any retry. Inbox Agent will not resend it.",
+        ));
+    }
+    if draft["folder"] != "drafts" {
+        return Err(Error::invalid(
+            "Only saved drafts can be reviewed for sending.",
+        ));
+    }
+    let message = payload(&draft)?;
+    let hash = review_hash(&config, &account, id, &message)?;
+    let mut body = message;
+    body["draftId"] = id.into();
+    body["requestId"] = uuid::Uuid::new_v4().to_string().into();
+    body["cliReviewHash"] = hash.clone().into();
+    body["cliReviewFromName"] = string(&config["preferences"], "displayName").into();
+    body["retryUnconfirmed"] = false.into();
+    Ok(json!({"reviewHash":hash,"body":body}))
+}
 async fn route(
     app: &App,
     owner: String,

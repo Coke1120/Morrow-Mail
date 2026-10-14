@@ -1157,6 +1157,150 @@ fire_and_forget refreshIntelligence(Page p) {
     } catch (...) { if (p->revision == revision && !p->busy) { p->clearResult(); p->tell(L"Status could not refresh. Review current account status before continuing."); } }
     p->polling = false;
 }
+
+void agentStop(Page const& page) {
+    auto id = page->shell->agentConversation;
+    if (id.empty() || !page->current()) return;
+    auto owner = page->owner;
+    [page, id, owner]() -> fire_and_forget {
+        try {
+            Json body; put(body, L"conversationId", id);
+            auto result = co_await page->shell->service->request(L"/agent/cancel", owner, L"POST", body);
+            if (!page->current() || page->owner != owner) co_return;
+            require(text(result, L"accountId") == owner && text(result, L"transport") == L"local-byo" && !flag(result, L"cloud"), L"Inbox Agent returned an unexpected response.");
+            page->tell(L"Stop requested. A model request cannot send mail.");
+            if (!page->busy) { auto shell = page->shell; page->stop(); co_await intelligencePage(shell, L"agent"); }
+        } catch (hresult_error const& error) { if (page->current()) page->tell(error.message()); }
+        catch (...) { if (page->current()) page->tell(L"Inbox Agent could not be stopped. Review the conversation before trying again."); }
+    }();
+}
+void agentReload(Page const& page, Json const& result) {
+    require(text(result, L"accountId") == page->owner && text(result, L"transport") == L"local-byo" && !flag(result, L"cloud"), L"Inbox Agent returned an unexpected response.");
+    auto conversation = object(result, L"conversation");
+    if (conversation.Size()) page->shell->agentConversation = text(conversation, L"id");
+}
+IAsyncAction buildAgent(Page p, StackPanel const& body) {
+    words(body, L"Inbox Agent", 24);
+    words(body, L"A local multi-turn assistant for this mailbox. It uses the model you configured and stores the chat on this device. It can read permitted cached mail and save drafts. Archive, star, trash, read and pending changes, and sending, wait until you confirm them here. This page does not contact a Morrow cloud agent or update Email Brain.");
+    auto settings = object(p->state, L"settings");
+    auto policy = object(settings, L"policy");
+    if (!flag(object(settings, L"ai"), L"configured")) words(body, L"Set up a model before using Inbox Agent.");
+    else if (!flag(policy, L"enabled") || !flag(object(policy, L"behaviors"), L"ask")) words(body, L"Inbox Agent is off. Enable Ask your inbox in AI permissions.");
+    auto listed = co_await p->shell->service->request(L"/agent/recents", p->owner);
+    if (!p->current()) co_return;
+    agentReload(p, listed);
+    action(p, body, L"New conversation", [](Page page) -> IAsyncAction {
+        auto result = co_await page->shell->service->request(L"/agent/start", page->owner, L"POST", Json());
+        if (!page->current()) co_return;
+        agentReload(page, result);
+        auto shell = page->shell; page->stop(); co_await intelligencePage(shell, L"agent");
+    });
+    words(body, L"Recent conversations", 20);
+    auto selected = p->shell->agentConversation;
+    bool found = selected.empty();
+    for (auto const& entry : array(listed, L"recents")) {
+        auto row = entry.GetObject(); auto id = text(row, L"id");
+        if (id == selected) found = true;
+        auto line = group(body, text(row, L"title", L"New conversation"));
+        words(line, text(row, L"status") + (text(row, L"pendingKind").empty() ? L"" : L" · " + text(row, L"pendingKind")));
+        action(p, line, L"Open", [id](Page page) -> IAsyncAction {
+            page->shell->agentConversation = id; auto shell = page->shell; page->stop(); co_await intelligencePage(shell, L"agent");
+        });
+        action(p, line, L"Delete", [id](Page page) -> IAsyncAction {
+            if (!(co_await page->shell->confirm(L"Delete this conversation?", L"Saved mail stays in the mailbox. This only removes the local chat.", L"Delete"))) co_return;
+            if (!page->current()) co_return;
+            auto result = co_await page->shell->service->request(L"/agent/conversations/" + escaped(id), page->owner, L"DELETE");
+            if (!page->current()) co_return;
+            agentReload(page, result);
+            if (page->shell->agentConversation == id) page->shell->agentConversation = {};
+            auto shell = page->shell; page->stop(); co_await intelligencePage(shell, L"agent");
+        });
+    }
+    if (!found) { p->shell->agentConversation = {}; selected = {}; }
+    Json conversation;
+    if (!selected.empty()) {
+        auto opened = co_await p->shell->service->requestWithStatus(L"/agent/conversations/" + escaped(selected), p->owner, L"GET", Json());
+        if (!p->current()) co_return;
+        auto status = static_cast<int>(opened.GetNamedNumber(L"status", 0));
+        if (status == 404) p->shell->agentConversation = {};
+        else {
+            require(status >= 200 && status < 300, L"This conversation could not be opened.");
+            auto payload = object(opened, L"body");
+            agentReload(p, payload);
+            conversation = object(payload, L"conversation");
+            require(text(conversation, L"accountId") == p->owner, L"Conversation mailbox changed.");
+        }
+    }
+    if (!conversation.Size()) { co_return; }
+    p->workflow = conversation;
+    words(body, text(conversation, L"title"), 20);
+    for (auto const& entry : array(conversation, L"turns")) {
+        auto turn = entry.GetObject();
+        words(body, text(turn, L"role") + L": " + text(turn, L"text"));
+    }
+    auto pending = object(conversation, L"pending");
+    auto state = text(conversation, L"status");
+    if (pending.Size()) {
+        words(body, text(pending, L"summary"), 16);
+        auto preview = object(pending, L"preview");
+        if (preview.Size()) words(body, L"To: " + text(preview, L"to") + L"\nCc: " + text(preview, L"cc") + L"\nBcc: " + text(preview, L"bcc") + L"\nSubject: " + text(preview, L"subject") + L"\n\n" + text(preview, L"body"));
+        auto proposal = text(pending, L"id");
+        auto sending = text(pending, L"kind") == L"send";
+        action(p, body, sending ? L"Review and send" : L"Review and apply", [proposal, sending](Page page) -> IAsyncAction {
+            auto summary = text(object(page->workflow, L"pending"), L"summary");
+            auto title = sending ? L"Send this message?" : L"Apply this mailbox change?";
+            auto detail = summary + L"\n\nMailbox: " + page->owner + (sending ? L"\n\nChoose Send to deliver this reviewed draft. The model cannot send it alone." : L"\n\nChoose Apply to make this local mailbox change.");
+            if (!(co_await page->shell->confirm(title, detail, sending ? L"Send" : L"Apply"))) co_return;
+            if (!page->current()) co_return;
+            Json body; put(body, L"conversationId", page->shell->agentConversation); put(body, L"proposalId", proposal); put(body, L"decision", L"confirm");
+            auto result = co_await page->shell->service->request(L"/agent/answer", page->owner, L"POST", body);
+            if (!page->current()) co_return;
+            agentReload(page, result);
+            auto shell = page->shell; page->stop(); co_await intelligencePage(shell, L"agent");
+        });
+        action(p, body, L"Dismiss review", [proposal](Page page) -> IAsyncAction {
+            Json body; put(body, L"conversationId", page->shell->agentConversation); put(body, L"proposalId", proposal); put(body, L"decision", L"deny");
+            auto result = co_await page->shell->service->request(L"/agent/answer", page->owner, L"POST", body);
+            if (!page->current()) co_return;
+            agentReload(page, result);
+            auto shell = page->shell; page->stop(); co_await intelligencePage(shell, L"agent");
+        });
+    }
+    if (state == L"running" || state == L"awaiting") {
+        if (state == L"running") words(body, L"This turn is still running. Use Stop. Mail is not sent without confirmation.");
+    }
+    if (state != L"running" && state != L"confirming") {
+        auto name = field(L"Conversation title", text(conversation, L"title"), false);
+        name.MaxLength(80); body.Children().Append(name);
+        auto rename = button(L"Rename", [weak = std::weak_ptr<Intelligence>(p), name] {
+            if (auto page = weak.lock()) perform(page, [title = trim(name.Text())](Page page) -> IAsyncAction {
+                require(!title.empty(), L"Enter a title.");
+                Json body; put(body, L"conversationId", page->shell->agentConversation); put(body, L"title", title);
+                auto result = co_await page->shell->service->request(L"/agent/rename", page->owner, L"POST", body);
+                if (!page->current()) co_return;
+                agentReload(page, result);
+                auto shell = page->shell; page->stop(); co_await intelligencePage(shell, L"agent");
+            });
+        });
+        body.Children().Append(rename);
+    }
+    if (state != L"awaiting" && state != L"running" && state != L"confirming") {
+        auto compose = field(L"Message to Inbox Agent", {}, true);
+        compose.MaxLength(4000); compose.MinHeight(96); body.Children().Append(compose);
+        auto send = button(L"Send", [weak = std::weak_ptr<Intelligence>(p), compose] {
+            if (auto page = weak.lock()) perform(page, [message = trim(compose.Text())](Page page) -> IAsyncAction {
+                require(!message.empty(), L"Enter a message.");
+                require(!page->shell->agentConversation.empty(), L"Start or open a conversation first.");
+                Json body; put(body, L"conversationId", page->shell->agentConversation); put(body, L"text", message);
+                auto result = co_await page->shell->service->request(L"/agent/send", page->owner, L"POST", body);
+                if (!page->current()) co_return;
+                agentReload(page, result);
+                auto shell = page->shell; page->stop(); co_await intelligencePage(shell, L"agent");
+            });
+        });
+        body.Children().Append(send);
+    }
+}
 } // namespace
 
 IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
@@ -1188,7 +1332,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
         accountTabs.Children().Append(tab);
     }
     ScrollViewer accountScroll; accountScroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto); accountScroll.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled); accountScroll.Content(accountTabs); root.Children().Append(accountScroll);
-    bool accountPage = kind == L"brain" || kind == L"learning" || kind == L"skills" || kind == L"rules" || kind == L"records";
+    bool accountPage = kind == L"brain" || kind == L"learning" || kind == L"skills" || kind == L"rules" || kind == L"records" || kind == L"agent";
     auto tabs = stack(6); tabs.Orientation(Orientation::Horizontal); std::weak_ptr<Intelligence> weak = p; bool known = kind == L"learning";
     for (auto const& [id, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{
         {L"studio", L"Assistant"}}) {
@@ -1198,7 +1342,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
     ComboBox more; more.PlaceholderText(L"More");
     xaml::Automation::AutomationProperties::SetName(more, L"More AI Studio pages");
     for (auto const& [id, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{
-        {L"brain", L"Writing style & notes"}, {L"reply-suggestions", L"Reply suggestions"}, {L"rules",L"Local Inbox Rules"}, {L"skills", L"Reusable skills"}, {L"simulations", L"Local simulations"}, {L"records", L"Simulation history"}}) {
+        {L"brain", L"Writing style & notes"}, {L"agent", L"Inbox Agent"}, {L"reply-suggestions", L"Reply suggestions"}, {L"rules",L"Local Inbox Rules"}, {L"skills", L"Reusable skills"}, {L"simulations", L"Local simulations"}, {L"records", L"Simulation history"}}) {
         ComboBoxItem item; item.Content(box_value(caption)); item.Tag(box_value(hstring(id))); more.Items().Append(item);
         if (kind == id) { known = true; more.SelectedItem(item); }
     }
@@ -1217,7 +1361,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
     auto body = stack(16); host.Content(body); root.Children().Append(host); p->body = make_weak(body); p->editorHost = make_weak(host);
     root.Unloaded([p](auto const&, auto const&) { p->stop(); p->notice = nullptr; }); shell->show(scroll(root));
     if ((p->owner == L"all" && accountPage) || (p->owner != L"all" && !shell->connected(p->owner))) {
-        p->tell(p->owner == L"all" ? L"Choose one mailbox tab for writing style, skills, rules and simulation history. Assistant can still use a selected message while All accounts is selected." : L"Choose one connected mailbox above.");
+        p->tell(p->owner == L"all" ? (kind == L"agent" ? L"Choose one mailbox tab. Inbox Agent keeps a separate conversation for each mailbox." : L"Choose one mailbox tab for writing style, skills, rules and simulation history. Assistant can still use a selected message while All accounts is selected.") : L"Choose one connected mailbox above.");
         co_return;
     }
     bool loaded = false;
@@ -1233,9 +1377,15 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
             auto result = co_await shell->service->request(L"/reply-suggestions", p->owner);
             if (!p->current()) co_return; require(text(result, L"owner") == p->owner, L"Suggestion mailbox changed.");
             p->suggestions = result; buildSuggestions(p, body);
-        } else if (kind == L"studio" || kind == L"simulations") {
+        }         else if (kind == L"studio" || kind == L"simulations") {
             buildTools(p, body); co_await loadMessages(p); if (!p->current()) co_return;
             p->forms[L"tool"].accept(p->forms[L"tool"].value);
+        } else if (kind == L"agent") {
+            // Stop stays outside the editor host so it remains clickable while Send disables that host.
+            auto stop = button(L"Stop", [weak] { if (auto page = weak.lock()) agentStop(page); });
+            stop.IsEnabled(!p->shell->agentConversation.empty());
+            root.Children().Append(stop);
+            co_await buildAgent(p, body); if (!p->current()) co_return;
         } else {
             auto list = stack(12); body.Children().Append(list); p->recordList = make_weak(list); renderRecords(p);
         }

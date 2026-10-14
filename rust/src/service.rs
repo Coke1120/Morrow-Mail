@@ -27,6 +27,7 @@ pub struct Runtime {
     dist: std::path::PathBuf,
     pub background: crate::background::Runtime,
     pub ai: crate::ai::Runtime,
+    pub agent: crate::inbox_agent::Runtime,
     pub reply_suggestions: crate::reply_suggestions::Runtime,
     pub workflows: Mutex<std::collections::HashMap<String, Value>>,
     pub calendars: crate::calendar::CalendarState,
@@ -127,6 +128,7 @@ impl App {
             dist,
             background: Default::default(),
             ai: Default::default(),
+            agent: Default::default(),
             reply_suggestions: Default::default(),
             workflows: Default::default(),
             calendars: Default::default(),
@@ -612,6 +614,7 @@ async fn handle_inner(app: App, request: axum::http::Request<Body>) -> Result<Re
                 ]
                 | ["account", "disconnect"]
                 | ["mail", "folders", ..]
+                | ["agent", ..]
         );
     let limit = if (route == ["attachments"] || route == ["cli"]) && parts.method == Method::POST {
         crate::attachments::MAX_BYTES.div_ceil(3) * 4 + 8192
@@ -718,6 +721,9 @@ pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
         return Ok(response);
     }
     if let Some(response) = crate::background::handle(app, &context).await? {
+        return Ok(response);
+    }
+    if let Some(response) = crate::inbox_agent::handle(app, &context).await? {
         return Ok(response);
     }
     if let Some(response) = crate::ai::handle(app, &context).await? {

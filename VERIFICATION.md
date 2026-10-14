@@ -38,6 +38,10 @@ Manual VoiceOver/Narrator, keyboard/focus, clean-machine, installed-app, and
 real-device UI checks remain incomplete. Live-account, model, and provider
 acceptance is not claimed. See [release notes](docs/releases/v0.7.8.md).
 
+## Local Inbox Agent — current source
+
+The in-app Inbox Agent stores conversations per mailbox in the local workspace and calls only the configured OpenAI-compatible model. Fixture tests cover persistence, account isolation, confirm-before-send, a refused direct-send tool, cancellation of an in-flight draft, and the absence of cloud-agent endpoints in `rust/src/inbox_agent.rs`. These checks do not establish live-account or live-model acceptance, and they are not part of the v0.7.8 release claim above. macOS and Windows chat surfaces follow the existing AI Studio More page; this Linux note does not claim a native UI run.
+
 ## v0.7.7 published — exact tagged attempt and public bytes
 
 [v0.7.7](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.7.7) published

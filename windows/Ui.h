@@ -90,6 +90,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     Json mailDrag;
     Json updateResult;
     winrt::hstring owner, folder = L"inbox", section = L"mail", nextCursor, mailRevision, mailSearchQuery;
+    winrt::hstring agentConversation;
     winrt::hstring todaySummaryOwner;
     winrt::hstring mailLayout = L"right";
     winrt::hstring mailDragToken, mailDragOwner;
