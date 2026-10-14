@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.8 — 2026-10-14
+
+- Discover changed cached IMAP flags in bounded MODSEQ windows and apply them within the existing 50-message background budget, keeping pending work across restarts (PR #34). Unchanged proofs use the provider snapshot. This remains polling, not push/IDLE, and the synthetic comparison is not a live-account speed claim.
+- Repair four IMAP reconcile stalls: folder wrap includes a name that sorts before INBOX, an older UIDVALIDITY row leaves the live MODSEQ intact, unsolicited VANISHED does not abort a tagged-OK discovery round, and a full changed queue still advances the rotation cursor (PR #39).
+- Remove AI Studio Summaries on macOS and Windows; Today keeps saved summaries. Studio mailbox tabs follow the shared review scope and do not switch the mailbox being read. Sync, refresh, and long AI work no longer lock sidebar or account-tab navigation; selecting an account still does (PR #40).
+- Require a fresh paired tagged run of Native checks and paired releases before publication. macOS stays ad-hoc signed without notarization; Windows stays unsigned. Residual Windows observation gaps, manual device checks, and live-account acceptance remain incomplete. See [release notes](docs/releases/v0.7.8.md).
+
 ## 0.7.4 — 2026-10-12
 
 - Keep the Windows reading pane inside the visible client when resizing the window or sidebar; retain the requested list width when space returns (PR30). Native UI/persistence fixtures passed, while known strict resource observation error 87 remains disclosed.
