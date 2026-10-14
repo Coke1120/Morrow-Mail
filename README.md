@@ -58,6 +58,14 @@ Older builds using the retired update URL require a manual download. Back up you
 
 Browser sign-in uses the desktop registration included in the build; custom registrations remain available. Source builds without Google configuration need a custom Google client. See [mailbox setup](docs/USER_GUIDE.md#connect-a-mailbox) and the [OAuth guide（繁體中文）](docs/OAUTH_SETUP.zh-TW.md).
 
+Current source can recover an expired or rejected Gmail access token once during
+eligible mail reads before asking you to reconnect. Reconnecting without a new
+refresh token retains the previous one only for the same verified mailbox,
+provider, OAuth client and granted scopes; an incompatible response retains the
+existing connection and reports a failure. This does not renew a revoked Google
+grant or change the seven-day limit of External/Testing OAuth projects. See
+[validation and limits](VERIFICATION.md#gmail-reconnect-recovery--14-october-2026).
+
 ## What it does
 
 - **Mail:** multiple accounts, combined inboxes, To/Cc/Bcc, reply/reply-all/forward, provider folders and Gmail labels, local Pending/Later markers, and reviewed scheduled sends.

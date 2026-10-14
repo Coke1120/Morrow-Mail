@@ -1,5 +1,52 @@
 # Verification — 12 October 2026
 
+## Gmail reconnect recovery — 14 October 2026
+
+This follow-up starts from main `a059dbd76db9c5a7acc8acb34d8c5be8e85ac02a`.
+Two isolated TLS fixtures reproduced pre-existing reconnect failures: a Gmail
+resource API 401 requested reconnect without trying the saved refresh token, and
+a successful authorization response without a refresh token replaced the saved
+token. These paths predate PRs #42–45; the reproduction does not identify the
+cause of a particular user's failure.
+
+The fix limits resource-401 recovery to explicitly selected safe Gmail reads,
+with at most one forced refresh and read retry. OAuth exchange failures keep
+their existing revoked-grant versus transient-error classification. Sending and
+provider mutations retain their existing no-replay behavior. Reconnect may
+reuse a nonempty saved refresh token only after checking the verified owner,
+provider, client ID/secret, equal scope sets and unchanged connection. It retains
+the newly granted access token and expiry; it does not claim that the provider
+has separately revalidated the old refresh token. Missing or incompatible
+credentials fail without replacing the old connection.
+
+A sync retry starts from the last committed checkpoint with a fresh fetch cache.
+Each attempt retains the existing page/detail bounds; a late 401 can therefore
+make one user sync perform up to two bounded rounds. Already imported messages
+do not enqueue duplicate arrival jobs. History token-exchange failures retain
+manual resume/reconnect handling rather than adding automatic OAuth retries.
+
+Linux Rust 1.98 formatting and strict all-target Clippy passed. The complete
+locked offline suite passed **409 tests, zero failed, four existing ignored
+benchmarks** across 45 result groups, including all 15 new Gmail regression
+tests. The fixtures cover refresh/token rotation and omission, classified token
+failures, a single-refresh retry cap, durable checkpoints and arrival deduplication,
+connection changes before/during refresh, history cursor ownership and restart,
+folder/raw reads, cross-account isolation, Microsoft exclusion, no provider-write
+replay, missing-token grant compatibility and wider-scope reconnect rejection.
+
+The first full run exposed an older folder-catalog fixture that assumed every
+provider request was GET. Its expectation now permits exactly one owned OAuth
+refresh POST returning invalid_grant, while retaining resource-GET, read-count,
+offline-name, account-isolation and blocked-retry assertions. That focused case
+and the complete rerun passed; the original failed log is retained in task
+evidence. This is not a claim that the first run passed.
+
+The existing macOS/Windows PR workflows remain pending for this candidate. Only
+isolated fictional accounts and loopback TLS providers were used. No real Google
+account, mail, send, external AI call or Google Console change was used. Native CI
+does not substitute for live-account, manual accessibility, clean-machine or
+signing/notarization acceptance. This follow-up is separate from v0.7.9.
+
 ## v0.7.9 release preparation — 14 October 2026
 
 Product source is merged main `a059dbd76db9c5a7acc8acb34d8c5be8e85ac02a`,

@@ -1,5 +1,15 @@
 # Morrow Mail feature coverage
 
+**Current source — Gmail reconnect recovery:** eligible Gmail mail reads may
+refresh a rejected access token and retry once. Failed token exchanges and
+provider writes are not automatically replayed. Reconnect responses without a
+refresh token retain an existing token only for the same verified mailbox,
+provider, client credentials and scope set; incompatible responses preserve the
+old connection. Other accounts and cached mail remain intact. Google grant
+revocation and External/Testing expiry still require attention. See
+[validation](VERIFICATION.md#gmail-reconnect-recovery--14-october-2026); synthetic
+coverage does not establish live-account acceptance.
+
 **0.7.9 — writing rules, Today, skill reviews and Inbox Agent:** merged
 PRs #42–#45 passed the exact-main native checks. Writing edits survive unrelated
 saves, the agent revalidates account/permission/source scope and requires reviewed

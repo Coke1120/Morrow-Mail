@@ -33,6 +33,9 @@ const B: &str = "b@example.invalid";
 const C: &str = "c@example.invalid";
 const NATIVE: &str = "fixture-native-token";
 
+#[path = "mail_service/gmail_reconnect.rs"]
+mod gmail_reconnect;
+
 #[tokio::test]
 async fn closing_uncertain_delivery_is_owned_durable_and_never_submits_again() {
     for resolution in ["sent", "dismissed"] {
@@ -800,12 +803,28 @@ async fn all_mail_refresh_ignores_inactive_inbox_sent_choices() {
 #[tokio::test]
 async fn automatic_folder_catalogs_are_owned_durable_and_keep_offline_names() {
     let reads = Arc::new(AtomicUsize::new(0));
+    let refreshes = Arc::new(AtomicUsize::new(0));
     let mode = Arc::new(AtomicUsize::new(0));
-    let (counted, response_mode) = (reads.clone(), mode.clone());
+    let (counted, exchanges, response_mode) = (reads.clone(), refreshes.clone(), mode.clone());
     let fixture = Fixture::new(Arc::new(move |request| {
-        let (reads, mode) = (counted.clone(), response_mode.clone());
+        let (reads, refreshes, mode) = (counted.clone(), exchanges.clone(), response_mode.clone());
         async move {
+            if request.host() == "oauth2.googleapis.com" {
+                assert_eq!(request.method, "POST");
+                assert_eq!(request.path, "/token");
+                assert_eq!(mode.load(Ordering::SeqCst), 2);
+                assert!(!request.headers.contains_key("authorization"));
+                let fields = url::form_urlencoded::parse(&request.body).collect::<std::collections::HashMap<_, _>>();
+                assert_eq!(fields["grant_type"], "refresh_token");
+                assert_eq!(fields["client_id"], "fixture-client");
+                assert_eq!(fields["client_secret"], "fixture-secret");
+                assert_eq!(fields["refresh_token"], format!("refresh-{A}"));
+                assert_eq!(refreshes.fetch_add(1, Ordering::SeqCst), 0, "This failed owned grant may be exchanged only once");
+                return Reply::Json(400, json!({"error":"invalid_grant","error_description":"private authorization detail"}));
+            }
+            assert!(["gmail.googleapis.com", "graph.microsoft.com"].contains(&request.host()));
             assert_eq!(request.method, "GET", "Metadata refresh must never write to a provider");
+            if mode.load(Ordering::SeqCst) != 0 { assert_eq!(request.owner(), A); }
             reads.fetch_add(1, Ordering::SeqCst);
             match mode.load(Ordering::SeqCst) {
                 1 => return Reply::Lost,
@@ -848,6 +867,7 @@ async fn automatic_folder_catalogs_are_owned_durable_and_keep_offline_names() {
         "Reading local state cannot start provider work"
     );
     assert_eq!(initial["serverFolders"][A]["folders"], json!([]));
+    assert_eq!(refreshes.load(Ordering::SeqCst), 0);
     morrow_search::folders::tick(&server.app).await.unwrap();
     let count = reads.load(Ordering::SeqCst);
     assert!(count > 0);
@@ -899,10 +919,11 @@ async fn automatic_folder_catalogs_are_owned_durable_and_keep_offline_names() {
         "Fresh metadata must not be downloaded again"
     );
     server.shutdown().await;
-    let server = fixture.start().await;
+    let mut server = fixture.start().await;
     let (_, restored) = server.call("GET", "/api/state", A, json!({})).await;
     assert_eq!(restored["serverFolders"], state["serverFolders"]);
     assert_eq!(reads.load(Ordering::SeqCst), count);
+    assert_eq!(refreshes.load(Ordering::SeqCst), 0);
     assert!(
         !fs::read(fixture.root.join("workspace/genmail.sqlite"))
             .unwrap()
@@ -932,8 +953,11 @@ async fn automatic_folder_catalogs_are_owned_durable_and_keep_offline_names() {
             state["serverFolders"][A]["folders"]
         );
         let before = reads.load(Ordering::SeqCst);
+        let refreshes_before = refreshes.load(Ordering::SeqCst);
         morrow_search::folders::tick(&server.app).await.unwrap();
         assert_eq!(reads.load(Ordering::SeqCst), before + 1);
+        let expected_refreshes = refreshes_before + usize::from(failure_mode == 2);
+        assert_eq!(refreshes.load(Ordering::SeqCst), expected_refreshes);
         let (_, offline) = server.call("GET", "/api/state", A, json!({})).await;
         assert_eq!(
             offline["serverFolders"][A]["folders"],
@@ -960,6 +984,20 @@ async fn automatic_folder_catalogs_are_owned_durable_and_keep_offline_names() {
             before + 1,
             "Respect retry pacing and block auth/malformed response retries"
         );
+        assert_eq!(refreshes.load(Ordering::SeqCst), expected_refreshes);
+        if failure_mode == 2 {
+            server.shutdown().await;
+            server = fixture.start().await;
+            morrow_search::folders::tick(&server.app).await.unwrap();
+            assert_eq!(reads.load(Ordering::SeqCst), before + 1);
+            assert_eq!(
+                refreshes.load(Ordering::SeqCst),
+                expected_refreshes,
+                "Restart must not retry the blocked authorization exchange"
+            );
+            let (_, restored) = server.call("GET", "/api/state", A, json!({})).await;
+            assert_eq!(restored["serverFolders"][A], offline["serverFolders"][A]);
+        }
     }
     mode.store(0, Ordering::SeqCst);
     server
@@ -985,6 +1023,7 @@ async fn automatic_folder_catalogs_are_owned_durable_and_keep_offline_names() {
     let (_, disconnected) = server.call("GET", "/api/state", B, json!({})).await;
     assert!(disconnected["serverFolders"].get(A).is_none());
     assert_eq!(disconnected["serverFolders"][B], state["serverFolders"][B]);
+    assert_eq!(refreshes.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

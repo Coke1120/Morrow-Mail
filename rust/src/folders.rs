@@ -175,7 +175,8 @@ pub async fn tick(app: &App) -> Result<()> {
     for (owner, original) in owners {
         let work = async {
             let mail = mail::current_mail(app, &owner).await?;
-            catalog(app, &mail).await?;
+            mail::google_read_recovery(app, &mail, |mail| async move { catalog(app, &mail).await })
+                .await?;
             Ok::<_, Error>(())
         }
         .await;
@@ -637,7 +638,9 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
     }
     if ctx.method.as_str() == "GET" {
         let mail = mail::current_mail(app, &owner).await?;
-        let folders = catalog(app, &mail).await?;
+        let (mail, folders) =
+            mail::google_read_recovery(app, &mail, |mail| async move { catalog(app, &mail).await })
+                .await?;
         return Ok(Some(Json(json!({"accountId":owner,"provider":if imap_mail(&mail){"imap"}else{string(&mail,"provider")},"canManage":providers::can_organize(&mail),"folders":folders})).into_response()));
     }
     let mail = mail::current_mail(app, &owner).await?;
