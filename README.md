@@ -12,7 +12,7 @@
 
 Morrow is a local, single-user app: **SwiftUI on macOS**, **WinUI 3 on Windows**, and a shared **Rust service**. Desktop packages include their runtime; no Node, Electron or Rust installation is needed to use them.
 
-The 0.8.0 source includes Gmail read recovery and compatible reconnect-token retention, mailbox writing-rule edit retention, Today suggestions and categories, skill review queues, the local Inbox Agent with explicit action/send review, and bounded Windows diagnostics. PR #46 passed both native platform jobs, and its tested tree matches the actual main merge. Publication requires the existing fresh paired tag checks and publisher. See [release notes and known limits](docs/releases/v0.8.0.md) and [validation](VERIFICATION.md#v080-release-preparation--14-october-2026). Today still retains 200 completion markers and exposes the latest 20 per mailbox; old suggestions can reappear after eviction, and unread-task priority ordering remains limited. The separate Today follow-up is excluded. macOS remains ad-hoc signed without Developer ID notarization, Windows unsigned, and live-account/manual accessibility acceptance incomplete.
+The v0.8.0 baseline includes Gmail read recovery and compatible reconnect-token retention, mailbox writing-rule edit retention, Today suggestions and categories, skill review queues, the local Inbox Agent with explicit action/send review, and bounded Windows diagnostics. PR #46 passed both native platform jobs, and its tested tree matches the actual main merge. Those checks included an incorrect history-download 401 recovery expectation; the current correction requires separate validation and is not in the preserved v0.8.0 tag. See [the correction and validation status](VERIFICATION.md#gmail-history-authorization-correction--14-october-2026) and [release notes and known limits](docs/releases/v0.8.0.md). Publication still requires the existing fresh paired tag checks and publisher. Today retains 200 completion markers and exposes the latest 20 per mailbox; old suggestions can reappear after eviction, and unread-task priority ordering remains limited. The separate Today follow-up is excluded. macOS remains ad-hoc signed without Developer ID notarization, Windows unsigned, and live-account/manual accessibility acceptance incomplete.
 
 Current source adds mailbox categories, local Today suggestions and skill review queues. Today keeps valid saved summary suggestions while newer jobs are queued or failed, and completing unread suggestions makes room for older unread mail. Category edits require review before being discarded. Skill schedules only queue items for review; they do not run a model, send mail or update Email Brain. See [behavior and limits](docs/USER_GUIDE.md#reviewed-attention-workflows) and [follow-up validation](VERIFICATION.md#pr-43-today-and-category-follow-up--14-october-2026).
 
@@ -58,13 +58,19 @@ Older builds using the retired update URL require a manual download. Back up you
 
 Browser sign-in uses the desktop registration included in the build; custom registrations remain available. Source builds without Google configuration need a custom Google client. See [mailbox setup](docs/USER_GUIDE.md#connect-a-mailbox) and the [OAuth guide（繁體中文）](docs/OAUTH_SETUP.zh-TW.md).
 
-Version 0.8.0 can recover an expired or rejected Gmail access token once during
-eligible mail reads before asking you to reconnect. Reconnecting without a new
-refresh token retains the previous one only for the same verified mailbox,
-provider, OAuth client and granted scopes; an incompatible response retains the
+Current source permits one refresh and read retry after a rejected Gmail access
+token during sync, folder-catalog and raw-message reads. History downloads retain
+routine token-expiry refresh before a request, but their first resource-API 401
+preserves the checkpoint and cached mail and stops with an authorization error.
+Resolve the authorization failure, then manually **Resume** if the saved
+connection is unchanged. Reconnecting changes the connection identity and
+requires starting a new import; cached mail remains. That 401 does not trigger a
+forced token exchange, another read or background/restart resume.
+Reconnecting without a new refresh token retains the previous one only for the
+same verified mailbox, provider, OAuth client and granted scopes; an incompatible response retains the
 existing connection and reports a failure. This does not renew a revoked Google
 grant or change the seven-day limit of External/Testing OAuth projects. See
-[validation and limits](VERIFICATION.md#gmail-reconnect-recovery--14-october-2026).
+[validation and limits](VERIFICATION.md#gmail-history-authorization-correction--14-october-2026).
 
 ## What it does
 

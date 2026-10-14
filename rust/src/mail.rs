@@ -100,6 +100,7 @@ async fn refresh_connection(
 }
 
 /// Call only around an owned, read-only provider operation while holding the mailbox gate.
+/// Exclude history-import pages: their first authorization failure requires manual recovery.
 /// A Gmail resource 401 permits one refresh and one new read attempt. Token exchange errors,
 /// writes and a second resource 401 are never retried. Return the current connection so local
 /// commits retain their exact connection checks after credentials have rotated.
@@ -212,13 +213,9 @@ pub(crate) async fn finish_read<T: Send + 'static>(
 }
 
 pub async fn fetch_page(app: &App, mail: &Value, options: &Value) -> Result<Value> {
-    // History imports retry the same page with a new cache; partial failed reads cannot
-    // advance the cursor or reuse bodies collected under rejected credentials.
-    let (_, page) = google_read_recovery(app, mail, |mail| async move {
-        fetch_page_cached(app, &mail, options, &mut HashMap::new()).await
-    })
-    .await?;
-    Ok(page)
+    // History authorization failures must reach the manual-recovery path unchanged.
+    // Normal expiry refresh happens before this read; do not retry a rejected page.
+    fetch_page_cached(app, mail, options, &mut HashMap::new()).await
 }
 fn body_fields_present(message: &Value) -> bool {
     message["body"].is_string()
