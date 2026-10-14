@@ -152,6 +152,15 @@ try {
             try {
                 Check ($batch.Count -eq 2 -and $batch[0].Pid -eq $childId -and $batch[1].Pid -eq $self.Id -and
                     $null -eq $batch[0].NativeError -and $null -eq $batch[1].NativeError) 'early-pin-batch-identities'
+                foreach ($item in $batch) {
+                    $trace = $item.Provenance
+                    Check ($trace.Source -ceq 'admission' -and $trace.NativeError -eq $item.NativeError -and
+                        $trace.OpenStartedAtQpc -gt 0 -and $trace.OpenCompletedAtQpc -ge $trace.OpenStartedAtQpc -and
+                        $trace.WindowStartedAtQpc -eq 0 -and $trace.WindowStoppedAtQpc -eq 0 -and $trace.WindowUtcTicks -eq 0 -and
+                        $trace.WindowUtcReadCompletedAtQpc -eq 0 -and $trace.Scan -eq 0 -and $trace.ScanStartedAtQpc -eq 0 -and
+                        $trace.SnapshotReadyAtQpc -eq 0 -and $trace.PriorScan -eq 0 -and $trace.PriorScanCompletedAtQpc -eq 0 -and
+                        $trace.CimReceivedAtQpc -eq 0) 'early-pin-batch-first-acquisition-provenance'
+                }
                 $fixtureHandle = $batch[0].Handle
             } finally {
                 foreach ($item in $batch) { if ($item.Handle -and $item.Handle -ne $fixtureHandle) { $item.Handle.Dispose() } }

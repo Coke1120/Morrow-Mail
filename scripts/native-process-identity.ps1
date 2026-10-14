@@ -18,6 +18,25 @@ namespace MorrowObservationIdentity {
         public uint Pid { get; internal set; }
         public SafeProcessHandle Handle { get; internal set; }
         public int? NativeError { get; internal set; }
+        public AcquisitionProvenance Provenance { get; internal set; }
+    }
+    // Numeric, fixture-side diagnostics only. No value here proves identity or
+    // exit, changes acquisition cadence, or permits a second open after failure.
+    public sealed class AcquisitionProvenance {
+        public string Source { get; internal set; }
+        public int? NativeError { get; internal set; }
+        public long WindowStartedAtQpc { get; internal set; }
+        public long WindowUtcTicks { get; internal set; }
+        public long WindowUtcReadCompletedAtQpc { get; internal set; }
+        public long WindowStoppedAtQpc { get; internal set; }
+        public long Scan { get; internal set; }
+        public long ScanStartedAtQpc { get; internal set; }
+        public long SnapshotReadyAtQpc { get; internal set; }
+        public long PriorScan { get; internal set; }
+        public long PriorScanCompletedAtQpc { get; internal set; }
+        public long OpenStartedAtQpc { get; internal set; }
+        public long OpenCompletedAtQpc { get; internal set; }
+        public long CimReceivedAtQpc { get; internal set; }
     }
     public sealed class Result {
         public string Outcome { get; internal set; } = "unavailable";
@@ -73,6 +92,7 @@ namespace MorrowObservationIdentity {
         public uint Pid { get; internal set; }
         public SafeProcessHandle Handle { get; internal set; }
         public int? NativeError { get; internal set; }
+        public AcquisitionProvenance Provenance { get; internal set; }
     }
     public sealed class InventoryPinWindow : IDisposable {
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -123,6 +143,11 @@ namespace MorrowObservationIdentity {
         Exception failure;
         bool transferred;
         int closing, cleaned;
+        readonly long windowStartedAtQpc = Stopwatch.GetTimestamp();
+        readonly long windowUtcTicks = DateTime.UtcNow.Ticks;
+        readonly long windowUtcReadCompletedAtQpc = Stopwatch.GetTimestamp();
+        long scanSequence;
+        long completedScan, completedScanAtQpc;
 
         InventoryPinWindow(uint[] ids, long[] ticks, SafeProcessHandle[] handles, uint[] knownIds,
             int maximum, uint fixturePid, int fixtureError) {
@@ -147,7 +172,7 @@ namespace MorrowObservationIdentity {
                 // Borrow these original retained parent objects, never reopen a
                 // PID or adopt/dispose the caller's managed process handles.
                 for (int i = 0; i < parentHandles.Length; i++) parentHandles[i].DangerousAddRef(ref parentRefs[i]);
-                Capture(); // Cover children already live before slow CIM starts.
+                Capture("initial-scan"); // Cover children already live before slow CIM starts.
                 worker = new Thread(Run) { IsBackground = true, Name = "Morrow inventory pins" };
                 worker.Start();
             } catch { closing = 1; Cleanup(); throw; }
@@ -175,20 +200,29 @@ namespace MorrowObservationIdentity {
             if (wait != 0 && wait != 258) throw new InvalidOperationException("Invalid parent wait.");
             return wait == 258;
         }
-        InventoryAcquisition AcquireOnce(uint id) {
+        InventoryAcquisition AcquireOnce(uint id, string source, long scan = 0, long scanStarted = 0, long snapshotReady = 0) {
             InventoryAcquisition existing;
             if (pins.TryGetValue(id, out existing)) return existing;
             if (pins.Count >= limit) throw new InvalidOperationException("Pin inventory limit.");
-            var item = new InventoryAcquisition { Pid = id };
+            var item = new InventoryAcquisition { Pid = id, Provenance = new AcquisitionProvenance {
+                Source = source, WindowStartedAtQpc = windowStartedAtQpc, Scan = scan,
+                WindowUtcTicks = windowUtcTicks, WindowUtcReadCompletedAtQpc = windowUtcReadCompletedAtQpc,
+                ScanStartedAtQpc = scanStarted, SnapshotReadyAtQpc = snapshotReady,
+                PriorScan = completedScan, PriorScanCompletedAtQpc = completedScanAtQpc,
+                OpenStartedAtQpc = Stopwatch.GetTimestamp() } };
             try {
                 if (id == projectedPid) throw new Win32Exception(projectedError);
                 item.Handle = ExitProof.Acquire(id);
-            } catch (Win32Exception error) { item.NativeError = error.NativeErrorCode; }
+            } catch (Win32Exception error) { item.NativeError = item.Provenance.NativeError = error.NativeErrorCode; }
+            finally { item.Provenance.OpenCompletedAtQpc = Stopwatch.GetTimestamp(); }
             pins.Add(id, item); Monitor.PulseAll(gate); return item;
         }
-        void Capture() {
+        void Capture(string source) {
+            long scan = ++scanSequence, started = Stopwatch.GetTimestamp();
+            bool complete = false;
             using (SnapshotHandle snapshot = CreateToolhelp32Snapshot(2, 0)) {
                 if (snapshot.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+                long ready = Stopwatch.GetTimestamp();
                 var entry = new ProcessEntry { Size = (uint)Marshal.SizeOf<ProcessEntry>() };
                 var seen = new HashSet<uint>();
                 bool available = Process32First(snapshot, ref entry);
@@ -198,31 +232,42 @@ namespace MorrowObservationIdentity {
                     int parent;
                     if (entry.Pid > 1 && !known.Contains(entry.Pid) && parents.TryGetValue(entry.ParentPid, out parent)) {
                         lock (gate) {
-                            if (!pins.ContainsKey(entry.Pid) && LiveParent(parent)) AcquireOnce(entry.Pid);
+                            if (!pins.ContainsKey(entry.Pid) && LiveParent(parent)) AcquireOnce(entry.Pid, source, scan, started, ready);
                         }
                     }
                     available = Process32Next(snapshot, ref entry);
                     if (!available && Marshal.GetLastWin32Error() != 18) throw new Win32Exception(Marshal.GetLastWin32Error());
                 }
+                complete = !available;
             }
+            if (complete) lock (gate) { completedScan = scan; completedScanAtQpc = Stopwatch.GetTimestamp(); }
         }
         void Run() {
-            try { while (!stop.Wait(10)) Capture(); }
+            try { while (!stop.Wait(10)) Capture("worker-scan"); }
             catch (Exception error) { lock (gate) failure = error; stop.Set(); }
             finally { if (Volatile.Read(ref closing) != 0) Cleanup(); }
         }
         // Borrow until Complete transfers ALL pins. The first result, including
         // 87/5, is retained under one lock across native scan and CIM delivery.
         public InventoryAcquisition AcquireForRow(uint id, uint parentId) {
+            return AcquireForRow(id, parentId, 0);
+        }
+        public InventoryAcquisition AcquireForRow(uint id, uint parentId, long receivedAtQpc) {
             if (id <= 1 || known.Contains(id)) throw new ArgumentException("Invalid child identity.");
+            if (receivedAtQpc < 0 || receivedAtQpc > Stopwatch.GetTimestamp()) throw new ArgumentException("Invalid row receipt clock.");
             lock (gate) {
                 if (failure != null) throw new InvalidOperationException("Native inventory failed.", failure);
                 if (transferred || Volatile.Read(ref closing) != 0) throw new ObjectDisposedException(nameof(InventoryPinWindow));
                 InventoryAcquisition existing;
-                if (pins.TryGetValue(id, out existing)) return existing;
+                if (pins.TryGetValue(id, out existing)) {
+                    if (receivedAtQpc != 0 && existing.Provenance.CimReceivedAtQpc == 0) existing.Provenance.CimReceivedAtQpc = receivedAtQpc;
+                    return existing;
+                }
                 int parent;
                 if (!parents.TryGetValue(parentId, out parent) || !LiveParent(parent)) throw new InvalidOperationException("Parent is not live and owned.");
-                return AcquireOnce(id);
+                var item = AcquireOnce(id, "cim-row");
+                item.Provenance.CimReceivedAtQpc = receivedAtQpc;
+                return item;
             }
         }
         public InventoryAcquisition[] BorrowForFixture() {
@@ -249,6 +294,8 @@ namespace MorrowObservationIdentity {
                 if (failure != null) throw new InvalidOperationException("Native inventory failed.", failure);
                 if (transferred || Volatile.Read(ref closing) != 0) throw new ObjectDisposedException(nameof(InventoryPinWindow));
                 var result = new InventoryAcquisition[pins.Count]; pins.Values.CopyTo(result, 0);
+                long stopped = Stopwatch.GetTimestamp();
+                foreach (var item in result) item.Provenance.WindowStoppedAtQpc = stopped;
                 transferred = true; return result;
             }
         }
@@ -323,9 +370,11 @@ namespace MorrowObservationIdentity {
             var acquired = new List<Acquisition>();
             try {
                 foreach (uint pid in pids) {
-                    var item = new Acquisition { Pid = pid };
+                    var item = new Acquisition { Pid = pid, Provenance = new AcquisitionProvenance {
+                        Source = "admission", OpenStartedAtQpc = Stopwatch.GetTimestamp() } };
                     try { item.Handle = Acquire(pid); }
-                    catch (Win32Exception error) { item.NativeError = error.NativeErrorCode; }
+                    catch (Win32Exception error) { item.NativeError = item.Provenance.NativeError = error.NativeErrorCode; }
+                    finally { item.Provenance.OpenCompletedAtQpc = Stopwatch.GetTimestamp(); }
                     acquired.Add(item);
                 }
                 return acquired.ToArray();
