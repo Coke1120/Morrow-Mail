@@ -10,24 +10,24 @@ revocation and External/Testing expiry still require attention. See
 [validation](VERIFICATION.md#gmail-reconnect-recovery--14-october-2026); synthetic
 coverage does not establish live-account acceptance.
 
-**0.7.8 preparation — IMAP progress, reconcile stalls, and AI Studio:** bounded
-MODSEQ discovery prioritizes changed cached flags inside the existing 50-message
-budget and persists queue and scan progress. Folder wrap includes a name that
-sorts before INBOX; an older UIDVALIDITY row does not clear the live generation;
-unsolicited VANISHED does not abort a tagged-OK discovery round; a full changed
-queue keeps one rotation slot. AI Studio no longer lists Summaries; saved
-summaries stay on Today. Studio mailbox tabs share review scope and do not change
-the mailbox being read. Sync, refresh, and long AI runs leave sidebar and
-account-tab navigation available; selecting an account still does. Merged PR
-platform jobs passed and remain separate from the tag. Fresh v0.7.8 paired tagged
-checks and the publisher have not run. See [notes](docs/releases/v0.7.8.md) and
-[validation](VERIFICATION.md#v078-release-preparation--14-october-2026). Ad-hoc
-Mac signing, unsigned Windows, residual native observation, manual device checks,
-and live-account limits remain.
+**0.7.9 — writing rules, Today, skill reviews and Inbox Agent:** merged
+PRs #42–#45 passed the exact-main native checks. Writing edits survive unrelated
+saves, the agent revalidates account/permission/source scope and requires reviewed
+actions and complete send previews, and Windows retains bounded diagnostic
+evidence. Today still retains only 200 completion markers and shows the latest
+20 per mailbox; eviction can restore a suggestion, older retained completions
+cannot be reopened in the current view, and unread suggestions do not inherit
+category priority for final ordering. Separate Today and Gmail reconnect fixes
+are not included. Fresh paired tagged checks and the existing publisher govern
+publication. See [release notes and limits](docs/releases/v0.7.9.md) and
+[validation](VERIFICATION.md#v079-release-preparation--14-october-2026).
+Ad-hoc Mac signing, unsigned Windows, unresolved intermittent native observation
+failures and incomplete manual/live-account acceptance remain. The historical
+preparation records below describe their original checkpoints.
 
 **Current source — categories, Today suggestions, and skill review queues:** each mailbox can save up to 20 ordered categories. Today builds suggested tasks from the latest validated summary items and unread Inbox mail already on this device; completing or reopening one asks for confirmation and does not mark mail read, send mail, or change Email Brain. AI Studio can install a small local skill library and save a daily or interval schedule. `autoExecute` only means a due skill may join that mailbox’s review queue (`propose-draft` or `propose-action`). Schedules do not call a model, send mail, or update Email Brain. This is not the P0 writing-rules work and not an inbox agent.
 
-Today selects up to eight eligible unread messages per mailbox after excluding completed suggestions and summary duplicates. A newer queued or failed summary keeps the latest valid completed summary suggestions visible; changed sources still withdraw them. Completion IDs remain bounded for long provider IDs, and older completion records remain reopenable. Both native category editors guard unsaved replacements; macOS category edits also join account/page navigation, quit and update guards. Categories label Today suggestions by their saved priority/order; their descriptions do not define classification rules. See [validation and native execution limits](VERIFICATION.md#pr-43-today-and-category-follow-up--14-october-2026).
+Today selects up to eight eligible unread messages per mailbox after excluding completed suggestions and summary duplicates. A newer queued or failed summary keeps the latest valid completed summary suggestions visible; changed sources still withdraw them. Completion IDs remain bounded for long provider IDs; the latest 20 completed records per mailbox remain reopenable in the current view. Both native category editors guard unsaved replacements; macOS category edits also join account/page navigation, quit and update guards. Categories label Today suggestions by their saved priority/order; their descriptions do not define classification rules. See [validation and native execution limits](VERIFICATION.md#pr-43-today-and-category-follow-up--14-october-2026).
 
 **0.7.7 — review lifecycle:** empty Today/reply projections avoid
 redundant conversation-index reads. Successful Mac Skip removes only dismissed

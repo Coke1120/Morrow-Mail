@@ -47,6 +47,47 @@ account, mail, send, external AI call or Google Console change was used. Native 
 does not substitute for live-account, manual accessibility, clean-machine or
 signing/notarization acceptance. This follow-up is separate from v0.7.9.
 
+## v0.7.9 release preparation — 14 October 2026
+
+Product source is merged main `a059dbd76db9c5a7acc8acb34d8c5be8e85ac02a`,
+containing PRs #42, #43, #44 and #45. This release preparation changes only the
+common `package.json` version and documentation. The separate unmerged Gmail
+reconnect fix and Today retention/history/priority follow-up are excluded.
+
+Exact-main [run 38598790847](https://github.com/Coke1120/Morrow-Mail/actions/runs/38598790847),
+attempt 1, completed successfully at 2026-10-14T17:07:55Z. macOS job 115972305334
+passed 394 Rust tests (zero failed, four ignored), native build, mail/reply
+presentation, service acceptance, review workspace and reader diagnostics. All
+40 reader samples had complete capture, zero network requests, parent exit zero
+and no errors. Windows job 115972305734 passed 390 Rust tests (zero failed,
+four ignored), native build/package, strict fresh/owned/restart UI observation,
+PowerShell 5.1 relocated-package checks and the fictional-mail benchmark.
+Observation counts were 4/45/35: all complete, no gaps/acquisition failures or
+forced collectors. Reader timeline counts were 0/22/22 with complete owned
+mount-to-pass phases and no overflow, rejected lines or partial capture. No
+natural error 87 or WebView ProcessFailed event occurred; root-cause repair is
+not established. The main run's release job was skipped as expected.
+
+The release metadata commit uses the existing `[release-on-tag]` convention:
+its main push does not duplicate builds, while its accompanying v0.7.9 tag must
+run both complete native jobs. Publication requires the fresh tag's successful
+paired jobs and the existing same-run, same-attempt publisher. These notes do
+not predeclare the tag or public-download verification successful. Workflow,
+security gates, publisher, builders, updater and pinned signing key are unchanged;
+no test waiver applies. Historical failures remain failures.
+
+Known shipped limits are explicit in the [release notes](docs/releases/v0.7.9.md):
+Today marker eviction after 200, the latest-20 completion history, unread task
+priority ordering, and the two pre-existing Gmail reconnect defects. The owner
+requested this release from merged main separately from those follow-ups.
+macOS is ad-hoc signed without Developer ID notarization; Windows is unsigned.
+No real mailbox, delivery, Google Console change or external AI call was used.
+Hosted CI does not complete manual accessibility, real-device, clean-machine,
+live-account/model or installed-updater restart/rollback acceptance.
+
+Earlier sections below retain their original evidence and pending-at-the-time
+statements; this current exact-main record supersedes their native-CI status.
+
 ## Writing-rule edit retention — 14 October 2026
 
 The #42 follow-up keeps unsaved text per rule and in the new-rule field. A
