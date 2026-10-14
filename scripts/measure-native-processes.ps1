@@ -124,7 +124,7 @@ function Close-NativeObservationState([Collections.IDictionary] $State) {
 }
 
 function Add-NativeObservationFailure($Sample, $Row, [uint32] $Root, [string] $Source,
-    [string] $Reason, [string] $Stage, $Failure = $null, $ExitCode = $null, $NativeProof = $null) {
+    [string] $Reason, [string] $Stage, $Failure = $null, $ExitCode = $null, $NativeProof = $null, $Acquisition = $null) {
     $kind = 'none'; $code = $null
     if ($Failure) {
         while ($Failure.InnerException) { $Failure = $Failure.InnerException }
@@ -142,7 +142,39 @@ function Add-NativeObservationFailure($Sample, $Row, [uint32] $Root, [string] $S
         cimStartUtcTicks = $Row.CreationDate.ToUniversalTime().Ticks; source = $Source
         reason = $Reason; stage = $Stage; errorKind = $kind; errorCode = $code; exitCode = $ExitCode }
     if ($null -ne $NativeProof) { $record.nativeProof = $NativeProof }
+    # Bound additional diagnostics independently of the unchanged 64 failures,
+    # 32 KiB record and 2 MiB file limits. Later failures still retain every
+    # original reason/code; absent provenance never implies a successful open.
+    if ($null -ne $Acquisition -and $Stage -eq 'nativeAcquire' -and $Sample.failedRecords.Count -lt 8) {
+        $record.acquisition = ConvertTo-NativeAcquisition $Acquisition
+    }
     $Sample.failedRecords.Add($record)
+}
+
+function ConvertTo-NativeAcquisition($Value) {
+    return [ordered]@{ version = 1L; source = $Value.Source; nativeError = $Value.NativeError; clockFrequency = [Diagnostics.Stopwatch]::Frequency
+        windowStartedAtQpc = $Value.WindowStartedAtQpc; windowStoppedAtQpc = $Value.WindowStoppedAtQpc
+        windowUtcTicks = $Value.WindowUtcTicks; windowUtcReadCompletedAtQpc = $Value.WindowUtcReadCompletedAtQpc
+        scan = $Value.Scan; scanStartedAtQpc = $Value.ScanStartedAtQpc; snapshotReadyAtQpc = $Value.SnapshotReadyAtQpc
+        priorScan = $Value.PriorScan; priorScanCompletedAtQpc = $Value.PriorScanCompletedAtQpc
+        openStartedAtQpc = $Value.OpenStartedAtQpc; openCompletedAtQpc = $Value.OpenCompletedAtQpc
+        cimReceivedAtQpc = $Value.CimReceivedAtQpc }
+}
+
+function Invoke-NativeAcquisition([uint32] $Id, [scriptblock] $AcquireIdentity, [string] $Source, [long] $CimReceivedAtQpc = 0) {
+    $trace = @{ Source = $Source; NativeError = $null; WindowStartedAtQpc = 0L; WindowStoppedAtQpc = 0L; Scan = 0L
+        WindowUtcTicks = 0L; WindowUtcReadCompletedAtQpc = 0L; PriorScan = 0L; PriorScanCompletedAtQpc = 0L
+        ScanStartedAtQpc = 0L; SnapshotReadyAtQpc = 0L; CimReceivedAtQpc = $CimReceivedAtQpc
+        OpenStartedAtQpc = [Diagnostics.Stopwatch]::GetTimestamp(); OpenCompletedAtQpc = 0L }
+    $handle = $null; $failure = $null
+    try { $handle = if ($AcquireIdentity) { & $AcquireIdentity $Id } else { [MorrowObservationIdentity.ExitProof]::Acquire($Id) } }
+    catch {
+        $failure = $_.Exception; $cause = $failure
+        while ($cause.InnerException) { $cause = $cause.InnerException }
+        if ($cause -is [ComponentModel.Win32Exception]) { $trace.NativeError = $cause.NativeErrorCode }
+    }
+    finally { $trace.OpenCompletedAtQpc = [Diagnostics.Stopwatch]::GetTimestamp() }
+    return @{ handle = $handle; failure = $failure; provenance = $trace }
 }
 
 function ConvertTo-NativeProofRead($Result) {
@@ -178,7 +210,7 @@ function Get-NativeProofParentState($Parent, [uint32] $ParentId, [long] $ParentT
 }
 
 function Add-NativeInventoryPin($Row, [uint32] $Root, [Collections.IDictionary] $Cache,
-    [Collections.IDictionary] $Pins, [scriptblock] $AcquireIdentity, $NativeWindow = $null) {
+    [Collections.IDictionary] $Pins, [scriptblock] $AcquireIdentity, $NativeWindow = $null, [long] $CimReceivedAtQpc = 0) {
     $id = [uint32] $Row.ProcessId; $parentId = [uint32] $Row.ParentProcessId
     if ($id -le 1 -or $Cache.ContainsKey($id) -or $Pins.ContainsKey($id) -or
         -not $Cache.ContainsKey($parentId)) { return $false }
@@ -192,18 +224,19 @@ function Add-NativeInventoryPin($Row, [uint32] $Root, [Collections.IDictionary] 
             $Row.CreationDate.ToUniversalTime().Ticks -lt $parent.ticks) { return $false }
     } catch { return $false }
     if ($Cache.Count + $Pins.Count -ge 64) { throw 'Pin inventory limit.' }
+    $trace = $null
     try {
-        $handle = if ($NativeWindow) {
-            $item = $NativeWindow.AcquireForRow($id, $parentId)
+        if ($NativeWindow) {
+            $item = $NativeWindow.AcquireForRow($id, $parentId, $CimReceivedAtQpc)
+            $trace = $item.Provenance
             if ($null -ne $item.NativeError) { throw [ComponentModel.Win32Exception]::new($item.NativeError) }
-            $item.Handle
-        } elseif ($AcquireIdentity) { & $AcquireIdentity $id } else { [MorrowObservationIdentity.ExitProof]::Acquire($id) }
-        $Pins[$id] = @{ handle = $handle; failure = $null }
-        return $true
+            $Pins[$id] = @{ handle = $item.Handle; failure = $null; provenance = $trace }
+        } else { $Pins[$id] = Invoke-NativeAcquisition $id $AcquireIdentity 'cim-row' $CimReceivedAtQpc }
+        return $null -eq $Pins[$id].failure
     } catch {
         # Store the FIRST result even while inventory is arriving. Nothing in
         # tree building or admission may reopen it or infer a normal exit.
-        $Pins[$id] = @{ handle = $null; failure = $_.Exception }
+        $Pins[$id] = @{ handle = $null; failure = $_.Exception; provenance = $trace }
         return $false
     }
 }
@@ -228,12 +261,11 @@ function New-NativeAdmissionPins($Candidates, [uint32] $Root, [Collections.IDict
     try {
         if ($AcquireIdentity) {
             foreach ($id in $wanted) {
-                try { $pins[$id] = @{ handle = (& $AcquireIdentity $id); failure = $null } }
-                catch { $pins[$id] = @{ handle = $null; failure = $_.Exception } }
+                $pins[$id] = Invoke-NativeAcquisition $id $AcquireIdentity 'admission'
             }
         } else {
             foreach ($item in [MorrowObservationIdentity.ExitProof]::AcquireMany($wanted.ToArray())) {
-                $pins[$item.Pid] = @{ handle = $item.Handle; failure = $(if ($null -ne $item.NativeError) {
+                $pins[$item.Pid] = @{ handle = $item.Handle; provenance = $item.Provenance; failure = $(if ($null -ne $item.NativeError) {
                     [ComponentModel.Win32Exception]::new($item.NativeError)
                 } else { $null }) }
             }
@@ -281,9 +313,10 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
         $inventory = [Collections.Generic.List[object]]::new()
         $receive = {
             param($Row)
+            $receivedAt = [Diagnostics.Stopwatch]::GetTimestamp()
             if ($inventory.Count -ge 8192) { throw 'Process inventory limit.' }
             $inventory.Add($Row)
-            if (Add-NativeInventoryPin $Row $Root $cache $earlyPins $AcquireIdentity $nativeWindow) {
+            if (Add-NativeInventoryPin $Row $Root $cache $earlyPins $AcquireIdentity $nativeWindow $receivedAt) {
                 if ($ObservationBarrier) { [void] (& $ObservationBarrier 'inventoryPinned' ([uint32] $Row.ProcessId)) }
             }
         }
@@ -303,7 +336,7 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
             $budget = [int] [Math]::Min(250L, [long] [Math]::Floor($remaining * 1000.0 / $frequency))
             foreach ($item in $nativeWindow.Complete($budget)) {
                 if (-not $earlyPins.ContainsKey($item.Pid)) {
-                    $earlyPins[$item.Pid] = @{ handle = $item.Handle; failure = $(if ($null -ne $item.NativeError) {
+                    $earlyPins[$item.Pid] = @{ handle = $item.Handle; provenance = $item.Provenance; failure = $(if ($null -ne $item.NativeError) {
                         [ComponentModel.Win32Exception]::new($item.NativeError)
                     } else { $null }) }
                 }
@@ -373,7 +406,7 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
             $row = $candidate.row; $id = [uint32] $row.ProcessId; $parentId = [uint32] $row.ParentProcessId
             if ($rejected.ContainsKey($id)) { continue }
             $skipReason = 'counterReadFailed'; $failureStage = 'identity'; $newProcess = $null; $identityHandle = $null
-            $proofDiagnostics = $null; $proofExitCode = $null
+            $proofDiagnostics = $null; $proofExitCode = $null; $acquisition = $null
             try {
                 if ($cache.ContainsKey($id)) {
                     $known = $cache[$id]
@@ -397,10 +430,13 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
                     $failureStage = 'nativeAcquire'; $skipReason = 'processUnavailable'
                     if ($earlyPins.ContainsKey($id)) {
                         $earlyPin = $earlyPins[$id]; [void] $earlyPins.Remove($id)
+                        $acquisition = $earlyPin.provenance
                         $identityHandle = $earlyPin.handle
                         if ($earlyPin.failure) { throw $earlyPin.failure }
                     } else {
-                        $identityHandle = if ($AcquireIdentity) { & $AcquireIdentity $id } else { [MorrowObservationIdentity.ExitProof]::Acquire($id) }
+                        $first = Invoke-NativeAcquisition $id $AcquireIdentity 'admission'
+                        $acquisition = $first.provenance; $identityHandle = $first.handle
+                        if ($first.failure) { throw $first.failure }
                     }
                     if ($ObservationBarrier) { [void] (& $ObservationBarrier 'identityProof' $id) }
                     $pin = [MorrowObservationIdentity.ExitProof]::ReadHandle($identityHandle, $id, $row.CreationDate.ToUniversalTime().Ticks, $parentTicks)
@@ -497,7 +533,7 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
                 $known.seen = $true; $admitted.Add(@{ row = $row; source = $candidate.source; identitySource = $identitySource; entry = $known })
             } catch {
                 $rejected[$id] = $true
-                Add-NativeObservationFailure $sample $row $Root $candidate.source $skipReason $failureStage $_.Exception $proofExitCode $proofDiagnostics
+                Add-NativeObservationFailure $sample $row $Root $candidate.source $skipReason $failureStage $_.Exception $proofExitCode $proofDiagnostics $acquisition
             } finally {
                 try { if ($newProcess) { $newProcess.Dispose() } }
                 finally { if ($identityHandle) { $identityHandle.Dispose() } }
@@ -713,6 +749,54 @@ function Get-NativeProofClock($Proof) {
         ForEach-Object { $Proof[$_].ToString([Globalization.CultureInfo]::InvariantCulture) }) -join ','
 }
 
+function Assert-NativeAcquisition($Value, $Failure) {
+    $keys = 'cimReceivedAtQpc,clockFrequency,nativeError,openCompletedAtQpc,openStartedAtQpc,priorScan,priorScanCompletedAtQpc,scan,scanStartedAtQpc,snapshotReadyAtQpc,source,version,windowStartedAtQpc,windowStoppedAtQpc,windowUtcReadCompletedAtQpc,windowUtcTicks'
+    if ($Value -isnot [Collections.IDictionary] -or (($Value.Keys | Sort-Object) -join ',') -cne $keys -or
+        $Value.version -isnot [long] -or $Value.version -ne 1 -or
+        $Value.source -cnotin @('initial-scan', 'worker-scan', 'cim-row', 'admission') -or
+        $Failure.source -cne 'cim' -or $Failure.stage -cne 'nativeAcquire' -or
+        $Failure.reason -cne 'processUnavailable' -or $null -ne $Failure.exitCode -or $Failure.ContainsKey('nativeProof')) {
+        throw 'Invalid acquisition provenance fields.'
+    }
+    foreach ($key in @('clockFrequency', 'windowStartedAtQpc', 'windowStoppedAtQpc', 'scan', 'scanStartedAtQpc',
+            'snapshotReadyAtQpc', 'openStartedAtQpc', 'openCompletedAtQpc', 'cimReceivedAtQpc',
+            'windowUtcTicks', 'windowUtcReadCompletedAtQpc', 'priorScan', 'priorScanCompletedAtQpc')) {
+        if ($Value[$key] -isnot [long] -or $Value[$key] -lt 0) { throw 'Invalid acquisition provenance integer.' }
+    }
+    if (($null -ne $Value.nativeError -and ($Value.nativeError -isnot [long] -or $Value.nativeError -le 0 -or $Value.nativeError -gt [int]::MaxValue)) -or
+        $Value.nativeError -ne $Failure.errorCode) { throw 'Acquisition error changed.' }
+    if ($Value.clockFrequency -le 0 -or $Value.clockFrequency -gt 10000000000L -or
+        $Value.openStartedAtQpc -le 0 -or $Value.openCompletedAtQpc -lt $Value.openStartedAtQpc -or
+        [decimal] $Value.openCompletedAtQpc - $Value.openStartedAtQpc -gt 180 * [decimal] $Value.clockFrequency -or
+        $Value.scan -gt 180000 -or $Value.priorScan -gt 180000) { throw 'Invalid acquisition provenance clock.' }
+    if ($Value.windowStartedAtQpc -eq 0) {
+        if ($Value.windowStoppedAtQpc -ne 0 -or $Value.scan -ne 0 -or $Value.scanStartedAtQpc -ne 0 -or
+            $Value.snapshotReadyAtQpc -ne 0 -or $Value.windowUtcTicks -ne 0 -or $Value.windowUtcReadCompletedAtQpc -ne 0 -or
+            $Value.priorScan -ne 0 -or $Value.priorScanCompletedAtQpc -ne 0 -or $Value.source -notin @('cim-row', 'admission')) { throw 'Invalid acquisition window.' }
+    } else {
+        if ($Value.source -eq 'admission' -or $Value.windowStoppedAtQpc -lt $Value.openCompletedAtQpc -or
+            $Value.openStartedAtQpc -lt $Value.windowStartedAtQpc -or
+            $Value.windowUtcTicks -le 0 -or $Value.windowUtcTicks -gt [DateTime]::MaxValue.Ticks -or
+            $Value.windowUtcReadCompletedAtQpc -lt $Value.windowStartedAtQpc -or $Value.windowUtcReadCompletedAtQpc -gt $Value.openStartedAtQpc -or
+            [decimal] $Value.windowStoppedAtQpc - $Value.windowStartedAtQpc -gt 180 * [decimal] $Value.clockFrequency -or
+            ($Value.cimReceivedAtQpc -ne 0 -and ($Value.cimReceivedAtQpc -lt $Value.windowStartedAtQpc -or
+                $Value.cimReceivedAtQpc -gt $Value.windowStoppedAtQpc))) { throw 'Invalid acquisition window clocks.' }
+        if ($Value.source -in @('initial-scan', 'worker-scan')) {
+            if ($Value.scan -lt 1 -or ($Value.source -eq 'initial-scan' -and $Value.scan -ne 1) -or
+                ($Value.source -eq 'worker-scan' -and $Value.scan -lt 2) -or
+                $Value.scanStartedAtQpc -lt $Value.windowUtcReadCompletedAtQpc -or $Value.snapshotReadyAtQpc -lt $Value.scanStartedAtQpc -or
+                $Value.openStartedAtQpc -lt $Value.snapshotReadyAtQpc) { throw 'Invalid acquisition scan clocks.' }
+        } elseif ($Value.scan -ne 0 -or $Value.scanStartedAtQpc -ne 0 -or $Value.snapshotReadyAtQpc -ne 0) { throw 'Invalid row acquisition scan.' }
+    }
+    if (($Value.priorScan -eq 0 -and $Value.priorScanCompletedAtQpc -ne 0) -or
+        ($Value.priorScan -gt 0 -and ($Value.priorScanCompletedAtQpc -lt $Value.windowUtcReadCompletedAtQpc -or
+            $Value.priorScanCompletedAtQpc -gt $Value.openStartedAtQpc -or
+            ($Value.scan -gt 0 -and ($Value.priorScan -ge $Value.scan -or
+                $Value.priorScanCompletedAtQpc -gt $Value.scanStartedAtQpc))))) { throw 'Invalid preceding scan clock.' }
+    if (($Value.source -eq 'cim-row' -and ($Value.cimReceivedAtQpc -le 0 -or $Value.cimReceivedAtQpc -gt $Value.openStartedAtQpc)) -or
+        ($Value.source -eq 'admission' -and $Value.cimReceivedAtQpc -ne 0)) { throw 'Invalid acquisition row clock.' }
+}
+
 function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
     $samples = [Collections.Generic.List[object]]::new(); $footer = $null; $invalid = $false; $partial = $false
     $peakWs = 0L; $peakPrivate = 0L; $lastElapsed = -1.0; $gaps = $false
@@ -818,8 +902,10 @@ function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
                             ($event.phase -eq 'afterSnapshot' -and $event.role -ne 'ui')) { throw 'Lifecycle counters do not match.' }
                         $exited[$event.pid] = $true
                     }
+                    $failureIndex = 0
                     foreach ($failure in $failures) {
                         if (($failure.Keys | Sort-Object) -join ',' -cnotin @('cimStartUtcTicks,errorCode,errorKind,exitCode,parentPid,pid,reason,source,stage',
+                                'acquisition,cimStartUtcTicks,errorCode,errorKind,exitCode,parentPid,pid,reason,source,stage',
                                 'cimStartUtcTicks,errorCode,errorKind,exitCode,nativeProof,parentPid,pid,reason,source,stage') -or
                             $failure.source -cnotin @('cim', 'retained') -or -not $recordReasons.ContainsKey($failure.reason) -or
                             $failure.stage -cnotin @('inventory', 'parent', 'lookup', 'handle', 'identity', 'role', 'counters', 'exit',
@@ -843,6 +929,11 @@ function Read-NativeResourceReport([string] $Path, $Stop, $Milestones) {
                             if ($null -ne $proofClock -and $proofClock -cne $clock) { throw 'Native admission deadline changed within a sample.' }
                             $proofClock = $clock
                         }
+                        if ($failure.ContainsKey('acquisition')) {
+                            if ($failureIndex -ge 8) { throw 'Acquisition provenance limit.' }
+                            Assert-NativeAcquisition $failure.acquisition $failure
+                        }
+                        $failureIndex++
                         $failed[$failure.pid] = $true; $recordReasons[$failure.reason]++
                     }
                     foreach ($key in @($skipCounts.Keys)) {
@@ -881,6 +972,15 @@ function Get-NativeObservationSummary([Collections.IDictionary] $Report, [Valida
         else { $missing.Add($key) }
     }
     $samples = @($Report.samples); $indices = [Collections.Generic.SortedSet[int]]::new()
+    $acquisitionFailures = 0L; $acquisitionRecorded = 0L
+    foreach ($sample in $samples) {
+        foreach ($failure in $sample.failedRecords) {
+            if ($failure.stage -eq 'nativeAcquire') {
+                $acquisitionFailures++
+                if ($failure.ContainsKey('acquisition')) { $acquisitionRecorded++ }
+            }
+        }
+    }
     if ($samples.Count) {
         [void] $indices.Add(0)
         foreach ($i in @(([Math]::Max(0, $samples.Count - 2)), ($samples.Count - 1))) { [void] $indices.Add($i) }
@@ -905,6 +1005,8 @@ function Get-NativeObservationSummary([Collections.IDictionary] $Report, [Valida
         collector = @{ forced = [bool] $Report.collector.forced; reaped = [bool] $Report.collector.reaped; exitCode = $Report.collector.exitCode }
         footer = $Report.footer; sampleCount = $samples.Count; skipReasonCounts = $Report.skipReasonCounts; rootSkipped = $Report.rootSkipped
         normalExitObservations = $Report.normalExitObservations
+        acquisitionProvenance = @{ version = 1; failureRecordLimit = 8; nativeAcquireFailures = $acquisitionFailures
+            recorded = $acquisitionRecorded; unavailable = ($acquisitionFailures - $acquisitionRecorded) }
         milestonesMs = $milestones; missingMilestones = @($missing.ToArray()); timeline = $timeline }
 }
 
@@ -1029,6 +1131,94 @@ function Test-NativeResourceObservation {
             $report = Read-ObservationFixture @($nativeGap, $footer)
             Check ($report.incomplete -and -not $report.invalidRecords -and $report.skipReasonCounts.processUnavailable -eq 1 -and $report.normalExitObservations -eq 0)
         }
+        $provenance = @{ version = 1L; source = 'worker-scan'; nativeError = 87L; clockFrequency = 1000L
+            windowStartedAtQpc = 100000L; windowStoppedAtQpc = 100020L; scan = 2L; scanStartedAtQpc = 100001L
+            windowUtcTicks = $ticks; windowUtcReadCompletedAtQpc = 100000L; priorScan = 1L; priorScanCompletedAtQpc = 100001L
+            snapshotReadyAtQpc = 100002L; openStartedAtQpc = 100003L; openCompletedAtQpc = 100004L; cimReceivedAtQpc = 100010L }
+        foreach ($origin in @('worker-scan', 'initial-scan', 'cim-row', 'admission')) {
+            $value = $provenance.Clone(); $value.source = $origin
+            if ($origin -eq 'initial-scan') { $value.scan = 1L; $value.priorScan = 0L; $value.priorScanCompletedAtQpc = 0L }
+            if ($origin -in @('cim-row', 'admission')) {
+                $value.scan = 0L; $value.scanStartedAtQpc = 0L; $value.snapshotReadyAtQpc = 0L
+                $value.cimReceivedAtQpc = 100001L
+            }
+            if ($origin -eq 'admission') {
+                $value.windowStartedAtQpc = 0L; $value.windowStoppedAtQpc = 0L; $value.cimReceivedAtQpc = 0L
+                $value.windowUtcTicks = 0L; $value.windowUtcReadCompletedAtQpc = 0L; $value.priorScan = 0L; $value.priorScanCompletedAtQpc = 0L
+            }
+            $firstOpen.acquisition = $value
+            $report = Read-ObservationFixture @($nativeGap, $footer)
+            Check ($report.incomplete -and -not $report.invalidRecords -and $report.normalExitObservations -eq 0 -and
+                $report.samples[0].failedRecords[0].acquisition.source -ceq $origin -and
+                $report.samples[0].failedRecords[0].acquisition.openStartedAtQpc -eq 100003L)
+        }
+        foreach ($case in @('extra-field', 'missing-field', 'source', 'version', 'fractional', 'string', 'boolean', 'negative',
+            'frequency', 'open-order', 'window-order', 'scan-order', 'snapshot-order', 'initial-sequence', 'worker-sequence',
+            'row-before-window', 'row-after-window', 'row-after-open', 'no-window-scan', 'duration', 'code', 'exit', 'stage',
+            'utc-range', 'utc-bracket', 'scan-before-bracket', 'prior-scan', 'prior-time', 'prior-after-scan', 'prior-before-bracket')) {
+            $value = $provenance.Clone(); $bad = $nativeGap.Clone(); $bad.failedRecords = @($firstOpen.Clone()); $bad.failedRecords[0].acquisition = $value
+            switch ($case) {
+                'extra-field' { $value['secret-token'] = 'secret-token' }
+                'missing-field' { [void] $value.Remove('scan') }
+                'source' { $value.source = 'secret-token' }
+                'version' { $value.version = 2L }
+                'fractional' { $value.scan = 2.5 }
+                'string' { $value.openStartedAtQpc = '100003' }
+                'boolean' { $value.openStartedAtQpc = $true }
+                'negative' { $value.openStartedAtQpc = -1L }
+                'frequency' { $value.clockFrequency = 10000000001L }
+                'open-order' { $value.openCompletedAtQpc = 100002L }
+                'window-order' { $value.windowStoppedAtQpc = 100003L }
+                'scan-order' { $value.scanStartedAtQpc = 99999L }
+                'snapshot-order' { $value.snapshotReadyAtQpc = 100004L }
+                'initial-sequence' { $value.source = 'initial-scan' }
+                'worker-sequence' { $value.scan = 1L }
+                'row-before-window' { $value.cimReceivedAtQpc = 99999L }
+                'row-after-window' { $value.cimReceivedAtQpc = 100021L }
+                'row-after-open' { $value.source = 'cim-row'; $value.scan = 0L; $value.scanStartedAtQpc = 0L; $value.snapshotReadyAtQpc = 0L }
+                'no-window-scan' { $value.windowStartedAtQpc = 0L; $value.windowStoppedAtQpc = 0L }
+                'duration' { $value.windowStoppedAtQpc = 280001L }
+                'code' { $value.nativeError = 5L }
+                'exit' { $bad.failedRecords[0].exitCode = 0L }
+                'stage' { $bad.failedRecords[0].stage = 'lookup' }
+                'utc-range' { $value.windowUtcTicks = [long]::MaxValue }
+                'utc-bracket' { $value.windowUtcReadCompletedAtQpc = 100004L }
+                'scan-before-bracket' { $value.windowUtcReadCompletedAtQpc = 100002L }
+                'prior-scan' { $value.priorScan = 2L }
+                'prior-time' { $value.priorScanCompletedAtQpc = 100004L }
+                'prior-after-scan' { $value.priorScanCompletedAtQpc = 100002L }
+                'prior-before-bracket' { $value.priorScanCompletedAtQpc = 99999L }
+            }
+            $report = Read-ObservationFixture @($bad, $footer)
+            Check ($report.incomplete -and $report.invalidRecords)
+            Check ((Get-NativeObservationSummary $report 2 owned $true $true | ConvertTo-Json -Depth 8) -cnotmatch 'secret-token')
+        }
+        # All 64 failure records survive; only the first eight carry optional
+        # provenance. Use large Int64 clocks to exercise the actual byte bound.
+        $bounded = $modernGap.Clone(); $bounded.processes = @(); $bounded.skipped = 0L; $bounded.rootSkipped = 0L
+        $bounded.skipReasonCounts = New-NativeSkipReasonCounts; $bounded.failedRecords = [Collections.Generic.List[object]]::new()
+        $trace = @{ Source = 'worker-scan'; NativeError = 87; WindowStartedAtQpc = 9223372036854000000L
+            WindowStoppedAtQpc = 9223372036854000020L; Scan = 2L; ScanStartedAtQpc = 9223372036854000001L
+            WindowUtcTicks = $ticks; WindowUtcReadCompletedAtQpc = 9223372036854000000L
+            PriorScan = 1L; PriorScanCompletedAtQpc = 9223372036854000001L
+            SnapshotReadyAtQpc = 9223372036854000002L; OpenStartedAtQpc = 9223372036854000003L
+            OpenCompletedAtQpc = 9223372036854000004L; CimReceivedAtQpc = 9223372036854000010L }
+        foreach ($id in 100..162) {
+            $row = @{ ProcessId = $id; ParentProcessId = 20; CreationDate = [DateTime]::new($ticks, [DateTimeKind]::Utc) }
+            Add-NativeObservationFailure $bounded $row 20 cim processUnavailable nativeAcquire ([ComponentModel.Win32Exception]::new(87)) $null $null $trace
+        }
+        Add-NativeObservationFailure $bounded @{ ProcessId = 20; ParentProcessId = 10; CreationDate = [DateTime]::new($ticks, [DateTimeKind]::Utc) } 20 retained processUnavailable inventory
+        $bounded.failedRecords = @($bounded.failedRecords.ToArray())
+        Check ($bounded.failedRecords.Count -eq 64 -and @($bounded.failedRecords | Where-Object { $_.Contains('acquisition') }).Count -eq 8)
+        $report = Read-ObservationFixture @($bounded, $footer)
+        Check ($report.incomplete -and -not $report.invalidRecords -and $report.samples[0].failedRecords.Count -eq 64 -and
+            $report.samples[0].failedRecords[0].acquisition.openStartedAtQpc -eq 9223372036854000003L)
+        $summary = Get-NativeObservationSummary $report 2 owned $true $true
+        Check ($summary.acquisitionProvenance.nativeAcquireFailures -eq 63 -and $summary.acquisitionProvenance.recorded -eq 8 -and
+            $summary.acquisitionProvenance.unavailable -eq 55)
+        $bounded.failedRecords[8]['acquisition'] = $bounded.failedRecords[0].acquisition
+        $report = Read-ObservationFixture @($bounded, $footer)
+        Check ($report.incomplete -and $report.invalidRecords)
         $denied = $failure.Clone(); $denied.reason = 'counterReadFailed'; $denied.stage = 'counters'
         $denied.errorKind = 'accessDenied'; $denied.errorCode = 5L; $denied.exitCode = 0L
         $deniedGap = $modernGap.Clone(); $deniedGap.failedRecords = @($denied)

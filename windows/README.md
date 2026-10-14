@@ -178,6 +178,9 @@ cases, not just ordinary reading. Fixed page/HTML readiness markers record time 
 before process launch to stderr receipt, not compositor first paint. The fixture
 pauses for two seconds after the initial page; these are individual observations,
 not steady-idle measurements, a latency distribution or an Electron comparison.
+Bounded [acquisition and Reader lifecycle diagnostics](../docs/WINDOWS_OBSERVATION_PROVENANCE.md)
+retain the first handle-attempt source and early Reader phases for failed runs.
+These details do not establish a missing exit code or waive an incomplete sample.
 The focused observer/pipe check runs without launching the app:
 
 ```powershell

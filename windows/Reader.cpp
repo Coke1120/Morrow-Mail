@@ -169,10 +169,27 @@ Image fetchImage(hstring const& value, std::shared_ptr<ImageBudget> const& budge
     return result;
 }
 
+// Created only by readerRuntimeChecks after its disposable-fixture validation.
+// This is event diagnostics, not evidence of a child process identity or exit.
+struct ReaderFixtureTrace {
+    uint64_t startedAt;
+    unsigned processFailures = 0;
+    explicit ReaderFixtureTrace(uint64_t started) : startedAt(started) {}
+    void processFailed(int kind) noexcept {
+        if (processFailures > 8) return;
+        auto elapsed = static_cast<unsigned long long>(GetTickCount64() - startedAt);
+        if (processFailures++ < 8)
+            std::fprintf(stderr, "Native reader: process-failed kind=%d +%llu ms\n", kind, elapsed);
+        else std::fprintf(stderr, "Native reader: process-failed-overflow +%llu ms\n", elapsed);
+        std::fflush(stderr);
+    }
+};
+
 struct Reader {
     std::weak_ptr<Shell> shell;
     uint64_t generation{}, selection{}, documentId{}, completedDocumentId{}, epoch = 0;
     unsigned fixtureTraceBudget = 0; // Enabled only after the temporary fixture marker is validated.
+    std::shared_ptr<ReaderFixtureTrace> fixtureTrace;
     // Observed initialization outcome only; these never relax reader policy.
     hresult initializationError{S_OK};
     bool runtimeUnavailable = false;
@@ -432,7 +449,16 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
                 else page->fail();
             }
         });
-        state->core.ProcessFailed([weak](auto const&, auto const&) { if (auto page = weak.lock()) page->fail(); });
+        state->core.ProcessFailed([weak](auto const&, CoreWebView2ProcessFailedEventArgs const& args) {
+            if (auto page = weak.lock()) {
+                if (page->fixtureTrace) {
+                    int kind = -1; // A failed diagnostic getter must not replace the production failure path.
+                    try { kind = static_cast<int>(args.ProcessFailedKind()); } catch (...) {}
+                    page->fixtureTrace->processFailed(kind);
+                }
+                page->fail();
+            }
+        });
         state->startupTimer.Stop();
         state->ready = true;
         if (auto images = state->imageButton.get()) images.IsEnabled(true);
@@ -450,7 +476,8 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
     state->initializing = false;
 }
 
-std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel const& panel, Json const& message, double height = 480, std::function<bool()> reviewContext = {}) {
+std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel const& panel, Json const& message, double height = 480,
+    std::function<bool()> reviewContext = {}, std::shared_ptr<ReaderFixtureTrace> fixtureTrace = {}) {
     if (flag(message, L"bodyTruncated")) panel.Children().Append(label(L"Downloaded message text was truncated. Check the original mailbox for the complete message."));
     if (text(message, L"deliveryStatus") == L"resolved") panel.Children().Append(label(text(message, L"deliveryResolution") == L"sent"
         ? L"You marked this delivery as sent after checking your mailbox. Morrow did not send another copy."
@@ -460,6 +487,7 @@ std::shared_ptr<Reader> mountReader(std::shared_ptr<Shell> shell, StackPanel con
     if (html.empty() || html.size() > (flag(message, L"inlineImages") ? size_t(1536 * 1024) : size_t(512 * 1024))) { panel.Children().Append(plain); return {}; }
     try {
         auto state = std::make_shared<Reader>();
+        state->fixtureTrace = std::move(fixtureTrace);
         state->reviewContext=std::move(reviewContext);
         state->shell = shell; state->generation = shell->generation; state->selection = shell->selectionGeneration;
         state->viewOwner = shell->owner; state->account = text(message, L"accountId"); state->messageId = text(message, L"id");
@@ -627,6 +655,7 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     runtimeCheck(markerText == "Morrow native acceptance fixture", L"Reader runtime fixture marker does not match.");
     auto cancellation = co_await get_cancellation_token(); cancellation.enable_propagation();
     auto startedAt = GetTickCount64();
+    auto fixtureTrace = std::make_shared<ReaderFixtureTrace>(startedAt);
     auto deadline = startedAt + 25000;
     // Fixed fixture phases and booleans only: no content, URLs or workspace paths.
     auto phase = [startedAt](char const* name) {
@@ -655,7 +684,7 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     auto readingPreferences = Json::Parse(originalPreferences.Stringify());
     readingPreferences.Insert(L"autoLoadExternalImages", Value::CreateBooleanValue(true));
     settingsState.Insert(L"preferences", readingPreferences);
-    auto state = mountReader(shell, panel, fixture);
+    auto state = mountReader(shell, panel, fixture, 480, {}, fixtureTrace);
     settingsState.Insert(L"preferences", originalPreferences);
     runtimeCheck(state != nullptr, L"The production reader could not mount its fixture.");
     runtimeCheck(state->images, L"The production reader ignored saved automatic image consent.");
@@ -721,7 +750,7 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     runtimeCheck(state->live() && !state->images && state->budget->requests == 0,
         L"Automatic image consent removed the per-message Hide control or fetched the inert fixture.");
     settingsState.Insert(L"preferences", readingPreferences);
-    auto refreshed = mountReader(shell, stack(8), fixture);
+    auto refreshed = mountReader(shell, stack(8), fixture, 480, {}, fixtureTrace);
     settingsState.Insert(L"preferences", originalPreferences);
     runtimeCheck(refreshed && !refreshed->images, L"Refreshing the same owned message lost its image override.");
     refreshed->unload();
@@ -747,7 +776,7 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
             auto remountMessage = Json::Parse(shell->selected.Stringify());
             put(remountMessage, L"bodyHtml", text(fixture, L"bodyHtml"));
             settingsState.Insert(L"preferences", readingPreferences);
-            auto remounted = mountReader(shell, stack(8), remountMessage);
+            auto remounted = mountReader(shell, stack(8), remountMessage, 480, {}, fixtureTrace);
             settingsState.Insert(L"preferences", originalPreferences);
             runtimeCheck(remounted && remounted->live() && !remounted->images,
                 L"Remounting after a local marker patch enabled hidden images under automatic consent.");
@@ -910,7 +939,7 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     // Exercise the same explicit failure path while mounted, without changing
     // runtime configuration or starting another document/network operation.
     phase("failure-fallback");
-    auto fallback = mountReader(shell, panel, fixture);
+    auto fallback = mountReader(shell, panel, fixture, 480, {}, fixtureTrace);
     runtimeCheck(fallback != nullptr, L"The fallback reader could not mount.");
     cleanup.readers.push_back(fallback); fallback->fail();
     co_await runtimeWait([fallback] { return fallback->fallback && fallback->fallback.IsLoaded(); }, deadline, L"failure-fallback");
@@ -926,7 +955,7 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     auto multiPreferences = Json::Parse(readingPreferences.Stringify());
     multiPreferences.Insert(L"markReadOnOpen", Value::CreateBooleanValue(false));
     settingsState.Insert(L"preferences", multiPreferences); // This consent check leaves fixture read markers unchanged.
-    auto hidden = mountReader(shell, stack(8), fixture);
+    auto hidden = mountReader(shell, stack(8), fixture, 480, {}, fixtureTrace);
     runtimeCheck(hidden && hidden->images, L"The multi-selection fixture did not apply image opt-in.");
     cleanup.readers.push_back(hidden); hidden->chooseImages(false);
     ListViewItem itemA{nullptr}, itemB{nullptr};
@@ -954,7 +983,7 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
         L"Returning from multi-selection lost the same owned message's Hide choice.");
     auto hiddenMessage = Json::Parse(shell->selected.Stringify());
     put(hiddenMessage,L"bodyHtml",text(fixture,L"bodyHtml"));
-    auto retained = mountReader(shell, stack(8), hiddenMessage);
+    auto retained = mountReader(shell, stack(8), hiddenMessage, 480, {}, fixtureTrace);
     runtimeCheck(retained && retained->live() && !retained->images,
         L"Remounting the reselected owned message loaded images after Hide.");
     cleanup.readers.push_back(retained); retained->unload(); hidden->unload();

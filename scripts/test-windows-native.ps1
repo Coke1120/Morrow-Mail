@@ -262,14 +262,28 @@ function Isolate-NativeEnvironment([Diagnostics.ProcessStartInfo] $Start) {
 function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMilliseconds = 180000, [long] $LaunchTimestamp = 0) {
     Require ($TimeoutMilliseconds -gt 0 -and $TimeoutMilliseconds -le 180000) 'Invalid native UI deadline.'
     if ($LaunchTimestamp -eq 0) { $LaunchTimestamp = [Diagnostics.Stopwatch]::GetTimestamp() }
-    $safeStartup = '^Native startup: [A-Za-z0-9 .(),:_-]{1,120}$|^Native (startup|XAML) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native startup (constructor|OnLaunched) \((installing unhandled exception handler|reading application resources|reading merged dictionaries|constructing control resources|appending control resources)\) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native smoke: [a-z-]{1,64}$|^Native reader: [a-z-]{1,64} \+[0-9]{1,6} ms$'
+    # Exact readerRuntimeChecks phases only; never preserve an arbitrary reader
+    # string as lifecycle evidence. These entries survive the separate tail cap.
+    $readerPhases = @('mount-loaded', 'environment', 'controller-ready', 'initial-document',
+        'runtime-unavailable-fallback', 'isolation-settings', 'image-preference', 'metadata-hide',
+        'metadata-other-row', 'metadata-reader-interaction', 'html-document', 'script-sentinel',
+        'csp-observer', 'csp-probe-start', 'csp-settle', 'plain-document', 'plain-empty-assertion',
+        'stale-navigation', 'unload-close', 'closed-protocol', 'failure-fallback', 'multi-selection-hide', 'passed')
+    $readerPhasePattern = '^Native reader: (' + ($readerPhases -join '|') + ') \+([0-9]{1,6}) ms$'
+    $readerFailurePattern = '^Native reader: process-failed kind=(-?[0-9]{1,10}) \+([0-9]{1,6}) ms$'
+    $readerOverflowPattern = '^Native reader: process-failed-overflow \+([0-9]{1,6}) ms$'
+    $safeStartup = '^Native startup: [A-Za-z0-9 .(),:_-]{1,120}$|^Native (startup|XAML) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native startup (constructor|OnLaunched) \((installing unhandled exception handler|reading application resources|reading merged dictionaries|constructing control resources|appending control resources)\) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native smoke: [a-z-]{1,64}$'
+    $safeStartup += '|' + $readerPhasePattern + '|' + $readerFailurePattern + '|' + $readerOverflowPattern
     $safeStartup += '|^Native reader: nav-start id=[0-9]{1,20} blank=[01] redirected=[01] user=[01] expected=[01] live=[01]$'
     $safeStartup += '|^Native reader: nav-decision id=[0-9]{1,20} cancelled=[01] expected=[01] tracked=[0-9]{1,20}$'
     $safeStartup += '|^Native reader: nav-completed id=[0-9]{1,20} success=[01] error=-?[0-9]{1,10} live=[01] tracked=[0-9]{1,20}$'
     $safeStartup += '|^Native reader: (render-request|render-returned|initial-document-state|initial-document-failed) active=[01] ready=[01] live=[01] expected=[01] core=[01] view=[01] loaded=[01] visible=[01] id=[0-9]{1,20} completed=[0-9]{1,20} epoch=[0-9]{1,20}$'
     $safeStartup += '|^Native reader: nav-uri empty=[01] dataHtml=[01] dataHtmlBase64=[01] aboutBlankPrefix=[01] other=[01] length=[0-9]{1,10}$'
     $safeLines = [Collections.Generic.Queue[string]]::new()
-    $state = @{ phase = ''; characters = 0; milestones = @{} }
+    $readerEvents = [Collections.Generic.List[object]]::new()
+    $readerEventLimit = 64
+    $state = @{ phase = ''; characters = 0; milestones = @{}; readerOverflow = $false
+        readerFailureOverflow = $false; readerRejected = $false }
     function Keep-Line([string] $Value) {
         # Receipt time only, with the clock captured before Process.Start. The
         # exact fixed markers survive diagnostic-tail trimming. No CIM or file
@@ -281,7 +295,27 @@ function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMillisecond
             }
             return
         }
-        if ($Value -cnotmatch $safeStartup) { return }
+        $entry = $null
+        if ($Value -cmatch $readerPhasePattern) {
+            $entry = [ordered]@{ event = 'phase'; phase = $Matches[1]; readerElapsedMs = [int] $Matches[2] }
+        } elseif ($Value -cmatch $readerFailurePattern) {
+            [int] $kind = 0
+            if (-not [int]::TryParse($Matches[1], [ref] $kind)) { $state.readerRejected = $true; return }
+            $entry = [ordered]@{ event = 'processFailed'; kind = $kind; readerElapsedMs = [int] $Matches[2] }
+        } elseif ($Value -cmatch $readerOverflowPattern) {
+            $state.readerFailureOverflow = $true
+            $entry = [ordered]@{ event = 'processFailedOverflow'; readerElapsedMs = [int] $Matches[1] }
+        }
+        if ($entry) {
+            if ($readerEvents.Count -lt $readerEventLimit) {
+                $entry['receiptElapsedMs'] = ([Diagnostics.Stopwatch]::GetTimestamp() - $LaunchTimestamp) * 1000.0 / [Diagnostics.Stopwatch]::Frequency
+                $readerEvents.Add($entry)
+            } else { $state.readerOverflow = $true }
+        }
+        if ($Value -cnotmatch $safeStartup) {
+            if ($Value.StartsWith('Native reader: ', [StringComparison]::Ordinal)) { $state.readerRejected = $true }
+            return
+        }
         if ($Value -cmatch '^Native smoke: [a-z-]{1,64}$') { $state.phase = $Value }
         $safeLines.Enqueue($Value); $state.characters += $Value.Length + 1
         while ($safeLines.Count -gt 20 -or $state.characters -gt 1025) {
@@ -293,7 +327,7 @@ function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMillisecond
     # reader: native fprintf/fflush can otherwise block the UI and its deadline.
     $buffer = [char[]]::new(1024)
     $line = [Text.StringBuilder]::new(256)
-    $discard = $false; $eof = $false; $read = $null; $readFailed = $false
+    $discard = $false; $eof = $false; $read = $null; $readFailed = $false; $lineTruncated = $false
     $deadline = [Environment]::TickCount64 + $TimeoutMilliseconds
     $tailDeadline = $null; $completed = $false
     while ($true) {
@@ -326,14 +360,24 @@ function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMillisecond
                     if (-not $discard) { Keep-Line $line.ToString().TrimEnd([char] 13) }
                     [void] $line.Clear(); $discard = $false
                 } elseif (-not $discard) {
-                    if ($line.Length -eq 256) { [void] $line.Clear(); $discard = $true }
+                    if ($line.Length -eq 256) { [void] $line.Clear(); $discard = $true; $lineTruncated = $true }
                     else { [void] $line.Append($buffer[$i]) }
                 }
             }
         } catch { $readFailed = $true; $eof = $true }
     }
     if ($readFailed) { Write-Warning 'Fixture stderr collection was incomplete; only validated phases are retained.' }
-    return @{ Completed = $completed; Diagnostics = ($safeLines -join "`n"); LastSmokePhase = $state.phase; MilestonesMs = $state.milestones }
+    $partialLine = $discard -or $line.Length -gt 0
+    $readerLifecycle = [ordered]@{
+        eventLimit = $readerEventLimit; overflow = $state.readerOverflow; processFailureOverflow = $state.readerFailureOverflow
+        receiptClock = 'launch-relative-stderr-receipt'; readerClock = 'runtime-relative-tick-count'
+        streamEnded = $eof -and -not $readFailed; partialLine = $partialLine; lineTruncated = $lineTruncated
+        readFailed = $readFailed; rejectedReaderLine = $state.readerRejected
+        complete = $eof -and -not ($readFailed -or $partialLine -or $lineTruncated -or $state.readerOverflow -or $state.readerFailureOverflow -or $state.readerRejected)
+        events = $readerEvents.ToArray()
+    }
+    return @{ Completed = $completed; Diagnostics = ($safeLines -join "`n"); LastSmokePhase = $state.phase
+        MilestonesMs = $state.milestones; ReaderLifecycle = $readerLifecycle }
 }
 function Test-NativeUiDrain {
     # Real pipes, fixed fictional text only: no app, workspace or network access.
@@ -353,7 +397,12 @@ function Test-NativeUiDrain {
 [Console]::Error.WriteLine('Native milestone: html-ready secret-token')
 [Console]::Error.WriteLine('native milestone: html-ready')
 [Console]::Error.WriteLine('Native smoke: reader-isolation')
+[Console]::Error.WriteLine('Native reader: mount-loaded +0 ms')
+[Console]::Error.WriteLine('Native reader: process-failed kind=6 +42 ms')
+[Console]::Error.WriteLine('Native reader: secret-token +1 ms')
+[Console]::Error.WriteLine('Native reader: process-failed kind=9999999999 +1 ms')
 for ($i = 0; $i -lt 4000; $i++) { [Console]::Error.WriteLine('Native reader: csp-settle +12345 ms') }
+[Console]::Error.WriteLine('Native reader: process-failed-overflow +12346 ms')
 [Console]::Error.WriteLine('secret-token-do-not-retain')
 [Console]::Error.Write('Native smoke: ' + ('x' * 262144))
 [Console]::Error.WriteLine('secret-overlong-do-not-retain')
@@ -367,18 +416,53 @@ exit 0
         Require ($result.Diagnostics -cnotmatch 'secret|xxx' -and $result.Diagnostics -cmatch 'render-returned') 'Drain self-check retained unsafe data or lost its tail.'
         Require ($result.LastSmokePhase -ceq 'Native smoke: reader-isolation') 'Drain self-check lost its last smoke phase.'
         Require ($result.MilestonesMs.Count -eq 1 -and $result.MilestonesMs['first-page-ready'] -gt 0) 'Exact milestone collection failed.'
+        $lifecycle = $result.ReaderLifecycle
+        Require ($lifecycle.eventLimit -eq 64 -and $lifecycle.events.Count -eq 64 -and $lifecycle.overflow -and -not $lifecycle.complete) 'Reader lifecycle retention did not expose its fixed limit.'
+        Require ($lifecycle.lineTruncated -and $lifecycle.rejectedReaderLine -and $lifecycle.processFailureOverflow) 'Reader lifecycle did not retain truncation, rejection and source-overflow diagnostics.'
+        Require ($lifecycle.events[0].phase -ceq 'mount-loaded' -and $lifecycle.events[0].readerElapsedMs -eq 0 -and
+            $lifecycle.events[1].event -ceq 'processFailed' -and $lifecycle.events[1].kind -is [int] -and
+            $lifecycle.events[1].kind -eq 6 -and $lifecycle.events[1].readerElapsedMs -eq 42) 'Reader lifecycle lost its early phase or typed ProcessFailed event.'
+        Require (($lifecycle | ConvertTo-Json -Compress -Depth 5) -cnotmatch 'secret|9999999999|render-returned') 'Reader lifecycle retained non-allowlisted text.'
+        for ($i = 1; $i -lt $lifecycle.events.Count; $i++) {
+            Require ($lifecycle.events[$i].receiptElapsedMs -ge $lifecycle.events[$i - 1].receiptElapsedMs) 'Reader lifecycle receipt times are not monotonic.'
+        }
         $child.Dispose(); $child = $null
         $launch = [Diagnostics.Stopwatch]::GetTimestamp()
-        $child = Start-DrainCheck "[Console]::Error.WriteLine('Native milestone: first-page-ready'); [Console]::Error.Flush(); Start-Sleep -Milliseconds 200; [Console]::Error.WriteLine('Native milestone: first-page-ready'); [Console]::Error.WriteLine('Native milestone: html-ready')"
+        $child = Start-DrainCheck @'
+[Console]::Error.WriteLine('Native milestone: first-page-ready')
+[Console]::Error.WriteLine('Native reader: mount-loaded +0 ms')
+[Console]::Error.Flush()
+Start-Sleep -Milliseconds 200
+[Console]::Error.WriteLine('Native milestone: first-page-ready')
+[Console]::Error.WriteLine('Native milestone: html-ready')
+[Console]::Error.WriteLine('Native reader: unload-close +200 ms')
+for ($i = 0; $i -lt 40; $i++) { [Console]::Error.WriteLine('Native smoke: settings-start') }
+[Console]::Error.WriteLine('Native smoke: shutdown')
+'@
         $result = Wait-NativeUi $child 30000 $launch
         Require ($result.Completed -and $child.ExitCode -eq 0 -and $result.MilestonesMs.Count -eq 2 -and $result.MilestonesMs['html-ready'] - $result.MilestonesMs['first-page-ready'] -ge 100) 'Milestones did not preserve first receipt times.'
+        $lifecycle = $result.ReaderLifecycle
+        Require ($lifecycle.complete -and -not $lifecycle.overflow -and $lifecycle.events.Count -eq 2 -and
+            $lifecycle.events[0].phase -ceq 'mount-loaded' -and $lifecycle.events[1].phase -ceq 'unload-close' -and
+            $lifecycle.events[1].receiptElapsedMs - $lifecycle.events[0].receiptElapsedMs -ge 100) 'Early reader phases did not survive later smoke output with separate receipt times.'
+        Require ($result.Diagnostics -cnotmatch 'Native reader:' -and $result.LastSmokePhase -ceq 'Native smoke: shutdown') 'Reader lifecycle retention changed the bounded diagnostic tail.'
+        $child.Dispose(); $child = $null
+        $child = Start-DrainCheck "[Console]::Error.Write('Native reader: passed +8 ms'); [Console]::Error.Flush(); exit 7"
+        $result = Wait-NativeUi $child 30000
+        Require ($result.Completed -and $child.ExitCode -eq 7 -and $result.ReaderLifecycle.partialLine -and
+            -not $result.ReaderLifecycle.complete -and $result.ReaderLifecycle.events.Count -eq 1) 'Partial reader diagnostics concealed a child failure or claimed completeness.'
+        $child.Dispose(); $child = $null
+        $child = Start-DrainCheck 'Start-Sleep -Seconds 20'
+        $child.StandardError.Dispose() # Exercise the actual read-failure path without emitting app data.
+        $result = Wait-NativeUi $child 750
+        Require ($child.HasExited -and $result.ReaderLifecycle.readFailed -and -not $result.ReaderLifecycle.complete) 'Reader lifecycle claimed completeness after its stderr reader failed.'
         $child.Dispose(); $child = $null
         $child = Start-DrainCheck "[Console]::Error.WriteLine('Native smoke: mail-reader'); [Console]::Error.Flush(); Start-Sleep -Seconds 20"
         $clock = [Diagnostics.Stopwatch]::StartNew()
         $result = Wait-NativeUi $child 750
         Require (-not $result.Completed -and $child.HasExited -and $child.ExitCode -ne 0) 'Drain deadline self-check did not terminate its child.'
         Require ($clock.ElapsedMilliseconds -lt 8750 -and $result.Diagnostics.Length -le 1024) 'Drain deadline self-check exceeded its bounded allowance.'
-        Write-Host 'Native UI bounded stderr drain and owned-process timeout self-check passed.'
+        Write-Host 'Native UI bounded stderr drain, reader lifecycle retention and owned-process timeout self-check passed.'
     } finally {
         if ($child) {
             try { if (-not $child.HasExited) { $child.Kill(); [void] $child.WaitForExit(5000) } }
@@ -553,6 +637,24 @@ try {
                     Write-Warning 'Native resource report is missing or incomplete; no complete measurement is claimed. The UI acceptance result is unchanged.'
                 }
                 if (-not $observationComplete) { $observationFailures.Add($caseIndex) }
+                # Separate diagnostic evidence, never a process-exit proof or a
+                # replacement for the UI/collector acceptance checks below.
+                try {
+                    $readerReport = [ordered]@{
+                        schemaVersion = 1; run = $caseIndex; mode = $case.mode; uiPid = $process.Id
+                        candidate = $resourceIdentity; available = $null -ne $completion
+                        uiCompleted = [bool] ($completion -and $completion.Completed)
+                        lifecycle = $(if ($completion) { $completion.ReaderLifecycle } else { $null })
+                    }
+                    $evidence = Join-Path $root 'test-results'
+                    [void] (New-Item -ItemType Directory -Force $evidence)
+                    [IO.File]::WriteAllText((Join-Path $evidence "windows-native-reader-$caseIndex.json"),
+                        ($readerReport | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+                    Write-Host ('Native reader lifecycle: ' + ($readerReport | ConvertTo-Json -Compress -Depth 6))
+                    if (-not $readerReport.available -or -not $readerReport.lifecycle.complete) {
+                        Write-Warning 'Reader lifecycle diagnostics are incomplete; process-exit evidence and acceptance are unchanged.'
+                    }
+                } catch { Write-Warning 'Reader lifecycle diagnostics could not be retained; original acceptance checks remain unchanged.' }
             }
             $completed = $completion.Completed
             $diagnostics = $completion.Diagnostics

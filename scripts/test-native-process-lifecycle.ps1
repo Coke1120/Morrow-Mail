@@ -48,10 +48,10 @@ exit 9
         } finally { $Child.Dispose() }
     }
     function Read-LifecycleInventory([uint32[]] $Wanted) {
-        Check ($Wanted.Count -eq 3 -and @($Wanted | Select-Object -Unique).Count -eq 3) 'inventory-identities'
+        Check ($Wanted.Count -in @(2, 3) -and @($Wanted | Select-Object -Unique).Count -eq $Wanted.Count) 'inventory-identities'
         # CIM's operation timeout is not a wall bound. Isolate only inventory
         # acquisition; the main fixture keeps ownership of its waiting children.
-        # The worker launches no children and emits only three numeric rows.
+        # The worker launches no children and emits at most three numeric rows.
         $source = '$wanted = @(' + ($Wanted -join ',') + "); `$ErrorActionPreference = 'Stop'`n" + @'
 try {
     $filter = ($wanted | ForEach-Object { 'ProcessId = ' + $_ }) -join ' OR '
@@ -60,7 +60,7 @@ try {
             @{ ProcessId = [uint32] $_.ProcessId; ParentProcessId = [uint32] $_.ParentProcessId
                 creationUtcTicks = $_.CreationDate.ToUniversalTime().Ticks }
         })
-    if ($rows.Count -ne 3) { exit 2 }
+    if ($rows.Count -ne $wanted.Count) { exit 2 }
     $json = ConvertTo-Json -InputObject $rows -Compress -Depth 3
     if ($json.Length -gt 2048) { exit 2 }
     [Console]::Out.Write($json); [Console]::Out.Flush(); exit 0
@@ -77,7 +77,7 @@ try {
             Check ($drained.Wait([Math]::Max(0, 5000 - [int] $watch.ElapsedMilliseconds))) 'inventory-drain'
             Check ($worker.ExitCode -eq 0 -and $errors.GetAwaiter().GetResult().Length -eq 0) 'inventory-worker'
             $rows = @(ConvertFrom-Json -InputObject ($output.GetAwaiter().GetResult()) -AsHashtable)
-            Check ($rows.Count -eq 3) 'inventory-count'
+            Check ($rows.Count -eq $Wanted.Count) 'inventory-count'
             $seen = @{}; $result = @(
                 foreach ($row in $rows) {
                     Check (($row.Keys | Sort-Object) -join ',' -ceq 'creationUtcTicks,ParentProcessId,ProcessId') 'inventory-fields'
@@ -494,6 +494,14 @@ namespace MorrowObservationFixture {
                         $snapshot.failedRecords[0].errorKind -eq $expectedKind -and $snapshot.failedRecords[0].errorCode -eq $expectedCode -and
                         $null -eq $snapshot.failedRecords[0].exitCode -and -not $state.handles.ContainsKey([uint32] $childId) -and
                         @($snapshot.processes | Where-Object { $_.pid -eq $childId }).Count -eq 0) 'first-acquire-failure-no-retry-or-proof'
+                    $trace = $report.samples[-1].failedRecords[0].acquisition
+                    Check ($trace.version -eq 1 -and $trace.nativeError -eq $expectedCode -and
+                        $trace.openCompletedAtQpc -ge $trace.openStartedAtQpc) 'first-acquire-provenance-preserves-error'
+                    if ($case -like 'query-window-*') {
+                        Check ($trace.source -ceq 'initial-scan' -and $trace.scan -eq 1 -and
+                            $trace.windowStoppedAtQpc -ge $trace.openCompletedAtQpc -and
+                            $trace.cimReceivedAtQpc -ge $trace.openCompletedAtQpc) 'native-window-first-error-provenance'
+                    } else { Check ($trace.source -ceq 'cim-row' -and $trace.windowStartedAtQpc -eq 0) 'row-first-error-provenance' }
                 }
                 'lookup-parent-exit-during-proof' {
                     Check ($facts.released -and $facts.parentReleased -and $facts.exitProofs -eq 1 -and $ancestor.ExitCode -eq 0 -and
@@ -572,6 +580,77 @@ namespace MorrowObservationFixture {
             if ($window) { $window.Dispose() }
             foreach ($pin in $completedPins) { if ($pin.Handle) { $pin.Handle.Dispose() } }
             Close-LifecycleChild $child $childAlreadyDisposed; $child = $null
+        }
+        # The child is genuinely born AFTER the window's initial native scan.
+        # Prepare its bounded real-CIM inventory before starting the snapshot's
+        # unchanged one-second admission clock; process/CIM startup must not be
+        # disguised as a larger production timeout. These are same-pin lifetime
+        # controls, not reproductions of the historical unknown kernel exit.
+        foreach ($lateExit in @(0, 7)) {
+            $lateWindow = $null; $lateState = $null; $lateChild = $null; $lateDisposed = $false; $latePins = @()
+            try {
+                $beforeRows = @(Read-LifecycleInventory @([uint32] $self.Id, [uint32] $control.Id))
+                $lateState = New-NativeObservationState ([uint32] $self.Id) $self.StartTime.ToUniversalTime().Ticks
+                $before = Get-NativeProcessSnapshot ([uint32] $self.Id) $self.StartTime.ToUniversalTime().Ticks $beforeRows -State $lateState
+                Check ($before.skipped -eq 0 -and $null -eq $before.terminalReason -and $lateState.handles.Count -eq 2) 'late-born-retained-parent'
+                $lateWindow = Start-NativeInventoryWindow ([uint32] $self.Id) $lateState.handles
+                $lateChild = Start-LifecycleChild; $lateId = [uint32] $lateChild.Id; $lateTicks = $lateChild.StartTime.ToUniversalTime().Ticks
+                Check ($lateWindow.WaitForPinForFixture($lateId, 5000)) 'late-born-worker-first-pin'
+                $latePin = @($lateWindow.BorrowForFixture() | Where-Object { $_.Pid -eq $lateId })[0]
+                Check ($null -eq $latePin.NativeError -and $latePin.Provenance.Source -ceq 'worker-scan' -and
+                    $latePin.Provenance.Scan -ge 2 -and $latePin.Provenance.CimReceivedAtQpc -eq 0 -and
+                    [object]::ReferenceEquals($latePin, $lateWindow.AcquireForRow($lateId, [uint32] $self.Id))) 'late-born-original-worker-result'
+                $lateRows = @(Read-LifecycleInventory @([uint32] $self.Id, [uint32] $control.Id, $lateId))
+                $lateRow = @($lateRows | Where-Object { $_.ProcessId -eq $lateId })[0]
+                $live = [MorrowObservationIdentity.ExitProof]::ReadHandle($latePin.Handle, $lateId,
+                    $lateRow.CreationDate.ToUniversalTime().Ticks, $self.StartTime.ToUniversalTime().Ticks)
+                Check ($live.IdentityMatched -and $live.Outcome -ceq 'alive' -and $live.StartUtcTicks -eq $lateTicks) 'late-born-live-original-pin'
+                $lateChild.StandardInput.WriteLine($(if ($lateExit -eq 0) { 'exit0' } else { 'exit7' })); $lateChild.StandardInput.Flush()
+                Check ($lateChild.WaitForExit(5000) -and $lateChild.ExitCode -eq $lateExit) 'late-born-real-exit'
+                $lateChild.Dispose(); $lateDisposed = $true
+                $latePins = @($lateWindow.BorrowForFixture())
+                $preparedWindow = $lateWindow
+                $preparedFactory = { param($Owner, $Cache); return $preparedWindow }.GetNewClosure()
+                $sampleAt = [Diagnostics.Stopwatch]::GetTimestamp()
+                $lateSnapshot = Get-NativeProcessSnapshot ([uint32] $self.Id) $self.StartTime.ToUniversalTime().Ticks $lateRows -State $lateState -InventoryWindowFactory $preparedFactory
+                $queryMs = ([Diagnostics.Stopwatch]::GetTimestamp() - $sampleAt) * 1000.0 / [Diagnostics.Stopwatch]::Frequency
+                Check ($lateSnapshot.hasSnapshot -and $null -eq $lateSnapshot.terminalReason -and $lateWindow.WorkerStopped -and
+                    @($latePins | Where-Object { $_.Handle -and -not $_.Handle.IsClosed }).Count -eq 0 -and
+                    -not $lateState.handles.ContainsKey($lateId)) 'late-born-integrated-disposal'
+                Check ($latePin.Provenance.CimReceivedAtQpc -gt $latePin.Provenance.OpenCompletedAtQpc -and
+                    $latePin.Provenance.WindowStoppedAtQpc -ge $latePin.Provenance.CimReceivedAtQpc) 'late-born-delayed-row-same-pin'
+                $lateSample = @{ kind = 0; nativeProofVersion = 1L; elapsedMs = 0.0; queryMs = $queryMs
+                    skipped = $lateSnapshot.skipped; rootSkipped = $lateSnapshot.rootSkipped; rootExitedDuringSample = $lateSnapshot.rootExitedDuringSample
+                    skipReasonCounts = $lateSnapshot.skipReasonCounts; processes = $lateSnapshot.processes
+                    lifecycleEvents = $lateSnapshot.lifecycleEvents; failedRecords = $lateSnapshot.failedRecords }
+                $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+                try {
+                    Check (Write-NativeSample $stream $lateSample) 'late-born-bounded-record'
+                    Check (Write-NativeSample $stream @{ kind = 1; reason = 0; samples = 1; failureStage = 'none' }) 'late-born-footer'
+                } finally { $stream.Dispose() }
+                $report = Read-NativeResourceReport $path @{ forced = $false; reaped = $true; exitCode = 0 } @{}
+                Check (-not $report.invalidRecords -and $report.samples.Count -eq 1) 'late-born-integrated-schema'
+                if ($lateExit -eq 0) {
+                    $event = @($report.samples[0].lifecycleEvents | Where-Object { $_.pid -eq $lateId })
+                    Check (-not $report.incomplete -and $event.Count -eq 1 -and $event[0].nativeProof.final.startUtcTicks -eq $lateTicks -and
+                        $event[0].nativeProof.final.exitCode -eq 0 -and $event[0].nativeProof.final.signaled) 'late-born-exact-zero-only'
+                } else {
+                    $failed = @($report.samples[0].failedRecords | Where-Object { $_.pid -eq $lateId })
+                    Check ($report.incomplete -and $failed.Count -eq 1 -and $failed[0].reason -ceq 'processExited' -and
+                        $failed[0].exitCode -eq 7 -and $report.normalExitObservations -eq 0) 'late-born-nonzero-remains-failure'
+                }
+                Write-Host ('Native late-born integration: ' + (@{ case = $(if ($lateExit -eq 0) { 'zero' } else { 'nonzero' })
+                    native = $true; historicalRaceReproduced = $false; projected = $false; originalPin = $true; creatorDisposed = $lateDisposed
+                    workerStopped = $lateWindow.WorkerStopped; pinsClosed = $true; incomplete = $report.incomplete
+                    acquisition = (ConvertTo-NativeAcquisition $latePin.Provenance) } | ConvertTo-Json -Compress -Depth 4))
+                [IO.File]::Delete($path)
+            } finally {
+                if ($lateWindow) { $lateWindow.Dispose() }
+                foreach ($pin in $latePins) { if ($pin.Handle) { $pin.Handle.Dispose() } }
+                if ($lateState) { Close-NativeObservationState $lateState }
+                Close-LifecycleChild $lateChild $lateDisposed
+                if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) }
+            }
         }
         Test-NativePinnedExitWait $control $self
     } finally {
