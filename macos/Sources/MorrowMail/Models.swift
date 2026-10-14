@@ -62,6 +62,34 @@ struct APIError: LocalizedError {
     init(payload: JSON) { self.payload = payload }
 }
 
+// Confirmation must display the complete, server-bound send payload. A legacy
+// excerpt is readable chat content, but cannot authorize delivery.
+func inboxAgentSendReviewText(_ preview: JSON, owner: String) throws -> String {
+    let fields = ["fromName", "fromEmail", "to", "cc", "bcc", "subject", "body"]
+    guard preview["complete"] == .bool(true), preview["bodyTruncated"] == .bool(false),
+          preview["fromEmail"].string == owner, !owner.isEmpty,
+          fields.allSatisfy({ if case .string = preview[$0] { return true }; return false }),
+          case .array(let attachments) = preview["attachments"],
+          case .string(let footerText) = preview["footer"]["text"],
+          case .string(let footerHTML) = preview["footer"]["html"] else {
+        throw APIError("This send review is incomplete. Dismiss it and ask for a new review before sending.")
+    }
+    var attachmentLines: [String] = []
+    for attachment in attachments {
+        guard attachment["id"].nonempty, attachment["name"].nonempty,
+              case .number(let size) = attachment["size"], size.isFinite, size >= 0,
+              size <= 50 * 1024 * 1024, size.rounded() == size,
+              case .string(let type) = attachment["contentType"] else {
+            throw APIError("The attachment list is incomplete. Ask for a new send review.")
+        }
+        attachmentLines.append("\(attachment["name"].string) (\(Int(size)) bytes; \(type))\nAttachment ID: \(attachment["id"].string)")
+    }
+    let attachmentText = attachmentLines.isEmpty ? "None" : attachmentLines.joined(separator: "\n")
+    // Literal HTML exposes footer link destinations without loading resources or
+    // making links interactive inside a send authorization dialog.
+    return "Mailbox: \(owner)\nFrom: \(preview["fromName"].string) <\(preview["fromEmail"].string)>\nTo: \(preview["to"].string)\nCc: \(preview["cc"].string)\nBcc: \(preview["bcc"].string)\nSubject: \(preview["subject"].string)\n\nMessage\n\(preview["body"].string)\n\nAttachments (\(attachments.count))\n\(attachmentText)\n\nEmail footer\n\(footerText.isEmpty ? "None" : footerText)\n\nFooter HTML (including link destinations)\n\(footerHTML.isEmpty ? "None" : footerHTML)"
+}
+
 struct Draft: Identifiable, Equatable {
     var id = UUID().uuidString
     var accountID = ""

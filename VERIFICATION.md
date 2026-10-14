@@ -98,6 +98,16 @@ Manual VoiceOver/Narrator, keyboard/focus, clean-machine, installed-app, and
 real-device UI checks remain incomplete. Live-account, model, and provider
 acceptance is not claimed. See [release notes](docs/releases/v0.7.8.md).
 
+## Local Inbox Agent — current source
+
+The in-app Inbox Agent stores conversations per mailbox in the local workspace and calls only the configured OpenAI-compatible model. Fixture tests cover persistence, account isolation, confirm-before-send, a refused direct-send tool, cancellation of an in-flight draft, and the absence of cloud-agent endpoints in `rust/src/inbox_agent.rs`. These checks do not establish live-account or live-model acceptance, and they are not part of the v0.7.8 release claim above. macOS and Windows chat surfaces follow the existing AI Studio More page; this Linux note does not claim a native UI run.
+
+The 14 October follow-up passed Rust formatting, strict all-target Clippy and the full locked suite on Linux: **381 passed, zero failed, four existing ignored tests**. This includes 31 Inbox Agent integration tests and four deterministic database-queue tests for cancellation, deadline expiry, deletion and active confirmation. Fixtures verify revoked/changed model context, aggregate source limits, private staged drafts, shared writing permissions, Reply-To freshness, action revalidation, complete payload review and server rejection of legacy incomplete previews. Models bind loopback only; delivery tests use local Demo simulation. These results apply to this PR branch; the combined writing-rule integration and native SDK jobs are separate verification steps.
+
+Native send confirmation requires a complete, account-bound preview and displays the entire body, From/To/Cc/Bcc, attachment names/IDs/sizes/types and the effective footer. Footer HTML is displayed as noninteractive text so link destinations remain reviewable without loading resources. Legacy truncated or incomplete previews cannot enable Send. Both clients read the saved conversation after an interrupted turn or confirmation, poll a running/recovering conversation, and keep Stop available while a model turn is busy; no mutation is automatically replayed. Account, conversation and operation-generation checks discard stale completions.
+
+`python3 -B scripts/test-agent-stop-lifetime.py` passes on Linux with C++20 AddressSanitizer. It extracts the actual Windows Stop, mutation and recovery-poll coroutine bodies into an isolated fake-request fixture and checks suspended-frame ownership, Stop while busy, duplicate cancellation, captured mailbox/conversation, stale results, interrupted POST → GET recovery and later read-only polling. It does not execute WinUI or the native HTTP client. The macOS model checks and Windows native interaction smoke include the production send-preview formatter with a body over 64,000 characters, duplicate-name attachments, Bcc and footer link destinations, plus incomplete/foreign-preview rejection. Those added platform checks still require the macOS/Windows SDK jobs; this Linux session cannot claim native compilation or UI acceptance.
+
 ## v0.7.7 published — exact tagged attempt and public bytes
 
 [v0.7.7](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.7.7) published

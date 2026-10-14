@@ -111,6 +111,7 @@ struct StudioView: View {
                 Spacer()
                 Menu("More") {
                     Button("Writing Style & Notes") { navigate("brain") }
+                    Button("Inbox Agent") { navigate("agent") }
                     Button("Local Inbox Rules") { navigate("rules") }
                     Button("Reusable Skills") { navigate("skills") }
                     Button("Mail Categories") { navigate("categories") }
@@ -126,6 +127,7 @@ struct StudioView: View {
             }
             if !model.policy["enabled"].bool { Label("AI is paused in your saved permissions. Manual mail and calendars still work.", systemImage: "pause.circle").foregroundStyle(.secondary) }
             switch tab {
+            case "agent": InboxAgentView(review: review, mailbox: scope)
             case "brain": brainPage
             case "rules": LocalRulesView()
             case "categories": categoriesPage

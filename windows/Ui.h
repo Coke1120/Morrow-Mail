@@ -90,6 +90,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     Json mailDrag;
     Json updateResult;
     winrt::hstring owner, folder = L"inbox", section = L"mail", nextCursor, mailRevision, mailSearchQuery;
+    winrt::hstring agentConversation;
     winrt::hstring todaySummaryOwner;
     winrt::hstring mailLayout = L"right";
     winrt::hstring mailDragToken, mailDragOwner;
@@ -167,6 +168,7 @@ winrt::Windows::Foundation::IAsyncAction reviewPage(std::shared_ptr<Shell> shell
 winrt::Windows::Foundation::IAsyncAction reviewWorkspaceChecks(std::shared_ptr<Shell> shell);
 winrt::Windows::Foundation::IAsyncAction summarizeNow(std::shared_ptr<Shell> shell, winrt::hstring mailbox);
 winrt::Windows::Foundation::IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, winrt::hstring kind);
+void inboxAgentReviewChecks();
 winrt::Windows::Foundation::IAsyncAction outOfOfficePage(std::shared_ptr<Shell> shell);
 winrt::Windows::Foundation::IAsyncAction calendarPage(std::shared_ptr<Shell> shell);
 winrt::Windows::Foundation::IAsyncOperation<Json> uploadAttachment(std::shared_ptr<Shell> shell, winrt::hstring owner);
