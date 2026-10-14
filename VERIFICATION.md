@@ -1,5 +1,46 @@
 # Verification — 14 October 2026
 
+## v0.8.1 release preparation — 14 October 2026
+
+The owner approved merging PR #47 after complete CI and publishing v0.8.1 through
+the existing paired workflow. PR #47 was normally merged at
+`196e747ce4d66d3862f4fa493ea42110719ef598` on 14 October at 19:23:07 UTC.
+Its full tree `4c353b5e373178bac7a5bdefaf489c5e2d0cef8b` exactly matches
+the reviewed head `fd43612d60b295f0363e505bc96ce2d588d528c7` and tested
+synthetic merge `5451803c247718e34ffa0ba8243cd5aa9ef28392`.
+This release changes only the common `package.json` version and documentation.
+The frozen Today retention/history/priority follow-up remains excluded.
+
+[PR #47 run 38616699702](https://github.com/Coke1120/Morrow-Mail/actions/runs/38616699702),
+attempt 1, completed successfully at 19:22:25 UTC. macOS job 116033689038
+passed 410 Rust tests and all 40 reader samples with complete capture, zero
+network activity, parent exit zero and no errors. Windows job 116033688475
+passed 406 Rust tests, complete fresh/owned/restart observations (4/44/34 samples),
+complete owned/restart 22-event reader timelines, PowerShell 5.1 relocated-package
+acceptance and the fictional-mail benchmark. Both platforms ran all 16 Gmail
+regressions with zero failures and four existing ignored benchmarks. Windows
+had no skipped processes, sample gaps, missing milestones or acquisition failures;
+collectors exited zero, were reaped and were not forced. These successful samples
+do not resolve the preserved intermittent Windows or macOS reader failures.
+
+The separate [main push run 38623219540](https://github.com/Coke1120/Morrow-Mail/actions/runs/38623219540)
+was in progress when this release was prepared. Its outcome is not assumed.
+The metadata commit uses the existing `[release-on-tag]` convention; the fresh
+v0.8.1 tag must run both complete native jobs before the same-run, same-attempt
+publisher can sign and publish either download. No test waiver, workflow, builder,
+publisher, updater or pinned-key change is included. Tagged CI, publication and
+verification of all six public assets remain separate operational checkpoints.
+
+v0.8.0 was published at 18:58:14 UTC, release ID 413074650, from
+`0d039aeeeec9db0047a8a57a64a0c5cab2d5e912`. Its tagged run 38613871205
+completed successfully at 18:58:19 UTC, including publisher job 116041682601.
+It was not cancelled and contains the history authorization regression corrected
+here. Its terminal workflow cannot publish later over v0.8.1; all older tags and
+assets remain unchanged. Publication metadata is not independent downloaded-byte
+verification. The failed, unpublished v0.7.9 candidate and its evidence below
+remain preserved. [Release notes](docs/releases/v0.8.1.md) retain Today,
+signing, manual/live-account and unresolved native-observation limits.
+
 ## Gmail history authorization correction — 14 October 2026
 
 [Review 4274561882](https://github.com/Coke1120/Morrow-Mail/pull/46#discussion_r4274561882)
@@ -37,8 +78,8 @@ The full suite completed **410 tests, zero failed, four existing ignored
 benchmarks**, across 45 result groups. Its log SHA-256 is
 `9b6c49d9433cfd49f5932259b708573d494d43c0923c5bd1e08e67aca208f982`.
 Independent source/test/documentation review found no remaining correction blocker.
-Fresh macOS/Windows native CI is still pending; the earlier PR #46 native runs
-do not validate this changed source. All provider tests used isolated fictional
+Fresh PR #47 macOS/Windows native CI passed as recorded above; the earlier
+PR #46 native runs do not validate this changed source. All provider tests used isolated fictional
 loopback TLS fixtures; no live mailbox, outgoing message or external model was used.
 
 At the recorded 18:25 UTC checkpoint, tag `v0.8.0` already pointed to

@@ -1,6 +1,6 @@
 # Morrow Mail feature coverage
 
-**Current source — Gmail authorization recovery:** sync, folder-catalog and
+**0.8.1 source — Gmail authorization recovery:** sync, folder-catalog and
 raw-message reads may refresh a rejected access token and retry once. History
 downloads retain routine token-expiry refresh before a request; their first
 resource-API 401 preserves the checkpoint and cached mail and ends the import
@@ -15,9 +15,14 @@ the same verified mailbox, provider, client credentials and scope set; incompati
 old connection. Other accounts and cached mail remain intact. Google grant
 revocation and External/Testing expiry still require attention. See
 [the correction and validation status](VERIFICATION.md#gmail-history-authorization-correction--14-october-2026).
-This correction is not in the preserved v0.8.0 tag. Earlier PR #46 tests incorrectly
-expected history-download 401 recovery; their passing native runs do not validate
-this policy. Synthetic coverage does not establish live-account acceptance.
+PR #47 passed both complete native jobs: macOS 410 and Windows 406 Rust tests,
+including all 16 Gmail regressions, with zero failures and four existing ignored
+benchmarks on each platform. The actual main merge has the same tested tree.
+This correction is not in the published, preserved v0.8.0 tag. Earlier PR #46
+tests incorrectly expected history-download 401 recovery; their passing runs do
+not validate this policy. Fresh paired v0.8.1 tagged checks and the existing
+publisher remain mandatory. See [release notes](docs/releases/v0.8.1.md).
+Synthetic coverage does not establish live-account acceptance.
 
 **0.8.0 — writing rules, Today, skill reviews and Inbox Agent:** the combined
 PR #42–46 source passed the exact-head native checks and matches the main merge.
@@ -27,8 +32,9 @@ Windows retains bounded diagnostic evidence. Today still retains only 200
 completion markers and shows the latest 20 per mailbox; eviction can restore a
 suggestion, older retained completions cannot be reopened in the current view,
 and unread suggestions do not inherit category priority for final ordering.
-The separate Today follow-up is excluded. Fresh paired tagged checks and the
-existing publisher govern publication. The intervening v0.7.9 tag failed its
+The separate Today follow-up is excluded. v0.8.0 was published after its paired
+tagged checks, but includes the history authorization regression corrected in
+0.8.1 source above. The intervening v0.7.9 tag failed its
 Windows reader initialization gate and was not published; it remains preserved.
 See [release notes and limits](docs/releases/v0.8.0.md) and
 [validation](VERIFICATION.md#v080-release-preparation--14-october-2026).
