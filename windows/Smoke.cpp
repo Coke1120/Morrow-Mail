@@ -20,6 +20,92 @@ using namespace Windows::Data::Json;
 IAsyncAction nativeInteractionChecks(std::shared_ptr<Shell> shell);
 IAsyncAction settingsNavigationChecks(std::shared_ptr<Shell> shell);
 IAsyncAction composerReturnChecks(std::shared_ptr<Shell> shell);
+IAsyncAction writingRuleEditingChecks(std::shared_ptr<Shell> shell) {
+    auto check = [](bool condition, wchar_t const* message) { if (!condition) throw hresult_error(E_FAIL, message); };
+    auto previousScope = shell->review->scope;
+    hstring owner = L"one@fixture.invalid";
+    std::vector<hstring> ids;
+    for (auto value : {L"Fixture original rule A", L"Fixture original rule B"}) {
+        Json input; put(input, L"text", value);
+        auto result = co_await shell->service->request(L"/workspace/brain/writing-rules", owner, L"POST", input);
+        for (auto const& item : array(object(object(result, L"workspace"), L"brain"), L"writingRules")) {
+            auto rule = item.GetObject(); if (text(rule, L"text") == value) ids.push_back(text(rule, L"id"));
+        }
+    }
+    check(ids.size() == 2, L"Writing-rule fixture setup failed.");
+    shell->review->scope = owner; co_await shell->navigate(L"brain"); shell->root.UpdateLayout();
+    auto mountedPage = shell->page.Content(); auto generation = shell->generation;
+    std::function<xaml::FrameworkElement(xaml::DependencyObject, hstring const&)> find;
+    find = [&find](xaml::DependencyObject node, hstring const& id) -> xaml::FrameworkElement {
+        if (auto control = node.try_as<xaml::FrameworkElement>(); control && xaml::Automation::AutomationProperties::GetAutomationId(control) == id) return control;
+        for (int i = 0; i < xaml::Media::VisualTreeHelper::GetChildrenCount(node); ++i) {
+            if (auto found = find(xaml::Media::VisualTreeHelper::GetChild(node, i), id)) return found;
+        }
+        return nullptr;
+    };
+    auto control = [&](hstring const& id) { shell->root.UpdateLayout(); auto found = find(shell->root, id); check(bool(found), L"Writing-rule native control is missing."); return found; };
+    auto field = [&](hstring const& id) { return control(L"writing-rule.text." + id).as<controls::TextBox>(); };
+    auto invoke = [&](hstring const& id) {
+        auto peer = xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(control(id));
+        auto action = peer.GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).as<xaml::Automation::Provider::IInvokeProvider>();
+        action.Invoke();
+    };
+    // These coroutine lambdas remain local variables until all invocations finish.
+    auto wait = [](std::function<bool()> ready) -> IAsyncAction {
+        apartment_context ui; auto deadline = GetTickCount64() + 5000;
+        while (!ready() && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+        if (!ready()) throw hresult_error(E_FAIL, L"Writing-rule native operation did not finish.");
+    };
+    auto edit = [&wait](controls::TextBox box, hstring value) -> IAsyncAction {
+        auto changed = std::make_shared<bool>(false);
+        auto event = box.TextChanged(auto_revoke, [changed](auto const&, auto const&) { *changed = true; });
+        box.Text(value); co_await wait([changed] { return *changed; });
+    };
+    co_await edit(field(ids[0]), L"Fixture unsaved A");
+    co_await edit(field(ids[1]), L"Fixture saved B");
+    auto newRule = control(L"writing-rule.new").as<controls::TextBox>();
+    co_await edit(newRule, L"Fixture new rule buffer");
+    check(!shell->dirty.empty(), L"Rule buffers did not join navigation and quit guards.");
+    auto retained = [&] {
+        check(shell->page.Content() == mountedPage && shell->generation == generation, L"Rule mutation rebuilt the entire page.");
+        check(field(ids[0]).Text() == L"Fixture unsaved A" && newRule.Text() == L"Fixture new rule buffer" && !shell->dirty.empty(), L"Unrelated rule/new-rule buffers or dirty guards were lost.");
+    };
+    auto oldB = field(ids[1]);
+    auto enabled = control(L"writing-rule.enabled." + ids[1]).as<controls::CheckBox>();
+    auto peer = xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(enabled);
+    peer.GetPattern(xaml::Automation::Peers::PatternInterface::Toggle).as<xaml::Automation::Provider::IToggleProvider>().Toggle();
+    co_await wait([&] { return field(ids[1]) != oldB; }); retained();
+    check(field(ids[1]).Text() == L"Fixture saved B", L"Toggling a rule discarded its own unsaved text.");
+    oldB = field(ids[1]); invoke(L"writing-rule.save." + ids[1]);
+    co_await wait([&] { return field(ids[1]) != oldB; }); retained();
+    auto state = co_await shell->service->request(L"/state", owner);
+    for (auto const& item : array(object(object(state, L"workspace"), L"brain"), L"writingRules")) {
+        auto rule = item.GetObject();
+        if (text(rule, L"id") == ids[0]) check(text(rule, L"text") == L"Fixture original rule A", L"An unrelated save persisted unsaved rule A.");
+        if (text(rule, L"id") == ids[1]) check(text(rule, L"text") == L"Fixture saved B" && !flag(rule, L"enabled"), L"The intended rule update was not persisted.");
+    }
+    co_await edit(field(ids[1]), L"Fixture original rule A"); // Duplicate text must fail without clearing either buffer.
+    invoke(L"writing-rule.save." + ids[1]);
+    co_await wait([&] { return std::wstring_view(control(L"intelligence.notice").as<controls::TextBlock>().Text()).find(L"already saved") != std::wstring_view::npos; });
+    retained(); check(field(ids[1]).Text() == L"Fixture original rule A", L"A failed save cleared its rule input.");
+    invoke(L"writing-rule.discard." + ids[1]);
+    co_await wait([&] { return field(ids[1]).Text() == L"Fixture saved B"; }); retained();
+    oldB = field(ids[1]); invoke(L"writing-rule.add");
+    co_await wait([&] { return field(ids[1]) != oldB; });
+    check(newRule.Text().empty() && field(ids[0]).Text() == L"Fixture unsaved A" && !shell->dirty.empty(), L"Adding a rule cleared another editor or left the new input dirty.");
+    invoke(L"writing-rule.discard." + ids[0]); co_await wait([&] { return shell->dirty.empty(); });
+    co_await edit(newRule, L"New input alone is dirty");
+    check(!shell->dirty.empty(), L"New-rule-only edits do not guard navigation and quit.");
+    invoke(L"writing-rule.discard-new"); co_await wait([&] { return shell->dirty.empty(); });
+    // Clean only the rules created inside this marked temporary native fixture.
+    state = co_await shell->service->request(L"/state", owner);
+    for (auto const& item : array(object(object(state, L"workspace"), L"brain"), L"writingRules")) {
+        auto rule = item.GetObject(); auto id = text(rule, L"id");
+        if (id == ids[0] || id == ids[1] || text(rule, L"text") == L"Fixture new rule buffer")
+            co_await shell->service->request(L"/workspace/brain/writing-rules/" + escaped(id), owner, L"DELETE", Json());
+    }
+    shell->review->scope = previousScope;
+}
 IAsyncAction captureMailList(std::shared_ptr<Shell> shell, hstring name) {
     xaml::Media::Imaging::RenderTargetBitmap bitmap;
     co_await bitmap.RenderAsync(shell->root);
@@ -974,6 +1060,8 @@ IAsyncAction Shell::smoke() {
             auto savedState=service->clientState(); auto pendingCalendar=text(savedState,L"morrow.pendingCalendar");
             service->saveClientState(L"morrow.account.collapsed.one@fixture.invalid",L"true");
             check(text(service->clientState(),L"morrow.pendingCalendar")==pendingCalendar,L"Desktop state changed a frozen calendar retry.");
+            co_await navigate(L"mail",L"one@fixture.invalid");
+            enter("writing-rule-edit-retention"); co_await writingRuleEditingChecks(lifetime);
             co_await navigate(L"mail",L"one@fixture.invalid");
             for (auto const* target : {L"today", L"activity", L"scheduled", L"calendar", L"out-of-office", L"studio", L"learning", L"brain", L"reply-suggestions", L"skills", L"summaries", L"records"}) {
                 enter("workspace-" + to_string(target));

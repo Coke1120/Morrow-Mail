@@ -28,9 +28,7 @@ struct StudioView: View {
     @State private var voice = ""
     @State private var notes = ""
     @State private var guardrails = ""
-    @State private var ruleText = ""
-    @State private var editingRuleID = ""
-    @State private var editingRuleText = ""
+    @State private var writingRuleEdits = WritingRuleEdits()
     @State private var savedGuardrails = ""
     @State private var savedVoice = ""
     @State private var savedNotes = ""
@@ -82,7 +80,8 @@ struct StudioView: View {
     var chosen: JSON { contextChoices.first { $0.viewID == messageID } ?? .null }
     var savedMemoryOptions: JSON { workspace["brainLearning"].picking(["enabled", "tokenBudget"]) }
     var memoryOptionsDirty: Bool { !memoryOptions.isNull && memoryOptions != savedMemoryOptions }
-    var brainDirty: Bool { voice != savedVoice || notes != savedNotes || guardrails != savedGuardrails || memoryOptionsDirty || learningDirty }
+    var notesDirty: Bool { voice != savedVoice || notes != savedNotes || guardrails != savedGuardrails || memoryOptionsDirty }
+    var brainDirty: Bool { notesDirty || learningDirty || writingRuleEdits.hasEdits }
     var visibleMemoryPreview: JSON { memoryPreview.isNull ? workspace["brainLearning"]["preview"] : memoryPreview }
     var blocked: Bool {
         !model.allowed(action) || (feature["context"].string == "selected" && chosen.isNull) ||
@@ -99,7 +98,7 @@ struct StudioView: View {
                 Button("AI & Privacy") { model.settings("permissions") }
             }
             ReviewAccountTabs(review: review, canPick: { owner in
-                owner == review.scope || !brainDirty || model.confirmDiscard("Discard unsaved writing style and notes changes?")
+                owner == review.scope || !brainDirty || model.confirmDiscard("Discard unsaved writing style, rules and notes changes?")
             })
             HStack {
                 Button("Assistant") { navigate("tools") }.disabled(tab == "tools")
@@ -143,7 +142,7 @@ struct StudioView: View {
         .onChange(of: action) { _ in clearResult() }
         .onChange(of: messageID) { _ in clearResult() }
         .onChange(of: model.mailPage) { _ in if usesReadingList && contextSearch.isNull && !permitted.contains(where: { $0.viewID == messageID }) { messageID = permitted.first?.viewID ?? "" } }
-        .onChange(of: review.scope) { _ in skillEditor = nil; clearResult(); clearContextSearch(); memoryPreview = .null; selectedMemories = []; learningDirty = false; ruleText = ""; editingRuleID = ""; editingRuleText = ""; model.dirty("brain", false); loadBrain() }
+        .onChange(of: review.scope) { _ in skillEditor = nil; clearResult(); clearContextSearch(); memoryPreview = .null; selectedMemories = []; learningDirty = false; writingRuleEdits = WritingRuleEdits(); loadBrain(); model.dirty("brain", brainDirty) }
         .onChange(of: model.account) { _ in clearContextSearch() }
         .onChange(of: skillID) { _ in clearResult() }
         .onChange(of: prompt) { _ in clearResult() }
@@ -155,6 +154,7 @@ struct StudioView: View {
         .onChange(of: guardrails) { _ in model.dirty("brain", brainDirty) }
         .onChange(of: memoryOptions) { _ in model.dirty("brain", brainDirty) }
         .onChange(of: learningDirty) { _ in model.dirty("brain", brainDirty) }
+        .onChange(of: writingRuleEdits) { _ in model.dirty("brain", brainDirty) }
         .onDisappear { contextOperation?.cancel(); contextTicket = UUID(); contextSearching = false; model.dirty("brain", false) }
         .sheet(item: $skillEditor) { skill in SkillEditor(initial: skill.value, mailbox: scope, onSaved: { store($0, owner: scope) }).environmentObject(model) }
     }
@@ -325,7 +325,7 @@ struct StudioView: View {
                             savedVoice = voice; savedNotes = notes; savedGuardrails = guardrails; memoryPreview = .null; model.dirty("brain", brainDirty); model.notice = "Notes saved."
                         }
                     }.buttonStyle(.borderedProminent).disabled(operationBusy) }
-                    Button("Discard Changes") { loadBrain(); model.dirty("brain", false) }.disabled(!brainDirty)
+                    Button("Discard Notes Changes") { loadBrain(); model.dirty("brain", brainDirty) }.disabled(!notesDirty)
                     Button("Clear Notes & Memories") {
                         guard model.confirm("Clear saved notes and memories?", detail: "Removes saved voice, notes, memories and contacts for this mailbox. How-you-write rules, confirmed identity and the approved Sent style remain saved.") else { return }
                         let owner = scope
@@ -333,7 +333,7 @@ struct StudioView: View {
                         model.perform {
                             let next = try await model.request("/workspace/brain", method: "DELETE", body: .object([:]), mailbox: owner)
                             guard review.scope == owner else { return }
-                            store(next, owner: owner); loadBrain(); model.dirty("brain", false)
+                            store(next, owner: owner); loadBrain(); model.dirty("brain", brainDirty)
                         }
                     }.disabled(operationBusy)
                 }
@@ -429,8 +429,10 @@ struct StudioView: View {
         }
     }
     func navigate(_ destination: String) {
-        guard destination != tab, !brainDirty || model.confirmDiscard("Discard unsaved writing style and notes changes?") else { return }
+        guard destination != tab, !brainDirty || model.confirmDiscard("Discard unsaved writing style, rules and notes changes?") else { return }
+        writingRuleEdits = WritingRuleEdits()
         loadBrain()
+        model.dirty("brain", brainDirty)
         model.studioTab = destination
         if destination == "simulations" { action = model.features.first { $0["mock"].bool }?.id ?? "memory" }
         if destination == "tools" && feature["mock"].bool { action = "ask" }
@@ -599,13 +601,17 @@ struct StudioView: View {
                 if scopeAll || !scopeStateReady {
                     Text("Choose a mailbox to edit its writing rules.").foregroundStyle(.secondary)
                 } else {
-                    TextArea(title: "New writing rule", text: $ruleText, height: 70)
-                    if ruleText.utf16.count > 500 { Text("Use at most 500 characters.").font(.caption).foregroundStyle(.orange) }
-                    Button("Add Rule") {
-                        let text = ruleText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !text.isEmpty, text.utf16.count <= 500 else { return }
-                        changeWritingRule("POST", "/workspace/brain/writing-rules", .object(["text": .string(text), "enabled": .bool(true), "source": .string("user")]), resetDraft: true)
-                    }.buttonStyle(.borderedProminent).disabled(ruleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || ruleText.utf16.count > 500)
+                    TextArea(title: "New writing rule", text: $writingRuleEdits.newText, height: 70)
+                    if writingRuleEdits.newText.utf16.count > 500 { Text("Use at most 500 characters.").font(.caption).foregroundStyle(.orange) }
+                    HStack {
+                        Button("Add Rule") {
+                            let submitted = writingRuleEdits.newText
+                            let text = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !text.isEmpty, text.utf16.count <= 500 else { return }
+                            changeWritingRule("POST", "/workspace/brain/writing-rules", .object(["text": .string(text), "enabled": .bool(true), "source": .string("user")]), addedText: submitted)
+                        }.buttonStyle(.borderedProminent).disabled(writingRuleEdits.newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || writingRuleEdits.newText.utf16.count > 500)
+                        Button("Discard New Rule") { writingRuleEdits.newText = "" }.disabled(writingRuleEdits.newText.isEmpty)
+                    }
                     if workspace["brain"]["writingRules"].array.isEmpty {
                         Text("No writing rules yet. The approved Sent style stays separate.").foregroundStyle(.secondary)
                     }
@@ -616,15 +622,16 @@ struct StudioView: View {
                                 Spacer()
                                 Text(dateLabel(rule["updatedAt"].string)).font(.caption).foregroundStyle(.secondary)
                             }
-                            if editingRuleID == rule.id && rule["source"].string != "learned" {
-                                TextArea(title: "Edit writing rule", text: $editingRuleText, height: 70)
+                            if let edit = writingRuleEdits.rows[rule.id], rule["source"].string != "learned" {
+                                TextArea(title: "Edit writing rule", text: Binding(get: { writingRuleEdits.rows[rule.id]?.text ?? rule["text"].string }, set: { writingRuleEdits.setText($0, for: rule.id) }), height: 70)
                                 HStack {
                                     Button("Save Rule") {
-                                        let text = editingRuleText.trimmingCharacters(in: .whitespacesAndNewlines)
+                                        let submitted = writingRuleEdits.rows[rule.id]?.text ?? edit.text
+                                        let text = submitted.trimmingCharacters(in: .whitespacesAndNewlines)
                                         guard !text.isEmpty, text.utf16.count <= 500 else { return }
-                                        changeWritingRule("POST", "/workspace/brain/writing-rules/" + encodedPath(rule.id), .object(["text": .string(text)]))
-                                    }.disabled(editingRuleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || editingRuleText.utf16.count > 500)
-                                    Button("Cancel") { editingRuleID = ""; editingRuleText = "" }
+                                        changeWritingRule("POST", "/workspace/brain/writing-rules/" + encodedPath(rule.id), .object(["text": .string(text)]), savedRule: (rule.id, submitted))
+                                    }.disabled(edit.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || edit.text.utf16.count > 500)
+                                    Button("Cancel") { writingRuleEdits.cancel(rule.id) }
                                 }
                             } else {
                                 Text(rule["text"].string).textSelection(.enabled)
@@ -637,12 +644,12 @@ struct StudioView: View {
                                     guard enabled != rule["enabled"].bool else { return }
                                     changeWritingRule("POST", "/workspace/brain/writing-rules/" + encodedPath(rule.id), .object(["enabled": .bool(enabled)]))
                                 })).toggleStyle(.checkbox)
-                                if rule["source"].string != "learned" && editingRuleID != rule.id {
-                                    Button("Edit") { editingRuleID = rule.id; editingRuleText = rule["text"].string }
+                                if rule["source"].string != "learned" && writingRuleEdits.rows[rule.id] == nil {
+                                    Button("Edit") { writingRuleEdits.begin(rule.id, savedText: rule["text"].string) }
                                 }
                                 Button("Delete", role: .destructive) {
                                     guard model.confirm("Delete this writing rule?", detail: "It will stop guiding drafts and replies for this mailbox. Nothing is sent.") else { return }
-                                    changeWritingRule("DELETE", "/workspace/brain/writing-rules/" + encodedPath(rule.id), .object([:]))
+                                    changeWritingRule("DELETE", "/workspace/brain/writing-rules/" + encodedPath(rule.id), .object([:]), deletedRule: rule.id)
                                 }
                             }
                         }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
@@ -653,16 +660,19 @@ struct StudioView: View {
             }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
         }
     }
-    func changeWritingRule(_ method: String, _ path: String, _ body: JSON, resetDraft: Bool = false) {
+    func changeWritingRule(_ method: String, _ path: String, _ body: JSON, addedText: String? = nil, savedRule: (id: String, submitted: String)? = nil, deletedRule: String? = nil) {
         let owner = scope
         guard !scopeAll, scopeStateReady, !operationBusy else { return }
         model.perform {
             let next = try await model.request(path, method: method, body: body, mailbox: owner)
             guard review.scope == owner else { return }
             store(next, owner: owner)
-            if resetDraft { ruleText = "" }
-            editingRuleID = ""
-            editingRuleText = ""
+            if let submitted = addedText { writingRuleEdits.added(submitted: submitted) }
+            if let saved = savedRule, let rule = next["workspace"]["brain"]["writingRules"].array.first(where: { $0.id == saved.id }) {
+                writingRuleEdits.saved(saved.id, submitted: saved.submitted, savedText: rule["text"].string)
+            }
+            if let id = deletedRule { writingRuleEdits.cancel(id) }
+            model.dirty("brain", brainDirty)
         }
     }
     var brainAutomation: some View {

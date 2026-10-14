@@ -94,6 +94,12 @@ struct Editor {
         initializing = false;
     }
     void accept(Json const& next) { value = clone(next); saved = clone(next); show(); }
+    void acceptSubmitted(Json const& submitted, Json const& next) {
+        bool unchanged = value.Stringify() == submitted.Stringify();
+        saved = clone(next);
+        if (unchanged) value = clone(next);
+        show();
+    }
 };
 struct Intelligence : std::enable_shared_from_this<Intelligence> {
     std::shared_ptr<Shell> shell;
@@ -102,7 +108,7 @@ struct Intelligence : std::enable_shared_from_this<Intelligence> {
     bool live = true, busy = false, polling = false, cancelling = false, generatingStyle = false, selecting = false;
     Json state, suggestions, workflow, output, outputMessage, outputSource, memoryPreview;
     std::set<std::wstring> selectedMemories;
-    weak_ref<StackPanel> memoryPanel;
+    weak_ref<StackPanel> memoryPanel, writingRuleList;
     hstring outputAction, outputContext, workflowContext, workflowOwner;
     std::map<std::wstring, Editor> forms;
     std::set<std::wstring> selectedCandidates;
@@ -122,6 +128,10 @@ struct Intelligence : std::enable_shared_from_this<Intelligence> {
     bool current() const { return live && !shell->closing && generation == shell->generation && (owner == L"all" || shell->connected(owner)); }
     void tell(hstring const& value) { if (current()) if (auto control = notice) control.Text(value); }
     bool edited() const { for (auto const& [_, form] : forms) if (form.dirty()) return true; return false; }
+    bool writingRulesEdited() const {
+        for (auto const& [name, form] : forms) if (name.starts_with(L"writingRule:") && form.dirty()) return true;
+        return false;
+    }
     void dirty() {
         if (!live) return;
         if (busy || cancelling || edited()) shell->dirty.insert(key()); else shell->dirty.erase(key());
@@ -493,6 +503,7 @@ void renderMemoryPreview(Page const& p) {
     }
     action(p, panel, L"Save selected memories", [](Page page) -> IAsyncAction {
         require(!page->forms[L"brain"].dirty(), L"Save or discard your notes first.");
+        require(!page->writingRulesEdited(), L"Save or discard writing rule edits before refreshing memories.");
         require(!page->selectedMemories.empty(), L"Select the memories you want to keep.");
         Json input; put(input, L"previewId", text(page->memoryPreview, L"id")); Array ids;
         for (auto const& id : page->selectedMemories) ids.Append(Value::CreateStringValue(hstring(id)));
@@ -511,27 +522,46 @@ void renderMemoryPreview(Page const& p) {
         page->clearResult();
     });
 }
-IAsyncAction commitWritingRule(Page page, hstring const& method, hstring const& path, Json const& input) {
-    require(!page->edited(), L"Save or discard writing style and notes before changing rules.");
+void renderWritingRules(Page const& p);
+IAsyncAction commitWritingRule(Page page, hstring method, hstring path, Json input, std::wstring formName = {}, Json submitted = Json()) {
     auto state = co_await page->shell->service->request(path, page->owner, method, input);
     if (!page->current()) co_return;
     acceptState(page, state);
-    auto shell = page->shell;
-    page->stop();
-    co_await intelligencePage(shell, L"brain");
+    if (!formName.empty()) {
+        if (method == L"DELETE") page->forms.erase(formName);
+        else {
+            Json saved; put(saved, L"text", formName == L"writingRule:new" ? hstring() : text(input, L"text"));
+            page->forms.at(formName).acceptSubmitted(submitted, saved);
+        }
+    }
+    renderWritingRules(page); page->dirty(); page->tell(L"Writing rule saved. Other unsaved edits were retained.");
 }
 void buildWritingRules(Page const& p, StackPanel const& body) {
     auto panel = group(body, L"How you write");
     words(panel, L"Add short rules in your own words. Enabled rules guide Write, Reply, Rewrite and reply suggestions for this mailbox. They never send mail. Learn Now still reviews Sent mail separately and does not create or replace these rules.");
-    auto add = field(L"New writing rule", {}, true);
-    add.MaxLength(500); add.MinHeight(72); add.MaxHeight(120);
-    panel.Children().Append(add);
-    action(p, panel, L"Add rule", [add](Page page) -> IAsyncAction {
-        auto value = trim(add.Text());
+    Json empty; put(empty, L"text", L""); editor(p, L"writingRule:new", empty);
+    auto add = editText(p, panel, L"writingRule:new", L"text", L"New writing rule", 500, true);
+    add.MinHeight(72); add.MaxHeight(120);
+    xaml::Automation::AutomationProperties::SetAutomationId(add, L"writing-rule.new");
+    auto addRule = action(p, panel, L"Add rule", [](Page page) -> IAsyncAction {
+        auto submitted = clone(page->forms[L"writingRule:new"].value);
+        auto value = trim(text(submitted, L"text"));
         require(!value.empty() && value.size() <= 500, L"Enter a writing rule of at most 500 characters.");
         Json input; put(input, L"text", value); truth(input, L"enabled", true); put(input, L"source", L"user");
-        co_await commitWritingRule(page, L"POST", L"/workspace/brain/writing-rules", input);
+        co_await commitWritingRule(page, L"POST", L"/workspace/brain/writing-rules", input, L"writingRule:new", submitted);
     });
+    xaml::Automation::AutomationProperties::SetAutomationId(addRule, L"writing-rule.add");
+    auto discardNew = action(p, panel, L"Discard new rule", [](Page page) -> IAsyncAction {
+        page->forms[L"writingRule:new"].accept(page->forms[L"writingRule:new"].saved); page->dirty(); co_return;
+    });
+    xaml::Automation::AutomationProperties::SetAutomationId(discardNew, L"writing-rule.discard-new");
+    auto list = stack(12); panel.Children().Append(list); p->writingRuleList = make_weak(list);
+    renderWritingRules(p);
+    words(panel, L"Up to 30 rules. Disabled rules stay saved and are left out of prompts.", 12);
+}
+void renderWritingRules(Page const& p) {
+    auto panel = p->writingRuleList.get(); if (!panel) return;
+    panel.Children().Clear();
     auto rules = array(object(object(p->state, L"workspace"), L"brain"), L"writingRules");
     if (!rules.Size()) words(panel, L"No writing rules yet. The approved Sent style stays separate.");
     for (auto const& entry : rules) {
@@ -542,17 +572,17 @@ void buildWritingRules(Page const& p, StackPanel const& body) {
         words(row, kind + L" · " + text(rule, L"text"));
         if (learned) words(row, L"Learned rules can be turned on or off, or deleted. Add your own rule to change the wording.", 12);
         auto id = text(rule, L"id");
+        auto formName = L"writingRule:" + std::wstring(id);
         CheckBox enabled; enabled.Content(box_value(L"Enabled")); enabled.IsChecked(flag(rule, L"enabled"));
+        xaml::Automation::AutomationProperties::SetAutomationId(enabled, L"writing-rule.enabled." + id);
         std::weak_ptr<Intelligence> weak = p;
         enabled.Click([weak, id](auto const& sender, auto const&) {
             auto box = sender.template as<CheckBox>();
             if (auto page = weak.lock(); page && page->current()) {
-                if (page->edited() || page->busy) {
-                    box.IsChecked(!checked(box));
-                    if (page->edited()) page->tell(L"Save or discard writing style and notes before changing rules.");
-                    return;
-                }
                 bool on = checked(box);
+                // Keep the saved state visible until the request succeeds, including on failure.
+                box.IsChecked(!on);
+                if (page->busy || page->cancelling) return;
                 perform(page, [id, on](Page page) -> IAsyncAction {
                     Json input; truth(input, L"enabled", on);
                     co_await commitWritingRule(page, L"POST", L"/workspace/brain/writing-rules/" + escaped(id), input);
@@ -561,23 +591,29 @@ void buildWritingRules(Page const& p, StackPanel const& body) {
         });
         row.Children().Append(enabled);
         if (!learned) {
-            auto edit = field(L"Edit writing rule", text(rule, L"text"), true);
-            edit.MaxLength(500); edit.MinHeight(72); edit.MaxHeight(120);
-            row.Children().Append(edit);
-            action(p, row, L"Save rule", [id, edit](Page page) -> IAsyncAction {
-                auto value = trim(edit.Text());
+            if (!p->forms.contains(formName)) editor(p, formName.c_str(), subset(rule, {L"text"}));
+            auto edit = editText(p, row, formName.c_str(), L"text", L"Edit writing rule", 500, true);
+            edit.MinHeight(72); edit.MaxHeight(120);
+            xaml::Automation::AutomationProperties::SetAutomationId(edit, L"writing-rule.text." + id);
+            auto save = action(p, row, L"Save rule", [id, formName](Page page) -> IAsyncAction {
+                auto submitted = clone(page->forms.at(formName).value);
+                auto value = trim(text(submitted, L"text"));
                 require(!value.empty() && value.size() <= 500, L"Enter a writing rule of at most 500 characters.");
                 Json input; put(input, L"text", value);
-                co_await commitWritingRule(page, L"POST", L"/workspace/brain/writing-rules/" + escaped(id), input);
+                co_await commitWritingRule(page, L"POST", L"/workspace/brain/writing-rules/" + escaped(id), input, formName, submitted);
             });
+            xaml::Automation::AutomationProperties::SetAutomationId(save, L"writing-rule.save." + id);
+            auto cancel = action(p, row, L"Discard rule edits", [formName](Page page) -> IAsyncAction {
+                page->forms.at(formName).accept(page->forms.at(formName).saved); page->dirty(); co_return;
+            });
+            xaml::Automation::AutomationProperties::SetAutomationId(cancel, L"writing-rule.discard." + id);
         }
-        action(p, row, L"Delete rule", [id](Page page) -> IAsyncAction {
+        action(p, row, L"Delete rule", [id, formName](Page page) -> IAsyncAction {
             if (!(co_await page->shell->confirm(L"Delete this writing rule?", L"It will stop guiding drafts and replies for this mailbox. Nothing is sent.", L"Delete rule")) || !page->current()) co_return;
-            co_await commitWritingRule(page, L"DELETE", L"/workspace/brain/writing-rules/" + escaped(id), Json());
+            co_await commitWritingRule(page, L"DELETE", L"/workspace/brain/writing-rules/" + escaped(id), Json(), formName);
         });
         panel.Children().Append(row);
     }
-    words(panel, L"Up to 30 rules. Disabled rules stay saved and are left out of prompts.", 12);
 }
 void buildBrain(Page const& p, StackPanel const& body) {
     words(body, L"Writing style & notes", 24);
@@ -632,6 +668,7 @@ void buildBrain(Page const& p, StackPanel const& body) {
         page->forms[L"brain"].accept(brainFields(page->state)); page->dirty(); page->tell(L"Saved notes restored."); co_return;
     });
     action(p, memory, L"Clear notes & memories…", [](Page page) -> IAsyncAction {
+        require(!page->writingRulesEdited(), L"Save or discard writing rule edits before clearing notes and refreshing this page.");
         if (!(co_await page->shell->confirm(L"Clear saved notes and memories?", page->owner + L"\nRemoves saved voice, notes, memories and contacts for this mailbox. How-you-write rules, confirmed identity and the approved Sent style remain saved.", L"Clear notes & memories")) || !page->current()) co_return;
         auto result = co_await page->shell->service->request(L"/workspace/brain", page->owner, L"DELETE");
         if (!page->current()) co_return;
@@ -645,6 +682,7 @@ void buildBrain(Page const& p, StackPanel const& body) {
         auto fact = entry.GetObject(); auto row = stack(6); words(row, text(fact, L"text")); memorySources(row, fact);
         action(p, row, L"Remove memory", [id = text(fact, L"id")](Page page) -> IAsyncAction {
             require(!page->forms[L"brain"].dirty(), L"Save or discard your notes first.");
+            require(!page->writingRulesEdited(), L"Save or discard writing rule edits before refreshing memories.");
             auto state = co_await page->shell->service->request(L"/workspace/brain/facts/" + escaped(id), page->owner, L"DELETE", Json());
             if (!page->current()) co_return; acceptState(page, state);
             auto shell = page->shell; page->stop(); co_await intelligencePage(shell, L"brain");
@@ -1277,6 +1315,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
     } }); tabs.Children().Append(more);
     ScrollViewer tabScroll; tabScroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto); tabScroll.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled); tabScroll.Content(tabs); root.Children().Append(tabScroll);
     auto notice = label(L"Loading this account’s saved context…"); root.Children().Append(notice); p->notice = notice;
+    xaml::Automation::AutomationProperties::SetAutomationId(notice, L"intelligence.notice");
     xaml::Automation::AutomationProperties::SetLiveSetting(notice, xaml::Automation::Peers::AutomationLiveSetting::Polite);
     if (kind == L"learning" || kind == L"brain") {
         auto cancel = button(L"Cancel current style analysis…", [weak] { if (auto page = weak.lock(); page && page->generatingStyle) revokeStyle(page); });

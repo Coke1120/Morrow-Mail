@@ -177,6 +177,12 @@ Beta.38 AI Studio uses Assistant / Summaries as primary pages, with Writing styl
 
 ## Mail, settings, and platform coverage
 
+Writing-rule editors retain per-row text and the separate new-rule input across
+unrelated rule mutations on both native clients. Those buffers participate in
+existing navigation and quit guards. Regression assertions cover the macOS buffer
+model and Windows native control/transport flow; fresh platform CI results are
+required for this fix and are not implied by the older acceptance results above.
+
 | Area | Reference / implementation status |
 | --- | --- |
 | Agent CLI | **Included in 0.7.0:** JSON accounts/list/search/read/draft/review/send through the existing Rust service, with the app open or closed; explicit sync/status/dry-run, MIME fetch, attachment-add/read and partial-sync exit code 4. Cached reads never mark mail read or trigger AI; sends require an owning account and current reviewed payload. No account setup, watch daemon, implicit fetch or automatic resend. [Usage](docs/CLI.md). |

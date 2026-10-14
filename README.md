@@ -61,7 +61,7 @@ Browser sign-in uses the desktop registration included in the build; custom regi
 - **Mail:** multiple accounts, combined inboxes, To/Cc/Bcc, reply/reply-all/forward, provider folders and Gmail labels, local Pending/Later markers, and reviewed scheduled sends.
 - **Search:** local full-text search, Chinese traditional/simplified matching, filters and saved searches; optional semantic indexing with a reviewed scope and budget.
 - **Calendars:** Google and Outlook month views, explicit event creation and provider reminders. Invitations and editing/deleting existing events are not implemented.
-- **AI assistance:** summaries, reply suggestions, translation, inbox questions and reviewed writing-style learning. Optional automation requires consent; AI never sends mail by itself. Studio simulations are labeled separately.
+- **AI assistance:** summaries, reply suggestions, translation, inbox questions and reviewed writing-style learning. Per-mailbox writing rules keep separate unsaved editors; saving or toggling one rule preserves other edits. Optional automation requires consent; AI never sends mail by itself. Studio simulations are labeled separately.
 - **Agent access:** JSON commands for reading mail and preparing, reviewing and explicitly sending owned drafts through the same Rust service.
 
 Detailed behavior and limits are in [feature coverage](FEATURE_COVERAGE.md) and the [user guide](docs/USER_GUIDE.md).
