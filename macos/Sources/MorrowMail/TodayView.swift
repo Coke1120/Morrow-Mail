@@ -12,6 +12,8 @@ private struct TodayReviewWorkspace: View {
     private var accounts: [JSON] { model.accounts.filter { review.scope == "all" || $0.id == review.scope } }
     private var events: [JSON] { model.state["today"]["events"].array.filter { review.scope == "all" || $0["accountId"].string == review.scope } }
     private var replies: [JSON] { model.state["today"]["replySuggestions"].array.filter { review.scope == "all" || review.owner($0) == review.scope } }
+    private var todos: [JSON] { model.state["today"]["todos"].array.filter { review.scope == "all" || $0["accountId"].string == review.scope } }
+    private var completedTodos: [JSON] { model.state["today"]["completedTodos"].array.filter { review.scope == "all" || $0["accountId"].string == review.scope } }
     private var replyCount: Int { let counts=model.state["today"]["replySuggestionCounts"]; return counts.isNull ? replies.count : review.scope == "all" ? counts.object.values.reduce(0) { $0 + Int($1.number) } : Int(counts[review.scope].number) }
     private var source: JSON? { review.originalSelection[review.scope] }
     var body: some View {
@@ -50,6 +52,15 @@ private struct TodayReviewWorkspace: View {
                 ForEach(Array(attention.prefix(3))) { event in eventRow(event) }
                 if attention.count > 3 { DisclosureGroup("More decisions (\(attention.count - 3))") { ForEach(Array(attention.dropFirst(3))) { event in eventRow(event) } } }
                 HStack { Text("Replies to review").font(.headline); Spacer(); Button("View all \(replyCount) →") { model.section = "reply-suggestions" }.disabled(!model.canNavigate) }
+                Text("Suggested tasks").font(.headline)
+                Text("From saved summaries and unread Inbox mail on this device. Completing a suggestion does not mark mail read.").font(.caption).foregroundStyle(.secondary)
+                if todos.isEmpty { Text("No open suggestions in this scope.").foregroundStyle(.secondary) }
+                ForEach(todos) { todo in suggestionRow(todo, reopen: false) }
+                if !completedTodos.isEmpty {
+                    DisclosureGroup("Completed suggestions (\(completedTodos.count))") {
+                        ForEach(completedTodos) { todo in suggestionRow(todo, reopen: true) }
+                    }
+                }
                 if replies.isEmpty { Text("No current suggestions for this scope. Automatic checks and setup live on Reply suggestions.").foregroundStyle(.secondary) }
                 ForEach(Array(replies.prefix(3)), id: \.viewID) { proposal in
                     Button {
@@ -78,6 +89,30 @@ private struct TodayReviewWorkspace: View {
             }.padding(24).frame(maxWidth: 1000, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading)
                 .background(ReviewScrollMemory(key: "today:" + review.scope, review: review))
         }
+    }
+    private func suggestionRow(_ todo: JSON, reopen: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(todo["title"].string).font(.system(size: 14, weight: .semibold)).lineLimit(2)
+            Text((todo["categoryName"].nonempty ? todo["categoryName"].string + " · " : "") + todo["accountId"].string).font(.caption).foregroundStyle(.secondary)
+            if !reopen { Text(todo["detail"].string).font(.callout).lineLimit(3) }
+            HStack {
+                Button(reopen ? "Reopen…" : "Complete…") { confirmSuggestion(todo, reopen: reopen) }
+                Button("View original message") { Task { await review.showOriginal(.object(["id": todo["messageId"], "accountId": todo["accountId"]]), model: model) } }
+            }
+        }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(.quaternary.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: 9))
+    }
+    private func confirmSuggestion(_ todo: JSON, reopen: Bool) {
+        let title = reopen ? "Reopen this suggestion?" : "Complete this suggestion?"
+        let detail = "Mail stays unchanged. Nothing is sent and Email Brain is not updated."
+        guard model.confirm(title, detail: detail) else { return }
+        let owner = todo["accountId"].string, id = todo.id, path = reopen ? "/workspace/todos/reopen" : "/workspace/todos/complete"
+        model.perform({
+            let next = try await model.request(path, method: "POST", body: .object(["id": .string(id), "confirm": .bool(true)]), mailbox: owner)
+            guard next["account"]["id"].string == owner else { return }
+            if owner == model.account { model.state = next }
+            else if !next["today"].isNull { model.state["today"] = next["today"] }
+            model.notice = reopen ? "Suggestion reopened." : "Suggestion completed. The message was not marked read."
+        }, blocksNavigation: false)
     }
     private func metric(_ title: String, count: Int) -> some View {
         VStack(alignment: .leading, spacing: 4) { Text(title).font(.caption).foregroundStyle(.secondary); Text(count.formatted()).font(.title3.weight(.semibold)).monospacedDigit() }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(morrowGreen.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: 8))
@@ -118,8 +153,6 @@ private struct TodayReviewWorkspace: View {
         }.padding(18).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
-
-private extension JSON { var isObject: Bool { if case .object = self { return true }; return false } }
 
 struct SummaryReportView: View {
     @EnvironmentObject var model: AppModel

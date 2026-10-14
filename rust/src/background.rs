@@ -1301,6 +1301,9 @@ pub async fn tick(app: &App) -> Result<()> {
             if runtime.stopped.load(Ordering::Acquire) { return Ok(()); }
             crate::brain::scheduled_tick(app).await?;
             if runtime.stopped.load(Ordering::Acquire) { return Ok(()); }
+            // Due skills join the review queue only. This tick does not call a model or send mail.
+            crate::home::scheduled_tick(app).await?;
+            if runtime.stopped.load(Ordering::Acquire) { return Ok(()); }
             automation_tick(app).await
         } => result,
     }

@@ -10,6 +10,7 @@ pub mod drafts;
 pub mod error;
 pub mod folders;
 mod google_sync;
+pub mod home;
 pub mod imap;
 pub mod learning;
 pub mod local_rules;

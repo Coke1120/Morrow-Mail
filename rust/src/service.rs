@@ -379,9 +379,15 @@ pub fn state(db: &Store, selected: &str, paged: bool, secret: &[u8; 32]) -> Resu
     let mut today_replies = Vec::new();
     let mut today_reply_counts = serde_json::Map::new();
     let mut today_events = Vec::new();
+    let mut today_todos = Vec::new();
+    let mut today_completed = Vec::new();
     for owner in &ids {
         let reports = crate::background::reports(db, owner)?;
         today_events.extend(crate::mail_review::events(db, owner, &reports)?);
+        today_todos.extend(crate::home::todos_from_reports(
+            db, &config, owner, &reports,
+        )?);
+        today_completed.extend(crate::home::completed_todos(db, &config, owner)?);
         for mut report in crate::background::daily_reports(&reports) {
             report["reportId"] = report["id"].clone();
             report["id"] = json!([owner, report["id"]]).to_string().into();
@@ -455,9 +461,11 @@ pub fn state(db: &Store, selected: &str, paged: bool, secret: &[u8; 32]) -> Resu
     result["serverFolders"] = crate::folders::cached_catalogs(&config);
     result["workspace"]["styleLearning"] = style;
     result["workspace"]["brainLearning"] = crate::brain::learning_state(db, &view)?;
+    result["workspace"]["categories"] = crate::home::categories(&config, &view);
+    result["workspace"]["skillLibrary"] = crate::home::library(&config, &view);
     result["workspace"]["summaries"] = reports;
     result["workspace"]["summaryOverflow"] = overflow.into();
-    result["today"] = json!({"summaries":today_reports,"summaryOverflow":today_overflow,"replySuggestions":today_replies,"replySuggestionCounts":today_reply_counts,"events":today_events});
+    result["today"] = json!({"summaries":today_reports,"summaryOverflow":today_overflow,"replySuggestions":today_replies,"replySuggestionCounts":today_reply_counts,"events":today_events,"todos":today_todos,"completedTodos":today_completed});
     if paged {
         result["mailPage"] = page;
     }
