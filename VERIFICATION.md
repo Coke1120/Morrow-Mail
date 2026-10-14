@@ -1,5 +1,26 @@
 # Verification — 12 October 2026
 
+## Writing-rule edit retention — 14 October 2026
+
+The #42 follow-up keeps unsaved text per rule and in the new-rule field. A
+successful save acknowledges only its submitted input; toggles and unrelated
+saves retain the other buffers. Both native clients include those edits in their
+existing mailbox/page/quit guards. Windows memory actions that rebuild the page
+require pending rule edits to be saved or discarded first.
+
+Added macOS assertions in `macos/Checks/main.swift` exercise the production
+`WritingRuleEdits` state, including multiple rows, only-new-input dirtiness,
+matching save/cancel and edits made after a submitted snapshot. The Windows
+native smoke suite now uses the actual TextChanged and automation handlers with
+the marked temporary fixture service: toggle, save, duplicate-save failure, add
+and discard must preserve unrelated text and global dirty state. These checks
+run in the existing paired native CI paths; they do not send mail or call AI.
+
+This follow-up was edited on Linux, without the macOS SDK or WinUI/MSVC. Static
+diff checks passed; execution of the new native checks and platform builds is
+pending fresh CI. No manual accessibility, live-model or real-account acceptance
+is claimed, and prior CI does not establish these new UI scenarios.
+
 ## PR #43 Today and category follow-up — 14 October 2026
 
 Today now excludes completed suggestions and summary duplicates before selecting
