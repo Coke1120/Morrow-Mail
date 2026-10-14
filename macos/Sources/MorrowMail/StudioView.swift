@@ -28,6 +28,9 @@ struct StudioView: View {
     @State private var voice = ""
     @State private var notes = ""
     @State private var guardrails = ""
+    @State private var ruleText = ""
+    @State private var editingRuleID = ""
+    @State private var editingRuleText = ""
     @State private var savedGuardrails = ""
     @State private var savedVoice = ""
     @State private var savedNotes = ""
@@ -140,7 +143,7 @@ struct StudioView: View {
         .onChange(of: action) { _ in clearResult() }
         .onChange(of: messageID) { _ in clearResult() }
         .onChange(of: model.mailPage) { _ in if usesReadingList && contextSearch.isNull && !permitted.contains(where: { $0.viewID == messageID }) { messageID = permitted.first?.viewID ?? "" } }
-        .onChange(of: review.scope) { _ in skillEditor = nil; clearResult(); clearContextSearch(); memoryPreview = .null; selectedMemories = []; learningDirty = false; model.dirty("brain", false); loadBrain() }
+        .onChange(of: review.scope) { _ in skillEditor = nil; clearResult(); clearContextSearch(); memoryPreview = .null; selectedMemories = []; learningDirty = false; ruleText = ""; editingRuleID = ""; editingRuleText = ""; model.dirty("brain", false); loadBrain() }
         .onChange(of: model.account) { _ in clearContextSearch() }
         .onChange(of: skillID) { _ in clearResult() }
         .onChange(of: prompt) { _ in clearResult() }
@@ -290,9 +293,10 @@ struct StudioView: View {
                 } else {
                     ProgressView("Loading this mailbox…").controlSize(.small)
                 }
+                writingRulesBox
                 DisclosureGroup("Notes and memory suggestions") {
                     VStack(alignment: .leading, spacing: 18) {
-                        Text("Optional notes and reviewed memories provide extra context. Manual writing instructions override the approved Sent style.").font(.callout).foregroundStyle(.secondary)
+                        Text("Optional notes and reviewed memories provide extra context. Manual writing instructions override the approved Sent style. How-you-write rules above stay separate from this voice field.").font(.callout).foregroundStyle(.secondary)
                 brainAutomation
                 GroupBox("Find memories in your mail") {
                     VStack(alignment: .leading, spacing: 10) {
@@ -323,7 +327,7 @@ struct StudioView: View {
                     }.buttonStyle(.borderedProminent).disabled(operationBusy) }
                     Button("Discard Changes") { loadBrain(); model.dirty("brain", false) }.disabled(!brainDirty)
                     Button("Clear Notes & Memories") {
-                        guard model.confirm("Clear saved notes and memories?", detail: "Saved voice, notes, memories and contacts will be removed.") else { return }
+                        guard model.confirm("Clear saved notes and memories?", detail: "Removes saved voice, notes, memories and contacts for this mailbox. How-you-write rules, confirmed identity and the approved Sent style remain saved.") else { return }
                         let owner = scope
                         guard !operationBusy else { return }
                         model.perform {
@@ -587,6 +591,79 @@ struct StudioView: View {
             localMessages = rows; localNext = result["nextCursor"].string; localOwner = owner; localCursors = Array(repeating: "", count: offset / 50 + 1)
             if contextSearch.isNull && !permitted.contains(where: { $0.viewID == messageID }) { messageID = permitted.first?.viewID ?? "" }
         } catch { if localTicket == ticket, review.scope == owner { model.error = error.localizedDescription } }
+    }
+    var writingRulesBox: some View {
+        GroupBox("How you write") {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Add short rules in your own words. Enabled rules guide Write, Reply, Rewrite and reply suggestions for this mailbox. They never send mail. Learn Now still reviews Sent mail separately and does not create or replace these rules.").font(.callout).foregroundStyle(.secondary)
+                if scopeAll || !scopeStateReady {
+                    Text("Choose a mailbox to edit its writing rules.").foregroundStyle(.secondary)
+                } else {
+                    TextArea(title: "New writing rule", text: $ruleText, height: 70)
+                    if ruleText.utf16.count > 500 { Text("Use at most 500 characters.").font(.caption).foregroundStyle(.orange) }
+                    Button("Add Rule") {
+                        let text = ruleText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !text.isEmpty, text.utf16.count <= 500 else { return }
+                        changeWritingRule("POST", "/workspace/brain/writing-rules", .object(["text": .string(text), "enabled": .bool(true), "source": .string("user")]), resetDraft: true)
+                    }.buttonStyle(.borderedProminent).disabled(ruleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || ruleText.utf16.count > 500)
+                    if workspace["brain"]["writingRules"].array.isEmpty {
+                        Text("No writing rules yet. The approved Sent style stays separate.").foregroundStyle(.secondary)
+                    }
+                    ForEach(workspace["brain"]["writingRules"].array) { rule in
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text(rule["source"].string == "learned" ? "Learned" : "You wrote this").font(.caption).foregroundStyle(.secondary)
+                                Spacer()
+                                Text(dateLabel(rule["updatedAt"].string)).font(.caption).foregroundStyle(.secondary)
+                            }
+                            if editingRuleID == rule.id && rule["source"].string != "learned" {
+                                TextArea(title: "Edit writing rule", text: $editingRuleText, height: 70)
+                                HStack {
+                                    Button("Save Rule") {
+                                        let text = editingRuleText.trimmingCharacters(in: .whitespacesAndNewlines)
+                                        guard !text.isEmpty, text.utf16.count <= 500 else { return }
+                                        changeWritingRule("POST", "/workspace/brain/writing-rules/" + encodedPath(rule.id), .object(["text": .string(text)]))
+                                    }.disabled(editingRuleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || editingRuleText.utf16.count > 500)
+                                    Button("Cancel") { editingRuleID = ""; editingRuleText = "" }
+                                }
+                            } else {
+                                Text(rule["text"].string).textSelection(.enabled)
+                                if rule["source"].string == "learned" {
+                                    Text("Learned rules can be turned on or off, or deleted. Add your own rule to change the wording.").font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            HStack {
+                                Toggle("Enabled", isOn: Binding(get: { rule["enabled"].bool }, set: { enabled in
+                                    guard enabled != rule["enabled"].bool else { return }
+                                    changeWritingRule("POST", "/workspace/brain/writing-rules/" + encodedPath(rule.id), .object(["enabled": .bool(enabled)]))
+                                })).toggleStyle(.checkbox)
+                                if rule["source"].string != "learned" && editingRuleID != rule.id {
+                                    Button("Edit") { editingRuleID = rule.id; editingRuleText = rule["text"].string }
+                                }
+                                Button("Delete", role: .destructive) {
+                                    guard model.confirm("Delete this writing rule?", detail: "It will stop guiding drafts and replies for this mailbox. Nothing is sent.") else { return }
+                                    changeWritingRule("DELETE", "/workspace/brain/writing-rules/" + encodedPath(rule.id), .object([:]))
+                                }
+                            }
+                        }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    Text("Up to 30 rules. Disabled rules stay saved and are left out of prompts.").font(.caption).foregroundStyle(.secondary)
+                }
+            }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+    func changeWritingRule(_ method: String, _ path: String, _ body: JSON, resetDraft: Bool = false) {
+        let owner = scope
+        guard !scopeAll, scopeStateReady, !operationBusy else { return }
+        model.perform {
+            let next = try await model.request(path, method: method, body: body, mailbox: owner)
+            guard review.scope == owner else { return }
+            store(next, owner: owner)
+            if resetDraft { ruleText = "" }
+            editingRuleID = ""
+            editingRuleText = ""
+        }
     }
     var brainAutomation: some View {
         GroupBox("Automatic learning") {

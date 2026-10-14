@@ -451,7 +451,19 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
         }
         ("DELETE", ["workspace", "brain"]) => {
             app.db(move |db| {
-                save_workspace(db, &owner, &json!({"brain":null}))?;
+                let config = db.settings()?;
+                if !valid_account(&config, &owner) {
+                    return Err(Error::conflict("Choose a connected mailbox."));
+                }
+                let current = workspace(&config, &owner);
+                let rules = current["brain"]["writingRules"].clone();
+                // Notes, memories and contacts clear. How-you-write rules stay on this mailbox.
+                let brain = if rules.as_array().is_some_and(|items| !items.is_empty()) {
+                    json!({"writingRules": rules, "updatedAt": now()})
+                } else {
+                    Value::Null
+                };
+                save_workspace(db, &owner, &json!({"brain": brain}))?;
                 ai::invalidate(db)
             })
             .await?;

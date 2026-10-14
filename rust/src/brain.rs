@@ -1,4 +1,4 @@
-//! Reviewed, source-bound memory. Manual notes and writing style stay independent.
+//! Reviewed, source-bound memory. Manual notes, how-you-write rules and learned style stay independent.
 use crate::{
     ai,
     error::{Error, Result},
@@ -97,7 +97,28 @@ pub fn context(db: &Store, config: &Value, owner: &str, skill: &Value) -> Result
         }
     }
     result["facts"] = json!(facts);
+    // User-authored rules are not source-proofed. The permission gate above still applies.
+    let rules = prompt_rules(brain);
+    if !rules.is_empty() {
+        result["writingRules"] = json!(rules);
+    }
     Ok(result)
+}
+
+/// Enabled rule text only, in saved order. Prompt callers decide which actions receive it.
+fn prompt_rules(brain: &Value) -> Vec<Value> {
+    brain
+        .get("writingRules")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|rule| rule["enabled"] == true)
+        .filter_map(|rule| {
+            let text = string(rule, "text").trim();
+            (!text.is_empty()).then(|| Value::String(text.to_owned()))
+        })
+        .take(30)
+        .collect()
 }
 
 fn validate(db: &Store, owner: &str, preview: &Value) -> Result<()> {
@@ -249,8 +270,183 @@ pub async fn scheduled_tick(app: &App) -> Result<()> {
     Ok(())
 }
 
+const MAX_WRITING_RULES: usize = 30;
+
+fn brain_object(config: &Value, owner: &str) -> Value {
+    let brain = workspace(config, owner)["brain"].clone();
+    if brain.is_object() { brain } else { json!({}) }
+}
+fn rule_list(brain: &Value) -> Vec<Value> {
+    brain
+        .get("writingRules")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+fn require_account(db: &Store, owner: &str) -> Result<Value> {
+    let config = db.settings()?;
+    if !valid_account(&config, owner) {
+        return Err(Error::conflict("Choose a connected mailbox."));
+    }
+    Ok(config)
+}
+fn optional_rule_text(input: &Value) -> Result<Option<String>> {
+    if input.get("text").is_none() || input["text"].is_null() {
+        return Ok(None);
+    }
+    Ok(Some(
+        crate::validation::text(&input["text"], "Writing rule", 500, false)?
+            .trim()
+            .to_owned(),
+    ))
+}
+fn optional_enabled(input: &Value) -> Result<Option<bool>> {
+    match input.get("enabled") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        _ => Err(Error::invalid(
+            "Writing rule enabled must be true or false.",
+        )),
+    }
+}
+fn rule_source(input: &Value) -> Result<&'static str> {
+    if input.get("source").is_none() || input["source"].is_null() {
+        return Ok("user");
+    }
+    match input["source"].as_str() {
+        Some("user") => Ok("user"),
+        Some("learned") => Ok("learned"),
+        _ => Err(Error::invalid(
+            "Writing rule source must be user or learned.",
+        )),
+    }
+}
+fn duplicate_rule(rules: &[Value], text: &str, except: Option<&str>) -> bool {
+    rules
+        .iter()
+        .any(|rule| except != Some(string(rule, "id")) && string(rule, "text").trim() == text)
+}
+fn store_rules(db: &Store, owner: &str, brain: &mut Value, rules: Vec<Value>) -> Result<()> {
+    let stamp = now();
+    brain["writingRules"] = json!(rules);
+    brain["updatedAt"] = stamp.into();
+    save_workspace(db, owner, &json!({"brain": brain}))?;
+    ai::invalidate(db)
+}
+async fn add_writing_rule(app: &App, owner: String, input: Value) -> Result<()> {
+    app.db(move |db| {
+        db.transaction(|db| {
+            let config = require_account(db, &owner)?;
+            let text = optional_rule_text(&input)?.ok_or_else(|| {
+                Error::invalid("Writing rule is required and must be at most 500 characters.")
+            })?;
+            let enabled = optional_enabled(&input)?.unwrap_or(true);
+            let source = rule_source(&input)?;
+            let mut brain = brain_object(&config, &owner);
+            let mut rules = rule_list(&brain);
+            if rules.len() >= MAX_WRITING_RULES {
+                return Err(Error::invalid("Keep at most 30 writing rules."));
+            }
+            if duplicate_rule(&rules, &text, None) {
+                return Err(Error::invalid(
+                    "That writing rule is already saved for this mailbox.",
+                ));
+            }
+            let stamp = now();
+            rules.push(json!({
+                "id": uuid::Uuid::new_v4().to_string(),
+                "text": text,
+                "enabled": enabled,
+                "source": source,
+                "createdAt": stamp,
+                "updatedAt": stamp
+            }));
+            store_rules(db, &owner, &mut brain, rules)
+        })
+    })
+    .await
+}
+async fn set_writing_rule(app: &App, owner: String, id: String, input: Value) -> Result<()> {
+    app.db(move |db| {
+        db.transaction(|db| {
+            let config = require_account(db, &owner)?;
+            let text = optional_rule_text(&input)?;
+            let enabled = optional_enabled(&input)?;
+            if text.is_none() && enabled.is_none() {
+                return Err(Error::invalid(
+                    "Enter the rule text or whether it is enabled.",
+                ));
+            }
+            let mut brain = brain_object(&config, &owner);
+            let mut rules = rule_list(&brain);
+            let index = rules
+                .iter()
+                .position(|rule| rule["id"] == id)
+                .ok_or_else(|| Error::new(404, "Writing rule not found."))?;
+            if rules[index]["source"] == "learned"
+                && text
+                    .as_ref()
+                    .is_some_and(|next| next != string(&rules[index], "text").trim())
+            {
+                return Err(Error::invalid(
+                    "Learned writing rules can be turned on or off, or deleted. Add your own rule to change the wording.",
+                ));
+            }
+            if let Some(next) = text.as_deref()
+                && duplicate_rule(&rules, next, Some(&id))
+            {
+                return Err(Error::invalid(
+                    "That writing rule is already saved for this mailbox.",
+                ));
+            }
+            let stamp = now();
+            if let Some(next) = text {
+                rules[index]["text"] = json!(next);
+            }
+            if let Some(value) = enabled {
+                rules[index]["enabled"] = json!(value);
+            }
+            rules[index]["updatedAt"] = stamp.into();
+            store_rules(db, &owner, &mut brain, rules)
+        })
+    })
+    .await
+}
+async fn delete_writing_rule(app: &App, owner: String, id: String) -> Result<()> {
+    app.db(move |db| {
+        db.transaction(|db| {
+            let config = require_account(db, &owner)?;
+            let mut brain = brain_object(&config, &owner);
+            let mut rules = rule_list(&brain);
+            let count = rules.len();
+            rules.retain(|rule| rule["id"] != id);
+            if rules.len() == count {
+                return Err(Error::new(404, "Writing rule not found."));
+            }
+            store_rules(db, &owner, &mut brain, rules)
+        })
+    })
+    .await
+}
+async fn writing_rule_route(app: &App, ctx: &Context, rest: &[&str]) -> Result<Option<Response>> {
+    let owner = ctx.owner.clone();
+    let input = ctx.body.clone();
+    match (ctx.method.as_str(), rest) {
+        ("POST", []) => add_writing_rule(app, owner, input).await?,
+        ("POST", [id]) => set_writing_rule(app, owner, (*id).to_owned(), input).await?,
+        ("DELETE", [id]) => delete_writing_rule(app, owner, (*id).to_owned()).await?,
+        _ => return Err(Error::new(404, "Writing rule not found.")),
+    }
+    Ok(Some(
+        Json(app.state(&ctx.owner, ctx.paged).await?).into_response(),
+    ))
+}
+
 pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
     let path: Vec<_> = ctx.path.iter().map(String::as_str).collect();
+    if let ["workspace", "brain", "writing-rules", rest @ ..] = path.as_slice() {
+        return writing_rule_route(app, ctx, rest).await;
+    }
     if ctx.method == "DELETE"
         && let ["workspace", "brain", "facts", id] = path.as_slice()
     {

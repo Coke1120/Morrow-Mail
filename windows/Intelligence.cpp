@@ -511,15 +511,84 @@ void renderMemoryPreview(Page const& p) {
         page->clearResult();
     });
 }
+IAsyncAction commitWritingRule(Page page, hstring const& method, hstring const& path, Json const& input) {
+    require(!page->edited(), L"Save or discard writing style and notes before changing rules.");
+    auto state = co_await page->shell->service->request(path, page->owner, method, input);
+    if (!page->current()) co_return;
+    acceptState(page, state);
+    auto shell = page->shell;
+    page->stop();
+    co_await intelligencePage(shell, L"brain");
+}
+void buildWritingRules(Page const& p, StackPanel const& body) {
+    auto panel = group(body, L"How you write");
+    words(panel, L"Add short rules in your own words. Enabled rules guide Write, Reply, Rewrite and reply suggestions for this mailbox. They never send mail. Learn Now still reviews Sent mail separately and does not create or replace these rules.");
+    auto add = field(L"New writing rule", {}, true);
+    add.MaxLength(500); add.MinHeight(72); add.MaxHeight(120);
+    panel.Children().Append(add);
+    action(p, panel, L"Add rule", [add](Page page) -> IAsyncAction {
+        auto value = trim(add.Text());
+        require(!value.empty() && value.size() <= 500, L"Enter a writing rule of at most 500 characters.");
+        Json input; put(input, L"text", value); truth(input, L"enabled", true); put(input, L"source", L"user");
+        co_await commitWritingRule(page, L"POST", L"/workspace/brain/writing-rules", input);
+    });
+    auto rules = array(object(object(p->state, L"workspace"), L"brain"), L"writingRules");
+    if (!rules.Size()) words(panel, L"No writing rules yet. The approved Sent style stays separate.");
+    for (auto const& entry : rules) {
+        auto rule = entry.GetObject();
+        auto learned = text(rule, L"source") == L"learned";
+        auto row = stack(6);
+        hstring kind = learned ? hstring(L"Learned") : hstring(L"You wrote this");
+        words(row, kind + L" · " + text(rule, L"text"));
+        if (learned) words(row, L"Learned rules can be turned on or off, or deleted. Add your own rule to change the wording.", 12);
+        auto id = text(rule, L"id");
+        CheckBox enabled; enabled.Content(box_value(L"Enabled")); enabled.IsChecked(flag(rule, L"enabled"));
+        std::weak_ptr<Intelligence> weak = p;
+        enabled.Click([weak, id](auto const& sender, auto const&) {
+            auto box = sender.template as<CheckBox>();
+            if (auto page = weak.lock(); page && page->current()) {
+                if (page->edited() || page->busy) {
+                    box.IsChecked(!checked(box));
+                    if (page->edited()) page->tell(L"Save or discard writing style and notes before changing rules.");
+                    return;
+                }
+                bool on = checked(box);
+                perform(page, [id, on](Page page) -> IAsyncAction {
+                    Json input; truth(input, L"enabled", on);
+                    co_await commitWritingRule(page, L"POST", L"/workspace/brain/writing-rules/" + escaped(id), input);
+                });
+            }
+        });
+        row.Children().Append(enabled);
+        if (!learned) {
+            auto edit = field(L"Edit writing rule", text(rule, L"text"), true);
+            edit.MaxLength(500); edit.MinHeight(72); edit.MaxHeight(120);
+            row.Children().Append(edit);
+            action(p, row, L"Save rule", [id, edit](Page page) -> IAsyncAction {
+                auto value = trim(edit.Text());
+                require(!value.empty() && value.size() <= 500, L"Enter a writing rule of at most 500 characters.");
+                Json input; put(input, L"text", value);
+                co_await commitWritingRule(page, L"POST", L"/workspace/brain/writing-rules/" + escaped(id), input);
+            });
+        }
+        action(p, row, L"Delete rule", [id](Page page) -> IAsyncAction {
+            if (!(co_await page->shell->confirm(L"Delete this writing rule?", L"It will stop guiding drafts and replies for this mailbox. Nothing is sent.", L"Delete rule")) || !page->current()) co_return;
+            co_await commitWritingRule(page, L"DELETE", L"/workspace/brain/writing-rules/" + escaped(id), Json());
+        });
+        panel.Children().Append(row);
+    }
+    words(panel, L"Up to 30 rules. Disabled rules stay saved and are left out of prompts.", 12);
+}
 void buildBrain(Page const& p, StackPanel const& body) {
     words(body, L"Writing style & notes", 24);
     buildLearning(p, body);
+    buildWritingRules(p, body);
     Expander details; details.Header(box_value(L"Notes and memory suggestions")); auto memory = stack(12); details.Content(memory); body.Children().Append(details);
     auto policy = object(object(p->state, L"settings"), L"policy");
     words(memory, flag(policy, L"enabled") && flag(object(policy, L"behaviors"), L"memory")
         ? L"Explicitly saved voice and notes may inform permitted AI requests. They remain local until included in an authorized model request."
         : L"Writing style and notes are disabled by your saved permissions. Saved notes will not inform AI requests.");
-    words(memory, L"Optional notes and memories provide extra context. Manual writing instructions override the approved Sent style.");
+    words(memory, L"Optional notes and memories provide extra context. Manual writing instructions override the approved Sent style. How-you-write rules above stay separate from this voice field.");
     auto automatic = object(object(p->state,L"workspace"),L"brainLearning");
     editor(p,L"memoryOptions",subset(automatic,{L"enabled",L"tokenBudget"}));
     auto automaticPanel = group(memory,L"Automatic memory suggestions");
@@ -557,13 +626,13 @@ void buildBrain(Page const& p, StackPanel const& body) {
         auto input = clone(page->forms[L"brain"].value);
         auto result = co_await page->shell->service->request(L"/workspace/brain", page->owner, L"POST", input);
         if (!page->current()) co_return;
-        acceptState(page, result); page->forms[L"brain"].accept(brainFields(result)); page->dirty(); page->tell(L"Notes saved for this account. Contacts and learned style were retained.");
+        acceptState(page, result); page->forms[L"brain"].accept(brainFields(result)); page->dirty(); page->tell(L"Notes saved for this account. Contacts, writing rules and learned style were retained.");
     });
     action(p, memory, L"Discard unsaved notes", [](Page page) -> IAsyncAction {
         page->forms[L"brain"].accept(brainFields(page->state)); page->dirty(); page->tell(L"Saved notes restored."); co_return;
     });
     action(p, memory, L"Clear notes & memories…", [](Page page) -> IAsyncAction {
-        if (!(co_await page->shell->confirm(L"Clear saved notes and memories?", page->owner + L"\nSaved manual voice, notes, memories and contacts will be removed. Confirmed identity and the separate learned style remain.", L"Clear notes & memories")) || !page->current()) co_return;
+        if (!(co_await page->shell->confirm(L"Clear saved notes and memories?", page->owner + L"\nRemoves saved voice, notes, memories and contacts for this mailbox. How-you-write rules, confirmed identity and the approved Sent style remain saved.", L"Clear notes & memories")) || !page->current()) co_return;
         auto result = co_await page->shell->service->request(L"/workspace/brain", page->owner, L"DELETE");
         if (!page->current()) co_return;
         acceptState(page, result); page->forms[L"brain"].accept(brainFields(result)); page->dirty();
