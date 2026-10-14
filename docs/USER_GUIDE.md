@@ -338,7 +338,7 @@ Replies, including AI replies and the native Reply shortcut, keep the account th
 
 ## Reviewed attention workflows
 
-Today links P0–P4 summaries to their source mail and shows up to five current reply suggestions per mailbox. Reply cards show a draft preview, reason and permitted correspondence; open the account’s queue to review, edit or ignore. Opening Today starts no AI job.
+Today links P0–P4 summaries to their source mail and shows up to five current reply suggestions per mailbox. Reply cards show a draft preview, reason and permitted correspondence; open the account’s queue to review, edit or ignore. Opening Today starts no AI job. Today also lists suggested tasks from saved summaries and unread Inbox mail already on this device. Completing or reopening a suggestion asks you to confirm. That confirmation does not mark the message read, send mail, or change Email Brain.
 
 Ask defaults to keyword context and offers an explicit **Use my approved Smart Search index** checkbox. It retrieves only permitted mail from that account; query embedding may incur charges and never starts indexing. Answers use numbered, server-derived source links; unavailable reference numbers are rejected. Sources identify supplied context, not a guarantee that a model’s interpretation is correct. Writing Style & Notes separates business facts, writing voice and reviewed writing guardrails.
 
@@ -346,7 +346,7 @@ AI Studio → More → **Local Inbox Rules** previews exact sender/domain or sub
 
 ## AI Studio simulations
 
-Priority previews, smart labels, legacy Brain simulations, person/company research, meeting preparation, follow-ups, meeting scheduling, cleanup, unsubscribe, attachment comparisons, and the legacy Batch Replies tool are **local simulations**, even with a model configured. Preview a plan, then apply it to create local changes or records. Custom skills save editable instructions and run through the configured model or labeled demo mode.
+Priority previews, smart labels, legacy Brain simulations, person/company research, meeting preparation, follow-ups, meeting scheduling, cleanup, unsubscribe, attachment comparisons, and the legacy Batch Replies tool are **local simulations**, even with a model configured. Preview a plan, then apply it to create local changes or records. Custom skills save editable instructions and run through the configured model or labeled demo mode. AI Studio → More → Mail categories saves an ordered list for the selected mailbox. Reusable skills can install a local library entry and save a daily or interval schedule. A schedule, or Queue review, only adds an item to that mailbox’s review queue. Opening or dismissing the item still does not send mail or update Email Brain.
 
 Simulations do not browse the web, contact a calendar, send invitations or messages, unsubscribe with a provider, or fetch attachments. Attachment examples are fixtures behind an opt-in permission. Calendar and contact permissions here control local simulated context; they do not authorize access to connected calendars or external address books. Studio reminders and events are local records, not scheduled notifications or background jobs.
 

@@ -15,6 +15,8 @@ checks and the publisher have not run. See [notes](docs/releases/v0.7.8.md) and
 Mac signing, unsigned Windows, residual native observation, manual device checks,
 and live-account limits remain.
 
+**Current source — categories, Today suggestions, and skill review queues:** each mailbox can save up to 20 ordered categories. Today builds suggested tasks from the latest validated summary items and unread Inbox mail already on this device; completing or reopening one asks for confirmation and does not mark mail read, send mail, or change Email Brain. AI Studio can install a small local skill library and save a daily or interval schedule. `autoExecute` only means a due skill may join that mailbox’s review queue (`propose-draft` or `propose-action`). Schedules do not call a model, send mail, or update Email Brain. This is not the P0 writing-rules work and not an inbox agent.
+
 **0.7.7 — review lifecycle:** empty Today/reply projections avoid
 redundant conversation-index reads. Successful Mac Skip removes only dismissed
 ephemeral state; refresh moves edited target state on both platforms, redirecting
@@ -165,7 +167,7 @@ Today combines existing reports from all connected mailboxes (latest 20 each) wh
 | Email Brain — `memory` | GenMail verified: learned writing/contact context [1] | **Implemented in beta.23.** Explicit model-generated memory proposals cite supplied mail; users select what to save separately from manual voice/notes. Per-account source/permission checks apply to interactive, scheduled and batch AI. Maximum 50 reviewed memories and individual removal. Manual previews are single-use and expire after ten minutes. Optional weekly memory proposals start with an initial eligible analysis, use a saved token budget, persist across restart and wait for review before another analysis. The legacy simulated memory endpoint cannot replace an existing Brain. Separate Sent-style analysis preserves a valid approved baseline in incremental proposals; application remains manual. No model-weight training or automatic memory application. |
 | People/company research — `research` | GenMail verified [1] | **Mock simulation.** Brief based on permitted email context; unknown facts remain unknown. No web lookup. |
 | Meeting preparation — `meeting` | GenMail verified [1] | **Mock simulation.** Agenda and talking points from a selected email. No calendar retrieval. |
-| Custom email skills — `skill` | GenMail verified [1], [2] | **Implemented, manual.** Create, edit, remove, and run saved instructions against permitted mail. Skills do not execute arbitrary tools. |
+| Custom email skills — `skill` | GenMail verified [1], [2] | **Implemented.** Create, edit, remove, and run saved instructions against permitted mail. A local library can be installed per mailbox. Daily or interval schedules only enqueue a review (`propose-draft` or `propose-action`); they do not call a model, send mail, update Email Brain, or execute tools. |
 | Follow-up reminders — `followup` | Earlier AI Inbox advertises task tracking [3]; this reminder workflow is inferred | **Mock simulation.** Saves a local follow-up record; no notification scheduler or automatic follow-up mail. |
 | Meeting scheduling — `schedule` | Predecessor/broader Genspark: calendar coordination [4], [5] | **Mock simulation.** Creates a local proposed event; no availability lookup, calendar booking, or invitation. |
 | Inbox cleanup — `cleanup` | Inferred addition | **Mock simulation.** Previews newsletter archiving and applies it only to Morrow's cached inbox. |

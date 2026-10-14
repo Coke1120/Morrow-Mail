@@ -311,6 +311,24 @@ void eventCard(P const& p,StackPanel const& parent,Json event) {
     for(auto const& question:array(event,L"questions")) words(evidence,L"Needs your answer: "+question.GetString());
     details.Content(evidence); card.Children().Append(details); parent.Children().Append(card);
 }
+void paintToday(P const& p);
+fire_and_forget reviewTodo(P page, hstring path, hstring owner, hstring id, hstring title, hstring confirmTitle, hstring done) {
+    if (!page || !page->current() || page->busy) co_return;
+    page->busy = true;
+    try {
+        if (!(co_await page->shell->confirm(confirmTitle, title + L"\nMail stays unchanged. Nothing is sent and Email Brain is not updated.", L"Continue")) || !page->current()) {
+            page->busy = false; co_return;
+        }
+        Json input; put(input, L"id", id); input.Insert(L"confirm", Value::CreateBooleanValue(true));
+        auto result = co_await page->shell->service->request(path, owner, L"POST", input);
+        if (!page->current()) { page->busy = false; co_return; }
+        if (text(object(result, L"account"), L"id") == page->shell->owner) page->shell->state = result;
+        else if (result.HasKey(L"today")) page->shell->state.Insert(L"today", object(result, L"today"));
+        paintToday(page); page->say(done);
+    } catch (hresult_error const& error) { if (page->current()) page->say(error.message()); }
+    catch (...) { if (page->current()) page->say(L"The suggestion could not be updated. Mail was not changed."); }
+    page->busy = false;
+}
 void paintToday(P const& p) {
     auto today=object(p->shell->state,L"today"); p->queue.Children().Clear();
     auto counts=object(today,L"replySuggestionCounts"); unsigned replies=0;
@@ -332,6 +350,37 @@ void paintToday(P const& p) {
         p->queue.Children().Append(button(L"Review suggested reply",[weak=p->shell->weak_from_this(),proposal]{ if(auto shell=weak.lock()){ shell->review->selections[std::wstring(shell->review->scope)]=keyOf(proposal); shell->review->details[std::wstring(shell->review->scope)]=true; shell->navigate(L"reply-suggestions"); } }));
     }
     p->queue.Children().Append(button(L"View all replies to review",[weak=p->shell->weak_from_this()]{ if(auto shell=weak.lock()) shell->navigate(L"reply-suggestions"); }));
+    words(p->queue, L"Suggested tasks", 20);
+    words(p->queue, L"From saved summaries and unread Inbox mail on this device. Completing one does not mark mail read, send mail, or change Email Brain.", 12);
+    unsigned suggestions = 0;
+    for (auto const& value : array(today, L"todos")) {
+        auto todo = value.GetObject(); if (p->scope != L"all" && text(todo, L"accountId") != p->scope) continue; ++suggestions;
+        words(p->queue, text(todo, L"title"), 15);
+        words(p->queue, text(todo, L"categoryName") + L" · " + text(todo, L"accountId"), 12);
+        words(p->queue, text(todo, L"detail"), 12);
+        auto id = text(todo, L"id"), owner = text(todo, L"accountId"), title = text(todo, L"title");
+        p->queue.Children().Append(button(L"Complete suggestion…", [weak = std::weak_ptr<Page>(p), id, owner, title] {
+            if (auto page = weak.lock()) reviewTodo(page, L"/workspace/todos/complete", owner, id, title, L"Complete this suggestion?", L"Suggestion completed. The message was not marked read.");
+        }));
+        Json metadata; put(metadata, L"id", text(todo, L"messageId")); put(metadata, L"accountId", owner);
+        p->queue.Children().Append(button(L"View original message", [weak = std::weak_ptr<Page>(p), metadata] {
+            if (auto page = weak.lock(); page && page->current()) selectOriginal(page, metadata);
+        }));
+    }
+    if (!suggestions) words(p->queue, L"No open suggestions in this scope.");
+    Expander completed; completed.Header(box_value(L"Completed suggestions")); auto doneList = stack(8);
+    unsigned finished = 0;
+    for (auto const& value : array(today, L"completedTodos")) {
+        auto todo = value.GetObject(); if (p->scope != L"all" && text(todo, L"accountId") != p->scope) continue; ++finished;
+        words(doneList, text(todo, L"title"), 15);
+        words(doneList, text(todo, L"categoryName") + L" · " + text(todo, L"accountId"), 12);
+        auto id = text(todo, L"id"), owner = text(todo, L"accountId"), title = text(todo, L"title");
+        doneList.Children().Append(button(L"Reopen suggestion…", [weak = std::weak_ptr<Page>(p), id, owner, title] {
+            if (auto page = weak.lock()) reviewTodo(page, L"/workspace/todos/reopen", owner, id, title, L"Reopen this suggestion?", L"Suggestion reopened. Mail was not changed.");
+        }));
+    }
+    if (!finished) words(doneList, L"No completed suggestions in this scope.");
+    completed.Content(doneList); p->queue.Children().Append(completed);
     other.Content(more); p->queue.Children().Append(other);
     Expander summaries; summaries.Header(box_value(L"Full summary details")); auto reports=stack(12);
     for(auto const& value:array(today,L"summaries")) { auto report=value.GetObject(); if(p->scope!=L"all" && text(report,L"accountId")!=p->scope) continue; words(reports,text(report,L"accountId"),12); words(reports,text(report,L"text")); }

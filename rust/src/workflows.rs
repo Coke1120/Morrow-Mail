@@ -372,6 +372,9 @@ pub fn create_plan(
 }
 
 pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
+    if let Some(response) = crate::home::handle(app, ctx).await? {
+        return Ok(Some(response));
+    }
     if let Some(response) = crate::brain::handle(app, ctx).await? {
         return Ok(Some(response));
     }
@@ -424,7 +427,7 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             let config=db.settings()?;if !valid_account(&config,&owner){return Err(Error::conflict("Choose a connected mailbox."));}let current=workspace(&config,&owner);let mut skills=current["skills"].as_array().cloned().unwrap_or_default();let existing=if input.get("id").is_some_and(|v|!v.is_null()&&v!=""){Some(skills.iter().position(|s|s["id"]==input["id"]).ok_or_else(||Error::new(404,"Skill not found."))?)}else{None};if existing.is_none()&&skills.len()>=20{return Err(Error::invalid("Keep at most 20 custom skills."));}
             let name=validation::text(&input["name"],"Skill name",80,false)?.trim();let instructions=validation::text(&input["instructions"],"Skill instructions",4000,false)?.trim();if input.get("enabled").is_some_and(|v|!v.is_boolean()){return Err(Error::invalid("Skill enabled must be true or false."));}
             let previous=existing.map(|i|skills[i].clone()).unwrap_or(Value::Null);let default_folders=json!({"inbox":true,"sent":false,"drafts":false,"archive":false,"trash":false});let folders=if input.get("folders").is_some_and(|v|!v.is_null()){policy::update(&json!({"folders":default_folders}),&json!({"folders":input["folders"]}))?["folders"].clone()}else{previous.get("folders").cloned().unwrap_or(default_folders)};
-            let skill=json!({"id":previous.get("id").cloned().unwrap_or(json!(uuid::Uuid::new_v4().to_string())),"name":name,"instructions":instructions,"enabled":input.get("enabled").or_else(||previous.get("enabled")).cloned().unwrap_or(json!(true)),"folders":folders});if let Some(index)=existing{skills[index]=skill;}else{skills.push(skill);}save_workspace(db,&owner,&json!({"skills":skills}))?;ai::invalidate(db)
+            let skill=json!({"id":previous.get("id").cloned().unwrap_or(json!(uuid::Uuid::new_v4().to_string())),"name":name,"instructions":instructions,"enabled":input.get("enabled").or_else(||previous.get("enabled")).cloned().unwrap_or(json!(true)),"folders":folders});let skill=crate::home::finish_skill(db,&owner,&input,&previous,skill)?;if let Some(index)=existing{skills[index]=skill;}else{skills.push(skill);}save_workspace(db,&owner,&json!({"skills":skills}))?;ai::invalidate(db)
         }).await?;
             app.state(&ctx.owner, ctx.paged).await?
         }

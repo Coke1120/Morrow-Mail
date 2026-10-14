@@ -33,6 +33,8 @@ struct StudioView: View {
     @State private var savedNotes = ""
     @State private var learningDirty = false
     @State private var skillEditor: SkillEdit?
+    @State private var categoryEditor: JSON = .object(["id": .string(""), "name": .string(""), "description": .string(""), "enabled": .bool(true), "priority": .string("")])
+    @State private var categoryPrompt = ""
     @State private var memoryPreview: JSON = .null
     @State private var memoryOptions: JSON = .null
     @State private var findingMemories = false
@@ -105,6 +107,7 @@ struct StudioView: View {
                     Button("Writing Style & Notes") { navigate("brain") }
                     Button("Local Inbox Rules") { navigate("rules") }
                     Button("Reusable Skills") { navigate("skills") }
+                    Button("Mail Categories") { navigate("categories") }
                     Button("Local Simulations") { navigate("simulations") }
                     Button("Simulation History") { navigate("activity") }
                 }.fixedSize()
@@ -119,6 +122,7 @@ struct StudioView: View {
             switch tab {
             case "brain": brainPage
             case "rules": LocalRulesView()
+            case "categories": categoriesPage
             case "skills": skillsPage
             case "activity": activityPage
             default: toolsPage
@@ -140,7 +144,7 @@ struct StudioView: View {
         .onChange(of: action) { _ in clearResult() }
         .onChange(of: messageID) { _ in clearResult() }
         .onChange(of: model.mailPage) { _ in if usesReadingList && contextSearch.isNull && !permitted.contains(where: { $0.viewID == messageID }) { messageID = permitted.first?.viewID ?? "" } }
-        .onChange(of: review.scope) { _ in skillEditor = nil; clearResult(); clearContextSearch(); memoryPreview = .null; selectedMemories = []; learningDirty = false; model.dirty("brain", false); loadBrain() }
+        .onChange(of: review.scope) { _ in skillEditor = nil; categoryEditor = .object(["id": .string(""), "name": .string(""), "description": .string(""), "enabled": .bool(true), "priority": .string("")]); categoryPrompt = ""; clearResult(); clearContextSearch(); memoryPreview = .null; selectedMemories = []; learningDirty = false; model.dirty("brain", false); loadBrain() }
         .onChange(of: model.account) { _ in clearContextSearch() }
         .onChange(of: skillID) { _ in clearResult() }
         .onChange(of: prompt) { _ in clearResult() }
@@ -363,21 +367,137 @@ struct StudioView: View {
             }.padding(20).disabled(operationBusy)
         }
     }
+    var categoriesPage: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                if scopeAll { Text("Choose one mailbox above for mail categories.").foregroundStyle(.secondary) }
+                else if !scopeStateReady { ProgressView("Loading this mailbox…").controlSize(.small) }
+                SectionHeading(title: "Mail categories", detail: "Ordered labels for Today suggestions on this mailbox. Saving does not call a model.")
+                ForEach(Array(workspace["categories"].array.enumerated()), id: \.element.id) { index, category in
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(category["name"].string + (category["enabled"].bool ? "" : " — disabled")).font(.headline)
+                            Text((category["priority"].nonempty ? category["priority"].string : "No priority") + " · " + category["description"].string).foregroundStyle(.secondary)
+                            HStack {
+                                Button("Edit") { categoryEditor = category }
+                                Button("Delete") {
+                                    guard model.confirm("Delete “\(category["name"].string)”?", detail: "Mail is not changed. Today rebuilds suggestions from the categories you keep.") else { return }
+                                    let owner = scope, id = category.id
+                                    guard !operationBusy else { return }
+                                    model.perform {
+                                        let next = try await model.request("/workspace/categories/" + encodedPath(id), method: "DELETE", body: .object([:]), mailbox: owner)
+                                        guard review.scope == owner else { return }
+                                        store(next, owner: owner)
+                                    }
+                                }
+                                Button("Move Up") { reorderCategories(index, by: -1) }.disabled(index == 0)
+                                Button("Move Down") { reorderCategories(index, by: 1) }.disabled(index + 1 == workspace["categories"].array.count)
+                            }
+                        }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(categoryEditor["id"].nonempty ? "Edit category" : "Add category").font(.headline)
+                        TextField("Name", text: Binding(get: { categoryEditor["name"].string }, set: { categoryEditor["name"] = .string($0) }))
+                        TextField("Description", text: Binding(get: { categoryEditor["description"].string }, set: { categoryEditor["description"] = .string($0) }))
+                        Picker("Priority", selection: Binding(get: { categoryEditor["priority"].string }, set: { categoryEditor["priority"] = .string($0) })) {
+                            Text("None").tag("")
+                            ForEach(["P0", "P1", "P2", "P3", "P4"], id: \.self) { Text($0).tag($0) }
+                        }
+                        Toggle("Enabled", isOn: Binding(get: { categoryEditor["enabled"].bool }, set: { categoryEditor["enabled"] = .bool($0) })).toggleStyle(.checkbox)
+                        HStack {
+                            Button(categoryEditor["id"].nonempty ? "Save Category" : "Add Category") { saveCategory() }.disabled(categoryEditor["name"].string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            Button("Clear") { categoryEditor = .object(["id": .string(""), "name": .string(""), "description": .string(""), "enabled": .bool(true), "priority": .string("")]) }
+                        }
+                        TextField("Draft a category name", text: $categoryPrompt)
+                        Button("Draft Name") { draftCategory() }
+                        Button("Reset Suggested Categories") {
+                            guard model.confirm("Restore the suggested categories?", detail: "This replaces the saved list for this mailbox. Mail is not changed.") else { return }
+                            let owner = scope
+                            guard !operationBusy else { return }
+                            model.perform {
+                                let next = try await model.request("/workspace/categories/reset", method: "POST", body: .object([:]), mailbox: owner)
+                                guard review.scope == owner else { return }
+                                store(next, owner: owner); model.notice = "Suggested categories restored."
+                            }
+                        }
+                    }.padding(8)
+                }
+                Text("A drafted name is not saved until you add it. No model is called.").font(.caption).foregroundStyle(.secondary)
+            }.padding(16).disabled(scopeAll || !scopeStateReady || operationBusy)
+        }
+    }
+    func saveCategory() {
+        let owner = scope, editor = categoryEditor
+        let id = editor.id
+        let path = id.isEmpty ? "/workspace/categories" : "/workspace/categories/" + encodedPath(id)
+        guard !operationBusy else { return }
+        model.perform {
+            let next = try await model.request(path, method: "POST", body: editor, mailbox: owner)
+            guard review.scope == owner else { return }
+            store(next, owner: owner)
+            categoryEditor = .object(["id": .string(""), "name": .string(""), "description": .string(""), "enabled": .bool(true), "priority": .string("")])
+            model.notice = "Category saved for this mailbox."
+        }
+    }
+    func draftCategory() {
+        let owner = scope, prompt = categoryPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty, !operationBusy else { return }
+        model.perform {
+            let response = try await model.request("/workspace/categories/suggest", method: "POST", body: .object(["prompt": .string(prompt)]), mailbox: owner)
+            guard review.scope == owner, response["stub"].bool, !response["saved"].bool else { return }
+            categoryEditor = .object(["id": .string(""), "name": response["suggestion"]["name"], "description": response["suggestion"]["description"], "enabled": .bool(true), "priority": .string("")])
+            model.notice = "Draft only. Add the category if you want to keep it. No model was called."
+        }
+    }
+    func reorderCategories(_ index: Int, by offset: Int) {
+        var ids = workspace["categories"].array.map(\.id)
+        let next = index + offset
+        guard ids.indices.contains(index), ids.indices.contains(next), !operationBusy else { return }
+        ids.swapAt(index, next)
+        let owner = scope
+        model.perform {
+            let result = try await model.request("/workspace/categories/reorder", method: "POST", body: .object(["ids": .array(ids.map { .string($0) })]), mailbox: owner)
+            guard review.scope == owner else { return }
+            store(result, owner: owner)
+        }
+    }
     var skillsPage: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 if scopeAll { Text("Choose one mailbox above for reusable skills.").foregroundStyle(.secondary) }
                 else if !scopeStateReady { ProgressView("Loading this mailbox…").controlSize(.small) }
-                HStack { SectionHeading(title: "Reusable email skills", detail: "Your instructions, run only when you ask. Global AI permissions always apply."); Button("New Skill") { skillEditor = SkillEdit(value: .null) }.buttonStyle(.borderedProminent).disabled(scopeAll || !scopeStateReady || operationBusy) }
+                HStack { SectionHeading(title: "Reusable email skills", detail: "Run a skill yourself, or let a schedule add it to the review queue. Nothing is sent automatically."); Button("New Skill") { skillEditor = SkillEdit(value: .null) }.buttonStyle(.borderedProminent).disabled(scopeAll || !scopeStateReady || operationBusy) }
                 ForEach(workspace["skills"].array) { skill in
                     GroupBox {
                         VStack(alignment: .leading, spacing: 12) {
                             HStack { Text(skill["name"].string).font(.headline); Spacer(); Text(skill["enabled"].bool ? "Enabled" : "Disabled").font(.caption).foregroundStyle(.secondary) }
                             Text(skill["instructions"].string).foregroundStyle(.secondary).textSelection(.enabled)
                             Text("Folders: " + permissionFolders.filter { skill["folders"][$0].bool }.joined(separator: ", ")).font(.caption)
+                            Text(skillScheduleLabel(skill)).font(.caption).foregroundStyle(.secondary)
                             HStack {
                                 Button("Use Skill") { skillID = skill.id; action = "skill"; model.studioTab = "tools" }.disabled(!skill["enabled"].bool)
                                 Button("Edit") { skillEditor = SkillEdit(value: skill) }
+                                Button("Queue Review") {
+                                    guard model.confirm("Queue “\(skill["name"].string)” for review?", detail: "This adds a review item. It does not send mail or update Email Brain.") else { return }
+                                    let owner = scope, id = skill.id
+                                    guard !operationBusy else { return }
+                                    model.perform {
+                                        let next = try await model.request("/workspace/skill-reviews", method: "POST", body: .object(["skillId": .string(id), "confirm": .bool(true)]), mailbox: owner)
+                                        guard review.scope == owner else { return }
+                                        store(next, owner: owner); model.notice = "Queued for review. Nothing was sent."
+                                    }
+                                }.disabled(!skill["enabled"].bool)
+                                Button(skill["autoExecute"].bool ? "Stop Queueing When Due" : "Queue When Due") {
+                                    let owner = scope, id = skill.id, enabled = !skill["autoExecute"].bool
+                                    guard !operationBusy else { return }
+                                    model.perform {
+                                        let next = try await model.request("/skills/" + encodedPath(id) + "/auto-execute", method: "POST", body: .object(["enabled": .bool(enabled), "autoExecuteMode": .string("review")]), mailbox: owner)
+                                        guard review.scope == owner else { return }
+                                        store(next, owner: owner)
+                                    }
+                                }
                                 Button("Delete") {
                                     guard model.confirm("Delete “\(skill["name"].string)” ?", detail: "This removes the saved instructions.") else { return }
                                     let owner = scope, id = skill.id
@@ -392,8 +512,69 @@ struct StudioView: View {
                         }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
+                SectionHeading(title: "Skill library", detail: "Install a prepared instruction set for this mailbox. Installing does not run it.")
+                ForEach(workspace["skillLibrary"].array) { item in
+                    HStack(alignment: .top) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(item["name"].string).font(.headline)
+                            Text(item["instructions"].string).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if item["installed"].bool { Text("Installed").font(.caption).foregroundStyle(.secondary) }
+                        else {
+                            Button("Install") {
+                                let owner = scope, id = item.id
+                                guard !operationBusy else { return }
+                                model.perform {
+                                    let next = try await model.request("/skills/library", method: "POST", body: .object(["libraryId": .string(id)]), mailbox: owner)
+                                    guard review.scope == owner else { return }
+                                    store(next, owner: owner); model.notice = "Library skill installed. It stays manual until you queue a review."
+                                }
+                            }
+                        }
+                    }
+                }
+                SectionHeading(title: "Review queue", detail: "Schedules and the queue button stop here. Opening a review does not send mail or update Email Brain.")
+                if workspace["skillReviews"].array.isEmpty { Text("Nothing is waiting for review.").foregroundStyle(.secondary) }
+                ForEach(workspace["skillReviews"].array) { item in
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(item["skillName"].string).font(.headline)
+                            Text(item["kind"].string + " · " + item["status"].string + " · " + item["source"].string).font(.caption)
+                            Text(item["detail"].string).foregroundStyle(.secondary)
+                            HStack {
+                                Button("Open Review") {
+                                    guard model.confirm("Open this review?", detail: "Opening it does not send mail or update Email Brain.") else { return }
+                                    let owner = scope, id = item.id
+                                    guard !operationBusy else { return }
+                                    model.perform {
+                                        let next = try await model.request("/workspace/skill-reviews/" + encodedPath(id) + "/open", method: "POST", body: .object(["confirm": .bool(true)]), mailbox: owner)
+                                        guard review.scope == owner else { return }
+                                        store(next, owner: owner)
+                                    }
+                                }
+                                Button("Dismiss") {
+                                    guard model.confirm("Dismiss this review?", detail: "The skill stays saved. Nothing is sent.") else { return }
+                                    let owner = scope, id = item.id
+                                    guard !operationBusy else { return }
+                                    model.perform {
+                                        let next = try await model.request("/workspace/skill-reviews/" + encodedPath(id) + "/dismiss", method: "POST", body: .object(["confirm": .bool(true)]), mailbox: owner)
+                                        guard review.scope == owner else { return }
+                                        store(next, owner: owner)
+                                    }
+                                }
+                            }
+                        }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
             }.padding(16).disabled(operationBusy)
         }
+    }
+    func skillScheduleLabel(_ skill: JSON) -> String {
+        let queue = skill["autoExecute"].bool ? "Due runs join the review queue." : "Manual only."
+        guard skill["schedule"].isObject else { return queue + " No schedule saved." }
+        let schedule = skill["schedule"]
+        return queue + " Schedule: " + schedule["cadence"].string + " " + schedule["time"].string + " " + schedule["timeZone"].string + (schedule["enabled"].bool ? " · on" : " · off") + "."
     }
     var activityPage: some View {
         ScrollView {
@@ -557,6 +738,7 @@ struct StudioView: View {
     func store(_ next: JSON, owner: String) {
         guard next["account"]["id"].string == owner else { return }
         if owner == model.account { model.state = next }
+        else if !next["today"].isNull { model.state["today"] = next["today"] }
         if owner == review.scope { scopedState = next }
     }
     func loadScopedState() async {
@@ -630,7 +812,13 @@ struct SkillEditor: View {
         self.initial = initial
         self.mailbox = mailbox
         self.onSaved = onSaved
-        let value: JSON = initial.isNull ? .object(["name": .string(""), "instructions": .string(""), "enabled": .bool(true), "folders": .object(Dictionary(uniqueKeysWithValues: permissionFolders.map { ($0, .bool($0 == "inbox")) }))]) : initial
+        var value: JSON = initial.isNull ? .object(["name": .string(""), "instructions": .string(""), "enabled": .bool(true), "folders": .object(Dictionary(uniqueKeysWithValues: permissionFolders.map { ($0, .bool($0 == "inbox")) }))]) : initial
+        if value["autoExecute"].isNull { value["autoExecute"] = .bool(false) }
+        let keepSchedule = value["schedule"].isObject
+        if !keepSchedule {
+            value["schedule"] = .object(["enabled": .bool(false), "cadence": .string("daily"), "time": .string("09:00"), "timeZone": .string(TimeZone.current.identifier), "intervalHours": .number(24)])
+        }
+        value["keepSchedule"] = .bool(keepSchedule)
         _skill = State(initialValue: value); _baseline = State(initialValue: value)
     }
     var dirty: Bool { skill != baseline }
@@ -642,6 +830,20 @@ struct SkillEditor: View {
             Toggle("Enable this skill", isOn: Binding(get: { skill["enabled"].bool }, set: { skill["enabled"] = .bool($0) })).toggleStyle(.checkbox)
             Text("Folders this skill can use").font(.headline)
             HStack { ForEach(permissionFolders, id: \.self) { folder in Toggle(folder.capitalized, isOn: Binding(get: { skill["folders"][folder].bool }, set: { skill["folders"][folder] = .bool($0) })).toggleStyle(.checkbox) } }
+            Toggle("Queue a review when the schedule is due", isOn: Binding(get: { skill["autoExecute"].bool }, set: { skill["autoExecute"] = .bool($0) })).toggleStyle(.checkbox)
+            Text("Due skills are added to the review queue. Morrow does not send mail or update Email Brain.").font(.caption).foregroundStyle(.secondary)
+            Toggle("Save a schedule", isOn: Binding(get: { skill["keepSchedule"].bool }, set: { skill["keepSchedule"] = .bool($0) })).toggleStyle(.checkbox)
+            if skill["keepSchedule"].bool {
+                Toggle("Schedule enabled", isOn: Binding(get: { skill["schedule"]["enabled"].bool }, set: { skill["schedule"]["enabled"] = .bool($0) })).toggleStyle(.checkbox)
+                Picker("Cadence", selection: Binding(get: { skill["schedule"]["cadence"].string }, set: { skill["schedule"]["cadence"] = .string($0) })) {
+                    Text("Daily").tag("daily"); Text("Interval").tag("interval")
+                }
+                TextField("Time (HH:MM)", text: Binding(get: { skill["schedule"]["time"].string }, set: { skill["schedule"]["time"] = .string($0) }))
+                TextField("IANA time zone", text: Binding(get: { skill["schedule"]["timeZone"].string }, set: { skill["schedule"]["timeZone"] = .string($0) }))
+                Stepper(value: Binding(get: { skill["schedule"]["intervalHours"].number }, set: { skill["schedule"]["intervalHours"] = .number($0) }), in: 1.0...168.0) {
+                    Text("Interval hours: \(Int(skill["schedule"]["intervalHours"].number))")
+                }
+            }
             Text("Global AI permissions still apply. Skills never execute external actions or send mail.").font(.caption).foregroundStyle(.secondary)
             if !error.isEmpty { Text(error).foregroundStyle(.red) }
             HStack {
@@ -651,7 +853,10 @@ struct SkillEditor: View {
                     let owner = mailbox
                     model.perform {
                         do {
-                            let next = try await model.request("/skills", method: "POST", body: skill, mailbox: owner)
+                            var payload = skill
+                            if !skill["keepSchedule"].bool { payload["schedule"] = .null }
+                            payload["autoExecuteMode"] = .string("review")
+                            let next = try await model.request("/skills", method: "POST", body: payload, mailbox: owner)
                             guard model.review.scope == owner else { return }
                             onSaved(next); baseline = skill; dismiss()
                         }
