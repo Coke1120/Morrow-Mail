@@ -1,14 +1,23 @@
 # Morrow Mail feature coverage
 
-**0.8.0 — Gmail reconnect recovery:** eligible Gmail mail reads may
-refresh a rejected access token and retry once. Failed token exchanges and
-provider writes are not automatically replayed. Reconnect responses without a
-refresh token retain an existing token only for the same verified mailbox,
-provider, client credentials and scope set; incompatible responses preserve the
+**Current source — Gmail authorization recovery:** sync, folder-catalog and
+raw-message reads may refresh a rejected access token and retry once. History
+downloads retain routine token-expiry refresh before a request; their first
+resource-API 401 preserves the checkpoint and cached mail and ends the import
+with an authorization error. It does not force another token exchange or read,
+schedule a retry or resume on restart. After authorization recovery, manual
+Resume retains the checkpoint only for the same connection; reconnecting changes
+the connection identity and requires a new import, without deleting cached mail.
+Transient history read/quota backoff remains unchanged.
+Failed token exchanges and provider writes are not automatically replayed.
+Reconnect responses without a refresh token retain an existing token only for
+the same verified mailbox, provider, client credentials and scope set; incompatible responses preserve the
 old connection. Other accounts and cached mail remain intact. Google grant
 revocation and External/Testing expiry still require attention. See
-[validation](VERIFICATION.md#gmail-reconnect-recovery--14-october-2026); synthetic
-coverage does not establish live-account acceptance.
+[the correction and validation status](VERIFICATION.md#gmail-history-authorization-correction--14-october-2026).
+This correction is not in the preserved v0.8.0 tag. Earlier PR #46 tests incorrectly
+expected history-download 401 recovery; their passing native runs do not validate
+this policy. Synthetic coverage does not establish live-account acceptance.
 
 **0.8.0 — writing rules, Today, skill reviews and Inbox Agent:** the combined
 PR #42–46 source passed the exact-head native checks and matches the main merge.

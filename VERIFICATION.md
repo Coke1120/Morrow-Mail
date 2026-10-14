@@ -1,5 +1,55 @@
 # Verification — 14 October 2026
 
+## Gmail history authorization correction — 14 October 2026
+
+[Review 4274561882](https://github.com/Coke1120/Morrow-Mail/pull/46#discussion_r4274561882)
+identified a PR #46 regression: history downloads automatically forced a token
+exchange and retried the same page after a Gmail resource-API 401, contrary to
+the [history retry policy](AGENTS.md). The earlier 15-test Gmail regression suite
+included an incorrect expectation that this recovery should succeed. Its passing
+Rust and native runs below remain historical evidence, but do not establish
+compliance with the history authorization policy.
+
+The correction starts from `0d039aeeeec9db0047a8a57a64a0c5cab2d5e912`
+and removes that retry wrapper from history downloads. Routine token-expiry
+refresh before a request remains. The first history resource-API 401 preserves
+the last committed checkpoint and cached mail, fails with the existing safe
+authorization/reconnect error, and schedules no retry. Neither background work
+nor restart resumes that failure. After resolving authorization, explicit Resume
+retains the checkpoint only for the same connection. Reconnecting changes the
+connection identity and requires starting a new import, while preserving cached
+mail. Transient network/quota history backoff is unchanged.
+Ordinary sync, folder-catalog and raw-message reads retain their once-only
+resource-401 recovery, and compatible reconnect-token retention is unchanged.
+No provider-write replay is added.
+
+The replacement first-resource-401 test failed on unchanged v0.8.0 production
+with the expected one-token-request-versus-zero assertion. After the correction,
+all **16 Gmail tests passed**, retaining the original 13 non-history cases.
+The new cases cover list/detail 401, preserved progress and partial-page isolation,
+no background/restart retry, explicit same-connection Resume, six token-exchange
+failure modes, and successful routine expiry refresh.
+
+Linux Rust 1.98 `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`,
+`cargo clippy --manifest-path rust/Cargo.toml --offline --locked --all-targets -- -D warnings`
+and `cargo test --manifest-path rust/Cargo.toml --offline --locked` passed.
+The full suite completed **410 tests, zero failed, four existing ignored
+benchmarks**, across 45 result groups. Its log SHA-256 is
+`9b6c49d9433cfd49f5932259b708573d494d43c0923c5bd1e08e67aca208f982`.
+Independent source/test/documentation review found no remaining correction blocker.
+Fresh macOS/Windows native CI is still pending; the earlier PR #46 native runs
+do not validate this changed source. All provider tests used isolated fictional
+loopback TLS fixtures; no live mailbox, outgoing message or external model was used.
+
+At the recorded 18:25 UTC checkpoint, tag `v0.8.0` already pointed to
+`0d039aeeeec9db0047a8a57a64a0c5cab2d5e912` and
+[run 38613871205](https://github.com/Coke1120/Morrow-Mail/actions/runs/38613871205)
+was still running and unpublished. Cancellation was requested, but no callable
+cancel action was available and cancellation was not confirmed. The tag is
+preserved; this correction selects no replacement version and changes no release
+workflow. The separate Today follow-up remains excluded. Later publication
+decisions require current evidence rather than treating this checkpoint as a pass.
+
 ## v0.8.0 release preparation — 14 October 2026
 
 The owner requested merging PR #46 and releasing v0.8.0. PR #46 was normally
@@ -44,8 +94,10 @@ preparation; no test waiver applies. These notes do not predeclare tagged CI,
 publication or public-byte verification successful.
 
 Known Today capacity/history/priority limitations remain in the [release notes](docs/releases/v0.8.0.md).
-Gmail recovery has a one-refresh limit and can perform two bounded read rounds;
-provider writes are not replayed. Provider revocation/policy expiry, retained-token
+That candidate's Gmail recovery had a one-refresh limit and could perform two
+bounded read rounds; its history-download 401 retry was subsequently found to
+violate policy, as recorded above. Provider writes are not replayed. Provider
+revocation/policy expiry, retained-token
 validity and abrupt termination before token persistence remain outside the fix.
 macOS is ad-hoc signed without Developer ID notarization; Windows is unsigned.
 Hosted fixtures do not complete manual accessibility, physical-device,
@@ -56,6 +108,10 @@ Earlier sections retain their original checkpoints and pending-at-the-time
 statements; the exact PR evidence above supersedes the Gmail native-CI status.
 
 ## Gmail reconnect recovery — 14 October 2026
+
+This is the original PR #46 checkpoint. The subsequent history authorization
+correction above supersedes its history-download 401 behavior, while preserving
+the test and CI results as recorded at the time.
 
 This follow-up starts from main `a059dbd76db9c5a7acc8acb34d8c5be8e85ac02a`.
 Two isolated TLS fixtures reproduced pre-existing reconnect failures: a Gmail

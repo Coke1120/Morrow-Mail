@@ -694,119 +694,71 @@ async fn start_checkpointed_history(server: &Running) -> Value {
     server.app.settings().await.unwrap()["imports"][A].clone()
 }
 
-#[tokio::test]
-async fn gmail_401_history_discards_partial_page_and_retries_the_same_saved_cursor() {
-    let exchanges = Arc::new(AtomicUsize::new(0));
-    let lists = Arc::new(Mutex::new(Vec::new()));
-    let first_details = Arc::new(AtomicUsize::new(0));
-    let (calls, pages, details) = (exchanges.clone(), lists.clone(), first_details.clone());
-    let fixture = Fixture::new(Arc::new(move |request| {
-        let (calls, pages, details) = (calls.clone(), pages.clone(), details.clone());
-        async move {
-            if request.host() == "oauth2.googleapis.com" {
-                calls.fetch_add(1, Ordering::SeqCst);
-                return Reply::Json(200, refreshed_token(None));
-            }
-            assert_eq!(request.method, "GET");
-            let fresh = bearer(&request) == format!("Bearer {FRESH}");
-            let url = url::Url::parse(&format!("https://gmail.googleapis.com{}", request.path)).unwrap();
-            if url.path().ends_with("/labels") { return empty_read(&request); }
-            if url.path().ends_with("/messages") {
-                let query = url.query_pairs().collect::<HashMap<_, _>>();
-                assert_eq!(query["pageToken"], "saved-history-page");
-                pages.lock().unwrap().push(request.path.clone());
-                return Reply::Json(200, json!({"messages":[{"id":"partial-first"},{"id":"partial-second"}],"nextPageToken":"next-history-page"}));
-            }
-            let id = percent_encoding::percent_decode_str(url.path().rsplit('/').next().unwrap()).decode_utf8().unwrap();
-            assert!(["partial-first", "partial-second"].contains(&id.as_ref()), "Unexpected synthetic detail endpoint: {}", request.path);
-            if id == "partial-first" { details.fetch_add(1, Ordering::SeqCst); }
-            if id == "partial-second" && !fresh { return unauthorized(); }
-            let mut row = google_message(&id, A, if fresh { "Fresh retried page" } else { "Discarded partial body" });
-            row["internalDate"] = (chrono::Utc::now() - chrono::Duration::days(1)).timestamp_millis().to_string().into();
-            Reply::Json(200, row)
-        }.boxed()
-    })).await;
-    let server = fixture.start().await;
-    let mut original = config(&[(A, "google"), (B, "google")]);
-    original["preferences"]["syncInterval"] = 0.into();
-    original["policy"] = json!({"enabled":false});
-    set(&server.app, original.clone()).await;
-    seed_cache(&server.app).await;
-    let checkpoint = start_checkpointed_history(&server).await;
-    morrow_search::background::tick(&server.app).await.unwrap();
-    assert_eq!(exchanges.load(Ordering::SeqCst), 1);
-    let lists = lists.lock().unwrap().clone();
-    assert_eq!(lists.len(), 2);
-    assert_eq!(
-        lists[0], lists[1],
-        "Retry retains the exact owned page cursor and date window"
-    );
-    assert_eq!(
-        first_details.load(Ordering::SeqCst),
-        2,
-        "The failed attempt's partial body cache must be discarded"
-    );
-    let saved = server.app.settings().await.unwrap();
-    let job = &saved["imports"][A];
-    assert_eq!(job["id"], checkpoint["id"]);
-    assert_eq!(job["cursor"], "next-history-page");
-    assert_eq!(job["folderIndex"], checkpoint["folderIndex"]);
-    assert_eq!(
-        job["pages"], 2,
-        "One successful page commit, not one commit per attempt"
-    );
-    assert_eq!(job["processed"], 3);
-    assert_eq!(job["imported"], 3);
-    assert_eq!(job["status"], "running");
-    assert_eq!(saved["mailAccounts"][B], original["mailAccounts"][B]);
-    server
-        .app
-        .db(|db| {
-            for id in ["google:partial-first", "google:partial-second"] {
-                assert_eq!(db.get(A, id)?.unwrap()["body"], "Fresh retried page");
-                assert!(db.get(B, id)?.is_none());
-            }
-            assert!(db.get(A, "prior-history-row")?.is_some());
-            Ok(())
-        })
-        .await
-        .unwrap();
-    assert_cache(&server.app).await;
-    server.shutdown().await;
-    let server = fixture.start().await;
-    assert_eq!(
-        server.app.settings().await.unwrap()["imports"][A]["cursor"],
-        "next-history-page"
-    );
-    assert_eq!(exchanges.load(Ordering::SeqCst), 1);
-    server.shutdown().await;
+fn assert_history_checkpoint(job: &Value, checkpoint: &Value) {
+    for key in [
+        "id",
+        "cursor",
+        "pages",
+        "processed",
+        "imported",
+        "folderIndex",
+        "since",
+        "before",
+        "recentSince",
+        "visited",
+        "options",
+        "connectionId",
+        "retryCount",
+    ] {
+        assert_eq!(job[key], checkpoint[key], "Saved history checkpoint {key}");
+    }
 }
 
 #[tokio::test]
-async fn gmail_401_history_authentication_failures_do_not_advance_or_auto_retry() {
-    for (mode, code, recovery) in [
-        (0, "authorization", "reconnect"),
-        (1, "authorization", "reconnect"),
-        (2, "import_failed", "resume"),
-    ] {
+async fn gmail_history_resource_401_stops_until_manual_resume_without_refresh_or_page_retry() {
+    for failure_at in ["list", "detail"] {
         let exchanges = Arc::new(AtomicUsize::new(0));
-        let reads = Arc::new(AtomicUsize::new(0));
-        let (calls, pages) = (exchanges.clone(), reads.clone());
+        let lists = Arc::new(Mutex::new(Vec::new()));
+        let first_details = Arc::new(AtomicUsize::new(0));
+        let resources = Arc::new(AtomicUsize::new(0));
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let (calls, pages, details, reads, allow) = (
+            exchanges.clone(),
+            lists.clone(),
+            first_details.clone(),
+            resources.clone(),
+            accepted.clone(),
+        );
         let fixture = Fixture::new(Arc::new(move |request| {
-            let (calls, pages) = (calls.clone(), pages.clone());
+            let (calls, pages, details, reads, allow) = (
+                calls.clone(), pages.clone(), details.clone(), reads.clone(), allow.clone(),
+            );
             async move {
                 if request.host() == "oauth2.googleapis.com" {
                     calls.fetch_add(1, Ordering::SeqCst);
-                    return match mode {
-                        0 => Reply::Json(200, refreshed_token(None)),
-                        1 => Reply::Json(400, json!({"error":"invalid_grant","error_description":"PRIVATE_TOKEN_DETAIL"})),
-                        _ => Reply::Json(503, json!({"error":"PRIVATE_TOKEN_DETAIL"})),
-                    };
+                    return Reply::Json(200, refreshed_token(None));
                 }
+                assert_eq!(request.host(), "gmail.googleapis.com");
                 assert_eq!(request.method, "GET");
-                assert!(request.path.contains("pageToken=saved-history-page"));
-                pages.fetch_add(1, Ordering::SeqCst);
-                unauthorized()
+                assert_eq!(bearer(&request), format!("Bearer fixture-{A}"));
+                reads.fetch_add(1, Ordering::SeqCst);
+                let ready = allow.load(Ordering::SeqCst) == 1;
+                let url = url::Url::parse(&format!("https://gmail.googleapis.com{}", request.path)).unwrap();
+                if url.path().ends_with("/labels") { return empty_read(&request); }
+                if url.path().ends_with("/messages") {
+                    let query = url.query_pairs().collect::<HashMap<_, _>>();
+                    assert_eq!(query["pageToken"], "saved-history-page");
+                    pages.lock().unwrap().push(request.path.clone());
+                    if failure_at == "list" && !ready { return unauthorized(); }
+                    return Reply::Json(200, json!({"messages":[{"id":"partial-first"},{"id":"partial-second"}],"nextPageToken":"next-history-page"}));
+                }
+                let id = percent_encoding::percent_decode_str(url.path().rsplit('/').next().unwrap()).decode_utf8().unwrap();
+                assert!(["partial-first", "partial-second"].contains(&id.as_ref()), "Unexpected synthetic detail endpoint: {}", request.path);
+                if id == "partial-first" { details.fetch_add(1, Ordering::SeqCst); }
+                if id == "partial-second" && !ready { return unauthorized(); }
+                let mut row = google_message(&id, A, if ready { "Fresh manually resumed page" } else { "Discarded partial body" });
+                row["internalDate"] = (chrono::Utc::now() - chrono::Duration::days(1)).timestamp_millis().to_string().into();
+                Reply::Json(200, row)
             }.boxed()
         })).await;
         let server = fixture.start().await;
@@ -817,45 +769,325 @@ async fn gmail_401_history_authentication_failures_do_not_advance_or_auto_retry(
         seed_cache(&server.app).await;
         let checkpoint = start_checkpointed_history(&server).await;
         morrow_search::background::tick(&server.app).await.unwrap();
+        assert_eq!(
+            exchanges.load(Ordering::SeqCst),
+            0,
+            "History {failure_at} 401 must stop before token egress"
+        );
+        assert_eq!(
+            lists.lock().unwrap().len(),
+            1,
+            "History {failure_at} 401 must not retry the page in the same tick"
+        );
+        assert_eq!(
+            first_details.load(Ordering::SeqCst),
+            usize::from(failure_at == "detail")
+        );
+        let reads_before = resources.load(Ordering::SeqCst);
+        let saved = server.app.settings().await.unwrap();
+        let failed = saved["imports"][A].clone();
+        assert_history_checkpoint(&failed, &checkpoint);
+        assert_eq!(failed["status"], "failed");
+        assert_eq!(failed["errorCode"], "authorization");
+        assert_eq!(failed["recoveryAction"], "reconnect");
+        assert!(failed["nextRetryAt"].is_null());
+        assert_safe(&failed);
+        assert_eq!(saved["mailAccounts"], original["mailAccounts"]);
+        server
+            .app
+            .db(|db| {
+                assert!(db.get(A, "google:partial-first")?.is_none());
+                assert!(db.get(A, "google:partial-second")?.is_none());
+                assert!(db.get(A, "prior-history-row")?.is_some());
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_cache(&server.app).await;
+
+        // Recovery at the provider is insufficient: failed authorization stays stopped.
+        accepted.store(1, Ordering::SeqCst);
+        for _ in 0..2 {
+            morrow_search::background::tick(&server.app).await.unwrap();
+        }
+        assert_eq!(resources.load(Ordering::SeqCst), reads_before);
+        assert_eq!(exchanges.load(Ordering::SeqCst), 0);
+        assert_eq!(server.app.settings().await.unwrap()["imports"][A], failed);
+        server.shutdown().await;
+        let server = fixture.start().await;
+        morrow_search::background::tick(&server.app).await.unwrap();
+        assert_eq!(
+            resources.load(Ordering::SeqCst),
+            reads_before,
+            "Restart must not retry the failed history page"
+        );
+        assert_eq!(exchanges.load(Ordering::SeqCst), 0);
+        assert_eq!(server.app.settings().await.unwrap()["imports"][A], failed);
+        assert_cache(&server.app).await;
+
+        let resumed = server
+            .call("POST", "/api/imports/resume", A, json!({}))
+            .await;
+        assert_eq!(resumed.0, 200, "{}", resumed.1);
+        assert_safe(&resumed.1);
+        let resumed_job = server.app.settings().await.unwrap()["imports"][A].clone();
+        assert_ne!(resumed_job["id"], checkpoint["id"]);
+        assert_eq!(resumed_job["cursor"], checkpoint["cursor"]);
+        assert_eq!(resumed_job["status"], "running");
+        assert_eq!(
+            resources.load(Ordering::SeqCst),
+            reads_before,
+            "Explicit resume queues work; only the next tick may fetch it"
+        );
+        morrow_search::background::tick(&server.app).await.unwrap();
+        assert_eq!(
+            exchanges.load(Ordering::SeqCst),
+            0,
+            "Manual resume does not force refresh an unexpired access token"
+        );
+        let requests = lists.lock().unwrap().clone();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests[0], requests[1],
+            "Manual resume retains the exact owned cursor and date window"
+        );
+        assert_eq!(
+            first_details.load(Ordering::SeqCst),
+            1 + usize::from(failure_at == "detail"),
+            "A partial body from the failed page must be fetched again after manual resume"
+        );
         let saved = server.app.settings().await.unwrap();
         let job = &saved["imports"][A];
-        for key in [
-            "id",
-            "cursor",
-            "pages",
-            "processed",
-            "imported",
-            "folderIndex",
-            "since",
-            "before",
-        ] {
-            assert_eq!(job[key], checkpoint[key], "mode {mode} checkpoint {key}");
-        }
-        assert_eq!(job["status"], "failed");
-        assert_eq!(job["errorCode"], code);
-        assert_eq!(job["recoveryAction"], recovery);
+        assert_eq!(job["id"], resumed_job["id"]);
+        assert_eq!(job["cursor"], "next-history-page");
+        assert_eq!(job["folderIndex"], checkpoint["folderIndex"]);
+        assert_eq!(
+            job["pages"], 2,
+            "Only the successful page advances progress"
+        );
+        assert_eq!(job["processed"], 3);
+        assert_eq!(job["imported"], 3);
+        assert_eq!(job["status"], "running");
+        assert!(job["errorCode"].is_null());
         assert!(job["nextRetryAt"].is_null());
-        assert_safe(job);
-        assert_eq!(exchanges.load(Ordering::SeqCst), 1);
-        assert_eq!(reads.load(Ordering::SeqCst), if mode == 0 { 2 } else { 1 });
-        morrow_search::background::tick(&server.app).await.unwrap();
-        assert_eq!(exchanges.load(Ordering::SeqCst), 1);
-        assert_eq!(saved["mailAccounts"][B], original["mailAccounts"][B]);
+        assert_eq!(saved["mailAccounts"], original["mailAccounts"]);
+        server
+            .app
+            .db(|db| {
+                for id in ["google:partial-first", "google:partial-second"] {
+                    assert_eq!(
+                        db.get(A, id)?.unwrap()["body"],
+                        "Fresh manually resumed page"
+                    );
+                    assert!(db.get(B, id)?.is_none());
+                }
+                assert!(db.get(A, "prior-history-row")?.is_some());
+                Ok(())
+            })
+            .await
+            .unwrap();
         assert_cache(&server.app).await;
+        server.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn gmail_history_expired_token_failure_requires_manual_resume_before_another_exchange() {
+    for (mode, code, recovery) in [
+        (0, "authorization", "reconnect"),
+        (1, "import_failed", "resume"),
+        (2, "import_failed", "resume"),
+        (3, "import_failed", "resume"),
+        (4, "import_failed", "resume"),
+        (5, "import_failed", "resume"),
+    ] {
+        let exchanges = Arc::new(AtomicUsize::new(0));
+        let reads = Arc::new(AtomicUsize::new(0));
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let (calls, pages, allow) = (exchanges.clone(), reads.clone(), accepted.clone());
+        let fixture = Fixture::new(Arc::new(move |request| {
+            let (calls, pages, allow) = (calls.clone(), pages.clone(), allow.clone());
+            async move {
+                if request.host() == "oauth2.googleapis.com" {
+                    assert_eq!(request.method, "POST");
+                    assert_eq!(request.path, "/token");
+                    let fields = form(&request);
+                    assert_eq!(fields["client_id"], "fixture-client");
+                    assert_eq!(fields["client_secret"], "fixture-secret");
+                    assert_eq!(fields["grant_type"], "refresh_token");
+                    assert_eq!(fields["refresh_token"], "refresh-a@example.invalid");
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    if allow.load(Ordering::SeqCst) == 1 {
+                        return Reply::Json(200, refreshed_token(Some("manual-resume-refresh")));
+                    }
+                    return match mode {
+                        0 => Reply::Json(400, json!({"error":"invalid_grant","error_description":"PRIVATE_TOKEN_DETAIL"})),
+                        1 => Reply::Json(401, json!({"error":"invalid_client","error_description":"PRIVATE_TOKEN_DETAIL"})),
+                        2 => Reply::Json(503, json!({"error":"PRIVATE_TOKEN_DETAIL"})),
+                        3 => Reply::Json(429, json!({"error":"PRIVATE_TOKEN_DETAIL"})),
+                        4 => Reply::Lost,
+                        _ => Reply::Json(200, json!({"access_token":"","expires_in":3600})),
+                    };
+                }
+                assert_eq!(request.host(), "gmail.googleapis.com");
+                assert_eq!(request.method, "GET");
+                assert_eq!(bearer(&request), format!("Bearer {FRESH}"));
+                assert!(request.path.contains("pageToken=saved-history-page"));
+                pages.fetch_add(1, Ordering::SeqCst);
+                Reply::Json(200, json!({"messages":[],"nextPageToken":"after-manual-resume"}))
+            }.boxed()
+        })).await;
+        let server = fixture.start().await;
+        let mut original = config(&[(A, "google"), (B, "google")]);
+        original["preferences"]["syncInterval"] = 0.into();
+        original["policy"] = json!({"enabled":false});
+        original["mailAccounts"][A]["expiresAt"] = 0.into();
+        set(&server.app, original.clone()).await;
+        seed_cache(&server.app).await;
+        let checkpoint = start_checkpointed_history(&server).await;
+        morrow_search::background::tick(&server.app).await.unwrap();
+        let saved = server.app.settings().await.unwrap();
+        let failed = saved["imports"][A].clone();
+        assert_history_checkpoint(&failed, &checkpoint);
+        assert_eq!(failed["status"], "failed", "mode {mode}");
+        assert_eq!(failed["errorCode"], code, "mode {mode}");
+        assert_eq!(failed["recoveryAction"], recovery, "mode {mode}");
+        assert!(failed["nextRetryAt"].is_null());
+        assert_safe(&failed);
+        assert_eq!(
+            exchanges.load(Ordering::SeqCst),
+            1,
+            "The normal expiry refresh is attempted only once"
+        );
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            0,
+            "Failed authentication cannot proceed to the history page"
+        );
+        assert_eq!(saved["mailAccounts"], original["mailAccounts"]);
+        assert_cache(&server.app).await;
+
+        accepted.store(1, Ordering::SeqCst);
+        for _ in 0..2 {
+            morrow_search::background::tick(&server.app).await.unwrap();
+        }
+        assert_eq!(exchanges.load(Ordering::SeqCst), 1);
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+        assert_eq!(server.app.settings().await.unwrap()["imports"][A], failed);
         server.shutdown().await;
         let server = fixture.start().await;
         morrow_search::background::tick(&server.app).await.unwrap();
         assert_eq!(
             exchanges.load(Ordering::SeqCst),
             1,
-            "A restart must not resume a failed authentication exchange"
+            "Restart must not retry a failed routine token refresh"
+        );
+        assert_eq!(reads.load(Ordering::SeqCst), 0);
+        assert_eq!(server.app.settings().await.unwrap()["imports"][A], failed);
+
+        let resumed = server
+            .call("POST", "/api/imports/resume", A, json!({}))
+            .await;
+        assert_eq!(resumed.0, 200, "{}", resumed.1);
+        assert_safe(&resumed.1);
+        let resumed_job = server.app.settings().await.unwrap()["imports"][A].clone();
+        assert_ne!(resumed_job["id"], checkpoint["id"]);
+        assert_eq!(resumed_job["cursor"], checkpoint["cursor"]);
+        assert_eq!(exchanges.load(Ordering::SeqCst), 1);
+        morrow_search::background::tick(&server.app).await.unwrap();
+        assert_eq!(
+            exchanges.load(Ordering::SeqCst),
+            2,
+            "Explicit manual resume permits exactly one new expiry refresh"
+        );
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        let saved = server.app.settings().await.unwrap();
+        let job = &saved["imports"][A];
+        assert_eq!(job["id"], resumed_job["id"]);
+        assert_eq!(job["cursor"], "after-manual-resume");
+        assert_eq!(job["pages"], 2);
+        assert_eq!(job["processed"], checkpoint["processed"]);
+        assert_eq!(job["imported"], checkpoint["imported"]);
+        assert_eq!(job["status"], "running");
+        assert!(job["errorCode"].is_null());
+        assert_eq!(
+            saved["mailAccounts"][A]["refreshToken"],
+            "manual-resume-refresh"
         );
         assert_eq!(
-            server.app.settings().await.unwrap()["imports"][A]["cursor"],
-            checkpoint["cursor"]
+            saved["mailAccounts"][A]["connectionId"],
+            original["mailAccounts"][A]["connectionId"]
         );
+        assert_eq!(saved["mailAccounts"][B], original["mailAccounts"][B]);
+        assert_cache(&server.app).await;
         server.shutdown().await;
     }
+}
+
+#[tokio::test]
+async fn gmail_history_preemptive_expiry_refresh_can_read_the_original_checkpoint() {
+    let exchanges = Arc::new(AtomicUsize::new(0));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let (calls, pages) = (exchanges.clone(), reads.clone());
+    let fixture = Fixture::new(Arc::new(move |request| {
+        let (calls, pages) = (calls.clone(), pages.clone());
+        async move {
+            if request.host() == "oauth2.googleapis.com" {
+                assert_eq!(request.method, "POST");
+                assert_eq!(request.path, "/token");
+                let fields = form(&request);
+                assert_eq!(fields["client_id"], "fixture-client");
+                assert_eq!(fields["client_secret"], "fixture-secret");
+                assert_eq!(fields["grant_type"], "refresh_token");
+                assert_eq!(fields["refresh_token"], "refresh-a@example.invalid");
+                calls.fetch_add(1, Ordering::SeqCst);
+                return Reply::Json(200, refreshed_token(None));
+            }
+            assert_eq!(request.host(), "gmail.googleapis.com");
+            assert_eq!(request.method, "GET");
+            assert_eq!(bearer(&request), format!("Bearer {FRESH}"));
+            assert!(request.path.contains("pageToken=saved-history-page"));
+            pages.fetch_add(1, Ordering::SeqCst);
+            Reply::Json(
+                200,
+                json!({"messages":[],"nextPageToken":"next-after-expiry"}),
+            )
+        }
+        .boxed()
+    }))
+    .await;
+    let server = fixture.start().await;
+    let mut original = config(&[(A, "google"), (B, "google")]);
+    original["preferences"]["syncInterval"] = 0.into();
+    original["policy"] = json!({"enabled":false});
+    original["mailAccounts"][A]["expiresAt"] = 0.into();
+    set(&server.app, original.clone()).await;
+    seed_cache(&server.app).await;
+    let checkpoint = start_checkpointed_history(&server).await;
+    morrow_search::background::tick(&server.app).await.unwrap();
+    assert_eq!(exchanges.load(Ordering::SeqCst), 1);
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+    let saved = server.app.settings().await.unwrap();
+    let job = &saved["imports"][A];
+    assert_eq!(job["id"], checkpoint["id"]);
+    assert_eq!(job["cursor"], "next-after-expiry");
+    assert_eq!(job["pages"], 2);
+    assert_eq!(job["processed"], checkpoint["processed"]);
+    assert_eq!(job["imported"], checkpoint["imported"]);
+    assert_eq!(job["status"], "running");
+    assert!(job["errorCode"].is_null());
+    assert_eq!(saved["mailAccounts"][A]["accessToken"], FRESH);
+    assert_eq!(
+        saved["mailAccounts"][A]["refreshToken"],
+        original["mailAccounts"][A]["refreshToken"]
+    );
+    assert_eq!(
+        saved["mailAccounts"][A]["connectionId"],
+        original["mailAccounts"][A]["connectionId"]
+    );
+    assert_eq!(saved["mailAccounts"][B], original["mailAccounts"][B]);
+    assert_cache(&server.app).await;
+    server.shutdown().await;
 }
 
 #[tokio::test]
