@@ -1613,6 +1613,7 @@ IAsyncAction nativeInteractionChecks(std::shared_ptr<Shell> shell) {
     auto guardAfterFailure = shell->dialogOpen;
     if (release) release();
     check(rejected && !guardAfterFailure, L"A synchronous popup failure retained its dialog guard.");
+    inboxAgentReviewChecks();
     co_await composerWriteGuardChecks(shell);
 }
 IAsyncAction openTodayMailbox(std::shared_ptr<Shell> self, hstring folder, bool unreadOnly) {

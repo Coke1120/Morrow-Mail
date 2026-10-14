@@ -132,7 +132,11 @@ pub(crate) fn guard_review(db: &Store, owner: &str, input: &Value) -> Result<()>
     let config = db.settings()?;
     let id = string(input, "draftId");
     let draft = service::get_message(db, owner, id)?;
-    let expected = payload(&draft)?;
+    let expected = if input["agentReview"] == true {
+        agent_payload(&config, &draft)?
+    } else {
+        payload(&draft)?
+    };
     let mut supplied = content::content(input, false)?;
     supplied["replyToId"] = input.get("replyToId").cloned().unwrap_or(json!(""));
     if draft["deliveryStatus"] == "unconfirmed" && input["footer"] == draft["footer"] {
@@ -154,6 +158,19 @@ pub(crate) fn reviewed_send_body(db: &Store, account: &str, id: &str) -> Result<
     let config = db.settings()?;
     let account = owner(&config, account, false)?;
     let draft = service::get_message(db, &account, id)?;
+    reviewed_agent_draft(db, &account, &draft)
+}
+fn agent_payload(config: &Value, draft: &Value) -> Result<Value> {
+    let mut message = payload(draft)?;
+    if draft.get("footer").is_none() {
+        message["footer"] = content::preferences_footer(&config["preferences"])?;
+    }
+    Ok(message)
+}
+pub(crate) fn reviewed_agent_draft(db: &Store, account: &str, draft: &Value) -> Result<Value> {
+    let config = db.settings()?;
+    let account = owner(&config, account, false)?;
+    let id = string(draft, "id");
     if draft["providerDraft"] == true {
         return Err(Error::conflict(
             "This is a read-only provider draft. Copy it to a local draft before sending.",
@@ -169,7 +186,7 @@ pub(crate) fn reviewed_send_body(db: &Store, account: &str, id: &str) -> Result<
             "Only saved drafts can be reviewed for sending.",
         ));
     }
-    let message = payload(&draft)?;
+    let message = agent_payload(&config, draft)?;
     let hash = review_hash(&config, &account, id, &message)?;
     let mut body = message;
     body["draftId"] = id.into();
@@ -177,6 +194,7 @@ pub(crate) fn reviewed_send_body(db: &Store, account: &str, id: &str) -> Result<
     body["cliReviewHash"] = hash.clone().into();
     body["cliReviewFromName"] = string(&config["preferences"], "displayName").into();
     body["retryUnconfirmed"] = false.into();
+    body["agentReview"] = true.into();
     Ok(json!({"reviewHash":hash,"body":body}))
 }
 async fn route(

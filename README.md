@@ -120,7 +120,7 @@ morrow sync --account person@example.com
 morrow status --account person@example.com
 ```
 
-`list`, `search` and `read` use cached mail without marking it read or triggering AI. `sync` explicitly fetches a bounded round of recent mail; `fetch` downloads MIME/attachments for an already cached message. Sending uses **draft → review → send --confirm** with the owning account and reviewed payload. Never automatically retry an uncertain send. The in-app Inbox Agent, under AI Studio → More, is a separate local multi-turn chat for one mailbox: it uses your configured model, keeps the conversation on this device, and sends only after you confirm in that chat.
+`list`, `search` and `read` use cached mail without marking it read or triggering AI. `sync` explicitly fetches a bounded round of recent mail; `fetch` downloads MIME/attachments for an already cached message. Sending uses **draft → review → send --confirm** with the owning account and reviewed payload. Never automatically retry an uncertain send. The in-app Inbox Agent, under AI Studio → More, is a separate local multi-turn chat for one mailbox: it uses your configured model, keeps the conversation on this device, and sends only after you confirm in that chat. Its read tools and reused history share the saved message limit and current permissions. Drafts are published after a complete turn; cancellation or the 50-second turn limit discards unfinished drafts. Send review includes the full body, sender, recipients, footer and attachments.
 
 See the [CLI guide](docs/CLI.md) for draft/send examples, attachments, workspaces, JSON output and exit codes. External agents with workspace access can read mail independently of the app's AI checkboxes; grant access only to agents you trust.
 

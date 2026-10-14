@@ -1,5 +1,13 @@
 import SwiftUI
 
+private struct AgentSendReview: Identifiable {
+    let id: String
+    let owner: String
+    let conversationID: String
+    let pending: JSON
+    let text: String
+}
+
 struct InboxAgentView: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var review: ReviewWorkspaceState
@@ -10,11 +18,15 @@ struct InboxAgentView: View {
     @State private var message = ""
     @State private var title = ""
     @State private var sending = false
+    @State private var recovering = false
+    @State private var stopping = false
     @State private var turn = 0
+    @State private var sendReview: AgentSendReview?
     private var needsMailbox: Bool { mailbox == "all" || mailbox == "demo" || !model.accounts.contains { $0.id == mailbox } }
     private var status: String { conversation["status"].string }
-    private var reviewing: Bool { sending || ["awaiting", "running", "confirming"].contains(status) }
-    private var operationBusy: Bool { model.busy || model.backgroundBusy }
+    private var reviewing: Bool { sending || recovering || stopping || ["awaiting", "running", "confirming"].contains(status) }
+    private var operationBusy: Bool { model.busy || model.backgroundBusy || stopping }
+    private var sendPreviewReady: Bool { (try? inboxAgentSendReviewText(conversation["pending"]["preview"], owner: mailbox)) != nil }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
@@ -50,21 +62,24 @@ struct InboxAgentView: View {
                         }
                         if !conversation["pending"].isNull {
                             Text(conversation["pending"]["summary"].string).font(.headline)
-                            if !conversation["pending"]["preview"].isNull {
-                                Text(preview(conversation["pending"]["preview"])).font(.callout).textSelection(.enabled)
+                            if conversation["pending"]["kind"].string == "send" {
+                                Text(sendPreviewReady ? "Review the complete message, recipients, attachments and footer before sending." : "This saved review is incomplete. Dismiss it and ask for a new review.").font(.callout).foregroundStyle(.secondary)
                             }
                             HStack {
                                 Button(conversation["pending"]["kind"].string == "send" ? "Review and send" : "Review and apply") { confirmPending() }
+                                    .disabled(recovering || status != "awaiting" || (conversation["pending"]["kind"].string == "send" && !sendPreviewReady))
                                 Button("Dismiss review") { answer("deny") }
+                                    .disabled(recovering || status != "awaiting")
                             }.disabled(operationBusy)
                         }
-                        if sending || status == "running" || status == "awaiting" {
-                            Button("Stop") { stop() }
+                        if sending || recovering || status == "running" || status == "awaiting" {
+                            Button(stopping ? "Stopping…" : "Stop") { stop() }.disabled(stopping)
                             if sending || status == "running" { Text("This turn is still running. Stop it before it finishes. Mail is not sent without confirmation.").font(.caption).foregroundStyle(.secondary) }
                         }
+                        if recovering { Text("Checking the saved conversation after an interrupted request. Nothing will be resent automatically.").font(.caption).foregroundStyle(.secondary) }
                         if status != "running" && status != "confirming" {
-                            TextField("Conversation title", text: $title)
-                            Button("Rename") { rename() }.disabled(operationBusy || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            TextField("Conversation title", text: $title).disabled(reviewing || operationBusy)
+                            Button("Rename") { rename() }.disabled(reviewing || operationBusy || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
                         if !reviewing {
                             TextEditor(text: $message)
@@ -80,10 +95,43 @@ struct InboxAgentView: View {
         }
         .task(id: mailbox) {
             let owner = mailbox
-            turn += 1; sending = false
+            turn += 1; sending = false; recovering = false; stopping = false; sendReview = nil
             recents = []; conversation = .null; selected = ""; message = ""; title = ""
             guard owner != "all", owner != "demo", model.accounts.contains(where: { $0.id == owner }) else { return }
             await load(owner)
+        }
+        .task(id: mailbox + "\n" + selected + "\n" + String(turn)) {
+            let owner = mailbox, id = selected, ticket = turn
+            guard !id.isEmpty else { return }
+            while !Task.isCancelled, review.scope == owner, selected == id, turn == ticket {
+                if !sending && !operationBusy && (recovering || status == "running" || status == "confirming") {
+                    await refreshConversation(owner: owner, id: id, ticket: ticket)
+                }
+                do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
+            }
+        }
+        .onDisappear { turn += 1; sendReview = nil }
+        .sheet(item: $sendReview) { item in
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Send this reviewed message?").font(.title2.bold())
+                ScrollView {
+                    Text(item.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Text("The complete message above will be sent from \(item.owner). Changes to the draft or sender require a new review.").font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("Cancel") { sendReview = nil }.keyboardShortcut(.cancelAction)
+                    Button("Send reviewed message") {
+                        sendReview = nil
+                        guard review.scope == item.owner, selected == item.conversationID,
+                              conversation["pending"] == item.pending, status == "awaiting" else {
+                            model.error = "This review changed. Open the current review before sending."
+                            return
+                        }
+                        answer("confirm")
+                    }.buttonStyle(.borderedProminent).disabled(operationBusy || recovering)
+                }
+            }.padding(24).frame(width: 680, height: 620)
         }
     }
     private func label(_ role: String) -> String {
@@ -95,20 +143,32 @@ struct InboxAgentView: View {
         default: role
         }
     }
-    private func preview(_ value: JSON) -> String {
-        "To: \(value["to"].string)\nCc: \(value["cc"].string)\nBcc: \(value["bcc"].string)\nSubject: \(value["subject"].string)\n\n\(value["body"].string)"
-    }
-    private func apply(_ result: JSON, owner: String) {
-        guard review.scope == owner else { return }
+    @discardableResult private func apply(_ result: JSON, owner: String, expectedID: String? = nil) -> Bool {
+        guard review.scope == owner else { return false }
         guard result["transport"].string == "local-byo", result["cloud"] == .bool(false), result["accountId"].string == owner else {
             model.error = "Inbox Agent returned an unexpected response."
-            return
+            return false
+        }
+        if expectedID != nil || result.object.keys.contains("conversation") {
+            guard result["conversation"]["accountId"].string == owner, !result["conversation"].id.isEmpty,
+                  expectedID == nil || result["conversation"].id == expectedID else {
+                model.error = "Inbox Agent returned a different conversation."
+                return false
+            }
+            conversation = result["conversation"]; selected = conversation.id; title = conversation["title"].string
         }
         recents = result["recents"].array
-        if result.object.keys.contains("conversation") {
-            conversation = result["conversation"]; selected = conversation.id; title = conversation["title"].string
-        } else if result["deleted"].bool {
-            conversation = .null; selected = ""; title = ""
+        return true
+    }
+    private func refreshConversation(owner: String, id: String, ticket: Int) async {
+        do {
+            let result = try await model.request("/agent/conversations/" + encodedPath(id), mailbox: owner)
+            guard !Task.isCancelled, review.scope == owner, selected == id, turn == ticket else { return }
+            recovering = !apply(result, owner: owner, expectedID: id)
+        } catch {
+            guard !Task.isCancelled, review.scope == owner, selected == id, turn == ticket else { return }
+            recovering = true
+            model.error = "The conversation status could not be checked. Stop or wait for recovery before trying again. " + error.localizedDescription
         }
     }
     private func load(_ owner: String) async {
@@ -126,92 +186,124 @@ struct InboxAgentView: View {
     private func start() {
         let owner = mailbox
         guard !needsMailbox, !operationBusy else { return }
+        turn += 1
+        let ticket = turn
         model.perform({
             let result = try await model.request("/agent/start", method: "POST", body: .object([:]), mailbox: owner)
-            guard review.scope == owner else { return }
-            apply(result, owner: owner); message = ""
+            guard review.scope == owner, turn == ticket else { return }
+            if apply(result, owner: owner) { message = ""; recovering = false }
         }, blocksNavigation: false)
     }
     private func open(_ id: String) {
         let owner = mailbox
         guard !needsMailbox, !operationBusy else { return }
+        turn += 1
+        let ticket = turn
         model.perform({
             let result = try await model.request("/agent/conversations/" + encodedPath(id), mailbox: owner)
-            guard review.scope == owner else { return }
-            apply(result, owner: owner)
+            guard review.scope == owner, turn == ticket else { return }
+            if apply(result, owner: owner, expectedID: id) { recovering = false }
         }, blocksNavigation: false)
     }
     private func send() {
         let owner = mailbox, id = selected, text = message
-        guard !needsMailbox, !operationBusy, !sending, !id.isEmpty else { return }
+        guard !needsMailbox, !operationBusy, !reviewing, !id.isEmpty else { return }
+        turn += 1
         let ticket = turn
         sending = true
         guard model.perform({
             defer { if ticket == turn { sending = false } }
-            let result = try await model.request("/agent/send", method: "POST", body: .object(["conversationId": .string(id), "text": .string(text)]), mailbox: owner)
-            guard review.scope == owner, ticket == turn else { return }
-            apply(result, owner: owner); message = ""
+            do {
+                let result = try await model.request("/agent/send", method: "POST", body: .object(["conversationId": .string(id), "text": .string(text)]), mailbox: owner)
+                guard review.scope == owner, selected == id, ticket == turn else { return }
+                if apply(result, owner: owner, expectedID: id) { message = ""; recovering = false }
+                else { recovering = true }
+            } catch {
+                guard review.scope == owner, selected == id, ticket == turn else { return }
+                recovering = true
+                model.error = error.localizedDescription
+                await refreshConversation(owner: owner, id: id, ticket: ticket)
+            }
         }, blocksNavigation: false) else {
             sending = false
             return
         }
     }
     private func confirmPending() {
-        let owner = mailbox, id = selected, proposal = conversation["pending"].id
+        let owner = mailbox, id = selected, pending = conversation["pending"]
         let delivering = conversation["pending"]["kind"].string == "send"
+        guard !operationBusy, !recovering, status == "awaiting", !id.isEmpty, !pending.id.isEmpty else { return }
+        if delivering {
+            do {
+                sendReview = AgentSendReview(id: pending.id, owner: owner, conversationID: id, pending: pending,
+                                            text: try inboxAgentSendReviewText(pending["preview"], owner: owner))
+            } catch { model.error = error.localizedDescription }
+            return
+        }
         let summary = conversation["pending"]["summary"].string
-        let detail = delivering
-            ? summary + "\n\nChoose Continue to send this reviewed draft from \(owner). The model cannot send it alone."
-            : summary + "\n\nChoose Continue to apply this mailbox change in \(owner)."
-        guard !operationBusy, model.confirm(delivering ? "Send this message?" : "Apply this mailbox change?", detail: detail) else { return }
-        model.perform({
-            let result = try await model.request("/agent/answer", method: "POST", body: .object(["conversationId": .string(id), "proposalId": .string(proposal), "decision": .string("confirm")]), mailbox: owner)
-            guard review.scope == owner else { return }
-            apply(result, owner: owner)
-            if model.account == owner { try await model.reload() }
-        }, blocksNavigation: false)
+        guard model.confirm("Apply this mailbox change?", detail: summary + "\n\nMailbox: \(owner)") else { return }
+        guard review.scope == owner, selected == id, conversation["pending"] == pending else { return }
+        answer("confirm")
     }
     private func answer(_ decision: String) {
         let owner = mailbox, id = selected, proposal = conversation["pending"].id
-        guard !operationBusy, !id.isEmpty, !proposal.isEmpty else { return }
+        guard !operationBusy, !recovering, status == "awaiting", !id.isEmpty, !proposal.isEmpty else { return }
+        if decision == "confirm", conversation["pending"]["kind"].string == "send", !sendPreviewReady { return }
+        turn += 1
+        let ticket = turn
         model.perform({
-            let result = try await model.request("/agent/answer", method: "POST", body: .object(["conversationId": .string(id), "proposalId": .string(proposal), "decision": .string(decision)]), mailbox: owner)
-            guard review.scope == owner else { return }
-            apply(result, owner: owner)
+            do {
+                let result = try await model.request("/agent/answer", method: "POST", body: .object(["conversationId": .string(id), "proposalId": .string(proposal), "decision": .string(decision)]), mailbox: owner)
+                guard review.scope == owner, selected == id, turn == ticket else { return }
+                recovering = !apply(result, owner: owner, expectedID: id)
+                if decision == "confirm", model.account == owner { try await model.reload() }
+            } catch {
+                guard review.scope == owner, selected == id, turn == ticket else { return }
+                recovering = true
+                model.error = error.localizedDescription
+                await refreshConversation(owner: owner, id: id, ticket: ticket)
+            }
         }, blocksNavigation: false)
     }
     private func stop() {
         let owner = mailbox, id = selected
-        guard !id.isEmpty else { return }
+        guard !id.isEmpty, !stopping else { return }
         turn += 1
         let ticket = turn
-        sending = false
+        sending = false; stopping = true
         Task { @MainActor in
+            defer { if ticket == turn { stopping = false } }
             do {
                 let result = try await model.request("/agent/cancel", method: "POST", body: .object(["conversationId": .string(id)]), mailbox: owner)
-                guard review.scope == owner, ticket == turn else { return }
-                apply(result, owner: owner)
+                guard review.scope == owner, selected == id, ticket == turn else { return }
+                recovering = !apply(result, owner: owner, expectedID: id)
             } catch {
-                guard review.scope == owner, ticket == turn else { return }
+                guard review.scope == owner, selected == id, ticket == turn else { return }
                 model.error = error.localizedDescription
+                recovering = true
+                await refreshConversation(owner: owner, id: id, ticket: ticket)
             }
         }
     }
     private func rename() {
         let owner = mailbox, id = selected, next = title
-        guard !operationBusy, !id.isEmpty else { return }
+        guard !operationBusy, !reviewing, !id.isEmpty else { return }
+        turn += 1
+        let ticket = turn
         model.perform({
             let result = try await model.request("/agent/rename", method: "POST", body: .object(["conversationId": .string(id), "title": .string(next)]), mailbox: owner)
-            guard review.scope == owner else { return }
-            apply(result, owner: owner)
+            guard review.scope == owner, selected == id, turn == ticket else { return }
+            apply(result, owner: owner, expectedID: id)
         }, blocksNavigation: false)
     }
     private func remove(_ id: String) {
         let owner = mailbox
         guard !operationBusy, model.confirm("Delete this conversation?", detail: "Saved mail stays in the mailbox. This only removes the local chat.") else { return }
+        turn += 1
+        let ticket = turn
         model.perform({
             let result = try await model.request("/agent/conversations/" + encodedPath(id), method: "DELETE", mailbox: owner)
-            guard review.scope == owner else { return }
+            guard review.scope == owner, turn == ticket else { return }
             if selected == id { conversation = .null; selected = ""; title = "" }
             apply(result, owner: owner)
         }, blocksNavigation: false)

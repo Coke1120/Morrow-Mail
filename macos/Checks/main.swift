@@ -219,3 +219,39 @@ expectEqual(messageMatchesFolder(.object(["folder": .string("inbox"), "lowPriori
 expectEqual(messageMatchesFolder(.object(["folder": .string("trash"), "lowPriority": .bool(true)]), folder: "later"), false)
 expectEqual(messageMatchesFolder(.object(["folder": .string("inbox")]), folder: "later"), false)
 print("Native Later marker filtering checks passed.")
+
+// The same formatter supplies the final send sheet; do not accept a chat excerpt.
+let agentOwner = "agent-owner@fixture.invalid"
+let agentBody = String(repeating: "完整 message\n", count: 9_000) + "BODY-TAIL-CANARY"
+var agentPreview: JSON = .object([
+    "complete": .bool(true), "bodyTruncated": .bool(false),
+    "fromEmail": .string(agentOwner), "fromName": .string("Reviewed Sender"),
+    "to": .string("to@fixture.invalid"), "cc": .string("cc@fixture.invalid"), "bcc": .string("hidden@fixture.invalid"),
+    "subject": .string("Complete send review"), "body": .string(agentBody),
+    "attachments": .array([
+        .object(["id": .string("attachment-one"), "name": .string("same-name.pdf"), "size": .number(123), "contentType": .string("application/pdf")]),
+        .object(["id": .string("attachment-two"), "name": .string("same-name.pdf"), "size": .number(456), "contentType": .string("application/pdf")])
+    ]),
+    "footer": .object(["text": .string("Company"), "html": .string("<a href=\"https://footer.fixture.invalid/destination\">Company</a>")])
+])
+let agentReview = try inboxAgentSendReviewText(agentPreview, owner: agentOwner)
+for expected in [agentBody, agentOwner, "Reviewed Sender", "to@fixture.invalid", "cc@fixture.invalid", "hidden@fixture.invalid", "Complete send review", "Attachments (2)", "attachment-one", "attachment-two", "123 bytes", "456 bytes", "https://footer.fixture.invalid/destination"] {
+    assert(agentReview.contains(expected), "Send review omitted complete payload: \(expected.prefix(100))")
+}
+for key in ["complete", "bodyTruncated", "fromEmail", "body", "attachments", "footer"] {
+    var invalid = agentPreview; invalid[key] = .null
+    do { _ = try inboxAgentSendReviewText(invalid, owner: agentOwner); assertionFailure("Incomplete \(key) authorized delivery") } catch is APIError { }
+}
+for (key, value) in [("complete", JSON.bool(false)), ("bodyTruncated", .bool(true)), ("fromEmail", .string("other@fixture.invalid"))] {
+    var invalid = agentPreview; invalid[key] = value
+    do { _ = try inboxAgentSendReviewText(invalid, owner: agentOwner); assertionFailure("Invalid \(key) authorized delivery") } catch is APIError { }
+}
+var missingFooterHTML = agentPreview; missingFooterHTML["footer"]["html"] = .null
+do { _ = try inboxAgentSendReviewText(missingFooterHTML, owner: agentOwner); assertionFailure("Missing footer HTML authorized delivery") } catch is APIError { }
+var invalidAttachment = agentPreview
+invalidAttachment["attachments"] = .array([.object(["id": .string("attachment-one"), "name": .string("same-name.pdf"), "size": .number(-1), "contentType": .string("application/pdf")])])
+do { _ = try inboxAgentSendReviewText(invalidAttachment, owner: agentOwner); assertionFailure("Invalid attachment authorized delivery") } catch is APIError { }
+agentPreview["attachments"] = .array([]); agentPreview["footer"] = .object(["text": .string(""), "html": .string("")])
+let emptyAgentReview = try inboxAgentSendReviewText(agentPreview, owner: agentOwner)
+assert(emptyAgentReview.contains("Attachments (0)\nNone"))
+print("Inbox Agent send review retains the entire long body, recipient set, duplicate-name attachment identities and footer links; incomplete/foreign previews cannot authorize delivery.")

@@ -168,6 +168,7 @@ winrt::Windows::Foundation::IAsyncAction reviewPage(std::shared_ptr<Shell> shell
 winrt::Windows::Foundation::IAsyncAction reviewWorkspaceChecks(std::shared_ptr<Shell> shell);
 winrt::Windows::Foundation::IAsyncAction summarizeNow(std::shared_ptr<Shell> shell, winrt::hstring mailbox);
 winrt::Windows::Foundation::IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, winrt::hstring kind);
+void inboxAgentReviewChecks();
 winrt::Windows::Foundation::IAsyncAction outOfOfficePage(std::shared_ptr<Shell> shell);
 winrt::Windows::Foundation::IAsyncAction calendarPage(std::shared_ptr<Shell> shell);
 winrt::Windows::Foundation::IAsyncOperation<Json> uploadAttachment(std::shared_ptr<Shell> shell, winrt::hstring owner);

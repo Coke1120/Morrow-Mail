@@ -924,6 +924,7 @@ pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
                     return Err(Error::conflict("This account was disconnected."));
                 }
                 let original = get_message(db, &owner, &id)?;
+                crate::inbox_agent::guard_action(db, &owner, &id, &body)?;
                 crate::scheduled::guard_draft(db, &owner, &id, None)?;
                 let patch = message_patch(&original, &body)?;
                 Ok(json!({"message":pages::owned(&owner,db.update(&owner,&id,&patch)?.unwrap())}))

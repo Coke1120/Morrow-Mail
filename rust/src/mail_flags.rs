@@ -22,6 +22,7 @@ pub async fn patch(app: &App, ctx: &Context) -> Result<Value> {
     let (message, mut patch) = app
         .db(move |db| {
             let message = get_message(db, &owner, &id)?;
+            crate::inbox_agent::guard_action(db, &owner, &id, &body)?;
             crate::scheduled::guard_draft(db, &owner, &id, None)?;
             let patch = crate::service::message_patch(&message, &body)?;
             Ok((message, patch))
@@ -40,6 +41,12 @@ pub async fn patch(app: &App, ctx: &Context) -> Result<Value> {
         return Err(Error::conflict(
             "This message is unavailable on the server. The cached copy is retained.",
         ));
+    }
+    // Token refresh awaited above; recheck the exact agent review before any provider write.
+    if ctx.body.get("agentReview").is_some() {
+        let (owner, id, body) = (ctx.owner.clone(), ctx.path[1].clone(), ctx.body.clone());
+        app.db(move |db| crate::inbox_agent::guard_action(db, &owner, &id, &body))
+            .await?;
     }
     let confirmed = match string(&connection, "provider") {
         "google" => {
