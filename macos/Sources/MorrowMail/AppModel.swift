@@ -18,6 +18,8 @@ final class AppModel: ObservableObject {
         }
     }
     @Published var busy = false
+    /// Sync, refresh and long AI runs. Does not block sidebar or review-account navigation.
+    @Published private(set) var backgroundBusy = false
     @Published private(set) var syncing = false
     @Published var starting = true
     @Published var error = ""
@@ -264,12 +266,12 @@ final class AppModel: ObservableObject {
                     try? await Task.sleep(nanoseconds: 30_000_000_000)
                     guard !Task.isCancelled, let self else { return }
                     // The service syncs all accounts and schedules AI; this only refreshes visible state.
-                    if self.canNavigate && NSApp?.isActive == true {
-                        self.perform {
+                    if self.canNavigate && !self.backgroundBusy && NSApp?.isActive == true {
+                        self.perform({
                             await self.publishSyncPriority()
                             let stamp = try await self.request("/state/revision", mailbox: "")
                             if stamp["revision"] != self.state["revision"] || stamp["accountId"].string != self.account { try await self.reload() }
-                        }
+                        }, blocksNavigation: false)
                     }
                 }
             }
@@ -439,8 +441,8 @@ final class AppModel: ObservableObject {
         } catch { if !Task.isCancelled, ticket == messageGeneration, selectedMessage == id, account == view, section == folder { messageDetail = .null; messageError = error.localizedDescription } }
     }
     func refreshWhenActive() {
-        guard !starting, baseURL != nil, !busy, compose == nil else { return }
-        perform { try await self.reload() }
+        guard !starting, baseURL != nil, !busy, !backgroundBusy, compose == nil else { return }
+        perform({ try await self.reload() }, blocksNavigation: false)
     }
     func checkForUpdates(force: Bool = false, now: Date = Date()) async {
         guard baseURL != nil, !checkingUpdates else { return }
@@ -457,13 +459,22 @@ final class AppModel: ObservableObject {
             updateCheckError = error.localizedDescription
         }
     }
-    func perform(_ work: @escaping @MainActor () async throws -> Void) {
-        guard !busy, !preparingUpdateRestart, !restartingForUpdate else { return }
-        busy = true; error = ""
+    @discardableResult
+    func perform(_ work: @escaping @MainActor () async throws -> Void, blocksNavigation: Bool = true) -> Bool {
+        guard !preparingUpdateRestart, !restartingForUpdate else { return false }
+        if blocksNavigation {
+            guard !busy else { return false }
+            busy = true
+        } else {
+            guard !backgroundBusy else { return false }
+            backgroundBusy = true
+        }
+        error = ""
         Task {
-            defer { busy = false }
+            defer { if blocksNavigation { busy = false } else { backgroundBusy = false } }
             do { try await work() } catch { self.error = error.localizedDescription }
         }
+        return true
     }
     func selectAccount(_ id: String, folder: String? = nil) async throws {
         // Invalidate reads before awaiting the selection, including A → B → A.

@@ -21,8 +21,8 @@ private struct TodayReviewWorkspace: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) { Text("Today").font(.title.weight(.semibold)); Text(context.date.formatted(date: .complete, time: .omitted) + " · " + TimeZone.current.identifier).font(.callout).foregroundStyle(.secondary) }
                         Spacer()
-                        Button("Summarize now…") { showSummaryReview = true }.buttonStyle(.borderedProminent).disabled(model.busy || accounts.isEmpty)
-                        Button { model.perform { try await model.sync() } } label: { Label(model.syncing ? "Syncing…" : "Sync all", systemImage: "arrow.clockwise") }.disabled(model.busy || !model.hasMailbox)
+                        Button("Summarize now…") { showSummaryReview = true }.buttonStyle(.borderedProminent).disabled(model.busy || model.backgroundBusy || accounts.isEmpty)
+                        Button { model.perform({ try await model.sync() }, blocksNavigation: false) } label: { Label(model.syncing ? "Syncing…" : "Sync all", systemImage: "arrow.clockwise") }.disabled(model.busy || model.backgroundBusy || model.syncing || !model.hasMailbox)
                     }.padding(.horizontal, 24).padding(.vertical, 16)
                     ReviewAccountTabs(review: review)
                     Divider()
@@ -74,7 +74,6 @@ private struct TodayReviewWorkspace: View {
                     if !model.policy["enabled"].bool { Text("AI is paused in your saved permissions.").foregroundStyle(.secondary) }
                     Text("Latest 20 validated summary jobs per mailbox. The All tab aggregates results; AI context and identity remain separate.").font(.caption).foregroundStyle(.secondary)
                     if model.state["today"]["summaryOverflow"].number > 0 { Text("Some summary jobs exceeded the queue limit. Review the remaining downloaded mail.").foregroundStyle(.orange) }
-                    Button("Summary history") { model.studioTab = "summaries"; model.section = "studio" }.disabled(!model.canNavigate)
                 }
             }.padding(24).frame(maxWidth: 1000, alignment: .leading).frame(maxWidth: .infinity, alignment: .leading)
                 .background(ReviewScrollMemory(key: "today:" + review.scope, review: review))
@@ -192,13 +191,13 @@ private struct TodaySummaryReview: View {
             }
             if !error.isEmpty { Text(error).foregroundStyle(.red).textSelection(.enabled) }
             HStack {
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).disabled(model.busy)
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).disabled(model.busy || generating)
                 Spacer()
                 if !error.isEmpty && ready { Button("Review again") { reviewRevision += 1 }.disabled(model.busy) }
                 Button {
                     let account = owner, id = preview["previewId"]
                     generating = true; error = ""
-                    model.perform {
+                    if !model.perform({
                         defer { generating = false }
                         do {
                             let result = try await model.request("/summaries/generate", method: "POST", body: .object(["previewId": id]), mailbox: account)
@@ -206,14 +205,14 @@ private struct TodaySummaryReview: View {
                             guard result["status"].string == "completed" else { throw APIError(result["error"].nonempty ? result["error"].string : "Summary was interrupted. Review before generating again.") }
                             dismiss()
                         } catch { self.error = error.localizedDescription; preview = .null }
-                    }
+                    }, blocksNavigation: false) { generating = false }
                 } label: {
                     if generating { ProgressView().controlSize(.small) }
                     Text(generating ? "Generating…" : "Generate summary")
-                }.buttonStyle(.borderedProminent).disabled(model.busy || loading || preview.isNull || !ready)
+                }.buttonStyle(.borderedProminent).disabled(model.busy || model.backgroundBusy || generating || loading || preview.isNull || !ready)
             }
         }.padding(28).frame(minWidth: 500, idealWidth: 600, maxWidth: 700, maxHeight: 650)
-        .interactiveDismissDisabled(model.busy)
+        .interactiveDismissDisabled(model.busy || generating)
         .onAppear { owner = model.accounts.contains { $0.id == model.review.scope } ? model.review.scope : model.accounts.first?.id ?? "" }
         .task(id: owner + "\n\(reviewRevision)") {
             preview = .null; error = ""

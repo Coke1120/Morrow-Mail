@@ -4,6 +4,8 @@ import AppKit
 struct ReviewAccountTabs: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var review: ReviewWorkspaceState
+    /// Return false to keep the current mailbox, for example while confirming unsaved Studio notes.
+    var canPick: ((String) -> Bool)? = nil
     @FocusState private var focused: String?
     private var owners: [String] { ["all"] + model.accounts.map(\.id) }
     var body: some View {
@@ -11,7 +13,7 @@ struct ReviewAccountTabs: View {
             ScrollView(.horizontal, showsIndicators: true) {
                 HStack(spacing: 7) {
                     ForEach(owners, id: \.self) { owner in
-                        Button { review.pickScope(owner) } label: {
+                        Button { choose(owner) } label: {
                             HStack(spacing: 7) {
                                 Text(owner == "all" ? "All accounts" : owner).lineLimit(1)
                                 let counts = model.state["today"]["replySuggestionCounts"]
@@ -22,16 +24,21 @@ struct ReviewAccountTabs: View {
                         }.buttonStyle(.plain).id(owner).focused($focused, equals: owner).help(owner)
                             .accessibilityLabel("\(owner == "all" ? "All accounts" : owner), \(review.scope == owner ? "selected" : "not selected")")
                             .accessibilityIdentifier("review.account.\(owner)")
-                            .disabled(review.writing || model.busy)
+                            .disabled(review.writing)
                     }
                 }.padding(.horizontal, 24)
             }.frame(height: 48)
                 .onChange(of: review.scope) { owner in proxy.scrollTo(owner, anchor: .center) }
                 .onMoveCommand { direction in
-                    guard let index = owners.firstIndex(of: focused ?? review.scope), direction == .left || direction == .right, !review.writing, !model.busy else { return }
-                    let next = owners[max(0,min(owners.count - 1,index + (direction == .left ? -1 : 1)))]; focused = next; review.pickScope(next)
+                    guard let index = owners.firstIndex(of: focused ?? review.scope), direction == .left || direction == .right, !review.writing else { return }
+                    choose(owners[max(0,min(owners.count - 1,index + (direction == .left ? -1 : 1)))])
                 }
         }
+    }
+    private func choose(_ owner: String) {
+        guard !review.writing, owner != review.scope, canPick?(owner) ?? true else { return }
+        focused = owner
+        review.pickScope(owner)
     }
 }
 

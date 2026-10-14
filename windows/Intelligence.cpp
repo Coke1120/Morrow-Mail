@@ -103,7 +103,7 @@ struct Intelligence : std::enable_shared_from_this<Intelligence> {
     Json state, suggestions, workflow, output, outputMessage, outputSource, memoryPreview;
     std::set<std::wstring> selectedMemories;
     weak_ref<StackPanel> memoryPanel;
-    hstring outputAction, outputContext, workflowContext;
+    hstring outputAction, outputContext, workflowContext, workflowOwner;
     std::map<std::wstring, Editor> forms;
     std::set<std::wstring> selectedCandidates;
     weak_ref<StackPanel> body, previewPanel, proposalPanel, candidatePanel, jobPanel, resultPanel, skillList, recordList;
@@ -119,7 +119,7 @@ struct Intelligence : std::enable_shared_from_this<Intelligence> {
     hstring nextCursor;
     xaml::DispatcherTimer timer{nullptr};
     std::wstring key() const { return L"intelligence:" + std::to_wstring(generation); }
-    bool current() const { return live && shell->current(generation, owner) && (owner == L"all" || shell->connected(owner)); }
+    bool current() const { return live && !shell->closing && generation == shell->generation && (owner == L"all" || shell->connected(owner)); }
     void tell(hstring const& value) { if (current()) if (auto control = notice) control.Text(value); }
     bool edited() const { for (auto const& [_, form] : forms) if (form.dirty()) return true; return false; }
     void dirty() {
@@ -170,10 +170,11 @@ void acceptState(Page const& p, Json const& next) {
     auto context = contextOf(next, p->owner);
     if (!p->context.empty() && p->context != context) p->clearResult();
     p->state = clone(next); p->context = context; p->connection = connectionOf(next, p->owner);
-    p->shell->state = clone(next);
+    if (p->owner == p->shell->owner) p->shell->state = clone(next);
 }
 void validateContext(Page const& p, hstring const& captured) {
-    require(p->current() && p->context == captured && contextOf(p->shell->state, p->owner) == captured,
+    auto const& source = p->owner == p->shell->owner ? p->shell->state : p->state;
+    require(p->current() && p->context == captured && contextOf(source, p->owner) == captured,
         L"The account, model, identity or permissions changed. Review fresh context before continuing.");
 }
 Editor& editor(Page const& p, wchar_t const* name, Json const& value) {
@@ -246,10 +247,7 @@ ComboBox editChoice(Page const& p, StackPanel const& panel, wchar_t const* formN
 fire_and_forget perform(Page p, std::function<IAsyncAction(Page)> task) {
     if (!p->current() || p->busy || p->cancelling || p->shell->loading) co_return;
     p->busy = true; ++p->revision; p->dirty(); p->tell(L"Working…");
-    // NavigationView contains the page itself. Disabling it also disables the
-    // independent cancel-analysis button. Shell's loading guard blocks sidebar
-    // navigation; the content control below blocks field and keyboard edits.
-    p->shell->loading = true;
+    // Disable the editor only. Sidebar and review-account tabs stay available during AI.
     if (auto host = p->editorHost.get()) host.IsEnabled(false);
     try { co_await task(p); }
     catch (ApiError const& error) {
@@ -262,7 +260,6 @@ fire_and_forget perform(Page p, std::function<IAsyncAction(Page)> task) {
     if (auto cancel = p->cancelStyle.get()) cancel.IsEnabled(false);
     if (p->current()) { if (auto host = p->editorHost.get()) host.IsEnabled(true); p->dirty(); }
     else p->shell->dirty.erase(p->key());
-    p->shell->loading = false;
 }
 Button action(Page const& p, StackPanel const& panel, hstring const& caption, std::function<IAsyncAction(Page)> task) {
     std::weak_ptr<Intelligence> weak = p;
@@ -762,26 +759,6 @@ void buildSkills(Page const& p, StackPanel const& body) {
 
 void renderRecords(Page const& p) {
     auto panel = p->recordList.get(); if (!panel) return; panel.Children().Clear(); auto workspace = object(p->state, L"workspace");
-    if (p->kind == L"summaries") {
-        words(panel, L"Saved priority summaries", 24);
-        words(panel, p->owner == L"all" ? L"All connected accounts. Each report labels its own mailbox; AI context never crosses accounts." : L"Reports for this mailbox only. Choose All accounts above to see them together.");
-        words(panel, L"Scheduled and newly synced mail create these reports when enabled. Opening or refreshing this page does not run AI. Configure the schedule in AI & privacy → Automatic assistance.");
-        if (p->owner == L"all") words(panel, L"Choose one mailbox above to create an inbox briefing now.");
-        else panel.Children().Append(button(L"Open Assistant for an inbox briefing", [weak = std::weak_ptr<Intelligence>(p)] { if (auto page = weak.lock()) changePage(page, L"studio"); }));
-        auto source = p->owner == L"all" ? object(p->state, L"today") : workspace;
-        words(panel, L"Arrival queue overflow: " + count(source, L"summaryOverflow") + L". Saved summaries are retained within the service history limit.");
-        auto values = array(source, L"summaries");
-        if (!values.Size()) words(panel, L"No saved reports. AI Studio → Inbox briefing can generate one response on explicit review.");
-        for (auto const& entry : values) {
-            auto report = entry.GetObject(); auto item = group(panel, text(report, L"kind") + L" · " + text(report, L"status"));
-            if (p->owner == L"all") words(item, text(report, L"accountId"), 12);
-            words(item, text(report, L"completedAt", text(report, L"createdAt")) + L" · " + to_hstring(array(report, L"messageIds").Size()) + L" source messages");
-            if (text(report, L"source") == L"demo") words(item, L"Illustrative demo output — not a model analysis.");
-            if (!text(report, L"error").empty()) words(item, text(report, L"error"));
-            words(item, text(report, L"text"));
-        }
-        return;
-    }
     words(panel, L"Local simulation records", 24);
     words(panel, L"These are local records of reviewed simulations. They have not sent notifications, created provider calendar events or unsubscribed you. Use Calendar for real provider events and Pending for your own follow-up markers.");
     for (auto collection : {L"reminders", L"events", L"unsubscribed", L"activity"}) {
@@ -816,9 +793,16 @@ Json selectedFeature(Page const& p) {
     for (auto const& feature : p->features) if (text(feature, L"id") == id) return feature;
     return Json();
 }
+hstring messageKey(Json const& message) {
+    auto view = text(message, L"viewId");
+    return view.empty() ? text(message, L"accountId") + L"\n" + text(message, L"id") : view;
+}
 Json selectedMessage(Page const& p) {
     auto id = text(p->forms[L"tool"].value, L"messageId");
-    for (auto const& message : p->messages) if (text(message, L"id") == id && text(message, L"accountId") == p->owner) return message;
+    for (auto const& message : p->messages) if (messageKey(message) == id) {
+        auto account = text(message, L"accountId");
+        if ((p->owner == L"all" || account == p->owner) && p->shell->connected(account)) return message;
+    }
     return Json();
 }
 bool usesDraft(Page const& p) {
@@ -848,6 +832,8 @@ hstring blockedTool(Page const& p) {
     auto feature = selectedFeature(p), value = p->forms[L"tool"].value; auto name = text(feature, L"id");
     auto settings = object(p->state, L"settings"), policy = object(settings, L"policy"), content = object(policy, L"content");
     if (!feature.Size()) return L"Select a supported tool.";
+    if (p->owner == L"all" && text(feature, L"context") != L"selected") return L"Choose one mailbox tab for inbox-wide AI. A selected message still uses its own account.";
+    if (p->owner == L"all" && usesDraft(p)) return L"Choose one mailbox tab for draft text.";
     if (!flag(policy, L"enabled")) return L"AI is off in saved permissions.";
     if (!flag(object(policy, L"behaviors"), name.c_str())) return L"This behavior is disabled in saved AI permissions.";
     if (!flag(feature, L"mock") && !flag(object(settings, L"ai"), L"configured")) return L"Set up AI in Settings → Advanced setup → AI connection first.";
@@ -897,6 +883,8 @@ IAsyncAction runTool(Page p) {
     auto reason = blockedTool(p); if (!reason.empty()) throw hresult_error(E_INVALIDARG, reason);
     auto feature = selectedFeature(p), value = clone(p->forms[L"tool"].value), message = selectedMessage(p);
     auto name = text(feature, L"id"), context = p->context; bool mock = flag(feature, L"mock"), selected = usesSelected(p);
+    auto mailbox = selected ? text(message, L"accountId") : p->owner;
+    require(!mailbox.empty() && mailbox != L"all" && p->shell->connected(mailbox), L"Choose one mailbox for this action.");
     Json input; put(input, L"action", name);
     if (selected) put(input, L"messageId", text(message, L"id"));
     if (mock) {
@@ -910,7 +898,7 @@ IAsyncAction runTool(Page p) {
         if (name == L"ask") truth(input,L"useSmartSearch",flag(value,L"useSmartSearch"));
         if (name == L"reply") truth(input, L"includeHistory", flag(value, L"includeHistory"));
         auto policy = object(object(p->state, L"settings"), L"policy"), model = object(object(p->state, L"settings"), L"ai");
-        auto detail = p->owner + L"\n" + text(feature, L"label") + L"\nModel: " + text(model, L"model") + L"\nEndpoint: " + text(model, L"baseUrl") +
+        auto detail = mailbox + L"\n" + text(feature, L"label") + L"\nModel: " + text(model, L"model") + L"\nEndpoint: " + text(model, L"baseUrl") +
             L"\nAllowed folders: " + selectedFlags(object(policy, L"folders")) + L"\nAllowed fields: " + selectedFlags(object(policy, L"content")) + L"\nContext cap: " + count(policy, L"maxMessages") + L" downloaded messages." +
             (name == L"reply" && flag(value, L"includeHistory") ? L"\nIncludes permitted same-correspondent downloaded history within that cap, not all mail." : L"") +
             (usesDraft(p) ? L"\nUses the draft text entered here." : selected ? L"\nUses the selected message shown below." : L"") +
@@ -920,16 +908,16 @@ IAsyncAction runTool(Page p) {
     }
     p->clearResult(); Json proof;
     if (selected && !mock) {
-        auto full = co_await p->shell->service->request(L"/messages/" + escaped(text(message, L"id")), p->owner);
+        auto full = co_await p->shell->service->request(L"/messages/" + escaped(text(message, L"id")), mailbox);
         if (!p->current()) co_return; validateContext(p, context); auto source = object(full, L"message");
-        require(text(source, L"accountId") == p->owner && text(source, L"id") == text(message, L"id"), L"The selected message owner changed.");
+        require(text(source, L"accountId") == mailbox && text(source, L"id") == text(message, L"id"), L"The selected message owner changed.");
         proof = sourceProof(source, object(object(p->state, L"settings"), L"policy"));
     }
-    auto result = co_await p->shell->service->request(mock ? L"/workflows/preview" : L"/ai", p->owner, L"POST", input);
+    auto result = co_await p->shell->service->request(mock ? L"/workflows/preview" : L"/ai", mailbox, L"POST", input);
     if (!p->current()) co_return; validateContext(p, context);
     if (mock) {
         require(flag(result, L"simulated"), L"The service did not identify this preview as a local simulation.");
-        p->workflow = object(result, L"preview"); p->workflowContext = context;
+        p->workflow = object(result, L"preview"); p->workflowContext = context; p->workflowOwner = mailbox;
         require(!text(p->workflow, L"id").empty() && text(p->workflow, L"action") == name, L"The workflow preview does not match this request.");
     } else { p->output = clone(result); p->outputAction = name; p->outputMessage = clone(message); p->outputSource = proof; p->outputContext = context; }
     renderToolResult(p); p->tell(mock ? L"Local preview ready. No provider or AI call was made. Review every proposed change before applying." : L"Response ready. Review it before using it in a draft.");
@@ -938,22 +926,24 @@ IAsyncAction useToolDraft(Page p) {
     auto context = p->outputContext, name = p->outputAction;
     auto output = clone(p->output), message = clone(p->outputMessage), proof = clone(p->outputSource);
     require(!text(output, L"text").empty() && (name == L"reply" || name == L"write" || name == L"rewrite" || name == L"translate"), L"No draftable result is available.");
+    auto mailbox = name == L"reply" || (name == L"translate" && !text(message, L"accountId").empty()) ? text(message, L"accountId") : p->owner;
+    require(!mailbox.empty() && mailbox != L"all" && p->shell->connected(mailbox), L"Choose one mailbox before creating this draft.");
     validateContext(p, context);
     auto state = co_await p->shell->service->request(L"/state", p->owner);
     if (!p->current()) co_return; acceptState(p, state); validateContext(p, context);
     if (proof.Size()) {
-        auto latest = co_await p->shell->service->request(L"/messages/" + escaped(text(message, L"id")), p->owner);
+        auto latest = co_await p->shell->service->request(L"/messages/" + escaped(text(message, L"id")), mailbox);
         if (!p->current()) co_return; validateContext(p, context);
         require(sourceProof(object(latest, L"message"), object(object(p->state, L"settings"), L"policy")).Stringify() == proof.Stringify(), L"The source message changed. Generate a fresh response before drafting.");
     }
     Json draft;
     if (name == L"reply") {
         Json input; put(input, L"mode", L"reply"); put(input, L"messageId", text(message, L"id")); put(input, L"body", text(output, L"text"));
-        auto prepared = co_await p->shell->service->request(L"/drafts/prepare", p->owner, L"POST", input);
+        auto prepared = co_await p->shell->service->request(L"/drafts/prepare", mailbox, L"POST", input);
         if (!p->current()) co_return; validateContext(p, context); draft = object(prepared, L"draft");
-        require(text(draft, L"accountId") == p->owner && text(draft, L"replyToId") == text(message, L"id") && text(draft, L"body") == text(output, L"text") && text(draft, L"bcc").empty(), L"Prepared reply did not match the reviewed output.");
+        require(text(draft, L"accountId") == mailbox && text(draft, L"replyToId") == text(message, L"id") && text(draft, L"body") == text(output, L"text") && text(draft, L"bcc").empty(), L"Prepared reply did not match the reviewed output.");
     } else {
-        put(draft, L"accountId", p->owner); for (auto key : {L"to", L"cc", L"bcc", L"subject"}) put(draft, key, L""); put(draft, L"body", text(output, L"text"));
+        put(draft, L"accountId", mailbox); for (auto key : {L"to", L"cc", L"bcc", L"subject"}) put(draft, key, L""); put(draft, L"body", text(output, L"text"));
     }
     p->forms[L"tool"].accept(p->forms[L"tool"].value); p->shell->dirty.erase(p->key()); auto shell = p->shell; p->stop(); co_await compose(shell, draft);
 }
@@ -967,9 +957,11 @@ void renderToolResult(Page const& p) {
         action(p, panel, L"Apply reviewed local simulation…", [id = text(preview, L"id")](Page page) -> IAsyncAction {
             auto context = page->workflowContext; validateContext(page, context);
             require(text(page->workflow, L"id") == id, L"This preview was replaced. Review the current one.");
-            if (!(co_await page->shell->confirm(L"Apply this local simulation?", page->owner + L"\n" + text(page->workflow, L"title") + L"\n" + text(page->workflow, L"summary") + L"\nApply only the changes reviewed on the page. Nothing is sent to a provider.", L"Apply local changes")) || !page->current()) co_return;
+            auto owner = page->workflowOwner.empty() ? page->owner : page->workflowOwner;
+            require(owner != L"all" && page->shell->connected(owner), L"Choose one mailbox before applying this simulation.");
+            if (!(co_await page->shell->confirm(L"Apply this local simulation?", owner + L"\n" + text(page->workflow, L"title") + L"\n" + text(page->workflow, L"summary") + L"\nApply only the changes reviewed on the page. Nothing is sent to a provider.", L"Apply local changes")) || !page->current()) co_return;
             validateContext(page, context); Json input; put(input, L"previewId", id);
-            auto result = co_await page->shell->service->request(L"/workflows/apply", page->owner, L"POST", input);
+            auto result = co_await page->shell->service->request(L"/workflows/apply", owner, L"POST", input);
             if (!page->current()) co_return; require(flag(result, L"simulated"), L"The applied result was not identified as a simulation.");
             acceptState(page, result); page->clearResult(); page->forms[L"tool"].accept(page->forms[L"tool"].value); page->dirty();
             co_await loadMessages(page); if (page->current()) page->tell(L"Reviewed simulation applied locally. See local records, Brain or Drafts for its results. No mail was sent.");
@@ -993,13 +985,14 @@ IAsyncAction loadMessages(Page p) {
     auto policy = object(object(p->state, L"settings"), L"policy"), folders = object(policy, L"folders"); std::vector<Json> messages;
     require(array(result, L"messages").Size() <= 50, L"The mail page exceeded its limit.");
     for (auto const& entry : array(result, L"messages")) {
-        auto message = entry.GetObject(); require(text(message, L"accountId") == p->owner, L"The mail page contains a different owner.");
+        auto message = entry.GetObject(); auto account = text(message, L"accountId");
+        require(p->owner == L"all" ? p->shell->connected(account) : account == p->owner, L"The mail page contains a different owner.");
         if (flag(folders, text(message, L"folder").c_str())) messages.push_back(message);
     }
     p->messages = std::move(messages); p->nextCursor = text(result, L"nextCursor");
     auto id = text(p->forms[L"tool"].value, L"messageId"); bool retained = false;
-    for (auto const& message : p->messages) if (text(message, L"id") == id) retained = true;
-    if (!retained) { put(p->forms[L"tool"].value, L"messageId", p->messages.empty() ? hstring() : text(p->messages.front(), L"id")); p->clearResult(); }
+    for (auto const& message : p->messages) if (messageKey(message) == id) retained = true;
+    if (!retained) { put(p->forms[L"tool"].value, L"messageId", p->messages.empty() ? hstring() : messageKey(p->messages.front())); p->clearResult(); }
     renderTool(p);
 }
 void renderTool(Page const& p) {
@@ -1017,8 +1010,8 @@ void renderTool(Page const& p) {
         for (auto const& message : p->messages) {
             auto title = (flag(content, L"subject") ? text(message, L"subject", L"No subject") : hstring(L"Subject withheld")) +
                 (flag(content, L"sender") ? L" · " + text(message, L"fromName", text(message, L"fromEmail")) : hstring()) + L" · " + text(message, L"date");
-            ComboBoxItem item; item.Content(box_value(title)); item.Tag(box_value(text(message, L"id"))); picker.Items().Append(item);
-            if (text(message, L"id") == selectedId) picker.SelectedItem(item);
+            ComboBoxItem item;             item.Content(box_value(title)); item.Tag(box_value(messageKey(message))); picker.Items().Append(item);
+            if (messageKey(message) == selectedId) picker.SelectedItem(item);
         }
         std::weak_ptr<Intelligence> weak = p;
         picker.SelectionChanged([weak](auto const& sender, auto const&) { if (auto page = weak.lock(); page && page->current() && !page->busy) {
@@ -1115,8 +1108,9 @@ void buildRules(Page const& p, StackPanel const& body) {
 }
 void buildTools(Page const& p, StackPanel const& body) {
     words(body, p->kind == L"simulations" ? L"Local simulations" : L"Assistant", 24); words(body, L"Choose a task, then review the result.");
+    if (p->owner == L"all" && p->kind != L"simulations") words(body, L"Choose one mailbox tab for inbox-wide AI tasks. You can still select a specific email across accounts below.");
     Json value; put(value, L"action", p->kind == L"simulations" ? L"triage" : L"ask"); put(value, L"prompt", L""); put(value, L"draftText", L""); put(value, L"messageId", L""); put(value, L"skillId", L""); put(value, L"translateSource", L"message"); truth(value, L"includeHistory", false); truth(value,L"useSmartSearch",false);
-    if (text(p->shell->selected, L"accountId") == p->owner) put(value, L"messageId", text(p->shell->selected, L"id"));
+    if ((p->owner == L"all" || text(p->shell->selected, L"accountId") == p->owner) && p->shell->connected(text(p->shell->selected, L"accountId"))) put(value, L"messageId", messageKey(p->shell->selected));
     for (auto const& entry : array(object(p->state, L"workspace"), L"skills")) if (flag(entry.GetObject(), L"enabled")) { put(value, L"skillId", text(entry.GetObject(), L"id")); break; }
     editor(p, L"tool", value);
     ComboBox picker; picker.Header(box_value(L"What would you like to do?")); picker.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
@@ -1166,45 +1160,38 @@ fire_and_forget refreshIntelligence(Page p) {
 } // namespace
 
 IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
-    if (kind == L"tools" || kind == L"ai") kind = L"studio";
+    if (kind == L"tools" || kind == L"ai" || kind == L"summaries") kind = L"studio";
     if (kind == L"replies") kind = L"reply-suggestions";
     if (kind == L"local-activity") kind = L"records";
-    auto requested = kind;
-    if (shell->owner == L"all" && (kind == L"studio" || kind == L"brain" || kind == L"learning" || kind == L"skills" || kind == L"simulations" || kind == L"records")) kind = L"summaries";
-    auto p = std::make_shared<Intelligence>(); p->shell = shell; p->owner = shell->owner; p->kind = kind; p->generation = ++shell->generation;
+    auto scopeOwner = shell->review->scope;
+    if (scopeOwner != L"all" && !shell->connected(scopeOwner)) { scopeOwner = L"all"; shell->review->scope = L"all"; }
+    auto p = std::make_shared<Intelligence>(); p->shell = shell; p->owner = scopeOwner; p->kind = kind; p->generation = ++shell->generation;
     shell->section = kind;
     auto root = stack(16); root.MaxWidth(1080); root.HorizontalAlignment(xaml::HorizontalAlignment::Left); root.Margin(xaml::Thickness{24, 20, 24, 32});
-    words(root, L"AI Studio", 28); words(root, p->owner);
-    ComboBox mailbox; mailbox.Header(box_value(L"Mailbox in AI Studio")); mailbox.HorizontalAlignment(xaml::HorizontalAlignment::Stretch);
-    auto addMailbox = [&](hstring id, hstring caption) {
-        ComboBoxItem item; item.Content(box_value(caption)); item.Tag(box_value(id)); mailbox.Items().Append(item);
-        if (id == p->owner) mailbox.SelectedItem(item);
-    };
-    addMailbox(L"all", L"All accounts — combined summaries");
-    for (auto const& entry : array(shell->state, L"accounts")) {
-        auto account = entry.GetObject(); addMailbox(text(account, L"id"), text(account, L"email"));
-    }
+    words(root, L"AI Studio", 28);
+    auto accountTabs = stack(7); accountTabs.Orientation(Orientation::Horizontal);
+    std::vector<hstring> owners{L"all"};
+    for (auto const& entry : array(shell->state, L"accounts")) owners.push_back(text(entry.GetObject(), L"id"));
     std::weak_ptr<Intelligence> scope = p;
-    auto selectedIndex = mailbox.SelectedIndex();
-    mailbox.SelectionChanged([scope, requested, selectedIndex](auto const& sender, auto const&) {
-        if (auto page = scope.lock(); page && page->current()) {
-            auto item = sender.template as<ComboBox>().SelectedItem().template try_as<ComboBoxItem>();
-            if (item) {
-                auto owner = unbox_value<hstring>(item.Tag());
-                if (owner != page->owner) {
-                    sender.template as<ComboBox>().SelectedIndex(selectedIndex);
-                    page->shell->navigate(requested, owner);
-                }
-            }
-        }
-    }); root.Children().Append(mailbox);
-    if ((!shell->connected(p->owner) && p->owner != L"all") || p->owner.empty() || p->owner == L"demo" || (p->owner == L"all" && kind != L"summaries")) {
-        words(root, L"Choose one connected mailbox above for writing, replies and style learning. All accounts combines saved summaries while keeping each account’s AI context separate.");
-        shell->show(scroll(root)); co_return;
+    for (auto const& owner : owners) {
+        controls::Primitives::ToggleButton tab; tab.Content(box_value(owner == L"all" ? hstring(L"All accounts") : owner)); tab.IsChecked(owner == p->owner); tab.IsTabStop(owner == p->owner);
+        xaml::Automation::AutomationProperties::SetAutomationId(tab, L"studio.scope." + owner);
+        xaml::Automation::AutomationProperties::SetName(tab, L"Studio mailbox: " + owner);
+        tab.Checked([scope, owner](auto const&, auto const&) -> fire_and_forget {
+            auto page = scope.lock();
+            if (!page || !page->current() || page->shell->review->writing || page->owner == owner) co_return;
+            if (page->edited() && !(co_await page->shell->confirm(L"Discard unsaved edits?", L"Only explicitly saved settings, styles and workspace notes take effect.", L"Discard"))) co_return;
+            if (!page->current()) co_return;
+            auto shell = page->shell; auto next = page->kind; page->stop(); shell->review->scope = owner; co_await intelligencePage(shell, next);
+        });
+        tab.Unchecked([scope, owner](auto const& sender, auto const&) { if (auto page = scope.lock(); page && page->current() && page->owner == owner) sender.template as<controls::Primitives::ToggleButton>().IsChecked(true); });
+        accountTabs.Children().Append(tab);
     }
+    ScrollViewer accountScroll; accountScroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto); accountScroll.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled); accountScroll.Content(accountTabs); root.Children().Append(accountScroll);
+    bool accountPage = kind == L"brain" || kind == L"learning" || kind == L"skills" || kind == L"rules" || kind == L"records";
     auto tabs = stack(6); tabs.Orientation(Orientation::Horizontal); std::weak_ptr<Intelligence> weak = p; bool known = kind == L"learning";
     for (auto const& [id, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{
-        {L"studio", L"Assistant"}, {L"summaries", L"Summaries"}}) {
+        {L"studio", L"Assistant"}}) {
         auto control = button(caption, [weak, target = hstring(id)] { if (auto page = weak.lock()) changePage(page, target); });
         if (kind == id) { known = true; control.IsEnabled(false); } tabs.Children().Append(control);
     }
@@ -1229,6 +1216,10 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
     ContentControl host; host.HorizontalContentAlignment(xaml::HorizontalAlignment::Stretch);
     auto body = stack(16); host.Content(body); root.Children().Append(host); p->body = make_weak(body); p->editorHost = make_weak(host);
     root.Unloaded([p](auto const&, auto const&) { p->stop(); p->notice = nullptr; }); shell->show(scroll(root));
+    if ((p->owner == L"all" && accountPage) || (p->owner != L"all" && !shell->connected(p->owner))) {
+        p->tell(p->owner == L"all" ? L"Choose one mailbox tab for writing style, skills, rules and simulation history. Assistant can still use a selected message while All accounts is selected." : L"Choose one connected mailbox above.");
+        co_return;
+    }
     bool loaded = false;
     try {
         require(known, L"Unknown Intelligence page.");

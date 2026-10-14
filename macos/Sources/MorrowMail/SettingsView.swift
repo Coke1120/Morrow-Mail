@@ -340,7 +340,7 @@ struct NativeSettingsView: View {
                 } else {
                     Stepper("Every \(Int(values["policy"]["summarySchedule"]["everyHours"].number)) hours", value: Binding(get: { Int(values["policy"]["summarySchedule"]["everyHours"].number) }, set: { values["policy"]["summarySchedule"]["everyHours"] = .number(Double($0)) }), in: 1...168)
                 }
-                Text("Runs while Morrow is open, using up to your maximum permitted messages from the cached inbox. Results appear in AI Studio → Summaries. Missed daily runs catch up once when reopened; interval timing starts when enabled. Failed or interrupted jobs are not retried automatically.").font(.caption).foregroundStyle(.secondary)
+                Text("Runs while Morrow is open, using up to your maximum permitted messages from the cached inbox. Results appear on Today. Missed daily runs catch up once when reopened; interval timing starts when enabled. Failed or interrupted jobs are not retried automatically.").font(.caption).foregroundStyle(.secondary)
                 Text("P0 emergency · P1 due today · P2 action/follow-up · P3 information · P4 bulk/promotional. AI priorities need your review. Writing style and saved notes still require explicit review and saving.").font(.caption).foregroundStyle(.secondary)
             }.padding(8)
         }
