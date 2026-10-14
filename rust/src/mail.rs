@@ -50,8 +50,25 @@ pub async fn current_mail(app: &App, owner: &str) -> Result<Value> {
     if ["", "imap"].contains(&string(&original, "provider")) {
         return Ok(original);
     }
-    let mut refreshed = providers::refresh(&app.0.client, &original)
-        .await
+    refresh_connection(app, owner, &original, false).await
+}
+async fn refresh_connection(
+    app: &App,
+    owner: &str,
+    original: &Value,
+    force: bool,
+) -> Result<Value> {
+    if force && connections(&app.settings().await?).get(owner) != Some(original) {
+        return Err(Error::conflict(
+            "The mailbox connection changed. Try again.",
+        ));
+    }
+    let refreshed = if force {
+        providers::refresh_now(&app.0.client, original).await
+    } else {
+        providers::refresh(&app.0.client, original).await
+    };
+    let mut refreshed = refreshed
         .map_err(|error| {
             let (status, code, message, recovery) = match string(&error.body, "code") {
                 "oauth_reconnect_required" => (401, "oauth_reconnect_required", "Mailbox authorization is no longer valid. Reconnect this account in Settings; cached mail is retained.", "reconnect"),
@@ -65,6 +82,7 @@ pub async fn current_mail(app: &App, owner: &str) -> Result<Value> {
         })?;
     refreshed["email"] = owner.into();
     let owner = owner.to_owned();
+    let original = original.clone();
     let result = refreshed.clone();
     app.db(move |db| {
         if connections(&db.settings()?).get(&owner) != Some(&original) {
@@ -79,6 +97,31 @@ pub async fn current_mail(app: &App, owner: &str) -> Result<Value> {
     })
     .await?;
     Ok(result)
+}
+
+/// Call only around an owned, read-only provider operation while holding the mailbox gate.
+/// A Gmail resource 401 permits one refresh and one new read attempt. Token exchange errors,
+/// writes and a second resource 401 are never retried. Return the current connection so local
+/// commits retain their exact connection checks after credentials have rotated.
+pub(crate) async fn google_read_recovery<T, F, Fut>(
+    app: &App,
+    connection: &Value,
+    read: F,
+) -> Result<(Value, T)>
+where
+    F: Fn(Value) -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let result = read(connection.clone()).await;
+    match result {
+        Err(error) if connection["provider"] == "google" && error.provider_status == Some(401) => {
+            let refreshed =
+                refresh_connection(app, string(connection, "email"), connection, true).await?;
+            let result = read(refreshed.clone()).await?;
+            Ok((refreshed, result))
+        }
+        result => Ok((connection.clone(), result?)),
+    }
 }
 pub(crate) fn read_backoff(config: &Value, mail: &Value) -> Option<Error> {
     let owner = string(mail, "email");
@@ -169,7 +212,13 @@ pub(crate) async fn finish_read<T: Send + 'static>(
 }
 
 pub async fn fetch_page(app: &App, mail: &Value, options: &Value) -> Result<Value> {
-    fetch_page_cached(app, mail, options, &mut HashMap::new()).await
+    // History imports retry the same page with a new cache; partial failed reads cannot
+    // advance the cursor or reuse bodies collected under rejected credentials.
+    let (_, page) = google_read_recovery(app, mail, |mail| async move {
+        fetch_page_cached(app, &mail, options, &mut HashMap::new()).await
+    })
+    .await?;
+    Ok(page)
 }
 fn body_fields_present(message: &Value) -> bool {
     message["body"].is_string()
@@ -988,7 +1037,12 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
         let work = async {
             let mail = current_mail(app, owner).await?;
             if mail["provider"] == "google" {
-                Box::pin(crate::google_sync::sync(app, &mail)).await?;
+                // Restart from the last committed checkpoint after at most one refresh.
+                // Every attempt gets its own connection and partial-page fetch cache.
+                google_read_recovery(app, &mail, |mail| async move {
+                    Box::pin(crate::google_sync::sync(app, &mail)).await
+                })
+                .await?;
                 return Ok(None);
             }
             if mail["provider"] == "microsoft" {
@@ -1356,7 +1410,10 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                 return Err(Error::conflict("Choose a connected mailbox."));
             }
             let mail = current_mail(app, &owner).await?;
-            let folders = remote_folders(app, &mail).await?;
+            let (mail, folders) = google_read_recovery(app, &mail, |mail| async move {
+                remote_folders(app, &mail).await
+            })
+            .await?;
             let updated = app.settings().await?["mailFolderCatalogs"][&owner]["updatedAt"].clone();
             json!({"folders":folders,"provider":mail.get("provider").cloned().unwrap_or(json!("imap")),"accountId":owner,"updatedAt":updated})
         }

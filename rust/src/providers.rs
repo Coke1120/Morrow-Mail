@@ -493,6 +493,11 @@ pub async fn refresh(client: &Client, mail: &Value) -> Result<Value> {
     {
         return Ok(mail.clone());
     }
+    refresh_now(client, mail).await
+}
+pub(crate) async fn refresh_now(client: &Client, mail: &Value) -> Result<Value> {
+    let provider = string(mail, "provider");
+    definition(provider)?;
     if string(mail, "refreshToken").is_empty() {
         let mut error = Error::new(401, "Authorization expired. Reconnect this account.");
         error.body["code"] = "oauth_reconnect_required".into();

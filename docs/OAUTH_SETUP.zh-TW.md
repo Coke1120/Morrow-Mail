@@ -24,6 +24,8 @@
 
 較早版本只授予 readonly/send 的帳號，需要在新版 Morrow 重新登入同一帳號一次並完成瀏覽器同意。更新 app 或勾選匯入資料夾不會擴大已發出的 token 權限；重新授權保留既有快取、草稿及其他帳號，不完整授權會保留原連線。
 
+目前 source 對可安全重試的 Gmail 郵件讀取，在 access token 被拒絕時可先更新 token 並重試一次。若重新登入的回應沒有新 refresh token，只會在確認為相同帳號、provider、client ID／secret 及授權 scope 集合時保留舊 token；不相容或沒有可保留的 token 時會保留原連線並回報失敗。這些處理不會延長 Google 已撤銷或依專案政策到期的 refresh token，也不會自動重送郵件或其他 provider 寫入。原生 CI 與真實帳號驗證的範圍見 [驗證記錄](../VERIFICATION.md#gmail-reconnect-recovery--14-october-2026)。
+
 4. 在 **Audience** 確認：外部 app 若仍在 **Testing**，將要登入的帳號加入 **Test users**。這些非基本 scopes 的測試 refresh token 通常會在 **7 天**到期，屆時需要重新連線。公開提供其他人使用時，依 Google 要求完成敏感／受限制 scopes 驗證；切換 In production 並不等於通過驗證。[Google token 到期規則](https://developers.google.com/identity/protocols/oauth2#expiration)、[OAuth verification](https://developers.google.com/identity/protocols/oauth2/production-readiness/sensitive-scope-verification)
 5. 在 **Clients** 保留 **Desktop app** 類型。Morrow 使用本機 loopback callback；不要改成 Web application，也不用設定 Web client 的 Authorized redirect URIs。Google Desktop loopback 適用於 macOS／Windows。[Desktop OAuth](https://developers.google.com/identity/protocols/oauth2/native-app)
 6. 回到 Morrow，先選取**個別 Gmail 帳號**，開啟 **Out of Office → Allow Out of Office settings…**，確認後在瀏覽器登入同一個帳號，接受新增權限。

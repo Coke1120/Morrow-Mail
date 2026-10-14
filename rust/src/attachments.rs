@@ -260,12 +260,17 @@ pub async fn download(app: &App, owner: &str, id: &str) -> Result<Value> {
     if let Some(error) = crate::mail::read_backoff(&app.settings().await?, &connection) {
         return Err(error);
     }
-    let raw = if ["", "imap"].contains(&string(&connection, "provider")) {
-        crate::imap::raw_message(&connection, &message).await
-    } else {
-        crate::providers::raw_message(&app.0.client, &connection, &message).await
-    };
-    let raw = crate::mail::finish_read(app, &connection, raw).await?;
+    let source = &message;
+    let (connection, raw) =
+        crate::mail::google_read_recovery(app, &connection, |connection| async move {
+            let raw = if ["", "imap"].contains(&string(&connection, "provider")) {
+                crate::imap::raw_message(&connection, source).await
+            } else {
+                crate::providers::raw_message(&app.0.client, &connection, source).await
+            };
+            crate::mail::finish_read(app, &connection, raw).await
+        })
+        .await?;
     let (account, key) = (owner.to_owned(), id.to_owned());
     app.db(move |db| {
         db.transaction(|db| {

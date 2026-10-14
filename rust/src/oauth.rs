@@ -14,7 +14,12 @@ use axum::{
 use chrono::Utc;
 use regex::Regex;
 use serde_json::{Value, json};
-use std::{collections::HashMap, io::Read, path::Path, sync::LazyLock};
+use std::{
+    collections::{BTreeSet, HashMap},
+    io::Read,
+    path::Path,
+    sync::LazyLock,
+};
 use tokio::sync::Mutex;
 
 // Public desktop application ID; shared with the Node compatibility service.
@@ -40,8 +45,44 @@ fn mail_version(connection: &Value) -> Value {
         connection["connectionId"],
         connection["authorizationId"],
         connection["provider"],
-        connection["clientId"]
+        connection["clientId"],
+        connection["clientSecret"],
+        connection["purpose"],
+        granted_scopes(connection)
     ])
+}
+fn granted_scopes(connection: &Value) -> BTreeSet<&str> {
+    string(connection, "grantedScopes")
+        .split_whitespace()
+        .collect()
+}
+fn preserve_refresh_token(connection: &mut Value, previous: Option<&Value>) -> Result<()> {
+    if !string(connection, "refreshToken").trim().is_empty() {
+        return Ok(());
+    }
+    let scopes = granted_scopes(connection);
+    let previous = previous
+        .filter(|previous| {
+            !string(previous, "refreshToken").trim().is_empty()
+                && previous["provider"] == connection["provider"]
+                && string(previous, "email").eq_ignore_ascii_case(string(connection, "email"))
+                && !string(connection, "clientId").is_empty()
+                && previous["clientId"] == connection["clientId"]
+                && validation::same_secret(
+                    string(previous, "clientSecret"),
+                    string(connection, "clientSecret"),
+                )
+                && string(previous, "purpose") == string(connection, "purpose")
+                && !scopes.is_empty()
+                && granted_scopes(previous) == scopes
+        })
+        .ok_or_else(|| {
+            Error::invalid("The provider did not return a refresh token for this authorization. Sign in again and allow offline access. Existing connections and cached mail were retained.")
+        })?;
+    // Keep the new access token and grant metadata. This preserves only a token
+    // for the same grant; its provider-side validity is checked on later refresh.
+    connection["refreshToken"] = previous["refreshToken"].clone();
+    Ok(())
 }
 pub fn parse_google_oauth(source: &str) -> Result<Value> {
     let invalid = || Error::invalid("Use a valid Google Desktop app OAuth JSON file.");
@@ -374,12 +415,13 @@ async fn finish_mail(app: &App, attempt: &Attempt, code: &str) -> Result<()> {
             if let Some(previous) = upgrade {
                 let current = connections(&db.settings()?);
                 let owner = string(&previous,"email");
-                if !email.eq_ignore_ascii_case(owner) || current.get(owner).is_none_or(|v| v["connectionId"] != previous["connectionId"] || v["authorizationId"] != previous["authorizationId"] || v["provider"] != previous["provider"] || v["clientId"] != previous["clientId"]) {
+                if !email.eq_ignore_ascii_case(owner) || current.get(owner).is_none_or(|v| mail_version(v) != mail_version(&previous)) {
                     return Err(Error::conflict("The mailbox changed. Authorize automatic replies again for the original account."));
                 }
                 if crate::out_of_office::capability(&connection, owner)["canWrite"] != true {
                     return Err(Error::new(403, "Automatic reply permissions were not fully granted. The existing mail connection was retained."));
                 }
+                preserve_refresh_token(&mut connection, current.get(owner))?;
                 connection = merge(current[owner].clone(), &connection);
                 // Keep history checkpoints but reject older authorization windows.
                 connection["authorizationId"] = uuid::Uuid::new_v4().to_string().into();
@@ -391,6 +433,7 @@ async fn finish_mail(app: &App, attempt: &Attempt, code: &str) -> Result<()> {
             if mail_versions.get(&email) != current.get(&email).map(mail_version).as_ref() {
                 return Err(Error::conflict("This mailbox changed while sign-in was open. Reconnect again; the newer connection was retained."));
             }
+            preserve_refresh_token(&mut connection, current.get(&email))?;
             mail::import_messages(db, &connection, &messages)?;
             save_connection(db, &connection, true)?;
             if let Some(options) = options {
