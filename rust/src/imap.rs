@@ -31,6 +31,8 @@ use std::{
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 type Mailbox = Session<BoundedImap<tokio_native_tls::TlsStream<tokio::net::TcpStream>>>;
 const COMMAND_LIMIT: usize = 8 * 1024 * 1024;
+mod move_recovery;
+pub(crate) use move_recovery::{MoveSession, Presence};
 
 #[derive(Debug)]
 struct ResponseLimit(usize);
@@ -378,6 +380,176 @@ pub fn server_origin(mail: &Value) -> Result<String> {
     ]);
     Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(serde_json::to_vec(&endpoint)?)))
 }
+
+/// A notification is only a request for ordinary bounded synchronization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdleOutcome {
+    Changed,
+    LeaseEnded,
+    Unsupported,
+}
+
+fn idle_protocol_error() -> Error {
+    let mut error = Error::new(
+        502,
+        "IMAP notifications stopped; ordinary mail polling remains available.",
+    );
+    error.body["code"] = "imap_idle_protocol".into();
+    error
+}
+
+fn idle_notification(response: &imap_proto::Response<'_>) -> Result<bool> {
+    use imap_proto::{MailboxDatum, Response, Status};
+    match response {
+        Response::MailboxData(MailboxDatum::Exists(_) | MailboxDatum::Recent(_))
+        | Response::Fetch(..)
+        | Response::Expunge(_)
+        | Response::Vanished { .. } => Ok(true),
+        Response::MailboxData(MailboxDatum::Flags(_))
+        | Response::Data {
+            status: Status::Ok, ..
+        } => Ok(false),
+        _ => Err(idle_protocol_error()),
+    }
+}
+
+/// Library-only TLS/lease injection. The service uses platform trust and a fixed
+/// 60-second lease; API callers cannot override either. No session is returned
+/// or reused after this future completes, fails, times out or is dropped.
+pub async fn idle_inbox_with_tls(
+    mail: &Value,
+    validity: Option<u32>,
+    connector: &native_tls::TlsConnector,
+    budget: Duration,
+) -> Result<IdleOutcome> {
+    idle_folder_with_tls(mail, "INBOX", validity, false, connector, budget).await
+}
+
+pub(crate) async fn idle_selected_folder_with_tls(
+    mail: &Value,
+    path: &str,
+    validity: u32,
+    connector: &native_tls::TlsConnector,
+    budget: Duration,
+) -> Result<IdleOutcome> {
+    if validity == 0 {
+        return Err(idle_protocol_error());
+    }
+    idle_folder_with_tls(mail, path, Some(validity), true, connector, budget).await
+}
+
+async fn idle_folder_with_tls(
+    mail: &Value,
+    path: &str,
+    validity: Option<u32>,
+    selected_custom: bool,
+    connector: &native_tls::TlsConnector,
+    budget: Duration,
+) -> Result<IdleOutcome> {
+    use async_imap::types::Capability;
+    use imap_proto::{Response, Status};
+    if budget < Duration::from_millis(40) || budget > Duration::from_secs(60) {
+        return Err(Error::invalid("Invalid IMAP notification lease."));
+    }
+    // The identity unit supplies this canonical endpoint/login validator. A
+    // malformed origin never reaches the network, even through library callers.
+    server_origin(mail)?;
+    valid_folder(path)?;
+    let deadline = tokio::time::Instant::now() + budget;
+    let leave_idle = deadline - Duration::from_secs(2).min(budget / 4);
+    let setup_deadline = leave_idle.min(tokio::time::Instant::now() + Duration::from_secs(45));
+    let Some((mut session, tag, mut changed)) = tokio::time::timeout_at(setup_deadline, async {
+        let mut session = connect(mail, connector).await?;
+        let capabilities = session.capabilities().await.map_err(imap_error)?;
+        if !capabilities.iter().any(|capability| {
+            matches!(capability, Capability::Atom(atom) if atom.eq_ignore_ascii_case("IDLE"))
+        }) {
+            return Ok(None);
+        }
+        if selected_custom {
+            require_selectable_custom(&mut session, path).await?;
+        }
+        let mailbox = examine_read(&mut session, path).await?;
+        if mailbox.uid_validity.is_none_or(|value| value == 0)
+            || validity.is_some_and(|expected| mailbox.uid_validity != Some(expected))
+        {
+            let mut error = idle_protocol_error();
+            error.body["code"] = "imap_idle_mailbox_changed".into();
+            return Err(error);
+        }
+        session.as_mut().set_limit(128 * 1024);
+        let tag = session.run_command("IDLE").await.map_err(imap_error)?;
+        let mut changed = false;
+        loop {
+            if tokio::time::Instant::now() >= setup_deadline {
+                return Err(network_error());
+            }
+            let response = session
+                .read_response()
+                .await
+                .map_err(io_error)?
+                .ok_or_else(network_error)?;
+            match response.parsed() {
+                Response::Continue { .. } => return Ok(Some((session, tag, changed))),
+                Response::Done {
+                    tag: received,
+                    status: Status::No | Status::Bad,
+                    ..
+                } if received == &tag => return Ok(None),
+                other => changed |= idle_notification(other)?,
+            }
+        }
+    })
+    .await
+    .map_err(|_| network_error())??
+    else {
+        // Missing/rejected IDLE is polling-only for this connection generation.
+        return Ok(IdleOutcome::Unsupported);
+    };
+    while !changed {
+        if tokio::time::Instant::now() >= leave_idle {
+            break;
+        }
+        let response = match tokio::time::timeout_at(leave_idle, session.read_response()).await {
+            Ok(response) => response.map_err(io_error)?.ok_or_else(network_error)?,
+            Err(_) => break,
+        };
+        changed |= idle_notification(response.parsed())?;
+    }
+    tokio::time::timeout_at(deadline, async {
+        session
+            .run_command_untagged("DONE")
+            .await
+            .map_err(imap_error)?;
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(network_error());
+            }
+            let response = session
+                .read_response()
+                .await
+                .map_err(io_error)?
+                .ok_or_else(network_error)?;
+            match response.parsed() {
+                Response::Done {
+                    tag: received,
+                    status: Status::Ok,
+                    ..
+                } if received == &tag => {
+                    return Ok(if changed {
+                        IdleOutcome::Changed
+                    } else {
+                        IdleOutcome::LeaseEnded
+                    });
+                }
+                other => changed |= idle_notification(other)?,
+            }
+        }
+    })
+    .await
+    .map_err(|_| network_error())?
+}
+
 async fn connect(mail: &Value, connector: &native_tls::TlsConnector) -> Result<Mailbox> {
     let _phase = crate::sync_profile::phase("imapConnect");
     crate::sync_profile::count("imapConnections", 1);
@@ -411,6 +583,111 @@ async fn connect(mail: &Value, connector: &native_tls::TlsConnector) -> Result<M
     .await
     .map_err(|_| network_error())?
 }
+
+/// Own one connection for discovery followed by one bounded flags read. It is
+/// never pooled across owners or sync ticks. Taking the session before awaiting
+/// makes a cancelled/failed operation discard it instead of leaving a partially
+/// consumed IMAP response available to the next operation.
+pub(crate) struct ReadRound {
+    mail: Value,
+    connector: native_tls::TlsConnector,
+    session: Option<Mailbox>,
+    uses: u8,
+    deadline: tokio::time::Instant,
+}
+impl ReadRound {
+    pub(crate) fn new(mail: &Value, tls: Option<&native_tls::TlsConnector>) -> Result<Self> {
+        Ok(Self {
+            mail: mail.clone(),
+            connector: match tls {
+                Some(tls) => tls.clone(),
+                None => connector()?,
+            },
+            session: None,
+            uses: 0,
+            // The existing two reads each had a 45-second limit. Time spent
+            // between them cannot extend their combined lifetime indefinitely.
+            deadline: tokio::time::Instant::now() + Duration::from_secs(90),
+        })
+    }
+    fn take(&mut self) -> Result<(Option<Mailbox>, tokio::time::Instant)> {
+        let session = self.session.take();
+        let now = tokio::time::Instant::now();
+        if self.uses >= 2 || self.uses > 0 && session.is_none() || now >= self.deadline {
+            return Err(network_error());
+        }
+        self.uses += 1;
+        Ok((session, self.deadline.min(now + Duration::from_secs(45))))
+    }
+    pub(crate) async fn discover(
+        &mut self,
+        app: &crate::service::App,
+        folder: &str,
+        checkpoint: &Value,
+    ) -> Result<Value> {
+        let (session, deadline) = self.take()?;
+        let (session, state) = tokio::time::timeout_at(deadline, async {
+            valid_folder(folder)?;
+            let mut session =
+                current_read_session(app, &self.mail, &self.connector, session).await?;
+            let state =
+                discover_changes_session(&mut session, &self.mail, folder, checkpoint).await?;
+            Ok::<_, Error>((session, state))
+        })
+        .await
+        .map_err(|_| network_error())??;
+        self.session = Some(session);
+        Ok(state)
+    }
+    pub(crate) async fn reconcile(
+        &mut self,
+        app: &crate::service::App,
+        messages: &[Value],
+    ) -> Result<Vec<Value>> {
+        let (session, deadline) = self.take()?;
+        let (session, rows) = tokio::time::timeout_at(deadline, async {
+            if messages.len() > 50 {
+                return Err(Error::invalid("Reconciliation batch exceeds 50 messages."));
+            }
+            let mut session =
+                current_read_session(app, &self.mail, &self.connector, session).await?;
+            let rows = reconcile_session(&mut session, &self.mail, messages).await?;
+            Ok::<_, Error>((session, rows))
+        })
+        .await
+        .map_err(|_| network_error())??;
+        self.session = Some(session);
+        Ok(rows)
+    }
+    pub(crate) async fn close(mut self) {
+        if let Some(mut session) = self.session.take() {
+            let deadline = self
+                .deadline
+                .min(tokio::time::Instant::now() + Duration::from_secs(2));
+            let _ = tokio::time::timeout_at(deadline, session.logout()).await;
+        }
+    }
+}
+async fn current_read_session(
+    app: &crate::service::App,
+    mail: &Value,
+    tls: &native_tls::TlsConnector,
+    session: Option<Mailbox>,
+) -> Result<Mailbox> {
+    if crate::service::connections(&app.settings().await?).get(string(mail, "email")) != Some(mail)
+    {
+        return Err(Error::conflict(
+            "This mailbox changed before the provider read.",
+        ));
+    }
+    match session {
+        Some(session) => {
+            crate::sync_profile::count("imapSessionReuses", 1);
+            Ok(session)
+        }
+        None => connect(mail, tls).await,
+    }
+}
 async fn names(session: &mut Mailbox) -> Result<Vec<(String, bool)>> {
     Ok(list_names(session)
         .await?
@@ -426,6 +703,29 @@ struct ImportFolder {
     selectable: bool,
     editable: bool,
 }
+
+async fn require_selectable_custom(session: &mut Mailbox, path: &str) -> Result<()> {
+    let catalog = list_names(session).await?;
+    if !catalog.iter().any(|folder| {
+        folder.path == path
+            && folder.selectable
+            && folder.editable
+            && ["archive", "folder"].contains(&folder.kind)
+    }) || catalog.iter().any(|folder| {
+        ["spam", "trash", "virtual"].contains(&folder.kind)
+            && (folder.path == path
+                || folder.delimiter.as_ref().is_some_and(|delimiter| {
+                    !delimiter.is_empty()
+                        && path.starts_with(&format!("{}{delimiter}", folder.path))
+                }))
+    }) {
+        let mut error = Error::conflict("The selected custom IMAP folder is unavailable.");
+        error.body["code"] = "folder_unavailable".into();
+        return Err(error);
+    }
+    Ok(())
+}
+
 async fn list_names(session: &mut Mailbox) -> Result<Vec<ImportFolder>> {
     use imap_proto::types::{MailboxDatum, Response, Status};
     // The library's LIST stream discards tagged failures, so check completion before trusting absence.
@@ -496,11 +796,20 @@ async fn list_names(session: &mut Mailbox) -> Result<Vec<ImportFolder>> {
 }
 async fn move_capabilities(session: &mut Mailbox) -> Result<()> {
     let capabilities = session.capabilities().await.map_err(imap_error)?;
-    if !capabilities.has_str("MOVE") || !capabilities.has_str("UIDPLUS") {
-        return Err(Error::new(
+    // Capability atoms are case-insensitive; async-imap's generic has_str
+    // checks Atom strings case-sensitively.
+    let has = |name: &str| {
+        capabilities.iter().any(|capability| {
+            matches!(capability, async_imap::types::Capability::Atom(value) if value.eq_ignore_ascii_case(name))
+        })
+    };
+    if !has("MOVE") || !has("UIDPLUS") {
+        let mut error = Error::new(
             409,
-            "Safe folder moves require MOVE and UIDPLUS support.",
-        ));
+            "Safe folder moves require MOVE and UIDPLUS support. No move was attempted.",
+        );
+        error.body["code"] = "imap_move_unsupported".into();
+        return Err(error);
     }
     Ok(())
 }
@@ -613,6 +922,7 @@ struct Fetched {
     read: bool,
     starred: bool,
     draft: bool,
+    deleted: bool,
     modseq: Option<u64>,
 }
 // async-imap 0.11's FETCH stream discards tagged NO/BAD; validate completion before using rows.
@@ -688,6 +998,9 @@ async fn checked_delta_bounded(
                                 .iter()
                                 .any(|f| Flag::from(f.as_ref()) == Flag::Flagged);
                             row.draft = flags.iter().any(|f| Flag::from(f.as_ref()) == Flag::Draft);
+                            row.deleted = flags
+                                .iter()
+                                .any(|f| Flag::from(f.as_ref()) == Flag::Deleted);
                         }
                         AttributeValue::InternalDate(date) => {
                             row.date = DateTime::parse_from_str(date, "%d-%b-%Y %H:%M:%S %z")
@@ -770,6 +1083,30 @@ pub(crate) async fn fetch_page_cached(
     options: &Value,
 ) -> Result<Value> {
     fetch_page_cached_with_tls(app, mail, options, &connector()?).await
+}
+pub(crate) async fn fetch_selected_page_cached(
+    app: &crate::service::App,
+    mail: &Value,
+    path: &str,
+    checkpoint: &Value,
+) -> Result<Value> {
+    fetch_selected_page_cached_with_tls(app, mail, path, checkpoint, &connector()?).await
+}
+pub async fn fetch_selected_page_cached_with_tls(
+    app: &crate::service::App,
+    mail: &Value,
+    path: &str,
+    checkpoint: &Value,
+    connector: &native_tls::TlsConnector,
+) -> Result<Value> {
+    valid_folder(path)?;
+    let options = json!({"folder":"archive","incremental":true,"syncCheckpoints":{path:checkpoint},"expectedValidity":checkpoint["validity"],"selectedCustomFolder":true});
+    tokio::time::timeout(
+        Duration::from_secs(45),
+        fetch_folder(mail, &options, connector, Some(path), Some(app)),
+    )
+    .await
+    .map_err(|_| network_error())?
 }
 pub async fn write_flags(mail: &Value, message: &Value, patch: &Value) -> Result<Value> {
     write_flags_with_tls(mail, message, patch, &connector()?).await
@@ -1040,13 +1377,6 @@ async fn enable_qresync(session: &mut Mailbox) -> Result<bool> {
 }
 
 pub(crate) const CHANGE_QUEUE_LIMIT: usize = 1000;
-pub(crate) async fn discover_changes(
-    mail: &Value,
-    folder: &str,
-    checkpoint: &Value,
-) -> Result<Value> {
-    discover_changes_with_tls(mail, folder, checkpoint, &connector()?).await
-}
 /// Discover metadata changes without downloading bodies or an unbounded UID set.
 /// The caller persists this state together with the applied message updates.
 pub async fn discover_changes_with_tls(
@@ -1058,129 +1388,160 @@ pub async fn discover_changes_with_tls(
     valid_folder(folder)?;
     tokio::time::timeout(Duration::from_secs(45), async {
         let mut session = connect(mail, connector).await?;
-        let (mailbox, _, enabled) = sync_examine(&mut session, folder).await?;
-        let validity = mailbox
-            .uid_validity
-            .filter(|v| *v > 0)
-            .ok_or_else(providers::remote_error)?;
-        let highest = mailbox.highest_modseq.filter(|v| *v > 0);
-        let connection = crate::folders::connection_version(mail);
-        let mut state = json!({"connection":connection,"validity":validity,"modseq":0,"pending":[],"scan":null});
-        let same = checkpoint["connection"] == connection
-            && checkpoint["validity"] == validity
-            && checkpoint["modseq"].as_u64().is_some()
-            && checkpoint["pending"].as_array().is_some_and(|uids| {
-                let mut seen = std::collections::HashSet::new();
-                uids.len() <= CHANGE_QUEUE_LIMIT
-                    && uids.iter().all(|uid| uid.as_u64().is_some_and(|uid| uid > 0 && uid <= u32::MAX as u64 && seen.insert(uid)))
-            });
-        if same && let Some(highest) = highest {
-            let scan = &checkpoint["scan"];
-            let scan_valid = (scan.is_null() && checkpoint["pending"].as_array().unwrap().is_empty())
-                || (scan["since"] == checkpoint["modseq"]
-                    && scan["target"].as_u64().is_some_and(|v| v <= highest && v > checkpoint["modseq"].as_u64().unwrap())
-                    && scan["upper"].as_u64().is_some_and(|v| v <= u32::MAX as u64)
-                    && scan["after"].as_u64().is_some_and(|v| v <= scan["upper"].as_u64().unwrap_or(0)));
-            if checkpoint["modseq"].as_u64().unwrap() <= highest && scan_valid {
-                state = checkpoint.clone();
-            }
-        }
-        let invalidated = checkpoint.is_object()
-            && (checkpoint["connection"] != connection
-                || checkpoint["validity"] != validity
-                || highest.is_some_and(|highest| checkpoint["modseq"].as_u64().is_some_and(|old| old > highest)));
-        state["enabled"] = enabled.into();
-        state["flagEpoch"] = if invalidated
-            || highest.is_none() && (!checkpoint.is_object() || !checkpoint["modseq"].is_null())
-        {
-            uuid::Uuid::new_v4().to_string().into()
-        } else { checkpoint["flagEpoch"].clone() };
-        if highest.is_none() {
-            state["modseq"] = Value::Null;
-        } else if state["scan"].is_null() && highest != state["modseq"].as_u64() {
-            let upper = if mailbox.exists == 0 {
-                0
-            } else if let Some(next) = mailbox.uid_next.filter(|v| *v > 0) {
-                if next == 1 { return Err(incomplete_read()); }
-                next - 1
-            } else {
-                let rows = checked_fetch(&mut session, "*", "UID").await?;
-                if rows.len() != 1 {
-                    return Err(incomplete_read());
-                }
-                rows[0].uid.filter(|v| *v > 0).ok_or_else(incomplete_read)?
-            };
-            state["scan"] = json!({"since":state["modseq"],"target":highest,"upper":upper,"after":0});
-        }
-        // Numeric windows cap even a server that ignores CHANGEDSINCE at 1000
-        // rows. At most 32 windows and 128 KiB per response, then yield durably.
-        if state["scan"].is_object() && state["pending"].as_array().unwrap().is_empty() {
-            let since = state["scan"]["since"].as_u64().unwrap();
-            let upper = state["scan"]["upper"].as_u64().unwrap() as u32;
-            let mut after = state["scan"]["after"].as_u64().unwrap() as u32;
-            let mut pending = Vec::new();
-            for _ in 0..32 {
-                if after >= upper || !pending.is_empty() {
-                    break;
-                }
-                let lower = after + 1;
-                let end = lower.saturating_add(CHANGE_QUEUE_LIMIT as u32 - 1).min(upper);
-                session.get_mut().set_limit(128 * 1024);
-                let delta = checked_delta_bounded(
-                    &mut session,
-                    format!("{lower}:{end}"),
-                    format!("(UID MODSEQ) (CHANGEDSINCE {since})"),
-                    CHANGE_QUEUE_LIMIT,
-                ).await;
-                session.get_mut().set_limit(COMMAND_LIMIT);
-                let (rows, _vanished, earlier_vanished) = match delta {
-                    Ok(delta) => delta,
-                    Err(error) if error.body["code"] == "provider_imap_command_rejected" => {
-                        state["modseq"] = Value::Null;
-                        state["scan"] = Value::Null;
-                        state["pending"] = json!([]);
-                        if !checkpoint.is_object() || !checkpoint["modseq"].is_null() {
-                            state["flagEpoch"] = uuid::Uuid::new_v4().to_string().into();
-                        }
-                        let _ = session.logout().await;
-                        return Ok(state);
-                    }
-                    Err(error) => return Err(error),
-                };
-                // This fetch does not request VANISHED. EARLIER is not a legal
-                // unsolicited form. A concurrent expunge without EARLIER still
-                // belongs to a round that ends tagged OK.
-                if earlier_vanished {
-                    return Err(incomplete_read());
-                }
-                let mut seen = std::collections::BTreeSet::new();
-                for row in rows {
-                    let uid = row.uid.filter(|v| *v >= lower && *v <= end).ok_or_else(incomplete_read)?;
-                    if !seen.insert(uid) {
-                        return Err(incomplete_read());
-                    }
-                    if !row.modseq.is_some_and(|v| v > since) {
-                        // A server ignoring MODSEQ/CHANGEDSINCE has not supplied
-                        // incremental proof. Discard it and let flags rotate normally.
-                        state["modseq"] = Value::Null;
-                        state["scan"] = Value::Null;
-                        state["pending"] = json!([]);
-                        if !checkpoint.is_object() || !checkpoint["modseq"].is_null() {
-                            state["flagEpoch"] = uuid::Uuid::new_v4().to_string().into();
-                        }
-                        let _ = session.logout().await;
-                        return Ok(state);
-                    }
-                }
-                pending.extend(seen);
-                after = end;
-            }
-            state["scan"]["after"] = after.into();
-            state["pending"] = json!(pending);
-        }
+        let state = discover_changes_session(&mut session, mail, folder, checkpoint).await?;
         let _ = session.logout().await;
         Ok(state)
-    }).await.map_err(|_| network_error())?
+    })
+    .await
+    .map_err(|_| network_error())?
+}
+async fn discover_changes_session(
+    session: &mut Mailbox,
+    mail: &Value,
+    folder: &str,
+    checkpoint: &Value,
+) -> Result<Value> {
+    let (mailbox, _, enabled) = sync_examine(session, folder).await?;
+    let validity = mailbox
+        .uid_validity
+        .filter(|v| *v > 0)
+        .ok_or_else(providers::remote_error)?;
+    let highest = mailbox.highest_modseq.filter(|v| *v > 0);
+    let connection = crate::folders::connection_version(mail);
+    let mut state =
+        json!({"connection":connection,"validity":validity,"modseq":0,"pending":[],"scan":null});
+    let same = checkpoint["connection"] == connection
+        && checkpoint["validity"] == validity
+        && checkpoint["modseq"].as_u64().is_some()
+        && checkpoint["pending"].as_array().is_some_and(|uids| {
+            let mut seen = std::collections::HashSet::new();
+            uids.len() <= CHANGE_QUEUE_LIMIT
+                && uids.iter().all(|uid| {
+                    uid.as_u64()
+                        .is_some_and(|uid| uid > 0 && uid <= u32::MAX as u64 && seen.insert(uid))
+                })
+        });
+    if same && let Some(highest) = highest {
+        let scan = &checkpoint["scan"];
+        let scan_valid = (scan.is_null() && checkpoint["pending"].as_array().unwrap().is_empty())
+            || (scan["since"] == checkpoint["modseq"]
+                && scan["target"]
+                    .as_u64()
+                    .is_some_and(|v| v <= highest && v > checkpoint["modseq"].as_u64().unwrap())
+                && scan["upper"].as_u64().is_some_and(|v| v <= u32::MAX as u64)
+                && scan["after"]
+                    .as_u64()
+                    .is_some_and(|v| v <= scan["upper"].as_u64().unwrap_or(0)));
+        if checkpoint["modseq"].as_u64().unwrap() <= highest && scan_valid {
+            state = checkpoint.clone();
+        }
+    }
+    let invalidated = checkpoint.is_object()
+        && (checkpoint["connection"] != connection
+            || checkpoint["validity"] != validity
+            || highest.is_some_and(|highest| {
+                checkpoint["modseq"]
+                    .as_u64()
+                    .is_some_and(|old| old > highest)
+            }));
+    state["enabled"] = enabled.into();
+    state["flagEpoch"] = if invalidated
+        || highest.is_none() && (!checkpoint.is_object() || !checkpoint["modseq"].is_null())
+    {
+        uuid::Uuid::new_v4().to_string().into()
+    } else {
+        checkpoint["flagEpoch"].clone()
+    };
+    if highest.is_none() {
+        state["modseq"] = Value::Null;
+    } else if state["scan"].is_null() && highest != state["modseq"].as_u64() {
+        let upper = if mailbox.exists == 0 {
+            0
+        } else if let Some(next) = mailbox.uid_next.filter(|v| *v > 0) {
+            if next == 1 {
+                return Err(incomplete_read());
+            }
+            next - 1
+        } else {
+            let rows = checked_fetch(session, "*", "UID").await?;
+            if rows.len() != 1 {
+                return Err(incomplete_read());
+            }
+            rows[0].uid.filter(|v| *v > 0).ok_or_else(incomplete_read)?
+        };
+        state["scan"] = json!({"since":state["modseq"],"target":highest,"upper":upper,"after":0});
+    }
+    // Numeric windows cap even a server that ignores CHANGEDSINCE at 1000
+    // rows. At most 32 windows and 128 KiB per response, then yield durably.
+    if state["scan"].is_object() && state["pending"].as_array().unwrap().is_empty() {
+        let since = state["scan"]["since"].as_u64().unwrap();
+        let upper = state["scan"]["upper"].as_u64().unwrap() as u32;
+        let mut after = state["scan"]["after"].as_u64().unwrap() as u32;
+        let mut pending = Vec::new();
+        for _ in 0..32 {
+            if after >= upper || !pending.is_empty() {
+                break;
+            }
+            let lower = after + 1;
+            let end = lower
+                .saturating_add(CHANGE_QUEUE_LIMIT as u32 - 1)
+                .min(upper);
+            session.get_mut().set_limit(128 * 1024);
+            let delta = checked_delta_bounded(
+                session,
+                format!("{lower}:{end}"),
+                format!("(UID MODSEQ) (CHANGEDSINCE {since})"),
+                CHANGE_QUEUE_LIMIT,
+            )
+            .await;
+            session.get_mut().set_limit(COMMAND_LIMIT);
+            let (rows, _vanished, earlier_vanished) = match delta {
+                Ok(delta) => delta,
+                Err(error) if error.body["code"] == "provider_imap_command_rejected" => {
+                    state["modseq"] = Value::Null;
+                    state["scan"] = Value::Null;
+                    state["pending"] = json!([]);
+                    if !checkpoint.is_object() || !checkpoint["modseq"].is_null() {
+                        state["flagEpoch"] = uuid::Uuid::new_v4().to_string().into();
+                    }
+                    return Ok(state);
+                }
+                Err(error) => return Err(error),
+            };
+            // This fetch does not request VANISHED. EARLIER is not a legal
+            // unsolicited form. A concurrent expunge without EARLIER still
+            // belongs to a round that ends tagged OK.
+            if earlier_vanished {
+                return Err(incomplete_read());
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            for row in rows {
+                let uid = row
+                    .uid
+                    .filter(|v| *v >= lower && *v <= end)
+                    .ok_or_else(incomplete_read)?;
+                if !seen.insert(uid) {
+                    return Err(incomplete_read());
+                }
+                if !row.modseq.is_some_and(|v| v > since) {
+                    // A server ignoring MODSEQ/CHANGEDSINCE has not supplied
+                    // incremental proof. Discard it and let flags rotate normally.
+                    state["modseq"] = Value::Null;
+                    state["scan"] = Value::Null;
+                    state["pending"] = json!([]);
+                    if !checkpoint.is_object() || !checkpoint["modseq"].is_null() {
+                        state["flagEpoch"] = uuid::Uuid::new_v4().to_string().into();
+                    }
+                    return Ok(state);
+                }
+            }
+            pending.extend(seen);
+            after = end;
+        }
+        state["scan"]["after"] = after.into();
+        state["pending"] = json!(pending);
+    }
+    Ok(state)
 }
 async fn reconcile_session(
     session: &mut Mailbox,
@@ -1599,15 +1960,20 @@ async fn fetch_folder(
     } else {
         names(&mut session).await?.into_iter().find(|(_,sent)|*sent).map(|(path,_)|path).ok_or_else(||Error::new(409,"This IMAP server does not identify a Sent folder. Import Inbox only or configure Sent on your provider."))?
     };
-    let mailbox = session
-        .examine(encode_folder(&path)?)
-        .await
-        .map_err(imap_error)?;
+    if options["selectedCustomFolder"] == true {
+        require_selectable_custom(&mut session, &path).await?;
+    }
+    let mailbox = examine_read(&mut session, &path).await?;
     let validity = mailbox
         .uid_validity
         .filter(|value| *value > 0)
         .ok_or_else(providers::remote_error)?
         .to_string();
+    if options["expectedValidity"].is_string() && options["expectedValidity"] != validity {
+        let mut error = Error::conflict("The selected IMAP folder changed UIDVALIDITY.");
+        error.body["code"] = "folder_changed".into();
+        return Err(error);
+    }
     let cursor = &options["cursor"];
     let cursor_uid = if !cursor.is_null() {
         if cursor["path"] != path || cursor["validity"] != validity {
@@ -1626,10 +1992,21 @@ async fn fetch_folder(
         None
     };
     if mailbox.exists == 0 || cursor_uid == Some(1) {
+        let previous = options["syncCheckpoints"][&path]["uid"]
+            .as_u64()
+            .and_then(|uid| u32::try_from(uid).ok())
+            .unwrap_or(0);
+        let mut upper = mailbox.uid_next.unwrap_or(1).saturating_sub(1);
+        if options["selectedCustomFolder"] == true {
+            if mailbox.uid_next.is_some() && upper < previous {
+                return Err(incomplete_read());
+            }
+            upper = upper.max(previous);
+        }
         let _ = session.logout().await;
         let mut page = json!({"messages":[],"nextCursor":null});
         if options["incremental"] == true {
-            page["syncCheckpoint"] = json!({"path":path,"validity":validity,"uid":mailbox.uid_next.unwrap_or(1).saturating_sub(1),"connection":crate::folders::connection_version(mail),"more":false});
+            page["syncCheckpoint"] = json!({"path":path,"validity":validity,"uid":upper,"connection":crate::folders::connection_version(mail),"more":false});
             page["expectedSyncCheckpoint"] = options["syncCheckpoints"][&path].clone();
         }
         return Ok(page);
@@ -1684,6 +2061,12 @@ async fn fetch_folder(
     } else {
         None
     };
+    if options["selectedCustomFolder"] == true
+        && mailbox.uid_next.is_some()
+        && previous_uid.is_some_and(|previous| previous > observed_upper)
+    {
+        return Err(incomplete_read());
+    }
     let mut ids = Vec::new();
     // ponytail: fixed UID windows bound SEARCH to 8192 IDs / 128 KiB per command.
     // Scan at most 32 windows per page; persist an advancing cursor across sparse gaps.
@@ -2118,6 +2501,32 @@ pub async fn organize_with_tls(
 #[cfg(test)]
 mod retry_tests {
     use super::*;
+
+    #[test]
+    fn read_round_deadlines_and_consumed_leases_cannot_be_extended_or_reopened() {
+        let mut round = ReadRound::new(&json!({}), None).unwrap();
+        let now = tokio::time::Instant::now();
+        let (_, phase_deadline) = round.take().unwrap();
+        assert!(phase_deadline <= tokio::time::Instant::now() + Duration::from_secs(45));
+        assert!(phase_deadline >= now + Duration::from_secs(44));
+        assert!(round.deadline <= now + Duration::from_secs(90));
+        assert!(
+            round.take().is_err(),
+            "A dropped/failed lease must not reconnect"
+        );
+
+        let mut round = ReadRound::new(&json!({}), None).unwrap();
+        round.deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        let deadline = round.deadline;
+        assert_eq!(round.take().unwrap().1, deadline);
+        let mut expired = ReadRound::new(&json!({}), None).unwrap();
+        expired.deadline = tokio::time::Instant::now() - Duration::from_secs(1);
+        assert!(expired.take().is_err());
+        assert_eq!(
+            expired.uses, 0,
+            "Expired rounds fail before attempting a connection"
+        );
+    }
 
     #[test]
     fn transport_retry_classification_excludes_auth_protocol_and_response_limits() {

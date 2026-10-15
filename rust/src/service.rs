@@ -359,6 +359,7 @@ pub(crate) fn message_patch(original: &Value, body: &Value) -> Result<Value> {
 }
 pub fn safe_mail(mail: &Value) -> Value {
     let mut safe = json!({"configured":!string(mail,"email").is_empty(),"provider":"imap","email":"","imapHost":"","imapPort":993,"smtpHost":"","smtpPort":465,"clientId":"","canOrganize":crate::providers::can_organize(mail)});
+    safe["connectionRef"] = crate::downloads::connection_ref(mail).into();
     for key in [
         "provider", "email", "imapHost", "imapPort", "smtpHost", "smtpPort", "clientId",
     ] {
@@ -366,6 +367,15 @@ pub fn safe_mail(mail: &Value) -> Value {
             safe[key] = value.clone();
         }
     }
+    safe["moveConnectionRef"] =
+        if !string(mail, "email").is_empty() && ["", "imap"].contains(&string(mail, "provider")) {
+            crate::imap_moves::connection_ref(mail)
+                .ok()
+                .map(Value::String)
+                .unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
     safe
 }
 pub fn state(db: &Store, selected: &str, paged: bool, secret: &[u8; 32]) -> Result<Value> {
@@ -471,6 +481,7 @@ pub fn state(db: &Store, selected: &str, paged: bool, secret: &[u8; 32]) -> Resu
     let mut result = json!({"features":catalog()["features"],"account":{"id":view,"email":if live {view.as_str()} else if view=="all" {""} else {"alex@genmail.example"},"name":if view=="all" {"All accounts"} else if !string(&preferences,"displayName").is_empty() {string(&preferences,"displayName")} else if live {view.split('@').next().unwrap_or("")} else {"Alex Morgan"},"mode":if view=="all" {"combined"} else if live {"live"} else {"demo"},"provider":if live {mail.get("provider").cloned().unwrap_or(json!("imap"))} else {json!(view)}},"accounts":metadata,"syncErrors":config.get("backgroundSyncErrors").cloned().unwrap_or(json!([])),"revision":db.revision()?,"demoStats":stats["demo"],"messages":messages,
         "settings":{"oauthClients":{"google":{"configured":false},"microsoft":{"configured":true}},"mail":safe_mail(mail),"ai":{"configured":!string(ai,"baseUrl").is_empty()&&!string(ai,"model").is_empty(),"baseUrl":ai.get("baseUrl").cloned().unwrap_or(json!("http://127.0.0.1:11434/v1")),"model":string(ai,"model"),"hasApiKey":!string(ai,"apiKey").is_empty(),"temperature":ai.get("temperature").cloned().unwrap_or(json!(0.3)),"maxTokens":ai.get("maxTokens").cloned().unwrap_or(json!(1200))},"policy":policy::resolve(&config["policy"]),"preferences":preferences,"footer":crate::content::preferences_footer(&preferences)?,"calendars":crate::calendar::state(&config)},"workspace":workspace(&config,&view)});
     result["serverFolders"] = crate::folders::cached_catalogs(&config);
+    result["serverFolderSync"] = crate::imap_folder_sync::statuses(&config);
     result["workspace"]["styleLearning"] = style;
     result["workspace"]["brainLearning"] = crate::brain::learning_state(db, &view)?;
     result["workspace"]["categories"] = crate::home::categories(&config, &view);
@@ -631,7 +642,7 @@ async fn handle_inner(app: App, request: axum::http::Request<Body>) -> Result<Re
                     ..
                 ]
                 | ["account", "disconnect"]
-                | ["mail", "folders", ..]
+                | ["mail", "folders" | "moves", ..]
                 | ["agent", ..]
         );
     let limit = if (route == ["attachments"] || route == ["cli"]) && parts.method == Method::POST {
@@ -723,7 +734,16 @@ pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
     if let Some(response) = crate::attachments::handle(app, &context).await? {
         return Ok(response);
     }
+    if let Some(response) = crate::imap_folder_sync::handle(app, &context).await? {
+        return Ok(response);
+    }
+    if let Some(response) = crate::downloads::handle(app, &context).await? {
+        return Ok(response);
+    }
     if let Some(response) = crate::folders::handle(app, &context).await? {
+        return Ok(response);
+    }
+    if let Some(response) = crate::imap_moves::handle(app, &context).await? {
         return Ok(response);
     }
     if let Some(response) = crate::calendar::handle(app, &context).await? {
@@ -951,7 +971,7 @@ pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
                 let original = get_message(db, &owner, &id)?;
                 crate::inbox_agent::guard_action(db, &owner, &id, &body)?;
                 crate::scheduled::guard_draft(db, &owner, &id, None)?;
-                let patch = message_patch(&original, &body)?;
+                let patch = crate::local_moves::patch(db, &owner, &original, &body)?;
                 Ok(json!({"message":pages::owned(&owner,db.update(&owner,&id,&patch)?.unwrap())}))
             })
             .await?

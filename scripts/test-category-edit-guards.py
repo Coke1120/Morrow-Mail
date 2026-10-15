@@ -77,8 +77,15 @@ class CategoryEditGuards(unittest.TestCase):
         self.assertIn('(!model.unsavedForms.isEmpty || model.review.hasEdits) && !model.confirmDiscard', app)
 
     def test_windows_edit_another_category_and_clear_can_cancel(self):
+        # Both versions inspect the same owned replacement handler. Keep the
+        # original button boundary available for immutable historical controls.
+        edit = 'menuAction(p, management, L"Edit", [category]'
+        delete = 'menuAction(p, management, L"Delete…"'
+        if edit not in WIN:
+            edit = 'action(p, item, L"Edit", [category]'
+            delete = 'action(p, item, L"Delete…"'
         for start, end in [
-            ('action(p, item, L"Edit", [category]', 'action(p, item, L"Delete…"'),
+            (edit, delete),
             ('action(p, fields, L"Clear form",', 'action(p, fields, L"Draft name",'),
         ]:
             with self.subTest(action=start):

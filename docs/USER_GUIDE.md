@@ -111,6 +111,10 @@ Gmail labels and Outlook/IMAP folder names are automatically downloaded per conn
 
 An account-scoped SQLite membership index for downloaded labels/server folders and search within them avoids full cached-message JSON scans when switching views. Existing workspaces build this index once on first open, which can add startup time for a large cache. Imports, provider moves and deletion maintain it atomically; local folder overrides stay separate. Folder browsing remains complete while the keyword index rebuilds. Paired tagged native checks and public-download/signature verification passed; see [verification](../VERIFICATION.md) for evidence and limits.
 
+For a connected IMAP account, **Folders to sync…** chooses custom folders for new-mail downloads. Reloading saved status is local; **Refresh server folder list** reads names from the provider. **Save selection** changes local download settings only. **Sync this mailbox now** starts a read; periodic reads follow the General sync interval while Morrow is open. Zero disables periodic Sync; quota retries and update continuations of previously requested reads can still run. The editor shows the last successful check for each folder and a recovery action when needed.
+
+Selected-folder Sync downloads a bounded recent page and later new mail, visiting at most four selected folders per mailbox per round with 50 messages per page. The existing reads for all target accounts finish before selected-folder downloads begin. Older mail still requires history import, and cached-message flags refresh in bounded batches. Larger bursts can take several rounds. A renamed/missing folder or changed server requires a fresh selection review; a recreated folder starts a new recent-mail baseline after you save again. Deselecting retains cached messages. See [selected-folder coverage and limits](SELECTED_IMAP_FOLDERS.md).
+
 To, Cc and Bcc accept up to **100 plain email addresses total**, separated by commas or semicolons. At least one address is required across the three fields; Bcc-only sends are supported. Display-name/group syntax is not accepted. Duplicate addresses are delivered once. Cc/Bcc survive saving and uncertain-send recovery. Review shows all recipients; SMTP Bcc stays in the delivery envelope, and Gmail/Outlook receive it in their provider delivery submission.
 
 Select an imported message and choose **Move / Labels** (or its context menu). The app loads destinations from that message's account, then requires review before writing:
@@ -334,6 +338,23 @@ The queue holds at most 100 pending jobs per account, retains up to 20 completed
 Morrow preserves safe model connection, HTTP, timeout and response-format diagnostics in failed **Summaries** reports. Older failures whose cause was discarded keep their generic message. Activity retains the last finished summary's status, so repeatedly seeing its warning does not imply repeated model calls; a discarded context also appears as interrupted. Failed paid work still requires a fresh manual review.
 
 ### Historical import and writing-style learning
+
+**Downloads & storage…** is available from the mail search area and each connected
+account in Settings. It shows stored/indexed records, incomplete or shortened
+bodies, logical message/attachment bytes, and a 30-record-per-page repair list.
+Opening the panel reads only the local cache; **Download full content…** explicitly
+retrieves one owning message using the existing attachment/MIME limits. The panel
+also opens history-range and automatic-sync settings and reuses Pause/Resume.
+It is not a global offline switch or a storage-deletion control. Counts/dates do
+not prove complete provider history. See [download and storage details](DOWNLOAD_CONTROLS.md).
+
+Local archive/Trash changes now expose **Undo local move to …** in the message
+reader. The latest move can be restored after restart while its location and
+connection still match; subsequent read/star/Pending edits remain. A new local
+move, provider organization or reimport invalidates the older receipt. This is
+separate from the provider Trash **one-minute Undo**, which does not survive an
+app restart. For expired/uncertain provider actions, inspect the original mailbox
+before making another reviewed move.
 
 In **Settings → Mail accounts**, choose **All history** or **1, 3, 6 or 12 calendar months** (default 3), then **All Mail** or individual **Inbox / Sent** scopes before connecting. Existing accounts can use **Start chosen import**. This downloads mail locally without any AI calls. New imports fetch the latest seven days across the selected folders before older history; existing jobs retain their checkpoint and scope. Progress, pause and resume are per account; read-only pages checkpoint to disk and resume after restart. Refresh progress in Settings. Importing a shorter range never deletes cached mail. Historical import does not generate new-mail summaries. IMAP Sent requires the server to advertise its `\Sent` special-use folder; if unavailable, select Inbox only or configure Sent on the provider. Large IMAP messages still use the existing 5 MB body ceiling. Gmail/Outlook page tokens and IMAP UIDVALIDITY are checked; a changed IMAP folder requires a fresh import.
 

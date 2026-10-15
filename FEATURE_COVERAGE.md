@@ -1,5 +1,30 @@
 # Morrow Mail feature coverage
 
+**Current source — contextual actions:** secondary reader and row-management
+commands use named native menus, selection commands follow the current mail
+selection, and Today hosts the existing owned reply editor. Empty Cc/Bcc fields
+can be revealed without changing the draft. Existing send/source review,
+provider versus local organization and recovery controls remain. Native mounted
+fixtures are extended; SDK execution, keyboard and manual accessibility acceptance
+remain required. No completion-retention or AI policy is changed. See
+[behavior and validation boundary](docs/CONTEXTUAL_ACTIONS.md).
+
+**Current-source download controls:** Both native clients expose account-owned
+stored/indexed/incomplete/shortened-body counts, precise logical message and
+attachment byte totals, and a 30-record content-repair list. The panel reads only
+local data until an explicit history control or single-message download is
+chosen. Local archive/Trash actions have a service-authored, restart-safe last-move
+undo guarded by mailbox connection and current location; read/star/Pending edits
+survive undo. Provider Trash retains its separate one-minute undo and provider
+writes retain review/permission/no-replay behavior. This is not cache eviction,
+a hard storage quota, a global offline mode or complete provider coverage.
+Repair eligibility requires a matching current IMAP origin. Opaque connection
+and history-job references reject stale panel actions after reconnect or job
+replacement, while already-downloaded bodies still shortened by size limits
+remain explained without offering a redundant download.
+See [behavior and remaining decisions](docs/DOWNLOAD_CONTROLS.md) and
+[verification](VERIFICATION.md#download-controls-and-local-recovery--15-october-2026).
+
 **IMAP server identity source follow-up:** imports, cached-body reuse and cached
 flag reconciliation bind to the validated server endpoint and actual login.
 Cross-server UID collisions retain separate copies and user state. An atomic
@@ -20,6 +45,49 @@ the frozen Today follow-up is also excluded. Exact source, historical failures,
 paired-tag requirements and distribution limits are in the
 [release notes](docs/releases/v0.8.2.md) and
 [verification](VERIFICATION.md#v082-release-preparation--15-october-2026).
+
+**Candidate — bounded IMAP read sessions:** change discovery and the following
+cached-mail flag read share one owned authenticated connection. Connections are
+not retained across sync ticks or owners. Cancellation/error drops the socket;
+the next phase checks the saved connection and revalidates capabilities and
+UIDVALIDITY. Unsupported MOVE/UIDPLUS preflight reports that no move was attempted;
+uncertain writes still require provider review before retry. IDLE and non-MOVE
+fallback were outside that read-session unit. After stacking the identity source,
+the focused 10-case TLS run, formatting, strict Clippy and complete Rust suite
+passed (456/0/4 existing ignored). Native CI and live-account acceptance remain
+pending. See [scope and validation](docs/IMAP_READ_SESSIONS.md).
+
+**Draft candidate — bounded IMAP notifications:** automatic-sync opt-in also
+permits read-only IDLE leases for eligible Inbox and selected custom folders.
+Custom folders require a committed UIDVALIDITY baseline, current source/selection
+identity, fresh catalog and satisfied recovery/backoff gates. At most four
+accounts and one folder per account are watched at once; accounts and folders
+rotate. Notifications coalesce into existing bounded sync and its opted-in
+arrival queue without calling a model or waking the background AI tick.
+Disabling the interval, disconnect and scope/connection changes cancel readers.
+Connection-wide failures cannot retry through other selected folders; temporary
+update pauses preserve failure/backoff state. Ordinary polling and recovery
+remain available. Identity, read-session and selected-folder prerequisites are
+stacked. Its 31 new TLS/Store cases and 18 existing selected-folder focused
+cases passed; formatting, strict Clippy and the full Rust suite also passed
+(505/0/4 existing ignored). No native/live-provider or release claim is made. Durable non-MOVE
+recovery is a separate unit. [Scope, lifecycle and bounds](docs/IMAP_IDLE_NOTIFICATIONS.md).
+
+**Candidate — reviewed non-MOVE recovery:** servers with UIDPLUS and persistent
+UIDs can use a durable, non-atomic COPY / source deletion flag / targeted UID
+EXPUNGE sequence. MOVE remains preferred; an uncertain MOVE never falls back to
+COPY. At most 100 unfinished operations are retained workspace-wide without
+eviction. The native recovery journal opens locally; provider checks and any
+remaining source removal each require an explicit action. Unknown COPYUID cannot
+enable recovery by guessing a destination. Connection, source, UIDVALIDITY and
+exact destination checks precede recovery writes. A duplicated destination cache
+requires manual provider review rather than merging local user state. Confirmed
+adoption clears obsolete missing-source markers and source-folder flag proofs
+while preserving the cached body and user state. Details,
+limits and current validation are in [the recovery contract](docs/IMAP_MOVE_RECOVERY.md)
+and [verification](VERIFICATION.md#imap-move-recovery-candidate--15-october-2026).
+IDLE remains a separate source unit; this does not add permanent-delete UI or
+live-provider acceptance.
 
 **Published 0.8.1 — Gmail authorization recovery:** sync, folder-catalog and
 raw-message reads may refresh a rejected access token and retry once. History
@@ -293,10 +361,11 @@ required for this fix and are not implied by the older acceptance results above.
 | IMAP cached metadata | **Included in 0.7.8.** Bounded UID/MODSEQ discovery prioritizes changed cached messages within the 50-message background budget, retains up to 1,000 pending UIDs, and atomically persists message/queue/scan progress. Valid legacy proofs seed folder progress once; incomplete proofs backfill conservatively. Unchanged flags use provider snapshots; missing snapshots reread FLAGS. Capability/connection/UIDVALIDITY changes invalidate proof while retaining content. Older-row rotation still checks expunges, wraps to the first cached folder, and keeps one batch slot when a changed queue would otherwise freeze the cursor. Retained mail from an older UIDVALIDITY does not erase the current folder generation. An unsolicited VANISHED expunge does not abort a discovery round that ends tagged OK. [Design and cloud evidence](docs/THUNDERBIRD_IMAP_SYNC.md). This is bounded polling; sparse UID space and large bursts require additional rounds. |
 | Mail / AI activity | **Implemented in 0.6.0-beta.8.** Independently polled per-account fetch/history/summary/learning/index status, counters, queued/paused/failure state and recent completed work in both clients. No invented progress percentage; idle does not establish complete mailbox coverage. |
 | IMAP/SMTP | Additional Morrow functionality requested for this project. TLS IMAP import and explicit SMTP sending are implemented; providers must support the configured authentication method. |
+| Selected custom IMAP folders | **Implemented in source.** Account-bound local selection of up to 20 custom selectable folders; regular/manual Sync downloads at most four 50-message pages per round and retains ascending new-UID progress. Per-folder timestamps, limited-coverage warnings and safe recovery are observational. Source, connection, selection and UIDVALIDITY checks protect in-flight commits; recreated folders require review. Initial recent pages and new mail only, with existing bounded cached-flag reconciliation; older history remains a separate import. [Contract and limits](docs/SELECTED_IMAP_FOLDERS.md). Synthetic tests do not establish native or live-account acceptance. |
 | Google and Microsoft calendars | **Implemented, manual.** Both can connect concurrently through separate calendar OAuth grants, independently of the current mail account. Google supports the same built-in Desktop client or an advanced custom registration; current source also supports Microsoft’s built-in public client, with an advanced custom-client option. Display checked calendars in a month grid, click a date, and review before creating an event without attendees. Google notification/email and Outlook notification reminders use provider-native settings. The API retains its 90-day range and bounded pagination limits. These calls use the real provider APIs when connected; no authenticated calendar testing is claimed. |
 | Multiple mail accounts | **Implemented.** Multiple Gmail, Outlook, and IMAP connections, independently collapsible account groups with remembered state, separate and combined folders, account-owned drafts/replies, a From picker for new messages, and per-account disconnect. Demo fixture data is hidden from the product interface. |
 | Safe message reading | **Implemented in 0.6.0-beta.8.** Sanitized HTML and plain-text links; isolated script-disabled reader, no forms/frames, external HTTPS images only after per-message consent, destination review before external links. Existing cache needs refetch for HTML. Version 0.7.0 includes explicit attachment download/save and CID raster loading; no malware scanning or phishing verdict. |
-| Mail organization | Search, drafts and explicitly labeled local archive/Trash actions are local. In version 0.7.0, Outlook, Gmail and IMAP Read/Unread and stars write back to supported provider messages with the required permissions. Beta.38 adds direct provider Delete in the list toolbar, reader and selection context menu, with batch Undo. Native multiple selection supports owned read/star and local Pending/archive/Trash batch actions and sequential provider Trash moves, preserving each owner and reporting partial failures. Hovered or focused native rows show read/unread, owned Reply All, and a direct provider Trash move with a one-minute Undo button and ⌘Z / Ctrl+Z. Undo is account-bound, single-use, restores the original provider location and leaves text-editing undo intact. The separate Move / Labels dialog also supports Gmail label add/remove and Inbox/Spam/Trash moves, Outlook folder/Junk/Deleted Items moves, and IMAP MOVE + UIDPLUS folder moves within the owning account. Gmail Trash uses the system label ID even when displayed as Bin, and its empty-body POST explicitly declares zero content length. Current-source Gmail/Outlook sign-in requests read/send/organization permissions by default, without a separate checkbox; older connections require browser reauthorization, and partial consent retains existing connections and cached mail. Failures show safe HTTP status and authorization/permission/quota guidance while retaining the cache; uncertain writes are never retried automatically. Outlook delta and bounded Gmail/IMAP cached-message reconciliation retain remote-deleted content locally. Gmail's bounded history and IMAP's capability-gated CONDSTORE/QRESYNC metadata reads are implemented in current source. IMAP IDLE/push, provider permanent-delete actions, phishing reporting and sender blocking remain unimplemented. Provider-site links cover the latter manual actions. |
+| Mail organization | Search, drafts and explicitly labeled local archive/Trash actions are local. In version 0.7.0, Outlook, Gmail and IMAP Read/Unread and stars write back to supported provider messages with the required permissions. Beta.38 adds direct provider Delete in the list toolbar, reader and selection context menu, with batch Undo. Native multiple selection supports owned read/star and local Pending/archive/Trash batch actions and sequential provider Trash moves, preserving each owner and reporting partial failures. Hovered or focused native rows show read/unread, owned Reply All, and a direct provider Trash move with a one-minute Undo button and ⌘Z / Ctrl+Z. Undo is account-bound, single-use, restores the original provider location and leaves text-editing undo intact. The separate Move / Labels dialog also supports Gmail label add/remove and Inbox/Spam/Trash moves, Outlook folder/Junk/Deleted Items moves, and IMAP folder moves within the owning account. The reviewed recovery candidate keeps MOVE + UIDPLUS preferred and adds the explicitly confirmed, journaled UIDPLUS fallback described above; interrupted fallback moves may leave two copies. Gmail Trash uses the system label ID even when displayed as Bin, and its empty-body POST explicitly declares zero content length. Current-source Gmail/Outlook sign-in requests read/send/organization permissions by default, without a separate checkbox; older connections require browser reauthorization, and partial consent retains existing connections and cached mail. Failures show safe HTTP status and authorization/permission/quota guidance while retaining the cache; uncertain writes are never retried automatically. Outlook delta and bounded Gmail/IMAP cached-message reconciliation retain remote-deleted content locally. Gmail's bounded history and IMAP's capability-gated CONDSTORE/QRESYNC metadata reads are implemented in current source. The isolated IMAP IDLE candidate rotates eligible Inbox and selected custom folders with four total and one-per-account notification leases; it passed Linux synthetic checks, with native/live-provider acceptance pending. Gmail/Outlook push remain unfinished. Provider permanent-delete actions, phishing reporting and sender blocking remain unimplemented. Provider-site links cover the latter manual actions. |
 | Inbox views and composition | Compact / Comfortable / Spacious density; six persisted sort orders; To, Cc, Bcc and multiple recipients (100 total). Beta.38 supports ⌘/Ctrl and Shift multiple selection on the current page, selection context actions, and retains the current read message in Unread until switching messages/view/page. Right/bottom/focused reading layouts, larger reader and full-width expansion; sender left-aligned, unread dot at the right, unread previews bold and read previews regular. Native window close hides without quitting; Dock reopens it and ⌘Q retains write/edit guards. Saved window size and presets. |
 | Custom model | User-supplied OpenAI-compatible base URL, model ID, optional API key, token limit, and temperature. Chat and embedding show saved-key status with collapsed replacement controls; model changes keep the key at the same normalized endpoint, including legacy equivalent URL spellings. Connection tests use a fixed prompt with no mail and do not save or discard an entered replacement key. Explicit Save, removal and changed-endpoint credential isolation remain. |
 | Reader AI popup and sender-history reply | **Implemented in beta.9 source.** Message-bound summary/reply/translation popup; reviewed use in an owned draft. Separate history action scans exact same-sender downloaded mail in one account, retains selected message first and newest permitted matches up to the saved 1–50 message limit, shows used/matched counts, applies field redaction and rejects changed sources. Historical bodies cap at 5,000 UTF-16 characters. No automatic delivery or provider-history fetch. |

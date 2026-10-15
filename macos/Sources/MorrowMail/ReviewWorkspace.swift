@@ -12,13 +12,14 @@ struct ReviewAccountTabs: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: true) {
                 HStack(spacing: 7) {
+                    Text("Mailbox scope").font(.caption).foregroundStyle(.secondary)
                     ForEach(owners, id: \.self) { owner in
                         Button { choose(owner) } label: {
                             HStack(spacing: 7) {
                                 Text(owner == "all" ? "All accounts" : owner).lineLimit(1)
                                 let counts = model.state["today"]["replySuggestionCounts"]
                                 let count = counts.isNull ? model.state["today"]["replySuggestions"].array.filter { owner == "all" || review.owner($0) == owner }.count : owner == "all" ? counts.object.values.reduce(0) { $0 + Int($1.number) } : Int(counts[owner].number)
-                                Text(count.formatted()).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                Text(count.formatted()).font(.caption.monospacedDigit()).foregroundStyle(.secondary).help("Replies waiting for review")
                             }.padding(.horizontal, 12).padding(.vertical, 8)
                                 .background(review.scope == owner ? morrowGreen.opacity(0.13) : .clear).clipShape(RoundedRectangle(cornerRadius: 8))
                         }.buttonStyle(.plain).id(owner).focused($focused, equals: owner).help(owner)

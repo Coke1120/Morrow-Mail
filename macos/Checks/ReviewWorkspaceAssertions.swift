@@ -89,6 +89,587 @@ import SwiftUI
         host.cacheDisplay(in:host.bounds,to:bitmap)
         try bitmap.representation(using:.png,properties:[:])!.write(to:URL(fileURLWithPath:directory).appendingPathComponent(name+".png"))
     }
+    @MainActor static func settle(_ description: String, _ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while !condition(), Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
+        try require(condition(), description)
+    }
+    @MainActor static func nativeViews<T: NSView>(_ root: NSView, _ type: T.Type) -> [T] {
+        ((root as? T).map { [$0] } ?? []) + root.subviews.flatMap { nativeViews($0, type) }
+    }
+    @MainActor static func accessibilityNodes(_ root: NSView) -> [NSAccessibilityProtocol] {
+        var result: [NSAccessibilityProtocol] = [], visited = Set<ObjectIdentifier>()
+        @MainActor func visit(_ value: Any) {
+            guard let object = value as? NSObject, visited.count < 4096,
+                  visited.insert(ObjectIdentifier(object)).inserted else { return }
+            if let element = object as? NSAccessibilityProtocol {
+                result.append(element)
+                for child in element.accessibilityChildren() ?? [] { visit(child) }
+            }
+            if let view = object as? NSView { for child in view.subviews { visit(child) } }
+        }
+        visit(root)
+        return result
+    }
+    @MainActor static func control(_ label: String, in root: NSView) -> NSAccessibilityProtocol? {
+        root.layoutSubtreeIfNeeded()
+        return accessibilityNodes(root).first { element in
+            guard let role = element.accessibilityRole(), [NSAccessibility.Role.button, .checkBox, .popUpButton].contains(role) else { return false }
+            let labels = [element.accessibilityLabel(), element.accessibilityTitle(), (element as? NSButton)?.title].compactMap { $0 }
+            return labels.contains(label) && !element.isAccessibilityHidden()
+                && !element.accessibilityFrame().isEmpty
+                && root.window?.frame.intersects(element.accessibilityFrame()) == true
+        }
+    }
+    @MainActor static func mountedText(_ root: NSView) -> [String] {
+        accessibilityNodes(root).flatMap { element -> [String] in
+            guard let role = element.accessibilityRole(), [NSAccessibility.Role.staticText, .textField, .textArea].contains(role),
+                  !element.isAccessibilityHidden(), !element.accessibilityFrame().isEmpty,
+                  root.window?.frame.intersects(element.accessibilityFrame()) == true else { return [] }
+            return [element.accessibilityValue() as? String, element.accessibilityLabel()].compactMap { $0 }
+        }
+    }
+    @MainActor static func pressControl(_ label: String, in root: NSView) async throws {
+        try await settle("Mounted enabled control missing: " + label) { control(label, in: root)?.isAccessibilityEnabled() == true }
+        guard let button = control(label, in: root) else { throw APIError("Lost mounted control: " + label) }
+        try require(button.accessibilityPerformPress(), "Native accessibility action failed: " + label)
+    }
+    struct MenuNode {
+        var role = "", identifier = ""
+        var labels: [String] = []
+        var parent: Int?
+        var children: [Int] = []
+        var completeChildren = true, mounted = true
+    }
+    struct MountedMenuControl {
+        let element: NSAccessibilityProtocol
+        let identities: [ObjectIdentifier]
+    }
+    @MainActor static func menuNodeIndices(_ identifier: String, nodes: [MenuNode]) -> [Int] {
+        let labels = ["reader.replyMenu": "Reply", "reader.organizeMenu": "Organize", "reader.moreMenu": "More", "reader.aiMenu": "AI help"]
+        guard let label = labels[identifier] else { return [] }
+        return nodes.indices.filter { index in
+            let node = nodes[index]
+            guard node.mounted, [NSAccessibility.Role.menuButton.rawValue, NSAccessibility.Role.popUpButton.rawValue].contains(node.role),
+                  node.identifier.isEmpty || node.identifier == identifier else { return false }
+            if identifier != "reader.replyMenu" { return node.labels.contains(label) }
+            // A primary-action Menu exposes an unlabeled secondary menu segment.
+            // Require its owned group and both reciprocal child links; never
+            // choose the primary Reply button or an arbitrary unlabeled control.
+            guard node.labels.allSatisfy({ $0.isEmpty || $0 == label }), let parent = node.parent, nodes.indices.contains(parent),
+                  nodes[parent].mounted, nodes[parent].role == NSAccessibility.Role.group.rawValue,
+                  nodes[parent].completeChildren, nodes[parent].children.count == 2,
+                  Set(nodes[parent].children).count == 2, nodes[parent].children.contains(index),
+                  let primary = nodes[parent].children.first(where: { $0 != index }), nodes.indices.contains(primary) else { return false }
+            let sibling = nodes[primary]
+            return sibling.mounted && sibling.parent == parent && sibling.role == NSAccessibility.Role.button.rawValue
+                && sibling.labels.contains(label) && (sibling.identifier.isEmpty || sibling.identifier == identifier)
+        }
+    }
+    @MainActor static func menuElementIsMounted(_ element: NSAccessibilityProtocol, in root: NSView, window: NSWindow, visible: NSRect) -> Bool {
+        guard (element.accessibilityWindow() as? NSWindow) === window,
+              !element.isAccessibilityHidden(), element.isAccessibilityEnabled(),
+              !element.accessibilityFrame().isEmpty, visible.intersects(element.accessibilityFrame()) else { return false }
+        var next: Any? = element
+        var seen = Set<ObjectIdentifier>()
+        for _ in 0..<64 {
+            guard let object = next as? NSObject, seen.insert(ObjectIdentifier(object)).inserted else { return false }
+            if let view = object as? NSView {
+                return view.window === window && !view.isHiddenOrHasHiddenAncestor && (view === root || view.isDescendant(of: root))
+            }
+            guard let ancestor = object as? NSAccessibilityProtocol, !ancestor.isAccessibilityHidden() else { return false }
+            next = ancestor.accessibilityParent()
+        }
+        return false
+    }
+    @MainActor static func menuControls(_ identifier: String, in root: NSView) -> [MountedMenuControl] {
+        root.layoutSubtreeIfNeeded()
+        guard let window = root.window, window.isVisible, !root.isHiddenOrHasHiddenAncestor else { return [] }
+        let visible = window.convertToScreen(root.convert(root.visibleRect, to: nil)).intersection(window.frame)
+        let elements = accessibilityNodes(root)
+        guard elements.count < 4096 else { return [] }
+        let indices = Dictionary(uniqueKeysWithValues: elements.enumerated().map { (ObjectIdentifier($0.element as AnyObject), $0.offset) })
+        let nodes = elements.map { element -> MenuNode in
+            let children = element.accessibilityChildren() ?? []
+            let childIndices = children.compactMap { ($0 as? NSObject).flatMap { indices[ObjectIdentifier($0)] } }
+            return MenuNode(role: element.accessibilityRole()?.rawValue ?? "", identifier: element.accessibilityIdentifier() ?? "",
+                            labels: [element.accessibilityLabel(), element.accessibilityTitle()].compactMap { $0 },
+                            parent: (element.accessibilityParent() as? NSObject).flatMap { indices[ObjectIdentifier($0)] },
+                            children: childIndices, completeChildren: childIndices.count == children.count,
+                            mounted: menuElementIsMounted(element, in: root, window: window, visible: visible))
+        }
+        return menuNodeIndices(identifier, nodes: nodes).map { index in
+            var owned = [index]
+            if identifier == "reader.replyMenu", let parent = nodes[index].parent { owned += [parent] + nodes[parent].children.filter { $0 != index } }
+            return MountedMenuControl(element: elements[index], identities: owned.map { ObjectIdentifier(elements[$0] as AnyObject) })
+        }
+    }
+    enum MenuAction: Equatable { case showMenu, press }
+    @MainActor static func advertisedMenuAction(_ names: [String]) -> MenuAction? {
+        if names.contains("AXShowMenu") { return .showMenu }
+        if names.contains("AXPress") { return .press }
+        return nil
+    }
+    @MainActor static func accessibilityActions(_ element: NSAccessibilityProtocol) -> [String]? {
+        // This public informal NSObject API reports actions without invoking
+        // them. Check the selector and result type instead of assuming that the
+        // modern protocol's default PerformShowMenu method is supported.
+        let selector = NSSelectorFromString("accessibilityActionNames")
+        guard let object = element as? NSObject, object.responds(to: selector),
+              let names = object.perform(selector)?.takeUnretainedValue() as? [String], names.count <= 32 else { return nil }
+        return names
+    }
+    @MainActor static func menuSelectorControls() throws {
+        let reply = [MenuNode(role: "AXGroup", children: [1, 2]),
+                     MenuNode(role: "AXButton", labels: ["Reply"], parent: 0),
+                     MenuNode(role: "AXMenuButton", labels: [""], parent: 0)]
+        try require(menuNodeIndices("reader.replyMenu", nodes: reply) == [2], "split-menu selector lost its exact secondary segment")
+        var titled = reply; titled[2].labels = ["", "Reply"]
+        try require(menuNodeIndices("reader.replyMenu", nodes: titled) == [2], "an exact Reply secondary title was rejected")
+        var checks = 2
+        for mutation in 0..<11 {
+            var nodes = reply
+            switch mutation {
+            case 0: nodes[2].parent = nil
+            case 1: nodes[1].parent = nil
+            case 2: nodes[0].children = [1, 1]
+            case 3: nodes[0].completeChildren = false
+            case 4: nodes[1].labels = ["Forward"]
+            case 5: nodes[2].role = "AXButton"
+            case 6: nodes[2].identifier = "other.menu"
+            case 7: nodes[0].mounted = false
+            case 8: nodes[1].mounted = false
+            case 9: nodes[2].mounted = false
+            default: nodes[2].labels = ["Other"]
+            }
+            try require(menuNodeIndices("reader.replyMenu", nodes: nodes).isEmpty, "split-menu selector accepted invalid graph case \(mutation)")
+            checks += 1
+        }
+        var duplicate = reply
+        duplicate += [MenuNode(role: "AXGroup", children: [4, 5]), MenuNode(role: "AXButton", labels: ["Reply"], parent: 3), MenuNode(role: "AXMenuButton", parent: 3)]
+        try require(menuNodeIndices("reader.replyMenu", nodes: duplicate).count == 2, "ambiguous split menus must remain non-unique")
+        let named = [MenuNode(role: "AXMenuButton", labels: ["More"])]
+        try require(menuNodeIndices("reader.moreMenu", nodes: named) == [0] && menuNodeIndices("reader.organizeMenu", nodes: named).isEmpty, "named menus lost their exact label")
+        try require(advertisedMenuAction([]) == nil && advertisedMenuAction(["AXConfirm"]) == nil, "an unadvertised menu action was invented")
+        try require(advertisedMenuAction(["AXShowMenu"]) == .showMenu && advertisedMenuAction(["AXPress"]) == .press && advertisedMenuAction(["AXPress", "AXShowMenu"]) == .showMenu, "advertised menu action choice changed")
+        print("Menu selector controls: \(checks) split graph cases plus ambiguity, named-label and advertised-action controls passed; these are synthetic graph checks, not an AppKit action pass.")
+    }
+    @MainActor static func menuMountedGateControls() throws {
+        let window = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 320, height: 180), styleMask: [.titled], backing: .buffered, defer: false)
+        let foreign = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 320, height: 180), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; foreign.isReleasedWhenClosed = false
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+        let root = NSView(frame: container.bounds), sibling = NSView(frame: container.bounds)
+        container.addSubview(root); container.addSubview(sibling)
+        let button = NSButton(title: "Fixture menu mounting gate", target: nil, action: nil)
+        button.frame = NSRect(x: 20, y: 20, width: 240, height: 28); root.addSubview(button)
+        window.contentView = container; window.makeKeyAndOrderFront(nil)
+        foreign.contentView = NSView(frame: container.bounds)
+        defer { foreign.close(); foreign.contentView = nil; window.close(); window.contentView = nil }
+        window.layoutIfNeeded()
+        let visible = window.convertToScreen(root.convert(root.visibleRect, to: nil)).intersection(window.frame)
+        try require(menuElementIsMounted(button, in: root, window: window, visible: visible), "owned enabled mounting control was rejected")
+        button.isEnabled = false
+        try require(!menuElementIsMounted(button, in: root, window: window, visible: visible), "disabled mounting control was accepted")
+        button.isEnabled = true; button.isHidden = true
+        try require(!menuElementIsMounted(button, in: root, window: window, visible: visible), "hidden mounting control was accepted")
+        button.isHidden = false; root.isHidden = true
+        try require(!menuElementIsMounted(button, in: root, window: window, visible: visible), "hidden ancestor was accepted")
+        root.isHidden = false; button.setFrameOrigin(NSPoint(x: 900, y: 20))
+        try require(!menuElementIsMounted(button, in: root, window: window, visible: visible), "offscreen mounting control was accepted")
+        button.setFrameOrigin(NSPoint(x: 20, y: 20)); sibling.addSubview(button)
+        try require(!menuElementIsMounted(button, in: root, window: window, visible: visible), "a same-window foreign subtree was accepted")
+        foreign.contentView?.addSubview(button); foreign.makeKeyAndOrderFront(nil)
+        try require(!menuElementIsMounted(button, in: root, window: window, visible: visible), "a foreign window was accepted")
+        print("Menu mounting controls: owned positive and disabled, hidden, hidden ancestor, offscreen, foreign subtree and foreign window negatives passed; no menu action invoked.")
+    }
+    @MainActor static func menuDiagnostics(_ identifier: String, in root: NSView) -> String {
+        // Only this fictional fixture's mounted tree. Prioritize actual menu
+        // nodes, include parent/child indices and advertised actions, and bound
+        // every count/string. Flat traversal order does not prove ownership.
+        let elements = accessibilityNodes(root)
+        let indices = Dictionary(uniqueKeysWithValues: elements.enumerated().map { (ObjectIdentifier($0.element as AnyObject), $0.offset) })
+        let controls = elements.indices.filter { [NSAccessibility.Role.button, .menuButton, .popUpButton].contains(elements[$0].accessibilityRole() ?? .unknown) }
+        let ordered = controls + elements.indices.filter { !controls.contains($0) }
+        let nodes = ordered.prefix(32).map { index in
+            let element = elements[index]
+            let labels = [element.accessibilityLabel(), element.accessibilityTitle()].compactMap { $0 }.map { String($0.replacingOccurrences(of: "\n", with: " ").prefix(100)) }
+            let parent = (element.accessibilityParent() as? NSObject).flatMap { indices[ObjectIdentifier($0)] }
+            let children = (element.accessibilityChildren() ?? []).prefix(16).map { ($0 as? NSObject).flatMap { indices[ObjectIdentifier($0)] }.map(String.init) ?? "outside" }
+            let actions = accessibilityActions(element)?.prefix(16).map { String($0.prefix(80)) }.joined(separator: ",") ?? "unavailable"
+            let segments = (element as? NSSegmentedControl).map { control in (0..<min(control.segmentCount, 16)).map { "\($0):\(String((control.label(forSegment: $0) ?? "").prefix(80)))" }.joined(separator: ",") } ?? "none"
+            return "#\(index) \(type(of: element)) parent=\(parent.map(String.init) ?? "outside") children=\(children) id=\(String((element.accessibilityIdentifier() ?? "").prefix(80))) role=\(element.accessibilityRole()?.rawValue ?? "nil") labels=\(labels) actions=\(actions) segments=\(segments) enabled=\(element.isAccessibilityEnabled()) hidden=\(element.isAccessibilityHidden()) ownWindow=\((element.accessibilityWindow() as? NSWindow) === root.window) frame=\(NSStringFromRect(element.accessibilityFrame()))"
+        }
+        return "Menu fixture \(identifier): windowVisible=\(root.window?.isVisible == true) root=\(NSStringFromRect(root.visibleRect)); " + nodes.joined(separator: " | ")
+    }
+    @MainActor static func menuEntries(_ menu: NSMenu) -> String {
+        menu.items.prefix(32).map { "\(String($0.title.prefix(100))) enabled=\($0.isEnabled) hidden=\($0.isHidden) action=\($0.action != nil)" }.joined(separator: " | ")
+    }
+    @MainActor final class MenuTracking {
+        var armed = false, ended = false, inspected = false
+        var begins = 0
+        var menu: NSMenu?
+        var failure: Error?
+        var entries = ""
+        var observers: [NSObjectProtocol] = []
+        var cancellation: Timer?, watchdog: Timer?
+        func stop() {
+            armed = false
+            watchdog?.invalidate(); cancellation?.invalidate()
+            if let menu, !ended { menu.cancelTracking() }
+            for observer in observers { NotificationCenter.default.removeObserver(observer) }
+            observers.removeAll()
+        }
+    }
+    @MainActor static func withMountedMenu(_ identifier: String, in root: NSView, deadline: Date,
+                                          inspect: @escaping @MainActor (NSMenu) throws -> Void) async throws {
+        let tracking = MenuTracking()
+        defer { tracking.stop() }
+        do {
+            while menuControls(identifier, in: root).count != 1, Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
+            let controls = menuControls(identifier, in: root)
+            try require(Date() < deadline && controls.count == 1, "Expected one mounted enabled menu control: " + identifier)
+            let target = controls[0], control = controls[0].element
+            guard let window = root.window else { throw APIError("Menu fixture lost its window") }
+            @MainActor func current() -> Bool {
+                let next = menuControls(identifier, in: root)
+                return root.window === window && next.count == 1 && next[0].identities == target.identities
+            }
+            tracking.observers.append(NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { notification in
+                MainActor.assumeIsolated {
+                    guard tracking.armed, let menu = notification.object as? NSMenu, menu.supermenu == nil else { return }
+                    tracking.begins += 1
+                    guard tracking.menu == nil else {
+                        tracking.failure = APIError("A menu action opened more than one root menu")
+                        menu.cancelTracking(); return
+                    }
+                    tracking.menu = menu
+                    // AppKit may synchronously track inside the accessibility
+                    // action. Inspect in its tracking loop, then close that menu.
+                    let timer = Timer(timeInterval: 0.001, repeats: false) { _ in
+                        MainActor.assumeIsolated {
+                            guard tracking.armed else { return }
+                            defer { menu.cancelTracking() }
+                            do {
+                                try require(Date() < deadline && current() && tracking.begins == 1, "The opened menu lost its captured mounted control")
+                                tracking.entries = menuEntries(menu)
+                                try inspect(menu)
+                                tracking.inspected = true
+                            } catch { tracking.failure = error }
+                        }
+                    }
+                    tracking.cancellation = timer
+                    RunLoop.main.add(timer, forMode: .eventTracking)
+                    RunLoop.main.add(timer, forMode: .common)
+                }
+            })
+            tracking.observers.append(NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) { notification in
+                MainActor.assumeIsolated {
+                    guard tracking.armed, let menu = notification.object as? NSMenu, menu === tracking.menu else { return }
+                    tracking.ended = true
+                }
+            })
+            let remaining = deadline.timeIntervalSinceNow
+            try require(remaining > 0, "The menu deadline expired before activation")
+            let watchdog = Timer(timeInterval: remaining, repeats: false) { _ in
+                MainActor.assumeIsolated {
+                    print(menuDiagnostics(identifier, in: root))
+                    print("Review fixture: native menu exceeded its five-second deadline; begins=\(tracking.begins) ended=\(tracking.ended) entries=\(tracking.entries)")
+                    tracking.stop()
+                    // Terminate only this isolated fixture if a synchronous
+                    // native tracking loop cannot return after cancellation.
+                    fflush(stdout); exit(1)
+                }
+            }
+            tracking.watchdog = watchdog
+            RunLoop.main.add(watchdog, forMode: .eventTracking)
+            RunLoop.main.add(watchdog, forMode: .common)
+            let names = accessibilityActions(control) ?? []
+            guard let action = advertisedMenuAction(names) else { throw APIError("The owned menu control advertises no supported menu action: " + identifier) }
+            tracking.armed = true
+            try require(current(), "The menu lost its captured secondary control before activation")
+            // AXPress is allowed only on the proven secondary/named menu node,
+            // when that exact node advertises it. Never press the Reply primary
+            // button and never try a second action after a failed first action.
+            let opened = action == .showMenu ? control.accessibilityPerformShowMenu() : control.accessibilityPerformPress()
+            try require(opened, "Advertised native menu action failed: " + identifier)
+            while !tracking.ended, Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
+            try require(Date() < deadline && tracking.begins == 1 && tracking.ended, "The native menu did not open and close within five seconds")
+            if let failure = tracking.failure { throw failure }
+            try require(tracking.inspected, "The menu closed before its native commands were inspected")
+        } catch {
+            print(menuDiagnostics(identifier, in: root))
+            print("Menu tracking: begins=\(tracking.begins) ended=\(tracking.ended) entries=\(tracking.entries)")
+            throw error
+        }
+    }
+    @MainActor static func commandIndex(_ title: String, in menu: NSMenu) -> Int? {
+        menu.items.firstIndex { $0.title == title && !$0.isHidden && !$0.isSeparatorItem && $0.action != nil }
+    }
+    @MainActor static func menuCommand(_ title: String, identifier: String, in root: NSView, enabled: Bool = true, perform: Bool = false) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        var matched = false
+        var entries = ""
+        while !matched, Date() < deadline {
+            try await withMountedMenu(identifier, in: root, deadline: deadline) { menu in
+                entries = menuEntries(menu)
+                guard let index = commandIndex(title, in: menu), menu.items[index].isEnabled == enabled else { return }
+                matched = true
+                if perform {
+                    try require(enabled, "A fixture must not invoke a disabled menu item")
+                    menu.performActionForItem(at: index)
+                }
+            }
+            if !matched { try await Task.sleep(nanoseconds: 20_000_000) }
+        }
+        if !matched { print(menuDiagnostics(identifier, in: root)); print("Menu command entries: " + entries) }
+        try require(matched, "Mounted menu command did not reach enabled=\(enabled): " + title)
+    }
+    @MainActor static func mountedReader(session: URLSession) async throws {
+        ReviewProtocol.resetLifecycle()
+        let first = ReviewFixture.owners[0], owner = ReviewFixture.owners[1]
+        let model = AppModel(session: session); model.state = ReviewFixture.state(owner: first); model.starting = false
+        var message = ReviewFixture.message(0, owner: owner); message["remoteId"] = .string("imap:1:1")
+        model.state["messages"] = .array([message]); model.selectedMessage = message.viewID; model.messageDetail = message
+        var expanded = 0
+        let window = NSWindow(contentRect: NSRect(x: 30, y: 30, width: 720, height: 760), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: MessageReader(message: message, expanded: false, focused: false, onExpand: { expanded += 1 }, onBack: {}).environmentObject(model))
+        window.contentView = host; window.makeKeyAndOrderFront(nil)
+        defer { window.close(); window.contentView = nil }
+        for (identifier, commands) in [("reader.replyMenu", ["Reply", "Reply All", "Forward"]), ("reader.organizeMenu", ["Move to…", "Create new folder…", "Manage folders…", "Move to provider Trash"]), ("reader.moreMenu", ["Star", "Mark Pending locally", "Archive locally", "Expand Reader"]), ("reader.aiMenu", ["Summarize", "Suggest Reply", "Suggest with History", "Translate"])] {
+            let prepared = ReviewProtocol.recordedTraffic().filter { $0["path"] == "/api/drafts/prepare" }.count
+            try await withMountedMenu(identifier, in: host, deadline: Date().addingTimeInterval(5)) { menu in
+                try require(commands.allSatisfy { commandIndex($0, in: menu) != nil }, "A grouped reader command became unreachable: " + identifier)
+            }
+            await Task.yield()
+            try require(model.compose == nil && !model.preparingDraft && ReviewProtocol.recordedTraffic().filter { $0["path"] == "/api/drafts/prepare" }.count == prepared, "Opening a menu invoked the primary Reply action")
+        }
+        try await menuCommand("Expand Reader", identifier: "reader.moreMenu", in: host, perform: true)
+        try require(expanded == 1, "More did not call the existing reader layout action")
+        try await menuCommand("Move to…", identifier: "reader.organizeMenu", in: host, perform: true)
+        try require(model.organizing?["message"] == message && model.organizing?["message"]["accountId"].string == owner, "Organize lost the message owner")
+        model.organizing = nil
+        for (title, mode) in [("Reply", "reply"), ("Reply All", "replyAll"), ("Forward", "forward")] {
+            try await menuCommand(title, identifier: "reader.replyMenu", in: host, perform: true)
+            try await settle("Grouped reply action did not prepare a draft: " + title) { model.compose != nil }
+            try require(model.compose?.accountID == owner && model.account == first, "Grouped reply switched the sending identity")
+            try require(ReviewProtocol.recordedTraffic().last(where: { $0["path"] == "/api/drafts/prepare" })?["mode"] == mode, "Grouped reply changed its preparation mode")
+            model.compose = nil
+        }
+        try await menuCommand("Suggest with History", identifier: "reader.aiMenu", in: host)
+        model.state["settings"]["policy"]["content"]["sender"] = .bool(false)
+        try await menuCommand("Suggest with History", identifier: "reader.aiMenu", in: host, enabled: false)
+        try await menuCommand("Suggest Reply", identifier: "reader.aiMenu", in: host)
+        model.messageDetail = .null
+        try await menuCommand("Suggest Reply", identifier: "reader.aiMenu", in: host, enabled: false)
+        try require(!ReviewProtocol.recordedTraffic().contains { $0["path"] == "/api/send" || $0["path"] == "/api/ai" || $0["path"]?.contains("/organize") == true }, "Opening grouped controls issued a send, AI or provider write")
+        print("Mounted reader menus retain every command, invoke layout/owned organization and reply variants, and disable forbidden history/stale AI.")
+    }
+    @MainActor static func mountedToday(session: URLSession, width: CGFloat) async throws {
+        ReviewProtocol.resetLifecycle()
+        let first = ReviewFixture.owners[0], second = ReviewFixture.owners[1]
+        let model = AppModel(session: session); model.state = ReviewFixture.state(owner: first); model.starting = false; model.section = "today"
+        let review = model.review
+        review.pickScope(first); await review.load(first, model: model)
+        let window = NSWindow(contentRect: NSRect(x: 30, y: 30, width: width, height: 780), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: TodayView().environmentObject(model)); window.contentView = host; window.makeKeyAndOrderFront(nil)
+        defer { window.close(); window.contentView = nil }
+        try await pressControl("Review replies (3)", in: host)
+        let key = review.key(ReviewFixture.proposal(0, owner: first))
+        try await settle("Today did not mount its original-owner editor") {
+            model.section == "today" && review.drafts[key]?.accountID == first
+                && mountedText(host).contains("From: " + first)
+                && nativeViews(host, NSTextView.self).contains { $0.isEditable && $0.string == review.drafts[key]?.body && $0.window === window }
+        }
+        try require(control("Review sending…", in: host)?.isAccessibilityEnabled() == false, "Unreviewed suggestion could enter sending review")
+        review.drafts[key]?.body = "Retained first-mailbox edit."
+        try await pressControl(second + ", not selected", in: host)
+        try await settle("Changing scope did not close the old Today editor") { review.scope == second && control("Back to Today", in: host) == nil }
+        try require(review.drafts[key]?.body == "Retained first-mailbox edit." && model.account == first && model.section == "today", "Scope change discarded edits or navigated the mailbox")
+        try await pressControl("Review replies (3)", in: host)
+        let otherKey = review.key(ReviewFixture.proposal(0, owner: second))
+        try await settle("Colliding message did not mount its second-owner editor") {
+            review.drafts[otherKey]?.accountID == second && mountedText(host).contains("From: " + second)
+                && !mountedText(host).contains("From: " + first)
+                && nativeViews(host, NSTextView.self).contains { $0.isEditable && $0.string == review.drafts[otherKey]?.body && $0.window === window }
+        }
+        review.drafts[otherKey]?.body = "Reviewed second-mailbox reply."
+        try await settle("Unchecked facts did not block a completed reply") { control("Review sending…", in: host)?.isAccessibilityEnabled() == false }
+        review.reviewedFacts.insert(otherKey)
+        try await settle("Reviewed reply did not enable sending review") { control("Review sending…", in: host)?.isAccessibilityEnabled() == true }
+        review.stale.insert(otherKey)
+        try await settle("Stale Today editor did not disable sending review") { control("Review sending…", in: host)?.isAccessibilityEnabled() == false }
+        review.stale.remove(otherKey)
+        try await pressControl("Review sending…", in: host)
+        try await settle("Today did not open the existing owned send review") { model.compose?.accountID == second }
+        try require(model.compose?.replyToID == "mail-0" && model.account == first && model.section == "today", "Today changed source identity while opening the composer")
+        model.compose = nil
+        try await pressControl("Back to Today", in: host)
+        try await pressControl(first + ", not selected", in: host)
+        try await pressControl("Review replies (3)", in: host)
+        try await settle("Returning to Today discarded the first draft") { nativeViews(host, NSTextView.self).contains { $0.isEditable && $0.string == "Retained first-mailbox edit." && $0.window === window } }
+        review.writing = true
+        try await settle("An in-flight review write did not disable scope changes") { control(second + ", not selected", in: host)?.isAccessibilityEnabled() == false }
+        review.writing = false
+        try require(!ReviewProtocol.recordedTraffic().contains { $0["path"] == "/api/send" || $0["path"] == "/api/ai" }, "Today review sent or generated content")
+        print("Mounted Today at \(Int(width))pt: real Review/scope/back/send-review controls, duplicate-ID owner isolation, retained draft, stale/unreviewed/write gates; no send/model request.")
+    }
+    @MainActor static func mountedTodayExactSelection(session: URLSession, cachedFirst: Bool) async throws {
+        ReviewProtocol.resetLifecycle()
+        let owner = ReviewFixture.owners[0]
+        let model = AppModel(session: session); model.state = ReviewFixture.state(owner: owner); model.starting = false; model.section = "today"
+        let review = model.review, previous = ReviewFixture.proposal(0, owner: owner), clicked = ReviewFixture.proposal(2, owner: owner)
+        let previousKey = review.key(previous), clickedKey = review.key(clicked)
+        review.pickScope(owner)
+        ReviewProtocol.setProposals(cachedFirst ? [previous] : [], owner: owner)
+        await review.load(owner, model: model)
+        // The saved queue deliberately predates Today. Do not load it again
+        // before pressing the actual card: that would hide the original fault.
+        model.state["today"]["replySuggestions"] = .array([clicked])
+        model.state["today"]["replySuggestionCounts"] = .object([owner: .number(1)])
+        model.state["today"]["events"] = .array([])
+        ReviewProtocol.setProposals([clicked], owner: owner)
+        try require(review.drafts[clickedKey] == nil && (cachedFirst ? review.selected(model).map(review.key) == previousKey : review.selected(model) == nil), "Exact-selection negative control lost its stale queue precondition")
+        let window = NSWindow(contentRect: NSRect(x: 30, y: 30, width: 1120, height: 900), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: TodayView().environmentObject(model)); window.contentView = host; window.makeKeyAndOrderFront(nil)
+        defer { window.close(); window.contentView = nil }
+        try await pressControl("Review suggested reply: " + clicked["message"]["subject"].string, in: host)
+        try await settle("Today did not mount the exact clicked suggestion after a stale queue") {
+            review.drafts[clickedKey]?.accountID == owner && review.drafts[clickedKey]?.replyToID == clicked["messageId"].string
+                && mountedText(host).contains("From: " + owner)
+                && mountedText(host).contains(clicked["message"]["subject"].string)
+                && nativeViews(host, NSTextView.self).contains { $0.isEditable && $0.string == clicked["text"].string && $0.window === window }
+        }
+        // An eventual correction to B must not hide an earlier inspection of A.
+        try require(!ReviewProtocol.recordedTraffic().contains { $0["path"] == "/api/messages/" + previous["messageId"].string }, "Clicking B inspected cached A before showing B")
+        review.selection[owner] = previousKey; review.proposals[previousKey] = previous
+        try await Task.sleep(nanoseconds: 40_000_000)
+        try require(nativeViews(host, NSTextView.self).contains { $0.isEditable && $0.string == clicked["text"].string && $0.window === window }, "Unrelated same-owner queue selection replaced the clicked Today editor")
+        try await pressControl("Skip suggestion", in: host)
+        try await settle("Successful Today Skip did not close the exact editor") {
+            review.drafts[clickedKey] == nil && review.proposals[clickedKey] == nil && control("Back to Today", in: host) == nil && !review.writing
+        }
+        try require(review.drafts[previousKey] == nil && !ReviewProtocol.recordedTraffic().contains { $0["path"] == "/api/messages/" + previous["messageId"].string }, "Skip fell back to a different cached suggestion")
+        try require(model.section == "today" && !ReviewProtocol.recordedTraffic().contains { $0["path"] == "/api/send" || $0["path"] == "/api/ai" }, "Exact Today selection navigated, sent or generated content")
+        print("Mounted Today exact card: cached \(cachedFirst ? "A" : "empty") → B, no A inspection, unrelated selection ignored and successful Skip closes without fallback.")
+    }
+    @MainActor static func mountedTodayUpdatedSelection(session: URLSession) async throws {
+        ReviewProtocol.resetLifecycle()
+        let owner = ReviewFixture.owners[0]
+        let model = AppModel(session: session); model.state = ReviewFixture.state(owner: owner); model.starting = false; model.section = "today"
+        let review = model.review
+        var initial = ReviewFixture.proposal(2, owner: owner); initial["conversationKey"] = .string("fixture-thread")
+        let oldKey = review.key(initial)
+        model.state["today"]["replySuggestions"] = .array([initial]); model.state["today"]["events"] = .array([])
+        model.state["today"]["replySuggestionCounts"] = .object([owner: .number(1)])
+        review.pickScope(owner); ReviewProtocol.setProposals([initial], owner: owner); await review.load(owner, model: model)
+        let window = NSWindow(contentRect: NSRect(x: 30, y: 30, width: 1120, height: 900), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: TodayView().environmentObject(model)); window.contentView = host; window.makeKeyAndOrderFront(nil)
+        defer { window.close(); window.contentView = nil }
+        try await pressControl("Review suggested reply: " + initial["message"]["subject"].string, in: host)
+        try await settle("Updated-selection control did not open its initial editor") { review.drafts[oldKey] != nil && !review.preparing.contains(oldKey) }
+        var same = initial; same["id"] = .string("same-source-update"); same["proposalId"] = same["id"]; same["text"] = .string("Updated suggestion for this same original.")
+        ReviewProtocol.setProposals([same], owner: owner); await review.load(owner, model: model)
+        try require(review.stale.contains(oldKey) && review.savedPayloads[oldKey] == review.drafts[oldKey]?.payload, "Same-key replacement control must start with a clean stale draft")
+        try await pressControl("Review updated suggestion…", in: host)
+        try await settle("Same-key evidence replacement closed or left the old Today editor") {
+            review.proposals[oldKey] == same && !review.stale.contains(oldKey)
+                && control("Back to Today", in: host) != nil
+                && nativeViews(host, NSTextView.self).contains { $0.isEditable && $0.string == same["text"].string && $0.window === window }
+        }
+        let retained = "Local edits retained while the conversation moves to a later message."
+        review.drafts[oldKey]?.body = retained
+        var later = ReviewFixture.proposal(3, owner: owner); later["conversationKey"] = initial["conversationKey"]
+        let laterKey = review.key(later)
+        ReviewProtocol.setProposals([later], owner: owner); await review.load(owner, model: model)
+        try await pressControl("Keep edits and refresh evidence", in: host)
+        try await settle("Different-key refresh did not retain Today presentation and edits") {
+            review.drafts[oldKey] == nil && review.proposals[oldKey] == nil && review.messages[oldKey] == nil
+                && review.drafts[laterKey]?.body == retained && review.drafts[laterKey]?.replyToID == later["messageId"].string
+                && review.proposals[laterKey] == later && !review.preparing.contains(laterKey)
+                && control("Back to Today", in: host) != nil
+                && mountedText(host).contains(later["message"]["subject"].string)
+                && nativeViews(host, NSTextView.self).contains { $0.isEditable && $0.string == retained && $0.window === window }
+        }
+        try require(!review.reviewedFacts.contains(laterKey) && review.hasEdits, "Retarget accepted old facts approval or lost the unsaved-edit guard")
+        try await pressControl("Back to Today", in: host)
+        try require(review.drafts[laterKey]?.body == retained && model.section == "today", "Closing the retargeted Today editor discarded its draft")
+        try require(!ReviewProtocol.recordedTraffic().contains { $0["path"] == "/api/send" || $0["path"] == "/api/ai" }, "Updating the Today editor sent or generated content")
+        print("Mounted Today updates: exact same-key replacement and atomic different-key keep-edits retarget remain visible; facts reset, edits and Back retention preserved.")
+    }
+    @MainActor static func mountedSelection(session: URLSession) async throws {
+        let model = AppModel(session: session), owner = ReviewFixture.owners[0]
+        model.state = ReviewFixture.state(owner: owner); model.starting = false
+        let rows = (0..<2).map { index -> JSON in
+            var row = ReviewFixture.message(index, owner: owner)
+            row["remoteId"] = .string("imap:1:\(index + 1)")
+            return row
+        }
+        model.searchResponse = .object(["messages": .array(rows), "total": .number(2), "page": .number(0)])
+        let defaults = UserDefaults.standard, priorLayout = defaults.object(forKey: "mailReaderLayout"), priorSidebar = defaults.object(forKey: "mailSidebarVisible")
+        defaults.set("right", forKey: "mailReaderLayout"); defaults.set(true, forKey: "mailSidebarVisible")
+        defer {
+            if let priorLayout { defaults.set(priorLayout, forKey: "mailReaderLayout") } else { defaults.removeObject(forKey: "mailReaderLayout") }
+            if let priorSidebar { defaults.set(priorSidebar, forKey: "mailSidebarVisible") } else { defaults.removeObject(forKey: "mailSidebarVisible") }
+        }
+        let window = NSWindow(contentRect: NSRect(x: 30, y: 30, width: 1220, height: 780), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: MailWorkspace().environmentObject(model)); window.contentView = host; window.makeKeyAndOrderFront(nil)
+        defer { window.close(); window.contentView = nil }
+        try await settle("Production mail table did not mount") { nativeViews(host, NSTableView.self).contains { $0.numberOfRows == 2 } }
+        try require(control("Delete (1)", in: host) == nil && control("Delete (2)", in: host) == nil, "Empty selection exposed a delete command")
+        for count in [1, 2] {
+            model.selectMailMessages(Set(rows.prefix(count).map(\.viewID)))
+            try await settle("Selected mail did not expose its owned delete command") { control("Delete (\(count))", in: host)?.isAccessibilityEnabled() == true }
+            try require(model.selectedMailRows.count == count, "Selection action count is not the actual selection")
+        }
+        model.busy = true
+        try await settle("Busy selection left Delete enabled") { control("Delete (2)", in: host)?.isAccessibilityEnabled() == false }
+        model.busy = false; model.selectMailMessages([])
+        try await settle("Clearing selection left Delete visible") { control("Delete (2)", in: host) == nil }
+        try require(model.trashUndos.isEmpty, "Presentation check performed a Trash operation")
+        print("Mounted mail list exposes Delete only for single/multiple selections and disables it while busy; no Trash command executed.")
+    }
+    @MainActor static func mountedCompose(session: URLSession) async throws {
+        ReviewProtocol.resetLifecycle()
+        let model = AppModel(session: session), owner = ReviewFixture.owners[0]
+        model.state = ReviewFixture.state(owner: owner); model.starting = false
+        for populated in [false, true] {
+            var draft = Draft(); draft.accountID = owner; draft.to = "recipient@example.invalid"; draft.body = "Synthetic reviewed content."
+            if populated { draft.cc = "copy@example.invalid"; draft.bcc = "hidden@example.invalid" }
+            let window = NSWindow(contentRect: NSRect(x: 30, y: 30, width: 740, height: 820), styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            let host = NSHostingView(rootView: ComposeView(initial: draft).environmentObject(model)); window.contentView = host; window.makeKeyAndOrderFront(nil)
+            defer { window.close(); window.contentView = nil }
+            try await settle("Composer recipients did not mount") { !nativeViews(host, NSTextField.self).isEmpty }
+            if !populated {
+                try require(!nativeViews(host, NSTextField.self).contains { ["Copy recipients", "Hidden recipients"].contains($0.placeholderString ?? "") }, "Empty optional recipients were not collapsed")
+                try await pressControl("Add Cc or Bcc", in: host)
+            }
+            try await settle("Optional recipients are not reachable or populated recipients were hidden") {
+                let fields = nativeViews(host, NSTextField.self)
+                return fields.contains { $0.placeholderString == "Copy recipients" && (!populated || $0.stringValue == draft.cc) }
+                    && fields.contains { $0.placeholderString == "Hidden recipients" && (!populated || $0.stringValue == draft.bcc) }
+            }
+            try await pressControl("Review & Send", in: host)
+            try await settle("Review & Send bypassed or failed to open confirmation") {
+                window.sheets.contains { sheet in sheet.contentView.map { nativeViews($0, NSButton.self).contains { $0.title == "Send Message" } } == true }
+            }
+            guard let sheet = window.sheets.first(where: { $0.contentView.map { nativeViews($0, NSButton.self).contains { $0.title == "Send Message" } } == true }),
+                  let content = sheet.contentView,
+                  let cancel = nativeViews(content, NSButton.self).first(where: { $0.title == "Cancel" }) else { throw APIError("Sending confirmation has no mounted Cancel action") }
+            try require(cancel.window === sheet && cancel.isEnabled, "Confirmation Cancel is not usable")
+            try require(mountedText(content).contains { $0.contains("From: " + owner) && $0.contains("Cc: " + draft.cc) && $0.contains("Bcc: " + draft.bcc) }, "Confirmation lost the reviewed sender or optional recipients")
+            cancel.performClick(nil)
+            try await settle("Confirmation did not cancel") { window.sheets.isEmpty }
+            try require(!ReviewProtocol.recordedTraffic().contains { $0["path"] == "/api/send" }, "Opening or cancelling confirmation sent mail")
+        }
+        print("Mounted composer reveals empty Cc/Bcc on request, retains populated recipients and opens/cancels the existing send confirmation without sending.")
+    }
     @MainActor static func main() async {
         _=NSApplication.shared; NSApp.setActivationPolicy(.regular)
         let config=URLSessionConfiguration.ephemeral; config.protocolClasses=[ReviewProtocol.self]
@@ -157,6 +738,18 @@ import SwiftUI
             let traffic=ReviewProtocol.recordedTraffic()
             try require(!traffic.contains { $0["path"]=="/api/send" || $0["path"]=="/api/ai" },"no send or model request is allowed by the fixture")
             try await lifecycle(session:model.session)
+            if ProcessInfo.processInfo.environment["MORROW_REVIEW_BASELINE"] != "1" {
+                try menuSelectorControls()
+                try menuMountedGateControls()
+                try await mountedReader(session: model.session)
+                try await mountedToday(session: model.session, width: 1120)
+                try await mountedToday(session: model.session, width: 720)
+                try await mountedTodayExactSelection(session: model.session, cachedFirst: false)
+                try await mountedTodayExactSelection(session: model.session, cachedFirst: true)
+                try await mountedTodayUpdatedSelection(session: model.session)
+                try await mountedSelection(session: model.session)
+                try await mountedCompose(session: model.session)
+            }
             print("Review workspace: combined owner-bound reads, duplicate IDs, A/B/A draft/selection/scroll retention, inline original owner, load failure, dirty-budget retention, foreign-draft rejection/retry, unanswered-decision blocking, stale proposal approval reset, owned Save and explicit sending review passed. Fictional transport only; VoiceOver and Windows are not established.")
         } catch { print(error.localizedDescription); exit(1) }
     }

@@ -75,15 +75,15 @@ struct MailWorkspace: View {
                             }.padding(30)
                         } else if model.section == "today" {
                             VStack(spacing: 0) {
-                                ShellSectionBar(mode: "agent", current: model.section) { destination in
+                                if !sidebarVisible { ShellSectionBar(mode: "agent", current: model.section) { destination in
                                     guard model.canNavigate else { return }
                                     model.section = destination
-                                }.padding(.horizontal, 20).padding(.top, 12)
+                                }.padding(.horizontal, 20).padding(.top, 12) }
                                 TodayView()
                             }
                         } else if model.section == "agent" || model.section == "skills" || model.section == "brain" || model.section == "categories" || model.section == "studio" {
                             GeometryReader { area in
-                                StudioView(review: model.review).id(model.account)
+                                StudioView(review: model.review, showSectionNavigation: !sidebarVisible).id(model.account)
                                     .frame(width: area.size.width, height: area.size.height)
                             }
                         }
@@ -112,6 +112,14 @@ struct MailWorkspace: View {
                     if !model.error.isEmpty { statusBar(model.error, error: true) }
                     else if !model.notice.isEmpty { statusBar(model.notice, error: false) }
                     else if model.busy || model.backgroundBusy || model.preparingDraft { HStack { ProgressView().controlSize(.small); Text(model.preparingDraft ? "Preparing draft…" : model.syncing ? "Syncing…" : model.busy ? "Working…" : "Working in the background…").foregroundStyle(.secondary); Spacer() }.padding(9).background(.bar) }
+                    if !model.unresolvedMove.isNull {
+                        HStack {
+                            Text("An IMAP move needs review: \(model.unresolvedMove["accountId"].string)").font(.callout)
+                            Spacer()
+                            Button("Review saved move…") { model.beginMoveRecovery(model.unresolvedMove["accountId"].string, operationID: model.unresolvedMove["operationId"].string) }
+                                .disabled(!model.canNavigate || !model.canReviewMoves(model.unresolvedMove["accountId"].string))
+                        }.padding(10).background(.bar)
+                    }
               }
             }
         }
@@ -131,7 +139,11 @@ struct MailWorkspace: View {
         .onChange(of: outOfOfficeDirty) { model.dirty("out-of-office", $0) }
         .onChange(of: model.selectedMessage) { selection in if selection == nil { leaveExpandedReader() } }
         .sheet(item: $model.compose) { draft in ComposeView(initial: draft).environmentObject(model) }
-        .sheet(item: $model.organizing) { request in OrganizeMailView(message: request["message"], preferredKind: request["preferredKind"].string, preferredDestination: request["destinationId"].string).environmentObject(model) }
+        .sheet(item: $model.organizing) { request in
+            if request["kind"].string == "move-recovery" { MoveRecoveryView(request: request).id(request.id).environmentObject(model) }
+            else { OrganizeMailView(message: request["message"], preferredKind: request["preferredKind"].string, preferredDestination: request["destinationId"].string).environmentObject(model) }
+        }
+        .sheet(item: $model.syncingFolders) { request in FolderSyncView(owner: request.id).environmentObject(model) }
         .sheet(item: $model.managingFolders) { request in FolderManagementView(owner: request.id, initialFolder: request["folderId"].string).environmentObject(model) }
         .sheet(item: $model.readerAssistant, onDismiss: {
             if let pending = assistantDraft {
@@ -239,7 +251,6 @@ struct MailWorkspace: View {
                     }
                 } else {
                 Section("Workspace") {
-                    if sidebarShows("Today — Moved to Agent") { Label("Today — Moved to Agent", systemImage: "sun.max").tag("today").accessibilityIdentifier("workspace.today.moved") }
                     Label("Reply Suggestions", systemImage: "text.bubble").tag("reply-suggestions").accessibilityIdentifier("workspace.reply-suggestions")
                     Label("Out of Office", systemImage: "moon").tag("out-of-office").accessibilityIdentifier("workspace.out-of-office")
                     Label("Calendar", systemImage: "calendar").tag("calendar")
@@ -342,6 +353,11 @@ struct MailWorkspace: View {
                 if count > 0 { Text("\(count)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary) }
             }.padding(.vertical, 5).help(title)
         }.accessibilityIdentifier("accountGroup.\(account)")
+        .contextMenu {
+            if model.canReviewMoves(account) {
+                Button("Review IMAP moves…") { model.beginMoveRecovery(account) }.disabled(!model.canNavigate)
+            }
+        }
     }
     @ViewBuilder func folderRows(_ account: String) -> some View {
         ForEach(mailFolders.filter { folderFilter.isEmpty || $0.localizedCaseInsensitiveContains(folderFilter) }, id: \.self) { folder in
@@ -381,6 +397,9 @@ struct MailWorkspace: View {
                 Button("Refresh labels / folders") { model.perform { try await model.loadServerFolders(account) } }.disabled(model.busy)
             } label: { Text(model.accounts.first { $0.id == account }?["provider"].string == "google" ? "Gmail labels" : "Server folders") }
             Button("Manage labels / folders…") { model.managingFolders = .object(["id": .string(account)]) }.disabled(!model.canNavigate)
+            if ["", "imap"].contains(model.accounts.first { $0.id == account }?["provider"].string ?? "") {
+                Button("Folders to sync…") { model.syncingFolders = .object(["id": .string(account)]) }.disabled(!model.canNavigate).accessibilityIdentifier("folderSync.open.\(account)")
+            }
         }
     }
     func folderCount(_ account: String, _ folder: String) -> Int {
@@ -408,9 +427,12 @@ struct MailWorkspace: View {
                     }
                 } label: { Label("Sort", systemImage: "arrow.up.arrow.down") }.fixedSize().accessibilityIdentifier("mail.sortMenu").disabled(!model.searchResponse.isNull)
                 Spacer(minLength: 0)
-                Button { model.trashMessages(model.selectedMailRows) } label: { Label("Delete", systemImage: "trash") }
+                if !model.selectedMailRows.isEmpty {
+                Button { model.trashMessages(model.selectedMailRows) } label: { Label("Delete (\(model.selectedMailRows.count))", systemImage: "trash") }
                     .disabled(!model.canNavigate || model.selectedMailRows.isEmpty || !model.selectedMailRows.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" })
                     .help("Move selected mail to provider Trash · Undo within one minute (⌘Z)")
+                    .accessibilityIdentifier("mail.deleteSelection")
+                }
             }.menuStyle(.borderlessButton).controlSize(.small).disabled(model.busy).padding(.horizontal, 14).padding(.bottom, 8)
             Divider()
             if filtered.isEmpty {
@@ -489,7 +511,7 @@ struct MailWorkspace: View {
                     let messages = filtered.filter { ids.contains($0.viewID) }
                     if messages.count == 1, let message = messages.first, model.canOrganize(message) { MessageOrganizationActions(message: message) }
                     if !messages.isEmpty {
-                        Button("Delete") { model.trashMessages(messages) }
+                        Button("Move to Provider Trash") { model.trashMessages(messages) }
                             .disabled(!messages.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" })
                         Divider()
                         Button("Mark Read") { model.patchMessages(messages, .object(["read": .bool(true)])) }
@@ -589,28 +611,52 @@ struct MessageReader: View {
                     }
                 }
                 else {
-                    Button { Task { await model.openDraft(message: message, mode: "reply") } } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }.labelStyle(.iconOnly).help("Reply")
-                    Button { Task { await model.openDraft(message: message, mode: "replyAll") } } label: { Label("Reply All", systemImage: "arrowshape.turn.up.left.2") }.labelStyle(.iconOnly).help("Reply All")
-                    Button { Task { await model.openDraft(message: message, mode: "forward") } } label: { Label("Forward", systemImage: "arrowshape.turn.up.right") }.labelStyle(.iconOnly).help("Forward")
+                    Menu {
+                        Button("Reply") { Task { await model.openDraft(message: message, mode: "reply") } }
+                        Button("Reply All") { Task { await model.openDraft(message: message, mode: "replyAll") } }
+                        Button("Forward") { Task { await model.openDraft(message: message, mode: "forward") } }
+                    } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") } primaryAction: {
+                        Task { await model.openDraft(message: message, mode: "reply") }
+                    }
+                    .help("Reply; open the menu for Reply All or Forward")
+                    .accessibilityIdentifier("reader.replyMenu")
+                    .disabled(!model.canNavigate || model.preparingDraft)
                 }
                 Spacer()
-                if model.canOrganize(message) { Menu { MessageOrganizationActions(message: message) } label: { Label("Organize email", systemImage: "folder") }.labelStyle(.iconOnly).help("Move or label this email") }
-                Button { model.patch(message, .object(["starred": .bool(!message["starred"].bool)])) } label: { Image(systemName: message["starred"].bool ? "star.fill" : "star") }.help("Toggle star").accessibilityLabel("Toggle star")
-                Button { model.patch(message, .object(["pending": .bool(!message["pending"].bool)])) } label: { Image(systemName: message["pending"].bool ? "clock.fill" : "clock") }.help(message["pending"].bool ? "Clear Pending" : "Mark Pending locally").accessibilityLabel(message["pending"].bool ? "Clear Pending" : "Mark Pending")
-                if message["folder"].string != "drafts" {
-                    Button { model.patch(message, .object(["folder": .string(message["folder"].string == "inbox" ? "archive" : "inbox")])) } label: { Image(systemName: message["folder"].string == "inbox" ? "archivebox" : "tray") }.help("Move locally").accessibilityLabel("Move locally")
+                if model.canOrganize(message) {
+                    Menu {
+                        MessageOrganizationActions(message: message)
+                        Divider()
+                        Button("Move to provider Trash") { model.beginOrganize(message, preferredKind: "trash") }
+                            .disabled(!model.canNavigate || message["folder"].string == "trash")
+                    } label: { Label("Organize", systemImage: "folder") }
+                    .help("Move or label at your provider. Trash supports Undo for one minute (⌘Z).")
+                    .accessibilityIdentifier("reader.organizeMenu")
+                    .disabled(!model.canNavigate)
                 }
-                Button { model.beginOrganize(message, preferredKind: "trash") } label: { Image(systemName: "trash") }
-                    .help("Move to provider Trash · Undo within one minute (⌘Z)").accessibilityLabel("Delete")
-                    .disabled(!model.canOrganize(message) || !model.canNavigate || message["folder"].string == "trash")
-                Divider().frame(height: 14)
-                Button(action: onExpand) { Label(expanded ? "Restore Panes" : "Expand Reader", systemImage: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") }.labelStyle(.iconOnly).help(expanded ? "Restore Panes" : "Expand Reader")
+                Menu {
+                    Button(message["starred"].bool ? "Remove star" : "Star") { model.patch(message, .object(["starred": .bool(!message["starred"].bool)])) }.disabled(!model.canNavigate)
+                    Button(message["pending"].bool ? "Clear Pending" : "Mark Pending locally") { model.patch(message, .object(["pending": .bool(!message["pending"].bool)])) }.disabled(!model.canNavigate)
+                    if message["folder"].string != "drafts" {
+                        Button(message["folder"].string == "inbox" ? "Archive locally" : "Move to Inbox locally") { model.patch(message, .object(["folder": .string(message["folder"].string == "inbox" ? "archive" : "inbox")])) }.disabled(!model.canNavigate)
+                    }
+                    Divider()
+                    Button(expanded ? "Restore Panes" : "Expand Reader", action: onExpand)
+                } label: { Label("More", systemImage: "ellipsis.circle") }
+                .help("Markers, local organization and reader layout")
+                .accessibilityIdentifier("reader.moreMenu")
             }.buttonStyle(.borderless).controlSize(.small).padding(.horizontal, 16).padding(.vertical, 10).disabled(model.busy)
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     Text(message["subject"].nonempty ? message["subject"].string : "(No subject)")
                         .font(.system(size: 21, weight: .semibold)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    if message["localFolderUndo"]["token"].nonempty {
+                        HStack {
+                            Text("Moved locally; the provider location was not changed.").font(.caption).foregroundStyle(.secondary)
+                            Button("Undo local move to \(message["localFolderUndo"]["from"].string.capitalized)") { model.patch(message, .object(["undoLocalMove": message["localFolderUndo"]["token"]])) }.disabled(model.busy)
+                        }
+                    }
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
                         Text(message["fromName"].nonempty ? message["fromName"].string : message["fromEmail"].string)
                             .font(.headline).lineLimit(1).help(message["fromEmail"].string)
@@ -655,14 +701,15 @@ struct MessageReader: View {
                     AttachmentReader(message: message).id(message.viewID)
                     FooterPreview(footer: message["footer"])
                     Divider()
-                    LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)], alignment: .leading, spacing: 8) {
+                    Menu {
                         ForEach(["summary", "reply", "history", "translate"], id: \.self) { action in
                             Button(action == "summary" ? "Summarize" : action == "reply" ? "Suggest Reply" : action == "history" ? "Suggest with History" : "Translate") {
                                 model.openAssistant(action == "history" ? "reply" : action, message: message, includeHistory: action == "history")
                             }.disabled(!model.canNavigate || model.messageDetail.viewID != message.viewID || !model.allowed(action == "history" ? "reply" : action) || !model.policy["folders"][message["folder"].string].bool || (action == "history" && !model.policy["content"]["sender"].bool))
                                 .help(action == "history" ? "Review downloaded same-sender mail in this account, within saved AI permissions. Sender access is required." : "Open AI assistance for this message")
                         }
-                    }.controlSize(.small).frame(maxWidth: 400, alignment: .leading)
+                    } label: { Label("AI help", systemImage: "sparkles") }
+                    .controlSize(.small).fixedSize().accessibilityIdentifier("reader.aiMenu")
                     Text("AI uses your saved permissions. Generated text is yours to review.").font(.caption).foregroundStyle(.secondary)
                 }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -971,6 +1018,7 @@ struct ComposeView: View {
     @State private var draft: Draft
     @State private var saved: JSON
     @State private var reviewed = false
+    @State private var showCopyRecipients = false
     @State private var aiPrompt = ""
     @State private var aiResult = ""
     @State private var aiSource = ""
@@ -988,6 +1036,7 @@ struct ComposeView: View {
         self.initial = initial; _draft = State(initialValue: initial); _saved = State(initialValue: initial.payload)
         _sendAt = State(initialValue: initial.scheduleDate ?? Date().addingTimeInterval(3600))
         _scheduleEnabled = State(initialValue: initial.scheduleDate != nil)
+        _showCopyRecipients = State(initialValue: !initial.cc.isEmpty || !initial.bcc.isEmpty)
     }
     var dirty: Bool { scheduleEnabled || scheduleAttempt != nil || draft.payload != saved || (draft.savedID.isEmpty && (!draft.to.isEmpty || !draft.cc.isEmpty || !draft.bcc.isEmpty || !draft.subject.isEmpty || !draft.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)) }
     private var frozen: Bool { model.busy || draft.unconfirmed || draft.scheduleLocked || scheduleAttempt != nil }
@@ -1033,8 +1082,14 @@ struct ComposeView: View {
             }
             VStack(spacing: 12) {
                 recipientField("To", text: $draft.to, placeholder: "Email addresses, separated by commas")
-                recipientField("Cc", text: $draft.cc, placeholder: "Copy recipients")
-                recipientField("Bcc", text: $draft.bcc, placeholder: "Hidden recipients")
+                if showCopyRecipients || !draft.cc.isEmpty || !draft.bcc.isEmpty {
+                    recipientField("Cc", text: $draft.cc, placeholder: "Copy recipients")
+                    recipientField("Bcc", text: $draft.bcc, placeholder: "Hidden recipients")
+                } else {
+                    Button("Add Cc or Bcc") { showCopyRecipients = true }
+                        .accessibilityIdentifier("compose.addCopyRecipients")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 Text("Use plain email addresses separated by commas or semicolons (100 recipients total). Bcc recipients are hidden from other recipients.").font(.caption).foregroundStyle(.secondary)
                 TextField("Subject", text: $draft.subject)
                 TextArea(title: "Message", text: $draft.body, height: 210)

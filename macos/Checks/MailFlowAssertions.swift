@@ -129,11 +129,19 @@ struct MailFlowAssertions {
         // virtual AX names were unavailable in our in-process traversal.
         // Use the existing ordered action rows and reject changed structure;
         // the resulting page/write assertions verify which action ran.
-        try await wait("Native action row did not mount: " + name) {
-            root.layoutSubtreeIfNeeded()
+        do {
+            try await wait("Native action row did not mount: " + name) {
+                root.layoutSubtreeIfNeeded()
+                let buttons = views(root, NSButton.self)
+                return buttons.count >= fromEnd && (expectedCount == nil || buttons.count == expectedCount)
+                    && buttons[buttons.count - fromEnd].isEnabled
+            }
+        } catch {
             let buttons = views(root, NSButton.self)
-            return buttons.count >= fromEnd && (expectedCount == nil || buttons.count == expectedCount)
-                && buttons[buttons.count - fromEnd].isEnabled
+            let candidate = buttons.count >= fromEnd ? buttons[buttons.count - fromEnd] : nil
+            let mounted = root.window != nil && candidate?.window === root.window
+            trace("Fixture action peers: action=\(name.prefix(32)) expected=\(expectedCount.map { String($0) } ?? "unspecified") observed=\(buttons.count) fromEnd=\(fromEnd) enabled=\(candidate?.isEnabled == true) mounted=\(mounted)")
+            throw error
         }
         let buttons = views(root, NSButton.self), button = buttons[buttons.count - fromEnd]
         try require(button.window === root.window, "Native action is not mounted: " + name)
@@ -163,7 +171,10 @@ struct MailFlowAssertions {
         try await wait("Search view did not mount.") { !views(host, NSTextField.self).isEmpty }
         try query("fictional", in: host)
         try await wait("Initial search did not finish.") { model.searchResponse["total"].number == 65 }
-        try await press("Next", fromEnd: 1, in: host, expectedCount: 7)
+        // Current search adds one Downloads button; the pinned historical
+        // SearchView used by the baseline control keeps seven native peers.
+        let baseline = CommandLine.arguments.contains("--expect-baseline-reset")
+        try await press("Next", fromEnd: 1, in: host, expectedCount: baseline ? 7 : 8)
         try await wait("Search did not reach page two.") { model.searchResponse["page"].number == 1 }
         trace("Fixture phase: search-page-two")
         let secondPage = model.searchResponse
@@ -172,7 +183,6 @@ struct MailFlowAssertions {
         await model.loadMessage() // Actual owner-bound GET, mark-read PATCH and reload.
         try await wait("Read-state refresh did not issue a search.") { MailFlowProtocol.snapshot().2 }
         let refreshing = MailFlowProtocol.snapshot().0.last!
-        let baseline = CommandLine.arguments.contains("--expect-baseline-reset")
         try require(refreshing.0 == MailFlowProtocol.owner, "Read refresh changed search owner.")
         if baseline {
             try require(refreshing.1["page"].number == 0 && model.searchResponse["messages"].array.isEmpty,
