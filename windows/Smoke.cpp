@@ -20,6 +20,7 @@ using namespace Windows::Data::Json;
 IAsyncAction nativeInteractionChecks(std::shared_ptr<Shell> shell);
 IAsyncAction settingsNavigationChecks(std::shared_ptr<Shell> shell);
 IAsyncAction composerReturnChecks(std::shared_ptr<Shell> shell);
+IAsyncAction summaryActivityChecks(std::shared_ptr<Shell> shell);
 IAsyncAction writingRuleEditingChecks(std::shared_ptr<Shell> shell) {
     auto check = [](bool condition, wchar_t const* message) { if (!condition) throw hresult_error(E_FAIL, message); };
     auto previousScope = shell->review->scope;
@@ -1089,6 +1090,7 @@ IAsyncAction Shell::smoke() {
                 co_await navigate(target);
                 check(page.Content() && page.Content() != previousPage, L"A native workspace page failed to open.");
                 check(dirty.empty(), L"Opening a saved page incorrectly created unsaved edits.");
+                if (std::wstring_view(target) == L"activity") { enter("activity-summary-diagnostics"); co_await summaryActivityChecks(lifetime); }
                 if(std::wstring_view(target)==L"reply-suggestions"){enter("review-workspace-ownership-and-retention");co_await reviewWorkspaceChecks(lifetime);}
                 if (std::wstring_view(target) == L"today") {
                     auto today = page.Content().as<controls::Grid>();
