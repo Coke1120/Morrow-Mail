@@ -54,6 +54,38 @@ Static byte checks do not establish the original failure's cause or a Windows
 runtime fix. Fresh SDK/runtime CI for this candidate remains required; no local
 native build or runtime pass is claimed.
 
+## PR #59 macOS advertised menu action dispatch — 15 October 2026
+
+Focused run `38757223868`, macOS job `116498717711`, compiled head `ea3c620`
+through synthetic merge `8676a76` into `692bb8d`; its source tree matched the head.
+Its lifecycle, 13 selector graph cases, single-getter snapshot, concrete native
+owner and mounted-control checks passed. The Reader selected the secondary
+`NSAccessibilitySegment`, which advertised `AXPress` and `AXShowMenu`, but the
+modern `accessibilityPerformShowMenu()` returned false. Native menu tracking
+began zero times and did not end. The original full log remains evidence with
+SHA-256 `a364bd961d1b5f0c0df9c23a99053f1203a5071d6fdc93659e4c7457172b0577`.
+
+The fixture now pairs the public informal `accessibilityActionNames` query with
+the corresponding public `accessibilityPerformAction(_:)` dispatcher, checking
+runtime selector availability. Apple's [Supporting Actions documentation](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/Accessibility/cocoaAXSupportingActions/cocoaAXSupportActions.html)
+documents that pair and its Void return. The previous Bool-return assertion is
+incompatible with this API contract; it is replaced by the existing requirement
+for exactly one actual NSMenu tracking begin/end, owned-control revalidation and
+native command inspection within the same five-second deadline. A Void return
+does not establish success. There is still one advertised action on the proven
+secondary/named node, without a fallback or second dispatch. All graph, primary
+Reply isolation and command checks, and the driver's 45-second limit remain.
+
+Prepared native synthetic controls invoke this same dispatcher, recording the
+exact legacy action and rejecting any modern callback. They cover Show Menu,
+Press and Show Menu precedence, plus unavailable advertisement/dispatch selectors,
+empty/unsupported advertisements and the existing action-list bound. Their Void
+probe only records dispatch; the real Reader still has to prove menu tracking.
+This API-family correction is source-supported, but the internal cause of the
+recorded failure is unproved. The new controls and candidate have **not** been
+compiled or run with an AppKit SDK locally; fresh matching-source macOS CI is
+required. No production source, workflow, deadline or service code changed.
+
 ## PR #59 macOS menu snapshot identity — 15 October 2026
 
 At head `269882f`, both the focused review run `38744078319` (job
