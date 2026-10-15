@@ -45,6 +45,26 @@ controls and deadlines are unchanged. The original SDK failure is retained.
 Source diff/hash review is not an SDK result; the corrected Windows build and
 native fixtures require fresh platform CI.
 
+PR54 Windows job `116341562940` at `4cef395` subsequently passed formatting,
+strict Clippy, all 470 Rust tests (0 failures, 4 existing ignored), and native
+packaging, then failed the `selected-folder-sync` runtime assertion
+`Filtering discarded the native folder selection.` The original log is retained.
+That assertion combines the visible-control count and in-memory selection
+count; the old log recorded neither value. Its printed phase timestamps come
+from a buffered diagnostic tail and do not measure the native operation duration.
+
+Source review confirmed that detached checkbox callbacks could still change the
+selection after rows were rebuilt. The follow-up invalidates the row generation
+before clearing controls and requires the current pane, generation and exact
+current control identity before accepting a checkbox event. It retains the
+existing configuring/busy/stale checks. The native fixture keeps the original
+filter assertion, five-second waits and unsaved-close checks, adds exact counts
+before filtering and bounded numeric failure details, and emits real Unchecked
+events from a retained old checkbox both while filtered and after replacement.
+This closes a confirmed source-level stale-callback gap; it does not establish
+that this event caused the original CI failure. Fresh Windows SDK/runtime
+validation is pending; no local native pass is claimed.
+
 ## IMAP server identity and safe migration — 15 October 2026
 
 This source follow-up starts from main
