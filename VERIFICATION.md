@@ -64,6 +64,51 @@ or run WinUI/WebView2. Fresh exact-head paired CI remains required, and the
 original initialization cause remains unresolved. This draft is excluded from
 v0.8.2.
 
+## v0.8.2 release preparation — 15 October 2026
+
+The owner requested a release of already merged main before the separate
+diagnostics and mailbox-improvement PRs. The product source is main
+`d5ac97c5d51cc265cc769d07bd36d7d013fa5c67`, tree
+`6173fb08ad75d57958eca9af48d17dd0936dfde2`, including PRs #48–50.
+No intervening main commit was present at preparation. Only `package.json` and
+release documentation change here. All unmerged diagnostics/mailbox changes and
+the frozen Today follow-up are excluded; workflows, builders, publisher,
+production source, persisted formats and the pinned update key are unchanged.
+
+PR #50 head `2405ac126ed52e23e1e6a5077c582f5e6349d607`, its tested synthetic
+merge and the actual main merge have the same product tree.
+[PR native run 38686362605](https://github.com/Coke1120/Morrow-Mail/actions/runs/38686362605),
+attempt 1, passed both complete jobs: macOS 427 and Windows 423 Rust tests,
+zero failures and four existing ignored benchmarks on each platform. macOS
+captured all 40 reader samples, with parent exit zero, no errors and no network
+activity. Windows retained complete fresh/owned/restart observations (4/42/34
+samples), complete owned/restart reader timelines, PowerShell 5.1 relocation
+and the synthetic service benchmark. The separate
+[observer run 38686362200](https://github.com/Coke1120/Morrow-Mail/actions/runs/38686362200)
+also passed its native process-family and stop-race fixtures without weakening
+unknown-exit or first-acquisition failure gates.
+
+The exact-main [push run 38690524448](https://github.com/Coke1120/Morrow-Mail/actions/runs/38690524448),
+attempt 1, completed successfully before tagging. Its macOS job `116275112194`
+passed 427 Rust tests and all 40 strict reader samples; Windows job
+`116275111938` passed 423 Rust tests and all required native/package checks.
+Both had zero Rust failures and four existing ignored benchmarks. The main
+push correctly skipped publication. Fresh v0.8.2 tagged checks run both native
+platforms again; the existing publisher requires successful same-run,
+same-attempt jobs and paired artifacts before signing and publication. The
+release tag, all six public downloads, checksums, pinned-key manifest signature
+and package versions must be checked after publication. Preparation does not
+predeclare those outcomes.
+
+Published v0.8.1 passed its tagged run `38624861643`, attempt 1, and six public
+assets were independently downloaded and verified on 14 October. Earlier
+preparation sections below retain their original point-in-time status.
+Original PR #48/#49 failures and historical Windows error-87/unknown-exit and
+reader failures remain failures, not explained away by passing later runs.
+macOS remains ad-hoc signed without notarization; Windows is unsigned.
+Live-account, clean-machine, manual accessibility and complete installed-updater
+acceptance remain incomplete. See [release notes](docs/releases/v0.8.2.md).
+
 ## Activity cancellation and native verification repairs — 15 October 2026
 
 This follow-up starts from main `cfe61c9fedfe7f07a99ab84751aabf7bae19d495`,
