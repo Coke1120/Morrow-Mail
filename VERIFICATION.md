@@ -1,5 +1,40 @@
 # Verification — 15 October 2026
 
+## PR #58 macOS initial-page diagnostic — 15 October 2026
+
+Measurement run `38756565340`, macOS job `116496439274`, compiled exact source
+`80093a98590027e6e9a149c772091d2c99be7120` and failed with `Initial owned native
+page did not mount.` Its before/after source digest was
+`d2aeec2d2d242f1f440c90ac03ff6bb4a008a73e324b45bf6e5e08588c3a3a77`.
+The earlier synthetic oracle, including actual offscreen placement, rejection
+and restoration, returned before that dataset failure. The repeated error
+does not identify which dataset size failed or establish any completed sample.
+
+Source review of the actual combined base `93bf058` found no confirmed cause.
+The production list supplies subject Text and a combined-view mailbox label;
+the fixture still requires actual visible exact subject and owner evidence.
+The unchanged ten-second initial predicate now emits one failure-only diagnostic
+before rethrowing the same error. Its fixed fields cover allowlisted size,
+loading/transport counts, bounded table/row0 state, exact versus contained
+subject/owner observations and allowlisted roles/ownership. The entire line is
+capped at 2048 bytes and emits no UI/mail text, identifiers, paths or class names.
+Containment flags are diagnostic only and cannot satisfy an identity gate.
+
+The v2 diagnostic also inspects only the first reported table's owned row0 AX
+subtree, bounded to 256 nodes, depth 16 and 256 children per node. Raw cell-owner
+rejection counters and raw text-leaf comparison flags can expose candidates
+rejected before the accepted-text observer. They never feed acceptance. The
+second table retains a rowcount/width qualification summary. The complete v1
+patch, freeze and report were preserved separately before this improvement.
+
+The prior 13 passing Python runner/evidence contract tests were retained without
+rerunning unchanged tests. Linux source checks include `git diff --check`.
+Source comparison confirms that removing the diagnostic and its catch/rethrow
+wrapper restores the original Swift file exactly. No production code, synthetic
+oracle, latency sampling gate, identity predicate or deadline changed. This
+diagnostic has not run on a macOS SDK locally; fresh matching-source macOS CI
+is required. The source800 failure remains unresolved.
+
 ## Windows download repair and guarded page cleanup — 15 October 2026
 
 The Downloads repair now refreshes shared local state, the committed mail/search
