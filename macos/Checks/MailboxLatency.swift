@@ -146,7 +146,13 @@ struct MailboxLatency {
                       let frame = visibleFrame(view) else { return }
                 visible = clip.intersection(frame)
                 guard !visible.isEmpty else { return }
-                if let field = view as? NSTextField { text.append(field.stringValue) }
+                if let field = view as? NSTextField {
+                    text.append(field.stringValue)
+                    // This mounted native text leaf already passed the view
+                    // visibility/ownership checks above. Its label need not
+                    // be exposed again by a separate AX text peer.
+                    if let label = field.accessibilityLabel() { text.append(label) }
+                }
                 if let field = view as? NSTextView { text.append(field.string) }
             }
             if let element = object as? NSAccessibilityProtocol {
@@ -179,6 +185,41 @@ struct MailboxLatency {
         let owner = MailboxLatencyProtocol.owners[index % 2]
         return text.contains("Fictional mailbox row \(index) 中文")
             && (text.contains(owner) || text.contains("Mailbox: " + owner))
+    }
+    @MainActor static func syntheticLabelDiagnostic(_ field: NSTextField, in root: NSView, expected: String, recognized: Bool?) {
+        // Fixed booleans and an allowlisted role only: no UI/mail text, class
+        // names, arbitrary errors or hierarchy dump enter the failure log.
+        let element = field as? NSAccessibilityProtocol
+        let nativeFrame = visibleFrame(field), rootFrame = visibleFrame(root)
+        let axFrame = element?.accessibilityFrame()
+        let finite = axFrame.map { [$0.minX, $0.minY, $0.width, $0.height].allSatisfy(\.isFinite) } ?? false
+        let axRole = element?.accessibilityRole()
+        let role = axRole == .staticText ? "staticText" : axRole == .textField ? "textField"
+            : axRole == .textArea ? "textArea" : axRole == .group ? "group" : axRole == nil ? "nil" : "other"
+        var intersects = false
+        if finite, let axFrame, let nativeFrame, let rootFrame {
+            intersects = !axFrame.intersection(nativeFrame).intersection(rootFrame).isEmpty
+        }
+        let record: JSON = .object([
+            "phase": .string("synthetic-label-only"), "recognized": recognized.map(JSON.bool) ?? .null,
+            "nativeWindowMatches": .bool(field.window != nil && field.window === root.window),
+            "nativeDescendant": .bool(field.isDescendant(of: root)),
+            "nativeVisible": .bool(nativeFrame != nil), "rootVisible": .bool(rootFrame != nil),
+            "nativeValueEmpty": .bool(field.stringValue.isEmpty),
+            "nativeLabelMatches": .bool(field.accessibilityLabel() == expected),
+            "axProtocol": .bool(element != nil), "axHidden": element.map { .bool($0.isAccessibilityHidden()) } ?? .null,
+            "axFrameFinite": axFrame == nil ? .null : .bool(finite),
+            "axFrameNonempty": axFrame.map { .bool(!$0.isEmpty) } ?? .null,
+            "axIntersectsNativeClip": axFrame == nil || nativeFrame == nil || rootFrame == nil ? .null : .bool(intersects),
+            "axRole": element == nil ? .null : .string(role),
+            "axLabelMatches": element.map { .bool($0.accessibilityLabel() == expected) } ?? .null])
+        guard let data = try? JSONEncoder().encode(record), data.count <= 2048 else {
+            FileHandle.standardError.write(Data("Native mailbox synthetic-label failure diagnostic unavailable.\n".utf8))
+            return
+        }
+        FileHandle.standardError.write(Data("Native mailbox synthetic-label failure diagnostic: ".utf8))
+        FileHandle.standardError.write(data)
+        FileHandle.standardError.write(Data("\n".utf8))
     }
     @MainActor static func readerIdentityMatches(_ reader: NSView, index: Int) -> Bool {
         let text = visibleText(reader)
@@ -291,17 +332,40 @@ struct MailboxLatency {
         let readerSubject = label(subject, 390, in: reader)
         let readerOwner = label("To: " + owner, 340, in: reader)
         let body = label("Fictional reader body 1. visible control", 270, in: reader)
+        let labeledContainer = NSView(frame: NSRect(x: 0, y: 130, width: 310, height: 120))
+        labeledContainer.setAccessibilityElement(true)
+        labeledContainer.setAccessibilityRole(.group)
+        labeledContainer.setAccessibilityLabel("Mailbox: " + owner)
+        _ = label(subject, 65, in: labeledContainer)
+        _ = label(MailboxLatencyProtocol.owners[0], 20, in: labeledContainer)
+        host.addSubview(labeledContainer)
         window.contentView = host; window.makeKeyAndOrderFront(nil)
         defer { window.close(); window.contentView = nil }
         host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
         try require(rowIdentityMatches(row, index: 1) && readerIdentityMatches(reader, index: 1),
             "Visible identity oracle positive control failed.")
-        // The production SwiftUI owner Text has this exact AX label. Check
-        // that label-only evidence works without accepting another mailbox.
+        // This synthetic native field checks label-only evidence. The actual
+        // production SwiftUI row/reader is checked separately in dataset().
         rowOwner.stringValue = ""; rowOwner.setAccessibilityLabel("Mailbox: " + owner)
-        try require(rowIdentityMatches(row, index: 1), "Production mailbox accessibility label was not recognized.")
+        let labelMatches = rowOwner.accessibilityLabel() == "Mailbox: " + owner
+        let fieldVisible = visibleFrame(rowOwner) != nil
+        if !labelMatches || !fieldVisible {
+            syntheticLabelDiagnostic(rowOwner, in: row, expected: "Mailbox: " + owner, recognized: nil)
+        }
+        try require(labelMatches, "Synthetic label-only control did not retain its accessibility label.")
+        try require(fieldVisible, "Synthetic label-only control is not visibly mounted.")
+        let labelRecognized = rowIdentityMatches(row, index: 1)
+        if !labelRecognized {
+            syntheticLabelDiagnostic(rowOwner, in: row, expected: "Mailbox: " + owner, recognized: false)
+        }
+        try require(labelRecognized, "Synthetic label-only mailbox identity was not recognized.")
         rowOwner.setAccessibilityLabel("Mailbox: " + MailboxLatencyProtocol.owners[0])
         try require(!rowIdentityMatches(row, index: 1), "Wrong selected-row accessibility owner passed the oracle.")
+        try require(visibleFrame(labeledContainer) != nil && labeledContainer.accessibilityRole() == .group
+            && labeledContainer.accessibilityLabel() == "Mailbox: " + owner
+            && visibleText(labeledContainer).contains(subject), "Container-label negative control did not mount.")
+        try require(!rowIdentityMatches(labeledContainer, index: 1), "Container label passed the row identity oracle.")
+        labeledContainer.removeFromSuperview()
         rowOwner.stringValue = MailboxLatencyProtocol.owners[0]
         rowOwner.setAccessibilityLabel(MailboxLatencyProtocol.owners[0])
         try require(!rowIdentityMatches(row, index: 1), "Wrong selected-row owner passed the oracle.")
@@ -338,7 +402,8 @@ struct MailboxLatency {
         window.setFrame(originalFrame, display: true)
         try require(rowIdentityMatches(row, index: 1) && readerIdentityMatches(reader, index: 1),
             "Restored visible identity oracle failed.")
-        return .object(["wrongSelectedOwnerRejected": .bool(true), "wrongReaderOwnerRejected": .bool(true),
+        return .object(["containerLabelRejected": .bool(true),
+            "wrongSelectedOwnerRejected": .bool(true), "wrongReaderOwnerRejected": .bool(true),
             "wrongReaderSubjectRejected": .bool(true), "hiddenBodyRejected": .bool(true),
             "outsideReaderBodyRejected": .bool(true), "offscreenBodyRejected": .bool(true),
             "hiddenAncestorRejected": .bool(true), "transparentAncestorRejected": .bool(true),

@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SIZES = (1000, 10000, 50000)
 PLATFORMS = ("macos", "windows")
 ACTIONS = ("next", "previous", "select")
-MAC_ORACLE_CONTROLS = ("wrongSelectedOwnerRejected", "wrongReaderOwnerRejected", "wrongReaderSubjectRejected",
+MAC_ORACLE_CONTROLS = ("containerLabelRejected", "wrongSelectedOwnerRejected", "wrongReaderOwnerRejected", "wrongReaderSubjectRejected",
                        "hiddenBodyRejected", "outsideReaderBodyRejected", "offscreenBodyRejected",
                        "hiddenAncestorRejected", "transparentAncestorRejected", "accessibilityHiddenBodyRejected", "offscreenWindowRejected")
 SERVICE_CHECKS = ("counts", "senderOrder", "boundedMetadata", "distinctOwnersAndCursorPages", "noDualWriter",

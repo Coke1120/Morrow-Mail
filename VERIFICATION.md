@@ -392,6 +392,32 @@ missing native Value/TextChanged receipts. Windows SDK execution of this new
 path remains pending; prior Linux protocol results are historical different-
 source evidence and cannot make this candidate's aggregate complete.
 
+At head `67c9280`, [macOS measurement job 116430451441](https://github.com/Coke1120/Morrow-Mail/actions/runs/38737504560/job/116430451441)
+passed all 13 Python controls and Swift compilation, then failed the synthetic
+label-only positive control before any production mailbox dataset began. The
+preceding mounted native row/reader positive control passed. The failing control
+cleared an `NSTextField` value and set its accessibility label; the production
+row instead uses nonempty SwiftUI `Text` with an owner label. The original log
+does not identify whether protocol, AX role/frame or label retrieval rejected
+the synthetic field. Its exact cause is not retroactively inferred, and source
+before/after remained `c66ab1c0…`.
+
+The fixture now reads a known native `NSTextField`'s public accessibility label
+in the same branch as its string value, after the existing same-window,
+root-descendant, hidden/alpha and screen-clipped view checks. Other AX peers
+retain their finite-frame and text-role checks; container labels still cannot
+supply identity. The synthetic positive first verifies its label getter and
+visible native frame, retains the wrong-label control and all ten original
+rejection controls, and adds a mounted group-label rejection required by the
+evidence validator. Failure diagnostics contain fixed booleans/nulls and an
+allowlisted role, bounded to 2 KiB; they contain no mail text or arbitrary errors.
+This repairs inconsistent native/AX text collection, not an observed product
+rendering defect. The new native controls and actual production pagination,
+selection and reader measurements still require matching-source macOS SDK CI;
+all 13 Python evidence controls pass locally, including rejection when the new
+required container control is false. No local AppKit execution or performance
+result is claimed.
+
 ## v0.8.1 published — 14 October 2026
 
 [Tagged run 38624861643](https://github.com/Coke1120/Morrow-Mail/actions/runs/38624861643),
