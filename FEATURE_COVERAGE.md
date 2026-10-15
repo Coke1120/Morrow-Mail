@@ -21,7 +21,7 @@ paired-tag requirements and distribution limits are in the
 [release notes](docs/releases/v0.8.2.md) and
 [verification](VERIFICATION.md#v082-release-preparation--15-october-2026).
 
-**0.8.1 source — Gmail authorization recovery:** sync, folder-catalog and
+**Published 0.8.1 — Gmail authorization recovery:** sync, folder-catalog and
 raw-message reads may refresh a rejected access token and retry once. History
 downloads retain routine token-expiry refresh before a request; their first
 resource-API 401 preserves the checkpoint and cached mail and ends the import
@@ -41,9 +41,20 @@ including all 16 Gmail regressions, with zero failures and four existing ignored
 benchmarks on each platform. The actual main merge has the same tested tree.
 This correction is not in the published, preserved v0.8.0 tag. Earlier PR #46
 tests incorrectly expected history-download 401 recovery; their passing runs do
-not validate this policy. v0.8.1 was published after its fresh paired tagged
-checks and existing publisher passed. See [release notes](docs/releases/v0.8.1.md).
+not validate this policy. The v0.8.1 paired tag, publisher and downloaded-asset
+verification completed on 14 October; see [publication evidence](docs/releases/v0.8.1-verification.md)
+and [release notes](docs/releases/v0.8.1.md).
 Synthetic coverage does not establish live-account acceptance.
+
+**Current source — controlled mailbox acceptance tools:** opt-in TLS runs start
+an empty target mailbox and actually download 1k/10k/50k messages, then check a
+120-message arrival burst, flags, restart/checkpoints and reconnect isolation.
+The existing service resource benchmark remains separate from a new macOS
+production-view button/selection-to-layout fixture. Strict aggregation rejects
+seeded-download claims, changed/mixed source, missing data and HTTP-as-UI evidence;
+missing platforms or explicit performance targets remain incomplete. The Windows
+entry is a separate unmerged unit; no Windows measurements are included here.
+[Run scope and limits](docs/MAILBOX_ACCEPTANCE.md).
 
 **0.8.2 source — hybrid navigation shell:** macOS and Windows share a Mail | Agent | Brain primary chrome. Cold start remains the Mail three-pane. Agent opens the existing Inbox Agent, Today, and Skills pages. Brain opens the existing persona and writing-rules page, plus categories. AI Studio is an advanced footer and Settings entry. Its More menu keeps one-release “Moved to Agent” and “Moved to Brain” hints for the pages that moved; Local Inbox Rules, local simulations, and simulation history stay there. Review-before-send, account routing, and provider writes are unchanged. Publication still requires the complete paired tagged checks.
 
@@ -88,7 +99,7 @@ suggestion, older retained completions cannot be reopened in the current view,
 and unread suggestions do not inherit category priority for final ordering.
 The separate Today follow-up is excluded. v0.8.0 was published after its paired
 tagged checks, but includes the history authorization regression corrected in
-0.8.1 source above. The intervening v0.7.9 tag failed its
+published 0.8.1 above. The intervening v0.7.9 tag failed its
 Windows reader initialization gate and was not published; it remains preserved.
 See [release notes and limits](docs/releases/v0.8.0.md) and
 [validation](VERIFICATION.md#v080-release-preparation--14-october-2026).

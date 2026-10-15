@@ -232,6 +232,7 @@ struct ImapScenario {
     announced_body: Option<&'static str>,
     large_search: bool,
     body_size: usize,
+    acceptance_body: bool,
     uidnext: Option<u32>,
     omit_uidnext: bool,
     search_ids: Option<Vec<u32>>,
@@ -291,6 +292,7 @@ impl Default for ImapScenario {
             announced_body: None,
             large_search: false,
             body_size: 0,
+            acceptance_body: false,
             uidnext: None,
             omit_uidnext: false,
             search_ids: None,
@@ -359,6 +361,12 @@ impl ImapFixture {
                         let Ok((socket,_))=result else{break};
                         let (acceptor,log,state)=(acceptor.clone(),saved_log.clone(),saved_state.clone());
                         sessions.spawn(checked_session(async move {
+                            // Only the opt-in acceptance transport avoids artificial
+                            // delayed ACKs between its separate literal writes.
+                            if state.lock().unwrap().acceptance_body {
+                                socket.set_nodelay(true)?;
+                                if !socket.nodelay()? { return Err(io::Error::other("Acceptance fixture TCP_NODELAY was not set")); }
+                            }
                             let Ok(socket)=acceptor.accept(socket).await else{return Ok(())};
                             imap_session(socket,state,log).await
                         }, saved_failures.clone()));
@@ -642,6 +650,12 @@ async fn priority_body_proof_requires_complete_imap_headers_before_reusing_cache
 fn fixture_message(scenario: &ImapScenario, uid: &str) -> String {
     if let Some(raw) = &scenario.raw_message {
         raw.clone()
+    } else if scenario.acceptance_body {
+        format!(
+            "{HEADER}\r\nAcceptance UID {:010}: {}\r\n",
+            uid.parse::<u32>().unwrap(),
+            "x".repeat(1024)
+        )
     } else if scenario.body_size > 0 {
         format!(
             "{HEADER}\r\n{{536870912}}\r\n{}",
@@ -3553,6 +3567,12 @@ async fn full_changed_queue_still_advances_nonoverlapping_rotation() {
         false
     );
 }
+
+// Keep this module after the shared reconciliation helpers and before the
+// historical benchmark: benchmark-imap-sync.py intentionally excludes it from
+// its immutable pre-change fixture adapter.
+#[path = "imap/acceptance.rs"]
+mod acceptance;
 
 #[tokio::test]
 #[ignore = "Explicit synthetic sync benchmark; local TLS fixtures only"]

@@ -190,6 +190,63 @@ macOS remains ad-hoc signed without notarization; Windows is unsigned.
 Live-account, clean-machine, manual accessibility and complete installed-updater
 acceptance remain incomplete. See [release notes](docs/releases/v0.8.2.md).
 
+## Controlled mailbox acceptance harness — 15 October 2026
+
+The new opt-in harness distinguishes actual empty-cache TLS downloads from seeded
+service benchmarks and native presentation timing. Its ordinary Rust contract
+uses 120 messages; only explicit runs at 1,000, 10,000 and 50,000 can satisfy those
+dataset gates. Python negative controls reject seeded or partial downloads,
+wrong UID/body digests, source/artifact changes, HTTP-as-UI samples, missing native
+platforms and absent/exceeded caller limits. The macOS entry compiles a standalone
+fixture using the production mail view and existing isolated transport seam.
+It observes real pagination buttons/table events through mounted layout/display,
+not compositor presentation or real service latency. The Windows event-to-layout
+entry is a separate unmerged unit; no Windows measurement evidence is included
+here. See [commands and exact scope](docs/MAILBOX_ACCEPTANCE.md).
+
+The initial checkpoint passed nine Python controls with Rust/native execution
+still pending. Subsequent Linux validation on identity head `01c1f0a` passed the
+related IMAP suite (45 passed, 3 ignored), the affected 120-message contract,
+formatting and strict all-target Clippy. Actual empty-cache 1k and 10k runs passed
+all assertions, including every body/digest, arrivals, both flag directions and
+reconnect controls. Their command wall times were 74.931 and 639.977 seconds.
+These are fictional loopback correctness runs, not a product speed comparison.
+
+The original 50k run naturally **failed** at the flag-round cap after 3,257.13
+test seconds on 15 October at 09:00 UTC; it did not time out. Source digest
+`08f4f0b0f7cb7ebf7c25bd3ae5c24e88a6761da62310e7125724fcddff0422c2`,
+the executable, full log, zero-byte result file and all 185 source files remain
+preserved in task evidence. A global `ceil(total/49)` undercounted independently
+drained 1,000-UID windows. The corrected fixture sums the rounded window work,
+retains the existing 16-round allowance, and adds boundary controls plus safe
+failure diagnostics. Dataset size and substantive assertions are unchanged.
+That Rust correction and the final stacked 1k/10k/50k matrix are not yet rerun.
+
+Independent review also corrected the Mac selected-row/reader visibility oracle
+and compiler-input/adapter provenance. The applied Python controls pass 13/13;
+the new AppKit controls and production fixture remain uncompiled/unexecuted here.
+Older-source protocol results cannot be combined with newer native source as a
+complete aggregate. Existing native reader/network/security gates and historical
+failures remain unchanged. Both platforms and reviewed performance targets are
+still required before claiming complete acceptance.
+
+## v0.8.1 published — 14 October 2026
+
+[Tagged run 38624861643](https://github.com/Coke1120/Morrow-Mail/actions/runs/38624861643),
+attempt 1, passed both complete native jobs and the existing publisher at source
+`9621202966751cd8f5341411a2f7cdb5b7252ce1`. The release was published at
+20:19:49 UTC. All six assets downloaded successfully and their hashes, paired
+versions, pinned manifest signature and archive controls were verified. A
+task-only exact-case Windows DLL lookup first failed; its bounded correction
+passed thirteen negative/positive controls and reverified the same downloaded
+bytes without replacing any asset. Both results remain preserved in the
+[publication record](docs/releases/v0.8.1-verification.md).
+
+The preparation sections below retain their original pending-at-the-time
+checkpoints. This publication does not include later main navigation/activity
+changes or the new mailbox branches, and does not resolve historical native
+error-87/reader failures, signing or manual/live-account acceptance limits.
+
 ## Activity cancellation and native verification repairs — 15 October 2026
 
 This follow-up starts from main `cfe61c9fedfe7f07a99ab84751aabf7bae19d495`,

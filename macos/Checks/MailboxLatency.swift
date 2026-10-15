@@ -1,0 +1,408 @@
+import AppKit
+import SwiftUI
+
+// Opt-in measurement executable, never linked into the app. Every request is
+// intercepted; no service, workspace, provider, model, reader HTML or write is
+// opened. The companion runner changes only AppModel's initial baseURL in a
+// private compiler input, using the existing MailFlowAssertions transport seam.
+final class MailboxLatencyProtocol: URLProtocol {
+    static let owners = ["alpha@latency.invalid", "beta@latency.invalid"]
+    static let lock = NSLock()
+    static var rows: [JSON] = []
+    static var unexpected = 0
+    static var requests = 0
+
+    static func prepare(_ size: Int) {
+        lock.lock(); defer { lock.unlock() }
+        rows = (0..<size).map { index in
+            let owner = owners[index % 2], id = "imap:55:\(index / 2 + 1)"
+            return .object(["id": .string(id), "viewId": .string(owner + ":" + id), "accountId": .string(owner),
+                "folder": .string("inbox"), "read": .bool(true), "starred": .bool(false),
+                "subject": .string("Fictional mailbox row \(index) 中文"), "fromName": .string("Fictional sender \(index % 37)"),
+                "fromEmail": .string("sender@example.invalid"), "to": .string(owner),
+                "date": .string("2026-01-01T12:00:00Z"), "preview": .string("Controlled native layout fixture \(index)")])
+        }
+        unexpected = 0; requests = 0
+    }
+    static func state() -> JSON {
+        .object(["account": .object(["id": .string("all")]), "revision": .string("fixture-1"),
+            "accounts": .array(owners.map { .object(["id": .string($0), "provider": .string("imap"),
+                "email": .string($0), "settings": .object(["configured": .bool(true)])]) }),
+            "messages": .array([]), "settings": .object(["preferences": .object(["markReadOnOpen": .bool(false),
+                "density": .string("comfortable"), "sort": .string("date-desc")]), "policy": .object(["enabled": .bool(false)])])])
+    }
+    static func snapshot() -> (Int, Int, Int) {
+        lock.lock(); defer { lock.unlock() }; return (rows.count, unexpected, requests)
+    }
+    static func payload(_ request: URLRequest) throws -> JSON {
+        if let data = request.httpBody { return try JSONDecoder().decode(JSON.self, from: data) }
+        guard let stream = request.httpBodyStream else { return .null }
+        stream.open(); defer { stream.close() }
+        var data = Data(), buffer = [UInt8](repeating: 0, count: 4096)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count < 0 || data.count + count > 65536 { throw APIError("Invalid synthetic request.") }
+            if count == 0 { break }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+        return try JSONDecoder().decode(JSON.self, from: data)
+    }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        do {
+            let body = try Self.payload(request), owner = request.value(forHTTPHeaderField: "X-Genmail-Account") ?? ""
+            guard request.url?.scheme == "http", request.url?.host == "127.0.0.1", request.url?.port == 18484 else {
+                throw APIError("Unexpected synthetic origin.")
+            }
+            let result: JSON
+            Self.lock.lock()
+            do {
+                defer { Self.lock.unlock() }
+                Self.requests += 1
+                switch (request.httpMethod ?? "GET", request.url!.path) {
+                case ("GET", "/api/search/preferences"):
+                    guard owner == "all" else { throw APIError("Wrong preference owner.") }
+                    result = .object(["saved": .array([]), "recent": .array([])])
+                case ("POST", "/api/mail/page"):
+                    let offset = Int(body["offset"].number)
+                    guard owner == "all", body["folder"].string == "inbox", offset >= 0, offset < Self.rows.count, offset % 50 == 0 else {
+                        throw APIError("Invalid synthetic page.")
+                    }
+                    let end = min(Self.rows.count, offset + 50)
+                    result = .object(["messages": .array(Array(Self.rows[offset..<end])), "total": .number(Double(Self.rows.count)),
+                        "nextCursor": .string(end < Self.rows.count ? "fixture-\(end)" : "")])
+                case ("POST", "/api/sync/priority"):
+                    guard owner == "all", body["messages"].array.count <= 51,
+                        body["messages"].array.allSatisfy({ Self.owners.contains($0["accountId"].string) }) else {
+                        throw APIError("Invalid synthetic priority hint.")
+                    }
+                    result = .object(["accepted": .bool(true)])
+                case ("GET", let path) where path.hasPrefix("/api/messages/"):
+                    let id = String(path.dropFirst("/api/messages/".count))
+                    guard let index = Self.rows.firstIndex(where: { $0.id == id && $0["accountId"].string == owner }) else {
+                        throw APIError("Unknown synthetic owned message.")
+                    }
+                    var row = Self.rows[index]
+                    row["body"] = .string("Fictional reader body \(index). " + String(repeating: "x", count: 1024))
+                    row["bodyHtml"] = .string("")
+                    result = .object(["message": row])
+                default: throw APIError("Unexpected synthetic operation.")
+                }
+            }
+            let data = try JSONEncoder().encode(result)
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"])!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: data); client?.urlProtocolDidFinishLoading(self)
+        } catch {
+            Self.lock.lock(); Self.unexpected += 1; Self.lock.unlock()
+            client?.urlProtocol(self, didFailWithError: APIError("Synthetic request rejected."))
+        }
+    }
+    override func stopLoading() {}
+}
+
+@main
+struct MailboxLatency {
+    @MainActor static func require(_ condition: Bool, _ message: String) throws {
+        if !condition { throw APIError(message) }
+    }
+    @MainActor static func views<T: NSView>(_ root: NSView, _ type: T.Type) -> [T] {
+        (root as? T).map { [$0] } ?? root.subviews.flatMap { views($0, type) }
+    }
+    @MainActor static func table(_ host: NSView) -> NSTableView? {
+        views(host, NSTableView.self).first { $0.numberOfRows == 50 && $0.frame.width > 250 }
+    }
+    @MainActor static func wait(_ message: String, _ condition: () -> Bool) async throws {
+        let end = ProcessInfo.processInfo.systemUptime + 10
+        while !condition(), ProcessInfo.processInfo.systemUptime < end { try await Task.sleep(nanoseconds: 1_000_000) }
+        try require(condition(), message)
+    }
+    @MainActor static func visibleFrame(_ view: NSView) -> NSRect? {
+        guard let window = view.window, window.isVisible, let screen = window.screen,
+              !view.isHiddenOrHasHiddenAncestor else { return nil }
+        var ancestor: NSView? = view
+        while let current = ancestor {
+            if current.alphaValue <= 0 || current.isAccessibilityHidden() { return nil }
+            ancestor = current.superview
+        }
+        let local = view.visibleRect.intersection(view.bounds)
+        guard !local.isEmpty else { return nil }
+        let frame = window.convertToScreen(view.convert(local, to: nil)).intersection(screen.visibleFrame)
+        guard [frame.minX, frame.minY, frame.width, frame.height].allSatisfy(\.isFinite),
+              !frame.isEmpty else { return nil }
+        return frame
+    }
+    @MainActor static func visibleText(_ root: NSView) -> [String] {
+        guard let boundary = visibleFrame(root), let window = root.window else { return [] }
+        var remaining = 2048, seen = Set<ObjectIdentifier>(), text: [String] = []
+        @MainActor func visit(_ raw: Any, clip: NSRect) {
+            guard remaining > 0, let object = raw as? NSObject,
+                  seen.insert(ObjectIdentifier(object)).inserted else { return }
+            remaining -= 1
+            var visible = clip
+            if let view = object as? NSView {
+                guard view.window === window, view === root || view.isDescendant(of: root),
+                      let frame = visibleFrame(view) else { return }
+                visible = clip.intersection(frame)
+                guard !visible.isEmpty else { return }
+                if let field = view as? NSTextField { text.append(field.stringValue) }
+                if let field = view as? NSTextView { text.append(field.string) }
+            }
+            if let element = object as? NSAccessibilityProtocol {
+                guard !element.isAccessibilityHidden() else { return }
+                let frame = element.accessibilityFrame()
+                let framed = [frame.minX, frame.minY, frame.width, frame.height].allSatisfy(\.isFinite)
+                    && !frame.isEmpty
+                if framed {
+                    visible = visible.intersection(frame)
+                    guard !visible.isEmpty else { return }
+                }
+                // A container's aggregated label can include a hidden/stale
+                // child. Only framed text leaves supply identity evidence.
+                if framed, let role = element.accessibilityRole(),
+                   [NSAccessibility.Role.staticText, .textField, .textArea].contains(role) {
+                    if let value = element.accessibilityValue() as? String { text.append(value) }
+                    if let label = element.accessibilityLabel() { text.append(label) }
+                }
+                for child in element.accessibilityChildren() ?? [] { visit(child, clip: visible) }
+            }
+            if let view = object as? NSView {
+                for child in view.subviews { visit(child, clip: visible) }
+            }
+        }
+        visit(root, clip: boundary)
+        return text
+    }
+    @MainActor static func rowIdentityMatches(_ cell: NSView, index: Int) -> Bool {
+        let text = visibleText(cell)
+        let owner = MailboxLatencyProtocol.owners[index % 2]
+        return text.contains("Fictional mailbox row \(index) 中文")
+            && (text.contains(owner) || text.contains("Mailbox: " + owner))
+    }
+    @MainActor static func readerIdentityMatches(_ reader: NSView, index: Int) -> Bool {
+        let text = visibleText(reader)
+        return text.contains("Fictional mailbox row \(index) 中文")
+            && text.contains("To: " + MailboxLatencyProtocol.owners[index % 2])
+            && text.contains { $0.hasPrefix("Fictional reader body \(index). ") }
+    }
+    @MainActor static func readerPane(for list: NSTableView) -> NSView? {
+        // Locate the actual reader sibling of the production mail-list pane,
+        // never a matching string anywhere in the host or the AppModel payload.
+        var parent = list.superview
+        while let current = parent {
+            if let split = current as? NSSplitView, split.isVertical,
+               split.arrangedSubviews.count == 2,
+               list.isDescendant(of: split.arrangedSubviews[0]),
+               !list.isDescendant(of: split.arrangedSubviews[1]),
+               let left = visibleFrame(split.arrangedSubviews[0]),
+               let right = visibleFrame(split.arrangedSubviews[1]),
+               right.minX >= left.maxX - 1, right.width >= 250 {
+                return split.arrangedSubviews[1]
+            }
+            parent = current.superview
+        }
+        return nil
+    }
+    @MainActor static func displayed(_ host: NSView, page: Int, readerIndex: Int? = nil) -> Bool {
+        host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+        guard let list = table(host), visibleFrame(list) != nil,
+              list.rows(in: list.visibleRect).length > 0,
+              let first = list.view(atColumn: 0, row: 0, makeIfNecessary: false),
+              rowIdentityMatches(first, index: page * 50) else { return false }
+        if let readerIndex {
+            guard list.selectedRowIndexes.contains(readerIndex),
+                  let selected = list.view(atColumn: 0, row: readerIndex, makeIfNecessary: false),
+                  rowIdentityMatches(selected, index: page * 50 + readerIndex),
+                  let reader = readerPane(for: list),
+                  readerIdentityMatches(reader, index: page * 50 + readerIndex) else { return false }
+        }
+        return true
+    }
+    @MainActor static func pageButton(_ host: NSView, next: Bool) throws -> NSButton {
+        guard let list = table(host), let viewport = list.enclosingScrollView else { throw APIError("Production mail table is missing.") }
+        let frame = viewport.convert(viewport.bounds, to: nil)
+        // SwiftUI's in-process peers do not always expose AX titles. Pin the
+        // actual pagination row immediately below the mounted mail viewport,
+        // require exactly two peers, then verify the resulting page and IDs.
+        let below = views(host, NSButton.self).filter { button in
+            let bounds = button.convert(button.bounds, to: nil)
+            return bounds.midX >= frame.minX && bounds.midX <= frame.maxX
+                && bounds.midY < frame.minY && bounds.midY > frame.minY - 80
+        }
+        guard let highest = below.map({ $0.convert($0.bounds, to: nil).midY }).max() else { throw APIError("Pagination peers are missing.") }
+        let buttons = below.filter { abs($0.convert($0.bounds, to: nil).midY - highest) < 4 }
+            .sorted { $0.convert($0.bounds, to: nil).midX < $1.convert($1.bounds, to: nil).midX }
+        try require(buttons.count == 2, "Pagination layout changed; measurement stopped.")
+        let button = buttons[next ? 1 : 0]
+        try require(button.isEnabled && button.window === host.window, "Pagination action is unavailable.")
+        return button
+    }
+    @MainActor static func clickRow(_ row: Int, list: NSTableView, window: NSWindow) throws {
+        let rect = list.rect(ofRow: row), point = list.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            guard let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: row, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) else {
+                throw APIError("Could not create the native selection event.")
+            }
+            NSApp.postEvent(event, atStart: false)
+        }
+        // Drain only our posted mouse events; AppKit's tracking loop may consume
+        // the matching mouse-up during sendEvent. Async waits below let the
+        // production selection binding and owned reader request complete.
+        while let event = NSApp.nextEvent(matching: [.leftMouseDown, .leftMouseUp], until: Date(), inMode: .default, dequeue: true) {
+            NSApp.sendEvent(event)
+        }
+    }
+    @MainActor static func sample(_ action: String, start: TimeInterval, page: Int, host: NSView, model: AppModel, readerIndex: Int? = nil) throws -> JSON {
+        try require(displayed(host, page: page, readerIndex: readerIndex), "The measured owned row/reader text is not displayed.")
+        let list = table(host)!, visible = list.rows(in: list.visibleRect)
+        let rows = model.listedMessages
+        try require(rows.count == 50 && model.mailCursors.count == page + 1, "Displayed page does not match the action.")
+        try require(rows.first?.id == "imap:55:\(page * 25 + 1)" && rows.first?["accountId"].string == MailboxLatencyProtocol.owners[0], "Wrong displayed owner/identity page.")
+        return .object(["action": .string(action), "completion": .string("layout-and-display"),
+            "elapsedMs": .number((ProcessInfo.processInfo.systemUptime - start) * 1000),
+            "page": .number(Double(page)), "tableRows": .number(Double(list.numberOfRows)),
+            "visibleRows": .number(Double(min(50, visible.length))), "ownerMatched": .bool(true),
+            "renderedRowIdentityMatched": .bool(true), "renderedReaderMatched": .bool(readerIndex != nil),
+            "renderedSelectedRowIdentityMatched": .bool(readerIndex != nil), "renderedReaderIdentityMatched": .bool(readerIndex != nil),
+            "selectedOwnedRow": .bool(model.current != nil)])
+    }
+    @MainActor static func checkVisibleIdentityOracle() throws -> JSON {
+        // Exercise the same oracle against real mounted AppKit text controls.
+        // These are rejection controls, not latency or production UI samples.
+        let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 700, height: 480),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 700, height: 480))
+        let row = NSView(frame: NSRect(x: 0, y: 300, width: 310, height: 120))
+        let reader = NSView(frame: NSRect(x: 330, y: 0, width: 340, height: 460))
+        host.addSubview(row); host.addSubview(reader)
+        @MainActor func label(_ value: String, _ y: CGFloat, in parent: NSView) -> NSTextField {
+            let field = NSTextField(labelWithString: value)
+            field.frame = NSRect(x: 10, y: y, width: 310, height: 35)
+            parent.addSubview(field)
+            return field
+        }
+        let subject = "Fictional mailbox row 1 中文", owner = MailboxLatencyProtocol.owners[1]
+        _ = label(subject, 65, in: row)
+        let rowOwner = label(owner, 20, in: row)
+        let readerSubject = label(subject, 390, in: reader)
+        let readerOwner = label("To: " + owner, 340, in: reader)
+        let body = label("Fictional reader body 1. visible control", 270, in: reader)
+        window.contentView = host; window.makeKeyAndOrderFront(nil)
+        defer { window.close(); window.contentView = nil }
+        host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+        try require(rowIdentityMatches(row, index: 1) && readerIdentityMatches(reader, index: 1),
+            "Visible identity oracle positive control failed.")
+        // The production SwiftUI owner Text has this exact AX label. Check
+        // that label-only evidence works without accepting another mailbox.
+        rowOwner.stringValue = ""; rowOwner.setAccessibilityLabel("Mailbox: " + owner)
+        try require(rowIdentityMatches(row, index: 1), "Production mailbox accessibility label was not recognized.")
+        rowOwner.setAccessibilityLabel("Mailbox: " + MailboxLatencyProtocol.owners[0])
+        try require(!rowIdentityMatches(row, index: 1), "Wrong selected-row accessibility owner passed the oracle.")
+        rowOwner.stringValue = MailboxLatencyProtocol.owners[0]
+        rowOwner.setAccessibilityLabel(MailboxLatencyProtocol.owners[0])
+        try require(!rowIdentityMatches(row, index: 1), "Wrong selected-row owner passed the oracle.")
+        rowOwner.stringValue = owner; rowOwner.setAccessibilityLabel(owner)
+        readerOwner.stringValue = "To: " + MailboxLatencyProtocol.owners[0]
+        try require(!readerIdentityMatches(reader, index: 1), "Wrong reader owner passed with the right body.")
+        readerOwner.stringValue = "To: " + owner
+        readerSubject.stringValue = "Fictional mailbox row 0 中文"
+        try require(!readerIdentityMatches(reader, index: 1), "Wrong reader subject passed with the right body.")
+        readerSubject.stringValue = subject
+        body.isHidden = true
+        try require(!readerIdentityMatches(reader, index: 1), "Hidden body passed the oracle.")
+        let stale = label("Fictional reader body 1. stale outside reader", 180, in: host)
+        try require(visibleText(host).contains { $0.hasPrefix("Fictional reader body 1. ") },
+            "Outside-reader stale-body negative control did not mount.")
+        try require(!readerIdentityMatches(reader, index: 1), "Outside-reader body passed the reader oracle.")
+        stale.removeFromSuperview(); body.isHidden = false
+        let frame = body.frame; body.setFrameOrigin(NSPoint(x: 900, y: 270))
+        try require(!readerIdentityMatches(reader, index: 1), "Offscreen body passed the oracle.")
+        body.frame = frame; reader.isHidden = true
+        try require(!readerIdentityMatches(reader, index: 1), "Hidden ancestor passed the oracle.")
+        reader.isHidden = false; reader.alphaValue = 0
+        try require(!readerIdentityMatches(reader, index: 1), "Transparent ancestor passed the oracle.")
+        reader.alphaValue = 1; body.setAccessibilityHidden(true)
+        try require(!readerIdentityMatches(reader, index: 1), "Accessibility-hidden body passed the oracle.")
+        body.setAccessibilityHidden(false)
+        let originalFrame = window.frame
+        let outsideX = (NSScreen.screens.map { $0.frame.maxX }.max() ?? originalFrame.maxX) + 2000
+        let outsideY = (NSScreen.screens.map { $0.frame.maxY }.max() ?? originalFrame.maxY) + 2000
+        window.setFrameOrigin(NSPoint(x: outsideX, y: outsideY))
+        try require(NSScreen.screens.allSatisfy { !$0.frame.intersects(window.frame) },
+            "Offscreen-window negative control did not move beyond the displays.")
+        try require(!readerIdentityMatches(reader, index: 1), "Offscreen window passed the oracle.")
+        window.setFrame(originalFrame, display: true)
+        try require(rowIdentityMatches(row, index: 1) && readerIdentityMatches(reader, index: 1),
+            "Restored visible identity oracle failed.")
+        return .object(["wrongSelectedOwnerRejected": .bool(true), "wrongReaderOwnerRejected": .bool(true),
+            "wrongReaderSubjectRejected": .bool(true), "hiddenBodyRejected": .bool(true),
+            "outsideReaderBodyRejected": .bool(true), "offscreenBodyRejected": .bool(true),
+            "hiddenAncestorRejected": .bool(true), "transparentAncestorRejected": .bool(true),
+            "accessibilityHiddenBodyRejected": .bool(true), "offscreenWindowRejected": .bool(true)])
+    }
+    @MainActor static func dataset(_ size: Int) async throws -> JSON {
+        MailboxLatencyProtocol.prepare(size)
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [MailboxLatencyProtocol.self]
+        let model = AppModel(session: URLSession(configuration: config))
+        model.state = MailboxLatencyProtocol.state(); model.starting = false
+        let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 1220, height: 820), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: MailWorkspace().environmentObject(model))
+        window.contentView = host; window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        defer { window.close(); window.contentView = nil; model.stop(); model.session.invalidateAndCancel() }
+        try await wait("Initial owned native page did not mount.") { model.listedMessages.count == 50 && !model.mailLoading && displayed(host, page: 0) }
+        var samples: [JSON] = []
+        for index in 0..<6 {
+            let next = try pageButton(host, next: true), startNext = ProcessInfo.processInfo.systemUptime
+            next.performClick(nil)
+            try await wait("Next did not render page two.") { model.mailCursors.count == 2 && !model.mailLoading && displayed(host, page: 1) }
+            samples.append(try sample("next", start: startNext, page: 1, host: host, model: model))
+            let previous = try pageButton(host, next: false), startPrevious = ProcessInfo.processInfo.systemUptime
+            previous.performClick(nil)
+            try await wait("Previous did not render page one.") { model.mailCursors.count == 1 && !model.mailLoading && displayed(host, page: 0) }
+            samples.append(try sample("previous", start: startPrevious, page: 0, host: host, model: model))
+            let selected = model.listedMessages[index % 2], startSelect = ProcessInfo.processInfo.systemUptime
+            try clickRow(index % 2, list: table(host)!, window: window)
+            try await wait("Native row selection did not load its owned reader.") {
+                model.selectedMessage == selected.viewID && model.messageDetail.viewID == selected.viewID
+                    && model.messageDetail["accountId"] == selected["accountId"] && model.messageDetail["body"].nonempty
+                    && table(host)?.selectedRowIndexes.contains(index % 2) == true
+                    && displayed(host, page: 0, readerIndex: index % 2)
+            }
+            samples.append(try sample("select", start: startSelect, page: 0, host: host, model: model, readerIndex: index % 2))
+        }
+        await model.publishSyncPriority()
+        let observed = MailboxLatencyProtocol.snapshot()
+        try require(observed.0 == size && observed.1 == 0, "Unexpected transport request or dataset count.")
+        return .object(["size": .number(Double(size)), "generatedRows": .number(Double(observed.0)), "pageSize": .number(50),
+            "unexpectedRequests": .number(Double(observed.1)), "interceptedRequests": .number(Double(observed.2)),
+            "ownerSelectionVerified": .bool(true), "samples": .array(samples)])
+    }
+    @MainActor static func main() async {
+        do {
+            let arguments = CommandLine.arguments
+            guard arguments.count == 5, arguments[1] == "--output", arguments[3] == "--version",
+                  let workspace = ProcessInfo.processInfo.environment["MORROW_DATA_DIR"], workspace.hasPrefix("/"),
+                  !FileManager.default.fileExists(atPath: arguments[2]) else { throw APIError("A new output, version and isolated fixture workspace are required.") }
+            NSApplication.shared.setActivationPolicy(.regular)
+            UserDefaults.standard.setVolatileDomain(["mailReaderLayout": "right", "mailSidebarVisible": true,
+                "collapsedMailAccounts": "[]"], forName: UserDefaults.argumentDomain)
+            let oracleControls = try checkVisibleIdentityOracle()
+            var results: [JSON] = []
+            for size in [1000, 10000, 50000] { results.append(try await dataset(size)) }
+            let report: JSON = .object(["schema": .number(1), "kind": .string("morrow-native-mailbox-latency"),
+                "status": .string("complete"), "platform": .string("macos"), "version": .string(arguments[4]),
+                "measuredAt": .string(ISO8601DateFormatter().string(from: Date())),
+                "measurement": .string("native-event-to-layout-display"), "transport": .string("intercepted-fictional-only"),
+                "windowWidth": .number(1220), "windowHeight": .number(820), "pollResolutionMs": .number(1),
+                "oracleControls": oracleControls, "results": .array(results), "limitations": .string("Production AppKit/SwiftUI buttons, table mouse events and owned reader, intercepted paginated responses. Includes fixture overhead and layout/display request, not compositor presentation, real service/SQLite/WAN cost, HTML reader, whole-app resources or accessibility automation. One first plus five warm samples; no default performance threshold.")])
+            let data = try JSONEncoder().encode(report)
+            try data.write(to: URL(fileURLWithPath: arguments[2]), options: .withoutOverwriting)
+            print("Native mailbox event/layout measurements completed.")
+        } catch { FileHandle.standardError.write(Data(("Native mailbox measurement failed: " + error.localizedDescription + "\n").utf8)); exit(1) }
+    }
+}
