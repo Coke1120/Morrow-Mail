@@ -134,31 +134,143 @@ import SwiftUI
         guard let button = control(label, in: root) else { throw APIError("Lost mounted control: " + label) }
         try require(button.accessibilityPerformPress(), "Native accessibility action failed: " + label)
     }
-    @MainActor static func mountedMenu(_ item: String, in root: NSView) throws -> NSMenu {
+    @MainActor static func menuControls(_ identifier: String, in root: NSView) -> [NSAccessibilityProtocol] {
         root.layoutSubtreeIfNeeded()
-        var seen = Set<ObjectIdentifier>()
-        let menus = nativeViews(root, NSButton.self).compactMap { button -> NSMenu? in
-            guard button.window === root.window, !button.isHiddenOrHasHiddenAncestor, let menu = button.menu,
-                  seen.insert(ObjectIdentifier(menu)).inserted else { return nil }
-            menu.delegate?.menuNeedsUpdate?(menu)
-            menu.update()
-            return menu
-        }.filter { $0.items.contains { $0.title == item } }
-        try require(menus.count == 1, "Expected one production menu containing \(item), found \(menus.count)")
-        return menus[0]
+        guard let window = root.window, window.isVisible, !root.isHiddenOrHasHiddenAncestor else { return [] }
+        let visible = window.convertToScreen(root.convert(root.visibleRect, to: nil)).intersection(window.frame)
+        return accessibilityNodes(root).filter { element in
+            guard element.accessibilityIdentifier() == identifier,
+                  let role = element.accessibilityRole(), [NSAccessibility.Role.button, .popUpButton].contains(role),
+                  (element.accessibilityWindow() as? NSWindow) === window,
+                  !element.isAccessibilityHidden(), element.isAccessibilityEnabled(),
+                  !element.accessibilityFrame().isEmpty, visible.intersects(element.accessibilityFrame()) else { return false }
+            if let view = element as? NSView { return view.window === window && !view.isHiddenOrHasHiddenAncestor }
+            return true
+        }
+    }
+    @MainActor static func menuDiagnostics(_ identifier: String, in root: NSView) -> String {
+        // Only this fictional fixture's mounted tree; bound labels and counts.
+        let nodes = accessibilityNodes(root).prefix(32).map { element in
+            let label = (element.accessibilityLabel() ?? element.accessibilityTitle() ?? "").replacingOccurrences(of: "\n", with: " ")
+            return "\(type(of: element)) id=\(String((element.accessibilityIdentifier() ?? "").prefix(80))) role=\(element.accessibilityRole()?.rawValue ?? "nil") label=\(String(label.prefix(100))) enabled=\(element.isAccessibilityEnabled()) hidden=\(element.isAccessibilityHidden()) ownWindow=\((element.accessibilityWindow() as? NSWindow) === root.window) frame=\(NSStringFromRect(element.accessibilityFrame()))"
+        }
+        return "Menu fixture \(identifier): windowVisible=\(root.window?.isVisible == true) root=\(NSStringFromRect(root.visibleRect)); " + nodes.joined(separator: " | ")
+    }
+    @MainActor static func menuEntries(_ menu: NSMenu) -> String {
+        menu.items.prefix(32).map { "\(String($0.title.prefix(100))) enabled=\($0.isEnabled) hidden=\($0.isHidden) action=\($0.action != nil)" }.joined(separator: " | ")
+    }
+    @MainActor final class MenuTracking {
+        var armed = false, ended = false, inspected = false
+        var begins = 0
+        var menu: NSMenu?
+        var failure: Error?
+        var entries = ""
+        var observers: [NSObjectProtocol] = []
+        var cancellation: Timer?, watchdog: Timer?
+        func stop() {
+            armed = false
+            watchdog?.invalidate(); cancellation?.invalidate()
+            if let menu, !ended { menu.cancelTracking() }
+            for observer in observers { NotificationCenter.default.removeObserver(observer) }
+            observers.removeAll()
+        }
+    }
+    @MainActor static func withMountedMenu(_ identifier: String, in root: NSView, deadline: Date,
+                                          inspect: @escaping @MainActor (NSMenu) throws -> Void) async throws {
+        let tracking = MenuTracking()
+        defer { tracking.stop() }
+        do {
+            while menuControls(identifier, in: root).count != 1, Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
+            let controls = menuControls(identifier, in: root)
+            try require(Date() < deadline && controls.count == 1, "Expected one mounted enabled menu control: " + identifier)
+            let control = controls[0], identity = ObjectIdentifier(controls[0] as AnyObject)
+            guard let window = root.window else { throw APIError("Menu fixture lost its window") }
+            @MainActor func current() -> Bool {
+                let next = menuControls(identifier, in: root)
+                return root.window === window && next.count == 1 && ObjectIdentifier(next[0] as AnyObject) == identity
+            }
+            tracking.observers.append(NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { notification in
+                MainActor.assumeIsolated {
+                    guard tracking.armed, let menu = notification.object as? NSMenu, menu.supermenu == nil else { return }
+                    tracking.begins += 1
+                    guard tracking.menu == nil else {
+                        tracking.failure = APIError("A menu action opened more than one root menu")
+                        menu.cancelTracking(); return
+                    }
+                    tracking.menu = menu
+                    // AppKit may synchronously track inside the accessibility
+                    // action. Inspect in its tracking loop, then close that menu.
+                    let timer = Timer(timeInterval: 0.001, repeats: false) { _ in
+                        MainActor.assumeIsolated {
+                            guard tracking.armed else { return }
+                            defer { menu.cancelTracking() }
+                            do {
+                                try require(Date() < deadline && current() && tracking.begins == 1, "The opened menu lost its captured mounted control")
+                                tracking.entries = menuEntries(menu)
+                                try inspect(menu)
+                                tracking.inspected = true
+                            } catch { tracking.failure = error }
+                        }
+                    }
+                    tracking.cancellation = timer
+                    RunLoop.main.add(timer, forMode: .eventTracking)
+                    RunLoop.main.add(timer, forMode: .common)
+                }
+            })
+            tracking.observers.append(NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) { notification in
+                MainActor.assumeIsolated {
+                    guard tracking.armed, let menu = notification.object as? NSMenu, menu === tracking.menu else { return }
+                    tracking.ended = true
+                }
+            })
+            let remaining = deadline.timeIntervalSinceNow
+            try require(remaining > 0, "The menu deadline expired before activation")
+            let watchdog = Timer(timeInterval: remaining, repeats: false) { _ in
+                MainActor.assumeIsolated {
+                    print(menuDiagnostics(identifier, in: root))
+                    print("Review fixture: native menu exceeded its five-second deadline; begins=\(tracking.begins) ended=\(tracking.ended) entries=\(tracking.entries)")
+                    tracking.stop()
+                    // Terminate only this isolated fixture if a synchronous
+                    // native tracking loop cannot return after cancellation.
+                    fflush(stdout); exit(1)
+                }
+            }
+            tracking.watchdog = watchdog
+            RunLoop.main.add(watchdog, forMode: .eventTracking)
+            RunLoop.main.add(watchdog, forMode: .common)
+            tracking.armed = true
+            try require(current() && control.accessibilityPerformShowMenu(), "Native show-menu action failed: " + identifier)
+            while !tracking.ended, Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
+            try require(Date() < deadline && tracking.begins == 1 && tracking.ended, "The native menu did not open and close within five seconds")
+            if let failure = tracking.failure { throw failure }
+            try require(tracking.inspected, "The menu closed before its native commands were inspected")
+        } catch {
+            print(menuDiagnostics(identifier, in: root))
+            print("Menu tracking: begins=\(tracking.begins) ended=\(tracking.ended) entries=\(tracking.entries)")
+            throw error
+        }
     }
     @MainActor static func commandIndex(_ title: String, in menu: NSMenu) -> Int? {
         menu.items.firstIndex { $0.title == title && !$0.isHidden && !$0.isSeparatorItem && $0.action != nil }
     }
-    @MainActor static func chooseMenuItem(_ title: String, in root: NSView) async throws {
-        try await settle("Mounted menu command did not become enabled: " + title) {
-            guard let menu = try? mountedMenu(title, in: root), let index = commandIndex(title, in: menu) else { return false }
-            return menu.items[index].isEnabled
+    @MainActor static func menuCommand(_ title: String, identifier: String, in root: NSView, enabled: Bool = true, perform: Bool = false) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        var matched = false
+        var entries = ""
+        while !matched, Date() < deadline {
+            try await withMountedMenu(identifier, in: root, deadline: deadline) { menu in
+                entries = menuEntries(menu)
+                guard let index = commandIndex(title, in: menu), menu.items[index].isEnabled == enabled else { return }
+                matched = true
+                if perform {
+                    try require(enabled, "A fixture must not invoke a disabled menu item")
+                    menu.performActionForItem(at: index)
+                }
+            }
+            if !matched { try await Task.sleep(nanoseconds: 20_000_000) }
         }
-        let menu = try mountedMenu(title, in: root)
-        guard let index = commandIndex(title, in: menu) else { throw APIError("Menu command is missing: " + title) }
-        try require(menu.items[index].isEnabled, "Menu command is not enabled: " + title)
-        menu.performActionForItem(at: index)
+        if !matched { print(menuDiagnostics(identifier, in: root)); print("Menu command entries: " + entries) }
+        try require(matched, "Mounted menu command did not reach enabled=\(enabled): " + title)
     }
     @MainActor static func mountedReader(session: URLSession) async throws {
         ReviewProtocol.resetLifecycle()
@@ -172,29 +284,29 @@ import SwiftUI
         let host = NSHostingView(rootView: MessageReader(message: message, expanded: false, focused: false, onExpand: { expanded += 1 }, onBack: {}).environmentObject(model))
         window.contentView = host; window.makeKeyAndOrderFront(nil)
         defer { window.close(); window.contentView = nil }
-        try await settle("Reader menus did not mount") { (try? mountedMenu("Reply All", in: host)) != nil }
-        for (item, commands) in [("Reply All", ["Reply", "Reply All", "Forward"]), ("Move to…", ["Move to…", "Create new folder…", "Manage folders…", "Move to provider Trash"]), ("Star", ["Star", "Mark Pending locally", "Archive locally", "Expand Reader"]), ("Summarize", ["Summarize", "Suggest Reply", "Suggest with History", "Translate"])] {
-            let menu = try mountedMenu(item, in: host)
-            try require(commands.allSatisfy { commandIndex($0, in: menu) != nil }, "A grouped reader command became unreachable: " + item)
+        for (identifier, commands) in [("reader.replyMenu", ["Reply", "Reply All", "Forward"]), ("reader.organizeMenu", ["Move to…", "Create new folder…", "Manage folders…", "Move to provider Trash"]), ("reader.moreMenu", ["Star", "Mark Pending locally", "Archive locally", "Expand Reader"]), ("reader.aiMenu", ["Summarize", "Suggest Reply", "Suggest with History", "Translate"])] {
+            try await withMountedMenu(identifier, in: host, deadline: Date().addingTimeInterval(5)) { menu in
+                try require(commands.allSatisfy { commandIndex($0, in: menu) != nil }, "A grouped reader command became unreachable: " + identifier)
+            }
         }
-        try await chooseMenuItem("Expand Reader", in: host)
+        try await menuCommand("Expand Reader", identifier: "reader.moreMenu", in: host, perform: true)
         try require(expanded == 1, "More did not call the existing reader layout action")
-        try await chooseMenuItem("Move to…", in: host)
+        try await menuCommand("Move to…", identifier: "reader.organizeMenu", in: host, perform: true)
         try require(model.organizing?["message"] == message && model.organizing?["message"]["accountId"].string == owner, "Organize lost the message owner")
         model.organizing = nil
         for (title, mode) in [("Reply", "reply"), ("Reply All", "replyAll"), ("Forward", "forward")] {
-            try await chooseMenuItem(title, in: host)
+            try await menuCommand(title, identifier: "reader.replyMenu", in: host, perform: true)
             try await settle("Grouped reply action did not prepare a draft: " + title) { model.compose != nil }
             try require(model.compose?.accountID == owner && model.account == first, "Grouped reply switched the sending identity")
             try require(ReviewProtocol.recordedTraffic().last(where: { $0["path"] == "/api/drafts/prepare" })?["mode"] == mode, "Grouped reply changed its preparation mode")
             model.compose = nil
         }
-        try await settle("Permitted history command was not reachable") { (try? mountedMenu("Suggest with History", in: host).item(withTitle: "Suggest with History")?.isEnabled) == true }
+        try await menuCommand("Suggest with History", identifier: "reader.aiMenu", in: host)
         model.state["settings"]["policy"]["content"]["sender"] = .bool(false)
-        try await settle("AI history lost the sender-permission gate") { (try? mountedMenu("Suggest with History", in: host).item(withTitle: "Suggest with History")?.isEnabled) == false }
-        try await settle("Permitted reply command was not reachable") { (try? mountedMenu("Suggest Reply", in: host).item(withTitle: "Suggest Reply")?.isEnabled) == true }
+        try await menuCommand("Suggest with History", identifier: "reader.aiMenu", in: host, enabled: false)
+        try await menuCommand("Suggest Reply", identifier: "reader.aiMenu", in: host)
         model.messageDetail = .null
-        try await settle("AI menu accepted a stale reader") { (try? mountedMenu("Suggest Reply", in: host).item(withTitle: "Suggest Reply")?.isEnabled) == false }
+        try await menuCommand("Suggest Reply", identifier: "reader.aiMenu", in: host, enabled: false)
         try require(!ReviewProtocol.recordedTraffic().contains { $0["path"] == "/api/send" || $0["path"] == "/api/ai" || $0["path"]?.contains("/organize") == true }, "Opening grouped controls issued a send, AI or provider write")
         print("Mounted reader menus retain every command, invoke layout/owned organization and reply variants, and disable forbidden history/stale AI.")
     }

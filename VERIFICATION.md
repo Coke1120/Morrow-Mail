@@ -78,6 +78,45 @@ compilation or native execution. Both focused stages still require a fresh
 SDK run. The separate main-job review-workspace failure remains unclassified
 until its terminal log is available.
 
+### Initial PR #59 main macOS runtime failure
+
+The original `4dd180b9` main run is now terminal: macOS job `116376821996`
+passed 432 Rust tests in 47 result groups, with zero failures and four ignored.
+The formal SwiftUI package, native search/read/reply and native acceptance
+steps passed. The review fixture compiled and ran its existing lifecycle suite,
+then failed with `Review fixture: Reader menus did not mount`. The initial menu
+oracle read `NSButton.menu` without opening a native menu; its failure alone
+does not distinguish a SwiftUI bridge/lazy-menu mismatch from a UI defect.
+The later Today, replacement/retarget, selection and Compose controls were not
+reached and are not validated by this run.
+
+The separate strict reader batch passed all 40 samples: 20 cold and 20 warm,
+unique sequences, zero exits, complete untruncated captures, zero observed
+network, 180,000 characters at one pixel, matching modes/same WebView and no
+errors. All parent/child timings were under 30 seconds. Parent cold timings
+were 15.125–19.424 seconds and warm timings 15.253–18.340 seconds. The two
+diagnostic reader steps also passed; the overall job still failed.
+
+The fixture-only menu correction locates the unique visible enabled control by
+its existing accessibility identifier and owned window, requests its native
+Show Menu action, and requires that activation's begin/end tracking events.
+It inspects and invokes the actual menu items inside native tracking, retaining
+the command, owner, sender-permission and stale-reader assertions. Reply never
+falls back to Press, which could invoke its primary reply action. A five-second
+watchdog also runs in the event-tracking mode, cancels the observed menu, removes
+observers and fails the isolated fixture if synchronous tracking cannot return.
+Bounded diagnostics report only the fictional fixture's controls/menu entries.
+The current source correction has not yet compiled or run with the macOS SDK;
+no product view, provider handler, global 180/45-second limit or assertion gate
+was changed to accept the original failure.
+
+The original run retained one reader-observations artifact; its metadata and
+185-file upload count were read, but its images were not downloaded or inspected.
+The four earlier snapshot calls returned before the lifecycle marker, which
+establishes the capture path, not a visual review. Open menus, inline Today
+review, Compose, keyboard traversal and VoiceOver remain pending actual visual
+and interactive verification. No denied artifact-download route was retried.
+
 ## Saved summary job diagnostics — 15 October 2026
 
 This separate follow-up starts from PR #50's tested tree, later merged as
