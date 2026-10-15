@@ -1,5 +1,43 @@
 # Verification — 15 October 2026
 
+## PR #58 macOS review fixture completion — 15 October 2026
+
+Focused run `38760958694`, job `116511781887`, reported success for head
+`baebe119`. Its actual checkout was synthetic merge `ee446c4` with prior PR52
+identity base `6cc684d`; canonical main was `692bb8d`. The tested source tree
+matched the frozen head. SDK compilation and the three positive/five negative
+legacy dispatch controls passed, along with the inherited lifecycle, selector,
+snapshot, owner and mounting controls. The full log SHA-256 is
+`467ff68fad3104b18a223b7dbfd707fe311b4d59dc5c1c296b6adbd7a17ccd0d`.
+
+The production log stops after mounting controls, about 0.124 seconds before job
+cleanup. It contains no Reader, Today, composer or final workspace completion
+receipt and no assertion error. The baseline process printed its own final
+workspace line earlier. The driver accepted only a zero process exit status,
+so that workflow success does **not** establish completion of the native suite.
+The cause of the missing native completion remains unproved.
+
+Each driver launch now supplies a fresh, noncredential nonce and requires
+exactly one matching baseline/production final receipt. The fixture emits it
+only after all assertions and the existing final workspace line. Production
+also requires a completion receipt for each of the four real Reader menus
+before its final receipt. Those menu receipts follow the existing actual
+tracking begin/end, current-owner and command-inspection gates. Fixed, flushed
+before/after-action and begin/end observations help locate a future incomplete
+execution. The action, ownership rules, assertions and five-second menu limit
+remain unchanged. Production clears any inherited baseline override.
+
+The driver forwards complete combined native stdout/stderr on success, failure
+and timeout before rejecting missing/mismatched receipts or a nonzero exit.
+The compiler's 180-second and native process's 45-second limits remain. Its
+explicit `--completion-receipt-controls` mode uses real Python subprocesses;
+two complete cases and ten missing/wrong/duplicate/truncated/early/incomplete,
+nonzero and timeout cases passed on Linux, retaining their child output. These
+controls establish only the driver contract. This candidate has not compiled
+or run with AppKit locally and requires fresh matching-source macOS CI. The
+original modern-Bool failure and the incomplete baebe119 log remain evidence;
+no native event-loop cause or runtime repair is claimed.
+
 ## PR #58 macOS initial-page diagnostic — 15 October 2026
 
 Measurement run `38756565340`, macOS job `116496439274`, compiled exact source

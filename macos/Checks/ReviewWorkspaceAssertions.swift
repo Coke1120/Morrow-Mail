@@ -524,6 +524,7 @@ import SwiftUI
                 MainActor.assumeIsolated {
                     guard tracking.armed, let menu = notification.object as? NSMenu, menu.supermenu == nil else { return }
                     tracking.begins += 1
+                    print("Menu tracking begin: \(identifier) count=\(tracking.begins)"); fflush(stdout)
                     guard tracking.menu == nil else {
                         tracking.failure = APIError("A menu action opened more than one root menu")
                         menu.cancelTracking(); return
@@ -552,6 +553,7 @@ import SwiftUI
                 MainActor.assumeIsolated {
                     guard tracking.armed, let menu = notification.object as? NSMenu, menu === tracking.menu else { return }
                     tracking.ended = true
+                    print("Menu tracking end: \(identifier) begins=\(tracking.begins)"); fflush(stdout)
                 }
             })
             let remaining = deadline.timeIntervalSinceNow
@@ -574,11 +576,14 @@ import SwiftUI
             // AXPress is allowed only on the proven secondary/named menu node,
             // when that exact node advertises it. Never press the Reply primary
             // button and never try a second action after a failed first action.
+            print("Menu action start: " + identifier); fflush(stdout)
             try performAdvertisedMenuAction(control)
+            print("Menu action returned: " + identifier); fflush(stdout)
             while !tracking.ended, Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
             try require(Date() < deadline && tracking.begins == 1 && tracking.ended, "The native menu did not open and close within five seconds")
             if let failure = tracking.failure { throw failure }
             try require(tracking.inspected, "The menu closed before its native commands were inspected")
+            print("Menu tracking complete: \(identifier) begins=\(tracking.begins) ended=\(tracking.ended) inspected=\(tracking.inspected)"); fflush(stdout)
         } catch {
             print(menuDiagnostics(identifier, in: root))
             print("Menu tracking: begins=\(tracking.begins) ended=\(tracking.ended) entries=\(tracking.entries)")
@@ -857,8 +862,10 @@ import SwiftUI
         let config=URLSessionConfiguration.ephemeral; config.protocolClasses=[ReviewProtocol.self]
         let model=AppModel(session:URLSession(configuration:config))
         model.starting=false; model.state=ReviewFixture.state(owner:ReviewFixture.owners[0]); model.section="today"
+        let completionNonce = ProcessInfo.processInfo.environment["MORROW_REVIEW_COMPLETION_NONCE"] ?? ""
         defer { model.session.invalidateAndCancel() }
         do {
+            try require(!completionNonce.isEmpty, "Missing review fixture completion nonce")
             let review=model.review, first=ReviewFixture.owners[0], second=ReviewFixture.owners[1]
             await review.load("all",model:model)
             try require(review.queue(model).count==6,"All must aggregate fictional account-owned rows")
@@ -936,6 +943,8 @@ import SwiftUI
                 try await mountedCompose(session: model.session)
             }
             print("Review workspace: combined owner-bound reads, duplicate IDs, A/B/A draft/selection/scroll retention, inline original owner, load failure, dirty-budget retention, foreign-draft rejection/retry, unanswered-decision blocking, stale proposal approval reset, owned Save and explicit sending review passed. Fictional transport only; VoiceOver and Windows are not established.")
+            let completionMode = ProcessInfo.processInfo.environment["MORROW_REVIEW_BASELINE"] == "1" ? "baseline" : "production"
+            print("MORROW_REVIEW_COMPLETE \(completionMode) \(completionNonce)"); fflush(stdout)
         } catch { print(error.localizedDescription); exit(1) }
     }
 }
