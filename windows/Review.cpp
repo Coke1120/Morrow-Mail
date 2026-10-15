@@ -577,22 +577,147 @@ IAsyncAction staleReplyFlyoutChecks(P p,Json first,Json next) {
     // The matching, newly mounted menu must still reach the original handler.
     // These fictional proposal IDs have no stored suggestion; its local GET
     // must finish with the retained draft intact, without preparing or sending.
+    // More diagnostics: fixed observations only; the original callbacks,
+    // invocation, wait, assertion and deadline positions remain below.
+    struct MoreSnapshot {
+        bool captured=false,readFailed=false,current=false,live=false,closing=false,memoryMatches=false,ownerMatches=false;
+        bool shellGenerationMatches=false,shellSectionMatches=false,reviewScopeMatches=false;
+        bool moreMatches=false,moreLoaded=false,moreSized=false,moreEnabled=false,moreRootMatches=false;
+        bool itemLoaded=false,itemSized=false,itemEnabled=false,itemRootMatches=false;
+        bool generationMatches=false,selectionMatches=false,scopeMatches=false,selectedMatches=false,connected=false,kindReply=false,detailsOpen=false;
+        bool entryExists=false,entryOwnerMatches=false,entryKeyMatches=false,entryProposalMatches=false,draftExists=false,draftMatches=false;
+        bool busy=false,writing=false,navEnabled=false,menuOpen=false,noticeExpected=false;
+    };
+    struct MoreProbe {
+        struct Event {unsigned kind=0,phase=0;uint64_t tick=0;bool writing=false,navEnabled=false;};
+        MoreSnapshot beforeInvoke,atClick,final;
+        Event events[8];unsigned eventCount=0,phase=0,clicks=0,opens=0,closes=0,falseNotifications=0,trueNotifications=0,disableEdges=0,enableEdges=0;
+        unsigned disabledBeforeInvoke=0;
+        uint64_t origin=GetTickCount64(),invokeStart=0,waitStart=0,finalTick=0;
+        bool overflow=false,traceOverflow=false,readFailed=false,previousEnabled=true;
+        bool clickSenderExact=true,openSenderExact=true,closeSenderExact=true,navSenderExact=true;
+    };
+    auto probe=std::make_shared<MoreProbe>();probe->previousEnabled=nav.IsEnabled();
+    auto increment=[probe](unsigned& value) noexcept {if(value<2)++value;else probe->overflow=true;};
+    auto record=[probe](unsigned kind,bool writing,bool enabled) noexcept {
+        if(probe->eventCount<8)probe->events[probe->eventCount++]={kind,probe->phase,GetTickCount64(),writing,enabled};
+        else probe->traceOverflow=true;
+    };
+    auto probeToken=nav.RegisterPropertyChangedCallback(Control::IsEnabledProperty(),[p,nav,probe,increment,record](auto const& sender,auto const&) noexcept {
+        try {
+            auto control=sender.template as<Control>();auto enabled=control.IsEnabled();
+            probe->navSenderExact&=sender.template try_as<NavigationView>()==nav;
+            if(enabled){increment(probe->trueNotifications);if(!probe->previousEnabled)increment(probe->enableEdges);}
+            else {increment(probe->falseNotifications);if(probe->previousEnabled)increment(probe->disableEdges);}
+            probe->previousEnabled=enabled;record(enabled?2u:1u,p->shell->review->writing,enabled);
+        }catch(...){probe->readFailed=true;}
+    });
+    Unregister unregisterProbe{nav,probeToken};
+    auto expectedGeneration=p->generation,expectedSelection=p->selection;
+    auto expectedScope=p->scope,expectedOwner=ownerOf(next),expectedKey=keyOf(next),expectedProposal=next.Stringify();
+    auto expectedMemory=p->shell->review;auto expectedShellOwner=p->shell->owner;
+    // End More diagnostics setup.
     auto active=p->replyMore;auto activeMenu=active.Flyout().as<MenuFlyout>();
     auto activeOpened=std::make_shared<bool>(false),activeClosed=std::make_shared<bool>(false);
     auto activeOpenEvent=activeMenu.Opened(auto_revoke,[activeOpened](auto const&,auto const&){*activeOpened=true;});
     auto activeCloseEvent=activeMenu.Closed(auto_revoke,[activeClosed](auto const&,auto const&){*activeClosed=true;});
+    // More diagnostics: passive event receipts; no command is called here.
+    auto openProbe=activeMenu.Opened(auto_revoke,[p,nav,activeMenu,probe,increment,record](auto const& sender,auto const&) noexcept {
+        try {increment(probe->opens);probe->openSenderExact&=sender.template try_as<MenuFlyout>()==activeMenu;record(3,p->shell->review->writing,nav.IsEnabled());}
+        catch(...){probe->readFailed=true;}
+    });
+    auto closeProbe=activeMenu.Closed(auto_revoke,[p,nav,activeMenu,probe,increment,record](auto const& sender,auto const&) noexcept {
+        try {increment(probe->closes);probe->closeSenderExact&=sender.template try_as<MenuFlyout>()==activeMenu;record(4,p->shell->review->writing,nav.IsEnabled());}
+        catch(...){probe->readFailed=true;}
+    });
+    // End More diagnostics menu observers.
     deadline=GetTickCount64()+5000;active.StartBringIntoView();p->shell->root.UpdateLayout();
     while((!active.IsLoaded() || !active.ActualWidth()) && GetTickCount64()<deadline){co_await resume_after(std::chrono::milliseconds(10));co_await ui;p->shell->root.UpdateLayout();}
     require(active.IsLoaded() && active.ActualWidth() && active.Focus(FocusState::Keyboard),L"The replacement reply More control did not mount.");
     activeMenu.ShowAt(active);while(!*activeOpened && GetTickCount64()<deadline){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
     require(*activeOpened && activeMenu.IsOpen(),L"The replacement reply flyout did not open.");
     auto activeItem=activeMenu.Items().GetAt(0).as<MenuFlyoutItem>();
+    // More diagnostics: a projection of guard inputs, not a call to replyContext.
+    auto snapshot=[p,nav,active,activeMenu,activeItem,probe,expectedGeneration,expectedSelection,expectedScope,expectedOwner,expectedKey,expectedProposal,expectedMemory,expectedShellOwner,nextDraft]() noexcept {
+        MoreSnapshot value;
+        try {
+            auto memory=p->shell->review;auto entry=memory->entries.find(std::wstring(expectedKey));
+            auto kind=memory->detailKinds.find(std::wstring(expectedScope));auto detail=memory->details.find(std::wstring(expectedScope));
+            value.current=p->current();value.live=p->live;value.closing=p->shell->closing;value.memoryMatches=memory==expectedMemory;value.ownerMatches=p->shell->owner==expectedShellOwner;
+            value.shellGenerationMatches=p->shell->generation==p->generation;value.shellSectionMatches=p->shell->section==p->kind;value.reviewScopeMatches=memory->scope==p->scope;
+            value.moreMatches=p->replyMore==active;value.moreLoaded=active.IsLoaded();value.moreSized=active.ActualWidth()>0 && active.ActualHeight()>0;
+            value.moreEnabled=active.IsEnabled();value.moreRootMatches=active.XamlRoot()==p->shell->root.XamlRoot();
+            value.itemLoaded=activeItem.IsLoaded();value.itemSized=activeItem.ActualWidth()>0 && activeItem.ActualHeight()>0;
+            value.itemEnabled=activeItem.IsEnabled();value.itemRootMatches=activeItem.XamlRoot()==p->shell->root.XamlRoot();
+            value.generationMatches=p->generation==expectedGeneration;value.selectionMatches=p->selection==expectedSelection;value.scopeMatches=p->scope==expectedScope;
+            value.selectedMatches=p->selectedKey==expectedKey;value.connected=p->shell->connected(expectedOwner);
+            value.kindReply=kind!=memory->detailKinds.end() && kind->second==L"reply";value.detailsOpen=detail!=memory->details.end() && detail->second;
+            value.entryExists=entry!=memory->entries.end();
+            if(value.entryExists){auto const& current=entry->second;value.entryOwnerMatches=ownerOf(current.proposal)==expectedOwner;value.entryKeyMatches=keyOf(current.proposal)==expectedKey;
+                value.entryProposalMatches=current.proposal.Stringify()==expectedProposal;value.draftExists=current.draft.Size()>0;value.draftMatches=current.draft.Stringify()==nextDraft;}
+            value.busy=p->busy;value.writing=memory->writing;value.navEnabled=nav.IsEnabled();value.menuOpen=activeMenu.IsOpen();
+            value.noticeExpected=p->notice && p->notice.Text()==L"No current reply is suggested for this conversation. Your edits can still be saved.";value.captured=true;
+        }catch(...){value.readFailed=true;probe->readFailed=true;}
+        return value;
+    };
+    auto activeClickProbe=activeItem.Click(auto_revoke,[probe,increment,record,snapshot,activeItem](auto const& sender,auto const&) noexcept {
+        try {
+            auto current=snapshot();if(!probe->clicks)probe->atClick=current;increment(probe->clicks);
+            probe->clickSenderExact&=sender.template try_as<MenuFlyoutItem>()==activeItem;
+            record(5,current.writing,current.navEnabled);
+        }catch(...){probe->readFailed=true;}
+    });
+    probe->beforeInvoke=snapshot();probe->disabledBeforeInvoke=*disabled;probe->invokeStart=GetTickCount64();probe->phase=1;
+    // End More diagnostics pre-Invoke receipt.
     xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(activeItem).GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).as<xaml::Automation::Provider::IInvokeProvider>().Invoke();
     deadline=GetTickCount64()+5000;
+    // More diagnostics: observe the original post-Invoke deadline without resetting it.
+    probe->waitStart=deadline-5000;probe->phase=2;
+    // End More diagnostics wait marker.
     while((!*disabled || !*activeClosed || p->shell->review->writing) && GetTickCount64()<deadline){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+    // More diagnostics: the original assertion is preserved inside this wrapper.
+    probe->finalTick=GetTickCount64();probe->final=snapshot();
+    try {
     require(*disabled==1 && *activeClosed && !activeMenu.IsOpen() && !p->shell->review->writing && p->shell->navigation.IsEnabled()
         && p->selectedKey==keyOf(next) && p->shell->review->entries.at(std::wstring(keyOf(next))).draft.Stringify()==nextDraft,
         L"The current reply More action was blocked or did not retain the fictional draft after its local lookup.");
+    }catch(...) {
+        auto resultCode=hresult{E_FAIL};hstring message=L"The current reply More assertion could not be evaluated.";bool evaluationFailed=false;
+        try {throw;}catch(hresult_error const& error){resultCode=error.code();message=error.message();}catch(...){evaluationFailed=true;}
+        auto encode=[](MoreSnapshot const& value) {
+            Json json;
+            for(auto const& [name,flag]:{std::pair{L"captured",value.captured},{L"readFailed",value.readFailed},{L"current",value.current},{L"live",value.live},{L"closing",value.closing},
+                {L"memoryMatches",value.memoryMatches},{L"ownerMatches",value.ownerMatches},{L"shellGenerationMatches",value.shellGenerationMatches},{L"shellSectionMatches",value.shellSectionMatches},{L"reviewScopeMatches",value.reviewScopeMatches},
+                {L"moreMatches",value.moreMatches},{L"moreLoaded",value.moreLoaded},{L"moreSized",value.moreSized},{L"moreEnabled",value.moreEnabled},{L"moreRootMatches",value.moreRootMatches},
+                {L"itemLoaded",value.itemLoaded},{L"itemSized",value.itemSized},{L"itemEnabled",value.itemEnabled},{L"itemRootMatches",value.itemRootMatches},
+                {L"generationMatches",value.generationMatches},{L"selectionMatches",value.selectionMatches},{L"scopeMatches",value.scopeMatches},{L"selectedMatches",value.selectedMatches},{L"connected",value.connected},
+                {L"kindReply",value.kindReply},{L"detailsOpen",value.detailsOpen},{L"entryExists",value.entryExists},{L"entryOwnerMatches",value.entryOwnerMatches},{L"entryKeyMatches",value.entryKeyMatches},
+                {L"entryProposalMatches",value.entryProposalMatches},{L"draftExists",value.draftExists},{L"draftMatches",value.draftMatches},{L"busy",value.busy},{L"writing",value.writing},
+                {L"navEnabled",value.navEnabled},{L"menuOpen",value.menuOpen},{L"noticeExpected",value.noticeExpected}})json.Insert(name,Value::CreateBooleanValue(flag));
+            return json;
+        };
+        Json receipt;receipt.Insert(L"beforeInvoke",encode(probe->beforeInvoke));receipt.Insert(L"atFirstClick",encode(probe->atClick));receipt.Insert(L"final",encode(probe->final));
+        for(auto const& [name,value]:{std::pair{L"staleClicks",*invoked},{L"disabled",*disabled},{L"disabledBeforeInvoke",probe->disabledBeforeInvoke},
+            {L"activeClicks",probe->clicks},{L"openedEvents",probe->opens},{L"closedEvents",probe->closes},{L"falseNotifications",probe->falseNotifications},
+            {L"trueNotifications",probe->trueNotifications},{L"disableEdges",probe->disableEdges},{L"enableEdges",probe->enableEdges}})receipt.Insert(name,Value::CreateNumberValue(value));
+        for(auto const& [name,flag]:{std::pair{L"combinedScope",expectedScope==L"all"},{L"proposalOwnersSame",ownerOf(first)==expectedOwner},{L"activeOpened",*activeOpened},{L"activeClosed",*activeClosed},
+            {L"disabledExactlyOne",*disabled==1},{L"menuClosed",!probe->final.menuOpen},{L"notWriting",!probe->final.writing},{L"navEnabled",probe->final.navEnabled},
+            {L"selectedMatches",probe->final.selectedMatches},{L"draftMatches",probe->final.draftMatches},{L"observationReadFailed",probe->readFailed},{L"counterOverflow",probe->overflow},{L"traceOverflow",probe->traceOverflow},
+            {L"clickSenderExact",probe->clickSenderExact},{L"openSenderExact",probe->openSenderExact},{L"closeSenderExact",probe->closeSenderExact},{L"navSenderExact",probe->navSenderExact},
+            {L"deadlineExpired",probe->finalTick>=deadline},{L"assertionEvaluationFailed",evaluationFailed},{L"invokeToWaitSaturated",probe->waitStart-probe->invokeStart>5001},
+            {L"noticeBecameExpected",probe->beforeInvoke.captured && probe->final.captured && !probe->beforeInvoke.noticeExpected && probe->final.noticeExpected}})
+            receipt.Insert(name,Value::CreateBooleanValue(flag));
+        JsonArray trace;
+        for(unsigned i=0;i<probe->eventCount;++i){auto const& event=probe->events[i];auto elapsed=event.tick-probe->origin;Json value;
+            value.Insert(L"kind",Value::CreateNumberValue(event.kind));value.Insert(L"phase",Value::CreateNumberValue(event.phase));
+            value.Insert(L"elapsedMs",Value::CreateNumberValue(static_cast<double>(std::min<uint64_t>(elapsed,10001))));value.Insert(L"elapsedSaturated",Value::CreateBooleanValue(elapsed>10001));
+            value.Insert(L"beforeDeadline",Value::CreateBooleanValue(event.tick<deadline));value.Insert(L"writing",Value::CreateBooleanValue(event.writing));value.Insert(L"navEnabled",Value::CreateBooleanValue(event.navEnabled));trace.Append(value);}
+        receipt.Insert(L"events",trace);
+        receipt.Insert(L"invokeToWaitMs",Value::CreateNumberValue(static_cast<double>(std::min<uint64_t>(probe->waitStart-probe->invokeStart,5001))));
+        receipt.Insert(L"waitElapsedMs",Value::CreateNumberValue(static_cast<double>(std::min<uint64_t>(probe->finalTick-probe->waitStart,5001))));
+        throw hresult_error(resultCode,message+L" "+receipt.Stringify());
+    }
+    // End More diagnostics failure wrapper.
 }
 }
 

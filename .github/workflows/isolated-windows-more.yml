@@ -1,0 +1,75 @@
+name: Isolated Windows More diagnostics
+on:
+  push:
+    branches: ['test/windows-more-diagnostics-20261015']
+permissions:
+  contents: read
+jobs:
+  windows-more:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - name: Preserve repository source bytes
+        shell: pwsh
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Record exact diagnostic source
+        shell: pwsh
+        run: |
+          @'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          names = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')[:-1]
+          files = {name: hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in names}
+          receipt = dict(head=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              tree=subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip(),
+              files=len(files), digest=hashlib.sha256(json.dumps(files, sort_keys=True, separators=(',', ':')).encode()).hexdigest())
+          Path(os.environ['RUNNER_TEMP'], 'morrow-more-source.json').write_text(json.dumps(receipt))
+          print('MORROW_WINDOWS_MORE_SOURCE ' + json.dumps(receipt, sort_keys=True))
+          '@ | python -X utf8 -B -
+          if ($LASTEXITCODE -ne 0) { throw 'Exact diagnostic source could not be recorded.' }
+      - name: Restore existing compiler cache
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: native-rust-${{ runner.os }}-${{ runner.arch }}-1.98.0-${{ hashFiles('rust/Cargo.lock', 'rust/Cargo.toml') }}
+      - name: Lock native Rust toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.98.0 --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned Rust toolchain install failed.' }
+          rustup default 1.98.0
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned Rust toolchain selection failed.' }
+          $env:PATH = (($env:PATH -split ';') | Where-Object {
+            $_ -and -not (Test-Path -LiteralPath (Join-Path $_ 'node.exe')) -and -not (Test-Path -LiteralPath (Join-Path $_ 'npm.cmd'))
+          }) -join ';'
+          if (Get-Command node,npm -ErrorAction SilentlyContinue) { throw 'Node/npm must not be available to native checks.' }
+          "PATH=$env:PATH" >> $env:GITHUB_ENV
+      - name: Build exact WinUI SDK fixture candidate
+        shell: pwsh
+        run: ./scripts/build-windows-native.ps1 -Zip
+      - name: Run fictional native walkthrough and bounded More observations
+        shell: pwsh
+        run: ./scripts/test-windows-native.ps1 -UiSmoke
+      - name: Verify unchanged diagnostic source
+        if: always()
+        shell: pwsh
+        run: |
+          @'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          before = json.loads(Path(os.environ['RUNNER_TEMP'], 'morrow-more-source.json').read_text())
+          names = subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0')[:-1]
+          files = {name: hashlib.sha256(Path(name).read_bytes()).hexdigest() for name in names}
+          after = dict(head=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              tree=subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip(),
+              files=len(files), digest=hashlib.sha256(json.dumps(files, sort_keys=True, separators=(',', ':')).encode()).hexdigest())
+          print('MORROW_WINDOWS_MORE_SOURCE_AFTER ' + json.dumps(dict(source=after, unchanged=before == after, productionAcceptance=False), sort_keys=True))
+          if before != after:
+              raise SystemExit('Diagnostic tracked source changed.')
+          '@ | python -X utf8 -B -
+          if ($LASTEXITCODE -ne 0) { throw 'Exact diagnostic source changed or could not be verified.' }
