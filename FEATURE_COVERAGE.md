@@ -1,5 +1,9 @@
 # Morrow Mail feature coverage
 
+The 0.8.3 source combines the current-source changes described below; the
+[release notes](docs/releases/v0.8.3.md) explain the schema migration, coverage
+and distribution limits. Publication still requires both tagged native jobs.
+
 **Current source — contextual actions:** secondary reader and row-management
 commands use named native menus, selection commands follow the current mail
 selection, and Today hosts the existing owned reply editor. Empty Cc/Bcc fields
