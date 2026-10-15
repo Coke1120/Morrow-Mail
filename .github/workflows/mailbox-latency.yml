@@ -1,0 +1,70 @@
+name: Controlled native mailbox latency evidence
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/mailbox-latency.yml'
+      - 'windows/Checks/MailboxLatency.cpp'
+      - 'scripts/windows-mailbox-latency.py'
+      - 'scripts/test-windows-mailbox-latency.py'
+      - 'scripts/mailbox-acceptance.py'
+      - 'scripts/test-mailbox-acceptance.py'
+      - 'macos/Checks/MailboxLatency.swift'
+permissions:
+  contents: read
+concurrency:
+  group: mailbox-latency-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  winui-measurement:
+    name: WinUI event/layout evidence validity
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Check synthetic adapter and evidence contracts
+        shell: pwsh
+        run: |
+          python -B scripts/test-mailbox-acceptance.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -B scripts/test-windows-mailbox-latency.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build private fixture and measure actual WinUI actions
+        shell: pwsh
+        run: python -B scripts/windows-mailbox-latency.py --output "$env:RUNNER_TEMP/mailbox-latency-windows"
+      - name: Retain evidence, adapters and measured binary identity
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mailbox-latency-windows
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/mailbox-latency-windows/*.json
+            ${{ runner.temp }}/mailbox-latency-windows/*.log
+            ${{ runner.temp }}/mailbox-latency-windows/*.exe
+            ${{ runner.temp }}/mailbox-latency-windows/*.dll
+            ${{ runner.temp }}/mailbox-latency-windows/compiler-inputs/windows/*.cpp
+            ${{ runner.temp }}/mailbox-latency-windows/compiler-inputs/windows/*.h
+  appkit-measurement:
+    name: AppKit event/layout evidence validity
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Check synthetic evidence contracts
+        run: python3 -B scripts/test-mailbox-acceptance.py
+      - name: Build private fixture and measure actual AppKit actions
+        run: python3 -B scripts/mailbox-acceptance.py run-native-macos --output "$RUNNER_TEMP/mailbox-latency-macos"
+      - name: Retain evidence, adapter and measured binary identity
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mailbox-latency-macos
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/mailbox-latency-macos/*.json
+            ${{ runner.temp }}/mailbox-latency-macos/*.log
+            ${{ runner.temp }}/mailbox-latency-macos/mailbox-native-latency
+            ${{ runner.temp }}/mailbox-latency-macos/compiler-inputs/AppModel.swift

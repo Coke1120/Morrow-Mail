@@ -6,6 +6,12 @@ historical Node upgrade CI is retired. Native updater/security checks remain
 required. Clean-machine/manual acceptance limits
 are recorded in VERIFICATION.md. These local build commands do not publish a release.
 
+The opt-in [controlled mailbox latency fixture](../docs/WINDOWS_MAILBOX_LATENCY.md)
+uses production WinUI controls with isolated fictional transport at 1k/10k/50k.
+It records control-event-to-mounted-layout timing separately from service HTTP
+or compositor latency. Its new platform compilation/execution remains pending
+at the local implementation checkpoint; it does not replace native release gates.
+
 ## Pinned build inputs
 
 Verified against Microsoft documentation, NuGet metadata and the hosted-runner

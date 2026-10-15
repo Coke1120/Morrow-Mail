@@ -49,11 +49,13 @@ Synthetic coverage does not establish live-account acceptance.
 **Current source — controlled mailbox acceptance tools:** opt-in TLS runs start
 an empty target mailbox and actually download 1k/10k/50k messages, then check a
 120-message arrival burst, flags, restart/checkpoints and reconnect isolation.
-The existing service resource benchmark remains separate from a new macOS
-production-view button/selection-to-layout fixture. Strict aggregation rejects
+The existing service resource benchmark remains separate from the macOS and
+Windows production-view button/selection-to-layout fixtures. Strict aggregation rejects
 seeded-download claims, changed/mixed source, missing data and HTTP-as-UI evidence;
-missing platforms or explicit performance targets remain incomplete. The Windows
-entry is a separate unmerged unit; no Windows measurements are included here.
+missing platforms or explicit performance targets remain incomplete. Both native
+entries are present in this candidate, but platform compilation and measurements
+remain pending. The opt-in PR workflow validates measurement evidence and does
+not replace normal native security checks or claim full performance acceptance.
 [Run scope and limits](docs/MAILBOX_ACCEPTANCE.md).
 
 **0.8.2 source — hybrid navigation shell:** macOS and Windows share a Mail | Agent | Brain primary chrome. Cold start remains the Mail three-pane. Agent opens the existing Inbox Agent, Today, and Skills pages. Brain opens the existing persona and writing-rules page, plus categories. AI Studio is an advanced footer and Settings entry. Its More menu keeps one-release “Moved to Agent” and “Moved to Brain” hints for the pages that moved; Local Inbox Rules, local simulations, and simulation history stay there. Review-before-send, account routing, and provider writes are unchanged. Publication still requires the complete paired tagged checks.

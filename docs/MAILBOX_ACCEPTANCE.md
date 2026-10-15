@@ -9,7 +9,8 @@ No fixture sends mail or calls a model.
 | --- | --- | --- |
 | Protocol | Generated trusted TLS, production IMAP fetch/import/reconciliation, an initially empty target mailbox, and actual 1k/10k/50k downloads | Live-server behavior, background polling cadence/backoff, attachments or a complete provider mirror |
 | Service | Existing `morrow-benchmark`: Rust-seeded 1k/10k/50k stores, service HTTP correctness, sampled service RSS and 30-second idle CPU on macOS/Windows | Download completeness, native UI latency, whole-app memory or a guaranteed peak |
-| Native | New opt-in macOS executable hosts the production SwiftUI mail view, uses real pagination buttons and table mouse events, and observes layout/display with 50-row pages | Real service/SQLite/WAN cost, compositor presentation, HTML-reader performance, accessibility automation or Windows latency |
+| Native macOS | Opt-in executable hosts the production SwiftUI mail view, uses real pagination buttons and table mouse events, and observes layout/display with 50-row pages | Real service/SQLite/WAN cost, compositor presentation, HTML-reader performance or screen-reader acceptance |
+| Native Windows | Opt-in executable hosts the production WinUI list/reader/search, invokes real control automation providers and verifies the resulting events and mounted owned content | Real service/SQLite/WAN cost, compositor presentation, HTML-reader performance or full accessibility acceptance |
 
 The protocol test verifies every UID and its unique 1 KiB body, recomputes a
 dataset digest, and retains the real importer checkpoint across an interrupted
@@ -30,7 +31,7 @@ explicit read-back check, to avoid artificial delayed ACKs between segmented
 loopback writes. Production transport and existing fixture defaults stay
 unchanged. Timings do not establish a WAN or historical-product speedup.
 
-The native fixture constructs the stated number of fictional metadata records
+The macOS native fixture constructs the stated number of fictional metadata records
 before returning bounded pages. All URLSession requests are intercepted and
 unexpected origins, methods, owners and routes fail the fixture. No real service
 is launched. The runner reuses the existing mail-flow fixture seam: among private
@@ -46,6 +47,14 @@ The endpoint is observed layout/display, not compositor presentation or proof
 against other-window occlusion. This is a smoke measurement, not a statistically
 established latency distribution. Native oracle controls require a real macOS
 build/run; passing Python evidence tests does not substitute for that execution.
+
+The [Windows fixture](WINDOWS_MAILBOX_LATENCY.md) constructs the same metadata
+sizes and uses a private copy of the existing native builder. Its service seam
+rejects startup and intercepts both production request entry points; only fixed
+fictional read requests are accepted. Actual Click/SelectionChanged events and
+visible owned rows/reader content are required. It also measures Search separately.
+The runner re-enumerates every private compiler input root before and after
+build/run, including added or removed files admitted by the project wildcard.
 
 ## Run stages
 
@@ -82,15 +91,25 @@ python3 -B scripts/mailbox-acceptance.py run-native-macos \
 That command explicitly compiles and runs the opt-in fixture. A missing window,
 changed pagination structure, incorrect selection or unexpected request stops
 measurement. Normal builds and reader-network/security gates are unchanged.
-There is currently no Windows counterpart for this event-to-layout measurement;
-the existing Windows walkthrough/resource observer must not be relabeled as one.
+On an interactive Windows desktop with the pinned native build prerequisites:
+
+```powershell
+python -B scripts/test-windows-mailbox-latency.py
+python -B scripts/windows-mailbox-latency.py --output C:/QA/new-native-evidence
+```
+
+The separate [native latency workflow](../.github/workflows/mailbox-latency.yml)
+can compile and run both entries on an unmerged PR through its narrow paths
+trigger, or be dispatched explicitly. Its green result concerns measurement
+validity, not caller-approved performance acceptance. The existing Windows
+walkthrough/resource observer remains separate evidence.
 
 ## Aggregate without hiding missing work
 
 ```sh
 python3 -B scripts/mailbox-acceptance.py aggregate \
   --evidence /absolute/protocol /absolute/mac-service /absolute/win-service \
-             /absolute/mac-native \
+             /absolute/mac-native /absolute/win-native \
   --limits /absolute/reviewed-limits.json --output /absolute/new-acceptance.json
 ```
 
@@ -107,8 +126,9 @@ explicit caller-approved limit policy. Missing evidence or limits returns
 **`incomplete`, exit 2**. Failed checks, changed bytes, mixed source, invalid
 numbers, wrong dataset digests, seeded downloads, or exceeded limits return
 **`failed`, exit 1**. Only a complete matching set within limits returns exit 0.
-Because the Windows latency stage is not implemented, a current full aggregate
-must remain incomplete even after the available stages succeed.
+Implementing both native entries does not supply their platform measurements.
+The combined candidate still needs the matching-source protocol/resource/native
+runs and reviewed limits before a full aggregate can pass.
 
 The limits file has `schema: 1` and `platforms.macos` / `platforms.windows`.
 Each platform contains `"1000"`, `"10000"` and `"50000"` objects with positive

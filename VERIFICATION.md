@@ -200,9 +200,10 @@ wrong UID/body digests, source/artifact changes, HTTP-as-UI samples, missing nat
 platforms and absent/exceeded caller limits. The macOS entry compiles a standalone
 fixture using the production mail view and existing isolated transport seam.
 It observes real pagination buttons/table events through mounted layout/display,
-not compositor presentation or real service latency. The Windows event-to-layout
-entry is a separate unmerged unit; no Windows measurement evidence is included
-here. See [commands and exact scope](docs/MAILBOX_ACCEPTANCE.md).
+not compositor presentation or real service latency. The combined candidate also
+contains the Windows event-to-layout entry and an isolated, read-only PR workflow
+for both platforms; no native measurement evidence is included here.
+See [commands and exact scope](docs/MAILBOX_ACCEPTANCE.md).
 
 The initial checkpoint passed nine Python controls with Rust/native execution
 still pending. Subsequent Linux validation on identity head `01c1f0a` passed the
@@ -225,6 +226,11 @@ That Rust correction and the final stacked 1k/10k/50k matrix are not yet rerun.
 Independent review also corrected the Mac selected-row/reader visibility oracle
 and compiler-input/adapter provenance. The applied Python controls pass 13/13;
 the new AppKit controls and production fixture remain uncompiled/unexecuted here.
+After stacking on harness commit `ae02ed0`, the combined source passed the same
+13 Python controls plus all seven Windows adapter/evidence controls. Enumerating
+the actual private compiler inputs succeeded for both platforms, including
+the newer Windows reader diagnostic headers. Those are Python/source checks,
+not Swift/WinUI compilation, control-event measurements or a new protocol run.
 Older-source protocol results cannot be combined with newer native source as a
 complete aggregate. Existing native reader/network/security gates and historical
 failures remain unchanged. Both platforms and reviewed performance targets are
