@@ -434,6 +434,7 @@ IAsyncAction Shell::start() {
                     return;
                 }
                 if (target == L"manage-folders") self->manageFolders(account);
+                else if (target == L"folder-sync") self->manageFolderSync(account);
                 else self->navigate(target, account, folder);
             }
         });
@@ -547,6 +548,10 @@ void Shell::rebuildNavigation() {
     auto folderActions = [&](NavigationViewItem const& item, hstring account, hstring id = {}) {
         MenuFlyout menu; MenuFlyoutItem manage; manage.Text(L"Manage labels / folders…");
         manage.Click([weak = weak_from_this(), account, id](auto const&, auto const&) { if (auto self = weak.lock()) self->manageFolders(account, id); }); menu.Items().Append(manage);
+        if (canReviewMoves(account)) {
+            MenuFlyoutItem recovery; recovery.Text(L"Review IMAP moves…");
+            recovery.Click([weak = weak_from_this(), account](auto const&, auto const&) { if (auto self = weak.lock()) self->reviewMoves(account); }); menu.Items().Append(recovery);
+        }
         if (!id.empty()) {
             MenuFlyoutItem move; move.Text(L"Move selected message here…");
             menu.Opening([weak = weak_from_this(), move, account](auto const&, auto const&) { if (auto self = weak.lock()) move.IsEnabled(!self->loading && !self->dialogOpen && self->dirty.empty() && text(self->selected,L"accountId") == account && !text(self->selected,L"id").empty() && !flag(self->selected,L"providerFolderMissing")); });
@@ -593,6 +598,10 @@ void Shell::rebuildNavigation() {
         auto detail = label(subtitle, 11); detail.IsTextSelectionEnabled(false);
         caption.Children().Append(name); caption.Children().Append(detail); item.Content(caption);
         Automation::AutomationProperties::SetName(item, title + L", " + subtitle);
+        if (canReviewMoves(id)) {
+            MenuFlyout menu; MenuFlyoutItem recovery; recovery.Text(L"Review IMAP moves…");
+            recovery.Click([weak = weak_from_this(), id](auto const&, auto const&) { if (auto self = weak.lock()) self->reviewMoves(id); }); menu.Items().Append(recovery); item.ContextFlyout(menu);
+        }
         auto collapseKey = L"morrow.account.collapsed." + id;
         item.IsExpanded((folderFilter && !folderFilter.Text().empty()) || text(desktopState, collapseKey.c_str()) != L"true");
         item.RegisterPropertyChangedCallback(NavigationViewItem::IsExpandedProperty(), [weak = weak_from_this(), collapseKey](DependencyObject const& sender, DependencyProperty const&) {
@@ -645,6 +654,9 @@ void Shell::rebuildNavigation() {
             }
             remote.MenuItems().Append(navItem(L"Refresh labels / folders", L"server-folders", id, L"inbox", L"\uE72C"));
             remote.MenuItems().Append(navItem(L"Manage labels / folders…", L"manage-folders", id, L"inbox", L"\uE70F"));
+            for (auto const& account : accounts) if (text(account,L"id")==id && (text(account,L"provider").empty() || text(account,L"provider")==L"imap")) {
+                auto selection=navItem(L"Folders to sync…",L"folder-sync",id,L"inbox",L"\uE895"); selection.SelectsOnInvoked(false); remote.MenuItems().Append(selection);
+            }
             item.MenuItems().Append(remote);
         }
         navigation.MenuItems().Append(item);
@@ -814,6 +826,8 @@ void Shell::mailPage() {
     auto accountCaption = label(owner == L"all" ? L"All accounts" : owner, 12); accountCaption.Opacity(0.7);
     titleText.Children().Append(accountCaption);
     listTitle.Children().Append(titleText);
+    heading.Children().Append(button(L"Downloads & storage…", [weak] {if(auto self=weak.lock()) self->downloadControls(self->owner);}));
+    auto localCoverage=label(L"Search downloaded content. Incomplete bodies may not match.",11); localCoverage.MaxLines(2); heading.Children().Append(localCoverage);
     if (std::wstring_view(folder).starts_with(L"provider:")) {
         auto coverage = label(L"Downloaded mail only. Sync or import history to add more messages.", 11); coverage.MaxLines(2); heading.Children().Append(coverage);
     }
@@ -1376,6 +1390,11 @@ void Shell::renderReader(Json const& message) {
     });
     auto moreButton = actionMenu(L"More", more, L"More actions for message: " + text(message, L"subject", L"(No subject)"));
     Automation::AutomationProperties::SetAutomationId(moreButton, L"reader.more"); replies.Children().Append(moreButton);
+    auto undo=object(message,L"localFolderUndo");
+    if(!text(undo,L"token").empty()) {
+        content.Children().Append(label(L"Moved locally; the provider location was not changed.",12));
+        content.Children().Append(button(L"Undo local move to "+text(undo,L"from"),[context,message,undo] {if(auto self=context()) {Json changes;put(changes,L"undoLocalMove",text(undo,L"token"));self->patch(message,changes);}}));
+    }
     auto summary = object(message, L"aiSummary");
     if (!text(summary, L"text").empty()) { Expander expanded; expanded.Header(box_value(L"Saved AI summary")); expanded.Content(label(text(summary, L"text"))); content.Children().Append(expanded); }
     appendReader(shared_from_this(), content, message);
@@ -1517,9 +1536,9 @@ IAsyncAction Shell::patchMessages(std::vector<Json> messages, Json changes) {
             ++completed;
             if (!current(version, captured)) break;
             if (text(selected, L"accountId") == account && text(selected, L"id") == id) {
-                if (changes.HasKey(L"folder")) { ++selectionGeneration; selected = Json(); retainedUnread = Json(); }
+                if (changes.HasKey(L"folder") || changes.HasKey(L"undoLocalMove")) { ++selectionGeneration; selected = Json(); retainedUnread = Json(); }
                 else selected = updated;
-                if (!changes.HasKey(L"folder")) retainReadRow(updated);
+                if (!changes.HasKey(L"folder") && !changes.HasKey(L"undoLocalMove")) retainReadRow(updated);
                 renderReader(selected);
             }
         }
@@ -1565,23 +1584,28 @@ IAsyncAction Shell::trashMessages(std::vector<Json> messages) {
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
     if (dialogOpen || navigationLocked || loading || closing || !dirty.empty() || service->writing() || messages.empty()
         || !std::all_of(messages.begin(), messages.end(), [&](auto const& row) { return canTrash(row); })) co_return;
-    navigationLocked = true; loading = true; auto batch = ++trashBatch; size_t completed = 0; hstring failure;
+    navigationLocked = true; loading = true; auto batch = ++trashBatch; size_t completed = 0; hstring failure, operationOwner, unresolved;
     try {
         for (auto const& message : messages) {
             auto account = text(message, L"accountId");
-            auto result = co_await service->request(L"/messages/" + escaped(text(message, L"id")) + L"/trash", account, L"POST", Json());
+            operationOwner = account;
+            auto response = co_await service->requestWithStatus(L"/messages/" + escaped(text(message, L"id")) + L"/trash", account, L"POST", Json());
+            auto status = static_cast<unsigned>(response.GetNamedNumber(L"status",0)); auto result = object(response,L"body");
+            if (status < 200 || status >= 300) throw ApiError(status,result);
             auto moved = object(result, L"message");
             if (text(moved, L"accountId") != account || text(moved, L"id") != text(message, L"id") || text(result, L"undoToken").empty()) throw hresult_error(E_FAIL, L"The Trash move could not be verified. Refresh your mailbox.");
             trashUndos.push_back({message, text(result, L"undoToken"), GetTickCount64() + 60000, batch}); ++completed;
             if (!current(version, captured)) break;
             if (text(selected, L"accountId") == account && text(selected, L"id") == text(message, L"id")) { selected = Json(); retainedUnread = Json(); renderReader(selected); }
         }
-    } catch (...) { failure = L"Moved " + to_hstring(completed) + L" of " + to_hstring(messages.size()) + L" messages. " + errorText(); }
+    } catch (ApiError const& error) { unresolved = unresolvedMoveOperation(error.body,operationOwner); failure = L"Moved " + to_hstring(completed) + L" of " + to_hstring(messages.size()) + L" messages. " + error.message(); }
+    catch (...) { failure = L"Moved " + to_hstring(completed) + L" of " + to_hstring(messages.size()) + L" messages. " + errorText(); }
     loading = false; navigationLocked = false; updateTrashUndo();
     if (current(version, captured)) {
         for (auto& cursor : cursors) cursor = L"";
         co_await loadPage();
         status.Text(failure.empty() ? L"Moved to provider Trash. Undo is available for one minute." : failure);
+        if (!unresolved.empty() && current(version,captured)) co_await reviewMoves(operationOwner,unresolved);
     }
 }
 IAsyncAction Shell::undoTrash() {
@@ -1590,17 +1614,23 @@ IAsyncAction Shell::undoTrash() {
     updateTrashUndo(); if (trashUndos.empty()) co_return;
     auto batch = trashUndos.back().batch; navigationLocked = true; loading = true; updateTrashUndo();
     auto version = generation; auto captured = owner;
+    hstring operationOwner, unresolved;
     try {
         while (!trashUndos.empty() && trashUndos.back().batch == batch) {
             auto entry = trashUndos.back(); trashUndos.pop_back();
             Json body; put(body, L"undoToken", entry.token);
-            co_await service->request(L"/messages/" + escaped(text(entry.message, L"id")) + L"/undo-trash", text(entry.message, L"accountId"), L"POST", body);
+            operationOwner = text(entry.message,L"accountId");
+            auto response = co_await service->requestWithStatus(L"/messages/" + escaped(text(entry.message, L"id")) + L"/undo-trash", operationOwner, L"POST", body);
+            auto status = static_cast<unsigned>(response.GetNamedNumber(L"status",0)); auto result = object(response,L"body");
+            if (status < 200 || status >= 300) throw ApiError(status,result);
         }
         loading = false; navigationLocked = false; updateTrashUndo();
         if (!current(version, captured)) co_return;
         if (section == L"mail") { for (auto& cursor : cursors) cursor = L""; co_await loadPage(); }
         status.Text(L"Trash move undone. The message was restored.");
-    } catch (...) { loading = false; navigationLocked = false; updateTrashUndo(); error(errorText()); }
+    } catch (ApiError const& failure) { unresolved = unresolvedMoveOperation(failure.body,operationOwner); loading = false; navigationLocked = false; updateTrashUndo(); error(failure.message()); }
+    catch (...) { loading = false; navigationLocked = false; updateTrashUndo(); error(errorText()); }
+    if (!unresolved.empty() && current(version,captured)) co_await reviewMoves(operationOwner,unresolved);
 }
 IAsyncAction Shell::prepare(Json message, hstring mode, hstring body) {
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner; auto sequence = selectionGeneration;

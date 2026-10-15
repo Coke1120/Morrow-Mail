@@ -732,6 +732,7 @@ IAsyncAction Shell::smoke() {
         fixtureVerified = true;
         enter("sync-status"); syncStatusChecks();
         enter("mail-drag-drop-guards"); mailDragChecks(service);
+        enter("imap-move-recovery"); co_await moveRecoveryChecks(root);
         bool seeded = array(state,L"accounts").Size() > 0;
         enter("sidebar-resize-and-filter");
         check(folderFilter && sidebarDivider, L"The sidebar has no native folder filter or resize handle.");
@@ -859,6 +860,9 @@ IAsyncAction Shell::smoke() {
         }
         enter("folder-manager-and-pickers");
         co_await folderPickerChecks(root);
+        enter("selected-folder-sync");
+        co_await folderSyncChecks(root);
+        downloadControlsChecks();
         enter("interaction-guards");
         co_await nativeInteractionChecks(lifetime);
         enter("general-navigation-save");

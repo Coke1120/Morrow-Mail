@@ -112,6 +112,14 @@ struct MailWorkspace: View {
                     if !model.error.isEmpty { statusBar(model.error, error: true) }
                     else if !model.notice.isEmpty { statusBar(model.notice, error: false) }
                     else if model.busy || model.backgroundBusy || model.preparingDraft { HStack { ProgressView().controlSize(.small); Text(model.preparingDraft ? "Preparing draft…" : model.syncing ? "Syncing…" : model.busy ? "Working…" : "Working in the background…").foregroundStyle(.secondary); Spacer() }.padding(9).background(.bar) }
+                    if !model.unresolvedMove.isNull {
+                        HStack {
+                            Text("An IMAP move needs review: \(model.unresolvedMove["accountId"].string)").font(.callout)
+                            Spacer()
+                            Button("Review saved move…") { model.beginMoveRecovery(model.unresolvedMove["accountId"].string, operationID: model.unresolvedMove["operationId"].string) }
+                                .disabled(!model.canNavigate || !model.canReviewMoves(model.unresolvedMove["accountId"].string))
+                        }.padding(10).background(.bar)
+                    }
               }
             }
         }
@@ -131,7 +139,11 @@ struct MailWorkspace: View {
         .onChange(of: outOfOfficeDirty) { model.dirty("out-of-office", $0) }
         .onChange(of: model.selectedMessage) { selection in if selection == nil { leaveExpandedReader() } }
         .sheet(item: $model.compose) { draft in ComposeView(initial: draft).environmentObject(model) }
-        .sheet(item: $model.organizing) { request in OrganizeMailView(message: request["message"], preferredKind: request["preferredKind"].string, preferredDestination: request["destinationId"].string).environmentObject(model) }
+        .sheet(item: $model.organizing) { request in
+            if request["kind"].string == "move-recovery" { MoveRecoveryView(request: request).id(request.id).environmentObject(model) }
+            else { OrganizeMailView(message: request["message"], preferredKind: request["preferredKind"].string, preferredDestination: request["destinationId"].string).environmentObject(model) }
+        }
+        .sheet(item: $model.syncingFolders) { request in FolderSyncView(owner: request.id).environmentObject(model) }
         .sheet(item: $model.managingFolders) { request in FolderManagementView(owner: request.id, initialFolder: request["folderId"].string).environmentObject(model) }
         .sheet(item: $model.readerAssistant, onDismiss: {
             if let pending = assistantDraft {
@@ -341,6 +353,11 @@ struct MailWorkspace: View {
                 if count > 0 { Text("\(count)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary) }
             }.padding(.vertical, 5).help(title)
         }.accessibilityIdentifier("accountGroup.\(account)")
+        .contextMenu {
+            if model.canReviewMoves(account) {
+                Button("Review IMAP moves…") { model.beginMoveRecovery(account) }.disabled(!model.canNavigate)
+            }
+        }
     }
     @ViewBuilder func folderRows(_ account: String) -> some View {
         ForEach(mailFolders.filter { folderFilter.isEmpty || $0.localizedCaseInsensitiveContains(folderFilter) }, id: \.self) { folder in
@@ -380,6 +397,9 @@ struct MailWorkspace: View {
                 Button("Refresh labels / folders") { model.perform { try await model.loadServerFolders(account) } }.disabled(model.busy)
             } label: { Text(model.accounts.first { $0.id == account }?["provider"].string == "google" ? "Gmail labels" : "Server folders") }
             Button("Manage labels / folders…") { model.managingFolders = .object(["id": .string(account)]) }.disabled(!model.canNavigate)
+            if ["", "imap"].contains(model.accounts.first { $0.id == account }?["provider"].string ?? "") {
+                Button("Folders to sync…") { model.syncingFolders = .object(["id": .string(account)]) }.disabled(!model.canNavigate).accessibilityIdentifier("folderSync.open.\(account)")
+            }
         }
     }
     func folderCount(_ account: String, _ folder: String) -> Int {
@@ -491,7 +511,7 @@ struct MailWorkspace: View {
                     let messages = filtered.filter { ids.contains($0.viewID) }
                     if messages.count == 1, let message = messages.first, model.canOrganize(message) { MessageOrganizationActions(message: message) }
                     if !messages.isEmpty {
-                        Button("Delete") { model.trashMessages(messages) }
+                        Button("Move to Provider Trash") { model.trashMessages(messages) }
                             .disabled(!messages.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" })
                         Divider()
                         Button("Mark Read") { model.patchMessages(messages, .object(["read": .bool(true)])) }
@@ -631,6 +651,12 @@ struct MessageReader: View {
                 VStack(alignment: .leading, spacing: 14) {
                     Text(message["subject"].nonempty ? message["subject"].string : "(No subject)")
                         .font(.system(size: 21, weight: .semibold)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    if message["localFolderUndo"]["token"].nonempty {
+                        HStack {
+                            Text("Moved locally; the provider location was not changed.").font(.caption).foregroundStyle(.secondary)
+                            Button("Undo local move to \(message["localFolderUndo"]["from"].string.capitalized)") { model.patch(message, .object(["undoLocalMove": message["localFolderUndo"]["token"]])) }.disabled(model.busy)
+                        }
+                    }
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
                         Text(message["fromName"].nonempty ? message["fromName"].string : message["fromEmail"].string)
                             .font(.headline).lineLimit(1).help(message["fromEmail"].string)

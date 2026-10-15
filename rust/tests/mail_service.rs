@@ -36,6 +36,9 @@ const NATIVE: &str = "fixture-native-token";
 #[path = "mail_service/gmail_reconnect.rs"]
 mod gmail_reconnect;
 
+#[path = "mail_service/download_controls.rs"]
+mod download_controls;
+
 #[tokio::test]
 async fn closing_uncertain_delivery_is_owned_durable_and_never_submits_again() {
     for resolution in ["sent", "dismissed"] {

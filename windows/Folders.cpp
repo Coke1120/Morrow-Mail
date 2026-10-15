@@ -164,6 +164,10 @@ MenuFlyout Shell::organizationMenu(Json message, std::function<bool()> context) 
     auto add=[&](hstring const& title,hstring kind) { MenuFlyoutItem item; item.Text(title); item.IsEnabled(imported&&!flag(message,L"providerFolderMissing")); item.Click([weak=weak_from_this(),message,kind,context](auto const&,auto const&) { if(auto self=weak.lock(); self && (!context || context())) self->organize(message,kind); }); menu.Items().Append(item); };
     add(L"Move to…",{}); if(google) add(L"Labels…",L"labels"); add(google?L"Create new label…":L"Create new folder…",L"create");
     MenuFlyoutItem manage; manage.Text(google?L"Manage labels…":L"Manage folders…"); manage.Click([weak=weak_from_this(),account,context](auto const&,auto const&) { if(auto self=weak.lock(); self && (!context || context())) self->manageFolders(account); }); menu.Items().Append(manage);
+    if (canReviewMoves(account)) {
+        MenuFlyoutItem recovery; recovery.Text(L"Review IMAP moves…");
+        recovery.Click([weak=weak_from_this(),account,context](auto const&,auto const&) { if (auto self=weak.lock(); self && (!context || context())) self->reviewMoves(account); }); menu.Items().Append(recovery);
+    }
     return menu;
 }
 IAsyncOperation<Json> Shell::manageFolders(hstring account, hstring initialFolder, bool creationOnly) {
@@ -348,17 +352,22 @@ IAsyncAction Shell::organize(Json message, hstring preferredKind, hstring prefer
                 state->destination->set(state->folders,preferredDestination.empty()?state->destination->id:preferredDestination); state->configure(weak); continue;
             }
             if(decision!=ContentDialogResult::Primary) co_return;
+            hstring unresolved;
             try {
                 auto body=state->payload(); auto detail=account+L"\n"+text(message,L"subject")+L"\n"+state->review();
                 if(!(co_await confirm(L"Apply this provider change?",detail,L"Apply provider change"))) continue;
                 if(!current(version,captured)||sequence!=selectionGeneration) co_return;
-                auto updated=co_await service->request(L"/messages/"+escaped(text(message,L"id"))+L"/organize",account,L"POST",body);
+                auto response=co_await service->requestWithStatus(L"/messages/"+escaped(text(message,L"id"))+L"/organize",account,L"POST",body);
                 if(!current(version,captured)||sequence!=selectionGeneration) co_return;
+                auto status=static_cast<unsigned>(response.GetNamedNumber(L"status",0)); auto updated=object(response,L"body");
+                if(status<200||status>=300) throw ApiError(status,updated);
                 auto moved=object(updated,L"message");
                 if(text(moved,L"accountId")!=account||text(moved,L"id")!=text(message,L"id")) throw hresult_error(E_FAIL,L"The message owner changed. Refresh your mailbox.");
                 if(text(selected,L"accountId")==account&&text(selected,L"id")==text(message,L"id")) { selected=moved; renderReader(selected); }
                 for(auto& cursor:cursors) cursor=L""; co_await loadPage(); co_return;
-            } catch(...) { state->status.Text(errorText()); }
+            } catch(ApiError const& failure) { unresolved=unresolvedMoveOperation(failure.body,account); state->status.Text(failure.message()); }
+            catch(...) { state->status.Text(errorText()); }
+            if(!unresolved.empty()&&current(version,captured)&&sequence==selectionGeneration) { co_await reviewMoves(account,unresolved); co_return; }
         }
     } catch(...) { loading=false; dialogOpen=false; error(errorText()); }
 }

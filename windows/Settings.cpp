@@ -362,6 +362,7 @@ void general(Page const& p) {
     help(f->panel, L"Applies to all mailboxes. Image servers may learn your IP address and that you opened an email. You can still hide images for individual messages.");
     title(f->panel, L"Mail sync");
     choice(f, L"syncInterval", L"Sync all accounts while Morrow is open", {{L"0", L"Manually"}, {L"1", L"Every minute"}, {L"5", L"Every 5 minutes"}, {L"15", L"Every 15 minutes"}, {L"30", L"Every 30 minutes"}}, true);
+    help(f->panel, L"Automatic sync can use supported IMAP notifications for Inbox and eligible selected folders with saved sync progress and a fresh server folder list. Up to four mailboxes are watched at once, one folder per mailbox; mailboxes and folders rotate in sessions of up to one minute. Other folders use their configured sync and recovery rules. Notifications do not guarantee real-time or complete downloads. Manually stops periodic sync and notifications; existing provider waits or update continuations may still complete requested reads.");
     help(f->panel, L"Each sync prioritizes the current mail page, fetches recent messages, and continues a bounded check of older downloaded mail. Large caches take multiple cycles. Failed provider writes are not retried automatically.");
     title(f->panel, L"Sending");
     choice(f, L"sendDelayHours", L"Default send delay · all accounts", {{L"0", L"Immediately"}, {L"1", L"1 hour"}, {L"2", L"2 hours"}, {L"3", L"3 hours"}, {L"4", L"4 hours"}, {L"5", L"5 hours"}, {L"6", L"6 hours"}}, true);
@@ -474,6 +475,7 @@ void accounts(Page const& p, StackPanel const& panel, Json const& state, Form co
         if (owner == L"demo" || owner == L"all" || owner.empty()) continue;
         auto job = object(account, L"import"); auto status = text(job, L"status");
         title(panel, text(account, L"email") + L" · " + text(account, L"provider"));
+        panel.Children().Append(button(L"Downloads & storage…",[weak=std::weak_ptr<SettingsPage>(p),owner] {if(auto page=weak.lock();page&&page->current()&&!page->busy) page->shell->downloadControls(owner);}));
         if (account.GetNamedNumber(L"incompleteMessages", 0) > 0)
             help(panel, number(account, L"incompleteMessages") + L" message(s) with incomplete content. " + text(account, L"contentWarning"));
         help(panel, status.empty() ? L"History import has not started." : L"History: " + status + L" · " + (text(job, L"downloadStage") == L"recent" ? L"Latest seven days first" : L"Older history") + L" · " + text(job, L"phase") + L" · " + number(job, L"imported") + L" imported · " + number(job, L"processed") + L" checked · " + number(job, L"pages") + L" pages");
