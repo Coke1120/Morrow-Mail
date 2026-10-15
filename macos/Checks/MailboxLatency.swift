@@ -142,22 +142,31 @@ struct MailboxLatency {
         let visible = clip.intersection(frame)
         return visible.isEmpty ? nil : visible
     }
-    @MainActor static func visibleText(_ root: NSView, observe: ((NSObject, String, String) -> Void)? = nil) -> [String] {
-        guard let boundary = visibleFrame(root), let window = root.window else { return [] }
+    @MainActor static func visibleText(_ root: NSView, trace: ((String, Int) -> Void)? = nil, observe: ((NSObject, String, String) -> Void)? = nil) -> [String] {
+        // Failure-only observation wraps the original values without repeating
+        // native getters or changing guard order. Nil callbacks collect nothing.
+        @MainActor func checked(_ value: Bool, _ reason: String) -> Bool {
+            if !value { trace?(reason, 1) }; return value
+        }
+        @MainActor func checkedFrame(_ value: NSRect?, _ reason: String) -> NSRect? {
+            if value == nil { trace?(reason, 1) }; return value
+        }
+        guard let boundary = visibleFrame(root), let window = root.window else { trace?("root", 1); return [] }
         var remaining = 2048, seen = Set<ObjectIdentifier>(), text: [String] = []
         @MainActor func append(_ value: String, from object: NSObject, channel: String) {
             text.append(value); observe?(object, channel, value)
         }
         @MainActor func visit(_ raw: Any, clip: NSRect) {
-            guard remaining > 0, let object = raw as? NSObject,
-                  seen.insert(ObjectIdentifier(object)).inserted else { return }
+            guard checked(remaining > 0, "budget"), let object = raw as? NSObject,
+                  checked(seen.insert(ObjectIdentifier(object)).inserted, "seen") else { return }
             remaining -= 1
+            trace?("nodes", 1)
             var visible = clip
             if let view = object as? NSView {
-                guard view.window === window, view === root || view.isDescendant(of: root),
-                      let frame = visibleFrame(view) else { return }
+                guard checked(view.window === window, "win"), checked(view === root || view.isDescendant(of: root), "desc"),
+                      let frame = checkedFrame(visibleFrame(view), "visible") else { return }
                 visible = clip.intersection(frame)
-                guard !visible.isEmpty else { return }
+                guard checked(!visible.isEmpty, "vclip") else { return }
                 if let field = view as? NSTextField {
                     append(field.stringValue, from: object, channel: "native-value")
                     // This mounted native text leaf already passed the view
@@ -168,17 +177,17 @@ struct MailboxLatency {
                 if let field = view as? NSTextView { append(field.string, from: object, channel: "native-value") }
             }
             if let cell = object as? NSCell {
-                guard let frame = visibleCellFrame(cell, in: root, window: window, clip: visible) else { return }
+                guard let frame = checkedFrame(visibleCellFrame(cell, in: root, window: window, clip: visible), "cell") else { return }
                 visible = frame
             }
             if let element = object as? NSAccessibilityProtocol {
-                guard !element.isAccessibilityHidden() else { return }
+                guard checked(!element.isAccessibilityHidden(), "hidden") else { return }
                 let frame = element.accessibilityFrame()
                 let framed = [frame.minX, frame.minY, frame.width, frame.height].allSatisfy(\.isFinite)
                     && !frame.isEmpty
                 if framed {
                     visible = visible.intersection(frame)
-                    guard !visible.isEmpty else { return }
+                    guard checked(!visible.isEmpty, "aclip") else { return }
                 }
                 // A container's aggregated label can include a hidden/stale
                 // child. Only framed text leaves supply identity evidence.
@@ -187,10 +196,10 @@ struct MailboxLatency {
                     if let value = element.accessibilityValue() as? String { append(value, from: object, channel: "ax-value") }
                     if let label = element.accessibilityLabel() { append(label, from: object, channel: "ax-label") }
                 }
-                for child in element.accessibilityChildren() ?? [] { visit(child, clip: visible) }
+                for child in element.accessibilityChildren() ?? [] { trace?("axEdges", 1); visit(child, clip: visible) }
             }
             if let view = object as? NSView {
-                for child in view.subviews { visit(child, clip: visible) }
+                for child in view.subviews { trace?("nativeEdges", 1); visit(child, clip: visible) }
             }
         }
         visit(root, clip: boundary)
@@ -313,9 +322,13 @@ struct MailboxLatency {
         return true
     }
     @MainActor static func initialPageDiagnostic(_ size: Int, host: NSView, model: AppModel) {
-        // Observe only this failed fictional fixture. Never emit text values,
-        // identifiers, paths, class names or an accessibility hierarchy.
+        // Fixed keys/tuples only; never emit UI text, identifiers, paths, class
+        // names or a hierarchy. All comparator observations remain diagnostic.
         func count(_ value: Int) -> JSON { .number(Double(max(0, min(value, 1_000_000)))) }
+        func roleName(_ role: NSAccessibility.Role?) -> String {
+            role == .staticText ? "staticText" : role == .textField ? "textField"
+                : role == .textArea ? "textArea" : role == .group ? "group" : role == nil ? "none" : "other"
+        }
         var inspected = 0, scanTruncated = false, tables: [NSTableView] = []
         @MainActor func collect(_ view: NSView, depth: Int = 0) {
             guard inspected < 512, depth < 64 else { scanTruncated = true; return }
@@ -326,23 +339,29 @@ struct MailboxLatency {
         collect(host)
         let selected = table(host), observed = MailboxLatencyProtocol.snapshot()
         let subject = "Fictional mailbox row 0 中文", owner = MailboxLatencyProtocol.owners[0]
+        let traceKeys = ["root", "budget", "seen", "nodes", "win", "desc", "visible", "vclip", "cell", "hidden", "aclip", "axEdges", "nativeEdges"]
+        var traceCounts: [String: Int] = [:]
         let reported = selected.map { selected in [selected] + Array(tables.filter { $0 !== selected }.prefix(1)) }
             ?? Array(tables.prefix(2))
         let candidates: [JSON] = reported.enumerated().map { index, list in
             let width = list.frame.width
             if index > 0 {
-                return .object(["rows": count(list.numberOfRows),
-                    "width": width.isFinite && abs(width) <= 10_000_000 ? .number(Double(width)) : .null,
-                    "qualifies": .bool(list.numberOfRows == 50 && width > 250)])
+                return .object(["n": count(list.numberOfRows),
+                    "w": width.isFinite && abs(width) <= 10_000_000 ? .number(Double(width)) : .null,
+                    "q": .bool(list.numberOfRows == 50 && width > 250)])
             }
             let row = list.numberOfRows > 0 && list.numberOfColumns > 0
                 ? list.view(atColumn: 0, row: 0, makeIfNecessary: false) : nil
+            let rowOwned = row.map { row in host.window != nil && list.window === host.window && list.isDescendant(of: host)
+                && row.window === host.window && row.isDescendant(of: list) } ?? false
             var textCount = 0, axCount = 0, unbacked = 0, foreignOwner = false
             var subjectExact = false, subjectContained = false, ownerExact = false, ownerContained = false
             var axSubjectExact = false, axSubjectContained = false, axOwnerExact = false, axOwnerContained = false
             var roles = Set<String>()
-            if let row {
-                _ = visibleText(row) { object, channel, value in
+            if let row, rowOwned {
+                _ = visibleText(row, trace: { key, value in
+                    traceCounts[key] = min(9999, (traceCounts[key] ?? 0) + value)
+                }) { object, channel, value in
                     textCount += 1
                     let exactOwner = value == owner || value == "Mailbox: " + owner
                     subjectExact = subjectExact || value == subject; subjectContained = subjectContained || value.contains(subject)
@@ -352,9 +371,7 @@ struct MailboxLatency {
                         axSubjectExact = axSubjectExact || value == subject; axSubjectContained = axSubjectContained || value.contains(subject)
                         axOwnerExact = axOwnerExact || exactOwner; axOwnerContained = axOwnerContained || value.contains(owner)
                     }
-                    let role = (object as? NSAccessibilityProtocol)?.accessibilityRole()
-                    roles.insert(role == .staticText ? "staticText" : role == .textField ? "textField"
-                        : role == .textArea ? "textArea" : role == .group ? "group" : role == nil ? "none" : "other")
+                    roles.insert(roleName((object as? NSAccessibilityProtocol)?.accessibilityRole()))
                     if let control = (object as? NSView) ?? (object as? NSCell)?.controlView {
                         foreignOwner = foreignOwner || control.window !== host.window
                             || !(control === row || control.isDescendant(of: row))
@@ -362,11 +379,9 @@ struct MailboxLatency {
                 }
             }
             var rawNodes = 0, cells = 0, noOwner = 0, foreign = 0, hidden = 0, invisible = 0, foreignViews = 0, leaves = 0
-            var rawOwned = false, rawTruncated = false, rawSubjectExact = false, rawSubjectContained = false
+            var rawTruncated = false, rawSubjectExact = false, rawSubjectContained = false
             var rawOwnerExact = false, rawOwnerContained = false, seen = Set<ObjectIdentifier>()
-            if let row, host.window != nil, list.window === host.window, list.isDescendant(of: host),
-               row.window === host.window, row.isDescendant(of: list) {
-                rawOwned = true
+            if let row, rowOwned {
                 // Raw AX candidates explain rejections; none enter visibleText
                 // or any acceptance predicate. Never follow controlView as a child.
                 @MainActor func rawVisit(_ value: Any, depth: Int) {
@@ -401,41 +416,83 @@ struct MailboxLatency {
                 rawVisit(row, depth: 0)
             }
             return .object([
-                "rows": count(list.numberOfRows), "width": width.isFinite && abs(width) <= 10_000_000 ? .number(Double(width)) : .null,
-                "visible": .bool(visibleFrame(list) != nil), "ownWindow": .bool(list.window != nil && list.window === host.window),
-                "qualifies": .bool(list.numberOfRows == 50 && width > 250), "selected": .bool(list === selected),
-                "visibleRows": count(list.rows(in: list.visibleRect).length), "row0": .bool(row != nil),
-                "row0Visible": .bool(row.map { visibleFrame($0) != nil } ?? false),
-                "subjectExact": .bool(subjectExact), "subjectContained": .bool(subjectContained),
-                "ownerExact": .bool(ownerExact), "ownerContained": .bool(ownerContained),
-                "axSubjectExact": .bool(axSubjectExact), "axSubjectContained": .bool(axSubjectContained),
-                "axOwnerExact": .bool(axOwnerExact), "axOwnerContained": .bool(axOwnerContained),
-                "textCount": count(textCount), "axTextCount": count(axCount), "unbackedTextCount": count(unbacked),
-                "foreignOwner": .bool(foreignOwner),
-                "raw": .object(["rowOwned": .bool(rawOwned), "nodes": count(rawNodes), "truncated": .bool(rawTruncated),
-                    "cells": count(cells), "noOwner": count(noOwner), "foreignOwner": count(foreign),
-                    "hiddenOwner": count(hidden), "invisibleOwner": count(invisible), "foreignViews": count(foreignViews),
-                    "textLeaves": count(leaves), "subjectExact": .bool(rawSubjectExact), "subjectContained": .bool(rawSubjectContained),
-                    "ownerExact": .bool(rawOwnerExact), "ownerContained": .bool(rawOwnerContained)]),
+                "n": count(list.numberOfRows), "w": width.isFinite && abs(width) <= 10_000_000 ? .number(Double(width)) : .null,
+                "v": .bool(visibleFrame(list) != nil), "o": .bool(list.window != nil && list.window === host.window),
+                "q": .bool(list.numberOfRows == 50 && width > 250), "s": .bool(list === selected),
+                "vr": count(list.rows(in: list.visibleRect).length), "c": count(list.numberOfColumns),
+                "r": .bool(row != nil), "rv": .bool(row.map { visibleFrame($0) != nil } ?? false),
+                "text": .array([count(textCount), count(axCount), count(unbacked), .bool(foreignOwner),
+                    .bool(subjectExact), .bool(subjectContained), .bool(ownerExact), .bool(ownerContained),
+                    .bool(axSubjectExact), .bool(axSubjectContained), .bool(axOwnerExact), .bool(axOwnerContained)]),
+                "raw": .array([.bool(rowOwned), count(rawNodes), .bool(rawTruncated), count(cells), count(noOwner), count(foreign),
+                    count(hidden), count(invisible), count(foreignViews), count(leaves), .bool(rawSubjectExact), .bool(rawSubjectContained),
+                    .bool(rawOwnerExact), .bool(rawOwnerContained)]),
                 "roles": .array(["staticText", "textField", "textArea", "group", "none", "other"].filter { roles.contains($0) }.map(JSON.string))])
+        }
+        @MainActor func peer(_ view: NSView?, kind: String) -> JSON {
+            let owned = view.map { view in host.window != nil && selected?.window === host.window
+                && selected?.isDescendant(of: host) == true && view.window === host.window
+                && selected.map { view.isDescendant(of: $0) } == true } ?? false
+            var nodes = 0, visible = 0, foreign = 0, truncated = false
+            var rootSubviews = 0, axRole = "none", axFramed = false, axIntersects = false
+            var subjectExact = false, ownerExact = false
+            if let view, owned, let list = selected {
+                @MainActor func nativeVisit(_ current: NSView, depth: Int) {
+                    guard nodes < 256, depth < 16 else { truncated = true; return }
+                    nodes += 1
+                    guard current.window === host.window, current === view || current.isDescendant(of: view),
+                          current.isDescendant(of: list) else { foreign += 1; return }
+                    if visibleFrame(current) != nil { visible += 1 }
+                    let children = current.subviews
+                    if children.count > 256 { truncated = true }
+                    for child in children.prefix(256) { nativeVisit(child, depth: depth + 1) }
+                }
+                nativeVisit(view, depth: 0)
+                rootSubviews = view.subviews.count
+                let frame = visibleFrame(view)
+                if let element = view as? NSAccessibilityProtocol {
+                    axRole = roleName(element.accessibilityRole())
+                    let axFrame = element.accessibilityFrame()
+                    axFramed = [axFrame.minX, axFrame.minY, axFrame.width, axFrame.height].allSatisfy(\.isFinite) && !axFrame.isEmpty
+                    axIntersects = axFramed && frame.map { !$0.intersection(axFrame).isEmpty } == true
+                }
+                let text = visibleText(view)
+                subjectExact = text.contains(subject)
+                ownerExact = text.contains(owner) || text.contains("Mailbox: " + owner)
+            }
+            return .object(["k": .string(kind), "p": .bool(view != nil), "o": .bool(owned),
+                "v": .bool(owned && view.map { visibleFrame($0) != nil } == true), "sv": count(rootSubviews),
+                "ax": .array([.string(axRole), .bool(axFramed), .bool(axIntersects)]),
+                "native": .array([count(nodes), count(visible), count(foreign), .bool(truncated)]),
+                "match": .array([.bool(subjectExact), .bool(ownerExact)])])
+        }
+        var peerViews: [NSView?] = [nil, nil, nil]
+        if let list = selected, host.window != nil, list.window === host.window, list.isDescendant(of: host), list.numberOfRows > 0 {
+            for column in 0..<min(2, list.numberOfColumns) { peerViews[column] = list.view(atColumn: column, row: 0, makeIfNecessary: false) }
+            peerViews[2] = list.rowView(atRow: 0, makeIfNecessary: false)
         }
         let record: JSON = .object([
             "phase": .string("initial-page"), "size": [1000, 10000, 50000].contains(size) ? .number(Double(size)) : .null,
-            "listed": count(model.listedMessages.count), "mailLoading": .bool(model.mailLoading),
+            "listed": count(model.listedMessages.count), "loading": .bool(model.mailLoading),
             "generated": count(observed.0), "unexpected": count(observed.1), "requests": count(observed.2),
-            "hasMailbox": .bool(model.hasMailbox), "combined": .bool(model.combined), "inbox": .bool(model.section == "inbox"),
-            "starting": .bool(model.starting), "hasError": .bool(!model.error.isEmpty), "connected": .bool(model.baseURL != nil),
-            "searchActive": .bool(!model.searchResponse.isNull), "hostVisible": .bool(visibleFrame(host) != nil),
-            "windowVisible": .bool(host.window?.isVisible == true), "hasScreen": .bool(host.window?.screen != nil),
-            "tableCount": count(tables.count), "tablesTruncated": .bool(tables.count > 2),
-            "scanTruncated": .bool(scanTruncated), "tables": .array(candidates)])
-        let prefix = Data("Native mailbox initial-page failure diagnostic: ".utf8)
-        guard let data = try? JSONEncoder().encode(record), prefix.count + data.count + 1 <= 2048 else {
-            FileHandle.standardError.write(Data("Native mailbox initial-page failure diagnostic: {\"phase\":\"initial-page\",\"diagnosticComplete\":false}\n".utf8))
-            return
+            "app": .array([.bool(model.hasMailbox), .bool(model.combined), .bool(model.section == "inbox"), .bool(model.starting),
+                .bool(!model.error.isEmpty), .bool(model.baseURL != nil), .bool(!model.searchResponse.isNull), .bool(visibleFrame(host) != nil),
+                .bool(host.window?.isVisible == true), .bool(host.window?.screen != nil)]),
+            "scan": .array([count(tables.count), .bool(tables.count > 2), .bool(scanTruncated)]), "tables": .array(candidates)])
+        let detail: JSON = .object(["phase": .string("initial-page"),
+            "trace": .object(Dictionary(uniqueKeysWithValues: traceKeys.map { ($0, count(traceCounts[$0] ?? 0)) })),
+            "columns": count(selected?.numberOfColumns ?? 0), "moreColumns": .bool((selected?.numberOfColumns ?? 0) > 2),
+            "peers": .array([peer(peerViews[0], kind: "c0"), peer(peerViews[1], kind: "c1"), peer(peerViews[2], kind: "row")])])
+        for (kind, value) in [("state", record), ("trace", detail)] {
+            let prefix = Data("Native mailbox initial-page failure \(kind): ".utf8)
+            guard let data = try? JSONEncoder().encode(value), prefix.count + data.count + 1 <= 1023 else {
+                FileHandle.standardError.write(prefix)
+                FileHandle.standardError.write(Data("{\"phase\":\"initial-page\",\"diagnosticComplete\":false}\n".utf8))
+                continue
+            }
+            FileHandle.standardError.write(prefix); FileHandle.standardError.write(data)
+            FileHandle.standardError.write(Data("\n".utf8))
         }
-        FileHandle.standardError.write(prefix); FileHandle.standardError.write(data)
-        FileHandle.standardError.write(Data("\n".utf8))
     }
     @MainActor static func pageButton(_ host: NSView, next: Bool) throws -> NSButton {
         guard let list = table(host), let viewport = list.enclosingScrollView else { throw APIError("Production mail table is missing.") }

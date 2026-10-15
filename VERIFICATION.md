@@ -38,6 +38,38 @@ or run with AppKit locally and requires fresh matching-source macOS CI. The
 original modern-Bool failure and the incomplete baebe119 log remain evidence;
 no native event-loop cause or runtime repair is claimed.
 
+## PR #58 macOS visible-text failure trace — 15 October 2026
+
+Combined measurement run `38760958928` compiled source `baebe119` and reached
+the 1,000-row dataset, then failed `Initial owned native page did not mount.`
+The selected native table had 50 rows, width 340, five visible rows and a visible
+row0 peer, with 50 loaded model rows and `mailLoading=false`. Neither exact
+subject nor owner was observed by the accepted text collector. The raw AX scan
+visited only its root; it does not traverse native subviews and cannot identify
+the cause. The workflow retained only the first 1,024 characters of the earlier
+diagnostic line. Full original job logs and their source receipts are preserved.
+
+The fixture now emits two fixed failure-only JSON lines, each at most 1,023 bytes
+including its prefix and newline (at most 2,046 bytes combined). The first keeps
+loading, transport, table and accepted/raw text observations in fixed tuples.
+The second counts the actual collector's root, budget/dedup, native window,
+descendant, visibility/clip, cell-owner and AX hidden/clip guard exits, and reached
+AX-child/native-subview edges. Its default nil callback repeats no native getter;
+the original guard evaluation order, values and returns are preserved.
+
+At most two existing column row0 views and the existing whole row view are
+compared diagnostically using `makeIfNecessary: false`, the same owned native
+window/table boundary, and bounded native scans (256 nodes, depth 16, child prefix
+256). Only fixed counts, booleans and allowlisted roles are emitted. Exact subject
+and owner flags still use the original visible-text collector; these comparisons
+never satisfy acceptance. No container-label, role, frame, identity, ownership or
+deadline gate is relaxed. All existing synthetic controls and measurement inputs
+remain unchanged. Source erasure checks and conservative encoded budget checks
+are local evidence only; no Swift SDK build or native execution was available.
+The initial-page cause remains unknown and fresh matching-source macOS CI is
+required. The prior passing 13 runner tests were not rerun for this fixture-only
+diagnostic change.
+
 ## PR #58 macOS initial-page diagnostic — 15 October 2026
 
 Measurement run `38756565340`, macOS job `116496439274`, compiled exact source
