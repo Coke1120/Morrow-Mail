@@ -274,6 +274,18 @@ import SwiftUI
               let names = object.perform(selector)?.takeUnretainedValue() as? [String], names.count <= 32 else { return nil }
         return names
     }
+    @MainActor static func performAdvertisedMenuAction(_ element: NSAccessibilityProtocol) throws {
+        guard let object = element as? NSObject, object.responds(to: NSSelectorFromString("accessibilityPerformAction:")) else {
+            throw APIError("The owned menu control cannot perform its advertised action")
+        }
+        guard let action = advertisedMenuAction(accessibilityActions(element) ?? []) else {
+            throw APIError("The owned menu control advertises no supported menu action")
+        }
+        // Pair the public informal action list with its corresponding public
+        // dispatcher. Its return is Void; only real NSMenu tracking and command
+        // inspection below can establish that the advertised action opened it.
+        object.accessibilityPerformAction(action == .showMenu ? .showMenu : .press)
+    }
     @MainActor static func menuSelectorControls() throws {
         let reply = [MenuNode(role: "AXGroup", children: [1, 2]),
                      MenuNode(role: "AXButton", labels: ["Reply"], parent: 0),
@@ -308,6 +320,49 @@ import SwiftUI
         try require(advertisedMenuAction([]) == nil && advertisedMenuAction(["AXConfirm"]) == nil, "an unadvertised menu action was invented")
         try require(advertisedMenuAction(["AXShowMenu"]) == .showMenu && advertisedMenuAction(["AXPress"]) == .press && advertisedMenuAction(["AXPress", "AXShowMenu"]) == .showMenu, "advertised menu action choice changed")
         print("Menu selector controls: \(checks) split graph cases plus ambiguity, named-label and advertised-action controls passed; these are synthetic graph checks, not an AppKit action pass.")
+    }
+    @MainActor final class MenuActionProbe: NSView {
+        nonisolated let unavailableSelector: String?
+        var advertised: [NSAccessibility.Action] = [.press, .showMenu]
+        var performed: [NSAccessibility.Action] = []
+        var modernShowMenuCalls = 0, modernPressCalls = 0
+        init(unavailableSelector: String? = nil) {
+            self.unavailableSelector = unavailableSelector
+            super.init(frame: .zero)
+        }
+        required init?(coder: NSCoder) {
+            unavailableSelector = nil
+            super.init(coder: coder)
+        }
+        nonisolated override func responds(to aSelector: Selector!) -> Bool {
+            if let unavailableSelector, aSelector == NSSelectorFromString(unavailableSelector) { return false }
+            return super.responds(to: aSelector)
+        }
+        override func accessibilityActionNames() -> [NSAccessibility.Action] { advertised }
+        override func accessibilityPerformAction(_ action: NSAccessibility.Action) { performed.append(action) }
+        override func accessibilityPerformShowMenu() -> Bool { modernShowMenuCalls += 1; return false }
+        override func accessibilityPerformPress() -> Bool { modernPressCalls += 1; return false }
+    }
+    @MainActor static func menuDispatchControls() throws {
+        let positives: [([NSAccessibility.Action], NSAccessibility.Action)] = [([.showMenu], .showMenu), ([.press], .press), ([.press, .showMenu], .showMenu)]
+        for (names, expected) in positives {
+            let probe = MenuActionProbe(); probe.advertised = names
+            try performAdvertisedMenuAction(probe)
+            try require(probe.performed == [expected] && probe.modernShowMenuCalls == 0 && probe.modernPressCalls == 0,
+                        "Advertised dispatch did not invoke exactly one matching legacy action without a modern fallback")
+        }
+        for mutation in 0..<5 {
+            let unavailable = mutation == 0 ? "accessibilityActionNames" : mutation == 1 ? "accessibilityPerformAction:" : nil
+            let probe = MenuActionProbe(unavailableSelector: unavailable)
+            if mutation == 2 { probe.advertised = [] }
+            if mutation == 3 { probe.advertised = [.increment] }
+            if mutation == 4 { probe.advertised = Array(repeating: .showMenu, count: 33) }
+            var rejected = false
+            do { try performAdvertisedMenuAction(probe) } catch { rejected = true }
+            try require(rejected && probe.performed.isEmpty && probe.modernShowMenuCalls == 0 && probe.modernPressCalls == 0,
+                        "Missing, unadvertised or oversized action case \(mutation) invoked an action or fallback")
+        }
+        print("Menu dispatch controls: three exact advertised actions and five missing/unadvertised/oversized negatives passed without a modern callback; synthetic dispatch only, not native menu tracking.")
     }
     @MainActor final class MenuWrapper: NSView {
         weak var fixtureParent: NSView?
@@ -514,15 +569,12 @@ import SwiftUI
             tracking.watchdog = watchdog
             RunLoop.main.add(watchdog, forMode: .eventTracking)
             RunLoop.main.add(watchdog, forMode: .common)
-            let names = accessibilityActions(control) ?? []
-            guard let action = advertisedMenuAction(names) else { throw APIError("The owned menu control advertises no supported menu action: " + identifier) }
             tracking.armed = true
             try require(current(), "The menu lost its captured secondary control before activation")
             // AXPress is allowed only on the proven secondary/named menu node,
             // when that exact node advertises it. Never press the Reply primary
             // button and never try a second action after a failed first action.
-            let opened = action == .showMenu ? control.accessibilityPerformShowMenu() : control.accessibilityPerformPress()
-            try require(opened, "Advertised native menu action failed: " + identifier)
+            try performAdvertisedMenuAction(control)
             while !tracking.ended, Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
             try require(Date() < deadline && tracking.begins == 1 && tracking.ended, "The native menu did not open and close within five seconds")
             if let failure = tracking.failure { throw failure }
@@ -870,6 +922,7 @@ import SwiftUI
             try await lifecycle(session:model.session)
             if ProcessInfo.processInfo.environment["MORROW_REVIEW_BASELINE"] != "1" {
                 try menuSelectorControls()
+                try menuDispatchControls()
                 try menuSnapshotControls()
                 try menuOwnerControls()
                 try menuMountedGateControls()
