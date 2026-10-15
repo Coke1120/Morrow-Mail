@@ -1,5 +1,47 @@
 # Verification — 14 October 2026
 
+## Saved summary job diagnostics — 15 October 2026
+
+This separate follow-up starts from PR #50's tested tree, later merged as
+`d5ac97c5d51cc265cc769d07bd36d7d013fa5c67`. It changes summary status projection
+and its native Activity details, independently of Today aggregation. A historical
+failed job can remain Activity's last finished summary while Today has no valid
+current-day/current-context report. That display does not establish a new model
+failure, its original cause, or a retry.
+
+The Activity snapshot includes an opaque mailbox-bound job reference, normalized
+status/trigger, recorded times, message count and an allowlisted diagnostic.
+Only exact server-authored errors and a strictly parsed HTTP-status template are
+mapped; provider bodies, URLs, summary text and message items are not returned.
+Cancelled, interrupted and skipped are distinct from failed. New normal terminal
+transitions record their finish/update time; restart recovery records observation
+time without inventing the interruption's actual finish. Missing legacy identity
+or timestamps remain unavailable. No schema change or new detail API is added.
+
+Both native clients capture the selected job metadata when its detail entry opens,
+preserve that snapshot across newer activity and close it when its owner or page
+scope is revoked. The detail view is read-only and does not navigate to Today's
+filtered aggregate or start provider/model work. The saved job is never retried
+automatically; independent future arrival/schedule policy is unchanged.
+
+Preparation evidence: three new contract tests failed against the previous
+projection because it lacked matching job metadata. The first repaired targeted
+run passed **30 tests** across summary diagnostics, Activity and background work,
+including synthetic stale/current context, state/error mapping, missing fields,
+loopback response failures, terminal persistence and no replay after restart.
+Final Linux Rust 1.98 validation passed rustfmt, locked/offline all-target Clippy
+with warnings denied, and the full suite: **432 passed, zero failed, four existing
+ignored benchmarks**, across 47 result groups. The full-suite log SHA-256 is
+`90e584f471b2cf9f5f4636919b10974ab3e0dcb5f28ecd2607636fd3d7191603`.
+Additional native fixture assertions cover captured identity, safe fields,
+timestamps and the detail entry/lifecycle. Independent source review corrected
+an overly restrictive Windows selected-account check: Activity lists every
+connected mailbox, so a displayed job's owning account may differ from the
+selected mail view. Captured page generation and connected-owner checks remain.
+Linux cannot compile or execute the SwiftUI/WinUI candidates; exact-head native
+results will be recorded with the draft PR after validation. No real mailbox, outgoing mail or external
+model was used, and the user's historical model failure cause remains unknown.
+
 ## Activity cancellation and native verification repairs — 15 October 2026
 
 This follow-up starts from main `cfe61c9fedfe7f07a99ab84751aabf7bae19d495`,

@@ -46,6 +46,17 @@ These checks are fixture tests, not
 live-account acceptance; native validation and original failed runs are recorded
 in [verification](VERIFICATION.md#activity-cancellation-and-native-verification-repairs--15-october-2026).
 
+**Current source — saved summary diagnostics:** Activity distinguishes failed,
+cancelled, interrupted and skipped summary jobs and shows their recorded job
+times. A content-free job-details view opens the selected mailbox/job snapshot
+even when Today has no valid summary for the current day or context. Known
+server-authored diagnostics distinguish model connection/HTTP/response failures,
+the 45-second model timeout and the 90-second whole-job timeout. Unknown historical
+errors use a fixed safe fallback; raw provider responses and summary/mail content
+are excluded. Missing job identity disables the detail entry; missing times stay
+unrecorded. Opening details neither generates nor retries a summary. See
+[validation and limits](VERIFICATION.md#saved-summary-job-diagnostics--15-october-2026).
+
 **0.8.0 — writing rules, Today, skill reviews and Inbox Agent:** the combined
 PR #42–46 source passed the exact-head native checks and matches the main merge.
 Writing edits survive unrelated saves, the agent revalidates account/permission/

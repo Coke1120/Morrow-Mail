@@ -24,6 +24,13 @@ response also cannot stop a replacement analysis started afterward. Synthetic
 cancellation and Windows process-observation coverage, original failures and remaining native acceptance
 limits are recorded in [verification](VERIFICATION.md#activity-cancellation-and-native-verification-repairs--15-october-2026).
 
+Activity now shows each last summary job's recorded times and safe diagnostic
+details, independently of Today's current-day and current-context summary card.
+Failed, cancelled, interrupted and skipped jobs have distinct labels. Opening
+saved job details keeps that job's snapshot and never retries analysis. Missing
+historical times and discarded error causes remain unknown. See
+[diagnostic behavior and checks](VERIFICATION.md#saved-summary-job-diagnostics--15-october-2026).
+
 Current source adds mailbox categories, local Today suggestions and skill review queues. Today keeps valid saved summary suggestions while newer jobs are queued or failed, and completing unread suggestions makes room for older unread mail. Category edits require review before being discarded. Skill schedules only queue items for review; they do not run a model, send mail or update Email Brain. See [behavior and limits](docs/USER_GUIDE.md#reviewed-attention-workflows) and [follow-up validation](VERIFICATION.md#pr-43-today-and-category-follow-up--14-october-2026).
 
 The 0.7.7 [Today and reply review workspace](docs/REVIEW_WORKSPACE.md) adds shared account tabs, compact saved decisions, inline original messages and editable account-owned replies. All accounts is a read-only aggregate. Downloaded conversations use account-scoped provider/RFC/reply relationships; new sources withdraw stale suggestions while retaining user edits. Decisions remain AI suggestions with checked source quotations; historical summaries and incomplete conversations require review. Saving or opening a suggestion never sends mail. Skip now clears only its dismissed ephemeral state, source refresh moves edits without ghost unsaved guards, and empty projections avoid redundant index loads; saved mailbox drafts remain. See [release notes and limits](docs/releases/v0.7.7.md), [workspace lifecycle](docs/REVIEW_STATE_LIFECYCLE.md) and [validation](VERIFICATION.md#v077-release-preparation--codex-cloud-12-october-2026). [v0.7.7 is published](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.7.7) after its exact paired tagged attempt and public-byte verification; the unpublished failed v0.7.5/v0.7.6 tags remain preserved. See [publication evidence and residual observation limits](docs/releases/v0.7.7-verification.md).
