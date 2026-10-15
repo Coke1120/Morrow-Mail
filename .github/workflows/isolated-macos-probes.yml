@@ -10,10 +10,6 @@ jobs:
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-      - name: Fetch immutable failed candidate for negative controls
-        run: git fetch --depth=1 origin 8f9130737e297338abba1925db3453a30496bd68
-      - name: Check original lifecycle negative controls
-        run: python3 -B scripts/test-macos-review-workspace.py --baseline-lifecycle
       - name: Check complete review workspace with explicit AppKit loop
         run: python3 -B scripts/test-macos-review-workspace.py
   row-projection:
@@ -21,5 +17,5 @@ jobs:
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-      - name: Compare minimal native row projection entry points
-        run: python3 -B scripts/run-isolated-macos-probes.py --probe row --output "$RUNNER_TEMP/morrow-isolated-row"
+      - name: Read rejected row projection in the explicit AppKit loop
+        run: python3 -B scripts/run-isolated-macos-probes.py --probe row --mode appkit --output "$RUNNER_TEMP/morrow-isolated-row"

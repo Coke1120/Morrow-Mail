@@ -190,7 +190,7 @@ def captured(command, *, environment, timeout, path):
     return data, code
 
 
-def run(probe, output):
+def run(probe, output, modes=("async", "appkit")):
     if sys.platform != "darwin":
         raise ValueError("Isolated AppKit probes require macOS")
     output.mkdir(parents=True, exist_ok=False)
@@ -199,7 +199,7 @@ def run(probe, output):
     inputs, compiler_inputs = prepare_inputs(output, probe)
     print("MORROW_ISOLATED_COMPILER_INPUTS " + json.dumps(compiler_inputs, sort_keys=True), flush=True)
     cases = []
-    for mode in ("async", "appkit"):
+    for mode in modes:
         nonce = secrets.token_hex(16)
         environment = os.environ.copy()
         environment.update(MORROW_DATA_DIR=str(output / f"fictional-{probe}-{mode}"),
@@ -297,6 +297,8 @@ if __name__ == "__main__":
         raise SystemExit(0)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--probe", choices=("menu", "row"), required=True)
+    parser.add_argument("--mode", choices=("both", "async", "appkit"), default="both")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    raise SystemExit(run(args.probe, args.output.resolve()))
+    modes = ("async", "appkit") if args.mode == "both" else (args.mode,)
+    raise SystemExit(run(args.probe, args.output.resolve(), modes))

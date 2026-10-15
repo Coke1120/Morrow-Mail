@@ -593,8 +593,36 @@ import SwiftUI
             throw error
         }
     }
-    @MainActor static func commandIndex(_ title: String, in menu: NSMenu) -> Int? {
-        menu.items.firstIndex { $0.title == title && !$0.isHidden && !$0.isSeparatorItem && $0.action != nil }
+    @MainActor static func commandIndex(_ title: String, in menu: NSMenu, requiresAction: Bool = true) -> Int? {
+        menu.items.firstIndex { $0.title == title && !$0.isHidden && !$0.isSeparatorItem && (!requiresAction || $0.action != nil) }
+    }
+    @MainActor final class MenuCommandProbe: NSObject {
+        var calls = 0
+        @objc func invoke(_ sender: NSMenuItem) { calls += 1 }
+    }
+    @MainActor static func menuCommandLookupControls() throws {
+        let title = "Fixture command", menu = NSMenu(), probe = MenuCommandProbe()
+        menu.autoenablesItems = false
+        let command = NSMenuItem(title: title, action: #selector(MenuCommandProbe.invoke(_:)), keyEquivalent: "")
+        command.target = probe; menu.addItem(command)
+        try require(commandIndex(title, in: menu) == 0, "Default command lookup rejected a callable item")
+        command.isEnabled = false
+        try require(commandIndex(title, in: menu) == 0 && !command.isEnabled, "Command lookup changed the actual disabled state")
+        command.action = nil
+        try require(commandIndex(title, in: menu) == nil && commandIndex(title, in: menu, requiresAction: false) == 0 && !command.isEnabled,
+                    "A visible disabled actionless item must match only the assertion lookup")
+        command.isHidden = true
+        try require(commandIndex(title, in: menu, requiresAction: false) == nil, "Disabled assertion lookup accepted a hidden item")
+        command.isHidden = false; command.title = "Other command"
+        try require(commandIndex(title, in: menu, requiresAction: false) == nil, "Disabled assertion lookup accepted a different title")
+        command.title = title
+        let separator = NSMenuItem.separator(); menu.addItem(separator)
+        try require(commandIndex(separator.title, in: menu, requiresAction: false) == nil, "Disabled assertion lookup accepted a separator")
+        try require(commandIndex("Missing command", in: menu, requiresAction: false) == nil, "Disabled assertion lookup invented an absent item")
+        command.isEnabled = true
+        try require(commandIndex(title, in: menu) == nil, "Default command lookup accepted an enabled actionless item")
+        try require(probe.calls == 0, "Command lookup invoked a fixture action")
+        print("Menu command lookup controls: callable and disabled actionless items plus hidden, title, separator, missing and enabled actionless negatives passed; no command invoked.")
     }
     @MainActor static func menuCommand(_ title: String, identifier: String, in root: NSView, enabled: Bool = true, perform: Bool = false) async throws {
         let deadline = Date().addingTimeInterval(5)
@@ -603,7 +631,9 @@ import SwiftUI
         while !matched, Date() < deadline {
             try await withMountedMenu(identifier, in: root, deadline: deadline) { menu in
                 entries = menuEntries(menu)
-                guard let index = commandIndex(title, in: menu), menu.items[index].isEnabled == enabled else { return }
+                // SwiftUI may clear a disabled item's action. Still require its
+                // exact visible title and actual disabled state; never invoke it.
+                guard let index = commandIndex(title, in: menu, requiresAction: enabled), menu.items[index].isEnabled == enabled else { return }
                 matched = true
                 if perform {
                     try require(enabled, "A fixture must not invoke a disabled menu item")
@@ -949,6 +979,7 @@ import SwiftUI
                 try menuSnapshotControls()
                 try menuOwnerControls()
                 try menuMountedGateControls()
+                try menuCommandLookupControls()
                 try await mountedReader(session: model.session)
                 try await mountedToday(session: model.session, width: 1120)
                 try await mountedToday(session: model.session, width: 720)

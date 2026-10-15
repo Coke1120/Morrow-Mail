@@ -230,6 +230,131 @@ import SwiftUI
         result.append(JSON.bool(ownerContained))
         return JSON.array(result)
     }
+    @MainActor static func nodeDiagnostic(_ node: Node, path: ParentPath, stage: String, readout: AXReadout,
+        boundary: NativeBoundary, row: NSObject, nativeRow: NSView, clip: NSRect) -> JSON {
+        let view: NSView? = node.object as? NSView
+        let cell: NSCell? = node.object as? NSCell
+        let control: NSView? = cell?.controlView
+        let owner: NSView? = view ?? control
+        let ownerWindow: Bool = owner?.window === boundary.window
+        let ownerDescendant: Bool = owner.map { $0 === nativeRow || $0.isDescendant(of: nativeRow) } ?? false
+        let ownerVisible: Bool = owner.map { MailboxLatency.visibleFrame($0) != nil } ?? false
+        let cellFrame: Bool = cell.map { MailboxLatency.visibleCellFrame($0, in: nativeRow, window: boundary.window, clip: clip) != nil } ?? false
+        let inClip: Bool = node.frame.map { !$0.intersection(clip).isEmpty } ?? false
+        var reasons: [String: JSON] = [:]
+        reasons["missingWindow"] = .bool(node.window == nil)
+        reasons["foreignWindow"] = .bool(node.window != nil && node.window !== boundary.window)
+        reasons["missingRowParent"] = .bool(!path.row)
+        reasons["missingTableParent"] = .bool(!path.table)
+        reasons["parentCycle"] = .bool(path.cycle)
+        reasons["parentTruncated"] = .bool(path.truncated)
+        reasons["hiddenAncestor"] = .bool(path.hidden > 0)
+        reasons["foreignAncestorWindow"] = .bool(path.foreignWindow > 0)
+        reasons["invisibleNativeAncestor"] = .bool(path.invisibleNative > 0)
+        reasons["missingFrame"] = .bool(node.frame == nil)
+        reasons["outsideClip"] = .bool(node.frame != nil && !inClip)
+        reasons["nativeViewOwner"] = .bool(view != nil && !(ownerWindow && ownerDescendant && ownerVisible))
+        reasons["nativeCellOwner"] = .bool(cell != nil && !cellFrame)
+        var fields: [String: JSON] = [:]
+        fields["stage"] = .string(stage)
+        fields["role"] = .string(roleName(node.role))
+        fields["frame"] = rect(node.frame)
+        fields["inClip"] = .bool(inClip)
+        fields["windowKnown"] = .bool(node.window != nil)
+        fields["windowSame"] = .bool(node.window === boundary.window)
+        fields["windowAdvertised"] = .bool(readout.family == .method ? node.conforms : node.attributes.contains(NSAccessibility.Attribute(rawValue: "AXWindow")))
+        fields["parentKnown"] = .bool(node.parent != nil)
+        fields["parentSameRow"] = .bool(node.parent === row)
+        fields["parentSameTable"] = .bool(node.parent === boundary.table)
+        fields["parent"] = path.json
+        fields["reasons"] = .object(reasons)
+        fields["nativeView"] = .bool(view != nil)
+        fields["nativeCell"] = .bool(cell != nil)
+        fields["controlViewKnown"] = .bool(control != nil)
+        fields["ownerWindow"] = .bool(ownerWindow)
+        fields["ownerDescendant"] = .bool(ownerDescendant)
+        fields["ownerVisible"] = .bool(ownerVisible)
+        fields["cellFrame"] = .bool(cellFrame)
+        fields["children"] = node.children.json
+        return JSON.object(fields)
+    }
+    @MainActor static func rawDescendantFacts(_ row: NSObject, readout: AXReadout, boundary: NativeBoundary,
+        nativeRow: NSView, clip: NSRect) -> JSON {
+        // Only called for the already proven current legacy AXrow. Continue
+        // through rejected candidates for fixed metadata; none enter acceptance.
+        var totals: [String: Int] = [:], roles: [String: Int] = [:]
+        var seen = Set<ObjectIdentifier>(), nodes = 0, truncated = false
+        var text: [String] = [], leafExamples: [JSON] = []
+        func add(_ key: String) { totals[key] = (totals[key] ?? 0) + 1 }
+        @MainActor func visit(_ current: NSObject, depth: Int) {
+            let identity = ObjectIdentifier(current)
+            if seen.contains(identity) { return }
+            guard nodes < 256, depth < 16 else { truncated = true; return }
+            seen.insert(identity); nodes += 1
+            guard let node = readout.node(current) else { truncated = true; return }
+            let path = parentPath(current, readout: readout, boundary: boundary, row: row)
+            let role: String = roleName(node.role)
+            roles[role] = (roles[role] ?? 0) + 1
+            if node.window == nil { add("missingWindow") }
+            if node.window != nil && node.window !== boundary.window { add("foreignWindow") }
+            if node.window === boundary.window { add("sameWindow") }
+            if path.row { add("rowParent") }
+            if path.table { add("tableParent") }
+            if path.cycle { add("parentCycle") }
+            if path.truncated { add("parentTruncated") }
+            if path.unknownHidden > 0 { add("unknownHidden") }
+            if node.frame == nil { add("missingFrame") }
+            let inClip: Bool = node.frame.map { !$0.intersection(clip).isEmpty } ?? false
+            if inClip { add("inClip") }
+            let view: NSView? = current as? NSView
+            let cell: NSCell? = current as? NSCell
+            let control: NSView? = cell?.controlView
+            if view != nil { add("nativeViews") }
+            if cell != nil { add("nativeCells"); if control == nil { add("missingControlView") } }
+            let nativeOwner: Bool
+            if let view {
+                nativeOwner = view.window === boundary.window && (view === nativeRow || view.isDescendant(of: nativeRow))
+                    && MailboxLatency.visibleFrame(view) != nil
+            } else if let cell {
+                nativeOwner = MailboxLatency.visibleCellFrame(cell, in: nativeRow, window: boundary.window, clip: clip) != nil
+            } else { nativeOwner = true }
+            let scoped: Bool = node.window === boundary.window && path.row && path.table && !path.cycle && !path.truncated
+                && path.hidden == 0 && path.foreignWindow == 0 && path.invisibleNative == 0 && inClip && nativeOwner
+            if ["staticText", "textField", "textArea"].contains(role) {
+                add("textLeaves")
+                if node.window == nil { add("leafMissingWindow") }
+                if path.row { add("leafRowParent") }
+                if path.table { add("leafTableParent") }
+                if inClip { add("leafInClip") }
+                if scoped { add("scopedTextLeaves"); text += readout.text(node) }
+                if leafExamples.count < 2 {
+                    leafExamples.append(nodeDiagnostic(node, path: path, stage: "raw-text-leaf", readout: readout,
+                        boundary: boundary, row: row, nativeRow: nativeRow, clip: clip))
+                }
+            }
+            // Missing per-node window/parent metadata does not prune this raw
+            // fact scan. Explicit foreign windows stop before further descent.
+            if node.window != nil && node.window !== boundary.window { return }
+            if let view, view.window !== boundary.window { return }
+            if let control, control.window !== boundary.window { return }
+            if node.children.truncated { truncated = true }
+            for child in node.children.objects { visit(child, depth: depth + 1) }
+        }
+        visit(row, depth: 0)
+        let keys: [String] = ["missingWindow", "foreignWindow", "sameWindow", "rowParent", "tableParent", "parentCycle",
+            "parentTruncated", "unknownHidden", "missingFrame", "inClip", "nativeViews", "nativeCells", "missingControlView",
+            "textLeaves", "leafMissingWindow", "leafRowParent", "leafTableParent", "leafInClip", "scopedTextLeaves"]
+        var fields: [String: JSON] = [:], roleFields: [String: JSON] = [:]
+        fields["nodes"] = count(nodes)
+        fields["truncated"] = .bool(truncated)
+        for key in keys { fields[key] = count(totals[key] ?? 0) }
+        let allowedRoles: [String] = ["row", "table", "list", "outline", "cell", "group", "scrollArea", "window", "staticText", "textField", "textArea", "none", "other"]
+        for role in allowedRoles { roleFields[role] = count(roles[role] ?? 0) }
+        fields["roles"] = .object(roleFields)
+        fields["text"] = matches(text)
+        fields["leafExamples"] = .array(leafExamples)
+        return JSON.object(fields)
+    }
     @MainActor static func rowFacts(_ object: NSObject, readout: AXReadout, boundary: NativeBoundary) -> JSON {
         guard let seed = readout.node(object) else { return .object(["bounded": .bool(false)]) }
         let path = parentPath(object, readout: readout, boundary: boundary)
@@ -248,7 +373,13 @@ import SwiftUI
         var nodes = 0, leaves = 0, framedLeaves = 0, knownVisibleLeaves = 0, unbacked = 0, rejected = 0, truncated = false
         var leafText: [String] = [], knownVisibleText: [String] = [], seen = Set<ObjectIdentifier>()
         var channels: [[String]] = [[], [], []]
+        var rejectedNodes: [JSON] = []
         if anchored, let clip = intersection, let nativeRow = boundary.row {
+            @MainActor func rejectedNode(_ node: Node, _ path: ParentPath, stage: String) {
+                guard rejectedNodes.count < 2 else { return }
+                rejectedNodes.append(nodeDiagnostic(node, path: path, stage: stage, readout: readout,
+                    boundary: boundary, row: object, nativeRow: nativeRow, clip: clip))
+            }
             @MainActor func visit(_ current: NSObject, depth: Int) {
                 let identity = ObjectIdentifier(current)
                 if seen.contains(identity) { return }
@@ -258,12 +389,12 @@ import SwiftUI
                 let path = parentPath(current, readout: readout, boundary: boundary, row: object)
                 guard node.window === boundary.window, path.row, path.table, !path.cycle, !path.truncated,
                       path.hidden == 0, path.foreignWindow == 0, path.invisibleNative == 0,
-                      let frame = node.frame, !frame.intersection(clip).isEmpty else { rejected += 1; return }
+                      let frame = node.frame, !frame.intersection(clip).isEmpty else { rejected += 1; rejectedNode(node, path, stage: "ax"); return }
                 if let view = current as? NSView {
                     guard view.window === boundary.window, view === nativeRow || view.isDescendant(of: nativeRow),
-                          MailboxLatency.visibleFrame(view) != nil else { rejected += 1; return }
+                          MailboxLatency.visibleFrame(view) != nil else { rejected += 1; rejectedNode(node, path, stage: "native-view"); return }
                 } else if let cell = current as? NSCell {
-                    guard MailboxLatency.visibleCellFrame(cell, in: nativeRow, window: boundary.window, clip: clip) != nil else { rejected += 1; return }
+                    guard MailboxLatency.visibleCellFrame(cell, in: nativeRow, window: boundary.window, clip: clip) != nil else { rejected += 1; rejectedNode(node, path, stage: "native-cell"); return }
                 } else { unbacked += 1 }
                 if [NSAccessibility.Role.staticText.rawValue, NSAccessibility.Role.textField.rawValue, NSAccessibility.Role.textArea.rawValue].contains(node.role ?? "") {
                     leaves += 1; framedLeaves += 1
@@ -306,6 +437,11 @@ import SwiftUI
         fields["leafTextChannels"] = JSON.array(leafChannelMatches)
         fields["knownVisibleText"] = matches(knownVisibleText)
         fields["truncated"] = .bool(truncated)
+        fields["rejectedNodes"] = .array(rejectedNodes)
+        fields["rawDescendants"] = .null
+        if anchored, readout.family == .attributes, let clip = intersection, let nativeRow = boundary.row {
+            fields["rawDescendants"] = rawDescendantFacts(object, readout: readout, boundary: boundary, nativeRow: nativeRow, clip: clip)
+        }
         return JSON.object(fields)
     }
     @MainActor static func tableProjection(_ readout: AXReadout, boundary: NativeBoundary) throws {
