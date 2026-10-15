@@ -104,6 +104,13 @@ trigger, or be dispatched explicitly. Its green result concerns measurement
 validity, not caller-approved performance acceptance. The existing Windows
 walkthrough/resource observer remains separate evidence.
 
+For a pull request, this measurement-only workflow checks out its exact head
+SHA. This lets independently recorded protocol and native stages measure the
+same source manifest even if a stacked base branch advances. Each stage still
+records its own commit, tree and full source hashes. The ordinary native and
+security workflow retains its normal synthetic-merge checkout and all existing
+gates; a head measurement is not evidence of merge-integration acceptance.
+
 ## Aggregate without hiding missing work
 
 ```sh
