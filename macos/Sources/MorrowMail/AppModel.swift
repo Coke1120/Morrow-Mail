@@ -774,6 +774,19 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "Keep Editing"); alert.addButton(withTitle: "Discard")
         return alert.runModal() == .alertSecondButtonReturn
     }
+    func cancelActivity(_ id: String) {
+        guard !id.isEmpty else { return }
+        guard confirm("Cancel this activity?", "The result will be discarded. Nothing will be sent. Choose Continue to cancel it.") else { return }
+        Task { @MainActor in
+            do {
+                let next = try await self.request("/activity/cancel", method: "POST", body: .object(["id": .string(id)]), mailbox: "")
+                self.activity = next
+                self.activityError = ""
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
     func confirm(_ title: String, detail: String) -> Bool {
         let alert = NSAlert(); alert.messageText = title; alert.informativeText = detail
         alert.addButton(withTitle: "Cancel"); alert.addButton(withTitle: "Continue")

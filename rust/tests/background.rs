@@ -989,9 +989,15 @@ async fn failed_or_shutdown_model_calls_never_retry_and_overflow_stays_visible()
     drop(release);
     drop(app);
     let app = App::open(&root, 3011, String::new(), String::new()).unwrap();
-    assert_eq!(
-        app.db(|db| jobs::reports(db, A)).await.unwrap()[0]["status"],
-        "interrupted"
+    let recovered = app.db(|db| jobs::reports(db, A)).await.unwrap();
+    // Shutdown drops the worker. That row is cancelled in-session, so launch
+    // recovery does not leave it running or replay the paid call.
+    assert_eq!(recovered[0]["status"], "cancelled");
+    assert!(
+        recovered[0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("Nothing was sent")
     );
     jobs::tick(&app).await.unwrap();
     assert!(calls.try_recv().is_err());
@@ -1250,4 +1256,271 @@ fn today_updates_one_daily_card_and_keeps_the_latest_summary_for_each_message() 
     let other_day = completed("job-4", "2026-10-10T12:00:00Z", "P3", "Next day");
     assert_eq!(jobs::daily_reports(&json!([other_day, first])).len(), 2);
     assert!(jobs::daily_reports(&json!([])).is_empty());
+}
+
+#[test]
+fn running_stamps_expire_only_when_missing_or_old() {
+    use morrow_search::store::{self, stamp_expired};
+    assert!(stamp_expired("", store::RUNNING_LIMIT));
+    assert!(stamp_expired("not-a-date", store::RUNNING_LIMIT));
+    assert!(stamp_expired(
+        "2020-01-01T00:00:00.000Z",
+        store::RUNNING_LIMIT
+    ));
+    assert!(!stamp_expired(&store::now(), store::RUNNING_LIMIT));
+    let future = (chrono::Utc::now() + chrono::Duration::hours(1))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    assert!(!stamp_expired(&future, store::RUNNING_LIMIT));
+}
+
+#[tokio::test]
+async fn stale_running_summaries_expire_without_expiring_imports_or_fresh_work() {
+    let root = directory();
+    let app = App::open(&root, 3011, String::new(), String::new()).unwrap();
+    app.db(|db| {
+        configure(db);
+        let fresh = now();
+        db.set_settings(&json!({
+            "automation": {A: {"jobs": [
+                {"id":"stale","kind":"manual","status":"running","runningAt":"2020-01-01T00:00:00.000Z","createdAt":"2020-01-01T00:00:00.000Z"},
+                {"id":"missing","kind":"arrival","status":"running","updatedAt":fresh,"createdAt":fresh},
+                {"id":"fresh","kind":"scheduled","status":"running","runningAt":fresh,"createdAt":fresh}
+            ]}},
+            "imports": {A: {"status":"running","updatedAt":"2020-01-01T00:00:00.000Z","pages":3,"connectionId":"connection-a"}}
+        }))?;
+        jobs::expire_stale(db)?;
+        let jobs = db.settings()?["automation"][A]["jobs"].clone();
+        let status = |id: &str| {
+            jobs.as_array()
+                .unwrap()
+                .iter()
+                .find(|job| job["id"] == id)
+                .unwrap()["status"]
+                .clone()
+        };
+        assert_eq!(status("stale"), "failed");
+        assert_eq!(status("missing"), "failed");
+        assert_eq!(status("fresh"), "running");
+        let stale = jobs
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|job| job["id"] == "stale")
+            .unwrap();
+        assert!(stale["error"].as_str().unwrap().contains("timed out"));
+        assert!(stale["error"].as_str().unwrap().contains("Nothing was sent"));
+        assert_eq!(db.settings()?["imports"][A]["status"], "running");
+        let snapshot = morrow_search::activity::Runtime::default().snapshot(&db.settings()?);
+        let import = snapshot["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|task| task["id"] == format!("import:{A}"))
+            .unwrap();
+        assert!(import.get("cancellable").is_none() || import["cancellable"] != true);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    app.db(|db| {
+        let fresh = now();
+        db.set_settings(&json!({
+            "automation": {A: {"jobs": [{"id":"fresh","kind":"manual","status":"running","runningAt":fresh,"createdAt":fresh}]}},
+            "imports": {}
+        }))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    jobs::tick(&app).await.unwrap();
+    let job = &app.settings().await.unwrap()["automation"][A]["jobs"][0];
+    assert_eq!(job["id"], "fresh");
+    assert_eq!(job["status"], "running");
+    drop(app);
+    fs::remove_dir_all(root).unwrap();
+}
+
+async fn summary_request(
+    app: &App,
+    owner: &str,
+    action: &str,
+    body: Value,
+) -> morrow_search::error::Result<Value> {
+    let mut context = Context {
+        method: axum::http::Method::POST,
+        path: vec!["summaries".into(), action.into()],
+        body,
+        query: json!({}),
+        headers: Default::default(),
+        owner: B.into(),
+        paged: true,
+    };
+    context
+        .headers
+        .insert("x-genmail-account", owner.parse().unwrap());
+    let response = jobs::handle(app, &context).await?.unwrap();
+    let bytes = axum::body::to_bytes(response.into_body(), 256 * 1024)
+        .await
+        .unwrap();
+    Ok(serde_json::from_slice(&bytes).unwrap())
+}
+
+fn job_status(settings: &Value, id: &str) -> String {
+    settings["automation"][A]["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|job| job["id"] == id)
+        .unwrap()["status"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn dropped_manual_summary_releases_the_running_row_and_the_gate() {
+    let (url, mut calls, server) = fake_model().await;
+    let (app, root) = app_fixture(url).await;
+    let preview = summary_request(&app, A, "preview", json!({}))
+        .await
+        .unwrap();
+    let approved = json!({"previewId": preview["previewId"]});
+    let running_app = app.clone();
+    let body = approved.clone();
+    let run = tokio::spawn(async move { summary_request(&running_app, A, "generate", body).await });
+    let (_payload, finish) = next_call(&mut calls).await;
+    let id = preview["previewId"].as_str().unwrap();
+    assert_eq!(job_status(&app.settings().await.unwrap(), id), "running");
+    let snapshot = app.0.activity.snapshot(&app.settings().await.unwrap());
+    let task = snapshot["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["id"] == format!("summaries:{A}"))
+        .unwrap();
+    assert_eq!(task["cancellable"], true);
+    run.abort();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if job_status(&app.settings().await.unwrap(), id) == "cancelled" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("dropped summary should leave the running row");
+    drop(finish);
+    assert!(summary_request(&app, A, "preview", json!({})).await.is_ok());
+    let preview = summary_request(&app, A, "preview", json!({}))
+        .await
+        .unwrap();
+    let preview_id = preview["previewId"].as_str().unwrap().to_owned();
+    let running_app = app.clone();
+    let next = tokio::spawn(async move {
+        summary_request(
+            &running_app,
+            A,
+            "generate",
+            json!({"previewId": preview_id}),
+        )
+        .await
+        .unwrap()
+    });
+    let (payload, finish) = next_call(&mut calls).await;
+    assert_eq!(
+        job_status(
+            &app.settings().await.unwrap(),
+            preview["previewId"].as_str().unwrap()
+        ),
+        "running"
+    );
+    finish.send(response(&payload)).unwrap();
+    let completed = next.await.unwrap();
+    assert_eq!(completed["status"], "completed");
+    assert!(
+        app.settings().await.unwrap()["deliveryAttempts"]
+            .as_array()
+            .map(|attempts| attempts.is_empty())
+            .unwrap_or(true)
+    );
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+async fn activity_cancel_releases_a_running_summary_without_sending() {
+    let (url, mut calls, server) = fake_model().await;
+    let (app, root) = app_fixture(url).await;
+    app.db(|db| {
+        db.set_settings(&json!({"imports": {A: {"status":"running","updatedAt":"2020-01-01T00:00:00.000Z","pages":1,"connectionId":"connection-a"}}}))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let blocked = morrow_search::activity::cancel(&app, &format!("import:{A}"))
+        .await
+        .unwrap_err();
+    assert_eq!(blocked.status, 409);
+    assert_eq!(
+        app.settings().await.unwrap()["imports"][A]["status"],
+        "running"
+    );
+    let preview = summary_request(&app, A, "preview", json!({}))
+        .await
+        .unwrap();
+    let id = preview["previewId"].as_str().unwrap().to_owned();
+    let running_app = app.clone();
+    let body = json!({"previewId": id});
+    let run = tokio::spawn(async move { summary_request(&running_app, A, "generate", body).await });
+    let (_payload, finish) = next_call(&mut calls).await;
+    assert_eq!(job_status(&app.settings().await.unwrap(), &id), "running");
+    let other = morrow_search::activity::cancel(&app, &format!("summaries:{B}"))
+        .await
+        .unwrap_err();
+    assert_eq!(other.status, 409);
+    assert_eq!(job_status(&app.settings().await.unwrap(), &id), "running");
+    let snapshot = morrow_search::activity::cancel(&app, &format!("summaries:{A}"))
+        .await
+        .unwrap();
+    assert_eq!(snapshot["cancelled"], true);
+    let result = tokio::time::timeout(Duration::from_secs(5), run)
+        .await
+        .expect("cancel should release the in-flight summary")
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["status"], "cancelled");
+    assert!(
+        result["error"]
+            .as_str()
+            .unwrap()
+            .contains("Nothing was sent")
+    );
+    assert_eq!(job_status(&app.settings().await.unwrap(), &id), "cancelled");
+    drop(finish);
+    let preview = summary_request(&app, A, "preview", json!({}))
+        .await
+        .unwrap();
+    let running_app = app.clone();
+    let next = tokio::spawn(async move {
+        summary_request(
+            &running_app,
+            A,
+            "generate",
+            json!({"previewId": preview["previewId"]}),
+        )
+        .await
+        .unwrap()
+    });
+    let (payload, finish) = next_call(&mut calls).await;
+    finish.send(response(&payload)).unwrap();
+    assert_eq!(next.await.unwrap()["status"], "completed");
+    assert!(
+        app.settings().await.unwrap()["deliveryAttempts"]
+            .as_array()
+            .map(|attempts| attempts.is_empty())
+            .unwrap_or(true)
+    );
+    server.abort();
+    fs::remove_dir_all(root).unwrap();
 }

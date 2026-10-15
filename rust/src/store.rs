@@ -183,6 +183,21 @@ pub fn catalog() -> &'static Value {
 pub fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
+/// Bound for a claimed model/agent job. Longer than the model request itself.
+pub const RUNNING_LIMIT: chrono::Duration = chrono::Duration::seconds(90);
+/// Empty or unparseable stamps are stale so a crashed write cannot stick.
+/// A future stamp is not stale.
+pub fn stamp_expired(stamp: &str, limit: chrono::Duration) -> bool {
+    let Ok(parsed) = DateTime::parse_from_rfc3339(stamp) else {
+        return true;
+    };
+    let stamp = parsed.with_timezone(&Utc);
+    let now = Utc::now();
+    if stamp > now {
+        return false;
+    }
+    now.signed_duration_since(stamp) >= limit
+}
 pub fn string<'a>(value: &'a Value, key: &str) -> &'a str {
     value[key].as_str().unwrap_or("")
 }

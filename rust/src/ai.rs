@@ -26,6 +26,22 @@ type Pending = watch::Receiver<Option<Arc<Result<Value>>>>;
 pub struct Runtime {
     automatic: Mutex<HashMap<String, Pending>>,
 }
+struct ReleaseAutomatic {
+    app: App,
+    key: String,
+}
+impl Drop for ReleaseAutomatic {
+    fn drop(&mut self) {
+        // Only a closed receiver is this task. A newer request may already own the key.
+        if let Ok(mut pending) = self.app.0.ai.automatic.try_lock()
+            && pending
+                .get(&self.key)
+                .is_some_and(|receiver| receiver.has_changed().is_err())
+        {
+            pending.remove(&self.key);
+        }
+    }
+}
 
 pub fn hash(value: &Value) -> String {
     format!(
@@ -1074,6 +1090,7 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                     return Ok(Some(Json(json!({"skipped":true})).into_response()));
                 };
                 let mut pending = app.0.ai.automatic.lock().await;
+                pending.retain(|_, receiver| receiver.has_changed().is_ok());
                 let mut receiver = if let Some(value) = pending.get(&key) {
                     value.clone()
                 } else {
@@ -1087,9 +1104,15 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                     pending.insert(key.clone(), rx.clone());
                     let app = app.clone();
                     tokio::spawn(async move {
+                        let _release = ReleaseAutomatic {
+                            app: app.clone(),
+                            key: key.clone(),
+                        };
                         let result = assistance(&app, &input, &owner, None).await;
                         tx.send_replace(Some(Arc::new(result)));
-                        app.0.ai.automatic.lock().await.remove(&key);
+                        // Drop releases the key. A second remove here can delete a newer request
+                        // that reused the key after this one finished.
+                        drop(tx);
                     });
                     rx
                 };

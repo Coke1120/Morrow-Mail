@@ -5,13 +5,14 @@ struct ActivityStatusView: View {
     let value: JSON
     var error: String = ""
     var onOpenSettings: (() -> Void)? = nil
+    var onCancel: ((String) -> Void)? = nil
     @State private var expanded = false
 
     private var tasks: [JSON] { value["tasks"].array }
     private var ready: Bool { if case .array = value["tasks"] { return true }; return false }
     private var running: [JSON] { tasks.filter { $0["status"].string == "running" } }
     private var queued: Int { tasks.filter { $0["status"].string == "queued" }.count }
-    private var attention: Int { tasks.filter { ["paused", "failed", "interrupted"].contains($0["status"].string) }.count }
+    private var attention: Int { tasks.filter { ["paused", "failed", "interrupted", "cancelled"].contains($0["status"].string) }.count }
     private var accounts: [String] { tasks.reduce(into: []) { result, task in let account = owner(task); if !result.contains(account) { result.append(account) } } }
     private var summary: String {
         if !error.isEmpty { return ready ? "Activity unavailable · Showing last known status" : "Activity unavailable" }
@@ -68,7 +69,12 @@ struct ActivityStatusView: View {
     private func taskRow(_ task: JSON) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(task["label"].nonempty ? task["label"].string : ["sync": "Fetching mail", "import": "Importing history", "ai": "AI processing", "learning": "Learning writing style", "index": "Indexing mail"][task["kind"].string] ?? "Background task").font(.callout.bold())
-            Text(status(task["status"].string)).font(.caption).foregroundStyle(["paused", "failed", "interrupted"].contains(task["status"].string) ? Color.orange : Color.secondary)
+            Text(status(task["status"].string)).font(.caption).foregroundStyle(["paused", "failed", "interrupted", "cancelled"].contains(task["status"].string) ? Color.orange : Color.secondary)
+            if task["cancellable"].bool, let onCancel {
+                Button("Cancel") { onCancel(task["id"].string) }
+                    .font(.caption)
+                    .help("Discard this result. Nothing will be sent.")
+            }
             if task["detail"].nonempty { Text(task["detail"].string).font(.callout).textSelection(.enabled) }
             if let completed = count(task["completed"]) {
                 Text(count(task["total"]).map { "\(completed) / \($0)" } ?? "\(completed) completed · Total not yet known").font(.caption).monospacedDigit()

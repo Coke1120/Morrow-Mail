@@ -2670,3 +2670,98 @@ async fn integration_rules_crud_reaches_agent_writer_only_and_respects_permissio
         assert_eq!(after, before);
     }
 }
+
+#[tokio::test]
+async fn stale_running_conversation_can_continue_and_does_not_send() {
+    let directory = Temporary::new();
+    let server = model_server(Script::new(200)).await;
+    let app = app_at(&directory, &server.url).await;
+    let started = call(&app, "POST", "agent/start", OWNER, json!({}))
+        .await
+        .unwrap();
+    let id = string(&started["conversation"], "id").to_owned();
+    let stored = id.clone();
+    app.db(move |db| {
+        let encoded: String = db.conn.query_row(
+            "SELECT data FROM inbox_agent WHERE account=? AND id=?",
+            rusqlite::params![OWNER, stored],
+            |row| row.get(0),
+        )?;
+        let mut conversation: Value = serde_json::from_str(&encoded)?;
+        conversation["status"] = "running".into();
+        conversation["runToken"] = json!(4);
+        db.conn.execute(
+            "UPDATE inbox_agent SET data=? WHERE account=? AND id=?",
+            rusqlite::params![conversation.to_string(), OWNER, stored],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let continued = call(
+        &app,
+        "POST",
+        "agent/send",
+        OWNER,
+        json!({"conversationId": id, "text": "Say hello only"}),
+    )
+    .await
+    .expect("a dead running turn must not block the conversation");
+    assert_ne!(continued["conversation"]["status"], "running");
+    let note = continued["conversation"]["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|turn| {
+            turn["text"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Nothing was sent")
+        });
+    assert!(note);
+    assert_eq!(
+        count_folder(&messages(&app, OWNER).await, "sent", "Review Northstar"),
+        0
+    );
+    assert!(
+        app.settings().await.unwrap()["deliveryAttempts"]
+            .as_array()
+            .map(|attempts| attempts.is_empty())
+            .unwrap_or(true)
+    );
+    let stored = id.clone();
+    app.db(move |db| {
+        let encoded: String = db.conn.query_row(
+            "SELECT data FROM inbox_agent WHERE account=? AND id=?",
+            rusqlite::params![OWNER, stored],
+            |row| row.get(0),
+        )?;
+        let mut conversation: Value = serde_json::from_str(&encoded)?;
+        conversation["status"] = "confirming".into();
+        conversation["pending"] = json!({"kind": "send", "sendBody": {"requestId": ""}});
+        db.conn.execute(
+            "UPDATE inbox_agent SET data=? WHERE account=? AND id=?",
+            rusqlite::params![conversation.to_string(), OWNER, stored],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let blocked = call(
+        &app,
+        "POST",
+        "agent/send",
+        OWNER,
+        json!({"conversationId": id, "text": "Send it now"}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(blocked.status, 409);
+    assert!(blocked.to_string().contains("Answer or dismiss"));
+    assert!(!blocked.to_string().contains("already working"));
+    assert_eq!(
+        count_folder(&messages(&app, OWNER).await, "sent", "Review Northstar"),
+        0
+    );
+    drop(server);
+}

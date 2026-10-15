@@ -15,18 +15,42 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
+    future::Future,
     sync::{
         LazyLock,
         atomic::{AtomicBool, AtomicI64, Ordering},
     },
+    time::Duration,
 };
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, watch};
+
+const SUMMARY_CANCELLED: &str =
+    "Cancelled. Nothing was sent. Review Today before generating again.";
+const SUMMARY_TIMEOUT: &str =
+    "The summary timed out. Nothing was sent. Review Today before generating again.";
+const RUNNING_WAIT: Duration = Duration::from_secs(90);
+
+#[derive(Clone, Default)]
+struct StopNote {
+    seq: u64,
+    owner: String,
+    kind: String,
+}
+fn stop_matches(note: &StopNote, seen: u64, owner: &str, kind: &str) -> bool {
+    if note.seq == seen {
+        return false;
+    }
+    let owner_ok = owner.is_empty() || note.owner == "*" || note.owner == owner;
+    let kind_ok = kind.is_empty() || note.kind == "*" || note.kind == kind;
+    owner_ok && kind_ok
+}
 
 pub struct Runtime {
     gate: Mutex<()>,
     stopped: AtomicBool,
     shutdown: Notify,
     last_sync: AtomicI64,
+    cancel: watch::Sender<StopNote>,
 }
 impl Default for Runtime {
     fn default() -> Self {
@@ -35,6 +59,32 @@ impl Default for Runtime {
             stopped: AtomicBool::new(false),
             shutdown: Notify::new(),
             last_sync: AtomicI64::new(0),
+            cancel: watch::channel(StopNote::default()).0,
+        }
+    }
+}
+impl Runtime {
+    pub fn request_stop(&self, owner: &str, kind: &str) {
+        let seq = self.cancel.borrow().seq.wrapping_add(1);
+        self.cancel.send_replace(StopNote {
+            seq,
+            owner: owner.to_owned(),
+            kind: kind.to_owned(),
+        });
+    }
+    pub fn stop_requested(
+        &self,
+        owner: &str,
+        kind: &str,
+    ) -> impl Future<Output = ()> + Send + 'static {
+        let mut notes = self.cancel.subscribe();
+        let seen = notes.borrow().seq;
+        let owner = owner.to_owned();
+        let kind = kind.to_owned();
+        async move {
+            let _ = notes
+                .wait_for(move |note| stop_matches(note, seen, &owner, &kind))
+                .await;
         }
     }
 }
@@ -1058,6 +1108,10 @@ async fn manual_summary(app: &App, ctx: &Context) -> Result<Response> {
     }
     let context = ctx.clone();
     let generating = action == "generate";
+    let mut lease = generating.then(|| summary_lease(app));
+    let guard = lease.as_ref().map(crate::activity::RunLease::guard);
+    let header_owner = ctx.header("x-genmail-account").to_owned();
+    let stop = generating.then(|| app.0.background.stop_requested(&header_owner, "summary"));
     let (account, job, model_context) = app.db(move |db| db.transaction(|db| {
         let config = db.settings()?;
         let account = context.read_owner(&config, false)?;
@@ -1072,7 +1126,8 @@ async fn manual_summary(app: &App, ctx: &Context) -> Result<Response> {
         if string(&config["ai"], "baseUrl").is_empty() || string(&config["ai"], "model").is_empty() {
             return Err(Error::conflict("Save an AI model in Settings first."));
         }
-        let mut value = automation(&config, &account);
+        expire_account_summaries(db, &account)?;
+        let mut value = automation(&db.settings()?, &account);
         if value["jobs"].as_array().into_iter().flatten().any(|job| job["kind"] == "manual" && pending(job)) {
             return Err(Error::conflict("A manual summary is already in progress for this mailbox."));
         }
@@ -1088,7 +1143,13 @@ async fn manual_summary(app: &App, ctx: &Context) -> Result<Response> {
             jobs.push(job.clone());
             value["jobs"] = jobs.into(); value["manualPreview"] = Value::Null;
             write_owner(db, "automation", &account, value)?;
-            let model_context = claim(db, &account, &job)?.ok_or_else(|| Error::conflict("The summary context changed. Review it again."))?;
+            let model_context = match claim(db, &account, &job, guard.as_ref())? {
+                Some(context) => context,
+                None => {
+                    let cancelled = automation(&db.settings()?, &account)["jobs"].as_array().into_iter().flatten().any(|current| current["id"] == job["id"] && current["status"] == "cancelled");
+                    return Err(Error::conflict(if cancelled { SUMMARY_CANCELLED } else { "The summary context changed. Review it again." }));
+                }
+            };
             Ok((account, job, model_context))
         } else {
             let ids = summary_ids(db, &account, &policy)?;
@@ -1106,13 +1167,32 @@ async fn manual_summary(app: &App, ctx: &Context) -> Result<Response> {
         return Ok(Json(model_context).into_response());
     }
     let report_id = string(&job, "id").to_owned();
+    let lease = lease.take().unwrap();
+    let mut stop = std::pin::pin!(stop.unwrap());
     tokio::select! {
-        _ = &mut shutdown => return Err(Error::conflict("Summary interrupted by shutdown. Review before generating again.")),
+        biased;
+        _ = &mut shutdown => {
+            let owner = account.clone();
+            let id = report_id.clone();
+            let _ = app.db(move |db| stop_summary(db, &owner, &id, "cancelled", SUMMARY_CANCELLED)).await;
+            return Err(Error::conflict("Summary interrupted by shutdown. Review before generating again."));
+        }
+        _ = &mut stop => {
+            let owner = account.clone();
+            let id = report_id.clone();
+            let _ = app.db(move |db| stop_summary(db, &owner, &id, "cancelled", SUMMARY_CANCELLED)).await;
+        }
+        _ = tokio::time::sleep(RUNNING_WAIT) => {
+            let owner = account.clone();
+            let id = report_id.clone();
+            let _ = app.db(move |db| stop_summary(db, &owner, &id, "failed", SUMMARY_TIMEOUT)).await;
+        }
         result = generate(app, &account, &job, &model_context) => {
             let owner = account.clone();
             app.db(move |db| finish(db, &owner, &job, &model_context, result)).await?;
         }
     }
+    drop(lease);
     Ok(Json(
         app.db(move |db| {
             let config = db.settings()?;
@@ -1134,7 +1214,88 @@ async fn manual_summary(app: &App, ctx: &Context) -> Result<Response> {
     .into_response())
 }
 
-fn claim(db: &Store, account: &str, job: &Value) -> Result<Option<Value>> {
+fn summary_lease(app: &App) -> crate::activity::RunLease {
+    let app = app.clone();
+    crate::activity::RunLease::on_drop(move |published| {
+        let Some((account, id)) = published else {
+            return;
+        };
+        let _ = app.blocking(move |db| {
+            stop_summary(db, &account, &id, "cancelled", SUMMARY_CANCELLED).map(|_| ())
+        });
+    })
+}
+fn stop_summary(db: &Store, account: &str, id: &str, status: &str, error: &str) -> Result<bool> {
+    db.transaction(|db| {
+        let value = automation(&db.settings()?, account);
+        let running = value["jobs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|job| job["id"] == id && job["status"] == "running");
+        if !running {
+            return Ok(false);
+        }
+        update_job(
+            db,
+            account,
+            id,
+            &json!({"status":status,"error":error,"updatedAt":now()}),
+        )?;
+        Ok(true)
+    })
+}
+/// Failed or cancelled running summaries no longer block Today. Queued jobs stay queued.
+pub fn cancel_running_summaries(db: &Store, account: &str) -> Result<bool> {
+    let ids: Vec<String> = automation(&db.settings()?, account)["jobs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|job| job["status"] == "running")
+        .map(|job| string(job, "id").to_owned())
+        .collect();
+    let mut changed = false;
+    for id in ids {
+        if stop_summary(db, account, &id, "cancelled", SUMMARY_CANCELLED)? {
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+fn expire_account_summaries(db: &Store, account: &str) -> Result<()> {
+    let ids: Vec<String> = automation(&db.settings()?, account)["jobs"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|job| {
+            job["status"] == "running"
+                && crate::store::stamp_expired(
+                    string(job, "runningAt"),
+                    crate::store::RUNNING_LIMIT,
+                )
+        })
+        .map(|job| string(job, "id").to_owned())
+        .collect();
+    for id in ids {
+        stop_summary(db, account, &id, "failed", SUMMARY_TIMEOUT)?;
+    }
+    Ok(())
+}
+pub fn expire_stale(db: &Store) -> Result<()> {
+    for account in owners(&db.settings()?) {
+        expire_account_summaries(db, &account)?;
+    }
+    crate::learning::expire_running(db)?;
+    crate::brain::expire_running(db)?;
+    crate::reply_suggestions::expire_running(db)?;
+    Ok(())
+}
+fn claim(
+    db: &Store,
+    account: &str,
+    job: &Value,
+    guard: Option<&crate::activity::RunningGuard>,
+) -> Result<Option<Value>> {
     db.transaction(|db| {
         let config = db.settings()?;
         let value = automation(&config,account);
@@ -1148,7 +1309,13 @@ fn claim(db: &Store, account: &str, job: &Value) -> Result<Option<Value>> {
         let messages = job["messageIds"].as_array().unwrap().iter().map(|id|db.get(account,id.as_str().unwrap_or("")).map(|message|policy::redact(&message.unwrap_or(Value::Null),&policy))).collect::<Result<Vec<_>>>()?;
         let brain = crate::brain::context(db,&config,account,&Value::Null)?;
         let options = json!({"preferences":merge(catalog()["preferences"].clone(),&config["preferences"]),"brain":brain,"styleVoice":"","structuredSummary":true,"timeZone":policy["summarySchedule"]["timeZone"]});
-        update_job(db,account,string(job,"id"),&json!({"status":"running"}))?;
+        let stamp = now();
+        update_job(db,account,string(job,"id"),&json!({"status":"running","runningAt":stamp,"updatedAt":stamp}))?;
+        let id = string(job, "id").to_owned();
+        if guard.is_some_and(|guard| guard.publish(account, &id)) {
+            update_job(db, account, &id, &json!({"status":"cancelled","error":SUMMARY_CANCELLED,"updatedAt":now()}))?;
+            return Ok(None);
+        }
         Ok(Some(json!({"ai":config["ai"],"messages":messages,"options":options,"generation":ai::generation(&config,account),"brain":options["brain"]})))
     })
 }
@@ -1249,20 +1416,45 @@ async fn automation_tick(app: &App) -> Result<()> {
         if app.0.background.stopped.load(Ordering::Acquire) || count >= 4 {
             break;
         }
+        let lease = summary_lease(app);
+        let guard = lease.guard();
+        let stop = app.0.background.stop_requested(&account, "summary");
+        tokio::pin!(stop);
         let (owner, queued_job) = (account.clone(), job.clone());
-        let Some(context) = app.db(move |db| claim(db, &owner, &queued_job)).await? else {
+        let Some(context) = app
+            .db(move |db| claim(db, &owner, &queued_job, Some(&guard)))
+            .await?
+        else {
             continue;
         };
         count += 1;
-        let result = generate(app, &account, &job, &context).await;
-        app.db(move |db| finish(db, &account, &job, &context, result))
-            .await?;
+        let id = string(&job, "id").to_owned();
+        tokio::select! {
+            biased;
+            _ = &mut stop => {
+                let owner = account.clone();
+                let id = id.clone();
+                let _ = app.db(move |db| stop_summary(db, &owner, &id, "cancelled", SUMMARY_CANCELLED)).await;
+            }
+            _ = tokio::time::sleep(RUNNING_WAIT) => {
+                let owner = account.clone();
+                let id = id.clone();
+                let _ = app.db(move |db| stop_summary(db, &owner, &id, "failed", SUMMARY_TIMEOUT)).await;
+            }
+            result = generate(app, &account, &job, &context) => {
+                let owner = account.clone();
+                app.db(move |db| finish(db, &owner, &job, &context, result)).await?;
+            }
+        }
+        drop(lease);
     }
     Ok(())
 }
 /// Called by the sole service lifecycle owner, normally every thirty seconds.
 pub async fn tick(app: &App) -> Result<()> {
     let runtime = &app.0.background;
+    // Expire even when another tick holds the gate, so a stuck claim cannot block recovery.
+    app.db(expire_stale).await?;
     let Ok(_guard) = runtime.gate.try_lock() else {
         return Ok(());
     };

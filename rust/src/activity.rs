@@ -1,10 +1,14 @@
 //! Content-free progress. These records never authorize work or retries.
 use crate::{
-    service::connections,
+    error::{Error, Result},
+    service::{App, connections},
     store::{now, string},
 };
 use serde_json::{Value, json};
-use std::sync::Mutex;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 #[derive(Default)]
 pub struct Runtime {
@@ -21,12 +25,17 @@ fn pending(value: &Value) -> bool {
 fn phase(value: &Value) -> &str {
     match string(value, "status") {
         value @ ("queued" | "running" | "paused" | "complete" | "completed" | "failed"
-        | "interrupted") => value,
+        | "interrupted" | "cancelled") => value,
         _ => "interrupted",
     }
 }
 fn failure(phase: &str) -> bool {
-    ["failed", "interrupted"].contains(&phase)
+    ["failed", "interrupted", "cancelled"].contains(&phase)
+}
+fn cancellable(task: &mut Value) {
+    if task["status"] == "running" {
+        task["cancellable"] = true.into();
+    }
 }
 fn count(value: &Value) -> Option<u64> {
     value.as_u64().filter(|v| *v <= 9_007_199_254_740_991)
@@ -195,7 +204,9 @@ impl Runtime {
                 .unwrap_or_default();
             let active: Vec<_> = jobs.iter().filter(|j| pending(j)).collect();
             if let Some(last) = active.last() {
-                tasks.push(json!({"id":format!("summaries:{owner}"),"accountId":owner,"kind":"ai","label":"AI summaries","status":if active.iter().any(|j|j["status"]=="running") {"running"} else {"queued"},"detail":format!("{} running · {} queued",active.iter().filter(|j|j["status"]=="running").count(),active.iter().filter(|j|j["status"]=="queued").count()),"completed":null,"total":active.len(),"updatedAt":timestamp(&[&last["updatedAt"],&last["createdAt"]])}));
+                let mut task = json!({"id":format!("summaries:{owner}"),"accountId":owner,"kind":"ai","label":"AI summaries","status":if active.iter().any(|j|j["status"]=="running") {"running"} else {"queued"},"detail":format!("{} running · {} queued",active.iter().filter(|j|j["status"]=="running").count(),active.iter().filter(|j|j["status"]=="queued").count()),"completed":null,"total":active.len(),"updatedAt":timestamp(&[&last["updatedAt"],&last["runningAt"],&last["createdAt"]])});
+                cancellable(&mut task);
+                tasks.push(task);
             }
             if let Some(job) = jobs
                 .iter()
@@ -212,7 +223,21 @@ impl Runtime {
                 } else {
                     phase(style)
                 };
-                tasks.push(json!({"id":format!("learning:{owner}"),"accountId":owner,"kind":"learning","label":"Writing-style learning","status":status,"detail":if style["status"]=="ready" {"Proposal ready. Review and save in Learning."} else if style["status"]=="prepared" {"Samples prepared. Waiting for your confirmation in Learning."} else if status == "running" {"Analyzing approved Sent samples."} else {"Review Learning before starting another analysis."},"completed":if style["status"]=="ready"{count(&style["sampleCount"])}else{None},"total":count(&style["sampleCount"]),"updatedAt":timestamp(&[&style["updatedAt"],&style["completedAt"],&style["createdAt"]]),"error":if failure(status){json!("Learning did not complete. Review Learning; no automatic retry.")}else{Value::Null}}));
+                let mut task = json!({"id":format!("learning:{owner}"),"accountId":owner,"kind":"learning","label":"Writing-style learning","status":status,"detail":if style["status"]=="ready" {"Proposal ready. Review and save in Learning."} else if style["status"]=="prepared" {"Samples prepared. Waiting for your confirmation in Learning."} else if status == "running" {"Analyzing approved Sent samples."} else {"Review Learning before starting another analysis."},"completed":if style["status"]=="ready"{count(&style["sampleCount"])}else{None},"total":count(&style["sampleCount"]),"updatedAt":timestamp(&[&style["updatedAt"],&style["runningAt"],&style["completedAt"],&style["createdAt"]]),"error":if failure(status){json!("Learning did not complete. Review Learning; no automatic retry.")}else{Value::Null}});
+                cancellable(&mut task);
+                tasks.push(task);
+            }
+            if config["brainLearning"][owner]["status"] == "running" {
+                let memory = &config["brainLearning"][owner];
+                let mut task = json!({"id":format!("brain:{owner}"),"accountId":owner,"kind":"ai","label":"Memory analysis","status":"running","detail":"Reviewing permitted mail for memory suggestions. Nothing is saved until you accept it.","completed":null,"total":null,"updatedAt":timestamp(&[&memory["runningAt"],&memory["updatedAt"],&memory["lastAt"]])});
+                cancellable(&mut task);
+                tasks.push(task);
+            }
+            if config["replySuggestions"][owner]["job"]["status"] == "running" {
+                let job = &config["replySuggestions"][owner]["job"];
+                let mut task = json!({"id":format!("replies:{owner}"),"accountId":owner,"kind":"ai","label":"Reply suggestions","status":"running","detail":"Reviewing approved Inbox messages. Nothing is sent.","completed":count(&job["completed"]),"total":count(&job["sampleCount"]),"updatedAt":timestamp(&[&job["runningAt"],&job["updatedAt"],&job["createdAt"]])});
+                cancellable(&mut task);
+                tasks.push(task);
             }
         }
         let index = &config["searchIndex"];
@@ -249,14 +274,16 @@ impl Runtime {
                 } else {
                     status
                 };
-                tasks.push(json!({"id":format!("semantic-index:{owner}"),"accountId":owner,"kind":"index","label":"Embedding index","status":status,"detail":if index["status"]=="prepared" {"Preview ready. Waiting for your confirmation in Search."} else {"Approved messages in the current batch; only downloaded mail is indexed."},"completed":done,"total":owned.len(),"updatedAt":timestamp(&[&index["updatedAt"],&index["createdAt"]]),"error":if failure(status){json!("Indexing did not complete. Review Search; retry only after reviewing a new batch.")}else{Value::Null}}));
+                let mut task = json!({"id":format!("semantic-index:{owner}"),"accountId":owner,"kind":"index","label":"Embedding index","status":status,"detail":if index["status"]=="prepared" {"Preview ready. Waiting for your confirmation in Search."} else {"Approved messages in the current batch; only downloaded mail is indexed."},"completed":done,"total":owned.len(),"updatedAt":timestamp(&[&index["updatedAt"],&index["createdAt"]]),"error":if failure(status){json!("Indexing did not complete. Review Search; retry only after reviewing a new batch.")}else{Value::Null}});
+                cancellable(&mut task);
+                tasks.push(task);
             }
         }
         tasks.sort_by(|a, b| {
             let rank = |v: &Value| match string(v, "status") {
                 "running" => 0,
                 "queued" => 1,
-                "failed" | "interrupted" => 2,
+                "failed" | "interrupted" | "cancelled" => 2,
                 "paused" => 3,
                 _ => 4,
             };
@@ -318,4 +345,140 @@ impl Drop for Work<'_> {
             self.update("interrupted", None);
         }
     }
+}
+
+type PublishedJob = Option<(String, String)>;
+type Settle = Box<dyn FnOnce(PublishedJob) + Send>;
+
+/// Marks a claimed job abandoned if its worker is dropped before a terminal write.
+/// Drop sets the flag before taking the store lock so an in-flight claim can see it.
+pub struct RunLease {
+    abandoned: Arc<AtomicBool>,
+    slot: Arc<Mutex<PublishedJob>>,
+    settle: Option<Settle>,
+}
+#[derive(Clone)]
+pub struct RunningGuard {
+    abandoned: Arc<AtomicBool>,
+    slot: Arc<Mutex<PublishedJob>>,
+}
+impl RunLease {
+    pub fn on_drop(settle: impl FnOnce(PublishedJob) + Send + 'static) -> Self {
+        Self {
+            abandoned: Arc::new(AtomicBool::new(false)),
+            slot: Arc::new(Mutex::new(None)),
+            settle: Some(Box::new(settle)),
+        }
+    }
+    pub fn guard(&self) -> RunningGuard {
+        RunningGuard {
+            abandoned: self.abandoned.clone(),
+            slot: self.slot.clone(),
+        }
+    }
+}
+impl RunningGuard {
+    /// Returns whether the worker was already dropped. Publish happens first.
+    pub fn publish(&self, account: &str, id: &str) -> bool {
+        if let Ok(mut slot) = self.slot.lock() {
+            *slot = Some((account.to_owned(), id.to_owned()));
+        }
+        self.abandoned.load(Ordering::Acquire)
+    }
+}
+impl Drop for RunLease {
+    fn drop(&mut self) {
+        self.abandoned.store(true, Ordering::Release);
+        let published = self.slot.lock().ok().and_then(|mut slot| slot.take());
+        if let Some(settle) = self.settle.take() {
+            settle(published);
+        }
+    }
+}
+
+const NOT_CANCELLABLE: &str = "That activity cannot be cancelled from here. Pause the import in Settings, or wait for the current mail fetch to finish.";
+
+/// Cancels one persisted running activity. The owner comes from the activity id.
+pub async fn cancel(app: &App, id: &str) -> Result<Value> {
+    let Some((kind, owner)) = id.split_once(':') else {
+        return Err(Error::conflict(NOT_CANCELLABLE));
+    };
+    if owner.is_empty()
+        || owner == "all"
+        || owner == "demo"
+        || owner.len() > 254
+        || owner.contains(['\n', '\r', '\0'])
+    {
+        return Err(Error::conflict("Choose an individual connected mailbox."));
+    }
+    let settings = app.settings().await?;
+    if connections(&settings).get(owner).is_none() {
+        return Err(Error::conflict("Choose an individual connected mailbox."));
+    }
+    let owner = owner.to_owned();
+    let changed = match kind {
+        "summaries" => {
+            let account = owner.clone();
+            let changed = app
+                .db(move |db| crate::background::cancel_running_summaries(db, &account))
+                .await?;
+            if changed {
+                app.0.background.request_stop(&owner, "summary");
+            }
+            changed
+        }
+        "learning" => {
+            let account = owner.clone();
+            let changed = app
+                .db(move |db| crate::learning::cancel_running(db, &account))
+                .await?;
+            if changed {
+                app.0.background.request_stop(&owner, "learning");
+            }
+            changed
+        }
+        "brain" => {
+            let account = owner.clone();
+            let changed = app
+                .db(move |db| crate::brain::cancel_running(db, &account))
+                .await?;
+            if changed {
+                app.0.background.request_stop(&owner, "brain");
+            }
+            changed
+        }
+        "replies" => {
+            let account = owner.clone();
+            let changed = app
+                .db(move |db| crate::reply_suggestions::cancel_running(db, &account))
+                .await?;
+            if changed {
+                crate::reply_suggestions::signal_cancel(app, &owner);
+            }
+            changed
+        }
+        "semantic-index" => {
+            if settings["searchIndex"]["status"] != "running" {
+                false
+            } else {
+                let job = string(&settings["searchIndex"], "id").to_owned();
+                if job.is_empty() {
+                    false
+                } else {
+                    app.db(move |db| crate::smart_search::control(db, "cancel", &job))
+                        .await?;
+                    app.0.smart.invalidate().await;
+                    true
+                }
+            }
+        }
+        "sync" | "import" | "last-summary" => return Err(Error::conflict(NOT_CANCELLABLE)),
+        _ => return Err(Error::conflict(NOT_CANCELLABLE)),
+    };
+    if !changed {
+        return Err(Error::conflict("That activity is no longer running."));
+    }
+    let mut snapshot = app.0.activity.snapshot(&app.settings().await?);
+    snapshot["cancelled"] = true.into();
+    Ok(snapshot)
 }

@@ -185,6 +185,16 @@ impl App {
         .await
         .map_err(|_| Error::new(500, "The database operation could not be completed."))?
     }
+    /// Store lock only. Drop handlers use this so they wait for an in-flight `db` write
+    /// without taking the single database permit.
+    pub fn blocking<T>(&self, work: impl FnOnce(&Store) -> Result<T>) -> Result<T> {
+        let db = self
+            .0
+            .store
+            .lock()
+            .map_err(|_| Error::new(503, "Restart Morrow Mail to reopen the workspace."))?;
+        work(&db)
+    }
     pub fn router(&self) -> Router {
         Router::new().fallback(handle).with_state(self.clone())
     }
@@ -809,6 +819,13 @@ pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
         }
         ("GET", ["state"]) => app.state(&owner, context.paged).await?,
         ("GET", ["activity"]) => app.0.activity.snapshot(&app.settings().await?),
+        ("POST", ["activity", "cancel"]) => {
+            let id = string(&body, "id");
+            if id.is_empty() || id.len() > 300 {
+                return Err(Error::invalid("Choose a running activity to cancel."));
+            }
+            crate::activity::cancel(app, id).await?
+        }
         ("GET", ["state", "revision"]) => {
             app.db(move |db| Ok(json!({"revision":db.revision()?,"accountId":owner})))
                 .await?

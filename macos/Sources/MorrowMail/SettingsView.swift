@@ -435,7 +435,7 @@ struct NativeSettingsView: View {
     var historyOptions: some View {
 GroupBox("History for your next connection or import") {
                 VStack(alignment: .leading, spacing: 12) {
-                    ActivityStatusView(value: model.activity, error: model.activityError)
+                    ActivityStatusView(value: model.activity, error: model.activityError, onCancel: { model.cancelActivity($0) })
                     Picker("History range", selection: Binding(get: { Int(importSettings["months"].number) }, set: { importSettings["months"] = .number(Double($0)) })) {
                         Text("All history (no date limit)").tag(0)
                         ForEach([1, 3, 6, 12], id: \.self) { Text("Last \($0) month(s)").tag($0) }

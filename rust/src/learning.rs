@@ -20,6 +20,10 @@ use std::{
 // Existing weekly consent keeps its seven-day cadence; daily analysis needs a new opt-in.
 const DAY_MS: i64 = 86_400_000;
 const WEEK_MS: i64 = 7 * DAY_MS;
+const CANCELLED: &str =
+    "Style analysis was cancelled. Nothing was saved. Prepare fresh samples to retry.";
+const TIMED_OUT: &str =
+    "Style analysis timed out. Nothing was saved. Prepare fresh samples to retry.";
 
 fn defaults() -> Value {
     json!({"enabled":false,"weekly":false,"daily":false,"months":3,"maxSamples":50,"tokenBudget":16000})
@@ -377,14 +381,23 @@ pub fn prepare_at(
             "Enable style learning, Email Brain, Sent folder and email body access in AI permissions.",
         ));
     }
-    let current = read(&settings, owner);
+    let mut current = read(&settings, owner);
     let options = config(&settings, owner);
     if string(&settings["ai"], "baseUrl").is_empty() || string(&settings["ai"], "model").is_empty()
     {
         return Err(Error::conflict("Configure an AI model first."));
     }
     if current["preview"]["status"] == "running" {
-        return Err(Error::conflict("Style analysis is already running."));
+        if crate::store::stamp_expired(
+            string(&current["preview"], "runningAt"),
+            crate::store::RUNNING_LIMIT,
+        ) {
+            current["preview"]["status"] = "failed".into();
+            current["preview"]["error"] = TIMED_OUT.into();
+            write(db, owner, current.clone())?;
+        } else {
+            return Err(Error::conflict("Style analysis is already running."));
+        }
     }
     let end = time.to_rfc3339_opts(SecondsFormat::Millis, true);
     let start = time
@@ -490,9 +503,62 @@ pub fn prepare_at(
     write(db, owner, merge(current, &json!({"preview":preview})))?;
     Ok(preview)
 }
+fn mark_preview(db: &Store, owner: &str, id: &str, status: &str, error: &str) -> Result<bool> {
+    let settings = db.settings()?;
+    let current = read(&settings, owner);
+    if current["preview"]["id"] != id || current["preview"]["status"] != "running" {
+        return Ok(false);
+    }
+    let mut preview = current["preview"].clone();
+    preview["status"] = status.into();
+    preview["error"] = error.into();
+    write(db, owner, merge(current, &json!({"preview": preview})))?;
+    Ok(true)
+}
+pub fn cancel_running(db: &Store, owner: &str) -> Result<bool> {
+    let id = string(&read(&db.settings()?, owner)["preview"], "id").to_owned();
+    if id.is_empty() {
+        return Ok(false);
+    }
+    mark_preview(db, owner, &id, "cancelled", CANCELLED)
+}
+pub fn expire_running(db: &Store) -> Result<()> {
+    let settings = db.settings()?;
+    for owner in settings["styleLearning"]
+        .as_object()
+        .into_iter()
+        .flat_map(|entries| entries.keys())
+    {
+        let current = read(&settings, owner);
+        if current["preview"]["status"] == "running"
+            && crate::store::stamp_expired(
+                string(&current["preview"], "runningAt"),
+                crate::store::RUNNING_LIMIT,
+            )
+        {
+            let id = string(&current["preview"], "id").to_owned();
+            mark_preview(db, owner, &id, "failed", TIMED_OUT)?;
+        }
+    }
+    Ok(())
+}
 pub async fn generate(app: &App, owner: &str, id: &str) -> Result<()> {
     let owner = owner.to_owned();
     let id = id.to_owned();
+    let app_for_lease = app.clone();
+    let lease_owner = owner.clone();
+    let lease_id = id.clone();
+    let _lease = crate::activity::RunLease::on_drop(move |published| {
+        if published.is_none() {
+            return;
+        }
+        let _ = app_for_lease.blocking(move |db| {
+            mark_preview(db, &lease_owner, &lease_id, "cancelled", CANCELLED).map(|_| ())
+        });
+    });
+    let guard = _lease.guard();
+    let stop = app.0.background.stop_requested(&owner, "learning");
+    tokio::pin!(stop);
     let account = owner.clone();
     let expected = id.clone();
     let (preview, settings) = app
@@ -508,14 +574,19 @@ pub async fn generate(app: &App, owner: &str, id: &str) -> Result<()> {
                     "Preview expired or was already used. Prepare fresh samples.",
                 ));
             }
+            let stamp = now();
             write(
                 db,
                 &account,
                 merge(
                     current,
-                    &json!({"preview":merge(preview.clone(),&json!({"status":"running"}))}),
+                    &json!({"preview":merge(preview.clone(),&json!({"status":"running","runningAt":stamp}))}),
                 ),
             )?;
+            if guard.publish(&account, &expected) {
+                mark_preview(db, &account, &expected, "cancelled", CANCELLED)?;
+                return Err(Error::conflict(CANCELLED));
+            }
             Ok((preview, settings))
         })
         .await?;
@@ -525,22 +596,57 @@ pub async fn generate(app: &App, owner: &str, id: &str) -> Result<()> {
         .flatten()
         .map(|i| json!({"body":i["body"]}))
         .collect();
-    let result = run_model(
-        &app.0.client,
-        &model_settings(&settings),
-        "style",
-        &messages,
-        "",
-        &model_options(&settings, &preview["baseProfile"]),
-    )
-    .await;
-    app.db(move|db|{
-        let settings=db.settings()?;let current=read(&settings,&owner);
-        let success=result.ok().filter(|result|{let voice=string(result,"text").trim();!voice.is_empty()&&voice.encode_utf16().count()<=2000});
-        if let Some(result)=success.filter(|_|current["preview"]["id"]==id&&current["preview"]["status"]=="running") && valid(db,&settings,&owner,&preview)?{write(db,&owner,merge(current,&json!({"analyzedThrough":preview["through"],"preview":merge(preview.clone(),&json!({"status":"ready","voice":string(&result,"text").trim(),"usage":result["usage"]}))})))?;return Ok(());}
-        if current["preview"]["id"]==id{write(db,&owner,merge(current,&json!({"preview":merge(preview,&json!({"status":"failed","error":"Analysis failed or its context changed. Tokens may have been used. Prepare a new preview to retry explicitly."}))})))?;}
-        Err(Error::new(502,"Style analysis failed or its context changed. Check settings and prepare fresh samples; tokens may have been used."))
-    }).await
+    let model = model_settings(&settings);
+    let options = model_options(&settings, &preview["baseProfile"]);
+    let result = tokio::select! {
+        biased;
+        _ = &mut stop => {
+            let owner = owner.clone();
+            let id = id.clone();
+            app.db(move |db| mark_preview(db, &owner, &id, "cancelled", CANCELLED)).await?;
+            return Ok(());
+        }
+        _ = tokio::time::sleep(std::time::Duration::from_secs(90)) => {
+            let owner = owner.clone();
+            let id = id.clone();
+            app.db(move |db| mark_preview(db, &owner, &id, "failed", TIMED_OUT)).await?;
+            return Err(Error::new(502, TIMED_OUT));
+        }
+        result = run_model(&app.0.client, &model, "style", &messages, "", &options) => result,
+    };
+    app.db(move |db| {
+        let settings = db.settings()?;
+        let current = read(&settings, &owner);
+        if current["preview"]["id"] == id && current["preview"]["status"] == "cancelled" {
+            return Ok(());
+        }
+        let success = result.ok().filter(|result| {
+            let voice = string(result, "text").trim();
+            !voice.is_empty() && voice.encode_utf16().count() <= 2000
+        });
+        if let Some(result) = success
+            .filter(|_| current["preview"]["id"] == id && current["preview"]["status"] == "running")
+            && valid(db, &settings, &owner, &preview)?
+        {
+            write(
+                db,
+                &owner,
+                merge(
+                    current,
+                    &json!({"analyzedThrough":preview["through"],"preview":merge(preview.clone(),&json!({"status":"ready","voice":string(&result,"text").trim(),"usage":result["usage"]}))}),
+                ),
+            )?;
+            return Ok(());
+        }
+        if current["preview"]["id"] == id && current["preview"]["status"] == "running" {
+            write(db, &owner, merge(current, &json!({"preview":merge(preview,&json!({"status":"failed","error":"Analysis failed or its context changed. Tokens may have been used. Prepare a new preview to retry explicitly."}))})))?;
+        }
+        Err(Error::new(
+            502,
+            "Style analysis failed or its context changed. Check settings and prepare fresh samples; tokens may have been used.",
+        ))
+    })
+    .await
 }
 pub fn apply(db: &Store, owner: &str, input: &Value) -> Result<()> {
     let settings = db.settings()?;

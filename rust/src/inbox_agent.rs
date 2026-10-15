@@ -301,7 +301,8 @@ async fn send(app: &App, owner: String, body: &Value) -> Result<Value> {
     let prepared = app
         .db(move |db| {
             let (policy, stamp) = ensure_agent(db, &owner_for_db)?;
-            let mut conversation = raw(db, &owner_for_db, &id_for_db)?;
+            // A live worker fails try_begin above. A leftover running or confirming row is stale.
+            let mut conversation = load(db, &owner_for_db, &id_for_db, false)?;
             match string(&conversation, "status") {
                 "running" | "confirming" => {
                     return Err(Error::conflict(

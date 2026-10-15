@@ -26,6 +26,16 @@ Synthetic coverage does not establish live-account acceptance.
 
 **Current source — hybrid navigation shell:** macOS and Windows share a Mail | Agent | Brain primary chrome. Cold start remains the Mail three-pane. Agent opens the existing Inbox Agent, Today, and Skills pages. Brain opens the existing persona and writing-rules page, plus categories. AI Studio is an advanced footer and Settings entry. Its More menu keeps one-release “Moved to Agent” and “Moved to Brain” hints for the pages that moved; Local Inbox Rules, local simulations, and simulation history stay there. Review-before-send, account routing, and provider writes are unchanged. This shell is not a paired release claim.
 
+**Running activity recovery:** a summary, style analysis, memory analysis, or reply
+batch left `running` after cancel, a 90-second timeout, client disconnect, or
+worker drop is marked cancelled or failed. That finished job no longer blocks
+the next Ask, skill, Inbox Agent, or Today action. Activity can cancel a stuck
+running summary, style analysis, memory analysis, reply batch, or embedding
+batch; cancellation discards that result and does not send mail. Opening the
+app still reconciles leftover `running` work from the previous process. Import
+jobs keep their own pause and resume path and are not expired by this timeout.
+These checks are fixture tests, not live-account acceptance.
+
 **0.8.0 — writing rules, Today, skill reviews and Inbox Agent:** the combined
 PR #42–46 source passed the exact-head native checks and matches the main merge.
 Writing edits survive unrelated saves, the agent revalidates account/permission/
