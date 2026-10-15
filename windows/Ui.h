@@ -133,6 +133,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     winrt::Windows::Foundation::IAsyncAction messageAI(Json message, winrt::hstring action, bool history = false);
     winrt::Windows::Foundation::IAsyncAction organize(Json message, winrt::hstring preferredKind = {}, winrt::hstring preferredDestination = {});
     winrt::Windows::Foundation::IAsyncOperation<Json> manageFolders(winrt::hstring account, winrt::hstring initialFolder = {}, bool creationOnly = false);
+    winrt::Windows::Foundation::IAsyncAction manageFolderSync(winrt::hstring account);
     controls::MenuFlyout organizationMenu(Json message);
     winrt::hstring startMailDrag(Json message);
     Json mailDropMessage(winrt::hstring const& token, winrt::hstring const& account, winrt::hstring const& destination) const;
@@ -181,6 +182,7 @@ void appendAttachmentControls(std::shared_ptr<Shell> shell, controls::StackPanel
 void appendReader(std::shared_ptr<Shell> shell, controls::StackPanel const& container, Json message, double height = 480, std::function<bool()> reviewContext = {});
 Json refreshedReaderMessage(Json const& previous, Json message);
 winrt::Windows::Foundation::IAsyncAction folderPickerChecks(controls::Grid root);
+winrt::Windows::Foundation::IAsyncAction folderSyncChecks(controls::Grid root);
 void readerSecurityChecks();
 winrt::Windows::Foundation::IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell);
 }

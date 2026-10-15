@@ -885,6 +885,30 @@ pub(crate) async fn fetch_page_cached(
 ) -> Result<Value> {
     fetch_page_cached_with_tls(app, mail, options, &connector()?).await
 }
+pub(crate) async fn fetch_selected_page_cached(
+    app: &crate::service::App,
+    mail: &Value,
+    path: &str,
+    checkpoint: &Value,
+) -> Result<Value> {
+    fetch_selected_page_cached_with_tls(app, mail, path, checkpoint, &connector()?).await
+}
+pub async fn fetch_selected_page_cached_with_tls(
+    app: &crate::service::App,
+    mail: &Value,
+    path: &str,
+    checkpoint: &Value,
+    connector: &native_tls::TlsConnector,
+) -> Result<Value> {
+    valid_folder(path)?;
+    let options = json!({"folder":"archive","incremental":true,"syncCheckpoints":{path:checkpoint},"expectedValidity":checkpoint["validity"],"selectedCustomFolder":true});
+    tokio::time::timeout(
+        Duration::from_secs(45),
+        fetch_folder(mail, &options, connector, Some(path), Some(app)),
+    )
+    .await
+    .map_err(|_| network_error())?
+}
 pub async fn write_flags(mail: &Value, message: &Value, patch: &Value) -> Result<Value> {
     write_flags_with_tls(mail, message, patch, &connector()?).await
 }
@@ -1737,15 +1761,36 @@ async fn fetch_folder(
     } else {
         names(&mut session).await?.into_iter().find(|(_,sent)|*sent).map(|(path,_)|path).ok_or_else(||Error::new(409,"This IMAP server does not identify a Sent folder. Import Inbox only or configure Sent on your provider."))?
     };
-    let mailbox = session
-        .examine(encode_folder(&path)?)
-        .await
-        .map_err(imap_error)?;
+    if options["selectedCustomFolder"] == true {
+        let catalog = list_names(&mut session).await?;
+        if !catalog
+            .iter()
+            .any(|folder| folder.path == path && folder.selectable && folder.editable)
+            || catalog.iter().any(|folder| {
+                ["spam", "trash", "virtual"].contains(&folder.kind)
+                    && (folder.path == path
+                        || folder.delimiter.as_ref().is_some_and(|delimiter| {
+                            !delimiter.is_empty()
+                                && path.starts_with(&format!("{}{delimiter}", folder.path))
+                        }))
+            })
+        {
+            let mut error = Error::conflict("The selected custom IMAP folder is unavailable.");
+            error.body["code"] = "folder_unavailable".into();
+            return Err(error);
+        }
+    }
+    let mailbox = examine_read(&mut session, &path).await?;
     let validity = mailbox
         .uid_validity
         .filter(|value| *value > 0)
         .ok_or_else(providers::remote_error)?
         .to_string();
+    if options["expectedValidity"].is_string() && options["expectedValidity"] != validity {
+        let mut error = Error::conflict("The selected IMAP folder changed UIDVALIDITY.");
+        error.body["code"] = "folder_changed".into();
+        return Err(error);
+    }
     let cursor = &options["cursor"];
     let cursor_uid = if !cursor.is_null() {
         if cursor["path"] != path || cursor["validity"] != validity {
@@ -1764,10 +1809,21 @@ async fn fetch_folder(
         None
     };
     if mailbox.exists == 0 || cursor_uid == Some(1) {
+        let previous = options["syncCheckpoints"][&path]["uid"]
+            .as_u64()
+            .and_then(|uid| u32::try_from(uid).ok())
+            .unwrap_or(0);
+        let mut upper = mailbox.uid_next.unwrap_or(1).saturating_sub(1);
+        if options["selectedCustomFolder"] == true {
+            if mailbox.uid_next.is_some() && upper < previous {
+                return Err(incomplete_read());
+            }
+            upper = upper.max(previous);
+        }
         let _ = session.logout().await;
         let mut page = json!({"messages":[],"nextCursor":null});
         if options["incremental"] == true {
-            page["syncCheckpoint"] = json!({"path":path,"validity":validity,"uid":mailbox.uid_next.unwrap_or(1).saturating_sub(1),"connection":crate::folders::connection_version(mail),"more":false});
+            page["syncCheckpoint"] = json!({"path":path,"validity":validity,"uid":upper,"connection":crate::folders::connection_version(mail),"more":false});
             page["expectedSyncCheckpoint"] = options["syncCheckpoints"][&path].clone();
         }
         return Ok(page);
@@ -1822,6 +1878,12 @@ async fn fetch_folder(
     } else {
         None
     };
+    if options["selectedCustomFolder"] == true
+        && mailbox.uid_next.is_some()
+        && previous_uid.is_some_and(|previous| previous > observed_upper)
+    {
+        return Err(incomplete_read());
+    }
     let mut ids = Vec::new();
     // ponytail: fixed UID windows bound SEARCH to 8192 IDs / 128 KiB per command.
     // Scan at most 32 windows per page; persist an advancing cursor across sparse gaps.

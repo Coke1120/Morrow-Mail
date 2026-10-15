@@ -625,6 +625,8 @@ IAsyncAction Shell::smoke() {
         }
         enter("folder-manager-and-pickers");
         co_await folderPickerChecks(root);
+        enter("selected-folder-sync");
+        co_await folderSyncChecks(root);
         enter("interaction-guards");
         co_await nativeInteractionChecks(lifetime);
         enter("general-navigation-save");

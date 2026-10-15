@@ -982,12 +982,29 @@ pub(crate) async fn commit_sync_page(
     let mail = mail.clone();
     let checkpoint = page["syncCheckpoint"].clone();
     let expected = page["expectedSyncCheckpoint"].clone();
+    let selection = page["selectedFolderSync"].clone();
     app.db(move |db| {
         if connections(&db.settings()?).get(&owner) != Some(&mail) {
             return Err(Error::conflict("This mailbox changed during sync."));
         }
         db.transaction(|db| {
-            if checkpoint.is_object() {
+            if selection.is_object() {
+                crate::imap_folder_sync::validate_page(
+                    &db.settings()?,
+                    &owner,
+                    &mail,
+                    &selection,
+                    &checkpoint,
+                )?;
+                if messages
+                    .iter()
+                    .any(|message| message["providerFolderId"] != checkpoint["path"])
+                {
+                    return Err(Error::conflict(
+                        "This page does not belong to the selected folder.",
+                    ));
+                }
+            } else if checkpoint.is_object() {
                 let config = db.settings()?;
                 let path = string(&checkpoint, "path");
                 if checkpoint["connection"] != crate::folders::connection_version(&mail)
@@ -1010,7 +1027,9 @@ pub(crate) async fn commit_sync_page(
                 })
                 .collect::<Vec<_>>();
             crate::background::arrivals(db, &owner, &arrivals)?;
-            if checkpoint.is_object() {
+            if selection.is_object() {
+                crate::imap_folder_sync::commit_page(db, &owner, &selection, &checkpoint)?;
+            } else if checkpoint.is_object() {
                 let mut state = merge(json!({}), &config["imapSync"][&owner]);
                 if !state["folders"].is_object() {
                     state["folders"] = json!({});
@@ -1023,7 +1042,69 @@ pub(crate) async fn commit_sync_page(
     })
     .await
 }
+/// Synthetic protocol fixtures use an explicit trusted TLS root for page and cached-mail reads.
+pub async fn sync_imap_with_tls(
+    app: &App,
+    owners: &[String],
+    connector: &native_tls::TlsConnector,
+) -> Result<Value> {
+    sync_round(app, owners, Some(connector)).await
+}
+
+async fn imap_primary_round(
+    app: &App,
+    mail: &Value,
+    connector: Option<&native_tls::TlsConnector>,
+) -> Result<Option<&'static str>> {
+    let owner = string(mail, "email");
+    let config = app.settings().await?;
+    let job = crate::background::current_import(&config, mail).unwrap_or(&Value::Null);
+    let options = &job["options"];
+    let folders = if options.is_object() {
+        ["inbox", "sent"]
+            .into_iter()
+            .filter(|folder| options["allMail"] == true || options[*folder] == true)
+            .collect::<Vec<_>>()
+    } else {
+        vec!["inbox"]
+    };
+    let mut warning = None;
+    let mut fetched = HashMap::new();
+    crate::reconcile::priority(app, mail, &mut fetched).await?;
+    for folder in folders {
+        let mut input = json!({"folder":folder,"incremental":true});
+        input["syncCheckpoints"] = config["imapSync"][owner]["folders"].clone();
+        input["historyComplete"] = (job["status"] == "complete").into();
+        if !string(job, "since").is_empty() {
+            input["since"] = job["since"].clone();
+        }
+        // Bounded recent/new-UID pages; history keeps its independent reviewed cursor.
+        let page = if let Some(connector) = connector {
+            let page = imap::fetch_page_cached_with_tls(app, mail, &input, connector).await;
+            finish_read(app, mail, page).await?
+        } else {
+            fetch_page_cached(app, mail, &input, &mut fetched).await?
+        };
+        warning = warning.or(sync_warning(&page));
+        commit_sync_page(app, owner, mail, &page).await?;
+    }
+    if let Some(connector) = connector {
+        crate::reconcile::sync_with_tls(app, mail, &mut fetched, connector).await?;
+    } else {
+        crate::reconcile::sync(app, mail, &mut fetched).await?;
+    }
+    Ok(warning)
+}
+
 pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
+    sync_round(app, owners, None).await
+}
+
+async fn sync_round(
+    app: &App,
+    owners: &[String],
+    connector: Option<&native_tls::TlsConnector>,
+) -> Result<Value> {
     struct Syncing<'a>(&'a App);
     impl Drop for Syncing<'_> {
         fn drop(&mut self) {
@@ -1037,20 +1118,37 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
         .lock()
         .map_err(|_| Error::new(503, "Restart the workspace."))? = owners.to_vec();
     let _syncing = Syncing(app);
+    let initial = app.settings().await?;
+    let initial_connections = connections(&initial);
     let mut errors = Vec::new();
+    let mut selected_folders = Vec::new();
     for owner in owners {
         let config = app.settings().await?;
-        if let Some(mail) = connections(&config).get(owner)
-            && let Some(error) = read_backoff(&config, mail)
-        {
-            errors.push(error.body);
-            continue;
-        }
         let previous = config["backgroundSyncErrors"]
             .as_array()
             .and_then(|errors| errors.iter().find(|error| error["accountId"] == *owner))
             .cloned()
             .unwrap_or(Value::Null);
+        let Some(original) = initial_connections.get(owner) else {
+            errors.push(sync_failure(
+                owner,
+                &Error::conflict("Connect a mailbox first."),
+                &previous,
+            ));
+            continue;
+        };
+        if connections(&config).get(owner) != Some(original) {
+            errors.push(sync_failure(
+                owner,
+                &Error::conflict("This mailbox changed during sync."),
+                &previous,
+            ));
+            continue;
+        }
+        if let Some(error) = read_backoff(&config, original) {
+            errors.push(error.body);
+            continue;
+        }
         if previous["code"] == "rate_limited"
             && !string(&previous, "nextRetryAt").is_empty()
             && string(&previous, "nextRetryAt") > now().as_str()
@@ -1058,8 +1156,24 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
             errors.push(previous);
             continue;
         }
+        if ["", "imap"].contains(&string(original, "provider"))
+            && initial["imapFolderSync"][owner]["folders"]
+                .as_array()
+                .is_some_and(|entries| !entries.is_empty())
+        {
+            selected_folders.push((
+                owner.clone(),
+                original.clone(),
+                initial["imapFolderSync"][owner]["version"].clone(),
+                previous.clone(),
+            ));
+        }
         let work = async {
-            let mail = current_mail(app, owner).await?;
+            let mail = if ["", "imap"].contains(&string(original, "provider")) {
+                original.clone()
+            } else {
+                refresh_connection(app, owner, original, false).await?
+            };
             if mail["provider"] == "google" {
                 // Restart from the last committed checkpoint after at most one refresh.
                 // Every attempt gets its own connection and partial-page fetch cache.
@@ -1083,44 +1197,13 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
                 })??;
                 return Ok(None);
             }
-            let config = app.settings().await?;
-            let job = crate::background::current_import(&config, &mail).unwrap_or(&Value::Null);
-            let options = &job["options"];
-            let folders = if mail["provider"] == "google" {
-                vec!["inbox", "sent", "drafts", "starred", "all"]
-            } else if options.is_object() {
-                ["inbox", "sent"]
-                    .into_iter()
-                    .filter(|folder| options["allMail"] == true || options[*folder] == true)
-                    .collect::<Vec<_>>()
-            } else {
-                vec!["inbox"]
-            };
-            let mut warning = None;
-            let mut fetched = HashMap::new();
-            crate::reconcile::priority(app, &mail, &mut fetched).await?;
-            for folder in folders {
-                let mut input = json!({"folder":folder});
-                input["incremental"] = true.into();
-                input["syncCheckpoints"] = config["imapSync"][owner]["folders"].clone();
-                input["historyComplete"] = (job["status"] == "complete").into();
-                if !string(job, "since").is_empty() {
-                    input["since"] = job["since"].clone();
-                }
-                // Refresh is deliberately bounded to the newest provider page in each
-                // scope. Complete, resumable pagination belongs to the reviewed history
-                // importer, which persists checkpoints and provider backoff metadata.
-                let page = fetch_page_cached(app, &mail, &input, &mut fetched).await?;
-                warning = warning.or(sync_warning(&page));
-                commit_sync_page(app, owner, &mail, &page).await?;
-            }
-            crate::reconcile::sync(app, &mail, &mut fetched).await?;
-            Ok(warning)
+            imap_primary_round(app, &mail, connector).await
         };
         // Keep the provider state machine off nested CLI/router poll stacks.
         // Windows' existing main-thread stack remains unchanged.
         let (result, mut profile) = crate::sync_profile::capture(Box::pin(work)).await;
         profile["ok"] = result.is_ok().into();
+        profile["scope"] = "primary".into();
         profile["provider"] = match string(&config["mailAccounts"][owner], "provider") {
             "google" => "google",
             "microsoft" => "microsoft",
@@ -1133,6 +1216,33 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
             Ok(None) => {}
             Ok(Some(warning)) => errors.push(json!({"accountId":owner,"error":warning})),
             Err(error) => errors.push(sync_failure(owner, &error, &previous)),
+        }
+    }
+    // Finish every target mailbox's existing reads before optional custom-folder pages.
+    // Preserve the round's reviewed owner/connection/selection snapshot between phases.
+    for (owner, connection, version, previous) in selected_folders {
+        let config = app.settings().await?;
+        if connections(&config).get(&owner) != Some(&connection)
+            || config["imapFolderSync"][&owner]["version"] != version
+        {
+            continue;
+        }
+        let work = async {
+            if let Some(connector) = connector {
+                crate::imap_folder_sync::sync_with_tls(app, &connection, &version, connector).await
+            } else {
+                crate::imap_folder_sync::sync(app, &connection, &version).await
+            }
+        };
+        let (result, mut profile) = crate::sync_profile::capture(Box::pin(work)).await;
+        profile["ok"] = result.is_ok().into();
+        profile["scope"] = "selected_folders".into();
+        profile["provider"] = "imap".into();
+        eprintln!("selected_folder_sync_profile {profile}");
+        if let Err(error) = result
+            && !errors.iter().any(|error| error["accountId"] == owner)
+        {
+            errors.push(sync_failure(&owner, &error, &previous));
         }
     }
     let owners = owners.to_vec();
@@ -1444,6 +1554,7 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                 .mailbox
                 .try_lock()
                 .map_err(|_| Error::conflict("Another mailbox operation is running."))?;
+            crate::imap_folder_sync::validate_sync_review(&app.settings().await?, &owner, &body)?;
             let owners = if owner == "all" {
                 connections(&app.settings().await?)
                     .as_object()

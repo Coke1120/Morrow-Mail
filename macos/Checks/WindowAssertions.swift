@@ -15,6 +15,7 @@ struct WindowAssertions {
         checkMailDrop()
         checkReaderBack()
         checkFolderLayouts()
+        checkFolderSyncSelection()
         checkComposeLayout()
         checkCalendarLayout()
         for width in [1040.0, 1877.0] { checkInitialSplit(width: width, vertical: true) }
@@ -225,6 +226,125 @@ struct WindowAssertions {
             window.close()
         }
         print("Cached folder hierarchy, create form and Gmail checklist fit native sheets without provider/service requests.")
+    }
+
+    @MainActor static func checkFolderSyncSelection() {
+        let owner = "folders@example.invalid", other = "other@example.invalid"
+        func row(_ id: String, selected: Bool = false, available: Bool = true) -> JSON {
+            .object(["folderId": .string(id), "name": .string(id), "selected": .bool(selected), "available": .bool(available),
+                     "selectionId": selected ? .string("saved-" + id) : .null, "status": .string(selected ? "queued" : "unselected")])
+        }
+        let original: JSON = .object(["accountId": .string(owner), "supported": .bool(true), "connectionVersion": .string("connection-1"),
+            "selectionVersion": .string("selection-1"), "catalogFresh": .bool(true), "automaticSyncEnabled": .bool(false), "intervalMinutes": .number(0),
+            "folders": .array([row("Projects", selected: true), row("Projects / 中文"), row("Other")])])
+        var editor = FolderSyncSelection(owner: owner)
+        assert(editor.adopt(original) && !editor.dirty && editor.canSync && !editor.canSave)
+        editor.select("Projects / 中文", true)
+        assert(editor.dirty && editor.canSave && !editor.canSync)
+        assert(Set(editor.payload["folderIds"].array.map(\.string)) == ["Projects", "Projects / 中文"])
+        assert(editor.payload["connectionVersion"] == original["connectionVersion"] && editor.payload["selectionVersion"] == original["selectionVersion"])
+        var replacement = original; replacement["selectionVersion"] = .string("selection-2")
+        assert(!editor.adopt(replacement) && editor.dirty && editor.snapshot == original, "A late reload must not replace unsaved selection.")
+        editor.discard(); assert(editor.adopt(replacement) && !editor.dirty)
+        var otherOwner = replacement; otherOwner["accountId"] = .string(other)
+        assert(!editor.saved(otherOwner) && editor.snapshot == replacement, "Duplicate folder paths must retain mailbox ownership.")
+        var duplicate = original; duplicate["folders"] = .array([row("Projects"), row("Projects")])
+        assert(!editor.adopt(duplicate))
+        var stale = original; stale["catalogFresh"] = .bool(false)
+        stale["folders"] = .array([row("Projects", selected: true, available: false), row("Other", selected: true, available: false)])
+        assert(editor.saved(stale)); editor.select("Projects", false); assert(editor.dirty && !editor.canSave)
+        editor.deselectAll(); assert(editor.canSave && editor.payload["folderIds"] == .array([]), "All selections can be cancelled with a stale folder catalog.")
+        var crowded = original; crowded["folders"] = .array((0..<21).map { row("Folder \($0)") })
+        assert(editor.saved(crowded))
+        for index in 0..<21 { editor.select("Folder \(index)", true) }
+        assert(editor.selected.count == 20 && editor.canSave)
+        editor.discard(); assert(editor.selected.isEmpty)
+        for code in ["folder_changed", "connection_changed", "checkpoint_invalid"] {
+            var reset = original, affected = row("Projects", selected: true)
+            affected["errorCode"] = .string(code); affected["recoveryAction"] = .string("reselect")
+            reset["folders"] = .array([affected]); assert(editor.saved(reset))
+            assert(!editor.dirty && editor.needsBaseline && !editor.canSave && !editor.canSync)
+            editor.reviewedBaseline = true; assert(editor.canSave, "Saving unchanged paths must allow an explicitly reviewed new baseline.")
+            editor.select("Projects", false); assert(!editor.reviewedBaseline && editor.canSave)
+        }
+        var retry = original, failed = row("Projects", selected: true)
+        failed["recoveryAction"] = .string("retry"); failed["status"] = .string("retry")
+        failed["error"] = .string("The mail server could not be reached. Try again later.")
+        failed["coverageWarning"] = .string("The initial recent-page scan reached its limit. Use history import to download the remaining older mail.")
+        failed["lastAttemptAt"] = .string("2026-10-15T09:00:00Z")
+        retry["folders"] = .array([failed, row("Other")]); assert(editor.saved(retry))
+        assert(editor.retryPayload(failed)?["selectionId"].string == "saved-Projects")
+        assert(editor.retryPayload(failed)?["connectionVersion"] == retry["connectionVersion"])
+        assert(editor.syncPayload["folderSyncConnectionVersion"] == retry["connectionVersion"] && editor.syncPayload["folderSyncSelectionVersion"] == retry["selectionVersion"])
+        editor.select("Other", true); assert(editor.retryPayload(failed) == nil); editor.discard()
+        assert(folderSyncTimes(failed).components(separatedBy: "Not recorded").count == 3)
+        assert(folderSyncStatus(failed) == "Retry pending")
+        failed["status"] = .string("current"); assert(folderSyncStatus(failed) == "Last bounded check caught up")
+        failed["status"] = .string("unknown"); assert(folderSyncStatus(failed) == "Status not recorded")
+        let connection: JSON = .object(["configured": .bool(true)]), scope = other + "\ninbox"
+        let accounts: [JSON] = [owner, other].map { .object(["id": .string($0), "settings": connection]) }
+        func current(active: Bool = true, page: String? = nil, list: [JSON]? = nil, ticket: UInt64 = 7) -> Bool {
+            folderSyncContextCurrent(owner: owner, scope: scope, connection: connection, ticket: 7, active: active, currentScope: page ?? scope, accounts: list ?? accounts, operation: ticket)
+        }
+        assert(current(), "A mailbox's own folder controls can open from another selected mailbox.")
+        assert(!current(active: false) && !current(page: owner + "\ninbox") && !current(ticket: 8) && !current(list: [accounts[1]]))
+        var reconnected = accounts; reconnected[0]["settings"] = .object(["configured": .bool(true), "connection": .string("new")])
+        assert(!current(list: reconnected), "Late responses after reconnect must not replace the buffer.")
+        let capturedVersions = FolderSyncVersions(original), newerSelection = FolderSyncVersions(replacement)
+        var newConnection = original; newConnection["connectionVersion"] = .string("connection-2")
+        let reconnectedVersions = FolderSyncVersions(newConnection)
+        assert(folderSyncVersionsCurrent(capturedVersions, capturedVersions))
+        assert(!folderSyncVersionsCurrent(capturedVersions, newerSelection)
+            && !folderSyncVersionsCurrent(capturedVersions, reconnectedVersions), "A queued request must stop when the observed saved versions change.")
+        assert(!folderSyncVersionsCurrent(capturedVersions, newerSelection, response: capturedVersions)
+            && !folderSyncVersionsCurrent(capturedVersions, reconnectedVersions, response: capturedVersions), "A late status response must not undo a newer selection or reconnect.")
+        assert(folderSyncVersionsCurrent(capturedVersions, capturedVersions, response: newerSelection)
+            && folderSyncVersionsCurrent(capturedVersions, newerSelection, response: newerSelection), "A successful save remains valid if a state refresh observes that same response first.")
+
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("morrow-folder-sync-layout-\(UUID())")
+        let previous = getenv("MORROW_DATA_DIR").map { String(cString: $0) }
+        setenv("MORROW_DATA_DIR", temporary.path, 1); let model = AppModel()
+        if let previous { setenv("MORROW_DATA_DIR", previous, 1) } else { unsetenv("MORROW_DATA_DIR") }
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        model.state = .object(["accounts": .array(accounts), "account": .object(["id": .string(other)]), "serverFolderSync": .object([owner: retry])])
+        // Real perform() queues its MainActor closure. Revoke a captured context
+        // before yielding; the request counter is a local spy, never transport.
+        var queuedActive = true, queuedScope = scope, queuedAccounts = accounts, queuedTicket: UInt64 = 7
+        var queuedVersions = capturedVersions, requests = 0
+        func queueCheck(_ revoke: () -> Void, expected: Int) {
+            queuedActive = true; queuedScope = scope; queuedAccounts = accounts; queuedTicket = 7; queuedVersions = capturedVersions
+            let before = requests
+            assert(model.perform {
+                guard folderSyncContextCurrent(owner: owner, scope: scope, connection: connection, ticket: 7,
+                    active: queuedActive, currentScope: queuedScope, accounts: queuedAccounts, operation: queuedTicket),
+                    folderSyncVersionsCurrent(capturedVersions, queuedVersions) else { return }
+                requests += 1
+            })
+            assert(requests == before, "perform must defer its action until the MainActor can run it.")
+            revoke()
+            let deadline = Date().addingTimeInterval(2)
+            while model.busy && Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+            assert(!model.busy && requests == before + expected, "A revoked queued folder action reached the request boundary.")
+        }
+        queueCheck({}, expected: 1)
+        queueCheck({ queuedActive = false }, expected: 0)
+        queueCheck({ queuedScope = owner + "\ninbox" }, expected: 0)
+        queueCheck({ queuedAccounts = [accounts[1]] }, expected: 0)
+        queueCheck({ queuedAccounts = reconnected }, expected: 0)
+        queueCheck({ queuedTicket = 8 }, expected: 0)
+        queueCheck({ queuedVersions = newerSelection }, expected: 0)
+        queueCheck({ queuedVersions = reconnectedVersions }, expected: 0)
+        model.syncingFolders = .object(["id": .string(owner)])
+        assert(!model.canNavigate)
+        let host = NSHostingView(rootView: FolderSyncView(owner: owner).environmentObject(model))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 850), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = host; window.orderBack(nil)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3)); host.layoutSubtreeIfNeeded(); let settled = host.fittingSize
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2)); host.layoutSubtreeIfNeeded()
+        assert(host.fittingSize == settled && settled.height <= 850 && settled.width <= 720, "Selected-folder controls and errors must fit a native sheet.")
+        window.close(); window.contentView = nil; model.syncingFolders = nil
+        assert(model.unsavedForms.isEmpty && !model.busy)
+        print("Selected IMAP folder state preserves owner/version/edits, explicit baseline review, stale-catalog cancellation, limits and real status times; native sheet settles without a running service.")
     }
 
     @MainActor static func checkComposeLayout() {

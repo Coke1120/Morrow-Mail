@@ -1,4 +1,32 @@
-# Verification — 14 October 2026
+# Verification — 15 October 2026
+
+## Selected custom IMAP folder sync — 15 October 2026
+
+This candidate is stacked on bounded read-session commit
+`ec0a38363cf303b479ce99d22512aa13b294e03d`, which includes the IMAP origin dependency.
+The isolated source adds explicit selected-folder new-mail pages, independent safe
+failure/freshness state, and version-checked atomic commits, using the separate
+IMAP server-origin identity change as a prerequisite. [Scope and service contract](docs/SELECTED_IMAP_FOLDERS.md).
+All 18 new synthetic checks passed: four selection/ownership/state cases, 12
+loopback TLS protocol cases and two transaction/request-review cases. They cover
+burst pagination and restart, source/reconnect/UIDVALIDITY changes, in-flight
+cancellation, persisted backoff, malformed pages, stale/protected catalogs,
+both target Inbox commits before a held custom read, and atomic rollback including
+search effects. The first route run exposed a test setup error in its partial
+settings replacement; the corrected fixture preserves both account and catalog
+maps without relaxing the production freshness guard.
+
+Rustfmt and locked all-target Clippy with `-D warnings` passed. The complete locked
+Rust suite with `--no-fail-fast` passed **474 tests, 0 failures, 4 existing ignored
+benchmarks**. Focused checks, fmt, Clippy and the full suite used the same 102-file
+Rust/Cargo source manifest.
+
+Native portable checks passed 71 state assertions and 18 version-fence assertions;
+the later string-only periodic-sync wording correction passed 23 source checks.
+The interval-zero wording now preserves existing quota/update continuations of
+previously requested reads. macOS/Windows SDK builds and native runtime fixtures
+remain pending platform CI. All executed provider/model tests used isolated
+fixtures; no live-account, release or UI-performance acceptance is claimed.
 
 ## IMAP server identity and safe migration — 15 October 2026
 

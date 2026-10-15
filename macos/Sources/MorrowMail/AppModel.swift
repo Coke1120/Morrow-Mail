@@ -50,6 +50,7 @@ final class AppModel: ObservableObject {
     private(set) var draftGeneration = 0
     @Published var organizing: JSON? { didSet { if organizing != oldValue { draftGeneration += 1 } } }
     @Published var managingFolders: JSON?
+    @Published var syncingFolders: JSON?
     private var mailDrag: JSON = .null
     @Published var searchFocus = 0
     @Published var searchResponse: JSON = .null { didSet { if searchResponse != oldValue { queueSyncPriority() } } }
@@ -176,7 +177,7 @@ final class AppModel: ObservableObject {
         switch preferences["theme"].string { case "light": return .light; case "dark": return .dark; default: return nil }
     }
     var updateHasUnsavedChanges: Bool { !unsavedForms.subtracting(["search-request"]).isEmpty || compose != nil || review.hasEdits }
-    var canNavigate: Bool { !preparingUpdateRestart && !restartingForUpdate && !busy && unsavedForms.isEmpty && compose == nil && organizing == nil && managingFolders == nil && readerAssistant == nil && !showSettings }
+    var canNavigate: Bool { !preparingUpdateRestart && !restartingForUpdate && !busy && unsavedForms.isEmpty && compose == nil && organizing == nil && managingFolders == nil && syncingFolders == nil && readerAssistant == nil && !showSettings }
 
     func start() async {
         guard !launching else { return }
@@ -740,7 +741,7 @@ final class AppModel: ObservableObject {
         catch { self.error = error.localizedDescription }
     }
     func newDraft(_ value: Draft? = nil) {
-        guard !busy, !preparingUpdateRestart, !restartingForUpdate, compose == nil, organizing == nil, readerAssistant == nil, !showSettings else { return }
+        guard !busy, !preparingUpdateRestart, !restartingForUpdate, compose == nil, organizing == nil, syncingFolders == nil, readerAssistant == nil, !showSettings else { return }
         guard unsavedForms.isEmpty else { notice = "Save your current changes before opening a new draft."; return }
         var draft = value ?? Draft()
         guard (draft.replyToID.isEmpty && !draft.forwarding && !draft.sourceDraft) || !draft.accountID.isEmpty else { error = "The original mailbox is unavailable. Reopen the original message."; return }
@@ -757,7 +758,7 @@ final class AppModel: ObservableObject {
     }
     func settings(_ tab: String = "start") {
         guard !preparingUpdateRestart, !restartingForUpdate else { return }
-        guard compose == nil, readerAssistant == nil, unsavedForms.subtracting(["settings"]).isEmpty else { notice = "Close AI assistance or save your current changes before opening Settings."; return }
+        guard compose == nil, syncingFolders == nil, readerAssistant == nil, unsavedForms.subtracting(["settings"]).isEmpty else { notice = "Close AI assistance or save your current changes before opening Settings."; return }
         settingsTab = tab; showSettings = true
     }
     func allowed(_ action: String) -> Bool { policy["enabled"].bool && policy["behaviors"][action].bool }
