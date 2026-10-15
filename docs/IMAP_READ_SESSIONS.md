@@ -39,9 +39,17 @@ unit assertions cover the 90-second cap and exhausted session lease. See
 After stacking identity commit `01c1f0a`, the focused TLS run passed all ten cases;
 the complete Linux Rust suite passed 456 tests with zero failures and four
 existing ignored benchmarks. Formatting and strict all-target Clippy passed on
-the same 100-file Rust/Cargo source manifest. Native CI remains pending.
-Fixture connection counts do not establish WAN speed, battery, UI latency or
-live-provider acceptance.
+the same 100-file Rust/Cargo source manifest. Subsequently,
+[paired native run 38723970357](https://github.com/Coke1120/Morrow-Mail/actions/runs/38723970357)
+passed on PR #53 head `d602c2f`: macOS Rust 461/0/4 and strict reader 40/40;
+Windows Rust 457/0/4 with complete fresh/owned/restart observations and
+relocated-package acceptance. The actual synthetic checkout `f55a7be`, PR head
+and normal main merge `796b93f` share tree `72618791eea82b1afab04d204be9e76aa5461eb4`;
+the linked execution status records the original base and full commit identities.
+These results cover that tree, not later combined release sources. Fixture
+connection counts do not establish WAN speed, battery, UI latency or live-provider
+acceptance. Clean-machine and manual accessibility acceptance, Developer ID/
+notarization and Windows code signing also remain incomplete.
 
 IDLE watchers and non-MOVE fallback are separate, unfinished implementation
 units. [RFC 2177](https://www.rfc-editor.org/rfc/rfc2177.html) requires capability

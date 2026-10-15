@@ -317,9 +317,31 @@ Rust/Cargo manifest; source and log hashes were checked after execution.
 The identity author's static cross-review confirmed the origin guards, filtered
 queries, import binding and atomic commit proofs remain intact.
 
-This is isolated Linux fixture evidence, not native or live-provider acceptance.
-Native CI and live-provider acceptance remain pending. The 90-second bound is
-covered with a controlled-deadline unit, not a real 90-second experiment.
+Those local runs are isolated Linux fixture evidence. The later
+[paired native run 38723970357](https://github.com/Coke1120/Morrow-Mail/actions/runs/38723970357),
+attempt 1, passed for PR #53 head
+`d602c2fc5693534508fe4968ddc49d1563fb1d16`. macOS job `116385148889` passed
+**461 Rust tests, 0 failures, 4 existing ignored benchmarks**, plus native mail
+flow, acceptance, review-workspace checks and the strict **40/40** reader batch
+(20 cold-view and 20 warm-view samples). Every reader sample had complete capture,
+zero observed network activity, matching mode and same-WebView evidence, no errors, and
+finished within the unchanged 30-second process bound. Windows job `116385148676`
+passed **457 Rust tests, 0 failures, 4 existing ignored benchmarks**, the native
+fresh/owned/restart walkthrough, relocated-package acceptance and synthetic service
+measurement. Its resource observations were complete, with **4/45/36 samples**
+(sample counts, not assertion counts); both owned reader traces completed the
+matching first document without overflow, truncation or missing milestones.
+
+Both platforms actually checked out `f55a7bec660d0c24f564d9dd498b1737afcd6d59`,
+the synthetic merge into the then-base `6cc684d983096d91be2e5ccafd4821b34d83f3bb`.
+Its tree `72618791eea82b1afab04d204be9e76aa5461eb4` exactly matches the PR head
+and the subsequent normal main merge `796b93f61d787e36eb299d0352611b0df5616fcb`.
+This evidence covers that exact tree; later combined release sources require
+their own acceptance. The earlier Windows failures remain recorded above, and
+this success does not establish their cause. Live-provider, clean-machine and
+manual accessibility acceptance, Developer ID/notarization and Windows code
+signing remain incomplete. The 90-second bound is covered with a controlled-deadline
+unit, not a real 90-second experiment.
 IDLE, persistent connection pooling
 and non-MOVE fallback are not implemented by this candidate. See
 [the precise scope](docs/IMAP_READ_SESSIONS.md).

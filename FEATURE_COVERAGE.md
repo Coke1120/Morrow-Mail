@@ -45,8 +45,13 @@ UIDVALIDITY. Unsupported MOVE/UIDPLUS preflight reports that no move was attempt
 uncertain writes still require provider review before retry. IDLE and non-MOVE
 fallback remain unfinished separate units. After stacking the identity source,
 the focused 10-case TLS run, formatting, strict Clippy and complete Rust suite
-passed (456/0/4 existing ignored). Native CI and live-account acceptance remain
-pending. See [scope and validation](docs/IMAP_READ_SESSIONS.md).
+passed (456/0/4 existing ignored). The later
+[paired native run 38723970357](https://github.com/Coke1120/Morrow-Mail/actions/runs/38723970357)
+passed for PR #53's exact tree: macOS Rust 461/0/4 and strict reader 40/40;
+Windows Rust 457/0/4 with complete fresh/owned/restart observations. Live-account,
+clean-machine and manual accessibility acceptance, Developer ID/notarization and
+Windows code signing remain incomplete. See [scope and validation](docs/IMAP_READ_SESSIONS.md)
+for the tested tree and limits on later combined candidates.
 
 **0.8.1 source — Gmail authorization recovery:** sync, folder-catalog and
 raw-message reads may refresh a rejected access token and retry once. History
