@@ -325,6 +325,27 @@ including added files that exhaust the read budget, a changed existing source
 verified before those files, and partial enumeration with no fabricated totals.
 This remains diagnostic coverage, not a native measurement pass.
 
+At head `abbfa62`, [Windows measurement job 116412875608](https://github.com/Coke1120/Morrow-Mail/actions/runs/38732326971/job/116412875608)
+again completed the build command and stopped at the unchanged compiler-input
+manifest gate before native execution. The complete bounded inventory found
+1,510 added inputs, no removals and no changed original inputs (31 before,
+1,541 after). All 40 displayed added paths are projection headers under
+`windows/Generated Files/winrt/`; the diagnostic does not list the remaining
+1,470 paths. The receipt and complete log are retained with the earlier failures.
+
+The private fixture project now sets the fixed package's documented
+`GeneratedFilesDir` before SDK imports to its task-owned `build/` directory and
+checks the effective property before building. The production project/builder,
+complete input enumeration and strict pre/post-build/pre/post-run equality gates
+are unchanged. Ten Python controls pass, including the actual runner with
+controlled subprocesses: projection output in `build/` reaches the native step,
+where an intentional nonzero result remains failed; identical output under
+`windows/Generated Files/` stops before any native invocation. These controls
+are not MSBuild or WinUI execution. The updated adapter/tests change the scoped
+source digest, so the earlier `bad245df…` protocol matrix remains historical
+evidence and cannot supply a matching-source aggregate for this candidate.
+Actual native execution and a final same-source matrix remain pending.
+
 ## v0.8.1 published — 14 October 2026
 
 [Tagged run 38624861643](https://github.com/Coke1120/Morrow-Mail/actions/runs/38624861643),

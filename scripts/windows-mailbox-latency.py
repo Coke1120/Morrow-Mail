@@ -84,6 +84,29 @@ def compiler_manifest(directory):
     return dict(sorted(files.items()))
 
 
+def private_project(source):
+    """Keep CppWinRT generation outside the immutable private input roots.
+
+    The pinned package documents GeneratedFilesDir as its projection/include
+    directory. Set it before SDK imports rather than relying on their IntDir
+    evaluation order; verify the final property when MSBuild starts the build.
+    """
+    require("GeneratedFilesDir" not in source and "CheckMailboxLatencyGeneratedFiles" not in source,
+            "Private fixture generated-file configuration changed")
+    directory = r"$(MSBuildThisFileDirectory)..\build\windows-native\obj\$(Platform)\$(Configuration)\mailbox-latency-generated" + "\\"
+    source = replace_once(source, '  <PropertyGroup Label="Globals">',
+        '  <PropertyGroup Label="Globals">\n'
+        f'    <MorrowMailboxLatencyGeneratedFilesDir>{directory}</MorrowMailboxLatencyGeneratedFilesDir>\n'
+        '    <GeneratedFilesDir>$(MorrowMailboxLatencyGeneratedFilesDir)</GeneratedFilesDir>')
+    return replace_once(source, "</Project>",
+        '  <Target Name="CheckMailboxLatencyGeneratedFiles" BeforeTargets="PrepareForBuild">\n'
+        '    <Error Condition="\'$(GeneratedFilesDir)\' != \'$(MorrowMailboxLatencyGeneratedFilesDir)\'" '
+        'Text="Mailbox latency fixture generated-file output changed." />\n'
+        '    <Message Importance="High" Text="Mailbox latency fixture CppWinRT output: '
+        'build/windows-native/obj/$(Platform)/$(Configuration)/mailbox-latency-generated/" />\n'
+        '  </Target>\n</Project>')
+
+
 def prepare_inputs(root, directory):
     """Copy existing build inputs and make exact, testable fixture-only edits."""
     root, directory = Path(root), Path(directory)
@@ -98,6 +121,8 @@ def prepare_inputs(root, directory):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
     native = directory / "windows"
+    project = native / "MorrowMail.vcxproj"
+    project.write_text(private_project(project.read_text(encoding="utf-8")), encoding="utf-8", newline="\n")
     shutil.copy2(native / "Checks/MailboxLatency.cpp", native / "MailboxLatency.cpp")
     app = (native / "App.cpp").read_text(encoding="utf-8")
     app = replace_once(app, "shell = std::make_shared<morrow::Shell>(); shell->start();",

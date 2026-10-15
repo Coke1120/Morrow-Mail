@@ -26,6 +26,17 @@ its pinned NuGet integrity checks; it does not run Cargo or package a release.
 Build and fixture execution have separate 20-minute and 10-minute bounds. The
 common runner stops only its owned process tree on timeout/interruption.
 
+Only the private project sets the pinned CppWinRT package's documented
+[`GeneratedFilesDir`](https://www.nuget.org/packages/Microsoft.Windows.CppWinRT/3.0.260818.1)
+before SDK imports, pointing to
+`compiler-inputs/build/windows-native/obj/<platform>/<configuration>/mailbox-latency-generated/`.
+A private `PrepareForBuild` assertion rejects a changed effective property.
+This keeps generated projection headers outside the immutable source roots;
+it does not exempt any `windows/` path from the manifest. The production project
+and builder remain unchanged. Local Python controls check the private XML and
+actual runner ordering with controlled subprocess results; they do not establish
+that the pinned SDK has built or executed the new fixture.
+
 The runner makes an isolated compiler copy, as the existing attachment-flow
 checks do. Exact-count source seams replace application startup, reject service
 startup, and replace the **entire** blocking service transport. Both production

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Private-adapter and evidence negative controls; no WinUI execution claim."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
+import xml.etree.ElementTree as ET
 
 SPEC = importlib.util.spec_from_file_location("windows_latency", Path(__file__).with_name("windows-mailbox-latency.py"))
 latency = importlib.util.module_from_spec(SPEC)
@@ -78,6 +80,96 @@ class WindowsLatencyTests(unittest.TestCase):
                 latency.prepare_inputs(root, inputs)
         self.assertEqual((root / "windows/App.cpp").read_bytes(), original_app)
         self.assertEqual((root / "windows/Service.cpp").read_bytes(), original_service)
+
+    def test_private_project_places_generation_before_imports_without_changing_production_build(self):
+        root = Path(__file__).resolve().parents[1]
+        project = root / "windows/MorrowMail.vcxproj"
+        builder = root / "scripts/build-windows-native.ps1"
+        original_project, original_builder = project.read_bytes(), builder.read_bytes()
+        with tempfile.TemporaryDirectory(prefix="morrow-native-generation-") as temporary:
+            inputs = Path(temporary) / "inputs"
+            files = latency.prepare_inputs(root, inputs)
+            private = ET.parse(inputs / "windows/MorrowMail.vcxproj").getroot()
+            ns = {"m": "http://schemas.microsoft.com/developer/msbuild/2003"}
+            properties = private.find("m:PropertyGroup[@Label='Globals']", ns)
+            expected = properties.find("m:MorrowMailboxLatencyGeneratedFilesDir", ns).text
+            self.assertEqual(expected, "$(MSBuildThisFileDirectory)..\\build\\windows-native\\obj\\$(Platform)\\$(Configuration)\\mailbox-latency-generated\\")
+            self.assertEqual(properties.find("m:GeneratedFilesDir", ns).text, "$(MorrowMailboxLatencyGeneratedFilesDir)")
+            self.assertEqual(len(private.findall(".//m:GeneratedFilesDir", ns)), 1)
+            self.assertLess(list(private).index(properties), min(list(private).index(node) for node in private.findall(".//m:Import", ns) if node in list(private)))
+            guard = private.find("m:Target[@Name='CheckMailboxLatencyGeneratedFiles']", ns)
+            self.assertEqual(guard.get("BeforeTargets"), "PrepareForBuild")
+            self.assertEqual(guard.find("m:Error", ns).get("Condition"), "'$(GeneratedFilesDir)' != '$(MorrowMailboxLatencyGeneratedFilesDir)'")
+            self.assertEqual((inputs / "scripts/build-windows-native.ps1").read_bytes(), original_builder)
+            self.assertEqual(files, latency.compiler_manifest(inputs))
+        self.assertEqual(project.read_bytes(), original_project)
+        self.assertEqual(builder.read_bytes(), original_builder)
+
+    def test_private_project_rejects_missing_ambiguous_or_preexisting_generation_configuration(self):
+        source = (Path(__file__).resolve().parents[1] / "windows/MorrowMail.vcxproj").read_text(encoding="utf-8")
+        marker = '  <PropertyGroup Label="Globals">'
+        for changed in (source.replace(marker, "<PropertyGroup>"), source.replace(marker, marker + marker),
+                        source.replace(marker, marker + "<GeneratedFilesDir>elsewhere</GeneratedFilesDir>"),
+                        latency.private_project(source)):
+            with self.subTest(source=changed[:80]), self.assertRaises(ValueError): latency.private_project(changed)
+
+    def test_real_runner_keeps_manifest_gate_before_native_execution_for_generated_inputs(self):
+        # Exercise the actual prepare/build/check/copy/run ordering, replacing
+        # process execution only. This does not compile MSBuild or execute WinUI.
+        common = latency.acceptance_module()
+        for misplaced in (False, True):
+            with self.subTest(misplaced=misplaced), tempfile.TemporaryDirectory(prefix="morrow-native-generation-run-") as temporary:
+                output = Path(temporary) / "evidence"
+                calls = []
+
+                def controlled_process(command, directory, log, **options):
+                    calls.append((command, log, options))
+                    if log == "native-build.log":
+                        self.assertEqual(command[-1], "-CompileOnly")
+                        self.assertEqual(options["timeout"], 1200)
+                        inputs = directory / "compiler-inputs"
+                        ns = {"m": "http://schemas.microsoft.com/developer/msbuild/2003"}
+                        project = ET.parse(inputs / "windows/MorrowMail.vcxproj").getroot()
+                        configured = project.find(".//m:MorrowMailboxLatencyGeneratedFilesDir", ns).text
+                        # Resolve the explicit fixture constants for this fake
+                        # process only; real MSBuild evaluation is a CI gate.
+                        configured = configured.replace("$(MSBuildThisFileDirectory)", str(inputs / "windows") + "/")
+                        configured = configured.replace("$(Platform)", "x64").replace("$(Configuration)", "Release")
+                        generated = Path(configured.replace("\\", "/")).resolve()
+                        self.assertTrue(generated.is_relative_to(inputs / "build/windows-native"))
+                        if misplaced:
+                            generated = inputs / "windows/Generated Files"
+                        header = generated / "winrt/Windows.Foundation.h"
+                        header.parent.mkdir(parents=True)
+                        header.write_text("// Fictional generated header; not compiled.\n")
+                        runtime = inputs / "build/windows-native/bin/x64/Release"
+                        runtime.mkdir(parents=True)
+                        (runtime / "Morrow Mail.exe").write_bytes(b"fictional-non-executable-placeholder")
+                        return 0
+                    self.assertEqual(log, "native.log")
+                    self.assertEqual(options["timeout"], 600)
+                    # A controlled nonzero process result keeps fabricated
+                    # execution from ever producing successful native evidence.
+                    return 71
+
+                args = type("Args", (), {"output": output, "pwsh": "fixture-pwsh"})()
+                with mock.patch.object(latency.sys, "platform", "win32"), \
+                     mock.patch.object(latency, "acceptance_module", return_value=common), \
+                     mock.patch.object(common, "run_command", side_effect=controlled_process):
+                    self.assertEqual(latency.run(args), 1)
+                evidence = json.loads((output / "evidence.json").read_text(encoding="utf-8"))
+                self.assertEqual(evidence["status"], "failed")
+                self.assertEqual(evidence["source"]["digest"], evidence["sourceAfter"]["digest"])
+                if misplaced:
+                    self.assertEqual(len(calls), 1)
+                    self.assertEqual(evidence["error"], "Private compiler inputs changed during build")
+                    self.assertIsNone(evidence["nativeProcessExitCode"])
+                    self.assertFalse((output / "Morrow Mail.exe").exists())
+                else:
+                    self.assertEqual(len(calls), 2)
+                    self.assertEqual(evidence["error"], "WinUI latency process failed")
+                    self.assertEqual(evidence["nativeProcessExitCode"], 71)
+                    self.assertEqual((output / "Morrow Mail.exe").read_bytes(), b"fictional-non-executable-placeholder")
 
     def test_added_removed_compiler_inputs_fail_while_build_outputs_are_excluded(self):
         root = Path(__file__).resolve().parents[1]
