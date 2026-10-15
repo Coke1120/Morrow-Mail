@@ -499,6 +499,7 @@ IAsyncAction Shell::smoke() {
         fixtureVerified = true;
         enter("sync-status"); syncStatusChecks();
         enter("mail-drag-drop-guards"); mailDragChecks(service);
+        enter("imap-move-recovery"); co_await moveRecoveryChecks(root);
         bool seeded = array(state,L"accounts").Size() > 0;
         enter("sidebar-resize-and-filter");
         check(folderFilter && sidebarDivider, L"The sidebar has no native folder filter or resize handle.");

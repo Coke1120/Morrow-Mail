@@ -15,6 +15,7 @@ struct WindowAssertions {
         checkMailDrop()
         checkReaderBack()
         checkFolderLayouts()
+        checkMoveRecovery()
         checkComposeLayout()
         checkCalendarLayout()
         for width in [1040.0, 1877.0] { checkInitialSplit(width: width, vertical: true) }
@@ -51,6 +52,96 @@ struct WindowAssertions {
         model.unsavedForms.remove("fixture-draft")
         assert(delegate.applicationShouldTerminate(app) == .terminateNow)
         print("Window close/reopen preserves pending work and unsaved forms.")
+    }
+
+    @MainActor static func checkMoveRecovery() {
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("morrow-move-review-\(UUID())")
+        let previous = getenv("MORROW_DATA_DIR").map { String(cString: $0) }
+        setenv("MORROW_DATA_DIR", temporary.path, 1)
+        let model = AppModel()
+        if let previous { setenv("MORROW_DATA_DIR", previous, 1) } else { unsetenv("MORROW_DATA_DIR") }
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let owner = "move@example.invalid", other = "other@example.invalid"
+        let connection: JSON = .object(["imapHost": .string("imap.example.invalid"), "moveConnectionRef": .string("connection-a")])
+        let accounts: [JSON] = [owner, other].map { .object(["id": .string($0), "provider": .string("imap"), "settings": connection]) }
+        model.starting = false
+        model.state = .object(["account": .object(["id": .string("all")]), "accounts": .array(accounts)])
+        var operation: JSON = .object(["id": .string("same-operation"), "accountId": .string(owner), "connectionRef": .string("connection-a"),
+            "operationRef": .string("revision-a"), "messageId": .string("same-message"), "subject": .string("Fictional partial move 中文"),
+            "sourceName": .string("Inbox"), "targetName": .string("Work / Customer"), "stage": .string("copied"), "status": .string("partial"),
+            "createdAt": .string("2026-10-15T01:00:00Z"), "updatedAt": .string("2026-10-15T02:00:00Z"),
+            "diagnosticCode": .string("fixture"), "diagnostic": .string("The checked copy exists; the original remains."),
+            "canPreview": .bool(true), "canResolve": .bool(true), "canFinish": .bool(true), "reviewRef": .string("checked-a"), "finishAction": .string("completeMove")])
+        var snapshot: JSON = .object(["accountId": .string(owner), "connectionRef": .string("connection-a"), "operations": .array([operation])])
+        assert(validMoveRecoverySnapshot(snapshot, owner: owner))
+        assert(moveRecoveryFinishAction(operation, owner: owner, connectionRef: "connection-a") == "completeMove")
+        assert(moveRecoveryReviewMatches(operation, saved: operation, selectedID: "same-operation", owner: owner))
+        var replaced = operation; replaced["operationRef"] = .string("revision-b")
+        assert(!moveRecoveryReviewMatches(operation, saved: replaced, selectedID: "same-operation", owner: owner), "A newer persisted revision must revoke the previous confirmation.")
+        assert(!moveRecoveryReviewMatches(operation, saved: operation, selectedID: "other-operation", owner: owner))
+        for field in ["id", "accountId", "connectionRef", "operationRef", "messageId"] {
+            var missing = operation; missing[field] = .string("")
+            assert(!validMoveRecoveryOperation(missing, owner: owner))
+        }
+        var foreign = operation; foreign["accountId"] = .string(other)
+        assert(!validMoveRecoveryOperation(foreign, owner: owner) && moveRecoveryFinishAction(foreign, owner: owner, connectionRef: "connection-a") == nil)
+        assert(!validMoveRecoverySnapshot(snapshot, owner: other))
+        var duplicate = snapshot; duplicate["operations"] = .array([operation, operation]); assert(!validMoveRecoverySnapshot(duplicate, owner: owner))
+        var wrongType = operation; wrongType["canResolve"] = .string("true"); assert(!validMoveRecoveryOperation(wrongType, owner: owner))
+        for (field, value) in [("reviewRef", JSON.null), ("finishAction", .string("copyAgain")), ("canFinish", .bool(false)), ("status", .string("completed")), ("status", .string("resolved"))] {
+            var invalid = operation; invalid[field] = value
+            assert(moveRecoveryFinishAction(invalid, owner: owner, connectionRef: "connection-a") == nil)
+        }
+        assert(moveRecoveryFinishAction(operation, owner: owner, connectionRef: "connection-b") == nil)
+        let captured = MoveRecoveryContext(owner: owner, viewOwner: "all", section: "inbox", connection: connection, presentationID: "first")
+        assert(captured.accepts(captured))
+        var reconnected = connection; reconnected["moveConnectionRef"] = .string("connection-b")
+        assert(reconnected["imapHost"] == connection["imapHost"])
+        assert(!captured.accepts(MoveRecoveryContext(owner: owner, viewOwner: "all", section: "inbox", connection: reconnected, presentationID: "first")), "A same-host reconnect must revoke a saved connection review.")
+        for value in [JSON.null, .bool(true), .string(""), .string(String(repeating: "x", count: 1025))] {
+            var unavailable = connection; unavailable["moveConnectionRef"] = value
+            let invalid = MoveRecoveryContext(owner: owner, viewOwner: "all", section: "inbox", connection: unavailable, presentationID: "first")
+            assert(moveRecoveryConnectionRef(unavailable).isEmpty && !invalid.accepts(invalid))
+        }
+        for next in [MoveRecoveryContext(owner: other, viewOwner: "all", section: "inbox", connection: connection, presentationID: "first"),
+                     MoveRecoveryContext(owner: owner, viewOwner: owner, section: "inbox", connection: connection, presentationID: "first"),
+                     MoveRecoveryContext(owner: owner, viewOwner: "all", section: "sent", connection: connection, presentationID: "first"),
+                     MoveRecoveryContext(owner: owner, viewOwner: "all", section: "inbox", connection: .null, presentationID: "first"),
+                     MoveRecoveryContext(owner: owner, viewOwner: "all", section: "inbox", connection: connection, presentationID: "replacement")] {
+            assert(!captured.accepts(next), "A late response must not adopt another mailbox, connection, page or presentation.")
+        }
+        let failure: JSON = .object(["code": .string("imap_move_unresolved"), "accountId": .string(owner), "operationId": .string("same-operation")])
+        assert(moveRecoveryFailure(failure, owner: owner) == "same-operation" && moveRecoveryFailure(failure, owner: other) == nil)
+        model.recordMoveFailure(APIError(payload: failure), owner: other); assert(model.unresolvedMove.isNull)
+        model.recordMoveFailure(APIError(payload: failure), owner: owner); assert(model.unresolvedMove["accountId"].string == owner)
+        model.beginMoveRecovery(owner, operationID: "same-operation")
+        guard let request = model.organizing else { fatalError("An owned recovery journal must open from All accounts.") }
+        assert(request["accountId"].string == owner && request["viewOwner"].string == "all" && request["operationId"].string == "same-operation" && !model.canNavigate)
+        model.newDraft(); model.settings(); assert(model.compose == nil && !model.showSettings, "Recovery must block underlying compose/settings shortcuts.")
+        model.beginMoveRecovery(other); assert(model.organizing == request, "A second open cannot replace the first review.")
+        assert(moveRecoveryConfirmation(operation, owner: owner, action: "completeMove").contains("not copy the message again"))
+        assert(moveRecoveryConfirmation(operation, owner: owner, action: "resolve").contains("does not move, delete, copy or verify"))
+        for (status, expected) in [("uncertain", "Result uncertain"), ("partial", "Partially completed"), ("providerComplete", "Provider move confirmed; local update pending"), ("completed", "Move completed"), ("resolved", "Marked resolved by you")] {
+            operation["status"] = .string(status)
+            operation["canFinish"] = .bool(status == "partial" || status == "providerComplete")
+            operation["finishAction"] = .string(status == "providerComplete" ? "applyConfirmedResult" : "completeMove")
+            assert(moveRecoveryStatus(operation) == expected)
+            if status == "resolved" || status == "completed" { assert(!moveRecoveryIsOpen(operation)) }
+            snapshot["operations"] = .array([operation])
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            let host = NSHostingView(rootView: MoveRecoveryView(request: request, fixtureSnapshot: snapshot, fixtureReview: operation).environmentObject(model))
+            window.contentView = host; window.orderBack(nil)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2)); host.layoutSubtreeIfNeeded()
+            assert(host.fittingSize.height <= 700 && host.fittingSize.width <= 720, "Recovery status, folder identities and actions must fit the native sheet.")
+            window.close(); window.contentView = nil
+        }
+        model.organizing = nil
+        model.beginMoveRecovery("all"); assert(model.organizing == nil)
+        var missingRef = accounts; missingRef[0]["settings"]["moveConnectionRef"] = .null
+        model.state["accounts"] = .array(missingRef)
+        model.beginMoveRecovery(owner); assert(model.organizing == nil && !model.canReviewMoves(owner), "Missing connection proof must fail closed before opening recovery.")
+        print("IMAP move recovery: owned journal/ref guards, distinct uncertainty/partial/resolved states, explicit no-copy confirmations, modal shortcuts and bounded native sheets passed without provider/service requests.")
     }
 
     @MainActor static func checkMailDrop() {

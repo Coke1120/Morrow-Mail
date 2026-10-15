@@ -112,6 +112,14 @@ struct MailWorkspace: View {
                     if !model.error.isEmpty { statusBar(model.error, error: true) }
                     else if !model.notice.isEmpty { statusBar(model.notice, error: false) }
                     else if model.busy || model.backgroundBusy || model.preparingDraft { HStack { ProgressView().controlSize(.small); Text(model.preparingDraft ? "Preparing draft…" : model.syncing ? "Syncing…" : model.busy ? "Working…" : "Working in the background…").foregroundStyle(.secondary); Spacer() }.padding(9).background(.bar) }
+                    if !model.unresolvedMove.isNull {
+                        HStack {
+                            Text("An IMAP move needs review: \(model.unresolvedMove["accountId"].string)").font(.callout)
+                            Spacer()
+                            Button("Review saved move…") { model.beginMoveRecovery(model.unresolvedMove["accountId"].string, operationID: model.unresolvedMove["operationId"].string) }
+                                .disabled(!model.canNavigate || !model.canReviewMoves(model.unresolvedMove["accountId"].string))
+                        }.padding(10).background(.bar)
+                    }
               }
             }
         }
@@ -131,7 +139,10 @@ struct MailWorkspace: View {
         .onChange(of: outOfOfficeDirty) { model.dirty("out-of-office", $0) }
         .onChange(of: model.selectedMessage) { selection in if selection == nil { leaveExpandedReader() } }
         .sheet(item: $model.compose) { draft in ComposeView(initial: draft).environmentObject(model) }
-        .sheet(item: $model.organizing) { request in OrganizeMailView(message: request["message"], preferredKind: request["preferredKind"].string, preferredDestination: request["destinationId"].string).environmentObject(model) }
+        .sheet(item: $model.organizing) { request in
+            if request["kind"].string == "move-recovery" { MoveRecoveryView(request: request).id(request.id).environmentObject(model) }
+            else { OrganizeMailView(message: request["message"], preferredKind: request["preferredKind"].string, preferredDestination: request["destinationId"].string).environmentObject(model) }
+        }
         .sheet(item: $model.managingFolders) { request in FolderManagementView(owner: request.id, initialFolder: request["folderId"].string).environmentObject(model) }
         .sheet(item: $model.readerAssistant, onDismiss: {
             if let pending = assistantDraft {
@@ -342,6 +353,11 @@ struct MailWorkspace: View {
                 if count > 0 { Text("\(count)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary) }
             }.padding(.vertical, 5).help(title)
         }.accessibilityIdentifier("accountGroup.\(account)")
+        .contextMenu {
+            if model.canReviewMoves(account) {
+                Button("Review IMAP moves…") { model.beginMoveRecovery(account) }.disabled(!model.canNavigate)
+            }
+        }
     }
     @ViewBuilder func folderRows(_ account: String) -> some View {
         ForEach(mailFolders.filter { folderFilter.isEmpty || $0.localizedCaseInsensitiveContains(folderFilter) }, id: \.self) { folder in

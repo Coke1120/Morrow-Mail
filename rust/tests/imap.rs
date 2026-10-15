@@ -31,6 +31,9 @@ const HEADER: &str = "From: Fixture <owner@example.invalid>\r\nTo: visible@examp
 #[path = "imap/read_session.rs"]
 mod read_session;
 
+#[path = "imap/move_recovery.rs"]
+mod move_recovery;
+
 #[tokio::test]
 async fn refused_imap_connection_is_a_provider_failure_not_a_workspace_error() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

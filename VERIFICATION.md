@@ -95,6 +95,54 @@ macOS remains ad-hoc signed without notarization; Windows is unsigned.
 Live-account, clean-machine, manual accessibility and complete installed-updater
 acceptance remain incomplete. See [release notes](docs/releases/v0.8.2.md).
 
+## IMAP move-recovery candidate — 15 October 2026
+
+This isolated candidate starts from read-session commit
+`ec0a38363cf303b479ce99d22512aa13b294e03d`. It adds owned non-MOVE UIDPLUS
+operations, a durable bounded journal, named-account recovery routes, and native
+review controls. It preserves the 45-second protocol deadline, exact COPYUID and
+UIDVALIDITY checks, targeted UID EXPUNGE, and uncertain-write no-replay rules.
+Opening or refreshing the journal does not call the provider. The native
+connection fence changes on a same-host credential/generation change without
+exposing credentials. See [the API and recovery limits](docs/IMAP_MOVE_RECOVERY.md).
+
+The final Linux candidate passed formatting, locked all-target Clippy with
+`-D warnings`, 17 new protocol/API/state controls, and the fixed-error projection
+unit. The locked complete Rust suite passed **474 tests, 0 failures, 4 existing
+ignored benchmarks**, across 49 result groups. These five runs used the same
+103-file Rust/Cargo manifest, checked before and after execution. The complete
+run took 280.67 seconds; its log SHA-256 is
+`beb1e99128e8377f26e897f5a32c4e12a97e87dc84a6339215f86adde100644b`.
+The protocol cases use real ephemeral loopback TLS, including an actual
+45-second stalled-write deadline and workspace reopen without replay.
+
+Independent review additionally reproduced stale missing-source markers after
+an expunge succeeded but its acknowledgement was lost. Destination adoption now
+clears those obsolete markers only after confirming the exact destination.
+A separate real-TLS failure showed that an old source-folder MODSEQ could skip
+different destination flags. Confirmed adoption now invalidates the source's
+MODSEQ/connection/epoch proofs while preserving current read/star/Pending/body
+state; the following destination read obtains fresh flags. The corrected case
+passes for both fallback and native MOVE. The pre-fix runtime failure was reached
+in the fallback iteration; it is not a separate native-MOVE red-run claim.
+
+Earlier failures remain recorded: the first fixture replaced its own account
+map (1 passed/15 failed), and a safe-error unit expected the wrong fixed sentence.
+Correcting the fixture also exposed a shallow local-override merge risk, now
+fixed by preserving unrelated overrides. An initial MODSEQ fixture attempted a
+private helper and failed to compile; it was replaced by a real source read.
+Both actual adoption regressions were retained before correction. An unqualified
+exact test filter selected zero tests and is excluded from verification; the
+qualified unit then executed and passed. No threshold was relaxed.
+
+Native portable lifetime/state checks passed 51 assertions, including an
+independent rerun, and an unsafe cleanup mutation failed its negative control.
+The UpdateRestart Swift fixture's missing state input was corrected and
+independently checked. These controls do not establish SDK compilation or
+native UI execution. Native CI, live-account and accessibility acceptance remain
+pending. Existing releases, updater keys, Today changes and IDLE are outside
+this candidate.
+
 ## Bounded IMAP read-session candidate — 15 October 2026
 
 The candidate adds one-round connection reuse for IMAP change discovery and
