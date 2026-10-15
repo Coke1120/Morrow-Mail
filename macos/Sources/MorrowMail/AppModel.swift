@@ -50,6 +50,7 @@ final class AppModel: ObservableObject {
     private(set) var draftGeneration = 0
     @Published var organizing: JSON? { didSet { if organizing != oldValue { draftGeneration += 1 } } }
     @Published var managingFolders: JSON?
+    @Published private(set) var downloadsPresentation: UUID? { didSet { if downloadsPresentation != oldValue { draftGeneration += 1 } } }
     private var mailDrag: JSON = .null
     @Published var searchFocus = 0
     @Published var searchResponse: JSON = .null { didSet { if searchResponse != oldValue { queueSyncPriority() } } }
@@ -176,7 +177,20 @@ final class AppModel: ObservableObject {
         switch preferences["theme"].string { case "light": return .light; case "dark": return .dark; default: return nil }
     }
     var updateHasUnsavedChanges: Bool { !unsavedForms.subtracting(["search-request"]).isEmpty || compose != nil || review.hasEdits }
-    var canNavigate: Bool { !preparingUpdateRestart && !restartingForUpdate && !busy && unsavedForms.isEmpty && compose == nil && organizing == nil && managingFolders == nil && readerAssistant == nil && !showSettings }
+    var canNavigate: Bool { !preparingUpdateRestart && !restartingForUpdate && !busy && unsavedForms.isEmpty && compose == nil && organizing == nil && managingFolders == nil && downloadsPresentation == nil && readerAssistant == nil && !showSettings }
+    var canOpenDownloads: Bool { !starting && !preparingUpdateRestart && !restartingForUpdate && !busy && !preparingDraft && unsavedForms.isEmpty && compose == nil && organizing == nil && managingFolders == nil && readerAssistant == nil && downloadsPresentation == nil && !accounts.isEmpty }
+
+    func beginDownloadControls() -> UUID? {
+        guard canOpenDownloads else { return nil }
+        let id = UUID(); downloadsPresentation = id
+        return id
+    }
+
+    @discardableResult func endDownloadControls(_ id: UUID) -> Bool {
+        guard downloadsPresentation == id else { return false }
+        downloadsPresentation = nil
+        return true
+    }
 
     func start() async {
         guard !launching else { return }
@@ -671,8 +685,9 @@ final class AppModel: ObservableObject {
                 for message in messages {
                     let result = try await self.request("/messages/" + encodedPath(message.id), method: "PATCH", body: values, mailbox: message["accountId"].string)
                     guard result["message"].id == message.id, result["message"]["accountId"] == message["accountId"] else { throw APIError("The updated message owner could not be verified. Refresh your mailbox.") }
-                    if values["folder"].nonempty && self.selectedMessage == message.viewID { self.selectedMessage = nil; self.messageDetail = .null }
-                    if !values["folder"].nonempty { self.retainReadRow(result["message"]) }
+                    let moved = values["folder"].nonempty || values["undoLocalMove"].nonempty
+                    if moved && self.selectedMessage == message.viewID { self.selectedMessage = nil; self.messageDetail = .null }
+                    if !moved { self.retainReadRow(result["message"]) }
                     completed += 1
                 }
             } catch { failure = "Updated \(completed) of \(messages.count) messages. " + error.localizedDescription }
@@ -683,7 +698,7 @@ final class AppModel: ObservableObject {
         }
     }
     func prepareDraft(message: JSON, mode: String, body: String? = nil) async throws -> Draft {
-        guard !busy, !preparingDraft, compose == nil, organizing == nil, !showSettings else { throw CancellationError() }
+        guard !busy, !preparingDraft, compose == nil, organizing == nil, downloadsPresentation == nil, !showSettings else { throw CancellationError() }
         guard unsavedForms.isEmpty else { throw APIError("Save your current changes before opening a new draft.") }
         let owner = message["accountId"].string
         guard !owner.isEmpty, owner != "all", !message.id.isEmpty,
@@ -740,7 +755,7 @@ final class AppModel: ObservableObject {
         catch { self.error = error.localizedDescription }
     }
     func newDraft(_ value: Draft? = nil) {
-        guard !busy, !preparingUpdateRestart, !restartingForUpdate, compose == nil, organizing == nil, readerAssistant == nil, !showSettings else { return }
+        guard !busy, !preparingUpdateRestart, !restartingForUpdate, compose == nil, organizing == nil, downloadsPresentation == nil, readerAssistant == nil, !showSettings else { return }
         guard unsavedForms.isEmpty else { notice = "Save your current changes before opening a new draft."; return }
         var draft = value ?? Draft()
         guard (draft.replyToID.isEmpty && !draft.forwarding && !draft.sourceDraft) || !draft.accountID.isEmpty else { error = "The original mailbox is unavailable. Reopen the original message."; return }
@@ -756,7 +771,7 @@ final class AppModel: ObservableObject {
         compose = draft
     }
     func settings(_ tab: String = "start") {
-        guard !preparingUpdateRestart, !restartingForUpdate else { return }
+        guard !preparingUpdateRestart, !restartingForUpdate, downloadsPresentation == nil else { return }
         guard compose == nil, readerAssistant == nil, unsavedForms.subtracting(["settings"]).isEmpty else { notice = "Close AI assistance or save your current changes before opening Settings."; return }
         settingsTab = tab; showSettings = true
     }

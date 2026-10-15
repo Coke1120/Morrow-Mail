@@ -1,5 +1,21 @@
 # Morrow Mail feature coverage
 
+**Current-source download controls:** Both native clients expose account-owned
+stored/indexed/incomplete/shortened-body counts, precise logical message and
+attachment byte totals, and a 30-record content-repair list. The panel reads only
+local data until an explicit history control or single-message download is
+chosen. Local archive/Trash actions have a service-authored, restart-safe last-move
+undo guarded by mailbox connection and current location; read/star/Pending edits
+survive undo. Provider Trash retains its separate one-minute undo and provider
+writes retain review/permission/no-replay behavior. This is not cache eviction,
+a hard storage quota, a global offline mode or complete provider coverage.
+Repair eligibility requires a matching current IMAP origin. Opaque connection
+and history-job references reject stale panel actions after reconnect or job
+replacement, while already-downloaded bodies still shortened by size limits
+remain explained without offering a redundant download.
+See [behavior and remaining decisions](docs/DOWNLOAD_CONTROLS.md) and
+[verification](VERIFICATION.md#download-controls-and-local-recovery--15-october-2026).
+
 **IMAP server identity source follow-up:** imports, cached-body reuse and cached
 flag reconciliation bind to the validated server endpoint and actual login.
 Cross-server UID collisions retain separate copies and user state. An atomic

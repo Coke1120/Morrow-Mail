@@ -642,6 +642,12 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             if connections(&config).get(&account).is_none() {
                 return Err(Error::conflict("Choose a connected mailbox."));
             }
+            crate::downloads::require_context(
+                &config,
+                &account,
+                &context.body,
+                !context.path[1].eq_ignore_ascii_case("start"),
+            )?;
             if context.path[1].eq_ignore_ascii_case("start") {
                 start_import(db, &account, &context.body)?;
             } else {

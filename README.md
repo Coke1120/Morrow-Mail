@@ -26,6 +26,14 @@ The v0.8.2 source includes the merged Mail | Agent | Brain navigation shell and 
 
 The v0.8.2 source adds a Mail | Agent | Brain navigation shell on macOS and Windows. Cold start stays on the Mail three-pane. Agent reuses Inbox Agent, Today, and Skills; Brain reuses persona, writing rules, and categories. AI Studio is an advanced footer and Settings entry, and its More menu keeps one-release Moved to Agent / Moved to Brain hints. Review-before-send is unchanged; publication follows the paired tag gates above.
 
+The download-controls follow-up adds account-owned downloaded-content coverage,
+logical storage totals and a 30-record repair list to both native clients. It
+reuses reviewed history controls and explicit single-message downloads. Local
+archive/Trash changes gain a restart-safe last-move undo while their location
+and connection remain unchanged. Provider Trash keeps its separate one-minute
+undo. No cache deletion, quota or global offline mode is introduced. See
+[controls and remaining limits](docs/DOWNLOAD_CONTROLS.md).
+
 The activity-recovery follow-up keeps cancellation requests separate across
 mailboxes and AI work types. Cancelling one analysis remains effective when
 another mailbox is cancelled or its reply settings change; completed or cancelled

@@ -474,6 +474,7 @@ void accounts(Page const& p, StackPanel const& panel, Json const& state, Form co
         if (owner == L"demo" || owner == L"all" || owner.empty()) continue;
         auto job = object(account, L"import"); auto status = text(job, L"status");
         title(panel, text(account, L"email") + L" · " + text(account, L"provider"));
+        panel.Children().Append(button(L"Downloads & storage…",[weak=std::weak_ptr<SettingsPage>(p),owner] {if(auto page=weak.lock();page&&page->current()&&!page->busy) page->shell->downloadControls(owner);}));
         if (account.GetNamedNumber(L"incompleteMessages", 0) > 0)
             help(panel, number(account, L"incompleteMessages") + L" message(s) with incomplete content. " + text(account, L"contentWarning"));
         help(panel, status.empty() ? L"History import has not started." : L"History: " + status + L" · " + (text(job, L"downloadStage") == L"recent" ? L"Latest seven days first" : L"Older history") + L" · " + text(job, L"phase") + L" · " + number(job, L"imported") + L" imported · " + number(job, L"processed") + L" checked · " + number(job, L"pages") + L" pages");
