@@ -1,4 +1,173 @@
-# Verification — 14 October 2026
+# Verification — 15 October 2026
+
+## IDLE with selected folders, Downloads and move recovery — 15 October 2026
+
+This normal integration combines IDLE/fixture-cleanup parent `b9691f9` with
+selected-folder/Downloads/move-recovery parent `aa9b282`, based on `e41b86f`.
+The only manual conflicts were the README, feature coverage and module list;
+both implementations and their native fixture groups are retained. The seven
+overlapping automatic merges were independently reconstructed byte for byte.
+No additional product change was needed. The Store revocation/rollback hook,
+captured notification proof at the initial sync snapshot, shared mailbox gate,
+selected-page atomic publication, confirmed-move Undo/watermark invalidation
+and native modal ownership guards remain intact.
+
+All **82 focused controls passed**: 33 IDLE, three selected transaction/request,
+12 selected-folder TLS, four selected API, 19 move recovery, seven Downloads
+and four Downloads service cases. Formatting and locked offline all-target
+Clippy with `-D warnings` passed. The complete locked offline suite passed
+**545 tests, 0 failures and 4 existing ignored benchmarks**, across 52 result
+groups. All commands used the same 121 tracked Rust input hashes before and
+after execution. The full log SHA-256 is
+`ca9ebd91cda0bca67de05a80891c630d5d76060c93f26c4557a23859801b3b54`.
+An initial API filter selected one existing Outlook date test; its original
+receipt is retained separately and is not counted among the 82 controls. The
+correct selected-folder API target subsequently passed all four cases.
+
+This is isolated Linux fixture evidence. The inherited OS32 failure and its
+cleanup-control limits below remain unchanged; this run does not establish the
+historical failing handle or a Windows pass. Fresh native SDK/runtime CI is
+required for this exact combined source. Parent CI, source review and portable
+controls do not establish visual, accessibility or live-provider acceptance.
+No live mailbox/model work, automatic write retry or release was performed.
+
+## Selected-folder, Downloads and move-recovery integration — 15 October 2026
+
+This isolated candidate combines selected-folder head `e41b86f` with the
+Downloads/move-recovery integration `98fa7d2`, retaining their separate native
+fixtures, source/connection guards, bounded read/write protocols and documented
+limits. It preserves the mounted-filter readiness correction and all prior
+failure evidence. The macOS modal guards now reject opening Downloads while a
+folder-selection editor is present, while keeping Downloads available from an
+otherwise idle Settings sheet. Move recovery and folder selection retain their
+captured mailbox identities and existing confirmation flows.
+
+A new macOS model control covers the three editors' mutual exclusion and a stale
+Downloads disappearance after a folder editor opens. A combined Rust control
+uses the real local-move receipt builder and selected-page transaction: a failed
+checkpoint or stale selection/connection must preserve the message, receipt,
+search index and download counts; a successful provider import invalidates only
+that owner's receipt while committing body/index/coverage and selected progress
+together. The other owner's duplicate ID and receipt must remain unchanged,
+and restart must retain the committed result. This is a transaction-boundary
+control; existing loopback TLS fixtures retain protocol coverage.
+
+The combined local Rust candidate passed formatting, locked offline all-target
+Clippy with `-D warnings`, all 49 focused controls (three selected transaction/
+request controls, four selected API cases, 12 selected-folder TLS cases, 19 move
+recovery cases, seven Downloads cases and four Downloads service cases), and the
+complete locked offline suite: **512 passed, 0 failed, 4 existing ignored
+benchmarks across 52 groups**. All checks used the same 118 tracked Rust input
+hashes before and after execution. The full log SHA-256 is
+`d18df1f563eddaac8386c2c440007b0cb2b0da5b3ec12dc04b46db59003c66a5`.
+Formatting changed only the new combined Rust control; no product or assertion
+change was needed during validation.
+
+The new macOS model control has not run locally, and macOS/Windows SDK/runtime
+acceptance still requires this combined source's own CI. Individual-parent
+results below are retained historical evidence, not a claim that this merged
+candidate has passed native acceptance. No live provider/model work, release or
+automatic replay was performed.
+
+## Selected custom IMAP folder sync — 15 October 2026
+
+This candidate is stacked on bounded read-session commit
+`ec0a38363cf303b479ce99d22512aa13b294e03d`, which includes the IMAP origin dependency.
+The isolated source adds explicit selected-folder new-mail pages, independent safe
+failure/freshness state, and version-checked atomic commits, using the separate
+IMAP server-origin identity change as a prerequisite. [Scope and service contract](docs/SELECTED_IMAP_FOLDERS.md).
+All 18 new synthetic checks passed: four selection/ownership/state cases, 12
+loopback TLS protocol cases and two transaction/request-review cases. They cover
+burst pagination and restart, source/reconnect/UIDVALIDITY changes, in-flight
+cancellation, persisted backoff, malformed pages, stale/protected catalogs,
+both target Inbox commits before a held custom read, and atomic rollback including
+search effects. The first route run exposed a test setup error in its partial
+settings replacement; the corrected fixture preserves both account and catalog
+maps without relaxing the production freshness guard.
+
+Rustfmt and locked all-target Clippy with `-D warnings` passed. The complete locked
+Rust suite with `--no-fail-fast` passed **474 tests, 0 failures, 4 existing ignored
+benchmarks**. Focused checks, fmt, Clippy and the full suite used the same 102-file
+Rust/Cargo source manifest.
+
+Native portable checks passed 71 state assertions and 18 version-fence assertions;
+the later string-only periodic-sync wording correction passed 23 source checks.
+The interval-zero wording now preserves existing quota/update continuations of
+previously requested reads. macOS/Windows SDK builds and native runtime fixtures
+remain pending platform CI. All executed provider/model tests used isolated
+fixtures; no live-account, release or UI-performance acceptance is claimed.
+
+The initial PR54 focused native run38705784868 at `274e113` failed compilation:
+two local functions in FolderSyncView accessed MainActor-owned model state from
+an unannotated local-function context. Both are now explicitly `@MainActor`;
+their guards and call sites remain inside the existing MainActor `perform`
+closure. The original failure is retained. This two-annotation follow-up changes
+no Rust source or deadlines and requires fresh platform CI; Linux has no Swift
+compiler or macOS SDK, so source review is not a native compile result.
+
+The subsequent PR54 Windows job at `01698b8` passed 470 Rust tests with 0 failures
+and 4 ignored, then failed native compilation with 14 C2664 errors in
+`FolderSync.cpp`: the UI adapters passed `std::wstring` values to helpers taking
+`const winrt::hstring&`. The follow-up adds explicit `hstring` construction at
+those 14 call sites only; the portable state helper, owner/version guards,
+controls and deadlines are unchanged. The original SDK failure is retained.
+Source diff/hash review is not an SDK result; the corrected Windows build and
+native fixtures require fresh platform CI.
+
+PR54 Windows job `116341562940` at `4cef395` subsequently passed formatting,
+strict Clippy, all 470 Rust tests (0 failures, 4 existing ignored), and native
+packaging, then failed the `selected-folder-sync` runtime assertion
+`Filtering discarded the native folder selection.` The original log is retained.
+That assertion combines the visible-control count and in-memory selection
+count; the old log recorded neither value. Its printed phase timestamps come
+from a buffered diagnostic tail and do not measure the native operation duration.
+
+Source review confirmed that detached checkbox callbacks could still change the
+selection after rows were rebuilt. The follow-up invalidates the row generation
+before clearing controls and requires the current pane, generation and exact
+current control identity before accepting a checkbox event. It retains the
+existing configuring/busy/stale checks. The native fixture keeps the original
+filter assertion, five-second waits and unsaved-close checks, adds exact counts
+before filtering and bounded numeric failure details, and emits real Unchecked
+events from a retained old checkbox both while filtered and after replacement.
+This closes a confirmed source-level stale-callback gap; it does not establish
+that this event caused the original CI failure. Fresh Windows SDK/runtime
+validation is pending; no local native pass is claimed.
+
+The next Windows job `116367581897` at `c5c054f` retained the same filter failure
+with concrete counts: two visible controls and two selected folders before and
+after the input. Selection was retained; the log does not establish whether the
+TextChanged event was delivered, suppressed or unable to rebuild the rows. Its
+cause remains unresolved. A fixture-only scoped TextChanged observer now adds
+capped event counts, sender/weak-owner checks, row-generation progress, loaded/
+size/enabled/configuring/current booleans, query length and equality to the fixed
+fictional query, and the matching-row count. Configuring is sampled at the
+observer, not claimed as the production handler's branch. No raw folder/query
+text is added. Production event/filter code, the single Text assignment, original
+five-second wait, selection/control assertions and stale-checkbox controls are
+unchanged. There is no forced template/layout, scrolling, focus, render call,
+retry or deadline extension. The receipt only distinguishes the next actual
+Windows failure; it is not a root-cause fix or a local native pass.
+
+PR54 Windows job `116387074152` at `7d581d4` then passed 475 Rust tests with
+0 failures and 4 existing ignored, packaging and the fresh native walkthrough,
+but failed the same filter assertion in the owned walkthrough. The bounded
+receipt now records zero observed TextChanged events, row generation `1->1`,
+the exact eight-character fictional query and zero predicate matches. The
+TextBox was not loaded and had no positive dimensions before the input; all
+three became true during the unchanged wait. Selection stayed at two. This
+identifies an input-before-mount fixture ordering gap; it does not establish a
+production filtering defect or retroactively prove the older failures' cause.
+
+The fixture now requires Opened plus the actual filter's loaded state, positive
+width/height and enabled state within the original single five-second initial
+deadline. It then keeps the single Text assignment, original five-second filter
+wait, exact zero-controls/two-selected assertion, bounded receipt and detached
+checkbox negative controls, and additionally requires a real TextChanged event.
+Production code and handlers are unchanged. There is no forced layout/template,
+direct render, second input or additional deadline. Source invariants and diff
+checks are the only local validation; Windows SDK/runtime validation remains
+pending. The original terminal failure and its complete log are retained.
 
 ## Downloads and IMAP move recovery integration — 15 October 2026
 
@@ -414,6 +583,96 @@ covered with a controlled-deadline unit, not a real 90-second experiment.
 IDLE, persistent connection pooling
 and non-MOVE fallback are not implemented by this candidate. See
 [the precise scope](docs/IMAP_READ_SESSIONS.md).
+
+## IMAP notification candidate — 15 October 2026
+
+This isolated draft adds bounded IDLE for eligible Inbox and selected custom
+folders, with explanatory native Settings text. It is stacked on selected-folder
+head `4cef39561bb69e9bc170315dd0482f6ee0d1f906`, including the macOS actor and
+Windows string-boundary corrections above, server-origin identity and read-session
+reuse. It is excluded from the separate v0.8.2 release.
+
+The 31 new notification TLS/Store cases and 18 existing selected-folder focused
+cases passed. Formatting and locked all-targets Clippy with `-D warnings` passed.
+The locked complete Rust suite passed **505 tests, 0 failures, 4 existing ignored
+benchmarks**, across 50 result groups. Final formatting, Clippy and full tests
+used the same 105-file Rust/Cargo manifest, checked before and after each run.
+
+The final stack normally merges selected-folder head `c5c054f`, including its
+native row-lifetime follow-up and the summary diagnostics already on main.
+At combined head `f5221d1`, formatting, strict all-target Clippy and the complete
+locked suite passed **510 tests, 0 failures, 4 existing ignored benchmarks**
+across 51 result groups. All three checks used the same 106-file Rust/Cargo
+manifest, verified before/after and against the final files. The notification
+implementation is unchanged by that stack. Native SDK acceptance remains
+pending for this combined candidate.
+The focused runs preceded two Clippy-only edits (a tuple type alias and equivalent
+Option `?` expression); the full suite covers those final sources.
+
+Coverage includes checked continuation/DONE, capabilities, absolute deadlines,
+invalid responses, cancellation, Store rollback/ABA, source/selection/UIDVALIDITY
+binding, fair owner/folder rotation, four total/one-per-owner notification socket
+bounds, clock-only retry/catalog expiry, live LIST checks, connection-wide versus
+folder-only failure policy, shutdown/quiesce, quota/backoff preservation, hint
+coalescing and the existing sync/arrival-policy path without direct model calls.
+Tests shorten leases and backoff; they do not measure a production 60-second
+lease or native UI latency.
+
+A static review found a gap between consumer validation and the sync round's
+initial settings read. An opaque proof is now checked in the same Store closure
+that captures that snapshot. A held-Store control deliberately ignored the proof:
+both connection and selection replacement were accepted, each making three
+synthetic LOGINs and committing two rows. The guarded case rejects both with zero
+provider access or rows. This demonstrates the sync-entry contract; the control
+does not reproduce the original consumer's outer cancellation/select scheduling
+interleaving, and is not claimed as a byte-identical baseline race reproduction.
+
+The first focused run was 30/31: a 400 ms synthetic lease expired during custom
+LIST/setup before its intended wrong-tag protocol failure. Diagnostic results
+showed provider_network retries, including for the healthy account. The fixture
+now uses one second and requires actual completed DONE exchanges for rotation;
+the strict one-login assertion remains. Production lease/setup/retry policy is
+unchanged. The narrowed case and final 31-case run passed. Original fixture
+shallow settings-patch mistakes were also corrected with full read/modify/write;
+the persisted-backoff hint still asserts zero network and unchanged wait/errors.
+The initial intentional red control, focused failure and two Clippy diagnostics
+are retained in task evidence.
+
+These are isolated Linux fixture results. IDLE native SDK CI, live-provider
+acceptance and release validation remain pending. No live mailbox/model or
+sending was used. [Behavior and coverage limits](docs/IMAP_IDLE_NOTIFICATIONS.md).
+
+PR57 Windows job `116407284508` (run `38730647752`, head `7529919`)
+subsequently failed the Rust checks with **70 passed and 1 failed**. The owned
+folder-rotation test reached its final workspace deletion after the fairness,
+per-owner socket, global socket and mailbox-gate assertions, then received
+Windows OS32. Its native build, walkthrough, relocation and benchmark steps
+were skipped. The complete original log is retained; it does not identify the
+specific file handle responsible for that deletion failure.
+
+A deterministic held-database control confirms a reachable cleanup gap:
+cancelling and joining an `App::db` await can drop the Runtime while its already
+started blocking closure still owns Store and the original writer lock. Runtime
+Weak expiry or a completed database no-op is therefore not a Store-close proof.
+The fixture cleanup now observes the existing writer lock within an absolute
+deadline, unlocks and drops its observation handle, and attempts directory
+deletion once. Missing-lock, other I/O, deadline and deletion errors still fail;
+it never creates a replacement lock or retries deletion. The failed rotation
+case uses the remaining budget of the original three-second manager-stop
+deadline. Other fixture cleanup calls have an explicit two-second teardown
+budget; this is not claimed to be part of their earlier stop deadline. The
+manager, socket-drain and production shutdown limits are unchanged.
+
+The new controls cover a cancelled waiter with a still-held Store, timeout
+without deletion, pending cleanup until actual lock handoff, an already-expired
+deadline and a missing original lock. Production code is unchanged. The initial
+retention control passed on Linux before the cleanup change. All **33 IDLE
+focused tests passed**, as did formatting and locked all-target Clippy with
+`-D warnings`. The complete locked suite passed **512 tests, 0 failures,
+4 existing ignored benchmarks**, across 51 result groups. These final checks
+used the same 114-file Rust/Cargo manifest, verified before and after execution.
+Fresh Windows CI is still required and the historical OS32 failure is not
+relabelled as a pass.
 
 ## Activity cancellation and native verification repairs — 15 October 2026
 

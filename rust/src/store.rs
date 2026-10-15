@@ -23,6 +23,7 @@ pub struct Store {
     _lock: File,
     epoch: String,
     depth: Cell<usize>,
+    pub(crate) idle_settings: crate::imap_idle::Settings,
 }
 pub fn random_bytes<const N: usize>() -> Result<[u8; N]> {
     let mut bytes = [0; N];
@@ -313,6 +314,7 @@ impl Store {
             _lock: lock,
             epoch: uuid::Uuid::new_v4().to_string(),
             depth: Cell::new(0),
+            idle_settings: Default::default(),
         };
         if needs_backup {
             store.backup(
@@ -363,6 +365,7 @@ impl Store {
             }
             Ok(())
         })?;
+        store.idle_settings.update(&store.settings()?);
         Ok(store)
     }
     pub fn settings(&self) -> Result<Value> {
@@ -378,6 +381,9 @@ impl Store {
             "INSERT INTO settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value",
             [encrypt(&self.key, settings)?],
         )?;
+        // Notification only: a watcher must revalidate committed settings through
+        // App::db before opening a socket or consuming a notification.
+        self.idle_settings.update(settings);
         Ok(())
     }
     pub fn set_settings(&self, patch: &Value) -> Result<Value> {
@@ -471,6 +477,11 @@ impl Store {
                 self.store.depth.set(self.depth);
                 if !self.committed {
                     let _ = self.store.conn.execute_batch(&self.statement);
+                    // A speculative change may revoke a reader, but may never
+                    // authorize a connection after its transaction was rolled back.
+                    self.store
+                        .idle_settings
+                        .update(&self.store.settings().unwrap_or(Value::Null));
                 }
             }
         }

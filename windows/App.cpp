@@ -423,6 +423,7 @@ IAsyncAction Shell::start() {
                     return;
                 }
                 if (target == L"manage-folders") self->manageFolders(account);
+                else if (target == L"folder-sync") self->manageFolderSync(account);
                 else self->navigate(target, account, folder);
             }
         });
@@ -642,6 +643,9 @@ void Shell::rebuildNavigation() {
             }
             remote.MenuItems().Append(navItem(L"Refresh labels / folders", L"server-folders", id, L"inbox", L"\uE72C"));
             remote.MenuItems().Append(navItem(L"Manage labels / folders…", L"manage-folders", id, L"inbox", L"\uE70F"));
+            for (auto const& account : accounts) if (text(account,L"id")==id && (text(account,L"provider").empty() || text(account,L"provider")==L"imap")) {
+                auto selection=navItem(L"Folders to sync…",L"folder-sync",id,L"inbox",L"\uE895"); selection.SelectsOnInvoked(false); remote.MenuItems().Append(selection);
+            }
             item.MenuItems().Append(remote);
         }
         navigation.MenuItems().Append(item);

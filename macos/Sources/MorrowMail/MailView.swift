@@ -143,6 +143,7 @@ struct MailWorkspace: View {
             if request["kind"].string == "move-recovery" { MoveRecoveryView(request: request).id(request.id).environmentObject(model) }
             else { OrganizeMailView(message: request["message"], preferredKind: request["preferredKind"].string, preferredDestination: request["destinationId"].string).environmentObject(model) }
         }
+        .sheet(item: $model.syncingFolders) { request in FolderSyncView(owner: request.id).environmentObject(model) }
         .sheet(item: $model.managingFolders) { request in FolderManagementView(owner: request.id, initialFolder: request["folderId"].string).environmentObject(model) }
         .sheet(item: $model.readerAssistant, onDismiss: {
             if let pending = assistantDraft {
@@ -397,6 +398,9 @@ struct MailWorkspace: View {
                 Button("Refresh labels / folders") { model.perform { try await model.loadServerFolders(account) } }.disabled(model.busy)
             } label: { Text(model.accounts.first { $0.id == account }?["provider"].string == "google" ? "Gmail labels" : "Server folders") }
             Button("Manage labels / folders…") { model.managingFolders = .object(["id": .string(account)]) }.disabled(!model.canNavigate)
+            if ["", "imap"].contains(model.accounts.first { $0.id == account }?["provider"].string ?? "") {
+                Button("Folders to sync…") { model.syncingFolders = .object(["id": .string(account)]) }.disabled(!model.canNavigate).accessibilityIdentifier("folderSync.open.\(account)")
+            }
         }
     }
     func folderCount(_ account: String, _ folder: String) -> Int {
