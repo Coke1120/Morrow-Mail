@@ -31,6 +31,8 @@ use std::{
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 type Mailbox = Session<BoundedImap<tokio_native_tls::TlsStream<tokio::net::TcpStream>>>;
 const COMMAND_LIMIT: usize = 8 * 1024 * 1024;
+mod move_recovery;
+pub(crate) use move_recovery::{MoveSession, Presence};
 
 #[derive(Debug)]
 struct ResponseLimit(usize);
@@ -920,6 +922,7 @@ struct Fetched {
     read: bool,
     starred: bool,
     draft: bool,
+    deleted: bool,
     modseq: Option<u64>,
 }
 // async-imap 0.11's FETCH stream discards tagged NO/BAD; validate completion before using rows.
@@ -995,6 +998,9 @@ async fn checked_delta_bounded(
                                 .iter()
                                 .any(|f| Flag::from(f.as_ref()) == Flag::Flagged);
                             row.draft = flags.iter().any(|f| Flag::from(f.as_ref()) == Flag::Draft);
+                            row.deleted = flags
+                                .iter()
+                                .any(|f| Flag::from(f.as_ref()) == Flag::Deleted);
                         }
                         AttributeValue::InternalDate(date) => {
                             row.date = DateTime::parse_from_str(date, "%d-%b-%Y %H:%M:%S %z")

@@ -2608,6 +2608,7 @@ fn run() -> Result<()> {
             "-parse-as-library",
             "macos/Sources/MorrowMail/Models.swift",
             "macos/Sources/MorrowMail/ReviewWorkspaceState.swift",
+            "macos/Sources/MorrowMail/MoveRecoveryState.swift",
             fixture_model
                 .to_str()
                 .ok_or("Invalid fixture model path.")?,

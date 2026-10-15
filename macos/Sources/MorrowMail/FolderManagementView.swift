@@ -147,6 +147,7 @@ struct MessageOrganizationActions: View {
         Button("Move to…") { model.beginOrganize(message) }
         if gmail { Button("Labels…") { model.beginOrganize(message, preferredKind: "labels") } }
         Button(gmail ? "Create new label…" : "Create new folder…") { model.beginOrganize(message, preferredKind: "create") }
+        if model.canReviewMoves(message["accountId"].string) { Button("Review IMAP moves…") { model.beginMoveRecovery(message["accountId"].string) } }
         Divider()
         Button(gmail ? "Manage labels…" : "Manage folders…") { model.managingFolders = .object(["id": message["accountId"]]) }
     }
@@ -170,6 +171,7 @@ struct OrganizeMailView: View {
     @State private var review = false
     @State private var showManager = false
     @State private var creating = false
+    @State private var unresolvedID = ""
     private var owner: String { message["accountId"].string }
     private var added: [String] { selected.subtracting(baseline).sorted() }
     private var removed: [String] { baseline.subtracting(selected).sorted() }
@@ -205,10 +207,13 @@ struct OrganizeMailView: View {
             else if provider == "microsoft" { Link("Open Outlook to report or block", destination: URL(string: "https://outlook.live.com/mail/")!) }
             if loading { HStack { ProgressView().controlSize(.small); Text("Refreshing saved labels / folders…").font(.caption).foregroundStyle(.secondary) } }
             if !localError.isEmpty { Text(localError).foregroundStyle(.red).textSelection(.enabled) }
+            if !unresolvedID.isEmpty {
+                Button("Review this saved move…") { model.beginMoveRecovery(owner, operationID: unresolvedID, replacing: message) }
+            }
             HStack {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction).disabled(model.busy)
                 Spacer()
-                Button("Review change…") { review = true }.buttonStyle(.borderedProminent).disabled(model.busy || !canReview)
+                Button("Review change…") { review = true }.buttonStyle(.borderedProminent).disabled(model.busy || !canReview || !unresolvedID.isEmpty)
             }
         }.padding(26).frame(width: 590).disabled(model.busy).interactiveDismissDisabled(model.busy)
         .task {
@@ -253,7 +258,10 @@ struct OrganizeMailView: View {
                         let result = try await model.request("/messages/" + encodedPath(message.id) + "/organize", method: "POST", body: payload, mailbox: owner)
                         guard result["message"].id == message.id, result["message"]["accountId"].string == owner else { throw APIError("The provider change could not be confirmed. Refresh this mailbox.") }
                         try await model.reload(); model.notice = "Provider change confirmed."; dismiss()
-                    } catch { localError = error.localizedDescription }
+                    } catch {
+                        if let failure = error as? APIError, let id = moveRecoveryFailure(failure.payload, owner: owner) { unresolvedID = id }
+                        localError = error.localizedDescription
+                    }
                 }
             }
             Button("Cancel", role: .cancel) {}
