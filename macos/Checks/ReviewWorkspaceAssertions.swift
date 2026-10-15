@@ -857,13 +857,27 @@ import SwiftUI
         }
         print("Mounted composer reveals empty Cc/Bcc on request, retains populated recipients and opens/cancels the existing send confirmation without sending.")
     }
-    @MainActor static func main() async {
-        _=NSApplication.shared; NSApp.setActivationPolicy(.regular)
+    // Menu tracking stops whichever run loop is current. Async main's loop is that
+    // loop unless NSApp.run owns it, so tracking end exits 0 before the receipt.
+    @MainActor static func main() {
+        final class Delegate: NSObject, NSApplicationDelegate {
+            func applicationDidFinishLaunching(_ notification: Notification) {
+                Task { @MainActor in await ReviewWorkspaceAssertions.runSuite() }
+            }
+            func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+        }
+        let delegate = Delegate()
+        let app = NSApplication.shared
+        app.delegate = delegate
+        app.setActivationPolicy(.regular)
+        app.activate(ignoringOtherApps: true)
+        app.run()
+    }
+    @MainActor static func runSuite() async {
         let config=URLSessionConfiguration.ephemeral; config.protocolClasses=[ReviewProtocol.self]
         let model=AppModel(session:URLSession(configuration:config))
         model.starting=false; model.state=ReviewFixture.state(owner:ReviewFixture.owners[0]); model.section="today"
         let completionNonce = ProcessInfo.processInfo.environment["MORROW_REVIEW_COMPLETION_NONCE"] ?? ""
-        defer { model.session.invalidateAndCancel() }
         do {
             try require(!completionNonce.isEmpty, "Missing review fixture completion nonce")
             let review=model.review, first=ReviewFixture.owners[0], second=ReviewFixture.owners[1]
@@ -945,6 +959,8 @@ import SwiftUI
             print("Review workspace: combined owner-bound reads, duplicate IDs, A/B/A draft/selection/scroll retention, inline original owner, load failure, dirty-budget retention, foreign-draft rejection/retry, unanswered-decision blocking, stale proposal approval reset, owned Save and explicit sending review passed. Fictional transport only; VoiceOver and Windows are not established.")
             let completionMode = ProcessInfo.processInfo.environment["MORROW_REVIEW_BASELINE"] == "1" ? "baseline" : "production"
             print("MORROW_REVIEW_COMPLETE \(completionMode) \(completionNonce)"); fflush(stdout)
-        } catch { print(error.localizedDescription); exit(1) }
+            model.session.invalidateAndCancel()
+            exit(0) // NSApp.run does not return.
+        } catch { print(error.localizedDescription); fflush(stdout); exit(1) }
     }
 }

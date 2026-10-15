@@ -154,8 +154,9 @@ void paintEditor(P const& p,hstring const& key) {
     auto replyContext=[weak=std::weak_ptr<Page>(p),control=make_weak(moreButton),key,owner,
         scope=p->scope,generation=p->generation,sequence=p->selection,proposal=entry.proposal.Stringify()]() -> P {
         auto page=weak.lock();auto target=control.get();
-        if(!page || !page->current() || !target || !target.IsLoaded() || page->replyMore!=target
-            || target.XamlRoot()!=page->shell->root.XamlRoot() || page->generation!=generation || page->selection!=sequence
+        // Open flyout can mark this anchor unloaded or give it another XamlRoot; replyMore still rejects a replacement.
+        if(!page || !page->current() || !target || page->replyMore!=target
+            || page->generation!=generation || page->selection!=sequence
             || page->scope!=scope || page->selectedKey!=key || !page->shell->connected(owner)
             || page->shell->review->detailKinds[std::wstring(scope)]!=L"reply" || !page->shell->review->details[std::wstring(scope)])return {};
         auto found=page->shell->review->entries.find(std::wstring(key));

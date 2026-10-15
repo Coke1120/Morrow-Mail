@@ -1,5 +1,37 @@
 # Verification — 15 October 2026
 
+## PR #58 AppKit run loop and open reply menu — 15 October 2026
+
+Runs `38765785512`, `38765785713` and `38765785507` on head `1e65f35` failed
+three checks. The macOS review fixture printed `Menu tracking begin` and
+`Menu tracking end` for `reader.replyMenu`, then exited 0 with no completion
+receipt and no assertion error. The 1,000-row measurement had 50 loaded visible
+rows and no accepted subject or owner text. Both executables created
+`NSApplication` but never called `NSApp.run()`, so menu tracking stopped the
+async-main run loop and SwiftUI never received an AppKit update cycle.
+
+Those two checks now start from `applicationDidFinishLaunching` inside
+`NSApp.run()`. Closing the last fixture window does not quit. The process
+exits only after the existing completion receipt or the existing failure path.
+Menu action rules, the five-second menu deadline, receipt matching and the
+ten-second displayed-row predicate are unchanged.
+
+The Windows review phase failed with “The current reply More action was blocked
+or did not retain the fictional draft after its local lookup.” The open item
+uses the same context as the visible button. That context required the anchor
+to be loaded and to share the shell `XamlRoot`, which an open flyout can fail
+while the button is still the current reply and `keepEdits` is skipped. Those
+two checks are removed. Page, control identity, generation, selection, scope,
+owner, detail and proposal checks remain, and a replaced More control still
+does not refresh. The not-found lookup still keeps the fictional draft and
+does not prepare or send. Which clause failed was not logged, and this was
+not executed on WinUI.
+
+No AppKit or WinUI run was available here. Fresh exact-source primary CI,
+complete native menu/event/measurement execution, and the matching-source
+1k/10k/50k matrix remain required. WinUI event/layout evidence was already
+green and this change does not touch that measurement.
+
 ## PR #58 macOS review fixture completion — 15 October 2026
 
 Focused run `38760958694`, job `116511781887`, reported success for head

@@ -770,13 +770,27 @@ struct MailboxLatency {
             "unexpectedRequests": .number(Double(observed.1)), "interceptedRequests": .number(Double(observed.2)),
             "ownerSelectionVerified": .bool(true), "samples": .array(samples)])
     }
-    @MainActor static func main() async {
+    // SwiftUI list text and accessibility leaves are produced by AppKit's update
+    // cycle. Async main never starts that cycle, so row shells stay non-text.
+    @MainActor static func main() {
+        final class Delegate: NSObject, NSApplicationDelegate {
+            func applicationDidFinishLaunching(_ notification: Notification) {
+                Task { @MainActor in await MailboxLatency.runMeasurements() }
+            }
+            func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+        }
+        let delegate = Delegate()
+        let app = NSApplication.shared
+        app.delegate = delegate
+        app.setActivationPolicy(.regular)
+        app.run()
+    }
+    @MainActor static func runMeasurements() async {
         do {
             let arguments = CommandLine.arguments
             guard arguments.count == 5, arguments[1] == "--output", arguments[3] == "--version",
                   let workspace = ProcessInfo.processInfo.environment["MORROW_DATA_DIR"], workspace.hasPrefix("/"),
                   !FileManager.default.fileExists(atPath: arguments[2]) else { throw APIError("A new output, version and isolated fixture workspace are required.") }
-            NSApplication.shared.setActivationPolicy(.regular)
             UserDefaults.standard.setVolatileDomain(["mailReaderLayout": "right", "mailSidebarVisible": true,
                 "collapsedMailAccounts": "[]"], forName: UserDefaults.argumentDomain)
             let oracleControls = try checkVisibleIdentityOracle()
@@ -791,6 +805,8 @@ struct MailboxLatency {
             let data = try JSONEncoder().encode(report)
             try data.write(to: URL(fileURLWithPath: arguments[2]), options: .withoutOverwriting)
             print("Native mailbox event/layout measurements completed.")
+            fflush(stdout)
+            exit(0) // NSApp.run does not return.
         } catch { FileHandle.standardError.write(Data(("Native mailbox measurement failed: " + error.localizedDescription + "\n").utf8)); exit(1) }
     }
 }
