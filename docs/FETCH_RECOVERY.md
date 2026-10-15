@@ -28,9 +28,15 @@ An IMAP UID with unresolved metadata/body is skipped only after a successful che
 
 Account ownership, reconnect/pause stale-result checks, page/checkpoint transactions, quota cooldown and uncertain-send protections remain required. These read-recovery changes do not authorize automatic sending or other provider writes.
 
-## Existing IMAP identity limitation
+## IMAP server identity follow-up
 
-IMAP cache identity uses account, folder, UIDVALIDITY and UID; it has no server-origin namespace. Reconnecting the same account to a different server can collide with an old identity. The Message-ID check only rejects contradictory nonempty IDs: a missing or reused Message-ID does not establish identity, and existing local metadata can still be inherited. This limitation needs a separate identity migration and is not resolved by the content-preservation fix.
+The original content-preservation fix did not namespace IMAP identities by server.
+The current [server identity follow-up](IMAP_SERVER_IDENTITY.md) adds an endpoint/login
+origin to imports, body reuse, reconciliation and provider action guards. It keeps
+cached copies separate across servers even when Message-ID is missing or reused.
+Legacy provenance that cannot establish an origin stays cached-only; already
+overwritten historical content cannot be reconstructed. Read the backup and
+workspace schema 2 compatibility requirements before upgrading.
 
 ## Native presentation
 

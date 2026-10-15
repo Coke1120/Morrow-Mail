@@ -34,6 +34,7 @@ fn eligible(message: &Value, connection: &Value) -> bool {
         _ => return false,
     };
     remote.starts_with(prefix)
+        && (prefix != "imap:" || crate::imap_identity::matches(connection, message))
         && message["providerDeleted"] != true
         && (message["folder"] != "drafts" || message["providerDraft"] == true)
 }
@@ -158,13 +159,14 @@ mod tests {
     async fn hints_expire_without_reviving_stale_generations_and_reject_changed_connections() {
         let root = std::env::temp_dir().join(format!("morrow-sync-view-{}", uuid::Uuid::new_v4()));
         let app = App::open(&root, 0, "fictional".into(), "".into()).unwrap();
-        let mail = json!({"email":"view@example.invalid","provider":"imap","connectionId":"one"});
+        let mail = json!({"email":"view@example.invalid","provider":"imap","imapHost":"fixture.example.invalid","connectionId":"one"});
+        let origin = crate::imap::server_origin(&mail).unwrap();
         let saved = mail.clone();
         app.db(move |db| {
             db.set_settings(&json!({"mailAccounts":{"view@example.invalid":saved}}))?;
             db.upsert(
                 "view@example.invalid",
-                &json!({"id":"imap:55:7","folder":"inbox","body":"Fictional"}),
+                &json!({"id":"imap:55:7","imapOrigin":origin,"folder":"inbox","body":"Fictional"}),
             )?;
             Ok(())
         })

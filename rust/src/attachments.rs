@@ -280,7 +280,7 @@ pub async fn download(app: &App, owner: &str, id: &str) -> Result<Value> {
                 ));
             }
             let current = get_message(db, &account, &key)?;
-            for field in ["remoteId", "providerFolderId", "messageId"] {
+            for field in ["remoteId", "providerFolderId", "messageId", "imapOrigin"] {
                 if current[field] != message[field] {
                     return Err(Error::conflict(
                         "This message moved or changed. Refresh before downloading attachments.",

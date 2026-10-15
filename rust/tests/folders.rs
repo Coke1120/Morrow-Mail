@@ -2,7 +2,11 @@ use morrow_search::{
     folders::{plan, update_cache},
     store::Store,
 };
-use serde_json::json;
+use serde_json::{Value, json};
+
+fn connection(account: &str, provider: &str) -> Value {
+    json!({"email":account,"provider":provider,"imapHost":"fixture.example.invalid","connectionId":format!("connection-{account}")})
+}
 
 #[test]
 fn creating_a_folder_does_not_read_message_content() {
@@ -28,12 +32,12 @@ fn creating_a_folder_does_not_read_message_content() {
     let root = std::env::temp_dir().join(format!("morrow-empty-folder-{}", uuid::Uuid::new_v4()));
     let db = Store::open(&root).unwrap();
     db.upsert(
-        "a",
+        "a@example.invalid",
         &json!({"id":"cached","body":"Unrelated downloaded mail","providerLabelIds":["old"]}),
     )
     .unwrap();
-    let before = db.get("a", "cached").unwrap();
-    db.set_settings(&json!({"imports":{"a":{"status":"paused","cursor":{"folders":[{"path":"INBOX"}],"index":0}}}})).unwrap();
+    let before = db.get("a@example.invalid", "cached").unwrap();
+    db.set_settings(&json!({"imports":{"a@example.invalid":{"status":"paused","cursor":{"folders":[{"path":"INBOX"}],"index":0}}}})).unwrap();
     // Enforce the operation's DB budget, independent of mailbox size or timing.
     // The callback has no borrowed state and lives for the entire registration.
     unsafe {
@@ -48,8 +52,8 @@ fn creating_a_folder_does_not_read_message_content() {
     }
     let result = update_cache(
         &db,
-        "a",
-        "google",
+        "a@example.invalid",
+        &connection("a@example.invalid", "google"),
         &[],
         &[json!({"id":"new","name":"New","kind":"label"})],
     );
@@ -60,8 +64,11 @@ fn creating_a_folder_does_not_read_message_content() {
         );
     }
     result.unwrap();
-    assert_eq!(db.get("a", "cached").unwrap(), before);
-    assert_eq!(db.settings().unwrap()["imports"]["a"]["status"], "paused");
+    assert_eq!(db.get("a@example.invalid", "cached").unwrap(), before);
+    assert_eq!(
+        db.settings().unwrap()["imports"]["a@example.invalid"]["status"],
+        "paused"
+    );
     drop(db);
     std::fs::remove_dir_all(root).unwrap();
 }
@@ -170,98 +177,115 @@ fn hierarchy_validation_and_owned_cache_reconciliation() {
 
     let root = std::env::temp_dir().join(format!("morrow-folders-{}", uuid::Uuid::new_v4()));
     let db = Store::open(&root).unwrap();
-    for account in ["a", "b"] {
+    for account in ["a@example.invalid", "b@example.invalid"] {
         db.upsert(account,&json!({"id":"same","providerLabelIds":["p","c"],"labels":["Projects","Projects/中文"],"pending":true,"providerSnapshot":{"read":false,"labels":["Projects","Projects/中文"]}})).unwrap();
         db.upsert(account,&json!({"id":"local","providerLabelIds":["p"],"labels":["My local name"],"localOverrides":{"labels":true}})).unwrap();
     }
     let deltas = vec![json!({"oldId":"p","newName":"Renamed","newId":"p"})];
     let mut renamed = catalog.clone();
     renamed[1]["name"] = "Renamed".into();
-    update_cache(&db, "a", "google", &deltas, &renamed).unwrap();
+    update_cache(
+        &db,
+        "a@example.invalid",
+        &connection("a@example.invalid", "google"),
+        &deltas,
+        &renamed,
+    )
+    .unwrap();
     assert_eq!(
-        db.get("a", "same").unwrap().unwrap()["labels"],
+        db.get("a@example.invalid", "same").unwrap().unwrap()["labels"],
         json!(["Renamed", "Projects/中文"])
     );
     assert_eq!(
-        db.get("a", "local").unwrap().unwrap()["labels"],
+        db.get("a@example.invalid", "local").unwrap().unwrap()["labels"],
         json!(["My local name"])
     );
     assert_eq!(
-        db.get("b", "same").unwrap().unwrap()["labels"],
+        db.get("b@example.invalid", "same").unwrap().unwrap()["labels"],
         json!(["Projects", "Projects/中文"])
     );
-    assert!(db.get("a", "same").unwrap().unwrap()["pending"] == true);
-    for account in ["a", "b"] {
-        db.upsert(account,&json!({"id":"imap:55:7","remoteId":"imap:55:7","providerFolderId":"Old","pending":true,"folder":"archive"})).unwrap();
+    assert!(db.get("a@example.invalid", "same").unwrap().unwrap()["pending"] == true);
+    for account in ["a@example.invalid", "b@example.invalid"] {
+        let origin = morrow_search::imap::server_origin(&connection(account, "imap")).unwrap();
+        db.upsert(account,&json!({"id":"imap:55:7","remoteId":"imap:55:7","imapOrigin":origin,"providerFolderId":"Old","pending":true,"folder":"archive"})).unwrap();
     }
-    db.set_settings(&json!({"imports":{"a":{"status":"paused","pages":5,"folderIndex":0,"cursor":{"version":1,"index":1,"folders":[{"path":"INBOX","kind":"inbox"},{"path":"Old","kind":"archive"},{"path":"Other","kind":"archive"}],"next":{"path":"Old","validity":55,"uid":8}}},"b":{"status":"paused","cursor":{"untouched":true}}}})).unwrap();
+    db.set_settings(&json!({"mailAccounts":{"a@example.invalid":connection("a@example.invalid", "imap"),"b@example.invalid":connection("b@example.invalid", "imap")},"imports":{"a@example.invalid":{"connectionId":"connection-a@example.invalid","status":"paused","pages":5,"folderIndex":0,"cursor":{"version":1,"index":1,"folders":[{"path":"INBOX","kind":"inbox"},{"path":"Old","kind":"archive"},{"path":"Other","kind":"archive"}],"next":{"path":"Old","validity":55,"uid":8}}},"b@example.invalid":{"connectionId":"connection-b@example.invalid","status":"paused","cursor":{"untouched":true}}}})).unwrap();
     update_cache(
         &db,
-        "a",
-        "imap",
+        "a@example.invalid",
+        &connection("a@example.invalid", "imap"),
         &[json!({"oldId":"Old","newName":"New","newId":"New","uidValidity":55})],
         &[],
     )
     .unwrap();
     assert_eq!(
-        db.get("a", "imap:55:7").unwrap().unwrap()["providerFolderId"],
+        db.get("a@example.invalid", "imap:55:7").unwrap().unwrap()["providerFolderId"],
         "New"
     );
     assert_eq!(
-        db.get("b", "imap:55:7").unwrap().unwrap()["providerFolderId"],
+        db.get("b@example.invalid", "imap:55:7").unwrap().unwrap()["providerFolderId"],
         "Old"
     );
     assert_eq!(
-        db.settings().unwrap()["imports"]["a"]["cursor"]["next"]["path"],
+        db.settings().unwrap()["imports"]["a@example.invalid"]["cursor"]["next"]["path"],
         "New"
     );
     update_cache(
         &db,
-        "a",
-        "imap",
+        "a@example.invalid",
+        &connection("a@example.invalid", "imap"),
         &[json!({"oldId":"New","newName":"","newId":""})],
         &[],
     )
     .unwrap();
     let saved = db.settings().unwrap();
-    let job = &saved["imports"]["a"];
+    let job = &saved["imports"]["a@example.invalid"];
     assert_eq!(job["status"], "paused");
     assert_eq!(job["pages"], 5);
     assert_eq!(job["cursor"]["index"], 1);
     assert_eq!(job["cursor"]["folders"][1]["path"], "Other");
     assert!(job["cursor"]["next"].is_null());
-    assert_eq!(saved["imports"]["b"]["cursor"], json!({"untouched":true}));
     assert_eq!(
-        db.get("a", "imap:55:7").unwrap().unwrap()["providerFolderMissing"],
+        saved["imports"]["b@example.invalid"]["cursor"],
+        json!({"untouched":true})
+    );
+    assert_eq!(
+        db.get("a@example.invalid", "imap:55:7").unwrap().unwrap()["providerFolderMissing"],
         true
     );
-    assert_eq!(db.get("a", "imap:55:7").unwrap().unwrap()["pending"], true);
+    assert_eq!(
+        db.get("a@example.invalid", "imap:55:7").unwrap().unwrap()["pending"],
+        true
+    );
     update_cache(
         &db,
-        "b",
-        "imap",
+        "b@example.invalid",
+        &connection("b@example.invalid", "imap"),
         &[json!({"oldId":"Old","newName":"New","newId":"New","uidValidity":66})],
         &[],
     )
     .unwrap();
     assert_eq!(
-        db.get("b", "imap:55:7").unwrap().unwrap()["providerFolderMissing"],
+        db.get("b@example.invalid", "imap:55:7").unwrap().unwrap()["providerFolderMissing"],
         true
     );
     assert_eq!(
-        db.get("b", "imap:55:7").unwrap().unwrap()["providerFolderId"],
+        db.get("b@example.invalid", "imap:55:7").unwrap().unwrap()["providerFolderId"],
         "Old"
     );
     update_cache(
         &db,
-        "a",
-        "imap",
+        "a@example.invalid",
+        &connection("a@example.invalid", "imap"),
         &[json!({"oldId":"Other","newName":"","newId":""})],
         &[],
     )
     .unwrap();
-    assert_eq!(db.settings().unwrap()["imports"]["a"]["status"], "complete");
-    assert!(db.settings().unwrap()["imports"]["a"]["cursor"].is_null());
+    assert_eq!(
+        db.settings().unwrap()["imports"]["a@example.invalid"]["status"],
+        "complete"
+    );
+    assert!(db.settings().unwrap()["imports"]["a@example.invalid"]["cursor"].is_null());
     drop(db);
     std::fs::remove_dir_all(root).unwrap();
 }

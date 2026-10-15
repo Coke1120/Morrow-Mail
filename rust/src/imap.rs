@@ -21,6 +21,7 @@ use lettre::{
     },
 };
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
     io,
     pin::Pin,
@@ -361,6 +362,21 @@ pub async fn send_with_tls(mail: &Value, message: &Value, tls: TlsParameters) ->
 }
 fn connector() -> Result<native_tls::TlsConnector> {
     native_tls::TlsConnector::new().map_err(|_| providers::remote_error())
+}
+/// Stable UID namespace: exactly the endpoint, transport and LOGIN principal
+/// used by connect(). Password, SMTP settings and reconnect generation are not identity.
+pub fn server_origin(mail: &Value) -> Result<String> {
+    let host = validation::hostname(&mail["imapHost"], "IMAP host")?.to_ascii_lowercase();
+    let host = host.strip_suffix('.').unwrap_or(&host);
+    let principal = validation::email(&mail["email"])?;
+    let endpoint = json!([
+        "imap-origin-v1",
+        "implicit-tls",
+        host,
+        port(mail, "imapPort", 993)?,
+        principal
+    ]);
+    Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(serde_json::to_vec(&endpoint)?)))
 }
 async fn connect(mail: &Value, connector: &native_tls::TlsConnector) -> Result<Mailbox> {
     let _phase = crate::sync_profile::phase("imapConnect");
@@ -764,6 +780,7 @@ pub async fn write_flags_with_tls(
     patch: &Value,
     connector: &native_tls::TlsConnector,
 ) -> Result<Value> {
+    crate::imap_identity::require(mail, message)?;
     tokio::time::timeout(Duration::from_secs(45), async {
         let remote = message["remoteId"]
             .as_str()
@@ -847,6 +864,9 @@ pub async fn reconcile_priority_with_tls(
     if messages.len() > crate::sync_priority::LIMIT {
         return Err(Error::invalid("The mail view exceeds its message limit."));
     }
+    for message in messages {
+        crate::imap_identity::require(mail, message)?;
+    }
     // A retained reader can add one row to a 50-row page. Keep the existing
     // per-request limit and overall read deadline; return no partial batch.
     tokio::time::timeout(Duration::from_secs(45), async {
@@ -871,6 +891,9 @@ pub async fn reconcile_with_tls(
 ) -> Result<Vec<Value>> {
     if messages.len() > 50 {
         return Err(Error::invalid("Reconciliation batch exceeds 50 messages."));
+    }
+    for message in messages {
+        crate::imap_identity::require(mail, message)?;
     }
     tokio::time::timeout(Duration::from_secs(45), async {
         let mut session = connect(mail, connector).await?;
@@ -1164,6 +1187,9 @@ async fn reconcile_session(
     mail: &Value,
     messages: &[Value],
 ) -> Result<Vec<Value>> {
+    for message in messages {
+        crate::imap_identity::require(mail, message)?;
+    }
     let _phase = crate::sync_profile::phase("imapReconcile");
     let mut result = Vec::new();
     let mut folders = std::collections::BTreeMap::<String, Vec<&Value>>::new();
@@ -1375,6 +1401,7 @@ pub async fn raw_message_with_tls(
     message: &Value,
     connector: &native_tls::TlsConnector,
 ) -> Result<Vec<u8>> {
+    crate::imap_identity::require(mail, message)?;
     tokio::time::timeout(Duration::from_secs(120), async {
         let remote = message["remoteId"]
             .as_str()
@@ -1864,7 +1891,7 @@ async fn fetch_folder(
         };
         value = merge(
             value,
-            &json!({"id":id,"remoteId":remote,"providerFolderId":path,"providerFolderName":path,"folder":folder,"read":row.read,"starred":row.starred}),
+            &json!({"id":id,"remoteId":remote,"imapOrigin":server_origin(mail)?,"providerFolderId":path,"providerFolderName":path,"folder":folder,"read":row.read,"starred":row.starred}),
         );
         if selected_path.is_some() || row.draft {
             value["providerSent"] = (folder == "sent").into();
@@ -2010,6 +2037,7 @@ pub async fn organize_with_tls(
     mode: &str,
     connector: &native_tls::TlsConnector,
 ) -> Result<Value> {
+    crate::imap_identity::require(mail, message)?;
     let target = encode_folder(string(destination, "id"))?;
     if !["move", "restoreTrash"].contains(&mode) {
         return Err(Error::invalid("IMAP supports folder moves."));

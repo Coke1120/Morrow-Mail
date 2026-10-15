@@ -282,14 +282,17 @@ impl Store {
             }
         }
         let migrated = table_exists("morrow_schema")?;
-        if migrated
-            && conn.query_row("SELECT version FROM morrow_schema", [], |row| {
-                row.get::<_, i64>(0)
-            })? != 1
-        {
-            return Err(Error::conflict(
-                "This workspace needs a newer Morrow Mail. No migration was made.",
-            ));
+        if migrated {
+            let (count, version): (i64, Option<i64>) = conn.query_row(
+                "SELECT count(*),min(version) FROM morrow_schema",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            if count != 1 || !matches!(version, Some(1 | 2)) {
+                return Err(Error::conflict(
+                    "This workspace needs a newer Morrow Mail. No migration was made.",
+                ));
+            }
         }
         let needs_backup = existed
             && !migrated
@@ -337,8 +340,11 @@ impl Store {
         store.transaction(|store| {
             create_index(&store.conn)?;
             create_provider_memberships(&store.conn)?;
+            crate::imap_identity::migrate(store)?;
             crate::mail_threads::create_schema(&store.conn)?;
-            store.conn.execute_batch("CREATE TABLE IF NOT EXISTS morrow_schema(version INTEGER PRIMARY KEY); INSERT OR IGNORE INTO morrow_schema VALUES(1);")?;
+            // Older services reject version 2 before writing; they must not ignore
+            // server-origin fencing and merge a retained UID into another source.
+            store.conn.execute_batch("CREATE TABLE IF NOT EXISTS morrow_schema(version INTEGER PRIMARY KEY); DELETE FROM morrow_schema; INSERT INTO morrow_schema VALUES(2);")?;
             let initialized: bool = store.conn.query_row("SELECT EXISTS(SELECT 1 FROM settings WHERE id=1)", [], |row| row.get(0))?;
             if !initialized {
                 store.write_settings(&json!({"mail": null, "ai": null, "activeAccount": "demo"}))?;

@@ -275,9 +275,17 @@ function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMillisecond
     $readerInitStages = 'environment-options|environment-create|controller-options|controller-ensure|core-policy|handlers|initial-render'
     $readerInitPattern = '^Native reader: init-failed origin=(startup-timeout|hresult|exception) stage=(' + $readerInitStages + ') hr=0x([0-9A-Fa-f]{8}) \+([0-9]{1,6}) ms$'
     $readerInitOverflowPattern = '^Native reader: init-failed-overflow \+([0-9]{1,6}) ms$'
+    $readerCompletedPattern = '^Native reader: init-completed stage=(environment-returned|controller-returned|handlers-installed|render-returned) \+([0-9]{1,6}) ms$'
+    $readerVersionPattern = '^Native reader: runtime-version value=(unavailable|[0-9]{1,10}(?:\.[0-9]{1,10}){3}(?: (?:beta|dev|canary))?) \+([0-9]{1,6}) ms$'
+    $readerDocumentPattern = '^Native reader: document-event kind=(start|decision|content-loading|dom-loaded|completed) id=([0-9]{1,20}) epoch=([0-9]{1,20}) tracked=([0-9]{1,20}) expected=([01]) live=([01]) outcome=(observed|allowed|cancelled|normal|error-page|success|failure) error=(-?[0-9]{1,10}) \+([0-9]{1,6}) ms$'
+    $readerWaitPattern = '^Native reader: wait-summary phase=(mount-loaded|environment|controller-ready|initial-document) outcome=(condition-met|deadline|cancelled|aborted) iterations=([0-9]{1,5}) maxResumeGapMs=([0-9]{1,6}) counterOverflow=([01]) \+([0-9]{1,6}) ms$'
+    $readerDetailOverflowPattern = '^Native reader: detail-overflow \+([0-9]{1,6}) ms$'
+    $readerUnavailablePattern = '^Native reader: detail-unavailable stage=(event-read|content-loading-subscribe|dom-loaded-subscribe) \+([0-9]{1,6}) ms$'
     $safeStartup = '^Native startup: [A-Za-z0-9 .(),:_-]{1,120}$|^Native (startup|XAML) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native startup (constructor|OnLaunched) \((installing unhandled exception handler|reading application resources|reading merged dictionaries|constructing control resources|appending control resources)\) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native smoke: [a-z-]{1,64}$'
     $safeStartup += '|' + $readerPhasePattern + '|' + $readerFailurePattern + '|' + $readerOverflowPattern
     $safeStartup += '|' + $readerInitPattern + '|' + $readerInitOverflowPattern
+    $safeStartup += '|' + $readerCompletedPattern + '|' + $readerVersionPattern + '|' + $readerDocumentPattern + '|' + $readerWaitPattern + '|' + $readerDetailOverflowPattern
+    $safeStartup += '|' + $readerUnavailablePattern
     $safeStartup += '|^Native reader: nav-start id=[0-9]{1,20} blank=[01] redirected=[01] user=[01] expected=[01] live=[01]$'
     $safeStartup += '|^Native reader: nav-decision id=[0-9]{1,20} cancelled=[01] expected=[01] tracked=[0-9]{1,20}$'
     $safeStartup += '|^Native reader: nav-completed id=[0-9]{1,20} success=[01] error=-?[0-9]{1,10} live=[01] tracked=[0-9]{1,20}$'
@@ -287,9 +295,11 @@ function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMillisecond
     $readerEvents = [Collections.Generic.List[object]]::new()
     $readerEventLimit = 64
     $readerInitializationFailureLimit = 8
+    $readerDetailLimit = 24
     $state = @{ phase = ''; characters = 0; milestones = @{}; readerOverflow = $false
         readerFailureOverflow = $false; readerRejected = $false; readerInitializationFailures = 0
-        readerInitializationOverflow = $false }
+        readerInitializationOverflow = $false; readerDetails = 0; readerDetailOverflow = $false
+        readerDetailOverflowSeen = $false; readerWaitCounterOverflow = $false; readerDetailUnavailable = $false }
     function Keep-Line([string] $Value) {
         # Receipt time only, with the clock captured before Process.Start. The
         # exact fixed markers survive diagnostic-tail trimming. No CIM or file
@@ -302,6 +312,7 @@ function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMillisecond
             return
         }
         $entry = $null
+        $detail = $false
         if ($Value -cmatch $readerPhasePattern) {
             $entry = [ordered]@{ event = 'phase'; phase = $Matches[1]; readerElapsedMs = [int] $Matches[2] }
         } elseif ($Value -cmatch $readerFailurePattern) {
@@ -331,6 +342,57 @@ function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMillisecond
             if ($elapsed -gt 180000) { $state.readerRejected = $true; return }
             $state.readerInitializationOverflow = $true
             $entry = [ordered]@{ event = 'initializationFailureOverflow'; readerElapsedMs = $elapsed }
+        } elseif ($Value -cmatch $readerCompletedPattern) {
+            $stage = $Matches[1]; $elapsed = [int] $Matches[2]
+            if ($elapsed -gt 180000) { $state.readerRejected = $true; return }
+            $detail = $true
+            $entry = [ordered]@{ event = 'initializationCompleted'; stage = $stage; readerElapsedMs = $elapsed }
+        } elseif ($Value -cmatch $readerVersionPattern) {
+            $version = $Matches[1]; $elapsed = [int] $Matches[2]
+            if ($elapsed -gt 180000 -or $version.Length -gt 64) { $state.readerRejected = $true; return }
+            $detail = $true
+            $entry = [ordered]@{ event = 'runtimeVersion'; available = $version -cne 'unavailable'
+                version = $(if ($version -cne 'unavailable') { $version } else { $null }); readerElapsedMs = $elapsed }
+        } elseif ($Value -cmatch $readerDocumentPattern) {
+            $kind = $Matches[1]; $expected = $Matches[5] -ceq '1'; $live = $Matches[6] -ceq '1'
+            $outcome = $Matches[7]; $elapsed = [int] $Matches[9]
+            [uint64] $id = 0; [uint64] $epoch = 0; [uint64] $tracked = 0; [int] $code = 0
+            if (-not [uint64]::TryParse($Matches[2], [ref] $id) -or -not [uint64]::TryParse($Matches[3], [ref] $epoch) -or
+                -not [uint64]::TryParse($Matches[4], [ref] $tracked) -or -not [int]::TryParse($Matches[8], [ref] $code) -or
+                $epoch -ne 1 -or $elapsed -gt 180000 -or
+                (($kind -ceq 'start' -or $kind -ceq 'dom-loaded') -and $outcome -cne 'observed') -or
+                ($kind -ceq 'decision' -and $outcome -cnotin @('allowed', 'cancelled')) -or
+                ($kind -ceq 'content-loading' -and $outcome -cnotin @('normal', 'error-page')) -or
+                ($kind -ceq 'completed' -and $outcome -cnotin @('success', 'failure')) -or
+                ($kind -cne 'completed' -and $code -ne 0)) { $state.readerRejected = $true; return }
+            $detail = $true
+            $entry = [ordered]@{ event = 'document'; kind = $kind; navigationId = $id; epoch = $epoch
+                trackedId = $tracked; expected = $expected; live = $live; outcome = $outcome; webErrorStatus = $code; readerElapsedMs = $elapsed }
+        } elseif ($Value -cmatch $readerWaitPattern) {
+            $phase = $Matches[1]; $outcome = $Matches[2]; [uint32] $iterations = $Matches[3]
+            [uint32] $gap = $Matches[4]; $counterOverflow = $Matches[5] -ceq '1'; $elapsed = [int] $Matches[6]
+            if ($elapsed -gt 180000 -or $iterations -eq 0 -or $iterations -gt 10000 -or $gap -gt $elapsed -or
+                ($outcome -ceq 'deadline' -and $elapsed -lt 25000)) { $state.readerRejected = $true; return }
+            if ($counterOverflow) { $state.readerWaitCounterOverflow = $true }
+            $detail = $true
+            $entry = [ordered]@{ event = 'waitSummary'; phase = $phase; outcome = $outcome; iterations = $iterations
+                maxResumeGapMs = $gap; counterOverflow = $counterOverflow; readerElapsedMs = $elapsed }
+        } elseif ($Value -cmatch $readerUnavailablePattern) {
+            $stage = $Matches[1]; $elapsed = [int] $Matches[2]
+            if ($elapsed -gt 180000) { $state.readerRejected = $true; return }
+            $state.readerDetailUnavailable = $true; $detail = $true
+            $entry = [ordered]@{ event = 'detailUnavailable'; stage = $stage; readerElapsedMs = $elapsed }
+        } elseif ($Value -cmatch $readerDetailOverflowPattern) {
+            $elapsed = [int] $Matches[1]
+            if ($elapsed -gt 180000) { $state.readerRejected = $true; return }
+            $state.readerDetailOverflow = $true
+            if ($state.readerDetailOverflowSeen) { return }
+            $state.readerDetailOverflowSeen = $true
+            $entry = [ordered]@{ event = 'detailOverflow'; readerElapsedMs = $elapsed }
+        }
+        if ($detail) {
+            if ($state.readerDetails -ge $readerDetailLimit) { $state.readerDetailOverflow = $true; return }
+            ++$state.readerDetails
         }
         if ($entry) {
             if ($readerEvents.Count -lt $readerEventLimit) {
@@ -397,10 +459,12 @@ function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMillisecond
     $readerLifecycle = [ordered]@{
         eventLimit = $readerEventLimit; overflow = $state.readerOverflow; processFailureOverflow = $state.readerFailureOverflow
         initializationFailureLimit = $readerInitializationFailureLimit; initializationFailureOverflow = $state.readerInitializationOverflow
+        detailLimit = $readerDetailLimit; detailOverflow = $state.readerDetailOverflow; waitCounterOverflow = $state.readerWaitCounterOverflow
+        detailUnavailable = $state.readerDetailUnavailable
         receiptClock = 'launch-relative-stderr-receipt'; readerClock = 'runtime-relative-tick-count'
         streamEnded = $eof -and -not $readFailed; partialLine = $partialLine; lineTruncated = $lineTruncated
         readFailed = $readFailed; rejectedReaderLine = $state.readerRejected
-        complete = $eof -and -not ($readFailed -or $partialLine -or $lineTruncated -or $state.readerOverflow -or $state.readerFailureOverflow -or $state.readerInitializationOverflow -or $state.readerRejected)
+        complete = $eof -and -not ($readFailed -or $partialLine -or $lineTruncated -or $state.readerOverflow -or $state.readerFailureOverflow -or $state.readerInitializationOverflow -or $state.readerDetailOverflow -or $state.readerWaitCounterOverflow -or $state.readerDetailUnavailable -or $state.readerRejected)
         events = $readerEvents.ToArray()
     }
     return @{ Completed = $completed; Diagnostics = ($safeLines -join "`n"); LastSmokePhase = $state.phase
@@ -527,6 +591,102 @@ exit 7
             $lifecycle.events.Count -eq 9 -and $lifecycle.events[8].event -ceq 'initializationFailureOverflow' -and
             $result.Diagnostics.Length -le 1024) 'Initialization diagnostics exceeded the eight-record bound or concealed overflow.'
         $child.Dispose(); $child = $null
+        $child = Start-DrainCheck @'
+[Console]::Error.WriteLine('Native reader: init-completed stage=environment-returned +12 ms')
+[Console]::Error.WriteLine('Native reader: runtime-version value=149.0.1.2 canary +12 ms')
+[Console]::Error.WriteLine('Native reader: init-completed stage=controller-returned +14000 ms')
+[Console]::Error.WriteLine('Native reader: init-completed stage=handlers-installed +14001 ms')
+[Console]::Error.WriteLine('Native reader: init-completed stage=render-returned +14002 ms')
+[Console]::Error.WriteLine('Native reader: document-event kind=start id=2 epoch=1 tracked=0 expected=1 live=1 outcome=observed error=0 +14003 ms')
+[Console]::Error.WriteLine('Native reader: document-event kind=decision id=2 epoch=1 tracked=2 expected=0 live=1 outcome=allowed error=0 +14004 ms')
+[Console]::Error.WriteLine('Native reader: document-event kind=content-loading id=2 epoch=1 tracked=2 expected=0 live=1 outcome=normal error=0 +14005 ms')
+[Console]::Error.WriteLine('Native reader: document-event kind=dom-loaded id=2 epoch=1 tracked=2 expected=0 live=1 outcome=observed error=0 +14006 ms')
+[Console]::Error.WriteLine('Native reader: wait-summary phase=initial-document outcome=deadline iterations=400 maxResumeGapMs=230 counterOverflow=0 +25001 ms')
+for ($i = 0; $i -lt 40; $i++) { [Console]::Error.WriteLine('Native smoke: settings-start') }
+exit 7
+'@
+        $result = Wait-NativeUi $child 30000
+        $lifecycle = $result.ReaderLifecycle
+        $document = @($lifecycle.events | Where-Object { $_.event -ceq 'document' })
+        $wait = @($lifecycle.events | Where-Object { $_.event -ceq 'waitSummary' })
+        Require ($result.Completed -and $child.ExitCode -eq 7 -and $lifecycle.complete -and $lifecycle.detailLimit -eq 24 -and
+            $lifecycle.events.Count -eq 10 -and $document.Count -eq 4 -and $wait.Count -eq 1) 'Navigation diagnostic retention concealed the failing child or dropped bounded details.'
+        Require ($lifecycle.events[0].stage -ceq 'environment-returned' -and $lifecycle.events[1].available -and
+            $lifecycle.events[1].version -ceq '149.0.1.2 canary' -and $document[0].navigationId -is [uint64] -and
+            $document[0].navigationId -eq 2 -and $document[0].epoch -eq 1 -and $document[1].trackedId -eq 2 -and
+            $document[1].expected -is [bool] -and -not $document[1].expected -and $document[1].outcome -ceq 'allowed' -and
+            $document[3].kind -ceq 'dom-loaded' -and $wait[0].iterations -is [uint32] -and
+            $wait[0].iterations -eq 400 -and $wait[0].maxResumeGapMs -eq 230 -and $wait[0].readerElapsedMs -eq 25001 -and
+            $wait[0].outcome -ceq 'deadline') 'Typed navigation identity, lifecycle or wait timing changed.'
+        Require ($result.Diagnostics -cnotmatch 'Native reader:' -and $result.MilestonesMs.Count -eq 0 -and
+            @($document | Where-Object { $_.kind -ceq 'completed' }).Count -eq 0) 'Diagnostics fabricated completion/readiness or did not survive tail trimming.'
+        $roundTrip = $lifecycle | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+        Require ($roundTrip.events[9].outcome -ceq 'deadline' -and $roundTrip.events[6].navigationId -eq 2) 'Navigation evidence did not survive report serialization.'
+        $child.Dispose(); $child = $null
+        $child = Start-DrainCheck @'
+[Console]::Error.WriteLine('Native reader: runtime-version value=unavailable +0 ms')
+[Console]::Error.WriteLine('Native reader: document-event kind=completed id=18446744073709551615 epoch=1 tracked=18446744073709551615 expected=0 live=0 outcome=failure error=-2147483648 +180000 ms')
+[Console]::Error.WriteLine('Native reader: wait-summary phase=mount-loaded outcome=condition-met iterations=1 maxResumeGapMs=0 counterOverflow=0 +0 ms')
+[Console]::Error.WriteLine('Native reader: wait-summary phase=controller-ready outcome=cancelled iterations=10000 maxResumeGapMs=180000 counterOverflow=1 +180000 ms')
+[Console]::Error.WriteLine('Native reader: detail-unavailable stage=event-read +180000 ms')
+exit 7
+'@
+        $result = Wait-NativeUi $child 30000
+        $lifecycle = $result.ReaderLifecycle
+        Require ($result.Completed -and $child.ExitCode -eq 7 -and -not $lifecycle.complete -and $lifecycle.waitCounterOverflow -and
+            -not $lifecycle.rejectedReaderLine -and $lifecycle.detailUnavailable -and $lifecycle.events.Count -eq 5 -and -not $lifecycle.events[0].available -and
+            $null -eq $lifecycle.events[0].version -and $lifecycle.events[1].navigationId -eq [uint64]::MaxValue -and
+            $lifecycle.events[1].webErrorStatus -eq [int]::MinValue -and $lifecycle.events[1].readerElapsedMs -eq 180000 -and
+            $lifecycle.events[2].outcome -ceq 'condition-met' -and $lifecycle.events[3].maxResumeGapMs -eq 180000) 'Navigation/wait boundary values were lost or counter overflow was reported as complete.'
+        $child.Dispose(); $child = $null
+        $child = Start-DrainCheck @'
+foreach ($line in @(
+    'Native reader: init-completed stage=private-path +1 ms',
+    'Native reader: init-completed stage=environment-returned +180001 ms',
+    'Native reader: runtime-version value=149.0.1.2 private-token +1 ms',
+    'Native reader: runtime-version value=149.0.1 +1 ms',
+    'Native reader: runtime-version value=149.0.1.2 +180001 ms',
+    'Native reader: document-event kind=start id=18446744073709551616 epoch=1 tracked=0 expected=1 live=1 outcome=observed error=0 +1 ms',
+    'Native reader: document-event kind=start id=2 epoch=18446744073709551616 tracked=0 expected=1 live=1 outcome=observed error=0 +1 ms',
+    'Native reader: document-event kind=start id=2 epoch=1 tracked=18446744073709551616 expected=1 live=1 outcome=observed error=0 +1 ms',
+    'Native reader: document-event kind=completed id=2 epoch=1 tracked=2 expected=0 live=1 outcome=failure error=2147483648 +1 ms',
+    'Native reader: document-event kind=start id=2 epoch=2 tracked=0 expected=1 live=1 outcome=observed error=0 +1 ms',
+    'Native reader: document-event kind=start id=2 epoch=1 tracked=0 expected=2 live=1 outcome=observed error=0 +1 ms',
+    'Native reader: document-event kind=dom-loaded id=2 epoch=1 tracked=2 expected=0 live=1 outcome=success error=0 +1 ms',
+    'Native reader: document-event kind=decision id=2 epoch=1 tracked=2 expected=0 live=1 outcome=allowed error=1 +1 ms',
+    'Native reader: document-event kind=start id=2 epoch=1 tracked=0 expected=1 live=1 outcome=observed error=0 +180001 ms',
+    'Native reader: document-event kind=start id=2 epoch=1 tracked=0 expected=1 live=1 outcome=observed error=0 +1 ms secret',
+    'Native reader: wait-summary phase=private-path outcome=deadline iterations=1 maxResumeGapMs=0 counterOverflow=0 +25000 ms',
+    'Native reader: wait-summary phase=initial-document outcome=passed iterations=1 maxResumeGapMs=0 counterOverflow=0 +25000 ms',
+    'Native reader: wait-summary phase=initial-document outcome=deadline iterations=0 maxResumeGapMs=0 counterOverflow=0 +25000 ms',
+    'Native reader: wait-summary phase=initial-document outcome=deadline iterations=10001 maxResumeGapMs=0 counterOverflow=0 +25000 ms',
+    'Native reader: wait-summary phase=initial-document outcome=deadline iterations=1 maxResumeGapMs=25001 counterOverflow=0 +25000 ms',
+    'Native reader: wait-summary phase=initial-document outcome=deadline iterations=1 maxResumeGapMs=0 counterOverflow=0 +24999 ms',
+    'Native reader: wait-summary phase=initial-document outcome=aborted iterations=1 maxResumeGapMs=0 counterOverflow=0 +180001 ms',
+    'Native reader: detail-overflow +180001 ms',
+    'Native reader: detail-unavailable stage=private-path +1 ms',
+    'Native reader: detail-unavailable stage=event-read +180001 ms'
+)) { [Console]::Error.WriteLine($line) }
+exit 7
+'@
+        $result = Wait-NativeUi $child 30000
+        Require ($result.Completed -and $child.ExitCode -eq 7 -and $result.ReaderLifecycle.rejectedReaderLine -and
+            -not $result.ReaderLifecycle.complete -and $result.ReaderLifecycle.events.Count -eq 0 -and
+            $result.Diagnostics.Length -eq 0) 'Malformed, out-of-range or private navigation diagnostic text was retained.'
+        $child.Dispose(); $child = $null
+        $child = Start-DrainCheck @'
+for ($i = 0; $i -lt 27; $i++) { [Console]::Error.WriteLine('Native reader: init-completed stage=render-returned +1 ms') }
+[Console]::Error.WriteLine('Native reader: detail-overflow +2 ms')
+[Console]::Error.WriteLine('Native reader: detail-overflow +3 ms')
+exit 7
+'@
+        $result = Wait-NativeUi $child 30000
+        $lifecycle = $result.ReaderLifecycle
+        Require ($result.Completed -and $child.ExitCode -eq 7 -and -not $lifecycle.complete -and $lifecycle.detailOverflow -and
+            $lifecycle.events.Count -eq 25 -and @($lifecycle.events | Where-Object { $_.event -ceq 'initializationCompleted' }).Count -eq 24 -and
+            $lifecycle.events[24].event -ceq 'detailOverflow' -and $lifecycle.events[24].readerElapsedMs -eq 2 -and
+            $result.Diagnostics.Length -le 1024) 'Navigation details or overflow receipts exceeded their fixed budget.'
+        $child.Dispose(); $child = $null
         $child = Start-DrainCheck "[Console]::Error.Write('Native reader: passed +8 ms'); [Console]::Error.Flush(); exit 7"
         $result = Wait-NativeUi $child 30000
         Require ($result.Completed -and $child.ExitCode -eq 7 -and $result.ReaderLifecycle.partialLine -and
@@ -542,7 +702,7 @@ exit 7
         $result = Wait-NativeUi $child 750
         Require (-not $result.Completed -and $child.HasExited -and $child.ExitCode -ne 0) 'Drain deadline self-check did not terminate its child.'
         Require ($clock.ElapsedMilliseconds -lt 8750 -and $result.Diagnostics.Length -le 1024) 'Drain deadline self-check exceeded its bounded allowance.'
-        Write-Host 'Native UI bounded stderr drain, typed initialization failure controls, reader lifecycle retention and owned-process timeout self-check passed.'
+        Write-Host 'Native UI bounded stderr drain, typed initialization/navigation/wait controls, reader lifecycle retention and owned-process timeout self-check passed.'
     } finally {
         if ($child) {
             try { if (-not $child.HasExited) { $child.Kill(); [void] $child.WaitForExit(5000) } }
@@ -721,7 +881,7 @@ try {
                 # replacement for the UI/collector acceptance checks below.
                 try {
                     $readerReport = [ordered]@{
-                        schemaVersion = 2; run = $caseIndex; mode = $case.mode; uiPid = $process.Id
+                        schemaVersion = 3; run = $caseIndex; mode = $case.mode; uiPid = $process.Id
                         candidate = $resourceIdentity; available = $null -ne $completion
                         uiCompleted = [bool] ($completion -and $completion.Completed)
                         lifecycle = $(if ($completion) { $completion.ReaderLifecycle } else { $null })

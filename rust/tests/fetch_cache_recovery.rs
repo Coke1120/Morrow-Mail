@@ -152,7 +152,8 @@ async fn downloaded_immutable_body_survives_provider_limit_refresh_restart_and_c
         let root = directory();
         let db = Store::open(&root).unwrap();
         let id = format!("{provider}:55:7");
-        let connection = json!({"email":A,"provider":provider});
+        let connection =
+            json!({"email":A,"provider":provider,"imapHost":"fixture.example.invalid"});
         let remote = json!({"id":id,"remoteId":id,"providerFolderId":"INBOX","folder":"inbox","date":"2026-10-09T00:00:00.000Z","body":LARGE,"bodyHtml":"","bodyTruncated":false,"preview":LARGE,"hasAttachments":true,"contentIncomplete":true,"contentErrorCode":format!("{provider}_size_limit"),"read":false,"starred":false,"labels":[],"providerLabelIds":["INBOX"]});
         mail::import_messages(&db, &connection, std::slice::from_ref(&remote)).unwrap();
         db.upsert(B, &remote).unwrap();
@@ -187,8 +188,8 @@ async fn downloaded_immutable_body_survives_provider_limit_refresh_restart_and_c
 async fn legacy_placeholder_and_mutable_draft_do_not_keep_a_completed_download_latch() {
     let root = directory();
     let db = Store::open(&root).unwrap();
-    let connection = json!({"email":A,"provider":"imap"});
-    let previous = json!({"id":"imap:55:9","remoteId":"imap:55:9","providerFolderId":"INBOX","folder":"inbox","body":LARGE,"bodyHtml":"","bodyTruncated":false,"attachments":[],"attachmentsLoaded":true});
+    let connection = json!({"email":A,"provider":"imap","imapHost":"fixture.example.invalid"});
+    let previous = json!({"imapOrigin":morrow_search::imap::server_origin(&connection).unwrap(),"id":"imap:55:9","remoteId":"imap:55:9","providerFolderId":"INBOX","folder":"inbox","body":LARGE,"bodyHtml":"","bodyTruncated":false,"attachments":[],"attachmentsLoaded":true});
     db.upsert(A, &previous).unwrap();
     drop(db);
     let app = App::open(&root, 0, "fixture".into(), "fixture-update".into()).unwrap();
@@ -202,7 +203,7 @@ async fn legacy_placeholder_and_mutable_draft_do_not_keep_a_completed_download_l
         &json!({"body":"Earlier downloaded draft","providerDraft":true}),
     )
     .unwrap();
-    let next = json!({"id":"imap:55:9","remoteId":"imap:55:9","providerFolderId":"INBOX","folder":"drafts","providerDraft":true,"body":LARGE,"bodyHtml":"","bodyTruncated":false,"contentIncomplete":true,"contentErrorCode":"imap_size_limit"});
+    let next = json!({"imapOrigin":morrow_search::imap::server_origin(&connection).unwrap(),"id":"imap:55:9","remoteId":"imap:55:9","providerFolderId":"INBOX","folder":"drafts","providerDraft":true,"body":LARGE,"bodyHtml":"","bodyTruncated":false,"contentIncomplete":true,"contentErrorCode":"imap_size_limit"});
     mail::import_messages(&db, &connection, &[next]).unwrap();
     let saved = db.get(A, "imap:55:9").unwrap().unwrap();
     assert_eq!(saved["body"], LARGE);
@@ -216,10 +217,10 @@ async fn legacy_placeholder_and_mutable_draft_do_not_keep_a_completed_download_l
 fn contradictory_message_id_does_not_attach_previous_downloaded_content_to_a_new_message() {
     let root = directory();
     let db = Store::open(&root).unwrap();
-    let connection = json!({"email":A,"provider":"imap"});
-    db.upsert(A,&json!({"id":"imap:55:11","remoteId":"imap:55:11","providerFolderId":"INBOX","folder":"inbox","messageId":"<old@example.invalid>","body":"Previous connection's downloaded body","bodyHtml":"<p>Previous body</p>","bodyTruncated":false,"attachmentsLoaded":true,"attachments":[],"contentIncomplete":false})).unwrap();
-    // A reconnected IMAP server can reuse a mailbox UID tuple for a different Message-ID.
-    let incoming = json!({"id":"imap:55:11","remoteId":"imap:55:11","providerFolderId":"INBOX","folder":"inbox","messageId":"<new@example.invalid>","body":LARGE,"bodyHtml":"","bodyTruncated":false,"contentIncomplete":true,"contentErrorCode":"imap_size_limit"});
+    let connection = json!({"email":A,"provider":"imap","imapHost":"fixture.example.invalid"});
+    db.upsert(A,&json!({"imapOrigin":morrow_search::imap::server_origin(&connection).unwrap(),"id":"imap:55:11","remoteId":"imap:55:11","providerFolderId":"INBOX","folder":"inbox","messageId":"<old@example.invalid>","body":"Previous connection's downloaded body","bodyHtml":"<p>Previous body</p>","bodyTruncated":false,"attachmentsLoaded":true,"attachments":[],"contentIncomplete":false})).unwrap();
+    // Even within a proven origin, conflicting Message-IDs must not reuse downloaded content.
+    let incoming = json!({"imapOrigin":morrow_search::imap::server_origin(&connection).unwrap(),"id":"imap:55:11","remoteId":"imap:55:11","providerFolderId":"INBOX","folder":"inbox","messageId":"<new@example.invalid>","body":LARGE,"bodyHtml":"","bodyTruncated":false,"contentIncomplete":true,"contentErrorCode":"imap_size_limit"});
     mail::import_messages(&db, &connection, &[incoming]).unwrap();
     let saved = db.get(A, "imap:55:11").unwrap().unwrap();
     assert_eq!(saved["messageId"], "<new@example.invalid>");
