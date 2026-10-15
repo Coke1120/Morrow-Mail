@@ -453,9 +453,9 @@ struct MailWorkspace: View {
                                     .fontWeight(message["read"].bool ? .regular : .bold).lineLimit(1)
                                     .help(["sent", "drafts"].contains(message["folder"].string) ? message["to"].string : message["fromEmail"].string)
                                 if model.combined || !model.searchResponse.isNull {
-                                    Text(message["accountId"].string).font(.caption2).foregroundStyle(.secondary)
-                                        .lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
-                                        .help("Mailbox: " + message["accountId"].string).accessibilityLabel("Mailbox: " + message["accountId"].string)
+                                    RowLabel(text: message["accountId"].string, accessibility: "Mailbox: " + message["accountId"].string, secondary: true)
+                                        .frame(maxWidth: 160, alignment: .leading)
+                                        .help("Mailbox: " + message["accountId"].string)
                                 }
                             }
                             Spacer(minLength: 0)
@@ -465,7 +465,11 @@ struct MailWorkspace: View {
                                 .help(dateLabel(message["date"].string))
                         }
                         HStack(spacing: 6) {
-                            searchHighlighted(message["searchSubject"], fallback: message["subject"].nonempty ? message["subject"].string : "(No subject)").font(.system(size: 13)).fontWeight(message["read"].bool ? .regular : .bold).lineLimit(1)
+                            if message["searchSubject"].array.isEmpty {
+                                RowLabel(text: message["subject"].nonempty ? message["subject"].string : "(No subject)", bold: !message["read"].bool)
+                            } else {
+                                searchHighlighted(message["searchSubject"], fallback: message["subject"].nonempty ? message["subject"].string : "(No subject)").font(.system(size: 13)).fontWeight(message["read"].bool ? .regular : .bold).lineLimit(1)
+                            }
                             Spacer(minLength: 2)
                             if message["starred"].bool { Image(systemName: "star.fill").foregroundStyle(.orange).font(.caption) }
                             if message["pending"].bool { Image(systemName: "clock.fill").foregroundStyle(morrowGreen).font(.caption).accessibilityLabel("Pending") }
@@ -589,6 +593,32 @@ private struct MailFolderDrop: DropDelegate {
         }
         return true
     }
+}
+
+// List Text is not an NSTextField or an accessibility text leaf.
+private struct RowLabel: NSViewRepresentable {
+    var text: String
+    var accessibility: String?
+    var bold = false
+    var secondary = false
+    func makeNSView(context: Context) -> NSTextField {
+        let field = RowLabelField(labelWithString: "")
+        field.maximumNumberOfLines = 1
+        field.lineBreakMode = .byTruncatingTail
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        apply(field)
+        return field
+    }
+    func updateNSView(_ field: NSTextField, context: Context) { apply(field) }
+    private func apply(_ field: NSTextField) {
+        if field.stringValue != text { field.stringValue = text }
+        field.font = NSFont.systemFont(ofSize: secondary ? 10 : 13, weight: bold ? .bold : .regular)
+        field.textColor = secondary ? .secondaryLabelColor : .labelColor
+        if let accessibility, field.accessibilityLabel != accessibility { field.accessibilityLabel = accessibility }
+    }
+}
+private final class RowLabelField: NSTextField {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
 struct MessageReader: View {

@@ -1,6 +1,6 @@
 # Verification — 15 October 2026
 
-## PR #58 AppKit run loop and open reply menu — 15 October 2026
+## PR #58 AppKit run loop, disabled menu items, and list text — 15 October 2026
 
 Runs `38765785512`, `38765785713` and `38765785507` on head `1e65f35` failed
 three checks. The macOS review fixture printed `Menu tracking begin` and
@@ -8,13 +8,20 @@ three checks. The macOS review fixture printed `Menu tracking begin` and
 receipt and no assertion error. The 1,000-row measurement had 50 loaded visible
 rows and no accepted subject or owner text. Both executables created
 `NSApplication` but never called `NSApp.run()`, so menu tracking stopped the
-async-main run loop and SwiftUI never received an AppKit update cycle.
+async-main run loop.
 
-Those two checks now start from `applicationDidFinishLaunching` inside
-`NSApp.run()`. Closing the last fixture window does not quit. The process
-exits only after the existing completion receipt or the existing failure path.
-Menu action rules, the five-second menu deadline, receipt matching and the
-ten-second displayed-row predicate are unchanged.
+`825c8c4` starts those checks from `applicationDidFinishLaunching` inside
+`NSApp.run()`. Run `38791296596` then reached `Menu tracking complete` and
+failed later: `Suggest with History` was `enabled=false` with no action, and
+the matcher required an action. SwiftUI `.disabled` clears that action. The
+disabled match now accepts a visible titled item with `isEnabled == false`.
+Enabled commands still require an action. The five-second deadline and receipt
+matching are unchanged.
+
+Run `38791296552` still had no text leaves in the list cell (`nodes=7`,
+`nativeEdges=6`, `axEdges=0`). Plain list subjects and combined mailbox captions
+are now non-editable `NSTextField`s that do not take clicks. Search-hit
+subjects stay SwiftUI text. The ten-second predicate is unchanged.
 
 The Windows review phase failed with “The current reply More action was blocked
 or did not retain the fictional draft after its local lookup.” The open item

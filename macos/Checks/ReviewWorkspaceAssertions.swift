@@ -600,7 +600,10 @@ import SwiftUI
         while !matched, Date() < deadline {
             try await withMountedMenu(identifier, in: root, deadline: deadline) { menu in
                 entries = menuEntries(menu)
-                guard let index = commandIndex(title, in: menu), menu.items[index].isEnabled == enabled else { return }
+                // SwiftUI .disabled clears the item action; title and isEnabled are the command.
+                guard let index = menu.items.firstIndex(where: {
+                    $0.title == title && !$0.isHidden && !$0.isSeparatorItem && ($0.action != nil || !enabled) && $0.isEnabled == enabled
+                }) else { return }
                 matched = true
                 if perform {
                     try require(enabled, "A fixture must not invoke a disabled menu item")
