@@ -521,6 +521,8 @@ pub fn import_messages(db: &Store, mail: &Value, messages: &[Value]) -> Result<V
                 }
             }
         }
+        // A later provider import invalidates the previous local-only undo.
+        value.as_object_mut().unwrap().remove("localFolderUndo");
         // Origin matching happened before this merge; conflicting Message-IDs still cannot share content.
         if message["providerDraft"] != true && let Some(previous)=existing.as_ref().filter(|m|m["attachmentsLoaded"]==true && m["providerDraft"]!=true && (string(m,"messageId").is_empty() || string(message,"messageId").is_empty() || m["messageId"]==message["messageId"])) {
             if message["contentIncomplete"]==true && cached_body_available(previous) {
@@ -1267,6 +1269,32 @@ async fn sync_round(
 }
 fn organize_failure(mail: &Value, error: Error) -> Error {
     let code = string(&error.body, "code");
+    if ["", "imap"].contains(&string(mail, "provider")) {
+        if code == "imap_move_unresolved"
+            && error.body["accountId"] == mail["email"]
+            && uuid::Uuid::parse_str(string(&error.body, "operationId")).is_ok()
+        {
+            return crate::imap_moves::unresolved(
+                string(mail, "email"),
+                string(&error.body, "operationId"),
+            );
+        }
+        if code == "imap_move_requires_uidplus" {
+            let mut safe = Error::new(
+                409,
+                "This server cannot safely move this message without UIDPLUS. No move was attempted; your cached copy is retained.",
+            );
+            safe.body["code"] = code.into();
+            return safe;
+        }
+        if code == "imap_move_journal_full" {
+            let mut safe = Error::conflict(
+                "Review an existing unfinished IMAP move before starting another. No provider move was attempted.",
+            );
+            safe.body["code"] = code.into();
+            return safe;
+        }
+    }
     if code == "imap_move_unsupported" && ["", "imap"].contains(&string(mail, "provider")) {
         // This fixed code is produced before SELECT or any provider mutation.
         // Never present it as an uncertain write or forward server error text.
@@ -1667,6 +1695,9 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             let mail = current_mail(app, &ctx.owner).await?;
             if ["", "imap"].contains(&string(&mail, "provider")) {
                 crate::imap_identity::require(&mail, &message)?;
+                let (saved, original) = (mail.clone(), message.clone());
+                app.db(move |db| crate::imap_moves::ensure_clear(db, &saved, &original))
+                    .await?;
             }
             let folders = remote_folders(app, &mail).await?;
             let mut destination = if mode == "labels" {
@@ -1749,10 +1780,13 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                     "The original provider folder could not be verified. Refresh before moving this message.",
                 ));
             }
-            let mut patch = if ["", "imap"].contains(&string(&mail, "provider")) {
-                imap::organize(&mail, &message, &destination, mode).await
+            let (mut patch, recovery) = if ["", "imap"].contains(&string(&mail, "provider")) {
+                crate::imap_moves::organize_with_tls(app, &mail, &message, &destination, mode, None)
+                    .await
             } else {
-                providers::organize(&app.0.client, &mail, &message, &destination, mode).await
+                providers::organize(&app.0.client, &mail, &message, &destination, mode)
+                    .await
+                    .map(|patch| (patch, None))
             }
             .map_err(|error| organize_failure(&mail, error))?;
             if trashing && patch["folder"] != "trash" {
@@ -1767,43 +1801,65 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             let original = json!({"id":message["id"],"folder":message["folder"],"localOverrides":{"folder":message["localOverrides"]["folder"]}});
             let connection = mail.clone();
             let restore = undo.map(|entry| entry.original);
+            let recovery_error = recovery
+                .as_ref()
+                .map(|id| crate::imap_moves::unresolved(&owner, id));
             let mut result = app
                 .db(move |db| {
-                    if connections(&db.settings()?).get(&owner) != Some(&mail) {
-                        return Err(Error::conflict("This mailbox changed during organization."));
-                    }
-                    let current = get_message(db, &owner, string(&message, "id"))?;
-                    if current.get("remoteId") != message.get("remoteId") {
-                        return Err(Error::conflict(
-                            "This message changed during organization. Refresh your mailbox.",
-                        ));
-                    }
-                    if google {
-                        let remote_folder =
-                            providers::google_folder(&patch["providerLabelIds"]).to_owned();
-                        let labels: Vec<Value> = patch["providerLabelIds"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .filter_map(|id| {
-                                folders
-                                    .iter()
-                                    .find(|folder| folder["id"] == *id && folder["kind"] == "label")
-                            })
-                            .map(|folder| folder["name"].clone())
-                            .collect();
-                        patch["providerSnapshot"] = Value::Object(
-                            current["providerSnapshot"]
-                                .as_object()
-                                .cloned()
-                                .unwrap_or_default(),
-                        );
-                        patch["providerSnapshot"]["folder"] = remote_folder.clone().into();
-                        patch["providerSnapshot"]["labels"] = json!(labels);
-                        if current["localOverrides"]["labels"] != true {
-                            patch["labels"] = json!(labels);
+                    db.transaction(|db| {
+                        if connections(&db.settings()?).get(&owner) != Some(&mail) {
+                            return Err(Error::conflict(
+                                "This mailbox changed during organization.",
+                            ));
                         }
-                        if moving {
+                        let current = get_message(db, &owner, string(&message, "id"))?;
+                        if current.get("remoteId") != message.get("remoteId") {
+                            return Err(Error::conflict(
+                                "This message changed during organization. Refresh your mailbox.",
+                            ));
+                        }
+                        if google {
+                            let remote_folder =
+                                providers::google_folder(&patch["providerLabelIds"]).to_owned();
+                            let labels: Vec<Value> = patch["providerLabelIds"]
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|id| {
+                                    folders.iter().find(|folder| {
+                                        folder["id"] == *id && folder["kind"] == "label"
+                                    })
+                                })
+                                .map(|folder| folder["name"].clone())
+                                .collect();
+                            patch["providerSnapshot"] = Value::Object(
+                                current["providerSnapshot"]
+                                    .as_object()
+                                    .cloned()
+                                    .unwrap_or_default(),
+                            );
+                            patch["providerSnapshot"]["folder"] = remote_folder.clone().into();
+                            patch["providerSnapshot"]["labels"] = json!(labels);
+                            if current["localOverrides"]["labels"] != true {
+                                patch["labels"] = json!(labels);
+                            }
+                            if moving {
+                                patch["localOverrides"] = Value::Object(
+                                    current["localOverrides"]
+                                        .as_object()
+                                        .cloned()
+                                        .unwrap_or_default(),
+                                );
+                                patch["localOverrides"]["folder"] = false.into();
+                            }
+                            patch["folder"] =
+                                if !moving && current["localOverrides"]["folder"] == true {
+                                    current["folder"].clone()
+                                } else {
+                                    remote_folder.into()
+                                };
+                        }
+                        if ["", "imap"].contains(&string(&mail, "provider")) {
                             patch["localOverrides"] = Value::Object(
                                 current["localOverrides"]
                                     .as_object()
@@ -1812,29 +1868,28 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                             );
                             patch["localOverrides"]["folder"] = false.into();
                         }
-                        patch["folder"] = if !moving && current["localOverrides"]["folder"] == true
-                        {
-                            current["folder"].clone()
-                        } else {
-                            remote_folder.into()
-                        };
-                    }
-                    if let Some(original) = restore {
-                        patch["folder"] = original["folder"].clone();
-                        if google {
-                            patch["localOverrides"]["folder"] =
-                                original["localOverrides"]["folder"]
-                                    .as_bool()
-                                    .unwrap_or(false)
-                                    .into();
+                        if let Some(original) = restore {
+                            patch["folder"] = original["folder"].clone();
+                            if google || ["", "imap"].contains(&string(&mail, "provider")) {
+                                patch["localOverrides"]["folder"] =
+                                    original["localOverrides"]["folder"]
+                                        .as_bool()
+                                        .unwrap_or(false)
+                                        .into();
+                            }
                         }
-                    }
-                    let changed = db
-                        .update(&owner, string(&message, "id"), &patch)?
-                        .ok_or_else(|| Error::new(404, "Message not found."))?;
-                    Ok(json!({"message":pages::owned(&owner,changed)}))
+                        if let Some(id) = &recovery {
+                            crate::imap_moves::apply_confirmed(db, &owner, id)?;
+                        }
+                        patch["localFolderUndo"] = Value::Null;
+                        let changed = db
+                            .update(&owner, string(&message, "id"), &patch)?
+                            .ok_or_else(|| Error::new(404, "Message not found."))?;
+                        Ok(json!({"message":pages::owned(&owner,changed)}))
+                    })
                 })
-                .await?;
+                .await
+                .map_err(|error| recovery_error.unwrap_or(error))?;
             if trashing {
                 let token = crate::service::hex_token()?;
                 let mut entries = app
@@ -1876,6 +1931,44 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn imap_journal_errors_project_only_fixed_messages_and_owned_operation_identity() {
+        let mail = json!({"provider":"imap","email":"owner@example.invalid"});
+        for code in ["imap_move_requires_uidplus", "imap_move_journal_full"] {
+            let mut error = Error::new(409, "PRIVATE PROVIDER TEXT");
+            error.body["code"] = code.into();
+            let safe = organize_failure(&mail, error);
+            assert_eq!(safe.status, 409);
+            assert_eq!(
+                safe.to_string(),
+                if code == "imap_move_requires_uidplus" {
+                    "This server cannot safely move this message without UIDPLUS. No move was attempted; your cached copy is retained."
+                } else {
+                    "Review an existing unfinished IMAP move before starting another. No provider move was attempted."
+                }
+            );
+            assert!(!safe.to_string().contains("PRIVATE"));
+        }
+        let id = uuid::Uuid::new_v4().to_string();
+        for owner in ["owner@example.invalid", "other@example.invalid"] {
+            let mut error = Error::new(409, "PRIVATE PROVIDER TEXT");
+            error.body["code"] = "imap_move_unresolved".into();
+            error.body["operationId"] = id.clone().into();
+            error.body["accountId"] = owner.into();
+            error.body["private"] = "PRIVATE".into();
+            let safe = organize_failure(&mail, error);
+            assert!(!safe.body.to_string().contains("PRIVATE"));
+            if owner == "owner@example.invalid" {
+                assert_eq!(safe.body["operationId"], id);
+                assert_eq!(safe.body["accountId"], owner);
+                assert_eq!(safe.status, 409);
+            } else {
+                assert!(safe.body.get("operationId").is_none());
+                assert!(safe.body.get("accountId").is_none());
+            }
+        }
+    }
 
     #[test]
     fn unsupported_imap_move_is_a_safe_preflight_refusal_not_an_uncertain_write() {

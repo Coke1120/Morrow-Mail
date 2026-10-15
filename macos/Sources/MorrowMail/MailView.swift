@@ -112,6 +112,14 @@ struct MailWorkspace: View {
                     if !model.error.isEmpty { statusBar(model.error, error: true) }
                     else if !model.notice.isEmpty { statusBar(model.notice, error: false) }
                     else if model.busy || model.backgroundBusy || model.preparingDraft { HStack { ProgressView().controlSize(.small); Text(model.preparingDraft ? "Preparing draft…" : model.syncing ? "Syncing…" : model.busy ? "Working…" : "Working in the background…").foregroundStyle(.secondary); Spacer() }.padding(9).background(.bar) }
+                    if !model.unresolvedMove.isNull {
+                        HStack {
+                            Text("An IMAP move needs review: \(model.unresolvedMove["accountId"].string)").font(.callout)
+                            Spacer()
+                            Button("Review saved move…") { model.beginMoveRecovery(model.unresolvedMove["accountId"].string, operationID: model.unresolvedMove["operationId"].string) }
+                                .disabled(!model.canNavigate || !model.canReviewMoves(model.unresolvedMove["accountId"].string))
+                        }.padding(10).background(.bar)
+                    }
               }
             }
         }
@@ -131,7 +139,10 @@ struct MailWorkspace: View {
         .onChange(of: outOfOfficeDirty) { model.dirty("out-of-office", $0) }
         .onChange(of: model.selectedMessage) { selection in if selection == nil { leaveExpandedReader() } }
         .sheet(item: $model.compose) { draft in ComposeView(initial: draft).environmentObject(model) }
-        .sheet(item: $model.organizing) { request in OrganizeMailView(message: request["message"], preferredKind: request["preferredKind"].string, preferredDestination: request["destinationId"].string).environmentObject(model) }
+        .sheet(item: $model.organizing) { request in
+            if request["kind"].string == "move-recovery" { MoveRecoveryView(request: request).id(request.id).environmentObject(model) }
+            else { OrganizeMailView(message: request["message"], preferredKind: request["preferredKind"].string, preferredDestination: request["destinationId"].string).environmentObject(model) }
+        }
         .sheet(item: $model.syncingFolders) { request in FolderSyncView(owner: request.id).environmentObject(model) }
         .sheet(item: $model.managingFolders) { request in FolderManagementView(owner: request.id, initialFolder: request["folderId"].string).environmentObject(model) }
         .sheet(item: $model.readerAssistant, onDismiss: {
@@ -343,6 +354,11 @@ struct MailWorkspace: View {
                 if count > 0 { Text("\(count)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary) }
             }.padding(.vertical, 5).help(title)
         }.accessibilityIdentifier("accountGroup.\(account)")
+        .contextMenu {
+            if model.canReviewMoves(account) {
+                Button("Review IMAP moves…") { model.beginMoveRecovery(account) }.disabled(!model.canNavigate)
+            }
+        }
     }
     @ViewBuilder func folderRows(_ account: String) -> some View {
         ForEach(mailFolders.filter { folderFilter.isEmpty || $0.localizedCaseInsensitiveContains(folderFilter) }, id: \.self) { folder in
@@ -412,7 +428,7 @@ struct MailWorkspace: View {
                     }
                 } label: { Label("Sort", systemImage: "arrow.up.arrow.down") }.fixedSize().accessibilityIdentifier("mail.sortMenu").disabled(!model.searchResponse.isNull)
                 Spacer(minLength: 0)
-                Button { model.trashMessages(model.selectedMailRows) } label: { Label("Delete", systemImage: "trash") }
+                Button { model.trashMessages(model.selectedMailRows) } label: { Label("Move to Provider Trash", systemImage: "trash") }
                     .disabled(!model.canNavigate || model.selectedMailRows.isEmpty || !model.selectedMailRows.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" })
                     .help("Move selected mail to provider Trash · Undo within one minute (⌘Z)")
             }.menuStyle(.borderlessButton).controlSize(.small).disabled(model.busy).padding(.horizontal, 14).padding(.bottom, 8)
@@ -493,7 +509,7 @@ struct MailWorkspace: View {
                     let messages = filtered.filter { ids.contains($0.viewID) }
                     if messages.count == 1, let message = messages.first, model.canOrganize(message) { MessageOrganizationActions(message: message) }
                     if !messages.isEmpty {
-                        Button("Delete") { model.trashMessages(messages) }
+                        Button("Move to Provider Trash") { model.trashMessages(messages) }
                             .disabled(!messages.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" })
                         Divider()
                         Button("Mark Read") { model.patchMessages(messages, .object(["read": .bool(true)])) }
@@ -602,10 +618,10 @@ struct MessageReader: View {
                 Button { model.patch(message, .object(["starred": .bool(!message["starred"].bool)])) } label: { Image(systemName: message["starred"].bool ? "star.fill" : "star") }.help("Toggle star").accessibilityLabel("Toggle star")
                 Button { model.patch(message, .object(["pending": .bool(!message["pending"].bool)])) } label: { Image(systemName: message["pending"].bool ? "clock.fill" : "clock") }.help(message["pending"].bool ? "Clear Pending" : "Mark Pending locally").accessibilityLabel(message["pending"].bool ? "Clear Pending" : "Mark Pending")
                 if message["folder"].string != "drafts" {
-                    Button { model.patch(message, .object(["folder": .string(message["folder"].string == "inbox" ? "archive" : "inbox")])) } label: { Image(systemName: message["folder"].string == "inbox" ? "archivebox" : "tray") }.help("Move locally").accessibilityLabel("Move locally")
+                    Button { model.patch(message, .object(["folder": .string(message["folder"].string == "inbox" ? "archive" : "inbox")])) } label: { Image(systemName: message["folder"].string == "inbox" ? "archivebox" : "tray") }.help(message["folder"].string == "inbox" ? "Archive locally; provider unchanged" : "Move to Inbox locally; provider unchanged").accessibilityLabel(message["folder"].string == "inbox" ? "Archive locally" : "Move to Inbox locally")
                 }
                 Button { model.beginOrganize(message, preferredKind: "trash") } label: { Image(systemName: "trash") }
-                    .help("Move to provider Trash · Undo within one minute (⌘Z)").accessibilityLabel("Delete")
+                    .help("Move to provider Trash · Undo within one minute (⌘Z)").accessibilityLabel("Move to Provider Trash")
                     .disabled(!model.canOrganize(message) || !model.canNavigate || message["folder"].string == "trash")
                 Divider().frame(height: 14)
                 Button(action: onExpand) { Label(expanded ? "Restore Panes" : "Expand Reader", systemImage: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") }.labelStyle(.iconOnly).help(expanded ? "Restore Panes" : "Expand Reader")
@@ -615,6 +631,12 @@ struct MessageReader: View {
                 VStack(alignment: .leading, spacing: 14) {
                     Text(message["subject"].nonempty ? message["subject"].string : "(No subject)")
                         .font(.system(size: 21, weight: .semibold)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    if message["localFolderUndo"]["token"].nonempty {
+                        HStack {
+                            Text("Moved locally; the provider location was not changed.").font(.caption).foregroundStyle(.secondary)
+                            Button("Undo local move to \(message["localFolderUndo"]["from"].string.capitalized)") { model.patch(message, .object(["undoLocalMove": message["localFolderUndo"]["token"]])) }.disabled(model.busy)
+                        }
+                    }
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
                         Text(message["fromName"].nonempty ? message["fromName"].string : message["fromEmail"].string)
                             .font(.headline).lineLimit(1).help(message["fromEmail"].string)

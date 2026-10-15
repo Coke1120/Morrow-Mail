@@ -671,6 +671,127 @@ mod tests {
     const OWNER: &str = "selected-atomic@example.invalid";
 
     #[tokio::test]
+    async fn selected_import_and_download_undo_commit_or_roll_back_together_per_owner() {
+        const OTHER: &str = "selected-undo-other@example.invalid";
+        const ID: &str = "stable-selected-local-id";
+        fn snapshot(db: &Store) -> Result<Value> {
+            Ok(json!({
+                "message":db.get(OWNER,ID)?,"other":db.get(OTHER,ID)?,
+                "selection":db.settings()?[GROUP],
+                "coverage":crate::downloads::coverage(db,OWNER)?,
+                "otherCoverage":crate::downloads::coverage(db,OTHER)?,
+                "indexedBody":db.conn.query_row("SELECT body FROM search_documents WHERE account=? AND id=?",[OWNER,ID],|row|row.get::<_,String>(0))?
+            }))
+        }
+        let root = std::env::temp_dir().join(format!(
+            "morrow-selected-downloads-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let app = App::open(&root, 0, "fixture-token".into(), String::new()).unwrap();
+        let connection = json!({"email":OWNER,"provider":"imap","imapHost":"imap.example.invalid","imapPort":993,"connectionId":"one"});
+        let saved = connection.clone();
+        let selection = app.db(move |db| {
+            let mut other = saved.clone(); other["email"] = OTHER.into();
+            db.set_settings(&json!({"mailAccounts":{OWNER:saved,OTHER:other},"preferences":{"syncInterval":0},"mailFolderCatalogs":{OWNER:{"connection":connection_version(&saved),"updatedAt":now(),"folders":[{"id":"Projects","name":"Projects","kind":"archive","editable":true,"selectable":true}]}}}))?;
+            select(db,OWNER,&json!({"folderIds":["Projects"],"selectionVersion":"","connectionVersion":connection_token(&saved)}))?;
+            for mail in [&saved,&other] {
+                let owner = string(mail,"email");
+                let message = json!({"id":ID,"remoteId":"imap:55:1","providerFolderId":"Projects","imapOrigin":imap::server_origin(mail)?,"folder":"archive","body":"","contentIncomplete":true,"bodyTruncated":false,"read":true,"starred":false,"pending":true,"labels":["local-label"],"date":"2026-10-15T00:00:00.000Z"});
+                db.upsert(owner,&message)?;
+                let patch = crate::local_moves::patch(db,owner,&message,&json!({"folder":"inbox"}))?;
+                let changed = db.update(owner,ID,&patch)?.unwrap();
+                assert!(changed["localFolderUndo"]["token"].is_string());
+            }
+            Ok(db.settings()?[GROUP][OWNER].clone())
+        }).await.unwrap();
+        let page = json!({"messages":[{"id":"provider-page-id","remoteId":"imap:55:1","providerFolderId":"Projects","imapOrigin":imap::server_origin(&connection).unwrap(),"folder":"archive","body":"selectedafter","contentIncomplete":false,"bodyTruncated":false,"read":true,"starred":false,"date":"2026-10-15T00:00:00.000Z"}],"syncCheckpoint":{"path":"Projects","validity":"55","uid":1,"connection":connection_version(&connection),"more":false},"selectedFolderSync":{"version":selection["version"],"expected":selection["folders"][0]}});
+        let before = app.db(snapshot).await.unwrap();
+        assert_eq!(before["coverage"]["incompleteCount"], 1);
+        app.db(|db| {
+            db.conn.execute_batch("CREATE TEMP TRIGGER reject_selected_downloads BEFORE UPDATE ON settings BEGIN SELECT RAISE(ABORT,'synthetic selected checkpoint failure'); END;")?;
+            Ok(())
+        }).await.unwrap();
+        assert!(
+            mail::commit_sync_page(&app, OWNER, &connection, &page)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            app.db(snapshot).await.unwrap(),
+            before,
+            "A failed selected checkpoint must restore the original message, undo, index and coverage together."
+        );
+        app.db(|db| {
+            db.conn
+                .execute_batch("DROP TRIGGER reject_selected_downloads;")?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let mut stale = page.clone();
+        stale["selectedFolderSync"]["version"] = "obsolete-selection".into();
+        assert!(
+            mail::commit_sync_page(&app, OWNER, &connection, &stale)
+                .await
+                .is_err()
+        );
+        let mut other_connection = connection.clone();
+        other_connection["connectionId"] = "obsolete-connection".into();
+        assert!(
+            mail::commit_sync_page(&app, OWNER, &other_connection, &page)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            app.db(snapshot).await.unwrap(),
+            before,
+            "Stale selection or connection cannot invalidate an unrelated local undo."
+        );
+        mail::commit_sync_page(&app, OWNER, &connection, &page)
+            .await
+            .unwrap();
+        let committed = app.db(snapshot).await.unwrap();
+        assert_eq!(committed["message"]["id"], ID);
+        assert_eq!(committed["message"]["remoteId"], "imap:55:1");
+        assert_eq!(committed["message"]["providerFolderId"], "Projects");
+        assert_eq!(committed["message"]["folder"], "inbox");
+        assert!(committed["message"]["localFolderUndo"].is_null());
+        for key in ["read", "starred", "pending", "labels", "imapOrigin"] {
+            assert_eq!(committed["message"][key], before["message"][key]);
+        }
+        assert_eq!(committed["message"]["body"], "selectedafter");
+        assert_eq!(committed["indexedBody"], "selectedafter");
+        assert_eq!(committed["coverage"]["incompleteCount"], 0);
+        assert_eq!(committed["other"], before["other"]);
+        assert_eq!(committed["otherCoverage"], before["otherCoverage"]);
+        assert_eq!(
+            committed["selection"][OWNER]["folders"][0]["checkpoint"]["uid"],
+            1
+        );
+        let token = before["message"]["localFolderUndo"]["token"].clone();
+        app.db(move |db| {
+            let message = db.get(OWNER, ID)?.unwrap();
+            assert_eq!(
+                crate::local_moves::patch(db, OWNER, &message, &json!({"undoLocalMove":token}))
+                    .unwrap_err()
+                    .status,
+                409
+            );
+            let folder = &status(&db.settings()?, OWNER)["folders"][0];
+            assert_eq!(folder["coverage"], "recent_page_and_new_mail");
+            assert_eq!(folder["olderHistoryIncluded"], false);
+            Ok(())
+        })
+        .await
+        .unwrap();
+        drop(app);
+        let db = Store::open(&root).unwrap();
+        assert_eq!(snapshot(&db).unwrap(), committed);
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn selected_messages_checkpoint_and_freshness_commit_atomically_and_reject_stale_tickets()
     {
         let root =

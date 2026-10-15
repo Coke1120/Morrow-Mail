@@ -359,6 +359,7 @@ pub(crate) fn message_patch(original: &Value, body: &Value) -> Result<Value> {
 }
 pub fn safe_mail(mail: &Value) -> Value {
     let mut safe = json!({"configured":!string(mail,"email").is_empty(),"provider":"imap","email":"","imapHost":"","imapPort":993,"smtpHost":"","smtpPort":465,"clientId":"","canOrganize":crate::providers::can_organize(mail)});
+    safe["connectionRef"] = crate::downloads::connection_ref(mail).into();
     for key in [
         "provider", "email", "imapHost", "imapPort", "smtpHost", "smtpPort", "clientId",
     ] {
@@ -366,6 +367,15 @@ pub fn safe_mail(mail: &Value) -> Value {
             safe[key] = value.clone();
         }
     }
+    safe["moveConnectionRef"] =
+        if !string(mail, "email").is_empty() && ["", "imap"].contains(&string(mail, "provider")) {
+            crate::imap_moves::connection_ref(mail)
+                .ok()
+                .map(Value::String)
+                .unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
     safe
 }
 pub fn state(db: &Store, selected: &str, paged: bool, secret: &[u8; 32]) -> Result<Value> {
@@ -632,7 +642,7 @@ async fn handle_inner(app: App, request: axum::http::Request<Body>) -> Result<Re
                     ..
                 ]
                 | ["account", "disconnect"]
-                | ["mail", "folders", ..]
+                | ["mail", "folders" | "moves", ..]
                 | ["agent", ..]
         );
     let limit = if (route == ["attachments"] || route == ["cli"]) && parts.method == Method::POST {
@@ -727,7 +737,13 @@ pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
     if let Some(response) = crate::imap_folder_sync::handle(app, &context).await? {
         return Ok(response);
     }
+    if let Some(response) = crate::downloads::handle(app, &context).await? {
+        return Ok(response);
+    }
     if let Some(response) = crate::folders::handle(app, &context).await? {
+        return Ok(response);
+    }
+    if let Some(response) = crate::imap_moves::handle(app, &context).await? {
         return Ok(response);
     }
     if let Some(response) = crate::calendar::handle(app, &context).await? {
@@ -955,7 +971,7 @@ pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
                 let original = get_message(db, &owner, &id)?;
                 crate::inbox_agent::guard_action(db, &owner, &id, &body)?;
                 crate::scheduled::guard_draft(db, &owner, &id, None)?;
-                let patch = message_patch(&original, &body)?;
+                let patch = crate::local_moves::patch(db, &owner, &original, &body)?;
                 Ok(json!({"message":pages::owned(&owner,db.update(&owner,&id,&patch)?.unwrap())}))
             })
             .await?

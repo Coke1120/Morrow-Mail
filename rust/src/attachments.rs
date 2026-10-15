@@ -351,6 +351,7 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             let _gate = app.0.mailbox.try_lock().map_err(|_| {
                 Error::conflict("Another mailbox operation is running. Try again when it finishes.")
             })?;
+            crate::downloads::require_context(&app.settings().await?, &owner, &ctx.body, false)?;
             json!({"message":crate::pages::owned(&owner,download(app,&owner,id).await?)})
         }
         _ => unreachable!(),

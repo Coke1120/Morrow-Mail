@@ -1,5 +1,43 @@
 # Verification — 15 October 2026
 
+## Selected-folder, Downloads and move-recovery integration — 15 October 2026
+
+This isolated candidate combines selected-folder head `e41b86f` with the
+Downloads/move-recovery integration `98fa7d2`, retaining their separate native
+fixtures, source/connection guards, bounded read/write protocols and documented
+limits. It preserves the mounted-filter readiness correction and all prior
+failure evidence. The macOS modal guards now reject opening Downloads while a
+folder-selection editor is present, while keeping Downloads available from an
+otherwise idle Settings sheet. Move recovery and folder selection retain their
+captured mailbox identities and existing confirmation flows.
+
+A new macOS model control covers the three editors' mutual exclusion and a stale
+Downloads disappearance after a folder editor opens. A combined Rust control
+uses the real local-move receipt builder and selected-page transaction: a failed
+checkpoint or stale selection/connection must preserve the message, receipt,
+search index and download counts; a successful provider import invalidates only
+that owner's receipt while committing body/index/coverage and selected progress
+together. The other owner's duplicate ID and receipt must remain unchanged,
+and restart must retain the committed result. This is a transaction-boundary
+control; existing loopback TLS fixtures retain protocol coverage.
+
+The combined local Rust candidate passed formatting, locked offline all-target
+Clippy with `-D warnings`, all 49 focused controls (three selected transaction/
+request controls, four selected API cases, 12 selected-folder TLS cases, 19 move
+recovery cases, seven Downloads cases and four Downloads service cases), and the
+complete locked offline suite: **512 passed, 0 failed, 4 existing ignored
+benchmarks across 52 groups**. All checks used the same 118 tracked Rust input
+hashes before and after execution. The full log SHA-256 is
+`d18df1f563eddaac8386c2c440007b0cb2b0da5b3ec12dc04b46db59003c66a5`.
+Formatting changed only the new combined Rust control; no product or assertion
+change was needed during validation.
+
+The new macOS model control has not run locally, and macOS/Windows SDK/runtime
+acceptance still requires this combined source's own CI. Individual-parent
+results below are retained historical evidence, not a claim that this merged
+candidate has passed native acceptance. No live provider/model work, release or
+automatic replay was performed.
+
 ## Selected custom IMAP folder sync — 15 October 2026
 
 This candidate is stacked on bounded read-session commit
@@ -99,6 +137,134 @@ Production code and handlers are unchanged. There is no forced layout/template,
 direct render, second input or additional deadline. Source invariants and diff
 checks are the only local validation; Windows SDK/runtime validation remains
 pending. The original terminal failure and its complete log are retained.
+
+## Downloads and IMAP move recovery integration — 15 October 2026
+
+This isolated candidate combines Downloads head `0d567a1` with move-recovery head
+`50c73a9`, retaining the latter's read-session dependency. Resolving the same
+conflicts against updated Downloads head `68e39b3` yields the identical tree;
+that head only merged the read-session dependency already present here. Both native check
+groups, the Downloads presentation/request guards, move-recovery owner/ref
+checks and both modal shortcut guards are preserved. Existing test results below
+belong to their recorded source heads and do not validate this combined tree.
+
+The shared confirmed IMAP result patch now clears the previous local-folder Undo
+receipt. Normal MOVE, non-MOVE adoption and explicitly reviewed recovery share
+that result; preview, unresolved failure and manual external resolution do not
+clear the local record. The folder override is cleared through the existing
+adoption path while unrelated overrides, read/star choices, Pending and body
+remain intact. Connection/source/journal compare-and-swap checks, the 45-second
+write budget and the rule against uncertain replay are unchanged.
+
+Two added cases use the existing synthetic loopback TLS fixture to cover normal
+and reviewed adoption, stale Undo proof rejection, owner isolation and independent
+edits. The existing transaction rollback case also checks that failed adoption
+retains the complete local record and its Undo proof. The native MOVE branch
+uses the production result patch with the real synthetic TLS provider and Store;
+it is not a complete HTTP organize-route test.
+
+The first focused run passed 18 cases and failed the new adoption case: its
+fixture replaced the complete local override map during an independent flag
+edit, so the source-proof guard correctly rejected adoption. The corrected
+fixture clones the existing overrides before editing read/star and explicitly
+checks that the captured folder/labels proof remains unchanged. No production
+guard was relaxed. All 19 move-recovery cases, seven download-control store cases
+and four download-control service cases then passed. A private negative control
+removed only the new Undo invalidation line; the new cleanup assertion failed
+as expected, and the exact original source was restored.
+
+Rust 1.98 formatting, locked all-target Clippy with `-D warnings`, and the full
+locked offline suite passed on the same Rust source manifest: **493 passed,
+zero failed, four existing ignored benchmarks**. `git diff --check` passed.
+The original failed run and negative-control logs are retained separately.
+Exact-head macOS/Windows compilation and native runtime checks remain required;
+no SDK or visual acceptance is claimed for this combined tree. No real provider,
+mailbox, model or outgoing message was used.
+
+## Download controls and local recovery — 15 October 2026
+
+This isolated follow-up originally started from main
+`d5ac97c5d51cc265cc769d07bd36d7d013fa5c67` and is now stacked on IMAP identity
+`01c1f0a9e27262bb61c9a878961ffe26ed42437a`, which includes the v0.8.2
+documentation/version commit. The identity verification below describes that
+prerequisite, not an executed Downloads test run.
+It adds downloaded-content/storage observation and existing download-control
+entry points, plus a guarded last-local-folder undo. It does not authorize a
+merge or release, change provider-write review, delete cached data or change the
+frozen Today work. [Scope and remaining decisions](docs/DOWNLOAD_CONTROLS.md)
+separate existing behavior, new behavior and excluded storage policy.
+
+Added synthetic tests cover logical UTF-8/blob byte totals, partial/unindexed
+coverage, duplicate IDs across owners, required mailbox headers, page validation
+and clamping, 30-row limits, local undo after restart, forged/obsolete tokens,
+move-away/back, reimport/reconnect fencing and preservation of subsequent
+read/star/Pending/content changes. Loopback-provider fixtures exercise the real
+native API routes: passive download status and local moves make no provider call;
+mark-read followed by local undo makes only the reviewed flag write; explicit
+full-content repair updates A's coverage without changing B's duplicate ID.
+A query-plan assertion checks the partial account/date/ID index and absence of a
+temporary sort for the repair list.
+
+Additional fixtures cover strict current IMAP origin eligibility (missing,
+unbound, foreign and invalid origins cannot download), same-server password
+reconnect, account isolation and already-downloaded bodies still shortened by
+size limits. The optional context guard is exercised through real loopback API
+routes: stale/empty/malformed connection references, same-owner reconnect and
+reconnect-back, another owner's duplicate ID, replacement history jobs and replay
+must leave stored data unchanged and make no provider requests. Current context
+and pre-existing unguarded routes are positive compatibility controls. Routine
+OAuth token rotation retains the opaque connection reference.
+
+Final Rust formatting and locked all-target Clippy with `-D warnings` passed.
+The seven download-control store tests, four loopback service cases and one
+production-query-plan check all passed. The complete locked Rust suite passed
+**456 tests, zero failures, with four existing ignored benchmarks**. Every final
+focused/fmt/Clippy/full run used the same 103-file Rust/Cargo source manifest.
+An initial compile check exposed SQLite's signed-integer binding requirement;
+page inputs still accept/clamp `u64` while SQLite values stay within `i64`.
+The first real-Store query-plan test then failed because a competing account
+index was chosen. The production coverage/count/page queries now explicitly use
+the partial incomplete-content index, and the test inspects those actual queries;
+the original failure was retained and its assertions were not relaxed.
+`git diff --check` passed during implementation. Both native check
+entry points include synthetic page-owner/connection/bounds assertions and
+the request-ticket or view-generation guards used for A→B→A/page changes. A native
+cross-review found two presentation lifetime gaps: Downloads did not hold the
+macOS global shortcut guard, and an obsolete Windows GET could release a newer
+page's loading flag. The fixes add captured sheet ownership and reuse the
+existing Windows request ticket. New macOS fixture assertions cover modal/draft/
+settings guards, matching cleanup and late prior-sheet cleanup. The exact C++
+loading helper passed 22 portable lifecycle assertions, including suspended
+coroutine success, failure and cancellation after a replacement request; an
+unconditional-release negative control failed as expected. That harness uses a
+minimal Shell fixture and is not WinUI execution. These are not an
+automated click-through of every download dialog. This Linux environment has no
+SwiftUI/AppKit or WinUI SDK, so native compilation/runtime, live-account,
+large-mailbox latency and manual accessibility acceptance remain unverified.
+
+The first PR #55 macOS cloud attempt on head
+`75c4da4f7d3936d71c1633e90e671afeecca3d60` failed in the executed mail-flow
+fixture: **"Native action row did not mount: Next"** at 09:08:33 UTC.
+[Run 38709274091](https://github.com/Coke1120/Morrow-Mail/actions/runs/38709274091),
+job `116336332078`, tested synthetic merge
+`d9bd9e8d46e9578cf55e4e9de6f24ec4337beb14`. That attempt passed formatting,
+strict Clippy, all 456 Rust tests (zero failures/four existing ignored), Swift
+production compilation and ad-hoc ZIP packaging. It did not reach the following
+full native acceptance or review-workspace steps. The independent reader batch
+later passed 40/40 with complete capture; it does not replace the failed gate.
+
+Source triage found that this fixture hosts only NativeMailSearch, not the
+MailView workspace toolbar. It still required exactly seven native button peers,
+while the candidate added an ordinary Downloads button before the unchanged
+Previous/Next row. The original log contains no button inventory or geometry;
+an actual count of eight is inferred from this source change, not measured in
+that failed run. The narrow correction expects exactly eight for the candidate
+and keeps seven for the pinned historical search control. Ordered selection,
+enabled/mounted checks, real button clicks, all page/write/owner assertions and
+the five-second wait remain unchanged. Failure-only diagnostics record bounded
+counts and enabled/mounted booleans without mailbox or message content.
+The original failure is preserved; the corrected native source still needs its
+own CI run. No SDK test was rerun in the Linux editing environment.
 
 ## IMAP server identity and safe migration — 15 October 2026
 
@@ -313,6 +479,54 @@ reader failures remain failures, not explained away by passing later runs.
 macOS remains ad-hoc signed without notarization; Windows is unsigned.
 Live-account, clean-machine, manual accessibility and complete installed-updater
 acceptance remain incomplete. See [release notes](docs/releases/v0.8.2.md).
+
+## IMAP move-recovery candidate — 15 October 2026
+
+This isolated candidate starts from read-session commit
+`ec0a38363cf303b479ce99d22512aa13b294e03d`. It adds owned non-MOVE UIDPLUS
+operations, a durable bounded journal, named-account recovery routes, and native
+review controls. It preserves the 45-second protocol deadline, exact COPYUID and
+UIDVALIDITY checks, targeted UID EXPUNGE, and uncertain-write no-replay rules.
+Opening or refreshing the journal does not call the provider. The native
+connection fence changes on a same-host credential/generation change without
+exposing credentials. See [the API and recovery limits](docs/IMAP_MOVE_RECOVERY.md).
+
+The final Linux candidate passed formatting, locked all-target Clippy with
+`-D warnings`, 17 new protocol/API/state controls, and the fixed-error projection
+unit. The locked complete Rust suite passed **474 tests, 0 failures, 4 existing
+ignored benchmarks**, across 49 result groups. These five runs used the same
+103-file Rust/Cargo manifest, checked before and after execution. The complete
+run took 280.67 seconds; its log SHA-256 is
+`beb1e99128e8377f26e897f5a32c4e12a97e87dc84a6339215f86adde100644b`.
+The protocol cases use real ephemeral loopback TLS, including an actual
+45-second stalled-write deadline and workspace reopen without replay.
+
+Independent review additionally reproduced stale missing-source markers after
+an expunge succeeded but its acknowledgement was lost. Destination adoption now
+clears those obsolete markers only after confirming the exact destination.
+A separate real-TLS failure showed that an old source-folder MODSEQ could skip
+different destination flags. Confirmed adoption now invalidates the source's
+MODSEQ/connection/epoch proofs while preserving current read/star/Pending/body
+state; the following destination read obtains fresh flags. The corrected case
+passes for both fallback and native MOVE. The pre-fix runtime failure was reached
+in the fallback iteration; it is not a separate native-MOVE red-run claim.
+
+Earlier failures remain recorded: the first fixture replaced its own account
+map (1 passed/15 failed), and a safe-error unit expected the wrong fixed sentence.
+Correcting the fixture also exposed a shallow local-override merge risk, now
+fixed by preserving unrelated overrides. An initial MODSEQ fixture attempted a
+private helper and failed to compile; it was replaced by a real source read.
+Both actual adoption regressions were retained before correction. An unqualified
+exact test filter selected zero tests and is excluded from verification; the
+qualified unit then executed and passed. No threshold was relaxed.
+
+Native portable lifetime/state checks passed 51 assertions, including an
+independent rerun, and an unsafe cleanup mutation failed its negative control.
+The UpdateRestart Swift fixture's missing state input was corrected and
+independently checked. These controls do not establish SDK compilation or
+native UI execution. Native CI, live-account and accessibility acceptance remain
+pending. Existing releases, updater keys, Today changes and IDLE are outside
+this candidate.
 
 ## Bounded IMAP read-session candidate — 15 October 2026
 

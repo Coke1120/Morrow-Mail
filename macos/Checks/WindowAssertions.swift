@@ -16,6 +16,9 @@ struct WindowAssertions {
         checkReaderBack()
         checkFolderLayouts()
         checkFolderSyncSelection()
+        checkMoveRecovery()
+        checkDownloadContracts()
+        checkMailboxToolModalGuards()
         checkActivitySummaryDiagnostics()
         checkComposeLayout()
         checkCalendarLayout()
@@ -115,6 +118,181 @@ struct WindowAssertions {
             window.close(); window.contentView = nil
         }
         print("Activity summary details: captured owned job, distinct terminal states, honest timestamps, legacy/foreign/disconnected rejection and bounded metadata-only native layout passed.")
+    }
+
+    @MainActor static func checkMoveRecovery() {
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("morrow-move-review-\(UUID())")
+        let previous = getenv("MORROW_DATA_DIR").map { String(cString: $0) }
+        setenv("MORROW_DATA_DIR", temporary.path, 1)
+        let model = AppModel()
+        if let previous { setenv("MORROW_DATA_DIR", previous, 1) } else { unsetenv("MORROW_DATA_DIR") }
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let owner = "move@example.invalid", other = "other@example.invalid"
+        let connection: JSON = .object(["imapHost": .string("imap.example.invalid"), "moveConnectionRef": .string("connection-a")])
+        let accounts: [JSON] = [owner, other].map { .object(["id": .string($0), "provider": .string("imap"), "settings": connection]) }
+        model.starting = false
+        model.state = .object(["account": .object(["id": .string("all")]), "accounts": .array(accounts)])
+        var operation: JSON = .object(["id": .string("same-operation"), "accountId": .string(owner), "connectionRef": .string("connection-a"),
+            "operationRef": .string("revision-a"), "messageId": .string("same-message"), "subject": .string("Fictional partial move 中文"),
+            "sourceName": .string("Inbox"), "targetName": .string("Work / Customer"), "stage": .string("copied"), "status": .string("partial"),
+            "createdAt": .string("2026-10-15T01:00:00Z"), "updatedAt": .string("2026-10-15T02:00:00Z"),
+            "diagnosticCode": .string("fixture"), "diagnostic": .string("The checked copy exists; the original remains."),
+            "canPreview": .bool(true), "canResolve": .bool(true), "canFinish": .bool(true), "reviewRef": .string("checked-a"), "finishAction": .string("completeMove")])
+        var snapshot: JSON = .object(["accountId": .string(owner), "connectionRef": .string("connection-a"), "operations": .array([operation])])
+        assert(validMoveRecoverySnapshot(snapshot, owner: owner))
+        assert(moveRecoveryFinishAction(operation, owner: owner, connectionRef: "connection-a") == "completeMove")
+        assert(moveRecoveryReviewMatches(operation, saved: operation, selectedID: "same-operation", owner: owner))
+        var replaced = operation; replaced["operationRef"] = .string("revision-b")
+        assert(!moveRecoveryReviewMatches(operation, saved: replaced, selectedID: "same-operation", owner: owner), "A newer persisted revision must revoke the previous confirmation.")
+        assert(!moveRecoveryReviewMatches(operation, saved: operation, selectedID: "other-operation", owner: owner))
+        for field in ["id", "accountId", "connectionRef", "operationRef", "messageId"] {
+            var missing = operation; missing[field] = .string("")
+            assert(!validMoveRecoveryOperation(missing, owner: owner))
+        }
+        var foreign = operation; foreign["accountId"] = .string(other)
+        assert(!validMoveRecoveryOperation(foreign, owner: owner) && moveRecoveryFinishAction(foreign, owner: owner, connectionRef: "connection-a") == nil)
+        assert(!validMoveRecoverySnapshot(snapshot, owner: other))
+        var duplicate = snapshot; duplicate["operations"] = .array([operation, operation]); assert(!validMoveRecoverySnapshot(duplicate, owner: owner))
+        var wrongType = operation; wrongType["canResolve"] = .string("true"); assert(!validMoveRecoveryOperation(wrongType, owner: owner))
+        for (field, value) in [("reviewRef", JSON.null), ("finishAction", .string("copyAgain")), ("canFinish", .bool(false)), ("status", .string("completed")), ("status", .string("resolved"))] {
+            var invalid = operation; invalid[field] = value
+            assert(moveRecoveryFinishAction(invalid, owner: owner, connectionRef: "connection-a") == nil)
+        }
+        assert(moveRecoveryFinishAction(operation, owner: owner, connectionRef: "connection-b") == nil)
+        let captured = MoveRecoveryContext(owner: owner, viewOwner: "all", section: "inbox", connection: connection, presentationID: "first")
+        assert(captured.accepts(captured))
+        var reconnected = connection; reconnected["moveConnectionRef"] = .string("connection-b")
+        assert(reconnected["imapHost"] == connection["imapHost"])
+        assert(!captured.accepts(MoveRecoveryContext(owner: owner, viewOwner: "all", section: "inbox", connection: reconnected, presentationID: "first")), "A same-host reconnect must revoke a saved connection review.")
+        for value in [JSON.null, .bool(true), .string(""), .string(String(repeating: "x", count: 1025))] {
+            var unavailable = connection; unavailable["moveConnectionRef"] = value
+            let invalid = MoveRecoveryContext(owner: owner, viewOwner: "all", section: "inbox", connection: unavailable, presentationID: "first")
+            assert(moveRecoveryConnectionRef(unavailable).isEmpty && !invalid.accepts(invalid))
+        }
+        for next in [MoveRecoveryContext(owner: other, viewOwner: "all", section: "inbox", connection: connection, presentationID: "first"),
+                     MoveRecoveryContext(owner: owner, viewOwner: owner, section: "inbox", connection: connection, presentationID: "first"),
+                     MoveRecoveryContext(owner: owner, viewOwner: "all", section: "sent", connection: connection, presentationID: "first"),
+                     MoveRecoveryContext(owner: owner, viewOwner: "all", section: "inbox", connection: .null, presentationID: "first"),
+                     MoveRecoveryContext(owner: owner, viewOwner: "all", section: "inbox", connection: connection, presentationID: "replacement")] {
+            assert(!captured.accepts(next), "A late response must not adopt another mailbox, connection, page or presentation.")
+        }
+        let failure: JSON = .object(["code": .string("imap_move_unresolved"), "accountId": .string(owner), "operationId": .string("same-operation")])
+        assert(moveRecoveryFailure(failure, owner: owner) == "same-operation" && moveRecoveryFailure(failure, owner: other) == nil)
+        model.recordMoveFailure(APIError(payload: failure), owner: other); assert(model.unresolvedMove.isNull)
+        model.recordMoveFailure(APIError(payload: failure), owner: owner); assert(model.unresolvedMove["accountId"].string == owner)
+        model.beginMoveRecovery(owner, operationID: "same-operation")
+        guard let request = model.organizing else { fatalError("An owned recovery journal must open from All accounts.") }
+        assert(request["accountId"].string == owner && request["viewOwner"].string == "all" && request["operationId"].string == "same-operation" && !model.canNavigate)
+        model.newDraft(); model.settings(); assert(model.compose == nil && !model.showSettings, "Recovery must block underlying compose/settings shortcuts.")
+        model.beginMoveRecovery(other); assert(model.organizing == request, "A second open cannot replace the first review.")
+        assert(moveRecoveryConfirmation(operation, owner: owner, action: "completeMove").contains("not copy the message again"))
+        assert(moveRecoveryConfirmation(operation, owner: owner, action: "resolve").contains("does not move, delete, copy or verify"))
+        for (status, expected) in [("uncertain", "Result uncertain"), ("partial", "Partially completed"), ("providerComplete", "Provider move confirmed; local update pending"), ("completed", "Move completed"), ("resolved", "Marked resolved by you")] {
+            operation["status"] = .string(status)
+            operation["canFinish"] = .bool(status == "partial" || status == "providerComplete")
+            operation["finishAction"] = .string(status == "providerComplete" ? "applyConfirmedResult" : "completeMove")
+            assert(moveRecoveryStatus(operation) == expected)
+            if status == "resolved" || status == "completed" { assert(!moveRecoveryIsOpen(operation)) }
+            snapshot["operations"] = .array([operation])
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            let host = NSHostingView(rootView: MoveRecoveryView(request: request, fixtureSnapshot: snapshot, fixtureReview: operation).environmentObject(model))
+            window.contentView = host; window.orderBack(nil)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2)); host.layoutSubtreeIfNeeded()
+            assert(host.fittingSize.height <= 700 && host.fittingSize.width <= 720, "Recovery status, folder identities and actions must fit the native sheet.")
+            window.close(); window.contentView = nil
+        }
+        model.organizing = nil
+        model.beginMoveRecovery("all"); assert(model.organizing == nil)
+        var missingRef = accounts; missingRef[0]["settings"]["moveConnectionRef"] = .null
+        model.state["accounts"] = .array(missingRef)
+        model.beginMoveRecovery(owner); assert(model.organizing == nil && !model.canReviewMoves(owner), "Missing connection proof must fail closed before opening recovery.")
+        print("IMAP move recovery: owned journal/ref guards, distinct uncertainty/partial/resolved states, explicit no-copy confirmations, modal shortcuts and bounded native sheets passed without provider/service requests.")
+    }
+
+    @MainActor static func checkDownloadContracts() {
+        let owner = "downloads@example.invalid", other = "other@example.invalid", reference = "fixture-reference"
+        let row: JSON = .object(["id": .string("same"), "viewId": .string("owned-same"), "accountId": .string(owner)])
+        var page: JSON = .object(["accountId": .string(owner), "connectionRef": .string(reference), "page": .number(0), "pageSize": .number(30), "items": .array([row])])
+        assert(validDownloadPage(page, owner: owner, connectionRef: reference) && !validDownloadPage(page, owner: other, connectionRef: reference))
+        assert(!validDownloadPage(page, owner: owner, connectionRef: "new-connection"))
+        assert(!validDownloadPage(page, owner: owner, connectionRef: ""))
+        page["connectionRef"] = .null; assert(!validDownloadPage(page, owner: owner, connectionRef: reference)); page["connectionRef"] = .string(reference)
+        var foreign = row; foreign["accountId"] = .string(other)
+        page["items"] = .array([foreign]); assert(!validDownloadPage(page, owner: owner, connectionRef: reference))
+        page["items"] = .array(Array(repeating: row, count: 31)); assert(!validDownloadPage(page, owner: owner, connectionRef: reference))
+        page["items"] = .array([row])
+        for invalid in [JSON.number(-1), .number(0.5), .number(.infinity), .null] {
+            page["page"] = invalid; assert(!validDownloadPage(page, owner: owner, connectionRef: reference))
+        }
+        let ticket = UUID(), captured = DownloadRequestContext(owner: owner, connectionRef: reference, ticket: UUID())
+        assert(captured.accepts(captured))
+        assert(!captured.accepts(DownloadRequestContext(owner: other, connectionRef: reference, ticket: captured.ticket)))
+        assert(!captured.accepts(DownloadRequestContext(owner: owner, connectionRef: "reconnected", ticket: captured.ticket)))
+        assert(!captured.accepts(DownloadRequestContext(owner: owner, connectionRef: reference, ticket: ticket)), "A → B → A or another page invalidates the first A request.")
+        assert(!DownloadRequestContext(owner: owner, connectionRef: "", ticket: ticket).accepts(DownloadRequestContext(owner: owner, connectionRef: "", ticket: ticket)))
+        let counts: JSON = .object(["cachedCount": .number(5), "count": .number(4), "incompleteCount": .number(2), "truncatedCount": .number(1)])
+        assert(downloadCoverageText(counts) == "5 stored · 4 indexed · 2 incomplete · 1 shortened bodies")
+        checkDownloadModalGuards(owner: owner)
+        print("Download coverage and bounded page ownership contracts passed; no provider requests made.")
+    }
+
+    @MainActor static func checkDownloadModalGuards(owner: String) {
+        let model = AppModel()
+        model.starting = false
+        model.state = .object(["account": .object(["id": .string(owner)]), "accounts": .array([.object(["id": .string(owner), "provider": .string("imap")])])])
+        assert(model.canNavigate && model.canOpenDownloads)
+        let before = model.draftGeneration
+        guard let first = model.beginDownloadControls() else { assertionFailure("Downloads must open for an idle connected mailbox."); return }
+        assert(!model.canNavigate && !model.canOpenDownloads && model.draftGeneration != before, "Downloads must disable mailbox shortcuts before its sheet appears and invalidate earlier draft work.")
+        assert(model.beginDownloadControls() == nil, "A second Downloads sheet must not acquire the first sheet's ownership.")
+        model.newDraft(); model.settings()
+        assert(model.compose == nil && !model.showSettings, "Cmd-N and Cmd-comma must not open another sheet behind Downloads.")
+        assert(!model.endDownloadControls(UUID()) && model.downloadsPresentation == first)
+        assert(model.endDownloadControls(first) && model.canNavigate)
+        model.newDraft()
+        assert(model.compose?.accountID == owner, "Closing Downloads must restore normal composition.")
+        model.compose = nil
+        guard let second = model.beginDownloadControls() else { assertionFailure("Downloads must reopen after closing."); return }
+        assert(!model.endDownloadControls(first) && model.downloadsPresentation == second && !model.canNavigate, "A late disappearance from the first sheet must not release its replacement.")
+        assert(model.endDownloadControls(second))
+        model.settings("mail")
+        assert(model.showSettings && model.settingsTab == "mail", "The panel's explicit settings handoff must work after releasing its own guard.")
+        assert(model.canOpenDownloads, "An otherwise idle Settings sheet may present Downloads.")
+        model.dirty("settings", true)
+        assert(model.beginDownloadControls() == nil, "Opening Downloads must preserve existing unsaved settings.")
+        model.dirty("settings", false)
+        guard let nested = model.beginDownloadControls() else { assertionFailure("Clean Settings must allow Downloads."); return }
+        model.settings("general")
+        assert(model.settingsTab == "mail", "Global Settings shortcuts must not switch the underlying Settings tab.")
+        assert(model.endDownloadControls(nested))
+        print("Downloads modal ownership, draft/settings shortcut guards and stale-sheet cleanup passed; no service launched.")
+    }
+
+    @MainActor static func checkMailboxToolModalGuards() {
+        let model = AppModel(), owner = "folder-downloads@example.invalid", other = "move-other@example.invalid"
+        model.starting = false
+        let accounts: [JSON] = [owner, other].map { .object(["id": .string($0), "provider": .string("imap"), "settings": .object(["moveConnectionRef": .string("fixture-" + $0)])]) }
+        model.state = .object(["account": .object(["id": .string("all")]), "accounts": .array(accounts)])
+        let selection: JSON = .object(["id": .string(owner)])
+        model.syncingFolders = selection
+        assert(!model.canNavigate && !model.canOpenDownloads && model.beginDownloadControls() == nil, "A folder editor must retain ownership before a Downloads sheet can open.")
+        model.newDraft(); model.settings(); model.beginMoveRecovery(other)
+        assert(model.syncingFolders == selection && model.compose == nil && !model.showSettings && model.organizing == nil, "Folder selection must block compose, Settings and another mailbox's move recovery.")
+        model.syncingFolders = nil
+        guard let downloads = model.beginDownloadControls() else { assertionFailure("Closing the folder editor must restore Downloads."); return }
+        model.beginMoveRecovery(other)
+        assert(model.organizing == nil && !model.canNavigate, "Downloads must block move recovery and the folder editor's navigation entry.")
+        assert(model.endDownloadControls(downloads))
+        model.beginMoveRecovery(other)
+        assert(model.organizing?["accountId"].string == other && model.organizing?["viewOwner"].string == "all", "Closing Downloads must preserve the explicitly reviewed recovery owner in a combined view.")
+        assert(!model.canNavigate && !model.canOpenDownloads && model.beginDownloadControls() == nil, "Move recovery must retain its modal guard against Downloads and folder selection.")
+        model.organizing = nil
+        model.syncingFolders = selection
+        assert(!model.endDownloadControls(downloads) && model.syncingFolders == selection && !model.canNavigate, "A late Downloads disappearance must not release a newer folder editor.")
+        model.syncingFolders = nil
+        assert(model.canNavigate && model.canOpenDownloads)
+        print("Folder selection, Downloads and move recovery preserve exclusive modal ownership and captured mailbox guards; no service requests made.")
     }
 
     @MainActor static func checkMailDrop() {

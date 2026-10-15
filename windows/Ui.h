@@ -135,6 +135,8 @@ struct Shell : std::enable_shared_from_this<Shell> {
     winrt::Windows::Foundation::IAsyncOperation<Json> manageFolders(winrt::hstring account, winrt::hstring initialFolder = {}, bool creationOnly = false);
     winrt::Windows::Foundation::IAsyncAction manageFolderSync(winrt::hstring account);
     controls::MenuFlyout organizationMenu(Json message);
+    bool canReviewMoves(winrt::hstring const& account) const;
+    winrt::Windows::Foundation::IAsyncAction reviewMoves(winrt::hstring account, winrt::hstring initialOperation = {});
     winrt::hstring startMailDrag(Json message);
     Json mailDropMessage(winrt::hstring const& token, winrt::hstring const& account, winrt::hstring const& destination) const;
     winrt::hstring mailDropDestination(winrt::hstring const& account, winrt::hstring const& folder) const;
@@ -144,6 +146,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     winrt::Windows::Foundation::IAsyncAction undoTrash();
     void updateTrashUndo();
     winrt::Windows::Foundation::IAsyncAction sync();
+    winrt::Windows::Foundation::IAsyncAction downloadControls(winrt::hstring account = {});
     winrt::Windows::Data::Json::JsonArray syncPriorityMessages() const;
     winrt::Windows::Foundation::IAsyncAction publishSyncPriority(bool clear = false);
     winrt::Windows::Foundation::IAsyncAction checkUpdates(bool force = false);
@@ -165,6 +168,8 @@ struct Shell : std::enable_shared_from_this<Shell> {
     void renderReader(Json const& message);
     void showReaderStatus(Json const& metadata, bool failed);
 };
+winrt::hstring unresolvedMoveOperation(Json const& payload, winrt::hstring const& owner);
+winrt::Windows::Foundation::IAsyncAction moveRecoveryChecks(controls::Grid host);
 winrt::Windows::Foundation::IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft = Json());
 winrt::Windows::Foundation::IAsyncAction scheduledPage(std::shared_ptr<Shell> shell);
 winrt::Windows::Foundation::IAsyncAction settingsPage(std::shared_ptr<Shell> shell, winrt::hstring tab = L"mail");
@@ -184,5 +189,6 @@ Json refreshedReaderMessage(Json const& previous, Json message);
 winrt::Windows::Foundation::IAsyncAction folderPickerChecks(controls::Grid root);
 winrt::Windows::Foundation::IAsyncAction folderSyncChecks(controls::Grid root);
 void readerSecurityChecks();
+void downloadControlsChecks();
 winrt::Windows::Foundation::IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell);
 }

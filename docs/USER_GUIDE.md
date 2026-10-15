@@ -339,6 +339,23 @@ Morrow preserves safe model connection, HTTP, timeout and response-format diagno
 
 ### Historical import and writing-style learning
 
+**Downloads & storage…** is available from the mail search area and each connected
+account in Settings. It shows stored/indexed records, incomplete or shortened
+bodies, logical message/attachment bytes, and a 30-record-per-page repair list.
+Opening the panel reads only the local cache; **Download full content…** explicitly
+retrieves one owning message using the existing attachment/MIME limits. The panel
+also opens history-range and automatic-sync settings and reuses Pause/Resume.
+It is not a global offline switch or a storage-deletion control. Counts/dates do
+not prove complete provider history. See [download and storage details](DOWNLOAD_CONTROLS.md).
+
+Local archive/Trash changes now expose **Undo local move to …** in the message
+reader. The latest move can be restored after restart while its location and
+connection still match; subsequent read/star/Pending edits remain. A new local
+move, provider organization or reimport invalidates the older receipt. This is
+separate from the provider Trash **one-minute Undo**, which does not survive an
+app restart. For expired/uncertain provider actions, inspect the original mailbox
+before making another reviewed move.
+
 In **Settings → Mail accounts**, choose **All history** or **1, 3, 6 or 12 calendar months** (default 3), then **All Mail** or individual **Inbox / Sent** scopes before connecting. Existing accounts can use **Start chosen import**. This downloads mail locally without any AI calls. New imports fetch the latest seven days across the selected folders before older history; existing jobs retain their checkpoint and scope. Progress, pause and resume are per account; read-only pages checkpoint to disk and resume after restart. Refresh progress in Settings. Importing a shorter range never deletes cached mail. Historical import does not generate new-mail summaries. IMAP Sent requires the server to advertise its `\Sent` special-use folder; if unavailable, select Inbox only or configure Sent on the provider. Large IMAP messages still use the existing 5 MB body ceiling. Gmail/Outlook page tokens and IMAP UIDVALIDITY are checked; a changed IMAP folder requires a fresh import.
 
 In **Settings → Advanced setup → Writing style**, select an individual connected account and optionally enable **Learn my writing style**. This requires the global AI switch, Email Brain behavior, Sent scope and body permission. It does **not** require Contacts, Subject or Sender permission: only cleaned body samples go to the model; ownership and diversity selection happen locally. Reviewed Brain memories and manual contact/project notes remain separate. Learning can be skipped entirely.

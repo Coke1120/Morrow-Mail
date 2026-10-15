@@ -29,8 +29,24 @@ The v0.8.2 source adds a Mail | Agent | Brain navigation shell on macOS and Wind
 The [IMAP read-session candidate](docs/IMAP_READ_SESSIONS.md) reuses one owned
 connection for change discovery and cached-mail flag reconciliation, with
 connection checks and bounded deadlines. It closes the socket after the round
-and discards failed or cancelled reads. IDLE and a non-MOVE write fallback remain
-separate implementation work; this candidate does not add either.
+and discards failed or cancelled reads. IDLE remains a separate implementation
+unit; persistent connection pooling is not added here.
+
+The [IMAP move-recovery candidate](docs/IMAP_MOVE_RECOVERY.md) adds a durable,
+explicitly reviewed fallback for servers with UIDPLUS but no MOVE. It records
+each COPY/delete/UID EXPUNGE step before sending it and never replays uncertain
+work. Interrupted moves may leave two copies; native recovery can check the exact
+recorded copies, finish a reviewed removal, apply an already confirmed result, or
+record that the user handled it in the provider. Opening recovery is local-only.
+This separate draft source is not part of v0.8.2 or live-account acceptance.
+
+The download-controls follow-up adds account-owned downloaded-content coverage,
+logical storage totals and a 30-record repair list to both native clients. It
+reuses reviewed history controls and explicit single-message downloads. Local
+archive/Trash changes gain a restart-safe last-move undo while their location
+and connection remain unchanged. Provider Trash keeps its separate one-minute
+undo. No cache deletion, quota or global offline mode is introduced. See
+[controls and remaining limits](docs/DOWNLOAD_CONTROLS.md).
 
 The activity-recovery follow-up keeps cancellation requests separate across
 mailboxes and AI work types. Cancelling one analysis remains effective when
