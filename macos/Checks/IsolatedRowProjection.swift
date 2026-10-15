@@ -30,8 +30,12 @@ import SwiftUI
     }
     static func count(_ value: Int) -> JSON { .number(Double(max(0, min(value, 1_000_000)))) }
     static func rect(_ frame: NSRect?) -> JSON {
-        guard let frame, [frame.minX, frame.minY, frame.width, frame.height].allSatisfy({ $0.isFinite && abs($0) <= 10_000_000 }) else { return .null }
-        return .array([frame.minX, frame.minY, frame.width, frame.height].map { .number(Double($0)) })
+        guard let frame else { return JSON.null }
+        let components: [CGFloat] = [frame.minX, frame.minY, frame.width, frame.height]
+        guard components.allSatisfy({ $0.isFinite && abs($0) <= 10_000_000 }) else { return JSON.null }
+        var encoded: [JSON] = []
+        for component in components { encoded.append(JSON.number(Double(component))) }
+        return JSON.array(encoded)
     }
     static func roleName(_ value: String?) -> String {
         let names: [(NSAccessibility.Role, String)] = [(.row, "row"), (.table, "table"), (.list, "list"),
@@ -48,8 +52,15 @@ import SwiftUI
         var supported = false, present = false, truncated = false
         var count = 0, invalid = 0
         var objects: [NSObject] = []
-        var json: JSON { .object(["supported": .bool(supported), "present": .bool(present),
-            "count": IsolatedRowProjection.count(count), "invalid": IsolatedRowProjection.count(invalid), "truncated": .bool(truncated)]) }
+        var json: JSON {
+            var fields: [String: JSON] = [:]
+            fields["supported"] = .bool(supported)
+            fields["present"] = .bool(present)
+            fields["count"] = IsolatedRowProjection.count(count)
+            fields["invalid"] = IsolatedRowProjection.count(invalid)
+            fields["truncated"] = .bool(truncated)
+            return JSON.object(fields)
+        }
     }
     struct Node {
         let object: NSObject
@@ -143,9 +154,19 @@ import SwiftUI
             switch family {
             case .method:
                 guard let element = node.object as? NSAccessibilityProtocol else { return [] }
-                values = [element.accessibilityValue() as? String, element.accessibilityLabel(), element.accessibilityTitle()].map { $0 ?? "" }
+                let rawValues: [String?] = [element.accessibilityValue() as? String, element.accessibilityLabel(), element.accessibilityTitle()]
+                var resolved: [String] = []
+                for value in rawValues { resolved.append(value ?? "") }
+                values = resolved
             case .attributes:
-                values = ["AXValue", "AXDescription", "AXTitle"].map { attribute(node.object, node.attributes, $0) as? String ?? "" }
+                let keys: [String] = ["AXValue", "AXDescription", "AXTitle"]
+                var resolved: [String] = []
+                for key in keys {
+                    let value: Any? = attribute(node.object, node.attributes, key)
+                    let text: String = value as? String ?? ""
+                    resolved.append(text)
+                }
+                values = resolved
             }
             textCache[identity] = values
             return values
@@ -159,10 +180,20 @@ import SwiftUI
     struct ParentPath {
         var table = false, host = false, row = false, cycle = false, truncated = false
         var hops = 0, hidden = 0, unknownHidden = 0, foreignWindow = 0, invisibleNative = 0
-        var json: JSON { .object(["table": .bool(table), "host": .bool(host), "row": .bool(row),
-            "hops": IsolatedRowProjection.count(hops), "cycle": .bool(cycle), "truncated": .bool(truncated),
-            "hidden": IsolatedRowProjection.count(hidden), "unknownHidden": IsolatedRowProjection.count(unknownHidden),
-            "foreignWindow": IsolatedRowProjection.count(foreignWindow), "invisibleNative": IsolatedRowProjection.count(invisibleNative)]) }
+        var json: JSON {
+            var fields: [String: JSON] = [:]
+            fields["table"] = .bool(table)
+            fields["host"] = .bool(host)
+            fields["row"] = .bool(row)
+            fields["hops"] = IsolatedRowProjection.count(hops)
+            fields["cycle"] = .bool(cycle)
+            fields["truncated"] = .bool(truncated)
+            fields["hidden"] = IsolatedRowProjection.count(hidden)
+            fields["unknownHidden"] = IsolatedRowProjection.count(unknownHidden)
+            fields["foreignWindow"] = IsolatedRowProjection.count(foreignWindow)
+            fields["invisibleNative"] = IsolatedRowProjection.count(invisibleNative)
+            return JSON.object(fields)
+        }
     }
     @MainActor static func parentPath(_ object: NSObject, readout: AXReadout, boundary: NativeBoundary, row: NSObject? = nil) -> ParentPath {
         var result = ParentPath(), next: NSObject? = object, seen = Set<ObjectIdentifier>()
@@ -188,14 +219,22 @@ import SwiftUI
     }
     static func matches(_ values: [String]) -> JSON {
         let subject = "Fictional mailbox row 0 中文", owner = MailboxLatencyProtocol.owners[0]
-        return .array([values.contains(subject), values.contains { $0.contains(subject) },
-            values.contains(owner) || values.contains("Mailbox: " + owner), values.contains { $0.contains(owner) }].map(JSON.bool))
+        let subjectExact: Bool = values.contains(subject)
+        let subjectContained: Bool = values.contains { $0.contains(subject) }
+        let ownerExact: Bool = values.contains(owner) || values.contains("Mailbox: " + owner)
+        let ownerContained: Bool = values.contains { $0.contains(owner) }
+        var result: [JSON] = []
+        result.append(JSON.bool(subjectExact))
+        result.append(JSON.bool(subjectContained))
+        result.append(JSON.bool(ownerExact))
+        result.append(JSON.bool(ownerContained))
+        return JSON.array(result)
     }
     @MainActor static func rowFacts(_ object: NSObject, readout: AXReadout, boundary: NativeBoundary) -> JSON {
         guard let seed = readout.node(object) else { return .object(["bounded": .bool(false)]) }
         let path = parentPath(object, readout: readout, boundary: boundary)
-        let intersection = seed.frame.flatMap { frame in boundary.clip.map { frame.intersection($0) } }
-        let overlap = intersection.map { !$0.isEmpty } ?? false
+        let intersection: NSRect? = seed.frame.flatMap { frame in boundary.clip.map { frame.intersection($0) } }
+        let overlap: Bool = intersection.map { !$0.isEmpty } ?? false
         let nativeOwner: Bool
         if let view = object as? NSView, let row = boundary.row {
             nativeOwner = view.window === boundary.window && (view === row || view.isDescendant(of: row))
@@ -203,7 +242,7 @@ import SwiftUI
         } else if let cell = object as? NSCell, let row = boundary.row, let clip = boundary.clip {
             nativeOwner = MailboxLatency.visibleCellFrame(cell, in: row, window: boundary.window, clip: clip) != nil
         } else { nativeOwner = !(object is NSView) && !(object is NSCell) }
-        let anchored = seed.role == NSAccessibility.Role.row.rawValue && seed.index == 0
+        let anchored: Bool = seed.role == NSAccessibility.Role.row.rawValue && seed.index == 0
             && seed.window === boundary.window && path.table && !path.cycle && !path.truncated
             && path.hidden == 0 && path.foreignWindow == 0 && path.invisibleNative == 0 && overlap && nativeOwner
         var nodes = 0, leaves = 0, framedLeaves = 0, knownVisibleLeaves = 0, unbacked = 0, rejected = 0, truncated = false
@@ -237,17 +276,37 @@ import SwiftUI
             }
             visit(object, depth: 0)
         }
-        return .object(["role": .string(roleName(seed.role)), "index0": .bool(seed.index == 0),
-            "window": .bool(seed.window === boundary.window), "frame": rect(seed.frame), "overlap": .bool(overlap),
-            "parent": path.json, "conforms": .bool(seed.conforms), "children": seed.children.json,
-            "sameColumn": .bool(object === boundary.column), "sameNativeRow": .bool(object === boundary.row),
-            "nativeOwner": .bool(nativeOwner),
-            "anchored": .bool(anchored), "rowText": matches(anchored ? readout.text(seed) : []),
-            "rowTextChannels": .array((anchored ? readout.text(seed) : ["", "", ""]).map { matches([$0]) }),
-            "leafNodes": count(nodes), "textLeaves": count(leaves), "framedLeaves": count(framedLeaves),
-            "knownVisibleLeaves": count(knownVisibleLeaves), "unbacked": count(unbacked), "rejected": count(rejected),
-            "leafText": matches(leafText), "leafTextChannels": .array(channels.map { matches($0) }),
-            "knownVisibleText": matches(knownVisibleText), "truncated": .bool(truncated)])
+        var fields: [String: JSON] = [:]
+        fields["role"] = .string(roleName(seed.role))
+        fields["index0"] = .bool(seed.index == 0)
+        fields["window"] = .bool(seed.window === boundary.window)
+        fields["frame"] = rect(seed.frame)
+        fields["overlap"] = .bool(overlap)
+        fields["parent"] = path.json
+        fields["conforms"] = .bool(seed.conforms)
+        fields["children"] = seed.children.json
+        fields["sameColumn"] = .bool(object === boundary.column)
+        fields["sameNativeRow"] = .bool(object === boundary.row)
+        fields["nativeOwner"] = .bool(nativeOwner)
+        fields["anchored"] = .bool(anchored)
+        fields["rowText"] = matches(anchored ? readout.text(seed) : [])
+        let rowChannelValues: [String] = anchored ? readout.text(seed) : ["", "", ""]
+        var rowChannelMatches: [JSON] = []
+        for value in rowChannelValues { rowChannelMatches.append(matches([value])) }
+        fields["rowTextChannels"] = JSON.array(rowChannelMatches)
+        fields["leafNodes"] = count(nodes)
+        fields["textLeaves"] = count(leaves)
+        fields["framedLeaves"] = count(framedLeaves)
+        fields["knownVisibleLeaves"] = count(knownVisibleLeaves)
+        fields["unbacked"] = count(unbacked)
+        fields["rejected"] = count(rejected)
+        fields["leafText"] = matches(leafText)
+        var leafChannelMatches: [JSON] = []
+        for values in channels { leafChannelMatches.append(matches(values)) }
+        fields["leafTextChannels"] = JSON.array(leafChannelMatches)
+        fields["knownVisibleText"] = matches(knownVisibleText)
+        fields["truncated"] = .bool(truncated)
+        return JSON.object(fields)
     }
     @MainActor static func tableProjection(_ readout: AXReadout, boundary: NativeBoundary) throws {
         guard let list = boundary.table else {
@@ -259,10 +318,19 @@ import SwiftUI
                 guard let node = readout.node(object) else { return false }
                 return node.role == NSAccessibility.Role.row.rawValue && node.index == 0
             }
-            return .object(["array": values.json, "index0Rows": count(candidates.count),
-                "examples": .array(candidates.prefix(2).map { rowFacts($0, readout: readout, boundary: boundary) })])
+            var fields: [String: JSON] = [:]
+            fields["array"] = values.json
+            fields["index0Rows"] = count(candidates.count)
+            var examples: [JSON] = []
+            for object in candidates.prefix(2) { examples.append(rowFacts(object, readout: readout, boundary: boundary)) }
+            fields["examples"] = JSON.array(examples)
+            return JSON.object(fields)
         }
-        try emit("table-" + readout.family.rawValue, ["rows": describe(rows), "visibleRows": describe(visible), "bounded": .bool(readout.bounded)])
+        var tableFields: [String: JSON] = [:]
+        tableFields["rows"] = describe(rows)
+        tableFields["visibleRows"] = describe(visible)
+        tableFields["bounded"] = .bool(readout.bounded)
+        try emit("table-" + readout.family.rawValue, tableFields)
     }
     @MainActor static func hostProjection(_ readout: AXReadout, boundary: NativeBoundary) throws {
         var seen = Set<ObjectIdentifier>(), nodes = 0, rows = 0, tables = 0, unsupported = 0, truncated = false
@@ -284,9 +352,15 @@ import SwiftUI
             for child in node.children.objects { visit(child, depth: depth + 1) }
         }
         visit(boundary.host, depth: 0)
-        try emit("host-" + readout.family.rawValue, ["nodes": count(nodes), "tables": count(tables),
-            "index0RowsInClip": count(rows), "unsupported": count(unsupported), "examples": .array(examples),
-            "truncated": .bool(truncated), "bounded": .bool(readout.bounded)])
+        var hostFields: [String: JSON] = [:]
+        hostFields["nodes"] = count(nodes)
+        hostFields["tables"] = count(tables)
+        hostFields["index0RowsInClip"] = count(rows)
+        hostFields["unsupported"] = count(unsupported)
+        hostFields["examples"] = .array(examples)
+        hostFields["truncated"] = .bool(truncated)
+        hostFields["bounded"] = .bool(readout.bounded)
+        try emit("host-" + readout.family.rawValue, hostFields)
     }
 
     @MainActor static func caseBody() async throws -> Bool {
@@ -311,15 +385,22 @@ import SwiftUI
             originalPassed = true
         } catch { originalPassed = false }
         let observed = MailboxLatencyProtocol.snapshot()
-        try emit("baseline", ["originalPredicatePassed": .bool(originalPassed), "listed": count(model.listedMessages.count),
-            "loading": .bool(model.mailLoading), "generated": count(observed.0), "unexpected": count(observed.1),
-            "requests": count(observed.2), "windowVisible": .bool(window.isVisible),
-            "active": .bool(NSApp.isActive), "running": .bool(NSApp.isRunning)])
+        var baselineFields: [String: JSON] = [:]
+        baselineFields["originalPredicatePassed"] = .bool(originalPassed)
+        baselineFields["listed"] = count(model.listedMessages.count)
+        baselineFields["loading"] = .bool(model.mailLoading)
+        baselineFields["generated"] = count(observed.0)
+        baselineFields["unexpected"] = count(observed.1)
+        baselineFields["requests"] = count(observed.2)
+        baselineFields["windowVisible"] = .bool(window.isVisible)
+        baselineFields["active"] = .bool(NSApp.isActive)
+        baselineFields["running"] = .bool(NSApp.isRunning)
+        try emit("baseline", baselineFields)
         // Capture the actual fictional native view before any new AX query.
         try ProbeEvidence.bitmap(host, name: "row-" + mode + "-before")
         let list = MailboxLatency.table(host)
-        let column = list.flatMap { $0.numberOfRows > 0 && $0.numberOfColumns > 0 ? $0.view(atColumn: 0, row: 0, makeIfNecessary: false) : nil }
-        let row = list.flatMap { $0.numberOfRows > 0 ? $0.rowView(atRow: 0, makeIfNecessary: false) : nil }
+        let column: NSView? = list.flatMap { $0.numberOfRows > 0 && $0.numberOfColumns > 0 ? $0.view(atColumn: 0, row: 0, makeIfNecessary: false) : nil }
+        let row: NSTableRowView? = list.flatMap { $0.numberOfRows > 0 ? $0.rowView(atRow: 0, makeIfNecessary: false) : nil }
         var clip: NSRect?
         if let list, let row, list.window === window, list.isDescendant(of: host), row.window === window,
            row.isDescendant(of: list), let tableFrame = MailboxLatency.visibleFrame(list), let rowFrame = MailboxLatency.visibleFrame(row) {
@@ -327,18 +408,28 @@ import SwiftUI
             clip = finiteFrame(frame.intersection(tableFrame).intersection(rowFrame))
         }
         let boundary = NativeBoundary(host: host, window: window, table: list, column: column, row: row, clip: clip)
-        try emit("native", ["table": .bool(list != nil), "rows": count(list?.numberOfRows ?? 0),
-            "columns": count(list?.numberOfColumns ?? 0), "column0": .bool(column != nil), "row0": .bool(row != nil),
-            "tableFrame": rect(list.flatMap { MailboxLatency.visibleFrame($0) }),
-            "rowFrame": rect(row.flatMap { MailboxLatency.visibleFrame($0) }), "clip": rect(clip)])
+        var nativeFields: [String: JSON] = [:]
+        nativeFields["table"] = .bool(list != nil)
+        nativeFields["rows"] = count(list?.numberOfRows ?? 0)
+        nativeFields["columns"] = count(list?.numberOfColumns ?? 0)
+        nativeFields["column0"] = .bool(column != nil)
+        nativeFields["row0"] = .bool(row != nil)
+        nativeFields["tableFrame"] = rect(list.flatMap { MailboxLatency.visibleFrame($0) })
+        nativeFields["rowFrame"] = rect(row.flatMap { MailboxLatency.visibleFrame($0) })
+        nativeFields["clip"] = rect(clip)
+        try emit("native", nativeFields)
         for family in [Family.method, .attributes] {
             let readout = AXReadout(family)
             try tableProjection(readout, boundary: boundary)
             try hostProjection(readout, boundary: boundary)
         }
         let after = MailboxLatency.displayed(host, page: 0)
-        try emit("after", ["afterQueryDisplayed": .bool(after), "originalPredicatePassed": .bool(originalPassed)])
+        var afterFields: [String: JSON] = [:]
+        afterFields["afterQueryDisplayed"] = .bool(after)
+        afterFields["originalPredicatePassed"] = .bool(originalPassed)
+        try emit("after", afterFields)
         if after != originalPassed { try ProbeEvidence.bitmap(host, name: "row-" + mode + "-after") }
+        await ProbeEvidence.windowBitmap(host, name: "row-" + mode + "-window-after")
         return originalPassed
     }
     @MainActor static func run() async {

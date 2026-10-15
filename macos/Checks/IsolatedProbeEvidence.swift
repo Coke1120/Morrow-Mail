@@ -1,6 +1,7 @@
 import AppKit
 import CryptoKit
 import Foundation
+import ScreenCaptureKit
 
 // Branch-only native diagnostics. Never linked into a distributed app.
 @MainActor enum ProbeEvidence {
@@ -34,6 +35,70 @@ import Foundation
             throw APIError("Native bitmap dimensions exceed the fixed fixture bound")
         }
         host.cacheDisplay(in: host.bounds, to: bitmap)
+        try emitPNG(bitmap, name: name)
+    }
+
+    // Called after the independent predicate/AX observations. Content comes
+    // only from this process, then one exact owned synthetic window. No desktop
+    // enumeration, permission request, fallback or retry is performed.
+    static func windowBitmap(_ host: NSView, name: String) async {
+        let mode = ProcessInfo.processInfo.environment["MORROW_ISOLATED_MODE"] ?? ""
+        do {
+            guard #available(macOS 14.4, *) else { throw APIError("Current-process compositor capture requires macOS 14.4") }
+            guard ["row-async-window-after", "row-appkit-window-after"].contains(name),
+                  let window = host.window, window.contentView === host,
+                  window.isVisible, !window.isMiniaturized,
+                  let windowID = CGWindowID(exactly: window.windowNumber), windowID != 0 else {
+                throw APIError("Owned fixture window is unavailable for compositor capture")
+            }
+            let frame = window.frame, scale = window.backingScaleFactor
+            let pid = ProcessInfo.processInfo.processIdentifier
+            let width = (frame.width * scale).rounded(.up), height = (frame.height * scale).rounded(.up)
+            guard width.isFinite, height.isFinite, width > 0, width <= 3200,
+                  height > 0, height <= 2000, width * height <= 6_400_000 else {
+                throw APIError("Owned fixture window exceeds compositor capture bounds")
+            }
+            @MainActor func stillOwned() -> Bool {
+                host.window === window && window.contentView === host && window.windowNumber == Int(windowID)
+                    && window.frame == frame && window.backingScaleFactor == scale
+                    && window.isVisible && !window.isMiniaturized
+            }
+            let content: SCShareableContent = try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<SCShareableContent, Error>) in
+                SCShareableContent.getCurrentProcessShareableContent { content, error in
+                    if let error { continuation.resume(throwing: error) }
+                    else if let content { continuation.resume(returning: content) }
+                    else { continuation.resume(throwing: APIError("Current-process capture content is unavailable")) }
+                }
+            }
+            guard stillOwned() else { throw APIError("Owned fixture window changed during capture enumeration") }
+            let matches = content.windows.filter { $0.windowID == windowID && $0.owningApplication?.processID == pid }
+            guard matches.count == 1 else { throw APIError("Exact owned fixture window is absent from current-process content") }
+            let configuration = SCStreamConfiguration()
+            configuration.width = Int(width); configuration.height = Int(height)
+            configuration.showsCursor = false; configuration.capturesAudio = false
+            let image = try await SCScreenshotManager.captureImage(
+                contentFilter: SCContentFilter(desktopIndependentWindow: matches[0]), configuration: configuration)
+            guard stillOwned() else { throw APIError("Owned fixture window changed during compositor capture") }
+            try emitPNG(NSBitmapImageRep(cgImage: image), name: name)
+            try emit("row", .object(["mode": .string(mode), "phase": .string("own-window-capture"),
+                "status": .string("captured"), "scope": .string("exact-current-process-window"),
+                "afterAXQueries": .bool(true)]))
+        } catch {
+            let failure = error as NSError
+            // No arbitrary localized message, title, application or mail text.
+            try? emit("row", .object(["mode": .string(mode), "phase": .string("own-window-capture"),
+                "status": .string("unavailable"), "domain": .string(String(failure.domain.prefix(128))),
+                "code": .number(Double(failure.code)), "retried": .bool(false),
+                "afterAXQueries": .bool(true)]))
+        }
+    }
+
+    private static func emitPNG(_ bitmap: NSBitmapImageRep, name: String) throws {
+        guard bitmap.pixelsWide > 0, bitmap.pixelsHigh > 0, bitmap.pixelsWide <= 3200,
+              bitmap.pixelsHigh <= 2000, bitmap.pixelsWide * bitmap.pixelsHigh <= 6_400_000 else {
+            throw APIError("Native PNG dimensions exceed the fixed fixture bound")
+        }
         guard let png = bitmap.representation(using: .png, properties: [:]),
               !png.isEmpty, png.count <= 524288 else {
             throw APIError("Native PNG exceeds the fixed 512KiB diagnostic bound")

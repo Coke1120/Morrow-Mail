@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import signal
 import struct
 import subprocess
 import sys
@@ -70,6 +71,8 @@ def validate_png(data):
 def parse_images(output, kind, mode):
     lines = output.splitlines()
     allowed = {f"{kind}-{mode}-before", f"{kind}-{mode}-after"}
+    if kind == "row":
+        allowed.add(f"{kind}-{mode}-window-after")
     images, pending = {}, {}
     for line in lines:
         if line.startswith(b"MORROW_ISOLATED_IMAGE_BEGIN "):
@@ -168,12 +171,20 @@ def prepare_inputs(output, kind):
 
 
 def captured(command, *, environment, timeout, path):
+    process = subprocess.Popen(command, cwd=ROOT, env=environment, stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, start_new_session=True)
     try:
-        result = subprocess.run(command, cwd=ROOT, env=environment, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, timeout=timeout, check=False)
-        data, code = result.stdout, result.returncode
-    except subprocess.TimeoutExpired as error:
-        data, code = error.output or b"", None
+        data, _ = process.communicate(timeout=timeout)
+        code = process.returncode
+    except subprocess.TimeoutExpired:
+        # Only this newly created fixture/compiler group is terminated. The
+        # frontend must not survive swiftc and overlap the next A/B compile.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        data, _ = process.communicate()
+        code = None
     path.write_bytes(data)
     sys.stdout.buffer.write(data); sys.stdout.buffer.flush()
     return data, code
@@ -196,13 +207,13 @@ def run(probe, output):
         environment.pop("MORROW_REVIEW_BASELINE", None)
         executable = output / f"{probe}-{mode}"
         command = ["/usr/bin/xcrun", "swiftc", "-D", "MORROW_WINDOW_CHECKS", "-parse-as-library",
+                   "-Xfrontend", "-warn-long-expression-type-checking=200",
                    "-module-cache-path", str(output / "module-cache")]
-        if probe == "row":
-            command.append("-O")
         if mode == "appkit":
             command += ["-D", "MORROW_PROBE_APPKIT"]
         command += [*map(str, inputs), "-o", str(executable)]
         result = {"kind": probe, "mode": mode, "nonce": nonce, "compilerTimeout": 180, "nativeTimeout": 45,
+                  "optimization": "none-diagnostic-only",
                   "diagnosticComplete": False, "originalGatePassed": False}
         started = time.monotonic()
         _, build_code = captured(command, environment=environment, timeout=180, path=output / f"{mode}-build.log")
@@ -258,12 +269,18 @@ def self_check():
             + f"\nMORROW_ISOLATED_COMPLETE row async {nonce}\n".encode())
     result, images = parse_capture(data, "row", "async", nonce)
     assert result["passed"] is False and images[name]["data"] == png
+    image_part = data.split(b"MORROW_ISOLATED_RESULT ", 1)[0]
+    window_part = image_part.replace(name.encode(), b"row-async-window-after")
+    extended = image_part + window_part + data[len(image_part):]
+    assert parse_capture(extended, "row", "async", nonce)[1]["row-async-window-after"]["data"] == png
     incomplete = data.replace(b"MORROW_ISOLATED_COMPLETE ", b"MISSING_COMPLETE ")
     assert parse_images(incomplete, "row", "async")[name]["data"] == png
     bad = [data.replace(b"MORROW_ISOLATED_COMPLETE ", b"MISSING_COMPLETE "),
            data.replace(nonce.encode(), b"1" * 32), data + f"MORROW_ISOLATED_COMPLETE row async {nonce}\n".encode(),
            data.replace(b"IMAGE_CHUNK row-async-before 0", b"IMAGE_CHUNK row-async-before 1"),
-           data.replace(digest(png).encode(), b"f" * 64), data.replace(b"MORROW_ISOLATED_IMAGE_END", b"MISSING_IMAGE_END")]
+           data.replace(digest(png).encode(), b"f" * 64), data.replace(b"MORROW_ISOLATED_IMAGE_END", b"MISSING_IMAGE_END"),
+           extended.replace(b"row-async-window-after", b"row-appkit-window-after"),
+           extended.replace(b"row-async-window-after", b"row-async-window-before")]
     for candidate in bad:
         try:
             parse_capture(candidate, "row", "async", nonce)
@@ -271,7 +288,7 @@ def self_check():
             pass
         else:
             raise AssertionError("Invalid capture accepted")
-    print("Isolated probe capture controls: false original gate retained; incomplete-process pixels preserved; six nonce/image completeness negatives rejected. No AppKit execution.")
+    print("Isolated probe capture controls: false original gate retained; incomplete-process pixels preserved; owned-window image supported; eight nonce/image scope/completeness negatives rejected. No AppKit execution.")
 
 
 if __name__ == "__main__":
