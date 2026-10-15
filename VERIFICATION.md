@@ -397,6 +397,38 @@ These are isolated Linux fixture results. IDLE native SDK CI, live-provider
 acceptance and release validation remain pending. No live mailbox/model or
 sending was used. [Behavior and coverage limits](docs/IMAP_IDLE_NOTIFICATIONS.md).
 
+PR57 Windows job `116407284508` (run `38730647752`, head `7529919`)
+subsequently failed the Rust checks with **70 passed and 1 failed**. The owned
+folder-rotation test reached its final workspace deletion after the fairness,
+per-owner socket, global socket and mailbox-gate assertions, then received
+Windows OS32. Its native build, walkthrough, relocation and benchmark steps
+were skipped. The complete original log is retained; it does not identify the
+specific file handle responsible for that deletion failure.
+
+A deterministic held-database control confirms a reachable cleanup gap:
+cancelling and joining an `App::db` await can drop the Runtime while its already
+started blocking closure still owns Store and the original writer lock. Runtime
+Weak expiry or a completed database no-op is therefore not a Store-close proof.
+The fixture cleanup now observes the existing writer lock within an absolute
+deadline, unlocks and drops its observation handle, and attempts directory
+deletion once. Missing-lock, other I/O, deadline and deletion errors still fail;
+it never creates a replacement lock or retries deletion. The failed rotation
+case uses the remaining budget of the original three-second manager-stop
+deadline. Other fixture cleanup calls have an explicit two-second teardown
+budget; this is not claimed to be part of their earlier stop deadline. The
+manager, socket-drain and production shutdown limits are unchanged.
+
+The new controls cover a cancelled waiter with a still-held Store, timeout
+without deletion, pending cleanup until actual lock handoff, an already-expired
+deadline and a missing original lock. Production code is unchanged. The initial
+retention control passed on Linux before the cleanup change. All **33 IDLE
+focused tests passed**, as did formatting and locked all-target Clippy with
+`-D warnings`. The complete locked suite passed **512 tests, 0 failures,
+4 existing ignored benchmarks**, across 51 result groups. These final checks
+used the same 114-file Rust/Cargo manifest, verified before and after execution.
+Fresh Windows CI is still required and the historical OS32 failure is not
+relabelled as a pass.
+
 ## Activity cancellation and native verification repairs — 15 October 2026
 
 This follow-up starts from main `cfe61c9fedfe7f07a99ab84751aabf7bae19d495`,

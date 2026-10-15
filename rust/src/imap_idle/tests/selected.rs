@@ -181,7 +181,7 @@ async fn selected_identity_survives_progress_and_eligibility_changes_but_not_rev
     assert_eq!(reviewed.owner_generation, original.owner_generation);
     assert_eq!(reviewed.validity, Some(78));
     assert_eq!(fixture.state.connections.load(Ordering::SeqCst), 0);
-    close_workspace(app, root);
+    close_workspace(app, root).await;
     fixture.close().await;
 }
 
@@ -323,7 +323,7 @@ async fn selected_lease_is_revoked_by_deselect_rename_reconnect_validity_or_reco
                 original.generation
             );
         }
-        close_workspace(app, root);
+        close_workspace(app, root).await;
         fixture.close().await;
     }
 }
@@ -400,7 +400,7 @@ async fn selected_retry_and_catalog_expiry_are_clock_gates_without_settings_writ
         "notifications do not refresh sync or catalog clocks"
     );
     stop_manager(stop, manager, &fixture).await;
-    close_workspace(app, root);
+    close_workspace(app, root).await;
     fixture.close().await;
 }
 
@@ -430,7 +430,7 @@ async fn owners_and_selected_folders_rotate_fairly_with_one_socket_per_owner() {
                 .all(|owner| completed(&fixture, owner).len() == 4)
         })
         .await;
-    stop_manager(stop, manager, &fixture).await;
+    let cleanup_deadline = stop_manager(stop, manager, &fixture).await;
     let first = fixture
         .state
         .commands
@@ -458,7 +458,9 @@ async fn owners_and_selected_folders_rotate_fairly_with_one_socket_per_owner() {
     }
     assert!(fixture.state.peak.load(Ordering::SeqCst) <= SOCKET_LIMIT);
     assert!(app.0.mailbox.try_lock().is_ok());
-    close_workspace(app, root);
+    close_workspace_until(app, root, cleanup_deadline)
+        .await
+        .unwrap();
     fixture.close().await;
 }
 
@@ -566,7 +568,7 @@ async fn connection_failures_block_all_selected_paths_across_progress_review_and
             original.owner_generation
         );
         stop_manager(stop, manager, &fixture).await;
-        close_workspace(app, root);
+        close_workspace(app, root).await;
         fixture.close().await;
     }
 }
@@ -628,7 +630,7 @@ async fn changed_or_missing_folder_blocks_only_that_path_until_selection_is_revi
             })
             .await;
         stop_manager(stop, manager, &fixture).await;
-        close_workspace(app, root);
+        close_workspace(app, root).await;
         fixture.close().await;
     }
 }
@@ -681,7 +683,7 @@ async fn selected_hint_waiting_for_mailbox_gate_cannot_survive_deselect_reselect
     stop.send(true).unwrap();
     worker.await.unwrap();
     drop(sender);
-    close_workspace(app, root);
+    close_workspace(app, root).await;
     fixture.close().await;
 }
 
@@ -724,7 +726,7 @@ async fn selected_speculative_settings_rollback_cannot_authorize_a_socket() {
     selected_setup(&app, fixture.mail(OWNER), &["Projects"], false).await;
     fixture.until(|| fixture.count("CONTINUE") == 1).await;
     stop_manager(stop, manager, &fixture).await;
-    close_workspace(app, root);
+    close_workspace(app, root).await;
     fixture.close().await;
 }
 
@@ -845,7 +847,7 @@ async fn selected_notification_uses_existing_owned_sync_and_commits_only_after_f
     assert_eq!(fixture.count("IDLE"), 1);
     assert_eq!(fixture.count("DONE"), 1);
     assert!(pending.0.lock().unwrap().is_empty());
-    close_workspace(app, root);
+    close_workspace(app, root).await;
     fixture.close().await;
 }
 
@@ -908,7 +910,7 @@ async fn notification_round_checks_captured_scope_in_the_initial_store_snapshot(
             examined(&fixture, OWNER),
         ));
         assert!(app.0.syncing.lock().unwrap().is_empty());
-        close_workspace(app, root);
+        close_workspace(app, root).await;
         fixture.close().await;
     }
     assert!(

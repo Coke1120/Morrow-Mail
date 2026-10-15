@@ -5,7 +5,7 @@ use serde_json::json;
 use std::{
     io,
     panic::AssertUnwindSafe,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicUsize, Ordering},
 };
 use tokio::{
@@ -459,9 +459,139 @@ fn workspace() -> (App, PathBuf) {
     let app = App::open(&path, 0, "fictional-only".into(), "fictional-update".into()).unwrap();
     (app, path)
 }
-fn close_workspace(app: App, path: PathBuf) {
+async fn close_workspace(app: App, path: PathBuf) {
+    close_workspace_until(app, path, Instant::now() + Duration::from_secs(2))
+        .await
+        .unwrap();
+}
+async fn close_workspace_until(app: App, path: PathBuf, deadline: Instant) -> io::Result<()> {
     drop(app);
-    std::fs::remove_dir_all(path).unwrap();
+    remove_workspace_after_writer_closed(&path, deadline).await
+}
+async fn remove_workspace_after_writer_closed(path: &Path, deadline: Instant) -> io::Result<()> {
+    // A cancelled App::db await can leave a started blocking closure holding
+    // Store after Runtime is gone. Store closes its connection before dropping
+    // its writer lock. Observe that existing lock, never create another writer.
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path.join("writer.lock"))?;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Fixture Store did not release its writer lock before cleanup",
+            ));
+        }
+        match lock.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) => {
+                tokio::time::sleep_until(deadline.min(Instant::now() + Duration::from_millis(1)))
+                    .await;
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(error),
+        }
+    }
+    lock.unlock()?;
+    drop(lock);
+    // Deletion is attempted once, only after the original Store released its
+    // lock and our observation handle is closed. Any deletion error still fails.
+    std::fs::remove_dir_all(path)
+}
+
+#[tokio::test]
+async fn cancelled_database_waiter_retains_the_store_after_runtime_drop() {
+    let (app, path) = workspace();
+    let runtime = Arc::downgrade(&app.0);
+    let (entered, started) = oneshot::channel();
+    let (release, held) = std::sync::mpsc::channel();
+    let (returned, finished) = oneshot::channel();
+    let writing = app.clone();
+    let waiter = tokio::spawn(async move {
+        writing
+            .db(move |db| {
+                entered.send(()).unwrap();
+                held.recv_timeout(Duration::from_secs(3)).unwrap();
+                let result = db.settings().map(|_| ());
+                returned.send(()).unwrap();
+                result
+            })
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(2), started)
+        .await
+        .unwrap()
+        .unwrap();
+    waiter.abort();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .unwrap()
+            .unwrap_err()
+            .is_cancelled()
+    );
+    drop(app);
+    assert!(runtime.upgrade().is_none());
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path.join("writer.lock"))
+        .unwrap();
+    assert!(
+        matches!(lock.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+        "Dropping the Runtime does not drain the blocking Store capture"
+    );
+    drop(lock);
+    let deadline = Instant::now() + Duration::from_millis(20);
+    let error = tokio::time::timeout(
+        Duration::from_secs(1),
+        remove_workspace_after_writer_closed(&path, deadline),
+    )
+    .await
+    .expect("Cleanup must honor its original absolute deadline")
+    .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert!(path.join("writer.lock").is_file());
+    assert!(path.join("genmail.sqlite").is_file());
+    let closing =
+        remove_workspace_after_writer_closed(&path, Instant::now() + Duration::from_secs(2));
+    tokio::pin!(closing);
+    assert!(futures_util::poll!(closing.as_mut()).is_pending());
+    assert!(path.join("genmail.sqlite").is_file());
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), finished)
+        .await
+        .unwrap()
+        .unwrap();
+    closing
+        .await
+        .expect("The released blocking Store must close its writer handle");
+    assert!(!path.exists());
+}
+
+#[tokio::test]
+async fn cleanup_deadline_and_missing_writer_leave_workspace_intact() {
+    let (app, path) = workspace();
+    drop(app);
+    let error = remove_workspace_after_writer_closed(&path, Instant::now())
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert!(path.join("genmail.sqlite").is_file());
+    let lock = path.join("writer.lock");
+    let moved = path.join("saved-writer.lock");
+    std::fs::rename(&lock, &moved).unwrap();
+    let error =
+        remove_workspace_after_writer_closed(&path, Instant::now() + Duration::from_secs(2))
+            .await
+            .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::NotFound);
+    assert!(!lock.exists(), "Cleanup must not create a replacement lock");
+    assert!(path.join("genmail.sqlite").is_file());
+    std::fs::rename(moved, lock).unwrap();
+    remove_workspace_after_writer_closed(&path, Instant::now() + Duration::from_secs(2))
+        .await
+        .unwrap();
 }
 async fn enabled(app: &App, mail: Value) {
     app.db(move |db| {
@@ -495,13 +625,19 @@ async fn start_manager(
         );
     (stop, receiver, job)
 }
-async fn stop_manager(stop: watch::Sender<bool>, job: JoinHandle<()>, fixture: &Fixture) {
+async fn stop_manager(
+    stop: watch::Sender<bool>,
+    job: JoinHandle<()>,
+    fixture: &Fixture,
+) -> Instant {
+    let deadline = Instant::now() + Duration::from_secs(3);
     stop.send(true).unwrap();
-    tokio::time::timeout(Duration::from_secs(3), job)
+    tokio::time::timeout_at(deadline, job)
         .await
         .unwrap()
         .unwrap();
     fixture.drained().await;
+    deadline
 }
 
 #[tokio::test]
@@ -716,7 +852,7 @@ async fn idle_settings_keep_owner_epochs_across_aba_without_restarting_on_unrela
     assert!(outcome.is_none());
     fixture.drained().await;
     assert_eq!(fixture.state.connections.load(Ordering::SeqCst), 1);
-    close_workspace(app, path);
+    close_workspace(app, path).await;
     fixture.close().await;
 }
 
@@ -760,7 +896,7 @@ async fn speculative_settings_rollback_cannot_authorize_a_socket() {
     enabled(&app, fixture.mail(OWNER)).await;
     fixture.until(|| fixture.count("CONTINUE") == 1).await;
     stop_manager(stop, manager, &fixture).await;
-    close_workspace(app, path);
+    close_workspace(app, path).await;
     fixture.close().await;
 }
 
@@ -805,7 +941,7 @@ async fn watcher_revokes_disable_disconnect_credentials_origin_and_inbox_scope_i
         fixture.drained().await;
         assert_eq!(fixture.count("DONE"), 0);
         assert_eq!(fixture.count("LOGIN"), 1);
-        close_workspace(app, path);
+        close_workspace(app, path).await;
         fixture.close().await;
     }
 }
@@ -841,7 +977,7 @@ async fn idle_uses_no_mailbox_gate_and_watches_only_each_owners_saved_inbox_scop
     drop(hint);
     drop(gate);
     stop_manager(stop, manager, &fixture).await;
-    close_workspace(app, path);
+    close_workspace(app, path).await;
     fixture.close().await;
 }
 
@@ -878,7 +1014,7 @@ async fn idle_socket_limit_fair_rotation_and_shutdown_are_owned() {
         .await;
     assert!(fixture.state.peak.load(Ordering::SeqCst) <= SOCKET_LIMIT);
     stop_manager(stop, manager, &fixture).await;
-    close_workspace(app, path);
+    close_workspace(app, path).await;
     fixture.close().await;
 }
 
@@ -910,7 +1046,7 @@ async fn dropping_service_idle_task_aborts_and_drains_its_children_without_a_mai
     app.db(|_| Ok(())).await.unwrap();
     assert!(app.0.mailbox.try_lock().is_ok());
     assert_eq!(fixture.count("LOGIN"), 1);
-    close_workspace(app, path);
+    close_workspace(app, path).await;
     fixture.close().await;
 }
 
@@ -975,7 +1111,7 @@ async fn notification_connect_and_real_sync_consumer_respect_owned_persisted_rea
     assert_eq!(fixture.state.connections.load(Ordering::SeqCst), 0);
     assert!(app.0.mailbox.try_lock().is_ok());
     assert!(pending.0.lock().unwrap().is_empty());
-    close_workspace(app, path);
+    close_workspace(app, path).await;
     fixture.close().await;
 }
 
@@ -1016,7 +1152,7 @@ async fn notification_flood_coalesces_through_inflight_hint_and_respects_debounc
     assert_eq!(next.scope.owner, OWNER);
     drop(next);
     stop_manager(stop, manager, &fixture).await;
-    close_workspace(app, path);
+    close_workspace(app, path).await;
     fixture.close().await;
 }
 
@@ -1040,7 +1176,7 @@ async fn transport_failure_backs_off_but_capability_auth_and_protocol_failures_d
     assert!(logins[2].duration_since(logins[1]) >= Duration::from_millis(300));
     assert!(hints.try_recv().is_err());
     stop_manager(stop, manager, &fixture).await;
-    close_workspace(app, path);
+    close_workspace(app, path).await;
     fixture.close().await;
     for mode in [Mode::Missing, Mode::LoginNo, Mode::DoneWrongTag] {
         let fixture = Fixture::new(mode).await;
@@ -1053,7 +1189,7 @@ async fn transport_failure_backs_off_but_capability_auth_and_protocol_failures_d
         assert_eq!(fixture.count("LOGIN"), 1);
         assert!(hints.try_recv().is_err());
         stop_manager(stop, manager, &fixture).await;
-        close_workspace(app, path);
+        close_workspace(app, path).await;
         fixture.close().await;
     }
 }
@@ -1097,7 +1233,7 @@ async fn stale_hint_waiting_for_mailbox_gate_cannot_start_a_read_after_aba() {
     stop.send(true).unwrap();
     worker.await.unwrap();
     drop(sender);
-    close_workspace(app, path);
+    close_workspace(app, path).await;
     fixture.close().await;
 }
 
@@ -1207,7 +1343,7 @@ async fn update_quiescing_pauses_owned_leases_then_resumes_or_shuts_down() {
         stop_manager(stop, manager, &fixture).await;
         assert_eq!(fixture.count("LOGIN"), if resume { 2 } else { 1 });
         assert!(app.0.mailbox.try_lock().is_ok());
-        close_workspace(app, path);
+        close_workspace(app, path).await;
         fixture.close().await;
     }
 }
@@ -1257,7 +1393,7 @@ async fn quiescing_preserves_blocked_generations_and_transport_retry_deadlines()
             assert!(at[1].duration_since(at[0]) >= policy.retry_min);
         }
         stop_manager(stop, manager, &fixture).await;
-        close_workspace(app, path);
+        close_workspace(app, path).await;
         fixture.close().await;
     }
 }
@@ -1410,7 +1546,7 @@ async fn a_real_notification_sync_only_queues_the_existing_opted_in_arrival_poli
             .await
             .unwrap()
             .unwrap();
-        close_workspace(app, path);
+        close_workspace(app, path).await;
         fixture.close().await;
     }
 }
