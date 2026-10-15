@@ -346,6 +346,26 @@ source digest, so the earlier `bad245df…` protocol matrix remains historical
 evidence and cannot supply a matching-source aggregate for this candidate.
 Actual native execution and a final same-source matrix remain pending.
 
+At head `59b19f3`, [Windows measurement job 116420652940](https://github.com/Coke1120/Morrow-Mail/actions/runs/38734620048/job/116420652940)
+completed SDK compilation and passed the original private-input manifest gate:
+31 files before and after, with zero added/removed/changed files. Native execution
+then failed at `phase=search size=1000 iteration=0 HRESULT=0x80004005`.
+The native process returned 0 but its report was failed, so the Python validator
+correctly failed the stage. Source before/after both matched `461e8cf7…`.
+The phase establishes that control flow reached Search; it is not a complete
+receipt for the preceding 18 actions or any finished dataset. The existing
+log cannot identify which Search predicate failed, and the original failure
+and complete logs remain retained.
+
+The fixture now records fixed assertion IDs, Search substeps and three bounded
+typed observation lines after failure, without arbitrary exception/control/mail
+text. Unavailable values remain null with group flags. The 10-second wait,
+native event/content checks and failed-report gate are unchanged. Local controls
+compile the actual pure C++ diagnostic helper and exercise fixed/unknown enums,
+missing observations and maximum integer values; they do not compile WinUI or
+prove a Search fix. The new fixture/test source requires another exact-head
+native run and cannot reuse an older digest as a complete acceptance aggregate.
+
 ## v0.8.1 published — 14 October 2026
 
 [Tagged run 38624861643](https://github.com/Coke1120/Morrow-Mail/actions/runs/38624861643),

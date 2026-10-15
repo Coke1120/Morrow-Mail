@@ -4,6 +4,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -47,6 +49,58 @@ def report():
 
 
 class WindowsLatencyTests(unittest.TestCase):
+    def test_failure_diagnostics_use_fixed_names_nulls_and_bounded_lines(self):
+        # The same pure C++ renderer is also checked by the real WinUI fixture
+        # before startup. This local extraction exercises its actual bytes,
+        # without pretending to compile AppKit/WinUI or invoke UI controls.
+        compiler = shutil.which("c++") or shutil.which("clang++")
+        if os.name == "nt" or not compiler:
+            self.skipTest("Standalone diagnostic control needs POSIX C++; real WinUI fixture also runs it")
+        source = (Path(__file__).resolve().parents[1] / "windows/Checks/MailboxLatency.cpp").read_text(encoding="utf-8")
+        begin = "// BEGIN portable mailbox latency diagnostics"
+        end = "// END portable mailbox latency diagnostics"
+        self.assertEqual(source.count(begin), 1); self.assertEqual(source.count(end), 1)
+        helper = source.split(begin)[1].split(end)[0]
+        driver = '''
+#include <array>
+#include <cstdint>
+#include <iostream>
+#include <optional>
+#include <string>
+'''+helper+'''
+int main() {
+    using namespace latency_diagnostic;
+    if (!controls()) return 1;
+    Snapshot missing; missing.step = static_cast<Step>(999); missing.unavailable = 31;
+    for (auto const& line : render(missing)) std::cout << line << "\\n";
+    Snapshot full; full.step = Step::waitResults;
+    full.searchPresent = full.searchLoaded = full.searchEnabled = full.queryMatches = full.currentSearch = true;
+    full.buttonPresent = full.buttonLoaded = full.buttonEnabled = full.buttonAttached = full.currentButton = false;
+    full.mailQueryMatches = full.pageLabelMatches = full.loading = full.firstVisible = full.firstIdentity = true;
+    full.secondVisible = full.secondIdentity = full.writing = false;
+    full.clicksBefore = full.clicksAfter = full.rows = full.cursors = full.active = full.pending = full.requests = full.unexpected = UINT64_MAX;
+    for (auto const& line : render(full)) std::cout << line << "\\n";
+}
+'''
+        with tempfile.TemporaryDirectory(prefix="morrow-latency-diagnostic-control-") as temporary:
+            path = Path(temporary); (path / "control.cpp").write_text(driver, encoding="utf-8")
+            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(path / "control.cpp"), "-o", str(path / "control")],
+                           check=True, capture_output=True, timeout=30)
+            output = subprocess.run([str(path / "control")], check=True, capture_output=True, timeout=5).stdout
+        lines = output.decode("utf-8").splitlines()
+        self.assertEqual(len(lines), 6)
+        self.assertTrue(all(len(line.encode("utf-8")) < 1024 for line in lines))
+        values = [json.loads(line) for line in lines]
+        self.assertEqual(values[0]["step"], "unknown-step")
+        self.assertIsNone(values[0]["searchLoaded"]); self.assertIsNone(values[1]["rows"])
+        self.assertEqual(values[2]["unavailableGroups"], 31)
+        self.assertIs(values[3]["searchLoaded"], True); self.assertIs(values[3]["buttonEnabled"], False)
+        self.assertEqual(values[4]["rows"], (1 << 64) - 1)
+        for value in values:
+            self.assertEqual(value["observedAt"], "after-failure")
+            self.assertIn(value["kind"], ("mailbox-latency-failure-controls", "mailbox-latency-failure-results", "mailbox-latency-failure-requests"))
+            self.assertTrue(all(type(item) in (bool, int) or item is None for key, item in value.items() if key not in ("kind", "observedAt", "step")))
+
     def test_private_copy_removes_network_and_launch_preserving_production_events(self):
         root = Path(__file__).resolve().parents[1]
         original_app = (root / "windows/App.cpp").read_bytes()

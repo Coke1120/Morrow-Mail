@@ -89,6 +89,23 @@ rows and page identity. Failed or missing native execution cannot become a
 successful evidence stage. These checks are local reproducibility controls,
 not independent cryptographic provenance for arbitrary external reports.
 
+Search failures retain the original 10-second wait and every mounted-content
+and control-event predicate. The fixture adds fixed assertion IDs and fixed
+substeps, followed by three bounded `after-failure` JSON lines. They expose only
+booleans/numbers: captured/current control identity, loaded/enabled state, exact
+fixture-query matches, Click counters, row/cursor counts, expected page-label
+and first-two-row identity matches, loading and request counters. They never
+print control text, mail, paths or arbitrary exception messages. Missing values
+remain null; `unavailableGroups` is an observation-error bitmask (1 search,
+2 button, 4 page state, 8 mounted rows, 16 requests). This later observation
+does not identify an earlier failing predicate unless its fixed assertion ID
+was recorded. A native process exit of zero cannot override a failed report.
+The pure C++ serializer has unknown-enum/missing/max-value controls, compiled
+locally on POSIX and also executed by the real native fixture before startup.
+The standalone compiler test explicitly skips on Windows; its real SDK fixture
+remains mandatory. These diagnostics provide no completed dataset or latency
+samples when a dataset aborts.
+
 ## Run on an unmerged candidate
 
 [mailbox-latency.yml](../.github/workflows/mailbox-latency.yml) has a narrow

@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <set>
 
 namespace morrow {
@@ -34,7 +35,89 @@ std::atomic_uint datasetSize = 0;
 char const* phase = "startup";
 unsigned iteration = 0;
 
-void require(bool condition, wchar_t const* message) {
+// BEGIN portable mailbox latency diagnostics
+// No exception, mail, control text, path or arbitrary string enters this output.
+namespace latency_diagnostic {
+enum class Check { other, valueProvider, buttonReady, invokeProvider, searchResults, contentsChanged, visibleRows, searchClick };
+enum class Step { none, valuePeer, valueSet, findButton, invoke, waitResults, sample, clickReceipt };
+char const* checkName(Check value) {
+    switch (value) {
+    case Check::other: return "other-requirement";
+    case Check::valueProvider: return "search-value-provider";
+    case Check::buttonReady: return "button-mounted-enabled";
+    case Check::invokeProvider: return "button-invoke-provider";
+    case Check::searchResults: return "search-owned-results";
+    case Check::contentsChanged: return "displayed-contents-stable";
+    case Check::visibleRows: return "bounded-visible-rows";
+    case Check::searchClick: return "search-click-receipt";
+    }
+    return "unknown-requirement";
+}
+char const* stepName(Step value) {
+    switch (value) {
+    case Step::none: return "none";
+    case Step::valuePeer: return "value-peer";
+    case Step::valueSet: return "value-set";
+    case Step::findButton: return "find-button";
+    case Step::invoke: return "invoke";
+    case Step::waitResults: return "wait-results";
+    case Step::sample: return "sample";
+    case Step::clickReceipt: return "click-receipt";
+    }
+    return "unknown-step";
+}
+struct Snapshot {
+    Step step = Step::none;
+    std::optional<bool> searchPresent, searchLoaded, searchEnabled, queryMatches, currentSearch;
+    std::optional<bool> buttonPresent, buttonLoaded, buttonEnabled, buttonAttached, currentButton;
+    std::optional<bool> mailQueryMatches, pageLabelMatches, loading, firstVisible, firstIdentity, secondVisible, secondIdentity, writing;
+    std::optional<uint64_t> clicksBefore, clicksAfter, rows, cursors, active, pending, requests, unexpected;
+    unsigned unavailable = 0;
+};
+std::string value(std::optional<bool> entry) { return !entry ? "null" : *entry ? "true" : "false"; }
+std::string value(std::optional<uint64_t> entry) { return entry ? std::to_string(*entry) : "null"; }
+std::array<std::string, 3> render(Snapshot const& s) {
+    return {
+        std::string("{\"kind\":\"mailbox-latency-failure-controls\",\"observedAt\":\"after-failure\",\"step\":\"") + stepName(s.step)
+            + "\",\"searchPresent\":" + value(s.searchPresent) + ",\"searchLoaded\":" + value(s.searchLoaded)
+            + ",\"searchEnabled\":" + value(s.searchEnabled) + ",\"queryMatches\":" + value(s.queryMatches)
+            + ",\"currentSearch\":" + value(s.currentSearch) + ",\"buttonPresent\":" + value(s.buttonPresent)
+            + ",\"buttonLoaded\":" + value(s.buttonLoaded) + ",\"buttonEnabled\":" + value(s.buttonEnabled)
+            + ",\"buttonAttached\":" + value(s.buttonAttached) + ",\"currentButton\":" + value(s.currentButton)
+            + ",\"clicksBefore\":" + value(s.clicksBefore) + ",\"clicksAfter\":" + value(s.clicksAfter) + "}",
+        std::string("{\"kind\":\"mailbox-latency-failure-results\",\"observedAt\":\"after-failure\",\"mailQueryMatches\":") + value(s.mailQueryMatches)
+            + ",\"rows\":" + value(s.rows) + ",\"cursors\":" + value(s.cursors) + ",\"pageLabelMatches\":" + value(s.pageLabelMatches)
+            + ",\"loading\":" + value(s.loading) + ",\"firstVisible\":" + value(s.firstVisible) + ",\"firstIdentity\":" + value(s.firstIdentity)
+            + ",\"secondVisible\":" + value(s.secondVisible) + ",\"secondIdentity\":" + value(s.secondIdentity) + "}",
+        std::string("{\"kind\":\"mailbox-latency-failure-requests\",\"observedAt\":\"after-failure\",\"active\":") + value(s.active)
+            + ",\"pending\":" + value(s.pending) + ",\"requests\":" + value(s.requests) + ",\"unexpected\":" + value(s.unexpected)
+            + ",\"writing\":" + value(s.writing) + ",\"unavailableGroups\":" + std::to_string(s.unavailable) + "}"
+    };
+}
+bool controls() {
+    Snapshot missing; missing.step = static_cast<Step>(999); missing.unavailable = 31;
+    auto absent = render(missing);
+    if (absent[0].find("\"step\":\"unknown-step\"") == std::string::npos
+        || absent[0].find("\"searchLoaded\":null") == std::string::npos
+        || absent[1].find("\"rows\":null") == std::string::npos
+        || std::string(checkName(static_cast<Check>(999))) != "unknown-requirement") return false;
+    Snapshot present; present.step = Step::waitResults;
+    present.searchLoaded = false; present.queryMatches = true;
+    present.rows = 18446744073709551615ull; present.clicksBefore = 18446744073709551615ull;
+    present.clicksAfter = 18446744073709551615ull; present.requests = 18446744073709551615ull;
+    for (auto const& lines : {render(present), absent}) for (auto const& line : lines)
+        if (line.size() >= 1024 || line.find('\n') != std::string::npos) return false;
+    auto known = render(present);
+    return known[0].find("\"searchLoaded\":false") != std::string::npos
+        && known[0].find("\"queryMatches\":true") != std::string::npos
+        && known[1].find("18446744073709551615") != std::string::npos;
+}
+}
+// END portable mailbox latency diagnostics
+
+void require(bool condition, wchar_t const* message, latency_diagnostic::Check check = latency_diagnostic::Check::other) {
+    if (!condition && check != latency_diagnostic::Check::other)
+        std::fprintf(stderr, "Mailbox latency assertion failed: id=%s\n", latency_diagnostic::checkName(check));
     if (!condition) throw hresult_error(E_FAIL, message);
 }
 void number(Json const& value, wchar_t const* key, double entry) { value.Insert(key, Value::CreateNumberValue(entry)); }
@@ -131,16 +214,16 @@ bool displayed(std::shared_ptr<Shell> const& shell, unsigned page, unsigned page
         && contains(shell->reader, bodyText(selectedIndex), shell->reader, shell->root)
         && contains(shell->reader, L"To: " + hstring(owners[selectedIndex % 2]), shell->reader, shell->root);
 }
-IAsyncAction waitFor(std::function<bool()> ready, wchar_t const* message) {
+IAsyncAction waitFor(std::function<bool()> ready, wchar_t const* message, latency_diagnostic::Check check = latency_diagnostic::Check::other) {
     apartment_context ui; auto end = GetTickCount64() + 10000;
     while (!ready() && GetTickCount64() < end) { co_await resume_after(std::chrono::milliseconds(1)); co_await ui; }
-    require(ready(), message);
+    require(ready(), message, check);
 }
 provider::IInvokeProvider invokeAction(controls::Button const& button, xaml::FrameworkElement const& root) {
-    require(button.IsEnabled() && attached(button, root), L"Native button is not mounted and enabled.");
+    require(button.IsEnabled() && attached(button, root), L"Native button is not mounted and enabled.", latency_diagnostic::Check::buttonReady);
     auto peer = peers::FrameworkElementAutomationPeer::CreatePeerForElement(button);
     auto action = peer.GetPattern(peers::PatternInterface::Invoke).try_as<provider::IInvokeProvider>();
-    require(bool(action), L"Native button does not expose Invoke."); return action;
+    require(bool(action), L"Native button does not expose Invoke.", latency_diagnostic::Check::invokeProvider); return action;
 }
 provider::ISelectionItemProvider selectionAction(std::shared_ptr<Shell> const& shell, unsigned index) {
     auto item = shell->rows.Items().GetAt(index).as<controls::ListViewItem>();
@@ -160,10 +243,10 @@ controls::Button findButton(xaml::DependencyObject const& node, hstring const& n
 }
 Json sample(std::shared_ptr<Shell> const& shell, hstring const& action, uint64_t begin,
     unsigned page, unsigned pageSize, unsigned firstIndex, bool selecting = false, unsigned selectedIndex = 0) {
-    require(displayed(shell, page, pageSize, firstIndex, selecting, selectedIndex), L"Observed native contents changed before recording.");
+    require(displayed(shell, page, pageSize, firstIndex, selecting, selectedIndex), L"Observed native contents changed before recording.", latency_diagnostic::Check::contentsChanged);
     unsigned visibleRows = 0;
     for (auto const& value : shell->rows.Items()) if (visible(value.as<controls::ListViewItem>(), shell->rows, shell->root)) ++visibleRows;
-    require(visibleRows > 0 && visibleRows <= pageSize, L"No bounded visible rows were measured.");
+    require(visibleRows > 0 && visibleRows <= pageSize, L"No bounded visible rows were measured.", latency_diagnostic::Check::visibleRows);
     Json result; put(result, L"action", action); put(result, L"completion", L"layout-and-display"); number(result, L"elapsedMs", milliseconds(begin));
     number(result, L"page", page); number(result, L"tableRows", pageSize); number(result, L"visibleRows", visibleRows);
     boolean(result, L"ownerMatched", true); boolean(result, L"renderedRowIdentityMatched", true); boolean(result, L"renderedReaderMatched", selecting);
@@ -191,8 +274,53 @@ IAsyncAction offlineControls(std::shared_ptr<Shell> shell) {
     }
     require(activeRequests.load() == 0 && mailboxLatencyPendingRequests.load() == 0 && !shell->service->writing(), L"Rejected fixture operations did not drain.");
 }
-IAsyncOperation<Json> dataset(std::shared_ptr<Shell> shell, unsigned size) {
+struct DiagnosticControls {
+    latency_diagnostic::Step step = latency_diagnostic::Step::none;
+    controls::TextBox search{nullptr};
+    controls::Button initialButton{nullptr}, currentButton{nullptr};
+    std::shared_ptr<std::array<unsigned, 4>> events;
+    unsigned clicksBefore = 0;
+};
+void diagnoseFailure(std::shared_ptr<Shell> const& shell, DiagnosticControls const& d) noexcept {
+    try {
+        latency_diagnostic::Snapshot s; s.step = d.step;
+        if (d.events) { s.clicksBefore = d.clicksBefore; s.clicksAfter = (*d.events)[3]; }
+        try {
+            s.searchPresent = bool(shell->search); s.currentSearch = d.search && d.search == shell->search;
+            if (shell->search) { s.searchLoaded = shell->search.IsLoaded(); s.searchEnabled = shell->search.IsEnabled(); s.queryMatches = shell->search.Text() == L"fictional-even"; }
+        } catch (...) { s.unavailable |= 1; }
+        try {
+            unsigned remaining = 4096; auto current = findButton(shell->page, L"Search", remaining);
+            s.buttonPresent = bool(d.currentButton);
+            s.currentButton = d.currentButton && d.currentButton == d.initialButton && d.currentButton == current;
+            if (d.currentButton) { s.buttonLoaded = d.currentButton.IsLoaded(); s.buttonEnabled = d.currentButton.IsEnabled(); s.buttonAttached = attached(d.currentButton, shell->root); }
+        } catch (...) { s.unavailable |= 2; }
+        try {
+            s.mailQueryMatches = shell->mailSearchQuery == L"fictional-even"; s.loading = shell->loading;
+            s.cursors = shell->cursors.size();
+            if (shell->pageLabel) s.pageLabelMatches = shell->pageLabel.Text() == L"Page 1 · " + to_hstring(datasetSize.load() / 2) + L" messages";
+            if (shell->rows) s.rows = shell->rows.Items().Size();
+        } catch (...) { s.unavailable |= 4; }
+        try {
+            if (shell->rows && shell->rows.Items().Size() >= 2) {
+                auto first = shell->rows.Items().GetAt(0).as<controls::ListViewItem>();
+                auto second = shell->rows.Items().GetAt(1).as<controls::ListViewItem>();
+                s.firstVisible = visible(first, shell->rows, shell->root); s.secondVisible = visible(second, shell->rows, shell->root);
+                s.firstIdentity = contains(first, subject(0), shell->rows, shell->root) && contains(first, owners[0], shell->rows, shell->root);
+                s.secondIdentity = contains(second, subject(2), shell->rows, shell->root) && contains(second, owners[0], shell->rows, shell->root);
+            }
+        } catch (...) { s.unavailable |= 8; }
+        try {
+            s.active = activeRequests.load(); s.pending = mailboxLatencyPendingRequests.load();
+            { std::lock_guard lock(fixtureMutex); s.requests = requestCount; s.unexpected = unexpected; }
+            if (shell->service) s.writing = shell->service->writing();
+        } catch (...) { s.unavailable |= 16; }
+        for (auto const& line : latency_diagnostic::render(s)) std::fprintf(stderr, "%s\n", line.c_str());
+    } catch (...) { std::fprintf(stderr, "Mailbox latency failure observations unavailable\n"); }
+}
+IAsyncOperation<Json> dataset(std::shared_ptr<Shell> shell, unsigned size, DiagnosticControls& diagnostic) {
     phase = "initial-page"; iteration = 0;
+    diagnostic = DiagnosticControls{};
     prepare(size); shell->state = state(); shell->owner = L"all"; shell->folder = L"inbox"; shell->section = L"mail";
     ++shell->generation; shell->selected = Json(); shell->pendingRead = Json(); shell->retainedUnread = Json();
     shell->cursors = {L""}; shell->nextCursor = {}; shell->mailLayout = L"right"; shell->listWidth = 440;
@@ -205,6 +333,7 @@ IAsyncOperation<Json> dataset(std::shared_ptr<Shell> shell, unsigned size) {
     unsigned searchRemaining = 4096; auto searchButton = findButton(shell->page, L"Search", searchRemaining);
     require(bool(searchButton), L"Production Search button is missing.");
     searchButton.Click([events](auto const&, auto const&) { ++(*events)[3]; });
+    diagnostic.search = shell->search; diagnostic.initialButton = searchButton; diagnostic.currentButton = searchButton; diagnostic.events = events;
     Array samples, searches;
     for (unsigned repeat = 0; repeat < 6; ++repeat) {
         iteration = repeat; phase = "next";
@@ -227,14 +356,22 @@ IAsyncOperation<Json> dataset(std::shared_ptr<Shell> shell, unsigned size) {
     // Actual TextBox Value and Search/Clear Invoke providers raise production events.
     for (unsigned repeat = 0; repeat < 6; ++repeat) {
         iteration = repeat; phase = "search";
+        diagnostic.clicksBefore = (*events)[3];
+        diagnostic.step = latency_diagnostic::Step::valuePeer;
         auto peer = peers::FrameworkElementAutomationPeer::CreatePeerForElement(shell->search);
         auto value = peer.GetPattern(peers::PatternInterface::Value).try_as<provider::IValueProvider>();
-        require(bool(value), L"Search input lacks a native Value provider."); value.SetValue(L"fictional-even");
+        require(bool(value), L"Search input lacks a native Value provider.", latency_diagnostic::Check::valueProvider);
+        diagnostic.step = latency_diagnostic::Step::valueSet; value.SetValue(L"fictional-even");
+        diagnostic.step = latency_diagnostic::Step::findButton;
         unsigned remaining = 4096; auto search = findButton(shell->page, L"Search", remaining);
+        diagnostic.currentButton = search; diagnostic.clicksBefore = (*events)[3]; diagnostic.step = latency_diagnostic::Step::invoke;
         auto before = (*events)[3]; auto action = invokeAction(search, shell->root); auto start = counter(); action.Invoke();
-        co_await waitFor([shell] { return shell->mailSearchQuery == L"fictional-even" && displayed(shell, 0, 30, 0); }, L"Search did not display its bounded owned results.");
+        diagnostic.step = latency_diagnostic::Step::waitResults;
+        co_await waitFor([shell] { return shell->mailSearchQuery == L"fictional-even" && displayed(shell, 0, 30, 0); }, L"Search did not display its bounded owned results.", latency_diagnostic::Check::searchResults);
+        diagnostic.step = latency_diagnostic::Step::sample;
         auto searchSample = sample(shell, L"search", start, 0, 30, 0);
-        require((*events)[3] > before, L"Search did not raise its actual Click event.");
+        diagnostic.step = latency_diagnostic::Step::clickReceipt;
+        require((*events)[3] > before, L"Search did not raise its actual Click event.", latency_diagnostic::Check::searchClick);
         boolean(searchSample, L"queryMatched", shell->search.Text() == L"fictional-even"); boolean(searchSample, L"nativeEventObserved", true); searches.Append(searchSample);
         phase = "clear-search";
         remaining = 4096; auto clear = findButton(shell->page, L"Clear", remaining); invokeAction(clear, shell->root).Invoke();
@@ -305,7 +442,9 @@ void mailboxLatencyRejectStart() {
 
 fire_and_forget startMailboxLatency(std::shared_ptr<Shell> shell) {
     bool passed = false; Json report; put(report, L"status", L"failed");
+    DiagnosticControls diagnostic;
     try {
+        require(latency_diagnostic::controls(), L"Fixed diagnostic controls failed.");
         workspace = std::filesystem::path(environment(L"MORROW_DATA_DIR").c_str());
         require(workspace.is_absolute() && workspace.filename() == L"fictional-workspace"
             && contents(workspace / L"mailbox-latency-fixture") == "Morrow synthetic mailbox latency v1", L"A new marked fixture workspace is required.");
@@ -320,7 +459,7 @@ fire_and_forget startMailboxLatency(std::shared_ptr<Shell> shell) {
         co_await waitFor([shell] { return shell->root.IsLoaded() && shell->root.ActualWidth() > 800; }, L"Fixture window did not mount.");
         co_await offlineControls(shell);
         Array results;
-        for (unsigned size : {1000u, 10000u, 50000u}) results.Append(co_await dataset(shell, size));
+        for (unsigned size : {1000u, 10000u, 50000u}) results.Append(co_await dataset(shell, size, diagnostic));
         number(report, L"schema", 1); put(report, L"kind", L"morrow-native-mailbox-latency"); put(report, L"platform", L"windows");
         put(report, L"status", L"complete"); put(report, L"version", environment(L"MORROW_FIXTURE_VERSION")); put(report, L"measuredAt", timestamp());
         put(report, L"measurement", L"native-event-to-layout-display"); put(report, L"transport", L"intercepted-fictional-only");
@@ -334,7 +473,8 @@ fire_and_forget startMailboxLatency(std::shared_ptr<Shell> shell) {
     } catch (...) { put(report, L"error", L"Native mailbox latency assertions failed; inspect the bounded fixture log.");
         put(report, L"failedPhase", to_hstring(phase)); number(report, L"failedSize", datasetSize.load()); number(report, L"failedIteration", iteration);
         std::fprintf(stderr, "Mailbox latency fixture failed: phase=%s size=%u iteration=%u HRESULT=0x%08X\n",
-            phase, datasetSize.load(), iteration, static_cast<unsigned>(to_hresult())); }
+            phase, datasetSize.load(), iteration, static_cast<unsigned>(to_hresult()));
+        if (std::string_view(phase) == "search") diagnoseFailure(shell, diagnostic); }
     if (!workspace.empty() && !std::filesystem::exists(workspace / L"native.json")) {
         std::ofstream output(workspace / L"native.json", std::ios::binary); output << to_string(report.Stringify());
         if (!output.good()) passed = false;
