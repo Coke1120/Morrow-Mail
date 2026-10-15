@@ -989,9 +989,15 @@ async fn failed_or_shutdown_model_calls_never_retry_and_overflow_stays_visible()
     drop(release);
     drop(app);
     let app = App::open(&root, 3011, String::new(), String::new()).unwrap();
-    assert_eq!(
-        app.db(|db| jobs::reports(db, A)).await.unwrap()[0]["status"],
-        "interrupted"
+    let recovered = app.db(|db| jobs::reports(db, A)).await.unwrap();
+    // Shutdown drops the worker. That row is cancelled in-session, so launch
+    // recovery does not leave it running or replay the paid call.
+    assert_eq!(recovered[0]["status"], "cancelled");
+    assert!(
+        recovered[0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("Nothing was sent")
     );
     jobs::tick(&app).await.unwrap();
     assert!(calls.try_recv().is_err());
