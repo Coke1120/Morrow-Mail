@@ -535,12 +535,14 @@ import SwiftUI
                     let timer = Timer(timeInterval: 0.001, repeats: false) { _ in
                         MainActor.assumeIsolated {
                             guard tracking.armed else { return }
+                            print("Menu inspection start: " + identifier); fflush(stdout)
                             defer { menu.cancelTracking() }
                             do {
                                 try require(Date() < deadline && current() && tracking.begins == 1, "The opened menu lost its captured mounted control")
                                 tracking.entries = menuEntries(menu)
                                 try inspect(menu)
                                 tracking.inspected = true
+                                print("Menu inspection complete: " + identifier); fflush(stdout)
                             } catch { tracking.failure = error }
                         }
                     }
@@ -553,7 +555,7 @@ import SwiftUI
                 MainActor.assumeIsolated {
                     guard tracking.armed, let menu = notification.object as? NSMenu, menu === tracking.menu else { return }
                     tracking.ended = true
-                    print("Menu tracking end: \(identifier) begins=\(tracking.begins)"); fflush(stdout)
+                    print("Menu tracking end: \(identifier) begins=\(tracking.begins) inspected=\(tracking.inspected) failed=\(tracking.failure != nil)"); fflush(stdout)
                 }
             })
             let remaining = deadline.timeIntervalSinceNow
@@ -580,6 +582,7 @@ import SwiftUI
             try performAdvertisedMenuAction(control)
             print("Menu action returned: " + identifier); fflush(stdout)
             while !tracking.ended, Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
+            print("Menu wait resumed: \(identifier) begins=\(tracking.begins) ended=\(tracking.ended) inspected=\(tracking.inspected) failed=\(tracking.failure != nil)"); fflush(stdout)
             try require(Date() < deadline && tracking.begins == 1 && tracking.ended, "The native menu did not open and close within five seconds")
             if let failure = tracking.failure { throw failure }
             try require(tracking.inspected, "The menu closed before its native commands were inspected")
@@ -857,7 +860,20 @@ import SwiftUI
         }
         print("Mounted composer reveals empty Cc/Bcc on request, retains populated recipients and opens/cancels the existing send confirmation without sending.")
     }
-    @MainActor static func main() async {
+    @MainActor static func main() {
+        let application = NSApplication.shared
+        application.setActivationPolicy(.regular)
+        // Drive normal AppKit events while the retained task awaits its checks.
+        let checks: Task<Void, Never> = Task { @MainActor in
+            await runChecks()
+            // runChecks emitted its final receipt and completed its defers.
+            fflush(stdout); exit(0)
+        }
+        withExtendedLifetime(checks) { application.run() }
+        print("Review fixture: AppKit event loop returned before fixture completion")
+        fflush(stdout); exit(1)
+    }
+    @MainActor static func runChecks() async {
         _=NSApplication.shared; NSApp.setActivationPolicy(.regular)
         let config=URLSessionConfiguration.ephemeral; config.protocolClasses=[ReviewProtocol.self]
         let model=AppModel(session:URLSession(configuration:config))

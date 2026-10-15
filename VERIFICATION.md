@@ -1,5 +1,43 @@
 # Verification — 15 October 2026
 
+## PR #58 macOS review AppKit bootstrap — 15 October 2026
+
+Focused run `38765785713`, job `116528494028`, compiled exact head `1e65f354`
+through synthetic merge `a4152e5` into main `692bb8d`; the source trees matched.
+Baseline completed with its nonce receipt. Production passed the inherited and
+dispatch controls, returned from the Reply menu action, and recorded one actual
+root-menu tracking begin/end. It emitted no tracking-complete, Reader or final
+production receipt. The hardened driver then rejected native exit status 0 with
+`production review fixture exited 0 without exactly one matching completion
+receipt (found 0)`. The whole log remains evidence at SHA-256
+`c21bc2685f222dad5f1506b7755be46acabaa61fc48c46a298e76d94b8c0b2c3`.
+That establishes incomplete execution, without proving its internal cause or
+whether menu inspection completed.
+
+The fixture now has a synchronous MainActor entry point driving the public
+`NSApplication.run()` event loop. A retained MainActor Task awaits the existing
+async suite, renamed `runChecks`, and exits 0 only after that function returns,
+including its final nonce receipt and deferred cleanup. An unexpected event-loop
+return exits 1. The original suite body and all native assertions remain intact.
+The [AppKit event architecture](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/EventOverview/EventArchitecture/EventArchitecture.html)
+documents NSApp's main-thread event loop; this is a standard fixture bootstrap
+candidate, not proof that missing AppKit startup caused the earlier termination.
+
+Fixed, flushed inspection-entry/success observations, inspection/failure booleans
+at tracking end and a post-wait observation narrow any remaining incomplete path.
+They do not replace the actual menu begin/end, current-owner or command-inspection
+gates. The exact single advertised action, existing failure exits, five-second
+shared menu deadline, 180-second compiler bound and 45-second process bound remain.
+The driver and its nonce/mode/four-menu receipt requirements are unchanged.
+
+Linux source/hash and diff inspection only establish the narrow fixture scope
+and preserved suite/driver bytes. Existing subprocess control evidence is retained;
+unchanged controls were not rerun. This candidate has not compiled or run with
+AppKit locally. It remains provisional until matching-source macOS CI establishes
+the complete suite and actual menu receipts. No production source, workflow,
+provider permission, action fallback or retry changed, and no native cause or
+runtime repair is yet claimed.
+
 ## PR #58 macOS review fixture completion — 15 October 2026
 
 Focused run `38760958694`, job `116511781887`, reported success for head
