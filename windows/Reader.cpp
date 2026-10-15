@@ -1,5 +1,7 @@
 #include "pch.h"
 #include "Ui.h"
+#include "ReaderInitDiagnostics.h"
+#include "ReaderNavigationDiagnostics.h"
 #include <winrt/Microsoft.Web.WebView2.Core.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Windows.Security.Cryptography.h>
@@ -174,13 +176,70 @@ Image fetchImage(hstring const& value, std::shared_ptr<ImageBudget> const& budge
 struct ReaderFixtureTrace {
     uint64_t startedAt;
     unsigned processFailures = 0;
+    unsigned initializationFailures = 0;
+    reader_diagnostics::DetailBudget detailBudget;
     explicit ReaderFixtureTrace(uint64_t started) : startedAt(started) {}
+    unsigned long long elapsed() const noexcept { return static_cast<unsigned long long>(GetTickCount64() - startedAt); }
+    bool detail() noexcept {
+        auto receipt = detailBudget.take();
+        if (receipt == reader_diagnostics::Receipt::Overflow) {
+            std::fprintf(stderr, "Native reader: detail-overflow +%llu ms\n", elapsed());
+            std::fflush(stderr);
+        }
+        return receipt == reader_diagnostics::Receipt::Record;
+    }
+    void completed(reader_diagnostics::Completion phase) noexcept {
+        if (!detail()) return;
+        std::fprintf(stderr, "Native reader: init-completed stage=%s +%llu ms\n", reader_diagnostics::name(phase), elapsed());
+        std::fflush(stderr);
+    }
+    void unavailable(reader_diagnostics::ObservationFailure stage) noexcept {
+        if (!detail()) return;
+        std::fprintf(stderr, "Native reader: detail-unavailable stage=%s +%llu ms\n", reader_diagnostics::name(stage), elapsed());
+        std::fflush(stderr);
+    }
+    void runtimeVersion(std::wstring_view version) noexcept {
+        if (!detail()) return;
+        if (reader_diagnostics::validRuntimeVersion(version))
+            std::fprintf(stderr, "Native reader: runtime-version value=%.*ls +%llu ms\n", static_cast<int>(version.size()), version.data(), elapsed());
+        else std::fprintf(stderr, "Native reader: runtime-version value=unavailable +%llu ms\n", elapsed());
+        std::fflush(stderr);
+    }
+    void documentEvent(reader_diagnostics::DocumentEvent kind, uint64_t id, uint64_t epoch, uint64_t tracked,
+        bool expected, bool live, reader_diagnostics::DocumentOutcome outcome, int error) noexcept {
+        if (!detail()) return;
+        std::fprintf(stderr, "Native reader: document-event kind=%s id=%llu epoch=%llu tracked=%llu expected=%u live=%u outcome=%s error=%d +%llu ms\n",
+            reader_diagnostics::name(kind), static_cast<unsigned long long>(id), static_cast<unsigned long long>(epoch),
+            static_cast<unsigned long long>(tracked), unsigned(expected), unsigned(live), reader_diagnostics::name(outcome), error, elapsed());
+        std::fflush(stderr);
+    }
+    void waitSummary(reader_diagnostics::WaitPhase phase, reader_diagnostics::WaitOutcome outcome,
+        reader_diagnostics::WaitMetrics const& metrics) noexcept {
+        if (!detail()) return;
+        std::fprintf(stderr, "Native reader: wait-summary phase=%s outcome=%s iterations=%u maxResumeGapMs=%llu counterOverflow=%u +%llu ms\n",
+            reader_diagnostics::name(phase), reader_diagnostics::name(outcome), metrics.iterations,
+            static_cast<unsigned long long>(metrics.maxResumeGapMs), unsigned(metrics.overflow), elapsed());
+        std::fflush(stderr);
+    }
     void processFailed(int kind) noexcept {
         if (processFailures > 8) return;
         auto elapsed = static_cast<unsigned long long>(GetTickCount64() - startedAt);
         if (processFailures++ < 8)
             std::fprintf(stderr, "Native reader: process-failed kind=%d +%llu ms\n", kind, elapsed);
         else std::fprintf(stderr, "Native reader: process-failed-overflow +%llu ms\n", elapsed);
+        std::fflush(stderr);
+    }
+    void initializationFailed(reader_diagnostics::FirstFailure& first,
+        reader_diagnostics::Origin origin, reader_diagnostics::Stage stage, hresult code) noexcept {
+        // Each mounted reader contributes only its first failure. In particular,
+        // a late Ensure cancellation cannot replace a recorded startup timeout.
+        if (!first.record(origin, stage, static_cast<uint32_t>(code), GetTickCount64() - startedAt)) return;
+        if (initializationFailures > 8) return;
+        if (initializationFailures++ < 8)
+            std::fprintf(stderr, "Native reader: init-failed origin=%s stage=%s hr=0x%08X +%llu ms\n",
+                reader_diagnostics::name(first.origin), reader_diagnostics::name(first.stage),
+                static_cast<unsigned>(first.hresult), static_cast<unsigned long long>(first.elapsedMs));
+        else std::fprintf(stderr, "Native reader: init-failed-overflow +%llu ms\n", static_cast<unsigned long long>(first.elapsedMs));
         std::fflush(stderr);
     }
 };
@@ -190,6 +249,9 @@ struct Reader {
     uint64_t generation{}, selection{}, documentId{}, completedDocumentId{}, epoch = 0;
     unsigned fixtureTraceBudget = 0; // Enabled only after the temporary fixture marker is validated.
     std::shared_ptr<ReaderFixtureTrace> fixtureTrace;
+    bool fixtureInitialDocument = false; // Set only for the first marked-fixture reader, before Loaded.
+    reader_diagnostics::Stage initializationStage = reader_diagnostics::Stage::EnvironmentOptions;
+    reader_diagnostics::FirstFailure fixtureInitializationFailure;
     // Observed initialization outcome only; these never relax reader policy.
     hresult initializationError{S_OK};
     bool runtimeUnavailable = false;
@@ -209,6 +271,21 @@ struct Reader {
     CoreWebView2 core{nullptr};
     CoreWebView2Environment environment{nullptr};
     std::function<bool()> reviewContext;
+    void fixtureInitializationFailed(reader_diagnostics::Origin origin, hresult code) noexcept {
+        if (fixtureTrace) fixtureTrace->initializationFailed(fixtureInitializationFailure, origin, initializationStage, code);
+    }
+    void fixtureCompleted(reader_diagnostics::Completion phase) noexcept {
+        if (fixtureInitialDocument && fixtureTrace) fixtureTrace->completed(phase);
+    }
+    void fixtureUnavailable(reader_diagnostics::ObservationFailure stage) noexcept {
+        if (fixtureInitialDocument && fixtureTrace) fixtureTrace->unavailable(stage);
+    }
+    void fixtureDocument(reader_diagnostics::DocumentEvent kind, uint64_t id,
+        reader_diagnostics::DocumentOutcome outcome, int error = 0) noexcept {
+        if (!fixtureInitialDocument || !fixtureTrace || epoch != 1) return;
+        try { fixtureTrace->documentEvent(kind, id, epoch, documentId, expectingDocument, live(), outcome, error); }
+        catch (...) { fixtureUnavailable(reader_diagnostics::ObservationFailure::EventRead); }
+    }
     bool live() const {
         auto host = shell.lock();
         if (reviewContext) return active && host && host->current(generation,viewOwner) && host->selectionGeneration == selection && host->connected(account) && reviewContext();
@@ -283,6 +360,7 @@ struct Reader {
             try { target.NavigateToString(content); }
             catch (hresult_error const&) { fail(); return; }
             fixtureState("render-returned");
+            if (epoch == 1) fixtureCompleted(reader_diagnostics::Completion::Render);
         }
     }
 };
@@ -346,23 +424,35 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
     state->startupTimer.Interval(std::chrono::seconds(20));
     state->startupTimer.Tick([weak = std::weak_ptr<Reader>(state)](auto const&, auto const&) {
         if (auto page = weak.lock(); page && page->live() && !page->ready) {
+            page->fixtureInitializationFailed(reader_diagnostics::Origin::StartupTimeout, HRESULT_FROM_WIN32(ERROR_TIMEOUT));
             page->initializationError = HRESULT_FROM_WIN32(ERROR_TIMEOUT); page->fail();
         }
     });
     state->startupTimer.Start();
     try {
+        state->initializationStage = reader_diagnostics::Stage::EnvironmentOptions;
         CoreWebView2EnvironmentOptions options;
         options.AllowSingleSignOnUsingOSPrimaryAccount(false);
         options.AreBrowserExtensionsEnabled(false);
+        state->initializationStage = reader_diagnostics::Stage::EnvironmentCreate;
         auto environment = co_await CoreWebView2Environment::CreateWithOptionsAsync(L"", hstring(state->profilePath.wstring()), options);
         co_await ui;
+        state->fixtureCompleted(reader_diagnostics::Completion::Environment);
+        if (state->fixtureInitialDocument && state->fixtureTrace) {
+            try { state->fixtureTrace->runtimeVersion(std::wstring_view(environment.BrowserVersionString())); }
+            catch (...) { state->fixtureTrace->runtimeVersion({}); }
+        }
         if (!state->live()) { state->initializing = false; state->close(); co_return; }
         state->environment = environment;
+        state->initializationStage = reader_diagnostics::Stage::ControllerOptions;
         auto controller = state->environment.CreateCoreWebView2ControllerOptions();
         controller.ProfileName(L"MorrowMailReader"); controller.IsInPrivateModeEnabled(true);
+        state->initializationStage = reader_diagnostics::Stage::ControllerEnsure;
         co_await view.EnsureCoreWebView2Async(state->environment, controller);
         co_await ui;
+        state->fixtureCompleted(reader_diagnostics::Completion::Controller);
         if (!state->live()) { state->initializing = false; state->close(); co_return; }
+        state->initializationStage = reader_diagnostics::Stage::CorePolicy;
         state->core = view.CoreWebView2();
         require(state->core && state->core.Profile().IsInPrivateModeEnabled());
         auto settings = state->core.Settings();
@@ -372,10 +462,15 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
         settings.IsStatusBarEnabled(false); settings.IsBuiltInErrorPageEnabled(false);
         settings.IsGeneralAutofillEnabled(false); settings.IsPasswordAutosaveEnabled(false);
         settings.IsSwipeNavigationEnabled(false);
+        state->initializationStage = reader_diagnostics::Stage::Handlers;
         auto weak = std::weak_ptr<Reader>(state);
         state->core.NavigationStarting([weak](auto const&, CoreWebView2NavigationStartingEventArgs const& args) {
             auto page = weak.lock();
             args.Cancel(true);
+            if (page && page->fixtureInitialDocument && page->epoch == 1) {
+                try { page->fixtureDocument(reader_diagnostics::DocumentEvent::Start, args.NavigationId(), reader_diagnostics::DocumentOutcome::Observed); }
+                catch (...) { page->fixtureUnavailable(reader_diagnostics::ObservationFailure::EventRead); }
+            }
             if (page && page->fixtureTraceBudget) {
                 --page->fixtureTraceBudget;
                 std::fprintf(stderr, "Native reader: nav-start id=%llu blank=%u redirected=%u user=%u expected=%u live=%u\n",
@@ -402,6 +497,11 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
                 page->expectingDocument = false; page->expectedDocumentBase64 = {};
                 page->documentId = args.NavigationId(); args.Cancel(false);
             } else if (args.IsUserInitiated()) openLink(page, args.Uri());
+            if (page->fixtureInitialDocument && page->epoch == 1) {
+                try { page->fixtureDocument(reader_diagnostics::DocumentEvent::Decision, args.NavigationId(), args.Cancel()
+                    ? reader_diagnostics::DocumentOutcome::Cancelled : reader_diagnostics::DocumentOutcome::Allowed); }
+                catch (...) { page->fixtureUnavailable(reader_diagnostics::ObservationFailure::EventRead); }
+            }
             if (page->fixtureTraceBudget) {
                 --page->fixtureTraceBudget;
                 std::fprintf(stderr, "Native reader: nav-decision id=%llu cancelled=%u expected=%u tracked=%llu\n",
@@ -437,6 +537,11 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
             } catch (...) { if (auto page = weak.lock()) page->fail(); }
         });
         state->core.NavigationCompleted([weak](auto const&, CoreWebView2NavigationCompletedEventArgs const& args) {
+            if (auto page = weak.lock(); page && page->fixtureInitialDocument && page->epoch == 1) {
+                try { page->fixtureDocument(reader_diagnostics::DocumentEvent::Completed, args.NavigationId(), args.IsSuccess()
+                    ? reader_diagnostics::DocumentOutcome::Success : reader_diagnostics::DocumentOutcome::Failure, int(args.WebErrorStatus())); }
+                catch (...) { page->fixtureUnavailable(reader_diagnostics::ObservationFailure::EventRead); }
+            }
             if (auto page = weak.lock(); page && page->fixtureTraceBudget) {
                 --page->fixtureTraceBudget;
                 std::fprintf(stderr, "Native reader: nav-completed id=%llu success=%u error=%d live=%u tracked=%llu\n",
@@ -459,16 +564,39 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
                 page->fail();
             }
         });
+        if (state->fixtureInitialDocument) {
+            try {
+                state->core.ContentLoading([weak](auto const&, CoreWebView2ContentLoadingEventArgs const& args) {
+                    if (auto page = weak.lock(); page && page->epoch == 1) {
+                        try { page->fixtureDocument(reader_diagnostics::DocumentEvent::ContentLoading, args.NavigationId(), args.IsErrorPage()
+                            ? reader_diagnostics::DocumentOutcome::ErrorPage : reader_diagnostics::DocumentOutcome::Normal); }
+                        catch (...) { page->fixtureUnavailable(reader_diagnostics::ObservationFailure::EventRead); }
+                    }
+                });
+            } catch (...) { state->fixtureUnavailable(reader_diagnostics::ObservationFailure::ContentSubscription); }
+            try {
+                state->core.DOMContentLoaded([weak](auto const&, CoreWebView2DOMContentLoadedEventArgs const& args) {
+                    if (auto page = weak.lock(); page && page->epoch == 1) {
+                        try { page->fixtureDocument(reader_diagnostics::DocumentEvent::DomLoaded, args.NavigationId(), reader_diagnostics::DocumentOutcome::Observed); }
+                        catch (...) { page->fixtureUnavailable(reader_diagnostics::ObservationFailure::EventRead); }
+                    }
+                });
+            } catch (...) { state->fixtureUnavailable(reader_diagnostics::ObservationFailure::DomSubscription); }
+        }
+        state->fixtureCompleted(reader_diagnostics::Completion::Handlers);
         state->startupTimer.Stop();
         state->ready = true;
         if (auto images = state->imageButton.get()) images.IsEnabled(true);
+        state->initializationStage = reader_diagnostics::Stage::InitialRender;
         state->render();
     } catch (hresult_error const& error) {
+        state->fixtureInitializationFailed(reader_diagnostics::Origin::Hresult, error.code());
         state->initializationError = error.code();
         state->runtimeUnavailable = !state->environment && error.code() == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
         if (state->live()) state->fail();
         else { try { view.Close(); } catch (hresult_error const&) {} }
     } catch (...) {
+        state->fixtureInitializationFailed(reader_diagnostics::Origin::Exception, E_FAIL);
         state->initializationError = E_FAIL;
         if (state->live()) state->fail();
         else { try { view.Close(); } catch (hresult_error const&) {} }
@@ -540,16 +668,30 @@ namespace {
 void runtimeCheck(bool condition, wchar_t const* message) {
     if (!condition) throw hresult_error(E_FAIL, message);
 }
-IAsyncAction runtimeWait(std::function<bool()> done, uint64_t deadline, wchar_t const* phase) {
+IAsyncAction runtimeWait(std::function<bool()> done, uint64_t deadline, wchar_t const* phase,
+    std::shared_ptr<ReaderFixtureTrace> trace = {}, reader_diagnostics::WaitPhase tracePhase = reader_diagnostics::WaitPhase::MountLoaded) {
     apartment_context ui;
     auto cancellation = co_await get_cancellation_token();
+    struct Receipt {
+        std::shared_ptr<ReaderFixtureTrace> trace;
+        reader_diagnostics::WaitPhase phase;
+        reader_diagnostics::WaitMetrics metrics;
+        reader_diagnostics::WaitOutcome outcome = reader_diagnostics::WaitOutcome::Aborted;
+        ~Receipt() { if (trace) trace->waitSummary(phase, outcome, metrics); }
+    } receipt{trace, tracePhase, {}, reader_diagnostics::WaitOutcome::Aborted};
     for (;;) {
-        if (cancellation()) throw hresult_canceled();
-        if (GetTickCount64() >= deadline) throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT),
-            L"Reader runtime acceptance timed out at " + hstring(phase) + L" (25-second total deadline).");
-        if (done()) co_return;
+        if (trace) receipt.metrics.poll();
+        if (cancellation()) { receipt.outcome = reader_diagnostics::WaitOutcome::Cancelled; throw hresult_canceled(); }
+        if (GetTickCount64() >= deadline) {
+            receipt.outcome = reader_diagnostics::WaitOutcome::Deadline;
+            throw hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT),
+                L"Reader runtime acceptance timed out at " + hstring(phase) + L" (25-second total deadline).");
+        }
+        if (done()) { receipt.outcome = reader_diagnostics::WaitOutcome::ConditionMet; co_return; }
+        auto suspendedAt = trace ? GetTickCount64() : 0;
         co_await resume_after(std::chrono::milliseconds(20));
         co_await ui;
+        if (trace) receipt.metrics.resumed(suspendedAt, GetTickCount64());
     }
 }
 IAsyncOperation<Json> runtimeProtocol(CoreWebView2 core, hstring method, hstring parameters, uint64_t deadline, wchar_t const* phase) {
@@ -653,6 +795,41 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     std::ifstream marker(markerPath, std::ios::binary);
     std::string markerText((std::istreambuf_iterator<char>(marker)), {});
     runtimeCheck(markerText == "Morrow native acceptance fixture", L"Reader runtime fixture marker does not match.");
+    // Synthetic latch controls emit no runtime receipt. A timeout must retain
+    // its original stage/code even if closing Ensure later produces E_ABORT.
+    reader_diagnostics::FirstFailure timeout, ensure;
+    using InitOrigin = reader_diagnostics::Origin;
+    using InitStage = reader_diagnostics::Stage;
+    runtimeCheck(timeout.record(InitOrigin::StartupTimeout, InitStage::ControllerEnsure, 0x800705B4u, 20000)
+        && !timeout.record(InitOrigin::Hresult, InitStage::ControllerEnsure, 0x80004004u, 20001)
+        && timeout.origin == InitOrigin::StartupTimeout && timeout.stage == InitStage::ControllerEnsure
+        && timeout.hresult == 0x800705B4u && timeout.elapsedMs == 20000,
+        L"Reader initialization telemetry replaced its first timeout with a late cancellation.");
+    runtimeCheck(ensure.record(InitOrigin::Hresult, InitStage::EnvironmentCreate, 0x80070002u, 10)
+        && !ensure.record(InitOrigin::StartupTimeout, InitStage::ControllerEnsure, 0x800705B4u, 20000)
+        && ensure.origin == InitOrigin::Hresult && ensure.stage == InitStage::EnvironmentCreate
+        && ensure.hresult == 0x80070002u && ensure.elapsedMs == 10,
+        L"Reader initialization telemetry replaced its first HRESULT or stage.");
+    // Pure metadata controls emit no event and run before the runtime deadline.
+    reader_diagnostics::DetailBudget detailBudget;
+    for (unsigned i = 0; i < reader_diagnostics::DetailBudget::limit; ++i)
+        runtimeCheck(detailBudget.take() == reader_diagnostics::Receipt::Record, L"Reader detail budget stopped before its fixed limit.");
+    runtimeCheck(detailBudget.take() == reader_diagnostics::Receipt::Overflow
+        && detailBudget.take() == reader_diagnostics::Receipt::Suppress,
+        L"Reader detail budget did not emit exactly one overflow receipt.");
+    reader_diagnostics::WaitMetrics waitMetrics;
+    waitMetrics.poll(); waitMetrics.resumed(100, 120); waitMetrics.resumed(120, 180); waitMetrics.resumed(180, 200);
+    runtimeCheck(waitMetrics.iterations == 1 && waitMetrics.maxResumeGapMs == 60 && !waitMetrics.overflow,
+        L"Reader wait metrics did not retain the maximum resume interval.");
+    waitMetrics.resumed(200, 199);
+    for (unsigned i = 0; i < reader_diagnostics::WaitMetrics::iterationLimit; ++i) waitMetrics.poll();
+    runtimeCheck(waitMetrics.iterations == reader_diagnostics::WaitMetrics::iterationLimit
+        && waitMetrics.maxResumeGapMs == 60 && waitMetrics.overflow, L"Reader wait metrics did not bound counters or clock reversal.");
+    runtimeCheck(reader_diagnostics::validRuntimeVersion(L"149.0.1.2")
+        && reader_diagnostics::validRuntimeVersion(L"149.0.1.2 canary")
+        && !reader_diagnostics::validRuntimeVersion(L"149.0.1.2\nprivate")
+        && !reader_diagnostics::validRuntimeVersion(L"149.0.1")
+        && !reader_diagnostics::validRuntimeVersion(L"149.0.1.2/private"), L"Reader version diagnostics accepted unbounded or non-version text.");
     auto cancellation = co_await get_cancellation_token(); cancellation.enable_propagation();
     auto startedAt = GetTickCount64();
     auto fixtureTrace = std::make_shared<ReaderFixtureTrace>(startedAt);
@@ -688,24 +865,29 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     settingsState.Insert(L"preferences", originalPreferences);
     runtimeCheck(state != nullptr, L"The production reader could not mount its fixture.");
     runtimeCheck(state->images, L"The production reader ignored saved automatic image consent.");
+    state->fixtureInitialDocument = true;
     state->fixtureTraceBudget = 24;
     cleanup.readers.push_back(state);
     shell->show(scroll(panel));
     phase("mount-loaded");
-    co_await runtimeWait([state] { return state->initializing || state->ready || !state->active; }, deadline, L"mount-loaded");
+    co_await runtimeWait([state] { return state->initializing || state->ready || !state->active; }, deadline, L"mount-loaded",
+        fixtureTrace, reader_diagnostics::WaitPhase::MountLoaded);
     if (state->active) {
         phase("environment");
-        co_await runtimeWait([state] { return state->environment || !state->active; }, deadline, L"environment");
+        co_await runtimeWait([state] { return state->environment || !state->active; }, deadline, L"environment",
+            fixtureTrace, reader_diagnostics::WaitPhase::Environment);
     }
     if (state->active) {
         phase("controller-ready");
-        co_await runtimeWait([state] { return state->ready || !state->active; }, deadline, L"controller-ready");
+        co_await runtimeWait([state] { return state->ready || !state->active; }, deadline, L"controller-ready",
+            fixtureTrace, reader_diagnostics::WaitPhase::ControllerReady);
     }
     if (state->active) {
         phase("initial-document");
         state->fixtureState("initial-document-state");
         try {
-            co_await runtimeWait([state] { return documentReady(state) || !state->active; }, deadline, L"initial-document");
+            co_await runtimeWait([state] { return documentReady(state) || !state->active; }, deadline, L"initial-document",
+                fixtureTrace, reader_diagnostics::WaitPhase::InitialDocument);
         } catch (hresult_error const&) {
             state->fixtureState("initial-document-failed");
             throw;

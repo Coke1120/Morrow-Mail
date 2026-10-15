@@ -260,12 +260,12 @@ fn summaries_learning_and_serial_index_progress_never_expose_sources_or_raw_erro
     assert_eq!(summary["total"], 2);
     assert!(summary["completed"].is_null());
     let last = task(&runtime, &config, &format!("last-summary:{A}"));
-    assert_eq!(last["status"], "interrupted");
+    assert_eq!(last["status"], "skipped");
     assert!(
-        last["detail"]
+        last["summaryJob"]["diagnostic"]
             .as_str()
             .unwrap()
-            .contains("result was discarded")
+            .contains("this job was skipped")
     );
     let learning = task(&runtime, &config, &format!("learning:{A}"));
     assert!(learning["completed"].is_null());

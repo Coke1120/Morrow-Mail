@@ -59,7 +59,7 @@ struct FolderSyncPane : std::enable_shared_from_this<FolderSyncPane> {
     std::shared_ptr<Shell> shell;
     FolderSyncSelection selection;
     hstring viewOwner, connectionSettings;
-    uint64_t generation = 0, operation = 0;
+    uint64_t generation = 0, operation = 0, rowGeneration = 0;
     bool busy = false, stale = false, closed = false, configuring = false;
     ContentDialog dialog;
     StackPanel content = stack(10), rows = stack(14);
@@ -106,16 +106,24 @@ struct FolderSyncPane : std::enable_shared_from_this<FolderSyncPane> {
         configuring = previous;
     }
     void renderRows() {
-        configuring = true; rows.Children().Clear(); checks.clear(); retries.clear(); auto weak = weak_from_this();
+        configuring = true;
+        // Invalidate callbacks before detaching controls: an old row can remain
+        // alive and deliver Checked/Unchecked after configuring is restored.
+        auto rowsVersion = ++rowGeneration;
+        rows.Children().Clear(); checks.clear(); retries.clear(); auto weak = weak_from_this();
         for (auto const& [id,row] : selection.snapshot.rows) {
             if (!filter.Text().empty() && FindStringOrdinal(FIND_FROMSTART,row.name.c_str(),static_cast<int>(row.name.size()),filter.Text().c_str(),static_cast<int>(filter.Text().size()),TRUE) < 0) continue;
             auto card = stack(4); CheckBox check; check.Content(label(hstring(row.name),15,false)); check.IsChecked(selection.selected.contains(id));
             Automation::AutomationProperties::SetName(check,row.name);
             Automation::AutomationProperties::SetAutomationId(check,L"folderSync.folder." + hstring(id));
-            auto changed = [weak,id,control=make_weak(check)](auto const&,auto const&) {
-                if (auto pane=weak.lock(); pane && !pane->configuring && !pane->busy && !pane->stale) if (auto checkbox=control.get()) {
-                    pane->selection.select(id,checkbox.IsChecked().Value()); pane->notice.Text(L""); pane->enabled();
-                }
+            auto changed = [weak,id,rowsVersion,control=make_weak(check)](auto const&,auto const&) {
+                auto pane=weak.lock(); auto checkbox=control.get();
+                if (!pane || !checkbox || pane->rowGeneration!=rowsVersion || !pane->current()
+                    || pane->configuring || pane->busy || pane->stale) return;
+                if (std::none_of(pane->checks.begin(),pane->checks.end(),[&](auto const& current) {
+                    return current.first==id && current.second==checkbox;
+                })) return;
+                pane->selection.select(id,checkbox.IsChecked().Value()); pane->notice.Text(L""); pane->enabled();
             };
             check.Checked(changed); check.Unchecked(changed); checks.emplace_back(id,check); card.Children().Append(check);
             card.Children().Append(label(hstring(folderSyncStatus(row) + (row.available ? L"" : L" · Folder unavailable in the current saved list")),12));
@@ -328,10 +336,33 @@ IAsyncAction folderSyncChecks(Grid root) {
         peer.GetPattern(Automation::Peers::PatternInterface::Toggle).as<Automation::Provider::IToggleProvider>().Toggle();
         co_await waitFolderSyncControl([pane] { return pane->selection.selected.contains(L"Projects / 中文"); });
         check(pane->selection.selected.contains(L"Projects / 中文") && pane->selection.dirty() && pane->dialog.IsPrimaryButtonEnabled() && !pane->sync.IsEnabled() && !pane->catalog.IsEnabled(),L"Native checkbox events lost edits or allowed work before saving.");
+        auto controlsBefore=pane->checks.size(), selectedBefore=pane->selection.selected.size();
+        auto counts=[pane,controlsBefore,selectedBefore](wchar_t const* message) {
+            return hstring(message) + L" [before controls=" + to_hstring(controlsBefore) + L", selected=" + to_hstring(selectedBefore)
+                + L"; after controls=" + to_hstring(pane->checks.size()) + L", selected=" + to_hstring(pane->selection.selected.size()) + L"]";
+        };
+        check(controlsBefore==2 && selectedBefore==2,counts(L"The native folder selection was incomplete before filtering.").c_str());
+        auto reviewedSelection=pane->selection.selected;
         pane->filter.Text(L"no match"); co_await waitFolderSyncControl([pane] { return pane->checks.empty(); });
-        check(pane->checks.empty() && pane->selection.selected.size()==2,L"Filtering discarded the native folder selection.");
+        check(pane->checks.empty() && pane->selection.selected.size()==2,counts(L"Filtering discarded the native folder selection.").c_str());
+        // Exercise the actual event on a retained old control, first with no
+        // visible rows and then with a replacement control for the same folder.
+        auto uncheckedEvents=std::make_shared<unsigned>(0);
+        auto unchecked=checkbox.Unchecked(auto_revoke,[uncheckedEvents](auto const&,auto const&) { if (*uncheckedEvents<4) ++*uncheckedEvents; });
+        checkbox.IsChecked(true); checkbox.IsChecked(false);
+        co_await waitFolderSyncControl([uncheckedEvents] { return *uncheckedEvents>0; });
+        check(*uncheckedEvents>0 && !checkbox.IsChecked().Value() && pane->checks.empty() && pane->selection.selected==reviewedSelection,
+            counts(L"A detached folder checkbox changed the filtered selection.").c_str());
         pane->filter.Text(L""); co_await waitFolderSyncControl([pane] { return pane->checks.size()==2; });
         check(pane->checks.size()==2,L"Clearing the filter did not restore folder controls.");
+        check(pane->checks.at(1).second!=checkbox && pane->selection.selected==reviewedSelection,
+            counts(L"Clearing the filter reused a detached checkbox or lost the selection.").c_str());
+        auto eventsBefore=*uncheckedEvents;
+        checkbox.IsChecked(true); checkbox.IsChecked(false);
+        co_await waitFolderSyncControl([uncheckedEvents,eventsBefore] { return *uncheckedEvents>eventsBefore; });
+        check(*uncheckedEvents>eventsBefore && !checkbox.IsChecked().Value() && pane->checks.size()==2
+            && pane->checks.at(1).second.IsChecked().Value() && pane->selection.selected==reviewedSelection,
+            counts(L"A detached folder checkbox changed its replacement row.").c_str());
         pane->dialog.Hide(); co_await resume_after(std::chrono::milliseconds(50)); co_await ui;
         check(showing.Status()==AsyncStatus::Started,L"Closing discarded unsaved folder selection without a decision.");
         pane->busy=true; pane->enabled(); check(!pane->dialog.IsPrimaryButtonEnabled() && !pane->reload.IsEnabled() && !pane->deselect.IsEnabled(),L"Busy folder actions remained interactive.");
