@@ -1,6 +1,17 @@
-> Historical implementation notes. Current behavior and release limits are documented in README.md, FEATURE_COVERAGE.md, and AGENTS.md.
+# Before upgrading the current app
 
-# Morrow Mail upgrade contract
+Before first opening a schema 1 workspace with this source, back up using the
+currently installed service, or copy the complete closed workspace with its
+matching `encryption.key`. The new service migrates to schema 2 before its own
+backup operation. Downgrading requires restoring the complete pre-upgrade copy;
+do not change the schema marker to bypass the guard. See
+[IMAP identity migration and recovery](docs/IMAP_SERVER_IDENTITY.md#before-upgrading).
+
+Current behavior and release limits are documented in README.md,
+FEATURE_COVERAGE.md, and AGENTS.md. The implementation notes below are historical;
+their Node modules and API descriptions are not the current native/Rust architecture.
+
+## Historical Morrow Mail upgrade contract
 
 Keep current Genmail folder/data and all existing safeguards. Public brand Morrow Mail / Morrow. Public icon /brand/morrow-icon.svg (branding worker may provide PNG; await result).
 

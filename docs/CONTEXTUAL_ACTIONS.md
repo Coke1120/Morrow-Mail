@@ -1,8 +1,8 @@
 # Contextual actions
 
-This source candidate reduces the controls shown before a task is selected.
+Current source reduces the controls shown before a task is selected.
 It keeps the existing Mail, Agent and Brain destinations, mailbox ownership,
-confirmation and recovery behavior. It is not included in the v0.8.2 downloads.
+confirmation and recovery behavior. It was not included in the v0.8.2 downloads.
 
 ## Reading and selecting mail
 
@@ -28,8 +28,9 @@ From mailbox and uses the same draft, source validation and send-review actions
 as Reply suggestions. Switching scope closes the current detail while retaining
 account-owned edits. Opening or saving a suggestion does not send it.
 
-Review replies is the primary reply entry. Summary creation and saved-suggestion
-reload are available from More. Summary creation still requires its existing
+Review replies on macOS and Review suggested reply on Windows open the owned
+reply editor. Summary creation and saved-suggestion reload are available from
+More. Summary creation still requires its existing
 scope and permission review. Existing event/task classifications, completion
 markers, retention limits and summary freshness rules are unchanged.
 
@@ -48,13 +49,13 @@ existing handlers and safeguards.
 
 ## Verification boundary
 
-The candidate extends existing native fixtures to invoke mounted controls and
+This change extends existing native fixtures to invoke mounted controls and
 check mailbox scope, stale controls, selection, draft retention and confirmation
 behavior. Static source checks and preserved-handler comparisons do not establish
 native compilation, keyboard traversal, screen-reader behavior or usability.
 Both platform SDK jobs and their native gates remain required. There is no
 measured learning-curve improvement or claim of another application's parity.
 
-See [verification](../VERIFICATION.md) for the exact candidate's results and
+See [verification](../VERIFICATION.md) for the tested sources, results and
 remaining limitations. No real mail, calendar, external model or provider is used
 by the new synthetic UI checks.
