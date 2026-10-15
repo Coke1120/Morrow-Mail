@@ -158,9 +158,10 @@ synthetic checkout. Its 50 Rust result groups contain 445 passing tests, zero
 failures and four ignored tests. The formal WinUI/Rust package compiled, then
 the native walkthrough failed in `contextual-reader-and-selection-actions`:
 `A query cannot reach Clear.` The relocated PowerShell 5.1 check was skipped;
-the separate fictional 1k/10k/50k service benchmark passed. The later Reader
-menus and Today/Compose contextual checks were not reached by this walkthrough.
-The original terminal log contains no TextChanged delivery trace.
+the separate fictional 1k/10k/50k service benchmark passed. The earlier
+composer-return controls completed, including optional recipients and retained
+selection actions. The later Reader menus and Today contextual checks were not
+reached. The original terminal log contains no TextChanged delivery trace.
 
 The failing fixture assigned Text, forced layout and immediately inspected
 Clear. WinUI TextChanged is asynchronous, so that sequence does not establish
