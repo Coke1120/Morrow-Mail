@@ -261,6 +261,16 @@ the ordinary native/security workflow is unchanged. This fixes the measurement
 input contract without changing runtime/test sources, normalizing the assertion
 or altering recorded source hashes. The next real Windows SDK run is pending.
 
+At head `2911380`, Windows job `116386213427` passed the adapter preflight:
+11 common controls passed with two explicit POSIX-only skips, and all seven
+Windows controls passed. The measurement step then failed, reporting only the
+path to its evidence artifact in the job log. The available log does not identify
+whether compilation, native execution or report validation failed. A workflow-only
+bounded diagnostic receipt now exposes selected status/source/exit/error fields
+and fixed build/native error lines on the next run. The original failure is
+retained; there is no root-cause or SDK success claim. Runtime/test sources, the
+191-file manifest, time limits and all assertions remain unchanged.
+
 ## v0.8.1 published — 14 October 2026
 
 [Tagged run 38624861643](https://github.com/Coke1120/Morrow-Mail/actions/runs/38624861643),

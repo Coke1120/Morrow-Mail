@@ -40,6 +40,42 @@ jobs:
       - name: Build private fixture and measure actual WinUI actions
         shell: pwsh
         run: python -X utf8 -B scripts/windows-mailbox-latency.py --output "$env:RUNNER_TEMP/mailbox-latency-windows"
+      - name: Report bounded measurement diagnostics
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP 'mailbox-latency-windows'
+          $receiptPath = Join-Path $evidenceRoot 'evidence.json'
+          if ((Test-Path -LiteralPath $receiptPath -PathType Leaf) -and (Get-Item -LiteralPath $receiptPath).Length -le 1048576) {
+            try {
+              $receipt = Get-Content -LiteralPath $receiptPath -Raw -Encoding utf8 | ConvertFrom-Json
+              $failure = [string]$receipt.error
+              [ordered]@{
+                status = $(if ($receipt.status -in @('complete', 'failed')) { $receipt.status } else { 'invalid' })
+                exitCode = $(if ($receipt.exitCode -is [long] -or $receipt.exitCode -is [int]) { $receipt.exitCode } else { $null })
+                nativeProcessExitCode = $(if ($receipt.nativeProcessExitCode -is [long] -or $receipt.nativeProcessExitCode -is [int]) { $receipt.nativeProcessExitCode } else { $null })
+                sourceCommit = $(if ([string]$receipt.source.commit -cmatch '^[0-9a-f]{40}$') { $receipt.source.commit } else { 'invalid' })
+                sourceDigest = $(if ([string]$receipt.source.digest -cmatch '^[0-9a-f]{64}$') { $receipt.source.digest } else { 'invalid' })
+                sourceAfterDigest = $(if ([string]$receipt.sourceAfter.digest -cmatch '^[0-9a-f]{64}$') { $receipt.sourceAfter.digest } else { 'invalid' })
+                error = $failure.Substring(0, [Math]::Min($failure.Length, 1024))
+                errorTruncated = $failure.Length -gt 1024
+              } | ConvertTo-Json -Compress
+            } catch { Write-Output 'Measurement receipt could not be decoded; retained artifact is authoritative.' }
+          } else { Write-Output 'Measurement receipt is missing or oversized.' }
+          foreach ($name in @('native-build.log', 'native.log')) {
+            $logPath = Join-Path $evidenceRoot $name
+            if (-not (Test-Path -LiteralPath $logPath -PathType Leaf)) { continue }
+            if ((Get-Item -LiteralPath $logPath).Length -gt 16777216) {
+              Write-Output "$name exceeds the diagnostic read bound; retained artifact is authoritative."
+              continue
+            }
+            $diagnosticMatches = @(Select-String -LiteralPath $logPath -Encoding utf8 -Pattern 'fatal error|error [A-Z]+[0-9]+|error:|failed|failure|exception' | Select-Object -First 41)
+            Write-Output "$name matchingLinesShown=$([Math]::Min($diagnosticMatches.Count, 40)) additionalMatches=$($diagnosticMatches.Count -gt 40)"
+            foreach ($diagnosticMatch in ($diagnosticMatches | Select-Object -First 40)) {
+              $diagnosticLine = $diagnosticMatch.Line
+              Write-Output ("{0}:{1}: {2}" -f $name, $diagnosticMatch.LineNumber, $diagnosticLine.Substring(0, [Math]::Min($diagnosticLine.Length, 1024)))
+            }
+          }
       - name: Retain evidence, adapters and measured binary identity
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

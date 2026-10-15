@@ -95,6 +95,12 @@ NuGet downloads and build object files. It is evidence, not an installable app
 distribution. Existing native reader/network/security and release gates remain
 unchanged; these extra jobs do not replace them.
 
+The Windows job also prints a bounded diagnostic receipt and matching build or
+native error lines. It reads only the fixed measurement output files, projects
+status/source/exit fields, and caps JSON/log input size, line count and line
+length. The original stage result and retained artifacts remain authoritative;
+the diagnostic step cannot turn a failed measurement into a pass.
+
 A green job means its measurement/report validity checks completed. It does not
 mean the full product acceptance aggregate passed: all actual protocol sizes,
 both service-resource stages and caller-reviewed performance limits are still
