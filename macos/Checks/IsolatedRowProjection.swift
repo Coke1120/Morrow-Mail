@@ -444,6 +444,161 @@ import SwiftUI
         }
         return JSON.object(fields)
     }
+    @MainActor static func selectorObjects(_ row: NSObject, cell: NSObject, boundary: NativeBoundary) throws {
+        // Every performed selector below is a fixed public zero-argument
+        // object-returning getter. Geometry, indices and BOOLs are not invoked.
+        let keys: [String] = ["accessibilityRole", "accessibilityWindow", "accessibilityParent", "accessibilityChildren",
+            "accessibilityValue", "accessibilityLabel", "accessibilityTitle", "accessibilityHelp"]
+        let textKeys: [String] = ["accessibilityValue", "accessibilityLabel", "accessibilityTitle", "accessibilityHelp"]
+        var retained: [ObjectIdentifier: NSObject] = [:], cache: [ObjectIdentifier: Node] = [:]
+        var queried: [ObjectIdentifier: Set<String>] = [:], available: [ObjectIdentifier: Set<String>] = [:]
+        var values: [ObjectIdentifier: [String: AnyObject]] = [:], bounded = true
+        @MainActor func read(_ object: NSObject, _ key: String) -> AnyObject? {
+            guard keys.contains(key) else { return nil }
+            let id = ObjectIdentifier(object)
+            if queried[id]?.contains(key) == true { return values[id]?[key] }
+            guard retained[id] != nil || retained.count < 512 else { bounded = false; return nil }
+            retained[id] = object
+            queried[id, default: []].insert(key)
+            let selector = NSSelectorFromString(key)
+            guard object.responds(to: selector) else { return nil }
+            available[id, default: []].insert(key)
+            let value: AnyObject? = object.perform(selector)?.takeUnretainedValue()
+            if let value { values[id, default: [:]][key] = value }
+            return value
+        }
+        @MainActor func node(_ object: NSObject) -> Node? {
+            let id = ObjectIdentifier(object)
+            if let existing = cache[id] { return existing }
+            guard retained[id] != nil || retained.count < 512 else { bounded = false; return nil }
+            var result = Node(object: object)
+            result.role = read(object, "accessibilityRole") as? String
+            result.window = read(object, "accessibilityWindow") as? NSObject
+            result.parent = read(object, "accessibilityParent") as? NSObject
+            let children: AnyObject? = read(object, "accessibilityChildren")
+            result.children.supported = available[id]?.contains("accessibilityChildren") == true
+            if let children = children as? [Any] {
+                result.children.present = true; result.children.count = children.count
+                result.children.truncated = children.count > 64
+                for child in children.prefix(64) {
+                    if let object = child as? NSObject { result.children.objects.append(object) }
+                    else { result.children.invalid += 1 }
+                }
+            }
+            cache[id] = result
+            return result
+        }
+        @MainActor func path(_ object: NSObject) -> (ParentPath, Bool) {
+            var result = ParentPath(), hasCell = false, next: NSObject? = object, seen = Set<ObjectIdentifier>()
+            for _ in 0..<32 {
+                guard let current = next else { return (result, hasCell) }
+                guard seen.insert(ObjectIdentifier(current)).inserted else { result.cycle = true; return (result, hasCell) }
+                result.hops += 1; result.row = result.row || current === row
+                result.table = result.table || current === boundary.table; result.host = result.host || current === boundary.host
+                hasCell = hasCell || current === cell
+                if let view = current as? NSView {
+                    if view.window !== boundary.window { result.foreignWindow += 1 }
+                    if MailboxLatency.visibleFrame(view) == nil { result.invisibleNative += 1 }
+                } else if let owner = (current as? NSCell)?.controlView, owner.window !== boundary.window {
+                    result.foreignWindow += 1
+                }
+                guard let value = node(current) else { result.truncated = true; return (result, hasCell) }
+                result.unknownHidden += 1
+                if let window = value.window, window !== boundary.window { result.foreignWindow += 1 }
+                if result.table { return (result, hasCell) }
+                next = value.parent
+            }
+            result.truncated = next != nil
+            return (result, hasCell)
+        }
+        func strings(_ value: AnyObject?) -> [String] {
+            if let string = value as? String { return [string] }
+            if let attributed = value as? NSAttributedString { return [attributed.string] }
+            return []
+        }
+        func valueType(_ value: AnyObject?) -> String {
+            guard let value else { return "missing" }
+            if value is String { return "string" }
+            if value is NSAttributedString { return "attributedString" }
+            if value is [Any] { return "array" }
+            if value is NSNumber { return "number" }
+            return "object"
+        }
+        @MainActor func facts(_ object: NSObject) -> JSON {
+            guard let value = node(object) else { return .object(["bounded": .bool(false)]) }
+            let id = ObjectIdentifier(object), owned = path(object)
+            var fields: [String: JSON] = [:], getters: [String: JSON] = [:], channels: [String: JSON] = [:]
+            fields["role"] = .string(roleName(value.role))
+            fields["windowKnown"] = .bool(value.window != nil)
+            fields["windowSame"] = .bool(value.window === boundary.window)
+            fields["sameRow"] = .bool(object === row); fields["sameCell"] = .bool(object === cell)
+            fields["parentKnown"] = .bool(value.parent != nil)
+            fields["parentSameRow"] = .bool(value.parent === row); fields["parentSameCell"] = .bool(value.parent === cell)
+            fields["parentSameTable"] = .bool(value.parent === boundary.table)
+            fields["parentPath"] = owned.0.json; fields["parentPathCell"] = .bool(owned.1)
+            fields["children"] = value.children.json
+            for key in keys {
+                var getter: [String: JSON] = [:]
+                getter["available"] = .bool(available[id]?.contains(key) == true)
+                getter["queried"] = .bool(queried[id]?.contains(key) == true)
+                getter["type"] = .string(valueType(values[id]?[key]))
+                getters[key] = .object(getter)
+            }
+            for key in textKeys { channels[key] = matches(strings(values[id]?[key])) }
+            fields["getters"] = .object(getters); fields["channels"] = .object(channels)
+            return JSON.object(fields)
+        }
+        var seen = Set<ObjectIdentifier>(), nodes = 0, truncated = false, foreign = 0, unknownWindow = 0, sameWindow = 0
+        var tableParents = 0, rowParents = 0, cellParents = 0, leaves = 0
+        var roles: [String: Int] = [:], text: [String] = [], leafText: [String] = [], examples: [JSON] = []
+        @MainActor func visit(_ object: NSObject, depth: Int) {
+            let id = ObjectIdentifier(object)
+            if seen.contains(id) { return }
+            guard nodes < 256, depth < 16 else { truncated = true; return }
+            seen.insert(id); nodes += 1
+            guard let value = node(object) else { truncated = true; return }
+            let owned = path(object), role = roleName(value.role)
+            roles[role] = (roles[role] ?? 0) + 1
+            if value.window == nil { unknownWindow += 1 }
+            if value.window === boundary.window { sameWindow += 1 }
+            if owned.0.table { tableParents += 1 }; if owned.0.row { rowParents += 1 }; if owned.1 { cellParents += 1 }
+            if owned.0.foreignWindow > 0 || (value.window != nil && value.window !== boundary.window) {
+                foreign += 1; return
+            }
+            // These are raw diagnostic matches on this retained modern child
+            // graph. Missing geometry/hidden/parent proof never enters acceptance.
+            var observed: [String] = []
+            for key in textKeys { observed += strings(read(object, key)) }
+            text += observed
+            if ["staticText", "textField", "textArea"].contains(role) {
+                leaves += 1; leafText += observed
+                if examples.count < 2 { examples.append(facts(object)) }
+            }
+            if value.children.truncated { truncated = true }
+            for child in value.children.objects { visit(child, depth: depth + 1) }
+        }
+        visit(row, depth: 0); visit(cell, depth: 0)
+        let rowFacts = facts(row), cellFacts = facts(cell)
+        var getterCounts: [String: JSON] = [:], roleCounts: [String: JSON] = [:]
+        for key in keys {
+            var getter: [String: JSON] = [:]
+            getter["available"] = count(available.values.filter { $0.contains(key) }.count)
+            getter["present"] = count(values.values.filter { $0[key] != nil }.count)
+            getterCounts[key] = .object(getter)
+        }
+        let allowedRoles: [String] = ["row", "table", "list", "outline", "cell", "group", "scrollArea", "window", "staticText", "textField", "textArea", "none", "other"]
+        for role in allowedRoles { roleCounts[role] = count(roles[role] ?? 0) }
+        var fields: [String: JSON] = [:]
+        fields["nodes"] = count(nodes); fields["retained"] = count(retained.count)
+        fields["truncated"] = .bool(truncated); fields["bounded"] = .bool(bounded)
+        fields["foreignWindowRejected"] = count(foreign); fields["unknownWindow"] = count(unknownWindow)
+        fields["sameWindow"] = count(sameWindow); fields["tableParent"] = count(tableParents)
+        fields["rowParent"] = count(rowParents); fields["cellParent"] = count(cellParents)
+        fields["textLeaves"] = count(leaves); fields["roles"] = .object(roleCounts)
+        fields["getters"] = .object(getterCounts); fields["row"] = rowFacts; fields["cell"] = cellFacts
+        fields["text"] = matches(text); fields["leafText"] = matches(leafText); fields["leafExamples"] = .array(examples)
+        try emit("selector-objects", fields)
+    }
     @MainActor static func cellProjection(_ object: NSObject?, readout: AXReadout, boundary: NativeBoundary) throws {
         var fields: [String: JSON] = [:]
         fields["capturedRow"] = .bool(object != nil)
@@ -554,6 +709,7 @@ import SwiftUI
             fields["alternateChildren"] = .object(childFields)
         }
         try emit("cell-attributes", fields)
+        if scoped { try selectorObjects(object, cell: node.object, boundary: boundary) }
     }
     @MainActor static func tableProjection(_ readout: AXReadout, boundary: NativeBoundary) throws {
         guard let list = boundary.table else {

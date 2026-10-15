@@ -1,4 +1,6 @@
 import AppKit
+import CryptoKit
+import ScreenCaptureKit
 import SwiftUI
 
 @main struct ReviewWorkspaceAssertions {
@@ -133,6 +135,8 @@ import SwiftUI
         let object: NSObject
         var supported = false, role = "", identifier = ""
         var labels: [String] = [], actions: [String] = [], children: [NSObject] = []
+        var value = "", selectors: [String] = []
+        var childCount = 0, attributeCount = 0, actionCount = 0
         var frame: NSRect? = nil, window: NSObject? = nil, parent: NSObject? = nil
         var enabled: Bool? = nil, hidden: Bool? = nil
     }
@@ -143,18 +147,40 @@ import SwiftUI
         print("Control fixture: requested=\(String(label.prefix(100))) windowVisible=\(window?.isVisible == true) windowFrame=\(NSStringFromRect(windowFrame)) rootVisible=\(NSStringFromRect(rootVisible)) clip=\(NSStringFromRect(clip))")
         // Failure observations only. Keep each API family's retained getter
         // results separate; no legacy object enters control/action acceptance.
-        for legacy in [false, true] {
+        for family in ["protocol", "selectors", "attributes"] {
             var cache: [ObjectIdentifier: ControlDiagnosticNode] = [:], visited = Set<ObjectIdentifier>()
-            var truncated = false, examples: [(Bool, String)] = []
+            var order: [ObjectIdentifier] = [], depths: [ObjectIdentifier: Int] = [:]
+            var nativeChildren: [ObjectIdentifier: [NSView]] = [:]
+            var nativeCounts: [ObjectIdentifier: Int] = [:]
+            var examples: [(Bool, String)] = [], maxDepth = 0
+            var objectCuts = 0, depthCuts = 0, childCuts = 0, nativeCuts = 0, attributeCuts = 0, actionCuts = 0
             @MainActor func read(_ object: NSObject) -> ControlDiagnosticNode? {
                 let identity = ObjectIdentifier(object)
                 if let node = cache[identity] { return node }
-                guard cache.count < 256 else { truncated = true; return nil }
+                guard cache.count < 4096 else { objectCuts += 1; return nil }
                 var node = ControlDiagnosticNode(object: object)
                 var children: [Any] = []
-                if legacy {
+                if family == "selectors" {
+                    // Every allowlisted method has an Objective-C object return.
+                    // Never send scalar, structure or action methods via perform.
+                    let names = ["accessibilityChildren", "accessibilityLabel", "accessibilityTitle", "accessibilityValue", "accessibilityRole", "accessibilityWindow", "accessibilityParent"]
+                    node.selectors = names.filter { object.responds(to: NSSelectorFromString($0)) }
+                    @MainActor func objectValue(_ name: String) -> Any? {
+                        guard node.selectors.contains(name) else { return nil }
+                        return object.perform(NSSelectorFromString(name))?.takeUnretainedValue()
+                    }
+                    node.supported = !node.selectors.isEmpty
+                    let role = objectValue("accessibilityRole")
+                    node.role = (role as? NSAccessibility.Role)?.rawValue ?? (role as? String) ?? ""
+                    node.labels = ["accessibilityLabel", "accessibilityTitle"].compactMap { objectValue($0) as? String }
+                    node.value = objectValue("accessibilityValue") as? String ?? ""
+                    node.window = objectValue("accessibilityWindow") as? NSObject
+                    node.parent = objectValue("accessibilityParent") as? NSObject
+                    children = objectValue("accessibilityChildren") as? [Any] ?? []
+                } else if family == "attributes" {
                     if object.responds(to: NSSelectorFromString("accessibilityAttributeNames")), object.responds(to: NSSelectorFromString("accessibilityAttributeValue:")) {
                         let names = (object.accessibilityAttributeNames() as Any) as? [NSAccessibility.Attribute] ?? []
+                        node.attributeCount = names.count
                         if names.count <= 128 {
                             @MainActor func attribute(_ key: String) -> Any? {
                                 let name = NSAccessibility.Attribute(rawValue: key)
@@ -165,6 +191,7 @@ import SwiftUI
                             node.role = (role as? NSAccessibility.Role)?.rawValue ?? (role as? String) ?? ""
                             node.identifier = attribute("AXIdentifier") as? String ?? ""
                             node.labels = ["AXDescription", "AXTitle"].compactMap { attribute($0) as? String }
+                            node.value = attribute("AXValue") as? String ?? ""
                             node.enabled = (attribute("AXEnabled") as? NSNumber)?.boolValue
                             node.hidden = (attribute("AXHidden") as? NSNumber)?.boolValue
                             node.window = attribute("AXWindow") as? NSObject; node.parent = attribute("AXParent") as? NSObject
@@ -172,36 +199,44 @@ import SwiftUI
                                 node.frame = NSRect(origin: position.pointValue, size: size.sizeValue)
                             }
                             children = attribute("AXChildren") as? [Any] ?? []
-                        } else { truncated = true }
+                        } else { attributeCuts += 1 }
                     }
                 } else if let element = object as? NSAccessibilityProtocol {
                     node.supported = true; node.role = element.accessibilityRole()?.rawValue ?? ""
                     node.identifier = element.accessibilityIdentifier() ?? ""
                     node.labels = [element.accessibilityLabel(), element.accessibilityTitle()].compactMap { $0 }
+                    node.value = element.accessibilityValue() as? String ?? ""
                     node.enabled = element.isAccessibilityEnabled(); node.hidden = element.isAccessibilityHidden()
                     node.frame = element.accessibilityFrame(); node.window = element.accessibilityWindow() as? NSObject
                     node.parent = element.accessibilityParent() as? NSObject; children = element.accessibilityChildren() ?? []
                 }
                 if object.responds(to: NSSelectorFromString("accessibilityActionNames")) {
                     let actions = (object.accessibilityActionNames() as Any) as? [NSAccessibility.Action] ?? []
-                    node.actions = actions.prefix(16).map { $0.rawValue }; if actions.count > 16 { truncated = true }
+                    node.actionCount = actions.count
+                    node.actions = actions.prefix(16).map { $0.rawValue }; if actions.count > 16 { actionCuts += 1 }
                 }
-                if children.count > 64 { truncated = true }
-                node.children = children.prefix(64).compactMap { $0 as? NSObject }
+                node.childCount = children.count
+                if children.count > 4096 { childCuts += 1 }
+                node.children = children.prefix(4096).compactMap { $0 as? NSObject }
                 cache[identity] = node
+                order.append(identity)
                 return node
             }
             @MainActor func visit(_ object: NSObject, depth: Int) {
                 let identity = ObjectIdentifier(object)
                 guard !visited.contains(identity) else { return }
-                guard visited.count < 256, depth < 16, let node = read(object) else { truncated = true; return }
+                maxDepth = max(maxDepth, depth)
+                guard depth < 64 else { depthCuts += 1; return }
+                guard visited.count < 4096 else { objectCuts += 1; return }
+                guard let node = read(object) else { return }
                 visited.insert(identity)
+                depths[identity] = depth
                 let nativeTitle = (object as? NSButton)?.title ?? ""
                 let match = node.labels.contains(label) || nativeTitle == label
                 if match || ["AXButton", "AXCheckBox", "AXPopUpButton", "AXMenuButton"].contains(node.role) {
                     var next: NSObject? = object, seen = Set<ObjectIdentifier>(), owner: NSView?
                     var parentCycle = false
-                    for _ in 0..<16 {
+                    for _ in 0..<64 {
                         guard let current = next else { break }
                         guard seen.insert(ObjectIdentifier(current)).inserted else { parentCycle = true; break }
                         if let view = current as? NSView { owner = view; break }
@@ -215,7 +250,7 @@ import SwiftUI
                         "labels=\(node.labels.prefix(3).map { String($0.prefix(100)) }) nativeTitle=\(String(nativeTitle.prefix(100)))",
                         "enabled=\(node.enabled.map { String($0) } ?? "unknown") hidden=\(node.hidden.map { String($0) } ?? "unknown")",
                         "frame=\(node.frame.map { NSStringFromRect($0) } ?? "unknown") inClip=\(node.frame.map { !$0.isEmpty && clip.intersects($0) } ?? false)",
-                        "windowKnown=\(node.window != nil) ownWindow=\(window != nil && node.window === window) parent=\(node.parent.map { String(describing: type(of: $0)) } ?? "none") parentCycle=\(parentCycle) ownerPathBound=\(owner == nil && next != nil && seen.count == 16)",
+                        "windowKnown=\(node.window != nil) ownWindow=\(window != nil && node.window === window) parent=\(node.parent.map { String(describing: type(of: $0)) } ?? "none") parentCycle=\(parentCycle) ownerPathBound=\(owner == nil && next != nil && seen.count == 64)",
                         "nativeOwner=\(owner != nil) ownerWindow=\(window != nil && owner?.window === window) ownerRoot=\(owner.map { $0 === root || $0.isDescendant(of: root) } ?? false) ownerHidden=\(owner.map { $0.isHiddenOrHasHiddenAncestor.description } ?? "unknown") ownerInClip=\(ownerFrame.map { !$0.isEmpty && clip.intersects($0) } ?? false)",
                         "advertised=\(node.actions) modernPress=\(object.responds(to: NSSelectorFromString("accessibilityPerformPress"))) legacyPerform=\(object.responds(to: NSSelectorFromString("accessibilityPerformAction:")))"]
                     examples.append((match, fields.joined(separator: " ")))
@@ -223,15 +258,104 @@ import SwiftUI
                 for child in node.children { visit(child, depth: depth + 1) }
                 if let view = object as? NSView {
                     let subviews = view.subviews
-                    for child in subviews.prefix(64) { visit(child, depth: depth + 1) }
-                    if subviews.count > 64 { truncated = true }
+                    nativeChildren[identity] = Array(subviews.prefix(4096)); nativeCounts[identity] = subviews.count
+                    for child in subviews.prefix(4096) { visit(child, depth: depth + 1) }
+                    if subviews.count > 4096 { nativeCuts += 1 }
                 }
             }
             visit(root, depth: 0)
-            print("Control snapshot: family=\(legacy ? "attributes" : "protocol") nodes=\(visited.count) reads=\(cache.count) matches=\(examples.filter { $0.0 }.count) truncated=\(truncated)")
+            let invalidChildren = cache.values.reduce(0) { $0 + min($1.childCount, 4096) - $1.children.count }
+            let unsupported = visited.filter { cache[$0]?.supported != true }.count
+            let topologyTruncated = objectCuts + depthCuts + childCuts + nativeCuts + attributeCuts + invalidChildren > 0
+            print("Control snapshot: family=\(family) nodes=\(visited.count) reads=\(cache.count) matches=\(examples.filter { $0.0 }.count) unsupported=\(unsupported) maxDepth=\(maxDepth) topologyTruncated=\(topologyTruncated) objectCuts=\(objectCuts) depthCuts=\(depthCuts) childCuts=\(childCuts) nativeCuts=\(nativeCuts) attributeCuts=\(attributeCuts) actionCuts=\(actionCuts) invalidChildren=\(invalidChildren)")
             for example in (examples.filter { $0.0 } + examples.filter { !$0.0 }).prefix(16) { print("Control node: " + example.1) }
+            let indices = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($0.element, $0.offset) })
+            for identity in order {
+                guard let node = cache[identity], let index = indices[identity] else { continue }
+                let parent = node.parent.flatMap { indices[ObjectIdentifier($0)] }
+                let children = node.children.map { indices[ObjectIdentifier($0)].map(String.init) ?? "unread" }
+                let subviews = nativeChildren[identity]
+                let native = subviews?.prefix(4096).map { indices[ObjectIdentifier($0)].map(String.init) ?? "unread" } ?? []
+                let view = node.object as? NSView
+                let frame = view.map { NSStringFromRect($0.frame) } ?? "none"
+                let bounds = view.map { NSStringFromRect($0.bounds) } ?? "none"
+                let visible = view.map { NSStringFromRect($0.visibleRect) } ?? "none"
+                var fields: [String] = []
+                fields.append("family=\(family) index=\(index) depth=\(depths[identity].map(String.init) ?? "parent-only") type=\(type(of: node.object))")
+                fields.append("conforms=\(node.object is NSAccessibilityProtocol) supported=\(node.supported) role=\(node.role) id=\(String(node.identifier.prefix(100)).debugDescription)")
+                fields.append("labels=\(node.labels.prefix(3).map { String($0.prefix(100)) }) value=\(String(node.value.prefix(100)).debugDescription) parent=\(parent.map(String.init) ?? "outside")")
+                fields.append("enabled=\(node.enabled.map { String($0) } ?? "unknown") hidden=\(node.hidden.map { String($0) } ?? "unknown") axFrame=\(node.frame.map { NSStringFromRect($0) } ?? "unknown") axWindow=\(window != nil && node.window === window)")
+                fields.append("childCount=\(node.childCount) children=\(children) nativeCount=\(nativeCounts[identity].map(String.init) ?? "unknown") native=\(native)")
+                fields.append("attributes=\(node.attributeCount) actions=\(node.actionCount) selectors=\(node.selectors)")
+                fields.append("nativeFrame=\(frame) nativeBounds=\(bounds) nativeVisible=\(visible)")
+                let nativeTitle = (node.object as? NSButton)?.title ?? ""
+                fields.append("nativeTitle=\(String(nativeTitle.prefix(100)).debugDescription)")
+                fields.append("nativeHidden=\(view.map { String($0.isHiddenOrHasHiddenAncestor) } ?? "unknown") nativeWindow=\(window != nil && view?.window === window)")
+                print("Control topology: " + fields.joined(separator: " "))
+            }
         }
         fflush(stdout)
+    }
+    @MainActor static func todayWindowAfterFailure(_ host: NSView) async {
+        // Exact current-process compositor route already used by the isolated
+        // row probe. Observe this fictional window only, after the AX facts.
+        print("Today compositor capture: start"); fflush(stdout)
+        do {
+            guard #available(macOS 14.4, *) else { throw APIError("Current-process compositor capture requires macOS 14.4") }
+            guard let window = host.window, window.contentView === host,
+                  window.isVisible, !window.isMiniaturized,
+                  let windowID = CGWindowID(exactly: window.windowNumber), windowID != 0 else {
+                throw APIError("Owned fixture window is unavailable for compositor capture")
+            }
+            let frame = window.frame, scale = window.backingScaleFactor
+            let pid = ProcessInfo.processInfo.processIdentifier
+            let width = (frame.width * scale).rounded(.up), height = (frame.height * scale).rounded(.up)
+            guard width.isFinite, height.isFinite, width > 0, width <= 3200,
+                  height > 0, height <= 2000, width * height <= 6_400_000 else {
+                throw APIError("Owned fixture window exceeds compositor capture bounds")
+            }
+            @MainActor func stillOwned() -> Bool {
+                host.window === window && window.contentView === host && window.windowNumber == Int(windowID)
+                    && window.frame == frame && window.backingScaleFactor == scale
+                    && window.isVisible && !window.isMiniaturized
+            }
+            let content: SCShareableContent = try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<SCShareableContent, Error>) in
+                SCShareableContent.getCurrentProcessShareableContent { content, error in
+                    if let error { continuation.resume(throwing: error) }
+                    else if let content { continuation.resume(returning: content) }
+                    else { continuation.resume(throwing: APIError("Current-process capture content is unavailable")) }
+                }
+            }
+            guard stillOwned() else { throw APIError("Owned fixture window changed during capture enumeration") }
+            let matches = content.windows.filter { $0.windowID == windowID && $0.owningApplication?.processID == pid }
+            guard matches.count == 1 else { throw APIError("Exact owned fixture window is absent from current-process content") }
+            let configuration = SCStreamConfiguration()
+            configuration.width = Int(width); configuration.height = Int(height)
+            configuration.showsCursor = false; configuration.capturesAudio = false
+            let image = try await SCScreenshotManager.captureImage(
+                contentFilter: SCContentFilter(desktopIndependentWindow: matches[0]), configuration: configuration)
+            guard stillOwned() else { throw APIError("Owned fixture window changed during compositor capture") }
+            let bitmap = NSBitmapImageRep(cgImage: image)
+            guard bitmap.pixelsWide > 0, bitmap.pixelsHigh > 0, bitmap.pixelsWide <= 3200,
+                  bitmap.pixelsHigh <= 2000, bitmap.pixelsWide * bitmap.pixelsHigh <= 6_400_000,
+                  let png = bitmap.representation(using: .png, properties: [:]),
+                  !png.isEmpty, png.count <= 524288 else { throw APIError("Today compositor PNG exceeds fixed bounds") }
+            let name = "today-appkit-window-after"
+            let digest = SHA256.hash(data: png).map { String(format: "%02x", $0) }.joined()
+            let encoded = png.base64EncodedString(), bytes = Array(encoded.utf8)
+            let count = (bytes.count + 1023) / 1024
+            print("MORROW_ISOLATED_IMAGE_BEGIN \(name) \(png.count) \(digest) \(count)")
+            for index in 0..<count {
+                let start = index * 1024, end = min(start + 1024, bytes.count)
+                print("MORROW_ISOLATED_IMAGE_CHUNK \(name) \(index) " + String(decoding: bytes[start..<end], as: UTF8.self))
+            }
+            print("MORROW_ISOLATED_IMAGE_END " + name)
+            print("Today compositor capture: captured width=\(bitmap.pixelsWide) height=\(bitmap.pixelsHigh)"); fflush(stdout)
+        } catch {
+            let failure = error as NSError
+            print("Today compositor capture: unavailable domain=\(String(failure.domain.prefix(128))) code=\(failure.code) retried=false"); fflush(stdout)
+        }
     }
     @MainActor static func pressControl(_ label: String, in root: NSView) async throws {
         do {
@@ -804,7 +928,10 @@ import SwiftUI
         defer { window.close(); window.contentView = nil }
         do { try await pressControl("Review replies (3)", in: host) }
         catch {
-            print("Today control context: width=\(Int(width)) busy=\(model.busy) writing=\(review.writing) scope=\(review.scope) replies=\(model.state["today"]["replySuggestions"].array.count) scopedCount=\(model.state["today"]["replySuggestionCounts"][review.scope].number)"); fflush(stdout)
+            let replies = model.state["today"]["replySuggestions"].array
+            let scoped = replies.filter { review.scope == "all" || review.owner($0) == review.scope }
+            print("Today control context: width=\(Int(width)) busy=\(model.busy) writing=\(review.writing) starting=\(model.starting) section=\(model.section) scope=\(review.scope) accounts=\(model.accounts.count) replies=\(replies.count) filteredReplies=\(scoped.count) firstOwner=\(scoped.first.map { review.owner($0) } ?? "none") scopedCount=\(model.state["today"]["replySuggestionCounts"][review.scope].number)"); fflush(stdout)
+            await todayWindowAfterFailure(host)
             throw error
         }
         let key = review.key(ReviewFixture.proposal(0, owner: first))
