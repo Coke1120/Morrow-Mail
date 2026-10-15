@@ -56,9 +56,13 @@ The original 63 portable production-coroutine controls retain their evidence.
 The additional actual-loadPage suite passed 67 controls with ASan/UBSan and
 -Werror; its former-cleanup mutation failed the restoration assertion as
 expected. Native row rendering, WinRT and transport use explicit portable fakes.
-A native fictional-service regression is prepared under the existing smoke
-bound. Source-specific Windows SDK and runtime results remain pending; neither
-portable tests nor mutation failure establish live-account acceptance.
+Head `ea3c620` ran through synthetic merge `8676a76` in primary run `38757223443`,
+Windows job `116498716082`. Rust checks and SDK package build passed. The owned
+walkthrough reached its later review-workspace phase, so the earlier sequential
+`downloadRefreshChecks` returned successfully, including its synthetic native
+page-abandonment check. The walkthrough then failed on the separate retained
+TextBox event receipt below. This control-flow evidence does not establish a
+queued-Sync race replay, provider download or live-account acceptance.
 
 ## Windows Today stale-control fixture receipt — 15 October 2026
 
@@ -71,23 +75,40 @@ error did not identify which condition failed. The complete original log is
 retained with SHA-256
 `522ef6556215421c7230df5422b08e47bb1c3d14530e749de69191531297f912`.
 
-The fixture now observes the real task-button Click and the exact captured task
-decision before changing retained controls. Task adoption and both native
-stale-input events share the original five-second absolute deadline. There is
-still one Text assignment and one facts-checkbox change; a missing matching
-TextChanged or Checked event remains a failure. Separate assertions distinguish
-an uncompleted task action, missing native events and changed retained state.
-Failure receipts contain only capped event counts and fixed state/layout
-booleans. They contain no message, draft, task, account or control text.
+The later exact-head run `38757223443`, Windows job `116498716082`, compiled
+`ea3c620` through merge `8676a76` and failed the matching TextChanged receipt at
+the shared five-second deadline. The real task Click and adoption were observed
+once; the old facts Checked event arrived once. TextChanged and matching-text
+counts were zero, and the retained TextBox was unloaded. Draft and approval
+remained unchanged. Full log SHA-256 is
+`9abcdf750e12ed100802d8bb2e62fd23010b0328d3c372e4fcf59baed2b915ab`.
+That failed delivery gate remains failed; it did not demonstrate corrupted
+retained state or a production ownership-guard regression.
 
-This is a fixture handshake and diagnostic change. Production handlers,
-owner/selection/control-identity guards and all subsequent lifecycle checks are
-unchanged. The old controls are not reparented, and their handlers are not called
-directly. In particular, the fixture does not assume an unloaded TextBox must
-dispatch TextChanged, nor accept unchanged state without both observed events.
-Static byte checks do not establish the original failure's cause or a Windows
-runtime fix. Fresh SDK/runtime CI for this candidate remains required; no local
-native build or runtime pass is claimed.
+The revised fixture first uses the real Back action to close reply details
+without replacing the loaded editor. Its one Text assignment must deliver a
+matching native TextChanged from the exact old control while current page,
+owner, key, body identity, reply kind and non-writing guards all still match.
+Only the production `details` guard is false. The callback records these facts
+and unchanged draft/approval; assertions run afterward in the coroutine. This
+is a source-derived isolation of the closed-details guard, not an executed
+mutation. If loaded-but-collapsed text input is not delivered, the case fails.
+
+The fixture then invokes the actual prepared task peer once, requires its
+native Click and captured-task adoption, changes the old facts checkbox once,
+and requires its native Checked event with cleared reply controls and unchanged
+owned draft/approval. It makes no post-task TextChanged delivery claim. Task
+peer mounting is prepared before the original single five-second event budget;
+text delivery, task invocation/adoption and facts delivery share that one
+absolute deadline. Each action, callback and final success checks the budget.
+
+Production handlers and all subsequent lifecycle checks are unchanged. The old
+controls are not reparented, handlers are not called directly, and there is no
+fallback or deadline extension. Failure receipts contain capped counts and
+fixed guard/state/layout booleans without message, draft, task, account or
+control text. The revised fixture has not run on a Windows SDK locally and
+requires fresh matching-source native CI; source review establishes no native
+event-delivery or release-readiness claim.
 
 ## PR #59 macOS advertised menu action dispatch — 15 October 2026
 
