@@ -1,5 +1,34 @@
 # Verification — 15 October 2026
 
+## Windows Today stale-control fixture receipt — 15 October 2026
+
+PR59 Windows job `116452990553` tested head `269882f` through synthetic merge
+`e3b8f1c1210b427adde629e2f5df95c052278795`. Rust checks and native compilation
+completed, but native acceptance failed during review-workspace ownership and
+retention. The original assertion combined receipt of a retained TextBox event
+with unchanged draft/approval and cleared active reply controls. Its single
+error did not identify which condition failed. The complete original log is
+retained with SHA-256
+`522ef6556215421c7230df5422b08e47bb1c3d14530e749de69191531297f912`.
+
+The fixture now observes the real task-button Click and the exact captured task
+decision before changing retained controls. Task adoption and both native
+stale-input events share the original five-second absolute deadline. There is
+still one Text assignment and one facts-checkbox change; a missing matching
+TextChanged or Checked event remains a failure. Separate assertions distinguish
+an uncompleted task action, missing native events and changed retained state.
+Failure receipts contain only capped event counts and fixed state/layout
+booleans. They contain no message, draft, task, account or control text.
+
+This is a fixture handshake and diagnostic change. Production handlers,
+owner/selection/control-identity guards and all subsequent lifecycle checks are
+unchanged. The old controls are not reparented, and their handlers are not called
+directly. In particular, the fixture does not assume an unloaded TextBox must
+dispatch TextChanged, nor accept unchanged state without both observed events.
+Static byte checks do not establish the original failure's cause or a Windows
+runtime fix. Fresh SDK/runtime CI for this candidate remains required; no local
+native build or runtime pass is claimed.
+
 ## IDLE with selected folders, Downloads and move recovery — 15 October 2026
 
 This normal integration combines IDLE/fixture-cleanup parent `b9691f9` with
