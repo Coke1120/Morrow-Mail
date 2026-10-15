@@ -418,6 +418,38 @@ all 13 Python evidence controls pass locally, including rejection when the new
 required container control is false. No local AppKit execution or performance
 result is claimed.
 
+At head `353d2ae94c9e07c41e025bf0b914700935e1ac66`,
+[macOS measurement job 116464567947](https://github.com/Coke1120/Morrow-Mail/actions/runs/38747403941/job/116464567947)
+compiled and ran the native executable. The label-only and subsequent owner,
+container, hidden-view and offscreen-body controls passed in sequence, then
+the accessibility-hidden-body rejection failed before the production dataset
+loop. Source before/after matched `6072eb42…`. The log does not establish whether
+the hidden setter retained its value or which native/AX channel supplied the
+accepted body; no AppKit cause or completed measurement is inferred.
+
+The follow-up requires the synthetic hidden getter to read back true before
+testing rejection; failure still stops the executable. It also closes a static
+oracle gap: an `NSCell` reached through a flattened AX hierarchy must validate
+its `controlView` against the same window, root and existing visible-frame checks
+before supplying text. This extra fence does not establish that an NSCell caused
+the original failure. General SwiftUI AX peers keep their existing hidden,
+finite-frame, clip and text-role checks. All eleven earlier rejection receipts
+remain required. Three additional receipts cover real mounted cells with hidden
+owners, owners outside the reader and a different window, with visible positive
+controls before rejection. Hidden-state restoration is also asserted. These
+AppKit controls have not yet run on the follow-up source.
+
+Only a synthetic hidden-control failure can emit the added diagnostic: fixed
+channel/kind names, bounded counts and boolean/null fields, capped at 2 KiB,
+without UI text, paths or object identifiers. Original waits, action sequences,
+dataset sizes, production sources and network isolation remain unchanged.
+The thirteen Python evidence tests pass locally; twelve additional direct
+validator cases accept complete synthetic receipts and reject absent/false/
+nonboolean cell controls and an old eleven-control receipt, while preserving
+the Windows contract. These are evidence-validator checks, not AppKit execution
+or latency measurements. Matching-source macOS SDK and full measurement remain
+required; no Cargo, native SDK or live-account test ran locally.
+
 ## v0.8.1 published — 14 October 2026
 
 [Tagged run 38624861643](https://github.com/Coke1120/Morrow-Mail/actions/runs/38624861643),
