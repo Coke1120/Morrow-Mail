@@ -316,6 +316,14 @@ function Get-NativeProcessSnapshot([uint32] $Root, [long] $RootTicks, [object[]]
             $receivedAt = [Diagnostics.Stopwatch]::GetTimestamp()
             if ($inventory.Count -ge 8192) { throw 'Process inventory limit.' }
             $inventory.Add($Row)
+            if ($nativeWindow -and [uint32] $Row.ProcessId -gt 1) {
+                # Same-sample new parents may preserve descendant handles only
+                # after their own original native pin matches this CIM identity.
+                # The window queues child-before-parent rows without admitting
+                # anything to the managed cache or changing later proof gates.
+                $cimTicks = if ($null -eq $Row.CreationDate) { 0L } else { $Row.CreationDate.ToUniversalTime().Ticks }
+                $nativeWindow.ObserveRow([uint32] $Row.ProcessId, [uint32] $Row.ParentProcessId, $cimTicks, $receivedAt)
+            }
             if (Add-NativeInventoryPin $Row $Root $cache $earlyPins $AcquireIdentity $nativeWindow $receivedAt) {
                 if ($ObservationBarrier) { [void] (& $ObservationBarrier 'inventoryPinned' ([uint32] $Row.ProcessId)) }
             }

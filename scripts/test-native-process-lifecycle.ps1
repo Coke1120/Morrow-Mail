@@ -48,10 +48,10 @@ exit 9
         } finally { $Child.Dispose() }
     }
     function Read-LifecycleInventory([uint32[]] $Wanted) {
-        Check ($Wanted.Count -in @(2, 3) -and @($Wanted | Select-Object -Unique).Count -eq $Wanted.Count) 'inventory-identities'
+        Check ($Wanted.Count -in @(2, 3, 4) -and @($Wanted | Select-Object -Unique).Count -eq $Wanted.Count) 'inventory-identities'
         # CIM's operation timeout is not a wall bound. Isolate only inventory
         # acquisition; the main fixture keeps ownership of its waiting children.
-        # The worker launches no children and emits at most three numeric rows.
+        # The worker launches no children and emits at most four numeric rows.
         $source = '$wanted = @(' + ($Wanted -join ',') + "); `$ErrorActionPreference = 'Stop'`n" + @'
 try {
     $filter = ($wanted | ForEach-Object { 'ProcessId = ' + $_ }) -join ' OR '
@@ -104,13 +104,124 @@ try {
             }
         }
     }
+    function Start-LifecycleFamily {
+        # A real parent/grandchild OS relationship, unlike the ancestry-only
+        # projections above. Each process is owned, pipe-controlled and bounded.
+        $source = @'
+$ErrorActionPreference = 'Stop'; $child = $null
+try {
+    $source = "[Console]::Out.WriteLine('ready'); [Console]::Out.Flush(); `$command = [Console]::ReadLine(); if (`$command -ceq 'exit0') { exit 0 }; if (`$command -ceq 'exit7') { exit 7 }; exit 9"
+    $start = [Diagnostics.ProcessStartInfo]::new([Environment]::ProcessPath)
+    $start.UseShellExecute = $false; $start.CreateNoWindow = $true
+    $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.Environment.Clear()
+    foreach ($key in @('SystemRoot', 'WINDIR', 'ComSpec', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'ProgramFiles', 'PSModulePath')) {
+        $value = [Environment]::GetEnvironmentVariable($key); if ($null -ne $value) { $start.Environment[$key] = $value }
+    }
+    foreach ($arg in @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($source)))) { $start.ArgumentList.Add($arg) }
+    $child = [Diagnostics.Process]::Start($start)
+    $ready = $child.StandardOutput.ReadLineAsync()
+    if (-not $ready.Wait(5000) -or $ready.GetAwaiter().GetResult() -cne 'ready') { throw 'Child readiness.' }
+    [Console]::Out.WriteLine('ready:' + $child.Id + ':' + $child.StartTime.ToUniversalTime().Ticks); [Console]::Out.Flush()
+    while ($true) {
+        $command = [Console]::ReadLine()
+        if ($command -ceq 'exit0' -or $null -eq $command) { break }
+        if ($command -cnotin @('child0', 'child7') -or $null -eq $child) { throw 'Child command.' }
+        $child.StandardInput.WriteLine($(if ($command -ceq 'child0') { 'exit0' } else { 'exit7' })); $child.StandardInput.Flush()
+        if (-not $child.WaitForExit(5000)) { throw 'Child exit.' }
+        $code = $child.ExitCode; $child.Dispose(); $child = $null
+        [Console]::Out.WriteLine('released:' + $code); [Console]::Out.Flush()
+    }
+} finally {
+    if ($child) {
+        try {
+            if (-not $child.HasExited) {
+                try { $child.StandardInput.WriteLine('exit0'); $child.StandardInput.Flush() } catch { }
+                if (-not $child.WaitForExit(5000)) { $child.Kill(); [void] $child.WaitForExit(2000) }
+            }
+        } finally { $child.Dispose() }
+    }
+}
+'@
+        $family = @{ parent = $null; child = $null; parentDisposed = $false; childDisposed = $false; childId = 0; childTicks = 0L }
+        try {
+            $family.parent = [Diagnostics.Process]::Start((New-LifecycleProcessStart $source))
+            $ready = $family.parent.StandardOutput.ReadLineAsync()
+            Check ($ready.Wait(5000)) 'family-ready-deadline'
+            $line = $ready.GetAwaiter().GetResult()
+            Check ($line -cmatch '^ready:([0-9]{1,10}):([0-9]{1,19})$') 'family-ready-format'
+            $family.childId = [uint32] $Matches[1]; $family.childTicks = [long] $Matches[2]
+            # Retain this exact, creator-reported child only for cleanup. Close
+            # it after real exit, before the collector's original-pin proof.
+            $family.child = [Diagnostics.Process]::GetProcessById($family.childId); [void] $family.child.Handle
+            Check ($family.child.Id -eq $family.childId -and $family.child.StartTime.ToUniversalTime().Ticks -eq $family.childTicks -and
+                -not $family.child.HasExited) 'family-owned-cleanup-identity'
+            return $family
+        } catch { Close-LifecycleFamily $family; throw }
+    }
+    function Release-LifecycleFamilyChild($Family, [int] $Code) {
+        Check ($Code -in @(0, 7) -and -not $Family.childDisposed) 'family-release-input'
+        $Family.parent.StandardInput.WriteLine($(if ($Code -eq 0) { 'child0' } else { 'child7' })); $Family.parent.StandardInput.Flush()
+        $reply = $Family.parent.StandardOutput.ReadLineAsync()
+        Check ($reply.Wait(5000) -and $reply.GetAwaiter().GetResult() -ceq ('released:' + $Code)) 'family-creator-released'
+        Check ($Family.child.WaitForExit(5000) -and $Family.child.ExitCode -eq $Code) 'family-child-real-exit'
+        $Family.child.Dispose(); $Family.childDisposed = $true
+    }
+    function Close-LifecycleFamily($Family) {
+        if (-not $Family) { return }
+        try {
+            if ($Family.parent -and -not $Family.parentDisposed) {
+                try {
+                    if (-not $Family.parent.HasExited) {
+                        try { $Family.parent.StandardInput.WriteLine('exit0'); $Family.parent.StandardInput.Flush() } catch { }
+                        if (-not $Family.parent.WaitForExit(5000)) {
+                            # Only this fixture-created family's retained parent
+                            # handle. Before ready handoff, the caller may not
+                            # yet own a separate cleanup handle for its child.
+                            $Family.parent.Kill($true)
+                            Check ($Family.parent.WaitForExit(5000)) 'family-owned-tree-reap'
+                        }
+                    }
+                } finally { $Family.parent.Dispose(); $Family.parentDisposed = $true }
+            }
+        } finally {
+            if ($Family.child -and -not $Family.childDisposed) {
+                try {
+                    if (-not $Family.child.HasExited) { $Family.child.Kill(); Check ($Family.child.WaitForExit(5000)) 'family-owned-child-reap' }
+                } finally { $Family.child.Dispose(); $Family.childDisposed = $true }
+            }
+        }
+    }
     if (-not ('MorrowObservationFixture.NativeCounter' -as [type])) {
         Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 namespace MorrowObservationFixture {
+    public sealed class WindowStopResult {
+        public Array Pins { get; internal set; }
+        public bool RowRejectedAfterStop { get; internal set; }
+    }
     public static class NativeCounter {
+        // Reflection avoids a second copy/reference of the in-memory native
+        // helper assembly. Both competing operations call its real methods.
+        public static WindowStopResult StopDuringRow(object window, uint id, uint parentId, long ticks) {
+            var type = window.GetType(); var start = new System.Threading.ManualResetEventSlim(false);
+            Exception rowFailure = null; Array pins = null;
+            var row = new System.Threading.Thread(() => {
+                try { start.Wait(); type.GetMethod("ObserveRow").Invoke(window, new object[] { id, parentId, ticks, System.Diagnostics.Stopwatch.GetTimestamp() }); }
+                catch (Exception error) { rowFailure = error is System.Reflection.TargetInvocationException ? error.InnerException : error; }
+            }) { IsBackground = true };
+            try {
+                row.Start(); start.Set();
+                pins = (Array)type.GetMethod("Complete").Invoke(window, new object[] { 250 });
+                if (!row.Join(250)) throw new TimeoutException("Fixture row did not drain.");
+                if (rowFailure != null && !(rowFailure is ObjectDisposedException)) throw new InvalidOperationException("Fixture row failed.", rowFailure);
+                return new WindowStopResult { Pins = pins, RowRejectedAfterStop = rowFailure is ObjectDisposedException };
+            } catch {
+                if (pins != null) foreach (var pin in pins) (pin.GetType().GetProperty("Handle").GetValue(pin) as IDisposable)?.Dispose();
+                throw;
+            } finally { if (!row.IsAlive) start.Dispose(); }
+        }
         public static async System.Threading.Tasks.Task<string> CaptureAsync(System.IO.TextReader reader, int limit) {
             char[] buffer = new char[256];
             var text = new System.Text.StringBuilder();
@@ -649,6 +760,142 @@ namespace MorrowObservationFixture {
                 foreach ($pin in $latePins) { if ($pin.Handle) { $pin.Handle.Dispose() } }
                 if ($lateState) { Close-NativeObservationState $lateState }
                 Close-LifecycleChild $lateChild $lateDisposed
+                if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) }
+            }
+        }
+        # Newly discovered real P -> C is absent from the managed cache. P's
+        # original native pin plus current CIM identity must preserve C BEFORE
+        # P's managed admission, including child-before-parent row delivery.
+        # Startup/CIM preparation is outside the unchanged one-second sample
+        # clock; real exit and proof remain inside it. This is not a reproduction
+        # of the historical PID 5800/7176 kernel exit or whole-lifetime coverage.
+        foreach ($familyCase in @('child-first-zero', 'parent-first-zero', 'child-first-nonzero',
+            'parent-creation-mismatch', 'parent-exited', 'parent-first87', 'parent-first5', 'child-first87', 'child-first5', 'concurrent-stop')) {
+            $family = $null; $familyWindow = $null; $familyState = $null
+            $familyFacts = @{ pins = @(); childPin = $null; transferredRejected = $false; parentUncached = $false }
+            try {
+                $beforeRows = @(Read-LifecycleInventory @([uint32] $self.Id, [uint32] $control.Id))
+                $familyState = New-NativeObservationState ([uint32] $self.Id) $self.StartTime.ToUniversalTime().Ticks
+                $before = Get-NativeProcessSnapshot ([uint32] $self.Id) $self.StartTime.ToUniversalTime().Ticks $beforeRows -State $familyState
+                Check ($before.skipped -eq 0 -and $null -eq $before.terminalReason -and $familyState.handles.Count -eq 2) 'family-retained-root'
+                $projectedError = if ($familyCase -like '*first87') { 87 } elseif ($familyCase -like '*first5') { 5 } else { 0 }
+                if (-not $projectedError) { $familyWindow = Start-NativeInventoryWindow ([uint32] $self.Id) $familyState.handles }
+                $family = Start-LifecycleFamily
+                $familyParentId = [uint32] $family.parent.Id; $familyParentTicks = $family.parent.StartTime.ToUniversalTime().Ticks
+                if ($projectedError) {
+                    $projectedId = if ($familyCase -like 'parent-*') { $familyParentId } else { [uint32] $family.childId }
+                    $familyWindow = Start-NativeInventoryWindow ([uint32] $self.Id) $familyState.handles $projectedId $projectedError
+                }
+                Check ($familyWindow.WaitForPinForFixture($familyParentId, 5000) -and
+                    -not $familyWindow.WaitForPinForFixture([uint32] $family.childId, 0)) 'new-parent-cannot-authorize-without-cim'
+                $familyRows = @(Read-LifecycleInventory @([uint32] $self.Id, [uint32] $control.Id, $familyParentId, [uint32] $family.childId))
+                $parentRow = @($familyRows | Where-Object { $_.ProcessId -eq $familyParentId })[0]
+                $childRow = @($familyRows | Where-Object { $_.ProcessId -eq $family.childId })[0]
+                Check ($parentRow.ParentProcessId -eq $self.Id -and $childRow.ParentProcessId -eq $familyParentId -and
+                    (Test-NativeCreation $familyParentTicks $familyParentTicks $parentRow.CreationDate.ToUniversalTime().Ticks) -and
+                    (Test-NativeCreation $family.childTicks $family.childTicks $childRow.CreationDate.ToUniversalTime().Ticks)) 'family-real-cim-lineage'
+                if ($familyCase -eq 'concurrent-stop') {
+                    $familyWindow.ObserveRow($familyParentId, [uint32] $self.Id, $parentRow.CreationDate.ToUniversalTime().Ticks, [Diagnostics.Stopwatch]::GetTimestamp())
+                    $race = [MorrowObservationFixture.NativeCounter]::StopDuringRow($familyWindow, [uint32] $family.childId,
+                        $familyParentId, $childRow.CreationDate.ToUniversalTime().Ticks)
+                    $familyFacts.pins = @($race.Pins)
+                    Check ($familyWindow.WorkerStopped -and $familyFacts.pins.Count + 2 -le 64) 'concurrent-stop-bounded-join'
+                    $rejected = $false
+                    try { $familyWindow.ObserveRow([uint32]::MaxValue, $familyParentId, $family.childTicks, [Diagnostics.Stopwatch]::GetTimestamp()) }
+                    catch { $rejected = $_.Exception.InnerException -is [ObjectDisposedException] }
+                    Check $rejected 'concurrent-stop-no-late-promotion'
+                    $familyWindow.Dispose()
+                    foreach ($pin in $familyFacts.pins) { if ($pin.Handle) { $pin.Handle.Dispose() } }
+                    Check (@($familyFacts.pins | Where-Object { $_.Handle -and -not $_.Handle.IsClosed }).Count -eq 0) 'concurrent-stop-transferred-pins-closed'
+                    Write-Host ('Native new-parent stop race: ' + (@{ native = $true; historicalRaceReproduced = $false
+                        rowRejectedAfterStop = $race.RowRejectedAfterStop; workerStopped = $true; pinsClosed = $true
+                        captureCompleteClaimed = $false } | ConvertTo-Json -Compress))
+                    continue
+                }
+                if ($familyCase -eq 'parent-creation-mismatch') { $parentRow.CreationDate = $parentRow.CreationDate.AddTicks(-10L) }
+                if ($familyCase -eq 'parent-exited') { Close-LifecycleFamily $family }
+                $orderedRows = @(@($familyRows | Where-Object { $_.ProcessId -eq $self.Id })[0],
+                    @($familyRows | Where-Object { $_.ProcessId -eq $control.Id })[0])
+                if ($familyCase -eq 'parent-first-zero') { $orderedRows += @($parentRow, $childRow) }
+                else { $orderedRows += @($childRow, $parentRow) }
+                $preparedFamily = $familyWindow
+                $familyFactory = { param($Owner, $Cache); return $preparedFamily }.GetNewClosure()
+                $familyBarrier = {
+                    param($Phase, $Process)
+                    if ($Phase -ne 'snapshot') { return }
+                    $familyFacts.parentUncached = -not $familyState.handles.ContainsKey($familyParentId)
+                    Check $familyFacts.parentUncached 'grandchild-before-managed-parent-admission'
+                    $familyFacts.pins = @($familyWindow.BorrowForFixture())
+                    $childPins = @($familyFacts.pins | Where-Object { $_.Pid -eq $family.childId })
+                    Check ($familyWindow.WorkerStopped -and $familyFacts.pins.Count + 2 -le 64) 'family-global-pin-bound-and-stop'
+                    # Transfer closes promotion authority, even before the
+                    # caller disposes the original transferred handles.
+                    try { $familyWindow.ObserveRow([uint32]::MaxValue, $familyParentId, $family.childTicks, [Diagnostics.Stopwatch]::GetTimestamp()) }
+                    catch { $familyFacts.transferredRejected = $_.Exception.InnerException -is [ObjectDisposedException] }
+                    Check $familyFacts.transferredRejected 'transferred-window-cannot-promote'
+                    if ($familyCase -in @('child-first-zero', 'parent-first-zero', 'child-first-nonzero', 'child-first87', 'child-first5')) {
+                        Check ($childPins.Count -eq 1) 'grandchild-first-pin-preserved'
+                        $familyFacts.childPin = $childPins[0]
+                        if ($projectedError) {
+                            Check ($childPins[0].NativeError -eq $projectedError -and $null -eq $childPins[0].Handle -and
+                                $childPins[0].Provenance.NativeError -eq $projectedError) 'grandchild-first-error-preserved'
+                        } else {
+                            $live = [MorrowObservationIdentity.ExitProof]::ReadHandle($childPins[0].Handle, [uint32] $family.childId,
+                                $childRow.CreationDate.ToUniversalTime().Ticks, $familyParentTicks)
+                            Check ($live.IdentityMatched -and $live.Outcome -ceq 'alive' -and $live.StartUtcTicks -eq $family.childTicks) 'grandchild-original-live-proof'
+                            Release-LifecycleFamilyChild $family $(if ($familyCase -eq 'child-first-nonzero') { 7 } else { 0 })
+                        }
+                    } else { Check ($childPins.Count -eq 0) 'unproved-parent-never-authorizes-grandchild' }
+                }
+                $noReopen = { param($Id); throw 'An inventory first result was not retained.' }
+                $sampleAt = [Diagnostics.Stopwatch]::GetTimestamp()
+                $familySnapshot = Get-NativeProcessSnapshot ([uint32] $self.Id) $self.StartTime.ToUniversalTime().Ticks $orderedRows `
+                    -State $familyState -InventoryWindowFactory $familyFactory -ObservationBarrier $familyBarrier -AcquireIdentity $noReopen
+                $queryMs = ([Diagnostics.Stopwatch]::GetTimestamp() - $sampleAt) * 1000.0 / [Diagnostics.Stopwatch]::Frequency
+                Check ($familySnapshot.hasSnapshot -and $null -eq $familySnapshot.terminalReason -and $familyFacts.parentUncached -and
+                    @($familyFacts.pins | Where-Object { $_.Handle -and -not $_.Handle.IsClosed }).Count -eq 0) 'family-snapshot-and-disposal'
+                $disposedRejected = $false
+                try { $familyWindow.ObserveRow([uint32]::MaxValue, $familyParentId, $family.childTicks, [Diagnostics.Stopwatch]::GetTimestamp()) }
+                catch { $disposedRejected = $_.Exception.InnerException -is [ObjectDisposedException] }
+                Check ($disposedRejected -and $familyWindow.WorkerStopped) 'disposed-window-cannot-promote'
+                $familySample = @{ kind = 0; nativeProofVersion = 1L; elapsedMs = 0.0; queryMs = $queryMs
+                    skipped = $familySnapshot.skipped; rootSkipped = $familySnapshot.rootSkipped; rootExitedDuringSample = $familySnapshot.rootExitedDuringSample
+                    skipReasonCounts = $familySnapshot.skipReasonCounts; processes = $familySnapshot.processes
+                    lifecycleEvents = $familySnapshot.lifecycleEvents; failedRecords = $familySnapshot.failedRecords }
+                $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+                try {
+                    Check (Write-NativeSample $stream $familySample) 'family-bounded-record'
+                    Check (Write-NativeSample $stream @{ kind = 1; reason = 0; samples = 1; failureStage = 'none' }) 'family-footer'
+                } finally { $stream.Dispose() }
+                $report = Read-NativeResourceReport $path @{ forced = $false; reaped = $true; exitCode = 0 } @{}
+                Check (-not $report.invalidRecords -and $report.samples.Count -eq 1) 'family-integrated-schema'
+                if ($familyCase -in @('child-first-zero', 'parent-first-zero')) {
+                    $event = @($report.samples[0].lifecycleEvents | Where-Object { $_.pid -eq $family.childId })
+                    Check (-not $report.incomplete -and $event.Count -eq 1 -and $event[0].nativeProof.final.startUtcTicks -eq $family.childTicks -and
+                        $event[0].nativeProof.final.signaled -and $event[0].nativeProof.final.exitCode -eq 0) 'family-exact-zero-only'
+                } elseif ($projectedError) {
+                    $failed = @($report.samples[0].failedRecords | Where-Object { $_.pid -eq $projectedId })
+                    Check ($report.incomplete -and $failed.Count -eq 1 -and $failed[0].stage -ceq 'nativeAcquire' -and
+                        $failed[0].errorCode -eq $projectedError -and $null -eq $failed[0].exitCode -and
+                        $failed[0].acquisition.nativeError -eq $projectedError -and $report.normalExitObservations -eq 0) 'family-first-error-not-retried-or-normalized'
+                } elseif ($familyCase -eq 'child-first-nonzero') {
+                    $failed = @($report.samples[0].failedRecords | Where-Object { $_.pid -eq $family.childId })
+                    Check ($report.incomplete -and $failed.Count -eq 1 -and $failed[0].reason -ceq 'processExited' -and
+                        $failed[0].exitCode -eq 7 -and $report.normalExitObservations -eq 0) 'family-nonzero-remains-failure'
+                } else {
+                    Check ($report.incomplete -and -not $familyState.handles.ContainsKey([uint32] $family.childId) -and
+                        @($report.samples[0].lifecycleEvents | Where-Object { $_.pid -eq $family.childId }).Count -eq 0) 'family-unproved-parent-no-adoption'
+                }
+                Write-Host ('Native new-parent integration: ' + (@{ case = $familyCase; native = $true; historicalRaceReproduced = $false
+                    ancestryProjected = $false; creationProjected = ($familyCase -eq 'parent-creation-mismatch'); acquisitionErrorProjected = $projectedError
+                    managedParentUncached = $familyFacts.parentUncached; workerStopped = $familyWindow.WorkerStopped; pinsClosed = $true
+                    transferRejected = $familyFacts.transferredRejected; disposalRejected = $disposedRejected; incomplete = $report.incomplete } | ConvertTo-Json -Compress))
+                [IO.File]::Delete($path)
+            } finally {
+                if ($familyWindow) { $familyWindow.Dispose() }
+                foreach ($pin in $familyFacts.pins) { if ($pin.Handle) { $pin.Handle.Dispose() } }
+                if ($familyState) { Close-NativeObservationState $familyState }
+                Close-LifecycleFamily $family
                 if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) }
             }
         }

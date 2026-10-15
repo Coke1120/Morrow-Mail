@@ -416,46 +416,55 @@ pub async fn cancel(app: &App, id: &str) -> Result<Value> {
         return Err(Error::conflict("Choose an individual connected mailbox."));
     }
     let owner = owner.to_owned();
+    // Publish while the Store is still locked, before a replacement can claim work.
     let changed = match kind {
         "summaries" => {
             let account = owner.clone();
-            let changed = app
-                .db(move |db| crate::background::cancel_running_summaries(db, &account))
-                .await?;
-            if changed {
-                app.0.background.request_stop(&owner, "summary");
-            }
-            changed
+            let cancel_app = app.clone();
+            app.db(move |db| {
+                let changed = crate::background::cancel_running_summaries(db, &account)?;
+                if changed {
+                    cancel_app.0.background.request_stop(&account, "summary");
+                }
+                Ok(changed)
+            })
+            .await?
         }
         "learning" => {
             let account = owner.clone();
-            let changed = app
-                .db(move |db| crate::learning::cancel_running(db, &account))
-                .await?;
-            if changed {
-                app.0.background.request_stop(&owner, "learning");
-            }
-            changed
+            let cancel_app = app.clone();
+            app.db(move |db| {
+                let changed = crate::learning::cancel_running(db, &account)?;
+                if changed {
+                    cancel_app.0.background.request_stop(&account, "learning");
+                }
+                Ok(changed)
+            })
+            .await?
         }
         "brain" => {
             let account = owner.clone();
-            let changed = app
-                .db(move |db| crate::brain::cancel_running(db, &account))
-                .await?;
-            if changed {
-                app.0.background.request_stop(&owner, "brain");
-            }
-            changed
+            let cancel_app = app.clone();
+            app.db(move |db| {
+                let changed = crate::brain::cancel_running(db, &account)?;
+                if changed {
+                    cancel_app.0.background.request_stop(&account, "brain");
+                }
+                Ok(changed)
+            })
+            .await?
         }
         "replies" => {
             let account = owner.clone();
-            let changed = app
-                .db(move |db| crate::reply_suggestions::cancel_running(db, &account))
-                .await?;
-            if changed {
-                crate::reply_suggestions::signal_cancel(app, &owner);
-            }
-            changed
+            let cancel_app = app.clone();
+            app.db(move |db| {
+                let changed = crate::reply_suggestions::cancel_running(db, &account)?;
+                if changed {
+                    crate::reply_suggestions::signal_cancel(&cancel_app, &account);
+                }
+                Ok(changed)
+            })
+            .await?
         }
         "semantic-index" => {
             if settings["searchIndex"]["status"] != "running" {

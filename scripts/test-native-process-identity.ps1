@@ -36,6 +36,57 @@ if ($SchemaSelfTest) {
         } catch { $rejected = $_.Exception.InnerException -is [ArgumentException] }
         Check $rejected 'invalid-inventory-window-no-native'
     }
+    # Exercise the SAME bounded metadata queue used by ObserveRow. The callback
+    # authority below is an explicit projection, never native identity proof.
+    foreach ($childFirst in @($false, $true)) {
+        $queue = [MorrowObservationIdentity.InventoryRowQueue]::new()
+        $authority = [Collections.Generic.HashSet[uint32]]::new(); [void] $authority.Add(20)
+        $order = [Collections.Generic.List[uint32]]::new()
+        $live = [Func[uint32, bool]] { param($Id); return $authority.Contains($Id) }
+        $promote = [Func[MorrowObservationIdentity.InventoryRow, bool]] {
+            param($Row)
+            Check ($Row.CimTicks -eq $ticks -and $Row.ReceivedAtQpc -eq 1L -and $authority.Contains($Row.ParentPid)) 'queue-fixed-row'
+            $order.Add($Row.Pid); [void] $authority.Add($Row.Pid); return $true
+        }
+        if ($childFirst) { $queue.Add(22, 21, $ticks, 1L); $queue.Drain(21, $live, $promote); Check ($order.Count -eq 0) 'unproved-parent-no-drain' }
+        $queue.Add(21, 20, $ticks, 1L); $queue.Drain(20, $live, $promote)
+        if (-not $childFirst) { $queue.Add(22, 21, $ticks, 1L); $queue.Drain(21, $live, $promote) }
+        Check (($order -join ',') -ceq '21,22' -and $queue.Count -eq 2) 'new-parent-child-queue-order'
+        $queue.Drain(20, $live, $promote); Check ($order.Count -eq 2) 'queue-does-not-repeat-acquisition'
+        $rejected = $false
+        try { $queue.Add(22, 20, $ticks, 1L) } catch { $rejected = $_.Exception.InnerException -is [InvalidOperationException] }
+        Check $rejected 'duplicate-row-cannot-reparent'
+    }
+    & {
+        $queue = [MorrowObservationIdentity.InventoryRowQueue]::new()
+        $attempted = [Collections.Generic.List[uint32]]::new()
+        $rootOnly = [Func[uint32, bool]] { param($Id); return $Id -eq 20 }
+        $denyPromotion = [Func[MorrowObservationIdentity.InventoryRow, bool]] { param($Row); $attempted.Add($Row.Pid); return $false }
+        $queue.Add(22, 21, $ticks, 1L); $queue.Drain(21, $rootOnly, $denyPromotion)
+        $queue.Add(21, 20, $ticks, 1L); $queue.Drain(20, $rootOnly, $denyPromotion)
+        $queue.Drain(20, $rootOnly, $denyPromotion)
+        Check (($attempted -join ',') -ceq '21') 'projected-rejected-parent-no-child-or-retry'
+    }
+    $bounded = [MorrowObservationIdentity.InventoryRowQueue]::new()
+    foreach ($id in 2..8193) { $bounded.Add([uint32] $id, 1, $ticks, 0L) }
+    Check ($bounded.Count -eq 8192) 'pending-row-bound'
+    $rejected = $false
+    try { $bounded.Add(8194, 1, $ticks, 0L) } catch { $rejected = $_.Exception.InnerException -is [InvalidOperationException] }
+    Check $rejected 'pending-row-overflow-fails'
+    foreach ($bad in @(@(0, $ticks, 0L), @(2, -1L, 0L), @(2, ([DateTime]::MaxValue.Ticks + 1L), 0L), @(2, $ticks, -1L))) {
+        $rejected = $false
+        try { [MorrowObservationIdentity.InventoryRowQueue]::new().Add([uint32] $bad[0], 1, [long] $bad[1], [long] $bad[2]) }
+        catch { $rejected = $_.Exception.InnerException -is [ArgumentException] }
+        Check $rejected 'pending-invalid-row-no-proof'
+    }
+    $bounded = [MorrowObservationIdentity.InventoryRowQueue]::new()
+    foreach ($id in 21..84) { $bounded.Add([uint32] $id, [uint32] ($id - 1), $ticks, 1L) }
+    $allLive = [Func[uint32, bool]] { param($Id); return $true }
+    $allPromoted = [Func[MorrowObservationIdentity.InventoryRow, bool]] { param($Row); return $true }
+    $rejected = $false
+    try { $bounded.Drain(20, $allLive, $allPromoted) } catch { $rejected = $_.Exception.InnerException -is [InvalidOperationException] }
+    Check $rejected 'pending-chain-over-64-fails'
+    Write-Host 'Inventory row queue ordering/bounds/projection checks passed; no native ownership or exit was proved.'
     Write-Host 'Native identity pure integer/input checks passed; Windows proof was not run.'
     return
 }

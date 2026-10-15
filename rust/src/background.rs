@@ -17,12 +17,12 @@ use std::{
     collections::HashSet,
     future::Future,
     sync::{
-        LazyLock,
+        LazyLock, Mutex as StdMutex,
         atomic::{AtomicBool, AtomicI64, Ordering},
     },
     time::Duration,
 };
-use tokio::sync::{Mutex, Notify, watch};
+use tokio::sync::{Mutex, Notify, oneshot};
 
 const SUMMARY_CANCELLED: &str =
     "Cancelled. Nothing was sent. Review Today before generating again.";
@@ -30,19 +30,10 @@ const SUMMARY_TIMEOUT: &str =
     "The summary timed out. Nothing was sent. Review Today before generating again.";
 const RUNNING_WAIT: Duration = Duration::from_secs(90);
 
-#[derive(Clone, Default)]
-struct StopNote {
-    seq: u64,
+struct StopWaiter {
     owner: String,
     kind: String,
-}
-fn stop_matches(note: &StopNote, seen: u64, owner: &str, kind: &str) -> bool {
-    if note.seq == seen {
-        return false;
-    }
-    let owner_ok = owner.is_empty() || note.owner == "*" || note.owner == owner;
-    let kind_ok = kind.is_empty() || note.kind == "*" || note.kind == kind;
-    owner_ok && kind_ok
+    stopped: oneshot::Sender<()>,
 }
 
 pub struct Runtime {
@@ -50,7 +41,7 @@ pub struct Runtime {
     stopped: AtomicBool,
     shutdown: Notify,
     last_sync: AtomicI64,
-    cancel: watch::Sender<StopNote>,
+    cancel: StdMutex<Vec<StopWaiter>>,
 }
 impl Default for Runtime {
     fn default() -> Self {
@@ -59,32 +50,52 @@ impl Default for Runtime {
             stopped: AtomicBool::new(false),
             shutdown: Notify::new(),
             last_sync: AtomicI64::new(0),
-            cancel: watch::channel(StopNote::default()).0,
+            cancel: StdMutex::new(Vec::new()),
         }
     }
 }
 impl Runtime {
     pub fn request_stop(&self, owner: &str, kind: &str) {
-        let seq = self.cancel.borrow().seq.wrapping_add(1);
-        self.cancel.send_replace(StopNote {
-            seq,
-            owner: owner.to_owned(),
-            kind: kind.to_owned(),
-        });
+        let stopped = {
+            let mut waiters = self
+                .cancel
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let (stopped, pending): (Vec<_>, Vec<_>) = std::mem::take(&mut *waiters)
+                .into_iter()
+                .filter(|waiter| !waiter.stopped.is_closed())
+                .partition(|waiter| {
+                    (waiter.owner.is_empty() || owner == "*" || waiter.owner == owner)
+                        && (waiter.kind.is_empty() || kind == "*" || waiter.kind == kind)
+                });
+            *waiters = pending;
+            stopped
+        };
+        for waiter in stopped {
+            let _ = waiter.stopped.send(());
+        }
     }
     pub fn stop_requested(
         &self,
         owner: &str,
         kind: &str,
-    ) -> impl Future<Output = ()> + Send + 'static {
-        let mut notes = self.cancel.subscribe();
-        let seen = notes.borrow().seq;
-        let owner = owner.to_owned();
-        let kind = kind.to_owned();
+    ) -> impl Future<Output = ()> + Send + 'static + use<> {
+        let (stopped, receiver) = oneshot::channel();
+        {
+            let mut waiters = self
+                .cancel
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            waiters.retain(|waiter| !waiter.stopped.is_closed());
+            // Register before returning so a stop between claim and first poll is retained.
+            waiters.push(StopWaiter {
+                owner: owner.to_owned(),
+                kind: kind.to_owned(),
+                stopped,
+            });
+        }
         async move {
-            let _ = notes
-                .wait_for(move |note| stop_matches(note, seen, &owner, &kind))
-                .await;
+            let _ = receiver.await;
         }
     }
 }
