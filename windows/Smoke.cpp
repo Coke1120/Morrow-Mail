@@ -928,6 +928,8 @@ IAsyncAction Shell::smoke() {
             }
             enter("mail-background-revision-and-cursor-recovery");
             co_await mailRevisionChecks(lifetime);
+            enter("download-shared-view-refresh");
+            co_await downloadRefreshChecks(lifetime);
             enter("mail-reader");
             auto response = co_await service->request(L"/messages/mail-000", owner);
             auto source = object(response,L"message");

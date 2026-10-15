@@ -1,5 +1,129 @@
 # Verification — 15 October 2026
 
+## Windows download repair and guarded page cleanup — 15 October 2026
+
+The Downloads repair now refreshes shared local state, the committed mail/search
+page and the still-owned selected detail after its explicitly reviewed POST.
+Owner, connection, presentation, page and selection epochs reject obsolete work.
+It preserves unsubmitted search edits, bounded retained-unread metadata and the
+existing mark-on-open boundary; repair itself makes no read/flag write or new
+provider-work hint.
+
+A guarded page read can be invalidated after transport releases its write guard
+and before UI adoption. Its cleanup now restores the five page controls only
+while the captured owner/generation/page/content/control identities and request
+ticket still match. Integration with contextual selection commands preserves
+the existing loading-state updates at start/completion and updates them after
+owned abandonment. An older request cannot re-enable a newer page's controls.
+This is a source-supported scheduling correction, not a native race replay.
+
+The original 63 portable production-coroutine controls retain their evidence.
+The additional actual-loadPage suite passed 67 controls with ASan/UBSan and
+-Werror; its former-cleanup mutation failed the restoration assertion as
+expected. Native row rendering, WinRT and transport use explicit portable fakes.
+A native fictional-service regression is prepared under the existing smoke
+bound. Source-specific Windows SDK and runtime results remain pending; neither
+portable tests nor mutation failure establish live-account acceptance.
+
+## Windows Today stale-control fixture receipt — 15 October 2026
+
+PR59 Windows job `116452990553` tested head `269882f` through synthetic merge
+`e3b8f1c1210b427adde629e2f5df95c052278795`. Rust checks and native compilation
+completed, but native acceptance failed during review-workspace ownership and
+retention. The original assertion combined receipt of a retained TextBox event
+with unchanged draft/approval and cleared active reply controls. Its single
+error did not identify which condition failed. The complete original log is
+retained with SHA-256
+`522ef6556215421c7230df5422b08e47bb1c3d14530e749de69191531297f912`.
+
+The fixture now observes the real task-button Click and the exact captured task
+decision before changing retained controls. Task adoption and both native
+stale-input events share the original five-second absolute deadline. There is
+still one Text assignment and one facts-checkbox change; a missing matching
+TextChanged or Checked event remains a failure. Separate assertions distinguish
+an uncompleted task action, missing native events and changed retained state.
+Failure receipts contain only capped event counts and fixed state/layout
+booleans. They contain no message, draft, task, account or control text.
+
+This is a fixture handshake and diagnostic change. Production handlers,
+owner/selection/control-identity guards and all subsequent lifecycle checks are
+unchanged. The old controls are not reparented, and their handlers are not called
+directly. In particular, the fixture does not assume an unloaded TextBox must
+dispatch TextChanged, nor accept unchanged state without both observed events.
+Static byte checks do not establish the original failure's cause or a Windows
+runtime fix. Fresh SDK/runtime CI for this candidate remains required; no local
+native build or runtime pass is claimed.
+
+## PR #59 macOS menu snapshot identity — 15 October 2026
+
+At head `269882f`, both the focused review run `38744078319` (job
+`116452991105`) and primary run `38744078202` (macOS job `116452991115`)
+compiled the fixture but failed before activating `reader.replyMenu`. Their
+actual checkout was synthetic merge `e3b8f1c`, merging `269882f` into `05cf409`.
+Both logs show the Reply and secondary menu nodes pointing to group 2, while a
+second query of that group's children reports two `outside` identities.
+Menu tracking began zero times. The preceding lifecycle, 13 synthetic graph
+cases and mounted-control gates passed; this does not establish a menu action
+pass or a product UI failure.
+
+The fixture previously enumerated accessibility children, then queried those
+children again while mapping their object identities into the first enumeration.
+It now retains the parent/child edges from one getter result per snapshot.
+The split Reply menu also retains its actual mounted `NSSegmentedControl` and
+exact `NSCell`, with the proven secondary child slot, rather than comparing
+virtual child wrapper addresses across snapshots. Role, label, reciprocal
+links, owner, visibility, enabled state, unique candidate and five-second gates
+remain required. Replacement controls cannot inherit the captured identity.
+The one advertised action, menu tracking, command checks and outer 45-second
+fixture limit remain unchanged; no fallback action or deadline extension was
+added. No production view, handler, provider permission or service code changed.
+
+Prepared controls cover a synthetic getter that returns fresh wrappers, the
+old second-getter mismatch, invalid parent/overflow, and real native owner/cell
+retention with wrong slot, ambiguous owner, wrong label, disabled, hidden,
+detached and replacement negatives. These controls and the corrected real
+Reader menu checks have **not run on an SDK locally**. Linux source/diff checks
+only establish the unchanged gates and fixture-only scope. The two original
+failure logs remain evidence; the exact candidate still requires fresh macOS
+compilation and runtime CI, plus separate visual/keyboard/accessibility review.
+
+## macOS download repair shared-state follow-up — 15 October 2026
+
+PR #55 review `discussion_r4282982883` identified a source-confirmed defect in
+integrated base `05cf409`: a successful full-content download refreshed only the
+Downloads sheet, discarding its returned message and leaving AppModel's reader
+and mailbox snapshots unchanged. This candidate retains the existing download
+confirmation and explicit connection/owner request. It then refreshes the local
+paged state and current mail page, and reads the still-selected message through
+a read-only GET. It does not call mark-read-on-open or the onboarding account
+selector, copy reader HTML/attachments into list metadata, or replay the POST's
+potentially older flags. Old state reads are invalidated; selection epochs,
+view/connection/presentation and caller-ticket guards reject obsolete work.
+The retained row in an unread-only page also receives fresh bounded metadata.
+
+`DownloadRepairAssertions.swift` adds 24 fictional URLProtocol cases using the
+actual AppModel handler, including held pre-download reloads, duplicate IDs,
+unselected repairs, selection A→B→A, modal replacement, reconnect/disconnect,
+cancellation, queued revocation, response identity, late page/detail responses,
+and newer shared-state changes. One case uses actual first-open/loadMessage to
+establish the retained unread row; repair must add no further mark-read PATCH.
+Another mounts NativeMailSearch and checks that the repaired body, current
+query and second page survive its state-triggered refresh. Unexpected routes
+fail the transport, and no provider, model or real workspace is used.
+
+The existing mail-flow driver compiles these assertions with the production
+sources and runs them as a separate process with the same 30-second limit;
+existing search/read/reply limits and assertions remain intact. Its explicit
+`--download-repair-negative-control` mode inserts a return after the validated
+POST only in a temporary compiler input, and requires the exact stale-reader
+failure. This is a mutation control, not an execution claim about historical UI.
+
+Local Python syntax/driver-preparation and diff checks are recorded outside the
+repository. This Linux environment has no SwiftUI/AppKit SDK; the new candidate,
+24 native cases and negative control have **not** been compiled or run on macOS.
+They require matching-source native CI before acceptance. No Rust/provider,
+Windows, signing, visual/accessibility or live-account result is inferred.
+
 ## IDLE with selected folders, Downloads and move recovery — 15 October 2026
 
 This normal integration combines IDLE/fixture-cleanup parent `b9691f9` with

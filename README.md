@@ -45,8 +45,10 @@ live-account acceptance.
 
 The download-controls follow-up adds account-owned downloaded-content coverage,
 logical storage totals and a 30-record repair list to both native clients. It
-reuses reviewed history controls and explicit single-message downloads. Local
-archive/Trash changes gain a restart-safe last-move undo while their location
+reuses reviewed history controls and explicit single-message downloads. The
+repair follow-up refreshes the current reader and shared mailbox metadata from
+local records on both platforms, preserving the selected owner, page and search
+query without another mark-read action. Local archive/Trash changes gain a restart-safe last-move undo while their location
 and connection remain unchanged. Provider Trash keeps its separate one-minute
 undo. No cache deletion, quota or global offline mode is introduced. See
 [controls and remaining limits](docs/DOWNLOAD_CONTROLS.md).

@@ -711,11 +711,63 @@ IAsyncAction reviewWorkspaceChecks(std::shared_ptr<Shell> shell) {
     Json task;put(task,L"id",L"fictional-inline-task");put(task,L"accountId",owner);put(task,L"messageId",L"same-id");put(task,L"title",L"Fictional decision retained in Today");put(task,L"detail",L"Review this saved task without changing mail.");
     JsonArray todos;todos.Append(task);today.Insert(L"todos",todos);shell->state.Insert(L"today",today);paintToday(inlinePage);
     Button taskReview{nullptr};for(auto const& child:inlinePage->queue.Children())if(auto candidate=child.try_as<Button>();candidate && xaml::Automation::AutomationProperties::GetAutomationId(candidate)==L"review.today.task."+owner+L".fictional-inline-task")taskReview=candidate;
-    require(bool(taskReview),L"Today has no native Review entry for its saved task.");co_await invokeReviewButton(shell,taskReview);
-    auto changedControl=std::make_shared<bool>(false);auto changedEvent=retainedBody.TextChanged(auto_revoke,[changedControl](auto const&,auto const&){*changedControl=true;});
-    retainedBody.Text(L"An obsolete editor must not update a task or retained reply.");retainedFacts.IsChecked(true);
-    ready=GetTickCount64()+5000;while(!*changedControl && GetTickCount64()<ready){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
-    require(*changedControl && inlinePage->selectedKey.empty() && !inlinePage->body && entry.draft.Stringify()==retainedDraft && !entry.reviewed,L"A detached reply control changed the retained draft or approval from task review.");
+    require(bool(taskReview),L"Today has no native Review entry for its saved task.");
+    struct DetachedEvents { unsigned taskClicks=0,text=0,matchingText=0,facts=0,checkedFacts=0; };
+    auto events=std::make_shared<DetachedEvents>();
+    auto count=[](unsigned& value){if(value<16)++value;};
+    auto taskClick=taskReview.Click(auto_revoke,[events,count](auto const&,auto const&){count(events->taskClicks);});
+    auto expectedTask=task.Stringify();
+    auto adopted=[&] {
+        auto kind=memory->detailKinds.find(std::wstring(owner));auto detail=memory->details.find(std::wstring(owner));
+        auto decision=memory->decisions.find(std::wstring(owner));
+        return inlinePage->current() && memory->scope==owner && kind!=memory->detailKinds.end() && kind->second==L"decision"
+            && detail!=memory->details.end() && detail->second && decision!=memory->decisions.end()
+            && flag(decision->second,L"task") && object(decision->second,L"item").Stringify()==expectedTask;
+    };
+    auto receipt=[&] {
+        Json value;
+        value.Insert(L"taskClicks",Value::CreateNumberValue(events->taskClicks));
+        value.Insert(L"textEvents",Value::CreateNumberValue(events->text));
+        value.Insert(L"matchingTextEvents",Value::CreateNumberValue(events->matchingText));
+        value.Insert(L"factsEvents",Value::CreateNumberValue(events->facts));
+        value.Insert(L"checkedFactsEvents",Value::CreateNumberValue(events->checkedFacts));
+        value.Insert(L"current",Value::CreateBooleanValue(inlinePage->current()));
+        value.Insert(L"taskAdopted",Value::CreateBooleanValue(adopted()));
+        value.Insert(L"selectedKeyEmpty",Value::CreateBooleanValue(inlinePage->selectedKey.empty()));
+        value.Insert(L"bodyCleared",Value::CreateBooleanValue(!inlinePage->body));
+        value.Insert(L"factsCleared",Value::CreateBooleanValue(!inlinePage->facts));
+        value.Insert(L"draftUnchanged",Value::CreateBooleanValue(entry.draft.Stringify()==retainedDraft));
+        value.Insert(L"reviewed",Value::CreateBooleanValue(entry.reviewed));
+        value.Insert(L"oldBodyLoaded",Value::CreateBooleanValue(retainedBody.IsLoaded()));
+        value.Insert(L"oldBodySized",Value::CreateBooleanValue(retainedBody.ActualWidth()>0 && retainedBody.ActualHeight()>0));
+        value.Insert(L"oldFactsLoaded",Value::CreateBooleanValue(retainedFacts.IsLoaded()));
+        value.Insert(L"deadlineExpired",Value::CreateBooleanValue(GetTickCount64()>=ready));
+        return value.Stringify();
+    };
+    auto observed=[&](bool condition,wchar_t const* message){if(!condition)throw hresult_error(E_FAIL,hstring(message)+L" "+receipt());};
+    co_await invokeReviewButton(shell,taskReview);
+    // Invoke requests an action; it does not supply a completion receipt. Share
+    // the original five-second budget between adoption and both native events.
+    ready=GetTickCount64()+5000;
+    while((!adopted() || !events->taskClicks) && GetTickCount64()<ready){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+    observed(adopted() && events->taskClicks>0,L"The native task action did not adopt its captured decision before stale input.");
+    observed(inlinePage->selectedKey.empty() && !inlinePage->body && !inlinePage->facts
+        && entry.draft.Stringify()==retainedDraft && !entry.reviewed,L"Task review did not revoke the reply controls while retaining its draft and approval.");
+    observed(!checked(retainedFacts),L"The retained facts control was not reset before stale input.");
+    hstring staleText=L"An obsolete editor must not update a task or retained reply.";
+    auto changedEvent=retainedBody.TextChanged(auto_revoke,[events,count,staleText](auto const& sender,auto const&){
+        count(events->text);if(sender.template as<TextBox>().Text()==staleText)count(events->matchingText);
+    });
+    auto checkedEvent=retainedFacts.Checked(auto_revoke,[events,count](auto const& sender,auto const&){
+        count(events->facts);if(checked(sender.template as<CheckBox>()))count(events->checkedFacts);
+    });
+    retainedBody.Text(staleText);retainedFacts.IsChecked(true);
+    while((!events->matchingText || !events->checkedFacts) && GetTickCount64()<ready){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+    // An unloaded TextBox is not assumed to deliver TextChanged. Missing native
+    // events remain a failure, distinct from an observed retained-state change.
+    observed(events->matchingText>0 && events->checkedFacts>0,L"The retained reply controls did not deliver both native stale-input events.");
+    observed(adopted() && inlinePage->selectedKey.empty() && !inlinePage->body && !inlinePage->facts
+        && entry.draft.Stringify()==retainedDraft && !entry.reviewed,L"A detached reply control changed the retained draft or approval from task review.");
     co_await reviewPage(shell,L"today");co_await ui;inlinePage=mountedReview.lock();
     require(inlinePage && inlinePage->current() && memory->detailKinds[std::wstring(owner)]==L"decision" && inlinePage->selectedKey.empty() && !inlinePage->body,L"Returning to Today restored an unrelated reply or original instead of its selected task.");
     auto decision=inlinePage->detailHost.Content().as<ScrollViewer>().Content().as<StackPanel>();
