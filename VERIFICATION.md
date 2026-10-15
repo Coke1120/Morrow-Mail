@@ -221,7 +221,8 @@ preserved in task evidence. A global `ceil(total/49)` undercounted independently
 drained 1,000-UID windows. The corrected fixture sums the rounded window work,
 retains the existing 16-round allowance, and adds boundary controls plus safe
 failure diagnostics. Dataset size and substantive assertions are unchanged.
-That Rust correction and the final stacked 1k/10k/50k matrix are not yet rerun.
+At that earlier checkpoint, the Rust correction and final stacked 1k/10k/50k
+matrix had not yet been rerun.
 
 Independent review also corrected the Mac selected-row/reader visibility oracle
 and compiler-input/adapter provenance. The applied Python controls pass 13/13;
@@ -246,10 +247,10 @@ explicit UTF-8 mode passed all seven. That control verifies the encoding contrac
 not Windows execution. No runtime, fixture or harness source bytes changed; the
 191-file source digest remains
 `bad245df9546e2ea61dbced0d0fb5d8b793d5b77343a16a9a8db600d1f513f3a`.
-The matching-source 1k and 10k protocol runs passed all assertions; the original
-50k process continues after a tool-transport interruption. Its terminal outcome
-and both native measurement jobs remain pending. Historical failures above are
-preserved and are not converted into passes.
+At that checkpoint, the matching-source 1k and 10k protocol runs had passed all
+assertions while the original 50k process continued after a tool-transport
+interruption. Its terminal outcome and both native jobs were pending. Historical
+failures above are preserved and are not converted into passes.
 
 The next Windows measurement job (`38723052135`, job `116382210212`, head
 `a8814a3`) passed the decoding point but failed the unchanged production-handler
@@ -270,6 +271,43 @@ bounded diagnostic receipt now exposes selected status/source/exit/error fields
 and fixed build/native error lines on the next run. The original failure is
 retained; there is no root-cause or SDK success claim. Runtime/test sources, the
 191-file manifest, time limits and all assertions remain unchanged.
+
+
+At head `47cd609`, [measurement run 38726249987](https://github.com/Coke1120/Morrow-Mail/actions/runs/38726249987)
+failed on both platforms. Windows job `116392722978` passed preflight and its
+build command, then stopped at `Private compiler inputs changed during build`.
+Its projected `nativeProcessExitCode` is null and both source digests still match
+`bad245df9546e2ea61dbced0d0fb5d8b793d5b77343a16a9a8db600d1f513f3a`.
+The native measurement command had not started. The receipt lacks the changed
+paths, so no particular generated file is blamed or excluded. macOS job
+`116392723215` passed its 13 Python controls but reported only the failed evidence
+path and exit 1; its exact inner error remains unknown. Artifact sizes do not
+establish the failed phase. Both complete workflow logs are preserved locally;
+the original runner artifacts remain retained by CI and were not downloaded.
+
+The workflow now projects the same fixed-file bounded receipt/error diagnostics
+on macOS and a bounded private-input delta on Windows. Deltas include only
+relative paths and old/new hashes, with explicit overflow/incomplete states;
+symlinks/reparse points, file-count, file-size and total-read limits fail closed.
+The delta is observed after the stage, not retroactively labeled an immediate
+post-build snapshot. No source-manifest assertion, measurement command, timeout
+or failure gate is relaxed. Isolated local controls execute the actual extracted
+PowerShell/Python workflow blocks: 13 controls passed, covering typed receipts,
+exact added/removed/changed hashes, overflow, missing/oversized inputs, symlink
+rejection, total-read/file-count limits and both platform log projections. These
+Linux controls do not establish Windows SDK/AppKit or native measurement success.
+The next native run is still required.
+
+The matching-source Linux protocol matrix subsequently completed at original
+frozen head `3ff9451`: actual 1k, 10k and 50k empty-cache datasets all passed,
+including every body/digest, 120 arrivals, both flag directions and reconnect
+controls. The 50k run required 1,053 true-flag rounds and four false-flag rounds,
+within the corrected 1,069 bound. A tool-transport interruption did not restart
+the original child: its recorder retained process exit 0 and the complete result.
+Contracts, formatting and strict all-target Clippy passed. Those results do not
+convert the original 50k failure or either native failure into a pass, and the
+aggregate remains incomplete without both platform resource/native evidence
+and caller-approved performance limits.
 
 ## v0.8.1 published — 14 October 2026
 

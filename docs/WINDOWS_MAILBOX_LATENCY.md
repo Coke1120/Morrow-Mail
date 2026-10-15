@@ -95,11 +95,22 @@ NuGet downloads and build object files. It is evidence, not an installable app
 distribution. Existing native reader/network/security and release gates remain
 unchanged; these extra jobs do not replace them.
 
-The Windows job also prints a bounded diagnostic receipt and matching build or
-native error lines. It reads only the fixed measurement output files, projects
-status/source/exit fields, and caps JSON/log input size, line count and line
-length. The original stage result and retained artifacts remain authoritative;
-the diagnostic step cannot turn a failed measurement into a pass.
+Both native jobs print a bounded diagnostic receipt and matching errors from
+only `native-build.log` and `native.log`. Each JSON input is limited to 1 MiB,
+each log to 16 MiB, and total diagnostic reads to 64 MiB. At most 40 matching
+lines per log are shown, with 1,024-character excerpts and explicit truncation.
+Missing, invalid, oversized or linked inputs produce an incomplete diagnostic.
+
+Windows also compares the saved compiler manifest with the same fixed private
+input roots after the stage stops. It reports added/removed/changed counts and
+at most 40 relative paths with old/new SHA-256 values, never source contents or
+environment variables. Enumeration is limited to 2,048 files, 4,096 directory
+entries, depth 32, 1,024-byte relative paths and 16 MiB per input within the shared
+64 MiB read budget; symlinks and reparse points are rejected. The comparison is
+labeled `diagnostic-after-stage`, not an immediate post-build snapshot. Overflow
+and incomplete enumeration stay explicit; no generated path is silently waived.
+The original stage result and retained artifacts remain authoritative. A
+successful diagnostic step cannot turn a failed measurement into a pass.
 
 A green job means its measurement/report validity checks completed. It does not
 mean the full product acceptance aggregate passed: all actual protocol sizes,

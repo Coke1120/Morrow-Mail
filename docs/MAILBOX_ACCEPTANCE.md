@@ -118,6 +118,12 @@ records its own commit, tree and full source hashes. The ordinary native and
 security workflow retains its normal synthetic-merge checkout and all existing
 gates; a head measurement is not evidence of merge-integration acceptance.
 
+Both jobs project bounded receipt/error diagnostics into their workflow logs.
+Windows additionally reports the bounded private compiler-input delta after the
+stage stops. Missing or truncated diagnostics do not certify the stage, and the
+original measurements, manifest gates and deadlines remain unchanged. See the
+[diagnostic bounds](WINDOWS_MAILBOX_LATENCY.md#run-on-an-unmerged-candidate).
+
 ## Aggregate without hiding missing work
 
 ```sh

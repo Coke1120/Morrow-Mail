@@ -44,38 +44,167 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: |
-          $evidenceRoot = Join-Path $env:RUNNER_TEMP 'mailbox-latency-windows'
-          $receiptPath = Join-Path $evidenceRoot 'evidence.json'
-          if ((Test-Path -LiteralPath $receiptPath -PathType Leaf) -and (Get-Item -LiteralPath $receiptPath).Length -le 1048576) {
-            try {
-              $receipt = Get-Content -LiteralPath $receiptPath -Raw -Encoding utf8 | ConvertFrom-Json
-              $failure = [string]$receipt.error
-              [ordered]@{
-                status = $(if ($receipt.status -in @('complete', 'failed')) { $receipt.status } else { 'invalid' })
-                exitCode = $(if ($receipt.exitCode -is [long] -or $receipt.exitCode -is [int]) { $receipt.exitCode } else { $null })
-                nativeProcessExitCode = $(if ($receipt.nativeProcessExitCode -is [long] -or $receipt.nativeProcessExitCode -is [int]) { $receipt.nativeProcessExitCode } else { $null })
-                sourceCommit = $(if ([string]$receipt.source.commit -cmatch '^[0-9a-f]{40}$') { $receipt.source.commit } else { 'invalid' })
-                sourceDigest = $(if ([string]$receipt.source.digest -cmatch '^[0-9a-f]{64}$') { $receipt.source.digest } else { 'invalid' })
-                sourceAfterDigest = $(if ([string]$receipt.sourceAfter.digest -cmatch '^[0-9a-f]{64}$') { $receipt.sourceAfter.digest } else { 'invalid' })
-                error = $failure.Substring(0, [Math]::Min($failure.Length, 1024))
-                errorTruncated = $failure.Length -gt 1024
-              } | ConvertTo-Json -Compress
-            } catch { Write-Output 'Measurement receipt could not be decoded; retained artifact is authoritative.' }
-          } else { Write-Output 'Measurement receipt is missing or oversized.' }
-          foreach ($name in @('native-build.log', 'native.log')) {
-            $logPath = Join-Path $evidenceRoot $name
-            if (-not (Test-Path -LiteralPath $logPath -PathType Leaf)) { continue }
-            if ((Get-Item -LiteralPath $logPath).Length -gt 16777216) {
-              Write-Output "$name exceeds the diagnostic read bound; retained artifact is authoritative."
-              continue
-            }
-            $diagnosticMatches = @(Select-String -LiteralPath $logPath -Encoding utf8 -Pattern 'fatal error|error [A-Z]+[0-9]+|error:|failed|failure|exception' | Select-Object -First 41)
-            Write-Output "$name matchingLinesShown=$([Math]::Min($diagnosticMatches.Count, 40)) additionalMatches=$($diagnosticMatches.Count -gt 40)"
-            foreach ($diagnosticMatch in ($diagnosticMatches | Select-Object -First 40)) {
-              $diagnosticLine = $diagnosticMatch.Line
-              Write-Output ("{0}:{1}: {2}" -f $name, $diagnosticMatch.LineNumber, $diagnosticLine.Substring(0, [Math]::Min($diagnosticLine.Length, 1024)))
-            }
-          }
+          @'
+          import hashlib, json, os, re, stat, sys
+          from pathlib import Path, PurePosixPath
+
+          # Only fixed synthetic output paths; these are diagnostics, never success gates.
+          PLATFORM = sys.argv[1]
+          ROOT = Path(os.environ["RUNNER_TEMP"]) / ("mailbox-latency-" + PLATFORM)
+          MAX_TOTAL = 64 * 1024 * 1024
+          read_bytes = 0
+
+          class Incomplete(Exception):
+              pass
+
+          def emit(kind, **fields):
+              print(json.dumps(dict(kind=kind, **fields), ensure_ascii=True, separators=(",", ":")))
+
+          def info(path, directory=False):
+              try:
+                  value = path.lstat()
+              except FileNotFoundError:
+                  raise Incomplete("missing") from None
+              if stat.S_ISLNK(value.st_mode) or getattr(value, "st_file_attributes", 0) & 0x400:
+                  raise Incomplete("link-or-reparse-point")
+              if not (stat.S_ISDIR(value.st_mode) if directory else stat.S_ISREG(value.st_mode)):
+                  raise Incomplete("not-a-regular-directory" if directory else "not-a-regular-file")
+              return value
+
+          def read(path, limit):
+              global read_bytes
+              value = info(path)
+              if value.st_size > limit:
+                  raise Incomplete("file-size-limit")
+              if read_bytes + value.st_size > MAX_TOTAL:
+                  raise Incomplete("total-read-limit")
+              with path.open("rb") as stream:
+                  opened = os.fstat(stream.fileno())
+                  if (opened.st_dev, opened.st_ino, opened.st_size) != (value.st_dev, value.st_ino, value.st_size):
+                      raise Incomplete("file-changed-before-read")
+                  data = stream.read(value.st_size)
+                  read_bytes += len(data)
+                  after = os.fstat(stream.fileno())
+              if len(data) != value.st_size or (after.st_size, after.st_mtime_ns) != (opened.st_size, opened.st_mtime_ns):
+                  raise Incomplete("file-changed-during-read")
+              return data
+
+          def fixed_json(name):
+              value = json.loads(read(ROOT / name, 1024 * 1024))
+              if not isinstance(value, dict):
+                  raise Incomplete("invalid-json-object")
+              return value
+
+          def failure(kind, error, **fields):
+              reason = str(error) if isinstance(error, Incomplete) else "invalid-json" if isinstance(error, ValueError) else "io-error"
+              emit(kind, diagnosticComplete=False, reason=reason, **fields)
+
+          try:
+              info(ROOT, directory=True)
+          except (Incomplete, OSError) as error:
+              failure("measurement-diagnostics", error)
+              sys.exit(0)
+
+          try:
+              receipt = fixed_json("evidence.json")
+              source, after = receipt.get("source"), receipt.get("sourceAfter")
+              if not isinstance(source, dict) or not isinstance(after, dict):
+                  raise Incomplete("invalid-source-metadata")
+              def hex_field(value, size):
+                  return value if isinstance(value, str) and re.fullmatch("[0-9a-f]{%d}" % size, value) else "invalid"
+              error = receipt.get("error")
+              if error is not None and not isinstance(error, str):
+                  raise Incomplete("invalid-error-field")
+              status = receipt.get("status")
+              fields = dict(status=status if status in ("complete", "failed") else "invalid",
+                  exitCode=receipt.get("exitCode") if type(receipt.get("exitCode")) is int else None,
+                  nativeProcessExitCode=receipt.get("nativeProcessExitCode") if type(receipt.get("nativeProcessExitCode")) is int else None,
+                  sourceCommit=hex_field(source.get("commit"), 40), sourceDigest=hex_field(source.get("digest"), 64),
+                  sourceAfterDigest=hex_field(after.get("digest"), 64), error=error[:1024] if error else error,
+                  errorTruncated=isinstance(error, str) and len(error) > 1024)
+              complete = fields["status"] != "invalid" and fields["exitCode"] is not None and all(fields[name] != "invalid" for name in ("sourceCommit", "sourceDigest", "sourceAfterDigest"))
+              emit("measurement-receipt", diagnosticComplete=complete, **fields)
+          except (Incomplete, OSError, ValueError) as error:
+              failure("measurement-receipt", error)
+
+          for name in ("native-build.log", "native.log"):
+              try:
+                  content = read(ROOT / name, 16 * 1024 * 1024).decode("utf-8", errors="replace")
+                  matches, shown = 0, []
+                  for number, line in enumerate(content.splitlines(), 1):
+                      if re.search(r"fatal error|error [A-Z]+[0-9]+|error:|failed|failure|exception", line, re.I):
+                          matches += 1
+                          if len(shown) < 40:
+                              shown.append(dict(line=number, text=line[:1024], lineTruncated=len(line) > 1024))
+                  emit("measurement-log", file=name, diagnosticComplete=True, matchingLines=matches,
+                       shown=shown, additionalMatches=matches > len(shown))
+              except (Incomplete, OSError) as error:
+                  failure("measurement-log", error, file=name)
+
+          # Re-enumerate the same roots as compiler_manifest, after the stage stopped.
+          # Build output outside these roots remains excluded; no changed input is waived.
+          try:
+              before = fixed_json("compiler-inputs.json")
+              def relative_name(name):
+                  if not isinstance(name, str) or len(name.encode("utf-8")) > 1024 or "\\" in name or any(ord(c) < 32 for c in name):
+                      raise Incomplete("invalid-relative-path")
+                  parts = PurePosixPath(name).parts
+                  if not parts or any(p in (".", "..", "/") for p in parts) or str(PurePosixPath(name)) != name:
+                      raise Incomplete("invalid-relative-path")
+                  if name != "package.json" and parts[0] not in ("windows", "scripts", "assets"):
+                      raise Incomplete("unexpected-input-root")
+                  return name
+              if not before or len(before) > 2048:
+                  raise Incomplete("manifest-file-count-limit")
+              for name, value in before.items():
+                  relative_name(name)
+                  if not isinstance(value, str) or not re.fullmatch("[0-9a-f]{64}", value):
+                      raise Incomplete("invalid-input-digest")
+              inputs = ROOT / "compiler-inputs"
+              info(inputs, directory=True)
+              actual, entries = {}, 0
+              def collect(path, depth):
+                  global entries
+                  if depth > 32:
+                      raise Incomplete("directory-depth-limit")
+                  info(path, directory=True)
+                  children = []
+                  with os.scandir(path) as listing:
+                      for item in listing:
+                          entries += 1
+                          if entries > 4096:
+                              raise Incomplete("directory-entry-limit")
+                          children.append(Path(item.path))
+                  for child in sorted(children):
+                      name = relative_name(child.relative_to(inputs).as_posix())
+                      value = child.lstat()
+                      if stat.S_ISLNK(value.st_mode) or getattr(value, "st_file_attributes", 0) & 0x400:
+                          raise Incomplete("link-or-reparse-point")
+                      if stat.S_ISDIR(value.st_mode):
+                          collect(child, depth + 1)
+                      else:
+                          if len(actual) >= 2048:
+                              raise Incomplete("input-file-count-limit")
+                          actual[name] = hashlib.sha256(read(child, 16 * 1024 * 1024)).hexdigest()
+              for name in ("windows", "scripts", "assets"):
+                  collect(inputs / name, 0)
+              if len(actual) >= 2048:
+                  raise Incomplete("input-file-count-limit")
+              actual["package.json"] = hashlib.sha256(read(inputs / "package.json", 16 * 1024 * 1024)).hexdigest()
+              added = sorted(actual.keys() - before.keys())
+              removed = sorted(before.keys() - actual.keys())
+              changed = sorted(name for name in actual.keys() & before.keys() if actual[name] != before[name])
+              differences = sorted((name, kind) for kind, names in (("added", added), ("removed", removed), ("changed", changed)) for name in names)
+              rows = [dict(path=name, change=kind, oldSha256=before.get(name), newSha256=actual.get(name)) for name, kind in differences[:40]]
+              emit("private-compiler-input-delta", diagnosticComplete=True, phase="diagnostic-after-stage",
+                   beforeFiles=len(before), afterFiles=len(actual), added=len(added), removed=len(removed), changed=len(changed),
+                   differences=rows, additionalDifferences=len(differences) > len(rows))
+          except (Incomplete, OSError, ValueError) as error:
+              failure("private-compiler-input-delta", error, phase="diagnostic-after-stage")
+
+          emit("diagnostic-read-budget", bytesRead=read_bytes, limitBytes=MAX_TOTAL)
+          '@ | python -X utf8 -B - windows
+          if ($LASTEXITCODE -ne 0) { throw 'Bounded measurement diagnostics could not run.' }
       - name: Retain evidence, adapters and measured binary identity
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -102,6 +231,108 @@ jobs:
         run: python3 -B scripts/test-mailbox-acceptance.py
       - name: Build private fixture and measure actual AppKit actions
         run: python3 -B scripts/mailbox-acceptance.py run-native-macos --output "$RUNNER_TEMP/mailbox-latency-macos"
+      - name: Report bounded measurement diagnostics
+        if: ${{ !cancelled() }}
+        run: |
+          python3 -B - macos <<'PY'
+          import hashlib, json, os, re, stat, sys
+          from pathlib import Path, PurePosixPath
+
+          # Only fixed synthetic output paths; these are diagnostics, never success gates.
+          PLATFORM = sys.argv[1]
+          ROOT = Path(os.environ["RUNNER_TEMP"]) / ("mailbox-latency-" + PLATFORM)
+          MAX_TOTAL = 64 * 1024 * 1024
+          read_bytes = 0
+
+          class Incomplete(Exception):
+              pass
+
+          def emit(kind, **fields):
+              print(json.dumps(dict(kind=kind, **fields), ensure_ascii=True, separators=(",", ":")))
+
+          def info(path, directory=False):
+              try:
+                  value = path.lstat()
+              except FileNotFoundError:
+                  raise Incomplete("missing") from None
+              if stat.S_ISLNK(value.st_mode) or getattr(value, "st_file_attributes", 0) & 0x400:
+                  raise Incomplete("link-or-reparse-point")
+              if not (stat.S_ISDIR(value.st_mode) if directory else stat.S_ISREG(value.st_mode)):
+                  raise Incomplete("not-a-regular-directory" if directory else "not-a-regular-file")
+              return value
+
+          def read(path, limit):
+              global read_bytes
+              value = info(path)
+              if value.st_size > limit:
+                  raise Incomplete("file-size-limit")
+              if read_bytes + value.st_size > MAX_TOTAL:
+                  raise Incomplete("total-read-limit")
+              with path.open("rb") as stream:
+                  opened = os.fstat(stream.fileno())
+                  if (opened.st_dev, opened.st_ino, opened.st_size) != (value.st_dev, value.st_ino, value.st_size):
+                      raise Incomplete("file-changed-before-read")
+                  data = stream.read(value.st_size)
+                  read_bytes += len(data)
+                  after = os.fstat(stream.fileno())
+              if len(data) != value.st_size or (after.st_size, after.st_mtime_ns) != (opened.st_size, opened.st_mtime_ns):
+                  raise Incomplete("file-changed-during-read")
+              return data
+
+          def fixed_json(name):
+              value = json.loads(read(ROOT / name, 1024 * 1024))
+              if not isinstance(value, dict):
+                  raise Incomplete("invalid-json-object")
+              return value
+
+          def failure(kind, error, **fields):
+              reason = str(error) if isinstance(error, Incomplete) else "invalid-json" if isinstance(error, ValueError) else "io-error"
+              emit(kind, diagnosticComplete=False, reason=reason, **fields)
+
+          try:
+              info(ROOT, directory=True)
+          except (Incomplete, OSError) as error:
+              failure("measurement-diagnostics", error)
+              sys.exit(0)
+
+          try:
+              receipt = fixed_json("evidence.json")
+              source, after = receipt.get("source"), receipt.get("sourceAfter")
+              if not isinstance(source, dict) or not isinstance(after, dict):
+                  raise Incomplete("invalid-source-metadata")
+              def hex_field(value, size):
+                  return value if isinstance(value, str) and re.fullmatch("[0-9a-f]{%d}" % size, value) else "invalid"
+              error = receipt.get("error")
+              if error is not None and not isinstance(error, str):
+                  raise Incomplete("invalid-error-field")
+              status = receipt.get("status")
+              fields = dict(status=status if status in ("complete", "failed") else "invalid",
+                  exitCode=receipt.get("exitCode") if type(receipt.get("exitCode")) is int else None,
+                  nativeProcessExitCode=receipt.get("nativeProcessExitCode") if type(receipt.get("nativeProcessExitCode")) is int else None,
+                  sourceCommit=hex_field(source.get("commit"), 40), sourceDigest=hex_field(source.get("digest"), 64),
+                  sourceAfterDigest=hex_field(after.get("digest"), 64), error=error[:1024] if error else error,
+                  errorTruncated=isinstance(error, str) and len(error) > 1024)
+              complete = fields["status"] != "invalid" and fields["exitCode"] is not None and all(fields[name] != "invalid" for name in ("sourceCommit", "sourceDigest", "sourceAfterDigest"))
+              emit("measurement-receipt", diagnosticComplete=complete, **fields)
+          except (Incomplete, OSError, ValueError) as error:
+              failure("measurement-receipt", error)
+
+          for name in ("native-build.log", "native.log"):
+              try:
+                  content = read(ROOT / name, 16 * 1024 * 1024).decode("utf-8", errors="replace")
+                  matches, shown = 0, []
+                  for number, line in enumerate(content.splitlines(), 1):
+                      if re.search(r"fatal error|error [A-Z]+[0-9]+|error:|failed|failure|exception", line, re.I):
+                          matches += 1
+                          if len(shown) < 40:
+                              shown.append(dict(line=number, text=line[:1024], lineTruncated=len(line) > 1024))
+                  emit("measurement-log", file=name, diagnosticComplete=True, matchingLines=matches,
+                       shown=shown, additionalMatches=matches > len(shown))
+              except (Incomplete, OSError) as error:
+                  failure("measurement-log", error, file=name)
+
+          emit("diagnostic-read-budget", bytesRead=read_bytes, limitBytes=MAX_TOTAL)
+          PY
       - name: Retain evidence, adapter and measured binary identity
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
