@@ -715,7 +715,40 @@ IAsyncAction staleReplyFlyoutChecks(P p,Json first,Json next) {
         receipt.Insert(L"events",trace);
         receipt.Insert(L"invokeToWaitMs",Value::CreateNumberValue(static_cast<double>(std::min<uint64_t>(probe->waitStart-probe->invokeStart,5001))));
         receipt.Insert(L"waitElapsedMs",Value::CreateNumberValue(static_cast<double>(std::min<uint64_t>(probe->finalTick-probe->waitStart,5001))));
-        throw hresult_error(resultCode,message+L" "+receipt.Stringify());
+        // v2 compact receipt survives the observed 512-character error boundary.
+        // c: disabled, disabledBeforeInvoke, activeClicks, false/trueNotifications,
+        //    disable/enableEdges, openedEvents, closedEvents (counts saturate at 2).
+        // p: disabledExactlyOne, activeClosed, menuClosed, notWriting, navEnabled,
+        //    selectedMatches, draftMatches (the seven original assertion terms).
+        // f: observationReadFailed, counterOverflow, traceOverflow, finalCaptured,
+        //    finalReadFailed, assertionEvaluationFailed, deadlineExpired,
+        //    invokeToWaitSaturated, clickSenderExact, combinedScope, activeOpened,
+        //    noticeBecameExpected, atFirstClickCaptured. Boolean entries are 0/1.
+        // g: beforeInvoke, atFirstClick, final; bit order is the existing verbose
+        // encoder order: captured, readFailed, current, live, closing,
+        // memoryMatches, ownerMatches, shellGenerationMatches, shellSectionMatches,
+        // reviewScopeMatches, moreMatches, moreLoaded, moreSized, moreEnabled,
+        // moreRootMatches, itemLoaded, itemSized, itemEnabled, itemRootMatches,
+        // generationMatches, selectionMatches, scopeMatches, selectedMatches,
+        // connected, kindReply, detailsOpen, entryExists, entryOwnerMatches,
+        // entryKeyMatches, entryProposalMatches, draftExists, draftMatches, busy,
+        // writing, navEnabled, menuOpen, noticeExpected (least significant first).
+        auto guardMask=[](MoreSnapshot const& value) {
+            uint64_t result=0,bit=1;
+            for(bool flag:{value.captured,value.readFailed,value.current,value.live,value.closing,value.memoryMatches,value.ownerMatches,
+                value.shellGenerationMatches,value.shellSectionMatches,value.reviewScopeMatches,value.moreMatches,value.moreLoaded,value.moreSized,value.moreEnabled,value.moreRootMatches,
+                value.itemLoaded,value.itemSized,value.itemEnabled,value.itemRootMatches,value.generationMatches,value.selectionMatches,value.scopeMatches,value.selectedMatches,value.connected,
+                value.kindReply,value.detailsOpen,value.entryExists,value.entryOwnerMatches,value.entryKeyMatches,value.entryProposalMatches,value.draftExists,value.draftMatches,value.busy,
+                value.writing,value.navEnabled,value.menuOpen,value.noticeExpected}){if(flag)result|=bit;bit<<=1;}
+            return result;
+        };
+        Json compact;compact.Insert(L"v",Value::CreateNumberValue(2));JsonArray counts,predicates,flags,guards;
+        for(auto value:{*disabled,probe->disabledBeforeInvoke,probe->clicks,probe->falseNotifications,probe->trueNotifications,probe->disableEdges,probe->enableEdges,probe->opens,probe->closes})counts.Append(Value::CreateNumberValue(value));
+        for(bool value:{*disabled==1,*activeClosed,!probe->final.menuOpen,!probe->final.writing,probe->final.navEnabled,probe->final.selectedMatches,probe->final.draftMatches})predicates.Append(Value::CreateNumberValue(value?1:0));
+        for(bool value:{probe->readFailed,probe->overflow,probe->traceOverflow,probe->final.captured,probe->final.readFailed,evaluationFailed,probe->finalTick>=deadline,probe->waitStart-probe->invokeStart>5001,probe->clickSenderExact,expectedScope==L"all",*activeOpened,probe->beforeInvoke.captured && probe->final.captured && !probe->beforeInvoke.noticeExpected && probe->final.noticeExpected,probe->atClick.captured})flags.Append(Value::CreateNumberValue(value?1:0));
+        for(auto const* value:{&probe->beforeInvoke,&probe->atClick,&probe->final})guards.Append(Value::CreateNumberValue(static_cast<double>(guardMask(*value))));
+        compact.Insert(L"c",counts);compact.Insert(L"p",predicates);compact.Insert(L"f",flags);compact.Insert(L"g",guards);
+        throw hresult_error(resultCode,compact.Stringify()+L" "+message+L" "+receipt.Stringify());
     }
     // End More diagnostics failure wrapper.
 }
