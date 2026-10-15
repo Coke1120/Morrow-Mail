@@ -133,9 +133,21 @@ struct MailboxLatency {
               !frame.isEmpty else { return nil }
         return frame
     }
-    @MainActor static func visibleText(_ root: NSView) -> [String] {
+    @MainActor static func visibleCellFrame(_ cell: NSCell, in root: NSView, window: NSWindow, clip: NSRect) -> NSRect? {
+        // AX may flatten a cell past its native control. That cell must not
+        // bypass the control's actual owner, window or ancestor visibility.
+        guard let control = cell.controlView, control.window === window,
+              control === root || control.isDescendant(of: root),
+              let frame = visibleFrame(control) else { return nil }
+        let visible = clip.intersection(frame)
+        return visible.isEmpty ? nil : visible
+    }
+    @MainActor static func visibleText(_ root: NSView, observe: ((NSObject, String, String) -> Void)? = nil) -> [String] {
         guard let boundary = visibleFrame(root), let window = root.window else { return [] }
         var remaining = 2048, seen = Set<ObjectIdentifier>(), text: [String] = []
+        @MainActor func append(_ value: String, from object: NSObject, channel: String) {
+            text.append(value); observe?(object, channel, value)
+        }
         @MainActor func visit(_ raw: Any, clip: NSRect) {
             guard remaining > 0, let object = raw as? NSObject,
                   seen.insert(ObjectIdentifier(object)).inserted else { return }
@@ -147,13 +159,17 @@ struct MailboxLatency {
                 visible = clip.intersection(frame)
                 guard !visible.isEmpty else { return }
                 if let field = view as? NSTextField {
-                    text.append(field.stringValue)
+                    append(field.stringValue, from: object, channel: "native-value")
                     // This mounted native text leaf already passed the view
                     // visibility/ownership checks above. Its label need not
                     // be exposed again by a separate AX text peer.
-                    if let label = field.accessibilityLabel() { text.append(label) }
+                    if let label = field.accessibilityLabel() { append(label, from: object, channel: "native-label") }
                 }
-                if let field = view as? NSTextView { text.append(field.string) }
+                if let field = view as? NSTextView { append(field.string, from: object, channel: "native-value") }
+            }
+            if let cell = object as? NSCell {
+                guard let frame = visibleCellFrame(cell, in: root, window: window, clip: visible) else { return }
+                visible = frame
             }
             if let element = object as? NSAccessibilityProtocol {
                 guard !element.isAccessibilityHidden() else { return }
@@ -168,8 +184,8 @@ struct MailboxLatency {
                 // child. Only framed text leaves supply identity evidence.
                 if framed, let role = element.accessibilityRole(),
                    [NSAccessibility.Role.staticText, .textField, .textArea].contains(role) {
-                    if let value = element.accessibilityValue() as? String { text.append(value) }
-                    if let label = element.accessibilityLabel() { text.append(label) }
+                    if let value = element.accessibilityValue() as? String { append(value, from: object, channel: "ax-value") }
+                    if let label = element.accessibilityLabel() { append(label, from: object, channel: "ax-label") }
                 }
                 for child in element.accessibilityChildren() ?? [] { visit(child, clip: visible) }
             }
@@ -218,6 +234,42 @@ struct MailboxLatency {
             return
         }
         FileHandle.standardError.write(Data("Native mailbox synthetic-label failure diagnostic: ".utf8))
+        FileHandle.standardError.write(data)
+        FileHandle.standardError.write(Data("\n".utf8))
+    }
+    @MainActor static func syntheticHiddenDiagnostic(_ body: NSTextField, in root: NSView, recognized: Bool?) {
+        // Only fixed channel/kind names and boolean/null observations leave
+        // this synthetic check. No text, paths, class names or object IDs.
+        var accepted: [JSON] = [], matched = 0
+        _ = visibleText(root) { object, channel, value in
+            guard value.hasPrefix("Fictional reader body 1. ") else { return }
+            matched += 1
+            guard accepted.count < 4 else { return }
+            let cell = object as? NSCell, view = object as? NSView
+            let control = cell?.controlView, element = object as? NSAccessibilityProtocol
+            accepted.append(.object([
+                "channel": .string(channel), "kind": .string(cell != nil ? "cell" : view != nil ? "view" : "ax-peer"),
+                "isBody": .bool(object === body), "cellOwnsBody": cell == nil ? .null : .bool(control === body),
+                "nativeHidden": view.map { .bool($0.isAccessibilityHidden()) } ?? .null,
+                "axHidden": element.map { .bool($0.isAccessibilityHidden()) } ?? .null,
+                "cellHasOwner": cell == nil ? .null : .bool(control != nil),
+                "cellOwnerVisible": control.map { .bool(visibleFrame($0) != nil) } ?? .null,
+                "cellOwnerInRoot": control.map { .bool($0 === root || $0.isDescendant(of: root)) } ?? .null,
+                "cellOwnerWindowMatches": control.map { .bool($0.window != nil && $0.window === root.window) } ?? .null]))
+        }
+        let cell = body.cell
+        let record: JSON = .object([
+            "phase": .string("synthetic-accessibility-hidden"), "recognized": recognized.map(JSON.bool) ?? .null,
+            "bodyHidden": .bool(body.isAccessibilityHidden()), "bodyVisible": .bool(visibleFrame(body) != nil),
+            "rootVisible": .bool(visibleFrame(root) != nil),
+            "bodyCellOwnsBody": cell == nil ? .null : .bool(cell?.controlView === body),
+            "bodyCellHidden": cell.map { .bool($0.isAccessibilityHidden()) } ?? .null,
+            "matchedCount": .number(Double(matched)), "accepted": .array(accepted)])
+        guard let data = try? JSONEncoder().encode(record), data.count <= 2048 else {
+            FileHandle.standardError.write(Data("Native mailbox synthetic-hidden failure diagnostic unavailable.\n".utf8))
+            return
+        }
+        FileHandle.standardError.write(Data("Native mailbox synthetic-hidden failure diagnostic: ".utf8))
         FileHandle.standardError.write(data)
         FileHandle.standardError.write(Data("\n".utf8))
     }
@@ -344,6 +396,12 @@ struct MailboxLatency {
         host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
         try require(rowIdentityMatches(row, index: 1) && readerIdentityMatches(reader, index: 1),
             "Visible identity oracle positive control failed.")
+        guard let bodyCell = body.cell, let readerClip = visibleFrame(reader) else {
+            throw APIError("Native cell-owner positive control is unavailable.")
+        }
+        try require(bodyCell.controlView === body
+            && visibleCellFrame(bodyCell, in: reader, window: window, clip: readerClip) != nil,
+            "Visible native cell-owner positive control failed.")
         // This synthetic native field checks label-only evidence. The actual
         // production SwiftUI row/reader is checked separately in dataset().
         rowOwner.stringValue = ""; rowOwner.setAccessibilityLabel("Mailbox: " + owner)
@@ -377,11 +435,36 @@ struct MailboxLatency {
         try require(!readerIdentityMatches(reader, index: 1), "Wrong reader subject passed with the right body.")
         readerSubject.stringValue = subject
         body.isHidden = true
+        try require(visibleCellFrame(bodyCell, in: reader, window: window, clip: readerClip) == nil,
+            "Hidden native cell owner passed the visibility guard.")
         try require(!readerIdentityMatches(reader, index: 1), "Hidden body passed the oracle.")
         let stale = label("Fictional reader body 1. stale outside reader", 180, in: host)
         try require(visibleText(host).contains { $0.hasPrefix("Fictional reader body 1. ") },
             "Outside-reader stale-body negative control did not mount.")
         try require(!readerIdentityMatches(reader, index: 1), "Outside-reader body passed the reader oracle.")
+        guard let staleCell = stale.cell else { throw APIError("Foreign cell-owner control is unavailable.") }
+        try require(staleCell.controlView === stale && visibleFrame(stale) != nil,
+            "Foreign cell-owner negative control did not mount.")
+        try require(visibleCellFrame(staleCell, in: reader, window: window, clip: readerClip) == nil,
+            "A cell owned outside the reader passed the visibility guard.")
+        do {
+            let other = NSWindow(contentRect: NSRect(x: 70, y: 70, width: 340, height: 160),
+                styleMask: [.titled], backing: .buffered, defer: false)
+            other.isReleasedWhenClosed = false
+            let otherRoot = NSView(frame: NSRect(x: 0, y: 0, width: 340, height: 160))
+            let otherBody = label("Fictional reader body 1. other window", 60, in: otherRoot)
+            other.contentView = otherRoot; other.makeKeyAndOrderFront(nil)
+            defer { other.close(); other.contentView = nil }
+            otherRoot.layoutSubtreeIfNeeded(); otherRoot.displayIfNeeded()
+            guard let otherCell = otherBody.cell, let otherClip = visibleFrame(otherRoot) else {
+                throw APIError("Foreign-window cell-owner control is unavailable.")
+            }
+            try require(otherCell.controlView === otherBody
+                && visibleCellFrame(otherCell, in: otherRoot, window: other, clip: otherClip) != nil,
+                "Foreign-window cell-owner positive control did not mount.")
+            try require(visibleCellFrame(otherCell, in: otherRoot, window: window, clip: otherClip) == nil,
+                "A cell from another window passed the visibility guard.")
+        }
         stale.removeFromSuperview(); body.isHidden = false
         let frame = body.frame; body.setFrameOrigin(NSPoint(x: 900, y: 270))
         try require(!readerIdentityMatches(reader, index: 1), "Offscreen body passed the oracle.")
@@ -390,8 +473,16 @@ struct MailboxLatency {
         reader.isHidden = false; reader.alphaValue = 0
         try require(!readerIdentityMatches(reader, index: 1), "Transparent ancestor passed the oracle.")
         reader.alphaValue = 1; body.setAccessibilityHidden(true)
-        try require(!readerIdentityMatches(reader, index: 1), "Accessibility-hidden body passed the oracle.")
+        let hidden = body.isAccessibilityHidden()
+        if !hidden { syntheticHiddenDiagnostic(body, in: reader, recognized: nil) }
+        try require(hidden, "Synthetic accessibility-hidden control did not retain its hidden state.")
+        let hiddenRecognized = readerIdentityMatches(reader, index: 1)
+        if hiddenRecognized { syntheticHiddenDiagnostic(body, in: reader, recognized: true) }
+        try require(visibleCellFrame(bodyCell, in: reader, window: window, clip: readerClip) == nil,
+            "Accessibility-hidden native cell owner passed the visibility guard.")
+        try require(!hiddenRecognized, "Accessibility-hidden body passed the oracle.")
         body.setAccessibilityHidden(false)
+        try require(!body.isAccessibilityHidden(), "Synthetic accessibility-hidden control did not restore its state.")
         let originalFrame = window.frame
         let outsideX = (NSScreen.screens.map { $0.frame.maxX }.max() ?? originalFrame.maxX) + 2000
         let outsideY = (NSScreen.screens.map { $0.frame.maxY }.max() ?? originalFrame.maxY) + 2000
@@ -402,7 +493,8 @@ struct MailboxLatency {
         window.setFrame(originalFrame, display: true)
         try require(rowIdentityMatches(row, index: 1) && readerIdentityMatches(reader, index: 1),
             "Restored visible identity oracle failed.")
-        return .object(["containerLabelRejected": .bool(true),
+        return .object(["cellHiddenOwnerRejected": .bool(true), "cellForeignOwnerRejected": .bool(true),
+            "cellForeignWindowRejected": .bool(true), "containerLabelRejected": .bool(true),
             "wrongSelectedOwnerRejected": .bool(true), "wrongReaderOwnerRejected": .bool(true),
             "wrongReaderSubjectRejected": .bool(true), "hiddenBodyRejected": .bool(true),
             "outsideReaderBodyRejected": .bool(true), "offscreenBodyRejected": .bool(true),
