@@ -203,6 +203,8 @@ def verify_windows(report, version):
                         and sample.get("selectedOwner") == OWNERS[selected] and sample.get("selectedViewId") == owned_id(selected), "Duplicate-ID selection/reader owner was not observed")
             elif index >= 18:
                 require(action == "search" and sample.get("queryMatched") is True, "Search input/event/results were not observed")
+                require(sample.get("nativeValueObserved") is True and sample.get("textChangedObserved") is True,
+                        "Search lacks native UIA Value and actual TextChanged evidence")
 
 
 def native_environment(workspace, version):

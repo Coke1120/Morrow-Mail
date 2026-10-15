@@ -366,6 +366,32 @@ missing observations and maximum integer values; they do not compile WinUI or
 prove a Search fix. The new fixture/test source requires another exact-head
 native run and cannot reuse an older digest as a complete acceptance aggregate.
 
+At head `67c9280`, [Windows measurement job 116430451278](https://github.com/Coke1120/Morrow-Mail/actions/runs/38737504560/job/116430451278)
+again passed SDK compilation and the unchanged 31-file private-input gate.
+The new receipt identifies `search-value-provider`, substep `value-peer`, at
+1,000 rows / iteration 0. The actual search control was loaded, enabled and
+current, but the query was not yet set and no Search Click occurred. Native
+exit 0 still produced a failed report and stage exit 1. Source before/after
+matched `c66ab1c0…`; no completed dataset or aggregate is inferred.
+
+The fixture now obtains TextBox's native Windows UIA Value pattern through a
+dedicated MTA client, rather than casting its WinRT peer pattern result to the
+unexposed projected provider interface. Lookup is confined to its owned HWND
+and one exact fixture AutomationId. PID, uniqueness, type, visibility, enabled
+and read-only checks precede setting the value; captured UI ownership/identity
+and an actual TextChanged event must still match before Search invocation.
+The original Search Invoke/Click, mounted row/owner checks and ten-second result
+deadline remain. Query setup separately uses two-second UIA call timeout settings
+and a ten-second fixture deadline. Only an OS-terminated worker is joined;
+an outstanding COM call at that deadline fails by terminating the isolated
+fixture itself with exit 124, without claiming COM cancellation. The unchanged
+outer watchdog remains necessary for a blocked UI dispatcher. Production
+projects, provider/network isolation and normal native gates remain unchanged.
+Portable controls exercise the actual no-write decision path and reject
+missing native Value/TextChanged receipts. Windows SDK execution of this new
+path remains pending; prior Linux protocol results are historical different-
+source evidence and cannot make this candidate's aggregate complete.
+
 ## v0.8.1 published — 14 October 2026
 
 [Tagged run 38624861643](https://github.com/Coke1120/Morrow-Mail/actions/runs/38624861643),

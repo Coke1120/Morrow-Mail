@@ -34,7 +34,7 @@ def report():
                     index = repeat % 2
                     sample.update(selectedOwnedRow=True, selectedOwner=latency.OWNERS[index], selectedViewId=latency.owned_id(index))
                 if action == "search":
-                    sample["queryMatched"] = True; searches.append(sample)
+                    sample.update(queryMatched=True, nativeValueObserved=True, textChangedObserved=True); searches.append(sample)
                 else:
                     samples.append(sample)
         rows.append({"size": size, "generatedRows": size, "pageSize": 50, "searchPageSize": 30,
@@ -49,6 +49,46 @@ def report():
 
 
 class WindowsLatencyTests(unittest.TestCase):
+    def test_native_value_policy_rejects_unowned_ambiguous_or_stale_targets_without_writing(self):
+        compiler = shutil.which("c++") or shutil.which("clang++")
+        if os.name == "nt" or not compiler:
+            self.skipTest("Standalone policy control needs POSIX C++; real WinUI fixture also runs it")
+        source = (Path(__file__).resolve().parents[1] / "windows/Checks/MailboxLatency.cpp").read_text(encoding="utf-8")
+        begin = "// BEGIN portable native value policy"
+        end = "// END portable native value policy"
+        self.assertEqual(source.count(begin), 1); self.assertEqual(source.count(end), 1)
+        helper = source.split(begin)[1].split(end)[0]
+        driver = '#include <string>\n' + helper + '''
+int main() {
+    using namespace native_value;
+    if (!controls()) return 1;
+    Control huge; huge.count = 0xffffffffu;
+    if (enter(huge) != Failure::duplicate || huge.writes) return 2;
+    Control beforeLookup; beforeLookup.root = false;
+    if (enter(beforeLookup) != Failure::rootOwner || beforeLookup.targetReads || beforeLookup.writes) return 3;
+    Control replaced; replaced.targetAfter = false;
+    if (enter(replaced) != Failure::replaced || replaced.windowReads != 2 || replaced.targetReads != 2 || replaced.writes) return 4;
+}
+'''
+        with tempfile.TemporaryDirectory(prefix="morrow-native-value-control-") as temporary:
+            path = Path(temporary); (path / "control.cpp").write_text(driver, encoding="utf-8")
+            subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", str(path / "control.cpp"), "-o", str(path / "control")],
+                           check=True, capture_output=True, timeout=30)
+            subprocess.run([str(path / "control")], check=True, capture_output=True, timeout=5)
+
+    def test_search_requires_both_native_value_and_text_changed_receipts(self):
+        for field in ("nativeValueObserved", "textChangedObserved"):
+            for replacement in (None, False, 1, "true"):
+                candidate = report()
+                sample = candidate["results"][0]["searchSamples"][0]
+                if replacement is None:
+                    del sample[field]
+                else:
+                    sample[field] = replacement
+                with self.assertRaises(ValueError):
+                    latency.verify_windows(candidate, "fictional-version")
+        latency.verify_windows(report(), "fictional-version")
+
     def test_failure_diagnostics_use_fixed_names_nulls_and_bounded_lines(self):
         # The same pure C++ renderer is also checked by the real WinUI fixture
         # before startup. This local extraction exercises its actual bytes,

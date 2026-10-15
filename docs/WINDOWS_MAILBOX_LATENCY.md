@@ -61,10 +61,46 @@ layout size, the expected **mounted TextBlock** subjects and owners for the firs
 two rows, the actual page label, 50 bounded rows and, for selection, matching
 selected owner/view ID plus the displayed owned reader body and recipient. A
 model or Tag update alone cannot satisfy those checks. Native Search uses the
-real TextBox Value and Search/Clear Invoke providers, verifies 30 displayed
+real TextBox's native Windows UI Automation Value pattern and Search/Clear
+Invoke providers, verifies actual TextChanged and Click events plus 30 displayed
 results with the expected even-row identities, and reports six separate search
 samples. Search is supplemental; the shared cross-platform limit currently
 applies to Next/Previous/Select only.
+
+The [TextBox peer's pattern implementation](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.automation.peers.textboxautomationpeer)
+is native and does not expose the corresponding WinRT provider interface.
+The fixture therefore uses `IUIAutomationValuePattern` on a dedicated MTA thread,
+as required by the [UIA threading guidance](https://learn.microsoft.com/en-us/windows/win32/winauto/uiauto-threading).
+It passes only its own HWND/PID and a generated fictional control ID to the
+worker, never XAML objects. `ElementFromHandle` scopes an exact AutomationId
+`FindAll` to that window; only one match is accepted and retrieved. This is a
+window/filter bound, not an explicit limit on the provider's internal tree
+traversal. Process ownership, Edit type, enabled/offscreen/read-only state and
+native Value support are checked before writing; ownership and target state
+are checked again immediately beforehand. The UI thread validates the captured
+window, owner, generation, page content, rows, TextBox and Search button before
+invocation. A replacement control does not inherit the fixture ID. There is no
+desktop-wide search, direct Text setter fallback, clipboard or physical input.
+
+UIA connection and transaction timeouts are each set to two seconds. The
+separate query-setup deadline is ten seconds, while the original Search-result
+deadline remains ten seconds from Search invocation. The main UI continues
+pumping while it polls worker completion; all COM objects are released on the
+worker, and joining occurs only after the OS reports that thread terminated.
+If a COM call outlives the setup deadline, the fixture terminates **its own
+process** with exit 124 and retains a failed/missing report. This does not cancel
+COM or claim that the worker completed. It never detaches a live worker or
+cleans its workspace while it might still act. The unchanged 600-second outer
+owned-process watchdog covers a blocked UI thread or dispatcher. UIAutomationCore
+and OleAut32 are linked by this private fixture file only; the production project
+and its dependencies are unchanged.
+
+The actual selection/write decision path has one positive and twelve negative
+no-write controls (wrong window/root/target, absent/duplicate target, non-Edit,
+disabled/offscreen/read-only, missing pattern and changed owner/target). They
+run in the native fixture and in a portable C++ extraction on POSIX. Additional
+receipt controls reject missing, false or mistyped native Value/TextChanged
+evidence. Portable controls do not execute COM or establish native UI acceptance.
 
 The clock is QueryPerformanceCounter and polling resolution is one millisecond.
 The endpoint is observed mounted content plus `UpdateLayout`, **not compositor

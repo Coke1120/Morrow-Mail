@@ -7,6 +7,7 @@
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
+#include <UIAutomation.h>
 #include <atomic>
 #include <array>
 #include <cmath>
@@ -15,6 +16,12 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <thread>
+#include <cstdlib>
+
+// This file is copied into the private fixture project only.
+#pragma comment(lib, "UIAutomationCore.lib")
+#pragma comment(lib, "OleAut32.lib")
 
 namespace morrow {
 using namespace winrt;
@@ -38,12 +45,14 @@ unsigned iteration = 0;
 // BEGIN portable mailbox latency diagnostics
 // No exception, mail, control text, path or arbitrary string enters this output.
 namespace latency_diagnostic {
-enum class Check { other, valueProvider, buttonReady, invokeProvider, searchResults, contentsChanged, visibleRows, searchClick };
+enum class Check { other, valueProvider, valueIdentity, valueEvent, buttonReady, invokeProvider, searchResults, contentsChanged, visibleRows, searchClick };
 enum class Step { none, valuePeer, valueSet, findButton, invoke, waitResults, sample, clickReceipt };
 char const* checkName(Check value) {
     switch (value) {
     case Check::other: return "other-requirement";
     case Check::valueProvider: return "search-value-provider";
+    case Check::valueIdentity: return "search-control-identity";
+    case Check::valueEvent: return "search-text-event";
     case Check::buttonReady: return "button-mounted-enabled";
     case Check::invokeProvider: return "button-invoke-provider";
     case Check::searchResults: return "search-owned-results";
@@ -114,6 +123,112 @@ bool controls() {
 }
 }
 // END portable mailbox latency diagnostics
+
+// BEGIN portable native value policy
+// The actual MTA client uses this decision path. Synthetic controls can exercise
+// rejection and no-write behavior without pretending to execute COM or WinUI.
+namespace native_value {
+enum class Failure { none, windowOwner, rootOwner, missing, duplicate, targetOwner, editType, disabled, offscreen, pattern, readOnly, replaced, api };
+enum class Stage { startup, window, root, find, target, pattern, recheck, write, complete };
+char const* name(Failure value) {
+    switch (value) {
+    case Failure::none: return "complete";
+    case Failure::windowOwner: return "window-owner";
+    case Failure::rootOwner: return "root-owner";
+    case Failure::missing: return "missing-target";
+    case Failure::duplicate: return "duplicate-target";
+    case Failure::targetOwner: return "target-owner";
+    case Failure::editType: return "target-not-edit";
+    case Failure::disabled: return "target-disabled";
+    case Failure::offscreen: return "target-offscreen";
+    case Failure::pattern: return "missing-native-value";
+    case Failure::readOnly: return "target-read-only";
+    case Failure::replaced: return "target-changed";
+    case Failure::api: return "native-api-failure";
+    }
+    return "unknown-failure";
+}
+char const* name(Stage value) {
+    switch (value) {
+    case Stage::startup: return "startup";
+    case Stage::window: return "window";
+    case Stage::root: return "window-root";
+    case Stage::find: return "find-exact-id";
+    case Stage::target: return "check-target";
+    case Stage::pattern: return "native-value-pattern";
+    case Stage::recheck: return "recheck-owner";
+    case Stage::write: return "set-native-value";
+    case Stage::complete: return "complete";
+    }
+    return "unknown-stage";
+}
+template<class Backend> Failure enter(Backend& api) {
+    api.stage(Stage::window);
+    if (!api.ownedWindow()) return Failure::windowOwner;
+    api.stage(Stage::root);
+    if (!api.ownedRoot()) return Failure::rootOwner;
+    api.stage(Stage::find);
+    auto matches = api.findExact();
+    if (matches == 0) return Failure::missing;
+    if (matches != 1) return Failure::duplicate;
+    api.stage(Stage::target);
+    if (!api.ownedTarget()) return Failure::targetOwner;
+    if (!api.editType()) return Failure::editType;
+    if (!api.enabled()) return Failure::disabled;
+    if (api.offscreen()) return Failure::offscreen;
+    api.stage(Stage::pattern);
+    if (!api.valuePattern()) return Failure::pattern;
+    if (api.readOnly()) return Failure::readOnly;
+    api.stage(Stage::recheck);
+    if (!api.ownedWindow() || !api.ownedTarget() || !api.editType()
+        || !api.enabled() || api.offscreen() || api.readOnly()) return Failure::replaced;
+    api.stage(Stage::write); api.setValue();
+    api.stage(Stage::complete); return Failure::none;
+}
+struct Control {
+    bool window = true, root = true, target = true, edit = true, enabledValue = true;
+    bool offscreenValue = false, hasPattern = true, readOnlyValue = false;
+    bool windowAfter = true, targetAfter = true;
+    unsigned count = 1, writes = 0, windowReads = 0, targetReads = 0;
+    Stage observed = Stage::startup;
+    void stage(Stage value) { observed = value; }
+    bool ownedWindow() { return ++windowReads == 1 ? window : windowAfter; }
+    bool ownedRoot() { return root; }
+    unsigned findExact() { return count; }
+    bool ownedTarget() { return ++targetReads == 1 ? target : targetAfter; }
+    bool editType() { return edit; }
+    bool enabled() { return enabledValue; }
+    bool offscreen() { return offscreenValue; }
+    bool valuePattern() { return hasPattern; }
+    bool readOnly() { return readOnlyValue; }
+    void setValue() { ++writes; }
+};
+bool controls() {
+    Control valid;
+    if (enter(valid) != Failure::none || valid.writes != 1 || valid.observed != Stage::complete) return false;
+    for (unsigned kind = 0; kind < 12; ++kind) {
+        Control value; Failure expected = Failure::api;
+        switch (kind) {
+        case 0: value.window = false; expected = Failure::windowOwner; break;
+        case 1: value.root = false; expected = Failure::rootOwner; break;
+        case 2: value.count = 0; expected = Failure::missing; break;
+        case 3: value.count = 2; expected = Failure::duplicate; break;
+        case 4: value.target = false; expected = Failure::targetOwner; break;
+        case 5: value.edit = false; expected = Failure::editType; break;
+        case 6: value.enabledValue = false; expected = Failure::disabled; break;
+        case 7: value.offscreenValue = true; expected = Failure::offscreen; break;
+        case 8: value.hasPattern = false; expected = Failure::pattern; break;
+        case 9: value.readOnlyValue = true; expected = Failure::readOnly; break;
+        case 10: value.windowAfter = false; expected = Failure::replaced; break;
+        case 11: value.targetAfter = false; expected = Failure::replaced; break;
+        }
+        if (enter(value) != expected || value.writes != 0 || value.observed == Stage::complete) return false;
+    }
+    return std::string(name(static_cast<Failure>(999))) == "unknown-failure"
+        && std::string(name(static_cast<Stage>(999))) == "unknown-stage";
+}
+}
+// END portable native value policy
 
 void require(bool condition, wchar_t const* message, latency_diagnostic::Check check = latency_diagnostic::Check::other) {
     if (!condition && check != latency_diagnostic::Check::other)
@@ -281,6 +396,171 @@ struct DiagnosticControls {
     std::shared_ptr<std::array<unsigned, 4>> events;
     unsigned clicksBefore = 0;
 };
+struct NativeValueResult {
+    std::atomic<native_value::Stage> stage = native_value::Stage::startup;
+    std::atomic_uint matches = 0;
+    native_value::Failure failure = native_value::Failure::api;
+    HRESULT error = S_OK;
+};
+struct AutomationString {
+    BSTR value = nullptr;
+    ~AutomationString() { SysFreeString(value); }
+};
+struct NativeValueClient {
+    HWND window;
+    DWORD process;
+    std::wstring id;
+    NativeValueResult& result;
+    com_ptr<IUIAutomation2> automation;
+    com_ptr<IUIAutomationElement> root, target;
+    com_ptr<IUIAutomationValuePattern> value;
+    NativeValueClient(HWND captured, DWORD owner, std::wstring identifier, NativeValueResult& output)
+        : window(captured), process(owner), id(std::move(identifier)), result(output) {
+        check_hresult(CoCreateInstance(__uuidof(CUIAutomation8), nullptr, CLSCTX_INPROC_SERVER,
+            __uuidof(IUIAutomation2), automation.put_void()));
+        check_hresult(automation->put_ConnectionTimeout(2000));
+        check_hresult(automation->put_TransactionTimeout(2000));
+    }
+    void stage(native_value::Stage current) { result.stage.store(current); }
+    bool ownedWindow() const {
+        DWORD actual = 0;
+        return process == GetCurrentProcessId() && IsWindow(window)
+            && GetWindowThreadProcessId(window, &actual) != 0 && actual == process;
+    }
+    bool ownedRoot() {
+        check_hresult(automation->ElementFromHandle(window, root.put()));
+        if (!root) return false;
+        int actual = 0; UIA_HWND actualWindow = nullptr;
+        check_hresult(root->get_CurrentProcessId(&actual));
+        check_hresult(root->get_CurrentNativeWindowHandle(&actualWindow));
+        return actual == static_cast<int>(process) && actualWindow == window;
+    }
+    unsigned findExact() {
+        AutomationString identifier; identifier.value = SysAllocStringLen(id.data(), static_cast<UINT>(id.size()));
+        if (!identifier.value) throw hresult_error(E_OUTOFMEMORY);
+        VARIANT property{}; property.vt = VT_BSTR; property.bstrVal = identifier.value;
+        com_ptr<IUIAutomationCondition> condition;
+        check_hresult(automation->CreatePropertyCondition(UIA_AutomationIdPropertyId, property, condition.put()));
+        com_ptr<IUIAutomationElementArray> matches;
+        // Only this owned HWND, never the desktop. Do not enumerate or log any
+        // returned element unless the exact fixture ID has one unique match.
+        check_hresult(root->FindAll(TreeScope_Descendants, condition.get(), matches.put()));
+        int count = 0;
+        if (matches) check_hresult(matches->get_Length(&count));
+        if (count < 0) throw hresult_error(E_FAIL);
+        result.matches.store(static_cast<unsigned>(count));
+        if (count == 1) check_hresult(matches->GetElement(0, target.put()));
+        return static_cast<unsigned>(count);
+    }
+    bool ownedTarget() const {
+        if (!target) return false;
+        int actual = 0; AutomationString identifier;
+        check_hresult(target->get_CurrentProcessId(&actual));
+        check_hresult(target->get_CurrentAutomationId(&identifier.value));
+        return actual == static_cast<int>(process) && identifier.value
+            && std::wstring_view(identifier.value, SysStringLen(identifier.value)) == id;
+    }
+    bool editType() const {
+        CONTROLTYPEID type = 0; check_hresult(target->get_CurrentControlType(&type)); return type == UIA_EditControlTypeId;
+    }
+    bool enabled() const { BOOL entry = FALSE; check_hresult(target->get_CurrentIsEnabled(&entry)); return entry != FALSE; }
+    bool offscreen() const { BOOL entry = TRUE; check_hresult(target->get_CurrentIsOffscreen(&entry)); return entry != FALSE; }
+    bool valuePattern() {
+        auto status = target->GetCurrentPatternAs(UIA_ValuePatternId, __uuidof(IUIAutomationValuePattern), value.put_void());
+        if (status == UIA_E_NOTSUPPORTED || status == E_NOINTERFACE) return false;
+        check_hresult(status); return bool(value);
+    }
+    bool readOnly() const { BOOL entry = TRUE; check_hresult(value->get_CurrentIsReadOnly(&entry)); return entry != FALSE; }
+    void setValue() const {
+        AutomationString query; query.value = SysAllocString(L"fictional-even");
+        if (!query.value) throw hresult_error(E_OUTOFMEMORY);
+        check_hresult(value->SetValue(query.value));
+    }
+};
+void runNativeValue(HWND window, DWORD process, std::wstring id, std::shared_ptr<NativeValueResult> const& result) noexcept {
+    try {
+        check_hresult(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
+        struct Apartment { ~Apartment() { CoUninitialize(); } } apartment;
+        NativeValueClient client(window, process, std::move(id), *result);
+        result->failure = native_value::enter(client);
+        // Client and every UIA object are released in this MTA before it exits.
+    } catch (...) { result->error = to_hresult(); result->failure = native_value::Failure::api; }
+}
+[[noreturn]] void nativeValueDeadline(char const* reason, NativeValueResult const& result) noexcept {
+    // Only fixed call-site strings, enums and numbers. A stuck COM call is not
+    // cancellable: fail the entire isolated process instead of detaching it or
+    // freeing its workspace while a worker might still act on the window.
+    std::fprintf(stderr, "Mailbox latency UIA failure: id=%s stage=%s matches=%u exit=124\n",
+        reason, native_value::name(result.stage.load()), result.matches.load());
+    std::fflush(stderr);
+    TerminateProcess(GetCurrentProcess(), 124);
+    std::abort(); // TerminateProcess on self normally never returns.
+}
+struct NativeValueWorker {
+    std::shared_ptr<NativeValueResult> result = std::make_shared<NativeValueResult>();
+    std::thread thread;
+    NativeValueWorker(HWND window, DWORD process, std::wstring id)
+        : thread(runNativeValue, window, process, std::move(id), result) {}
+    bool exited() noexcept {
+        auto status = WaitForSingleObject(thread.native_handle(), 0);
+        if (status == WAIT_FAILED) nativeValueDeadline("worker-status-unavailable", *result);
+        return status == WAIT_OBJECT_0;
+    }
+    void joinCompleted() noexcept {
+        if (!thread.joinable()) return;
+        if (!exited()) nativeValueDeadline("worker-unfinished", *result);
+        // This join follows observed OS thread termination; it never waits for
+        // a live COM call. No UIA/XAML object crosses the thread boundary.
+        try { thread.join(); } catch (...) { nativeValueDeadline("worker-join-failed", *result); }
+    }
+    ~NativeValueWorker() noexcept { joinCompleted(); }
+};
+IAsyncAction nativeSearchValue(std::shared_ptr<Shell> shell, DiagnosticControls& diagnostic) {
+    apartment_context ui;
+    auto input = shell->search; auto page = shell->page; auto contents = page.Content(); auto rows = shell->rows;
+    auto window = shell->window; auto owner = shell->owner; auto generation = shell->generation;
+    HWND handle = nullptr; check_hresult(window.as<IWindowNative>()->get_WindowHandle(&handle));
+    auto process = GetCurrentProcessId();
+    auto current = [&] {
+        return shell->window == window && shell->owner == owner && owner == L"all"
+            && shell->generation == generation && shell->section == L"mail" && shell->folder == L"inbox"
+            && shell->page == page && page.Content() == contents && shell->rows == rows
+            && shell->search == input && input == diagnostic.search && input.IsEnabled() && !input.IsReadOnly()
+            && attached(input, shell->root) && !shell->loading && !shell->service->writing();
+    };
+    require(current(), L"Search input no longer belongs to the captured fixture page.", latency_diagnostic::Check::valueIdentity);
+    auto identifier = L"morrow-mailbox-latency-search-" + to_hstring(datasetSize.load()) + L"-" + to_hstring(iteration);
+    xaml::Automation::AutomationProperties::SetAutomationId(input, identifier);
+    auto taggedCurrent = [&] { return current() && xaml::Automation::AutomationProperties::GetAutomationId(input) == identifier; };
+    auto changes = std::make_shared<unsigned>(0);
+    auto changed = input.TextChanged(auto_revoke, [changes, input](auto const& sender, auto const&) { if (sender == input) ++*changes; });
+    // Setup is separate from the unchanged 10-second Search-result deadline.
+    // This UI coroutine keeps pumping. The outer runner's 600-second owned-
+    // process watchdog still covers a blocked UI thread or dispatcher.
+    auto end = GetTickCount64() + 10000;
+    diagnostic.step = latency_diagnostic::Step::valuePeer;
+    NativeValueWorker worker(handle, process, std::wstring(identifier));
+    while (!worker.exited()) {
+        if (GetTickCount64() >= end) nativeValueDeadline("worker-deadline", *worker.result);
+        co_await resume_after(std::chrono::milliseconds(1)); co_await ui;
+    }
+    worker.joinCompleted();
+    // No WinRT control was captured by the MTA worker. All these checks occur
+    // back on the original UI thread, before any Search invocation can happen.
+    auto const& result = *worker.result;
+    std::fprintf(stderr, "Mailbox latency native value %s: status=%s stage=%s matches=%u HRESULT=0x%08X\n",
+        result.failure == native_value::Failure::none && SUCCEEDED(result.error) ? "complete" : "failure",
+        native_value::name(result.failure), native_value::name(result.stage.load()), result.matches.load(), static_cast<unsigned>(result.error));
+    require(result.failure == native_value::Failure::none && SUCCEEDED(result.error),
+        L"Search input lacks an eligible native Value pattern.", latency_diagnostic::Check::valueProvider);
+    diagnostic.step = latency_diagnostic::Step::valueSet;
+    while (taggedCurrent() && (!*changes || input.Text() != L"fictional-even") && GetTickCount64() < end) {
+        co_await resume_after(std::chrono::milliseconds(1)); co_await ui;
+    }
+    require(taggedCurrent(), L"Search input changed during native automation.", latency_diagnostic::Check::valueIdentity);
+    require(GetTickCount64() < end && *changes > 0 && input.Text() == L"fictional-even",
+        L"Native search value did not raise TextChanged with the expected query.", latency_diagnostic::Check::valueEvent);
+}
 void diagnoseFailure(std::shared_ptr<Shell> const& shell, DiagnosticControls const& d) noexcept {
     try {
         latency_diagnostic::Snapshot s; s.step = d.step;
@@ -353,17 +633,24 @@ IAsyncOperation<Json> dataset(std::shared_ptr<Shell> shell, unsigned size, Diagn
         result = sample(shell, L"select", start, 0, 50, 0, true, index); boolean(result, L"nativeEventObserved", true); samples.Append(result);
     }
     // Search stays separate from the cross-platform Next/Previous/Select metric.
-    // Actual TextBox Value and Search/Clear Invoke providers raise production events.
+    // Native Windows UIA Value and Search/Clear Invoke raise production events.
     for (unsigned repeat = 0; repeat < 6; ++repeat) {
         iteration = repeat; phase = "search";
         diagnostic.clicksBefore = (*events)[3];
-        diagnostic.step = latency_diagnostic::Step::valuePeer;
-        auto peer = peers::FrameworkElementAutomationPeer::CreatePeerForElement(shell->search);
-        auto value = peer.GetPattern(peers::PatternInterface::Value).try_as<provider::IValueProvider>();
-        require(bool(value), L"Search input lacks a native Value provider.", latency_diagnostic::Check::valueProvider);
-        diagnostic.step = latency_diagnostic::Step::valueSet; value.SetValue(L"fictional-even");
+        auto capturedOwner = shell->owner; auto capturedGeneration = shell->generation;
+        auto capturedPage = shell->page; auto capturedContents = capturedPage.Content(); auto capturedRows = shell->rows;
+        auto capturedWindow = shell->window; auto capturedInput = shell->search;
+        co_await nativeSearchValue(shell, diagnostic);
+        require(shell->owner == capturedOwner && capturedOwner == L"all" && shell->generation == capturedGeneration
+            && shell->section == L"mail" && shell->folder == L"inbox" && shell->window == capturedWindow
+            && shell->page == capturedPage && capturedPage.Content() == capturedContents && shell->rows == capturedRows
+            && shell->search == capturedInput && capturedInput == diagnostic.search
+            && attached(capturedInput, shell->root) && capturedInput.IsEnabled() && !capturedInput.IsReadOnly()
+            && capturedInput.Text() == L"fictional-even" && !shell->loading && !shell->service->writing(),
+            L"Search page changed before invoking its control.", latency_diagnostic::Check::valueIdentity);
         diagnostic.step = latency_diagnostic::Step::findButton;
         unsigned remaining = 4096; auto search = findButton(shell->page, L"Search", remaining);
+        require(search && search == diagnostic.initialButton, L"Search button no longer belongs to the captured page.", latency_diagnostic::Check::valueIdentity);
         diagnostic.currentButton = search; diagnostic.clicksBefore = (*events)[3]; diagnostic.step = latency_diagnostic::Step::invoke;
         auto before = (*events)[3]; auto action = invokeAction(search, shell->root); auto start = counter(); action.Invoke();
         diagnostic.step = latency_diagnostic::Step::waitResults;
@@ -372,6 +659,7 @@ IAsyncOperation<Json> dataset(std::shared_ptr<Shell> shell, unsigned size, Diagn
         auto searchSample = sample(shell, L"search", start, 0, 30, 0);
         diagnostic.step = latency_diagnostic::Step::clickReceipt;
         require((*events)[3] > before, L"Search did not raise its actual Click event.", latency_diagnostic::Check::searchClick);
+        boolean(searchSample, L"nativeValueObserved", true); boolean(searchSample, L"textChangedObserved", true);
         boolean(searchSample, L"queryMatched", shell->search.Text() == L"fictional-even"); boolean(searchSample, L"nativeEventObserved", true); searches.Append(searchSample);
         phase = "clear-search";
         remaining = 4096; auto clear = findButton(shell->page, L"Clear", remaining); invokeAction(clear, shell->root).Invoke();
@@ -445,6 +733,7 @@ fire_and_forget startMailboxLatency(std::shared_ptr<Shell> shell) {
     DiagnosticControls diagnostic;
     try {
         require(latency_diagnostic::controls(), L"Fixed diagnostic controls failed.");
+        require(native_value::controls(), L"Native Value no-write controls failed.");
         workspace = std::filesystem::path(environment(L"MORROW_DATA_DIR").c_str());
         require(workspace.is_absolute() && workspace.filename() == L"fictional-workspace"
             && contents(workspace / L"mailbox-latency-fixture") == "Morrow synthetic mailbox latency v1", L"A new marked fixture workspace is required.");
@@ -463,7 +752,7 @@ fire_and_forget startMailboxLatency(std::shared_ptr<Shell> shell) {
         number(report, L"schema", 1); put(report, L"kind", L"morrow-native-mailbox-latency"); put(report, L"platform", L"windows");
         put(report, L"status", L"complete"); put(report, L"version", environment(L"MORROW_FIXTURE_VERSION")); put(report, L"measuredAt", timestamp());
         put(report, L"measurement", L"native-event-to-layout-display"); put(report, L"transport", L"intercepted-fictional-only");
-        put(report, L"input", L"WinUI Invoke/SelectionItem/Value automation providers raising production control events");
+        put(report, L"input", L"WinUI Invoke/SelectionItem providers and native Windows UIA Value pattern raising production control events");
         number(report, L"pollResolutionMs", 1); number(report, L"windowWidth", shell->root.ActualWidth()); number(report, L"windowHeight", shell->root.ActualHeight());
         number(report, L"windowScale", windowScale(shell->window)); report.Insert(L"results", results);
         auto controls = Json::Parse(LR"({"serviceStartRejected":true,"sendRejected":true,"unknownOwnerRejected":true,"hostOperationRejected":true,"unsafeStatusMethodRejected":true})");
