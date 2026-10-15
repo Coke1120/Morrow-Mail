@@ -293,6 +293,15 @@ cases passed. Formatting and locked all-targets Clippy with `-D warnings` passed
 The locked complete Rust suite passed **505 tests, 0 failures, 4 existing ignored
 benchmarks**, across 50 result groups. Final formatting, Clippy and full tests
 used the same 105-file Rust/Cargo manifest, checked before and after each run.
+
+The final stack normally merges selected-folder head `c5c054f`, including its
+native row-lifetime follow-up and the summary diagnostics already on main.
+At combined head `f5221d1`, formatting, strict all-target Clippy and the complete
+locked suite passed **510 tests, 0 failures, 4 existing ignored benchmarks**
+across 51 result groups. All three checks used the same 106-file Rust/Cargo
+manifest, verified before/after and against the final files. The notification
+implementation is unchanged by that stack. Native SDK acceptance remains
+pending for this combined candidate.
 The focused runs preceded two Clippy-only edits (a tuple type alias and equivalent
 Option `?` expression); the full suite covers those final sources.
 
