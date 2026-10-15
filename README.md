@@ -40,6 +40,14 @@ recorded copies, finish a reviewed removal, apply an already confirmed result, o
 record that the user handled it in the provider. Opening recovery is local-only.
 This separate draft source is not part of v0.8.2 or live-account acceptance.
 
+The download-controls follow-up adds account-owned downloaded-content coverage,
+logical storage totals and a 30-record repair list to both native clients. It
+reuses reviewed history controls and explicit single-message downloads. Local
+archive/Trash changes gain a restart-safe last-move undo while their location
+and connection remain unchanged. Provider Trash keeps its separate one-minute
+undo. No cache deletion, quota or global offline mode is introduced. See
+[controls and remaining limits](docs/DOWNLOAD_CONTROLS.md).
+
 The activity-recovery follow-up keeps cancellation requests separate across
 mailboxes and AI work types. Cancelling one analysis remains effective when
 another mailbox is cancelled or its reply settings change; completed or cancelled

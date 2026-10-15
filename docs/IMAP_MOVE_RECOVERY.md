@@ -23,7 +23,10 @@ After the exact destination is confirmed, adoption preserves the stable local
 message ID, body, read/star choices, Pending marker, and unrelated local
 overrides. It clears missing-source markers and invalidates source-folder
 MODSEQ/connection/epoch proofs. A later read must obtain the destination's flags;
-the old folder's watermark cannot certify them. The cache update and journal
+the old folder's watermark cannot certify them. Confirmed adoption also retires
+the previous local-folder Undo receipt, including adoption from explicit recovery.
+Provider preview, failed/uncertain work and marking a record reviewed externally
+do not clear that receipt. The cache update, Undo invalidation and journal
 completion commit together.
 
 ## Native contract

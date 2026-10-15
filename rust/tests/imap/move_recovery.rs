@@ -182,6 +182,37 @@ impl MoveFixture {
         )
         .await
     }
+    async fn archive_locally(&mut self) -> Value {
+        let before = self.commands();
+        self.message = self
+            .cache
+            .app()
+            .db(|db| {
+                let current = db.get(OWNER, "stable-local")?.unwrap();
+                let patch = morrow_search::local_moves::patch(
+                    db,
+                    OWNER,
+                    &current,
+                    &json!({"folder":"archive"}),
+                )?;
+                let changed = db.update(OWNER, "stable-local", &patch)?.unwrap();
+                let undo = morrow_search::local_moves::patch(
+                    db,
+                    OWNER,
+                    &changed,
+                    &json!({"undoLocalMove":changed["localFolderUndo"]["token"]}),
+                )?;
+                assert_eq!(
+                    undo["folder"], "inbox",
+                    "The initial local proof must be valid"
+                );
+                Ok(changed)
+            })
+            .await
+            .unwrap();
+        assert_eq!(self.commands(), before, "A local move cannot contact IMAP");
+        self.message["localFolderUndo"].clone()
+    }
     async fn records(&self) -> Vec<Value> {
         self.cache.app().settings().await.unwrap()["imapMoveJournal"][OWNER]
             .as_array()
@@ -992,7 +1023,9 @@ async fn journal_capacity_is_global_reserved_before_mutation_and_never_evicts_un
 
 #[tokio::test]
 async fn final_cache_and_journal_adoption_roll_back_together_on_database_failure() {
-    let fixture = MoveFixture::new(Scenario::default()).await;
+    let mut fixture = MoveFixture::new(Scenario::default()).await;
+    fixture.archive_locally().await;
+    let original = fixture.message.clone();
     let (_, id) = fixture.organize().await.unwrap();
     let id = id.unwrap();
     let saved = id.clone();
@@ -1010,24 +1043,215 @@ async fn final_cache_and_journal_adoption_roll_back_together_on_database_failure
         .await;
     assert!(result.is_err());
     assert_eq!(fixture.records().await[0]["stage"], "provider_complete");
+    let retained = fixture
+        .cache
+        .app()
+        .db(|db| db.get(OWNER, "stable-local"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        fixture
-            .cache
-            .app()
-            .db(|db| db.get(OWNER, "stable-local"))
-            .await
-            .unwrap()
-            .unwrap()["remoteId"],
-        "imap:55:7"
+        retained, original,
+        "Rollback must also retain the local Undo proof"
     );
-    fixture
+    let adopted = fixture
         .cache
         .app()
         .db(move |db| imap_moves::apply_confirmed(db, OWNER, &id))
         .await
         .unwrap();
+    assert!(adopted["localFolderUndo"].is_null());
     assert_eq!(fixture.records().await[0]["stage"], "completed");
     fixture.close().await;
+}
+
+#[tokio::test]
+async fn confirmed_moves_invalidate_local_undo_but_preserve_independent_cached_edits() {
+    for native in [false, true] {
+        let mut fixture = MoveFixture::new(Scenario {
+            capabilities: if native {
+                "IMAP4rev1 UIDPLUS MOVE"
+            } else {
+                "IMAP4rev1 UIDPLUS"
+            },
+            ..Default::default()
+        })
+        .await;
+        let undo = fixture.archive_locally().await;
+        let token = undo["token"].clone();
+        let other_before = fixture
+            .cache
+            .app()
+            .db(|db| db.get(OTHER, "stable-local"))
+            .await
+            .unwrap();
+        let (patch, id) = fixture.organize().await.unwrap();
+        let before = fixture.commands();
+        let saved_undo = undo.clone();
+        let adopted = fixture.cache.app().db(move |db| {
+            let current = db.get(OWNER, "stable-local")?.unwrap();
+            assert_eq!(current["localFolderUndo"], saved_undo, "Provider completion alone must not mutate the local record");
+            // Independent edits may arrive before the reviewed provider result commits.
+            let mut overrides = current["localOverrides"].clone();
+            overrides["read"] = true.into();
+            overrides["starred"] = true.into();
+            let edited = db.update(OWNER, "stable-local", &json!({"read":true,"starred":false,"pending":true,"body":"Edited downloaded body","localOverrides":overrides}))?.unwrap();
+            assert_eq!(edited["folder"], current["folder"]);
+            assert_eq!(edited["localOverrides"]["folder"], current["localOverrides"]["folder"], "Independent edits must not change the captured source proof");
+            assert_eq!(edited["localOverrides"]["labels"], current["localOverrides"]["labels"]);
+            if let Some(id) = id { imap_moves::apply_confirmed(db, OWNER, &id) }
+            else { Ok(db.update(OWNER, "stable-local", &patch)?.unwrap()) }
+        }).await.unwrap();
+        assert_eq!(adopted["id"], "stable-local");
+        assert_eq!(adopted["remoteId"], "imap:99:70");
+        assert_eq!(adopted["providerFolderId"], "Archive");
+        assert!(
+            adopted["localFolderUndo"].is_null(),
+            "A confirmed provider location must retire its prior local Undo (native={native})"
+        );
+        assert_eq!(adopted["read"], true);
+        assert_eq!(adopted["starred"], false);
+        assert_eq!(adopted["pending"], true);
+        assert_eq!(adopted["body"], "Edited downloaded body");
+        assert_eq!(adopted["labels"], json!(["local choice"]));
+        for key in ["labels", "read", "starred"] {
+            assert_eq!(adopted["localOverrides"][key], true, "{key}");
+        }
+        if !native {
+            assert_eq!(adopted["localOverrides"]["folder"], false);
+        }
+        fixture
+            .cache
+            .app()
+            .db(move |db| {
+                let current = db.get(OWNER, "stable-local")?.unwrap();
+                assert_eq!(
+                    morrow_search::local_moves::patch(
+                        db,
+                        OWNER,
+                        &current,
+                        &json!({"undoLocalMove":token})
+                    )
+                    .unwrap_err()
+                    .status,
+                    409
+                );
+                // Even a retained pre-adoption proof cannot undo the changed remote identity.
+                let mut stale = current.clone();
+                stale["localFolderUndo"] = undo;
+                assert_eq!(
+                    morrow_search::local_moves::patch(
+                        db,
+                        OWNER,
+                        &stale,
+                        &json!({"undoLocalMove":token})
+                    )
+                    .unwrap_err()
+                    .status,
+                    409
+                );
+                assert_eq!(db.get(OWNER, "stable-local")?.unwrap(), current);
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            fixture.commands(),
+            before,
+            "Local adoption and stale proof checks do not repeat a provider write"
+        );
+        assert_eq!(
+            fixture
+                .cache
+                .app()
+                .db(|db| db.get(OTHER, "stable-local"))
+                .await
+                .unwrap(),
+            other_before
+        );
+        fixture.close().await;
+    }
+}
+
+#[tokio::test]
+async fn recovery_clears_local_undo_only_on_confirmed_adoption_not_preview_or_external_resolution()
+{
+    for finish in [false, true] {
+        let mut fixture = MoveFixture::new(Scenario {
+            failure: if finish {
+                "expunge_disconnect"
+            } else {
+                "copy_disconnect"
+            },
+            ..Default::default()
+        })
+        .await;
+        let undo = fixture.archive_locally().await;
+        fixture.organize().await.unwrap_err();
+        let retained = fixture
+            .cache
+            .app()
+            .db(|db| db.get(OWNER, "stable-local"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            retained["localFolderUndo"], undo,
+            "An unresolved provider outcome must retain the original local record"
+        );
+        let operation = fixture.list().await["operations"][0].clone();
+        let mutations = fixture.mutations();
+        if finish {
+            fixture.update(|state| state.failure = "");
+            let review = fixture.preview(&operation).await.unwrap()["operation"].clone();
+            assert_eq!(review["finishAction"], "applyConfirmedResult");
+            let previewed = fixture
+                .cache
+                .app()
+                .db(|db| db.get(OWNER, "stable-local"))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                previewed, retained,
+                "A read-only provider preview must not retire local Undo"
+            );
+            let result = fixture.finish(&review).await.unwrap();
+            assert_eq!(result["operation"]["status"], "completed");
+            assert!(result["message"]["localFolderUndo"].is_null());
+            for key in ["id", "read", "starred", "pending", "body", "labels"] {
+                assert_eq!(result["message"][key], retained[key], "{key}");
+            }
+            assert_eq!(result["message"]["localOverrides"]["labels"], true);
+            assert_eq!(result["message"]["localOverrides"]["folder"], false);
+        } else {
+            let commands = fixture.commands();
+            let resolved = fixture.route(Method::POST, OWNER, &format!("/{}/resolve", string(&operation, "id")),
+                json!({"operationRef":operation["operationRef"],"confirmed":true,"resolution":"reviewedExternally"})).await.unwrap();
+            assert_eq!(resolved["operation"]["status"], "resolved");
+            assert_eq!(
+                fixture.commands(),
+                commands,
+                "Manual resolution remains local-only"
+            );
+            assert_eq!(
+                fixture
+                    .cache
+                    .app()
+                    .db(|db| db.get(OWNER, "stable-local"))
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                retained
+            );
+        }
+        assert_eq!(
+            fixture.mutations(),
+            mutations,
+            "Recovery must not repeat COPY or source removal"
+        );
+        fixture.close().await;
+    }
 }
 
 #[tokio::test]

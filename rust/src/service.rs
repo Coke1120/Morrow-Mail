@@ -359,6 +359,7 @@ pub(crate) fn message_patch(original: &Value, body: &Value) -> Result<Value> {
 }
 pub fn safe_mail(mail: &Value) -> Value {
     let mut safe = json!({"configured":!string(mail,"email").is_empty(),"provider":"imap","email":"","imapHost":"","imapPort":993,"smtpHost":"","smtpPort":465,"clientId":"","canOrganize":crate::providers::can_organize(mail)});
+    safe["connectionRef"] = crate::downloads::connection_ref(mail).into();
     for key in [
         "provider", "email", "imapHost", "imapPort", "smtpHost", "smtpPort", "clientId",
     ] {
@@ -732,6 +733,9 @@ pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
     if let Some(response) = crate::attachments::handle(app, &context).await? {
         return Ok(response);
     }
+    if let Some(response) = crate::downloads::handle(app, &context).await? {
+        return Ok(response);
+    }
     if let Some(response) = crate::folders::handle(app, &context).await? {
         return Ok(response);
     }
@@ -963,7 +967,7 @@ pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
                 let original = get_message(db, &owner, &id)?;
                 crate::inbox_agent::guard_action(db, &owner, &id, &body)?;
                 crate::scheduled::guard_draft(db, &owner, &id, None)?;
-                let patch = message_patch(&original, &body)?;
+                let patch = crate::local_moves::patch(db, &owner, &original, &body)?;
                 Ok(json!({"message":pages::owned(&owner,db.update(&owner,&id,&patch)?.unwrap())}))
             })
             .await?

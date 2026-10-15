@@ -521,6 +521,8 @@ pub fn import_messages(db: &Store, mail: &Value, messages: &[Value]) -> Result<V
                 }
             }
         }
+        // A later provider import invalidates the previous local-only undo.
+        value.as_object_mut().unwrap().remove("localFolderUndo");
         // Origin matching happened before this merge; conflicting Message-IDs still cannot share content.
         if message["providerDraft"] != true && let Some(previous)=existing.as_ref().filter(|m|m["attachmentsLoaded"]==true && m["providerDraft"]!=true && (string(m,"messageId").is_empty() || string(message,"messageId").is_empty() || m["messageId"]==message["messageId"])) {
             if message["contentIncomplete"]==true && cached_body_available(previous) {
@@ -1768,6 +1770,7 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                         if let Some(id) = &recovery {
                             crate::imap_moves::apply_confirmed(db, &owner, id)?;
                         }
+                        patch["localFolderUndo"] = Value::Null;
                         let changed = db
                             .update(&owner, string(&message, "id"), &patch)?
                             .ok_or_else(|| Error::new(404, "Message not found."))?;

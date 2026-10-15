@@ -389,6 +389,7 @@ struct NativeSettingsView: View {
                         Text("\(Int(account["incompleteMessages"].number)) messages need full content. \(account["contentWarning"].string)")
                             .font(.caption).foregroundStyle(.orange)
                     }
+                    DownloadControlsButton(owner: account.id, openSettings: { selectTab($0) })
                     HStack {
                         if account["import"]["status"].string != "running" {
                             Button(account["import"].isNull ? "Start History Import…" : "Start New Import…") {

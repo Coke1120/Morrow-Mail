@@ -87,6 +87,7 @@ fn patch(record: &Value) -> Result<Value> {
     Ok(
         json!({"remoteId":format!("imap:{validity}:{uid}"),"providerFolderId":target["id"],
         "providerFolderName":target["name"],"providerDeleted":false,"providerFolderMissing":false,
+        "localFolderUndo":null,
         "imapModseq":null,"imapSyncConnection":null,"imapSyncEpoch":null,
         "folder":match string(target,"kind") { "inbox"=>"inbox", "trash"=>"trash", _=>"archive" }}),
     )
