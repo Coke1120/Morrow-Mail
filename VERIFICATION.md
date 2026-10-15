@@ -57,6 +57,27 @@ These new checks and the corrected sources still require a fresh exact-head
 Windows SDK build and native run. Linux source inspection and `git diff --check`
 do not establish SDK, visual, keyboard-traversal or screen-reader acceptance.
 
+### Initial PR #59 focused lifecycle compilation
+
+[Focused run 38721478166](https://github.com/Coke1120/Morrow-Mail/actions/runs/38721478166),
+job `116376822040`, tested the same `4dd180b9` head and `06c0e247` synthetic merge.
+Its pinned-baseline step failed before execution: old `TodayView.swift:123`
+redeclared `JSON.isObject`, already provided by current `Models.swift:49`.
+The old lifecycle negative controls did not run, and the current-production
+step was skipped. This compiler failure does not establish a lifecycle or
+rendered-layout assertion failure.
+
+The runner now removes only that byte-identical redundant helper from its
+temporary pinned Today copy, in baseline mode only. Exact occurrence guards
+require one old extension and one matching current property; absent, changed
+or duplicate definitions fail closed. The pinned reply/state handlers,
+current-production input path, fixture assertions and 180/45-second limits
+are unchanged. Controlled source checks exercise the valid adaptation and
+missing, duplicated and changed helper rejection on Linux; these are not Swift
+compilation or native execution. Both focused stages still require a fresh
+SDK run. The separate main-job review-workspace failure remains unclassified
+until its terminal log is available.
+
 ## Saved summary job diagnostics — 15 October 2026
 
 This separate follow-up starts from PR #50's tested tree, later merged as

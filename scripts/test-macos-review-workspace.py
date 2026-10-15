@@ -21,6 +21,17 @@ with tempfile.TemporaryDirectory(prefix="morrow-review-check-") as temporary:
         for name in ["ReviewWorkspaceState.swift", "ReplySuggestionsView.swift", "TodayView.swift"]:
             overrides[name] = fixture / name
             overrides[name].write_bytes(subprocess.check_output(["git", "show", "8f9130737e297338abba1925db3453a30496bd68:macos/Sources/MorrowMail/" + name], cwd=root))
+        # The old Today file declared this helper privately; current Models
+        # provides the identical property. Adapt only that duplicate in the
+        # temporary baseline copy, leaving its lifecycle handlers untouched.
+        property_body = b"var isObject: Bool { if case .object = self { return true }; return false }"
+        duplicate = b"private extension JSON { " + property_body + b" }\n"
+        today = overrides["TodayView.swift"].read_bytes()
+        models = (sources / "Models.swift").read_bytes()
+        if (today.count(duplicate) != 1 or today.count(b"var isObject:") != 1
+                or models.count(property_body) != 1 or models.count(b"var isObject:") != 1):
+            raise RuntimeError("The baseline Today JSON helper compatibility seam changed")
+        overrides["TodayView.swift"].write_bytes(today.replace(duplicate, b"", 1))
     model = (sources / "AppModel.swift").read_text()
     seam = "private(set) var baseURL: URL?"
     if model.count(seam) != 1:
