@@ -10,6 +10,7 @@ use axum::{
     Json,
     response::{IntoResponse, Response},
 };
+use rusqlite::params;
 use serde_json::{Value, json};
 use std::{
     collections::HashSet,
@@ -48,7 +49,11 @@ pub fn cached_catalogs(config: &Value) -> Value {
     let mut result = serde_json::Map::new();
     for (owner, mail) in connections(config).as_object().unwrap() {
         let cache = &config["mailFolderCatalogs"][owner];
-        let mut value = if cache["provider"] == provider(mail) {
+        let same_origin = !imap_mail(mail)
+            || imap::server_origin(mail).is_ok_and(|origin| {
+                crate::imap_identity::saved_origin(&cache["connection"]) == Some(origin)
+            });
+        let mut value = if cache["provider"] == provider(mail) && same_origin {
             project(
                 cache,
                 &[
@@ -108,8 +113,14 @@ pub(crate) fn remember(db: &Store, mail: &Value, folders: &[Value]) -> Result<()
                 && !string(f, "id").chars().any(char::is_control)
         })
         .map(|f| {
-            let previous = config["mailFolderCatalogs"][owner]["folders"]
+            let cache = &config["mailFolderCatalogs"][owner];
+            let same_origin = !imap_mail(mail)
+                || imap::server_origin(mail).is_ok_and(|origin| {
+                    crate::imap_identity::saved_origin(&cache["connection"]) == Some(origin)
+                });
+            let previous = cache["folders"]
                 .as_array()
+                .filter(|_| same_origin)
                 .and_then(|folders| {
                     folders
                         .iter()
@@ -483,11 +494,25 @@ async fn reviewed_plan(app: &App, mail: &Value, input: &Value) -> Result<Value> 
 pub fn update_cache(
     db: &Store,
     owner: &str,
-    provider: &str,
+    connection: &Value,
     changes: &[Value],
     catalog: &[Value],
 ) -> Result<()> {
+    let provider = provider(connection);
     db.transaction(|db| {
+        let config = db.settings()?;
+        let origin = if imap_mail(connection) {
+            if string(connection, "email") != owner
+                || connections(&config).get(owner) != Some(connection)
+            {
+                return Err(Error::conflict(
+                    "The mailbox changed during this provider operation.",
+                ));
+            }
+            Some(imap::server_origin(connection)?)
+        } else {
+            None
+        };
         // Creating a folder has no existing memberships to reconcile. For other
         // changes, use the same owned membership index as provider-folder pages.
         let messages = if changes.is_empty() {
@@ -501,11 +526,12 @@ pub fn update_cache(
             )?;
             db.conn
                 .prepare(
-                    "SELECT data FROM messages WHERE account=?1 AND rowid IN (
+                    "SELECT data FROM messages WHERE account=?1
+                AND (?3 IS NULL OR json_extract(data,'$.imapOrigin')=?3) AND rowid IN (
                 SELECT message_rowid FROM mail_provider_memberships WHERE account=?1
                 AND folder_id IN (SELECT value FROM json_each(?2)))",
                 )?
-                .query_map([owner, &ids], |row| row.get::<_, String>(0))?
+                .query_map(params![owner, ids, origin], |row| row.get::<_, String>(0))?
                 .map(|row| Ok(serde_json::from_str::<Value>(&row?)?))
                 .collect::<Result<Vec<_>>>()?
         };
@@ -571,8 +597,11 @@ pub fn update_cache(
             }
         }
         // Keep unrelated checkpoints and the pause state; deleted mailboxes leave the traversal.
-        let mut imports = db.settings()?["imports"].clone();
-        if let Some(folders) = imports[owner]["cursor"]["folders"].as_array().cloned() {
+        let mut imports = config["imports"].clone();
+        if (!imap_mail(connection)
+            || crate::background::current_import(&config, connection).is_some())
+            && let Some(folders) = imports[owner]["cursor"]["folders"].as_array().cloned()
+        {
             let key = if provider == "imap" { "path" } else { "id" };
             let old_index = imports[owner]["cursor"]["index"].as_u64().unwrap_or(0) as usize;
             let mut next = Vec::new();
@@ -789,14 +818,13 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             changes.clone(),
             catalog.clone(),
         );
-        let cached_provider = provider.to_owned();
         app.db(move |db| {
             if connections(&db.settings()?).get(&account) != Some(&connection) {
                 return Err(Error::conflict(
                     "The mailbox changed during this provider operation.",
                 ));
             }
-            update_cache(db, &account, &cached_provider, &deltas, &next)
+            update_cache(db, &account, &connection, &deltas, &next)
         })
         .await?;
         let selection = changes

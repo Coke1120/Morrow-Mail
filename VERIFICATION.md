@@ -1,5 +1,55 @@
 # Verification — 14 October 2026
 
+## IMAP server identity and safe migration — 15 October 2026
+
+This source follow-up starts from main
+`d5ac97c5d51cc265cc769d07bd36d7d013fa5c67` and incorporates the documentation/version-only
+v0.8.2 main commit `6a52974afdd80edda0ed5e29972157f3288906a8`. It separates cached IMAP identities
+by the actual validated endpoint and LOGIN principal, preserves old local IDs
+and user data, and prevents foreign or unproven copies from issuing provider
+reads or mutations. Old history coverage, scope/date inputs and cursors cannot
+be reused by another connection generation. Missing legacy generations require
+reconnection before a new import can replace saved progress.
+
+The four unchanged tests in `rust/tests/imap_identity.rs` ran against that exact
+base: one same-server compatibility case passed and three regressions failed
+(cross-server UID collision, unproven legacy adoption and inherited history
+completeness). The repaired source passed all four. Additional synthetic tests
+cover two TLS servers returning the same UID/Message-ID, source-specific flags
+and body reads, source-bound folder catalogs, malformed provenance, retained
+draft/uncertain-send references, missing-generation no-write recovery, and
+atomic migration rollback.
+
+A final cross-review also reproduced a separate folder-management gap in the
+initially passing implementation: applying one server's confirmed rename/delete
+could rewrite another source's retained folder path or history cursor. The
+follow-up carries the captured connection into the atomic cache update, filters
+IMAP rows by origin and restricts cursor changes to the current import. The
+focused regression initially had two failures and one passing current-source
+case; it also checks replacement of the captured connection before any local
+write. Its API-call adapter changed with the captured-connection parameter;
+the four baseline regressions above remain byte-identical.
+
+Schema 1 upgrades to one schema-2 marker in the same transaction as the origin,
+FTS, folder-membership and thread work. Empty, malformed, multiple and future
+schema markers fail before migration. The actual service binary built from
+the base above rejected a synthetic schema-2 workspace with exit 3 / HTTP-style
+409 and left both database and key bytes unchanged. This is an executed
+downgrade-gate check for that base binary, not a claim about every historical
+release. See [backup and recovery requirements](docs/IMAP_SERVER_IDENTITY.md).
+
+Final source `cargo fmt --all -- --check` and locked all-targets Clippy with
+`-D warnings` passed. The focused folder/identity/migration/service checks passed
+72 tests with one existing ignored benchmark. The locked complete Rust suite
+with `--no-fail-fast` passed **444 tests, 0 failures, 4 existing ignored
+benchmarks**. All four runs used the same 99-file Rust/Cargo source manifest;
+the final folder-management fix is included in those results.
+
+Native macOS/Windows, live-provider, large-workspace migration latency and
+signed-release acceptance remain pending. Tests used only temporary synthetic
+workspaces and loopback fixtures; no real mailbox, model, external send, user
+workspace or user backup was used.
+
 ## v0.8.2 release preparation — 15 October 2026
 
 The owner requested a release of already merged main before the separate

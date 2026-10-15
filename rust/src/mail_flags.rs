@@ -29,6 +29,9 @@ pub async fn patch(app: &App, ctx: &Context) -> Result<Value> {
         })
         .await?;
     let connection = mail::current_mail(app, &ctx.owner).await?;
+    if ["", "imap"].contains(&string(&connection, "provider")) {
+        crate::imap_identity::require(&connection, &message)?;
+    }
     if !providers::can_organize(&connection) {
         let mut error = Error::new(
             403,

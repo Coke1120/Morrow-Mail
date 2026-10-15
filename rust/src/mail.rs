@@ -134,7 +134,7 @@ pub(crate) fn read_backoff(config: &Value, mail: &Value) -> Option<Error> {
         return None;
     }
     let shared = &config["mailReadBackoffs"][owner];
-    let job = &config["imports"][owner];
+    let job = crate::background::current_import(config, mail).unwrap_or(&Value::Null);
     let folders = &config["mailFolderCatalogs"][owner];
     let sync = config["backgroundSyncErrors"]
         .as_array()
@@ -190,7 +190,7 @@ pub(crate) async fn finish_read<T: Send + 'static>(
         let previous = &config["mailReadBackoffs"][owner];
         let mut result = result;
         if let Err(error) = &mut result {
-            let job = &config["imports"][owner];
+            let job = crate::background::current_import(&config, &mail).unwrap_or(&Value::Null);
             let folders = &config["mailFolderCatalogs"][owner];
             let sync = config["backgroundSyncErrors"].as_array().and_then(|errors| errors.iter().find(|error| error["accountId"] == owner));
             let count = [
@@ -288,6 +288,8 @@ pub(crate) fn copy_cached_body(cached: &Value, message: &mut Value) {
 }
 pub(crate) fn reusable_immutable_body(message: &Value, connection: &Value) -> bool {
     message["bodyConnection"] == crate::folders::connection_version(connection)
+        && (!["", "imap"].contains(&string(connection, "provider"))
+            || crate::imap_identity::matches(connection, message))
         && cached_body_available(message)
         && message["providerDraft"] != true
         && message["folder"] != "drafts"
@@ -310,13 +312,18 @@ pub(crate) async fn cached_page_bodies(
         // Unsaved connection checks and replaced connections have no reusable body proof.
         if connections(&db.settings()?).get(owner) != Some(&connection) { return Ok(cached); }
         for remote in remote_ids {
-            let row: Option<String> = db.conn.query_row(
+            let row = if ["", "imap"].contains(&string(&connection, "provider")) {
+                crate::imap_identity::existing(db, owner, &remote, folder.as_deref().unwrap_or("INBOX"), &imap::server_origin(&connection)?)?
+            } else {
+                let raw: Option<String> = db.conn.query_row(
                 "SELECT data FROM messages WHERE account=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id)=? AND (? IS NULL OR COALESCE(NULLIF(json_extract(data,'$.providerFolderId'),''),'INBOX')=?) ORDER BY rowid DESC LIMIT 1",
                 params![owner, remote, folder, folder], |row| row.get(0)).optional()?;
-            if let Some(row) = row {
-                let message: Value = serde_json::from_str(&row)?;
-                if reusable_immutable_body(&message, &connection)
-                { cached.insert(remote, message); }
+                raw.map(|raw| serde_json::from_str::<Value>(&raw)).transpose()?
+            };
+            if let Some(message) = row
+                && reusable_immutable_body(&message, &connection)
+            {
+                cached.insert(remote, message);
             }
         }
         Ok(cached)
@@ -487,11 +494,24 @@ pub fn import_messages(db: &Store, mail: &Value, messages: &[Value]) -> Result<V
     let is_imap = ["", "imap"].contains(&string(mail, "provider"));
     let mut new_ids = Vec::new();
     db.transaction(|db|{let mut statement=None;for message in messages{let remote=message["remoteId"].as_str().filter(|s|!s.is_empty()).unwrap_or(string(message,"id"));let folder=message["providerFolderId"].as_str().filter(|s|!s.is_empty()).unwrap_or("INBOX");
-        let existing:Option<String>=db.conn.query_row("SELECT data FROM messages WHERE account=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id)=? AND (?=0 OR COALESCE(NULLIF(json_extract(data,'$.providerFolderId'),''),'INBOX')=?) ORDER BY rowid DESC LIMIT 1",params![account,remote,is_imap,folder],|row|row.get(0)).optional()?;
-        let mut existing=existing.map(|s|serde_json::from_str::<Value>(&s)).transpose()?;
-        if existing.is_none()&&(message["folder"]=="sent"||(mail["provider"]=="google"&&message["providerSent"]==true))&&string(message,"fromEmail").eq_ignore_ascii_case(account)&&!string(message,"messageId").is_empty(){let local:Option<String>=db.conn.query_row("SELECT data FROM messages WHERE account=? AND id LIKE 'sent:%' AND COALESCE(json_extract(data,'$.remoteId'),'')='' AND json_extract(data,'$.messageId')=? LIMIT 1",params![account,string(message,"messageId")],|row|row.get(0)).optional()?;existing=local.map(|s|serde_json::from_str(&s)).transpose()?;}
-        if existing.is_none()&&db.get(account,string(message,"id"))?.is_none(){new_ids.push(string(message,"id").to_owned());}
-        let mut value=message.clone();value["remoteId"]=remote.into();if let Some(existing)=&existing{if string(existing,"id").starts_with("sent:"){value=merge(value,existing);for key in ["bodyConnection","bodySize"]{if value.get(key).is_some(){value[key]=existing[key].clone();}}}for key in ["id","folder","read","starred","labels","pending","lowPriority"]{if let Some(entry)=existing.get(key){value[key]=entry.clone();}}value["remoteId"]=existing["remoteId"].as_str().filter(|s|!s.is_empty()).unwrap_or(remote).into();
+        let origin = if is_imap && remote.starts_with("imap:") { Some(imap::server_origin(mail)?) } else { None };
+        if origin.is_some() && (message.get("imapOrigin").is_some() || crate::imap_identity::message_origin(message).is_some()) {
+            crate::imap_identity::require(mail, message)?;
+        }
+        let mut existing = if let Some(origin) = &origin {
+            crate::imap_identity::existing(db, account, remote, folder, origin)?
+        } else {
+            let raw:Option<String>=db.conn.query_row("SELECT data FROM messages WHERE account=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id)=? AND (?=0 OR COALESCE(NULLIF(json_extract(data,'$.providerFolderId'),''),'INBOX')=?) ORDER BY rowid DESC LIMIT 1",params![account,remote,is_imap,folder],|row|row.get(0)).optional()?;
+            raw.map(|s|serde_json::from_str::<Value>(&s)).transpose()?
+        };
+        if existing.is_none()&&(message["folder"]=="sent"||(mail["provider"]=="google"&&message["providerSent"]==true))&&string(message,"fromEmail").eq_ignore_ascii_case(account)&&!string(message,"messageId").is_empty(){let local:Option<String>=db.conn.query_row("SELECT data FROM messages WHERE account=? AND id LIKE 'sent:%' AND COALESCE(json_extract(data,'$.remoteId'),'')='' AND json_extract(data,'$.messageId')=? AND (? IS NULL OR json_extract(data,'$.imapOrigin')=?) LIMIT 1",params![account,string(message,"messageId"),origin,origin],|row|row.get(0)).optional()?;existing=local.map(|s|serde_json::from_str(&s)).transpose()?;}
+        let mut value=message.clone();
+        if let Some(origin) = &origin {
+            value["imapOrigin"] = origin.clone().into();
+            if existing.is_none() { value["id"] = crate::imap_identity::available_id(db, account, string(message,"id"), origin)?.into(); }
+        }
+        if existing.is_none()&&db.get(account,string(&value,"id"))?.is_none(){new_ids.push(string(&value,"id").to_owned());}
+        value["remoteId"]=remote.into();if let Some(existing)=&existing{if string(existing,"id").starts_with("sent:"){value=merge(value,existing);for key in ["bodyConnection","bodySize"]{if value.get(key).is_some(){value[key]=existing[key].clone();}}}for key in ["id","folder","read","starred","labels","pending","lowPriority"]{if let Some(entry)=existing.get(key){value[key]=entry.clone();}}value["remoteId"]=existing["remoteId"].as_str().filter(|s|!s.is_empty()).unwrap_or(remote).into();
             // Provider locations describe the fetched message, independently of local folder overrides.
             // Bounded refreshes that omit location metadata retain the last known provider location.
             for key in ["providerFolderId", "providerFolderName"] {
@@ -501,7 +521,7 @@ pub fn import_messages(db: &Store, mail: &Value, messages: &[Value]) -> Result<V
                 }
             }
         }
-        // A reconnected IMAP server can reuse UID tuples; conflicting Message-IDs cannot share downloaded content.
+        // Origin matching happened before this merge; conflicting Message-IDs still cannot share content.
         if message["providerDraft"] != true && let Some(previous)=existing.as_ref().filter(|m|m["attachmentsLoaded"]==true && m["providerDraft"]!=true && (string(m,"messageId").is_empty() || string(message,"messageId").is_empty() || m["messageId"]==message["messageId"])) {
             if message["contentIncomplete"]==true && cached_body_available(previous) {
                 // Refresh flags/location without replacing a downloaded immutable body with a size-limit placeholder.
@@ -775,8 +795,12 @@ if previous["payloadHash"]!=hash{return Err(Error::conflict("This draft has an u
     };
     let mut attempt = Value::Null;
     let mut message_id = String::new();
+    let mut sent_origin = None;
     if ctx.owner != "demo" {
         let mail = current_mail(app, &ctx.owner).await?;
+        if ["", "imap"].contains(&string(&mail, "provider")) {
+            sent_origin = Some(imap::server_origin(&mail)?);
+        }
         providers::check_attachment_send_limit(&mail, &value)?;
         let attachment_owner = ctx.owner.clone();
         let mut delivery = value.clone();
@@ -851,6 +875,9 @@ if previous["payloadHash"]!=hash{return Err(Error::conflict("This draft has an u
                     crate::cli::guard_review(db, &owner, &input)?;
                 }
                 let mut extra = json!({"id":sent_id,"folder":"sent","messageId":message_id});
+                if let Some(origin) = sent_origin {
+                    extra["imapOrigin"] = origin.into();
+                }
                 let reply = string(&value, "replyToId");
                 if !reply.is_empty() {
                     extra["replyToId"] = reply.into();
@@ -972,7 +999,7 @@ pub(crate) async fn commit_sync_page(
             }
             let ids = import_messages(db, &mail, &messages)?;
             let config = db.settings()?;
-            let job = &config["imports"][&owner];
+            let job = crate::background::current_import(&config, &mail).unwrap_or(&Value::Null);
             let arrivals = ids
                 .into_iter()
                 .filter(|id| {
@@ -1057,7 +1084,7 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
                 return Ok(None);
             }
             let config = app.settings().await?;
-            let job = &config["imports"][owner];
+            let job = crate::background::current_import(&config, &mail).unwrap_or(&Value::Null);
             let options = &job["options"];
             let folders = if mail["provider"] == "google" {
                 vec!["inbox", "sent", "drafts", "starred", "all"]
@@ -1484,6 +1511,9 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                 }
             }
             let mail = current_mail(app, &ctx.owner).await?;
+            if ["", "imap"].contains(&string(&mail, "provider")) {
+                crate::imap_identity::require(&mail, &message)?;
+            }
             let folders = remote_folders(app, &mail).await?;
             let mut destination = if mode == "labels" {
                 if mail["provider"] != "google" {
@@ -1724,7 +1754,7 @@ mod tests {
         let owner = "imap@example.invalid";
         app.db(move |db| {
             // Invalid port fails before networking; an empty scope must not report success.
-            db.set_settings(&json!({"mailAccounts":{owner:{"email":owner,"provider":"imap","connectionId":"fixture","imapPort":0}},"imports":{owner:{"options":{"allMail":true,"inbox":false,"sent":false}}}}))?;
+            db.set_settings(&json!({"mailAccounts":{owner:{"email":owner,"provider":"imap","connectionId":"fixture","imapPort":0}},"imports":{owner:{"connectionId":"fixture","options":{"allMail":true,"inbox":false,"sent":false}}}}))?;
             Ok(())
         }).await.unwrap();
         let errors = sync(&app, &[owner.into()]).await.unwrap();

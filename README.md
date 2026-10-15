@@ -12,6 +12,14 @@
 
 Morrow is a local, single-user app: **SwiftUI on macOS**, **WinUI 3 on Windows**, and a shared **Rust service**. Desktop packages include their runtime; no Node, Electron or Rust installation is needed to use them.
 
+The IMAP identity follow-up separates cached mail by server endpoint and login,
+so reconnecting the same email to another server cannot reuse old UIDs or local
+state. Proven legacy messages keep their IDs; unverified copies remain readable
+locally and cannot act on the new server. **Back up before opening this source:**
+workspace schema 2 is incompatible with the prior service. See
+[migration and recovery limits](docs/IMAP_SERVER_IDENTITY.md).
+This source change is not a release or live-account acceptance claim.
+
 The v0.8.2 source includes the merged Mail | Agent | Brain navigation shell and activity-recovery fixes from PRs #48–50. Cancellation remains scoped to its mailbox and work type, and delayed cancellation or settings responses cannot stop replacement work. Release preparation changes only the common version and documentation; summary-job diagnostics, IMAP/mailbox improvements and the separate Today follow-up are excluded. See [validation](VERIFICATION.md#v082-release-preparation--15-october-2026) and [release notes and known limits](docs/releases/v0.8.2.md). Publication requires fresh paired v0.8.2 tag checks and the existing signed-manifest publisher. macOS remains ad-hoc signed without Developer ID notarization, Windows unsigned, and live-account/manual accessibility acceptance incomplete.
 
 [Published v0.8.1](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.8.1) corrected the v0.8.0 Gmail history authorization regression: the first history resource-API 401 stops the import for manual recovery while preserving its checkpoint and cached mail. Routine token-expiry refresh and other Gmail read/reconnect fixes remain. Writing rules, Today suggestions and categories, skill review queues and the local Inbox Agent with explicit action/send review are retained. Today still keeps 200 completion markers and exposes the latest 20 per mailbox; old suggestions can reappear after eviction, and unread-task priority ordering remains limited. See the [v0.8.1 notes](docs/releases/v0.8.1.md). Older tags and assets remain unchanged.

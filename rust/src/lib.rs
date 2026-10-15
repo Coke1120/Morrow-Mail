@@ -12,6 +12,7 @@ pub mod folders;
 mod google_sync;
 pub mod home;
 pub mod imap;
+mod imap_identity;
 pub mod inbox_agent;
 pub mod learning;
 pub mod local_rules;
