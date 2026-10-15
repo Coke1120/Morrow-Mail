@@ -712,11 +712,23 @@ IAsyncAction reviewWorkspaceChecks(std::shared_ptr<Shell> shell) {
     JsonArray todos;todos.Append(task);today.Insert(L"todos",todos);shell->state.Insert(L"today",today);paintToday(inlinePage);
     Button taskReview{nullptr};for(auto const& child:inlinePage->queue.Children())if(auto candidate=child.try_as<Button>();candidate && xaml::Automation::AutomationProperties::GetAutomationId(candidate)==L"review.today.task."+owner+L".fictional-inline-task")taskReview=candidate;
     require(bool(taskReview),L"Today has no native Review entry for its saved task.");
-    struct DetachedEvents { unsigned taskClicks=0,text=0,matchingText=0,facts=0,checkedFacts=0; };
-    auto events=std::make_shared<DetachedEvents>();
+    {
+    struct StaleEvents {
+        unsigned taskClicks=0,text=0,matchingText=0,facts=0,checkedFacts=0;
+        bool textSender=true,textCurrent=true,textIdle=true,textKey=true,textBody=true,textReply=true,textClosed=true;
+        bool textOwned=true,textLoaded=true,textSized=true,textBeforeTask=true,textDraft=true,textUnreviewed=true;
+        bool taskSender=true,factsSender=true,factsAfterTask=true,textInTime=true,taskInTime=true,factsInTime=true;
+    };
+    auto events=std::make_shared<StaleEvents>();
     auto count=[](unsigned& value){if(value<16)++value;};
-    auto taskClick=taskReview.Click(auto_revoke,[events,count](auto const&,auto const&){count(events->taskClicks);});
+    auto taskClick=taskReview.Click(auto_revoke,[&,events,count,taskReview](auto const& sender,auto const&){
+        count(events->taskClicks);events->taskSender&=sender.template try_as<Button>()==taskReview;events->taskInTime&=GetTickCount64()<ready;
+    });
     auto expectedTask=task.Stringify();
+    auto ownsReply=[&] {
+        return inlinePage->shell==shell && shell->review==memory && memory->scope==owner && inlinePage->scope==owner && shell->owner==globalOwner
+            && ownerOf(entry.proposal)==owner && text(entry.draft,L"accountId")==owner;
+    };
     auto adopted=[&] {
         auto kind=memory->detailKinds.find(std::wstring(owner));auto detail=memory->details.find(std::wstring(owner));
         auto decision=memory->decisions.find(std::wstring(owner));
@@ -742,32 +754,83 @@ IAsyncAction reviewWorkspaceChecks(std::shared_ptr<Shell> shell) {
         value.Insert(L"oldBodySized",Value::CreateBooleanValue(retainedBody.ActualWidth()>0 && retainedBody.ActualHeight()>0));
         value.Insert(L"oldFactsLoaded",Value::CreateBooleanValue(retainedFacts.IsLoaded()));
         value.Insert(L"deadlineExpired",Value::CreateBooleanValue(GetTickCount64()>=ready));
+        for(auto const& [name,flag]:{std::pair{L"textSenderExact",events->textSender},
+            {L"textCurrent",events->textCurrent},{L"textNotWriting",events->textIdle},{L"textKeyMatches",events->textKey},
+            {L"textBodyMatches",events->textBody},{L"textKindReply",events->textReply},{L"textDetailsClosed",events->textClosed},
+            {L"textOwnersMatch",events->textOwned},{L"textBodyLoaded",events->textLoaded},{L"textBodySized",events->textSized},
+            {L"textBeforeTask",events->textBeforeTask},{L"textDraftUnchanged",events->textDraft},{L"textUnreviewed",events->textUnreviewed},
+            {L"taskSenderExact",events->taskSender},{L"factsSenderExact",events->factsSender},{L"factsAfterTask",events->factsAfterTask},
+            {L"textBeforeDeadline",events->textInTime},{L"taskBeforeDeadline",events->taskInTime},{L"factsBeforeDeadline",events->factsInTime}})
+            value.Insert(name,Value::CreateBooleanValue(flag));
         return value.Stringify();
     };
     auto observed=[&](bool condition,wchar_t const* message){if(!condition)throw hresult_error(E_FAIL,hstring(message)+L" "+receipt());};
-    co_await invokeReviewButton(shell,taskReview);
-    // Invoke requests an action; it does not supply a completion receipt. Share
-    // the original five-second budget between adoption and both native events.
-    ready=GetTickCount64()+5000;
-    while((!adopted() || !events->taskClicks) && GetTickCount64()<ready){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
-    observed(adopted() && events->taskClicks>0,L"The native task action did not adopt its captured decision before stale input.");
-    observed(inlinePage->selectedKey.empty() && !inlinePage->body && !inlinePage->facts
-        && entry.draft.Stringify()==retainedDraft && !entry.reviewed,L"Task review did not revoke the reply controls while retaining its draft and approval.");
-    observed(!checked(retainedFacts),L"The retained facts control was not reset before stale input.");
+    // Prepare the same mounted native peer before the shared event budget.
+    // Invoking it below must not start another helper's five-second mount wait.
+    auto mountDeadline=GetTickCount64()+5000;taskReview.StartBringIntoView();shell->root.UpdateLayout();
+    while((!taskReview.IsLoaded() || !taskReview.ActualWidth() || !taskReview.ActualHeight()) && GetTickCount64()<mountDeadline) {
+        co_await resume_after(std::chrono::milliseconds(10));co_await ui;shell->root.UpdateLayout();
+    }
+    require(taskReview.IsLoaded() && taskReview.ActualWidth() && taskReview.ActualHeight() && taskReview.Focus(FocusState::Keyboard),
+        L"The stale-input task action did not become a focusable mounted native button.");
+    auto taskPeer=xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(taskReview);
+    auto taskInvoke=taskPeer.GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).as<xaml::Automation::Provider::IInvokeProvider>();
     hstring staleText=L"An obsolete editor must not update a task or retained reply.";
-    auto changedEvent=retainedBody.TextChanged(auto_revoke,[events,count,staleText](auto const& sender,auto const&){
-        count(events->text);if(sender.template as<TextBox>().Text()==staleText)count(events->matchingText);
+    auto changedEvent=retainedBody.TextChanged(auto_revoke,[&,events,count,staleText,retainedBody](auto const& sender,auto const&){
+        count(events->text);auto target=sender.template try_as<TextBox>();events->textSender&=target==retainedBody;
+        if(target && target.Text()==staleText) {
+            count(events->matchingText);
+            auto kind=memory->detailKinds.find(std::wstring(owner));auto detail=memory->details.find(std::wstring(owner));
+            events->textCurrent&=inlinePage->current();events->textIdle&=!memory->writing;
+            events->textKey&=inlinePage->selectedKey==key;events->textBody&=inlinePage->body==target;
+            events->textReply&=kind!=memory->detailKinds.end() && kind->second==L"reply";
+            events->textClosed&=detail!=memory->details.end() && !detail->second;events->textOwned&=ownsReply();
+            events->textLoaded&=target.IsLoaded();events->textSized&=target.ActualWidth()>0 && target.ActualHeight()>0;
+            events->textBeforeTask&=!events->taskClicks && !adopted();events->textDraft&=entry.draft.Stringify()==retainedDraft;
+            events->textUnreviewed&=!entry.reviewed;events->textInTime&=GetTickCount64()<ready;
+        }
     });
-    auto checkedEvent=retainedFacts.Checked(auto_revoke,[events,count](auto const& sender,auto const&){
-        count(events->facts);if(checked(sender.template as<CheckBox>()))count(events->checkedFacts);
+    auto checkedEvent=retainedFacts.Checked(auto_revoke,[&,events,count,retainedFacts](auto const& sender,auto const&){
+        count(events->facts);auto target=sender.template try_as<CheckBox>();events->factsSender&=target==retainedFacts;
+        if(target && checked(target)) {
+            count(events->checkedFacts);events->factsAfterTask&=events->taskClicks>0 && adopted()
+                && inlinePage->selectedKey.empty() && !inlinePage->body && !inlinePage->facts && ownsReply()
+                && entry.draft.Stringify()==retainedDraft && !entry.reviewed;events->factsInTime&=GetTickCount64()<ready;
+        }
     });
-    retainedBody.Text(staleText);retainedFacts.IsChecked(true);
-    while((!events->matchingText || !events->checkedFacts) && GetTickCount64()<ready){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
-    // An unloaded TextBox is not assumed to deliver TextChanged. Missing native
-    // events remain a failure, distinct from an observed retained-state change.
-    observed(events->matchingText>0 && events->checkedFacts>0,L"The retained reply controls did not deliver both native stale-input events.");
-    observed(adopted() && inlinePage->selectedKey.empty() && !inlinePage->body && !inlinePage->facts
+    // Back closed the reply scope without replacing its loaded controls. Prove
+    // an actual matching native TextChanged is rejected by the details guard.
+    // No post-task/unloaded TextChanged delivery is assumed or claimed.
+    ready=GetTickCount64()+5000;
+    observed(GetTickCount64()<ready && inlinePage->current() && !memory->writing && ownsReply()
+        && inlinePage->selectedKey==key && inlinePage->body==retainedBody && inlinePage->facts==retainedFacts
+        && memory->detailKinds[std::wstring(owner)]==L"reply" && !memory->details[std::wstring(owner)]
+        && retainedBody.IsLoaded() && retainedBody.ActualWidth()>0 && retainedBody.ActualHeight()>0
+        && retainedBody.Text()!=staleText && !events->taskClicks && entry.draft.Stringify()==retainedDraft && !entry.reviewed
+        && !checked(retainedFacts),L"Back did not retain the loaded reply with only its details guard revoked.");
+    observed(GetTickCount64()<ready,L"The stale reply text assignment exceeded the shared deadline.");
+    retainedBody.Text(staleText);
+    while(!events->matchingText && GetTickCount64()<ready){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+    observed(GetTickCount64()<ready && events->matchingText>0 && events->textSender && events->textCurrent && events->textIdle
+        && events->textKey && events->textBody && events->textReply && events->textClosed && events->textOwned
+        && events->textLoaded && events->textSized && events->textBeforeTask && events->textDraft && events->textUnreviewed && events->textInTime
+        && !events->taskClicks && entry.draft.Stringify()==retainedDraft && !entry.reviewed,
+        L"The closed loaded reply did not deliver unchanged, account-owned native text input.");
+    observed(GetTickCount64()<ready,L"The native task action exceeded the shared stale-input deadline.");
+    taskInvoke.Invoke();
+    while((!adopted() || !events->taskClicks) && GetTickCount64()<ready){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+    observed(GetTickCount64()<ready && adopted() && events->taskClicks==1 && events->taskSender && events->taskInTime,
+        L"The native task action did not adopt its captured decision after closed-reply input.");
+    observed(inlinePage->selectedKey.empty() && !inlinePage->body && !inlinePage->facts && ownsReply()
+        && entry.draft.Stringify()==retainedDraft && !entry.reviewed,L"Task review did not revoke the reply controls while retaining its draft and approval.");
+    observed(GetTickCount64()<ready && !checked(retainedFacts),L"The retained facts control was not reset within the shared stale-input deadline.");
+    retainedFacts.IsChecked(true);
+    while(!events->checkedFacts && GetTickCount64()<ready){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+    observed(GetTickCount64()<ready && events->checkedFacts>0 && events->factsSender && events->factsAfterTask && events->factsInTime,
+        L"The detached reply facts control did not deliver native checked input after task adoption.");
+    observed(GetTickCount64()<ready && adopted() && inlinePage->selectedKey.empty() && !inlinePage->body && !inlinePage->facts && ownsReply()
         && entry.draft.Stringify()==retainedDraft && !entry.reviewed,L"A detached reply control changed the retained draft or approval from task review.");
+    }
     co_await reviewPage(shell,L"today");co_await ui;inlinePage=mountedReview.lock();
     require(inlinePage && inlinePage->current() && memory->detailKinds[std::wstring(owner)]==L"decision" && inlinePage->selectedKey.empty() && !inlinePage->body,L"Returning to Today restored an unrelated reply or original instead of its selected task.");
     auto decision=inlinePage->detailHost.Content().as<ScrollViewer>().Content().as<StackPanel>();
