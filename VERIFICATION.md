@@ -117,6 +117,39 @@ establishes the capture path, not a visual review. Open menus, inline Today
 review, Compose, keyboard traversal and VoiceOver remain pending actual visual
 and interactive verification. No denied artifact-download route was retried.
 
+### PR #59 native menu selector follow-up
+
+[Focused run 38731593839](https://github.com/Coke1120/Morrow-Mail/actions/runs/38731593839),
+job `116410435652`, tested head `484eb592` through synthetic checkout
+`e19ea980c3ad88da2863230e1b731b74f7316306`; both have tree
+`bf7d702d2d7527921b73fe78ace724da0b8ba887`. The pinned baseline now compiled
+and reproduced the full Skip/second-404 and retarget/save negative controls.
+Current source also compiled and passed its existing lifecycle assertions,
+then failed before menu activation: `Expected one mounted enabled menu control:
+reader.replyMenu`. Native diagnostics show an `AXButton` Reply primary and an
+`AXMenuButton` secondary, with empty identifiers; Organize/More also expose
+`AXMenuButton`. The identifier-only selector did not match those actual controls.
+Current Reader-completion and subsequent Today/selection/Compose markers are
+absent. The baseline's final general workspace marker is not a current UI pass.
+
+The next fixture-only correction matches exact named menu labels and requires
+Reply's reciprocal parent/primary/secondary relationship, unique target,
+owned visible enabled window/subtree and stable captured identities. It reads
+the target's advertised accessibility actions through the public NSObject
+informal API, with selector and result-type checks. Only that proven menu
+target may receive its advertised Show Menu or Press action; the primary Reply
+button is never a substitute and a failed action is not retried with another.
+The existing begin/end tracking, command/owner/stale checks and five-second
+watchdog remain. Inspection-only menu opens also assert that no draft was
+prepared. Bounded diagnostics now include parent/child links and action names.
+
+The fixture gains synthetic graph/action controls and mounted native rejection
+controls for disabled/hidden/offscreen/foreign controls. These additions have
+not yet executed with the SDK; Linux source/whitespace checks are not native
+acceptance. Product views, lifecycle handlers, fictional transport and the
+180/45-second runner limits remain unchanged. Visual, keyboard and screen-reader
+inspection remains a separate pending requirement.
+
 ## IMAP server identity and safe migration — 15 October 2026
 
 This source follow-up starts from main

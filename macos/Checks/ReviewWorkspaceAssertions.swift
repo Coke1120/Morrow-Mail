@@ -134,25 +134,171 @@ import SwiftUI
         guard let button = control(label, in: root) else { throw APIError("Lost mounted control: " + label) }
         try require(button.accessibilityPerformPress(), "Native accessibility action failed: " + label)
     }
-    @MainActor static func menuControls(_ identifier: String, in root: NSView) -> [NSAccessibilityProtocol] {
+    struct MenuNode {
+        var role = "", identifier = ""
+        var labels: [String] = []
+        var parent: Int?
+        var children: [Int] = []
+        var completeChildren = true, mounted = true
+    }
+    struct MountedMenuControl {
+        let element: NSAccessibilityProtocol
+        let identities: [ObjectIdentifier]
+    }
+    @MainActor static func menuNodeIndices(_ identifier: String, nodes: [MenuNode]) -> [Int] {
+        let labels = ["reader.replyMenu": "Reply", "reader.organizeMenu": "Organize", "reader.moreMenu": "More", "reader.aiMenu": "AI help"]
+        guard let label = labels[identifier] else { return [] }
+        return nodes.indices.filter { index in
+            let node = nodes[index]
+            guard node.mounted, [NSAccessibility.Role.menuButton.rawValue, NSAccessibility.Role.popUpButton.rawValue].contains(node.role),
+                  node.identifier.isEmpty || node.identifier == identifier else { return false }
+            if identifier != "reader.replyMenu" { return node.labels.contains(label) }
+            // A primary-action Menu exposes an unlabeled secondary menu segment.
+            // Require its owned group and both reciprocal child links; never
+            // choose the primary Reply button or an arbitrary unlabeled control.
+            guard node.labels.allSatisfy({ $0.isEmpty || $0 == label }), let parent = node.parent, nodes.indices.contains(parent),
+                  nodes[parent].mounted, nodes[parent].role == NSAccessibility.Role.group.rawValue,
+                  nodes[parent].completeChildren, nodes[parent].children.count == 2,
+                  Set(nodes[parent].children).count == 2, nodes[parent].children.contains(index),
+                  let primary = nodes[parent].children.first(where: { $0 != index }), nodes.indices.contains(primary) else { return false }
+            let sibling = nodes[primary]
+            return sibling.mounted && sibling.parent == parent && sibling.role == NSAccessibility.Role.button.rawValue
+                && sibling.labels.contains(label) && (sibling.identifier.isEmpty || sibling.identifier == identifier)
+        }
+    }
+    @MainActor static func menuElementIsMounted(_ element: NSAccessibilityProtocol, in root: NSView, window: NSWindow, visible: NSRect) -> Bool {
+        guard (element.accessibilityWindow() as? NSWindow) === window,
+              !element.isAccessibilityHidden(), element.isAccessibilityEnabled(),
+              !element.accessibilityFrame().isEmpty, visible.intersects(element.accessibilityFrame()) else { return false }
+        var next: Any? = element
+        var seen = Set<ObjectIdentifier>()
+        for _ in 0..<64 {
+            guard let object = next as? NSObject, seen.insert(ObjectIdentifier(object)).inserted else { return false }
+            if let view = object as? NSView {
+                return view.window === window && !view.isHiddenOrHasHiddenAncestor && (view === root || view.isDescendant(of: root))
+            }
+            guard let ancestor = object as? NSAccessibilityProtocol, !ancestor.isAccessibilityHidden() else { return false }
+            next = ancestor.accessibilityParent()
+        }
+        return false
+    }
+    @MainActor static func menuControls(_ identifier: String, in root: NSView) -> [MountedMenuControl] {
         root.layoutSubtreeIfNeeded()
         guard let window = root.window, window.isVisible, !root.isHiddenOrHasHiddenAncestor else { return [] }
         let visible = window.convertToScreen(root.convert(root.visibleRect, to: nil)).intersection(window.frame)
-        return accessibilityNodes(root).filter { element in
-            guard element.accessibilityIdentifier() == identifier,
-                  let role = element.accessibilityRole(), [NSAccessibility.Role.button, .popUpButton].contains(role),
-                  (element.accessibilityWindow() as? NSWindow) === window,
-                  !element.isAccessibilityHidden(), element.isAccessibilityEnabled(),
-                  !element.accessibilityFrame().isEmpty, visible.intersects(element.accessibilityFrame()) else { return false }
-            if let view = element as? NSView { return view.window === window && !view.isHiddenOrHasHiddenAncestor }
-            return true
+        let elements = accessibilityNodes(root)
+        guard elements.count < 4096 else { return [] }
+        let indices = Dictionary(uniqueKeysWithValues: elements.enumerated().map { (ObjectIdentifier($0.element as AnyObject), $0.offset) })
+        let nodes = elements.map { element -> MenuNode in
+            let children = element.accessibilityChildren() ?? []
+            let childIndices = children.compactMap { ($0 as? NSObject).flatMap { indices[ObjectIdentifier($0)] } }
+            return MenuNode(role: element.accessibilityRole()?.rawValue ?? "", identifier: element.accessibilityIdentifier() ?? "",
+                            labels: [element.accessibilityLabel(), element.accessibilityTitle()].compactMap { $0 },
+                            parent: (element.accessibilityParent() as? NSObject).flatMap { indices[ObjectIdentifier($0)] },
+                            children: childIndices, completeChildren: childIndices.count == children.count,
+                            mounted: menuElementIsMounted(element, in: root, window: window, visible: visible))
+        }
+        return menuNodeIndices(identifier, nodes: nodes).map { index in
+            var owned = [index]
+            if identifier == "reader.replyMenu", let parent = nodes[index].parent { owned += [parent] + nodes[parent].children.filter { $0 != index } }
+            return MountedMenuControl(element: elements[index], identities: owned.map { ObjectIdentifier(elements[$0] as AnyObject) })
         }
     }
+    enum MenuAction: Equatable { case showMenu, press }
+    @MainActor static func advertisedMenuAction(_ names: [String]) -> MenuAction? {
+        if names.contains("AXShowMenu") { return .showMenu }
+        if names.contains("AXPress") { return .press }
+        return nil
+    }
+    @MainActor static func accessibilityActions(_ element: NSAccessibilityProtocol) -> [String]? {
+        // This public informal NSObject API reports actions without invoking
+        // them. Check the selector and result type instead of assuming that the
+        // modern protocol's default PerformShowMenu method is supported.
+        let selector = NSSelectorFromString("accessibilityActionNames")
+        guard let object = element as? NSObject, object.responds(to: selector),
+              let names = object.perform(selector)?.takeUnretainedValue() as? [String], names.count <= 32 else { return nil }
+        return names
+    }
+    @MainActor static func menuSelectorControls() throws {
+        let reply = [MenuNode(role: "AXGroup", children: [1, 2]),
+                     MenuNode(role: "AXButton", labels: ["Reply"], parent: 0),
+                     MenuNode(role: "AXMenuButton", labels: [""], parent: 0)]
+        try require(menuNodeIndices("reader.replyMenu", nodes: reply) == [2], "split-menu selector lost its exact secondary segment")
+        var titled = reply; titled[2].labels = ["", "Reply"]
+        try require(menuNodeIndices("reader.replyMenu", nodes: titled) == [2], "an exact Reply secondary title was rejected")
+        var checks = 2
+        for mutation in 0..<11 {
+            var nodes = reply
+            switch mutation {
+            case 0: nodes[2].parent = nil
+            case 1: nodes[1].parent = nil
+            case 2: nodes[0].children = [1, 1]
+            case 3: nodes[0].completeChildren = false
+            case 4: nodes[1].labels = ["Forward"]
+            case 5: nodes[2].role = "AXButton"
+            case 6: nodes[2].identifier = "other.menu"
+            case 7: nodes[0].mounted = false
+            case 8: nodes[1].mounted = false
+            case 9: nodes[2].mounted = false
+            default: nodes[2].labels = ["Other"]
+            }
+            try require(menuNodeIndices("reader.replyMenu", nodes: nodes).isEmpty, "split-menu selector accepted invalid graph case \(mutation)")
+            checks += 1
+        }
+        var duplicate = reply
+        duplicate += [MenuNode(role: "AXGroup", children: [4, 5]), MenuNode(role: "AXButton", labels: ["Reply"], parent: 3), MenuNode(role: "AXMenuButton", parent: 3)]
+        try require(menuNodeIndices("reader.replyMenu", nodes: duplicate).count == 2, "ambiguous split menus must remain non-unique")
+        let named = [MenuNode(role: "AXMenuButton", labels: ["More"])]
+        try require(menuNodeIndices("reader.moreMenu", nodes: named) == [0] && menuNodeIndices("reader.organizeMenu", nodes: named).isEmpty, "named menus lost their exact label")
+        try require(advertisedMenuAction([]) == nil && advertisedMenuAction(["AXConfirm"]) == nil, "an unadvertised menu action was invented")
+        try require(advertisedMenuAction(["AXShowMenu"]) == .showMenu && advertisedMenuAction(["AXPress"]) == .press && advertisedMenuAction(["AXPress", "AXShowMenu"]) == .showMenu, "advertised menu action choice changed")
+        print("Menu selector controls: \(checks) split graph cases plus ambiguity, named-label and advertised-action controls passed; these are synthetic graph checks, not an AppKit action pass.")
+    }
+    @MainActor static func menuMountedGateControls() throws {
+        let window = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 320, height: 180), styleMask: [.titled], backing: .buffered, defer: false)
+        let foreign = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 320, height: 180), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; foreign.isReleasedWhenClosed = false
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+        let root = NSView(frame: container.bounds), sibling = NSView(frame: container.bounds)
+        container.addSubview(root); container.addSubview(sibling)
+        let button = NSButton(title: "Fixture menu mounting gate", target: nil, action: nil)
+        button.frame = NSRect(x: 20, y: 20, width: 240, height: 28); root.addSubview(button)
+        window.contentView = container; window.makeKeyAndOrderFront(nil)
+        foreign.contentView = NSView(frame: container.bounds)
+        defer { foreign.close(); foreign.contentView = nil; window.close(); window.contentView = nil }
+        window.layoutIfNeeded()
+        let visible = window.convertToScreen(root.convert(root.visibleRect, to: nil)).intersection(window.frame)
+        try require(menuElementIsMounted(button, in: root, window: window, visible: visible), "owned enabled mounting control was rejected")
+        button.isEnabled = false
+        try require(!menuElementIsMounted(button, in: root, window: window, visible: visible), "disabled mounting control was accepted")
+        button.isEnabled = true; button.isHidden = true
+        try require(!menuElementIsMounted(button, in: root, window: window, visible: visible), "hidden mounting control was accepted")
+        button.isHidden = false; root.isHidden = true
+        try require(!menuElementIsMounted(button, in: root, window: window, visible: visible), "hidden ancestor was accepted")
+        root.isHidden = false; button.setFrameOrigin(NSPoint(x: 900, y: 20))
+        try require(!menuElementIsMounted(button, in: root, window: window, visible: visible), "offscreen mounting control was accepted")
+        button.setFrameOrigin(NSPoint(x: 20, y: 20)); sibling.addSubview(button)
+        try require(!menuElementIsMounted(button, in: root, window: window, visible: visible), "a same-window foreign subtree was accepted")
+        foreign.contentView?.addSubview(button); foreign.makeKeyAndOrderFront(nil)
+        try require(!menuElementIsMounted(button, in: root, window: window, visible: visible), "a foreign window was accepted")
+        print("Menu mounting controls: owned positive and disabled, hidden, hidden ancestor, offscreen, foreign subtree and foreign window negatives passed; no menu action invoked.")
+    }
     @MainActor static func menuDiagnostics(_ identifier: String, in root: NSView) -> String {
-        // Only this fictional fixture's mounted tree; bound labels and counts.
-        let nodes = accessibilityNodes(root).prefix(32).map { element in
-            let label = (element.accessibilityLabel() ?? element.accessibilityTitle() ?? "").replacingOccurrences(of: "\n", with: " ")
-            return "\(type(of: element)) id=\(String((element.accessibilityIdentifier() ?? "").prefix(80))) role=\(element.accessibilityRole()?.rawValue ?? "nil") label=\(String(label.prefix(100))) enabled=\(element.isAccessibilityEnabled()) hidden=\(element.isAccessibilityHidden()) ownWindow=\((element.accessibilityWindow() as? NSWindow) === root.window) frame=\(NSStringFromRect(element.accessibilityFrame()))"
+        // Only this fictional fixture's mounted tree. Prioritize actual menu
+        // nodes, include parent/child indices and advertised actions, and bound
+        // every count/string. Flat traversal order does not prove ownership.
+        let elements = accessibilityNodes(root)
+        let indices = Dictionary(uniqueKeysWithValues: elements.enumerated().map { (ObjectIdentifier($0.element as AnyObject), $0.offset) })
+        let controls = elements.indices.filter { [NSAccessibility.Role.button, .menuButton, .popUpButton].contains(elements[$0].accessibilityRole() ?? .unknown) }
+        let ordered = controls + elements.indices.filter { !controls.contains($0) }
+        let nodes = ordered.prefix(32).map { index in
+            let element = elements[index]
+            let labels = [element.accessibilityLabel(), element.accessibilityTitle()].compactMap { $0 }.map { String($0.replacingOccurrences(of: "\n", with: " ").prefix(100)) }
+            let parent = (element.accessibilityParent() as? NSObject).flatMap { indices[ObjectIdentifier($0)] }
+            let children = (element.accessibilityChildren() ?? []).prefix(16).map { ($0 as? NSObject).flatMap { indices[ObjectIdentifier($0)] }.map(String.init) ?? "outside" }
+            let actions = accessibilityActions(element)?.prefix(16).map { String($0.prefix(80)) }.joined(separator: ",") ?? "unavailable"
+            let segments = (element as? NSSegmentedControl).map { control in (0..<min(control.segmentCount, 16)).map { "\($0):\(String((control.label(forSegment: $0) ?? "").prefix(80)))" }.joined(separator: ",") } ?? "none"
+            return "#\(index) \(type(of: element)) parent=\(parent.map(String.init) ?? "outside") children=\(children) id=\(String((element.accessibilityIdentifier() ?? "").prefix(80))) role=\(element.accessibilityRole()?.rawValue ?? "nil") labels=\(labels) actions=\(actions) segments=\(segments) enabled=\(element.isAccessibilityEnabled()) hidden=\(element.isAccessibilityHidden()) ownWindow=\((element.accessibilityWindow() as? NSWindow) === root.window) frame=\(NSStringFromRect(element.accessibilityFrame()))"
         }
         return "Menu fixture \(identifier): windowVisible=\(root.window?.isVisible == true) root=\(NSStringFromRect(root.visibleRect)); " + nodes.joined(separator: " | ")
     }
@@ -183,11 +329,11 @@ import SwiftUI
             while menuControls(identifier, in: root).count != 1, Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
             let controls = menuControls(identifier, in: root)
             try require(Date() < deadline && controls.count == 1, "Expected one mounted enabled menu control: " + identifier)
-            let control = controls[0], identity = ObjectIdentifier(controls[0] as AnyObject)
+            let target = controls[0], control = controls[0].element
             guard let window = root.window else { throw APIError("Menu fixture lost its window") }
             @MainActor func current() -> Bool {
                 let next = menuControls(identifier, in: root)
-                return root.window === window && next.count == 1 && ObjectIdentifier(next[0] as AnyObject) == identity
+                return root.window === window && next.count == 1 && next[0].identities == target.identities
             }
             tracking.observers.append(NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { notification in
                 MainActor.assumeIsolated {
@@ -238,8 +384,15 @@ import SwiftUI
             tracking.watchdog = watchdog
             RunLoop.main.add(watchdog, forMode: .eventTracking)
             RunLoop.main.add(watchdog, forMode: .common)
+            let names = accessibilityActions(control) ?? []
+            guard let action = advertisedMenuAction(names) else { throw APIError("The owned menu control advertises no supported menu action: " + identifier) }
             tracking.armed = true
-            try require(current() && control.accessibilityPerformShowMenu(), "Native show-menu action failed: " + identifier)
+            try require(current(), "The menu lost its captured secondary control before activation")
+            // AXPress is allowed only on the proven secondary/named menu node,
+            // when that exact node advertises it. Never press the Reply primary
+            // button and never try a second action after a failed first action.
+            let opened = action == .showMenu ? control.accessibilityPerformShowMenu() : control.accessibilityPerformPress()
+            try require(opened, "Advertised native menu action failed: " + identifier)
             while !tracking.ended, Date() < deadline { try await Task.sleep(nanoseconds: 20_000_000) }
             try require(Date() < deadline && tracking.begins == 1 && tracking.ended, "The native menu did not open and close within five seconds")
             if let failure = tracking.failure { throw failure }
@@ -285,9 +438,12 @@ import SwiftUI
         window.contentView = host; window.makeKeyAndOrderFront(nil)
         defer { window.close(); window.contentView = nil }
         for (identifier, commands) in [("reader.replyMenu", ["Reply", "Reply All", "Forward"]), ("reader.organizeMenu", ["Move to…", "Create new folder…", "Manage folders…", "Move to provider Trash"]), ("reader.moreMenu", ["Star", "Mark Pending locally", "Archive locally", "Expand Reader"]), ("reader.aiMenu", ["Summarize", "Suggest Reply", "Suggest with History", "Translate"])] {
+            let prepared = ReviewProtocol.recordedTraffic().filter { $0["path"] == "/api/drafts/prepare" }.count
             try await withMountedMenu(identifier, in: host, deadline: Date().addingTimeInterval(5)) { menu in
                 try require(commands.allSatisfy { commandIndex($0, in: menu) != nil }, "A grouped reader command became unreachable: " + identifier)
             }
+            await Task.yield()
+            try require(model.compose == nil && !model.preparingDraft && ReviewProtocol.recordedTraffic().filter { $0["path"] == "/api/drafts/prepare" }.count == prepared, "Opening a menu invoked the primary Reply action")
         }
         try await menuCommand("Expand Reader", identifier: "reader.moreMenu", in: host, perform: true)
         try require(expanded == 1, "More did not call the existing reader layout action")
@@ -583,6 +739,8 @@ import SwiftUI
             try require(!traffic.contains { $0["path"]=="/api/send" || $0["path"]=="/api/ai" },"no send or model request is allowed by the fixture")
             try await lifecycle(session:model.session)
             if ProcessInfo.processInfo.environment["MORROW_REVIEW_BASELINE"] != "1" {
+                try menuSelectorControls()
+                try menuMountedGateControls()
                 try await mountedReader(session: model.session)
                 try await mountedToday(session: model.session, width: 1120)
                 try await mountedToday(session: model.session, width: 720)
