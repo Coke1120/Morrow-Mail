@@ -94,9 +94,12 @@ measurement. Normal builds and reader-network/security gates are unchanged.
 On an interactive Windows desktop with the pinned native build prerequisites:
 
 ```powershell
-python -B scripts/test-windows-mailbox-latency.py
-python -B scripts/windows-mailbox-latency.py --output C:/QA/new-native-evidence
+python -X utf8 -B scripts/test-windows-mailbox-latency.py
+python -X utf8 -B scripts/windows-mailbox-latency.py --output C:/QA/new-native-evidence
 ```
+
+Explicit Python UTF-8 mode makes source-text checks independent of the Windows
+system code page. All adapter assertions and strict decoding remain enabled.
 
 The separate [native latency workflow](../.github/workflows/mailbox-latency.yml)
 can compile and run both entries on an unmerged PR through its narrow paths

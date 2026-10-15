@@ -236,6 +236,21 @@ complete aggregate. Existing native reader/network/security gates and historical
 failures remain unchanged. Both platforms and reviewed performance targets are
 still required before claiming complete acceptance.
 
+The first PR #58 Windows measurement job (`38721001259`, job `116375238109`)
+failed before SDK compilation: Python's default `cp1252` decoding rejected the
+UTF-8 `windows/App.cpp` in an adapter source check. The workflow and documented
+Windows commands now explicitly use `python -X utf8 -B`, preserving all source
+checks and strict decoding. A controlled Linux ASCII-locale run of the unchanged
+seven-test script failed with a decoding error; the same script and locale with
+explicit UTF-8 mode passed all seven. That control verifies the encoding contract,
+not Windows execution. No runtime, fixture or harness source bytes changed; the
+191-file source digest remains
+`bad245df9546e2ea61dbced0d0fb5d8b793d5b77343a16a9a8db600d1f513f3a`.
+The matching-source 1k and 10k protocol runs passed all assertions; the original
+50k process continues after a tool-transport interruption. Its terminal outcome
+and both native measurement jobs remain pending. Historical failures above are
+preserved and are not converted into passes.
+
 ## v0.8.1 published — 14 October 2026
 
 [Tagged run 38624861643](https://github.com/Coke1120/Morrow-Mail/actions/runs/38624861643),

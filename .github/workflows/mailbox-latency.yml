@@ -30,13 +30,13 @@ jobs:
       - name: Check synthetic adapter and evidence contracts
         shell: pwsh
         run: |
-          python -B scripts/test-mailbox-acceptance.py
+          python -X utf8 -B scripts/test-mailbox-acceptance.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -B scripts/test-windows-mailbox-latency.py
+          python -X utf8 -B scripts/test-windows-mailbox-latency.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build private fixture and measure actual WinUI actions
         shell: pwsh
-        run: python -B scripts/windows-mailbox-latency.py --output "$env:RUNNER_TEMP/mailbox-latency-windows"
+        run: python -X utf8 -B scripts/windows-mailbox-latency.py --output "$env:RUNNER_TEMP/mailbox-latency-windows"
       - name: Retain evidence, adapters and measured binary identity
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

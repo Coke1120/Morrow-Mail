@@ -9,12 +9,14 @@ On an interactive Windows x64 desktop with the prerequisites pinned in
 [windows/README.md](../windows/README.md):
 
 ```powershell
-python -B scripts/test-windows-mailbox-latency.py
-python -B scripts/windows-mailbox-latency.py --output C:/QA/new-native-latency-evidence
+python -X utf8 -B scripts/test-windows-mailbox-latency.py
+python -X utf8 -B scripts/windows-mailbox-latency.py --output C:/QA/new-native-latency-evidence
 ```
 
 Choose a new absolute directory outside the checkout. Existing evidence is never
-overwritten. The runner uses the existing builder's `-CompileOnly` path, including
+overwritten. Explicit Python UTF-8 mode keeps source-text checks independent of
+the Windows system code page; decoding errors remain failures. The runner uses
+the existing builder's `-CompileOnly` path, including
 its pinned NuGet integrity checks; it does not run Cargo or package a release.
 Build and fixture execution have separate 20-minute and 10-minute bounds. The
 common runner stops only its owned process tree on timeout/interruption.
