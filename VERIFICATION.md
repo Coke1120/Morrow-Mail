@@ -65,6 +65,41 @@ This closes a confirmed source-level stale-callback gap; it does not establish
 that this event caused the original CI failure. Fresh Windows SDK/runtime
 validation is pending; no local native pass is claimed.
 
+The next Windows job `116367581897` at `c5c054f` retained the same filter failure
+with concrete counts: two visible controls and two selected folders before and
+after the input. Selection was retained; the log does not establish whether the
+TextChanged event was delivered, suppressed or unable to rebuild the rows. Its
+cause remains unresolved. A fixture-only scoped TextChanged observer now adds
+capped event counts, sender/weak-owner checks, row-generation progress, loaded/
+size/enabled/configuring/current booleans, query length and equality to the fixed
+fictional query, and the matching-row count. Configuring is sampled at the
+observer, not claimed as the production handler's branch. No raw folder/query
+text is added. Production event/filter code, the single Text assignment, original
+five-second wait, selection/control assertions and stale-checkbox controls are
+unchanged. There is no forced template/layout, scrolling, focus, render call,
+retry or deadline extension. The receipt only distinguishes the next actual
+Windows failure; it is not a root-cause fix or a local native pass.
+
+PR54 Windows job `116387074152` at `7d581d4` then passed 475 Rust tests with
+0 failures and 4 existing ignored, packaging and the fresh native walkthrough,
+but failed the same filter assertion in the owned walkthrough. The bounded
+receipt now records zero observed TextChanged events, row generation `1->1`,
+the exact eight-character fictional query and zero predicate matches. The
+TextBox was not loaded and had no positive dimensions before the input; all
+three became true during the unchanged wait. Selection stayed at two. This
+identifies an input-before-mount fixture ordering gap; it does not establish a
+production filtering defect or retroactively prove the older failures' cause.
+
+The fixture now requires Opened plus the actual filter's loaded state, positive
+width/height and enabled state within the original single five-second initial
+deadline. It then keeps the single Text assignment, original five-second filter
+wait, exact zero-controls/two-selected assertion, bounded receipt and detached
+checkbox negative controls, and additionally requires a real TextChanged event.
+Production code and handlers are unchanged. There is no forced layout/template,
+direct render, second input or additional deadline. Source invariants and diff
+checks are the only local validation; Windows SDK/runtime validation remains
+pending. The original terminal failure and its complete log are retained.
+
 ## IMAP server identity and safe migration — 15 October 2026
 
 This source follow-up starts from main
@@ -114,6 +149,30 @@ Native macOS/Windows, live-provider, large-workspace migration latency and
 signed-release acceptance remain pending. Tests used only temporary synthetic
 workspaces and loopback fixtures; no real mailbox, model, external send, user
 workspace or user backup was used.
+
+## PR #52 ownership-probe fixture coordination — 15 October 2026
+
+Run `38713018388` at head `921fc1c` failed a macOS Rust fixture before the
+package/native gates. Its fake reader exited after a fixed 0.5-second sleep,
+before the separately launched Python probe created `started.txt`. The test
+was unchanged from the released base. A synthetic 0.8-second probe startup
+delay reproduced the same missing-file failure on Linux.
+
+The fixture now signals readiness only after its exclusive single-shot marker
+and flushed output exist. The fake reader waits for that signal within the
+unchanged two-second absolute deadline, then completes while the probe still
+has ten seconds of work. Cancellation, reaping, single-shot, captured output
+and reader-success assertions remain unchanged. All 23 native-check binary
+tests, formatting and strict all-target Clippy pass on the corrected source;
+this does not establish macOS native acceptance.
+
+The same run's Windows native gate separately failed the existing 20-second
+controller initialization deadline. Its environment returned after 2,313 ms;
+the controller returned only after the timeout. The bounded event trace is
+complete and its dispatch observations do not establish a continuously blocked
+UI thread. This is a second unresolved Windows acceptance failure, distinct
+from the earlier post-navigation initial-document timeout below. No production
+deadline, retry, cold-start requirement or success predicate was relaxed.
 
 ## PR #52 Windows initial-document diagnostic follow-up — 15 October 2026
 
