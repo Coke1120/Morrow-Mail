@@ -130,6 +130,30 @@ signed-release acceptance remain pending. Tests used only temporary synthetic
 workspaces and loopback fixtures; no real mailbox, model, external send, user
 workspace or user backup was used.
 
+## PR #52 ownership-probe fixture coordination — 15 October 2026
+
+Run `38713018388` at head `921fc1c` failed a macOS Rust fixture before the
+package/native gates. Its fake reader exited after a fixed 0.5-second sleep,
+before the separately launched Python probe created `started.txt`. The test
+was unchanged from the released base. A synthetic 0.8-second probe startup
+delay reproduced the same missing-file failure on Linux.
+
+The fixture now signals readiness only after its exclusive single-shot marker
+and flushed output exist. The fake reader waits for that signal within the
+unchanged two-second absolute deadline, then completes while the probe still
+has ten seconds of work. Cancellation, reaping, single-shot, captured output
+and reader-success assertions remain unchanged. All 23 native-check binary
+tests, formatting and strict all-target Clippy pass on the corrected source;
+this does not establish macOS native acceptance.
+
+The same run's Windows native gate separately failed the existing 20-second
+controller initialization deadline. Its environment returned after 2,313 ms;
+the controller returned only after the timeout. The bounded event trace is
+complete and its dispatch observations do not establish a continuously blocked
+UI thread. This is a second unresolved Windows acceptance failure, distinct
+from the earlier post-navigation initial-document timeout below. No production
+deadline, retry, cold-start requirement or success predicate was relaxed.
+
 ## PR #52 Windows initial-document diagnostic follow-up — 15 October 2026
 
 PR #52 head `01c1f0a9e27262bb61c9a878961ffe26ed42437a` passed macOS and
