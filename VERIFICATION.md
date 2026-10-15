@@ -115,6 +115,101 @@ signed-release acceptance remain pending. Tests used only temporary synthetic
 workspaces and loopback fixtures; no real mailbox, model, external send, user
 workspace or user backup was used.
 
+## PR #52 Windows initial-document diagnostic follow-up — 15 October 2026
+
+PR #52 head `01c1f0a9e27262bb61c9a878961ffe26ed42437a` passed macOS and
+Windows Rust checks/packaging in run `38699628543`, but the owned Windows
+Reader failed at the unchanged 25-second `initial-document` deadline. Its first
+expected navigation was allowed; completion was not observed. This is an open
+Windows acceptance blocker, not an established IMAP-origin regression or a
+diagnosed runtime fault. PR #51/#53 and the released base's passes do not replace
+that failed result.
+
+After normally merging main `337a2f740390d20b329f698ce4e7c5d32bcdcc09` into
+the identity branch, this follow-up adds only marked-fixture observations for
+actual initialization returns, the first navigation's fixed event fields, early
+validated runtime version, and bounded wait/dispatch intervals. It preserves
+the original 20/25-second limits, cold setup, success predicates and no-retry
+behavior. New details share a 24-record budget with explicit overflow and remain
+within the existing 64-event timeline. See the [diagnostic contract and its
+limits](docs/WINDOWS_OBSERVATION_PROVENANCE.md).
+
+Linux checks passed **73 actual pure-helper/trace/native-fixture assertions**
+with C++20, warnings denied and ASan/UBSan, PowerShell syntax checks, and the
+actual bounded pipe/parser controls. Positive/negative cases cover unsigned
+64-bit navigation IDs, signed 32-bit error codes, timing/counter limits,
+malformed/private text, unavailable observations, overflow and tail trimming.
+An actual C++ trace writer also fed the actual PowerShell reader: its typed
+records survived while the child retained exit 7. These are synthetic metadata
+checks; no Windows SDK, WinUI/WebView2 runtime, real mailbox, provider/model,
+Cargo build or CI rerun was executed for this diagnostic edit. The final head's
+normal Windows/macOS CI remains required; the historical timeout's cause remains
+unknown.
+
+## Saved summary job diagnostics — 15 October 2026
+
+This separate follow-up starts from PR #50's tested tree, later merged as
+`d5ac97c5d51cc265cc769d07bd36d7d013fa5c67`. It changes summary status projection
+and its native Activity details, independently of Today aggregation. A historical
+failed job can remain Activity's last finished summary while Today has no valid
+current-day/current-context report. That display does not establish a new model
+failure, its original cause, or a retry.
+
+The Activity snapshot includes an opaque mailbox-bound job reference, normalized
+status/trigger, recorded times, message count and an allowlisted diagnostic.
+Only exact server-authored errors and a strictly parsed HTTP-status template are
+mapped; provider bodies, URLs, summary text and message items are not returned.
+Cancelled, interrupted and skipped are distinct from failed. New normal terminal
+transitions record their finish/update time; restart recovery records observation
+time without inventing the interruption's actual finish. Missing legacy identity
+or timestamps remain unavailable. No schema change or new detail API is added.
+
+Both native clients capture the selected job metadata when its detail entry opens,
+preserve that snapshot across newer activity and close it when its owner or page
+scope is revoked. The detail view is read-only and does not navigate to Today's
+filtered aggregate or start provider/model work. The saved job is never retried
+automatically; independent future arrival/schedule policy is unchanged.
+
+Preparation evidence: three new contract tests failed against the previous
+projection because it lacked matching job metadata. The first repaired targeted
+run passed **30 tests** across summary diagnostics, Activity and background work,
+including synthetic stale/current context, state/error mapping, missing fields,
+loopback response failures, terminal persistence and no replay after restart.
+Final Linux Rust 1.98 validation passed rustfmt, locked/offline all-target Clippy
+with warnings denied, and the full suite: **432 passed, zero failed, four existing
+ignored benchmarks**, across 47 result groups. The full-suite log SHA-256 is
+`90e584f471b2cf9f5f4636919b10974ab3e0dcb5f28ecd2607636fd3d7191603`.
+Additional native fixture assertions cover captured identity, safe fields,
+timestamps and the detail entry/lifecycle. Independent source review corrected
+an overly restrictive Windows selected-account check: Activity lists every
+connected mailbox, so a displayed job's owning account may differ from the
+selected mail view. Captured page generation and connected-owner checks remain.
+Linux cannot compile or execute the SwiftUI/WinUI candidates; exact-head native
+results will be recorded with the draft PR after validation. No real mailbox, outgoing mail or external
+model was used, and the user's historical model failure cause remains unknown.
+
+### Initial PR #51 native result and diagnostic follow-up
+
+[Run 38691628248](https://github.com/Coke1120/Morrow-Mail/actions/runs/38691628248),
+attempt 1, tested head `96912573a73424a51115f8c86a4091088cd94c4a`.
+macOS passed 432 Rust tests and all 40 strict reader samples. Windows passed
+428 Rust tests and packaging, then failed its owned reader initialization before
+the summary Activity fixture. The retained phases show entry into controller
+readiness waiting, not completed readiness; no HRESULT was retained. The original
+cause is unknown, and this is not classified as a missing-runtime acceptance pass
+or dismissed as flakiness. That failed run does not validate Windows summary UI.
+
+The follow-up retains only the first fixture initialization origin, fixed stage,
+HRESULT and elapsed time, with eight-record and parser bounds. It does not alter
+the 20/25-second reader deadlines, add retries or weaken acceptance gates. Summary
+dialog fixtures now wait for actual Opened before revocation and give closing a
+fresh five-second bound. Portable actual-code checks passed 39 diagnostic and
+64 summary-helper assertions with ASan/UBSan; PowerShell parsing and actual-pipe
+positive/negative diagnostic controls passed. These Linux checks do not compile
+or run WinUI/WebView2. Fresh exact-head paired CI remains required, and the
+original initialization cause remains unresolved. This draft is excluded from
+v0.8.2.
+
 ## v0.8.2 release preparation — 15 October 2026
 
 The owner requested a release of already merged main before the separate
