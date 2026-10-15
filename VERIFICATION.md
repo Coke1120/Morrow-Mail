@@ -28,6 +28,14 @@ previously requested reads. macOS/Windows SDK builds and native runtime fixtures
 remain pending platform CI. All executed provider/model tests used isolated
 fixtures; no live-account, release or UI-performance acceptance is claimed.
 
+The initial PR54 focused native run38705784868 at `274e113` failed compilation:
+two local functions in FolderSyncView accessed MainActor-owned model state from
+an unannotated local-function context. Both are now explicitly `@MainActor`;
+their guards and call sites remain inside the existing MainActor `perform`
+closure. The original failure is retained. This two-annotation follow-up changes
+no Rust source or deadlines and requires fresh platform CI; Linux has no Swift
+compiler or macOS SDK, so source review is not a native compile result.
+
 ## IMAP server identity and safe migration — 15 October 2026
 
 This source follow-up starts from main

@@ -138,10 +138,10 @@ struct FolderSyncView: View {
         error = ""; notice = ""
         let accepted = model.perform {
             defer { if active && operation == ticket { working = false } }
-            func current() -> Bool { folderSyncContextCurrent(owner: owner, scope: scope, connection: connection, ticket: ticket, active: active, currentScope: scopeKey, accounts: model.accounts, operation: operation) }
+            @MainActor func current() -> Bool { folderSyncContextCurrent(owner: owner, scope: scope, connection: connection, ticket: ticket, active: active, currentScope: scopeKey, accounts: model.accounts, operation: operation) }
             // perform queues a MainActor task: the sheet may be gone before it starts.
             guard current() else { return }
-            func verifyVersions(response: JSON? = nil) throws {
+            @MainActor func verifyVersions(response: JSON? = nil) throws {
                 guard folderSyncVersionsCurrent(observed, FolderSyncVersions(model.state["serverFolderSync"][owner]), response: response.map(FolderSyncVersions.init)) else {
                     stale = true
                     throw APIError("This mailbox connection or saved selection changed. Discard unsaved changes, then reload and review the folder selection.")
