@@ -1,5 +1,42 @@
 # Verification — 15 October 2026
 
+## macOS download repair shared-state follow-up — 15 October 2026
+
+PR #55 review `discussion_r4282982883` identified a source-confirmed defect in
+integrated base `05cf409`: a successful full-content download refreshed only the
+Downloads sheet, discarding its returned message and leaving AppModel's reader
+and mailbox snapshots unchanged. This candidate retains the existing download
+confirmation and explicit connection/owner request. It then refreshes the local
+paged state and current mail page, and reads the still-selected message through
+a read-only GET. It does not call mark-read-on-open or the onboarding account
+selector, copy reader HTML/attachments into list metadata, or replay the POST's
+potentially older flags. Old state reads are invalidated; selection epochs,
+view/connection/presentation and caller-ticket guards reject obsolete work.
+The retained row in an unread-only page also receives fresh bounded metadata.
+
+`DownloadRepairAssertions.swift` adds 24 fictional URLProtocol cases using the
+actual AppModel handler, including held pre-download reloads, duplicate IDs,
+unselected repairs, selection A→B→A, modal replacement, reconnect/disconnect,
+cancellation, queued revocation, response identity, late page/detail responses,
+and newer shared-state changes. One case uses actual first-open/loadMessage to
+establish the retained unread row; repair must add no further mark-read PATCH.
+Another mounts NativeMailSearch and checks that the repaired body, current
+query and second page survive its state-triggered refresh. Unexpected routes
+fail the transport, and no provider, model or real workspace is used.
+
+The existing mail-flow driver compiles these assertions with the production
+sources and runs them as a separate process with the same 30-second limit;
+existing search/read/reply limits and assertions remain intact. Its explicit
+`--download-repair-negative-control` mode inserts a return after the validated
+POST only in a temporary compiler input, and requires the exact stale-reader
+failure. This is a mutation control, not an execution claim about historical UI.
+
+Local Python syntax/driver-preparation and diff checks are recorded outside the
+repository. This Linux environment has no SwiftUI/AppKit SDK; the new candidate,
+24 native cases and negative control have **not** been compiled or run on macOS.
+They require matching-source native CI before acceptance. No Rust/provider,
+Windows, signing, visual/accessibility or live-account result is inferred.
+
 ## IDLE with selected folders, Downloads and move recovery — 15 October 2026
 
 This normal integration combines IDLE/fixture-cleanup parent `b9691f9` with
