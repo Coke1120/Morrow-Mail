@@ -1807,17 +1807,25 @@ ContentDialog summaryActivityDialog(std::shared_ptr<Shell> const& shell, Summary
     dialog.DefaultButton(ContentDialogButton::Close);
     return dialog;
 }
-IAsyncAction openSummaryActivity(std::shared_ptr<Shell> shell, SummaryActivitySnapshot job, uint64_t version, hstring viewOwner) {
+// Only summaryActivityChecks supplies this probe. Shared value state keeps an
+// Opened callback safe even when the bounded fixture stops awaiting the dialog.
+struct SummaryActivityDialogFixture { bool opened = false, closeRequested = false; };
+IAsyncAction openSummaryActivity(std::shared_ptr<Shell> shell, SummaryActivitySnapshot job, uint64_t version, hstring viewOwner,
+    std::shared_ptr<SummaryActivityDialogFixture> fixture = {}) {
     if (!summaryActivityCurrent(shell, job, version, viewOwner)) co_return;
     std::function<void()> release;
     try {
         auto dialog = summaryActivityDialog(shell, job);
+        if (fixture) dialog.Opened([fixture](auto const& sender, auto const&) {
+            fixture->opened = true;
+            if (fixture->closeRequested) sender.template as<ContentDialog>().Hide();
+        });
         auto display = showReaderPopup(shell, dialog, release);
         struct CloseDialog { ContentDialog dialog; ~CloseDialog() { try { dialog.Hide(); } catch (...) {} } } close{dialog};
         apartment_context ui;
         while (display.Status() == AsyncStatus::Started) {
             // Observe only cached UI ownership; this never fetches or retries a job.
-            if (!summaryActivityContext(shell, job, version, viewOwner)) { dialog.Hide(); break; }
+            if ((fixture && fixture->closeRequested) || !summaryActivityContext(shell, job, version, viewOwner)) { dialog.Hide(); break; }
             co_await resume_after(std::chrono::milliseconds(250)); co_await ui;
         }
         co_await display;
@@ -1974,6 +1982,7 @@ IAsyncAction summaryActivityChecks(std::shared_ptr<Shell> shell) {
     check(*opened && shell->dialogOpen && rendered.Text() == detail && shell->current(version, viewOwner)
         && shell->section == L"activity", L"The native summary dialog changed the selected saved job or navigated to Today.");
     dialog.Hide();
+    deadline = GetTickCount64() + 5000;
     while (display.Status() == AsyncStatus::Started && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
     check(display.Status() == AsyncStatus::Completed && !shell->dialogOpen, L"Closing summary job details retained the native modal guard.");
     display.GetResults();
@@ -1981,8 +1990,12 @@ IAsyncAction summaryActivityChecks(std::shared_ptr<Shell> shell) {
     // if its page is revoked or its owner disappears. No service request is made.
     for (bool disconnect : {false, true}) {
         auto captured = disconnect ? *otherSelected : *selected;
-        auto opening = openSummaryActivity(shell, captured, version, viewOwner);
-        check(shell->dialogOpen, L"The saved-job entry did not use the native dialog guard.");
+        auto fixture = std::make_shared<SummaryActivityDialogFixture>();
+        struct CloseFixture { std::shared_ptr<SummaryActivityDialogFixture> fixture; ~CloseFixture() { fixture->closeRequested = true; } } closeFixture{fixture};
+        auto opening = openSummaryActivity(shell, captured, version, viewOwner, fixture);
+        deadline = GetTickCount64() + 5000;
+        while (!fixture->opened && opening.Status() == AsyncStatus::Started && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+        check(fixture->opened && shell->dialogOpen, L"The saved-job entry did not finish opening its guarded native dialog.");
         if (disconnect) {
             shell->state = Json::Parse(restore.state.Stringify());
             JsonArray accounts;

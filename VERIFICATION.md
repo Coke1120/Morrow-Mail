@@ -42,6 +42,28 @@ Linux cannot compile or execute the SwiftUI/WinUI candidates; exact-head native
 results will be recorded with the draft PR after validation. No real mailbox, outgoing mail or external
 model was used, and the user's historical model failure cause remains unknown.
 
+### Initial PR #51 native result and diagnostic follow-up
+
+[Run 38691628248](https://github.com/Coke1120/Morrow-Mail/actions/runs/38691628248),
+attempt 1, tested head `96912573a73424a51115f8c86a4091088cd94c4a`.
+macOS passed 432 Rust tests and all 40 strict reader samples. Windows passed
+428 Rust tests and packaging, then failed its owned reader initialization before
+the summary Activity fixture. The retained phases show entry into controller
+readiness waiting, not completed readiness; no HRESULT was retained. The original
+cause is unknown, and this is not classified as a missing-runtime acceptance pass
+or dismissed as flakiness. That failed run does not validate Windows summary UI.
+
+The follow-up retains only the first fixture initialization origin, fixed stage,
+HRESULT and elapsed time, with eight-record and parser bounds. It does not alter
+the 20/25-second reader deadlines, add retries or weaken acceptance gates. Summary
+dialog fixtures now wait for actual Opened before revocation and give closing a
+fresh five-second bound. Portable actual-code checks passed 39 diagnostic and
+64 summary-helper assertions with ASan/UBSan; PowerShell parsing and actual-pipe
+positive/negative diagnostic controls passed. These Linux checks do not compile
+or run WinUI/WebView2. Fresh exact-head paired CI remains required, and the
+original initialization cause remains unresolved. This draft is excluded from
+v0.8.2.
+
 ## Activity cancellation and native verification repairs — 15 October 2026
 
 This follow-up starts from main `cfe61c9fedfe7f07a99ab84751aabf7bae19d495`,
