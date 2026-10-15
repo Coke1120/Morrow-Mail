@@ -37,18 +37,18 @@ FolderSyncSnapshot syncSnapshot(Json const& value) {
 Json selectionPayload(FolderSyncSelection const& selection) {
     Json result; Array folders;
     for (auto const& id : selection.selected) folders.Append(Value::CreateStringValue(id));
-    result.Insert(L"folderIds",folders); put(result,L"selectionVersion",selection.snapshot.version); put(result,L"connectionVersion",selection.snapshot.connection);
+    result.Insert(L"folderIds",folders); put(result,L"selectionVersion",hstring(selection.snapshot.version)); put(result,L"connectionVersion",hstring(selection.snapshot.connection));
     return result;
 }
 Json syncPayload(FolderSyncSelection const& selection) {
-    Json result; put(result,L"folderSyncSelectionVersion",selection.snapshot.version); put(result,L"folderSyncConnectionVersion",selection.snapshot.connection); return result;
+    Json result; put(result,L"folderSyncSelectionVersion",hstring(selection.snapshot.version)); put(result,L"folderSyncConnectionVersion",hstring(selection.snapshot.connection)); return result;
 }
 Json retryPayload(FolderSyncSelection const& selection, std::wstring const& id) {
     if (!selection.canRetry(id)) throw hresult_error(E_FAIL,L"Reload and review this folder before allowing a retry.");
-    Json result; put(result,L"selectionId",selection.snapshot.rows.at(id).selectionId);
-    put(result,L"selectionVersion",selection.snapshot.version); put(result,L"connectionVersion",selection.snapshot.connection); return result;
+    Json result; put(result,L"selectionId",hstring(selection.snapshot.rows.at(id).selectionId));
+    put(result,L"selectionVersion",hstring(selection.snapshot.version)); put(result,L"connectionVersion",hstring(selection.snapshot.connection)); return result;
 }
-hstring syncTime(std::wstring const& value) { return value.empty() ? hstring(L"Not recorded") : mailDateLabel(value); }
+hstring syncTime(std::wstring const& value) { return value.empty() ? hstring(L"Not recorded") : mailDateLabel(hstring(value)); }
 hstring syncTimes(FolderSyncRow const& row) {
     return L"Last attempt: " + syncTime(row.attempted) + L"\nLast successful check: " + syncTime(row.successful) + L"\nLast caught up: " + syncTime(row.caughtUp);
 }
@@ -75,7 +75,7 @@ struct FolderSyncPane : std::enable_shared_from_this<FolderSyncPane> {
     }
     std::wstring dirtyKey() const { return L"folder-sync:" + selection.owner; }
     bool current() const {
-        if (closed || !shell->current(generation,viewOwner) || !shell->connected(selection.owner)) return false;
+        if (closed || !shell->current(generation,viewOwner) || !shell->connected(hstring(selection.owner))) return false;
         for (auto const& item : array(shell->state,L"accounts")) if (text(item.GetObject(),L"id") == selection.owner)
             return object(item.GetObject(),L"settings").Stringify() == connectionSettings;
         return false;
@@ -109,7 +109,7 @@ struct FolderSyncPane : std::enable_shared_from_this<FolderSyncPane> {
         configuring = true; rows.Children().Clear(); checks.clear(); retries.clear(); auto weak = weak_from_this();
         for (auto const& [id,row] : selection.snapshot.rows) {
             if (!filter.Text().empty() && FindStringOrdinal(FIND_FROMSTART,row.name.c_str(),static_cast<int>(row.name.size()),filter.Text().c_str(),static_cast<int>(filter.Text().size()),TRUE) < 0) continue;
-            auto card = stack(4); CheckBox check; check.Content(label(row.name,15,false)); check.IsChecked(selection.selected.contains(id));
+            auto card = stack(4); CheckBox check; check.Content(label(hstring(row.name),15,false)); check.IsChecked(selection.selected.contains(id));
             Automation::AutomationProperties::SetName(check,row.name);
             Automation::AutomationProperties::SetAutomationId(check,L"folderSync.folder." + hstring(id));
             auto changed = [weak,id,control=make_weak(check)](auto const&,auto const&) {
@@ -118,11 +118,11 @@ struct FolderSyncPane : std::enable_shared_from_this<FolderSyncPane> {
                 }
             };
             check.Checked(changed); check.Unchecked(changed); checks.emplace_back(id,check); card.Children().Append(check);
-            card.Children().Append(label(folderSyncStatus(row) + (row.available ? L"" : L" · Folder unavailable in the current saved list"),12));
+            card.Children().Append(label(hstring(folderSyncStatus(row) + (row.available ? L"" : L" · Folder unavailable in the current saved list")),12));
             if (row.selected) {
                 card.Children().Append(label(syncTimes(row),12));
-                if (!row.warning.empty()) card.Children().Append(label(row.warning,12));
-                if (!row.error.empty()) card.Children().Append(label(row.error,12));
+                if (!row.warning.empty()) card.Children().Append(label(hstring(row.warning),12));
+                if (!row.error.empty()) card.Children().Append(label(hstring(row.error),12));
                 if (!row.nextRetry.empty()) card.Children().Append(label(L"Next eligible retry: " + syncTime(row.nextRetry),12));
                 if (row.recovery == L"reconnect") card.Children().Append(label(L"Reconnect this mailbox in Settings → Mail accounts, then reload its folder selection.",12));
                 if (row.recovery == L"retry") {
@@ -146,7 +146,7 @@ struct FolderSyncPane : std::enable_shared_from_this<FolderSyncPane> {
         auto weak = weak_from_this(); dialog.XamlRoot(shell->root.XamlRoot()); dialog.Title(box_value(L"Folders to sync"));
         dialog.Resources().Insert(box_value(L"ContentDialogMaxWidth"),box_value(760.0));
         dialog.PrimaryButtonText(L"Save selection"); dialog.SecondaryButtonText(L"Discard changes"); dialog.CloseButtonText(L"Close"); dialog.DefaultButton(ContentDialogButton::Close);
-        content.Children().Append(label(selection.owner,17));
+        content.Children().Append(label(hstring(selection.owner),17));
         content.Children().Append(label(L"Choose custom IMAP folders to download during mailbox sync. Saving changes only the local selection; a later mailbox sync can download selected folders.",13));
         content.Children().Append(label(L"Recent page and new mail only; older mail requires history import. Flags refresh in bounded batches.",13));
         cadence=label(L"",12); content.Children().Append(cadence);

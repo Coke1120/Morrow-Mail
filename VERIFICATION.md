@@ -36,6 +36,15 @@ closure. The original failure is retained. This two-annotation follow-up changes
 no Rust source or deadlines and requires fresh platform CI; Linux has no Swift
 compiler or macOS SDK, so source review is not a native compile result.
 
+The subsequent PR54 Windows job at `01698b8` passed 470 Rust tests with 0 failures
+and 4 ignored, then failed native compilation with 14 C2664 errors in
+`FolderSync.cpp`: the UI adapters passed `std::wstring` values to helpers taking
+`const winrt::hstring&`. The follow-up adds explicit `hstring` construction at
+those 14 call sites only; the portable state helper, owner/version guards,
+controls and deadlines are unchanged. The original SDK failure is retained.
+Source diff/hash review is not an SDK result; the corrected Windows build and
+native fixtures require fresh platform CI.
+
 ## IMAP server identity and safe migration — 15 October 2026
 
 This source follow-up starts from main
