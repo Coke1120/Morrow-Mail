@@ -42,6 +42,11 @@ struct NativeMailSearch: View {
                     Button("Clear Recent Searches") { remember("clear") }
                 }
             }
+            HStack {
+                Text("Search downloaded content. Incomplete bodies may not match.").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                DownloadControlsButton(owner: model.account).controlSize(.small)
+            }
             if advanced { filterPanel }
             if !filters.object.values.filter(\.nonempty).isEmpty || !result["chips"].array.isEmpty {
                 ScrollView(.horizontal) { HStack {
@@ -84,8 +89,8 @@ struct NativeMailSearch: View {
             HStack {
                 Text("\(Int(result["total"].number)) \(smart ? "ranked matches" : "matches")").font(.caption.bold())
                 Menu("Downloaded Coverage") {
-                    ForEach(Array(result["coverage"].array.enumerated()), id: \.offset) { item in Text("\(item.element["account"].string): \(Int(item.element["count"].number)) · \(item.element["oldest"].string.prefix(10)) – \(item.element["newest"].string.prefix(10))") }
-                    Text("Downloaded mail only. Import older mail in Settings → Mail.")
+                    ForEach(Array(result["coverage"].array.enumerated()), id: \.offset) { item in Text("\(item.element["account"].string): \(downloadCoverageText(item.element)) · \(item.element["oldest"].string.prefix(10)) – \(item.element["newest"].string.prefix(10))") }
+                    Text("Downloaded content only; incomplete bodies may not match. Use Downloads & storage for repairs and history controls.")
                 }.font(.caption)
                 Spacer()
                 Button("Previous") { run(page: Int(result["page"].number) - 1) }.disabled(searching || result["page"].number == 0)

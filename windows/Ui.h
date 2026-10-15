@@ -143,6 +143,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     winrt::Windows::Foundation::IAsyncAction undoTrash();
     void updateTrashUndo();
     winrt::Windows::Foundation::IAsyncAction sync();
+    winrt::Windows::Foundation::IAsyncAction downloadControls(winrt::hstring account = {});
     winrt::Windows::Data::Json::JsonArray syncPriorityMessages() const;
     winrt::Windows::Foundation::IAsyncAction publishSyncPriority(bool clear = false);
     winrt::Windows::Foundation::IAsyncAction checkUpdates(bool force = false);
@@ -182,5 +183,6 @@ void appendReader(std::shared_ptr<Shell> shell, controls::StackPanel const& cont
 Json refreshedReaderMessage(Json const& previous, Json message);
 winrt::Windows::Foundation::IAsyncAction folderPickerChecks(controls::Grid root);
 void readerSecurityChecks();
+void downloadControlsChecks();
 winrt::Windows::Foundation::IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell);
 }

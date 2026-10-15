@@ -797,6 +797,8 @@ void Shell::mailPage() {
     auto accountCaption = label(owner == L"all" ? L"All accounts" : owner, 12); accountCaption.Opacity(0.7);
     titleText.Children().Append(accountCaption);
     listTitle.Children().Append(titleText);
+    heading.Children().Append(button(L"Downloads & storage…", [weak] {if(auto self=weak.lock()) self->downloadControls(self->owner);}));
+    auto localCoverage=label(L"Search downloaded content. Incomplete bodies may not match.",11); localCoverage.MaxLines(2); heading.Children().Append(localCoverage);
     if (std::wstring_view(folder).starts_with(L"provider:")) {
         auto coverage = label(L"Downloaded mail only. Sync or import history to add more messages.", 11); coverage.MaxLines(2); heading.Children().Append(coverage);
     }
@@ -827,7 +829,7 @@ void Shell::mailPage() {
     sorting.SelectedIndex(0);
     sorting.SelectionChanged([weak](auto const&, auto const&) { if (auto self = weak.lock(); self && !self->loading) self->loadPage(0, false, true); });
     toolbar.Children().Append(sorting);
-    toolbar.Children().Append(iconButton(L"\uE74D", L"Delete selected messages", [weak] { if (auto self = weak.lock()) self->trashMessages(self->selectedMessages()); }));
+    toolbar.Children().Append(iconButton(L"\uE74D", L"Move selected messages to provider Trash", [weak] { if (auto self = weak.lock()) self->trashMessages(self->selectedMessages()); }));
     heading.Children().Append(toolbar); list.Children().Append(heading);
     rows = ListView(); rows.SelectionMode(ListViewSelectionMode::Extended);
     Automation::AutomationProperties::SetName(rows, L"Mail list");
@@ -1297,7 +1299,7 @@ void Shell::renderReader(Json const& message) {
     }
     content.Children().Append(markers);
     auto remote = text(message, L"remoteId", text(message, L"id"));
-    auto remove = button(L"Delete", [weak, message] { if (auto self = weak.lock()) self->trash(message); });
+    auto remove = button(L"Move to provider Trash", [weak, message] { if (auto self = weak.lock()) self->trash(message); });
     remove.IsEnabled(canTrash(message)); replies.Children().Append(remove);
     if (std::wstring_view(remote).starts_with(L"google:") || std::wstring_view(remote).starts_with(L"microsoft:") || std::wstring_view(remote).starts_with(L"imap:")) {
         DropDownButton organizeButton; organizeButton.Content(box_value(L"Organize email")); organizeButton.Flyout(organizationMenu(message)); replies.Children().Append(organizeButton);
@@ -1309,6 +1311,11 @@ void Shell::renderReader(Json const& message) {
     }
     if (text(message, L"folder") != L"trash") local.Children().Append(button(L"Trash locally", [weak, message] { if (auto self = weak.lock()) { Json changes; put(changes, L"folder", L"trash"); self->patch(message, changes); } }));
     content.Children().Append(local);
+    auto undo=object(message,L"localFolderUndo");
+    if(!text(undo,L"token").empty()) {
+        content.Children().Append(label(L"Moved locally; the provider location was not changed.",12));
+        content.Children().Append(button(L"Undo local move to "+text(undo,L"from"),[weak,message,undo] {if(auto self=weak.lock()) {Json changes;put(changes,L"undoLocalMove",text(undo,L"token"));self->patch(message,changes);}}));
+    }
     auto assistance = actions();
     for (auto const& option : {std::pair{L"Summarize",L"summary"}, {L"Suggest reply",L"reply"}, {L"Translate",L"translate"}})
         assistance.Children().Append(button(option.first, [weak, message, mode = hstring(option.second)] { if (auto self = weak.lock()) self->messageAI(message, mode); }));
@@ -1370,7 +1377,7 @@ MenuFlyout Shell::mailActionsMenu(Json message) {
             auto organization = self->organizationMenu(messages[0]);
             while (organization.Items().Size()) { auto item = organization.Items().GetAt(0); organization.Items().RemoveAt(0); menu.Items().Append(item); }
         }
-        MenuFlyoutItem remove; remove.Text(L"Delete");
+        MenuFlyoutItem remove; remove.Text(L"Move to provider Trash");
         remove.IsEnabled(enabled && std::all_of(messages.begin(), messages.end(), [&](auto const& row) { return self->canTrash(row); }));
         remove.Click([weak, messages](auto const&, auto const&) { if (auto self = weak.lock()) self->trashMessages(messages); }); menu.Items().Append(remove);
         menu.Items().Append(MenuFlyoutSeparator());
@@ -1407,9 +1414,9 @@ IAsyncAction Shell::patchMessages(std::vector<Json> messages, Json changes) {
             ++completed;
             if (!current(version, captured)) break;
             if (text(selected, L"accountId") == account && text(selected, L"id") == id) {
-                if (changes.HasKey(L"folder")) { ++selectionGeneration; selected = Json(); retainedUnread = Json(); }
+                if (changes.HasKey(L"folder") || changes.HasKey(L"undoLocalMove")) { ++selectionGeneration; selected = Json(); retainedUnread = Json(); }
                 else selected = updated;
-                if (!changes.HasKey(L"folder")) retainReadRow(updated);
+                if (!changes.HasKey(L"folder") && !changes.HasKey(L"undoLocalMove")) retainReadRow(updated);
                 renderReader(selected);
             }
         }

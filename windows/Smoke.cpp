@@ -294,7 +294,7 @@ IAsyncAction mailSelectionMenuChecks(std::shared_ptr<Shell> shell, std::vector<J
         check(menu.Items().Size() >= 9, L"The selection context menu has no batch actions.");
         std::vector<hstring> actions;
         for (auto const& value : menu.Items()) if (auto item = value.try_as<controls::MenuFlyoutItem>()) actions.push_back(item.Text());
-        check(actions == std::vector<hstring>{L"Delete", L"Mark read", L"Mark unread", L"Star", L"Unstar", L"Mark Pending", L"Clear Pending", L"Archive locally", L"Move to local Trash"},
+        check(actions == std::vector<hstring>{L"Move to provider Trash", L"Mark read", L"Mark unread", L"Star", L"Unstar", L"Mark Pending", L"Clear Pending", L"Archive locally", L"Move to local Trash"},
             L"The owned two-row selection menu lost or changed its batch actions.");
         menu.Hide();
         while (!events->closed && GetTickCount64() < deadline) {
@@ -626,6 +626,7 @@ IAsyncAction Shell::smoke() {
         }
         enter("folder-manager-and-pickers");
         co_await folderPickerChecks(root);
+        downloadControlsChecks();
         enter("interaction-guards");
         co_await nativeInteractionChecks(lifetime);
         enter("general-navigation-save");
@@ -1009,7 +1010,7 @@ IAsyncAction Shell::smoke() {
                         L"The sidebar actions overlap or Sync/Delete is clipped.");
                     check(unbox_value<hstring>(syncButton.Content()) == L"Sync" && xaml::Automation::AutomationProperties::GetAutomationId(syncButton) == L"mail.sync",
                         L"The sidebar lost its labeled Sync button.");
-                    check(xaml::Automation::AutomationProperties::GetName(deleteButton) == L"Delete selected messages",
+                    check(xaml::Automation::AutomationProperties::GetName(deleteButton) == L"Move selected messages to provider Trash",
                         L"The toolbar Delete icon lost its accessible action name.");
                     auto row = item.Content().as<controls::StackPanel>();
                     auto heading = row.Children().GetAt(0).as<controls::Grid>();

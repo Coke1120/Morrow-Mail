@@ -15,6 +15,7 @@ struct WindowAssertions {
         checkMailDrop()
         checkReaderBack()
         checkFolderLayouts()
+        checkDownloadContracts()
         checkActivitySummaryDiagnostics()
         checkComposeLayout()
         checkCalendarLayout()
@@ -114,6 +115,65 @@ struct WindowAssertions {
             window.close(); window.contentView = nil
         }
         print("Activity summary details: captured owned job, distinct terminal states, honest timestamps, legacy/foreign/disconnected rejection and bounded metadata-only native layout passed.")
+    }
+
+    @MainActor static func checkDownloadContracts() {
+        let owner = "downloads@example.invalid", other = "other@example.invalid", reference = "fixture-reference"
+        let row: JSON = .object(["id": .string("same"), "viewId": .string("owned-same"), "accountId": .string(owner)])
+        var page: JSON = .object(["accountId": .string(owner), "connectionRef": .string(reference), "page": .number(0), "pageSize": .number(30), "items": .array([row])])
+        assert(validDownloadPage(page, owner: owner, connectionRef: reference) && !validDownloadPage(page, owner: other, connectionRef: reference))
+        assert(!validDownloadPage(page, owner: owner, connectionRef: "new-connection"))
+        assert(!validDownloadPage(page, owner: owner, connectionRef: ""))
+        page["connectionRef"] = .null; assert(!validDownloadPage(page, owner: owner, connectionRef: reference)); page["connectionRef"] = .string(reference)
+        var foreign = row; foreign["accountId"] = .string(other)
+        page["items"] = .array([foreign]); assert(!validDownloadPage(page, owner: owner, connectionRef: reference))
+        page["items"] = .array(Array(repeating: row, count: 31)); assert(!validDownloadPage(page, owner: owner, connectionRef: reference))
+        page["items"] = .array([row])
+        for invalid in [JSON.number(-1), .number(0.5), .number(.infinity), .null] {
+            page["page"] = invalid; assert(!validDownloadPage(page, owner: owner, connectionRef: reference))
+        }
+        let ticket = UUID(), captured = DownloadRequestContext(owner: owner, connectionRef: reference, ticket: UUID())
+        assert(captured.accepts(captured))
+        assert(!captured.accepts(DownloadRequestContext(owner: other, connectionRef: reference, ticket: captured.ticket)))
+        assert(!captured.accepts(DownloadRequestContext(owner: owner, connectionRef: "reconnected", ticket: captured.ticket)))
+        assert(!captured.accepts(DownloadRequestContext(owner: owner, connectionRef: reference, ticket: ticket)), "A → B → A or another page invalidates the first A request.")
+        assert(!DownloadRequestContext(owner: owner, connectionRef: "", ticket: ticket).accepts(DownloadRequestContext(owner: owner, connectionRef: "", ticket: ticket)))
+        let counts: JSON = .object(["cachedCount": .number(5), "count": .number(4), "incompleteCount": .number(2), "truncatedCount": .number(1)])
+        assert(downloadCoverageText(counts) == "5 stored · 4 indexed · 2 incomplete · 1 shortened bodies")
+        checkDownloadModalGuards(owner: owner)
+        print("Download coverage and bounded page ownership contracts passed; no provider requests made.")
+    }
+
+    @MainActor static func checkDownloadModalGuards(owner: String) {
+        let model = AppModel()
+        model.starting = false
+        model.state = .object(["account": .object(["id": .string(owner)]), "accounts": .array([.object(["id": .string(owner), "provider": .string("imap")])])])
+        assert(model.canNavigate && model.canOpenDownloads)
+        let before = model.draftGeneration
+        guard let first = model.beginDownloadControls() else { assertionFailure("Downloads must open for an idle connected mailbox."); return }
+        assert(!model.canNavigate && !model.canOpenDownloads && model.draftGeneration != before, "Downloads must disable mailbox shortcuts before its sheet appears and invalidate earlier draft work.")
+        assert(model.beginDownloadControls() == nil, "A second Downloads sheet must not acquire the first sheet's ownership.")
+        model.newDraft(); model.settings()
+        assert(model.compose == nil && !model.showSettings, "Cmd-N and Cmd-comma must not open another sheet behind Downloads.")
+        assert(!model.endDownloadControls(UUID()) && model.downloadsPresentation == first)
+        assert(model.endDownloadControls(first) && model.canNavigate)
+        model.newDraft()
+        assert(model.compose?.accountID == owner, "Closing Downloads must restore normal composition.")
+        model.compose = nil
+        guard let second = model.beginDownloadControls() else { assertionFailure("Downloads must reopen after closing."); return }
+        assert(!model.endDownloadControls(first) && model.downloadsPresentation == second && !model.canNavigate, "A late disappearance from the first sheet must not release its replacement.")
+        assert(model.endDownloadControls(second))
+        model.settings("mail")
+        assert(model.showSettings && model.settingsTab == "mail", "The panel's explicit settings handoff must work after releasing its own guard.")
+        assert(model.canOpenDownloads, "An otherwise idle Settings sheet may present Downloads.")
+        model.dirty("settings", true)
+        assert(model.beginDownloadControls() == nil, "Opening Downloads must preserve existing unsaved settings.")
+        model.dirty("settings", false)
+        guard let nested = model.beginDownloadControls() else { assertionFailure("Clean Settings must allow Downloads."); return }
+        model.settings("general")
+        assert(model.settingsTab == "mail", "Global Settings shortcuts must not switch the underlying Settings tab.")
+        assert(model.endDownloadControls(nested))
+        print("Downloads modal ownership, draft/settings shortcut guards and stale-sheet cleanup passed; no service launched.")
     }
 
     @MainActor static func checkMailDrop() {

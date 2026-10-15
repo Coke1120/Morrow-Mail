@@ -1,5 +1,90 @@
 # Verification — 14 October 2026
 
+## Download controls and local recovery — 15 October 2026
+
+This isolated follow-up originally started from main
+`d5ac97c5d51cc265cc769d07bd36d7d013fa5c67` and is now stacked on IMAP identity
+`01c1f0a9e27262bb61c9a878961ffe26ed42437a`, which includes the v0.8.2
+documentation/version commit. The identity verification below describes that
+prerequisite, not an executed Downloads test run.
+It adds downloaded-content/storage observation and existing download-control
+entry points, plus a guarded last-local-folder undo. It does not authorize a
+merge or release, change provider-write review, delete cached data or change the
+frozen Today work. [Scope and remaining decisions](docs/DOWNLOAD_CONTROLS.md)
+separate existing behavior, new behavior and excluded storage policy.
+
+Added synthetic tests cover logical UTF-8/blob byte totals, partial/unindexed
+coverage, duplicate IDs across owners, required mailbox headers, page validation
+and clamping, 30-row limits, local undo after restart, forged/obsolete tokens,
+move-away/back, reimport/reconnect fencing and preservation of subsequent
+read/star/Pending/content changes. Loopback-provider fixtures exercise the real
+native API routes: passive download status and local moves make no provider call;
+mark-read followed by local undo makes only the reviewed flag write; explicit
+full-content repair updates A's coverage without changing B's duplicate ID.
+A query-plan assertion checks the partial account/date/ID index and absence of a
+temporary sort for the repair list.
+
+Additional fixtures cover strict current IMAP origin eligibility (missing,
+unbound, foreign and invalid origins cannot download), same-server password
+reconnect, account isolation and already-downloaded bodies still shortened by
+size limits. The optional context guard is exercised through real loopback API
+routes: stale/empty/malformed connection references, same-owner reconnect and
+reconnect-back, another owner's duplicate ID, replacement history jobs and replay
+must leave stored data unchanged and make no provider requests. Current context
+and pre-existing unguarded routes are positive compatibility controls. Routine
+OAuth token rotation retains the opaque connection reference.
+
+Final Rust formatting and locked all-target Clippy with `-D warnings` passed.
+The seven download-control store tests, four loopback service cases and one
+production-query-plan check all passed. The complete locked Rust suite passed
+**456 tests, zero failures, with four existing ignored benchmarks**. Every final
+focused/fmt/Clippy/full run used the same 103-file Rust/Cargo source manifest.
+An initial compile check exposed SQLite's signed-integer binding requirement;
+page inputs still accept/clamp `u64` while SQLite values stay within `i64`.
+The first real-Store query-plan test then failed because a competing account
+index was chosen. The production coverage/count/page queries now explicitly use
+the partial incomplete-content index, and the test inspects those actual queries;
+the original failure was retained and its assertions were not relaxed.
+`git diff --check` passed during implementation. Both native check
+entry points include synthetic page-owner/connection/bounds assertions and
+the request-ticket or view-generation guards used for A→B→A/page changes. A native
+cross-review found two presentation lifetime gaps: Downloads did not hold the
+macOS global shortcut guard, and an obsolete Windows GET could release a newer
+page's loading flag. The fixes add captured sheet ownership and reuse the
+existing Windows request ticket. New macOS fixture assertions cover modal/draft/
+settings guards, matching cleanup and late prior-sheet cleanup. The exact C++
+loading helper passed 22 portable lifecycle assertions, including suspended
+coroutine success, failure and cancellation after a replacement request; an
+unconditional-release negative control failed as expected. That harness uses a
+minimal Shell fixture and is not WinUI execution. These are not an
+automated click-through of every download dialog. This Linux environment has no
+SwiftUI/AppKit or WinUI SDK, so native compilation/runtime, live-account,
+large-mailbox latency and manual accessibility acceptance remain unverified.
+
+The first PR #55 macOS cloud attempt on head
+`75c4da4f7d3936d71c1633e90e671afeecca3d60` failed in the executed mail-flow
+fixture: **"Native action row did not mount: Next"** at 09:08:33 UTC.
+[Run 38709274091](https://github.com/Coke1120/Morrow-Mail/actions/runs/38709274091),
+job `116336332078`, tested synthetic merge
+`d9bd9e8d46e9578cf55e4e9de6f24ec4337beb14`. That attempt passed formatting,
+strict Clippy, all 456 Rust tests (zero failures/four existing ignored), Swift
+production compilation and ad-hoc ZIP packaging. It did not reach the following
+full native acceptance or review-workspace steps. The independent reader batch
+later passed 40/40 with complete capture; it does not replace the failed gate.
+
+Source triage found that this fixture hosts only NativeMailSearch, not the
+MailView workspace toolbar. It still required exactly seven native button peers,
+while the candidate added an ordinary Downloads button before the unchanged
+Previous/Next row. The original log contains no button inventory or geometry;
+an actual count of eight is inferred from this source change, not measured in
+that failed run. The narrow correction expects exactly eight for the candidate
+and keeps seven for the pinned historical search control. Ordered selection,
+enabled/mounted checks, real button clicks, all page/write/owner assertions and
+the five-second wait remain unchanged. Failure-only diagnostics record bounded
+counts and enabled/mounted booleans without mailbox or message content.
+The original failure is preserved; the corrected native source still needs its
+own CI run. No SDK test was rerun in the Linux editing environment.
+
 ## IMAP server identity and safe migration — 15 October 2026
 
 This source follow-up starts from main

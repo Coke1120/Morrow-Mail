@@ -8,7 +8,7 @@ use crate::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use hmac::{Hmac, Mac};
 use regex::Regex;
-use rusqlite::{params_from_iter, types::Value as Sql};
+use rusqlite::types::Value as Sql;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{collections::HashSet, sync::LazyLock};
@@ -338,8 +338,10 @@ pub fn lexical(db: &Store, query: &Query, accounts: &[String], candidates: bool)
     Ok(result)
 }
 pub fn coverage(db: &Store, accounts: &[String]) -> Result<Value> {
-    let mut statement=db.conn.prepare(&format!("SELECT account,count(*),min(date),max(date) FROM search_documents WHERE account IN ({}) GROUP BY account",placeholders(accounts.len())))?;
-    let rows=statement.query_map(params_from_iter(accounts),|row|Ok(json!({"account":row.get::<_,String>(0)?,"count":row.get::<_,i64>(1)?,"oldest":row.get::<_,Option<String>>(2)?,"newest":row.get::<_,Option<String>>(3)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+    let rows = accounts
+        .iter()
+        .map(|account| crate::downloads::coverage(db, account))
+        .collect::<Result<Vec<_>>>()?;
     Ok(json!(rows))
 }
 pub fn digest(value: &Value) -> String {
