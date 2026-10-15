@@ -29,6 +29,39 @@ Static byte checks do not establish the original failure's cause or a Windows
 runtime fix. Fresh SDK/runtime CI for this candidate remains required; no local
 native build or runtime pass is claimed.
 
+## PR #59 macOS menu snapshot identity — 15 October 2026
+
+At head `269882f`, both the focused review run `38744078319` (job
+`116452991105`) and primary run `38744078202` (macOS job `116452991115`)
+compiled the fixture but failed before activating `reader.replyMenu`. Their
+actual checkout was synthetic merge `e3b8f1c`, merging `269882f` into `05cf409`.
+Both logs show the Reply and secondary menu nodes pointing to group 2, while a
+second query of that group's children reports two `outside` identities.
+Menu tracking began zero times. The preceding lifecycle, 13 synthetic graph
+cases and mounted-control gates passed; this does not establish a menu action
+pass or a product UI failure.
+
+The fixture previously enumerated accessibility children, then queried those
+children again while mapping their object identities into the first enumeration.
+It now retains the parent/child edges from one getter result per snapshot.
+The split Reply menu also retains its actual mounted `NSSegmentedControl` and
+exact `NSCell`, with the proven secondary child slot, rather than comparing
+virtual child wrapper addresses across snapshots. Role, label, reciprocal
+links, owner, visibility, enabled state, unique candidate and five-second gates
+remain required. Replacement controls cannot inherit the captured identity.
+The one advertised action, menu tracking, command checks and outer 45-second
+fixture limit remain unchanged; no fallback action or deadline extension was
+added. No production view, handler, provider permission or service code changed.
+
+Prepared controls cover a synthetic getter that returns fresh wrappers, the
+old second-getter mismatch, invalid parent/overflow, and real native owner/cell
+retention with wrong slot, ambiguous owner, wrong label, disabled, hidden,
+detached and replacement negatives. These controls and the corrected real
+Reader menu checks have **not run on an SDK locally**. Linux source/diff checks
+only establish the unchanged gates and fixture-only scope. The two original
+failure logs remain evidence; the exact candidate still requires fresh macOS
+compilation and runtime CI, plus separate visual/keyboard/accessibility review.
+
 ## IDLE with selected folders, Downloads and move recovery — 15 October 2026
 
 This normal integration combines IDLE/fixture-cleanup parent `b9691f9` with

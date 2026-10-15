@@ -143,7 +143,55 @@ import SwiftUI
     }
     struct MountedMenuControl {
         let element: NSAccessibilityProtocol
-        let identities: [ObjectIdentifier]
+        // Retain the concrete owner, not the identity of a virtual segment
+        // wrapper that AppKit may recreate on the next accessibility query.
+        let owners: [NSObject]
+        let secondarySlot: Int?
+        func hasSameOwner(as other: MountedMenuControl) -> Bool {
+            owners.map { ObjectIdentifier($0) } == other.owners.map { ObjectIdentifier($0) } && secondarySlot == other.secondarySlot
+        }
+    }
+    struct MenuSnapshot {
+        let elements: [NSAccessibilityProtocol]
+        let nodes: [MenuNode]
+        let childIndices: [[Int?]]
+        let bounded: Bool
+    }
+    @MainActor static func menuSnapshot(_ root: NSView) -> MenuSnapshot {
+        var elements: [NSAccessibilityProtocol] = [], parents: [NSObject?] = [], children: [[NSObject?]] = []
+        var visited = Set<ObjectIdentifier>(), bounded = true
+        @MainActor func visit(_ value: Any) {
+            guard let object = value as? NSObject else { return }
+            let identity = ObjectIdentifier(object)
+            if visited.contains(identity) { return }
+            guard visited.count < 4096 else { bounded = false; return }
+            visited.insert(identity)
+            if let element = object as? NSAccessibilityProtocol {
+                // Capture each edge once, retaining that exact getter result
+                // until the snapshot is mapped. Never combine child wrappers
+                // from a second getter call with the first call's identities.
+                let direct = element.accessibilityChildren() ?? []
+                if direct.count > 4096 { bounded = false }
+                elements.append(element)
+                parents.append(element.accessibilityParent() as? NSObject)
+                children.append(direct.prefix(4096).map { $0 as? NSObject })
+                for child in direct.prefix(4096) { visit(child) }
+            }
+            if let view = object as? NSView { for child in view.subviews { visit(child) } }
+        }
+        visit(root)
+        let indices = Dictionary(uniqueKeysWithValues: elements.enumerated().map { (ObjectIdentifier($0.element as AnyObject), $0.offset) })
+        let childIndices = children.map { $0.map { $0.flatMap { indices[ObjectIdentifier($0)] } } }
+        let window = root.window
+        let visible = window.map { $0.convertToScreen(root.convert(root.visibleRect, to: nil)).intersection($0.frame) } ?? .zero
+        let nodes = elements.enumerated().map { index, element in
+            MenuNode(role: element.accessibilityRole()?.rawValue ?? "", identifier: element.accessibilityIdentifier() ?? "",
+                     labels: [element.accessibilityLabel(), element.accessibilityTitle()].compactMap { $0 },
+                     parent: parents[index].flatMap { indices[ObjectIdentifier($0)] },
+                     children: childIndices[index].compactMap { $0 }, completeChildren: childIndices[index].allSatisfy { $0 != nil },
+                     mounted: window.map { menuElementIsMounted(element, in: root, window: $0, visible: visible) } ?? false)
+        }
+        return MenuSnapshot(elements: elements, nodes: nodes, childIndices: childIndices, bounded: bounded && elements.count < 4096)
     }
     @MainActor static func menuNodeIndices(_ identifier: String, nodes: [MenuNode]) -> [Int] {
         let labels = ["reader.replyMenu": "Reply", "reader.organizeMenu": "Organize", "reader.moreMenu": "More", "reader.aiMenu": "AI help"]
@@ -182,26 +230,33 @@ import SwiftUI
         }
         return false
     }
+    @MainActor static func replyMenuOwner(_ group: NSAccessibilityProtocol, secondarySlot: Int, controls: [NSSegmentedControl], in root: NSView) -> [NSObject]? {
+        guard let cell = group as? NSCell else { return nil }
+        let owners = controls.filter { $0.cell === cell }
+        guard let window = root.window, window.isVisible, !root.isHiddenOrHasHiddenAncestor,
+              owners.count == 1, let owner = owners.first, owner.segmentCount == 2, secondarySlot == 1,
+              owner.label(forSegment: 0) == "Reply",
+              (owner.label(forSegment: secondarySlot) ?? "").isEmpty || owner.label(forSegment: secondarySlot) == "Reply" else { return nil }
+        let visible = window.convertToScreen(root.convert(root.visibleRect, to: nil)).intersection(window.frame)
+        guard menuElementIsMounted(owner, in: root, window: window, visible: visible) else { return nil }
+        return [owner, cell]
+    }
     @MainActor static func menuControls(_ identifier: String, in root: NSView) -> [MountedMenuControl] {
         root.layoutSubtreeIfNeeded()
         guard let window = root.window, window.isVisible, !root.isHiddenOrHasHiddenAncestor else { return [] }
-        let visible = window.convertToScreen(root.convert(root.visibleRect, to: nil)).intersection(window.frame)
-        let elements = accessibilityNodes(root)
-        guard elements.count < 4096 else { return [] }
-        let indices = Dictionary(uniqueKeysWithValues: elements.enumerated().map { (ObjectIdentifier($0.element as AnyObject), $0.offset) })
-        let nodes = elements.map { element -> MenuNode in
-            let children = element.accessibilityChildren() ?? []
-            let childIndices = children.compactMap { ($0 as? NSObject).flatMap { indices[ObjectIdentifier($0)] } }
-            return MenuNode(role: element.accessibilityRole()?.rawValue ?? "", identifier: element.accessibilityIdentifier() ?? "",
-                            labels: [element.accessibilityLabel(), element.accessibilityTitle()].compactMap { $0 },
-                            parent: (element.accessibilityParent() as? NSObject).flatMap { indices[ObjectIdentifier($0)] },
-                            children: childIndices, completeChildren: childIndices.count == children.count,
-                            mounted: menuElementIsMounted(element, in: root, window: window, visible: visible))
-        }
-        return menuNodeIndices(identifier, nodes: nodes).map { index in
-            var owned = [index]
-            if identifier == "reader.replyMenu", let parent = nodes[index].parent { owned += [parent] + nodes[parent].children.filter { $0 != index } }
-            return MountedMenuControl(element: elements[index], identities: owned.map { ObjectIdentifier(elements[$0] as AnyObject) })
+        let snapshot = menuSnapshot(root), elements = snapshot.elements, nodes = snapshot.nodes
+        guard snapshot.bounded else { return [] }
+        let candidates = menuNodeIndices(identifier, nodes: nodes)
+        guard candidates.count == 1 else { return [] }
+        let nativeOwners = elements.compactMap { $0 as? NSSegmentedControl }
+        return candidates.compactMap { index in
+            if identifier == "reader.replyMenu" {
+                guard let parent = nodes[index].parent, let slot = nodes[parent].children.firstIndex(of: index),
+                      let owners = replyMenuOwner(elements[parent], secondarySlot: slot, controls: nativeOwners, in: root) else { return nil }
+                return MountedMenuControl(element: elements[index], owners: owners, secondarySlot: slot)
+            }
+            guard let owner = elements[index] as? NSObject else { return nil }
+            return MountedMenuControl(element: elements[index], owners: [owner], secondarySlot: nil)
         }
     }
     enum MenuAction: Equatable { case showMenu, press }
@@ -254,6 +309,81 @@ import SwiftUI
         try require(advertisedMenuAction(["AXShowMenu"]) == .showMenu && advertisedMenuAction(["AXPress"]) == .press && advertisedMenuAction(["AXPress", "AXShowMenu"]) == .showMenu, "advertised menu action choice changed")
         print("Menu selector controls: \(checks) split graph cases plus ambiguity, named-label and advertised-action controls passed; these are synthetic graph checks, not an AppKit action pass.")
     }
+    @MainActor final class MenuWrapper: NSView {
+        weak var fixtureParent: NSView?
+        var fixtureRole = NSAccessibility.Role.button
+        var fixtureLabel = ""
+        override func accessibilityRole() -> NSAccessibility.Role? { fixtureRole }
+        override func accessibilityLabel() -> String? { fixtureLabel }
+        override func accessibilityParent() -> Any? { fixtureParent }
+        override func accessibilityChildren() -> [Any]? { [] }
+    }
+    @MainActor final class FreshMenuChildren: NSView {
+        var reads = 0, oversized = false
+        var foreignParent: NSView?
+        override func accessibilityRole() -> NSAccessibility.Role? { .group }
+        override func accessibilityChildren() -> [Any]? {
+            reads += 1
+            let primary = MenuWrapper(frame: .zero), secondary = MenuWrapper(frame: .zero)
+            primary.fixtureLabel = "Reply"; primary.fixtureParent = self
+            secondary.fixtureRole = .menuButton; secondary.fixtureParent = foreignParent ?? self
+            return oversized ? Array(repeating: primary as Any, count: 4097) : [primary, secondary]
+        }
+    }
+    @MainActor static func menuSnapshotControls() throws {
+        let root = FreshMenuChildren(frame: .zero)
+        @MainActor func graph(_ snapshot: MenuSnapshot) -> [MenuNode] {
+            // This control tests the getter/edge collector only. The separate
+            // mounted controls and real Reader must still prove visibility.
+            snapshot.nodes.map { node in var value = node; value.mounted = true; return value }
+        }
+        let first = menuSnapshot(root)
+        try require(root.reads == 1 && first.bounded && first.nodes.count == 3
+                    && menuNodeIndices("reader.replyMenu", nodes: graph(first)) == [2], "A one-getter menu snapshot lost its reciprocal wrapper edges")
+        let second = menuSnapshot(root)
+        try require(root.reads == 2 && second.bounded && menuNodeIndices("reader.replyMenu", nodes: graph(second)) == [2]
+                    && ObjectIdentifier(first.elements[2] as AnyObject) != ObjectIdentifier(second.elements[2] as AnyObject), "Fresh wrappers were not retained independently in each snapshot")
+        let firstIDs = Set(first.elements.map { ObjectIdentifier($0 as AnyObject) })
+        let reread = root.accessibilityChildren() ?? []
+        try require(reread.count == 2 && reread.allSatisfy { !firstIDs.contains(ObjectIdentifier($0 as AnyObject)) }, "The former second-getter identity mismatch control did not fail closed")
+        root.foreignParent = NSView(frame: .zero)
+        try require(menuNodeIndices("reader.replyMenu", nodes: graph(menuSnapshot(root))).isEmpty, "A child from another parent entered the captured menu group")
+        root.foreignParent = nil; root.oversized = true
+        try require(!menuSnapshot(root).bounded, "An oversized repeated-child list bypassed the menu snapshot bound")
+        print("Menu snapshot controls: single getter, fresh wrappers, former reread mismatch, wrong parent and bounded overflow passed; synthetic getter controls only.")
+    }
+    @MainActor static func menuOwnerControls() throws {
+        let window = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 360, height: 160), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 160))
+        @MainActor func segmented() -> NSSegmentedControl {
+            let control = NSSegmentedControl(frame: NSRect(x: 20, y: 30, width: 240, height: 28))
+            control.segmentCount = 2; control.setLabel("Reply", forSegment: 0); control.setLabel("", forSegment: 1)
+            return control
+        }
+        let owner = segmented(); root.addSubview(owner)
+        window.contentView = root; window.makeKeyAndOrderFront(nil); window.layoutIfNeeded()
+        defer { window.close(); window.contentView = nil }
+        guard let cell = owner.cell, let original = replyMenuOwner(cell, secondarySlot: 1, controls: [owner], in: root) else { throw APIError("The concrete split-menu owner did not mount") }
+        let target = MountedMenuControl(element: cell, owners: original, secondarySlot: 1)
+        guard let same = replyMenuOwner(cell, secondarySlot: 1, controls: [owner], in: root) else { throw APIError("The retained native menu owner disappeared") }
+        try require(target.hasSameOwner(as: MountedMenuControl(element: cell, owners: same, secondarySlot: 1)), "A fresh snapshot lost its unchanged concrete owner")
+        try require(replyMenuOwner(cell, secondarySlot: 0, controls: [owner], in: root) == nil && replyMenuOwner(root, secondarySlot: 1, controls: [owner], in: root) == nil, "A primary slot or unrelated group became the secondary menu")
+        try require(replyMenuOwner(cell, secondarySlot: 1, controls: [owner, owner], in: root) == nil, "An ambiguous native owner became current")
+        owner.setLabel("Forward", forSegment: 0)
+        try require(replyMenuOwner(cell, secondarySlot: 1, controls: [owner], in: root) == nil, "A differently labeled native owner became Reply")
+        owner.setLabel("Reply", forSegment: 0); owner.isEnabled = false
+        try require(replyMenuOwner(cell, secondarySlot: 1, controls: [owner], in: root) == nil, "A disabled native owner became current")
+        owner.isEnabled = true; owner.isHidden = true
+        try require(replyMenuOwner(cell, secondarySlot: 1, controls: [owner], in: root) == nil, "A hidden native owner became current")
+        owner.isHidden = false; owner.removeFromSuperview()
+        try require(replyMenuOwner(cell, secondarySlot: 1, controls: [owner], in: root) == nil, "A detached original owner remained current")
+        let replacement = segmented(); root.addSubview(replacement); window.layoutIfNeeded()
+        guard let nextCell = replacement.cell, let next = replyMenuOwner(nextCell, secondarySlot: 1, controls: [replacement], in: root) else { throw APIError("The replacement native menu owner did not mount") }
+        try require(!target.hasSameOwner(as: MountedMenuControl(element: nextCell, owners: next, secondarySlot: 1)), "An identically labeled replacement reused the captured owner")
+        try require(!target.hasSameOwner(as: MountedMenuControl(element: cell, owners: original, secondarySlot: 0)), "A changed segment slot reused the captured secondary identity")
+        print("Menu owner controls: exact native control/cell/secondary slot retained; primary, wrong group/label, disabled, hidden, detached, replacement and changed-slot negatives passed; no menu action invoked.")
+    }
     @MainActor static func menuMountedGateControls() throws {
         let window = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 320, height: 180), styleMask: [.titled], backing: .buffered, defer: false)
         let foreign = NSWindow(contentRect: NSRect(x: 40, y: 40, width: 320, height: 180), styleMask: [.titled], backing: .buffered, defer: false)
@@ -287,20 +417,20 @@ import SwiftUI
         // Only this fictional fixture's mounted tree. Prioritize actual menu
         // nodes, include parent/child indices and advertised actions, and bound
         // every count/string. Flat traversal order does not prove ownership.
-        let elements = accessibilityNodes(root)
-        let indices = Dictionary(uniqueKeysWithValues: elements.enumerated().map { (ObjectIdentifier($0.element as AnyObject), $0.offset) })
+        let snapshot = menuSnapshot(root), elements = snapshot.elements
         let controls = elements.indices.filter { [NSAccessibility.Role.button, .menuButton, .popUpButton].contains(elements[$0].accessibilityRole() ?? .unknown) }
         let ordered = controls + elements.indices.filter { !controls.contains($0) }
         let nodes = ordered.prefix(32).map { index in
             let element = elements[index]
             let labels = [element.accessibilityLabel(), element.accessibilityTitle()].compactMap { $0 }.map { String($0.replacingOccurrences(of: "\n", with: " ").prefix(100)) }
-            let parent = (element.accessibilityParent() as? NSObject).flatMap { indices[ObjectIdentifier($0)] }
-            let children = (element.accessibilityChildren() ?? []).prefix(16).map { ($0 as? NSObject).flatMap { indices[ObjectIdentifier($0)] }.map(String.init) ?? "outside" }
+            let parent = snapshot.nodes[index].parent
+            let children = snapshot.childIndices[index].prefix(16).map { $0.map(String.init) ?? "outside" }
+            let cellOwners = (element as? NSCell).map { cell in elements.indices.filter { (elements[$0] as? NSSegmentedControl)?.cell === cell } } ?? []
             let actions = accessibilityActions(element)?.prefix(16).map { String($0.prefix(80)) }.joined(separator: ",") ?? "unavailable"
             let segments = (element as? NSSegmentedControl).map { control in (0..<min(control.segmentCount, 16)).map { "\($0):\(String((control.label(forSegment: $0) ?? "").prefix(80)))" }.joined(separator: ",") } ?? "none"
-            return "#\(index) \(type(of: element)) parent=\(parent.map(String.init) ?? "outside") children=\(children) id=\(String((element.accessibilityIdentifier() ?? "").prefix(80))) role=\(element.accessibilityRole()?.rawValue ?? "nil") labels=\(labels) actions=\(actions) segments=\(segments) enabled=\(element.isAccessibilityEnabled()) hidden=\(element.isAccessibilityHidden()) ownWindow=\((element.accessibilityWindow() as? NSWindow) === root.window) frame=\(NSStringFromRect(element.accessibilityFrame()))"
+            return "#\(index) \(type(of: element)) parent=\(parent.map(String.init) ?? "outside") children=\(children) cellOwners=\(cellOwners.prefix(16)) id=\(String((element.accessibilityIdentifier() ?? "").prefix(80))) role=\(element.accessibilityRole()?.rawValue ?? "nil") labels=\(labels) actions=\(actions) segments=\(segments) enabled=\(element.isAccessibilityEnabled()) hidden=\(element.isAccessibilityHidden()) ownWindow=\((element.accessibilityWindow() as? NSWindow) === root.window) frame=\(NSStringFromRect(element.accessibilityFrame()))"
         }
-        return "Menu fixture \(identifier): windowVisible=\(root.window?.isVisible == true) root=\(NSStringFromRect(root.visibleRect)); " + nodes.joined(separator: " | ")
+        return "Menu fixture \(identifier): bounded=\(snapshot.bounded) windowVisible=\(root.window?.isVisible == true) root=\(NSStringFromRect(root.visibleRect)); " + nodes.joined(separator: " | ")
     }
     @MainActor static func menuEntries(_ menu: NSMenu) -> String {
         menu.items.prefix(32).map { "\(String($0.title.prefix(100))) enabled=\($0.isEnabled) hidden=\($0.isHidden) action=\($0.action != nil)" }.joined(separator: " | ")
@@ -333,7 +463,7 @@ import SwiftUI
             guard let window = root.window else { throw APIError("Menu fixture lost its window") }
             @MainActor func current() -> Bool {
                 let next = menuControls(identifier, in: root)
-                return root.window === window && next.count == 1 && next[0].identities == target.identities
+                return root.window === window && next.count == 1 && next[0].hasSameOwner(as: target)
             }
             tracking.observers.append(NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { notification in
                 MainActor.assumeIsolated {
@@ -740,6 +870,8 @@ import SwiftUI
             try await lifecycle(session:model.session)
             if ProcessInfo.processInfo.environment["MORROW_REVIEW_BASELINE"] != "1" {
                 try menuSelectorControls()
+                try menuSnapshotControls()
+                try menuOwnerControls()
                 try menuMountedGateControls()
                 try await mountedReader(session: model.session)
                 try await mountedToday(session: model.session, width: 1120)
