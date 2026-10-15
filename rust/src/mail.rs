@@ -1048,7 +1048,15 @@ pub async fn sync_imap_with_tls(
     owners: &[String],
     connector: &native_tls::TlsConnector,
 ) -> Result<Value> {
-    sync_round(app, owners, Some(connector)).await
+    sync_round(app, owners, Some(connector), None).await
+}
+
+pub(crate) async fn sync_notification(
+    app: &App,
+    proof: crate::imap_idle::SyncProof,
+    connector: Option<&native_tls::TlsConnector>,
+) -> Result<Value> {
+    sync_round(app, &[proof.owner().to_owned()], connector, Some(proof)).await
 }
 
 async fn imap_primary_round(
@@ -1097,13 +1105,14 @@ async fn imap_primary_round(
 }
 
 pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
-    sync_round(app, owners, None).await
+    sync_round(app, owners, None, None).await
 }
 
 async fn sync_round(
     app: &App,
     owners: &[String],
     connector: Option<&native_tls::TlsConnector>,
+    proof: Option<crate::imap_idle::SyncProof>,
 ) -> Result<Value> {
     struct Syncing<'a>(&'a App);
     impl Drop for Syncing<'_> {
@@ -1118,7 +1127,15 @@ async fn sync_round(
         .lock()
         .map_err(|_| Error::new(503, "Restart the workspace."))? = owners.to_vec();
     let _syncing = Syncing(app);
-    let initial = app.settings().await?;
+    let initial = app
+        .db(move |db| {
+            let config = db.settings()?;
+            if let Some(proof) = proof {
+                proof.verify(db, &config)?;
+            }
+            Ok(config)
+        })
+        .await?;
     let initial_connections = connections(&initial);
     let mut errors = Vec::new();
     let mut selected_folders = Vec::new();

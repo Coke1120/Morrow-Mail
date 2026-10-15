@@ -29,8 +29,8 @@ The v0.8.2 source adds a Mail | Agent | Brain navigation shell on macOS and Wind
 The [IMAP read-session candidate](docs/IMAP_READ_SESSIONS.md) reuses one owned
 connection for change discovery and cached-mail flag reconciliation, with
 connection checks and bounded deadlines. It closes the socket after the round
-and discards failed or cancelled reads. IDLE and a non-MOVE write fallback remain
-separate implementation work; this candidate does not add either.
+and discards failed or cancelled reads. IDLE and a non-MOVE write fallback are
+separate units; this candidate does not add either.
 
 The activity-recovery follow-up keeps cancellation requests separate across
 mailboxes and AI work types. Cancelling one analysis remains effective when
@@ -63,7 +63,7 @@ Current source adds explicit [selected custom IMAP folder sync](docs/SELECTED_IM
 
 The [Thunderbird-informed IMAP follow-up](docs/THUNDERBIRD_IMAP_SYNC.md) discovers changed cached UIDs in bounded MODSEQ windows, prioritizes their flags within the existing 50-message background budget, and commits pending work with message updates. Unchanged MODSEQ reads use the provider snapshot, preserving local-only stars; missing snapshots reread flags. Legacy proof migration, capability fallback and UIDVALIDITY resets retain cached content. 0.7.8 includes this follow-up and the later reconcile-stall repairs. The synthetic comparison does not establish live-account or native UI acceptance; see the [0.7.8 release notes](docs/releases/v0.7.8.md).
 
-[Current-page synchronization](docs/SYNC_PRIORITY_AND_INCREMENTAL.md) in the 0.7.3 source prioritizes the selected message and visible page while retaining older-cache checks. Recent IMAP/Outlook pages reuse proven immutable cached bodies; drafts and uncertain content still fetch normally. Sync preserves reviewed sent payloads and owned downloaded attachments. The 0.7.4 follow-up implements bounded incremental polling; push/IDLE remain future work. Publication requires fresh paired tagged checks; see the [0.7.3 release notes](docs/releases/v0.7.3.md).
+[Current-page synchronization](docs/SYNC_PRIORITY_AND_INCREMENTAL.md) in the 0.7.3 source prioritizes the selected message and visible page while retaining older-cache checks. Recent IMAP/Outlook pages reuse proven immutable cached bodies; drafts and uncertain content still fetch normally. Sync preserves reviewed sent payloads and owned downloaded attachments. The 0.7.4 follow-up implements bounded incremental polling. A separate [IMAP notification candidate](docs/IMAP_IDLE_NOTIFICATIONS.md) rotates eligible Inbox and selected custom folders under the existing automatic-sync opt-in, with at most four accounts and one folder per account watched at once. Coalesced hints use the existing bounded sync path; selected folders need a committed UIDVALIDITY baseline, fresh catalog and current recovery/backoff eligibility. The candidate passed its Linux synthetic Rust checks; native SDK and live-provider acceptance remain pending. It is excluded from the separate v0.8.2 release. Publication requires fresh paired tagged checks; see the [0.7.3 release notes](docs/releases/v0.7.3.md).
 
 ## Download
 

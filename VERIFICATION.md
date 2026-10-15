@@ -165,6 +165,55 @@ IDLE, persistent connection pooling
 and non-MOVE fallback are not implemented by this candidate. See
 [the precise scope](docs/IMAP_READ_SESSIONS.md).
 
+## IMAP notification candidate — 15 October 2026
+
+This isolated draft adds bounded IDLE for eligible Inbox and selected custom
+folders, with explanatory native Settings text. It is stacked on selected-folder
+head `4cef39561bb69e9bc170315dd0482f6ee0d1f906`, including the macOS actor and
+Windows string-boundary corrections above, server-origin identity and read-session
+reuse. It is excluded from the separate v0.8.2 release.
+
+The 31 new notification TLS/Store cases and 18 existing selected-folder focused
+cases passed. Formatting and locked all-targets Clippy with `-D warnings` passed.
+The locked complete Rust suite passed **505 tests, 0 failures, 4 existing ignored
+benchmarks**, across 50 result groups. Final formatting, Clippy and full tests
+used the same 105-file Rust/Cargo manifest, checked before and after each run.
+The focused runs preceded two Clippy-only edits (a tuple type alias and equivalent
+Option `?` expression); the full suite covers those final sources.
+
+Coverage includes checked continuation/DONE, capabilities, absolute deadlines,
+invalid responses, cancellation, Store rollback/ABA, source/selection/UIDVALIDITY
+binding, fair owner/folder rotation, four total/one-per-owner notification socket
+bounds, clock-only retry/catalog expiry, live LIST checks, connection-wide versus
+folder-only failure policy, shutdown/quiesce, quota/backoff preservation, hint
+coalescing and the existing sync/arrival-policy path without direct model calls.
+Tests shorten leases and backoff; they do not measure a production 60-second
+lease or native UI latency.
+
+A static review found a gap between consumer validation and the sync round's
+initial settings read. An opaque proof is now checked in the same Store closure
+that captures that snapshot. A held-Store control deliberately ignored the proof:
+both connection and selection replacement were accepted, each making three
+synthetic LOGINs and committing two rows. The guarded case rejects both with zero
+provider access or rows. This demonstrates the sync-entry contract; the control
+does not reproduce the original consumer's outer cancellation/select scheduling
+interleaving, and is not claimed as a byte-identical baseline race reproduction.
+
+The first focused run was 30/31: a 400 ms synthetic lease expired during custom
+LIST/setup before its intended wrong-tag protocol failure. Diagnostic results
+showed provider_network retries, including for the healthy account. The fixture
+now uses one second and requires actual completed DONE exchanges for rotation;
+the strict one-login assertion remains. Production lease/setup/retry policy is
+unchanged. The narrowed case and final 31-case run passed. Original fixture
+shallow settings-patch mistakes were also corrected with full read/modify/write;
+the persisted-backoff hint still asserts zero network and unchanged wait/errors.
+The initial intentional red control, focused failure and two Clippy diagnostics
+are retained in task evidence.
+
+These are isolated Linux fixture results. IDLE native SDK CI, live-provider
+acceptance and release validation remain pending. No live mailbox/model or
+sending was used. [Behavior and coverage limits](docs/IMAP_IDLE_NOTIFICATIONS.md).
+
 ## Activity cancellation and native verification repairs — 15 October 2026
 
 This follow-up starts from main `cfe61c9fedfe7f07a99ab84751aabf7bae19d495`,

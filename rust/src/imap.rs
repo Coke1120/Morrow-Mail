@@ -378,6 +378,176 @@ pub fn server_origin(mail: &Value) -> Result<String> {
     ]);
     Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(serde_json::to_vec(&endpoint)?)))
 }
+
+/// A notification is only a request for ordinary bounded synchronization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdleOutcome {
+    Changed,
+    LeaseEnded,
+    Unsupported,
+}
+
+fn idle_protocol_error() -> Error {
+    let mut error = Error::new(
+        502,
+        "IMAP notifications stopped; ordinary mail polling remains available.",
+    );
+    error.body["code"] = "imap_idle_protocol".into();
+    error
+}
+
+fn idle_notification(response: &imap_proto::Response<'_>) -> Result<bool> {
+    use imap_proto::{MailboxDatum, Response, Status};
+    match response {
+        Response::MailboxData(MailboxDatum::Exists(_) | MailboxDatum::Recent(_))
+        | Response::Fetch(..)
+        | Response::Expunge(_)
+        | Response::Vanished { .. } => Ok(true),
+        Response::MailboxData(MailboxDatum::Flags(_))
+        | Response::Data {
+            status: Status::Ok, ..
+        } => Ok(false),
+        _ => Err(idle_protocol_error()),
+    }
+}
+
+/// Library-only TLS/lease injection. The service uses platform trust and a fixed
+/// 60-second lease; API callers cannot override either. No session is returned
+/// or reused after this future completes, fails, times out or is dropped.
+pub async fn idle_inbox_with_tls(
+    mail: &Value,
+    validity: Option<u32>,
+    connector: &native_tls::TlsConnector,
+    budget: Duration,
+) -> Result<IdleOutcome> {
+    idle_folder_with_tls(mail, "INBOX", validity, false, connector, budget).await
+}
+
+pub(crate) async fn idle_selected_folder_with_tls(
+    mail: &Value,
+    path: &str,
+    validity: u32,
+    connector: &native_tls::TlsConnector,
+    budget: Duration,
+) -> Result<IdleOutcome> {
+    if validity == 0 {
+        return Err(idle_protocol_error());
+    }
+    idle_folder_with_tls(mail, path, Some(validity), true, connector, budget).await
+}
+
+async fn idle_folder_with_tls(
+    mail: &Value,
+    path: &str,
+    validity: Option<u32>,
+    selected_custom: bool,
+    connector: &native_tls::TlsConnector,
+    budget: Duration,
+) -> Result<IdleOutcome> {
+    use async_imap::types::Capability;
+    use imap_proto::{Response, Status};
+    if budget < Duration::from_millis(40) || budget > Duration::from_secs(60) {
+        return Err(Error::invalid("Invalid IMAP notification lease."));
+    }
+    // The identity unit supplies this canonical endpoint/login validator. A
+    // malformed origin never reaches the network, even through library callers.
+    server_origin(mail)?;
+    valid_folder(path)?;
+    let deadline = tokio::time::Instant::now() + budget;
+    let leave_idle = deadline - Duration::from_secs(2).min(budget / 4);
+    let setup_deadline = leave_idle.min(tokio::time::Instant::now() + Duration::from_secs(45));
+    let Some((mut session, tag, mut changed)) = tokio::time::timeout_at(setup_deadline, async {
+        let mut session = connect(mail, connector).await?;
+        let capabilities = session.capabilities().await.map_err(imap_error)?;
+        if !capabilities.iter().any(|capability| {
+            matches!(capability, Capability::Atom(atom) if atom.eq_ignore_ascii_case("IDLE"))
+        }) {
+            return Ok(None);
+        }
+        if selected_custom {
+            require_selectable_custom(&mut session, path).await?;
+        }
+        let mailbox = examine_read(&mut session, path).await?;
+        if mailbox.uid_validity.is_none_or(|value| value == 0)
+            || validity.is_some_and(|expected| mailbox.uid_validity != Some(expected))
+        {
+            let mut error = idle_protocol_error();
+            error.body["code"] = "imap_idle_mailbox_changed".into();
+            return Err(error);
+        }
+        session.as_mut().set_limit(128 * 1024);
+        let tag = session.run_command("IDLE").await.map_err(imap_error)?;
+        let mut changed = false;
+        loop {
+            if tokio::time::Instant::now() >= setup_deadline {
+                return Err(network_error());
+            }
+            let response = session
+                .read_response()
+                .await
+                .map_err(io_error)?
+                .ok_or_else(network_error)?;
+            match response.parsed() {
+                Response::Continue { .. } => return Ok(Some((session, tag, changed))),
+                Response::Done {
+                    tag: received,
+                    status: Status::No | Status::Bad,
+                    ..
+                } if received == &tag => return Ok(None),
+                other => changed |= idle_notification(other)?,
+            }
+        }
+    })
+    .await
+    .map_err(|_| network_error())??
+    else {
+        // Missing/rejected IDLE is polling-only for this connection generation.
+        return Ok(IdleOutcome::Unsupported);
+    };
+    while !changed {
+        if tokio::time::Instant::now() >= leave_idle {
+            break;
+        }
+        let response = match tokio::time::timeout_at(leave_idle, session.read_response()).await {
+            Ok(response) => response.map_err(io_error)?.ok_or_else(network_error)?,
+            Err(_) => break,
+        };
+        changed |= idle_notification(response.parsed())?;
+    }
+    tokio::time::timeout_at(deadline, async {
+        session
+            .run_command_untagged("DONE")
+            .await
+            .map_err(imap_error)?;
+        loop {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(network_error());
+            }
+            let response = session
+                .read_response()
+                .await
+                .map_err(io_error)?
+                .ok_or_else(network_error)?;
+            match response.parsed() {
+                Response::Done {
+                    tag: received,
+                    status: Status::Ok,
+                    ..
+                } if received == &tag => {
+                    return Ok(if changed {
+                        IdleOutcome::Changed
+                    } else {
+                        IdleOutcome::LeaseEnded
+                    });
+                }
+                other => changed |= idle_notification(other)?,
+            }
+        }
+    })
+    .await
+    .map_err(|_| network_error())?
+}
+
 async fn connect(mail: &Value, connector: &native_tls::TlsConnector) -> Result<Mailbox> {
     let _phase = crate::sync_profile::phase("imapConnect");
     crate::sync_profile::count("imapConnections", 1);
@@ -531,6 +701,29 @@ struct ImportFolder {
     selectable: bool,
     editable: bool,
 }
+
+async fn require_selectable_custom(session: &mut Mailbox, path: &str) -> Result<()> {
+    let catalog = list_names(session).await?;
+    if !catalog.iter().any(|folder| {
+        folder.path == path
+            && folder.selectable
+            && folder.editable
+            && ["archive", "folder"].contains(&folder.kind)
+    }) || catalog.iter().any(|folder| {
+        ["spam", "trash", "virtual"].contains(&folder.kind)
+            && (folder.path == path
+                || folder.delimiter.as_ref().is_some_and(|delimiter| {
+                    !delimiter.is_empty()
+                        && path.starts_with(&format!("{}{delimiter}", folder.path))
+                }))
+    }) {
+        let mut error = Error::conflict("The selected custom IMAP folder is unavailable.");
+        error.body["code"] = "folder_unavailable".into();
+        return Err(error);
+    }
+    Ok(())
+}
+
 async fn list_names(session: &mut Mailbox) -> Result<Vec<ImportFolder>> {
     use imap_proto::types::{MailboxDatum, Response, Status};
     // The library's LIST stream discards tagged failures, so check completion before trusting absence.
@@ -1762,23 +1955,7 @@ async fn fetch_folder(
         names(&mut session).await?.into_iter().find(|(_,sent)|*sent).map(|(path,_)|path).ok_or_else(||Error::new(409,"This IMAP server does not identify a Sent folder. Import Inbox only or configure Sent on your provider."))?
     };
     if options["selectedCustomFolder"] == true {
-        let catalog = list_names(&mut session).await?;
-        if !catalog
-            .iter()
-            .any(|folder| folder.path == path && folder.selectable && folder.editable)
-            || catalog.iter().any(|folder| {
-                ["spam", "trash", "virtual"].contains(&folder.kind)
-                    && (folder.path == path
-                        || folder.delimiter.as_ref().is_some_and(|delimiter| {
-                            !delimiter.is_empty()
-                                && path.starts_with(&format!("{}{delimiter}", folder.path))
-                        }))
-            })
-        {
-            let mut error = Error::conflict("The selected custom IMAP folder is unavailable.");
-            error.body["code"] = "folder_unavailable".into();
-            return Err(error);
-        }
+        require_selectable_custom(&mut session, &path).await?;
     }
     let mailbox = examine_read(&mut session, &path).await?;
     let validity = mailbox

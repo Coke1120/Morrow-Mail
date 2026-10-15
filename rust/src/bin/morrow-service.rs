@@ -165,6 +165,11 @@ async fn run() -> Result<()> {
         }
     });
     let mut jobs = Vec::new();
+    let idle_app = app.clone();
+    let idle_stop = shutdown_rx.clone();
+    jobs.push(tokio::spawn(async move {
+        morrow_search::imap_idle::run(&idle_app, idle_stop).await;
+    }));
     for kind in 0..5 {
         let worker = app.clone();
         let mut stop = shutdown_rx.clone();

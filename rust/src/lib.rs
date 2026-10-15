@@ -14,6 +14,7 @@ pub mod home;
 pub mod imap;
 pub mod imap_folder_sync;
 mod imap_identity;
+pub mod imap_idle;
 pub mod inbox_agent;
 pub mod learning;
 pub mod local_rules;

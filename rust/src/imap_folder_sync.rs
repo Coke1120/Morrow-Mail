@@ -40,13 +40,23 @@ fn reviewed_connection(mail: &Value, input: &Value) -> Result<()> {
 }
 
 fn catalog_fresh(config: &Value, owner: &str, mail: &Value) -> bool {
+    catalog_window(config, owner, mail).is_some_and(|(from, until)| {
+        let now = chrono::Utc::now().timestamp_millis();
+        from <= now && now < until
+    })
+}
+
+fn catalog_window(config: &Value, owner: &str, mail: &Value) -> Option<(i64, i64)> {
     let catalog = &config["mailFolderCatalogs"][owner];
-    catalog["connection"] == connection_version(mail)
-        && catalog["errorCode"].is_null()
-        && chrono::DateTime::parse_from_rfc3339(string(catalog, "updatedAt")).is_ok_and(|at| {
-            let age = chrono::Utc::now().signed_duration_since(at);
-            age >= chrono::Duration::zero() && age < chrono::Duration::minutes(15)
-        })
+    if catalog["connection"] != connection_version(mail) || !catalog["errorCode"].is_null() {
+        return None;
+    }
+    let at = chrono::DateTime::parse_from_rfc3339(string(catalog, "updatedAt")).ok()?;
+    let millis = at.timestamp_millis();
+    // Round the start inward, so a future fractional millisecond never becomes
+    // an already-current catalog when represented in the notification clock.
+    let from = millis.checked_add(i64::from(at.timestamp_subsec_nanos() % 1_000_000 != 0))?;
+    Some((from, millis.checked_add(15 * 60 * 1000)?))
 }
 
 fn selectable(catalog: &[Value], folder: &Value) -> bool {
@@ -68,6 +78,99 @@ fn selectable(catalog: &[Value], folder: &Value) -> bool {
                             string(parent, "delimiter")
                         )))
         })
+}
+
+/// Private notification input. Progress/attempt clocks are deliberately absent
+/// from the identity; gates can pause an existing identity without clearing a
+/// notification worker's authentication/protocol failure policy.
+pub(crate) struct NotificationSelection {
+    pub id: String,
+    pub version: String,
+    pub path: String,
+    pub validity: Option<u32>,
+    pub available: bool,
+    pub not_before: i64,
+    pub expires_at: i64,
+}
+
+pub(crate) fn notification_selections(
+    config: &Value,
+    owner: &str,
+    connection: &Value,
+) -> Vec<NotificationSelection> {
+    let state = &config[GROUP][owner];
+    let version = string(state, "version");
+    if version.is_empty()
+        || !supported(connection)
+        || !imap::server_origin(connection).is_ok_and(|origin| state["origin"] == origin)
+    {
+        return Vec::new();
+    }
+    let catalog = config["mailFolderCatalogs"][owner]["folders"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let window = catalog_window(config, owner, connection);
+    let mut seen = HashSet::new();
+    state["folders"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(LIMIT)
+        .filter_map(|entry| {
+            let path = string(entry, "path");
+            let id = string(entry, "id");
+            if id.is_empty()
+                || path.is_empty()
+                || path.eq_ignore_ascii_case("INBOX")
+                || path.len() > 4096
+                || path.chars().any(char::is_control)
+                || !seen.insert(path)
+            {
+                return None;
+            }
+            let checkpoint = &entry["checkpoint"];
+            let validity = (checkpoint["path"] == path
+                && checkpoint["uid"]
+                    .as_u64()
+                    .is_some_and(|uid| uid <= u32::MAX as u64))
+            .then(|| {
+                let raw = checkpoint["validity"].as_str()?;
+                (!raw.is_empty() && raw.bytes().all(|byte| byte.is_ascii_digit()))
+                    .then(|| raw.parse::<u32>().ok().filter(|value| *value > 0))
+                    .flatten()
+            })
+            .flatten();
+            let retry = if entry["nextRetryAt"].is_null() {
+                Some(0)
+            } else {
+                chrono::DateTime::parse_from_rfc3339(string(entry, "nextRetryAt"))
+                    .ok()
+                    .and_then(|at| {
+                        at.timestamp_millis()
+                            .checked_add(i64::from(at.timestamp_subsec_nanos() % 1_000_000 != 0))
+                    })
+            };
+            let available = validity.is_some()
+                && window.is_some()
+                && retry.is_some()
+                && entry["blocked"] != true
+                && !["folder_changed", "checkpoint_invalid"].contains(&string(entry, "errorCode"))
+                && catalog
+                    .iter()
+                    .any(|folder| folder["id"] == path && selectable(&catalog, folder));
+            let (from, until) = window.unwrap_or((0, 0));
+            Some(NotificationSelection {
+                id: id.into(),
+                version: version.into(),
+                path: path.into(),
+                validity,
+                available,
+                not_before: from.max(retry.unwrap_or(0)),
+                expires_at: until,
+            })
+        })
+        .collect()
 }
 
 fn error_details(code: &str) -> (&'static str, &'static str) {
