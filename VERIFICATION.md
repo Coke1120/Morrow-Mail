@@ -50,6 +50,37 @@ signed-release acceptance remain pending. Tests used only temporary synthetic
 workspaces and loopback fixtures; no real mailbox, model, external send, user
 workspace or user backup was used.
 
+## PR #52 Windows initial-document diagnostic follow-up — 15 October 2026
+
+PR #52 head `01c1f0a9e27262bb61c9a878961ffe26ed42437a` passed macOS and
+Windows Rust checks/packaging in run `38699628543`, but the owned Windows
+Reader failed at the unchanged 25-second `initial-document` deadline. Its first
+expected navigation was allowed; completion was not observed. This is an open
+Windows acceptance blocker, not an established IMAP-origin regression or a
+diagnosed runtime fault. PR #51/#53 and the released base's passes do not replace
+that failed result.
+
+After normally merging main `337a2f740390d20b329f698ce4e7c5d32bcdcc09` into
+the identity branch, this follow-up adds only marked-fixture observations for
+actual initialization returns, the first navigation's fixed event fields, early
+validated runtime version, and bounded wait/dispatch intervals. It preserves
+the original 20/25-second limits, cold setup, success predicates and no-retry
+behavior. New details share a 24-record budget with explicit overflow and remain
+within the existing 64-event timeline. See the [diagnostic contract and its
+limits](docs/WINDOWS_OBSERVATION_PROVENANCE.md).
+
+Linux checks passed **73 actual pure-helper/trace/native-fixture assertions**
+with C++20, warnings denied and ASan/UBSan, PowerShell syntax checks, and the
+actual bounded pipe/parser controls. Positive/negative cases cover unsigned
+64-bit navigation IDs, signed 32-bit error codes, timing/counter limits,
+malformed/private text, unavailable observations, overflow and tail trimming.
+An actual C++ trace writer also fed the actual PowerShell reader: its typed
+records survived while the child retained exit 7. These are synthetic metadata
+checks; no Windows SDK, WinUI/WebView2 runtime, real mailbox, provider/model,
+Cargo build or CI rerun was executed for this diagnostic edit. The final head's
+normal Windows/macOS CI remains required; the historical timeout's cause remains
+unknown.
+
 ## Saved summary job diagnostics — 15 October 2026
 
 This separate follow-up starts from PR #50's tested tree, later merged as
