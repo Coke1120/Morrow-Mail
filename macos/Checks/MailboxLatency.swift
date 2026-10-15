@@ -362,10 +362,36 @@ struct MailboxLatency {
             "renderedSelectedRowIdentityMatched": .bool(readerIndex != nil), "renderedReaderIdentityMatched": .bool(readerIndex != nil),
             "selectedOwnedRow": .bool(model.current != nil)])
     }
+    @MainActor private final class SyntheticOracleWindow: NSWindow {
+        // Permit the explicit offscreen negative only. Normal synthetic setup
+        // and restoration retain AppKit's constraints; dataset windows use NSWindow.
+        var permitsOffscreenFrame = false
+        override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect {
+            permitsOffscreenFrame ? frameRect : super.constrainFrameRect(frameRect, to: screen)
+        }
+    }
+    @MainActor static func syntheticWindowDiagnostic(_ window: NSWindow, expected: NSRect, restoring: Bool) {
+        // Fixed geometry/boolean fields only; never content, paths or object IDs.
+        func frame(_ rect: NSRect) -> JSON {
+            .array([rect.minX, rect.minY, rect.width, rect.height].map {
+                $0.isFinite && abs($0) <= 10_000_000 ? .number(Double($0)) : .null
+            })
+        }
+        let record: JSON = .object([
+            "phase": .string(restoring ? "synthetic-window-restored" : "synthetic-window-offscreen"),
+            "expectedFrame": frame(expected), "actualFrame": frame(window.frame),
+            "frameMatchesExpected": .bool(window.frame == expected), "windowVisible": .bool(window.isVisible),
+            "hasDisplays": .bool(!NSScreen.screens.isEmpty),
+            "intersectsDisplay": .bool(NSScreen.screens.contains { $0.frame.intersects(window.frame) })])
+        guard let data = try? JSONEncoder().encode(record), data.count <= 1024 else { return }
+        FileHandle.standardError.write(Data("Native mailbox synthetic-window failure diagnostic: ".utf8))
+        FileHandle.standardError.write(data)
+        FileHandle.standardError.write(Data("\n".utf8))
+    }
     @MainActor static func checkVisibleIdentityOracle() throws -> JSON {
         // Exercise the same oracle against real mounted AppKit text controls.
         // These are rejection controls, not latency or production UI samples.
-        let window = NSWindow(contentRect: NSRect(x: 50, y: 50, width: 700, height: 480),
+        let window = SyntheticOracleWindow(contentRect: NSRect(x: 50, y: 50, width: 700, height: 480),
             styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let host = NSView(frame: NSRect(x: 0, y: 0, width: 700, height: 480))
@@ -486,11 +512,29 @@ struct MailboxLatency {
         let originalFrame = window.frame
         let outsideX = (NSScreen.screens.map { $0.frame.maxX }.max() ?? originalFrame.maxX) + 2000
         let outsideY = (NSScreen.screens.map { $0.frame.maxY }.max() ?? originalFrame.maxY) + 2000
-        window.setFrameOrigin(NSPoint(x: outsideX, y: outsideY))
-        try require(NSScreen.screens.allSatisfy { !$0.frame.intersects(window.frame) },
-            "Offscreen-window negative control did not move beyond the displays.")
-        try require(!readerIdentityMatches(reader, index: 1), "Offscreen window passed the oracle.")
-        window.setFrame(originalFrame, display: true)
+        let offscreenFrame = NSRect(origin: NSPoint(x: outsideX, y: outsideY), size: originalFrame.size)
+        do {
+            window.permitsOffscreenFrame = true
+            defer {
+                window.permitsOffscreenFrame = false
+                window.setFrame(originalFrame, display: true)
+            }
+            window.setFrameOrigin(offscreenFrame.origin)
+            let outsideDisplays = NSScreen.screens.allSatisfy { !$0.frame.intersects(window.frame) }
+            let placed = window.frame == offscreenFrame
+            let mounted = window.isVisible && window.contentView === host && row.window === window && reader.window === window
+            if NSScreen.screens.isEmpty || !outsideDisplays || !placed || !mounted {
+                syntheticWindowDiagnostic(window, expected: offscreenFrame, restoring: false)
+            }
+            try require(!NSScreen.screens.isEmpty && mounted, "Offscreen-window negative control lost its visible native window.")
+            try require(placed, "Offscreen-window negative control did not retain its requested native frame.")
+            try require(outsideDisplays, "Offscreen-window negative control did not move beyond the displays.")
+            try require(!readerIdentityMatches(reader, index: 1), "Offscreen window passed the oracle.")
+        }
+        let restored = window.frame == originalFrame && window.isVisible && window.contentView === host
+            && row.window === window && reader.window === window
+        if !restored { syntheticWindowDiagnostic(window, expected: originalFrame, restoring: true) }
+        try require(restored, "Offscreen-window negative control did not restore its native window.")
         try require(rowIdentityMatches(row, index: 1) && readerIdentityMatches(reader, index: 1),
             "Restored visible identity oracle failed.")
         return .object(["cellHiddenOwnerRejected": .bool(true), "cellForeignOwnerRejected": .bool(true),
