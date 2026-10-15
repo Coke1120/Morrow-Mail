@@ -251,6 +251,16 @@ The matching-source 1k and 10k protocol runs passed all assertions; the original
 and both native measurement jobs remain pending. Historical failures above are
 preserved and are not converted into passes.
 
+The next Windows measurement job (`38723052135`, job `116382210212`, head
+`a8814a3`) passed the decoding point but failed the unchanged production-handler
+byte comparison: the checkout had CRLF while the private compiler copy had LF.
+Isolated local checkouts of that exact commit reproduced the same line-73
+assertion with `core.autocrlf=true` and passed all seven adapter controls with
+`core.autocrlf=false`. The measurement job now sets the latter before checkout;
+the ordinary native/security workflow is unchanged. This fixes the measurement
+input contract without changing runtime/test sources, normalizing the assertion
+or altering recorded source hashes. The next real Windows SDK run is pending.
+
 ## v0.8.1 published — 14 October 2026
 
 [Tagged run 38624861643](https://github.com/Coke1120/Morrow-Mail/actions/runs/38624861643),

@@ -100,6 +100,10 @@ python -X utf8 -B scripts/windows-mailbox-latency.py --output C:/QA/new-native-e
 
 Explicit Python UTF-8 mode makes source-text checks independent of the Windows
 system code page. All adapter assertions and strict decoding remain enabled.
+The measurement checkout must also preserve committed line endings with
+`core.autocrlf=false`; the Windows measurement job configures Git before checkout.
+This keeps exact source hashes and private-copy handler checks comparable across
+platforms without normalizing recorded evidence or weakening byte comparisons.
 
 The separate [native latency workflow](../.github/workflows/mailbox-latency.yml)
 can compile and run both entries on an unmerged PR through its narrow paths

@@ -21,6 +21,9 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 30
     steps:
+      - name: Preserve repository source bytes
+        shell: pwsh
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           # Measure the submitted source so independent protocol/native stages

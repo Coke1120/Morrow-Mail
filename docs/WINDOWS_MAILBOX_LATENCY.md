@@ -8,6 +8,11 @@ It does not start Rust, use a real mailbox, send mail or call a model.
 On an interactive Windows x64 desktop with the prerequisites pinned in
 [windows/README.md](../windows/README.md):
 
+Use a measurement checkout created with `core.autocrlf=false` so Git preserves
+the committed source bytes. The CI job sets this before checkout. Runtime/test
+hashes and unchanged production-handler checks intentionally compare exact
+bytes; converting a report or its source after measurement is not valid evidence.
+
 ```powershell
 python -X utf8 -B scripts/test-windows-mailbox-latency.py
 python -X utf8 -B scripts/windows-mailbox-latency.py --output C:/QA/new-native-latency-evidence
