@@ -65,6 +65,21 @@ This closes a confirmed source-level stale-callback gap; it does not establish
 that this event caused the original CI failure. Fresh Windows SDK/runtime
 validation is pending; no local native pass is claimed.
 
+The next Windows job `116367581897` at `c5c054f` retained the same filter failure
+with concrete counts: two visible controls and two selected folders before and
+after the input. Selection was retained; the log does not establish whether the
+TextChanged event was delivered, suppressed or unable to rebuild the rows. Its
+cause remains unresolved. A fixture-only scoped TextChanged observer now adds
+capped event counts, sender/weak-owner checks, row-generation progress, loaded/
+size/enabled/configuring/current booleans, query length and equality to the fixed
+fictional query, and the matching-row count. Configuring is sampled at the
+observer, not claimed as the production handler's branch. No raw folder/query
+text is added. Production event/filter code, the single Text assignment, original
+five-second wait, selection/control assertions and stale-checkbox controls are
+unchanged. There is no forced template/layout, scrolling, focus, render call,
+retry or deadline extension. The receipt only distinguishes the next actual
+Windows failure; it is not a root-cause fix or a local native pass.
+
 ## IMAP server identity and safe migration — 15 October 2026
 
 This source follow-up starts from main

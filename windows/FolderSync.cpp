@@ -337,9 +337,41 @@ IAsyncAction folderSyncChecks(Grid root) {
         co_await waitFolderSyncControl([pane] { return pane->selection.selected.contains(L"Projects / 中文"); });
         check(pane->selection.selected.contains(L"Projects / 中文") && pane->selection.dirty() && pane->dialog.IsPrimaryButtonEnabled() && !pane->sync.IsEnabled() && !pane->catalog.IsEnabled(),L"Native checkbox events lost edits or allowed work before saving.");
         auto controlsBefore=pane->checks.size(), selectedBefore=pane->selection.selected.size();
-        auto counts=[pane,controlsBefore,selectedBefore](wchar_t const* message) {
+        // Observe this fixture's real event without changing production handlers,
+        // rendering, input delivery or the existing filter deadline. Configuring
+        // is sampled at this observer, not proof of the earlier handler's branch.
+        struct FilterEvents { unsigned delivered=0, configuring=0, expired=0, otherSender=0; bool overflow=false, failed=false; };
+        auto events=std::make_shared<FilterEvents>(); auto rowGenerationBefore=pane->rowGeneration;
+        auto loadedBefore=pane->filter.IsLoaded(), widthBefore=pane->filter.ActualWidth()>0, heightBefore=pane->filter.ActualHeight()>0;
+        auto filterChanged=pane->filter.TextChanged(auto_revoke,[weak=std::weak_ptr<FolderSyncPane>(pane),events](auto const& sender,auto const&) {
+            auto increment=[events](unsigned& count) { if(count<16)++count; else events->overflow=true; };
+            increment(events->delivered);
+            try {
+                auto current=weak.lock(); if(!current){increment(events->expired);return;}
+                if(sender.template try_as<TextBox>()!=current->filter)increment(events->otherSender);
+                if(current->configuring)increment(events->configuring);
+            } catch (...) { events->failed=true; }
+        });
+        auto counts=[pane,controlsBefore,selectedBefore,events,rowGenerationBefore,loadedBefore,widthBefore,heightBefore](wchar_t const* message) {
+            auto diagnostic=hstring(L" [filter receipt unavailable]");
+            try {
+                auto query=pane->filter.Text(); unsigned matches=0;
+                for(auto const& [_,row]:pane->selection.snapshot.rows) {
+                    if(query.empty() || FindStringOrdinal(FIND_FROMSTART,row.name.c_str(),static_cast<int>(row.name.size()),query.c_str(),static_cast<int>(query.size()),TRUE)>=0)++matches;
+                }
+                diagnostic=L" [filter delivered="+to_hstring(events->delivered)+L", configuringAtObserver="+to_hstring(events->configuring)
+                    +L", expired="+to_hstring(events->expired)+L", otherSender="+to_hstring(events->otherSender)
+                    +L", overflow="+to_hstring(events->overflow)+L", observerFailed="+to_hstring(events->failed)
+                    +L", rowGeneration="+to_hstring(rowGenerationBefore)+L"->"+to_hstring(pane->rowGeneration)
+                    +L", configuring="+to_hstring(pane->configuring)+L", current="+to_hstring(pane->current())+L", enabled="+to_hstring(pane->filter.IsEnabled())
+                    +L", loaded="+to_hstring(loadedBefore)+L"->"+to_hstring(pane->filter.IsLoaded())
+                    +L", widthPositive="+to_hstring(widthBefore)+L"->"+to_hstring(pane->filter.ActualWidth()>0)
+                    +L", heightPositive="+to_hstring(heightBefore)+L"->"+to_hstring(pane->filter.ActualHeight()>0)
+                    +L", queryLength="+to_hstring(std::min<uint32_t>(query.size(),512))+L", queryLengthCapped="+to_hstring(query.size()>512)
+                    +L", exactFixtureQuery="+to_hstring(query==L"no match")+L", matchingRows="+to_hstring(std::min(matches,2u))+L", matchesCapped="+to_hstring(matches>2)+L"]";
+            } catch (...) { /* Diagnostic reads must not replace the original assertion. */ }
             return hstring(message) + L" [before controls=" + to_hstring(controlsBefore) + L", selected=" + to_hstring(selectedBefore)
-                + L"; after controls=" + to_hstring(pane->checks.size()) + L", selected=" + to_hstring(pane->selection.selected.size()) + L"]";
+                + L"; after controls=" + to_hstring(pane->checks.size()) + L", selected=" + to_hstring(pane->selection.selected.size()) + L"]" + diagnostic;
         };
         check(controlsBefore==2 && selectedBefore==2,counts(L"The native folder selection was incomplete before filtering.").c_str());
         auto reviewedSelection=pane->selection.selected;
