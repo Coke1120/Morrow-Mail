@@ -102,9 +102,15 @@ lines per log are shown, with 1,024-character excerpts and explicit truncation.
 Missing, invalid, oversized or linked inputs produce an incomplete diagnostic.
 
 Windows also compares the saved compiler manifest with the same fixed private
-input roots after the stage stops. It reports added/removed/changed counts and
-at most 40 relative paths with old/new SHA-256 values, never source contents or
-environment variables. Enumeration is limited to 2,048 files, 4,096 directory
+input roots after the stage stops. It first inventories names, file types and
+sizes, verifies existing inputs before hashing newly added files, and reports
+at most 40 relative paths with old/new SHA-256 values. Source contents and
+environment variables are never printed. Added/removed counts are exact only
+when enumeration completes; otherwise total counts remain null and the observed
+paths are labeled partial. An unavailable hash stays null with an explicit
+`hashStatus`; an unchecked existing file is never counted as unchanged. The
+changed count stays null while any existing hash is unknown. Enumeration is
+limited to 2,048 files, 4,096 directory
 entries, depth 32, 1,024-byte relative paths and 16 MiB per input within the shared
 64 MiB read budget; symlinks and reparse points are rejected. The comparison is
 labeled `diagnostic-after-stage`, not an immediate post-build snapshot. Overflow

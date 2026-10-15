@@ -309,6 +309,22 @@ convert the original 50k failure or either native failure into a pass, and the
 aggregate remains incomplete without both platform resource/native evidence
 and caller-approved performance limits.
 
+
+At head `2332256`, Windows measurement job `116404899031` again stopped before
+native execution at the unchanged private compiler manifest gate. The bounded
+receipt still matches the 191-file source digest. Its first delta diagnostic
+reached the 64 MiB cumulative-read limit and correctly reported incomplete, but
+it had not yet emitted the observed paths. The complete original log and this
+limited receipt remain preserved; no file type or size is inferred from them.
+The diagnostic now inventories names/types/sizes first, verifies existing inputs
+before added files, and retains up to 40 observed paths when hashing reaches a
+limit. Unknown hashes and incomplete-enumeration totals stay null with explicit
+status; all previous bounds and the manifest failure gate remain unchanged.
+Fifteen isolated controls passed using the actual extracted workflow blocks,
+including added files that exhaust the read budget, a changed existing source
+verified before those files, and partial enumeration with no fabricated totals.
+This remains diagnostic coverage, not a native measurement pass.
+
 ## v0.8.1 published — 14 October 2026
 
 [Tagged run 38624861643](https://github.com/Coke1120/Morrow-Mail/actions/runs/38624861643),

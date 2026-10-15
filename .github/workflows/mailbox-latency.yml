@@ -141,8 +141,8 @@ jobs:
               except (Incomplete, OSError) as error:
                   failure("measurement-log", error, file=name)
 
-          # Re-enumerate the same roots as compiler_manifest, after the stage stopped.
-          # Build output outside these roots remains excluded; no changed input is waived.
+          # Inventory names/sizes before hashing; a read limit must not hide observed paths.
+          # Counts are exact only after complete enumeration; unknown hashes stay unknown.
           try:
               before = fixed_json("compiler-inputs.json")
               def relative_name(name):
@@ -161,44 +161,77 @@ jobs:
                   if not isinstance(value, str) or not re.fullmatch("[0-9a-f]{64}", value):
                       raise Incomplete("invalid-input-digest")
               inputs = ROOT / "compiler-inputs"
-              info(inputs, directory=True)
-              actual, entries = {}, 0
+              metadata, entries, enumeration_error = {}, 0, None
+              def remember(path):
+                  name = relative_name(path.relative_to(inputs).as_posix())
+                  value = info(path)
+                  if len(metadata) >= 2048:
+                      raise Incomplete("input-file-count-limit")
+                  metadata[name] = value
               def collect(path, depth):
                   global entries
                   if depth > 32:
                       raise Incomplete("directory-depth-limit")
                   info(path, directory=True)
-                  children = []
                   with os.scandir(path) as listing:
                       for item in listing:
                           entries += 1
                           if entries > 4096:
                               raise Incomplete("directory-entry-limit")
-                          children.append(Path(item.path))
-                  for child in sorted(children):
-                      name = relative_name(child.relative_to(inputs).as_posix())
-                      value = child.lstat()
-                      if stat.S_ISLNK(value.st_mode) or getattr(value, "st_file_attributes", 0) & 0x400:
-                          raise Incomplete("link-or-reparse-point")
-                      if stat.S_ISDIR(value.st_mode):
-                          collect(child, depth + 1)
-                      else:
-                          if len(actual) >= 2048:
-                              raise Incomplete("input-file-count-limit")
-                          actual[name] = hashlib.sha256(read(child, 16 * 1024 * 1024)).hexdigest()
-              for name in ("windows", "scripts", "assets"):
-                  collect(inputs / name, 0)
-              if len(actual) >= 2048:
-                  raise Incomplete("input-file-count-limit")
-              actual["package.json"] = hashlib.sha256(read(inputs / "package.json", 16 * 1024 * 1024)).hexdigest()
-              added = sorted(actual.keys() - before.keys())
-              removed = sorted(before.keys() - actual.keys())
-              changed = sorted(name for name in actual.keys() & before.keys() if actual[name] != before[name])
-              differences = sorted((name, kind) for kind, names in (("added", added), ("removed", removed), ("changed", changed)) for name in names)
-              rows = [dict(path=name, change=kind, oldSha256=before.get(name), newSha256=actual.get(name)) for name, kind in differences[:40]]
-              emit("private-compiler-input-delta", diagnosticComplete=True, phase="diagnostic-after-stage",
-                   beforeFiles=len(before), afterFiles=len(actual), added=len(added), removed=len(removed), changed=len(changed),
-                   differences=rows, additionalDifferences=len(differences) > len(rows))
+                          child = Path(item.path)
+                          relative_name(child.relative_to(inputs).as_posix())
+                          value = child.lstat()
+                          if stat.S_ISLNK(value.st_mode) or getattr(value, "st_file_attributes", 0) & 0x400:
+                              raise Incomplete("link-or-reparse-point")
+                          if stat.S_ISDIR(value.st_mode):
+                              collect(child, depth + 1)
+                          else:
+                              remember(child)
+              try:
+                  info(inputs, directory=True)
+                  for name in ("windows", "scripts", "assets"):
+                      collect(inputs / name, 0)
+                  remember(inputs / "package.json")
+              except (Incomplete, OSError) as error:
+                  enumeration_error = str(error) if isinstance(error, Incomplete) else "io-error"
+              enumeration_complete = enumeration_error is None
+              hashes, hash_status = {}, {}
+              def hash_input(name):
+                  try:
+                      current = info(inputs / name)
+                      observed = metadata[name]
+                      if (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns) != (observed.st_dev, observed.st_ino, observed.st_size, observed.st_mtime_ns):
+                          raise Incomplete("file-changed-after-enumeration")
+                      hashes[name] = hashlib.sha256(read(inputs / name, 16 * 1024 * 1024)).hexdigest()
+                      hash_status[name] = "verified"
+                  except (Incomplete, OSError) as error:
+                      hash_status[name] = str(error) if isinstance(error, Incomplete) else "io-error"
+              # Verify existing source inputs first, before any newly generated file.
+              for name in sorted(metadata.keys() & before.keys()):
+                  hash_input(name)
+              added = sorted(metadata.keys() - before.keys())
+              removed = sorted(before.keys() - metadata.keys()) if enumeration_complete else []
+              changed = sorted(name for name in hashes.keys() & before.keys() if hashes[name] != before[name])
+              unknown = sorted(metadata.keys() & before.keys() - hashes.keys())
+              unknown_count = len(before.keys() - hashes.keys() - set(removed))
+              candidates = [(name, kind) for kind, names in (("changed", changed), ("removed", removed), ("unknown-existing", unknown), ("added", added)) for name in names]
+              selected = candidates[:40]
+              for name, kind in selected:
+                  if kind == "added":
+                      hash_input(name)
+              rows = [dict(path=name, change=kind, fileType="regular" if name in metadata else None,
+                           observedBytes=metadata[name].st_size if name in metadata else None,
+                           oldSha256=before.get(name), newSha256=hashes.get(name),
+                           hashStatus="not-present" if kind == "removed" else hash_status[name]) for name, kind in selected]
+              complete = enumeration_complete and unknown_count == 0 and all(row["hashStatus"] in ("verified", "not-present") for row in rows)
+              emit("private-compiler-input-delta", diagnosticComplete=complete, phase="diagnostic-after-stage",
+                   enumerationComplete=enumeration_complete, enumerationError=enumeration_error,
+                   beforeFiles=len(before), afterFiles=len(metadata) if enumeration_complete else None,
+                   observedFiles=len(metadata), added=len(added) if enumeration_complete else None,
+                   removed=len(removed) if enumeration_complete else None,
+                   changed=len(changed) if enumeration_complete and unknown_count == 0 else None,
+                   observedAdded=len(added), observedChanged=len(changed), unknownExistingHashes=unknown_count,
+                   differences=rows, additionalDifferences=len(candidates) > len(rows))
           except (Incomplete, OSError, ValueError) as error:
               failure("private-compiler-input-delta", error, phase="diagnostic-after-stage")
 
