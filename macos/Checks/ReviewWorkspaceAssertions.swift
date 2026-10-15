@@ -140,15 +140,22 @@ import SwiftUI
         var frame: NSRect? = nil, window: NSObject? = nil, parent: NSObject? = nil
         var enabled: Bool? = nil, hidden: Bool? = nil
     }
-    @MainActor static func mountedControlDiagnostics(_ label: String, in root: NSView) {
+    @MainActor static func mountedControlDiagnostics(_ label: String, in root: NSView, fromWindow: Bool = false) {
         let window = root.window
+        let boundary = fromWindow ? "window" : "host"
+        let seed: NSObject
+        if fromWindow {
+            guard let window, window.contentView === root else { print("Control window boundary: unavailable"); fflush(stdout); return }
+            seed = window
+        } else { seed = root }
         let rootVisible = root.visibleRect, windowFrame = window?.frame ?? .zero
         let clip = window.map { $0.convertToScreen(root.convert(rootVisible, to: nil)).intersection(windowFrame) } ?? .zero
-        print("Control fixture: requested=\(String(label.prefix(100))) windowVisible=\(window?.isVisible == true) windowFrame=\(NSStringFromRect(windowFrame)) rootVisible=\(NSStringFromRect(rootVisible)) clip=\(NSStringFromRect(clip))")
+        print("Control fixture: boundary=\(boundary) requested=\(String(label.prefix(100))) windowVisible=\(window?.isVisible == true) windowFrame=\(NSStringFromRect(windowFrame)) rootVisible=\(NSStringFromRect(rootVisible)) clip=\(NSStringFromRect(clip))")
         // Failure observations only. Keep each API family's retained getter
         // results separate; no legacy object enters control/action acceptance.
         for family in ["protocol", "selectors", "attributes"] {
             var cache: [ObjectIdentifier: ControlDiagnosticNode] = [:], visited = Set<ObjectIdentifier>()
+            var foreign = Set<ObjectIdentifier>()
             var order: [ObjectIdentifier] = [], depths: [ObjectIdentifier: Int] = [:]
             var nativeChildren: [ObjectIdentifier: [NSView]] = [:]
             var nativeCounts: [ObjectIdentifier: Int] = [:]
@@ -156,6 +163,9 @@ import SwiftUI
             var objectCuts = 0, depthCuts = 0, childCuts = 0, nativeCuts = 0, attributeCuts = 0, actionCuts = 0
             @MainActor func read(_ object: NSObject) -> ControlDiagnosticNode? {
                 let identity = ObjectIdentifier(object)
+                if foreign.contains(identity) { return nil }
+                if let other = object as? NSWindow, other !== window { foreign.insert(identity); return nil }
+                if let other = (object as? NSView)?.window, other !== window { foreign.insert(identity); return nil }
                 if let node = cache[identity] { return node }
                 guard cache.count < 4096 else { objectCuts += 1; return nil }
                 var node = ControlDiagnosticNode(object: object)
@@ -170,11 +180,12 @@ import SwiftUI
                         return object.perform(NSSelectorFromString(name))?.takeUnretainedValue()
                     }
                     node.supported = !node.selectors.isEmpty
+                    node.window = objectValue("accessibilityWindow") as? NSObject
+                    if let other = node.window as? NSWindow, other !== window { foreign.insert(identity); return nil }
                     let role = objectValue("accessibilityRole")
                     node.role = (role as? NSAccessibility.Role)?.rawValue ?? (role as? String) ?? ""
                     node.labels = ["accessibilityLabel", "accessibilityTitle"].compactMap { objectValue($0) as? String }
                     node.value = objectValue("accessibilityValue") as? String ?? ""
-                    node.window = objectValue("accessibilityWindow") as? NSObject
                     node.parent = objectValue("accessibilityParent") as? NSObject
                     children = objectValue("accessibilityChildren") as? [Any] ?? []
                 } else if family == "attributes" {
@@ -187,6 +198,8 @@ import SwiftUI
                                 return names.contains(name) ? object.accessibilityAttributeValue(name) : nil
                             }
                             node.supported = true
+                            node.window = attribute("AXWindow") as? NSObject
+                            if let other = node.window as? NSWindow, other !== window { foreign.insert(identity); return nil }
                             let role = attribute("AXRole")
                             node.role = (role as? NSAccessibility.Role)?.rawValue ?? (role as? String) ?? ""
                             node.identifier = attribute("AXIdentifier") as? String ?? ""
@@ -194,7 +207,7 @@ import SwiftUI
                             node.value = attribute("AXValue") as? String ?? ""
                             node.enabled = (attribute("AXEnabled") as? NSNumber)?.boolValue
                             node.hidden = (attribute("AXHidden") as? NSNumber)?.boolValue
-                            node.window = attribute("AXWindow") as? NSObject; node.parent = attribute("AXParent") as? NSObject
+                            node.parent = attribute("AXParent") as? NSObject
                             if let position = attribute("AXPosition") as? NSValue, let size = attribute("AXSize") as? NSValue {
                                 node.frame = NSRect(origin: position.pointValue, size: size.sizeValue)
                             }
@@ -202,12 +215,14 @@ import SwiftUI
                         } else { attributeCuts += 1 }
                     }
                 } else if let element = object as? NSAccessibilityProtocol {
+                    node.window = element.accessibilityWindow() as? NSObject
+                    if let other = node.window as? NSWindow, other !== window { foreign.insert(identity); return nil }
                     node.supported = true; node.role = element.accessibilityRole()?.rawValue ?? ""
                     node.identifier = element.accessibilityIdentifier() ?? ""
                     node.labels = [element.accessibilityLabel(), element.accessibilityTitle()].compactMap { $0 }
                     node.value = element.accessibilityValue() as? String ?? ""
                     node.enabled = element.isAccessibilityEnabled(); node.hidden = element.isAccessibilityHidden()
-                    node.frame = element.accessibilityFrame(); node.window = element.accessibilityWindow() as? NSObject
+                    node.frame = element.accessibilityFrame()
                     node.parent = element.accessibilityParent() as? NSObject; children = element.accessibilityChildren() ?? []
                 }
                 if object.responds(to: NSSelectorFromString("accessibilityActionNames")) {
@@ -263,12 +278,12 @@ import SwiftUI
                     if subviews.count > 4096 { nativeCuts += 1 }
                 }
             }
-            visit(root, depth: 0)
+            visit(seed, depth: 0)
             let invalidChildren = cache.values.reduce(0) { $0 + min($1.childCount, 4096) - $1.children.count }
             let unsupported = visited.filter { cache[$0]?.supported != true }.count
             let topologyTruncated = objectCuts + depthCuts + childCuts + nativeCuts + attributeCuts + invalidChildren > 0
-            print("Control snapshot: family=\(family) nodes=\(visited.count) reads=\(cache.count) matches=\(examples.filter { $0.0 }.count) unsupported=\(unsupported) maxDepth=\(maxDepth) topologyTruncated=\(topologyTruncated) objectCuts=\(objectCuts) depthCuts=\(depthCuts) childCuts=\(childCuts) nativeCuts=\(nativeCuts) attributeCuts=\(attributeCuts) actionCuts=\(actionCuts) invalidChildren=\(invalidChildren)")
-            for example in (examples.filter { $0.0 } + examples.filter { !$0.0 }).prefix(16) { print("Control node: " + example.1) }
+            print("Control snapshot: boundary=\(boundary) family=\(family) nodes=\(visited.count) reads=\(cache.count) matches=\(examples.filter { $0.0 }.count) unsupported=\(unsupported) maxDepth=\(maxDepth) topologyTruncated=\(topologyTruncated) objectCuts=\(objectCuts) depthCuts=\(depthCuts) childCuts=\(childCuts) nativeCuts=\(nativeCuts) attributeCuts=\(attributeCuts) actionCuts=\(actionCuts) invalidChildren=\(invalidChildren) foreignPruned=\(foreign.count)")
+            for example in (examples.filter { $0.0 } + examples.filter { !$0.0 }).prefix(16) { print("Control node: boundary=\(boundary) " + example.1) }
             let indices = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($0.element, $0.offset) })
             for identity in order {
                 guard let node = cache[identity], let index = indices[identity] else { continue }
@@ -281,7 +296,7 @@ import SwiftUI
                 let bounds = view.map { NSStringFromRect($0.bounds) } ?? "none"
                 let visible = view.map { NSStringFromRect($0.visibleRect) } ?? "none"
                 var fields: [String] = []
-                fields.append("family=\(family) index=\(index) depth=\(depths[identity].map(String.init) ?? "parent-only") type=\(type(of: node.object))")
+                fields.append("boundary=\(boundary) family=\(family) index=\(index) depth=\(depths[identity].map(String.init) ?? "parent-only") type=\(type(of: node.object))")
                 fields.append("conforms=\(node.object is NSAccessibilityProtocol) supported=\(node.supported) role=\(node.role) id=\(String(node.identifier.prefix(100)).debugDescription)")
                 fields.append("labels=\(node.labels.prefix(3).map { String($0.prefix(100)) }) value=\(String(node.value.prefix(100)).debugDescription) parent=\(parent.map(String.init) ?? "outside")")
                 fields.append("enabled=\(node.enabled.map { String($0) } ?? "unknown") hidden=\(node.hidden.map { String($0) } ?? "unknown") axFrame=\(node.frame.map { NSStringFromRect($0) } ?? "unknown") axWindow=\(window != nil && node.window === window)")
@@ -294,6 +309,86 @@ import SwiftUI
                 print("Control topology: " + fields.joined(separator: " "))
             }
         }
+        fflush(stdout)
+    }
+    @MainActor static func todayAXBoundaryAfterFailure(_ label: String, in root: NSView) {
+        guard let window = root.window, window.contentView === root, window.isVisible, !window.isMiniaturized else {
+            print("Today AX boundary: unavailable owned-window"); fflush(stdout); return
+        }
+        mountedControlDiagnostics(label, in: root, fromWindow: true)
+        let bounds = root.bounds, windowFrame = window.frame
+        guard bounds.width > 0, bounds.height > 0,
+              [bounds.minX, bounds.minY, bounds.width, bounds.height].allSatisfy(\.isFinite) else {
+            print("Today AX boundary: unavailable root-bounds"); fflush(stdout); return
+        }
+        let headerHeight = min(CGFloat(80), bounds.height)
+        let header = NSRect(x: bounds.minX, y: root.isFlipped ? bounds.minY : bounds.maxY - headerHeight,
+                            width: bounds.width, height: headerHeight)
+        let clip = window.convertToScreen(root.convert(root.visibleRect.intersection(bounds), to: nil)).intersection(windowFrame)
+        let buttons = root.subviews.compactMap { $0 as? NSButton }
+        let candidates = buttons.filter { button in
+            guard !(button is NSPopUpButton), button.window === window, button.superview === root,
+                  button.isEnabled, !button.isHiddenOrHasHiddenAncestor, !button.bounds.isEmpty else { return false }
+            let point = NSPoint(x: button.bounds.midX, y: button.bounds.midY)
+            let screen = window.convertPoint(toScreen: button.convert(point, to: nil))
+            let visible = button.visibleRect.intersection(button.bounds)
+            let frame = window.convertToScreen(button.convert(visible, to: nil)).intersection(clip)
+            return [screen.x, screen.y, frame.minX, frame.minY, frame.width, frame.height].allSatisfy(\.isFinite)
+                && !frame.isEmpty && frame.contains(screen) && header.contains(button.convert(point, to: root))
+        }
+        print("Today AX boundary: directButtons=\(buttons.count) qualified=\(candidates.count) header=\(NSStringFromRect(header)) clip=\(NSStringFromRect(clip))")
+        guard candidates.count == 1, let button = candidates.first, let parent = root.superview else {
+            print("Today AX boundary: unavailable ambiguous-or-missing-header"); fflush(stdout); return
+        }
+        let buttonFrame = button.frame, buttonBounds = button.bounds
+        let localPoint = NSPoint(x: buttonBounds.midX, y: buttonBounds.midY)
+        let windowPoint = button.convert(localPoint, to: nil)
+        let screenPoint = window.convertPoint(toScreen: windowPoint)
+        @MainActor func current() -> Bool {
+            root.window === window && window.contentView === root && window.frame == windowFrame && root.bounds == bounds
+                && window.isVisible && !window.isMiniaturized && root.superview === parent
+                && button.window === window && button.superview === root && button.frame == buttonFrame && button.bounds == buttonBounds
+                && button.isEnabled && !button.isHiddenOrHasHiddenAncestor
+        }
+        guard current() else { print("Today AX boundary: unavailable changed-before-query"); fflush(stdout); return }
+        // Ordinary NSView hitTest uses superview coordinates; accessibility
+        // hitTest uses the converted global screen point. Neither sends input.
+        let nativeHit = root.hitTest(parent.convert(windowPoint, from: nil))
+        print("Today native hit: point=\(NSStringFromPoint(screenPoint)) type=\(nativeHit.map { String(describing: type(of: $0)) } ?? "nil") buttonOrDescendant=\(nativeHit.map { $0 === button || $0.isDescendant(of: button) } ?? false) ownWindow=\(nativeHit?.window === window) ownRoot=\(nativeHit.map { $0 === root || $0.isDescendant(of: root) } ?? false)")
+        let hostHit = root.accessibilityHitTest(screenPoint)
+        guard current() else { print("Today AX boundary: unavailable changed-after-host-query"); fflush(stdout); return }
+        let windowHit = window.accessibilityHitTest(screenPoint)
+        // One immediate observation of the original predicate, without waiting
+        // or invoking any returned element. The original failure is rethrown.
+        let original = control(label, in: root)
+        print("Today AX boundary post-query: originalMatch=\(original != nil) originalEnabled=\(original.map { String($0.isAccessibilityEnabled()) } ?? "unknown") current=\(current())")
+        @MainActor func observe(_ value: Any?, source: String) {
+            guard let object = value as? NSObject else { print("Today AX hit: source=\(source) object=false"); return }
+            if let other = object as? NSWindow, other !== window { print("Today AX hit: source=\(source) foreign=true"); return }
+            if let other = (object as? NSView)?.window, other !== window { print("Today AX hit: source=\(source) foreign=true"); return }
+            let names = ["accessibilityChildren", "accessibilityLabel", "accessibilityTitle", "accessibilityValue", "accessibilityRole", "accessibilityWindow", "accessibilityParent"]
+            @MainActor func getter(_ name: String) -> Any? {
+                let selector = NSSelectorFromString(name)
+                guard names.contains(name), object.responds(to: selector) else { return nil }
+                return object.perform(selector)?.takeUnretainedValue()
+            }
+            let owner = getter("accessibilityWindow") as? NSObject
+            if let other = owner as? NSWindow, other !== window { print("Today AX hit: source=\(source) foreign=true"); return }
+            let role = getter("accessibilityRole")
+            let roleName = (role as? NSAccessibility.Role)?.rawValue ?? (role as? String) ?? "unknown"
+            let labels = ["accessibilityLabel", "accessibilityTitle"].compactMap { getter($0) as? String }
+            let text = getter("accessibilityValue") as? String ?? ""
+            let ancestor = getter("accessibilityParent") as? NSObject
+            let children = getter("accessibilityChildren") as? [Any]
+            let element = object as? NSAccessibilityProtocol
+            var fields: [String] = []
+            fields.append("source=\(source) type=\(type(of: object)) sameNative=\(object === button) sameHost=\(object === root) sameWindow=\(object === window)")
+            fields.append("selectorRole=\(roleName) selectorLabels=\(labels.prefix(3).map { String($0.prefix(100)) }) selectorValue=\(String(text.prefix(100)).debugDescription) exactLabel=\(labels.contains(label))")
+            fields.append("selectorWindowKnown=\(owner != nil) selectorWindowSame=\(owner === window) selectorParent=\(ancestor.map { String(describing: type(of: $0)) } ?? "none") parentHost=\(ancestor === root) parentWindow=\(ancestor === window) childCount=\(children?.count.description ?? "nil")")
+            fields.append("protocolConforms=\(element != nil) protocolFrame=\(element.map { NSStringFromRect($0.accessibilityFrame()) } ?? "unknown") protocolEnabled=\(element.map { String($0.isAccessibilityEnabled()) } ?? "unknown") protocolHidden=\(element.map { String($0.isAccessibilityHidden()) } ?? "unknown")")
+            print("Today AX hit: " + fields.joined(separator: " "))
+        }
+        observe(hostHit, source: "host"); observe(windowHit, source: "window")
         fflush(stdout)
     }
     @MainActor static func todayWindowAfterFailure(_ host: NSView) async {
@@ -931,6 +1026,7 @@ import SwiftUI
             let replies = model.state["today"]["replySuggestions"].array
             let scoped = replies.filter { review.scope == "all" || review.owner($0) == review.scope }
             print("Today control context: width=\(Int(width)) busy=\(model.busy) writing=\(review.writing) starting=\(model.starting) section=\(model.section) scope=\(review.scope) accounts=\(model.accounts.count) replies=\(replies.count) filteredReplies=\(scoped.count) firstOwner=\(scoped.first.map { review.owner($0) } ?? "none") scopedCount=\(model.state["today"]["replySuggestionCounts"][review.scope].number)"); fflush(stdout)
+            todayAXBoundaryAfterFailure("Review replies (3)", in: host)
             await todayWindowAfterFailure(host)
             throw error
         }
