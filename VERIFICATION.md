@@ -117,6 +117,111 @@ establishes the capture path, not a visual review. Open menus, inline Today
 review, Compose, keyboard traversal and VoiceOver remain pending actual visual
 and interactive verification. No denied artifact-download route was retried.
 
+## IMAP server identity and safe migration — 15 October 2026
+
+This source follow-up starts from main
+`d5ac97c5d51cc265cc769d07bd36d7d013fa5c67` and incorporates the documentation/version-only
+v0.8.2 main commit `6a52974afdd80edda0ed5e29972157f3288906a8`. It separates cached IMAP identities
+by the actual validated endpoint and LOGIN principal, preserves old local IDs
+and user data, and prevents foreign or unproven copies from issuing provider
+reads or mutations. Old history coverage, scope/date inputs and cursors cannot
+be reused by another connection generation. Missing legacy generations require
+reconnection before a new import can replace saved progress.
+
+The four unchanged tests in `rust/tests/imap_identity.rs` ran against that exact
+base: one same-server compatibility case passed and three regressions failed
+(cross-server UID collision, unproven legacy adoption and inherited history
+completeness). The repaired source passed all four. Additional synthetic tests
+cover two TLS servers returning the same UID/Message-ID, source-specific flags
+and body reads, source-bound folder catalogs, malformed provenance, retained
+draft/uncertain-send references, missing-generation no-write recovery, and
+atomic migration rollback.
+
+A final cross-review also reproduced a separate folder-management gap in the
+initially passing implementation: applying one server's confirmed rename/delete
+could rewrite another source's retained folder path or history cursor. The
+follow-up carries the captured connection into the atomic cache update, filters
+IMAP rows by origin and restricts cursor changes to the current import. The
+focused regression initially had two failures and one passing current-source
+case; it also checks replacement of the captured connection before any local
+write. Its API-call adapter changed with the captured-connection parameter;
+the four baseline regressions above remain byte-identical.
+
+Schema 1 upgrades to one schema-2 marker in the same transaction as the origin,
+FTS, folder-membership and thread work. Empty, malformed, multiple and future
+schema markers fail before migration. The actual service binary built from
+the base above rejected a synthetic schema-2 workspace with exit 3 / HTTP-style
+409 and left both database and key bytes unchanged. This is an executed
+downgrade-gate check for that base binary, not a claim about every historical
+release. See [backup and recovery requirements](docs/IMAP_SERVER_IDENTITY.md).
+
+Final source `cargo fmt --all -- --check` and locked all-targets Clippy with
+`-D warnings` passed. The focused folder/identity/migration/service checks passed
+72 tests with one existing ignored benchmark. The locked complete Rust suite
+with `--no-fail-fast` passed **444 tests, 0 failures, 4 existing ignored
+benchmarks**. All four runs used the same 99-file Rust/Cargo source manifest;
+the final folder-management fix is included in those results.
+
+Native macOS/Windows, live-provider, large-workspace migration latency and
+signed-release acceptance remain pending. Tests used only temporary synthetic
+workspaces and loopback fixtures; no real mailbox, model, external send, user
+workspace or user backup was used.
+
+## PR #52 ownership-probe fixture coordination — 15 October 2026
+
+Run `38713018388` at head `921fc1c` failed a macOS Rust fixture before the
+package/native gates. Its fake reader exited after a fixed 0.5-second sleep,
+before the separately launched Python probe created `started.txt`. The test
+was unchanged from the released base. A synthetic 0.8-second probe startup
+delay reproduced the same missing-file failure on Linux.
+
+The fixture now signals readiness only after its exclusive single-shot marker
+and flushed output exist. The fake reader waits for that signal within the
+unchanged two-second absolute deadline, then completes while the probe still
+has ten seconds of work. Cancellation, reaping, single-shot, captured output
+and reader-success assertions remain unchanged. All 23 native-check binary
+tests, formatting and strict all-target Clippy pass on the corrected source;
+this does not establish macOS native acceptance.
+
+The same run's Windows native gate separately failed the existing 20-second
+controller initialization deadline. Its environment returned after 2,313 ms;
+the controller returned only after the timeout. The bounded event trace is
+complete and its dispatch observations do not establish a continuously blocked
+UI thread. This is a second unresolved Windows acceptance failure, distinct
+from the earlier post-navigation initial-document timeout below. No production
+deadline, retry, cold-start requirement or success predicate was relaxed.
+
+## PR #52 Windows initial-document diagnostic follow-up — 15 October 2026
+
+PR #52 head `01c1f0a9e27262bb61c9a878961ffe26ed42437a` passed macOS and
+Windows Rust checks/packaging in run `38699628543`, but the owned Windows
+Reader failed at the unchanged 25-second `initial-document` deadline. Its first
+expected navigation was allowed; completion was not observed. This is an open
+Windows acceptance blocker, not an established IMAP-origin regression or a
+diagnosed runtime fault. PR #51/#53 and the released base's passes do not replace
+that failed result.
+
+After normally merging main `337a2f740390d20b329f698ce4e7c5d32bcdcc09` into
+the identity branch, this follow-up adds only marked-fixture observations for
+actual initialization returns, the first navigation's fixed event fields, early
+validated runtime version, and bounded wait/dispatch intervals. It preserves
+the original 20/25-second limits, cold setup, success predicates and no-retry
+behavior. New details share a 24-record budget with explicit overflow and remain
+within the existing 64-event timeline. See the [diagnostic contract and its
+limits](docs/WINDOWS_OBSERVATION_PROVENANCE.md).
+
+Linux checks passed **73 actual pure-helper/trace/native-fixture assertions**
+with C++20, warnings denied and ASan/UBSan, PowerShell syntax checks, and the
+actual bounded pipe/parser controls. Positive/negative cases cover unsigned
+64-bit navigation IDs, signed 32-bit error codes, timing/counter limits,
+malformed/private text, unavailable observations, overflow and tail trimming.
+An actual C++ trace writer also fed the actual PowerShell reader: its typed
+records survived while the child retained exit 7. These are synthetic metadata
+checks; no Windows SDK, WinUI/WebView2 runtime, real mailbox, provider/model,
+Cargo build or CI rerun was executed for this diagnostic edit. The final head's
+normal Windows/macOS CI remains required; the historical timeout's cause remains
+unknown.
+
 ## Saved summary job diagnostics — 15 October 2026
 
 This separate follow-up starts from PR #50's tested tree, later merged as

@@ -388,7 +388,7 @@ impl ImapFixture {
     async fn organize(&self, destination: Value) -> morrow_search::error::Result<Value> {
         imap::organize_with_tls(
             &self.mail,
-            &json!({"id":"stable-local","remoteId":"imap:55:7","providerFolderId":"INBOX"}),
+            &json!({"imapOrigin":imap::server_origin(&self.mail).unwrap(),"id":"stable-local","remoteId":"imap:55:7","providerFolderId":"INBOX"}),
             &destination,
             "move",
             &self.connector,
@@ -1423,7 +1423,7 @@ async fn imap_move_validates_capabilities_validity_and_exact_copyuid_before_retu
     );
     let trashed = imap::organize_with_tls(
         &fixture.mail,
-        &json!({"id":"stable-local","remoteId":"imap:55:7","providerFolderId":SENT}),
+        &json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":"stable-local","remoteId":"imap:55:7","providerFolderId":SENT}),
         &trash,
         "move",
         &fixture.connector,
@@ -1439,7 +1439,7 @@ async fn imap_move_validates_capabilities_validity_and_exact_copyuid_before_retu
     }
     let restored = imap::organize_with_tls(
         &fixture.mail,
-        &json!({"id":"stable-local","remoteId":"imap:88:19","providerFolderId":"Deleted"}),
+        &json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":"stable-local","remoteId":"imap:88:19","providerFolderId":"Deleted"}),
         &json!({"id":SENT,"name":SENT,"kind":"folder"}),
         "restoreTrash",
         &fixture.connector,
@@ -1462,7 +1462,7 @@ async fn imap_move_validates_capabilities_validity_and_exact_copyuid_before_retu
     let before = fixture.commands().len();
     let same = imap::organize_with_tls(
         &fixture.mail,
-        &json!({"id":"stable-local","remoteId":"imap:55:7","providerFolderId":SENT}),
+        &json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":"stable-local","remoteId":"imap:55:7","providerFolderId":SENT}),
         &json!({"id":SENT,"name":SENT,"kind":"folder"}),
         "move",
         &fixture.connector,
@@ -1875,9 +1875,9 @@ async fn full_history_imap_persists_folder_and_uid_checkpoints_excluding_special
 async fn imap_priority_checks_a_retained_reader_plus_fifty_rows_within_existing_batch_bounds() {
     let fixture = ImapFixture::new(ImapScenario::default()).await;
     let mut messages = vec![
-        json!({"id":"imap:55:60","providerFolderId":"INBOX","body":"selected cache","read":false}),
+        json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":"imap:55:60","providerFolderId":"INBOX","body":"selected cache","read":false}),
     ];
-    messages.extend((1..=50).map(|uid| json!({"id":format!("imap:55:{uid}"),"providerFolderId":"INBOX","body":"page cache","read":false})));
+    messages.extend((1..=50).map(|uid| json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":format!("imap:55:{uid}"),"providerFolderId":"INBOX","body":"page cache","read":false})));
     assert_eq!(
         imap::reconcile_with_tls(&fixture.mail, &messages, &fixture.connector)
             .await
@@ -1934,7 +1934,8 @@ async fn imap_priority_checks_a_retained_reader_plus_fifty_rows_within_existing_
 
     let before = fixture.commands().len();
     let mut oversized = messages.clone();
-    oversized.push(json!({"id":"imap:55:59"}));
+    oversized
+        .push(json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":"imap:55:59"}));
     assert_eq!(
         imap::reconcile_priority_with_tls(&fixture.mail, &oversized, &fixture.connector)
             .await
@@ -1974,7 +1975,7 @@ async fn imap_flags_and_attachment_reads_validate_generation_preserve_other_flag
         ..Default::default()
     })
     .await;
-    let message = json!({"id":"imap:55:1","providerFolderId":"INBOX","body":"cached","read":false,"starred":false});
+    let message = json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":"imap:55:1","providerFolderId":"INBOX","body":"cached","read":false,"starred":false});
     assert_eq!(
         imap::raw_message_with_tls(&fixture.mail, &message, &fixture.connector)
             .await
@@ -1992,8 +1993,8 @@ async fn imap_flags_and_attachment_reads_validate_generation_preserve_other_flag
     assert_eq!(confirmed, json!({"read":false,"starred":true}));
     let messages = vec![
         message.clone(),
-        json!({"id":"imap:55:2","body":"deleted cache"}),
-        json!({"id":"imap:12:1","body":"old generation"}),
+        json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":"imap:55:2","body":"deleted cache"}),
+        json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":"imap:12:1","body":"old generation"}),
     ];
     let result = imap::reconcile_with_tls(&fixture.mail, &messages, &fixture.connector)
         .await
@@ -2076,10 +2077,10 @@ async fn missing_imap_folder_does_not_block_other_flags_or_erase_cached_mail() {
         ..Default::default()
     })
     .await;
-    let missing = json!({"id":"imap:55:1","providerFolderId":"A-removed","read":false,"body":"Retained cache","pending":true,"providerSnapshot":{"read":true}});
+    let missing = json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":"imap:55:1","providerFolderId":"A-removed","read":false,"body":"Retained cache","pending":true,"providerSnapshot":{"read":true}});
     let messages = vec![
         missing.clone(),
-        json!({"id":"imap:55:2","providerFolderId":"INBOX","read":false}),
+        json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":"imap:55:2","providerFolderId":"INBOX","read":false}),
     ];
     for _ in 0..2 {
         let result = imap::reconcile_with_tls(&fixture.mail, &messages, &fixture.connector)
@@ -2126,7 +2127,7 @@ async fn imap_folder_reconciliation_does_not_mistake_failed_reads_for_missing_fo
         .await;
         let result = imap::reconcile_with_tls(
             &fixture.mail,
-            &[json!({"id":"imap:55:1","providerFolderId":"A-removed"})],
+            &[json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":"imap:55:1","providerFolderId":"A-removed"})],
             &fixture.connector,
         )
         .await;
@@ -2152,7 +2153,7 @@ async fn imap_folder_reconciliation_does_not_mistake_failed_reads_for_missing_fo
         assert!(
             imap::reconcile_with_tls(
                 &fixture.mail,
-                &[json!({"id":"imap:55:1","providerFolderId":folder})],
+                &[json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":"imap:55:1","providerFolderId":folder})],
                 &fixture.connector
             )
             .await
@@ -2170,7 +2171,7 @@ async fn failed_fetch_completion_never_means_success_or_deleted_mail() {
         ..Default::default()
     })
     .await;
-    let message = json!({"id":"imap:55:1","providerFolderId":"INBOX"});
+    let message = json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":"imap:55:1","providerFolderId":"INBOX"});
     assert!(
         imap::reconcile_with_tls(
             &fixture.mail,
@@ -2484,8 +2485,8 @@ async fn capability_gated_modseq_and_vanished_do_not_treat_unchanged_omissions_a
         })
         .await;
         let rows = vec![
-            json!({"id":"imap:55:2","body":"Owned synthetic cache","providerFolderId":"INBOX"}),
-            json!({"id":"imap:55:3","body":"Second owned cache","providerFolderId":"INBOX"}),
+            json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":"imap:55:2","body":"Owned synthetic cache","providerFolderId":"INBOX"}),
+            json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":"imap:55:3","body":"Second owned cache","providerFolderId":"INBOX"}),
         ];
         let first = imap::reconcile_with_tls(&fixture.mail, &rows, &fixture.connector)
             .await
@@ -2549,7 +2550,9 @@ async fn optional_extensions_fall_back_when_rejected_ignored_or_nomodseq() {
             ..Default::default()
         })
         .await;
-        let rows = vec![json!({"id":"imap:55:2","providerFolderId":"INBOX"})];
+        let rows = vec![
+            json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":"imap:55:2","providerFolderId":"INBOX"}),
+        ];
         let result = imap::reconcile_with_tls(&fixture.mail, &rows, &fixture.connector)
             .await
             .unwrap_or_else(|error|panic!("reject={reject} ignored={ignored} nomodseq={nomodseq}: {error:?}; commands={:?}",fixture.commands().iter().filter(|c|!c.starts_with("LOGIN")).collect::<Vec<_>>()));
@@ -2572,13 +2575,14 @@ async fn seed_changed_cache(
 ) -> Value {
     let proof = imap::reconcile_with_tls(
         &fixture.mail,
-        &[json!({"id":"imap:55:1"})],
+        &[json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":"imap:55:1"})],
         &fixture.connector,
     )
     .await
     .unwrap()[0]["imapSyncConnection"]
         .clone();
     let saved_proof = proof.clone();
+    let saved_origin = imap::server_origin(&fixture.mail).unwrap();
     let body = if count > 1000 {
         "Owned synthetic body ".repeat(100)
     } else {
@@ -2603,7 +2607,7 @@ async fn seed_changed_cache(
         }
         let mut insert=db.conn.prepare("INSERT INTO messages(account,id,data) VALUES(?,?,?)")?;
         for uid in 1..=count {
-            let row=json!({"id":format!("imap:55:{uid}"),"folder":"inbox","providerFolderId":"INBOX",
+            let row=json!({"imapOrigin":saved_origin,"id":format!("imap:55:{uid}"),"folder":"inbox","providerFolderId":"INBOX",
                 "read":false,"starred":false,"pending":true,"body":body,"bodyHtml":"","labels":[],
                 "providerSnapshot":{"read":false,"starred":false},"imapModseq":warm_modseq,"imapSyncConnection":saved_proof});
             insert.execute(rusqlite::params![OWNER,string(&row,"id"),serde_json::to_string(&row)?])?;
@@ -2899,7 +2903,7 @@ async fn discovery_yields_across_sparse_uid_windows_and_limits_queued_uids() {
     .await;
     let proof = imap::reconcile_with_tls(
         &fixture.mail,
-        &[json!({"id":"imap:55:1"})],
+        &[json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":"imap:55:1"})],
         &fixture.connector,
     )
     .await
@@ -3322,6 +3326,84 @@ async fn incremental_changes_keep_folder_and_account_identity_and_use_bounded_sq
 }
 
 #[tokio::test]
+async fn reconnect_to_another_origin_never_reuses_old_body_flags_or_reconciliation_rows() {
+    let first = ImapFixture::new(ImapScenario {
+        count: 1,
+        raw_message: Some(format!("{HEADER}\r\nOld retained content.")),
+        ..Default::default()
+    })
+    .await;
+    let cache = CacheWorkspace::new(&first.mail).await;
+    cache.page(&first, &first.mail, "inbox").await;
+    cache
+        .app()
+        .db(|db| {
+            db.update(
+                OWNER,
+                "imap:55:1",
+                &json!({"pending":true,"folder":"archive","starred":true}),
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let retained = cache
+        .app()
+        .db(|db| db.get(OWNER, "imap:55:1"))
+        .await
+        .unwrap()
+        .unwrap();
+    let second = ImapFixture::new(ImapScenario {
+        capabilities: "IMAP4rev1 CONDSTORE",
+        count: 1,
+        highest_modseq: Some(10),
+        raw_message: Some(format!("{HEADER}\r\nNew provider content.")),
+        remote_read: false,
+        remote_starred: false,
+        ..Default::default()
+    })
+    .await;
+    let connection = second.mail.clone();
+    cache
+        .app()
+        .db(move |db| db.set_settings(&json!({"mailAccounts":{OWNER:connection}})))
+        .await
+        .unwrap();
+    cache.page(&second, &second.mail, "inbox").await;
+    assert_eq!(body_requests(&first), 1);
+    assert_eq!(
+        body_requests(&second),
+        1,
+        "same UID/Message-ID must not reuse another server's body"
+    );
+    second.update(|scenario| {
+        scenario.highest_modseq = Some(11);
+        scenario.remote_read = true;
+    });
+    changed_sync(&second, &cache).await.unwrap();
+    let rows = cache.app().db(|db| db.list(OWNER)).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows.iter().find(|row| row["id"] == "imap:55:1").unwrap(),
+        &retained
+    );
+    let live = rows.iter().find(|row| row["id"] != "imap:55:1").unwrap();
+    assert_eq!(live["read"], true);
+    assert_eq!(live["starred"], false);
+    assert_ne!(live["pending"], true);
+    assert!(string(live, "body").contains("New provider content."));
+    assert_eq!(
+        live["imapOrigin"],
+        imap::server_origin(&second.mail).unwrap()
+    );
+    assert_eq!(
+        body_requests(&second),
+        1,
+        "reconciliation must remain flags-only"
+    );
+}
+
+#[tokio::test]
 async fn folder_rotation_wraps_to_the_folder_that_sorts_before_inbox() {
     let fixture = ImapFixture::new(ImapScenario {
         capabilities: "IMAP4rev1 CONDSTORE",
@@ -3331,12 +3413,14 @@ async fn folder_rotation_wraps_to_the_folder_that_sorts_before_inbox() {
     })
     .await;
     let cache = CacheWorkspace::new(&fixture.mail).await;
+    let origin = imap::server_origin(&fixture.mail).unwrap();
     cache
         .app()
-        .db(|db| {
+        .db(move |db| {
             for (uid, folder) in [(1, "Archive"), (2, "INBOX")] {
                 let row = json!({
                     "id": format!("imap:55:{uid}"),
+                    "imapOrigin": origin,
                     "folder": if folder == "INBOX" { "inbox" } else { "archive" },
                     "providerFolderId": folder,
                     "read": false,
@@ -3376,7 +3460,7 @@ async fn discovery_accepts_async_vanished_expunge_and_still_rejects_earlier() {
         .await;
         let proof = imap::reconcile_with_tls(
             &fixture.mail,
-            &[json!({"id":"imap:55:1"})],
+            &[json!({"imapOrigin":imap::server_origin(&fixture.mail).unwrap(),"id":"imap:55:1"})],
             &fixture.connector,
         )
         .await

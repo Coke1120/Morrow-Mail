@@ -27,9 +27,12 @@ fn batch(db: &Store, connection: &Value) -> Result<Vec<(i64, Value)>> {
     } else {
         "imap:%"
     };
-    let mut query=db.conn.prepare("SELECT rowid,data FROM messages WHERE account=? AND rowid>? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id) LIKE ? AND COALESCE(json_extract(data,'$.providerDeleted'),0)=0 AND (json_extract(data,'$.folder')!='drafts' OR json_extract(data,'$.providerDraft')=1) ORDER BY rowid LIMIT 50")?;
+    let origin = (prefix == "imap:%")
+        .then(|| crate::imap::server_origin(connection))
+        .transpose()?;
+    let mut query=db.conn.prepare("SELECT rowid,data FROM messages WHERE account=? AND rowid>? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id) LIKE ? AND (? IS NULL OR json_extract(data,'$.imapOrigin')=?) AND COALESCE(json_extract(data,'$.providerDeleted'),0)=0 AND (json_extract(data,'$.folder')!='drafts' OR json_extract(data,'$.providerDraft')=1) ORDER BY rowid LIMIT 50")?;
     query
-        .query_map(params![owner, after, prefix], |row| {
+        .query_map(params![owner, after, prefix, origin, origin], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })?
         .map(|row| {
@@ -171,6 +174,7 @@ fn save(db: &Store, connection: &Value, result: &[Value], proposed: Option<&Valu
             };
             if remote(&current) != remote(message)
                 || folder(&current) != folder(message)
+                || !crate::imap_identity::matches(connection, &current)
                 || current["providerSnapshot"] != message["providerSnapshot"]
                 || message["imapSyncEpoch"] != flag_epoch(checkpoint, message_folder(message))
             {
@@ -233,6 +237,7 @@ pub async fn sync_with_tls(
 
 fn next_folder(db: &Store, connection: &Value, checkpoint: &Value) -> Result<Option<String>> {
     let owner = string(connection, "email");
+    let origin = crate::imap::server_origin(connection)?;
     let previous = string(checkpoint, "folder");
     if checkpoint["folders"][previous]["pending"]
         .as_array()
@@ -243,27 +248,31 @@ fn next_folder(db: &Store, connection: &Value, checkpoint: &Value) -> Result<Opt
     }
     // Seek the membership index, rather than DISTINCT/grouping every cached row.
     let folder: Option<String> = db.conn.query_row(
-        "SELECT folder_id FROM mail_provider_memberships WHERE account=? AND folder_id>? ORDER BY folder_id LIMIT 1",
-        params![owner, previous], |row| row.get(0),
+        "SELECT membership.folder_id FROM mail_provider_memberships AS membership JOIN messages AS m ON m.rowid=membership.message_rowid WHERE membership.account=? AND membership.folder_id>? AND json_extract(m.data,'$.imapOrigin')=? ORDER BY membership.folder_id LIMIT 1",
+        params![owner, previous, origin], |row| row.get(0),
     ).optional()?;
     if folder.is_some() {
         return Ok(folder);
     }
     let first: Option<String> = db.conn.query_row(
-        "SELECT folder_id FROM mail_provider_memberships WHERE account=? ORDER BY folder_id LIMIT 1",
-        params![owner],
+        "SELECT membership.folder_id FROM mail_provider_memberships AS membership JOIN messages AS m ON m.rowid=membership.message_rowid WHERE membership.account=? AND json_extract(m.data,'$.imapOrigin')=? ORDER BY membership.folder_id LIMIT 1",
+        params![owner, origin],
         |row| row.get(0),
     ).optional()?;
     if first.is_some() {
         return Ok(first);
     }
-    inbox_for_rows_missing_folder_index(db, owner)
+    inbox_for_rows_missing_folder_index(db, owner, &origin)
 }
 
-fn inbox_for_rows_missing_folder_index(db: &Store, owner: &str) -> Result<Option<String>> {
+fn inbox_for_rows_missing_folder_index(
+    db: &Store,
+    owner: &str,
+    origin: &str,
+) -> Result<Option<String>> {
     let cached: bool = db.conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM messages WHERE account=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id) LIKE 'imap:%')",
-        [owner], |row| row.get(0),
+        "SELECT EXISTS(SELECT 1 FROM messages WHERE account=? AND json_extract(data,'$.imapOrigin')=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id) LIKE 'imap:%')",
+        params![owner, origin], |row| row.get(0),
     )?;
     Ok(cached.then(|| "INBOX".to_owned()))
 }
@@ -275,9 +284,10 @@ fn legacy_folder_checkpoint(
     epoch: &Value,
 ) -> Result<Value> {
     let owner = string(connection, "email");
+    let origin = crate::imap::server_origin(connection)?;
     let remote: Option<String> = db.conn.query_row(
-        "SELECT COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id) FROM messages WHERE account=? AND COALESCE(NULLIF(json_extract(data,'$.providerFolderId'),''),'INBOX')=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id) LIKE 'imap:%' AND COALESCE(json_extract(data,'$.providerDeleted'),0)=0 ORDER BY rowid LIMIT 1",
-        params![owner, folder], |row| row.get(0),
+        "SELECT COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id) FROM messages WHERE account=? AND json_extract(data,'$.imapOrigin')=? AND COALESCE(NULLIF(json_extract(data,'$.providerFolderId'),''),'INBOX')=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id) LIKE 'imap:%' AND COALESCE(json_extract(data,'$.providerDeleted'),0)=0 ORDER BY rowid LIMIT 1",
+        params![owner, origin, folder], |row| row.get(0),
     ).optional()?;
     let Some(validity) = remote
         .as_deref()
@@ -293,8 +303,8 @@ fn legacy_folder_checkpoint(
     // those values deliberately fall back rather than round up and skip changes.
     let version = connection_version(connection);
     let minimum: Option<i64> = db.conn.query_row(
-        "SELECT MIN(CASE WHEN json_extract(data,'$.imapSyncConnection')=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id) LIKE ? AND COALESCE(json_extract(data,'$.imapSyncEpoch'),'[null,null]')=? AND typeof(json_extract(data,'$.imapModseq'))='integer' AND json_extract(data,'$.imapModseq')>0 AND json_type(data,'$.providerSnapshot.read') IN ('true','false') AND json_type(data,'$.providerSnapshot.starred') IN ('true','false') THEN json_extract(data,'$.imapModseq') ELSE 0 END) FROM messages WHERE account=? AND COALESCE(NULLIF(json_extract(data,'$.providerFolderId'),''),'INBOX')=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id) LIKE 'imap:%' AND COALESCE(json_extract(data,'$.providerDeleted'),0)=0",
-        params![serde_json::to_string(&version)?,format!("imap:{validity}:%"),serde_json::to_string(epoch)?,owner,folder], |row| row.get(0),
+        "SELECT MIN(CASE WHEN json_extract(data,'$.imapSyncConnection')=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id) LIKE ? AND COALESCE(json_extract(data,'$.imapSyncEpoch'),'[null,null]')=? AND typeof(json_extract(data,'$.imapModseq'))='integer' AND json_extract(data,'$.imapModseq')>0 AND json_type(data,'$.providerSnapshot.read') IN ('true','false') AND json_type(data,'$.providerSnapshot.starred') IN ('true','false') THEN json_extract(data,'$.imapModseq') ELSE 0 END) FROM messages WHERE account=? AND json_extract(data,'$.imapOrigin')=? AND COALESCE(NULLIF(json_extract(data,'$.providerFolderId'),''),'INBOX')=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id) LIKE 'imap:%' AND COALESCE(json_extract(data,'$.providerDeleted'),0)=0",
+        params![serde_json::to_string(&version)?,format!("imap:{validity}:%"),serde_json::to_string(epoch)?,owner,origin,folder], |row| row.get(0),
     )?;
     Ok(if let Some(minimum) = minimum.filter(|v| *v > 0) {
         json!({"connection":version,"validity":validity,"modseq":minimum,"pending":[],"scan":null})
@@ -322,8 +332,9 @@ fn changed_rows(
     let mut rows = Vec::new();
     let mut consumed = 0;
     let mut rotation_covered = rotation_head.is_none();
+    let origin = crate::imap::server_origin(connection)?;
     let mut query = db.conn.prepare(
-        "SELECT rowid,data FROM messages WHERE account=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id)=? AND COALESCE(NULLIF(json_extract(data,'$.providerFolderId'),''),'INBOX')=? AND COALESCE(json_extract(data,'$.providerDeleted'),0)=0 ORDER BY rowid DESC LIMIT 1",
+        "SELECT rowid,data FROM messages WHERE account=? AND json_extract(data,'$.imapOrigin')=? AND COALESCE(NULLIF(json_extract(data,'$.remoteId'),''),id)=? AND COALESCE(NULLIF(json_extract(data,'$.providerFolderId'),''),'INBOX')=? AND COALESCE(json_extract(data,'$.providerDeleted'),0)=0 ORDER BY rowid DESC LIMIT 1",
     )?;
     for uid in pending {
         if rows.len() == BACKGROUND_BATCH && rotation_covered {
@@ -332,7 +343,7 @@ fn changed_rows(
         let remote = format!("imap:{validity}:{}", uid.as_u64().unwrap());
         let row: Option<(i64, String)> = query
             .query_row(
-                params![string(connection, "email"), remote, folder],
+                params![string(connection, "email"), origin, remote, folder],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;

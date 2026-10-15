@@ -9,6 +9,16 @@ fixtures are extended; SDK execution, keyboard and manual accessibility acceptan
 remain required. No completion-retention or AI policy is changed. See
 [behavior and validation boundary](docs/CONTEXTUAL_ACTIONS.md).
 
+**IMAP server identity source follow-up:** imports, cached-body reuse and cached
+flag reconciliation bind to the validated server endpoint and actual login.
+Cross-server UID collisions retain separate copies and user state. An atomic
+provenance-only migration preserves IDs/data; unknown sources remain cached-only.
+Raw downloads and provider mutations reject unknown or mismatched origins before
+network access. Workspace schema 2 makes the tested prior service reject the
+upgraded workspace instead of ignoring this fence.
+See [upgrade preparation, recovery and limits](docs/IMAP_SERVER_IDENTITY.md).
+No live-account or native-platform acceptance is claimed.
+
 **0.8.2 source — navigation and activity recovery:** merged PRs #48–50 add
 the Mail | Agent | Brain shell, recover abandoned AI jobs and retain cancellation
 for each mailbox/work type. Stop publication is ordered with the persisted job
@@ -132,7 +142,7 @@ The v0.7.3 source includes merged PR28/29. Windows first-acquire native error 87
 
 **0.7.3 source — mail flow follow-up:** macOS refreshes completed search results at their current page after reading or saving a reply, retaining rows during refresh and falling back once to the last valid page if needed. Smart refreshes use cached matching only. Mac/Windows attachment removal accessibility names include filenames; Mac footer removal has its own name. The [review and profiling/observation design](docs/MAIL_FLOW_REVIEW.md) describes the isolated native fixtures and remaining manual accessibility/live-account limits. Mac extreme HTML timing and Windows first-handle acquisition gaps are not declared fixed.
 
-**0.7.2 — fetch recovery:** IMAP import dates use INTERNALDATE consistently and transient read failures retain retryable checkpoints. Outlook delta resets preserve catch-up coverage; metadata-first lists and bounded individual bodies avoid aggregate body-page stalls. Gmail reads support up to 10,000 labels while organization destinations remain bounded to 1,000. Explicit incomplete-content records retain recoverable message identities and appear in account/CLI status; full MIME loading clears them only after success. Downloaded bodies survive placeholder refreshes within the existing provider identity namespace, while mutable drafts still update; cross-server IMAP identity collisions remain a limitation. Windows revision/cursor recovery follows the Mac page/selection behavior. See [behavior and remaining limits](docs/FETCH_RECOVERY.md); the paired PR native run passed, with release-tag and manual/live-account evidence tracked separately in [verification](VERIFICATION.md).
+**0.7.2 — fetch recovery:** IMAP import dates use INTERNALDATE consistently and transient read failures retain retryable checkpoints. Outlook delta resets preserve catch-up coverage; metadata-first lists and bounded individual bodies avoid aggregate body-page stalls. Gmail reads support up to 10,000 labels while organization destinations remain bounded to 1,000. Explicit incomplete-content records retain recoverable message identities and appear in account/CLI status; full MIME loading clears them only after success. Downloaded bodies survive placeholder refreshes within the existing provider identity namespace, while mutable drafts still update; cross-server IMAP identity collisions remained a limitation in that version (addressed by the current server identity follow-up). Windows revision/cursor recovery follows the Mac page/selection behavior. See [behavior and remaining limits](docs/FETCH_RECOVERY.md); the paired PR native run passed, with release-tag and manual/live-account evidence tracked separately in [verification](VERIFICATION.md).
 
 **0.7.2 — native recovery:** Windows detail loading has selection-bound loading/retry and cancellation, retaining the mounted message for interrupted reselection without leaving its controls active. Closing a composer returns to its source mailbox/page/query and restores a visible mail control's keyboard focus; unresolved or draft selections are cleared for reopening. General preferences retain their serialized field-diff saves, newer edits and failed saves; Retry is shown after a failure and hidden during retry or a new edit. macOS loading/error readers expose Back/Escape and restore list focus, keep reader errors separate from workspace notices, and reject obsolete same-message read/mark-read completions. Added macOS and Windows native assertions passed in PR CI at `13d5822164a95a235fc8051036425726be21c0b1`, including all four Windows composer-return cases and HTTP 409/400 cursor recovery probes. This does not complete manual UX/accessibility acceptance; see [verification](VERIFICATION.md) and the [earlier local baseline](VERIFICATION.md#local-native-readiness-work--unreleased).
 

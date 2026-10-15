@@ -96,7 +96,8 @@ fn remote_reads_override_legacy_local_state_without_losing_other_edits_or_owners
     for provider in ["microsoft", "imap", "google"] {
         for initial in [false, true] {
             let id = format!("{provider}:{initial}");
-            let connection = json!({"email":owner,"provider":provider});
+            let connection =
+                json!({"email":owner,"provider":provider,"imapHost":"fixture.example.invalid"});
             let mut message = json!({"id":id,"folder":"inbox","providerFolderId":"INBOX","body":"Downloaded body","read":initial,"starred":false,"labels":[]});
             if provider == "google" {
                 message["providerLabelIds"] = if initial {
@@ -108,7 +109,7 @@ fn remote_reads_override_legacy_local_state_without_losing_other_edits_or_owners
             for account in [owner, other] {
                 mail::import_messages(
                     &db,
-                    &json!({"email":account,"provider":provider}),
+                    &json!({"email":account,"provider":provider,"imapHost":"fixture.example.invalid"}),
                     std::slice::from_ref(&message),
                 )
                 .unwrap();
@@ -178,9 +179,21 @@ fn remote_reads_override_legacy_local_state_without_losing_other_edits_or_owners
             }
             assert_eq!(db.get(other, &id).unwrap().unwrap(), untouched);
 
-            // Old caches without a read snapshot adopt the fetched server value on first refresh.
+            // Same-source old caches without a read snapshot adopt the fetched
+            // server value on first refresh. Their source still needs proof.
             let legacy_id = format!("{provider}:legacy-{initial}");
             message["id"] = legacy_id.clone().into();
+            if provider == "imap" {
+                message["bodyConnection"] = json!([
+                    connection["connectionId"],
+                    connection["authorizationId"],
+                    connection["provider"],
+                    connection["email"],
+                    connection["clientId"],
+                    connection["imapHost"],
+                    connection["imapPort"]
+                ]);
+            }
             db.upsert(owner, &message).unwrap();
             message["read"] = (!initial).into();
             if provider == "google" {

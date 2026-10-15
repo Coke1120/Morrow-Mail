@@ -306,6 +306,16 @@ pub fn start_import(db: &Store, account: &str, input: &Value) -> Result<()> {
     let connection = live
         .get(account)
         .ok_or_else(|| Error::invalid("Choose a connected mailbox."))?;
+    if matches!(string(connection, "provider"), "imap" | "")
+        && string(connection, "connectionId").trim().is_empty()
+    {
+        let mut error = Error::conflict(
+            "Reconnect this IMAP mailbox, then start a new import. Cached mail and saved import progress are retained.",
+        );
+        error.body["code"] = "imap_connection_unverified".into();
+        error.body["recoveryAction"] = "reconnect".into();
+        return Err(error);
+    }
     if options["allMail"] == true
         && !["google", "microsoft", "imap", ""].contains(&string(connection, "provider"))
     {
@@ -340,8 +350,9 @@ pub fn control_import(db: &Store, account: &str, action: &str) -> Result<()> {
         return Err(Error::invalid("No import to pause or resume."));
     }
     if action == "resume"
-        && (connections(&config).get(account).is_none()
-            || job["connectionId"] != connections(&config)[account]["connectionId"])
+        && connections(&config)
+            .get(account)
+            .is_none_or(|mail| !import_connection_current(job, mail))
     {
         return Err(Error::invalid("Start a new import for this connection."));
     }
@@ -386,6 +397,14 @@ pub fn import_status_from(config: &Value, account: &str) -> Value {
     let mut job = config["imports"][account].clone();
     if !job.is_object() {
         return Value::Null;
+    }
+    if let Some(mail) = live.get(account)
+        && matches!(string(mail, "provider"), "imap" | "")
+        && current_import(config, mail).is_none()
+    {
+        // Keep the stored job/cursor for its original connection, but do not
+        // present its completeness or counters as coverage of another server.
+        job = json!({"status":"paused","errorCode":"connection_changed","nextRetryAt":null});
     }
     if job["status"] == "running"
         && let Some(mail) = live.get(account)
@@ -453,7 +472,21 @@ fn import_current(config: &Value, account: &str, job: &Value) -> bool {
         && config["imports"][account]["status"] == "running"
         && connections(config)
             .get(account)
-            .is_some_and(|mail| mail["connectionId"] == job["connectionId"])
+            .is_some_and(|mail| import_connection_current(job, mail))
+}
+fn import_connection_current(job: &Value, mail: &Value) -> bool {
+    job["connectionId"] == mail["connectionId"]
+        && (!matches!(string(mail, "provider"), "imap" | "")
+            || !string(mail, "connectionId").trim().is_empty())
+}
+/// History cursors and coverage belong to the reviewed connection generation.
+/// An unversioned legacy IMAP job cannot prove which server it downloaded.
+pub(crate) fn current_import<'a>(config: &'a Value, mail: &Value) -> Option<&'a Value> {
+    let job = &config["imports"][string(mail, "email")];
+    (job.is_object()
+        && (!matches!(string(mail, "provider"), "imap" | "")
+            || import_connection_current(job, mail)))
+    .then_some(job)
 }
 fn import_folders(job: &Value) -> Vec<&'static str> {
     if job["options"]["allMail"] == true {
@@ -528,12 +561,12 @@ async fn history_tick(app: &App) -> Result<()> {
                 .flat_map(|entries| entries.iter())
                 .filter(|(account, job)| {
                     live.get(*account).is_some()
-                        && (live[*account]["connectionId"] != job["connectionId"]
+                        && (!import_connection_current(job, &live[*account])
                             || mail::read_backoff(&config, &live[*account]).is_none())
                         && job["status"] == "running"
                         && (string(job, "nextRetryAt").is_empty()
                             || string(job, "nextRetryAt") <= now().as_str()
-                            || live[*account]["connectionId"] != job["connectionId"])
+                            || !import_connection_current(job, &live[*account]))
                 })
                 .min_by(|a, b| string(a.1, "updatedAt").cmp(string(b.1, "updatedAt")))
                 .map(|(account, job)| (account.clone(), job.clone())))
@@ -542,10 +575,10 @@ async fn history_tick(app: &App) -> Result<()> {
     let Some((account, job)) = entry else {
         return Ok(());
     };
-    if connections(&app.settings().await?)[&account]["connectionId"] != job["connectionId"] {
+    if !import_connection_current(&job, &connections(&app.settings().await?)[&account]) {
         return app.db(move |db| {
             let current=db.settings()?;
-            if current["imports"][&account]["id"]==job["id"] && current["imports"][&account]["status"]=="running" && connections(&current)[&account]["connectionId"]!=job["connectionId"] {
+            if current["imports"][&account]["id"]==job["id"] && current["imports"][&account]["status"]=="running" && !import_connection_current(&job,&connections(&current)[&account]) {
                 write_owner(db,"imports",&account,merge(merge(job,&clear_import_failure()),&json!({"status":"paused","error":"Connection changed. Start a new import.","errorCode":"connection_changed","recoveryAction":"restart","updatedAt":now()})))?;
             }
             Ok(())
@@ -1729,14 +1762,15 @@ mod history_retry_tests {
         ] {
             let mut error = Error::new(502, "private provider payload and account detail");
             error.body["code"] = provider_code.into();
-            let status = import_failure(&error, "fetch", &json!({"retryCount":2}), 0);
+            let mut status = import_failure(&error, "fetch", &json!({"retryCount":2}), 0);
+            status["connectionId"] = "fixture-generation".into();
             assert_eq!(status["status"], "failed");
             assert_eq!(status["errorCode"], public_code);
             assert_eq!(status["recoveryAction"], action);
             assert_eq!(status["retryCount"], 2);
             assert!(status["nextRetryAt"].is_null());
             assert!(!status.to_string().contains("private provider"));
-            let config = json!({"mailAccounts":{"owner@example.invalid":{"email":"owner@example.invalid"}},"imports":{"owner@example.invalid":status}});
+            let config = json!({"mailAccounts":{"owner@example.invalid":{"email":"owner@example.invalid","connectionId":"fixture-generation"}},"imports":{"owner@example.invalid":status}});
             let public = import_status_from(&config, "owner@example.invalid");
             assert_eq!(public["errorCode"], public_code);
             assert_eq!(public["recoveryAction"], action);
@@ -1745,6 +1779,36 @@ mod history_retry_tests {
             assert_eq!(
                 import_failure(&error, "commit", &json!({}), 0)["errorCode"],
                 "storage_error"
+            );
+        }
+    }
+
+    #[test]
+    fn imap_sync_inputs_require_a_proven_history_connection() {
+        let owner = "history@example.invalid";
+        let mail = json!({"email":owner,"provider":"imap","connectionId":"new"});
+        let job = json!({"connectionId":"old","status":"complete","options":{"sent":true},"since":"2026-01-01","before":"2026-10-01","cursor":{"uid":42}});
+        let mut config = json!({"imports":{owner:job}});
+        assert!(current_import(&config, &mail).is_none());
+        assert_eq!(config["imports"][owner], job);
+        config["imports"][owner]["connectionId"] = "new".into();
+        assert_eq!(
+            current_import(&config, &mail),
+            Some(&config["imports"][owner])
+        );
+        config["imports"][owner]
+            .as_object_mut()
+            .unwrap()
+            .remove("connectionId");
+        assert!(current_import(&config, &mail).is_none());
+        let legacy_mail = json!({"email":owner,"provider":"imap"});
+        assert!(current_import(&config, &legacy_mail).is_none());
+        // Other providers keep their existing sync/import behavior.
+        for provider in ["google", "microsoft"] {
+            let mail = json!({"email":owner,"provider":provider,"connectionId":"new"});
+            assert_eq!(
+                current_import(&config, &mail),
+                Some(&config["imports"][owner])
             );
         }
     }
