@@ -1,5 +1,17 @@
 # Verification — 14 October 2026
 
+## Hybrid navigation shell — 15 October 2026
+
+Source adds the same Mail | Agent | Brain primary chrome on macOS and Windows.
+Cold start stays on the Mail three-pane. Agent reuses Inbox Agent, Today, and
+Skills. Brain reuses persona, writing rules, and categories. AI Studio moves to
+the advanced footer and Settings, with one-release Moved to Agent / Moved to
+Brain hints in its More menu. Local Inbox Rules, local simulations, and
+simulation history stay in Studio. This does not change review-before-send,
+account isolation, or provider writes. No paired native release check has been
+run for this shell. It is not a release claim and does not retire any earlier
+acceptance record below.
+
 ## v0.8.1 release preparation — 14 October 2026
 
 The owner approved merging PR #47 after complete CI and publishing v0.8.1 through

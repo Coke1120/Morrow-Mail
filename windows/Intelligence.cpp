@@ -282,7 +282,11 @@ IAsyncAction changePage(Page p, hstring target) {
     if (p->edited() && !(co_await p->shell->confirm(L"Discard unsaved edits?", L"Only explicitly saved settings, styles and workspace notes take effect.", L"Discard"))) co_return;
     if (!p->current()) co_return;
     auto shell = p->shell; p->stop();
-    if(target==L"reply-suggestions"){shell->review->scope=p->owner;co_await shell->navigate(target);co_return;}
+    if (target == L"reply-suggestions" || target == L"agent" || target == L"skills" || target == L"today" || target == L"brain" || target == L"categories" || target == L"learning") {
+        if (target == L"reply-suggestions") shell->review->scope = p->owner;
+        co_await shell->navigate(target);
+        co_return;
+    }
     co_await intelligencePage(shell, target);
 }
 void renderLearning(Page const& p);
@@ -1724,8 +1728,13 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
     if (scopeOwner != L"all" && !shell->connected(scopeOwner)) { scopeOwner = L"all"; shell->review->scope = L"all"; }
     auto p = std::make_shared<Intelligence>(); p->shell = shell; p->owner = scopeOwner; p->kind = kind; p->generation = ++shell->generation;
     shell->section = kind;
+    bool agentShell = kind == L"agent" || kind == L"skills";
+    bool brainShell = kind == L"brain" || kind == L"categories" || kind == L"learning";
     auto root = stack(16); root.MaxWidth(1080); root.HorizontalAlignment(xaml::HorizontalAlignment::Left); root.Margin(xaml::Thickness{24, 20, 24, 32});
-    words(root, L"AI Studio", 28);
+    words(root, agentShell ? L"Agent" : brainShell ? L"Brain" : L"AI Studio", 28);
+    words(root, agentShell ? L"Inbox Agent, Today, and reusable skills. Sending still waits for your review."
+        : brainShell ? L"Persona, writing rules, and mail categories for one mailbox."
+        : L"Advanced tools. Inbox Agent, skills, writing rules, and categories have moved to Agent and Brain.");
     auto accountTabs = stack(7); accountTabs.Orientation(Orientation::Horizontal);
     std::vector<hstring> owners{L"all"};
     for (auto const& entry : array(shell->state, L"accounts")) owners.push_back(text(entry.GetObject(), L"id"));
@@ -1733,7 +1742,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
     for (auto const& owner : owners) {
         controls::Primitives::ToggleButton tab; tab.Content(box_value(owner == L"all" ? hstring(L"All accounts") : owner)); tab.IsChecked(owner == p->owner); tab.IsTabStop(owner == p->owner);
         xaml::Automation::AutomationProperties::SetAutomationId(tab, L"studio.scope." + owner);
-        xaml::Automation::AutomationProperties::SetName(tab, L"Studio mailbox: " + owner);
+        xaml::Automation::AutomationProperties::SetName(tab, (agentShell ? L"Agent mailbox: " : brainShell ? L"Brain mailbox: " : L"Studio mailbox: ") + owner);
         tab.Checked([scope, owner](auto const&, auto const&) -> fire_and_forget {
             auto page = scope.lock();
             if (!page || !page->current() || page->shell->review->writing || page->owner == owner) co_return;
@@ -1746,7 +1755,28 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
     }
     ScrollViewer accountScroll; accountScroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto); accountScroll.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled); accountScroll.Content(accountTabs); root.Children().Append(accountScroll);
     bool accountPage = kind == L"brain" || kind == L"learning" || kind == L"skills" || kind == L"categories" || kind == L"rules" || kind == L"records" || kind == L"agent";
-    auto tabs = stack(6); tabs.Orientation(Orientation::Horizontal); std::weak_ptr<Intelligence> weak = p; bool known = kind == L"learning";
+    auto tabs = stack(6); tabs.Orientation(Orientation::Horizontal); std::weak_ptr<Intelligence> weak = p;
+    bool known = agentShell || brainShell || kind == L"studio" || kind == L"rules" || kind == L"simulations" || kind == L"records";
+    auto shellTab = [&](hstring id, hstring caption, bool selected) {
+        auto control = button(caption, [weak, id] {
+            if (auto page = weak.lock()) {
+                if (!page->current() || page->kind == id) return;
+                changePage(page, id);
+            }
+        });
+        control.IsEnabled(!selected);
+        xaml::Automation::AutomationProperties::SetAutomationId(control, L"shell.section." + id);
+        xaml::Automation::AutomationProperties::SetName(control, selected ? caption + L", selected" : caption);
+        tabs.Children().Append(control);
+    };
+    if (agentShell) {
+        shellTab(L"agent", L"Inbox Agent", kind == L"agent");
+        shellTab(L"today", L"Today", false);
+        shellTab(L"skills", L"Skills", kind == L"skills");
+    } else if (brainShell) {
+        shellTab(L"brain", L"Persona & writing rules", kind == L"brain");
+        shellTab(L"categories", L"Categories", kind == L"categories");
+    } else {
     for (auto const& [id, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{
         {L"studio", L"Assistant"}}) {
         auto control = button(caption, [weak, target = hstring(id)] { if (auto page = weak.lock()) changePage(page, target); });
@@ -1755,7 +1785,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
     ComboBox more; more.PlaceholderText(L"More");
     xaml::Automation::AutomationProperties::SetName(more, L"More AI Studio pages");
     for (auto const& [id, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{
-        {L"brain", L"Writing style & notes"}, {L"agent", L"Inbox Agent"}, {L"reply-suggestions", L"Reply suggestions"}, {L"rules",L"Local Inbox Rules"}, {L"skills", L"Reusable skills"}, {L"categories", L"Mail categories"}, {L"simulations", L"Local simulations"}, {L"records", L"Simulation history"}}) {
+        {L"brain", L"Writing style & notes — Moved to Brain"}, {L"agent", L"Inbox Agent — Moved to Agent"}, {L"reply-suggestions", L"Reply suggestions"}, {L"rules",L"Local Inbox Rules"}, {L"skills", L"Reusable skills — Moved to Agent"}, {L"categories", L"Mail categories — Moved to Brain"}, {L"simulations", L"Local simulations"}, {L"records", L"Simulation history"}}) {
         ComboBoxItem item; item.Content(box_value(caption)); item.Tag(box_value(hstring(id))); more.Items().Append(item);
         if (kind == id) { known = true; more.SelectedItem(item); }
     }
@@ -1763,6 +1793,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
         auto item = sender.template as<ComboBox>().SelectedItem().template try_as<ComboBoxItem>();
         if (item) changePage(page, unbox_value<hstring>(item.Tag()));
     } }); tabs.Children().Append(more);
+    }
     ScrollViewer tabScroll; tabScroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto); tabScroll.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled); tabScroll.Content(tabs); root.Children().Append(tabScroll);
     auto notice = label(L"Loading this account’s saved context…"); root.Children().Append(notice); p->notice = notice;
     xaml::Automation::AutomationProperties::SetAutomationId(notice, L"intelligence.notice");

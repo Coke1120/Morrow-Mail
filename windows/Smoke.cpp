@@ -548,6 +548,26 @@ IAsyncAction Shell::smoke() {
         }
         root.RequestedTheme(requestedTheme);
         check(composeButton.IsEnabled() == seeded && syncButton.IsEnabled() == seeded, L"Compose/Sync do not reflect connected-account onboarding.");
+        check(shellMail && shellAgent && shellBrain && shellMode() == L"mail" && section == L"mail" && folder == L"inbox", L"Cold start did not land on Mail with Mail, Agent, and Brain in the primary chrome.");
+        check(xaml::Automation::AutomationProperties::GetAutomationId(shellMail) == L"shell.mail"
+            && xaml::Automation::AutomationProperties::GetName(shellMail) == L"Mail, selected"
+            && xaml::Automation::AutomationProperties::GetAutomationId(shellAgent) == L"shell.agent"
+            && xaml::Automation::AutomationProperties::GetAutomationId(shellBrain) == L"shell.brain",
+            L"The primary chrome does not expose Mail, Agent, and Brain.");
+        bool studioPrimary = false, movedToday = false;
+        for (auto const& value : navigation.MenuItems()) if (auto item = value.try_as<controls::NavigationViewItem>(); item && item.Tag()) {
+            auto tag = item.Tag().as<Json>();
+            if (text(tag, L"section") == L"studio" && text(tag, L"owner").empty()) studioPrimary = true;
+            if (text(tag, L"section") == L"today") {
+                auto caption = unbox_value_or<hstring>(item.Content(), L"");
+                if (std::wstring(caption).find(L"Moved to Agent") != std::wstring::npos) movedToday = true;
+            }
+        }
+        bool studioAdvanced = false;
+        for (auto const& value : navigation.FooterMenuItems()) if (auto item = value.try_as<controls::NavigationViewItem>(); item && item.Tag()) {
+            if (text(item.Tag().as<Json>(), L"section") == L"studio") studioAdvanced = true;
+        }
+        check(!studioPrimary && movedToday && studioAdvanced, L"AI Studio must leave the primary workspace, Today must point to Agent, and AI Studio must remain an advanced footer entry.");
         check(composeButton.Parent() == syncButton.Parent() && controls::Grid::GetColumn(syncButton) == 1,
             L"Sync must sit beside Compose in the sidebar.");
         controls::NavigationViewItem combined{nullptr};
@@ -1063,7 +1083,7 @@ IAsyncAction Shell::smoke() {
             co_await navigate(L"mail",L"one@fixture.invalid");
             enter("writing-rule-edit-retention"); co_await writingRuleEditingChecks(lifetime);
             co_await navigate(L"mail",L"one@fixture.invalid");
-            for (auto const* target : {L"today", L"activity", L"scheduled", L"calendar", L"out-of-office", L"studio", L"learning", L"brain", L"reply-suggestions", L"skills", L"summaries", L"records"}) {
+            for (auto const* target : {L"today", L"activity", L"scheduled", L"calendar", L"out-of-office", L"studio", L"learning", L"brain", L"reply-suggestions", L"skills", L"summaries", L"records", L"agent", L"categories"}) {
                 enter("workspace-" + to_string(target));
                 auto previousPage = page.Content();
                 co_await navigate(target);
@@ -1087,15 +1107,38 @@ IAsyncAction Shell::smoke() {
                     check(tabs.Children().Size()==array(state,L"accounts").Size()+1,L"Today lost the shared All/account tabs.");
 
                 }
+                if (std::wstring_view(target) == L"today") check(shellMode() == L"agent", L"Today did not open inside Agent.");
+                if (std::wstring_view(target) == L"agent" || std::wstring_view(target) == L"skills") {
+                    auto panel = page.Content().as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
+                    check(panel.Children().GetAt(0).as<controls::TextBlock>().Text() == L"Agent" && shellMode() == L"agent", L"Inbox Agent and Skills must use the Agent shell.");
+                }
+                if (std::wstring_view(target) == L"brain" || std::wstring_view(target) == L"categories" || std::wstring_view(target) == L"learning") {
+                    auto panel = page.Content().as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
+                    check(panel.Children().GetAt(0).as<controls::TextBlock>().Text() == L"Brain" && shellMode() == L"brain", L"Persona, writing rules, and categories must use the Brain shell.");
+                }
                 if (std::wstring_view(target) == L"studio") {
                     auto studio = page.Content().as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
-                    auto accounts = studio.Children().GetAt(1).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
+                    check(studio.Children().GetAt(0).as<controls::TextBlock>().Text() == L"AI Studio", L"Advanced AI Studio lost its title.");
+                    auto accounts = studio.Children().GetAt(2).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
                     check(accounts.Children().Size() == array(state, L"accounts").Size() + 1, L"AI Studio lost the All and per-account tabs.");
-                    auto tabs = studio.Children().GetAt(2).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
+                    auto tabs = studio.Children().GetAt(3).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
                     check(tabs.Children().Size() == 2, L"AI Studio must show Assistant and More without a Summaries page.");
                     auto more = tabs.Children().GetAt(1).as<controls::ComboBox>();
-                    check(unbox_value<hstring>(more.Items().GetAt(0).as<controls::ComboBoxItem>().Tag()) == L"brain",
-                        L"Writing style and notes is no longer reachable through More.");
+                    auto first = more.Items().GetAt(0).as<controls::ComboBoxItem>();
+                    check(unbox_value<hstring>(first.Tag()) == L"brain"
+                        && std::wstring(unbox_value<hstring>(first.Content())).find(L"Moved to Brain") != std::wstring::npos,
+                        L"Writing style and notes no longer leaves a Moved to Brain hint in More.");
+                    bool agentMoved = false, skillsMoved = false, categoriesMoved = false, rulesKept = false;
+                    for (auto const& value : more.Items()) {
+                        auto item = value.as<controls::ComboBoxItem>();
+                        auto id = std::wstring(unbox_value<hstring>(item.Tag()));
+                        auto caption = std::wstring(unbox_value<hstring>(item.Content()));
+                        if (id == L"agent") agentMoved = caption.find(L"Moved to Agent") != std::wstring::npos;
+                        if (id == L"skills") skillsMoved = caption.find(L"Moved to Agent") != std::wstring::npos;
+                        if (id == L"categories") categoriesMoved = caption.find(L"Moved to Brain") != std::wstring::npos;
+                        if (id == L"rules") rulesKept = caption.find(L"Local Inbox Rules") != std::wstring::npos;
+                    }
+                    check(agentMoved && skillsMoved && categoriesMoved && rulesKept, L"AI Studio More lost a moved hint or an advanced page that stays in Studio.");
                 }
             }
             for (auto const* tab : {L"start", L"general", L"mail", L"calendar", L"model", L"search", L"policy", L"about"}) {

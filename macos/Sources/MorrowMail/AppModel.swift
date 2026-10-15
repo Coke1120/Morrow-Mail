@@ -78,6 +78,8 @@ final class AppModel: ObservableObject {
     var updateAvailable: Bool { updateResult["updateAvailable"].bool }
     @Published var assistantAction = "ask"
     @Published var studioTab = "tools"
+    /// Skill chosen from Agent before Assistant opens in advanced AI Studio.
+    @Published var pendingSkillID = ""
     @Published var readerAssistant: JSON?
     @Published var unsavedForms = Set<String>()
     @Published private(set) var restartingForUpdate = false
@@ -123,6 +125,14 @@ final class AppModel: ObservableObject {
     var mailScopeKey: String { [account, section, preferences["sort"].string, String(unreadOnly)].joined(separator: "\n") }
     var mailQueryKey: String { mailScopeKey + "\n" + state["revision"].string }
     var isMailSection: Bool { mailFolders.contains(section) || section.hasPrefix("provider:") }
+    /// Primary chrome. Mail stays the 3-pane home; Agent and Brain are the other top-level destinations.
+    var shellMode: String {
+        switch section {
+        case "agent", "today", "skills": return "agent"
+        case "brain", "categories": return "brain"
+        default: return "mail"
+        }
+    }
     var mailSectionTitle: String { serverFolders[account]?.first { "provider:" + $0.id == section }?["name"].string ?? section.capitalized }
     var listedMessages: [JSON] {
         if mailPage.isNull { return section.hasPrefix("provider:") ? [] : messages.filter { section == "studio" || messageMatchesFolder($0, folder: section) } }

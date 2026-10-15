@@ -78,6 +78,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     controls::ComboBox sorting{nullptr};
     controls::CheckBox unreadFilter{nullptr};
     controls::Button composeButton{nullptr}, syncButton{nullptr};
+    controls::Button shellMail{nullptr}, shellAgent{nullptr}, shellBrain{nullptr};
     controls::Button previous{nullptr}, next{nullptr};
     controls::TextBlock pageLabel{nullptr};
     xaml::DispatcherTimer timer{nullptr};
@@ -155,6 +156,9 @@ struct Shell : std::enable_shared_from_this<Shell> {
     void error(winrt::hstring const& message);
     void show(xaml::UIElement const& content);
     void rebuildNavigation();
+    winrt::hstring shellMode() const;
+    void markShellMode();
+    void openShell(winrt::hstring const& mode);
     void mailPage();
     void applyMailLayout();
     void renderReader(Json const& message);

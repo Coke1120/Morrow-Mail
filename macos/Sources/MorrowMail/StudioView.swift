@@ -4,7 +4,33 @@ import AppKit
 struct StudioView: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var review: ReviewWorkspaceState
-    private var tab: String { model.studioTab == "summaries" ? "tools" : model.studioTab }
+    private var tab: String {
+        switch model.section {
+        case "agent": return "agent"
+        case "skills": return "skills"
+        case "brain": return "brain"
+        case "categories": return "categories"
+        default:
+            switch model.studioTab {
+            case "summaries", "agent", "skills", "brain", "categories": return "tools"
+            default: return model.studioTab
+            }
+        }
+    }
+    private var shellTitle: String {
+        switch model.section {
+        case "agent", "skills": return "Agent"
+        case "brain", "categories": return "Brain"
+        default: return "AI Studio"
+        }
+    }
+    private var shellDetail: String {
+        switch model.section {
+        case "agent", "skills": return "Inbox Agent, Today, and reusable skills. Sending still waits for your review."
+        case "brain", "categories": return "Persona, writing rules, and mail categories for one mailbox."
+        default: return "Advanced tools. Inbox Agent, skills, writing rules, and categories have moved to Agent and Brain."
+        }
+    }
     @State private var action = "ask"
     @State private var messageID = ""
     @State private var contextField = "subject"
@@ -99,25 +125,31 @@ struct StudioView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                SectionHeading(title: "AI Studio", detail: "Ask about your mail or draft replies.")
+                SectionHeading(title: shellTitle, detail: shellDetail)
                 Text(model.state["settings"]["ai"]["configured"].bool ? "AI connected" : "AI not set up").font(.caption).foregroundStyle(morrowGreen).padding(8).background(morrowGreen.opacity(0.08)).clipShape(Capsule())
                 Button("AI & Privacy") { model.settings("permissions") }
             }
             ReviewAccountTabs(review: review, canPick: { owner in
                 owner == review.scope || !studioDirty || model.confirmDiscard("Discard unsaved Studio changes?")
             })
+            if model.section == "agent" || model.section == "skills" {
+                ShellSectionBar(mode: "agent", current: model.section) { navigate($0) }
+            } else if model.section == "brain" || model.section == "categories" {
+                ShellSectionBar(mode: "brain", current: model.section) { navigate($0) }
+            } else {
             HStack {
                 Button("Assistant") { navigate("tools") }.disabled(tab == "tools")
                 Spacer()
                 Menu("More") {
-                    Button("Writing Style & Notes") { navigate("brain") }
-                    Button("Inbox Agent") { navigate("agent") }
+                    Button("Writing style & notes — Moved to Brain") { navigate("brain") }
+                    Button("Inbox Agent — Moved to Agent") { navigate("agent") }
                     Button("Local Inbox Rules") { navigate("rules") }
-                    Button("Reusable Skills") { navigate("skills") }
-                    Button("Mail Categories") { navigate("categories") }
+                    Button("Reusable skills — Moved to Agent") { navigate("skills") }
+                    Button("Mail categories — Moved to Brain") { navigate("categories") }
                     Button("Local Simulations") { navigate("simulations") }
                     Button("Simulation History") { navigate("activity") }
-                }.fixedSize()
+                }.fixedSize().accessibilityLabel("More AI Studio pages")
+            }
             }
             if tab != "rules" && !model.state["settings"]["ai"]["configured"].bool {
                 HStack {
@@ -137,11 +169,27 @@ struct StudioView: View {
             }
         }.padding(26)
         .onAppear {
-            if model.studioTab == "summaries" { model.studioTab = "tools" }
-            action = tab == "simulations" ? "triage" : model.assistantAction
+            if model.section == "studio", ["summaries", "agent", "skills", "brain", "categories"].contains(model.studioTab) {
+                model.studioTab = "tools"
+            }
+            if !model.pendingSkillID.isEmpty {
+                skillID = model.pendingSkillID
+                action = "skill"
+                model.assistantAction = "skill"
+                model.pendingSkillID = ""
+            } else if skillID.isEmpty {
+                action = tab == "simulations" ? "triage" : model.assistantAction
+                skillID = workspace["skills"].array.first(where: { $0["enabled"].bool })?.id ?? ""
+            }
             messageID = permitted.first(where: { $0.viewID == model.selectedMessage })?.viewID ?? permitted.first?.viewID ?? ""
-            skillID = workspace["skills"].array.first(where: { $0["enabled"].bool })?.id ?? ""
             loadBrain()
+        }
+        .onChange(of: model.section) { section in
+            guard section == "studio", !model.pendingSkillID.isEmpty else { return }
+            skillID = model.pendingSkillID
+            action = "skill"
+            model.assistantAction = "skill"
+            model.pendingSkillID = ""
         }
         .task(id: scope + "\n" + model.account) {
             if review.scope != "all", !model.accounts.contains(where: { $0.id == review.scope }), !review.writing { review.pickScope("all") }
@@ -507,7 +555,13 @@ struct StudioView: View {
                             Text("Folders: " + permissionFolders.filter { skill["folders"][$0].bool }.joined(separator: ", ")).font(.caption)
                             Text(skillScheduleLabel(skill)).font(.caption).foregroundStyle(.secondary)
                             HStack {
-                                Button("Use Skill") { skillID = skill.id; action = "skill"; model.studioTab = "tools" }.disabled(!skill["enabled"].bool)
+                                Button("Use Skill") {
+                                    skillID = skill.id
+                                    action = "skill"
+                                    model.assistantAction = "skill"
+                                    model.pendingSkillID = skill.id
+                                    navigate("tools")
+                                }.disabled(!skill["enabled"].bool)
                                 Button("Edit") { skillEditor = SkillEdit(value: skill) }
                                 Button("Queue Review") {
                                     guard model.confirm("Queue “\(skill["name"].string)” for review?", detail: "This adds a review item. It does not send mail or update Email Brain.") else { return }
@@ -636,14 +690,20 @@ struct StudioView: View {
         }
     }
     func navigate(_ destination: String) {
-        guard destination != tab, !studioDirty || model.confirmDiscard("Discard unsaved Studio changes?") else { return }
+        let current = ["agent", "skills", "brain", "categories"].contains(model.section) ? model.section : tab
+        guard destination != current, !studioDirty || model.confirmDiscard("Discard unsaved Studio changes?") else { return }
         writingRuleEdits = WritingRuleEdits()
         loadBrain()
         model.dirty("brain", brainDirty)
         loadCategoryEditor(Self.blankCategory)
+        if ["agent", "skills", "brain", "categories", "today"].contains(destination) {
+            model.section = destination
+            return
+        }
         model.studioTab = destination
+        if model.section != "studio" { model.section = "studio" }
         if destination == "simulations" { action = model.features.first { $0["mock"].bool }?.id ?? "memory" }
-        if destination == "tools" && feature["mock"].bool { action = "ask" }
+        if destination == "tools" && model.pendingSkillID.isEmpty && feature["mock"].bool { action = "ask" }
     }
     @ViewBuilder var memorySuggestions: some View {
         if !visibleMemoryPreview.isNull {

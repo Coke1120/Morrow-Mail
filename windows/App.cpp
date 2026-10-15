@@ -173,7 +173,7 @@ void setupKeyboardAccelerators(std::shared_ptr<Shell> const& shell) {
         auto self = weak.lock();
         if (!self || self->closing || self->dialogOpen || self->navigationLocked || !self->service || !self->navigation.IsEnabled()) co_return;
         auto key = shortcut.Key(); auto modifiers = shortcut.Modifiers();
-        bool sectionSwitch = key == Key::Number1 || key == Key::Number2 || key == Key::Number3 || key == Key::Number4;
+        bool sectionSwitch = key == Key::Number1 || key == Key::Number2 || key == Key::Number3 || key == Key::Number4 || key == Key::Number5;
         if (!sectionSwitch && (self->loading || self->service->writing())) co_return;
         auto captured = self->owner; auto version = self->generation;
         try {
@@ -193,14 +193,15 @@ void setupKeyboardAccelerators(std::shared_ptr<Shell> const& shell) {
                     co_await self->prepare(message, L"reply");
             } else if (key == Key::R) co_await self->sync();
             else if (key == Key::Number1) co_await self->navigate(L"mail", captured, L"inbox");
-            else if (key == Key::Number2) co_await self->navigate(L"studio", captured);
+            else if (key == Key::Number2) co_await self->navigate(L"agent", captured);
             else if (key == Key::Number3) co_await self->navigate(L"calendar", captured);
             else if (key == Key::Number4) co_await self->navigate(L"today", captured);
+            else if (key == Key::Number5) co_await self->navigate(L"brain", captured);
             else if (key == static_cast<Key>(VK_OEM_COMMA)) co_await self->navigate(L"preferences", captured);
         } catch (...) { if (!self->closing) self->error(errorText()); }
     };
     // Native matching handles modifiers and IME; do not intercept ordinary typing with KeyDown.
-    for (auto key : {Key::N, Key::F, Key::R, static_cast<Key>(VK_OEM_COMMA), Key::Number1, Key::Number2, Key::Number3, Key::Number4}) {
+    for (auto key : {Key::N, Key::F, Key::R, static_cast<Key>(VK_OEM_COMMA), Key::Number1, Key::Number2, Key::Number3, Key::Number4, Key::Number5}) {
         Input::KeyboardAccelerator shortcut; shortcut.Key(key); shortcut.Modifiers(Modifiers::Control);
         shortcut.Invoked(invoked); shell->root.KeyboardAccelerators().Append(shortcut);
     }
@@ -324,6 +325,21 @@ IAsyncAction Shell::start() {
     auto brand = stack(10); brand.Margin(ThicknessHelper::FromLengths(12, 4, 12, 12));
     brand.Children().Append(label(L"Morrow", 22));
     brand.Children().Append(label(L"A calmer kind of inbox", 12));
+    auto modeButton = [weak = weak_from_this()](hstring title, hstring mode, hstring id) {
+        auto control = button(title, [weak, mode] { if (auto self = weak.lock()) self->openShell(mode); });
+        control.Padding(ThicknessHelper::FromLengths(6, 4, 6, 4));
+        control.MinWidth(0);
+        Automation::AutomationProperties::SetAutomationId(control, id);
+        return control;
+    };
+    auto modes = stack(4); modes.Orientation(Orientation::Horizontal);
+    shellMail = modeButton(L"Mail", L"mail", L"shell.mail");
+    shellAgent = modeButton(L"Agent", L"agent", L"shell.agent");
+    shellBrain = modeButton(L"Brain", L"brain", L"shell.brain");
+    modes.Children().Append(shellMail); modes.Children().Append(shellAgent); modes.Children().Append(shellBrain);
+    Automation::AutomationProperties::SetAutomationId(modes, L"shell.modes");
+    Automation::AutomationProperties::SetName(modes, L"Mail, Agent, and Brain");
+    brand.Children().Append(modes);
     composeButton = button(L"Compose", [weak = weak_from_this()] {
         if (auto self = weak.lock(); self && self->service && !self->loading && !self->dialogOpen
             && self->navigation.IsEnabled() && !self->closing) compose(self);
@@ -526,22 +542,37 @@ void Shell::rebuildNavigation() {
         }
         item.ContextFlyout(menu);
     };
-    NavigationViewItemHeader header; header.Content(box_value(L"Workspace")); navigation.MenuItems().Append(header);
     struct Destination { wchar_t const* title; wchar_t const* id; wchar_t const* glyph; };
-    for (auto const& entry : {Destination{L"Today", L"today", L"\uE706"}, {L"Reply Suggestions", L"reply-suggestions", L"\uE8F2"},
-        {L"Out of Office", L"out-of-office", L"\uE708"}, {L"AI Studio", L"studio", L"\uE734"},
-        {L"Calendar", L"calendar", L"\uE787"}, {L"Outbox", L"scheduled", L"\uE823"}}) {
+    auto appendDestination = [&](Destination const& entry, bool selected) {
+        if (!matches(entry.title)) return;
         auto item = navItem(entry.title, entry.id, {}, L"inbox", entry.glyph);
-        item.IsSelected(section == entry.id); if (item.IsSelected()) selectedItem = item;
+        item.IsSelected(selected); if (item.IsSelected()) selectedItem = item;
         navigation.MenuItems().Append(item);
-    }
+    };
     std::vector<Json> accounts;
     for (auto const& value : array(state, L"accounts")) {
         auto account = value.GetObject(); auto id = text(account, L"id");
         if (!id.empty() && id != L"demo" && id != L"all") accounts.push_back(account);
     }
-    composeButton.IsEnabled(!accounts.empty());
-    syncButton.IsEnabled(!accounts.empty() && !syncing);
+    if (composeButton) composeButton.IsEnabled(!accounts.empty());
+    if (syncButton) syncButton.IsEnabled(!accounts.empty() && !syncing);
+    auto mode = shellMode();
+    if (mode == L"agent") {
+        NavigationViewItemHeader header; header.Content(box_value(L"Agent")); navigation.MenuItems().Append(header);
+        appendDestination({L"Inbox Agent", L"agent", L"\uE8F2"}, section == L"agent");
+        appendDestination({L"Today", L"today", L"\uE706"}, section == L"today");
+        appendDestination({L"Skills", L"skills", L"\uE8F1"}, section == L"skills");
+    } else if (mode == L"brain") {
+        NavigationViewItemHeader header; header.Content(box_value(L"Brain")); navigation.MenuItems().Append(header);
+        appendDestination({L"Persona & writing rules", L"brain", L"\uE8D4"}, section == L"brain");
+        appendDestination({L"Categories", L"categories", L"\uE8EC"}, section == L"categories");
+    } else {
+    NavigationViewItemHeader header; header.Content(box_value(L"Workspace")); navigation.MenuItems().Append(header);
+    for (auto const& entry : {Destination{L"Today — Moved to Agent", L"today", L"\uE706"}, {L"Reply Suggestions", L"reply-suggestions", L"\uE8F2"},
+        {L"Out of Office", L"out-of-office", L"\uE708"},
+        {L"Calendar", L"calendar", L"\uE787"}, {L"Outbox", L"scheduled", L"\uE823"}}) {
+        appendDestination(entry, section == entry.id && std::wstring_view(entry.id) != L"today");
+    }
     auto accountGroup = [&](hstring const& id, hstring const& title, hstring const& subtitle) {
         auto item = navItem(title, L"mail", id, L"inbox", id == L"all" ? L"\uE8F1" : L"\uE715");
         item.SelectsOnInvoked(false);
@@ -611,7 +642,13 @@ void Shell::rebuildNavigation() {
         auto provider = text(account, L"provider");
         accountGroup(text(account, L"id"), text(account, L"email", text(account, L"id")), provider == L"google" ? L"Gmail" : provider == L"microsoft" ? L"Outlook" : L"IMAP");
     }
+    }
     navigation.FooterMenuItems().Clear();
+    auto studio = navItem(L"AI Studio", L"studio", {}, L"inbox", L"\uE734");
+    Automation::AutomationProperties::SetName(studio, section == L"studio" ? L"AI Studio, advanced, selected" : L"AI Studio, advanced");
+    studio.IsSelected(section == L"studio" || section == L"rules" || section == L"simulations" || section == L"records");
+    if (studio.IsSelected()) selectedItem = studio;
+    navigation.FooterMenuItems().Append(studio);
     auto activity = navItem(L"Activity", L"activity", {}, L"inbox", L"\uE9D9"); activity.IsSelected(section == L"activity");
     if (activity.IsSelected()) selectedItem = activity;
     navigation.FooterMenuItems().Append(activity);
@@ -625,7 +662,33 @@ void Shell::rebuildNavigation() {
     // selection model; restore the canonical item after all groups exist.
     navigation.SelectedItem(selectedItem);
     updateBadge();
+    markShellMode();
     selectingNavigation = false;
+}
+hstring Shell::shellMode() const {
+    if (section == L"agent" || section == L"today" || section == L"skills") return L"agent";
+    if (section == L"brain" || section == L"categories" || section == L"learning") return L"brain";
+    return L"mail";
+}
+void Shell::markShellMode() {
+    auto paint = [](Button const& control, hstring title, bool selected) {
+        if (!control) return;
+        Windows::UI::Text::FontWeight weight{}; weight.Weight = selected ? 600 : 400;
+        control.FontWeight(weight);
+        Automation::AutomationProperties::SetName(control, selected ? title + L", selected" : title);
+    };
+    auto mode = shellMode();
+    paint(shellMail, L"Mail", mode == L"mail");
+    paint(shellAgent, L"Agent", mode == L"agent");
+    paint(shellBrain, L"Brain", mode == L"brain");
+}
+void Shell::openShell(hstring const& mode) {
+    if (closing || navigationLocked || dialogOpen || !navigation.IsEnabled()) return;
+    if (mode == L"agent") {
+        if (shellMode() != L"agent") navigate(L"agent");
+    } else if (mode == L"brain") {
+        if (shellMode() != L"brain") navigate(L"brain");
+    } else if (!(section == L"mail" && folder == L"inbox")) navigate(L"mail", owner, L"inbox");
 }
 IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder) {
     auto lifetime = shared_from_this();
@@ -1651,7 +1714,7 @@ IAsyncAction summarizeNow(std::shared_ptr<Shell> self, hstring mailbox) {
     } catch (...) { self->error(errorText()); }
 }
 IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
-    if (kind == L"studio" || kind == L"learning" || kind == L"brain" || kind == L"rules" || kind == L"reply-suggestions" || kind == L"skills" || kind == L"summaries" || kind == L"records") {
+    if (kind == L"studio" || kind == L"learning" || kind == L"brain" || kind == L"categories" || kind == L"rules" || kind == L"reply-suggestions" || kind == L"skills" || kind == L"agent" || kind == L"summaries" || kind == L"records") {
         co_await intelligencePage(self, kind); co_return;
     }
     auto version = self->generation; auto account = self->owner;

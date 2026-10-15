@@ -445,6 +445,7 @@ IAsyncAction reviewPage(std::shared_ptr<Shell> shell,hstring kind) {
     Grid root; root.Margin(xaml::Thickness{20,16,20,16});
     for(unsigned i=0;i<4;++i){ RowDefinition row; row.Height(GridLengthHelper::FromValueAndType(i==3 ? 1:0,i==3 ? GridUnitType::Star:GridUnitType::Auto)); root.RowDefinitions().Append(row); }
     auto header=stack(8); header.Orientation(Orientation::Horizontal); words(header,kind==L"today" ? L"Today":L"Reply suggestions",26);
+    if (kind == L"today") { auto place = label(L"In Agent", 12); place.Opacity(0.75); xaml::Automation::AutomationProperties::SetName(place, L"Today is in Agent"); header.Children().Append(place); }
     auto reload=button(L"Reload",[weak=std::weak_ptr<Page>(p)]{ if(auto page=weak.lock();page && page->current()) refresh(page); }); header.Children().Append(reload);
     if(kind==L"today") {
         auto summarize=button(L"Summarize now…",[]{}); MenuFlyout mailboxes;

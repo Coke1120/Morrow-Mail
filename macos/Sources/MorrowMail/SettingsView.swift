@@ -167,7 +167,8 @@ struct NativeSettingsView: View {
                 Button(model.accounts.isEmpty ? "Add an Account" : "Manage Accounts") { selectTab("mail") }
                 Text("Google or Microsoft sign-in opens in your browser. If your provider requires your own app registration, Mail explains the extra steps.").font(.caption).foregroundStyle(.secondary)
             }.padding(8).frame(maxWidth: .infinity, alignment: .leading) }
-            Button("Open Today") { close { model.section = "today" } }.disabled(model.accounts.isEmpty || model.busy || searchRequestBusy || preferenceSaving)
+            Button("Open Today in Agent") { close { model.section = "today" } }.disabled(model.accounts.isEmpty || model.busy || searchRequestBusy || preferenceSaving)
+            Button("Open AI Studio") { close { model.section = "studio" } }.disabled(model.busy || searchRequestBusy || preferenceSaving)
             GroupBox("2 · Set up AI help (optional)") { VStack(alignment: .leading, spacing: 8) {
                 Text("AI can help write replies and summarize mail. Ask your IT support or AI provider for the connection details. Online AI receives only the mail you permit and may charge for requests.")
                 Text(model.state["settings"]["ai"]["configured"].bool ? "AI connection saved." : "AI has not been set up yet. You can still use mail.").font(.caption).foregroundStyle(.secondary)
