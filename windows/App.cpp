@@ -4,6 +4,7 @@
 #include <shobjidl.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Microsoft.UI.Windowing.h>
@@ -1741,6 +1742,292 @@ IAsyncAction cancelActivity(std::shared_ptr<Shell> self, hstring id) {
         if (self->section == L"activity") co_await workspacePage(self, L"activity");
     } catch (...) { self->error(errorText()); }
 }
+namespace {
+// Copy only the server's content-free projection. A later Activity snapshot must
+// not replace the selected job or introduce mail/model output into its dialog.
+struct SummaryActivitySnapshot {
+    hstring id, account, status, kind, createdAt, startedAt, finishedAt, updatedAt, observedAt;
+    hstring diagnostic, messageCount = L"Not recorded";
+    bool available = false;
+};
+hstring summaryActivityStatus(hstring const& status) {
+    if (status == L"failed") return L"Failed";
+    if (status == L"cancelled") return L"Cancelled";
+    if (status == L"interrupted") return L"Interrupted";
+    if (status == L"skipped") return L"Skipped";
+    if (status == L"completed") return L"Completed";
+    return L"Unknown";
+}
+hstring summaryActivityTrigger(hstring const& kind) {
+    if (kind == L"manual") return L"Manual";
+    if (kind == L"arrival") return L"On arrival";
+    if (kind == L"scheduled") return L"Scheduled";
+    return L"Unknown";
+}
+hstring activityTime(hstring const& value) { return value.empty() ? hstring(L"Not recorded") : mailDateLabel(value); }
+hstring summaryActivityTime(SummaryActivitySnapshot const& job) {
+    if (!job.finishedAt.empty()) return L"Finished: " + activityTime(job.finishedAt);
+    if (!job.updatedAt.empty()) return L"Updated: " + activityTime(job.updatedAt);
+    if (!job.startedAt.empty()) return L"Started: " + activityTime(job.startedAt);
+    if (!job.createdAt.empty()) return L"Created: " + activityTime(job.createdAt);
+    return L"Job time not recorded";
+}
+SummaryActivitySnapshot captureSummaryActivity(Json const& task, hstring const& checkedAt) {
+    SummaryActivitySnapshot result;
+    result.account = text(task, L"accountId"); result.status = text(task, L"status"); result.observedAt = checkedAt;
+    auto job = object(task, L"summaryJob");
+    if (result.account.empty() || result.account == L"all" || text(job, L"accountId") != result.account) {
+        result.diagnostic = L"Saved job details are unavailable for this mailbox.";
+        return result;
+    }
+    result.id = text(job, L"id"); result.status = text(job, L"status"); result.kind = text(job, L"kind");
+    result.createdAt = text(job, L"createdAt"); result.startedAt = text(job, L"startedAt");
+    result.finishedAt = text(job, L"finishedAt"); result.updatedAt = text(job, L"updatedAt");
+    // diagnostic is an allowlisted server message, never job.error/provider text.
+    result.diagnostic = text(job, L"diagnostic");
+    if (result.diagnostic.empty() || result.diagnostic.size() > 512) result.diagnostic = L"No diagnostic was recorded for this job.";
+    auto count = job.GetNamedValue(L"messageCount", Value::CreateNullValue());
+    if (count.ValueType() == JsonValueType::Number) {
+        auto number = count.GetNumber();
+        if (std::isfinite(number) && number >= 0 && number <= 9007199254740991.0 && std::floor(number) == number)
+            result.messageCount = to_hstring(static_cast<uint64_t>(number));
+    }
+    auto retry = job.GetNamedValue(L"automaticRetry", Value::CreateNullValue());
+    result.available = result.id.size() == 64
+        && std::all_of(result.id.begin(), result.id.end(), [](wchar_t ch) { return (ch >= L'0' && ch <= L'9') || (ch >= L'a' && ch <= L'f'); })
+        && retry.ValueType() == JsonValueType::Boolean && !retry.GetBoolean();
+    return result;
+}
+hstring summaryActivityText(SummaryActivitySnapshot const& job) {
+    return L"Mailbox: " + job.account + L"\nStatus: " + summaryActivityStatus(job.status)
+        + L"\nTrigger: " + summaryActivityTrigger(job.kind)
+        + L"\n\n" + job.diagnostic
+        + L"\n\nCreated: " + activityTime(job.createdAt) + L"\nStarted: " + activityTime(job.startedAt)
+        + L"\nFinished: " + activityTime(job.finishedAt) + L"\nUpdated: " + activityTime(job.updatedAt)
+        + L"\nMessages in this job: " + job.messageCount
+        + L"\n\nThis job is not retried automatically."
+        + L"\nStatus snapshot observed: " + activityTime(job.observedAt);
+}
+bool summaryActivityContext(std::shared_ptr<Shell> const& shell, SummaryActivitySnapshot const& job,
+    uint64_t version, hstring const& viewOwner) {
+    // Activity lists all connected owners. viewOwner guards the page lifetime;
+    // the captured job's account, not the selected Mail account, owns the detail.
+    return job.available && shell->current(version, viewOwner) && shell->section == L"activity"
+        && shell->connected(job.account);
+}
+bool summaryActivityCurrent(std::shared_ptr<Shell> const& shell, SummaryActivitySnapshot const& job,
+    uint64_t version, hstring const& viewOwner) {
+    return summaryActivityContext(shell, job, version, viewOwner)
+        && !shell->loading && !shell->dialogOpen && !shell->navigationLocked && shell->dirty.empty();
+}
+ContentDialog summaryActivityDialog(std::shared_ptr<Shell> const& shell, SummaryActivitySnapshot const& job) {
+    ContentDialog dialog; dialog.XamlRoot(shell->root.XamlRoot()); dialog.Title(box_value(L"Summary job details"));
+    dialog.Content(scroll(label(summaryActivityText(job)))); dialog.CloseButtonText(L"Close");
+    dialog.DefaultButton(ContentDialogButton::Close);
+    return dialog;
+}
+// Only summaryActivityChecks supplies this probe. Shared value state keeps an
+// Opened callback safe even when the bounded fixture stops awaiting the dialog.
+struct SummaryActivityDialogFixture { bool opened = false, closeRequested = false; };
+IAsyncAction openSummaryActivity(std::shared_ptr<Shell> shell, SummaryActivitySnapshot job, uint64_t version, hstring viewOwner,
+    std::shared_ptr<SummaryActivityDialogFixture> fixture = {}) {
+    if (!summaryActivityCurrent(shell, job, version, viewOwner)) co_return;
+    std::function<void()> release;
+    try {
+        auto dialog = summaryActivityDialog(shell, job);
+        if (fixture) dialog.Opened([fixture](auto const& sender, auto const&) {
+            fixture->opened = true;
+            if (fixture->closeRequested) sender.template as<ContentDialog>().Hide();
+        });
+        auto display = showReaderPopup(shell, dialog, release);
+        struct CloseDialog { ContentDialog dialog; ~CloseDialog() { try { dialog.Hide(); } catch (...) {} } } close{dialog};
+        apartment_context ui;
+        while (display.Status() == AsyncStatus::Started) {
+            // Observe only cached UI ownership; this never fetches or retries a job.
+            if ((fixture && fixture->closeRequested) || !summaryActivityContext(shell, job, version, viewOwner)) { dialog.Hide(); break; }
+            co_await resume_after(std::chrono::milliseconds(250)); co_await ui;
+        }
+        co_await display;
+    } catch (...) {
+        if (shell->current(version, viewOwner) && shell->section == L"activity") shell->error(L"The saved job details could not be opened. Refresh Activity and try again.");
+    }
+    if (release) release();
+}
+StackPanel summaryActivityRow(Json const& task, hstring const& checkedAt, std::function<void(SummaryActivitySnapshot)> open) {
+    auto snapshot = captureSummaryActivity(task, checkedAt);
+    auto item = stack(4);
+    item.Children().Append(label(text(task, L"label", L"Last AI summary") + L" · " + summaryActivityStatus(snapshot.status), 18));
+    item.Children().Append(label(snapshot.account));
+    item.Children().Append(label(summaryActivityTime(snapshot), 12));
+    item.Children().Append(label(snapshot.diagnostic));
+    item.Children().Append(label(L"This job is not retried automatically.", 12));
+    if (snapshot.available) {
+        auto details = button(L"Summary job details", [snapshot, open = std::move(open)] { open(snapshot); });
+        Automation::AutomationProperties::SetAutomationId(details, L"activity.summary.details." + snapshot.id);
+        item.Children().Append(details);
+    } else {
+        item.Children().Append(label(L"Details are unavailable for this saved job.", 12));
+    }
+    return item;
+}
+}
+IAsyncAction summaryActivityChecks(std::shared_ptr<Shell> shell) {
+    auto check = [](bool condition, wchar_t const* message) { if (!condition) throw hresult_error(E_FAIL, message); };
+    check(std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos
+        && shell->section == L"activity" && shell->connected(L"one@fixture.invalid")
+        && shell->connected(L"two@fixture.invalid") && !shell->dialogOpen && !shell->loading,
+        L"Summary diagnostics checks require the owned native fixture Activity page.");
+    Json task = Json::Parse(LR"({"id":"last-summary:one@fixture.invalid","accountId":"one@fixture.invalid","label":"Last AI summary","status":"failed","updatedAt":"2026-10-15T09:00:00.000Z","error":"RAW_TASK_ERROR_CANARY","summaryJob":{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","accountId":"one@fixture.invalid","status":"failed","kind":"scheduled","createdAt":"2020-01-02T03:00:00.000Z","startedAt":"2020-01-02T03:01:00.000Z","finishedAt":null,"updatedAt":"2020-01-02T03:02:00.000Z","messageCount":7,"diagnosticCode":"model_timeout","diagnostic":"The model request exceeded its 45-second limit.","automaticRetry":false,"error":"RAW_PROVIDER_ERROR_CANARY","text":"PRIVATE_MODEL_TEXT_CANARY","items":[{"summary":"PRIVATE_MAIL_CANARY"}],"signature":"OLD_CONTEXT_CANARY"}})");
+    hstring checkedAt = L"2026-10-15T09:01:00.000Z";
+    auto original = captureSummaryActivity(task, checkedAt);
+    auto detail = summaryActivityText(original);
+    check(original.available && original.messageCount == L"7" && original.status == L"failed"
+        && original.updatedAt == L"2020-01-02T03:02:00.000Z" && original.finishedAt.empty(),
+        L"Summary diagnostics lost the exact historical job metadata.");
+    auto timedRow = summaryActivityRow(task, checkedAt, [](auto) {});
+    check(timedRow.Children().GetAt(2).as<TextBlock>().Text() == L"Updated: " + activityTime(original.updatedAt),
+        L"A terminal summary row hid its recorded update behind its start time.");
+    auto finished = Json::Parse(task.Stringify()); put(object(finished, L"summaryJob"), L"finishedAt", L"2020-01-02T03:03:00.000Z");
+    check(summaryActivityRow(finished, checkedAt, [](auto) {}).Children().GetAt(2).as<TextBlock>().Text()
+        == L"Finished: " + activityTime(L"2020-01-02T03:03:00.000Z"), L"A terminal summary row lost its known finish time.");
+    check(std::wstring_view(detail).find(L"Finished: Not recorded") != std::wstring_view::npos
+        && std::wstring_view(detail).find(L"Status snapshot observed: " + activityTime(checkedAt)) != std::wstring_view::npos
+        && std::wstring_view(detail).find(L"This job is not retried automatically.") != std::wstring_view::npos
+        && std::wstring_view(detail).find(L"CANARY") == std::wstring_view::npos,
+        L"Summary diagnostics exposed unprojected content or fabricated the finish time.");
+    for (auto const& [status, title] : {std::pair{L"failed", L"Failed"}, {L"cancelled", L"Cancelled"},
+        {L"interrupted", L"Interrupted"}, {L"skipped", L"Skipped"}, {L"completed", L"Completed"}, {L"legacy-invalid", L"Unknown"}}) {
+        auto next = Json::Parse(task.Stringify()); put(object(next, L"summaryJob"), L"status", status);
+        auto captured = captureSummaryActivity(next, checkedAt);
+        auto row = summaryActivityRow(next, checkedAt, [](auto) {});
+        check(summaryActivityStatus(captured.status) == title
+            && row.Children().GetAt(0).as<TextBlock>().Text() == hstring(L"Last AI summary · ") + title,
+            L"Summary terminal states were collapsed in the Activity row.");
+    }
+    for (auto const& [kind, title] : {std::pair{L"manual", L"Manual"}, {L"arrival", L"On arrival"}, {L"scheduled", L"Scheduled"}, {L"other", L"Unknown"}})
+        check(summaryActivityTrigger(kind) == title, L"Summary trigger labels are ambiguous.");
+    auto absent = Json::Parse(task.Stringify()); auto absentJob = object(absent, L"summaryJob");
+    for (auto key : {L"createdAt", L"startedAt", L"finishedAt", L"updatedAt", L"messageCount"}) absentJob.Insert(key, Value::CreateNullValue());
+    auto unknown = captureSummaryActivity(absent, L"");
+    auto unknownRow = summaryActivityRow(absent, L"", [](auto) {});
+    check(unknown.available && unknown.messageCount == L"Not recorded"
+        && unknownRow.Children().GetAt(2).as<TextBlock>().Text() == L"Job time not recorded"
+        && std::wstring_view(summaryActivityText(unknown)).find(L"Created: Not recorded\nStarted: Not recorded\nFinished: Not recorded\nUpdated: Not recorded") != std::wstring_view::npos,
+        L"A missing job timestamp was replaced by the Activity sorting fallback.");
+    for (auto count : {-1.0, 1.5, 9007199254740992.0}) {
+        absentJob.Insert(L"messageCount", Value::CreateNumberValue(count));
+        check(captureSummaryActivity(absent, checkedAt).messageCount == L"Not recorded", L"An invalid summary message count became a reported total.");
+    }
+    for (auto id : {L"", L" ", L"untrusted-stored-job-id"}) {
+        put(absentJob, L"id", id);
+        auto row = summaryActivityRow(absent, checkedAt, [](auto) {});
+        check(!captureSummaryActivity(absent, checkedAt).available
+            && !row.Children().GetAt(row.Children().Size() - 1).try_as<Button>(),
+            L"A legacy job without a valid opaque reference offered mismatched details.");
+    }
+    absentJob.Insert(L"id", Value::CreateNullValue());
+    check(!captureSummaryActivity(absent, checkedAt).available, L"A null job reference became actionable.");
+    auto mismatch = Json::Parse(task.Stringify()); put(object(mismatch, L"summaryJob"), L"accountId", L"two@fixture.invalid");
+    auto mismatched = captureSummaryActivity(mismatch, checkedAt);
+    check(!mismatched.available && mismatched.updatedAt.empty()
+        && mismatched.diagnostic == L"Saved job details are unavailable for this mailbox.",
+        L"A summary nested under another mailbox supplied the row's diagnosis.");
+    auto unsafeRetry = Json::Parse(task.Stringify()); object(unsafeRetry, L"summaryJob").Insert(L"automaticRetry", Value::CreateBooleanValue(true));
+    check(!captureSummaryActivity(unsafeRetry, checkedAt).available, L"A changed retry contract silently reused the no-retry detail.");
+    auto timeout = Json::Parse(task.Stringify()); auto timeoutJob = object(timeout, L"summaryJob");
+    put(timeoutJob, L"diagnosticCode", L"summary_timeout"); put(timeoutJob, L"diagnostic", L"The summary job exceeded its 90-second limit.");
+    check(captureSummaryActivity(timeout, checkedAt).diagnostic != original.diagnostic
+        && std::wstring_view(summaryActivityText(captureSummaryActivity(timeout, checkedAt))).find(L"90-second") != std::wstring_view::npos
+        && std::wstring_view(detail).find(L"45-second") != std::wstring_view::npos,
+        L"The full-job and model-request timeout diagnoses were collapsed.");
+
+    auto version = shell->generation; auto viewOwner = shell->owner; auto previousPage = shell->page.Content();
+    apartment_context ui;
+    struct RestorePage {
+        std::shared_ptr<Shell> shell; IInspectable page; Json state; uint64_t generation;
+        ~RestorePage() { shell->page.Content(page); shell->state = state; shell->generation = generation; }
+    } restore{shell, previousPage, shell->state, version};
+    std::optional<SummaryActivitySnapshot> selected;
+    auto row = summaryActivityRow(task, checkedAt, [&selected](SummaryActivitySnapshot job) { selected = std::move(job); });
+    shell->show(scroll(row)); shell->root.UpdateLayout();
+    auto details = row.Children().GetAt(row.Children().Size() - 1).as<Button>();
+    check(details.IsEnabled() && unbox_value<hstring>(details.Content()) == L"Summary job details",
+        L"Activity has no usable native saved-job detail entry.");
+    // Mutating the next/latest snapshot must not mutate a previously rendered
+    // button. Neither Today date/context filtering nor its aggregate is read.
+    auto nextJob = object(task, L"summaryJob");
+    put(nextJob, L"id", L"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    put(nextJob, L"status", L"completed"); put(nextJob, L"updatedAt", checkedAt); put(nextJob, L"diagnostic", L"A different latest job.");
+    auto peer = Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(details);
+    peer.GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
+    auto deadline = GetTickCount64() + 5000;
+    while (!selected.has_value() && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+    check(selected.has_value() && selected->id == original.id && selected->account == original.account
+        && selected->updatedAt == original.updatedAt && summaryActivityText(*selected) == detail,
+        L"The saved-job button followed a newer job or lost its original mailbox/date/context.");
+    check(summaryActivityCurrent(shell, *selected, version, viewOwner)
+        && !summaryActivityCurrent(shell, *selected, version + 1, viewOwner)
+        && !summaryActivityCurrent(shell, *selected, version, viewOwner == L"two@fixture.invalid" ? hstring(L"one@fixture.invalid") : hstring(L"two@fixture.invalid")),
+        L"A stale Activity generation or mailbox scope can open captured job details.");
+    auto disconnected = *selected; disconnected.account = L"removed@fixture.invalid";
+    check(!summaryActivityCurrent(shell, disconnected, version, viewOwner), L"A removed mailbox can open captured job details.");
+    // Activity is a workspace-wide observation even when Mail selected owner A.
+    // An explicitly displayed owner B row must open B's captured job, not A's.
+    auto otherTask = Json::Parse(task.Stringify()); put(otherTask, L"accountId", L"two@fixture.invalid");
+    put(otherTask, L"id", L"last-summary:two@fixture.invalid"); put(object(otherTask, L"summaryJob"), L"accountId", L"two@fixture.invalid");
+    std::optional<SummaryActivitySnapshot> otherSelected;
+    auto otherRow = summaryActivityRow(otherTask, checkedAt, [&otherSelected](SummaryActivitySnapshot job) { otherSelected = std::move(job); });
+    row.Children().Append(otherRow); shell->root.UpdateLayout();
+    auto otherButton = otherRow.Children().GetAt(otherRow.Children().Size() - 1).as<Button>();
+    auto otherPeer = Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(otherButton);
+    otherPeer.GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
+    deadline = GetTickCount64() + 5000;
+    while (!otherSelected.has_value() && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+    check(otherSelected.has_value() && otherSelected->account == L"two@fixture.invalid" && otherSelected->id != selected->id
+        && summaryActivityCurrent(shell, *otherSelected, version, viewOwner)
+        && std::wstring_view(summaryActivityText(*otherSelected)).find(L"Mailbox: two@fixture.invalid") != std::wstring_view::npos,
+        L"A displayed summary job was blocked by the unrelated selected Mail account or opened the wrong owner.");
+
+    auto dialog = summaryActivityDialog(shell, *selected);
+    auto rendered = dialog.Content().as<ScrollViewer>().Content().as<TextBlock>();
+    check(rendered.Text() == detail && dialog.PrimaryButtonText().empty() && dialog.SecondaryButtonText().empty()
+        && dialog.CloseButtonText() == L"Close", L"Summary details lost the captured metadata or offered a work/retry action.");
+    auto opened = std::make_shared<bool>(false); dialog.Opened([opened](auto const&, auto const&) { *opened = true; });
+    std::function<void()> release;
+    auto display = showReaderPopup(shell, dialog, release);
+    struct CloseDialog { ContentDialog dialog; std::function<void()> release; ~CloseDialog() { try { dialog.Hide(); } catch (...) {} release(); } } close{dialog, release};
+    deadline = GetTickCount64() + 5000;
+    while (!*opened && display.Status() == AsyncStatus::Started && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+    check(*opened && shell->dialogOpen && rendered.Text() == detail && shell->current(version, viewOwner)
+        && shell->section == L"activity", L"The native summary dialog changed the selected saved job or navigated to Today.");
+    dialog.Hide();
+    deadline = GetTickCount64() + 5000;
+    while (display.Status() == AsyncStatus::Started && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+    check(display.Status() == AsyncStatus::Completed && !shell->dialogOpen, L"Closing summary job details retained the native modal guard.");
+    display.GetResults();
+    // Run the production by-value coroutine too: an already-open snapshot closes
+    // if its page is revoked or its owner disappears. No service request is made.
+    for (bool disconnect : {false, true}) {
+        auto captured = disconnect ? *otherSelected : *selected;
+        auto fixture = std::make_shared<SummaryActivityDialogFixture>();
+        struct CloseFixture { std::shared_ptr<SummaryActivityDialogFixture> fixture; ~CloseFixture() { fixture->closeRequested = true; } } closeFixture{fixture};
+        auto opening = openSummaryActivity(shell, captured, version, viewOwner, fixture);
+        deadline = GetTickCount64() + 5000;
+        while (!fixture->opened && opening.Status() == AsyncStatus::Started && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+        check(fixture->opened && shell->dialogOpen, L"The saved-job entry did not finish opening its guarded native dialog.");
+        if (disconnect) {
+            shell->state = Json::Parse(restore.state.Stringify());
+            JsonArray accounts;
+            for (auto const& entry : array(shell->state, L"accounts")) if (text(entry.GetObject(), L"id") != captured.account) accounts.Append(entry);
+            shell->state.Insert(L"accounts", accounts);
+        } else ++shell->generation;
+        deadline = GetTickCount64() + 5000;
+        while (opening.Status() == AsyncStatus::Started && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+        check(opening.Status() == AsyncStatus::Completed && !shell->dialogOpen, L"A revoked Activity page or removed mailbox retained its saved-job dialog.");
+        opening.GetResults(); shell->state = restore.state; shell->generation = version;
+    }
+    std::fprintf(stderr, "Summary Activity diagnostics passed: captured historical job, terminal states, safe fields, timestamps, owner guards, native detail control and dialog lifecycle.\n"); std::fflush(stderr);
+}
 IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
     if (kind == L"studio" || kind == L"learning" || kind == L"brain" || kind == L"categories" || kind == L"rules" || kind == L"reply-suggestions" || kind == L"skills" || kind == L"agent" || kind == L"summaries" || kind == L"records") {
         co_await intelligencePage(self, kind); co_return;
@@ -1764,7 +2051,15 @@ IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
             content.Children().Append(label(L"Recent-mail sync checks a limited set of messages. Older downloaded messages may still have an earlier read/unread state. Opening Activity does not start provider or AI work."));
             content.Children().Append(label(L"Activity status updated: " + mailDateLabel(text(result, L"checkedAt")) + L" (local status, not the last mailbox sync)", 12));
             for (auto const& value : array(result, L"tasks")) {
-                auto task = value.GetObject(); auto item = stack(4);
+                auto task = value.GetObject();
+                if (std::wstring_view(text(task, L"id")).starts_with(L"last-summary:")) {
+                    content.Children().Append(summaryActivityRow(task, text(result, L"checkedAt"),
+                        [weak = self->weak_from_this(), version, account](SummaryActivitySnapshot snapshot) {
+                            if (auto shell = weak.lock()) openSummaryActivity(shell, snapshot, version, account);
+                        }));
+                    continue;
+                }
+                auto item = stack(4);
                 item.Children().Append(label(text(task, L"label") + L" · " + text(task, L"status"), 18));
                 item.Children().Append(label(text(task, L"accountId") + L"\n" + text(task, L"detail")));
                 if (!text(task, L"error").empty()) item.Children().Append(label(text(task, L"error")));
@@ -1858,7 +2153,7 @@ IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
             content.Children().Append(label(L"One daily summary per mailbox, updated from its latest 20 validated jobs. Today keeps those saved summaries.", 12));
         }
         if (self->current(version, account)) self->show(scroll(content));
-    } catch (...) { self->error(errorText()); }
+    } catch (...) { if (self->current(version, account)) self->error(errorText()); }
 }
 }
 

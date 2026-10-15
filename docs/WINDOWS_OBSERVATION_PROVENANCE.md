@@ -32,6 +32,43 @@ resource report; it never substitutes for a retained native handle or supplies
 a missing process exit code. Normal Reader behavior and the strict observation
 gate are unchanged.
 
+PR #52's exact-head Windows run `38699628543` failed its first owned Reader at
+the 25-second `initial-document` deadline. Its expected data-HTML navigation was
+allowed, but the matching completion was not observed. The original cause is
+unknown; the unchanged Reader source and other passing runs do not waive that
+failure. The retained `controller-ready` phase marks entry into a wait, not
+completed initialization.
+
+Reader report schema 3 additionally captures the first marked fixture Reader's
+environment/controller return to the UI thread, handler installation and first
+render return. Its first document (epoch 1) records navigation start/decision,
+ContentLoading, DOMContentLoaded and NavigationCompleted using numeric IDs,
+fixed outcomes and relative times. The runtime version is read as soon as the
+environment exists, validated against the fixed numeric/channel grammar, and
+otherwise reported unavailable. No URLs, HTML, mailbox data, paths or exception
+text are retained. Later fixture remounts do not consume this detail budget.
+
+The first four waits also report bounded iteration counts and the largest
+interval from starting the existing 20 ms await until resuming on the UI thread.
+That interval includes timer/thread-pool scheduling and UI dispatch; it does not
+isolate UI blocking or prove a renderer fault. `condition-met` means that wait's
+existing predicate returned true, including its inactive/fallback alternative;
+it is not a new readiness milestone. Deadline, cancellation and aborted waits
+retain their own outcomes when unwinding.
+
+These details share a 24-record budget plus one overflow receipt, within the
+unchanged 64-event timeline. Typed parsing rejects out-of-range IDs, times,
+outcomes and non-version text. Counter overflow or an unavailable event getter
+or subscription makes the diagnostic report incomplete. An unavailable runtime
+version only marks that field as `available=false`; it does not by itself make
+the lifecycle report incomplete. Bounded pipe
+controls retain early details even after later output trims the diagnostic tail,
+and a failed child remains failed with a complete diagnostic stream. None of
+this changes the 20-second initialization timer, 25-second total Reader deadline,
+cold fixture, success predicates, network policy or retry behavior. Windows
+compilation and actual WebView2 execution are still required to assess PR #52;
+portable helper/parser tests do not establish that its timeout was repaired.
+
 Portable parser/schema and pipe-drain checks use:
 
 ```powershell
