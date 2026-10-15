@@ -28,6 +28,9 @@ const SENT: &str = "已寄件";
 const SENT_WIRE: &str = "&XfJbxE72-";
 const HEADER: &str = "From: Fixture <owner@example.invalid>\r\nTo: visible@example.invalid\r\nSubject: Fixture message\r\nDate: Wed, 23 Sep 2026 12:00:00 +0000\r\nMessage-ID: <fixture@example.invalid>\r\n";
 
+#[path = "imap/read_session.rs"]
+mod read_session;
+
 #[tokio::test]
 async fn refused_imap_connection_is_a_provider_failure_not_a_workspace_error() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -214,6 +217,7 @@ struct ImapScenario {
     omit_changed_modseq: bool,
     pause_discovery: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
     pause_flags: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
+    truncate_discovery: bool,
     highest_modseq: Option<u64>,
     changed_modseq: Option<u64>,
     extension_rejected: bool,
@@ -273,6 +277,7 @@ impl Default for ImapScenario {
             omit_changed_modseq: false,
             pause_discovery: None,
             pause_flags: None,
+            truncate_discovery: false,
             highest_modseq: None,
             changed_modseq: None,
             extension_rejected: false,
@@ -327,7 +332,14 @@ struct ImapFixture {
     state: Arc<Mutex<ImapScenario>>,
     log: Log,
     failures: Log,
+    active_sessions: Arc<std::sync::atomic::AtomicUsize>,
     task: JoinHandle<()>,
+}
+struct ActiveImapSession(Arc<std::sync::atomic::AtomicUsize>);
+impl Drop for ActiveImapSession {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 impl Drop for ImapFixture {
     fn drop(&mut self) {
@@ -350,6 +362,8 @@ impl ImapFixture {
         let failures = Arc::new(Mutex::new(Vec::new()));
         let saved_failures = failures.clone();
         let state = Arc::new(Mutex::new(state));
+        let active_sessions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let saved_active_sessions = active_sessions.clone();
         let (saved_log, saved_state) = (log.clone(), state.clone());
         let task = tokio::spawn(async move {
             let mut sessions = JoinSet::new();
@@ -358,8 +372,11 @@ impl ImapFixture {
                     result=listener.accept()=>{
                         let Ok((socket,_))=result else{break};
                         let (acceptor,log,state)=(acceptor.clone(),saved_log.clone(),saved_state.clone());
+                        let active = saved_active_sessions.clone();
                         sessions.spawn(checked_session(async move {
                             let Ok(socket)=acceptor.accept(socket).await else{return Ok(())};
+                            active.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            let _active = ActiveImapSession(active);
                             imap_session(socket,state,log).await
                         }, saved_failures.clone()));
                     },
@@ -373,6 +390,7 @@ impl ImapFixture {
             state,
             log,
             failures,
+            active_sessions,
             task,
         }
     }
@@ -914,6 +932,10 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                         format!(" MODSEQ ({seq})")
                     };
                     let row = format!("* 1 FETCH (UID {uid}{suffix})\r\n");
+                    if scenario.truncate_discovery {
+                        write(&mut stream, &row[..row.len() - 3]).await?;
+                        return Ok(());
+                    }
                     write(&mut stream, &row).await?;
                     if scenario.duplicate_uid {
                         write(&mut stream, &row).await?;
