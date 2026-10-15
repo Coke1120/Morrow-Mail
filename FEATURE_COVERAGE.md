@@ -37,6 +37,17 @@ paired-tag requirements and distribution limits are in the
 [release notes](docs/releases/v0.8.2.md) and
 [verification](VERIFICATION.md#v082-release-preparation--15-october-2026).
 
+**Candidate — bounded IMAP read sessions:** change discovery and the following
+cached-mail flag read share one owned authenticated connection. Connections are
+not retained across sync ticks or owners. Cancellation/error drops the socket;
+the next phase checks the saved connection and revalidates capabilities and
+UIDVALIDITY. Unsupported MOVE/UIDPLUS preflight reports that no move was attempted;
+uncertain writes still require provider review before retry. IDLE and non-MOVE
+fallback remain unfinished separate units. After stacking the identity source,
+the focused 10-case TLS run, formatting, strict Clippy and complete Rust suite
+passed (456/0/4 existing ignored). Native CI and live-account acceptance remain
+pending. See [scope and validation](docs/IMAP_READ_SESSIONS.md).
+
 **0.8.1 source — Gmail authorization recovery:** sync, folder-catalog and
 raw-message reads may refresh a rejected access token and retry once. History
 downloads retain routine token-expiry refresh before a request; their first

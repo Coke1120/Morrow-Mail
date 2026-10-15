@@ -34,6 +34,12 @@ and connection remain unchanged. Provider Trash keeps its separate one-minute
 undo. No cache deletion, quota or global offline mode is introduced. See
 [controls and remaining limits](docs/DOWNLOAD_CONTROLS.md).
 
+The [IMAP read-session candidate](docs/IMAP_READ_SESSIONS.md) reuses one owned
+connection for change discovery and cached-mail flag reconciliation, with
+connection checks and bounded deadlines. It closes the socket after the round
+and discards failed or cancelled reads. IDLE and a non-MOVE write fallback remain
+separate implementation work; this candidate does not add either.
+
 The activity-recovery follow-up keeps cancellation requests separate across
 mailboxes and AI work types. Cancelling one analysis remains effective when
 another mailbox is cancelled or its reply settings change; completed or cancelled

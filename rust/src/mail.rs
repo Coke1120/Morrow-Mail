@@ -1157,6 +1157,49 @@ pub async fn sync(app: &App, owners: &[String]) -> Result<Value> {
     .await?;
     Ok(json!(errors))
 }
+fn organize_failure(mail: &Value, error: Error) -> Error {
+    let code = string(&error.body, "code");
+    if code == "imap_move_unsupported" && ["", "imap"].contains(&string(mail, "provider")) {
+        // This fixed code is produced before SELECT or any provider mutation.
+        // Never present it as an uncertain write or forward server error text.
+        let mut safe = Error::new(
+            409,
+            "Safe IMAP moves require MOVE and UIDPLUS support. This server does not advertise both. No move was attempted; your cached copy is retained.",
+        );
+        safe.body["code"] = "imap_move_unsupported".into();
+        return safe;
+    }
+    let reason = match code {
+        "provider_permission_denied" if mail["provider"] == "google" =>
+            "Gmail denied this change because the required permission was not granted. Sign in again with this account and approve mail access in your browser.".to_owned(),
+        "provider_quota_exceeded" | "provider_daily_quota_exceeded" =>
+            "The provider is limiting requests. Wait before reviewing another attempt.".to_owned(),
+        _ if error.provider_status.is_some_and(|status| status < 500) => error.to_string(),
+        _ => "The provider change could not be confirmed.".to_owned(),
+    };
+    let status = error
+        .provider_status
+        .map(|status| format!(" Provider HTTP status: {status}."))
+        .unwrap_or_default();
+    let mut safe = Error::new(
+        502,
+        &format!(
+            "{reason}{status} Your cached copy is retained. Check your provider before retrying."
+        ),
+    );
+    safe.provider_status = error.provider_status;
+    if let Some(status) = error.provider_status {
+        safe.body["providerStatus"] = status.into();
+    }
+    if !code.is_empty() {
+        safe.body["code"] = code.into();
+    }
+    if code == "provider_permission_denied" || error.provider_status == Some(401) {
+        safe.body["recoveryAction"] = "reconnect".into();
+    }
+    safe
+}
+
 pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
     let parts = ctx
         .path
@@ -1602,30 +1645,7 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             } else {
                 providers::organize(&app.0.client, &mail, &message, &destination, mode).await
             }
-            .map_err(|error| {
-                let code = string(&error.body, "code");
-                let reason = match code {
-                    "provider_permission_denied" if mail["provider"] == "google" =>
-                        "Gmail denied this change because the required permission was not granted. Sign in again with this account and approve mail access in your browser.".to_owned(),
-                    "provider_quota_exceeded" | "provider_daily_quota_exceeded" =>
-                        "The provider is limiting requests. Wait before reviewing another attempt.".to_owned(),
-                    _ if error.provider_status.is_some_and(|status| status < 500) => error.to_string(),
-                    _ => "The provider change could not be confirmed.".to_owned(),
-                };
-                let status = error.provider_status.map(|status| format!(" Provider HTTP status: {status}.")).unwrap_or_default();
-                let mut safe = Error::new(502, &format!("{reason}{status} Your cached copy is retained. Check your provider before retrying."));
-                safe.provider_status = error.provider_status;
-                if let Some(status) = error.provider_status {
-                    safe.body["providerStatus"] = status.into();
-                }
-                if !code.is_empty() {
-                    safe.body["code"] = code.into();
-                }
-                if code == "provider_permission_denied" || error.provider_status == Some(401) {
-                    safe.body["recoveryAction"] = "reconnect".into();
-                }
-                safe
-            })?;
+            .map_err(|error| organize_failure(&mail, error))?;
             if trashing && patch["folder"] != "trash" {
                 return Err(Error::new(
                     502,
@@ -1748,6 +1768,36 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsupported_imap_move_is_a_safe_preflight_refusal_not_an_uncertain_write() {
+        let mail = json!({"provider":"imap"});
+        let mut unsupported = Error::new(409, "PRIVATE-RAW-SERVER-TEXT");
+        unsupported.body["code"] = "imap_move_unsupported".into();
+        let safe = organize_failure(&mail, unsupported);
+        assert_eq!(safe.status, 409);
+        assert_eq!(safe.body["code"], "imap_move_unsupported");
+        assert!(safe.to_string().contains("MOVE and UIDPLUS"));
+        assert!(safe.to_string().contains("No move was attempted"));
+        assert!(!safe.to_string().contains("could not be confirmed"));
+        assert!(!safe.to_string().contains("PRIVATE"));
+        assert!(safe.provider_status.is_none());
+
+        for provider in ["imap", "google", "microsoft"] {
+            let safe = organize_failure(
+                &json!({"provider":provider}),
+                Error::new(502, "PRIVATE-PARTIAL-MOVE-RESPONSE"),
+            );
+            assert_eq!(safe.status, 502);
+            assert!(safe.to_string().contains("could not be confirmed"));
+            assert!(
+                safe.to_string()
+                    .contains("Check your provider before retrying")
+            );
+            assert!(!safe.to_string().contains("No move was attempted"));
+            assert!(!safe.to_string().contains("PRIVATE"));
+        }
+    }
 
     #[tokio::test]
     async fn all_mail_imap_refresh_attempts_a_fetch() {
