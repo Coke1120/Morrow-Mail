@@ -851,7 +851,7 @@ void Shell::mailPage() {
     Automation::AutomationProperties::SetAutomationId(mailSelectionActions, L"mail.selection.actions");
     mailSelectionCount = label(L"", 12); mailSelectionActions.Children().Append(mailSelectionCount);
     auto selectionButtons=actions();
-    auto selectionMenu = actionMenu(L"Actions", mailActionsMenu(Json()), L"Actions for selected messages");
+    selectionMenu = actionMenu(L"Actions", mailActionsMenu(Json()), L"Actions for selected messages");
     Automation::AutomationProperties::SetAutomationId(selectionMenu, L"mail.selection.menu"); selectionButtons.Children().Append(selectionMenu);
     selectionDelete = button(L"Delete", [weak] { if (auto self = weak.lock()) self->trashMessages(self->selectedMessages()); });
     Automation::AutomationProperties::SetName(selectionDelete, L"Move selected messages to provider Trash");
@@ -920,8 +920,9 @@ void Shell::updateMailSelectionActions() {
     auto messages = selectedMessages();
     mailSelectionActions.Visibility(messages.empty() ? Visibility::Collapsed : Visibility::Visible);
     mailSelectionCount.Text(to_hstring(messages.size()) + L" selected");
-    mailSelectionActions.IsEnabled(!loading && !dialogOpen && !closing && dirty.empty());
-    selectionDelete.IsEnabled(!messages.empty() && std::all_of(messages.begin(), messages.end(), [&](auto const& row) { return canTrash(row); }));
+    bool enabled = !loading && !dialogOpen && !closing && dirty.empty();
+    selectionMenu.IsEnabled(enabled);
+    selectionDelete.IsEnabled(enabled && !messages.empty() && std::all_of(messages.begin(), messages.end(), [&](auto const& row) { return canTrash(row); }));
 }
 void Shell::applyMailLayout() {
     if (!mailBody || !mailList || !readerPane || !mailDivider) return;

@@ -36,6 +36,27 @@ no local Rust rerun is claimed for this UI candidate.
 The separately retained Today completion-policy work is not part of this
 candidate. See [interaction behavior](docs/CONTEXTUAL_ACTIONS.md) for scope.
 
+### Initial PR #59 Windows compilation and narrow correction
+
+[Run 38721478130](https://github.com/Coke1120/Morrow-Mail/actions/runs/38721478130),
+attempt 1, tested head `4dd180b9c2b0b00c1facf98b90d46cbb889c3e4b` through
+synthetic merge `06c0e24738c52d39d6ee94139e12466b279d7766`. Windows job
+`116376822306` passed 428 Rust tests, with zero failures and four ignored tests,
+then failed package compilation with C2039 at `windows/App.cpp:923`:
+`StackPanel` has no `IsEnabled` member. The native walkthrough, relocated
+PowerShell 5.1 check and benchmark were skipped. This result does not validate
+the new mounted-control fixtures or the candidate's rendered appearance.
+
+The narrow correction stores the existing Actions `DropDownButton` and applies
+the shared loading/dialog/closing/unsaved-edit gate to that button and Delete.
+Delete retains the additional all-selected-messages-can-Trash predicate. The
+layout, action handlers and lifecycle checks are unchanged. The existing
+selection fixture gains mounted-control checks for all four gates and recovery
+of the original Trash eligibility, with failure-safe fixture-state restoration.
+These new checks and the corrected sources still require a fresh exact-head
+Windows SDK build and native run. Linux source inspection and `git diff --check`
+do not establish SDK, visual, keyboard-traversal or screen-reader acceptance.
+
 ## Saved summary job diagnostics — 15 October 2026
 
 This separate follow-up starts from PR #50's tested tree, later merged as

@@ -70,7 +70,7 @@ IAsyncAction returnedMailActionsChecks(std::shared_ptr<Shell> shell) {
 }
 IAsyncAction contextualMailChecks(std::shared_ptr<Shell> shell) {
     auto check=[](bool value,wchar_t const* why){if(!value)throw hresult_error(E_FAIL,why);};
-    check(std::wstring_view(GetCommandLineW()).find(L"--native-smoke")!=std::wstring_view::npos && shell->rows.Items().Size()>1 && !shell->loading,L"Contextual actions require the owned native fixture.");
+    check(std::wstring_view(GetCommandLineW()).find(L"--native-smoke")!=std::wstring_view::npos && shell->rows.Items().Size()>1 && !shell->loading && !shell->dialogOpen && !shell->closing && shell->dirty.empty(),L"Contextual actions require the idle owned native fixture.");
     struct RestoreLayout {std::shared_ptr<Shell> shell;hstring layout;bool focused;~RestoreLayout(){shell->mailLayout=layout;shell->readerFocused=focused;shell->applyMailLayout();}} restoreLayout{shell,shell->mailLayout,shell->readerFocused};
     shell->mailLayout=L"right";shell->readerFocused=false;shell->applyMailLayout();shell->root.UpdateLayout();
     auto mountedReader=shell->reader.Content();auto refreshRequest=shell->readGeneration;
@@ -93,6 +93,29 @@ IAsyncAction contextualMailChecks(std::shared_ptr<Shell> shell) {
             if(item.Text()==L"Reply all")replyAll=item.IsEnabled();
         }
         check(marks==3 && (count!=1 || replyAll),L"Selected message commands or the single-message Reply all action are not reachable in the opened native menu.");co_await closeActionFlyout(menu);
+        check(menu==shell->selectionMenu && menu.IsEnabled(),L"The stored selection Actions control is not the enabled mounted button.");
+        auto messages=shell->selectedMessages();
+        bool canDelete=!messages.empty() && std::all_of(messages.begin(),messages.end(),[&](auto const& row){return shell->canTrash(row);});
+        check(shell->selectionDelete.IsEnabled()==canDelete,L"The mounted Delete control lost its selected-message Trash eligibility.");
+        {
+            // Do not suspend while injecting fixture gates; always restore them on failure.
+            struct RestoreGates {
+                std::shared_ptr<Shell> shell; bool loading,dialogOpen,closing; std::set<std::wstring> dirty;
+                ~RestoreGates() {
+                    shell->loading=loading;shell->dialogOpen=dialogOpen;shell->closing=closing;shell->dirty=std::move(dirty);
+                    try { shell->updateMailSelectionActions(); } catch (...) {}
+                }
+            } restore{shell,shell->loading,shell->dialogOpen,shell->closing,shell->dirty};
+            for(auto gate:{&Shell::loading,&Shell::dialogOpen,&Shell::closing}) {
+                (shell.get()->*gate)=true;shell->updateMailSelectionActions();
+                check(!menu.IsEnabled() && !shell->selectionDelete.IsEnabled(),L"A busy, modal or closing selection kept an action control enabled.");
+                (shell.get()->*gate)=false;shell->updateMailSelectionActions();
+                check(menu.IsEnabled() && shell->selectionDelete.IsEnabled()==canDelete,L"Clearing a selection gate did not restore the eligible controls.");
+            }
+            shell->dirty.insert(L"contextual-selection-gate-fixture");shell->updateMailSelectionActions();
+            check(!menu.IsEnabled() && !shell->selectionDelete.IsEnabled(),L"Unsaved edits kept a selection action enabled.");
+        }
+        check(menu.IsEnabled() && shell->selectionDelete.IsEnabled()==canDelete,L"Restoring the fixture gates did not restore the eligible selection controls.");
     }
     shell->loading=true;shell->rows.SelectedItems().Clear();for(auto const& row:savedSelection)shell->rows.SelectedItems().Append(row);shell->loading=false;shell->updateMailSelectionActions();
     auto view=find(shell->root,L"mail.view").as<controls::DropDownButton>();co_await openActionFlyout(view);

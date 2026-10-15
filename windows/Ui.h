@@ -74,6 +74,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     controls::Button readerBack{nullptr}; // Keep the current native peer alive for focus restoration.
     controls::StackPanel mailSelectionActions{nullptr};
     controls::TextBlock mailSelectionCount{nullptr};
+    controls::DropDownButton selectionMenu{nullptr};
     controls::Button selectionDelete{nullptr};
     controls::Grid mailBody{nullptr};
     controls::Grid mailList{nullptr};
