@@ -5,10 +5,20 @@ struct TodayView: View {
     var body: some View { TodayReviewWorkspace(review: model.review) }
 }
 
+private struct TodayReplySelection {
+    let id = UUID()
+    let scope: String
+    let owner: String
+    let key: String
+    let proposal: JSON
+}
+
+@MainActor
 private struct TodayReviewWorkspace: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var review: ReviewWorkspaceState
     @State private var showSummaryReview = false
+    @State private var replySelection: TodayReplySelection?
     private var accounts: [JSON] { model.accounts.filter { review.scope == "all" || $0.id == review.scope } }
     private var events: [JSON] { model.state["today"]["events"].array.filter { review.scope == "all" || $0["accountId"].string == review.scope } }
     private var replies: [JSON] { model.state["today"]["replySuggestions"].array.filter { review.scope == "all" || review.owner($0) == review.scope } }
@@ -16,6 +26,13 @@ private struct TodayReviewWorkspace: View {
     private var completedTodos: [JSON] { model.state["today"]["completedTodos"].array.filter { review.scope == "all" || $0["accountId"].string == review.scope } }
     private var replyCount: Int { let counts=model.state["today"]["replySuggestionCounts"]; return counts.isNull ? replies.count : review.scope == "all" ? counts.object.values.reduce(0) { $0 + Int($1.number) } : Int(counts[review.scope].number) }
     private var source: JSON? { review.originalSelection[review.scope] }
+    private var selectedReply: JSON? {
+        guard let selection = replySelection, selection.scope == review.scope,
+              selection.scope == "all" || selection.scope == selection.owner,
+              model.accounts.contains(where: { $0.id == selection.owner }),
+              review.proposals[selection.key] == selection.proposal else { return nil }
+        return selection.proposal
+    }
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
             GeometryReader { area in
@@ -23,12 +40,28 @@ private struct TodayReviewWorkspace: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) { Text("Today").font(.title.weight(.semibold)); Text(context.date.formatted(date: .complete, time: .omitted) + " · " + TimeZone.current.identifier).font(.callout).foregroundStyle(.secondary) }
                         Spacer()
-                        Button("Summarize now…") { showSummaryReview = true }.buttonStyle(.borderedProminent).disabled(model.busy || model.backgroundBusy || accounts.isEmpty)
-                        Button { model.perform({ try await model.sync() }, blocksNavigation: false) } label: { Label(model.syncing ? "Syncing…" : "Sync all", systemImage: "arrow.clockwise") }.disabled(model.busy || model.backgroundBusy || model.syncing || !model.hasMailbox)
+                        if let first = replies.first {
+                            Button("Review replies (\(replyCount))") { openReply(first) }.buttonStyle(.borderedProminent)
+                                .disabled(model.busy || review.writing).accessibilityIdentifier("today.reviewReplies")
+                        }
+                        Menu("More") {
+                            Button("Summarize now…") { showSummaryReview = true }.disabled(model.busy || model.backgroundBusy || accounts.isEmpty)
+                            Button("Reload saved suggestions") { Task { await review.load(review.scope, model: model) } }.disabled(review.writing)
+                        }.fixedSize().accessibilityLabel("More Today actions").accessibilityIdentifier("today.moreMenu")
                     }.padding(.horizontal, 24).padding(.vertical, 16)
                     ReviewAccountTabs(review: review)
+                    if let error = review.errors[review.scope] {
+                        HStack { Text(error).font(.callout).foregroundStyle(.red); Spacer(); Button("Reload suggestions") { Task { await review.load(review.scope, model: model) } }.disabled(review.writing) }.padding(12)
+                    }
                     Divider()
-                    if let source, area.size.width < 780 {
+                    if let selectedReply, area.size.width < 780 {
+                        VStack(spacing: 0) { closeReply; replyEditor(selectedReply) }
+                    } else if let selectedReply {
+                        HSplitView {
+                            content(context.date).frame(minWidth: 350)
+                            VStack(spacing: 0) { closeReply; replyEditor(selectedReply) }.frame(minWidth: 360, idealWidth: 420)
+                        }
+                    } else if let source, area.size.width < 780 {
                         VStack(spacing: 0) { Button("Back to Today") { review.originalSelection[review.scope] = nil }.keyboardShortcut(.cancelAction).padding(12); original(source) }
                     } else if let source {
                         HSplitView { content(context.date).frame(minWidth: 350); original(source).frame(minWidth: 320, idealWidth: 380) }
@@ -36,6 +69,58 @@ private struct TodayReviewWorkspace: View {
                 }
             }
         }.sheet(isPresented: $showSummaryReview) { TodaySummaryReview().environmentObject(model) }
+        .task(id: replySelection?.id) {
+            guard let captured = replySelection else { return }
+            // Reopening can overlap the cancelled inspection's deferred cleanup.
+            // Wait locally; the original inspection and all its guards stay intact.
+            while review.preparing.contains(captured.key) {
+                do { try await Task.sleep(nanoseconds: 20_000_000) } catch { return }
+            }
+            guard !Task.isCancelled, replySelection?.id == captured.id,
+                  review.scope == captured.scope, selectedReply == captured.proposal else { return }
+            await review.inspect(captured.proposal, model: model)
+        }
+        .task(id: selectedReply == nil ? nil : review.scope) {
+            guard selectedReply != nil else { return }
+            let owner = review.scope
+            while !Task.isCancelled {
+                await review.load(owner, model: model)
+                do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+            }
+        }
+        .onChange(of: review.scope) { _ in replySelection = nil }
+        .onChange(of: source) { next in if next != nil { replySelection = nil } }
+        .onChange(of: review.proposals[replySelection?.key ?? ""]) { _ in
+            if let selection = replySelection, review.proposals[selection.key] == nil { replySelection = nil }
+        }
+    }
+    private var closeReply: some View {
+        HStack {
+            Button("Back to Today") { replySelection = nil }.keyboardShortcut(.cancelAction).accessibilityIdentifier("today.closeReply")
+            Spacer()
+            Text("Draft edits stay with their mailbox").font(.caption).foregroundStyle(.secondary)
+        }.padding(12)
+    }
+    private func openReply(_ proposal: JSON) {
+        let owner = review.owner(proposal), key = review.key(proposal)
+        guard !model.busy, !review.writing, review.scope == "all" || review.scope == owner,
+              model.accounts.contains(where: { $0.id == owner }) else { return }
+        review.originalSelection[review.scope] = nil
+        review.show(proposal)
+        guard let working = review.proposals[key], review.owner(working) == owner else { return }
+        replySelection = TodayReplySelection(scope: review.scope, owner: owner, key: key, proposal: working)
+    }
+    private func replyEditor(_ proposal: JSON) -> some View {
+        let captured = replySelection
+        return ReplySuggestionEditor(review: review, proposal: proposal, onUpdated: { previous, fresh in
+            guard let captured, replySelection?.id == captured.id, review.scope == captured.scope,
+                  previous == captured.proposal, review.key(previous) == captured.key,
+                  review.owner(fresh) == captured.owner,
+                  model.accounts.contains(where: { $0.id == captured.owner }) else { return }
+            // Only the explicit editor action can retarget this presentation;
+            // unrelated shared selection changes never choose a different mail.
+            replySelection = TodayReplySelection(scope: captured.scope, owner: captured.owner, key: review.key(fresh), proposal: fresh)
+        })
     }
     private func content(_ now: Date) -> some View {
         ScrollView {
@@ -52,6 +137,22 @@ private struct TodayReviewWorkspace: View {
                 ForEach(Array(attention.prefix(3))) { event in eventRow(event) }
                 if attention.count > 3 { DisclosureGroup("More decisions (\(attention.count - 3))") { ForEach(Array(attention.dropFirst(3))) { event in eventRow(event) } } }
                 HStack { Text("Replies to review").font(.headline); Spacer(); Button("View all \(replyCount) →") { model.section = "reply-suggestions" }.disabled(!model.canNavigate) }
+                if replies.isEmpty { Text("No current suggestions for this scope. Automatic checks and setup live on Reply suggestions.").foregroundStyle(.secondary) }
+                ForEach(Array(replies.prefix(3)), id: \.viewID) { proposal in
+                    Button {
+                        openReply(proposal)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 5) {
+                            HStack {
+                                Text(proposal["message"]["subject"].nonempty ? proposal["message"]["subject"].string : "(Subject withheld)").font(.system(size: 14, weight: .semibold))
+                                Spacer(minLength: 8)
+                                Label("Review", systemImage: "chevron.right").font(.caption)
+                            }
+                            Text(review.owner(proposal) + " · " + proposal["reason"].string).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(.quaternary.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: 9))
+                    }.buttonStyle(.plain).disabled(model.busy || review.writing).accessibilityLabel("Review suggested reply: " + proposal["message"]["subject"].string)
+                        .accessibilityIdentifier("today.reviewReply." + review.key(proposal))
+                }
                 Text("Suggested tasks").font(.headline)
                 Text("From saved summaries and unread Inbox mail on this device. Completing a suggestion does not mark mail read.").font(.caption).foregroundStyle(.secondary)
                 if todos.isEmpty { Text("No open suggestions in this scope.").foregroundStyle(.secondary) }
@@ -60,17 +161,6 @@ private struct TodayReviewWorkspace: View {
                     DisclosureGroup("Completed suggestions (\(completedTodos.count))") {
                         ForEach(completedTodos) { todo in suggestionRow(todo, reopen: true) }
                     }
-                }
-                if replies.isEmpty { Text("No current suggestions for this scope. Automatic checks and setup live on Reply suggestions.").foregroundStyle(.secondary) }
-                ForEach(Array(replies.prefix(3)), id: \.viewID) { proposal in
-                    Button {
-                        review.show(proposal); model.section = "reply-suggestions"
-                    } label: {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(proposal["message"]["subject"].nonempty ? proposal["message"]["subject"].string : "(Subject withheld)").font(.system(size: 14, weight: .semibold))
-                            Text(review.owner(proposal) + " · " + proposal["reason"].string).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                        }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(.quaternary.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: 9))
-                    }.buttonStyle(.plain).disabled(model.busy).accessibilityLabel("Review suggested reply: " + proposal["message"]["subject"].string)
                 }
                 let waiting = events.filter { $0["state"].string == "waiting_on_others" }
                 if !waiting.isEmpty { DisclosureGroup("Waiting on others (\(waiting.count))") { ForEach(waiting) { eventRow($0) } } }

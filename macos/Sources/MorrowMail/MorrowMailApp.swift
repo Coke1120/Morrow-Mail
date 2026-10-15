@@ -40,10 +40,10 @@ struct MorrowMailApp: App {
         .commands {
             ReadingLayoutCommands(model: model)
             CommandGroup(replacing: .newItem) {
-                Button("New Message") { model.newDraft() }.keyboardShortcut("n").disabled(model.starting || model.busy || model.showSettings || model.downloadsPresentation != nil)
+                Button("New Message") { model.newDraft() }.keyboardShortcut("n").disabled(model.starting || model.busy || model.showSettings || model.organizing?["kind"].string == "move-recovery" || model.downloadsPresentation != nil)
             }
             CommandGroup(replacing: .appSettings) {
-                Button("Settings…") { model.settings() }.keyboardShortcut(",").disabled(model.starting || model.compose != nil || model.downloadsPresentation != nil)
+                Button("Settings…") { model.settings() }.keyboardShortcut(",").disabled(model.starting || model.compose != nil || model.organizing?["kind"].string == "move-recovery" || model.downloadsPresentation != nil)
             }
             CommandGroup(after: .windowSize) {
                 Menu("Window Size") {

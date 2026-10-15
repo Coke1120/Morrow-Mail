@@ -31,6 +31,9 @@ const HEADER: &str = "From: Fixture <owner@example.invalid>\r\nTo: visible@examp
 #[path = "imap/read_session.rs"]
 mod read_session;
 
+#[path = "imap/move_recovery.rs"]
+mod move_recovery;
+
 #[tokio::test]
 async fn refused_imap_connection_is_a_provider_failure_not_a_workspace_error() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -218,6 +221,8 @@ struct ImapScenario {
     pause_discovery: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
     pause_flags: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
     truncate_discovery: bool,
+    pause_body: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
+    pause_body_folder: Option<&'static str>,
     highest_modseq: Option<u64>,
     changed_modseq: Option<u64>,
     extension_rejected: bool,
@@ -278,6 +283,8 @@ impl Default for ImapScenario {
             pause_discovery: None,
             pause_flags: None,
             truncate_discovery: false,
+            pause_body: None,
+            pause_body_folder: None,
             highest_modseq: None,
             changed_modseq: None,
             extension_rejected: false,
@@ -676,6 +683,7 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
 ) -> io::Result<()> {
     let mut stream = BufReader::new(socket);
     write(&mut stream, "* OK IMAP4rev1 fixture {8388000}\r\n").await?;
+    let mut selected_mailbox = String::new();
     while let Some(input) = line(&mut stream).await? {
         let (tag, command) = input.split_once(' ').unwrap();
         let upper = command.to_ascii_uppercase();
@@ -756,6 +764,7 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
             )
             .await?;
         } else if upper.starts_with("EXAMINE ") || upper.starts_with("SELECT ") {
+            selected_mailbox = command.to_owned();
             if let Some((folder, response)) = scenario.examine_failure
                 && command.ends_with(&format!("\"{folder}\""))
             {
@@ -1035,6 +1044,14 @@ async fn imap_session<S: AsyncRead + AsyncWrite + Unpin>(
                     write(&mut stream,&format!("* {} FETCH (UID {uid} FLAGS ({flags}) RFC822.SIZE {} INTERNALDATE \"{}\" BODY[HEADER] {{{}}}\r\n{header})\r\n",index+1,if scenario.large{6*1024*1024}else{fixture_message(&scenario,uid).len()},scenario.internal_date,header.len())).await?;
                 }
             } else if fields.contains("BODY.PEEK[]") {
+                if let Some((entered, resume)) = &scenario.pause_body
+                    && scenario
+                        .pause_body_folder
+                        .is_none_or(|folder| selected_mailbox.ends_with(&format!("\"{folder}\"")))
+                {
+                    entered.notify_one();
+                    resume.notified().await;
+                }
                 if scenario.disconnect_on_body {
                     return Ok(());
                 }
@@ -3703,4 +3720,807 @@ async fn synthetic_changed_flags_benchmark() {
     if let Some(path) = std::env::var_os("MORROW_IMAP_BENCH_OUTPUT") {
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
+}
+
+async fn selected_fixture_setup(
+    fixture: &ImapFixture,
+    cache: &CacheWorkspace,
+    paths: &[&str],
+) -> Value {
+    selected_fixture_setup_for(fixture, cache, &fixture.mail, paths).await
+}
+async fn selected_fixture_setup_for(
+    fixture: &ImapFixture,
+    cache: &CacheWorkspace,
+    mail: &Value,
+    paths: &[&str],
+) -> Value {
+    let catalog = imap::management_folders_with_tls(mail, &fixture.connector)
+        .await
+        .unwrap();
+    let mail = mail.clone();
+    let paths = paths
+        .iter()
+        .map(|path| path.to_string())
+        .collect::<Vec<_>>();
+    cache.app().db(move |db| {
+        let owner = string(&mail, "email");
+        let version = json!([mail["connectionId"],mail["authorizationId"],mail["provider"],mail["email"],mail["clientId"],mail["imapHost"],mail["imapPort"]]);
+        let mut config = db.settings()?;
+        if !config["mailFolderCatalogs"].is_object() {
+            config["mailFolderCatalogs"] = json!({});
+        }
+        config["mailFolderCatalogs"][owner] = json!({"connection":version,"updatedAt":morrow_search::store::now(),"folders":catalog});
+        if !config["preferences"].is_object() {
+            config["preferences"] = json!({});
+        }
+        config["preferences"]["syncInterval"] = 0.into();
+        db.set_settings(&config)?;
+        let status = morrow_search::imap_folder_sync::status(&db.settings()?,owner);
+        morrow_search::imap_folder_sync::select(db, owner, &json!({"folderIds":paths,"selectionVersion":status["selectionVersion"],"connectionVersion":status["connectionVersion"]}))
+    }).await.unwrap()
+}
+async fn selected_status(cache: &CacheWorkspace) -> Value {
+    morrow_search::imap_folder_sync::status(&cache.app().settings().await.unwrap(), OWNER)
+}
+async fn selected_round(fixture: &ImapFixture, cache: &CacheWorkspace) {
+    let version = selected_status(cache).await["selectionVersion"].clone();
+    morrow_search::imap_folder_sync::sync_with_tls(
+        cache.app(),
+        &fixture.mail,
+        &version,
+        &fixture.connector,
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn selected_custom_folder_burst_continues_durably_and_status_never_claims_full_history() {
+    let fixture = ImapFixture::new(ImapScenario::default()).await;
+    let mut cache = CacheWorkspace::new(&fixture.mail).await;
+    let selected = selected_fixture_setup(&fixture, &cache, &["項目 & stuff"]).await;
+    assert_eq!(selected["automaticSyncEnabled"], false);
+    selected_round(&fixture, &cache).await;
+    assert_eq!(
+        cache
+            .app()
+            .db(|db| Ok(db.list(OWNER)?.len()))
+            .await
+            .unwrap(),
+        50
+    );
+    let first = selected_status(&cache).await;
+    let first = &first["folders"][0];
+    assert_eq!(first["status"], "current");
+    assert_eq!(first["olderHistoryIncluded"], false);
+    assert!(first["lastSuccessfulSyncAt"].is_string());
+    fixture.update(|s| s.count = 180);
+    for (index, (boundary, more)) in [(110, true), (160, true), (180, false)]
+        .into_iter()
+        .enumerate()
+    {
+        selected_round(&fixture, &cache).await;
+        let settings = cache.app().settings().await.unwrap();
+        let entry = &settings["imapFolderSync"][OWNER]["folders"][0];
+        assert_eq!(entry["checkpoint"]["uid"], boundary);
+        assert_eq!(entry["more"], more);
+        if index == 0 {
+            drop(cache.app.take());
+            cache.app = Some(
+                morrow_search::service::App::open(
+                    &cache.root,
+                    0,
+                    "fictional-cache".into(),
+                    String::new(),
+                )
+                .unwrap(),
+            );
+            assert_eq!(
+                cache.app().settings().await.unwrap()["imapFolderSync"],
+                settings["imapFolderSync"]
+            );
+        }
+    }
+    let rows = cache.app().db(|db| db.list(OWNER)).await.unwrap();
+    assert_eq!(rows.len(), 170);
+    assert!(
+        rows.iter()
+            .all(|row| row["providerFolderId"] == "項目 & stuff")
+    );
+    let ids = rows
+        .iter()
+        .map(|row| string(row, "remoteId"))
+        .collect::<std::collections::HashSet<_>>();
+    for uid in 61..=180 {
+        assert!(ids.contains(format!("imap:55:{uid}").as_str()));
+    }
+    let before = fixture.commands().len();
+    selected_round(&fixture, &cache).await;
+    assert!(
+        !fixture.commands()[before..]
+            .iter()
+            .any(|command| command.starts_with("UID SEARCH") || command.starts_with("UID FETCH"))
+    );
+    assert!(!fixture.commands().iter().any(|command| {
+        [
+            "SELECT ",
+            "UID STORE ",
+            "UID MOVE ",
+            "UID COPY ",
+            "EXPUNGE",
+            "CREATE ",
+            "RENAME ",
+            "DELETE ",
+        ]
+        .iter()
+        .any(|prefix| command.starts_with(prefix))
+    }));
+}
+
+#[tokio::test]
+async fn selected_custom_folder_failed_page_preserves_checkpoint_and_last_success_then_explicit_retry_recovers()
+ {
+    let fixture = ImapFixture::new(ImapScenario {
+        count: 1,
+        ..Default::default()
+    })
+    .await;
+    let cache = CacheWorkspace::new(&fixture.mail).await;
+    selected_fixture_setup(&fixture, &cache, &["項目 & stuff"]).await;
+    selected_round(&fixture, &cache).await;
+    let before =
+        cache.app().settings().await.unwrap()["imapFolderSync"][OWNER]["folders"][0].clone();
+    fixture.update(|s| {
+        s.count = 2;
+        s.truncated_body = true;
+    });
+    selected_round(&fixture, &cache).await;
+    let status = selected_status(&cache).await;
+    assert_eq!(status["folders"][0]["errorCode"], "incomplete_page");
+    assert_eq!(status["folders"][0]["status"], "blocked");
+    let failed =
+        cache.app().settings().await.unwrap()["imapFolderSync"][OWNER]["folders"][0].clone();
+    assert_eq!(failed["checkpoint"], before["checkpoint"]);
+    assert_eq!(
+        failed["lastSuccessfulSyncAt"],
+        before["lastSuccessfulSyncAt"]
+    );
+    assert_eq!(
+        cache
+            .app()
+            .db(|db| Ok(db.list(OWNER)?.len()))
+            .await
+            .unwrap(),
+        1
+    );
+    let commands = fixture.commands().len();
+    selected_round(&fixture, &cache).await;
+    assert_eq!(
+        fixture.commands().len(),
+        commands,
+        "Blocked malformed pages do not auto-retry"
+    );
+    fixture.update(|s| s.truncated_body = false);
+    cache.app().db(move |db|morrow_search::imap_folder_sync::retry(db,OWNER,&json!({"selectionId":status["folders"][0]["selectionId"],"selectionVersion":status["selectionVersion"],"connectionVersion":status["connectionVersion"]}))).await.unwrap();
+    selected_round(&fixture, &cache).await;
+    assert_eq!(
+        cache
+            .app()
+            .db(|db| Ok(db.list(OWNER)?.len()))
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        selected_status(&cache).await["folders"][0]["status"],
+        "current"
+    );
+}
+
+#[tokio::test]
+async fn selected_folder_uidvalidity_recreation_requires_reviewed_new_baseline() {
+    let fixture = ImapFixture::new(ImapScenario {
+        count: 2,
+        ..Default::default()
+    })
+    .await;
+    let cache = CacheWorkspace::new(&fixture.mail).await;
+    let selected = selected_fixture_setup(&fixture, &cache, &["項目 & stuff"]).await;
+    selected_round(&fixture, &cache).await;
+    let before = body_requests(&fixture);
+    fixture.update(|s| s.validity = 66);
+    selected_round(&fixture, &cache).await;
+    assert_eq!(body_requests(&fixture), before);
+    let failed = selected_status(&cache).await;
+    assert_eq!(failed["folders"][0]["errorCode"], "folder_changed");
+    assert_eq!(
+        cache.app().settings().await.unwrap()["imapFolderSync"][OWNER]["folders"][0]["checkpoint"]
+            ["validity"],
+        "55"
+    );
+    let new = selected_fixture_setup(&fixture, &cache, &["項目 & stuff"]).await;
+    assert_ne!(
+        new["folders"][0]["selectionId"],
+        selected["folders"][0]["selectionId"]
+    );
+    selected_round(&fixture, &cache).await;
+    assert_eq!(
+        cache
+            .app()
+            .db(|db| Ok(db.list(OWNER)?.len()))
+            .await
+            .unwrap(),
+        4
+    );
+    assert_eq!(
+        cache.app().settings().await.unwrap()["imapFolderSync"][OWNER]["folders"][0]["checkpoint"]
+            ["validity"],
+        "66"
+    );
+}
+
+#[tokio::test]
+async fn selected_folder_same_server_reconnect_keeps_the_new_uid_boundary() {
+    let mut fixture = ImapFixture::new(ImapScenario {
+        count: 1,
+        ..Default::default()
+    })
+    .await;
+    let cache = CacheWorkspace::new(&fixture.mail).await;
+    let selected = selected_fixture_setup(&fixture, &cache, &["項目 & stuff"]).await;
+    selected_round(&fixture, &cache).await;
+    fixture.mail["connectionId"] = "reconnected".into();
+    let mail = fixture.mail.clone();
+    cache
+        .app()
+        .db(move |db| db.set_settings(&json!({"mailAccounts":{OWNER:mail}})))
+        .await
+        .unwrap();
+    let reconnected = selected_fixture_setup(&fixture, &cache, &["項目 & stuff"]).await;
+    assert_eq!(
+        reconnected["folders"][0]["selectionId"],
+        selected["folders"][0]["selectionId"]
+    );
+    fixture.update(|s| s.count = 121);
+    for _ in 0..3 {
+        selected_round(&fixture, &cache).await;
+    }
+    assert_eq!(
+        cache
+            .app()
+            .db(|db| Ok(db.list(OWNER)?.len()))
+            .await
+            .unwrap(),
+        121
+    );
+}
+
+#[tokio::test]
+async fn selected_folder_cancellation_and_reconnect_discard_inflight_pages() {
+    for reconnect in [false, true] {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let fixture = ImapFixture::new(ImapScenario {
+            count: 1,
+            pause_body: Some((entered.clone(), resume.clone())),
+            ..Default::default()
+        })
+        .await;
+        let cache = CacheWorkspace::new(&fixture.mail).await;
+        let selected = selected_fixture_setup(&fixture, &cache, &["項目 & stuff"]).await;
+        let version = selected["selectionVersion"].clone();
+        let (app, mail, connector) = (
+            cache.app().clone(),
+            fixture.mail.clone(),
+            fixture.connector.clone(),
+        );
+        let task = tokio::spawn(async move {
+            morrow_search::imap_folder_sync::sync_with_tls(&app, &mail, &version, &connector).await
+        });
+        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        if reconnect {
+            let mut mail = fixture.mail.clone();
+            mail["connectionId"] = "changed-during-read".into();
+            cache
+                .app()
+                .db(move |db| db.set_settings(&json!({"mailAccounts":{OWNER:mail}})))
+                .await
+                .unwrap();
+        } else {
+            cache.app().db(move |db|morrow_search::imap_folder_sync::select(db,OWNER,&json!({"folderIds":[],"selectionVersion":selected["selectionVersion"],"connectionVersion":selected["connectionVersion"]}))).await.unwrap();
+        }
+        resume.notify_one();
+        task.await.unwrap().unwrap();
+        assert!(
+            cache
+                .app()
+                .db(|db| db.list(OWNER))
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let state = cache.app().settings().await.unwrap()["imapFolderSync"][OWNER].clone();
+        assert!(
+            state["folders"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["checkpoint"].is_null()
+                    && entry["lastSuccessfulSyncAt"].is_null())
+        );
+    }
+}
+
+#[tokio::test]
+async fn selected_folder_round_is_bounded_and_stale_or_protected_folders_never_fetch_mail() {
+    let fixture = ImapFixture::new(ImapScenario { count:0,extra_folders:"* LIST () \"/\" \"F0\"\r\n* LIST () \"/\" \"F1\"\r\n* LIST () \"/\" \"F2\"\r\n* LIST () \"/\" \"F3\"\r\n* LIST () \"/\" \"F4\"\r\n* LIST () \"/\" \"F5\"\r\n",..Default::default() }).await;
+    let cache = CacheWorkspace::new(&fixture.mail).await;
+    selected_fixture_setup(&fixture, &cache, &["F0", "F1", "F2", "F3", "F4", "F5"]).await;
+    selected_round(&fixture, &cache).await;
+    assert_eq!(
+        selected_status(&cache).await["folders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["lastSuccessfulSyncAt"].is_string())
+            .count(),
+        4
+    );
+    selected_round(&fixture, &cache).await;
+    assert_eq!(
+        selected_status(&cache).await["folders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["lastSuccessfulSyncAt"].is_string())
+            .count(),
+        6
+    );
+    cache
+        .app()
+        .db(|db| {
+            db.set_settings(
+                &json!({"mailFolderCatalogs":{OWNER:{"updatedAt":"2000-01-01T00:00:00.000Z"}}}),
+            )
+        })
+        .await
+        .unwrap();
+    let before = fixture.commands().len();
+    selected_round(&fixture, &cache).await;
+    assert_eq!(fixture.commands().len(), before);
+    selected_fixture_setup(&fixture, &cache, &["F0"]).await;
+    fixture.update(|s| s.extra_folders = "* LIST (\\Noselect) \"/\" \"F0\"\r\n");
+    let before = fixture.commands().len();
+    selected_round(&fixture, &cache).await;
+    assert!(
+        !fixture.commands()[before..]
+            .iter()
+            .any(|command| command.starts_with("EXAMINE") || command.starts_with("UID FETCH"))
+    );
+    assert_eq!(
+        selected_status(&cache).await["folders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["folderId"] == "F0")
+            .unwrap()["errorCode"],
+        "folder_unavailable"
+    );
+}
+
+#[tokio::test]
+async fn selected_folder_network_backoff_survives_restart_without_advancing_progress() {
+    let fixture = ImapFixture::new(ImapScenario {
+        count: 1,
+        ..Default::default()
+    })
+    .await;
+    let mut cache = CacheWorkspace::new(&fixture.mail).await;
+    selected_fixture_setup(&fixture, &cache, &["項目 & stuff"]).await;
+    selected_round(&fixture, &cache).await;
+    let before =
+        cache.app().settings().await.unwrap()["imapFolderSync"][OWNER]["folders"][0].clone();
+    fixture.update(|s| {
+        s.count = 2;
+        s.disconnect_on_body = true;
+    });
+    selected_round(&fixture, &cache).await;
+    let failed =
+        cache.app().settings().await.unwrap()["imapFolderSync"][OWNER]["folders"][0].clone();
+    assert_eq!(failed["errorCode"], "network_error");
+    assert_eq!(failed["retryCount"], 1);
+    assert!(failed["nextRetryAt"].is_string());
+    assert_eq!(failed["checkpoint"], before["checkpoint"]);
+    assert_eq!(
+        failed["lastSuccessfulSyncAt"],
+        before["lastSuccessfulSyncAt"]
+    );
+    drop(cache.app.take());
+    cache.app = Some(
+        morrow_search::service::App::open(&cache.root, 0, "fictional-cache".into(), String::new())
+            .unwrap(),
+    );
+    let commands = fixture.commands().len();
+    selected_round(&fixture, &cache).await;
+    assert_eq!(fixture.commands().len(), commands);
+    fixture.update(|s| s.disconnect_on_body = false);
+    cache
+        .app()
+        .db(|db| {
+            let mut state = db.settings()?["imapFolderSync"].clone();
+            state[OWNER]["folders"][0]["nextRetryAt"] = "2000-01-01T00:00:00.000Z".into();
+            db.set_settings(&json!({"imapFolderSync":state}))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    selected_round(&fixture, &cache).await;
+    assert_eq!(
+        cache
+            .app()
+            .db(|db| Ok(db.list(OWNER)?.len()))
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(selected_status(&cache).await["folders"][0]["retryCount"], 0);
+}
+
+#[tokio::test]
+async fn selected_folder_sparse_initial_scan_reports_limited_coverage_without_invented_history() {
+    let fixture = ImapFixture::new(ImapScenario {
+        count: 1,
+        uidnext: Some(1_000_001),
+        search_ids: Some(vec![1]),
+        ..Default::default()
+    })
+    .await;
+    let cache = CacheWorkspace::new(&fixture.mail).await;
+    selected_fixture_setup(&fixture, &cache, &["項目 & stuff"]).await;
+    selected_round(&fixture, &cache).await;
+    let status = selected_status(&cache).await;
+    assert_eq!(status["folders"][0]["recentPageIncomplete"], true);
+    assert!(
+        status["folders"][0]["coverageWarning"]
+            .as_str()
+            .unwrap()
+            .contains("history import")
+    );
+    assert_eq!(status["folders"][0]["olderHistoryIncluded"], false);
+    assert!(
+        cache
+            .app()
+            .db(|db| db.list(OWNER))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        fixture
+            .commands()
+            .iter()
+            .filter(|command| command.starts_with("UID SEARCH"))
+            .count(),
+        32
+    );
+    let mut changed = fixture.mail.clone();
+    changed["imapHost"] = "different.example.invalid".into();
+    let saved = changed.clone();
+    cache
+        .app()
+        .db(move |db| db.set_settings(&json!({"mailAccounts":{OWNER:saved}})))
+        .await
+        .unwrap();
+    let before = fixture.commands().len();
+    let version = selected_status(&cache).await["selectionVersion"].clone();
+    morrow_search::imap_folder_sync::sync_with_tls(
+        cache.app(),
+        &changed,
+        &version,
+        &fixture.connector,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        fixture.commands().len(),
+        before,
+        "A changed server must not reuse the old selection"
+    );
+    assert_eq!(
+        selected_status(&cache).await["folders"][0]["errorCode"],
+        "connection_changed"
+    );
+}
+
+#[tokio::test]
+async fn selected_folder_empty_without_uidnext_retains_boundary_and_corrupt_checkpoint_requires_review()
+ {
+    let fixture = ImapFixture::new(ImapScenario {
+        count: 2,
+        ..Default::default()
+    })
+    .await;
+    let cache = CacheWorkspace::new(&fixture.mail).await;
+    selected_fixture_setup(&fixture, &cache, &["項目 & stuff"]).await;
+    selected_round(&fixture, &cache).await;
+    fixture.update(|scenario| {
+        scenario.count = 0;
+        scenario.omit_uidnext = true;
+    });
+    selected_round(&fixture, &cache).await;
+    assert_eq!(
+        cache.app().settings().await.unwrap()["imapFolderSync"][OWNER]["folders"][0]["checkpoint"]
+            ["uid"],
+        2
+    );
+    cache
+        .app()
+        .db(|db| {
+            let mut state = db.settings()?["imapFolderSync"].clone();
+            state[OWNER]["folders"][0]["checkpoint"]["path"] = "Different folder".into();
+            db.set_settings(&json!({"imapFolderSync":state}))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let before = fixture.commands().len();
+    selected_round(&fixture, &cache).await;
+    assert_eq!(fixture.commands().len(), before);
+    let status = selected_status(&cache).await;
+    assert_eq!(status["folders"][0]["errorCode"], "checkpoint_invalid");
+    assert_eq!(status["folders"][0]["recoveryAction"], "reselect");
+}
+
+#[tokio::test]
+async fn slow_selected_folder_does_not_delay_primary_inbox_commit_or_suppress_its_failures() {
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
+    let fixture = ImapFixture::new(ImapScenario {
+        count: 1,
+        pause_body: Some((entered.clone(), resume.clone())),
+        pause_body_folder: Some("&mAV27g- &- stuff"),
+        ..Default::default()
+    })
+    .await;
+    let cache = CacheWorkspace::new(&fixture.mail).await;
+    selected_fixture_setup(&fixture, &cache, &["項目 & stuff"]).await;
+    let (app, connector) = (cache.app().clone(), fixture.connector.clone());
+    let task = tokio::spawn(async move {
+        morrow_search::mail::sync_imap_with_tls(&app, &[OWNER.into()], &connector).await
+    });
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .unwrap();
+    let rows = cache.app().db(|db| db.list(OWNER)).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0]["providerFolderId"], "INBOX",
+        "Inbox is committed while custom-folder body is still held"
+    );
+    assert_eq!(
+        cache.app().settings().await.unwrap()["imapSync"][OWNER]["folders"]["INBOX"]["uid"],
+        1
+    );
+    resume.notify_one();
+    task.await.unwrap().unwrap();
+    assert_eq!(
+        cache
+            .app()
+            .db(|db| Ok(db.list(OWNER)?.len()))
+            .await
+            .unwrap(),
+        2
+    );
+
+    let failed = ImapFixture::new(ImapScenario {
+        count: 1,
+        examine_failure: Some(("INBOX", "NO synthetic inbox failure")),
+        ..Default::default()
+    })
+    .await;
+    let other = CacheWorkspace::new(&failed.mail).await;
+    selected_fixture_setup(&failed, &other, &["項目 & stuff"]).await;
+    assert_eq!(
+        morrow_search::mail::sync_imap_with_tls(other.app(), &[OWNER.into()], &failed.connector)
+            .await
+            .unwrap()[0]["accountId"],
+        OWNER
+    );
+    let rows = other.app().db(|db| db.list(OWNER)).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0]["providerFolderId"], "項目 & stuff",
+        "Primary failure does not suppress a healthy selected folder"
+    );
+}
+
+#[tokio::test]
+async fn selected_folder_combined_sync_finishes_both_inboxes_before_custom_and_keeps_phase_scope() {
+    const SECOND: &str = "second@example.invalid";
+    for change in ["none", "connection", "selection"] {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let fixture = ImapFixture::new(ImapScenario {
+            count: 1,
+            pause_body: Some((entered.clone(), resume.clone())),
+            pause_body_folder: Some("&mAV27g- &- stuff"),
+            ..Default::default()
+        })
+        .await;
+        let cache = CacheWorkspace::new(&fixture.mail).await;
+        let mut second = fixture.mail.clone();
+        second["email"] = SECOND.into();
+        second["connectionId"] = "second-original".into();
+        let saved = second.clone();
+        cache
+            .app()
+            .db(move |db| {
+                let mut config = db.settings()?;
+                config["mailAccounts"][SECOND] = saved;
+                db.set_settings(&config)
+            })
+            .await
+            .unwrap();
+        selected_fixture_setup(&fixture, &cache, &["項目 & stuff"]).await;
+        let selected =
+            selected_fixture_setup_for(&fixture, &cache, &second, &["項目 & stuff"]).await;
+        let (app, connector) = (cache.app().clone(), fixture.connector.clone());
+        let task = tokio::spawn(async move {
+            morrow_search::mail::sync_imap_with_tls(
+                &app,
+                &[OWNER.into(), SECOND.into()],
+                &connector,
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        cache
+            .app()
+            .db(|db| {
+                for owner in [OWNER, SECOND] {
+                    let rows = db.list(owner)?;
+                    assert_eq!(
+                        rows.len(),
+                        1,
+                        "Each primary page must commit before the first custom page"
+                    );
+                    assert_eq!(rows[0]["providerFolderId"], "INBOX");
+                    assert_eq!(
+                        db.settings()?["imapSync"][owner]["folders"]["INBOX"]["uid"],
+                        1
+                    );
+                    assert!(
+                        db.settings()?["imapFolderSync"][owner]["folders"][0]["checkpoint"]
+                            .is_null()
+                    );
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let logins = fixture
+            .commands()
+            .iter()
+            .filter(|command| command.starts_with("LOGIN ") && command.contains(SECOND))
+            .count();
+        if change == "connection" {
+            second["connectionId"] = "second-replaced".into();
+            cache
+                .app()
+                .db(move |db| {
+                    let version = json!([
+                        second["connectionId"],
+                        second["authorizationId"],
+                        second["provider"],
+                        second["email"],
+                        second["clientId"],
+                        second["imapHost"],
+                        second["imapPort"]
+                    ]);
+                    // Keep a usable catalog and the same selection version: the phase must
+                    // reject the changed connection instead of quietly refreshing its snapshot.
+                    let mut config = db.settings()?;
+                    config["mailAccounts"][SECOND] = second;
+                    config["mailFolderCatalogs"][SECOND]["connection"] = version;
+                    config["mailFolderCatalogs"][SECOND]["updatedAt"] =
+                        morrow_search::store::now().into();
+                    db.set_settings(&config)
+                })
+                .await
+                .unwrap();
+        } else if change == "selection" {
+            cache.app().db(move |db| morrow_search::imap_folder_sync::select(db, SECOND, &json!({"folderIds":["項目 & stuff"],"selectionVersion":selected["selectionVersion"],"connectionVersion":selected["connectionVersion"]}))).await.unwrap();
+        }
+        fixture.update(|scenario| scenario.pause_body = None);
+        resume.notify_one();
+        let errors = tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(errors, json!([]));
+        assert_eq!(
+            cache
+                .app()
+                .db(|db| Ok(db.list(OWNER)?.len()))
+                .await
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            cache
+                .app()
+                .db(|db| Ok(db.list(SECOND)?.len()))
+                .await
+                .unwrap(),
+            if change == "none" { 2 } else { 1 }
+        );
+        if change != "none" {
+            assert_eq!(
+                fixture
+                    .commands()
+                    .iter()
+                    .filter(|command| command.starts_with("LOGIN ") && command.contains(SECOND))
+                    .count(),
+                logins,
+                "The second phase must not read a replacement connection or newly reviewed selection"
+            );
+            assert!(cache.app().settings().await.unwrap()["imapFolderSync"][SECOND]["folders"][0]["checkpoint"].is_null());
+        }
+    }
+}
+
+#[tokio::test]
+async fn selected_folder_review_version_is_checked_at_actual_download_snapshot() {
+    let fixture = ImapFixture::new(ImapScenario {
+        count: 1,
+        ..Default::default()
+    })
+    .await;
+    let cache = CacheWorkspace::new(&fixture.mail).await;
+    let reviewed = selected_fixture_setup(&fixture, &cache, &["項目 & stuff"]).await;
+    let replaced = selected_fixture_setup(&fixture, &cache, &["項目 & stuff"]).await;
+    assert_ne!(reviewed["selectionVersion"], replaced["selectionVersion"]);
+    let before = fixture.commands().len();
+    // The outer sync phase may have checked its snapshot before this save. The
+    // actual download module must reject the obsolete review after its own await.
+    morrow_search::imap_folder_sync::sync_with_tls(
+        cache.app(),
+        &fixture.mail,
+        &reviewed["selectionVersion"],
+        &fixture.connector,
+    )
+    .await
+    .unwrap();
+    assert_eq!(fixture.commands().len(), before);
+    assert!(cache.app().settings().await.unwrap()["imapFolderSync"][OWNER]["folders"][0]["lastAttemptAt"].is_null());
+    assert!(
+        cache
+            .app()
+            .db(|db| db.list(OWNER))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    morrow_search::imap_folder_sync::sync_with_tls(
+        cache.app(),
+        &fixture.mail,
+        &replaced["selectionVersion"],
+        &fixture.connector,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        cache
+            .app()
+            .db(|db| Ok(db.list(OWNER)?.len()))
+            .await
+            .unwrap(),
+        1
+    );
 }

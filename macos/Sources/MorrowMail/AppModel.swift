@@ -50,6 +50,8 @@ final class AppModel: ObservableObject {
     private(set) var draftGeneration = 0
     @Published var organizing: JSON? { didSet { if organizing != oldValue { draftGeneration += 1 } } }
     @Published var managingFolders: JSON?
+    @Published var syncingFolders: JSON?
+    @Published var unresolvedMove: JSON = .null
     @Published private(set) var downloadsPresentation: UUID? { didSet { if downloadsPresentation != oldValue { draftGeneration += 1 } } }
     private var mailDrag: JSON = .null
     @Published var searchFocus = 0
@@ -177,8 +179,8 @@ final class AppModel: ObservableObject {
         switch preferences["theme"].string { case "light": return .light; case "dark": return .dark; default: return nil }
     }
     var updateHasUnsavedChanges: Bool { !unsavedForms.subtracting(["search-request"]).isEmpty || compose != nil || review.hasEdits }
-    var canNavigate: Bool { !preparingUpdateRestart && !restartingForUpdate && !busy && unsavedForms.isEmpty && compose == nil && organizing == nil && managingFolders == nil && downloadsPresentation == nil && readerAssistant == nil && !showSettings }
-    var canOpenDownloads: Bool { !starting && !preparingUpdateRestart && !restartingForUpdate && !busy && !preparingDraft && unsavedForms.isEmpty && compose == nil && organizing == nil && managingFolders == nil && readerAssistant == nil && downloadsPresentation == nil && !accounts.isEmpty }
+    var canNavigate: Bool { !preparingUpdateRestart && !restartingForUpdate && !busy && unsavedForms.isEmpty && compose == nil && organizing == nil && managingFolders == nil && syncingFolders == nil && downloadsPresentation == nil && readerAssistant == nil && !showSettings }
+    var canOpenDownloads: Bool { !starting && !preparingUpdateRestart && !restartingForUpdate && !busy && !preparingDraft && unsavedForms.isEmpty && compose == nil && organizing == nil && managingFolders == nil && syncingFolders == nil && readerAssistant == nil && downloadsPresentation == nil && !accounts.isEmpty }
 
     func beginDownloadControls() -> UUID? {
         guard canOpenDownloads else { return nil }
@@ -634,14 +636,32 @@ final class AppModel: ObservableObject {
         }
         organizing = .object(["id": .string(UUID().uuidString), "message": message, "preferredKind": .string(preferredKind), "destinationId": .string(destinationId)])
     }
+    func canReviewMoves(_ owner: String) -> Bool {
+        !owner.isEmpty && owner != "all" && accounts.contains { $0.id == owner && ["", "imap"].contains($0["provider"].string) && !moveRecoveryConnectionRef($0["settings"]).isEmpty }
+    }
+    func beginMoveRecovery(_ owner: String, operationID: String = "", replacing message: JSON? = nil) {
+        guard !busy, canReviewMoves(owner), let account = accounts.first(where: { $0.id == owner }) else { return }
+        if let message {
+            guard organizing?["message"] == message, message["accountId"].string == owner else { return }
+        } else { guard canNavigate else { return } }
+        organizing = .object(["id": .string(UUID().uuidString), "kind": .string("move-recovery"), "accountId": .string(owner),
+            "operationId": .string(operationID), "connection": account["settings"], "viewOwner": .string(self.account), "section": .string(section)])
+        unresolvedMove = .null
+    }
+    func recordMoveFailure(_ error: Error, owner: String) {
+        guard let failure = error as? APIError, let id = moveRecoveryFailure(failure.payload, owner: owner) else { return }
+        unresolvedMove = .object(["accountId": .string(owner), "operationId": .string(id)])
+    }
     func trashMessages(_ messages: [JSON]) {
         guard canNavigate, !messages.isEmpty, messages.allSatisfy({ canOrganize($0) && $0["folder"].string != "trash" }) else { return }
         let batch = UUID()
         perform {
             var completed = 0
             var failure = ""
+            var operationOwner = ""
             do {
                 for message in messages {
+                    operationOwner = message["accountId"].string
                     let result = try await self.request("/messages/" + encodedPath(message.id) + "/trash", method: "POST", body: .object([:]), mailbox: message["accountId"].string)
                     guard result["message"].id == message.id, result["message"]["accountId"] == message["accountId"], result["undoToken"].nonempty else { throw APIError("The Trash move could not be verified. Refresh your mailbox.") }
                     self.trashUndos.append((message, result["undoToken"].string, ProcessInfo.processInfo.systemUptime + 60, batch))
@@ -649,7 +669,7 @@ final class AppModel: ObservableObject {
                     if self.selectedMessage == message.viewID { self.selectedMessage = nil; self.messageDetail = .null }
                 }
                 self.notice = "Moved \(completed) message(s) to provider Trash. Undo is available for one minute (⌘Z)."
-            } catch { failure = "Moved \(completed) of \(messages.count) messages. " + error.localizedDescription }
+            } catch { self.recordMoveFailure(error, owner: operationOwner); failure = "Moved \(completed) of \(messages.count) messages. " + error.localizedDescription }
             Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 60_000_000_000)
                 self?.trashUndos.removeAll { $0.expires <= ProcessInfo.processInfo.systemUptime }
@@ -664,10 +684,13 @@ final class AppModel: ObservableObject {
         trashUndos.removeAll { $0.expires <= ProcessInfo.processInfo.systemUptime }
         guard let batch = trashUndos.last?.batch else { return }
         perform {
-            while let entry = self.trashUndos.last, entry.batch == batch {
-                self.trashUndos.removeLast()
-                _ = try await self.request("/messages/" + encodedPath(entry.message.id) + "/undo-trash", method: "POST", body: .object(["undoToken": .string(entry.token)]), mailbox: entry.message["accountId"].string)
-            }
+            var operationOwner = ""
+            do {
+                while let entry = self.trashUndos.last, entry.batch == batch {
+                    self.trashUndos.removeLast(); operationOwner = entry.message["accountId"].string
+                    _ = try await self.request("/messages/" + encodedPath(entry.message.id) + "/undo-trash", method: "POST", body: .object(["undoToken": .string(entry.token)]), mailbox: operationOwner)
+                }
+            } catch { self.recordMoveFailure(error, owner: operationOwner); throw error }
             self.notice = "Trash move undone. The message was restored."
             try await self.reload()
             await self.refreshMailPage()
@@ -755,7 +778,7 @@ final class AppModel: ObservableObject {
         catch { self.error = error.localizedDescription }
     }
     func newDraft(_ value: Draft? = nil) {
-        guard !busy, !preparingUpdateRestart, !restartingForUpdate, compose == nil, organizing == nil, downloadsPresentation == nil, readerAssistant == nil, !showSettings else { return }
+        guard !busy, !preparingUpdateRestart, !restartingForUpdate, compose == nil, organizing == nil, syncingFolders == nil, downloadsPresentation == nil, readerAssistant == nil, !showSettings else { return }
         guard unsavedForms.isEmpty else { notice = "Save your current changes before opening a new draft."; return }
         var draft = value ?? Draft()
         guard (draft.replyToID.isEmpty && !draft.forwarding && !draft.sourceDraft) || !draft.accountID.isEmpty else { error = "The original mailbox is unavailable. Reopen the original message."; return }
@@ -771,8 +794,8 @@ final class AppModel: ObservableObject {
         compose = draft
     }
     func settings(_ tab: String = "start") {
-        guard !preparingUpdateRestart, !restartingForUpdate, downloadsPresentation == nil else { return }
-        guard compose == nil, readerAssistant == nil, unsavedForms.subtracting(["settings"]).isEmpty else { notice = "Close AI assistance or save your current changes before opening Settings."; return }
+        guard !preparingUpdateRestart, !restartingForUpdate, organizing?["kind"].string != "move-recovery", downloadsPresentation == nil else { return }
+        guard compose == nil, syncingFolders == nil, readerAssistant == nil, unsavedForms.subtracting(["settings"]).isEmpty else { notice = "Close AI assistance or save your current changes before opening Settings."; return }
         settingsTab = tab; showSettings = true
     }
     func allowed(_ action: String) -> Bool { policy["enabled"].bool && policy["behaviors"][action].bool }

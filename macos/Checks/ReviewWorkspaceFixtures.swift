@@ -56,7 +56,7 @@ final class ReviewProtocol: URLProtocol {
             guard account.isEmpty || account == "all" || ReviewFixture.owners.contains(account) else { throw APIError("Unexpected fixture owner") }
             let body = try Self.body(request)
             Self.lock.lock(); defer { Self.lock.unlock() }
-            Self.traffic.append(["path":path,"method":request.httpMethod ?? "GET","account":account])
+            Self.traffic.append(["path":path,"method":request.httpMethod ?? "GET","account":account,"mode":body["mode"].string])
             var response: JSON = .null
             var status = 200
             switch path {
@@ -82,7 +82,10 @@ final class ReviewProtocol: URLProtocol {
             case "/api/drafts/prepare":
                 let i = Int(body["messageId"].string.split(separator:"-").last ?? "0") ?? 0
                 let m = ReviewFixture.message(i,owner:account)
-                response = .object(["draft":.object(["accountId":.string(account),"to":m["fromEmail"],"cc":.string(""),"bcc":.string(""),"subject":.string("Re: "+m["subject"].string),"body":body["body"],"replyToId":body["messageId"]])])
+                var draft: JSON = .object(["accountId":.string(account),"to":m["fromEmail"],"cc":.string(""),"bcc":.string(""),"subject":.string("Re: "+m["subject"].string),"body":.string(body["body"].string)])
+                if body["mode"].string == "forward" { draft["forwarding"] = .bool(true); draft["to"] = .string("") }
+                else { draft["replyToId"] = body["messageId"] }
+                response = .object(["draft":draft])
                 if Self.wrongDraftOwner { response["draft"]["accountId"] = .string(ReviewFixture.owners.first { $0 != account }!) }
             case "/api/account/select": Self.owner=body["accountId"].string; response=ReviewFixture.state(owner:Self.owner)
             case "/api/state": response=ReviewFixture.state(owner:Self.owner)

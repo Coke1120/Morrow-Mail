@@ -195,6 +195,7 @@ struct NativeSettingsView: View {
             }.padding(8) }
             GroupBox("Mail sync") { VStack(alignment: .leading, spacing: 8) {
             Picker("Sync all accounts while Morrow is open", selection: number("preferences", "syncInterval")) { Text("Manually").tag(0); ForEach([1, 5, 15, 30], id: \.self) { Text("Every \($0) minutes").tag($0) } }
+                Text("Automatic sync can use supported IMAP notifications for Inbox and eligible selected folders with saved sync progress and a fresh server folder list. Up to four mailboxes are watched at once, one folder per mailbox; mailboxes and folders rotate in sessions of up to one minute. Other folders use their configured sync and recovery rules. Notifications do not guarantee real-time or complete downloads. Manually stops periodic sync and notifications; existing provider waits or update continuations may still complete requested reads.").font(.caption).foregroundStyle(.secondary)
                 Text("Gmail, Outlook and IMAP read/star changes sync to the server. Gmail/Outlook require mail organization permission. Pending/Read Later stay local. Failed provider writes are not retried automatically.").font(.caption).foregroundStyle(.secondary)
                 Text("Each sync prioritizes the current mail page, fetches recent messages, and continues a bounded check of older downloaded mail. Large caches take multiple cycles.").font(.caption).foregroundStyle(.secondary)
                 Text("Automatic AI actions are controlled separately in AI & privacy.").font(.caption).foregroundStyle(.secondary)
@@ -363,20 +364,22 @@ struct NativeSettingsView: View {
                         VStack(alignment: .leading) { Text(account["provider"].string.uppercased()).font(.caption).foregroundStyle(.secondary); Text(account["email"].string).font(.headline) }
                         Spacer()
                         Button("Use Mailbox") { run { try await model.selectAccount(account.id, folder: "inbox"); status = "Workspace changed." } }
-                        if account["provider"].string == "imap" {
-                            Button("Edit") {
-                                if values["mail"] != baseline["mail"] && !model.confirmDiscard() { return }
-                                provider = "imap"; values["mail"] = account["settings"].picking(["email", "imapHost", "imapPort", "smtpHost", "smtpPort"])
-                                values["mail"]["password"] = .string(""); baseline["mail"] = values["mail"]; mailEditor = true
+                        Menu("Account actions") {
+                            if account["provider"].string == "imap" {
+                                Button("Edit") {
+                                    if values["mail"] != baseline["mail"] && !model.confirmDiscard() { return }
+                                    provider = "imap"; values["mail"] = account["settings"].picking(["email", "imapHost", "imapPort", "smtpHost", "smtpPort"])
+                                    values["mail"]["password"] = .string(""); baseline["mail"] = values["mail"]; mailEditor = true
+                                }
                             }
-                        }
-                        if account["provider"].string != "imap" {
-                            Button("Reconnect") { provider = account["provider"].string; mailEditor = true }
-                        }
-                        Button("Disconnect") {
-                            guard model.confirm("Disconnect \(account["email"].string)?", detail: "Only this account’s credentials will be removed. Cached mail and drafts remain on this Mac.") else { return }
-                            run { model.state = try await model.request("/account/disconnect", method: "POST", body: .object([:]), mailbox: account.id); model.selectedMessage = nil; status = "Mailbox disconnected." }
-                        }
+                            if account["provider"].string != "imap" {
+                                Button("Reconnect") { provider = account["provider"].string; mailEditor = true }
+                            }
+                            Button("Disconnect") {
+                                guard model.confirm("Disconnect \(account["email"].string)?", detail: "Only this account’s credentials will be removed. Cached mail and drafts remain on this Mac.") else { return }
+                                run { model.state = try await model.request("/account/disconnect", method: "POST", body: .object([:]), mailbox: account.id); model.selectedMessage = nil; status = "Mailbox disconnected." }
+                            }
+                        }.fixedSize().accessibilityLabel("Actions for " + account["email"].string)
                     }
                     if !account["import"].isNull {
                         Text(importProgress(account["import"])).font(.caption)

@@ -42,11 +42,11 @@ private struct ReplyReviewWorkspace: View {
                     if review.detailVisible[review.scope] == true, let selected {
                         VStack(spacing: 0) {
                             HStack { Button("Back to suggestions") { review.detailVisible[review.scope] = false; rowFocus = review.key(selected) }.keyboardShortcut(.cancelAction); Spacer(); Text("Drafts stay with their original mailbox").font(.caption).foregroundStyle(.secondary) }.padding(12)
-                            editor(selected)
+                            ReplySuggestionEditor(review: review, proposal: selected)
                         }
                     } else { list }
                 } else {
-                    HSplitView { list.frame(minWidth: 250, idealWidth: 280, maxWidth: 340); if let selected { editor(selected).frame(minWidth: 360) } }
+                    HSplitView { list.frame(minWidth: 250, idealWidth: 280, maxWidth: 340); if let selected { ReplySuggestionEditor(review: review, proposal: selected).frame(minWidth: 360) } }
                 }
             }
         }
@@ -84,7 +84,45 @@ private struct ReplyReviewWorkspace: View {
             let next = rows[max(0, min(rows.count - 1, index + (direction == .up ? -1 : 1)))]; rowFocus = review.key(next); review.selection[review.scope] = review.key(next); review.proposals[review.key(next)] = next
         }
     }
-    private func editor(_ proposal: JSON) -> some View {
+    @ViewBuilder private var setup: some View {
+        if review.scope != "all", !value.isNull {
+            if !value["identityReady"].bool { Text("Confirm the identity for this mailbox first."); Button("Confirm this account's identity") { settings("learning") } }
+            else if !value["modelReady"].bool { Button("Set up a chat model") { settings("model") } }
+            else if !value["permitted"].bool { Text("AI replies need your saved Inbox, sender and body permissions."); Button("Review AI & Privacy") { settings("permissions") } }
+            else if !value["automaticReady"].bool {
+                Button("Enable automatic reply suggestions…") { var next = review.options[review.scope] ?? value["settings"]; next["enabled"] = .bool(true); next["automatic"] = .bool(true); review.options[review.scope] = next; review.saveOptions(review.scope, model: model) }
+            } else { Label(value["job"]["status"].string == "running" ? "Checking downloaded mail…" : "Automatic checks are on", systemImage: "checkmark.circle").foregroundStyle(.secondary) }
+            if value["automaticStatus"].nonempty { Text(value["automaticStatus"].string).font(.caption).foregroundStyle(.secondary) }
+        }
+    }
+    @ViewBuilder private var options: some View {
+        if review.scope != "all", let current = review.options[review.scope], !current.isNull {
+            DisclosureGroup("Automatic checks & budget") {
+                VStack(alignment: .leading, spacing: 12) {
+                    setup
+                    Toggle("Check new Inbox mail automatically", isOn: Binding(get: { review.options[review.scope]?["automatic"].bool ?? false }, set: { enabled in review.options[review.scope]?["automatic"] = .bool(enabled); if enabled { review.options[review.scope]?["enabled"] = .bool(true) } })).toggleStyle(.checkbox)
+                    TextField("Daily token budget (UTC)", value: Binding(get: { Int(review.options[review.scope]?["dailyTokenBudget"].number ?? 100000) }, set: { review.options[review.scope]?["dailyTokenBudget"] = .number(Double($0)) }), format: .number.grouping(.never))
+                    Text("Used today: \(Int(value["spentToday"].number)) estimated tokens. Checks cover at most the newest 200 downloaded Inbox messages. Mail is never sent automatically.").font(.caption).foregroundStyle(.secondary)
+                    if current != value["settings"] { HStack { Button("Save settings…") { review.saveOptions(review.scope, model: model) }; Button("Discard setting edits") { review.options[review.scope] = value["settings"] } } }
+                }.padding(.top, 8).disabled(review.writing || model.busy)
+            }
+        } else { Text("All accounts is a read-only queue. Select one mailbox to change its automatic checks or budget.").font(.caption).foregroundStyle(.secondary) }
+    }
+    private func settings(_ tab: String) {
+        let owner = review.scope
+        model.perform { try await model.selectAccount(owner); model.settings(tab) }
+    }
+}
+
+/// Shared by the queue and Today; all writes retain the original review workspace guards.
+@MainActor
+struct ReplySuggestionEditor: View {
+    @EnvironmentObject var model: AppModel
+    @ObservedObject var review: ReviewWorkspaceState
+    let proposal: JSON
+    var onUpdated: (@MainActor (JSON, JSON) -> Void)? = nil
+    private var value: JSON { review.values[review.scope] ?? .null }
+    var body: some View {
         let key = review.key(proposal), owner = review.owner(proposal)
         return VStack(alignment: .leading, spacing: 0) {
             HStack { Image(systemName: "lock.fill"); Text("From: " + owner).textSelection(.enabled); Spacer() }.font(.caption).foregroundStyle(.secondary).padding(14)
@@ -98,9 +136,15 @@ private struct ReplyReviewWorkspace: View {
                     if review.stale.contains(key) {
                         Text("The suggestion or its evidence changed. Your draft is retained. Recheck the original before reviewing a send.").foregroundStyle(.orange)
                         if let fresh = value["proposals"].array.first(where: { review.key($0) == key || (proposal["conversationKey"].nonempty && $0["conversationKey"] == proposal["conversationKey"]) }) {
-                            Button("Keep edits and refresh evidence") { Task { await review.refreshKeepingEdits(proposal, fresh: fresh, model: model) } }
+                            Button("Keep edits and refresh evidence") { Task {
+                                await review.refreshKeepingEdits(proposal, fresh: fresh, model: model)
+                                finishUpdate(fresh, keepingEdits: true)
+                            } }
                             Button("Review updated suggestion…") {
-                                if review.savedPayloads[key] == review.drafts[key]?.payload || model.confirmDiscard("Replace this draft with the updated suggestion?") { Task { await review.inspect(fresh, model: model, replace: true) } }
+                                if review.savedPayloads[key] == review.drafts[key]?.payload || model.confirmDiscard("Replace this draft with the updated suggestion?") { Task {
+                                    await review.inspect(fresh, model: model, replace: true)
+                                    finishUpdate(fresh, keepingEdits: false)
+                                } }
                             }
                         }
                     }
@@ -135,32 +179,18 @@ private struct ReplyReviewWorkspace: View {
             }.padding(14)
         }
     }
-    @ViewBuilder private var setup: some View {
-        if review.scope != "all", !value.isNull {
-            if !value["identityReady"].bool { Text("Confirm the identity for this mailbox first."); Button("Confirm this account's identity") { settings("learning") } }
-            else if !value["modelReady"].bool { Button("Set up a chat model") { settings("model") } }
-            else if !value["permitted"].bool { Text("AI replies need your saved Inbox, sender and body permissions."); Button("Review AI & Privacy") { settings("permissions") } }
-            else if !value["automaticReady"].bool {
-                Button("Enable automatic reply suggestions…") { var next = review.options[review.scope] ?? value["settings"]; next["enabled"] = .bool(true); next["automatic"] = .bool(true); review.options[review.scope] = next; review.saveOptions(review.scope, model: model) }
-            } else { Label(value["job"]["status"].string == "running" ? "Checking downloaded mail…" : "Automatic checks are on", systemImage: "checkmark.circle").foregroundStyle(.secondary) }
-            if value["automaticStatus"].nonempty { Text(value["automaticStatus"].string).font(.caption).foregroundStyle(.secondary) }
+    private func finishUpdate(_ fresh: JSON, keepingEdits: Bool) {
+        let oldKey = review.key(proposal), newKey = review.key(fresh), owner = review.owner(proposal)
+        guard !Task.isCancelled, review.owner(fresh) == owner,
+              model.accounts.contains(where: { $0.id == owner }),
+              review.proposals[newKey] == fresh, review.errors[newKey] == nil,
+              let draft = review.drafts[newKey], draft.accountID == owner, draft.replyToID == fresh["messageId"].string,
+              review.messages[newKey]?["accountId"].string == owner,
+              review.messages[newKey]?.id == fresh["messageId"].string,
+              !review.preparing.contains(newKey) else { return }
+        if keepingEdits, newKey != oldKey {
+            guard review.proposals[oldKey] == nil, review.drafts[oldKey] == nil, review.messages[oldKey] == nil else { return }
         }
-    }
-    @ViewBuilder private var options: some View {
-        if review.scope != "all", let current = review.options[review.scope], !current.isNull {
-            DisclosureGroup("Automatic checks & budget") {
-                VStack(alignment: .leading, spacing: 12) {
-                    setup
-                    Toggle("Check new Inbox mail automatically", isOn: Binding(get: { review.options[review.scope]?["automatic"].bool ?? false }, set: { enabled in review.options[review.scope]?["automatic"] = .bool(enabled); if enabled { review.options[review.scope]?["enabled"] = .bool(true) } })).toggleStyle(.checkbox)
-                    TextField("Daily token budget (UTC)", value: Binding(get: { Int(review.options[review.scope]?["dailyTokenBudget"].number ?? 100000) }, set: { review.options[review.scope]?["dailyTokenBudget"] = .number(Double($0)) }), format: .number.grouping(.never))
-                    Text("Used today: \(Int(value["spentToday"].number)) estimated tokens. Checks cover at most the newest 200 downloaded Inbox messages. Mail is never sent automatically.").font(.caption).foregroundStyle(.secondary)
-                    if current != value["settings"] { HStack { Button("Save settings…") { review.saveOptions(review.scope, model: model) }; Button("Discard setting edits") { review.options[review.scope] = value["settings"] } } }
-                }.padding(.top, 8).disabled(review.writing || model.busy)
-            }
-        } else { Text("All accounts is a read-only queue. Select one mailbox to change its automatic checks or budget.").font(.caption).foregroundStyle(.secondary) }
-    }
-    private func settings(_ tab: String) {
-        let owner = review.scope
-        model.perform { try await model.selectAccount(owner); model.settings(tab) }
+        onUpdated?(proposal, fresh)
     }
 }
