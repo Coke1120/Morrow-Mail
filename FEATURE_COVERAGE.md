@@ -1,5 +1,16 @@
 # Morrow Mail feature coverage
 
+**0.8.2 source — navigation and activity recovery:** merged PRs #48–50 add
+the Mail | Agent | Brain shell, recover abandoned AI jobs and retain cancellation
+for each mailbox/work type. Stop publication is ordered with the persisted job
+change, so a delayed request cannot cancel replacement work. Native compilation,
+Windows fixture cleanup and bounded process-observation fixes are included.
+Summary-job diagnostics and new IMAP/mailbox work remain separate unmerged changes;
+the frozen Today follow-up is also excluded. Exact source, historical failures,
+paired-tag requirements and distribution limits are in the
+[release notes](docs/releases/v0.8.2.md) and
+[verification](VERIFICATION.md#v082-release-preparation--15-october-2026).
+
 **0.8.1 source — Gmail authorization recovery:** sync, folder-catalog and
 raw-message reads may refresh a rejected access token and retry once. History
 downloads retain routine token-expiry refresh before a request; their first
@@ -20,11 +31,11 @@ including all 16 Gmail regressions, with zero failures and four existing ignored
 benchmarks on each platform. The actual main merge has the same tested tree.
 This correction is not in the published, preserved v0.8.0 tag. Earlier PR #46
 tests incorrectly expected history-download 401 recovery; their passing runs do
-not validate this policy. Fresh paired v0.8.1 tagged checks and the existing
-publisher remain mandatory. See [release notes](docs/releases/v0.8.1.md).
+not validate this policy. v0.8.1 was published after its fresh paired tagged
+checks and existing publisher passed. See [release notes](docs/releases/v0.8.1.md).
 Synthetic coverage does not establish live-account acceptance.
 
-**Current source — hybrid navigation shell:** macOS and Windows share a Mail | Agent | Brain primary chrome. Cold start remains the Mail three-pane. Agent opens the existing Inbox Agent, Today, and Skills pages. Brain opens the existing persona and writing-rules page, plus categories. AI Studio is an advanced footer and Settings entry. Its More menu keeps one-release “Moved to Agent” and “Moved to Brain” hints for the pages that moved; Local Inbox Rules, local simulations, and simulation history stay there. Review-before-send, account routing, and provider writes are unchanged. This shell is not a paired release claim.
+**0.8.2 source — hybrid navigation shell:** macOS and Windows share a Mail | Agent | Brain primary chrome. Cold start remains the Mail three-pane. Agent opens the existing Inbox Agent, Today, and Skills pages. Brain opens the existing persona and writing-rules page, plus categories. AI Studio is an advanced footer and Settings entry. Its More menu keeps one-release “Moved to Agent” and “Moved to Brain” hints for the pages that moved; Local Inbox Rules, local simulations, and simulation history stay there. Review-before-send, account routing, and provider writes are unchanged. Publication still requires the complete paired tagged checks.
 
 **Running activity recovery:** a summary, style analysis, memory analysis, or reply
 batch left `running` after cancel, a 90-second timeout, client disconnect, or
