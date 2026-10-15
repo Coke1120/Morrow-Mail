@@ -199,16 +199,20 @@ struct DownloadControlsView: View {
     private func repair(_ message: JSON) {
         guard ready, message["accountId"].string == owner, message["canRepair"].bool, !model.busy, !loading else { return }
         let captured = context, requested = Int(page["page"].number)
+        let view = model.account, section = model.section, presentation = model.downloadsPresentation
+        let currentRepair: @MainActor () -> Bool = {
+            current(captured) && model.account == view && model.section == section &&
+                presentation != nil && model.downloadsPresentation == presentation
+        }
         guard model.confirm("Download this message's full content?", detail: "Mailbox: \(captured.owner)\n\(message["subject"].string)\nThis explicitly downloads one message, including attachments (up to 50 MiB) and raw message data (up to 80 MiB). No email is moved, deleted or sent; no AI is called."), current(captured) else { return }
         model.perform {
             do {
-                guard current(captured) else { return }
-                let result = try await model.request("/messages/" + encodedPath(message.id) + "/attachments", method: "POST", body: .object(["connectionRef": .string(captured.connectionRef)]), mailbox: captured.owner)
-                guard current(captured) else { return }
-                guard result["message"].id == message.id, result["message"]["accountId"].string == captured.owner else { throw APIError("Downloaded message ownership could not be confirmed.") }
+                guard currentRepair() else { return }
+                try await model.repairDownloadedMessage(message, connectionRef: captured.connectionRef, isCurrent: currentRepair)
+                guard currentRepair() else { return }
                 try await refresh(requested, context: captured)
-                if current(captured) { error = ""; status = "Download saved. Review remaining content limits above." }
-            } catch { if current(captured) { self.error = error.localizedDescription } }
+                if currentRepair() { error = ""; status = "Download saved. Review remaining content limits above." }
+            } catch { if currentRepair() { self.error = error.localizedDescription } }
         }
     }
 }

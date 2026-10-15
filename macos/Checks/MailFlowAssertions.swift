@@ -154,7 +154,19 @@ struct MailFlowAssertions {
     }
     static func trace(_ message: String) { FileHandle.standardError.write(Data((message + "\n").utf8)) }
     @MainActor static func main() async {
-        do { try await run() }
+        do {
+            if CommandLine.arguments.contains("--download-repair") {
+                let negative = CommandLine.arguments.contains("--expect-download-repair-regression")
+                do {
+                    try await DownloadRepairAssertions.run()
+                    if negative { throw APIError("The repair negative control unexpectedly passed.") }
+                } catch {
+                    guard negative, error.localizedDescription == "Download repair fixture: The opened reader still shows its old body or incomplete status." else { throw error }
+                    trace("Download repair negative control reproduced the stale opened body after a successful fictional POST; shared refresh was omitted only in the private compiler input.")
+                }
+            }
+            else { try await run() }
+        }
         catch { trace(error.localizedDescription); exit(1) }
     }
     @MainActor static func run() async throws {
