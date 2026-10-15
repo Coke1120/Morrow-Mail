@@ -129,10 +129,116 @@ import SwiftUI
             return [element.accessibilityValue() as? String, element.accessibilityLabel()].compactMap { $0 }
         }
     }
+    struct ControlDiagnosticNode {
+        let object: NSObject
+        var supported = false, role = "", identifier = ""
+        var labels: [String] = [], actions: [String] = [], children: [NSObject] = []
+        var frame: NSRect? = nil, window: NSObject? = nil, parent: NSObject? = nil
+        var enabled: Bool? = nil, hidden: Bool? = nil
+    }
+    @MainActor static func mountedControlDiagnostics(_ label: String, in root: NSView) {
+        let window = root.window
+        let rootVisible = root.visibleRect, windowFrame = window?.frame ?? .zero
+        let clip = window.map { $0.convertToScreen(root.convert(rootVisible, to: nil)).intersection(windowFrame) } ?? .zero
+        print("Control fixture: requested=\(String(label.prefix(100))) windowVisible=\(window?.isVisible == true) windowFrame=\(NSStringFromRect(windowFrame)) rootVisible=\(NSStringFromRect(rootVisible)) clip=\(NSStringFromRect(clip))")
+        // Failure observations only. Keep each API family's retained getter
+        // results separate; no legacy object enters control/action acceptance.
+        for legacy in [false, true] {
+            var cache: [ObjectIdentifier: ControlDiagnosticNode] = [:], visited = Set<ObjectIdentifier>()
+            var truncated = false, examples: [(Bool, String)] = []
+            @MainActor func read(_ object: NSObject) -> ControlDiagnosticNode? {
+                let identity = ObjectIdentifier(object)
+                if let node = cache[identity] { return node }
+                guard cache.count < 256 else { truncated = true; return nil }
+                var node = ControlDiagnosticNode(object: object)
+                var children: [Any] = []
+                if legacy {
+                    if object.responds(to: NSSelectorFromString("accessibilityAttributeNames")), object.responds(to: NSSelectorFromString("accessibilityAttributeValue:")) {
+                        let names = (object.accessibilityAttributeNames() as Any) as? [NSAccessibility.Attribute] ?? []
+                        if names.count <= 128 {
+                            @MainActor func attribute(_ key: String) -> Any? {
+                                let name = NSAccessibility.Attribute(rawValue: key)
+                                return names.contains(name) ? object.accessibilityAttributeValue(name) : nil
+                            }
+                            node.supported = true
+                            let role = attribute("AXRole")
+                            node.role = (role as? NSAccessibility.Role)?.rawValue ?? (role as? String) ?? ""
+                            node.identifier = attribute("AXIdentifier") as? String ?? ""
+                            node.labels = ["AXDescription", "AXTitle"].compactMap { attribute($0) as? String }
+                            node.enabled = (attribute("AXEnabled") as? NSNumber)?.boolValue
+                            node.hidden = (attribute("AXHidden") as? NSNumber)?.boolValue
+                            node.window = attribute("AXWindow") as? NSObject; node.parent = attribute("AXParent") as? NSObject
+                            if let position = attribute("AXPosition") as? NSValue, let size = attribute("AXSize") as? NSValue {
+                                node.frame = NSRect(origin: position.pointValue, size: size.sizeValue)
+                            }
+                            children = attribute("AXChildren") as? [Any] ?? []
+                        } else { truncated = true }
+                    }
+                } else if let element = object as? NSAccessibilityProtocol {
+                    node.supported = true; node.role = element.accessibilityRole()?.rawValue ?? ""
+                    node.identifier = element.accessibilityIdentifier() ?? ""
+                    node.labels = [element.accessibilityLabel(), element.accessibilityTitle()].compactMap { $0 }
+                    node.enabled = element.isAccessibilityEnabled(); node.hidden = element.isAccessibilityHidden()
+                    node.frame = element.accessibilityFrame(); node.window = element.accessibilityWindow() as? NSObject
+                    node.parent = element.accessibilityParent() as? NSObject; children = element.accessibilityChildren() ?? []
+                }
+                if object.responds(to: NSSelectorFromString("accessibilityActionNames")) {
+                    let actions = (object.accessibilityActionNames() as Any) as? [NSAccessibility.Action] ?? []
+                    node.actions = actions.prefix(16).map { $0.rawValue }; if actions.count > 16 { truncated = true }
+                }
+                if children.count > 64 { truncated = true }
+                node.children = children.prefix(64).compactMap { $0 as? NSObject }
+                cache[identity] = node
+                return node
+            }
+            @MainActor func visit(_ object: NSObject, depth: Int) {
+                let identity = ObjectIdentifier(object)
+                guard !visited.contains(identity) else { return }
+                guard visited.count < 256, depth < 16, let node = read(object) else { truncated = true; return }
+                visited.insert(identity)
+                let nativeTitle = (object as? NSButton)?.title ?? ""
+                let match = node.labels.contains(label) || nativeTitle == label
+                if match || ["AXButton", "AXCheckBox", "AXPopUpButton", "AXMenuButton"].contains(node.role) {
+                    var next: NSObject? = object, seen = Set<ObjectIdentifier>(), owner: NSView?
+                    var parentCycle = false
+                    for _ in 0..<16 {
+                        guard let current = next else { break }
+                        guard seen.insert(ObjectIdentifier(current)).inserted else { parentCycle = true; break }
+                        if let view = current as? NSView { owner = view; break }
+                        if let cell = current as? NSCell, let view = cell.controlView { owner = view; break }
+                        if current is NSWindow { break }
+                        next = read(current)?.parent
+                    }
+                    let ownerFrame = owner.flatMap { view in view.window.map { $0.convertToScreen(view.convert(view.visibleRect, to: nil)) } }
+                    let fields = ["type=\(type(of: object)) conforms=\(object is NSAccessibilityProtocol) supported=\(node.supported)",
+                        "role=\(node.role) id=\(String(node.identifier.prefix(100))) match=\(match)",
+                        "labels=\(node.labels.prefix(3).map { String($0.prefix(100)) }) nativeTitle=\(String(nativeTitle.prefix(100)))",
+                        "enabled=\(node.enabled.map { String($0) } ?? "unknown") hidden=\(node.hidden.map { String($0) } ?? "unknown")",
+                        "frame=\(node.frame.map { NSStringFromRect($0) } ?? "unknown") inClip=\(node.frame.map { !$0.isEmpty && clip.intersects($0) } ?? false)",
+                        "windowKnown=\(node.window != nil) ownWindow=\(window != nil && node.window === window) parent=\(node.parent.map { String(describing: type(of: $0)) } ?? "none") parentCycle=\(parentCycle) ownerPathBound=\(owner == nil && next != nil && seen.count == 16)",
+                        "nativeOwner=\(owner != nil) ownerWindow=\(window != nil && owner?.window === window) ownerRoot=\(owner.map { $0 === root || $0.isDescendant(of: root) } ?? false) ownerHidden=\(owner.map { $0.isHiddenOrHasHiddenAncestor.description } ?? "unknown") ownerInClip=\(ownerFrame.map { !$0.isEmpty && clip.intersects($0) } ?? false)",
+                        "advertised=\(node.actions) modernPress=\(object.responds(to: NSSelectorFromString("accessibilityPerformPress"))) legacyPerform=\(object.responds(to: NSSelectorFromString("accessibilityPerformAction:")))"]
+                    examples.append((match, fields.joined(separator: " ")))
+                }
+                for child in node.children { visit(child, depth: depth + 1) }
+                if let view = object as? NSView {
+                    let subviews = view.subviews
+                    for child in subviews.prefix(64) { visit(child, depth: depth + 1) }
+                    if subviews.count > 64 { truncated = true }
+                }
+            }
+            visit(root, depth: 0)
+            print("Control snapshot: family=\(legacy ? "attributes" : "protocol") nodes=\(visited.count) reads=\(cache.count) matches=\(examples.filter { $0.0 }.count) truncated=\(truncated)")
+            for example in (examples.filter { $0.0 } + examples.filter { !$0.0 }).prefix(16) { print("Control node: " + example.1) }
+        }
+        fflush(stdout)
+    }
     @MainActor static func pressControl(_ label: String, in root: NSView) async throws {
-        try await settle("Mounted enabled control missing: " + label) { control(label, in: root)?.isAccessibilityEnabled() == true }
-        guard let button = control(label, in: root) else { throw APIError("Lost mounted control: " + label) }
-        try require(button.accessibilityPerformPress(), "Native accessibility action failed: " + label)
+        do {
+            try await settle("Mounted enabled control missing: " + label) { control(label, in: root)?.isAccessibilityEnabled() == true }
+            guard let button = control(label, in: root) else { throw APIError("Lost mounted control: " + label) }
+            try require(button.accessibilityPerformPress(), "Native accessibility action failed: " + label)
+        } catch { mountedControlDiagnostics(label, in: root); throw error }
     }
     struct MenuNode {
         var role = "", identifier = ""
@@ -696,7 +802,11 @@ import SwiftUI
         window.isReleasedWhenClosed = false
         let host = NSHostingView(rootView: TodayView().environmentObject(model)); window.contentView = host; window.makeKeyAndOrderFront(nil)
         defer { window.close(); window.contentView = nil }
-        try await pressControl("Review replies (3)", in: host)
+        do { try await pressControl("Review replies (3)", in: host) }
+        catch {
+            print("Today control context: width=\(Int(width)) busy=\(model.busy) writing=\(review.writing) scope=\(review.scope) replies=\(model.state["today"]["replySuggestions"].array.count) scopedCount=\(model.state["today"]["replySuggestionCounts"][review.scope].number)"); fflush(stdout)
+            throw error
+        }
         let key = review.key(ReviewFixture.proposal(0, owner: first))
         try await settle("Today did not mount its original-owner editor") {
             model.section == "today" && review.drafts[key]?.accountID == first

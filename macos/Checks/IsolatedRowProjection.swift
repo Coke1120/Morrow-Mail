@@ -444,16 +444,129 @@ import SwiftUI
         }
         return JSON.object(fields)
     }
+    @MainActor static func cellProjection(_ object: NSObject?, readout: AXReadout, boundary: NativeBoundary) throws {
+        var fields: [String: JSON] = [:]
+        fields["capturedRow"] = .bool(object != nil)
+        guard let object, let seed = readout.node(object), let table = boundary.table,
+              let nativeRow = boundary.row, let column = boundary.column, let clip = boundary.clip else {
+            try emit("cell-attributes", fields); return
+        }
+        let currentSlot: Bool = table.numberOfRows > 0 && table.numberOfColumns > 0
+            && table.rowView(atRow: 0, makeIfNecessary: false) === nativeRow
+            && table.view(atColumn: 0, row: 0, makeIfNecessary: false) === column
+        let nativeOwned: Bool = table.window === boundary.window && table.isDescendant(of: boundary.host)
+            && nativeRow.window === boundary.window && nativeRow.isDescendant(of: table)
+            && column.window === boundary.window && column.isDescendant(of: nativeRow)
+        let nativeVisible: Bool = MailboxLatency.visibleFrame(table) != nil && MailboxLatency.visibleFrame(nativeRow) != nil
+            && MailboxLatency.visibleFrame(column) != nil
+        let path = parentPath(object, readout: readout, boundary: boundary)
+        let rowPathOwned: Bool = path.table && !path.cycle && !path.truncated && path.hidden == 0
+            && path.foreignWindow == 0 && path.invisibleNative == 0
+        let rowScoped: Bool = seed.role == NSAccessibility.Role.row.rawValue && seed.index == 0
+            && seed.window === boundary.window && rowPathOwned && (seed.frame.map { $0.intersects(clip) } ?? false)
+        fields["currentSlot"] = .bool(currentSlot)
+        fields["nativeOwned"] = .bool(nativeOwned)
+        fields["nativeVisible"] = .bool(nativeVisible)
+        fields["rowScoped"] = .bool(rowScoped)
+        let cells: [Node] = seed.children.objects.compactMap { readout.node($0) }.filter { $0.role == NSAccessibility.Role.cell.rawValue }
+        fields["cells"] = count(cells.count)
+        guard let node = cells.first else { try emit("cell-attributes", fields); return }
+        let cellPath = parentPath(node.object, readout: readout, boundary: boundary, row: object)
+        let cellInClip: Bool = node.frame.map { clip.contains($0) } ?? false
+        let cellPathOwned: Bool = cellPath.table && !cellPath.cycle && !cellPath.truncated && cellPath.hidden == 0
+            && cellPath.foreignWindow == 0 && cellPath.invisibleNative == 0
+        let cellNativeOwned: Bool
+        if let view = node.object as? NSView {
+            cellNativeOwned = view.window === boundary.window && view.isDescendant(of: nativeRow) && MailboxLatency.visibleFrame(view) != nil
+        } else if let cell = node.object as? NSCell {
+            cellNativeOwned = MailboxLatency.visibleCellFrame(cell, in: nativeRow, window: boundary.window, clip: clip) != nil
+        } else { cellNativeOwned = true }
+        let scoped: Bool = currentSlot && nativeOwned && nativeVisible && rowScoped && cellNativeOwned
+            && node.window === boundary.window && cellPathOwned && cellInClip
+        fields["scoped"] = .bool(scoped)
+        fields["role"] = .string(roleName(node.role))
+        fields["frame"] = rect(node.frame)
+        fields["window"] = .bool(node.window === boundary.window)
+        fields["inClip"] = .bool(cellInClip)
+        fields["parentPath"] = cellPath.json
+        fields["sameCapturedRowParent"] = .bool(node.parent === object)
+        var parentFields: [String: JSON] = [:]
+        if let parent = node.parent, let parentNode = readout.node(parent) {
+            parentFields["role"] = .string(roleName(parentNode.role))
+            parentFields["index0"] = .bool(parentNode.index == 0)
+            parentFields["index"] = parentNode.index.map { count($0) } ?? .null
+            parentFields["window"] = .bool(parentNode.window === boundary.window)
+            parentFields["frame"] = rect(parentNode.frame)
+            parentFields["sameRowFrame"] = .bool(parentNode.frame != nil && parentNode.frame == seed.frame)
+            parentFields["path"] = parentPath(parent, readout: readout, boundary: boundary).json
+        }
+        fields["parent"] = .object(parentFields)
+        let keys: [String] = ["AXValue", "AXDescription", "AXTitle", "AXRowIndexRange", "AXColumnIndexRange",
+            "AXContents", "AXVisibleChildren", "AXChildren", "AXWindow", "AXParent", "AXPosition", "AXSize", "AXIndex", "AXHidden"]
+        var advertised: [String: JSON] = [:]
+        for key in keys { advertised[key] = .bool(node.attributes.contains(NSAccessibility.Attribute(rawValue: key))) }
+        fields["advertised"] = .object(advertised)
+        // All new channel reads are confined to this captured current cell.
+        // Missing wrapper identity is observed here, never accepted by an oracle.
+        if scoped {
+            func valueType(_ value: Any?) -> String {
+                guard let value else { return "missing" }
+                if value is NSNull { return "null" }
+                if value is String { return "string" }
+                if value is NSAttributedString { return "attributedString" }
+                if value is NSNumber { return "number" }
+                if value is [Any] { return "array" }
+                return value is NSObject ? "object" : "other"
+            }
+            var channelFields: [String: JSON] = [:]
+            for key in ["AXValue", "AXDescription", "AXTitle"] {
+                let value: Any? = readout.attribute(node.object, node.attributes, key)
+                var channel: [String: JSON] = [:]
+                channel["type"] = .string(valueType(value))
+                channel["match"] = matches((value as? String).map { [$0] } ?? [])
+                channelFields[key] = .object(channel)
+            }
+            fields["channels"] = .object(channelFields)
+            var ranges: [String: JSON] = [:]
+            let rangeType: String = String(cString: NSValue(range: NSRange(location: 0, length: 1)).objCType)
+            for key in ["AXRowIndexRange", "AXColumnIndexRange"] {
+                let value: Any? = readout.attribute(node.object, node.attributes, key)
+                var rangeFields: [String: JSON] = [:]
+                rangeFields["type"] = .string(valueType(value))
+                if let value = value as? NSValue, String(cString: value.objCType) == rangeType {
+                    let range: NSRange = value.rangeValue
+                    rangeFields["location"] = count(range.location)
+                    rangeFields["length"] = count(range.length)
+                    rangeFields["slot0"] = .bool(range.location == 0 && range.length == 1)
+                }
+                ranges[key] = .object(rangeFields)
+            }
+            fields["ranges"] = .object(ranges)
+            var childFields: [String: JSON] = [:]
+            for key in ["AXContents", "AXVisibleChildren"] {
+                let value: Any? = readout.attribute(node.object, node.attributes, key)
+                let supported: Bool = node.attributes.contains(NSAccessibility.Attribute(rawValue: key))
+                var child: [String: JSON] = [:]
+                child["type"] = .string(valueType(value))
+                child["array"] = readout.array(value, supported: supported).json
+                childFields[key] = .object(child)
+            }
+            fields["alternateChildren"] = .object(childFields)
+        }
+        try emit("cell-attributes", fields)
+    }
     @MainActor static func tableProjection(_ readout: AXReadout, boundary: NativeBoundary) throws {
         guard let list = boundary.table else {
             try emit("table-" + readout.family.rawValue, ["nativeTable": .bool(false)]); return
         }
         let rows = readout.rows(list, visible: false), visible = readout.rows(list, visible: true)
+        var capturedRow: NSObject?
         @MainActor func describe(_ values: ArrayRead) -> JSON {
             let candidates = values.objects.filter { object in
                 guard let node = readout.node(object) else { return false }
                 return node.role == NSAccessibility.Role.row.rawValue && node.index == 0
             }
+            if readout.family == .attributes, capturedRow == nil { capturedRow = candidates.first }
             var fields: [String: JSON] = [:]
             fields["array"] = values.json
             fields["index0Rows"] = count(candidates.count)
@@ -467,6 +580,7 @@ import SwiftUI
         tableFields["visibleRows"] = describe(visible)
         tableFields["bounded"] = .bool(readout.bounded)
         try emit("table-" + readout.family.rawValue, tableFields)
+        if readout.family == .attributes { try cellProjection(capturedRow, readout: readout, boundary: boundary) }
     }
     @MainActor static func hostProjection(_ readout: AXReadout, boundary: NativeBoundary) throws {
         var seen = Set<ObjectIdentifier>(), nodes = 0, rows = 0, tables = 0, unsupported = 0, truncated = false
