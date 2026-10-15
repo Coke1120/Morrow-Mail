@@ -328,9 +328,12 @@ IAsyncAction folderSyncChecks(Grid root) {
     bool opened=false; auto openedToken=pane->dialog.Opened([&opened](auto const&,auto const&) { opened=true; });
     auto showing=pane->dialog.ShowAsync(); auto monitor=folderSyncMonitor(pane); monitor.Start();
     try {
+        // Opened can precede loading the TextBox. Input must reach the mounted
+        // control within the same initial deadline before observing its event.
+        auto filterReady=[pane,&opened] { return opened && pane->filter.IsLoaded() && pane->filter.ActualWidth()>0 && pane->filter.ActualHeight()>0 && pane->filter.IsEnabled(); };
         auto deadline=GetTickCount64()+5000;
-        while(!opened && GetTickCount64()<deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
-        check(opened,L"The native selected-folder dialog did not open.");
+        while(!filterReady() && GetTickCount64()<deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+        check(filterReady(),L"The native selected-folder filter did not mount and become editable.");
         auto checkbox=pane->checks.at(1).second;
         auto peer=Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(checkbox);
         peer.GetPattern(Automation::Peers::PatternInterface::Toggle).as<Automation::Provider::IToggleProvider>().Toggle();
@@ -377,6 +380,7 @@ IAsyncAction folderSyncChecks(Grid root) {
         auto reviewedSelection=pane->selection.selected;
         pane->filter.Text(L"no match"); co_await waitFolderSyncControl([pane] { return pane->checks.empty(); });
         check(pane->checks.empty() && pane->selection.selected.size()==2,counts(L"Filtering discarded the native folder selection.").c_str());
+        check(events->delivered>0,counts(L"The mounted folder filter did not deliver TextChanged.").c_str());
         // Exercise the actual event on a retained old control, first with no
         // visible rows and then with a replacement control for the same folder.
         auto uncheckedEvents=std::make_shared<unsigned>(0);

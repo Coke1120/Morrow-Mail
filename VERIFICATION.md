@@ -80,6 +80,26 @@ unchanged. There is no forced template/layout, scrolling, focus, render call,
 retry or deadline extension. The receipt only distinguishes the next actual
 Windows failure; it is not a root-cause fix or a local native pass.
 
+PR54 Windows job `116387074152` at `7d581d4` then passed 475 Rust tests with
+0 failures and 4 existing ignored, packaging and the fresh native walkthrough,
+but failed the same filter assertion in the owned walkthrough. The bounded
+receipt now records zero observed TextChanged events, row generation `1->1`,
+the exact eight-character fictional query and zero predicate matches. The
+TextBox was not loaded and had no positive dimensions before the input; all
+three became true during the unchanged wait. Selection stayed at two. This
+identifies an input-before-mount fixture ordering gap; it does not establish a
+production filtering defect or retroactively prove the older failures' cause.
+
+The fixture now requires Opened plus the actual filter's loaded state, positive
+width/height and enabled state within the original single five-second initial
+deadline. It then keeps the single Text assignment, original five-second filter
+wait, exact zero-controls/two-selected assertion, bounded receipt and detached
+checkbox negative controls, and additionally requires a real TextChanged event.
+Production code and handlers are unchanged. There is no forced layout/template,
+direct render, second input or additional deadline. Source invariants and diff
+checks are the only local validation; Windows SDK/runtime validation remains
+pending. The original terminal failure and its complete log are retained.
+
 ## IMAP server identity and safe migration — 15 October 2026
 
 This source follow-up starts from main
