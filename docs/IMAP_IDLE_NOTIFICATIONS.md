@@ -1,12 +1,12 @@
 # Bounded IMAP notifications
 
-This draft accelerates existing automatic mail synchronization with read-only
+Current source accelerates existing automatic mail synchronization with read-only
 IMAP IDLE. Inbox and eligible selected custom folders participate. It does not
 make IMAP a complete mirror or guarantee real-time delivery. Identity,
 read-session reuse and selected-folder synchronization are stacked prerequisites.
-The combined candidate passed Linux synthetic Rust checks. Native SDK and
-live-provider acceptance remain pending; this source is excluded from the
-separate v0.8.2 release.
+The original candidate's Linux synthetic results are recorded below. Each later
+combined source requires its own native SDK and release checks; live-provider
+acceptance remains incomplete. This feature was not included in v0.8.2.
 
 ## Eligibility and actual watch scope
 
@@ -135,7 +135,8 @@ intentional unchecked control adopted replacement scope; this is a sync-entry
 contract test, not a reproduction of the original consumer’s entire scheduling
 interleaving.
 
-All 31 notification cases and 18 existing selected-folder focused cases passed.
+For the original Linux candidate, all 31 notification cases and 18 existing
+selected-folder focused cases passed.
 Formatting and locked all-targets Clippy with `-D warnings` passed. The complete
 Rust suite passed 505 tests with zero failures and four existing ignored
 benchmarks. Final formatting, Clippy and full tests used the same 105-file
