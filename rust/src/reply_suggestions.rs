@@ -568,6 +568,8 @@ pub fn update_settings(db: &Store, owner: &str, input: &Value) -> Result<()> {
 pub fn preview(db: &Store, owner: &str, input: &Value) -> Result<Value> {
     let settings = db.settings()?;
     connected(&settings, owner)?;
+    expire_running(db)?;
+    let settings = db.settings()?;
     let mut current = read(&settings, owner);
     if ["queued", "running"].contains(&string(&current["job"], "status")) {
         return Err(Error::conflict("Cancel or finish the current batch first."));
@@ -639,6 +641,51 @@ pub fn run(db: &Store, owner: &str, id: &str) -> Result<()> {
     job["status"] = "queued".into();
     write(db, owner, value)
 }
+const CANCELLED: &str = "Cancelled. Review the batch before trying again.";
+const TIMED_OUT: &str =
+    "The reply batch timed out. Nothing was sent. Review the batch before trying again.";
+fn abandon_running(db: &Store, owner: &str, id: &str) -> Result<bool> {
+    let mut value = read(&db.settings()?, owner);
+    if value["job"]["id"] != id || value["job"]["status"] != "running" {
+        return Ok(false);
+    }
+    value["job"]["status"] = "cancelled".into();
+    value["job"]["error"] = CANCELLED.into();
+    value["job"].as_object_mut().unwrap().remove("inflight");
+    write(db, owner, value)?;
+    Ok(true)
+}
+pub fn cancel_running(db: &Store, owner: &str) -> Result<bool> {
+    let id = string(&read(&db.settings()?, owner)["job"], "id").to_owned();
+    if id.is_empty() {
+        return Ok(false);
+    }
+    abandon_running(db, owner, &id)
+}
+pub fn expire_running(db: &Store) -> Result<()> {
+    let settings = db.settings()?;
+    for (owner, value) in settings["replySuggestions"]
+        .as_object()
+        .into_iter()
+        .flatten()
+    {
+        if value["job"]["status"] == "running"
+            && crate::store::stamp_expired(
+                string(&value["job"], "runningAt"),
+                crate::store::RUNNING_LIMIT,
+            )
+        {
+            let mut value = value.clone();
+            value["job"]["status"] = "failed".into();
+            value["job"]["error"] = TIMED_OUT.into();
+            if let Some(job) = value["job"].as_object_mut() {
+                job.remove("inflight");
+            }
+            write(db, owner, value)?;
+        }
+    }
+    Ok(())
+}
 pub fn cancel(db: &Store, owner: &str) -> Result<()> {
     let settings = db.settings()?;
     connected(&settings, owner)?;
@@ -679,7 +726,7 @@ struct Work {
     prompt: String,
     options: Value,
 }
-fn claim(db: &Store) -> Result<Option<Work>> {
+fn claim(db: &Store, guard: Option<&crate::activity::RunningGuard>) -> Result<Option<Work>> {
     let settings = db.settings()?;
     for (owner, saved) in settings["replySuggestions"]
         .as_object()
@@ -738,7 +785,12 @@ fn claim(db: &Store) -> Result<Option<Work>> {
                     (job["spentTokens"].as_u64().unwrap_or(0) + work.source.estimate).into();
                 job["status"] = "running".into();
                 job["inflight"] = true.into();
+                job["runningAt"] = now().into();
                 write(db, owner, value)?;
+                if guard.is_some_and(|guard| guard.publish(owner, &work.job_id)) {
+                    abandon_running(db, owner, &work.job_id)?;
+                    return Ok(None);
+                }
                 return Ok(Some(work));
             }
             Err(_) => {
@@ -880,8 +932,17 @@ pub async fn tick(app: &App) -> Result<()> {
     let mut cancel = runtime.cancelled.subscribe();
     let mut scan = runtime.scan.lock().await;
     let previous = scan.clone();
+    let app_for_lease = app.clone();
+    let lease = crate::activity::RunLease::on_drop(move |published| {
+        let Some((owner, id)) = published else {
+            return;
+        };
+        let _ = app_for_lease.blocking(move |db| abandon_running(db, &owner, &id).map(|_| ()));
+    });
+    let guard = lease.guard();
     let (work, revision) = app
         .db(move |db| {
+            expire_running(db)?;
             let key = format!(
                 "{}:{}",
                 db.revision()?,
@@ -890,7 +951,7 @@ pub async fn tick(app: &App) -> Result<()> {
             if key != previous {
                 schedule_automatic(db)?;
             }
-            let work = claim(db)?;
+            let work = claim(db, Some(&guard))?;
             Ok((
                 work,
                 format!(
@@ -920,6 +981,8 @@ pub async fn tick(app: &App) -> Result<()> {
             &work.options,
         );
         tokio::pin!(request);
+        let timeout = tokio::time::sleep(std::time::Duration::from_secs(90));
+        tokio::pin!(timeout);
         loop {
             tokio::select! {
                 biased;
@@ -928,11 +991,35 @@ pub async fn tick(app: &App) -> Result<()> {
                         break Err(Error::conflict("Cancelled."));
                     }
                 }
+                _ = &mut timeout => break Err(Error::conflict(TIMED_OUT)),
                 result = &mut request => break result,
             }
         }
     };
-    app.db(move |db| finish(db, work, response)).await
+    let response = if response
+        .as_ref()
+        .is_err_and(|error| error.to_string() == TIMED_OUT)
+    {
+        let owner = work.owner.clone();
+        let id = work.job_id.clone();
+        app.db(move |db| {
+            let mut value = read(&db.settings()?, &owner);
+            if value["job"]["id"] == id && value["job"]["status"] == "running" {
+                value["job"]["status"] = "failed".into();
+                value["job"]["error"] = TIMED_OUT.into();
+                value["job"].as_object_mut().unwrap().remove("inflight");
+                write(db, &owner, value)?;
+            }
+            Ok(())
+        })
+        .await?;
+        return Ok(());
+    } else {
+        response
+    };
+    let outcome = app.db(move |db| finish(db, work, response)).await;
+    drop(lease);
+    outcome
 }
 pub fn stop(app: &App) {
     app.0
@@ -940,6 +1027,12 @@ pub fn stop(app: &App) {
         .stopped
         .store(true, Ordering::Release);
     app.0.reply_suggestions.cancelled.send_replace("*".into());
+}
+pub fn signal_cancel(app: &App, owner: &str) {
+    app.0
+        .reply_suggestions
+        .cancelled
+        .send_replace(owner.to_owned());
 }
 pub fn use_proposal(db: &Store, owner: &str, id: &str) -> Result<Value> {
     let settings = db.settings()?;

@@ -200,6 +200,10 @@ fn automation(settings: &Value, owner: &str) -> Value {
         &settings["brainLearning"][owner],
     )
 }
+const CANCELLED: &str =
+    "Memory analysis was cancelled. Nothing was saved. Use Suggest Memories to retry.";
+const TIMED_OUT: &str =
+    "Memory analysis timed out. Nothing was saved. Use Suggest Memories to retry.";
 fn write_automation(db: &Store, owner: &str, value: &Value) -> Result<()> {
     let mut all = db.settings()?["brainLearning"]
         .as_object()
@@ -231,14 +235,51 @@ pub fn learning_state(db: &Store, owner: &str) -> Result<Value> {
         json!({"enabled":value["enabled"],"tokenBudget":value["tokenBudget"],"status":value["status"],"lastAt":value["lastAt"],"error":value["error"],"preview":if preview.is_object() && validate(db,owner,preview).is_ok(){visible(preview)}else{Value::Null}}),
     )
 }
+fn abandon_running(db: &Store, owner: &str) -> Result<bool> {
+    let mut value = automation(&db.settings()?, owner);
+    if value["status"] != "running" {
+        return Ok(false);
+    }
+    value["status"] = "cancelled".into();
+    value["error"] = CANCELLED.into();
+    write_automation(db, owner, &value)?;
+    Ok(true)
+}
+pub fn cancel_running(db: &Store, owner: &str) -> Result<bool> {
+    abandon_running(db, owner)
+}
+pub fn expire_running(db: &Store) -> Result<()> {
+    let settings = db.settings()?;
+    for (owner, value) in settings["brainLearning"].as_object().into_iter().flatten() {
+        if value["status"] == "running"
+            && crate::store::stamp_expired(string(value, "runningAt"), crate::store::RUNNING_LIMIT)
+        {
+            let mut value = value.clone();
+            value["status"] = "failed".into();
+            value["error"] = TIMED_OUT.into();
+            write_automation(db, owner, &value)?;
+        }
+    }
+    Ok(())
+}
 /// One reviewed proposal at a time; weekly opt-in authorizes generation, never application.
 pub async fn scheduled_tick(app: &App) -> Result<()> {
-    let work = app.db(|db| {
+    let app_for_lease = app.clone();
+    let _lease = crate::activity::RunLease::on_drop(move |published| {
+        let Some((owner, _)) = published else {
+            return;
+        };
+        let _ = app_for_lease.blocking(move |db| abandon_running(db, &owner).map(|_| ()));
+    });
+    let guard = _lease.guard();
+    let stop = app.0.background.stop_requested("", "brain");
+    tokio::pin!(stop);
+    let work = app.db(move |db| {
         let settings = db.settings()?;
-        let now = Utc::now().timestamp_millis();
+        let now_ms = Utc::now().timestamp_millis();
         for owner in crate::service::connections(&settings).as_object().unwrap().keys() {
             let mut value = automation(&settings,owner);
-            if value["enabled"] != true || now < value["lastAt"].as_i64().unwrap_or(0).saturating_add(7*86400000)
+            if value["enabled"] != true || now_ms < value["lastAt"].as_i64().unwrap_or(0).saturating_add(7*86400000)
                 || (value["preview"].is_object() && validate(db,owner,&value["preview"]).is_ok()) { continue; }
             let Ok(mut context) = ai::context_for(db,"memory",&json!({}),owner) else { continue; };
             if string(&settings["ai"],"model").is_empty() || string(&settings["ai"],"baseUrl").is_empty()
@@ -249,14 +290,38 @@ pub async fn scheduled_tick(app: &App) -> Result<()> {
             if context.messages.is_empty() { continue; }
             let fingerprint = ai::hash(&json!(context.messages.iter().map(proof).collect::<Vec<_>>()));
             if value["fingerprint"] == fingerprint { continue; }
-            value["lastAt"] = now.into(); value["fingerprint"] = fingerprint.into(); value["status"] = "running".into(); value["error"] = "".into(); value["preview"] = Value::Null;
+            value["lastAt"] = now_ms.into(); value["fingerprint"] = fingerprint.into(); value["status"] = "running".into(); value["runningAt"] = now().into(); value["error"] = "".into(); value["preview"] = Value::Null;
             write_automation(db,owner,&value)?;
+            if guard.publish(owner, "brain") {
+                abandon_running(db, owner)?;
+                return Ok(None);
+            }
             return Ok(Some((owner.clone(),context,value)));
         }
         Ok(None)
     }).await?;
     if let Some((owner, context, claim)) = work {
-        let result = propose(app, &owner, context, i64::MAX).await;
+        let result = tokio::select! {
+            biased;
+            _ = &mut stop => {
+                let owner = owner.clone();
+                app.db(move |db| abandon_running(db, &owner)).await?;
+                return Ok(());
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_secs(90)) => {
+                let owner = owner.clone();
+                let claim = claim.clone();
+                app.db(move |db| {
+                    let mut value = automation(&db.settings()?, &owner);
+                    if value != claim { return Ok(()); }
+                    value["status"] = "failed".into();
+                    value["error"] = TIMED_OUT.into();
+                    write_automation(db, &owner, &value)
+                }).await?;
+                return Ok(());
+            }
+            result = propose(app, &owner, context, i64::MAX) => result,
+        };
         app.db(move |db| {
             let mut value = automation(&db.settings()?,&owner);
             if value != claim { return Ok(()); }

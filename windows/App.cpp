@@ -1713,6 +1713,15 @@ IAsyncAction summarizeNow(std::shared_ptr<Shell> self, hstring mailbox) {
         }
     } catch (...) { self->error(errorText()); }
 }
+IAsyncAction cancelActivity(std::shared_ptr<Shell> self, hstring id) {
+    if (id.empty()) co_return;
+    if (!co_await self->confirm(L"Cancel this activity?", L"The result will be discarded. Nothing will be sent.", L"Cancel activity")) co_return;
+    try {
+        Json body; put(body, L"id", id);
+        co_await self->service->request(L"/activity/cancel", L"", L"POST", body);
+        if (self->section == L"activity") co_await workspacePage(self, L"activity");
+    } catch (...) { self->error(errorText()); }
+}
 IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
     if (kind == L"studio" || kind == L"learning" || kind == L"brain" || kind == L"categories" || kind == L"rules" || kind == L"reply-suggestions" || kind == L"skills" || kind == L"agent" || kind == L"summaries" || kind == L"records") {
         co_await intelligencePage(self, kind); co_return;
@@ -1740,6 +1749,12 @@ IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
                 item.Children().Append(label(text(task, L"label") + L" · " + text(task, L"status"), 18));
                 item.Children().Append(label(text(task, L"accountId") + L"\n" + text(task, L"detail")));
                 if (!text(task, L"error").empty()) item.Children().Append(label(text(task, L"error")));
+                if (flag(task, L"cancellable")) {
+                    auto id = text(task, L"id");
+                    item.Children().Append(button(L"Cancel", [weak = self->weak_from_this(), id] {
+                        if (auto shell = weak.lock()) cancelActivity(shell, id);
+                    }));
+                }
                 content.Children().Append(item);
             }
             if (!array(result, L"tasks").Size()) content.Children().Append(label(L"No recent activity."));

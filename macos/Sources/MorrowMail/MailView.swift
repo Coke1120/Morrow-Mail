@@ -101,7 +101,7 @@ struct MailWorkspace: View {
                         }
                     }
                 }
-                    ActivityStatusView(value: model.activity, error: model.activityError, onOpenSettings: { model.settings("mail") }).padding(.horizontal, 12).padding(.vertical, 5).background(.bar)
+                    ActivityStatusView(value: model.activity, error: model.activityError, onOpenSettings: { model.settings("mail") }, onCancel: { model.cancelActivity($0) }).padding(.horizontal, 12).padding(.vertical, 5).background(.bar)
                     if !model.trashUndos.isEmpty {
                         HStack {
                             Text("Moved to provider Trash · Undo within one minute").font(.callout)
