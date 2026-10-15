@@ -34,7 +34,14 @@ running summary, style analysis, memory analysis, reply batch, or embedding
 batch; cancellation discards that result and does not send mail. Opening the
 app still reconciles leftover `running` work from the previous process. Import
 jobs keep their own pause and resume path and are not expired by this timeout.
-These checks are fixture tests, not live-account acceptance.
+Cancellation delivery is retained for each registered mailbox/work type, so a
+later cancellation or another mailbox's reply-settings save cannot erase it.
+The reply worker registers its mailbox while claiming the job, before another
+request can cancel that claim. Synthetic cases cover drop before claim publication,
+drop during model work, owner isolation, retained cancellation, late results,
+replacement jobs and stale timestamps. These checks are fixture tests, not
+live-account acceptance; native validation and original failed runs are recorded
+in [verification](VERIFICATION.md#activity-cancellation-and-native-verification-repairs--15-october-2026).
 
 **0.8.0 — writing rules, Today, skill reviews and Inbox Agent:** the combined
 PR #42–46 source passed the exact-head native checks and matches the main merge.

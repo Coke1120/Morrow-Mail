@@ -1,5 +1,80 @@
 # Verification — 14 October 2026
 
+## Activity cancellation and native verification repairs — 15 October 2026
+
+This follow-up starts from main `cfe61c9fedfe7f07a99ab84751aabf7bae19d495`,
+after PR #48 (`d16c7e2cce1e160c11fa22cf48361eba087e34f7`) and PR #49.
+The frozen Today follow-up, release metadata, updater key and workflows are
+excluded. This repair does not authorize another merge or release.
+
+Both the [PR #49 run 38680591088](https://github.com/Coke1120/Morrow-Mail/actions/runs/38680591088)
+and [merged-main run 38680738219](https://github.com/Coke1120/Morrow-Mail/actions/runs/38680738219),
+attempt 1, failed on both native platforms. macOS compilation failed at
+`AppModel.swift:779` because the confirmation call omitted the required `detail:`
+argument label; the repair supplies it. Windows failed the two new background
+cancellation tests with OS error 32 when they removed a temporary SQLite directory
+while still owning its App. The tests now join stopped workers and the loopback
+server and drop App before removal, retaining their state and no-send assertions.
+Successful reader diagnostics after the macOS build error did not run or validate
+the skipped package and primary native acceptance steps.
+
+Two deterministic loopback regressions also failed before their respective
+repairs. Concurrent manual style workers for A and B both received successful
+Activity cancellation responses, but the single watch channel retained only B's
+notification when the workers resumed. A kept waiting for the model. A reply
+worker similarly retained the shared reply gate when A's cancellation was followed
+by B's ordinary reply-settings save before the worker resumed. The background
+watch was introduced in PR #49; the separate reply watch already existed and was
+reused by the new Activity cancellation route. Terminal result guards prevented
+late publication in both cases; these were cancellation/resource-release defects,
+not evidence of cross-account writes or sending.
+
+Cancellation now registers a separate mailbox/work-type oneshot receiver
+synchronously and delivers every matching stop outside the registry lock. Reply
+registration occurs in the same Store closure as its claim. Closed receivers are
+pruned, new work does not inherit old notifications, and unrelated mailbox/settings
+signals remain isolated. Existing claim identity, result, timeout and drop guards
+remain in force. Synthetic tests cover style, scheduled Brain and reply work,
+including claim publication after drop, held model responses, real authenticated
+cancel routes, stale timestamps, replacement jobs and explicit reviewed retries.
+Stale-time tests control stored timestamps; they do not wait for a real 90-second
+timer. Brain retries use the real manual preview path, without inventing concurrent
+scheduled claims that the production background gate excludes.
+
+The [PR #48 Windows failure](https://github.com/Coke1120/Morrow-Mail/actions/runs/38673897184/job/116223016671)
+is retained separately. In owned run 3, sample 3, PID 5800 under parent 5312 had
+first native acquisition error 87, source `admission`, no retained window/scan/CIM
+receipt clocks and unknown exit code. The collector exited zero and the reader
+completed, but strict capture was incomplete. This does not prove why PID 5800
+disappeared or establish normal exit. The observer was unchanged by PRs #48/#49.
+
+The observer follow-up covers a demonstrated source gap: a newly discovered parent
+was not eligible to preserve its children's handles during the same CIM inventory
+window. A new provisional parent now requires its current CIM identity to match
+the original live native handle and a revalidated owned parent chain. Child rows
+arriving before parent rows are bounded and deferred. The 64-pin/8192-row limits,
+original deadlines, first-acquisition errors, final admission and exit gates stay
+strict. No missing process becomes proof of successful exit, and the original
+error-87 run is not reclassified. New fixtures do not establish universal capture
+or explain the historical process's cause of exit.
+
+Local Linux Rust 1.98 validation passed: rustfmt, locked/offline all-target Clippy
+with warnings denied and the complete locked/offline test suite, **425 passed,
+zero failed, four existing ignored benchmarks**, across 46 result groups. The
+full-suite log SHA-256 is
+`9bf861dd95611efb69aded9208eeaa02c53af5ca394cc11fc8b9e597abdc76a9`.
+All ten new cancellation tests passed, including both regressions that failed
+before their repairs. Independent source/test review found no remaining source
+blocker. PowerShell 7.6.6 parsing, identity and fixture C# compilation, bounded
+row/schema controls and existing observation/real-pipe checks also passed on Linux;
+Windows-only lifecycle checks were explicitly skipped on this host.
+
+Fresh exact-head PR native CI is still required at this preparation checkpoint.
+Linux schema/C# compilation cannot establish Win32 behavior or native SwiftUI/WinUI
+acceptance. All data and services used here are fictional isolated fixtures, with
+no real mailbox, outgoing message or external model. Manual accessibility,
+clean-machine, real-account and signing limitations remain unchanged.
+
 ## Hybrid navigation shell — 15 October 2026
 
 Source adds the same Mail | Agent | Brain primary chrome on macOS and Windows.

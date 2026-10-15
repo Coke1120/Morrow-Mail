@@ -94,6 +94,40 @@ namespace MorrowObservationIdentity {
         public int? NativeError { get; internal set; }
         public AcquisitionProvenance Provenance { get; internal set; }
     }
+    // Only bounded CIM metadata, not ownership or identity proof. A child row
+    // can arrive before its parent's row. Drain calls the native window's live
+    // authority/proof callbacks; the queue itself cannot authorize a handle.
+    public sealed class InventoryRow {
+        public uint Pid { get; internal set; }
+        public uint ParentPid { get; internal set; }
+        public long CimTicks { get; internal set; }
+        public long ReceivedAtQpc { get; internal set; }
+    }
+    public sealed class InventoryRowQueue {
+        readonly HashSet<uint> seen = new HashSet<uint>();
+        readonly Dictionary<uint, List<InventoryRow>> waiting = new Dictionary<uint, List<InventoryRow>>();
+        public int Count => seen.Count;
+        public void Add(uint id, uint parentId, long cimTicks, long receivedAtQpc) {
+            if (id <= 1 || cimTicks < 0 || cimTicks > DateTime.MaxValue.Ticks || receivedAtQpc < 0)
+                throw new ArgumentException("Invalid inventory row.");
+            if (seen.Count >= 8192 || !seen.Add(id)) throw new InvalidOperationException("Process inventory limit or duplicate.");
+            List<InventoryRow> children;
+            if (!waiting.TryGetValue(parentId, out children)) waiting.Add(parentId, children = new List<InventoryRow>());
+            children.Add(new InventoryRow { Pid = id, ParentPid = parentId, CimTicks = cimTicks, ReceivedAtQpc = receivedAtQpc });
+        }
+        public void Drain(uint parentId, Func<uint, bool> liveParent, Func<InventoryRow, bool> pinAndProveParent) {
+            var pending = new Queue<uint>(); var visited = new HashSet<uint>(); pending.Enqueue(parentId);
+            while (pending.Count != 0) {
+                uint id = pending.Dequeue();
+                if (!visited.Add(id)) throw new InvalidOperationException("Inventory lineage cycle.");
+                if (visited.Count > 64) throw new InvalidOperationException("Pin inventory limit.");
+                List<InventoryRow> children;
+                if (!liveParent(id) || !waiting.TryGetValue(id, out children)) continue;
+                waiting.Remove(id);
+                foreach (var row in children) if (pinAndProveParent(row)) pending.Enqueue(row.Pid);
+            }
+        }
+    }
     public sealed class InventoryPinWindow : IDisposable {
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         struct ProcessEntry {
@@ -130,6 +164,12 @@ namespace MorrowObservationIdentity {
         readonly object gate = new object();
         readonly Dictionary<uint, int> parents = new Dictionary<uint, int>();
         readonly Dictionary<uint, InventoryAcquisition> pins = new Dictionary<uint, InventoryAcquisition>();
+        sealed class ProvisionalParent {
+            public uint ParentPid;
+            public long StartTicks, ParentTicks;
+        }
+        readonly Dictionary<uint, ProvisionalParent> provisionalParents = new Dictionary<uint, ProvisionalParent>();
+        readonly InventoryRowQueue rows = new InventoryRowQueue();
         readonly HashSet<uint> known;
         readonly uint[] parentIds;
         readonly long[] parentTicks;
@@ -187,20 +227,45 @@ namespace MorrowObservationIdentity {
             if (pid <= 1 || (error != 5 && error != 87)) throw new ArgumentException("Invalid fixture error.");
             return new InventoryPinWindow(ids, ticks, handles, knownIds, maximum, pid, error);
         }
-        bool LiveParent(int index) {
-            uint actual = GetProcessId(parentHandles[index]);
+        static bool LiveHandle(SafeProcessHandle handle, uint id, long ticks) {
+            if (handle == null || handle.IsInvalid || handle.IsClosed) return false;
+            uint actual = GetProcessId(handle);
             if (actual == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
-            if (actual != parentIds[index]) return false;
+            if (actual != id) return false;
             long created, exited, kernel, user;
-            if (!GetProcessTimes(parentHandles[index], out created, out exited, out kernel, out user))
+            if (!GetProcessTimes(handle, out created, out exited, out kernel, out user))
                 throw new Win32Exception(Marshal.GetLastWin32Error());
-            if (DateTime.FromFileTimeUtc(created).Ticks != parentTicks[index]) return false;
-            uint wait = WaitForSingleObject(parentHandles[index], 0);
+            if (DateTime.FromFileTimeUtc(created).Ticks != ticks) return false;
+            uint wait = WaitForSingleObject(handle, 0);
             if (wait == 0xffffffff) throw new Win32Exception(Marshal.GetLastWin32Error());
             if (wait != 0 && wait != 258) throw new InvalidOperationException("Invalid parent wait.");
             return wait == 258;
         }
+        bool LiveParent(uint id, out long ticks) {
+            ticks = 0; var visited = new HashSet<uint>(); long expectedTicks = 0;
+            while (visited.Count < 64 && visited.Add(id)) {
+                int index;
+                if (parents.TryGetValue(id, out index)) {
+                    if (expectedTicks != 0 && parentTicks[index] != expectedTicks) return false;
+                    if (ticks == 0) ticks = parentTicks[index];
+                    return LiveHandle(parentHandles[index], id, parentTicks[index]);
+                }
+                ProvisionalParent parent; InventoryAcquisition pin;
+                if (!provisionalParents.TryGetValue(id, out parent) || !pins.TryGetValue(id, out pin) || pin.NativeError != null ||
+                    (expectedTicks != 0 && parent.StartTicks != expectedTicks) || parent.StartTicks < parent.ParentTicks ||
+                    !LiveHandle(pin.Handle, id, parent.StartTicks)) return false;
+                if (ticks == 0) ticks = parent.StartTicks;
+                expectedTicks = parent.ParentTicks; id = parent.ParentPid;
+            }
+            return false;
+        }
+        void RequireOpen() {
+            if (failure != null) throw new InvalidOperationException("Native inventory failed.", failure);
+            if (transferred || Volatile.Read(ref closing) != 0 || stop.IsSet)
+                throw new ObjectDisposedException(nameof(InventoryPinWindow));
+        }
         InventoryAcquisition AcquireOnce(uint id, string source, long scan = 0, long scanStarted = 0, long snapshotReady = 0) {
+            RequireOpen();
             InventoryAcquisition existing;
             if (pins.TryGetValue(id, out existing)) return existing;
             if (pins.Count >= limit) throw new InvalidOperationException("Pin inventory limit.");
@@ -220,6 +285,8 @@ namespace MorrowObservationIdentity {
         void Capture(string source) {
             long scan = ++scanSequence, started = Stopwatch.GetTimestamp();
             bool complete = false;
+            HashSet<uint> possibleParents;
+            lock (gate) { possibleParents = new HashSet<uint>(parents.Keys); possibleParents.UnionWith(provisionalParents.Keys); }
             using (SnapshotHandle snapshot = CreateToolhelp32Snapshot(2, 0)) {
                 if (snapshot.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
                 long ready = Stopwatch.GetTimestamp();
@@ -229,10 +296,11 @@ namespace MorrowObservationIdentity {
                 if (!available && Marshal.GetLastWin32Error() != 18) throw new Win32Exception(Marshal.GetLastWin32Error());
                 while (available && !stop.IsSet) {
                     if (seen.Count >= 8192 || !seen.Add(entry.Pid)) throw new InvalidOperationException("Process inventory limit or duplicate.");
-                    int parent;
-                    if (entry.Pid > 1 && !known.Contains(entry.Pid) && parents.TryGetValue(entry.ParentPid, out parent)) {
+                    if (entry.Pid > 1 && !known.Contains(entry.Pid) && possibleParents.Contains(entry.ParentPid)) {
                         lock (gate) {
-                            if (!pins.ContainsKey(entry.Pid) && LiveParent(parent)) AcquireOnce(entry.Pid, source, scan, started, ready);
+                            if (stop.IsSet) break;
+                            long parentStart;
+                            if (!pins.ContainsKey(entry.Pid) && LiveParent(entry.ParentPid, out parentStart)) AcquireOnce(entry.Pid, source, scan, started, ready);
                         }
                     }
                     available = Process32Next(snapshot, ref entry);
@@ -256,18 +324,42 @@ namespace MorrowObservationIdentity {
             if (id <= 1 || known.Contains(id)) throw new ArgumentException("Invalid child identity.");
             if (receivedAtQpc < 0 || receivedAtQpc > Stopwatch.GetTimestamp()) throw new ArgumentException("Invalid row receipt clock.");
             lock (gate) {
-                if (failure != null) throw new InvalidOperationException("Native inventory failed.", failure);
-                if (transferred || Volatile.Read(ref closing) != 0) throw new ObjectDisposedException(nameof(InventoryPinWindow));
+                RequireOpen();
                 InventoryAcquisition existing;
                 if (pins.TryGetValue(id, out existing)) {
                     if (receivedAtQpc != 0 && existing.Provenance.CimReceivedAtQpc == 0) existing.Provenance.CimReceivedAtQpc = receivedAtQpc;
                     return existing;
                 }
-                int parent;
-                if (!parents.TryGetValue(parentId, out parent) || !LiveParent(parent)) throw new InvalidOperationException("Parent is not live and owned.");
+                long parentStart;
+                if (!LiveParent(parentId, out parentStart)) throw new InvalidOperationException("Parent is not live and owned.");
                 var item = AcquireOnce(id, "cim-row");
                 item.Provenance.CimReceivedAtQpc = receivedAtQpc;
                 return item;
+            }
+        }
+        // This is still read-only provisional pinning. Only the original handle
+        // matched to this sample's CIM row can authorize another provisional
+        // pin. Full current-CIM ownership/admission/counter checks remain later.
+        bool PinRow(InventoryRow row) {
+            RequireOpen();
+            long parentStart;
+            if (known.Contains(row.Pid) || row.CimTicks == 0 || !LiveParent(row.ParentPid, out parentStart) || row.CimTicks < parentStart) return false;
+            var pin = AcquireOnce(row.Pid, "cim-row");
+            if (pin.Provenance.CimReceivedAtQpc == 0) pin.Provenance.CimReceivedAtQpc = row.ReceivedAtQpc;
+            if (pin.NativeError != null) return false; // First 87/5 is permanent; never reopen/promote it.
+            var proof = ExitProof.ReadHandle(pin.Handle, row.Pid, row.CimTicks, parentStart);
+            long parentAfter;
+            if (!proof.IdentityMatched || proof.Outcome != "alive" || !proof.StartUtcTicks.HasValue ||
+                !LiveParent(row.ParentPid, out parentAfter) || parentAfter != parentStart) return false;
+            provisionalParents.Add(row.Pid, new ProvisionalParent {
+                ParentPid = row.ParentPid, StartTicks = proof.StartUtcTicks.Value, ParentTicks = parentStart });
+            return true;
+        }
+        public void ObserveRow(uint id, uint parentId, long cimTicks, long receivedAtQpc) {
+            if (receivedAtQpc < 0 || receivedAtQpc > Stopwatch.GetTimestamp()) throw new ArgumentException("Invalid row receipt clock.");
+            lock (gate) {
+                RequireOpen(); rows.Add(id, parentId, cimTicks, receivedAtQpc);
+                rows.Drain(parentId, candidate => { long ticks; return LiveParent(candidate, out ticks); }, PinRow);
             }
         }
         public InventoryAcquisition[] BorrowForFixture() {
@@ -288,7 +380,7 @@ namespace MorrowObservationIdentity {
         public bool WorkerStopped => worker == null || !worker.IsAlive;
         public InventoryAcquisition[] Complete(int milliseconds) {
             if (milliseconds < 0 || milliseconds > 250) throw new ArgumentException("Invalid inventory join budget.");
-            stop.Set();
+            lock (gate) { RequireOpen(); stop.Set(); }
             if (!worker.Join(milliseconds)) { Interlocked.Exchange(ref closing, 1); throw new TimeoutException("Inventory pin window did not stop."); }
             lock (gate) {
                 if (failure != null) throw new InvalidOperationException("Native inventory failed.", failure);

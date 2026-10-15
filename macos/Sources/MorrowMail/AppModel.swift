@@ -776,7 +776,7 @@ final class AppModel: ObservableObject {
     }
     func cancelActivity(_ id: String) {
         guard !id.isEmpty else { return }
-        guard confirm("Cancel this activity?", "The result will be discarded. Nothing will be sent. Choose Continue to cancel it.") else { return }
+        guard confirm("Cancel this activity?", detail: "The result will be discarded. Nothing will be sent. Choose Continue to cancel it.") else { return }
         Task { @MainActor in
             do {
                 let next = try await self.request("/activity/cancel", method: "POST", body: .object(["id": .string(id)]), mailbox: "")

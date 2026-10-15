@@ -13,12 +13,11 @@ use axum::{
 };
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::{Mutex, watch};
+use tokio::sync::Mutex;
 
 pub struct Runtime {
     gate: Mutex<()>,
     scan: Mutex<String>,
-    cancelled: watch::Sender<String>,
     stopped: AtomicBool,
 }
 impl Default for Runtime {
@@ -26,7 +25,6 @@ impl Default for Runtime {
         Self {
             gate: Mutex::new(()),
             scan: Mutex::new(String::new()),
-            cancelled: watch::channel(String::new()).0,
             stopped: AtomicBool::new(false),
         }
     }
@@ -929,7 +927,6 @@ pub async fn tick(app: &App) -> Result<()> {
     let Ok(_guard) = runtime.gate.try_lock() else {
         return Ok(());
     };
-    let mut cancel = runtime.cancelled.subscribe();
     let mut scan = runtime.scan.lock().await;
     let previous = scan.clone();
     let app_for_lease = app.clone();
@@ -940,6 +937,7 @@ pub async fn tick(app: &App) -> Result<()> {
         let _ = app_for_lease.blocking(move |db| abandon_running(db, &owner, &id).map(|_| ()));
     });
     let guard = lease.guard();
+    let app_for_stop = app.clone();
     let (work, revision) = app
         .db(move |db| {
             expire_running(db)?;
@@ -951,7 +949,15 @@ pub async fn tick(app: &App) -> Result<()> {
             if key != previous {
                 schedule_automatic(db)?;
             }
-            let work = claim(db, Some(&guard))?;
+            let work = claim(db, Some(&guard))?.map(|work| {
+                // Claim and owner-specific registration share the store lock,
+                // so cancellation cannot slip between them.
+                let cancel = app_for_stop
+                    .0
+                    .background
+                    .stop_requested(&work.owner, "replies");
+                (work, cancel)
+            });
             Ok((
                 work,
                 format!(
@@ -963,9 +969,10 @@ pub async fn tick(app: &App) -> Result<()> {
         })
         .await?;
     *scan = revision;
-    let Some(work) = work else {
+    let Some((work, cancel)) = work else {
         return Ok(());
     };
+    tokio::pin!(cancel);
     if runtime.stopped.load(Ordering::Acquire) {
         return app
             .db(move |db| finish(db, work, Err(Error::conflict("Stopped."))))
@@ -983,17 +990,11 @@ pub async fn tick(app: &App) -> Result<()> {
         tokio::pin!(request);
         let timeout = tokio::time::sleep(std::time::Duration::from_secs(90));
         tokio::pin!(timeout);
-        loop {
-            tokio::select! {
-                biased;
-                changed = cancel.changed() => {
-                    if changed.is_err() || *cancel.borrow() == "*" || *cancel.borrow() == work.owner {
-                        break Err(Error::conflict("Cancelled."));
-                    }
-                }
-                _ = &mut timeout => break Err(Error::conflict(TIMED_OUT)),
-                result = &mut request => break result,
-            }
+        tokio::select! {
+            biased;
+            _ = &mut cancel => Err(Error::conflict("Cancelled.")),
+            _ = &mut timeout => Err(Error::conflict(TIMED_OUT)),
+            result = &mut request => result,
         }
     };
     let response = if response
@@ -1026,13 +1027,10 @@ pub fn stop(app: &App) {
         .reply_suggestions
         .stopped
         .store(true, Ordering::Release);
-    app.0.reply_suggestions.cancelled.send_replace("*".into());
+    signal_cancel(app, "*");
 }
 pub fn signal_cancel(app: &App, owner: &str) {
-    app.0
-        .reply_suggestions
-        .cancelled
-        .send_replace(owner.to_owned());
+    app.0.background.request_stop(owner, "replies");
 }
 pub fn use_proposal(db: &Store, owner: &str, id: &str) -> Result<Value> {
     let settings = db.settings()?;
@@ -1124,10 +1122,7 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             .get(1)
             .is_some_and(|v| v == "cancel" || v == "settings")
     {
-        app.0
-            .reply_suggestions
-            .cancelled
-            .send_replace(cancelled_owner);
+        signal_cancel(app, &cancelled_owner);
     }
     let status = if ctx.method == "POST" && ctx.path.get(1).is_some_and(|v| v == "run") {
         axum::http::StatusCode::ACCEPTED

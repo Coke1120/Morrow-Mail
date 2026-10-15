@@ -1400,16 +1400,14 @@ async fn dropped_manual_summary_releases_the_running_row_and_the_gate() {
         .unwrap();
     assert_eq!(task["cancellable"], true);
     run.abort();
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if job_status(&app.settings().await.unwrap(), id) == "cancelled" {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("dropped summary should leave the running row");
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), run)
+            .await
+            .expect("dropped summary should release its worker")
+            .unwrap_err()
+            .is_cancelled()
+    );
+    assert_eq!(job_status(&app.settings().await.unwrap(), id), "cancelled");
     drop(finish);
     assert!(summary_request(&app, A, "preview", json!({})).await.is_ok());
     let preview = summary_request(&app, A, "preview", json!({}))
@@ -1445,6 +1443,8 @@ async fn dropped_manual_summary_releases_the_running_row_and_the_gate() {
             .unwrap_or(true)
     );
     server.abort();
+    let _ = server.await;
+    drop(app);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -1522,5 +1522,7 @@ async fn activity_cancel_releases_a_running_summary_without_sending() {
             .unwrap_or(true)
     );
     server.abort();
+    let _ = server.await;
+    drop(app);
     fs::remove_dir_all(root).unwrap();
 }
