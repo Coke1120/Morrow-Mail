@@ -341,7 +341,8 @@ void start(Page const& p) {
     hstring accountDetail = accounts ? to_hstring(accounts) + L" mail account(s) connected." :
         hstring(L"Add a Gmail, Outlook or IMAP account to see your inbox.");
     step(L"1 · Connect your mail", accountDetail, accounts ? L"Manage Accounts" : L"Add an Account", L"mail");
-    p->body.Children().Append(button(L"Open Today",[weak]{ if (auto page=weak.lock()) page->shell->navigate(L"today"); }));
+    p->body.Children().Append(button(L"Open Today in Agent",[weak]{ if (auto page=weak.lock()) page->shell->navigate(L"today"); }));
+    p->body.Children().Append(button(L"Open AI Studio",[weak]{ if (auto page=weak.lock()) page->shell->navigate(L"studio"); }));
     step(L"2 · Set up AI help (optional)", flag(object(object(p->shell->state, L"settings"), L"ai"), L"configured") ?
         L"AI connection saved. Online AI receives only the mail you permit and may charge for requests." :
         L"AI can help write replies and summarize mail. Ask your IT support or AI provider for the connection details. You can still use mail without AI.",
@@ -989,7 +990,7 @@ void about(Page const& p) {
 
 IAsyncAction settingsPage(std::shared_ptr<Shell> shell, hstring tab) {
     shell->saveGeneralBeforeLeave = {};
-    if (tab == L"learning") { co_await workspacePage(shell, L"learning"); co_return; }
+    if (tab == L"learning") { co_await shell->navigate(L"learning"); co_return; }
     auto p = std::make_shared<SettingsPage>(); p->shell = shell; p->owner = shell->owner; p->tab = tab;
     p->generation = ++shell->generation; p->busyKey = L"settings-request:" + std::to_wstring(p->generation);
     Grid root; root.Margin(xaml::Thickness{24, 20, 24, 20}); root.ColumnSpacing(24); root.RowSpacing(16);

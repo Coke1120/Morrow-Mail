@@ -2,6 +2,30 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+struct ShellSectionBar: View {
+    var mode: String
+    var current: String
+    var select: (String) -> Void
+    private var items: [(id: String, title: String)] {
+        mode == "brain"
+            ? [("brain", "Persona & writing rules"), ("categories", "Categories")]
+            : [("agent", "Inbox Agent"), ("today", "Today"), ("skills", "Skills")]
+    }
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(items, id: \.id) { item in
+                Button(item.title) { select(item.id) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(current == item.id)
+                    .accessibilityIdentifier("shell.section.\(item.id)")
+                    .accessibilityLabel(current == item.id ? "\(item.title), selected" : item.title)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
 struct MailWorkspace: View {
     @AppStorage("collapsedMailAccounts") private var collapsedAccounts = "[]"
     @AppStorage("mailReaderLayout") private var readerLayout = "right"
@@ -38,7 +62,8 @@ struct MailWorkspace: View {
                         if !sidebarVisible {
                             HStack(spacing: 14) {
                                 Button { sidebarVisible = true } label: { Label("Show Sidebar", systemImage: "sidebar.left") }.labelStyle(.iconOnly).help("Show Sidebar")
-                                Spacer()
+                                shellModes(compact: true)
+                                Spacer(minLength: 8)
                                 syncButton
                                 composeButton
                             }.buttonStyle(.borderless).padding(.horizontal, 14).padding(.vertical, 8).background(.bar)
@@ -49,8 +74,14 @@ struct MailWorkspace: View {
                                 Button("Add account") { model.settings("mail") }.buttonStyle(.borderedProminent)
                             }.padding(30)
                         } else if model.section == "today" {
-                            TodayView()
-                        } else if model.section == "studio" {
+                            VStack(spacing: 0) {
+                                ShellSectionBar(mode: "agent", current: model.section) { destination in
+                                    guard model.canNavigate else { return }
+                                    model.section = destination
+                                }.padding(.horizontal, 20).padding(.top, 12)
+                                TodayView()
+                            }
+                        } else if model.section == "agent" || model.section == "skills" || model.section == "brain" || model.section == "categories" || model.section == "studio" {
                             GeometryReader { area in
                                 StudioView(review: model.review).id(model.account)
                                     .frame(width: area.size.width, height: area.size.height)
@@ -178,6 +209,8 @@ struct MailWorkspace: View {
                 Spacer(minLength: 0)
                 Button { sidebarVisible = false } label: { Label("Hide Sidebar", systemImage: "sidebar.left") }.labelStyle(.iconOnly).buttonStyle(.borderless).help("Hide Sidebar")
             }.padding(.horizontal, 14).padding(.vertical, 12)
+            shellModes()
+                .padding(.horizontal, 14).padding(.bottom, 8)
             HStack(spacing: 8) {
                 composeButton.buttonStyle(.borderedProminent)
                 syncButton
@@ -193,11 +226,22 @@ struct MailWorkspace: View {
                     else { model.perform { try await model.selectAccount(parts[0], folder: parts[1]) } }
                 } else { model.section = value }
             })) {
+                if model.shellMode == "agent" {
+                    Section("Agent") {
+                        if sidebarShows("Inbox Agent") { Label("Inbox Agent", systemImage: "bubble.left.and.bubble.right").tag("agent").accessibilityIdentifier("workspace.agent") }
+                        if sidebarShows("Today") { Label("Today", systemImage: "sun.max").tag("today").accessibilityIdentifier("workspace.today") }
+                        if sidebarShows("Skills") { Label("Skills", systemImage: "square.stack.3d.up").tag("skills").accessibilityIdentifier("workspace.skills") }
+                    }
+                } else if model.shellMode == "brain" {
+                    Section("Brain") {
+                        if sidebarShows("Persona & writing rules") { Label("Persona & writing rules", systemImage: "brain.head.profile").tag("brain").accessibilityIdentifier("workspace.brain") }
+                        if sidebarShows("Categories") { Label("Categories", systemImage: "tag").tag("categories").accessibilityIdentifier("workspace.categories") }
+                    }
+                } else {
                 Section("Workspace") {
-                    Label("Today", systemImage: "sun.max").tag("today").accessibilityIdentifier("workspace.today")
+                    if sidebarShows("Today — Moved to Agent") { Label("Today — Moved to Agent", systemImage: "sun.max").tag("today").accessibilityIdentifier("workspace.today.moved") }
                     Label("Reply Suggestions", systemImage: "text.bubble").tag("reply-suggestions").accessibilityIdentifier("workspace.reply-suggestions")
                     Label("Out of Office", systemImage: "moon").tag("out-of-office").accessibilityIdentifier("workspace.out-of-office")
-                    Label("AI Studio", systemImage: "sparkles").tag("studio")
                     Label("Calendar", systemImage: "calendar").tag("calendar")
                     Label("Outbox", systemImage: "clock.arrow.circlepath").tag("scheduled").accessibilityIdentifier("workspace.scheduled")
                 }
@@ -207,9 +251,23 @@ struct MailWorkspace: View {
                         accountGroup(account.id, title: account["email"].string, subtitle: account["provider"].string == "imap" ? "IMAP" : providerLabel(account["provider"].string), symbol: "envelope")
                     }
                 }
+                }
             }.listStyle(.sidebar)
             Button { model.settings("mail") } label: { Label("Add account", systemImage: "plus") }.buttonStyle(.plain).padding(12).disabled(model.busy)
             Divider()
+            Button { guard model.canNavigate else { return }; model.section = "studio" } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label("AI Studio", systemImage: "sparkles")
+                    Text("Advanced").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityIdentifier("workspace.studio")
+            .accessibilityLabel(model.section == "studio" ? "AI Studio, advanced, selected" : "AI Studio, advanced")
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 18).padding(.top, 8)
+            .disabled(!model.canNavigate && model.section != "studio")
+            .background(model.section == "studio" ? morrowGreen.opacity(0.12) : Color.clear)
             Button { model.settings(model.updateAvailable ? "about" : "general") } label: {
                 HStack {
                     Label("Settings & connections", systemImage: "gearshape")
@@ -222,6 +280,38 @@ struct MailWorkspace: View {
                 .accessibilityLabel(model.updateAvailable ? "Settings & connections, update available" : "Settings & connections")
                 .help(model.updateAvailable ? "A new version is available. Open App updates." : "Settings & connections")
                 .buttonStyle(.plain).frame(maxWidth: .infinity, alignment: .leading).padding(18).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+    private func shellModes(compact: Bool = false) -> some View {
+        HStack(spacing: 6) {
+            ForEach([("mail", "Mail"), ("agent", "Agent"), ("brain", "Brain")], id: \.0) { mode, title in
+                Button(title) { selectShell(mode) }
+                    .font(.callout.weight(model.shellMode == mode ? .semibold : .regular))
+                    .frame(maxWidth: compact ? nil : .infinity)
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, compact ? 8 : 0)
+                    .background(model.shellMode == mode ? morrowGreen.opacity(0.16) : Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+                    .buttonStyle(.plain)
+                    .disabled(!model.canNavigate && model.shellMode != mode)
+                    .accessibilityIdentifier("shell.\(mode)")
+                    .accessibilityLabel(model.shellMode == mode ? "\(title), selected" : title)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Mail, Agent, and Brain")
+    }
+    private func sidebarShows(_ title: String) -> Bool {
+        folderFilter.isEmpty || title.localizedCaseInsensitiveContains(folderFilter)
+    }
+    private func selectShell(_ mode: String) {
+        guard model.canNavigate else { return }
+        switch mode {
+        case "agent":
+            if model.shellMode != "agent" { model.section = "agent" }
+        case "brain":
+            if model.shellMode != "brain" { model.section = "brain" }
+        default:
+            if model.section != "inbox" { model.section = "inbox" }
         }
     }
     private var syncButton: some View {
