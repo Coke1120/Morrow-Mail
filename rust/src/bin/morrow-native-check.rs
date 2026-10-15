@@ -3270,9 +3270,12 @@ Native macOS reader: trace phase=adversarial-text rendering-configuration policy
             fixture.0.join("scripts/probe-macos-reader-processes.py"),
             r#"import pathlib, sys, time
 output = pathlib.Path(sys.argv[sys.argv.index('--output') + 1])
+# Exercise slow interpreter startup without assuming the probe starts in 0.5s.
+time.sleep(0.8)
 with output.with_name('started.txt').open('x') as started:
     started.write('one owned probe')
 print('fixture metadata probe started', flush=True)
+output.with_name('ready.txt').write_text('ready')
 time.sleep(10)
 "#,
         )
@@ -3280,13 +3283,17 @@ time.sleep(10)
         let probe_directory = fixture.0.join("probe");
         fs::create_dir(&probe_directory).unwrap();
         let mut probe = ReaderOwnershipProbe::new(&fixture.0, &probe_directory);
-        let script = "printf 'Native macOS reader: trace phase=adversarial-text fixture-update-request end; SwiftUI navigation/layout may still be pending +1832 ms\\nNative macOS reader: trace phase=adversarial-text marker-wait-begin marker=Bounded adversarial tail loading=false +1832 ms\\nNative macOS reader: trace phase=adversarial-text navigation-loading reader=initial value=' >&2; sleep 0.05; printf 'true +1839 ms\\nNative macOS reader: trace phase=adversarial-text navigation-loading reader=initial value=true +1840 ms\\n' >&2; sleep 0.5; printf '%s\\n' \"$1\"";
+        let ready_path = probe_directory.join("ready.txt");
+        // Wait for the fake probe's first flushed output within the unchanged
+        // two-second reader deadline, then verify cancellation of its long work.
+        let script = "printf 'Native macOS reader: trace phase=adversarial-text fixture-update-request end; SwiftUI navigation/layout may still be pending +1832 ms\\nNative macOS reader: trace phase=adversarial-text marker-wait-begin marker=Bounded adversarial tail loading=false +1832 ms\\nNative macOS reader: trace phase=adversarial-text navigation-loading reader=initial value=' >&2; sleep 0.05; printf 'true +1839 ms\\nNative macOS reader: trace phase=adversarial-text navigation-loading reader=initial value=true +1840 ms\\n' >&2; while [ ! -f \"$2\" ]; do sleep 0.01; done; printf '%s\\n' \"$1\"";
         let process = reader_sample_process_controlled(
             command(&fixture.0, "/bin/sh").args([
                 "-c",
                 script,
                 "fixture",
                 &reader_child_result("warm-view").to_string(),
+                ready_path.to_str().unwrap(),
             ]),
             Duration::from_secs(2),
             4096,
