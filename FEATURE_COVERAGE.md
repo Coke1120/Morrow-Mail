@@ -37,9 +37,12 @@ jobs keep their own pause and resume path and are not expired by this timeout.
 Cancellation delivery is retained for each registered mailbox/work type, so a
 later cancellation or another mailbox's reply-settings save cannot erase it.
 The reply worker registers its mailbox while claiming the job, before another
-request can cancel that claim. Synthetic cases cover drop before claim publication,
+request can cancel that claim. Cancellation and reply-settings changes publish
+their stop before releasing the Store, so a delayed response cannot stop a new
+claim. Synthetic cases cover drop before claim publication,
 drop during model work, owner isolation, retained cancellation, late results,
-replacement jobs and stale timestamps. These checks are fixture tests, not
+replacement jobs, delayed cancellation/settings responses and stale timestamps.
+These checks are fixture tests, not
 live-account acceptance; native validation and original failed runs are recorded
 in [verification](VERIFICATION.md#activity-cancellation-and-native-verification-repairs--15-october-2026).
 

@@ -19,8 +19,9 @@ Current source adds a Mail | Agent | Brain navigation shell on macOS and Windows
 The activity-recovery follow-up keeps cancellation requests separate across
 mailboxes and AI work types. Cancelling one analysis remains effective when
 another mailbox is cancelled or its reply settings change; completed or cancelled
-work still cannot publish a late result. Synthetic cancellation and Windows
-process-observation coverage, original failures and remaining native acceptance
+work still cannot publish a late result. A delayed cancellation or settings
+response also cannot stop a replacement analysis started afterward. Synthetic
+cancellation and Windows process-observation coverage, original failures and remaining native acceptance
 limits are recorded in [verification](VERIFICATION.md#activity-cancellation-and-native-verification-repairs--15-october-2026).
 
 Current source adds mailbox categories, local Today suggestions and skill review queues. Today keeps valid saved summary suggestions while newer jobs are queued or failed, and completing unread suggestions makes room for older unread mail. Category edits require review before being discarded. Skill schedules only queue items for review; they do not run a model, send mail or update Email Brain. See [behavior and limits](docs/USER_GUIDE.md#reviewed-attention-workflows) and [follow-up validation](VERIFICATION.md#pr-43-today-and-category-follow-up--14-october-2026).

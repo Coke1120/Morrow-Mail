@@ -41,6 +41,20 @@ Stale-time tests control stored timestamps; they do not wait for a real 90-secon
 timer. Brain retries use the real manual preview path, without inventing concurrent
 scheduled claims that the production background gate excludes.
 
+Two further controlled scheduling tests reproduced a separate ordering gap:
+after a cancellation/settings mutation committed, a new worker could claim work
+before the old request resumed and published its stop. The ordinary reply-settings
+handler's delayed stop turned a newly approved automatic batch `failed`; a delayed
+Activity cancel turned a newly prepared manual style preview `cancelled`. Both
+fixtures use production handlers/claims, held loopback models, and database barriers
+that check the replacement's persisted state before releasing its response.
+The reply approval is created by the actual settings operation. The reply-settings
+ordering gap predates PR #49; the Activity route was added in PR #49. Both gaps
+precede the oneshot repair. Stop
+publication now stays inside the successful mutation's Store closure, including
+all four owner-scoped Activity worker kinds and reply settings/cancel. The style
+case controls concurrent API scheduling; it is not a natural native-UI reproduction.
+
 The [PR #48 Windows failure](https://github.com/Coke1120/Morrow-Mail/actions/runs/38673897184/job/116223016671)
 is retained separately. In owned run 3, sample 3, PID 5800 under parent 5312 had
 first native acquisition error 87, source `admission`, no retained window/scan/CIM
@@ -59,11 +73,11 @@ error-87 run is not reclassified. New fixtures do not establish universal captur
 or explain the historical process's cause of exit.
 
 Local Linux Rust 1.98 validation passed: rustfmt, locked/offline all-target Clippy
-with warnings denied and the complete locked/offline test suite, **425 passed,
+with warnings denied and the complete locked/offline test suite, **427 passed,
 zero failed, four existing ignored benchmarks**, across 46 result groups. The
 full-suite log SHA-256 is
-`9bf861dd95611efb69aded9208eeaa02c53af5ca394cc11fc8b9e597abdc76a9`.
-All ten new cancellation tests passed, including both regressions that failed
+`f0ca553ab1440c99f202edfc91e62b7c2d287a75ac5b4d32ac4e9c30d35cb027`.
+All twelve new cancellation tests passed, including four regressions that failed
 before their repairs. Independent source/test review found no remaining source
 blocker. PowerShell 7.6.6 parsing, identity and fixture C# compilation, bounded
 row/schema controls and existing observation/real-pipe checks also passed on Linux;

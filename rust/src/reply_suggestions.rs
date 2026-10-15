@@ -1085,7 +1085,7 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
     }
     let body = ctx.body.clone();
     let method = ctx.method.clone();
-    let cancelled_owner = owner.clone();
+    let cancel_app = app.clone();
     let result = app
         .db(move |db| {
             if owner == "all" && method == "GET" && action.is_empty() {
@@ -1096,6 +1096,8 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                 ("GET", "") => state(db, &owner),
                 ("POST", "settings") => {
                     update_settings(db, &owner, &body)?;
+                    // The next claim must not receive this settings change's stop.
+                    signal_cancel(&cancel_app, &owner);
                     state(db, &owner)
                 }
                 ("POST", "preview") => preview(db, &owner, &body),
@@ -1105,6 +1107,7 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
                 }
                 ("POST", "cancel") => {
                     cancel(db, &owner)?;
+                    signal_cancel(&cancel_app, &owner);
                     state(db, &owner)
                 }
                 ("POST", "use") => use_proposal(db, &owner, string(&body, "id")),
@@ -1116,14 +1119,6 @@ pub async fn handle(app: &App, ctx: &Context) -> Result<Option<Response>> {
             }
         })
         .await?;
-    if ctx.method == "POST"
-        && ctx
-            .path
-            .get(1)
-            .is_some_and(|v| v == "cancel" || v == "settings")
-    {
-        signal_cancel(app, &cancelled_owner);
-    }
     let status = if ctx.method == "POST" && ctx.path.get(1).is_some_and(|v| v == "run") {
         axum::http::StatusCode::ACCEPTED
     } else {

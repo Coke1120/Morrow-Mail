@@ -646,6 +646,214 @@ async fn reply_cancel_survives_another_owners_settings_save_without_cross_owner_
 }
 
 #[tokio::test]
+async fn delayed_reply_settings_completion_keeps_the_new_automatic_batch_running() {
+    let mut fixture = Fixture::new().await;
+    let previous = prepare(&fixture.app, Kind::Replies).await;
+    let before = fixture.app.settings().await.unwrap();
+    let app = fixture.app.clone();
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("x-genmail-account", A.parse().unwrap());
+    let context = morrow_search::service::Context {
+        method: axum::http::Method::POST,
+        path: vec!["reply-suggestions".into(), "settings".into()],
+        body: json!({"enabled":true,"automatic":true,"maxMessages":1,"tokenBudget":64000,"dailyTokenBudget":100000}),
+        query: json!({}),
+        headers,
+        owner: A.into(),
+        paged: true,
+    };
+    // Exercise the production route handler directly so its executor continuation
+    // can be held after the actual settings transaction. No approval is seeded.
+    let mut save = Box::pin(replies::handle(&app, &context));
+    let (release, holder) = held_store(&app).await;
+    assert!(poll_once(save.as_mut()).is_pending());
+    release.send(()).unwrap();
+    tokio::time::timeout(WAIT, holder).await.unwrap().unwrap();
+    // App::db's single permit is released by the blocking closure, not by polling
+    // the handler again. This read therefore proves that settings committed.
+    let committed = app.settings().await.unwrap();
+    assert_eq!(
+        committed["replySuggestions"][A]["settings"]["automatic"],
+        true
+    );
+    assert!(!string(&committed["replySuggestions"][A], "automaticApproval").is_empty());
+    assert!(committed["replySuggestions"][A]["job"].is_null());
+    assert_eq!(
+        committed["replySuggestions"][B],
+        before["replySuggestions"][B]
+    );
+    assert_eq!(
+        app.db(|db| replies::state(db, A)).await.unwrap()["automaticReady"],
+        true
+    );
+
+    // The service's normal reply tick may run while the handler is unpolled.
+    // Let schedule_automatic, preview/run and claim establish the new batch.
+    let mut pending = work(app.clone(), Kind::Replies, String::new());
+    let response = tokio::select! {
+        request = fixture.next() => request,
+        result = &mut pending => panic!("automatic reply ended before model dispatch: {result:?}"),
+    };
+    let claimed = app.settings().await.unwrap();
+    let replacement = string(Kind::Replies.row(&claimed, A), "id").to_owned();
+    assert_ne!(replacement, previous);
+    assert_eq!(Kind::Replies.row(&claimed, A)["automatic"], true);
+    assert_eq!(Kind::Replies.row(&claimed, A)["status"], "running");
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        tokio::time::timeout(WAIT, &mut save)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .status(),
+        200
+    );
+    drop(save);
+
+    let mut ended = match poll_once(pending.as_mut()) {
+        Poll::Ready(result) => Some(result),
+        Poll::Pending => None,
+    };
+    // Pending alone could be a cancellation waiting to commit its terminal row.
+    let held = app.settings().await.unwrap();
+    if ended.is_none()
+        && let Poll::Ready(result) = poll_once(pending.as_mut())
+    {
+        ended = Some(result);
+    }
+    let stopped_before_response = ended.is_some();
+    let _ = response.respond.send(REPLY.into());
+    let outcome = match ended {
+        Some(result) => result,
+        None => tokio::time::timeout(WAIT, &mut pending).await.unwrap(),
+    };
+    drop(pending);
+    let finished = app.settings().await.unwrap();
+    assert_eq!(
+        finished["replySuggestions"][B],
+        before["replySuggestions"][B]
+    );
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+    preserved(&app).await;
+    drop(app);
+    fixture.close().await;
+
+    assert_eq!(Kind::Replies.row(&held, A)["id"], replacement);
+    assert_eq!(
+        Kind::Replies.row(&held, A)["status"],
+        "running",
+        "a delayed settings completion must not cancel the automatic batch created after its settings transaction"
+    );
+    assert!(!stopped_before_response);
+    outcome.unwrap();
+    assert_eq!(Kind::Replies.row(&finished, A)["id"], replacement);
+    assert_eq!(Kind::Replies.row(&finished, A)["status"], "complete");
+    assert_eq!(
+        finished["replySuggestions"][A]["proposals"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn delayed_activity_cancel_completion_keeps_the_new_style_preview_running() {
+    let mut fixture = Fixture::new().await;
+    let original = prepare(&fixture.app, Kind::Style).await;
+    let before = fixture.app.settings().await.unwrap();
+    let app = fixture.app.clone();
+    let mut old = work(app.clone(), Kind::Style, original.clone());
+    let old_response = tokio::select! {
+        request = fixture.next() => request,
+        result = &mut old => panic!("old style worker ended before model dispatch: {result:?}"),
+    };
+    let activity = Kind::Style.activity(A);
+    // This is the production API operation, paused at its two App::db awaits.
+    // A second authorized API request may prepare/generate a new preview after
+    // the cancellation transaction; this is not a native-UI click-through claim.
+    let mut cancel = Box::pin(morrow_search::activity::cancel(&app, &activity));
+    let (release, holder) = held_store(&app).await;
+    assert!(poll_once(cancel.as_mut()).is_pending());
+    release.send(()).unwrap();
+    tokio::time::timeout(WAIT, holder).await.unwrap().unwrap();
+    let validated = app.settings().await.unwrap();
+    assert_eq!(Kind::Style.row(&validated, A)["status"], "running");
+
+    let (release, holder) = held_store(&app).await;
+    assert!(poll_once(cancel.as_mut()).is_pending());
+    release.send(()).unwrap();
+    tokio::time::timeout(WAIT, holder).await.unwrap().unwrap();
+    let committed = app.settings().await.unwrap();
+    assert_eq!(Kind::Style.row(&committed, A)["id"], original);
+    assert_eq!(Kind::Style.row(&committed, A)["status"], "cancelled");
+
+    let replacement = prepare(&app, Kind::Style).await;
+    assert_ne!(replacement, original);
+    let mut pending = work(app.clone(), Kind::Style, replacement.clone());
+    let response = tokio::select! {
+        request = fixture.next() => request,
+        result = &mut pending => panic!("new style worker ended before model dispatch: {result:?}"),
+    };
+    let claimed = app.settings().await.unwrap();
+    assert_eq!(Kind::Style.row(&claimed, A)["id"], replacement);
+    assert_eq!(Kind::Style.row(&claimed, A)["status"], "running");
+    assert_eq!(
+        tokio::time::timeout(WAIT, &mut cancel)
+            .await
+            .unwrap()
+            .unwrap()["cancelled"],
+        true
+    );
+    drop(cancel);
+    tokio::time::timeout(WAIT, &mut old).await.unwrap().unwrap();
+    drop(old);
+    let _ = old_response.respond.send("Discard this old voice".into());
+    assert_eq!(
+        app.settings().await.unwrap()["styleLearning"],
+        claimed["styleLearning"],
+        "settling the cancelled old worker must not mutate the replacement or B"
+    );
+
+    let mut ended = match poll_once(pending.as_mut()) {
+        Poll::Ready(result) => Some(result),
+        Poll::Pending => None,
+    };
+    let held = app.settings().await.unwrap();
+    if ended.is_none()
+        && let Poll::Ready(result) = poll_once(pending.as_mut())
+    {
+        ended = Some(result);
+    }
+    let stopped_before_response = ended.is_some();
+    let _ = response.respond.send(VOICE.into());
+    let outcome = match ended {
+        Some(result) => result,
+        None => tokio::time::timeout(WAIT, &mut pending).await.unwrap(),
+    };
+    drop(pending);
+    let finished = app.settings().await.unwrap();
+    assert_eq!(finished["styleLearning"][B], before["styleLearning"][B]);
+    assert_eq!(fixture.calls.load(Ordering::SeqCst), 2);
+    preserved(&app).await;
+    drop(app);
+    fixture.close().await;
+
+    assert_eq!(Kind::Style.row(&held, A)["id"], replacement);
+    assert_eq!(
+        Kind::Style.row(&held, A)["status"],
+        "running",
+        "a delayed activity cancellation completion must not cancel a newer prepared style preview"
+    );
+    assert!(!stopped_before_response);
+    outcome.unwrap();
+    assert_eq!(Kind::Style.row(&finished, A)["id"], replacement);
+    assert_eq!(Kind::Style.row(&finished, A)["status"], "ready");
+    assert_eq!(Kind::Style.row(&finished, A)["voice"], VOICE);
+}
+
+#[tokio::test]
 async fn expired_style_brain_reply_claims_reject_held_model_results_and_preserve_the_failure() {
     for kind in KINDS {
         let mut fixture = Fixture::new().await;
