@@ -16,7 +16,9 @@ with tempfile.TemporaryDirectory(prefix="morrow-review-check-") as temporary:
     overrides = {}
     if baseline:
         # Immutable failed candidate, used only for synthetic negative controls.
-        for name in ["ReviewWorkspaceState.swift", "ReplySuggestionsView.swift"]:
+        # Today shares the current reply editor; keep the baseline consumer
+        # with its original view rather than mixing it with the current API.
+        for name in ["ReviewWorkspaceState.swift", "ReplySuggestionsView.swift", "TodayView.swift"]:
             overrides[name] = fixture / name
             overrides[name].write_bytes(subprocess.check_output(["git", "show", "8f9130737e297338abba1925db3453a30496bd68:macos/Sources/MorrowMail/" + name], cwd=root))
     model = (sources / "AppModel.swift").read_text()

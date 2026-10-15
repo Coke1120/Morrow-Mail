@@ -16,6 +16,8 @@ namespace controls = winrt::Microsoft::UI::Xaml::Controls;
 winrt::hstring errorText();
 controls::TextBlock label(winrt::hstring const& value, double size = 14, bool selectable = true);
 controls::Button button(winrt::hstring const& value, std::function<void()> action);
+controls::MenuFlyoutItem menuItem(winrt::hstring const& value, std::function<void()> action);
+controls::DropDownButton actionMenu(winrt::hstring const& value, controls::MenuFlyout const& menu, winrt::hstring const& accessibleName = {});
 controls::StackPanel stack(double gap = 8);
 controls::ListViewItem clickedListItem(controls::ListView const& list, winrt::Windows::Foundation::IInspectable const& clicked);
 controls::TextBox field(winrt::hstring const& title, winrt::hstring const& value = {}, bool multiline = false);
@@ -29,9 +31,10 @@ struct ReviewMemory {
     winrt::hstring scope = L"all";
     std::map<std::wstring, ReviewEntry> entries;
     std::map<std::wstring, winrt::hstring> selections;
-    std::map<std::wstring, Json> values, options, savedOptions, originals;
+    std::map<std::wstring, Json> values, options, savedOptions, originals, decisions;
     std::map<std::wstring, double> scrolls;
     std::map<std::wstring, bool> details;
+    std::map<std::wstring, winrt::hstring> detailKinds;
     bool writing = false;
     void moveEntry(winrt::hstring const& oldKey, winrt::hstring const& newKey, ReviewEntry next) {
         entries[std::wstring(newKey)] = std::move(next);
@@ -69,6 +72,9 @@ struct Shell : std::enable_shared_from_this<Shell> {
     controls::Grid readerPane{nullptr};
     controls::ContentControl readerNotice{nullptr};
     controls::Button readerBack{nullptr}; // Keep the current native peer alive for focus restoration.
+    controls::StackPanel mailSelectionActions{nullptr};
+    controls::TextBlock mailSelectionCount{nullptr};
+    controls::Button selectionDelete{nullptr};
     controls::Grid mailBody{nullptr};
     controls::Grid mailList{nullptr};
     xaml::FrameworkElement mailDivider{nullptr};
@@ -133,7 +139,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     winrt::Windows::Foundation::IAsyncAction messageAI(Json message, winrt::hstring action, bool history = false);
     winrt::Windows::Foundation::IAsyncAction organize(Json message, winrt::hstring preferredKind = {}, winrt::hstring preferredDestination = {});
     winrt::Windows::Foundation::IAsyncOperation<Json> manageFolders(winrt::hstring account, winrt::hstring initialFolder = {}, bool creationOnly = false);
-    controls::MenuFlyout organizationMenu(Json message);
+    controls::MenuFlyout organizationMenu(Json message, std::function<bool()> context = {});
     winrt::hstring startMailDrag(Json message);
     Json mailDropMessage(winrt::hstring const& token, winrt::hstring const& account, winrt::hstring const& destination) const;
     winrt::hstring mailDropDestination(winrt::hstring const& account, winrt::hstring const& folder) const;
@@ -160,6 +166,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     void markShellMode();
     void openShell(winrt::hstring const& mode);
     void mailPage();
+    void updateMailSelectionActions();
     void applyMailLayout();
     void renderReader(Json const& message);
     void showReaderStatus(Json const& metadata, bool failed);

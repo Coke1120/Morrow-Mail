@@ -1,5 +1,14 @@
 # Morrow Mail feature coverage
 
+**Current source — contextual actions:** secondary reader and row-management
+commands use named native menus, selection commands follow the current mail
+selection, and Today hosts the existing owned reply editor. Empty Cc/Bcc fields
+can be revealed without changing the draft. Existing send/source review,
+provider versus local organization and recovery controls remain. Native mounted
+fixtures are extended; SDK execution, keyboard and manual accessibility acceptance
+remain required. No completion-retention or AI policy is changed. See
+[behavior and validation boundary](docs/CONTEXTUAL_ACTIONS.md).
+
 **0.8.2 source — navigation and activity recovery:** merged PRs #48–50 add
 the Mail | Agent | Brain shell, recover abandoned AI jobs and retain cancellation
 for each mailbox/work type. Stop publication is ordered with the persisted job

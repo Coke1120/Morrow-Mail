@@ -51,7 +51,9 @@ struct InboxAgentView: View {
                             }
                             Spacer()
                             Button("Open") { open(recent.id) }
-                            Button("Delete") { remove(recent.id) }
+                            Menu("Conversation actions") {
+                                Button("Delete…") { remove(recent.id) }
+                            }.fixedSize().accessibilityLabel("Actions for conversation " + recent["title"].string)
                         }.disabled(operationBusy)
                     }
                     if !conversation.isNull {
@@ -78,8 +80,10 @@ struct InboxAgentView: View {
                         }
                         if recovering { Text("Checking the saved conversation after an interrupted request. Nothing will be resent automatically.").font(.caption).foregroundStyle(.secondary) }
                         if status != "running" && status != "confirming" {
-                            TextField("Conversation title", text: $title).disabled(reviewing || operationBusy)
-                            Button("Rename") { rename() }.disabled(reviewing || operationBusy || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            DisclosureGroup("Conversation title") {
+                                TextField("Conversation title", text: $title).disabled(reviewing || operationBusy)
+                                Button("Rename") { rename() }.disabled(reviewing || operationBusy || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            }
                         }
                         if !reviewing {
                             TextEditor(text: $message)

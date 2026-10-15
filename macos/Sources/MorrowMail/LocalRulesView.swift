@@ -62,15 +62,17 @@ struct LocalRulesView: View {
                             Text(rule["condition"].string + ": " + rule["value"].string + " → " + (rule["action"].string == "lowPriority" ? "Later" : rule["action"].string.capitalized))
                             Spacer()
                             Button("Review") { condition = rule["condition"].string; value = rule["value"].string; action = rule["action"].string; review() }
-                            Button("Remove") {
-                                let owner = mailbox, id = rule.id
-                                guard !operationBusy else { return }
-                                model.perform({
-                                    _ = try await model.request("/workspace/rules/" + encodedPath(id), method: "DELETE", mailbox: owner)
-                                    guard model.review.scope == owner else { return }
-                                    rules = try await model.request("/workspace/rules", mailbox: owner)["rules"].array
-                                }, blocksNavigation: false)
-                            }
+                            Menu("Rule actions") {
+                                Button("Remove") {
+                                    let owner = mailbox, id = rule.id
+                                    guard !operationBusy else { return }
+                                    model.perform({
+                                        _ = try await model.request("/workspace/rules/" + encodedPath(id), method: "DELETE", mailbox: owner)
+                                        guard model.review.scope == owner else { return }
+                                        rules = try await model.request("/workspace/rules", mailbox: owner)["rules"].array
+                                    }, blocksNavigation: false)
+                                }
+                            }.fixedSize()
                         }.disabled(operationBusy)
                     }
                 }

@@ -21,6 +21,104 @@ IAsyncAction nativeInteractionChecks(std::shared_ptr<Shell> shell);
 IAsyncAction settingsNavigationChecks(std::shared_ptr<Shell> shell);
 IAsyncAction composerReturnChecks(std::shared_ptr<Shell> shell);
 IAsyncAction summaryActivityChecks(std::shared_ptr<Shell> shell);
+// Operate the mounted native flyout and its AutomationPeer; source labels alone
+// do not establish that a hidden command can actually be reached.
+IAsyncAction openActionFlyout(controls::DropDownButton target) {
+    apartment_context ui; auto flyout=target.Flyout(); auto opened=std::make_shared<bool>(false);
+    auto token=flyout.Opened(auto_revoke,[opened](auto const&,auto const&){*opened=true;});
+    auto deadline=GetTickCount64()+5000;target.StartBringIntoView();target.UpdateLayout();
+    while((!target.IsLoaded() || !target.ActualWidth() || !target.ActualHeight()) && GetTickCount64()<deadline) {
+        co_await resume_after(std::chrono::milliseconds(10));co_await ui;target.UpdateLayout();
+    }
+    if(!target.IsLoaded() || !target.ActualWidth() || !target.ActualHeight() || !target.XamlRoot())throw hresult_error(E_FAIL,L"The action menu target did not become a mounted native control.");
+    if(!target.Focus(xaml::FocusState::Keyboard))throw hresult_error(E_FAIL,L"The named action menu cannot receive keyboard focus.");
+    flyout.ShowAt(target);
+    while(!*opened && GetTickCount64()<deadline){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+    if(!*opened || !flyout.IsOpen())throw hresult_error(E_FAIL,L"The native action flyout did not open.");
+}
+IAsyncAction closeActionFlyout(controls::DropDownButton target) {
+    apartment_context ui;auto flyout=target.Flyout();if(!flyout.IsOpen())co_return;
+    auto closed=std::make_shared<bool>(false);auto event=flyout.Closed(auto_revoke,[closed](auto const&,auto const&){*closed=true;});
+    auto deadline=GetTickCount64()+5000;flyout.Hide();
+    while(!*closed && GetTickCount64()<deadline){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+    if(!*closed || flyout.IsOpen())throw hresult_error(E_FAIL,L"The native action flyout did not close.");
+}
+void invokeNativeAction(xaml::FrameworkElement const& control) {
+    auto peer=xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(control);
+    peer.GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).as<xaml::Automation::Provider::IInvokeProvider>().Invoke();
+}
+IAsyncAction invokeFlyoutAction(controls::DropDownButton target,controls::MenuFlyoutItem item) {
+    apartment_context ui;auto flyout=target.Flyout();auto closed=std::make_shared<bool>(false);
+    auto event=flyout.Closed(auto_revoke,[closed](auto const&,auto const&){*closed=true;});
+    auto deadline=GetTickCount64()+5000;invokeNativeAction(item);
+    while(!*closed && GetTickCount64()<deadline){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+    if(!*closed || flyout.IsOpen())throw hresult_error(E_FAIL,L"The invoked native action did not close its flyout.");
+}
+IAsyncAction returnedMailActionsChecks(std::shared_ptr<Shell> shell) {
+    auto check=[](bool value,wchar_t const* message){if(!value)throw hresult_error(E_FAIL,message);};
+    check(std::wstring_view(GetCommandLineW()).find(L"--native-smoke")!=std::wstring_view::npos && shell->section==L"mail" && !shell->loading,L"Returned-mail checks require the owned native fixture.");
+    auto selected=std::vector<IInspectable>();for(auto const& value:shell->rows.SelectedItems())selected.push_back(value);
+    struct Restore {std::shared_ptr<Shell> shell;std::vector<IInspectable> selected;bool focused;uint64_t generation;hstring owner;~Restore(){shell->generation=generation;shell->owner=owner;shell->readerFocused=focused;shell->loading=true;shell->rows.SelectedItems().Clear();for(auto const& row:selected)shell->rows.SelectedItems().Append(row);shell->loading=false;shell->updateMailSelectionActions();shell->applyMailLayout();}} restore{shell,selected,shell->readerFocused,shell->generation,shell->owner};
+    shell->readerFocused=false;shell->applyMailLayout();shell->loading=true;shell->rows.SelectedItems().Clear();shell->rows.SelectedItems().Append(shell->rows.Items().GetAt(0));shell->loading=false;shell->updateMailSelectionActions();shell->root.UpdateLayout();
+    auto menu=shell->mailSelectionActions.Children().GetAt(1).as<controls::StackPanel>().Children().GetAt(0).as<controls::DropDownButton>();
+    co_await openActionFlyout(menu);controls::MenuFlyoutItem mark{nullptr};
+    for(auto const& item:menu.Flyout().as<controls::MenuFlyout>().Items())if(auto candidate=item.try_as<controls::MenuFlyoutItem>();candidate && candidate.Text()==L"Mark read")mark=candidate;
+    check(mark && mark.IsEnabled(),L"Restoring the composer left the retained Actions menu empty or disabled.");
+    auto request=shell->readGeneration;auto before=shell->selected.Stringify();
+    ++shell->generation;shell->owner=L"two@fixture.invalid";co_await invokeFlyoutAction(menu,mark);
+    check(shell->readGeneration==request && shell->selected.Stringify()==before && !shell->navigationLocked,L"A retained selection action survived its captured page and mailbox revocation.");
+}
+IAsyncAction contextualMailChecks(std::shared_ptr<Shell> shell) {
+    auto check=[](bool value,wchar_t const* why){if(!value)throw hresult_error(E_FAIL,why);};
+    check(std::wstring_view(GetCommandLineW()).find(L"--native-smoke")!=std::wstring_view::npos && shell->rows.Items().Size()>1 && !shell->loading,L"Contextual actions require the owned native fixture.");
+    struct RestoreLayout {std::shared_ptr<Shell> shell;hstring layout;bool focused;~RestoreLayout(){shell->mailLayout=layout;shell->readerFocused=focused;shell->applyMailLayout();}} restoreLayout{shell,shell->mailLayout,shell->readerFocused};
+    shell->mailLayout=L"right";shell->readerFocused=false;shell->applyMailLayout();shell->root.UpdateLayout();
+    auto mountedReader=shell->reader.Content();auto refreshRequest=shell->readGeneration;
+    co_await shell->refreshMailReader();
+    check(shell->reader.Content()==mountedReader && shell->readGeneration>refreshRequest,L"The unchanged-message refresh control did not retain the mounted reader.");
+    std::function<xaml::FrameworkElement(xaml::DependencyObject,hstring const&)> find;
+    find=[&find](xaml::DependencyObject node,hstring const& id)->xaml::FrameworkElement {
+        if(auto view=node.try_as<xaml::FrameworkElement>();view && xaml::Automation::AutomationProperties::GetAutomationId(view)==id)return view;
+        for(int i=0;i<xaml::Media::VisualTreeHelper::GetChildrenCount(node);++i)if(auto value=find(xaml::Media::VisualTreeHelper::GetChild(node,i),id))return value;
+        return nullptr;
+    };
+    auto savedSelection=std::vector<IInspectable>();for(auto const& row:shell->rows.SelectedItems())savedSelection.push_back(row);
+    auto setCount=[&](unsigned count){shell->loading=true;shell->rows.SelectedItems().Clear();for(unsigned i=0;i<count;++i)shell->rows.SelectedItems().Append(shell->rows.Items().GetAt(i));shell->loading=false;shell->updateMailSelectionActions();shell->root.UpdateLayout();};
+    setCount(0);check(shell->mailSelectionActions.Visibility()==xaml::Visibility::Collapsed,L"Empty selection exposes mutation controls.");
+    for(unsigned count:{1u,2u}) {
+        setCount(count);check(shell->mailSelectionActions.Visibility()==xaml::Visibility::Visible && shell->mailSelectionCount.Text()==to_hstring(count)+L" selected",L"The action bar does not follow native selection.");
+        auto menu=find(shell->root,L"mail.selection.menu").as<controls::DropDownButton>();co_await openActionFlyout(menu);
+        unsigned marks=0;bool replyAll=false;for(auto const& entry:menu.Flyout().as<controls::MenuFlyout>().Items())if(auto item=entry.try_as<controls::MenuFlyoutItem>()) {
+            if(item.Text()==L"Mark read" || item.Text()==L"Mark unread" || item.Text()==L"Mark Pending")++marks;
+            if(item.Text()==L"Reply all")replyAll=item.IsEnabled();
+        }
+        check(marks==3 && (count!=1 || replyAll),L"Selected message commands or the single-message Reply all action are not reachable in the opened native menu.");co_await closeActionFlyout(menu);
+    }
+    shell->loading=true;shell->rows.SelectedItems().Clear();for(auto const& row:savedSelection)shell->rows.SelectedItems().Append(row);shell->loading=false;shell->updateMailSelectionActions();
+    auto view=find(shell->root,L"mail.view").as<controls::DropDownButton>();co_await openActionFlyout(view);
+    check(shell->sorting.IsLoaded() && shell->sorting.Items().Size()==6 && shell->sorting.IsEnabled(),L"View no longer exposes the actual six-way native sort control.");co_await closeActionFlyout(view);
+    auto query=shell->search.Text();shell->search.Text(L"");shell->root.UpdateLayout();
+    auto clear=find(shell->root,L"mail.search.clear");check(clear && clear.Visibility()==xaml::Visibility::Collapsed,L"An empty query retains Clear in the tab order.");
+    shell->search.Text(L"fictional unsent search");shell->root.UpdateLayout();check(clear.Visibility()==xaml::Visibility::Visible,L"A query cannot reach Clear.");shell->search.Text(query);
+    for(auto id:{L"reader.reply",L"reader.more",L"reader.ai"}) {
+        auto target=find(shell->root,id).as<controls::DropDownButton>();co_await openActionFlyout(target);
+        auto menu=target.Flyout().as<controls::MenuFlyout>();check(menu.Items().Size()>0,L"A named reader action menu is empty.");
+        if(std::wstring_view(id)==L"reader.reply") {
+            check(menu.Items().Size()==3 && menu.Items().GetAt(0).as<controls::MenuFlyoutItem>().Text()==L"Reply" && menu.Items().GetAt(1).as<controls::MenuFlyoutItem>().Text()==L"Reply all" && menu.Items().GetAt(2).as<controls::MenuFlyoutItem>().Text()==L"Forward",L"Reply variants are not discoverable in the same native menu.");
+        }
+        if(std::wstring_view(id)==L"reader.more") {
+            bool local=false;for(auto const& item:menu.Items())if(auto sub=item.try_as<controls::MenuFlyoutSubItem>();sub && sub.Text()==L"On this device only")local=sub.Items().Size()>0;
+            check(local,L"Local organization lost its effect disclosure.");
+            auto focused=shell->readerFocused;co_await invokeFlyoutAction(target,menu.Items().GetAt(menu.Items().Size()-1).as<controls::MenuFlyoutItem>());
+            check(shell->readerFocused!=focused,L"An unchanged background read disabled the mounted reader menu.");
+            shell->readerFocused=focused;shell->applyMailLayout();co_await openActionFlyout(target);
+            auto oldSelection=shell->selectionGeneration;auto oldRead=shell->readGeneration;auto before=shell->selected.Stringify();
+            ++shell->selectionGeneration;co_await invokeFlyoutAction(target,menu.Items().GetAt(0).as<controls::MenuFlyoutItem>());
+            check(shell->readGeneration==oldRead && shell->selected.Stringify()==before && !shell->navigationLocked,L"An obsolete open reader menu executed a metadata write.");shell->selectionGeneration=oldSelection;
+        }
+        co_await closeActionFlyout(target);
+    }
+}
 IAsyncAction writingRuleEditingChecks(std::shared_ptr<Shell> shell) {
     auto check = [](bool condition, wchar_t const* message) { if (!condition) throw hresult_error(E_FAIL, message); };
     auto previousScope = shell->review->scope;
@@ -62,6 +160,14 @@ IAsyncAction writingRuleEditingChecks(std::shared_ptr<Shell> shell) {
         auto event = box.TextChanged(auto_revoke, [changed](auto const&, auto const&) { *changed = true; });
         box.Text(value); co_await wait([changed] { return *changed; });
     };
+    for(auto const& id:ids) {
+        auto more=control(L"writing-rule.more."+id).as<controls::DropDownButton>();
+        co_await openActionFlyout(more);
+        auto editRule=more.Flyout().as<controls::MenuFlyout>().Items().GetAt(0).as<controls::MenuFlyoutItem>();
+        check(xaml::Automation::AutomationProperties::GetAutomationId(editRule)==L"writing-rule.edit."+id,L"The writing-rule menu points at another row.");
+        co_await invokeFlyoutAction(more,editRule);
+        co_await wait([&]{return bool(find(shell->root,L"writing-rule.text."+id));});
+    }
     co_await edit(field(ids[0]), L"Fixture unsaved A");
     co_await edit(field(ids[1]), L"Fixture saved B");
     auto newRule = control(L"writing-rule.new").as<controls::TextBox>();
@@ -106,6 +212,67 @@ IAsyncAction writingRuleEditingChecks(std::shared_ptr<Shell> shell) {
             co_await shell->service->request(L"/workspace/brain/writing-rules/" + escaped(id), owner, L"DELETE", Json());
     }
     shell->review->scope = previousScope;
+}
+IAsyncAction categoryCreationChecks(std::shared_ptr<Shell> shell) {
+    auto check=[](bool value,wchar_t const* message){if(!value)throw hresult_error(E_FAIL,message);};
+    check(std::wstring_view(GetCommandLineW()).find(L"--native-smoke")!=std::wstring_view::npos && !shell->dialogOpen && shell->dirty.empty(),L"Category creation checks require the idle native fixture.");
+    auto scope=shell->review->scope;hstring owner=L"one@fixture.invalid";
+    Json input;put(input,L"name",L"Contextual fixture original");put(input,L"description",L"Retained saved category");put(input,L"priority",L"P2");input.Insert(L"enabled",Value::CreateBooleanValue(true));
+    auto state=co_await shell->service->request(L"/workspace/categories",owner,L"POST",input);hstring originalId;Json original;
+    for(auto const& value:array(object(state,L"workspace"),L"categories"))if(text(value.GetObject(),L"name")==L"Contextual fixture original"){original=value.GetObject();originalId=text(original,L"id");}
+    check(!originalId.empty(),L"The fictional category setup did not return its identity.");
+    shell->review->scope=owner;co_await shell->navigate(L"categories");shell->root.UpdateLayout();
+    std::function<xaml::FrameworkElement(xaml::DependencyObject,hstring const&,bool)> find;
+    find=[&find](xaml::DependencyObject node,hstring const& id,bool name)->xaml::FrameworkElement {
+        if(!node)return nullptr;
+        if(auto value=node.try_as<xaml::FrameworkElement>();value && (name ? value.Name()==id : xaml::Automation::AutomationProperties::GetAutomationId(value)==id))return value;
+        for(int i=0;i<xaml::Media::VisualTreeHelper::GetChildrenCount(node);++i)if(auto result=find(xaml::Media::VisualTreeHelper::GetChild(node,i),id,name))return result;
+        return nullptr;
+    };
+    auto wait=[](std::function<bool()> ready)->IAsyncAction {apartment_context ui;auto deadline=GetTickCount64()+5000;while(!ready() && GetTickCount64()<deadline){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}if(!ready())throw hresult_error(E_FAIL,L"A native category control did not finish within its deadline.");};
+    auto invoke=[shell,&wait](controls::Button control)->IAsyncAction {
+        control.StartBringIntoView();shell->root.UpdateLayout();
+        co_await wait([&]{shell->root.UpdateLayout();return control.IsLoaded() && control.IsEnabled() && control.ActualWidth()>0 && control.ActualHeight()>0;});
+        if(!control.Focus(xaml::FocusState::Keyboard))throw hresult_error(E_FAIL,L"The category action is not keyboard reachable.");
+        invokeNativeAction(control);
+    };
+    auto more=find(shell->root,L"category.more."+originalId,false).as<controls::DropDownButton>();co_await openActionFlyout(more);
+    co_await invokeFlyoutAction(more,more.Flyout().as<controls::MenuFlyout>().Items().GetAt(0).as<controls::MenuFlyoutItem>());
+    co_await wait([&]{auto view=find(shell->root,L"category.name",false).try_as<controls::TextBox>();return view && view.Text()==L"Contextual fixture original" && shell->dirty.empty();});
+    auto name=find(shell->root,L"category.name",false).as<controls::TextBox>();auto add=find(shell->root,L"category.add",false).as<controls::Button>();
+    name.Text(L"Unsaved original category edit");co_await wait([&]{return !shell->dirty.empty();});
+    // This coroutine lambda remains in this frame until both awaited dialog
+    // responses complete. It operates the real ContentDialog template buttons.
+    auto respond=[shell,&find,&wait,&invoke](bool accept)->IAsyncAction {
+        std::function<controls::ContentDialog(xaml::DependencyObject)> findDialog;
+        findDialog=[&findDialog](xaml::DependencyObject node)->controls::ContentDialog {
+            if(!node)return nullptr;
+            if(auto dialog=node.try_as<controls::ContentDialog>();dialog && unbox_value_or<hstring>(dialog.Title(),L"")==L"Discard unsaved category edits?")return dialog;
+            for(int i=0;i<xaml::Media::VisualTreeHelper::GetChildrenCount(node);++i)if(auto value=findDialog(xaml::Media::VisualTreeHelper::GetChild(node,i)))return value;
+            return nullptr;
+        };
+        controls::ContentDialog dialog{nullptr};
+        co_await wait([&]{for(auto const& popup:xaml::Media::VisualTreeHelper::GetOpenPopupsForXamlRoot(shell->root.XamlRoot()))if(auto found=findDialog(popup.Child()))dialog=found;return dialog && dialog.IsLoaded();});
+        controls::Button choice{nullptr};
+        co_await wait([&]{choice=find(dialog,accept ? hstring(L"PrimaryButton") : hstring(L"CloseButton"),true).try_as<controls::Button>();return choice && choice.IsLoaded() && choice.IsEnabled();});
+        co_await invoke(choice);co_await wait([&]{return !shell->dialogOpen;});
+    };
+    co_await invoke(add);co_await respond(false);
+    // ShowAsync finishing clears dialogOpen before perform restores its editor.
+    // Observe the mounted host's effective enabled state before another click.
+    co_await wait([&]{return add.IsEnabled() && name.IsEnabled();});
+    check(name.Text()==L"Unsaved original category edit" && !shell->dirty.empty(),L"Cancelling Add category discarded the old category buffer.");
+    co_await invoke(add);co_await respond(true);co_await wait([&]{return add.IsEnabled() && name.IsEnabled() && name.Text().empty() && shell->dirty.empty();});
+    name.Text(L"Contextual fixture new");co_await wait([&]{return !shell->dirty.empty();});
+    co_await invoke(find(shell->root,L"category.save",false).as<controls::Button>());co_await wait([&]{return add.IsEnabled() && name.IsEnabled() && name.Text().empty() && shell->dirty.empty();});
+    state=co_await shell->service->request(L"/state",owner);hstring newId;bool originalRetained=false;
+    for(auto const& value:array(object(state,L"workspace"),L"categories")) {
+        auto row=value.GetObject();if(text(row,L"id")==originalId)originalRetained=row.Stringify()==original.Stringify();
+        if(text(row,L"name")==L"Contextual fixture new")newId=text(row,L"id");
+    }
+    check(originalRetained && !newId.empty() && newId!=originalId,L"Add category reused the edited category identity or changed its saved data.");
+    for(auto const& id:{originalId,newId})co_await shell->service->request(L"/workspace/categories/"+escaped(id),owner,L"DELETE",Json());
+    shell->review->scope=scope;
 }
 IAsyncAction captureMailList(std::shared_ptr<Shell> shell, hstring name) {
     xaml::Media::Imaging::RenderTargetBitmap bitmap;
@@ -555,20 +722,20 @@ IAsyncAction Shell::smoke() {
             && xaml::Automation::AutomationProperties::GetAutomationId(shellAgent) == L"shell.agent"
             && xaml::Automation::AutomationProperties::GetAutomationId(shellBrain) == L"shell.brain",
             L"The primary chrome does not expose Mail, Agent, and Brain.");
-        bool studioPrimary = false, movedToday = false;
+        bool studioPrimary = false, namedToday = false;
         for (auto const& value : navigation.MenuItems()) if (auto item = value.try_as<controls::NavigationViewItem>(); item && item.Tag()) {
             auto tag = item.Tag().as<Json>();
             if (text(tag, L"section") == L"studio" && text(tag, L"owner").empty()) studioPrimary = true;
             if (text(tag, L"section") == L"today") {
                 auto caption = unbox_value_or<hstring>(item.Content(), L"");
-                if (std::wstring(caption).find(L"Moved to Agent") != std::wstring::npos) movedToday = true;
+                if (caption == L"Today") namedToday = true;
             }
         }
         bool studioAdvanced = false;
         for (auto const& value : navigation.FooterMenuItems()) if (auto item = value.try_as<controls::NavigationViewItem>(); item && item.Tag()) {
             if (text(item.Tag().as<Json>(), L"section") == L"studio") studioAdvanced = true;
         }
-        check(!studioPrimary && movedToday && studioAdvanced, L"AI Studio must leave the primary workspace, Today must point to Agent, and AI Studio must remain an advanced footer entry.");
+        check(!studioPrimary && namedToday && studioAdvanced, L"Today must retain its named entry and AI Studio its advanced footer entry.");
         check(composeButton.Parent() == syncButton.Parent() && controls::Grid::GetColumn(syncButton) == 1,
             L"Sync must sit beside Compose in the sidebar.");
         controls::NavigationViewItem combined{nullptr};
@@ -595,7 +762,8 @@ IAsyncAction Shell::smoke() {
                 L"The initial owned mailbox has no ready mail rows.");
             auto firstRow = rows.Items().GetAt(0).as<controls::ListViewItem>().Content().try_as<controls::StackPanel>();
             auto quick = firstRow ? firstRow.Tag().try_as<controls::StackPanel>() : controls::StackPanel{nullptr};
-            check(quick && quick.Children().Size() == 3, L"Mail rows lost read, Reply all, or provider Trash actions.");
+            check(quick && quick.Children().Size() == 2 && quick.Children().GetAt(0).try_as<controls::Button>()
+                && quick.Children().GetAt(1).try_as<controls::DropDownButton>(), L"Mail rows must expose Read and a named More menu.");
             check(mailList && mailList.RowDefinitions().Size() == 3 && mailBody.Children().Size() == 3 &&
                 controls::Grid::GetRow(rows) == 1, L"Mail controls and paging are not grouped with the message list.");
             auto savedLayout = mailLayout;
@@ -717,6 +885,7 @@ IAsyncAction Shell::smoke() {
             auto readerLayout = reader.Content().try_as<controls::Grid>();
             check(readerLayout && readerLayout.RowDefinitions().Size() == 2,
                 L"The message actions are not kept above the scrolling reader.");
+            enter("contextual-reader-and-selection-actions");co_await contextualMailChecks(lifetime);
             enter("reader-load-recovery");
             auto missing = Json::Parse(source.Stringify()); put(missing, L"id", L"missing-native-fixture");
             auto mounted = reader.Content();
@@ -996,9 +1165,9 @@ IAsyncAction Shell::smoke() {
                     while ((!item.ActualHeight() || !readerFits()
                         || (width + 328 <= mailBody.ActualWidth() && std::abs(mailList.ActualWidth() - width) > 1)) && GetTickCount64() < deadline);
                     check(readerFits(), L"The reading pane extends beyond the mail page.");
-                    auto listHeading = mailList.Children().GetAt(0).as<controls::StackPanel>();
-                    auto toolbar = listHeading.Children().GetAt(listHeading.Children().Size() - 1).as<controls::StackPanel>();
-                    auto deleteButton = toolbar.Children().GetAt(2).as<controls::Button>();
+                    loading=true;rows.SelectedItem(item);loading=false;updateMailSelectionActions();root.UpdateLayout();
+                    auto toolbar=mailSelectionActions.Children().GetAt(1).as<controls::StackPanel>();
+                    auto deleteButton=selectionDelete;
                     auto sidebarActions = syncButton.Parent().as<controls::Grid>();
                     auto deleteOrigin = deleteButton.TransformToVisual(toolbar).TransformPoint(Point{});
                     auto syncOrigin = syncButton.TransformToVisual(sidebarActions).TransformPoint(Point{});
@@ -1009,7 +1178,7 @@ IAsyncAction Shell::smoke() {
                         L"The sidebar actions overlap or Sync/Delete is clipped.");
                     check(unbox_value<hstring>(syncButton.Content()) == L"Sync" && xaml::Automation::AutomationProperties::GetAutomationId(syncButton) == L"mail.sync",
                         L"The sidebar lost its labeled Sync button.");
-                    check(xaml::Automation::AutomationProperties::GetName(deleteButton) == L"Delete selected messages",
+                    check(xaml::Automation::AutomationProperties::GetName(deleteButton) == L"Move selected messages to provider Trash",
                         L"The toolbar Delete icon lost its accessible action name.");
                     auto row = item.Content().as<controls::StackPanel>();
                     auto heading = row.Children().GetAt(0).as<controls::Grid>();
@@ -1084,6 +1253,8 @@ IAsyncAction Shell::smoke() {
             co_await navigate(L"mail",L"one@fixture.invalid");
             enter("writing-rule-edit-retention"); co_await writingRuleEditingChecks(lifetime);
             co_await navigate(L"mail",L"one@fixture.invalid");
+            enter("category-add-identity");co_await categoryCreationChecks(lifetime);
+            co_await navigate(L"mail",L"one@fixture.invalid");
             for (auto const* target : {L"today", L"activity", L"scheduled", L"calendar", L"out-of-office", L"studio", L"learning", L"brain", L"reply-suggestions", L"skills", L"summaries", L"records", L"agent", L"categories"}) {
                 enter("workspace-" + to_string(target));
                 auto previousPage = page.Content();
@@ -1096,17 +1267,19 @@ IAsyncAction Shell::smoke() {
                     auto today = page.Content().as<controls::Grid>();
                     check(today.RowDefinitions().Size()==4,L"Today must keep account tabs and status outside the scrolling content.");
                     auto header=today.Children().GetAt(0).as<controls::StackPanel>();
-                    controls::Button generate{nullptr},sync{nullptr};
-                    for(auto const& child:header.Children())if(auto button=child.try_as<controls::Button>()){
-                        auto id=xaml::Automation::AutomationProperties::GetAutomationId(button);
-                        if(id==L"review.summarize")generate=button;if(id==L"mail.syncAll")sync=button;
-                    }
-                    check(generate && generate.IsEnabled() && sync && sync.IsEnabled(),L"Today lost explicit summary or Sync All actions.");
-                    auto choices=generate.Flyout().as<controls::MenuFlyout>();
-                    check(choices.Items().Size()==array(state,L"accounts").Size(),L"Today summary review must list individual accounts.");
-                    for(auto const& item:choices.Items())check(connected(unbox_value<hstring>(item.as<controls::MenuFlyoutItem>().Tag())),L"Summary review offers an invalid writing identity.");
+                    controls::DropDownButton more{nullptr};
+                    for(auto const& child:header.Children())if(auto button=child.try_as<controls::DropDownButton>();button && xaml::Automation::AutomationProperties::GetAutomationId(button)==L"review.more")more=button;
+                    check(more && syncButton && syncButton.IsEnabled(),L"Today lost its explicit saved-result menu or the single global Sync action.");
+                    co_await openActionFlyout(more);
+                    auto choices=more.Flyout().as<controls::MenuFlyout>();controls::MenuFlyoutSubItem generate{nullptr};
+                    for(auto const& item:choices.Items())if(auto sub=item.try_as<controls::MenuFlyoutSubItem>();sub && xaml::Automation::AutomationProperties::GetAutomationId(sub)==L"review.summarize")generate=sub;
+                    auto expected=review->scope==L"all" ? array(state,L"accounts").Size() : 1u;
+                    check(generate && generate.Items().Size()==expected,L"Today summary review must keep individual mailbox identity within the selected scope.");
+                    for(auto const& item:generate.Items())check(connected(unbox_value<hstring>(item.as<controls::MenuFlyoutItem>().Tag())),L"Summary review offers an invalid writing identity.");
+                    co_await closeActionFlyout(more);
                     auto tabs=today.Children().GetAt(1).as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
-                    check(tabs.Children().Size()==array(state,L"accounts").Size()+1,L"Today lost the shared All/account tabs.");
+                    unsigned accounts=0;for(auto const& child:tabs.Children())if(child.try_as<controls::Primitives::ToggleButton>())++accounts;
+                    check(accounts==array(state,L"accounts").Size()+1,L"Today lost the shared All/account tabs.");
 
                 }
                 if (std::wstring_view(target) == L"today") check(shellMode() == L"agent", L"Today did not open inside Agent.");
@@ -1118,6 +1291,17 @@ IAsyncAction Shell::smoke() {
                     auto panel = page.Content().as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
                     check(panel.Children().GetAt(0).as<controls::TextBlock>().Text() == L"Brain" && shellMode() == L"brain", L"Persona, writing rules, and categories must use the Brain shell.");
                 }
+                if(std::wstring_view(target)==L"agent" || std::wstring_view(target)==L"categories") {
+                    auto panel=page.Content().as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
+                    auto tabs=panel.Children().GetAt(3).as<controls::ScrollViewer>();auto open=navigation.IsPaneOpen();
+                    navigation.IsPaneOpen(false);root.UpdateLayout();auto deadline=GetTickCount64()+5000;
+                    while(tabs.Visibility()!=xaml::Visibility::Visible && GetTickCount64()<deadline){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+                    check(tabs.Visibility()==xaml::Visibility::Visible,L"Closing the sidebar removed the alternate named navigation.");
+                    navigation.IsPaneOpen(true);root.UpdateLayout();deadline=GetTickCount64()+5000;
+                    while(navigation.DisplayMode()==controls::NavigationViewDisplayMode::Expanded && tabs.Visibility()!=xaml::Visibility::Collapsed && GetTickCount64()<deadline){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+                    check(navigation.DisplayMode()!=controls::NavigationViewDisplayMode::Expanded || tabs.Visibility()==xaml::Visibility::Collapsed,L"The expanded sidebar still duplicates page navigation.");
+                    navigation.IsPaneOpen(open);root.UpdateLayout();
+                }
                 if (std::wstring_view(target) == L"studio") {
                     auto studio = page.Content().as<controls::ScrollViewer>().Content().as<controls::StackPanel>();
                     check(studio.Children().GetAt(0).as<controls::TextBlock>().Text() == L"AI Studio", L"Advanced AI Studio lost its title.");
@@ -1128,19 +1312,19 @@ IAsyncAction Shell::smoke() {
                     auto more = tabs.Children().GetAt(1).as<controls::ComboBox>();
                     auto first = more.Items().GetAt(0).as<controls::ComboBoxItem>();
                     check(unbox_value<hstring>(first.Tag()) == L"brain"
-                        && std::wstring(unbox_value<hstring>(first.Content())).find(L"Moved to Brain") != std::wstring::npos,
-                        L"Writing style and notes no longer leaves a Moved to Brain hint in More.");
+                        && unbox_value<hstring>(first.Content())==L"Writing style & notes",
+                        L"Writing style and notes lost its named advanced navigation entry.");
                     bool agentMoved = false, skillsMoved = false, categoriesMoved = false, rulesKept = false;
                     for (auto const& value : more.Items()) {
                         auto item = value.as<controls::ComboBoxItem>();
                         auto id = std::wstring(unbox_value<hstring>(item.Tag()));
                         auto caption = std::wstring(unbox_value<hstring>(item.Content()));
-                        if (id == L"agent") agentMoved = caption.find(L"Moved to Agent") != std::wstring::npos;
-                        if (id == L"skills") skillsMoved = caption.find(L"Moved to Agent") != std::wstring::npos;
-                        if (id == L"categories") categoriesMoved = caption.find(L"Moved to Brain") != std::wstring::npos;
+                        if (id == L"agent") agentMoved = caption==L"Inbox Agent";
+                        if (id == L"skills") skillsMoved = caption==L"Reusable skills";
+                        if (id == L"categories") categoriesMoved = caption==L"Mail categories";
                         if (id == L"rules") rulesKept = caption.find(L"Local Inbox Rules") != std::wstring::npos;
                     }
-                    check(agentMoved && skillsMoved && categoriesMoved && rulesKept, L"AI Studio More lost a moved hint or an advanced page that stays in Studio.");
+                    check(agentMoved && skillsMoved && categoriesMoved && rulesKept, L"Advanced navigation lost Agent, Skills, Categories, or Local Inbox Rules.");
                 }
             }
             for (auto const* tab : {L"start", L"general", L"mail", L"calendar", L"model", L"search", L"policy", L"about"}) {

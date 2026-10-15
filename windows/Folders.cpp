@@ -157,13 +157,13 @@ struct FolderManager {
     }
 };
 }
-MenuFlyout Shell::organizationMenu(Json message) {
+MenuFlyout Shell::organizationMenu(Json message, std::function<bool()> context) {
     MenuFlyout menu; auto account=text(message,L"accountId"); auto remote=text(message,L"remoteId",text(message,L"id"));
     bool google=std::wstring_view(remote).starts_with(L"google:");
     bool imported=google||std::wstring_view(remote).starts_with(L"microsoft:")||std::wstring_view(remote).starts_with(L"imap:");
-    auto add=[&](hstring const& title,hstring kind) { MenuFlyoutItem item; item.Text(title); item.IsEnabled(imported&&!flag(message,L"providerFolderMissing")); item.Click([weak=weak_from_this(),message,kind](auto const&,auto const&) { if(auto self=weak.lock()) self->organize(message,kind); }); menu.Items().Append(item); };
+    auto add=[&](hstring const& title,hstring kind) { MenuFlyoutItem item; item.Text(title); item.IsEnabled(imported&&!flag(message,L"providerFolderMissing")); item.Click([weak=weak_from_this(),message,kind,context](auto const&,auto const&) { if(auto self=weak.lock(); self && (!context || context())) self->organize(message,kind); }); menu.Items().Append(item); };
     add(L"Move to…",{}); if(google) add(L"Labels…",L"labels"); add(google?L"Create new label…":L"Create new folder…",L"create");
-    MenuFlyoutItem manage; manage.Text(google?L"Manage labels…":L"Manage folders…"); manage.Click([weak=weak_from_this(),account](auto const&,auto const&) { if(auto self=weak.lock()) self->manageFolders(account); }); menu.Items().Append(manage);
+    MenuFlyoutItem manage; manage.Text(google?L"Manage labels…":L"Manage folders…"); manage.Click([weak=weak_from_this(),account,context](auto const&,auto const&) { if(auto self=weak.lock(); self && (!context || context())) self->manageFolders(account); }); menu.Items().Append(manage);
     return menu;
 }
 IAsyncOperation<Json> Shell::manageFolders(hstring account, hstring initialFolder, bool creationOnly) {

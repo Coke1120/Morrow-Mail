@@ -1,5 +1,41 @@
 # Verification — 14 October 2026
 
+## Contextual actions candidate — 15 October 2026
+
+This separate UI candidate starts from main `337a2f7`. It groups secondary
+reader/management actions, keeps selection controls contextual, hosts owned
+reply review on Today, and reveals initially empty Cc/Bcc fields. It does not
+change the service, provider permissions, summary retention or release version.
+
+Independent source review checks account and proposal identities, stale control
+callbacks, draft retention and existing confirmation/uncertain-send behavior.
+The existing native fixtures gain actual menu/button/control operations for
+these paths. Their added assertions have not yet run on macOS or Windows;
+source inspection and unchanged-handler comparisons are not native acceptance.
+The historical macOS lifecycle negative control retains its pinned Today view
+with its pinned reply view, while the formal fixture compiles current sources.
+Both complete SDK/native jobs are still required; no screenshot, measured
+learning-curve improvement, keyboard traversal or screen-reader pass is claimed.
+
+The final independent source pass corrected four candidate defects: Today
+could select a different cached reply, a retained Windows reply menu could act
+on a newly selected reply, the selection Actions menu could expire on return
+from composing, and Add category could retain an existing category ID. The
+fixtures now exercise the corresponding exact-target and retained-control
+paths. These are source-level closures; their new native controls still need
+SDK execution. Today's cancelled-inspection overlap is handled with a
+cancellable local wait, but held-request close/reopen timing is not yet measured.
+
+The six existing category replacement/navigation source contracts pass after
+adapting their handler boundary to native menus. The immutable original
+`e59d331` control still fails eight assertions. The two edited Python runners
+parse successfully, and `git diff --check` passes. All 17 authored native files
+match the independently reviewed final manifests. No Rust source changed and
+no local Rust rerun is claimed for this UI candidate.
+
+The separately retained Today completion-policy work is not part of this
+candidate. See [interaction behavior](docs/CONTEXTUAL_ACTIONS.md) for scope.
+
 ## Saved summary job diagnostics — 15 October 2026
 
 This separate follow-up starts from PR #50's tested tree, later merged as
