@@ -504,6 +504,32 @@ SDK CI, rendered review, keyboard traversal and screen-reader checks remain
 required; successful fragments of the earlier failed `484eb592` run are not a
 combined-candidate pass.
 
+## PR #58 synthetic offscreen-window setup — 15 October 2026
+
+The macOS measurement job `116488981153` in run `38754431904`, at exact
+checkout `b73696bece0630e7773778d1dd2327ad1264feaf`, compiled the native
+fixture and reached the synthetic oracle's offscreen-window setup check.
+It failed because the window still intersected a display. All preceding
+sequential synthetic gates, including the accessibility-hidden body and its
+restoration, had passed. This identifies a fixture setup failure; it does
+not prove that AppKit's frame constraints caused that observed placement.
+
+Only the synthetic oracle window now uses an `NSWindow` subclass whose public
+`constrainFrameRect(_:to:)` override permits the requested frame during the
+explicit offscreen negative. Initial setup and restoration retain normal
+AppKit constraints. Dataset and production windows are unchanged. The actual
+all-display nonintersection check and reader-oracle rejection remain required,
+with added visible-window ownership and exact-frame restoration checks.
+The original restored row/reader positive still gates success. Failure-only
+diagnostics contain fixed bounded geometry and boolean observations.
+
+Linux ran `python3 -B scripts/test-mailbox-acceptance.py` with 13 tests passing,
+and `git diff --check` passed. These harness/source checks do not execute Swift.
+This correction has not been compiled or run with a macOS SDK locally and does
+not establish actual native placement, oracle rejection, restoration or dataset
+measurements. Fresh matching-source macOS CI remains required; the original
+job remains failed.
+
 ## IMAP server identity and safe migration — 15 October 2026
 
 This source follow-up starts from main
