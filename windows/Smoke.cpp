@@ -848,6 +848,22 @@ IAsyncAction Shell::smoke() {
         apartment_context ui;
         co_await resume_after(std::chrono::seconds(2)); co_await ui;
         if (seeded) {
+            // Branch-only initial-owned discriminator; the original later review remains.
+            auto earlyOwner=owner,earlyFolder=folder;auto earlyReview=review;
+            enter("review-workspace-before-reader");
+            check(array(state,L"accounts").Size()==2,L"The early review discriminator requires two fictional owners.");
+            co_await reviewWorkspaceChecks(lifetime);
+            enter("review-workspace-before-reader-passed");
+            check(review==earlyReview && owner==earlyOwner && !review->writing && navigation.IsEnabled()
+                && !navigationLocked && !loading && !closing && !dialogOpen && dirty.empty(),
+                L"The early review discriminator did not restore an idle original review context.");
+            auto earlyReviewContent=page.Content();
+            co_await navigate(L"mail",earlyOwner,earlyFolder);
+            check(page.Content() && page.Content()!=earlyReviewContent && section==L"mail" && shellMode()==L"mail"
+                && owner==earlyOwner && folder==earlyFolder && review==earlyReview && !review->writing
+                && rows && rows.Items().Size()>=2 && !loading && !navigationLocked && navigation.IsEnabled()
+                && !closing && !dialogOpen && dirty.empty(),L"The early review discriminator did not restore the owned Mail page.");
+            enter("review-before-reader-mail-restored");
             enter("mail-resize");
             auto savedLayout = mailLayout;
             auto savedHeight = listHeight;

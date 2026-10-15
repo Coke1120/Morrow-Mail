@@ -31,6 +31,7 @@ jobs:
           '@ | python -X utf8 -B -
           if ($LASTEXITCODE -ne 0) { throw 'Exact diagnostic source could not be recorded.' }
       - name: Restore existing compiler cache
+        id: rust-cache
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809
         with:
           path: |
@@ -50,12 +51,14 @@ jobs:
           if (Get-Command node,npm -ErrorAction SilentlyContinue) { throw 'Node/npm must not be available to native checks.' }
           "PATH=$env:PATH" >> $env:GITHUB_ENV
       - name: Build exact WinUI SDK fixture candidate
+        id: package
         shell: pwsh
         run: ./scripts/build-windows-native.ps1 -Zip
       - name: Run fictional native walkthrough and bounded More observations
         shell: pwsh
         run: ./scripts/test-windows-native.ps1 -UiSmoke
       - name: Verify unchanged diagnostic source
+        id: source-check
         if: always()
         shell: pwsh
         run: |
@@ -73,3 +76,11 @@ jobs:
               raise SystemExit('Diagnostic tracked source changed.')
           '@ | python -X utf8 -B -
           if ($LASTEXITCODE -ne 0) { throw 'Exact diagnostic source changed or could not be verified.' }
+      - name: Cache completed diagnostic Rust builds
+        if: ${{ !cancelled() && steps.package.outcome == 'success' && steps.source-check.outcome == 'success' && steps.rust-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: |
+            ~/.cargo/registry
+            rust/target
+          key: ${{ steps.rust-cache.outputs.cache-primary-key }}
