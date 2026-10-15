@@ -120,9 +120,51 @@ IAsyncAction contextualMailChecks(std::shared_ptr<Shell> shell) {
     shell->loading=true;shell->rows.SelectedItems().Clear();for(auto const& row:savedSelection)shell->rows.SelectedItems().Append(row);shell->loading=false;shell->updateMailSelectionActions();
     auto view=find(shell->root,L"mail.view").as<controls::DropDownButton>();co_await openActionFlyout(view);
     check(shell->sorting.IsLoaded() && shell->sorting.Items().Size()==6 && shell->sorting.IsEnabled(),L"View no longer exposes the actual six-way native sort control.");co_await closeActionFlyout(view);
-    auto query=shell->search.Text();shell->search.Text(L"");shell->root.UpdateLayout();
-    auto clear=find(shell->root,L"mail.search.clear");check(clear && clear.Visibility()==xaml::Visibility::Collapsed,L"An empty query retains Clear in the tab order.");
-    shell->search.Text(L"fictional unsent search");shell->root.UpdateLayout();check(clear.Visibility()==xaml::Visibility::Visible,L"A query cannot reach Clear.");shell->search.Text(query);
+    {
+        auto input=shell->search;auto query=input.Text();auto mountedPage=shell->page.Content();
+        auto owner=shell->owner;auto generation=shell->generation;auto submittedQuery=shell->mailSearchQuery;
+        auto clear=find(shell->root,L"mail.search.clear");check(bool(clear),L"The mounted Clear control is missing.");
+        struct RestoreQuery {
+            controls::TextBox input;hstring query;bool completed=false;
+            ~RestoreQuery(){if(!completed)try{if(input.Text()!=query)input.Text(query);}catch(...) {}}
+        } restore{input,query};
+        auto current=[&] {
+            return shell->section==L"mail" && shell->owner==owner && shell->generation==generation &&
+                shell->page.Content()==mountedPage && shell->search==input &&
+                find(shell->root,L"mail.search.clear")==clear && input.XamlRoot() && clear.XamlRoot()==input.XamlRoot();
+        };
+        auto mounted=[&] {return input.IsLoaded() && input.IsEnabled() && input.ActualWidth()>0 && input.ActualHeight()>0;};
+        // Keep this coroutine lambda alive until every awaited edit has finished.
+        // TextChanged is asynchronous; layout alone does not acknowledge an edit.
+        auto edit=[&](hstring value,xaml::Visibility expected,wchar_t const* message)->IAsyncAction {
+            apartment_context ui;shell->root.UpdateLayout();
+            check(current() && mounted(),L"The captured mail search input is not the current mounted enabled control.");
+            auto changed=std::make_shared<bool>(false);bool requiresEvent=input.Text()!=value;
+            auto event=input.TextChanged(auto_revoke,[changed,input,value](auto const& sender,auto const&) {
+                if(sender.template as<controls::TextBox>()==input && input.Text()==value)*changed=true;
+            });
+            auto deadline=GetTickCount64()+5000;
+            if(requiresEvent)input.Text(value); // Exactly one setter; a no-op has no required change event.
+            while(current() && mounted() && ((requiresEvent && !*changed) || clear.Visibility()!=expected) && GetTickCount64()<deadline) {
+                co_await resume_after(std::chrono::milliseconds(10));co_await ui;shell->root.UpdateLayout();
+            }
+            auto same=current();auto ready=mounted();auto textMatches=input.Text()==value;auto queryUnchanged=shell->mailSearchQuery==submittedQuery;
+            auto details=L" [sameControl="+to_hstring(same)+L", mounted="+to_hstring(ready)+
+                L", eventRequired="+to_hstring(requiresEvent)+L", matchingEvent="+to_hstring(*changed)+
+                L", textMatches="+to_hstring(textMatches)+L", clearVisible="+to_hstring(clear.Visibility()==xaml::Visibility::Visible)+
+                L", queryUnchanged="+to_hstring(queryUnchanged)+L"]";
+            check(same && ready,(L"The search edit lost its captured page, mailbox or mounted controls."+details).c_str());
+            check(!requiresEvent || *changed,(L"The search edit did not reach its matching native TextChanged event."+details).c_str());
+            check(textMatches,(L"The captured search text changed before its event settled."+details).c_str());
+            check(clear.Visibility()==expected,(hstring(message)+details).c_str());
+            check(queryUnchanged,(L"Editing search text submitted a query without a native search action."+details).c_str());
+        };
+        co_await edit(L"",xaml::Visibility::Collapsed,L"An empty query retains Clear in the tab order.");
+        co_await edit(L"fictional unsent search",xaml::Visibility::Visible,L"A query cannot reach Clear.");
+        co_await edit(query,query.empty()?xaml::Visibility::Collapsed:xaml::Visibility::Visible,L"Restoring search text left Clear in the wrong state.");
+        restore.completed=true;
+        std::fprintf(stderr,"Native smoke: search-clear-event-settlement-passed\n");std::fflush(stderr);
+    }
     for(auto id:{L"reader.reply",L"reader.more",L"reader.ai"}) {
         auto target=find(shell->root,id).as<controls::DropDownButton>();co_await openActionFlyout(target);
         auto menu=target.Flyout().as<controls::MenuFlyout>();check(menu.Items().Size()>0,L"A named reader action menu is empty.");

@@ -150,6 +150,38 @@ acceptance. Product views, lifecycle handlers, fictional transport and the
 180/45-second runner limits remain unchanged. Visual, keyboard and screen-reader
 inspection remains a separate pending requirement.
 
+### PR #59 Windows search event settlement
+
+[Run 38731593826](https://github.com/Coke1120/Morrow-Mail/actions/runs/38731593826),
+Windows job `116410435704`, tested the same `484eb592` head and `e19ea980`
+synthetic checkout. Its 50 Rust result groups contain 445 passing tests, zero
+failures and four ignored tests. The formal WinUI/Rust package compiled, then
+the native walkthrough failed in `contextual-reader-and-selection-actions`:
+`A query cannot reach Clear.` The relocated PowerShell 5.1 check was skipped;
+the separate fictional 1k/10k/50k service benchmark passed. The later Reader
+menus and Today/Compose contextual checks were not reached by this walkthrough.
+The original terminal log contains no TextChanged delivery trace.
+
+The failing fixture assigned Text, forced layout and immediately inspected
+Clear. WinUI TextChanged is asynchronous, so that sequence does not establish
+event completion ([Microsoft event contract](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.textbox.textchanging?view=windows-app-sdk-1.8)).
+A fixture-only correction first verifies the captured
+TextBox is loaded, enabled and has positive dimensions, then subscribes to its
+exact sender/value event before each changed value's single assignment. It
+waits at most five seconds for the event and expected visibility, within the
+unchanged 180-second walkthrough limit. Same page, mailbox, generation,
+TextBox/Clear identities and the unsubmitted search query are revalidated.
+The original Visible/Collapsed assertions remain; unchanged text does not
+require a nonexistent change event. Normal restoration uses the same event
+path, and exception cleanup only restores the retained fixture TextBox.
+
+Production handlers, search submission and provider actions are unchanged.
+Fixed boolean failure details distinguish event, identity and visibility
+failures without recording query or message contents. Linux whitespace and
+unchanged-source checks are not a Windows SDK or native UI pass. The event
+settlement correction, remaining contextual fixtures and rendered/keyboard/
+screen-reader behavior still require their actual platform verification.
+
 ## IMAP server identity and safe migration — 15 October 2026
 
 This source follow-up starts from main
