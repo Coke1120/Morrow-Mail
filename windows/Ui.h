@@ -13,6 +13,8 @@
 namespace morrow {
 namespace xaml = winrt::Microsoft::UI::Xaml;
 namespace controls = winrt::Microsoft::UI::Xaml::Controls;
+// Optional proof for an explicit read-only refresh after a scoped download.
+using WorkspaceReadGuard = std::function<bool(Json const&)>;
 winrt::hstring errorText();
 controls::TextBlock label(winrt::hstring const& value, double size = 14, bool selectable = true);
 controls::Button button(winrt::hstring const& value, std::function<void()> action);
@@ -110,16 +112,17 @@ struct Shell : std::enable_shared_from_this<Shell> {
     // Account selection and short mailbox writes. Page refresh, sync and AI do not set this.
     bool navigationLocked = false;
     uint64_t mailLoadTicket = 0;
+    uint64_t workspaceRefreshTicket = 0;
     bool closeReady = false;
     bool checkingUpdates = false, includePrereleases = false;
     uint64_t lastUpdateCheck = 0;
     std::set<std::wstring> dirty;
     std::function<winrt::Windows::Foundation::IAsyncOperation<bool>()> saveGeneralBeforeLeave;
     winrt::Windows::Foundation::IAsyncAction start();
-    winrt::Windows::Foundation::IAsyncAction refresh(bool rebuildNavigation = false);
+    winrt::Windows::Foundation::IAsyncOperation<bool> refresh(bool rebuildNavigation = false, WorkspaceReadGuard validity = {});
     winrt::Windows::Foundation::IAsyncAction navigate(winrt::hstring target, winrt::hstring account = {}, winrt::hstring mailFolder = L"inbox");
-    winrt::Windows::Foundation::IAsyncAction loadPage(int pageDelta = 0, bool refreshReader = false, bool reset = false);
-    winrt::Windows::Foundation::IAsyncAction refreshMailReader();
+    winrt::Windows::Foundation::IAsyncOperation<bool> loadPage(int pageDelta = 0, bool refreshReader = false, bool reset = false, WorkspaceReadGuard validity = {});
+    winrt::Windows::Foundation::IAsyncOperation<bool> refreshMailReader(WorkspaceReadGuard validity = {});
     winrt::Windows::Foundation::IAsyncAction read(Json metadata, bool markOnOpen = true);
     void focusMail();
     winrt::Windows::Foundation::IAsyncAction openSource(Json metadata);
@@ -128,7 +131,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     std::vector<Json> selectedMessages(Json target = Json()) const;
     controls::MenuFlyout mailActionsMenu(Json message);
     bool canTrash(Json const& message) const;
-    void retainReadRow(Json const& message);
+    void retainReadRow(Json const& message, bool refreshMetadata = false);
     winrt::Windows::Foundation::IAsyncAction prepare(Json message, winrt::hstring mode, winrt::hstring body = {});
     winrt::Windows::Foundation::IAsyncAction messageAI(Json message, winrt::hstring action, bool history = false);
     winrt::Windows::Foundation::IAsyncAction organize(Json message, winrt::hstring preferredKind = {}, winrt::hstring preferredDestination = {});
@@ -147,6 +150,7 @@ struct Shell : std::enable_shared_from_this<Shell> {
     void updateTrashUndo();
     winrt::Windows::Foundation::IAsyncAction sync();
     winrt::Windows::Foundation::IAsyncAction downloadControls(winrt::hstring account = {});
+    winrt::Windows::Foundation::IAsyncOperation<bool> repairDownloadedMessage(Json message, winrt::hstring account, winrt::hstring connectionRef);
     winrt::Windows::Data::Json::JsonArray syncPriorityMessages() const;
     winrt::Windows::Foundation::IAsyncAction publishSyncPriority(bool clear = false);
     winrt::Windows::Foundation::IAsyncAction checkUpdates(bool force = false);
@@ -190,5 +194,6 @@ winrt::Windows::Foundation::IAsyncAction folderPickerChecks(controls::Grid root)
 winrt::Windows::Foundation::IAsyncAction folderSyncChecks(controls::Grid root);
 void readerSecurityChecks();
 void downloadControlsChecks();
+winrt::Windows::Foundation::IAsyncAction downloadRefreshChecks(std::shared_ptr<Shell> shell);
 winrt::Windows::Foundation::IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell);
 }

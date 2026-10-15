@@ -53,6 +53,66 @@ struct DownloadLoading {
     ~DownloadLoading() { if (current()) shell.loading = false; }
 };
 
+struct DownloadRefreshScope {
+    hstring account, connectionRef, viewOwner, section, folder, query, submittedQuery;
+    hstring selectedOwner, selectedID, selectedViewID, selectedConnection;
+    uint64_t generation, selection;
+    controls::ListView rows;
+    controls::ContentControl page, reader;
+    IInspectable content;
+    controls::TextBox search;
+    controls::ComboBox sorting;
+    controls::CheckBox unreadFilter;
+    int sortIndex;
+    bool unreadOnly;
+
+    DownloadRefreshScope(Shell const& shell, hstring owner, hstring reference)
+        : account(std::move(owner)), connectionRef(std::move(reference)), viewOwner(shell.owner),
+          section(shell.section), folder(shell.folder), query(shell.search ? shell.search.Text() : hstring{}),
+          submittedQuery(shell.mailSearchQuery), selectedOwner(text(shell.selected,L"accountId")),
+          selectedID(text(shell.selected,L"id")), selectedViewID(text(shell.selected,L"viewId")),
+          selectedConnection(downloadConnectionRef(shell.state,selectedOwner)),
+          generation(shell.generation), selection(shell.selectionGeneration), rows(shell.rows), page(shell.page),
+          reader(shell.reader), content(shell.page ? shell.page.Content() : IInspectable{nullptr}),
+          search(shell.search), sorting(shell.sorting), unreadFilter(shell.unreadFilter),
+          sortIndex(shell.sorting ? shell.sorting.SelectedIndex() : -1),
+          unreadOnly(shell.unreadFilter && shell.unreadFilter.IsChecked() && shell.unreadFilter.IsChecked().Value()) {}
+
+    bool current(Shell const& shell, Json const& candidate) const {
+        if (!shell.current(generation,viewOwner) || shell.section!=section || shell.folder!=folder
+            || shell.selectionGeneration!=selection || shell.rows!=rows || shell.page!=page || shell.reader!=reader
+            || (page && page.Content()!=content)
+            || shell.search!=search || shell.sorting!=sorting || shell.unreadFilter!=unreadFilter
+            || (search && (search.Text()!=query || shell.mailSearchQuery!=submittedQuery))
+            || (sorting && sorting.SelectedIndex()!=sortIndex)
+            || (unreadFilter && bool(unreadFilter.IsChecked() && unreadFilter.IsChecked().Value())!=unreadOnly)
+            || shell.dialogOpen || shell.navigationLocked || shell.syncing || shell.pendingRead.Size() || !shell.dirty.empty()
+            || !shell.service || shell.service->writing() || !shell.navigation || !shell.navigation.IsEnabled()
+            || !shell.connected(account) || connectionRef.empty()
+            || downloadConnectionRef(shell.state,account)!=connectionRef
+            || downloadConnectionRef(candidate,account)!=connectionRef
+            || text(object(candidate,L"account"),L"id")!=viewOwner
+            || text(shell.selected,L"accountId")!=selectedOwner || text(shell.selected,L"id")!=selectedID
+            || text(shell.selected,L"viewId")!=selectedViewID) return false;
+        return selectedOwner.empty() || (!selectedConnection.empty()
+            && downloadConnectionRef(shell.state,selectedOwner)==selectedConnection
+            && downloadConnectionRef(candidate,selectedOwner)==selectedConnection);
+    }
+};
+
+IAsyncOperation<bool> refreshDownloadedViews(std::shared_ptr<Shell> shell, DownloadRefreshScope scope) {
+    if (!scope.current(*shell,shell->state)) co_return false;
+    auto validity=[shell,scope](Json const& candidate) { return scope.current(*shell,candidate); };
+    auto ticket=shell->workspaceRefreshTicket+1;
+    bool completed=false;
+    try { completed=co_await shell->refresh(true,validity); }
+    catch (...) {
+        if (!validity(shell->state) || shell->workspaceRefreshTicket!=ticket) co_return false;
+        throw hresult_error(E_FAIL,L"Download saved, but the mailbox view could not refresh. Close Downloads and refresh the mailbox. "+errorText());
+    }
+    co_return completed && shell->workspaceRefreshTicket==ticket && validity(shell->state);
+}
+
 template<typename Check> void downloadLoadingChecks(Check check) {
     Shell shell;
     {
@@ -78,9 +138,30 @@ template<typename Check> void downloadLoadingChecks(Check check) {
 }
 }
 
+IAsyncOperation<bool> Shell::repairDownloadedMessage(Json message, hstring account, hstring connectionRef) {
+    auto lifetime=shared_from_this();
+    DownloadRefreshScope scope(*this,account,connectionRef);
+    if (loading || syncing || !scope.current(*this,state) || !flag(message,L"canRepair")
+        || text(message,L"accountId")!=account || text(message,L"id").empty() || text(message,L"viewId").empty()) co_return false;
+    // An older workspace/detail read cannot restore the pre-download snapshot.
+    ++workspaceRefreshTicket; refreshing=false; ++readGeneration;
+    {
+        DownloadLoading request(*this);
+        Json body; put(body,L"connectionRef",connectionRef);
+        auto result=co_await service->request(L"/messages/"+escaped(text(message,L"id"))+L"/attachments",account,L"POST",body);
+        if (!request.current() || !scope.current(*this,state)) co_return false;
+        auto downloaded=object(result,L"message");
+        if (text(downloaded,L"accountId")!=account || text(downloaded,L"id")!=text(message,L"id")
+            || text(downloaded,L"viewId")!=text(message,L"viewId")) throw hresult_error(E_FAIL,L"Downloaded message ownership could not be confirmed.");
+        // The POST may precede a flag change. Shared refresh reads the latest
+        // local projections and reader; never copy the full POST body into rows.
+    }
+    co_return co_await refreshDownloadedViews(lifetime,scope);
+}
+
 IAsyncAction Shell::downloadControls(hstring account) {
     auto lifetime=shared_from_this(); auto version=generation; auto captured=owner;
-    if (closing||dialogOpen||loading||navigationLocked||!service||service->writing()) co_return;
+    if (closing||dialogOpen||loading||navigationLocked||pendingRead.Size()||!service||service->writing()) co_return;
     if (!dirty.empty()) {error(L"Save or discard your current edits before opening download controls."); co_return;}
     if (!connected(account)) for (auto const& entry : array(state,L"accounts")) {
         auto candidate=text(entry.GetObject(),L"id"); if (connected(candidate)) { account=candidate; break; }
@@ -180,18 +261,168 @@ IAsyncAction Shell::downloadControls(hstring account) {
                     if(!(co_await confirm(L"Download this message's full content?",account+L"\n"+text(panel->message,L"subject")+L"\nThis explicitly downloads one message, including attachments (up to 50 MiB) and raw message data (up to 80 MiB). Nothing is moved, deleted or sent; no AI is called.",L"Download"))) continue;
                 }
                 if(!current(version,captured)||!connected(account)||downloadConnectionRef(state,account)!=connectionRef) co_return;
-                DownloadLoading request(*this);
                 try {
                     if(repairing) {
-                        auto id=text(panel->message,L"id"); auto result=co_await service->request(L"/messages/"+escaped(id)+L"/attachments",account,L"POST",body);
-                        if(!request.current()||!current(version,captured)||!connected(account)||downloadConnectionRef(state,account)!=connectionRef) co_return;
-                        auto message=object(result,L"message"); if(text(message,L"accountId")!=account||text(message,L"id")!=id) throw hresult_error(E_FAIL,L"Downloaded message ownership could not be confirmed.");
+                        if (!(co_await repairDownloadedMessage(panel->message,account,connectionRef))) co_return;
                         notice=L"Download saved. Review remaining content limits above.";
-                    } else {co_await service->request(L"/imports/"+panel->action,account,L"POST",body); if(!request.current()||!current(version,captured)||!connected(account)||downloadConnectionRef(state,account)!=connectionRef) co_return; notice=L"History checkpoint updated.";}
-                } catch(...) {if(!request.current()||!current(version,captured)) co_return; notice=errorText();}
+                    } else {
+                        DownloadLoading request(*this);
+                        try {
+                            co_await service->request(L"/imports/"+panel->action,account,L"POST",body);
+                            if(!request.current()||!current(version,captured)||!connected(account)||downloadConnectionRef(state,account)!=connectionRef) co_return;
+                            notice=L"History checkpoint updated.";
+                        } catch (...) { if (!request.current()) co_return; throw; }
+                    }
+                } catch(...) {if(!current(version,captured)||!connected(account)||downloadConnectionRef(state,account)!=connectionRef) co_return; notice=errorText();}
             }
         }
     } catch(...) {if(current(version,captured)) error(errorText());}
+}
+
+IAsyncAction downloadRefreshChecks(std::shared_ptr<Shell> shell) {
+    auto check=[](bool value,hstring const& detail) { if(!value) throw hresult_error(E_FAIL,detail); };
+    auto visible=[shell](hstring const& viewID) {
+        for(auto const& value:shell->rows.Items()) {
+            auto row=value.as<ListViewItem>().Tag().as<Json>();
+            if(text(row,L"viewId")==viewID) return row;
+        }
+        return Json();
+    };
+    auto stale=[shell](Json const& original) {
+        shell->selected=Json::Parse(original.Stringify());
+        put(shell->selected,L"body",L"Incomplete local copy before download");
+        put(shell->selected,L"bodyHtml",L"");
+        shell->selected.Insert(L"contentIncomplete",Value::CreateBooleanValue(true));
+        shell->selected.Insert(L"attachmentsLoaded",Value::CreateBooleanValue(false));
+        shell->renderReader(shell->selected);
+        shell->state=Json::Parse(shell->state.Stringify());
+        put(shell->state,L"revision",L"download-fixture-stale");
+        shell->mailRevision=L"download-fixture-stale";
+        for(auto const& value:shell->rows.Items()) {
+            auto item=value.as<ListViewItem>(); auto row=Json::Parse(item.Tag().as<Json>().Stringify());
+            if(text(row,L"viewId")==text(original,L"viewId")) {
+                put(row,L"preview",L"Incomplete local preview before download"); item.Tag(row);
+            }
+        }
+    };
+    // This exercises the actual completion path against the fictional local
+    // service. Provider download/POST is covered by the held-transport control;
+    // it must not contact the fixture accounts' fake Google credentials.
+    co_await shell->navigate(L"mail",L"one@fixture.invalid");
+    co_await shell->loadPage(1);
+    check(shell->cursors.size()==2 && shell->rows.Items().Size()==15,L"Download refresh fixture requires mail page two.");
+    auto row=shell->rows.Items().GetAt(0).as<ListViewItem>(); auto metadata=row.Tag().as<Json>();
+    shell->loading=true; shell->rows.SelectedItem(row); shell->loading=false;
+    co_await shell->read(metadata,false);
+    auto original=Json::Parse(shell->selected.Stringify()); auto sequence=shell->selectionGeneration;
+    auto viewID=text(original,L"viewId"), account=text(original,L"accountId"), id=text(original,L"id");
+    auto reference=downloadConnectionRef(shell->state,account);
+    stale(original);
+    check(text(shell->selected,L"body")!=text(original,L"body")
+        && text(visible(viewID),L"preview")==L"Incomplete local preview before download",L"Download refresh fixture did not expose stale reader/list copies.");
+    check(co_await refreshDownloadedViews(shell,DownloadRefreshScope(*shell,account,reference)),L"Downloaded mail did not finish its shared refresh.");
+    check(shell->cursors.size()==2 && shell->rows.Items().Size()==15 && shell->selectionGeneration==sequence
+        && text(shell->selected,L"viewId")==viewID && text(shell->selected,L"body")==text(original,L"body")
+        && flag(shell->selected,L"read")==flag(original,L"read")
+        && text(visible(viewID),L"preview")!=L"Incomplete local preview before download"
+        && shell->mailRevision!=L"download-fixture-stale" && text(shell->state,L"revision")!=L"download-fixture-stale",
+        L"Download refresh left stale shared state/list/reader or changed the current page/selection/read flag.");
+    for(auto const& value:shell->rows.Items()) {
+        auto item=value.as<ListViewItem>().Tag().as<Json>();
+        check(!item.HasKey(L"body") && !item.HasKey(L"bodyHtml") && !item.HasKey(L"attachments"),L"Download refresh copied reader content into list metadata.");
+    }
+    auto persisted=object(co_await shell->service->request(L"/messages/"+escaped(id),account),L"message");
+    check(flag(persisted,L"read")==flag(original,L"read"),L"Download completion performed mark-on-open.");
+
+    shell->search.Text(L"Native fixture"); co_await shell->loadPage(0,false,true); co_await shell->loadPage(1);
+    check(shell->rows.Items().Size()==30 && shell->cursors.size()==2,L"Download refresh fixture requires search page two.");
+    auto searchRow=shell->rows.Items().GetAt(0).as<ListViewItem>().Tag().as<Json>();
+    co_await shell->read(searchRow,false); original=Json::Parse(shell->selected.Stringify());
+    shell->search.Text(L"Unsubmitted download fixture edit"); stale(original);
+    check(co_await refreshDownloadedViews(shell,DownloadRefreshScope(*shell,account,reference)),L"Download refresh did not reload the submitted search.");
+    check(shell->search.Text()==L"Unsubmitted download fixture edit" && shell->mailSearchQuery==L"Native fixture"
+        && shell->cursors.size()==2 && shell->rows.Items().Size()==30
+        && text(shell->selected,L"body")==text(original,L"body"),L"Download refresh submitted an unfinished search edit or reset its page.");
+
+    // Synthetic scope invalidation at the actual native page continuation,
+    // after the local POST releases Write. This checks cleanup without running
+    // Sync/provider work; it does not reproduce native event scheduling.
+    {
+        auto scope=DownloadRefreshScope(*shell,account,reference);
+        auto invalidated=std::make_shared<bool>(false);
+        auto validity=[shell,scope,invalidated](Json const& candidate) {
+            if(!*invalidated && shell->loading && !shell->search.IsEnabled() && !shell->service->writing()) {
+                *invalidated=true; shell->syncing=true;
+            }
+            return scope.current(*shell,candidate);
+        };
+        auto cursors=shell->cursors; auto nextCursor=shell->nextCursor;
+        auto revision=shell->mailRevision, selected=shell->selected.Stringify();
+        auto pageLabel=shell->pageLabel.Text(); auto first=shell->rows.Items().GetAt(0);
+        bool adopted=false; std::exception_ptr failure;
+        try {
+            auto pending=shell->loadPage(0,false,false,validity);
+            check(shell->loading && !shell->previous.IsEnabled() && !shell->next.IsEnabled()
+                && !shell->search.IsEnabled() && !shell->sorting.IsEnabled() && !shell->unreadFilter.IsEnabled(),
+                L"Guarded native page did not disable its controls before its local read.");
+            adopted=co_await pending;
+        } catch(...) { failure=std::current_exception(); }
+        shell->syncing=false;
+        if(failure) std::rethrow_exception(failure);
+        check(*invalidated && !adopted && !shell->loading && shell->previous.IsEnabled() && shell->next.IsEnabled()
+            && shell->search.IsEnabled() && !shell->sorting.IsEnabled() && !shell->unreadFilter.IsEnabled()
+            && shell->cursors==cursors && shell->nextCursor==nextCursor && shell->mailRevision==revision
+            && shell->pageLabel.Text()==pageLabel && shell->rows.Items().GetAt(0)==first && shell->selected.Stringify()==selected
+            && shell->search.Text()==L"Unsubmitted download fixture edit" && shell->mailSearchQuery==L"Native fixture",
+            L"Abandoned native page adopted a stale response, lost the draft query or left its controls disabled.");
+    }
+
+    co_await shell->navigate(L"mail",L"one@fixture.invalid");
+    shell->unreadFilter.IsChecked(true); co_await shell->loadPage(0,false,true);
+    check(shell->rows.Items().Size()>0,L"Download refresh fixture requires an unread local message.");
+    auto unreadRow=shell->rows.Items().GetAt(0).as<ListViewItem>(); auto unreadMessage=unreadRow.Tag().as<Json>();
+    auto unreadID=text(unreadMessage,L"id");
+    check(!flag(unreadMessage,L"read"),L"Download unread fixture chose an already-read message.");
+    // Establish retainedUnread through the actual read handler. This intentional
+    // fixture-only local flag change is restored below; completion must add none.
+    object(object(shell->state,L"settings"),L"preferences").Insert(L"markReadOnOpen",Value::CreateBooleanValue(true));
+    shell->loading=true; shell->rows.SelectedItem(unreadRow); shell->loading=false;
+    std::exception_ptr retainedFailure;
+    try {
+        co_await shell->read(unreadMessage);
+        check(shell->retainedUnread.Size() && flag(shell->selected,L"read"),L"Actual reader did not establish its retained unread-filter row.");
+        original=Json::Parse(shell->selected.Stringify()); stale(original);
+        put(shell->retainedUnread,L"preview",L"Incomplete local preview before download");
+        reference=downloadConnectionRef(shell->state,account);
+        check(co_await refreshDownloadedViews(shell,DownloadRefreshScope(*shell,account,reference)),L"Download refresh did not finish for a retained read row.");
+        check(shell->retainedUnread.Size() && text(shell->retainedUnread,L"preview")!=L"Incomplete local preview before download"
+            && text(visible(text(original,L"viewId")),L"preview")!=L"Incomplete local preview before download"
+            && flag(shell->selected,L"read") && text(shell->selected,L"body")==text(original,L"body")
+            && !shell->retainedUnread.HasKey(L"body") && !shell->retainedUnread.HasKey(L"bodyHtml") && !shell->retainedUnread.HasKey(L"attachments"),
+            L"Download refresh retained stale preview metadata or exposed full reader content.");
+        persisted=object(co_await shell->service->request(L"/messages/"+escaped(unreadID),account),L"message");
+        check(flag(persisted,L"read"),L"Download refresh changed the retained message's read flag.");
+    } catch (...) { retainedFailure=std::current_exception(); }
+    Json unreadRestore; unreadRestore.Insert(L"read",Value::CreateBooleanValue(false));
+    co_await shell->service->request(L"/messages/"+escaped(unreadID),account,L"PATCH",unreadRestore);
+    shell->state=co_await shell->service->request(L"/state",account);
+    if(retainedFailure) std::rethrow_exception(retainedFailure);
+
+    co_await shell->navigate(L"mail",L"all");
+    auto other=object(co_await shell->service->request(L"/messages/mail-000",L"two@fixture.invalid"),L"message");
+    co_await shell->read(other,false); original=Json::Parse(shell->selected.Stringify());
+    sequence=shell->selectionGeneration; stale(original);
+    reference=downloadConnectionRef(shell->state,L"one@fixture.invalid");
+    check(co_await refreshDownloadedViews(shell,DownloadRefreshScope(*shell,L"one@fixture.invalid",reference)),L"Combined download completion did not refresh local views.");
+    check(shell->owner==L"all" && text(shell->selected,L"accountId")==L"two@fixture.invalid"
+        && text(shell->selected,L"viewId")==text(original,L"viewId") && shell->selectionGeneration==sequence
+        && text(shell->selected,L"body")==text(original,L"body") && flag(shell->selected,L"read")==flag(original,L"read"),
+        L"Repairing another owner's duplicate ID replaced the selected reader.");
+    DownloadRefreshScope obsolete(*shell,L"one@fixture.invalid",reference);
+    ++shell->selectionGeneration; auto ticket=shell->workspaceRefreshTicket;
+    check(!(co_await refreshDownloadedViews(shell,obsolete)) && shell->workspaceRefreshTicket==ticket,
+        L"An obsolete download completion started a new workspace read.");
+    co_await shell->navigate(L"mail",L"one@fixture.invalid");
 }
 
 void downloadControlsChecks() {

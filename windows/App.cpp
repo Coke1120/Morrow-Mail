@@ -467,19 +467,31 @@ IAsyncAction Shell::start() {
         timer.Start();
     } catch (...) { error(errorText()); }
 }
-IAsyncAction Shell::refresh(bool rebuild) {
-    if (closing || refreshing || (!rebuild && (loading || syncing || dialogOpen || !dirty.empty()
-        || service->writing() || !navigation.IsEnabled() || pendingRead.Size()))) co_return;
+IAsyncOperation<bool> Shell::refresh(bool rebuild, WorkspaceReadGuard validity) {
+    if (closing || (refreshing && !validity) || (validity && !validity(state)) || (!rebuild && (loading || syncing || dialogOpen || !dirty.empty()
+        || service->writing() || !navigation.IsEnabled() || pendingRead.Size()))) co_return false;
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
     auto before = state.Stringify();
+    auto ticket = ++workspaceRefreshTicket, pageTicket = mailLoadTicket;
     refreshing = true;
-    struct Refreshing { bool& value; ~Refreshing() { value = false; } } guard{refreshing};
+    struct Refreshing {
+        Shell& shell; uint64_t ticket;
+        ~Refreshing() { if (shell.workspaceRefreshTicket == ticket) shell.refreshing = false; }
+    } guard{*this,ticket};
     try {
-        co_await publishSyncPriority();
+        // A completed download refreshes local views without submitting another
+        // provider-work hint. It supersedes an older coalesced workspace read.
+        if (!validity) co_await publishSyncPriority();
+        if (validity && !validity(state)) co_return false;
         auto result = co_await service->request(L"/state", captured);
-        if (!current(version, captured) || state.Stringify() != before) co_return;
+        if (!current(version, captured) || workspaceRefreshTicket != ticket
+            || (validity && (mailLoadTicket != pageTicket || !validity(state) || !validity(result)))) co_return false;
+        if (state.Stringify() != before) {
+            if (validity) throw hresult_error(E_ABORT,L"The mailbox changed during its local refresh. Refresh it again.");
+            co_return false;
+        }
         if (!rebuild && (loading || syncing || dialogOpen || !dirty.empty()
-            || service->writing() || !navigation.IsEnabled() || pendingRead.Size())) co_return;
+            || service->writing() || !navigation.IsEnabled() || pendingRead.Size())) co_return false;
         bool changedAccounts = array(result, L"accounts").Stringify() != array(state, L"accounts").Stringify();
         bool changedFolders = object(result, L"serverFolders").Stringify() != object(state, L"serverFolders").Stringify();
         state = result;
@@ -494,13 +506,22 @@ IAsyncAction Shell::refresh(bool rebuild) {
         if (rebuild || changedAccounts || changedFolders) rebuildNavigation();
         if (!connected(owner) && owner != L"all") selected = Json();
         error(L"");
-        if (section == L"activity") co_await workspacePage(lifetime, section);
-        else if ((section == L"today" || section == L"reply-suggestions") && refreshReview) co_await refreshReview();
+        if (!validity && section == L"activity") co_await workspacePage(lifetime, section);
+        else if (!validity && (section == L"today" || section == L"reply-suggestions") && refreshReview) co_await refreshReview();
         else if (section == L"mail" && owner == captured && rows && !loading && !dialogOpen
             && dirty.empty() && navigation.IsEnabled() && !pendingRead.Size()
-            && search.Text() == mailSearchQuery
-            && (rebuild || mailRevision != text(state, L"revision"))) co_await loadPage(0, true);
-    } catch (...) { if (current(version, captured)) error(errorText()); }
+            && (validity || search.Text() == mailSearchQuery)
+            && (rebuild || mailRevision != text(state, L"revision"))) {
+            if (!(co_await loadPage(0, true, false, validity)) && validity) co_return false;
+        }
+        if (current(version,captured) && workspaceRefreshTicket==ticket && (!validity || validity(state))) co_return true;
+    } catch (...) {
+        if (current(version, captured) && workspaceRefreshTicket == ticket) {
+            if (validity) { if (validity(state)) throw; }
+            else error(errorText());
+        }
+    }
+    co_return false;
 }
 void Shell::rebuildNavigation() {
     selectingNavigation = true;
@@ -933,28 +954,48 @@ void Shell::applyMailLayout() {
         Grid::SetColumn(mailDivider, 1); Grid::SetColumn(readerPane, 2);
     }
 }
-IAsyncAction Shell::loadPage(int pageDelta, bool refreshReader, bool reset) {
+IAsyncOperation<bool> Shell::loadPage(int pageDelta, bool refreshReader, bool reset, WorkspaceReadGuard validity) {
     auto lifetime = shared_from_this();
     auto weak = weak_from_this();
-    if (navigationLocked || section != L"mail" || !rows) co_return;
+    if (navigationLocked || section != L"mail" || !rows || (validity && !validity(state))) co_return false;
     auto version = generation; auto captured = owner; auto targetRows = rows; auto query = search.Text();
+    // A download refreshes the displayed query, never an unsubmitted edit.
+    auto requestQuery = validity ? mailSearchQuery : query;
+    auto previousPageTicket = mailLoadTicket;
     if (refreshReader) {
         // Capture a newly read selected row while the old unread page is still
         // mounted; updating the filtered page first would discard its selection.
-        co_await refreshMailReader();
+        if (!(co_await refreshMailReader(validity)) && validity) co_return false;
         if (!current(version, captured) || section != L"mail" || rows != targetRows || loading
             || dialogOpen || !dirty.empty() || !navigation.IsEnabled() || pendingRead.Size()
-            || service->writing() || search.Text() != query) co_return;
+            || service->writing() || search.Text() != query
+            || (validity && (mailLoadTicket != previousPageTicket || !validity(state)))) co_return false;
     }
     auto requested = reset ? std::vector<hstring>{L""} : cursors;
-    if (pageDelta < 0) { if (requested.size() < 2) co_return; requested.pop_back(); }
-    if (pageDelta > 0) { if (nextCursor.empty()) co_return; requested.push_back(nextCursor); }
+    if (pageDelta < 0) { if (requested.size() < 2) co_return false; requested.pop_back(); }
+    if (pageDelta > 0) { if (nextCursor.empty()) co_return false; requested.push_back(nextCursor); }
     if (refreshReader) for (auto& cursor : requested) cursor = L"";
     auto ticket = ++mailLoadTicket; loading = true;
-    auto currentPage = [&] { return mailLoadTicket == ticket && current(version, captured) && section == L"mail" && rows == targetRows; };
-    auto releaseAbandonedPage = [&] { if (rows == targetRows && mailLoadTicket == ticket) loading = false; };
+    auto targetPage = page; auto targetContent = page ? page.Content() : IInspectable{nullptr};
+    auto targetPrevious = previous, targetNext = next;
+    auto targetSearch = search; auto targetSorting = sorting; auto targetUnreadFilter = unreadFilter;
+    // Scope invalidation still rejects the response, but the request must undo
+    // its disabled controls while it owns this mounted page. A replacement
+    // page/control or newer request owns its own loading and enabled states.
+    auto ownsPage = [&] { return mailLoadTicket == ticket && current(version, captured) && section == L"mail"
+        && rows == targetRows && page == targetPage && (!page || page.Content() == targetContent)
+        && previous == targetPrevious && next == targetNext && search == targetSearch
+        && sorting == targetSorting && unreadFilter == targetUnreadFilter; };
+    auto currentPage = [&] { return ownsPage() && (!validity || validity(state)); };
+    auto releaseAbandonedPage = [&] {
+        if (!ownsPage()) return;
+        previous.IsEnabled(cursors.size() > 1); next.IsEnabled(!nextCursor.empty());
+        search.IsEnabled(true); sorting.IsEnabled(search.Text().empty()); unreadFilter.IsEnabled(search.Text().empty());
+        loading = false;
+    };
     previous.IsEnabled(false); next.IsEnabled(false);
     search.IsEnabled(false); sorting.IsEnabled(false); unreadFilter.IsEnabled(false);
+    std::exception_ptr refreshFailure;
     try {
         Json options; put(options, L"folder", folder); put(options, L"cursor", requested.back());
         if (requested.back().empty()) options.Insert(L"offset", Value::CreateNumberValue(static_cast<double>((requested.size() - 1) * 50)));
@@ -963,10 +1004,10 @@ IAsyncAction Shell::loadPage(int pageDelta, bool refreshReader, bool reset) {
         auto unread = unreadFilter.IsChecked(); options.Insert(L"unreadOnly", Value::CreateBooleanValue(unread && unread.Value()));
         put(options, L"locale", L"en");
         hstring path = L"/mail/page";
-        bool searching = !search.Text().empty();
-        if (searching) { path = L"/search"; options.Remove(L"unreadOnly"); if (options.HasKey(L"offset")) options.Remove(L"offset"); put(options, L"query", search.Text()); put(options, L"scope", L"folder"); put(options, L"sort", L"relevance"); options.Insert(L"page",Value::CreateNumberValue(static_cast<double>(requested.size()-1))); }
+        bool searching = !requestQuery.empty();
+        if (searching) { path = L"/search"; options.Remove(L"unreadOnly"); if (options.HasKey(L"offset")) options.Remove(L"offset"); put(options, L"query", requestQuery); put(options, L"scope", L"folder"); put(options, L"sort", L"relevance"); options.Insert(L"page",Value::CreateNumberValue(static_cast<double>(requested.size()-1))); }
         auto response = co_await service->requestWithStatus(path, captured, L"POST", options);
-        if (!currentPage()) { releaseAbandonedPage(); co_return; }
+        if (!currentPage()) { releaseAbandonedPage(); co_return false; }
         auto status = static_cast<unsigned>(response.GetNamedNumber(L"status", 0));
         auto result = object(response, L"body");
         bool expired = !requested.back().empty() && status == 409
@@ -981,7 +1022,7 @@ IAsyncAction Shell::loadPage(int pageDelta, bool refreshReader, bool reset) {
             options.Insert(searching ? L"page" : L"offset", Value::CreateNumberValue(static_cast<double>((requested.size() - 1) * (searching ? 1 : 50))));
             result = co_await service->request(path, captured, L"POST", options);
         }
-        if (!currentPage()) { releaseAbandonedPage(); co_return; }
+        if (!currentPage()) { releaseAbandonedPage(); co_return false; }
         bool retain = !reset && pageDelta == 0 && !searching && unread && unread.Value()
             && retainedUnread.Size() && text(retainedUnread, L"viewId") == text(selected, L"viewId");
         if (array(result, L"messages").Size() == 0 && requested.size() > 1 && !retain) {
@@ -990,7 +1031,7 @@ IAsyncAction Shell::loadPage(int pageDelta, bool refreshReader, bool reset) {
                 requested.assign(last + 1, L""); put(options, L"cursor", L"");
                 options.Insert(searching ? L"page" : L"offset", Value::CreateNumberValue(static_cast<double>(last * (searching ? 1 : 50))));
                 result = co_await service->request(path, captured, L"POST", options);
-                if (!currentPage()) { releaseAbandonedPage(); co_return; }
+                if (!currentPage()) { releaseAbandonedPage(); co_return false; }
             }
         }
         std::set<std::wstring> selectedIds;
@@ -1092,19 +1133,26 @@ IAsyncAction Shell::loadPage(int pageDelta, bool refreshReader, bool reset) {
         if (reset || pageDelta != 0) retainedUnread = Json();
         nextCursor = text(result, L"nextCursor");
         mailRevision = text(result, L"revision");
-        mailSearchQuery = search.Text();
+        mailSearchQuery = requestQuery;
         previous.IsEnabled(cursors.size() > 1); next.IsEnabled(!nextCursor.empty());
         auto pageNumber = to_hstring(cursors.size());
         auto messageCount = to_hstring(static_cast<uint64_t>(result.GetNamedNumber(L"total", 0)));
         pageLabel.Text(L"Page " + pageNumber + L" · " + messageCount + L" messages");
         Automation::AutomationProperties::SetName(pageLabel, L"Page " + pageNumber + L", " + messageCount + L" messages");
         error(text(result, L"warning"));
-    } catch (...) { if (currentPage()) error(errorText()); }
-    if (!currentPage()) { releaseAbandonedPage(); co_return; }
+    } catch (...) {
+        if (currentPage()) {
+            if (validity) refreshFailure = std::current_exception();
+            else error(errorText());
+        }
+    }
+    if (!currentPage()) { releaseAbandonedPage(); co_return false; }
     previous.IsEnabled(cursors.size() > 1); next.IsEnabled(!nextCursor.empty());
     search.IsEnabled(true); sorting.IsEnabled(search.Text().empty()); unreadFilter.IsEnabled(search.Text().empty());
     if (mailLoadTicket == ticket) loading = false;
-    publishSyncPriority();
+    if (refreshFailure) std::rethrow_exception(refreshFailure);
+    if (!validity) publishSyncPriority();
+    co_return true;
 }
 Json refreshedReaderMessage(Json const& previous, Json message) {
     // Raw downloads contain a reader-only CID copy. Keep that explicitly
@@ -1126,33 +1174,43 @@ Json refreshedReaderMessage(Json const& previous, Json message) {
     }
     return message;
 }
-IAsyncAction Shell::refreshMailReader() {
+IAsyncOperation<bool> Shell::refreshMailReader(WorkspaceReadGuard validity) {
     if (closing || loading || dialogOpen || !dirty.empty() || !navigation.IsEnabled()
-        || service->writing() || section != L"mail" || pendingRead.Size() || !reader || !reader.IsEnabled() || !selected.Size()) co_return;
+        || service->writing() || section != L"mail" || pendingRead.Size() || !reader || !reader.IsEnabled()
+        || (validity && !validity(state))) co_return false;
+    if (!selected.Size()) co_return true;
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
     auto sequence = selectionGeneration; auto request = ++readGeneration;
     auto account = text(selected, L"accountId"), id = text(selected, L"id");
     auto before = selected.Stringify();
     if (!connected(account) || (captured != L"all" && account != captured)) {
-        selected = Json(); retainedUnread = Json(); renderReader(selected); co_return;
+        selected = Json(); retainedUnread = Json(); renderReader(selected); co_return false;
     }
     try {
         auto result = co_await service->request(L"/messages/" + escaped(id), account);
         if (!current(version, captured) || sequence != selectionGeneration || request != readGeneration
-            || selected.Stringify() != before || dialogOpen || !dirty.empty() || !navigation.IsEnabled() || service->writing()) co_return;
+            || selected.Stringify() != before || dialogOpen || !dirty.empty() || !navigation.IsEnabled() || service->writing()
+            || (validity && !validity(state))) co_return false;
         auto message = object(result, L"message");
-        if (text(message, L"accountId") != account || text(message, L"id") != id) throw hresult_error(E_FAIL, L"The message owner changed. Open it again.");
+        if (text(message, L"accountId") != account || text(message, L"id") != id
+            || (validity && text(message, L"viewId") != text(selected, L"viewId"))) throw hresult_error(E_FAIL, L"The message owner changed. Open it again.");
         message = refreshedReaderMessage(selected, message);
+        auto sameFolder = text(message, L"folder") == text(selected, L"folder");
         if (message.Stringify() != selected.Stringify()) {
-            auto sameFolder = text(message, L"folder") == text(selected, L"folder");
             selected = message;
-            if (sameFolder) retainReadRow(message); else retainedUnread = Json();
+            if (sameFolder) { if (!validity) retainReadRow(message); } else retainedUnread = Json();
             renderReader(message);
         }
+        if (validity && sameFolder) retainReadRow(message,true);
         // A revision refresh never invokes mark-on-open or changes readerFocused.
+        co_return true;
     } catch (...) {
-        if (current(version, captured) && sequence == selectionGeneration && request == readGeneration) error(errorText());
+        if (current(version, captured) && sequence == selectionGeneration && request == readGeneration) {
+            if (validity) { if (validity(state)) throw; }
+            else error(errorText());
+        }
     }
+    co_return false;
 }
 IAsyncAction Shell::openSource(Json metadata) {
     auto self = shared_from_this(); auto account = text(metadata,L"accountId"), id = text(metadata,L"id");
@@ -1348,15 +1406,26 @@ void Shell::renderReader(Json const& message) {
 IAsyncAction Shell::patch(Json message, Json changes) {
     co_await patchMessages({message}, changes);
 }
-void Shell::retainReadRow(Json const& message) {
+void Shell::retainReadRow(Json const& message, bool refreshMetadata) {
     if (text(message, L"viewId") != text(selected, L"viewId")) return;
     if (!flag(message, L"read")) { retainedUnread = Json(); return; }
-    if (!unreadFilter.IsChecked().Value() || !search.Text().empty()) return;
+    if (!unreadFilter.IsChecked().Value() || !(refreshMetadata ? mailSearchQuery : search.Text()).empty()) return;
     for (uint32_t i = 0; i < rows.Items().Size(); ++i) {
         auto row = rows.Items().GetAt(i).as<ListViewItem>().Tag().as<Json>();
         if (text(row, L"viewId") == text(message, L"viewId")) {
             retainedUnread = Json::Parse(row.Stringify());
             for (auto key : {L"read", L"starred", L"pending"}) retainedUnread.Insert(key, Value::CreateBooleanValue(flag(message, key)));
+            if (refreshMetadata) {
+                // Downloaded content changes the preview even when an active
+                // read row is retained outside the unread page. Keep it bounded
+                // metadata; full bodies and attachment bytes stay in the reader.
+                auto preview = std::wstring(text(message,L"preview"));
+                if (preview.size()>240) {
+                    preview.resize(240);
+                    if (preview.back()>=0xd800 && preview.back()<=0xdbff) preview.pop_back();
+                }
+                put(retainedUnread,L"preview",hstring(preview));
+            }
             retainedUnreadIndex = i; break;
         }
     }
