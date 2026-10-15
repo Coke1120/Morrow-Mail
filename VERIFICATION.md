@@ -61,6 +61,30 @@ automated click-through of every download dialog. This Linux environment has no
 SwiftUI/AppKit or WinUI SDK, so native compilation/runtime, live-account,
 large-mailbox latency and manual accessibility acceptance remain unverified.
 
+The first PR #55 macOS cloud attempt on head
+`75c4da4f7d3936d71c1633e90e671afeecca3d60` failed in the executed mail-flow
+fixture: **"Native action row did not mount: Next"** at 09:08:33 UTC.
+[Run 38709274091](https://github.com/Coke1120/Morrow-Mail/actions/runs/38709274091),
+job `116336332078`, tested synthetic merge
+`d9bd9e8d46e9578cf55e4e9de6f24ec4337beb14`. That attempt passed formatting,
+strict Clippy, all 456 Rust tests (zero failures/four existing ignored), Swift
+production compilation and ad-hoc ZIP packaging. It did not reach the following
+full native acceptance or review-workspace steps. The independent reader batch
+later passed 40/40 with complete capture; it does not replace the failed gate.
+
+Source triage found that this fixture hosts only NativeMailSearch, not the
+MailView workspace toolbar. It still required exactly seven native button peers,
+while the candidate added an ordinary Downloads button before the unchanged
+Previous/Next row. The original log contains no button inventory or geometry;
+an actual count of eight is inferred from this source change, not measured in
+that failed run. The narrow correction expects exactly eight for the candidate
+and keeps seven for the pinned historical search control. Ordered selection,
+enabled/mounted checks, real button clicks, all page/write/owner assertions and
+the five-second wait remain unchanged. Failure-only diagnostics record bounded
+counts and enabled/mounted booleans without mailbox or message content.
+The original failure is preserved; the corrected native source still needs its
+own CI run. No SDK test was rerun in the Linux editing environment.
+
 ## IMAP server identity and safe migration — 15 October 2026
 
 This source follow-up starts from main
