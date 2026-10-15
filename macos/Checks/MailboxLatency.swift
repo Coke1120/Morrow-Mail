@@ -312,6 +312,131 @@ struct MailboxLatency {
         }
         return true
     }
+    @MainActor static func initialPageDiagnostic(_ size: Int, host: NSView, model: AppModel) {
+        // Observe only this failed fictional fixture. Never emit text values,
+        // identifiers, paths, class names or an accessibility hierarchy.
+        func count(_ value: Int) -> JSON { .number(Double(max(0, min(value, 1_000_000)))) }
+        var inspected = 0, scanTruncated = false, tables: [NSTableView] = []
+        @MainActor func collect(_ view: NSView, depth: Int = 0) {
+            guard inspected < 512, depth < 64 else { scanTruncated = true; return }
+            inspected += 1
+            if let list = view as? NSTableView { tables.append(list); return }
+            for child in view.subviews { collect(child, depth: depth + 1) }
+        }
+        collect(host)
+        let selected = table(host), observed = MailboxLatencyProtocol.snapshot()
+        let subject = "Fictional mailbox row 0 中文", owner = MailboxLatencyProtocol.owners[0]
+        let reported = selected.map { selected in [selected] + Array(tables.filter { $0 !== selected }.prefix(1)) }
+            ?? Array(tables.prefix(2))
+        let candidates: [JSON] = reported.enumerated().map { index, list in
+            let width = list.frame.width
+            if index > 0 {
+                return .object(["rows": count(list.numberOfRows),
+                    "width": width.isFinite && abs(width) <= 10_000_000 ? .number(Double(width)) : .null,
+                    "qualifies": .bool(list.numberOfRows == 50 && width > 250)])
+            }
+            let row = list.numberOfRows > 0 && list.numberOfColumns > 0
+                ? list.view(atColumn: 0, row: 0, makeIfNecessary: false) : nil
+            var textCount = 0, axCount = 0, unbacked = 0, foreignOwner = false
+            var subjectExact = false, subjectContained = false, ownerExact = false, ownerContained = false
+            var axSubjectExact = false, axSubjectContained = false, axOwnerExact = false, axOwnerContained = false
+            var roles = Set<String>()
+            if let row {
+                _ = visibleText(row) { object, channel, value in
+                    textCount += 1
+                    let exactOwner = value == owner || value == "Mailbox: " + owner
+                    subjectExact = subjectExact || value == subject; subjectContained = subjectContained || value.contains(subject)
+                    ownerExact = ownerExact || exactOwner; ownerContained = ownerContained || value.contains(owner)
+                    if channel == "ax-value" || channel == "ax-label" {
+                        axCount += 1
+                        axSubjectExact = axSubjectExact || value == subject; axSubjectContained = axSubjectContained || value.contains(subject)
+                        axOwnerExact = axOwnerExact || exactOwner; axOwnerContained = axOwnerContained || value.contains(owner)
+                    }
+                    let role = (object as? NSAccessibilityProtocol)?.accessibilityRole()
+                    roles.insert(role == .staticText ? "staticText" : role == .textField ? "textField"
+                        : role == .textArea ? "textArea" : role == .group ? "group" : role == nil ? "none" : "other")
+                    if let control = (object as? NSView) ?? (object as? NSCell)?.controlView {
+                        foreignOwner = foreignOwner || control.window !== host.window
+                            || !(control === row || control.isDescendant(of: row))
+                    } else { unbacked += 1 }
+                }
+            }
+            var rawNodes = 0, cells = 0, noOwner = 0, foreign = 0, hidden = 0, invisible = 0, foreignViews = 0, leaves = 0
+            var rawOwned = false, rawTruncated = false, rawSubjectExact = false, rawSubjectContained = false
+            var rawOwnerExact = false, rawOwnerContained = false, seen = Set<ObjectIdentifier>()
+            if let row, host.window != nil, list.window === host.window, list.isDescendant(of: host),
+               row.window === host.window, row.isDescendant(of: list) {
+                rawOwned = true
+                // Raw AX candidates explain rejections; none enter visibleText
+                // or any acceptance predicate. Never follow controlView as a child.
+                @MainActor func rawVisit(_ value: Any, depth: Int) {
+                    guard let object = value as? NSObject else { return }
+                    let identity = ObjectIdentifier(object)
+                    if seen.contains(identity) { return }
+                    guard rawNodes < 256, depth < 16 else { rawTruncated = true; return }
+                    seen.insert(identity); rawNodes += 1
+                    if let view = object as? NSView, view !== row,
+                       view.window !== host.window || !view.isDescendant(of: row) { foreignViews += 1; return }
+                    if let cell = object as? NSCell {
+                        cells += 1
+                        if let control = cell.controlView {
+                            if control.window !== host.window || !(control === row || control.isDescendant(of: row)) { foreign += 1 }
+                            if control.isHiddenOrHasHiddenAncestor || control.isAccessibilityHidden() { hidden += 1 }
+                            if visibleFrame(control) == nil { invisible += 1 }
+                        } else { noOwner += 1 }
+                    }
+                    guard let element = object as? NSAccessibilityProtocol else { return }
+                    if let role = element.accessibilityRole(), [NSAccessibility.Role.staticText, .textField, .textArea].contains(role) {
+                        leaves += 1
+                        for value in [element.accessibilityValue() as? String, element.accessibilityLabel()].compactMap({ $0 }) {
+                            rawSubjectExact = rawSubjectExact || value == subject; rawSubjectContained = rawSubjectContained || value.contains(subject)
+                            rawOwnerExact = rawOwnerExact || value == owner || value == "Mailbox: " + owner
+                            rawOwnerContained = rawOwnerContained || value.contains(owner)
+                        }
+                    }
+                    let children = element.accessibilityChildren() ?? []
+                    if children.count > 256 { rawTruncated = true }
+                    for child in children.prefix(256) { rawVisit(child, depth: depth + 1) }
+                }
+                rawVisit(row, depth: 0)
+            }
+            return .object([
+                "rows": count(list.numberOfRows), "width": width.isFinite && abs(width) <= 10_000_000 ? .number(Double(width)) : .null,
+                "visible": .bool(visibleFrame(list) != nil), "ownWindow": .bool(list.window != nil && list.window === host.window),
+                "qualifies": .bool(list.numberOfRows == 50 && width > 250), "selected": .bool(list === selected),
+                "visibleRows": count(list.rows(in: list.visibleRect).length), "row0": .bool(row != nil),
+                "row0Visible": .bool(row.map { visibleFrame($0) != nil } ?? false),
+                "subjectExact": .bool(subjectExact), "subjectContained": .bool(subjectContained),
+                "ownerExact": .bool(ownerExact), "ownerContained": .bool(ownerContained),
+                "axSubjectExact": .bool(axSubjectExact), "axSubjectContained": .bool(axSubjectContained),
+                "axOwnerExact": .bool(axOwnerExact), "axOwnerContained": .bool(axOwnerContained),
+                "textCount": count(textCount), "axTextCount": count(axCount), "unbackedTextCount": count(unbacked),
+                "foreignOwner": .bool(foreignOwner),
+                "raw": .object(["rowOwned": .bool(rawOwned), "nodes": count(rawNodes), "truncated": .bool(rawTruncated),
+                    "cells": count(cells), "noOwner": count(noOwner), "foreignOwner": count(foreign),
+                    "hiddenOwner": count(hidden), "invisibleOwner": count(invisible), "foreignViews": count(foreignViews),
+                    "textLeaves": count(leaves), "subjectExact": .bool(rawSubjectExact), "subjectContained": .bool(rawSubjectContained),
+                    "ownerExact": .bool(rawOwnerExact), "ownerContained": .bool(rawOwnerContained)]),
+                "roles": .array(["staticText", "textField", "textArea", "group", "none", "other"].filter { roles.contains($0) }.map(JSON.string))])
+        }
+        let record: JSON = .object([
+            "phase": .string("initial-page"), "size": [1000, 10000, 50000].contains(size) ? .number(Double(size)) : .null,
+            "listed": count(model.listedMessages.count), "mailLoading": .bool(model.mailLoading),
+            "generated": count(observed.0), "unexpected": count(observed.1), "requests": count(observed.2),
+            "hasMailbox": .bool(model.hasMailbox), "combined": .bool(model.combined), "inbox": .bool(model.section == "inbox"),
+            "starting": .bool(model.starting), "hasError": .bool(!model.error.isEmpty), "connected": .bool(model.baseURL != nil),
+            "searchActive": .bool(!model.searchResponse.isNull), "hostVisible": .bool(visibleFrame(host) != nil),
+            "windowVisible": .bool(host.window?.isVisible == true), "hasScreen": .bool(host.window?.screen != nil),
+            "tableCount": count(tables.count), "tablesTruncated": .bool(tables.count > 2),
+            "scanTruncated": .bool(scanTruncated), "tables": .array(candidates)])
+        let prefix = Data("Native mailbox initial-page failure diagnostic: ".utf8)
+        guard let data = try? JSONEncoder().encode(record), prefix.count + data.count + 1 <= 2048 else {
+            FileHandle.standardError.write(Data("Native mailbox initial-page failure diagnostic: {\"phase\":\"initial-page\",\"diagnosticComplete\":false}\n".utf8))
+            return
+        }
+        FileHandle.standardError.write(prefix); FileHandle.standardError.write(data)
+        FileHandle.standardError.write(Data("\n".utf8))
+    }
     @MainActor static func pageButton(_ host: NSView, next: Bool) throws -> NSButton {
         guard let list = table(host), let viewport = list.enclosingScrollView else { throw APIError("Production mail table is missing.") }
         let frame = viewport.convert(viewport.bounds, to: nil)
@@ -555,7 +680,12 @@ struct MailboxLatency {
         let host = NSHostingView(rootView: MailWorkspace().environmentObject(model))
         window.contentView = host; window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         defer { window.close(); window.contentView = nil; model.stop(); model.session.invalidateAndCancel() }
-        try await wait("Initial owned native page did not mount.") { model.listedMessages.count == 50 && !model.mailLoading && displayed(host, page: 0) }
+        do {
+            try await wait("Initial owned native page did not mount.") { model.listedMessages.count == 50 && !model.mailLoading && displayed(host, page: 0) }
+        } catch {
+            initialPageDiagnostic(size, host: host, model: model)
+            throw error
+        }
         var samples: [JSON] = []
         for index in 0..<6 {
             let next = try pageButton(host, next: true), startNext = ProcessInfo.processInfo.systemUptime
