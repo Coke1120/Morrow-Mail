@@ -12,7 +12,7 @@
 
 Morrow is a local, single-user app: **SwiftUI on macOS**, **WinUI 3 on Windows**, and a shared **Rust service**. Desktop packages include their runtime; no Node, Electron or Rust installation is needed to use them.
 
-The current [contextual-actions candidate](docs/CONTEXTUAL_ACTIONS.md) groups secondary reader and management commands into named menus, shows mail actions when a selection exists, and opens reply review directly on Today. Empty Cc/Bcc fields can be revealed when needed. Account ownership, source validation, send review and existing recovery behavior are retained. This candidate is separate from the published v0.8.2 downloads; native validation remains required.
+The current [contextual actions](docs/CONTEXTUAL_ACTIONS.md) groups secondary reader and management commands into named menus, shows mail actions when a selection exists, and opens reply review directly on Today. Empty Cc/Bcc fields can be revealed when needed. Account ownership, source validation, send review and existing recovery behavior are retained. These actions were not included in the published v0.8.2 downloads. Each combined source requires its own native validation.
 
 The IMAP identity follow-up separates cached mail by server endpoint and login,
 so reconnecting the same email to another server cannot reuse old UIDs or local
@@ -28,19 +28,20 @@ The v0.8.2 source includes the merged Mail | Agent | Brain navigation shell and 
 
 The v0.8.2 source adds a Mail | Agent | Brain navigation shell on macOS and Windows. Cold start stays on the Mail three-pane. Agent reuses Inbox Agent, Today, and Skills; Brain reuses persona, writing rules, and categories. AI Studio is an advanced footer and Settings entry, and its More menu keeps one-release Moved to Agent / Moved to Brain hints. Review-before-send is unchanged; publication follows the paired tag gates above.
 
-The [IMAP read-session candidate](docs/IMAP_READ_SESSIONS.md) reuses one owned
+The [IMAP read sessions](docs/IMAP_READ_SESSIONS.md) reuses one owned
 connection for change discovery and cached-mail flag reconciliation, with
 connection checks and bounded deadlines. It closes the socket after the round
-and discards failed or cancelled reads. IDLE remains a separate implementation
-unit; persistent connection pooling is not added here.
+and discards failed or cancelled reads. [IDLE notifications](docs/IMAP_IDLE_NOTIFICATIONS.md)
+have a separate bounded lifecycle; read-session reuse adds no persistent pool.
 
-The [IMAP move-recovery candidate](docs/IMAP_MOVE_RECOVERY.md) adds a durable,
+The [IMAP move recovery](docs/IMAP_MOVE_RECOVERY.md) adds a durable,
 explicitly reviewed fallback for servers with UIDPLUS but no MOVE. It records
 each COPY/delete/UID EXPUNGE step before sending it and never replays uncertain
 work. Interrupted moves may leave two copies; native recovery can check the exact
 recorded copies, finish a reviewed removal, apply an already confirmed result, or
 record that the user handled it in the provider. Opening recovery is local-only.
-This separate draft source is not part of v0.8.2 or live-account acceptance.
+This feature was not included in v0.8.2. Synthetic checks do not establish
+live-account acceptance.
 
 The download-controls follow-up adds account-owned downloaded-content coverage,
 logical storage totals and a 30-record repair list to both native clients. It
@@ -88,7 +89,7 @@ Current source adds explicit [selected custom IMAP folder sync](docs/SELECTED_IM
 
 The [Thunderbird-informed IMAP follow-up](docs/THUNDERBIRD_IMAP_SYNC.md) discovers changed cached UIDs in bounded MODSEQ windows, prioritizes their flags within the existing 50-message background budget, and commits pending work with message updates. Unchanged MODSEQ reads use the provider snapshot, preserving local-only stars; missing snapshots reread flags. Legacy proof migration, capability fallback and UIDVALIDITY resets retain cached content. 0.7.8 includes this follow-up and the later reconcile-stall repairs. The synthetic comparison does not establish live-account or native UI acceptance; see the [0.7.8 release notes](docs/releases/v0.7.8.md).
 
-[Current-page synchronization](docs/SYNC_PRIORITY_AND_INCREMENTAL.md) in the 0.7.3 source prioritizes the selected message and visible page while retaining older-cache checks. Recent IMAP/Outlook pages reuse proven immutable cached bodies; drafts and uncertain content still fetch normally. Sync preserves reviewed sent payloads and owned downloaded attachments. The 0.7.4 follow-up implements bounded incremental polling. A separate [IMAP notification candidate](docs/IMAP_IDLE_NOTIFICATIONS.md) rotates eligible Inbox and selected custom folders under the existing automatic-sync opt-in, with at most four accounts and one folder per account watched at once. Coalesced hints use the existing bounded sync path; selected folders need a committed UIDVALIDITY baseline, fresh catalog and current recovery/backoff eligibility. The candidate passed its Linux synthetic Rust checks; native SDK and live-provider acceptance remain pending. It is excluded from the separate v0.8.2 release. Publication requires fresh paired tagged checks; see the [0.7.3 release notes](docs/releases/v0.7.3.md).
+[Current-page synchronization](docs/SYNC_PRIORITY_AND_INCREMENTAL.md) in the 0.7.3 source prioritizes the selected message and visible page while retaining older-cache checks. Recent IMAP/Outlook pages reuse proven immutable cached bodies; drafts and uncertain content still fetch normally. Sync preserves reviewed sent payloads and owned downloaded attachments. The 0.7.4 follow-up implements bounded incremental polling. Current [IMAP notifications](docs/IMAP_IDLE_NOTIFICATIONS.md) rotate eligible Inbox and selected custom folders under the existing automatic-sync opt-in, with at most four accounts and one folder per account watched at once. Coalesced hints use the existing bounded sync path; selected folders need a committed UIDVALIDITY baseline, fresh catalog and current recovery/backoff eligibility. The original Linux synthetic results and subsequent source-specific native checks are recorded separately; live-provider acceptance remains incomplete. This feature was not included in v0.8.2. Publication requires fresh paired tagged checks; see the [0.7.3 release notes](docs/releases/v0.7.3.md).
 
 ## Download
 

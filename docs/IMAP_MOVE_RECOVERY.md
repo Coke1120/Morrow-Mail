@@ -90,8 +90,8 @@ message ID. That conflict is `cached_destination_conflict`; inspect both copies 
 the provider and resolve the record manually. Neither this flow nor its fixtures
 establish live-account acceptance or an atomic multi-command move.
 
-The final Linux candidate passed formatting, strict Clippy, 17 protocol/API/state
+The original Linux candidate passed formatting, strict Clippy, 17 protocol/API/state
 controls, one safe-error unit, and the complete Rust suite (474 passed, 0 failed,
-4 existing ignored). Native portable controls are separate from SwiftUI/WinUI
-compilation and execution, which remain pending. See
+4 existing ignored). Those results and native portable controls do not establish
+SwiftUI/WinUI compilation or execution for later combined sources. See
 [verification and preserved failures](../VERIFICATION.md#imap-move-recovery-candidate--15-october-2026).

@@ -162,7 +162,7 @@ Do not claim error-free operation.
 
 Manual provider organization is separate from local patches and simulations. Require
 an explicit mailbox header, server-validated destination, confirmation and provider
-write permission. Gmail Spam and Outlook Junk are reviewed provider moves; phishing reports and sender blocking remain provider-site actions, never simulated success. IMAP moves require MOVE + UIDPLUS and matching UIDVALIDITY.
+write permission. Gmail Spam and Outlook Junk are reviewed provider moves; phishing reports and sender blocking remain provider-site actions, never simulated success. IMAP moves require UIDPLUS, persistent UIDs and matching source/destination UIDVALIDITY. Prefer UID MOVE when supported; otherwise use the explicitly reviewed, journaled COPY / source deletion flag / targeted UID EXPUNGE path. An uncertain MOVE must never fall back to COPY or replay automatically.
 Keep the local message ID stable while recording the provider's destination ID.
 To/Cc/Bcc belong to the send fingerprint and uncertain draft; never drop Bcc from
 the provider delivery submission or expose it in SMTP recipient-visible headers.
