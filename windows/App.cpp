@@ -536,6 +536,10 @@ void Shell::rebuildNavigation() {
     auto folderActions = [&](NavigationViewItem const& item, hstring account, hstring id = {}) {
         MenuFlyout menu; MenuFlyoutItem manage; manage.Text(L"Manage labels / folders…");
         manage.Click([weak = weak_from_this(), account, id](auto const&, auto const&) { if (auto self = weak.lock()) self->manageFolders(account, id); }); menu.Items().Append(manage);
+        if (canReviewMoves(account)) {
+            MenuFlyoutItem recovery; recovery.Text(L"Review IMAP moves…");
+            recovery.Click([weak = weak_from_this(), account](auto const&, auto const&) { if (auto self = weak.lock()) self->reviewMoves(account); }); menu.Items().Append(recovery);
+        }
         if (!id.empty()) {
             MenuFlyoutItem move; move.Text(L"Move selected message here…");
             menu.Opening([weak = weak_from_this(), move, account](auto const&, auto const&) { if (auto self = weak.lock()) move.IsEnabled(!self->loading && !self->dialogOpen && self->dirty.empty() && text(self->selected,L"accountId") == account && !text(self->selected,L"id").empty() && !flag(self->selected,L"providerFolderMissing")); });
@@ -582,6 +586,10 @@ void Shell::rebuildNavigation() {
         auto detail = label(subtitle, 11); detail.IsTextSelectionEnabled(false);
         caption.Children().Append(name); caption.Children().Append(detail); item.Content(caption);
         Automation::AutomationProperties::SetName(item, title + L", " + subtitle);
+        if (canReviewMoves(id)) {
+            MenuFlyout menu; MenuFlyoutItem recovery; recovery.Text(L"Review IMAP moves…");
+            recovery.Click([weak = weak_from_this(), id](auto const&, auto const&) { if (auto self = weak.lock()) self->reviewMoves(id); }); menu.Items().Append(recovery); item.ContextFlyout(menu);
+        }
         auto collapseKey = L"morrow.account.collapsed." + id;
         item.IsExpanded((folderFilter && !folderFilter.Text().empty()) || text(desktopState, collapseKey.c_str()) != L"true");
         item.RegisterPropertyChangedCallback(NavigationViewItem::IsExpandedProperty(), [weak = weak_from_this(), collapseKey](DependencyObject const& sender, DependencyProperty const&) {
@@ -1462,23 +1470,28 @@ IAsyncAction Shell::trashMessages(std::vector<Json> messages) {
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
     if (dialogOpen || navigationLocked || loading || closing || !dirty.empty() || service->writing() || messages.empty()
         || !std::all_of(messages.begin(), messages.end(), [&](auto const& row) { return canTrash(row); })) co_return;
-    navigationLocked = true; loading = true; auto batch = ++trashBatch; size_t completed = 0; hstring failure;
+    navigationLocked = true; loading = true; auto batch = ++trashBatch; size_t completed = 0; hstring failure, operationOwner, unresolved;
     try {
         for (auto const& message : messages) {
             auto account = text(message, L"accountId");
-            auto result = co_await service->request(L"/messages/" + escaped(text(message, L"id")) + L"/trash", account, L"POST", Json());
+            operationOwner = account;
+            auto response = co_await service->requestWithStatus(L"/messages/" + escaped(text(message, L"id")) + L"/trash", account, L"POST", Json());
+            auto status = static_cast<unsigned>(response.GetNamedNumber(L"status",0)); auto result = object(response,L"body");
+            if (status < 200 || status >= 300) throw ApiError(status,result);
             auto moved = object(result, L"message");
             if (text(moved, L"accountId") != account || text(moved, L"id") != text(message, L"id") || text(result, L"undoToken").empty()) throw hresult_error(E_FAIL, L"The Trash move could not be verified. Refresh your mailbox.");
             trashUndos.push_back({message, text(result, L"undoToken"), GetTickCount64() + 60000, batch}); ++completed;
             if (!current(version, captured)) break;
             if (text(selected, L"accountId") == account && text(selected, L"id") == text(message, L"id")) { selected = Json(); retainedUnread = Json(); renderReader(selected); }
         }
-    } catch (...) { failure = L"Moved " + to_hstring(completed) + L" of " + to_hstring(messages.size()) + L" messages. " + errorText(); }
+    } catch (ApiError const& error) { unresolved = unresolvedMoveOperation(error.body,operationOwner); failure = L"Moved " + to_hstring(completed) + L" of " + to_hstring(messages.size()) + L" messages. " + error.message(); }
+    catch (...) { failure = L"Moved " + to_hstring(completed) + L" of " + to_hstring(messages.size()) + L" messages. " + errorText(); }
     loading = false; navigationLocked = false; updateTrashUndo();
     if (current(version, captured)) {
         for (auto& cursor : cursors) cursor = L"";
         co_await loadPage();
         status.Text(failure.empty() ? L"Moved to provider Trash. Undo is available for one minute." : failure);
+        if (!unresolved.empty() && current(version,captured)) co_await reviewMoves(operationOwner,unresolved);
     }
 }
 IAsyncAction Shell::undoTrash() {
@@ -1487,17 +1500,23 @@ IAsyncAction Shell::undoTrash() {
     updateTrashUndo(); if (trashUndos.empty()) co_return;
     auto batch = trashUndos.back().batch; navigationLocked = true; loading = true; updateTrashUndo();
     auto version = generation; auto captured = owner;
+    hstring operationOwner, unresolved;
     try {
         while (!trashUndos.empty() && trashUndos.back().batch == batch) {
             auto entry = trashUndos.back(); trashUndos.pop_back();
             Json body; put(body, L"undoToken", entry.token);
-            co_await service->request(L"/messages/" + escaped(text(entry.message, L"id")) + L"/undo-trash", text(entry.message, L"accountId"), L"POST", body);
+            operationOwner = text(entry.message,L"accountId");
+            auto response = co_await service->requestWithStatus(L"/messages/" + escaped(text(entry.message, L"id")) + L"/undo-trash", operationOwner, L"POST", body);
+            auto status = static_cast<unsigned>(response.GetNamedNumber(L"status",0)); auto result = object(response,L"body");
+            if (status < 200 || status >= 300) throw ApiError(status,result);
         }
         loading = false; navigationLocked = false; updateTrashUndo();
         if (!current(version, captured)) co_return;
         if (section == L"mail") { for (auto& cursor : cursors) cursor = L""; co_await loadPage(); }
         status.Text(L"Trash move undone. The message was restored.");
-    } catch (...) { loading = false; navigationLocked = false; updateTrashUndo(); error(errorText()); }
+    } catch (ApiError const& failure) { unresolved = unresolvedMoveOperation(failure.body,operationOwner); loading = false; navigationLocked = false; updateTrashUndo(); error(failure.message()); }
+    catch (...) { loading = false; navigationLocked = false; updateTrashUndo(); error(errorText()); }
+    if (!unresolved.empty() && current(version,captured)) co_await reviewMoves(operationOwner,unresolved);
 }
 IAsyncAction Shell::prepare(Json message, hstring mode, hstring body) {
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner; auto sequence = selectionGeneration;

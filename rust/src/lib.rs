@@ -14,6 +14,7 @@ mod google_sync;
 pub mod home;
 pub mod imap;
 mod imap_identity;
+pub mod imap_moves;
 pub mod inbox_agent;
 pub mod learning;
 pub mod local_moves;

@@ -74,8 +74,10 @@ still match. It is not a history of all moves or a provider operation.
 
 The service creates the receipt; a client cannot supply its original folder.
 A later local move replaces its token, preventing an old action from undoing a
-move-away/move-back sequence. Provider organization or reimport clears it, and
-changed provider identity/location or a new connection invalidates it. Read,
+move-away/move-back sequence. Confirmed provider organization, including explicit
+IMAP recovery adoption, or reimport clears it. Previewing a recovery record or
+marking it reviewed externally does not certify a provider move or clear the
+receipt. Changed provider identity/location or a new connection invalidates it. Read,
 star, Pending and content updates are independent: undo preserves their current
 values, including automatic mark-read-on-open. If the receipt is unavailable or
 stale, inspect the current locations and choose an explicit local action.

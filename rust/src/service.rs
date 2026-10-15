@@ -367,6 +367,15 @@ pub fn safe_mail(mail: &Value) -> Value {
             safe[key] = value.clone();
         }
     }
+    safe["moveConnectionRef"] =
+        if !string(mail, "email").is_empty() && ["", "imap"].contains(&string(mail, "provider")) {
+            crate::imap_moves::connection_ref(mail)
+                .ok()
+                .map(Value::String)
+                .unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
     safe
 }
 pub fn state(db: &Store, selected: &str, paged: bool, secret: &[u8; 32]) -> Result<Value> {
@@ -632,7 +641,7 @@ async fn handle_inner(app: App, request: axum::http::Request<Body>) -> Result<Re
                     ..
                 ]
                 | ["account", "disconnect"]
-                | ["mail", "folders", ..]
+                | ["mail", "folders" | "moves", ..]
                 | ["agent", ..]
         );
     let limit = if (route == ["attachments"] || route == ["cli"]) && parts.method == Method::POST {
@@ -728,6 +737,9 @@ pub(crate) async fn dispatch(app: &App, context: Context) -> Result<Response> {
         return Ok(response);
     }
     if let Some(response) = crate::folders::handle(app, &context).await? {
+        return Ok(response);
+    }
+    if let Some(response) = crate::imap_moves::handle(app, &context).await? {
         return Ok(response);
     }
     if let Some(response) = crate::calendar::handle(app, &context).await? {

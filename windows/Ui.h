@@ -134,6 +134,8 @@ struct Shell : std::enable_shared_from_this<Shell> {
     winrt::Windows::Foundation::IAsyncAction organize(Json message, winrt::hstring preferredKind = {}, winrt::hstring preferredDestination = {});
     winrt::Windows::Foundation::IAsyncOperation<Json> manageFolders(winrt::hstring account, winrt::hstring initialFolder = {}, bool creationOnly = false);
     controls::MenuFlyout organizationMenu(Json message);
+    bool canReviewMoves(winrt::hstring const& account) const;
+    winrt::Windows::Foundation::IAsyncAction reviewMoves(winrt::hstring account, winrt::hstring initialOperation = {});
     winrt::hstring startMailDrag(Json message);
     Json mailDropMessage(winrt::hstring const& token, winrt::hstring const& account, winrt::hstring const& destination) const;
     winrt::hstring mailDropDestination(winrt::hstring const& account, winrt::hstring const& folder) const;
@@ -165,6 +167,8 @@ struct Shell : std::enable_shared_from_this<Shell> {
     void renderReader(Json const& message);
     void showReaderStatus(Json const& metadata, bool failed);
 };
+winrt::hstring unresolvedMoveOperation(Json const& payload, winrt::hstring const& owner);
+winrt::Windows::Foundation::IAsyncAction moveRecoveryChecks(controls::Grid host);
 winrt::Windows::Foundation::IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft = Json());
 winrt::Windows::Foundation::IAsyncAction scheduledPage(std::shared_ptr<Shell> shell);
 winrt::Windows::Foundation::IAsyncAction settingsPage(std::shared_ptr<Shell> shell, winrt::hstring tab = L"mail");
