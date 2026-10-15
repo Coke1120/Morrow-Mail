@@ -26,6 +26,12 @@ The v0.8.2 source includes the merged Mail | Agent | Brain navigation shell and 
 
 The v0.8.2 source adds a Mail | Agent | Brain navigation shell on macOS and Windows. Cold start stays on the Mail three-pane. Agent reuses Inbox Agent, Today, and Skills; Brain reuses persona, writing rules, and categories. AI Studio is an advanced footer and Settings entry, and its More menu keeps one-release Moved to Agent / Moved to Brain hints. Review-before-send is unchanged; publication follows the paired tag gates above.
 
+The [IMAP read-session candidate](docs/IMAP_READ_SESSIONS.md) reuses one owned
+connection for change discovery and cached-mail flag reconciliation, with
+connection checks and bounded deadlines. It closes the socket after the round
+and discards failed or cancelled reads. IDLE and a non-MOVE write fallback remain
+separate implementation work; this candidate does not add either.
+
 The activity-recovery follow-up keeps cancellation requests separate across
 mailboxes and AI work types. Cancelling one analysis remains effective when
 another mailbox is cancelled or its reply settings change; completed or cancelled

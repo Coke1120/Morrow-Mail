@@ -214,6 +214,31 @@ macOS remains ad-hoc signed without notarization; Windows is unsigned.
 Live-account, clean-machine, manual accessibility and complete installed-updater
 acceptance remain incomplete. See [release notes](docs/releases/v0.8.2.md).
 
+## Bounded IMAP read-session candidate — 15 October 2026
+
+The candidate adds one-round connection reuse for IMAP change discovery and
+flag reconciliation, plus explicit unsupported-MOVE preflight feedback. Its
+10 new loopback TLS cases count LOGIN commands and cover owner isolation,
+connection changes, cancellation, partial responses, capability/UIDVALIDITY
+changes, the real 45-second deadline and the existing missing-folder fallback.
+Two unit cases cover consumed/deadline-bound leases and fixed service error
+mapping. The source is stacked on identity commit
+`01c1f0a9e27262bb61c9a878961ffe26ed42437a`, including v0.8.2 release metadata.
+The focused TLS run passed all 10 cases, including the actual 45-second stalled
+read. Locked all-targets Clippy with `-D warnings` and the formatting check passed.
+The locked complete Rust suite passed **456 tests, 0 failures, 4 existing ignored
+benchmarks**, across 49 result groups. These four runs used the same 100-file
+Rust/Cargo manifest; source and log hashes were checked after execution.
+The identity author's static cross-review confirmed the origin guards, filtered
+queries, import binding and atomic commit proofs remain intact.
+
+This is isolated Linux fixture evidence, not native or live-provider acceptance.
+Native CI and live-provider acceptance remain pending. The 90-second bound is
+covered with a controlled-deadline unit, not a real 90-second experiment.
+IDLE, persistent connection pooling
+and non-MOVE fallback are not implemented by this candidate. See
+[the precise scope](docs/IMAP_READ_SESSIONS.md).
+
 ## Activity cancellation and native verification repairs — 15 October 2026
 
 This follow-up starts from main `cfe61c9fedfe7f07a99ab84751aabf7bae19d495`,

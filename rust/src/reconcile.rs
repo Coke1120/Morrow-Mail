@@ -389,107 +389,161 @@ async fn sync_inner(
     fetched: &mut HashMap<String, Value>,
     connector: Option<&native_tls::TlsConnector>,
 ) -> Result<()> {
-    let saved = connection.clone();
-    let (rotation, expected, mut checkpoint, folder) = app
-        .db(move |db| {
-            let expected = db.settings()?["mailReconcile"][string(&saved, "email")].clone();
-            let checkpoint = if expected["connection"] == connection_version(&saved) {
-                expected.clone()
-            } else {
-                json!({"connection":connection_version(&saved),"after":0})
-            };
-            let folder = if ["", "imap"].contains(&string(&saved, "provider")) {
-                next_folder(db, &saved, &checkpoint)?
-            } else {
-                None
-            };
-            let mut checkpoint = checkpoint;
-            if let Some(folder) = &folder
-                && !checkpoint["folders"][folder].is_object()
-            {
-                let initial =
-                    legacy_folder_checkpoint(db, &saved, folder, &flag_epoch(&checkpoint, folder))?;
-                if initial.is_object() {
-                    if !checkpoint["folders"].is_object() {
-                        checkpoint["folders"] = json!({});
+    // The network round ends before the atomic local commit. Timeout/drop must
+    // release its owned socket, including while waiting for a local read, and
+    // must not leave a queued checkpoint write that can run after the timeout.
+    let read = async {
+        let saved = connection.clone();
+        let (rotation, expected, mut checkpoint, folder) = app
+            .db(move |db| {
+                let expected = db.settings()?["mailReconcile"][string(&saved, "email")].clone();
+                let checkpoint = if expected["connection"] == connection_version(&saved) {
+                    expected.clone()
+                } else {
+                    json!({"connection":connection_version(&saved),"after":0})
+                };
+                let folder = if ["", "imap"].contains(&string(&saved, "provider")) {
+                    next_folder(db, &saved, &checkpoint)?
+                } else {
+                    None
+                };
+                let mut checkpoint = checkpoint;
+                if let Some(folder) = &folder
+                    && !checkpoint["folders"][folder].is_object()
+                {
+                    let initial = legacy_folder_checkpoint(
+                        db,
+                        &saved,
+                        folder,
+                        &flag_epoch(&checkpoint, folder),
+                    )?;
+                    if initial.is_object() {
+                        if !checkpoint["folders"].is_object() {
+                            checkpoint["folders"] = json!({});
+                        }
+                        checkpoint["folders"][folder] = initial;
                     }
-                    checkpoint["folders"][folder] = initial;
                 }
-            }
-            Ok((batch(db, &saved)?, expected, checkpoint, folder))
-        })
-        .await?;
-    let mut rows = Vec::new();
-    if let Some(folder) = folder {
-        if checkpoint["folders"][&folder].is_object()
-            && checkpoint["folders"][&folder]["capabilityEpoch"] != checkpoint["capabilityEpoch"]
+                Ok((batch(db, &saved)?, expected, checkpoint, folder))
+            })
+            .await?;
+        let mut read_round = if ["", "imap"].contains(&string(connection, "provider"))
+            && (folder.is_some() || !rotation.is_empty())
         {
-            checkpoint["folders"][&folder] = Value::Null;
-        }
-        let previous = &checkpoint["folders"][&folder];
-        let discovery = if let Some(connector) = connector {
-            crate::imap::discover_changes_with_tls(connection, &folder, previous, connector).await
+            Some(crate::imap::ReadRound::new(connection, connector)?)
         } else {
-            crate::imap::discover_changes(connection, &folder, previous).await
+            None
         };
-        let mut state = match mail::finish_read(app, connection, discovery).await {
-            Ok(state) => Some(state),
-            // Rolling reconciliation verifies whether a rejected folder is
-            // truly missing before recording it; discovery never invents that proof.
-            Err(error) if error.body["code"] == "provider_imap_mailbox_rejected" => None,
-            Err(error) => return Err(error),
-        };
-        if let Some(mut state) = state.take() {
-            if state["enabled"] == false && checkpoint["capabilityEnabled"] != false {
-                checkpoint["capabilityEpoch"] = uuid::Uuid::new_v4().to_string().into();
+        let mut rows = Vec::new();
+        if let Some(folder) = folder {
+            if checkpoint["folders"][&folder].is_object()
+                && checkpoint["folders"][&folder]["capabilityEpoch"]
+                    != checkpoint["capabilityEpoch"]
+            {
+                checkpoint["folders"][&folder] = Value::Null;
             }
-            checkpoint["capabilityEnabled"] = state["enabled"].clone();
-            state["capabilityEpoch"] = checkpoint["capabilityEpoch"].clone();
-            let saved = connection.clone();
-            let path = folder.clone();
-            let rotation_head = rotation.first().map(|row| row.0);
-            (rows, state) = app
-                .db(move |db| {
-                    let rows = changed_rows(db, &saved, &path, &mut state, rotation_head)?;
-                    Ok((rows, state))
-                })
-                .await?;
-            if !checkpoint["folders"].is_object() {
-                checkpoint["folders"] = json!({});
+            let previous = &checkpoint["folders"][&folder];
+            let discovery = read_round
+                .as_mut()
+                .expect("IMAP discovery owns its read round")
+                .discover(app, &folder, previous)
+                .await;
+            let mut state = match mail::finish_read(app, connection, discovery).await {
+                Ok(state) => Some(state),
+                // Rolling reconciliation verifies whether a rejected folder is
+                // truly missing before recording it; discovery never invents that proof.
+                Err(error) if error.body["code"] == "provider_imap_mailbox_rejected" => {
+                    // Preserve the existing missing-folder verification path, but
+                    // never reuse the rejected discovery session. The separate
+                    // flags read proves absence with LIST; it does not retry the
+                    // discovery command or persist its incomplete checkpoint.
+                    drop(read_round.take());
+                    read_round = Some(crate::imap::ReadRound::new(connection, connector)?);
+                    None
+                }
+                Err(error) => return Err(error),
+            };
+            if let Some(mut state) = state.take() {
+                if state["enabled"] == false && checkpoint["capabilityEnabled"] != false {
+                    checkpoint["capabilityEpoch"] = uuid::Uuid::new_v4().to_string().into();
+                }
+                checkpoint["capabilityEnabled"] = state["enabled"].clone();
+                state["capabilityEpoch"] = checkpoint["capabilityEpoch"].clone();
+                let saved = connection.clone();
+                let path = folder.clone();
+                let rotation_head = rotation.first().map(|row| row.0);
+                (rows, state) = app
+                    .db(move |db| {
+                        let rows = changed_rows(db, &saved, &path, &mut state, rotation_head)?;
+                        Ok((rows, state))
+                    })
+                    .await?;
+                if !checkpoint["folders"].is_object() {
+                    checkpoint["folders"] = json!({});
+                }
+                checkpoint["folders"][&folder] = state;
+            } else if checkpoint["folders"].is_object() {
+                checkpoint["folders"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(&folder);
             }
-            checkpoint["folders"][&folder] = state;
-        } else if checkpoint["folders"].is_object() {
-            checkpoint["folders"]
-                .as_object_mut()
-                .unwrap()
-                .remove(&folder);
+            checkpoint["folder"] = folder.into();
         }
-        checkpoint["folder"] = folder.into();
-    }
-    let mut consumed = 0;
-    for row in &rotation {
-        if !rows.iter().any(|(id, _)| *id == row.0) {
-            if rows.len() == BACKGROUND_BATCH {
-                break;
+        let mut consumed = 0;
+        for row in &rotation {
+            if !rows.iter().any(|(id, _)| *id == row.0) {
+                if rows.len() == BACKGROUND_BATCH {
+                    break;
+                }
+                rows.push(row.clone());
             }
-            rows.push(row.clone());
+            consumed += 1;
         }
-        consumed += 1;
-    }
-    if consumed > 0 {
-        checkpoint["after"] = if consumed == rotation.len() && rotation.len() < BACKGROUND_BATCH {
-            json!(0)
+        if consumed > 0 {
+            checkpoint["after"] = if consumed == rotation.len() && rotation.len() < BACKGROUND_BATCH
+            {
+                json!(0)
+            } else {
+                json!(rotation[consumed - 1].0)
+            };
+        } else if rotation.is_empty() {
+            checkpoint["after"] = json!(0);
+        }
+        let mut messages: Vec<_> = rows.iter().map(|(_, m)| m.clone()).collect();
+        if ["", "imap"].contains(&string(connection, "provider")) {
+            bind_flag_epochs(&mut messages, &checkpoint);
+        }
+        let result = if let Some(round) = &mut read_round {
+            let result = if messages.is_empty() {
+                Ok(Vec::new())
+            } else {
+                round.reconcile(app, &messages).await
+            };
+            mail::finish_read(app, connection, result).await?
         } else {
-            json!(rotation[consumed - 1].0)
+            fetch(app, connection, &messages, fetched, connector).await?
         };
-    } else if rotation.is_empty() {
-        checkpoint["after"] = json!(0);
-    }
-    let mut messages: Vec<_> = rows.iter().map(|(_, m)| m.clone()).collect();
-    if ["", "imap"].contains(&string(connection, "provider")) {
-        bind_flag_epochs(&mut messages, &checkpoint);
-    }
-    let mut result = fetch(app, connection, &messages, fetched, connector).await?;
+        if let Some(round) = read_round.take() {
+            round.close().await;
+        }
+        Ok::<_, Error>((expected, checkpoint, result))
+    };
+    let (expected, mut checkpoint, mut result) =
+        if ["", "imap"].contains(&string(connection, "provider")) {
+            tokio::time::timeout(std::time::Duration::from_secs(90), read)
+                .await
+                .map_err(|_| {
+                    let mut error = Error::new(
+                        502,
+                        "IMAP reconciliation timed out. Saved checkpoints are retained; try again.",
+                    );
+                    error.body["code"] = "provider_network".into();
+                    error
+                })??
+        } else {
+            read.await?
+        };
     // Capabilities/generation can change between discovery and flag retrieval.
     // An authoritative basic read repairs flags but cannot certify MODSEQ progress.
     for message in &result {
