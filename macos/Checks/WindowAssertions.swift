@@ -16,6 +16,7 @@ struct WindowAssertions {
         checkReaderBack()
         checkFolderLayouts()
         checkDownloadContracts()
+        checkActivitySummaryDiagnostics()
         checkComposeLayout()
         checkCalendarLayout()
         for width in [1040.0, 1877.0] { checkInitialSplit(width: width, vertical: true) }
@@ -52,6 +53,68 @@ struct WindowAssertions {
         model.unsavedForms.remove("fixture-draft")
         assert(delegate.applicationShouldTerminate(app) == .terminateNow)
         print("Window close/reopen preserves pending work and unsaved forms.")
+    }
+
+    @MainActor static func checkActivitySummaryDiagnostics() {
+        // Uses only immutable metadata: no AppModel, workspace, service or model
+        // request is needed to open a matching job outside Today's date/context.
+        let owner = "summary-owner@example.invalid", other = "other-summary@example.invalid"
+        let checkedAt = JSON.string("2026-10-15T01:00:00Z")
+        let job: JSON = .object(["id": .string(String(repeating: "a", count: 64)), "accountId": .string(owner),
+                                 "kind": .string("scheduled"), "status": .string("failed"),
+                                 "createdAt": .string("2026-10-13T23:55:00Z"), "startedAt": .string("2026-10-14T00:00:00Z"),
+                                 "finishedAt": .null, "updatedAt": .string("2026-10-14T00:01:30Z"), "messageCount": .number(12),
+                                 "diagnosticCode": .string("summary_timeout"), "diagnostic": .string("The summary job timed out after 90 seconds. No result was saved."),
+                                 "automaticRetry": .bool(false), "error": .string("PRIVATE_RAW_PROVIDER_SENTINEL"),
+                                 "text": .string("PRIVATE_MAIL_SENTINEL"), "items": .array([.string("PRIVATE_MAIL_SENTINEL")])])
+        var task: JSON = .object(["id": .string("last-summary:" + owner), "accountId": .string(owner), "kind": .string("ai"), "summaryJob": job])
+        guard let captured = ActivitySummarySnapshot(task: task, checkedAt: checkedAt, connectedAccounts: [owner, other]) else { fatalError("A matching connected summary job could not open") }
+        let fields = Dictionary(uniqueKeysWithValues: captured.fields)
+        assert(fields["Mailbox"] == owner && fields["Status"] == "Failed" && fields["Trigger"] == "Scheduled" && fields["Messages"] == "12")
+        assert(fields["Finished"] == "Not recorded" && fields["Started"] != "Not recorded" && fields["Updated"] != "Not recorded", "Observed update time must not become a fabricated finish time")
+        assert(captured.job["error"].isNull && captured.job["text"].isNull && captured.job["items"].isNull, "Details must never retain raw provider error or mail/result payload")
+        assert(!captured.fields.contains { $0.1.contains(job["id"].string) }, "Opaque matching identity is not a user-facing report field")
+
+        task["summaryJob"]["id"] = .string(String(repeating: "b", count: 64))
+        task["summaryJob"]["status"] = .string("completed")
+        assert(captured.job["id"] == job["id"] && captured.job["status"].string == "failed" && captured.checkedAt == checkedAt, "Polling a newer last-summary must not retarget the captured job")
+        assert(ActivitySummarySnapshot(task: task, checkedAt: checkedAt, connectedAccounts: [other]) == nil, "Disconnected owner must not open stale summary details")
+        task["summaryJob"]["accountId"] = .string(other)
+        assert(ActivitySummarySnapshot(task: task, checkedAt: checkedAt, connectedAccounts: [owner, other]) == nil, "A row cannot open another owner's summary")
+        task["accountId"] = .string(other)
+        assert(ActivitySummarySnapshot(task: task, checkedAt: checkedAt, connectedAccounts: [owner, other])?.owner == other)
+        for missingID in [JSON.null, .string(""), .string("   ")] {
+            task["summaryJob"]["id"] = missingID
+            assert(ActivitySummarySnapshot(task: task, checkedAt: checkedAt, connectedAccounts: [owner, other]) == nil, "Legacy missing job identity must not expose a misleading detail entry")
+        }
+        assert(activityDate(.null) == nil && activityDate(.string("not-a-date")) == nil && activityDate(.number(.infinity)) == nil)
+        assert(activityCount(.null) == nil && activityCount(.number(-1)) == nil && activityCount(.number(1.5)) == nil)
+        var timeJob = job
+        assert(activitySummaryTime(timeJob).hasPrefix("Updated "), "Recorded update must take precedence over start time")
+        timeJob["finishedAt"] = .string("2026-10-14T00:01:20Z")
+        assert(activitySummaryTime(timeJob).hasPrefix("Finished "), "Recorded finish must take precedence over update time")
+        timeJob["finishedAt"] = .null; timeJob["updatedAt"] = .null
+        assert(activitySummaryTime(timeJob).hasPrefix("Started "))
+        timeJob["startedAt"] = .null
+        assert(activitySummaryTime(timeJob).hasPrefix("Created "))
+        timeJob["createdAt"] = .null
+        assert(activitySummaryTime(timeJob) == "Job time not recorded.")
+
+        for (status, label) in [("failed", "Failed"), ("cancelled", "Cancelled"), ("interrupted", "Interrupted"), ("skipped", "Skipped")] {
+            var stateJob = job; stateJob["status"] = .string(status)
+            stateJob["diagnostic"] = .string(String(repeating: "Safe recorded diagnostic. ", count: 18))
+            let row: JSON = .object(["accountId": .string(owner), "summaryJob": stateJob])
+            guard let snapshot = ActivitySummarySnapshot(task: row, checkedAt: checkedAt, connectedAccounts: [owner]) else { fatalError("Terminal state snapshot is missing") }
+            assert(Dictionary(uniqueKeysWithValues: snapshot.fields)["Status"] == label, "Terminal states must remain distinct")
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 560), styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            let host = NSHostingView(rootView: ActivitySummaryDetails(snapshot: snapshot).padding(16).frame(width: 380))
+            window.contentView = host; window.orderBack(nil)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1)); host.layoutSubtreeIfNeeded()
+            assert(host.fittingSize.height <= 560, "Summary detail must keep diagnostics scrollable within its native panel")
+            window.close(); window.contentView = nil
+        }
+        print("Activity summary details: captured owned job, distinct terminal states, honest timestamps, legacy/foreign/disconnected rejection and bounded metadata-only native layout passed.")
     }
 
     @MainActor static func checkDownloadContracts() {

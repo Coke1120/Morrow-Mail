@@ -968,13 +968,26 @@ pub fn state(db: &Store, account: &str) -> Result<Value> {
 }
 fn update_job(db: &Store, account: &str, id: &str, patch: &Value) -> Result<()> {
     let mut value = automation(&db.settings()?, account);
+    let mut patch = patch.clone();
+    match string(&patch, "status") {
+        "completed" | "failed" | "cancelled" | "skipped" => {
+            let stamp = now();
+            patch["updatedAt"] = stamp.clone().into();
+            patch["finishedAt"] = stamp.into();
+        }
+        "interrupted" => {
+            // Recovery observes an interruption; it cannot know when work stopped.
+            patch["updatedAt"] = now().into();
+        }
+        _ => {}
+    }
     let jobs: Vec<_> = value["jobs"]
         .as_array()
         .into_iter()
         .flatten()
         .map(|job| {
             if job["id"] == id {
-                merge(job.clone(), patch)
+                merge(job.clone(), &patch)
             } else {
                 job.clone()
             }

@@ -1526,3 +1526,138 @@ async fn activity_cancel_releases_a_running_summary_without_sending() {
     drop(app);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test]
+async fn summary_activity_diagnostics_follow_real_failures_and_skips_without_replay() {
+    let (url, mut calls, server) = fake_model().await;
+    let (app, root) = app_fixture(url).await;
+    let mut last_detail = Value::Null;
+    for expected in [
+        "model_empty_response",
+        "summary_incomplete",
+        "summary_ungrounded",
+        "context_changed",
+    ] {
+        app.db(|db| jobs::arrivals(db, A, &["same".into()]))
+            .await
+            .unwrap();
+        let worker = run_tick(&app);
+        let (payload, release) = next_call(&mut calls).await;
+        let model_response = match expected {
+            "model_empty_response" => json!({"privateError":"PRIVATE-MODEL-SECRET"}),
+            "summary_incomplete" => {
+                json!({"choices":[{"message":{"content":"PRIVATE-MODEL-SECRET"}}]})
+            }
+            "summary_ungrounded" => {
+                let mut data = response(&payload);
+                let mut content: Value = serde_json::from_str(
+                    data["choices"][0]["message"]["content"].as_str().unwrap(),
+                )
+                .unwrap();
+                content["items"][0]["review"] = json!({"title":"PRIVATE-MODEL-SECRET"});
+                data["choices"][0]["message"]["content"] = content.to_string().into();
+                data
+            }
+            "context_changed" => {
+                app.db(|db| {
+                    db.update(
+                        A,
+                        "same",
+                        &json!({"body":"Changed fictional source; PRIVATE-SOURCE-SECRET"}),
+                    )?;
+                    Ok(())
+                })
+                .await
+                .unwrap();
+                response(&payload)
+            }
+            _ => unreachable!(),
+        };
+        release.send(model_response).unwrap();
+        worker.await.unwrap();
+        let settings = app.settings().await.unwrap();
+        let snapshot = app.0.activity.snapshot(&settings);
+        let task = snapshot["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|task| task["id"] == format!("last-summary:{A}"))
+            .unwrap();
+        let detail = &task["summaryJob"];
+        assert_eq!(detail["diagnosticCode"], expected);
+        assert_eq!(
+            detail["status"],
+            if expected == "context_changed" {
+                "skipped"
+            } else {
+                "failed"
+            }
+        );
+        assert_eq!(detail["accountId"], A);
+        assert_eq!(detail["automaticRetry"], false);
+        assert_ne!(detail["id"], last_detail["id"]);
+        assert!(detail["finishedAt"].is_string());
+        assert!(detail["startedAt"].as_str().unwrap() <= detail["finishedAt"].as_str().unwrap());
+        assert_eq!(detail["updatedAt"], detail["finishedAt"]);
+        assert!(!task.to_string().contains("PRIVATE-"));
+        last_detail = detail.clone();
+        jobs::tick(&app).await.unwrap();
+        assert!(
+            calls.try_recv().is_err(),
+            "terminal summary must never be retried automatically"
+        );
+        assert!(
+            app.settings().await.unwrap()["deliveryAttempts"]
+                .as_array()
+                .is_none_or(Vec::is_empty)
+        );
+    }
+
+    // A stale queued job is skipped before model dispatch, with no invented start.
+    app.db(|db| {
+        jobs::arrivals(db, A, &["same".into()])?;
+        let mut policy = db.settings()?["policy"].clone();
+        policy["enabled"] = false.into();
+        db.set_settings(&json!({"policy":policy}))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    jobs::tick(&app).await.unwrap();
+    assert!(calls.try_recv().is_err());
+    let settings = app.settings().await.unwrap();
+    let snapshot = app.0.activity.snapshot(&settings);
+    let detail = snapshot["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|task| task["id"] == format!("last-summary:{A}"))
+        .unwrap()["summaryJob"]
+        .clone();
+    assert_eq!(detail["status"], "skipped");
+    assert_eq!(detail["diagnosticCode"], "context_changed");
+    assert!(detail["startedAt"].is_null());
+    assert!(detail["finishedAt"].is_string());
+    assert_ne!(detail["id"], last_detail["id"]);
+    drop(app);
+    let restarted = App::open(&root, 3011, String::new(), String::new()).unwrap();
+    let after = restarted
+        .0
+        .activity
+        .snapshot(&restarted.settings().await.unwrap());
+    assert_eq!(
+        after["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|task| task["id"] == format!("last-summary:{A}"))
+            .unwrap()["summaryJob"],
+        detail
+    );
+    jobs::tick(&restarted).await.unwrap();
+    assert!(calls.try_recv().is_err());
+    drop(restarted);
+    server.abort();
+    let _ = server.await;
+    fs::remove_dir_all(root).unwrap();
+}
