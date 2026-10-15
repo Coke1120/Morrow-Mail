@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "Ui.h"
+#include "ReaderInitDiagnostics.h"
 #include <winrt/Microsoft.Web.WebView2.Core.h>
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
 #include <winrt/Windows.Security.Cryptography.h>
@@ -174,6 +175,7 @@ Image fetchImage(hstring const& value, std::shared_ptr<ImageBudget> const& budge
 struct ReaderFixtureTrace {
     uint64_t startedAt;
     unsigned processFailures = 0;
+    unsigned initializationFailures = 0;
     explicit ReaderFixtureTrace(uint64_t started) : startedAt(started) {}
     void processFailed(int kind) noexcept {
         if (processFailures > 8) return;
@@ -183,6 +185,19 @@ struct ReaderFixtureTrace {
         else std::fprintf(stderr, "Native reader: process-failed-overflow +%llu ms\n", elapsed);
         std::fflush(stderr);
     }
+    void initializationFailed(reader_diagnostics::FirstFailure& first,
+        reader_diagnostics::Origin origin, reader_diagnostics::Stage stage, hresult code) noexcept {
+        // Each mounted reader contributes only its first failure. In particular,
+        // a late Ensure cancellation cannot replace a recorded startup timeout.
+        if (!first.record(origin, stage, static_cast<uint32_t>(code), GetTickCount64() - startedAt)) return;
+        if (initializationFailures > 8) return;
+        if (initializationFailures++ < 8)
+            std::fprintf(stderr, "Native reader: init-failed origin=%s stage=%s hr=0x%08X +%llu ms\n",
+                reader_diagnostics::name(first.origin), reader_diagnostics::name(first.stage),
+                static_cast<unsigned>(first.hresult), static_cast<unsigned long long>(first.elapsedMs));
+        else std::fprintf(stderr, "Native reader: init-failed-overflow +%llu ms\n", static_cast<unsigned long long>(first.elapsedMs));
+        std::fflush(stderr);
+    }
 };
 
 struct Reader {
@@ -190,6 +205,8 @@ struct Reader {
     uint64_t generation{}, selection{}, documentId{}, completedDocumentId{}, epoch = 0;
     unsigned fixtureTraceBudget = 0; // Enabled only after the temporary fixture marker is validated.
     std::shared_ptr<ReaderFixtureTrace> fixtureTrace;
+    reader_diagnostics::Stage initializationStage = reader_diagnostics::Stage::EnvironmentOptions;
+    reader_diagnostics::FirstFailure fixtureInitializationFailure;
     // Observed initialization outcome only; these never relax reader policy.
     hresult initializationError{S_OK};
     bool runtimeUnavailable = false;
@@ -209,6 +226,9 @@ struct Reader {
     CoreWebView2 core{nullptr};
     CoreWebView2Environment environment{nullptr};
     std::function<bool()> reviewContext;
+    void fixtureInitializationFailed(reader_diagnostics::Origin origin, hresult code) noexcept {
+        if (fixtureTrace) fixtureTrace->initializationFailed(fixtureInitializationFailure, origin, initializationStage, code);
+    }
     bool live() const {
         auto host = shell.lock();
         if (reviewContext) return active && host && host->current(generation,viewOwner) && host->selectionGeneration == selection && host->connected(account) && reviewContext();
@@ -346,23 +366,29 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
     state->startupTimer.Interval(std::chrono::seconds(20));
     state->startupTimer.Tick([weak = std::weak_ptr<Reader>(state)](auto const&, auto const&) {
         if (auto page = weak.lock(); page && page->live() && !page->ready) {
+            page->fixtureInitializationFailed(reader_diagnostics::Origin::StartupTimeout, HRESULT_FROM_WIN32(ERROR_TIMEOUT));
             page->initializationError = HRESULT_FROM_WIN32(ERROR_TIMEOUT); page->fail();
         }
     });
     state->startupTimer.Start();
     try {
+        state->initializationStage = reader_diagnostics::Stage::EnvironmentOptions;
         CoreWebView2EnvironmentOptions options;
         options.AllowSingleSignOnUsingOSPrimaryAccount(false);
         options.AreBrowserExtensionsEnabled(false);
+        state->initializationStage = reader_diagnostics::Stage::EnvironmentCreate;
         auto environment = co_await CoreWebView2Environment::CreateWithOptionsAsync(L"", hstring(state->profilePath.wstring()), options);
         co_await ui;
         if (!state->live()) { state->initializing = false; state->close(); co_return; }
         state->environment = environment;
+        state->initializationStage = reader_diagnostics::Stage::ControllerOptions;
         auto controller = state->environment.CreateCoreWebView2ControllerOptions();
         controller.ProfileName(L"MorrowMailReader"); controller.IsInPrivateModeEnabled(true);
+        state->initializationStage = reader_diagnostics::Stage::ControllerEnsure;
         co_await view.EnsureCoreWebView2Async(state->environment, controller);
         co_await ui;
         if (!state->live()) { state->initializing = false; state->close(); co_return; }
+        state->initializationStage = reader_diagnostics::Stage::CorePolicy;
         state->core = view.CoreWebView2();
         require(state->core && state->core.Profile().IsInPrivateModeEnabled());
         auto settings = state->core.Settings();
@@ -372,6 +398,7 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
         settings.IsStatusBarEnabled(false); settings.IsBuiltInErrorPageEnabled(false);
         settings.IsGeneralAutofillEnabled(false); settings.IsPasswordAutosaveEnabled(false);
         settings.IsSwipeNavigationEnabled(false);
+        state->initializationStage = reader_diagnostics::Stage::Handlers;
         auto weak = std::weak_ptr<Reader>(state);
         state->core.NavigationStarting([weak](auto const&, CoreWebView2NavigationStartingEventArgs const& args) {
             auto page = weak.lock();
@@ -462,13 +489,16 @@ IAsyncAction initialize(std::shared_ptr<Reader> state) {
         state->startupTimer.Stop();
         state->ready = true;
         if (auto images = state->imageButton.get()) images.IsEnabled(true);
+        state->initializationStage = reader_diagnostics::Stage::InitialRender;
         state->render();
     } catch (hresult_error const& error) {
+        state->fixtureInitializationFailed(reader_diagnostics::Origin::Hresult, error.code());
         state->initializationError = error.code();
         state->runtimeUnavailable = !state->environment && error.code() == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
         if (state->live()) state->fail();
         else { try { view.Close(); } catch (hresult_error const&) {} }
     } catch (...) {
+        state->fixtureInitializationFailed(reader_diagnostics::Origin::Exception, E_FAIL);
         state->initializationError = E_FAIL;
         if (state->live()) state->fail();
         else { try { view.Close(); } catch (hresult_error const&) {} }
@@ -653,6 +683,21 @@ IAsyncOperation<Json> readerRuntimeChecks(std::shared_ptr<Shell> shell) {
     std::ifstream marker(markerPath, std::ios::binary);
     std::string markerText((std::istreambuf_iterator<char>(marker)), {});
     runtimeCheck(markerText == "Morrow native acceptance fixture", L"Reader runtime fixture marker does not match.");
+    // Synthetic latch controls emit no runtime receipt. A timeout must retain
+    // its original stage/code even if closing Ensure later produces E_ABORT.
+    reader_diagnostics::FirstFailure timeout, ensure;
+    using InitOrigin = reader_diagnostics::Origin;
+    using InitStage = reader_diagnostics::Stage;
+    runtimeCheck(timeout.record(InitOrigin::StartupTimeout, InitStage::ControllerEnsure, 0x800705B4u, 20000)
+        && !timeout.record(InitOrigin::Hresult, InitStage::ControllerEnsure, 0x80004004u, 20001)
+        && timeout.origin == InitOrigin::StartupTimeout && timeout.stage == InitStage::ControllerEnsure
+        && timeout.hresult == 0x800705B4u && timeout.elapsedMs == 20000,
+        L"Reader initialization telemetry replaced its first timeout with a late cancellation.");
+    runtimeCheck(ensure.record(InitOrigin::Hresult, InitStage::EnvironmentCreate, 0x80070002u, 10)
+        && !ensure.record(InitOrigin::StartupTimeout, InitStage::ControllerEnsure, 0x800705B4u, 20000)
+        && ensure.origin == InitOrigin::Hresult && ensure.stage == InitStage::EnvironmentCreate
+        && ensure.hresult == 0x80070002u && ensure.elapsedMs == 10,
+        L"Reader initialization telemetry replaced its first HRESULT or stage.");
     auto cancellation = co_await get_cancellation_token(); cancellation.enable_propagation();
     auto startedAt = GetTickCount64();
     auto fixtureTrace = std::make_shared<ReaderFixtureTrace>(startedAt);

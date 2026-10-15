@@ -5,6 +5,7 @@ use crate::{
     store::{now, string},
 };
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -55,6 +56,155 @@ fn timestamp(values: &[&Value]) -> Value {
             )
         })
         .unwrap_or(Value::Null)
+}
+fn summary_status(job: &Value) -> &str {
+    match string(job, "status") {
+        "complete" | "completed" => "completed",
+        status @ ("failed" | "cancelled" | "interrupted" | "skipped") => status,
+        _ => "unknown",
+    }
+}
+fn summary_diagnostic(status: &str, error: &str) -> (&'static str, String) {
+    let (code, message) = match status {
+        "completed" => ("completed", "The summary completed."),
+        "cancelled" => (
+            "cancelled",
+            "The summary was cancelled before completion. Nothing was sent.",
+        ),
+        "interrupted" => (
+            "interrupted",
+            "The summary was interrupted before completion. Review the saved job details before generating again.",
+        ),
+        "skipped" => (
+            "context_changed",
+            "The summary context changed; this job was skipped. Review current permissions and sources before generating again.",
+        ),
+        "failed" => match error {
+            "The summary timed out. Nothing was sent. Review Today before generating again." => (
+                "summary_timeout",
+                "The summary job timed out. Its running-time limit is 90 seconds. Nothing was sent. Review the model before generating again.",
+            ),
+            "The AI model did not respond within 45 seconds. Check model availability or use a faster model; no automatic retry was started." => {
+                (
+                    "model_timeout",
+                    "The AI model did not respond within 45 seconds. Check model availability or use a faster model.",
+                )
+            }
+            "Could not reach the AI model or read its response. Check your endpoint and model, then try again." => {
+                (
+                    "model_unreachable",
+                    "Could not reach the AI model or read its response. Check your endpoint and model before generating again.",
+                )
+            }
+            "The model response exceeded the 1 MB limit. Reduce the token limit." => (
+                "response_too_large",
+                "The model response exceeded the 1 MB limit. Reduce the response token limit before generating again.",
+            ),
+            "The AI model returned invalid JSON. Check that the endpoint supports chat completions." => {
+                (
+                    "model_invalid_json",
+                    "The AI model returned invalid JSON. Check that the endpoint supports chat completions.",
+                )
+            }
+            "The model returned an empty response. Try a different model." => (
+                "model_empty_response",
+                "The model returned an empty response. Review the selected model before generating again.",
+            ),
+            "The model returned an incomplete P0–P4 summary. Try fewer context messages or a higher response token limit." => {
+                (
+                    "summary_incomplete",
+                    "The model returned an incomplete P0–P4 summary. Try fewer context messages or a higher response token limit.",
+                )
+            }
+            "The model returned an ungrounded decision. Review its sources and generate again." => {
+                (
+                    "summary_ungrounded",
+                    "The model returned an ungrounded decision. Review the source selection before generating again.",
+                )
+            }
+            "Choose an AI model in Settings to use assistance with your mailbox."
+            | "AI API base URL is required and must be at most 2048 characters."
+            | "Enter a valid AI API base URL."
+            | "Use an HTTP(S) base URL without credentials, query or fragment."
+            | "Remote AI providers must use HTTPS. Local models may use HTTP on localhost."
+            | "Choose a valid IANA time zone." => (
+                "model_configuration",
+                "The saved AI configuration could not be used. Review the model, endpoint and summary time zone in Settings.",
+            ),
+            "Invalid summary context." => (
+                "summary_context_invalid",
+                "The summary context could not be used. Review permissions and prepare a new preview.",
+            ),
+            "The workspace could not complete the database operation. Saved data has been retained." => {
+                (
+                    "storage_error",
+                    "The workspace could not complete the database operation. Saved data has been retained.",
+                )
+            }
+            "The workspace could not read or save its files. Check available space and permissions." => {
+                (
+                    "file_error",
+                    "The workspace could not read or save its files. Check available space and permissions.",
+                )
+            }
+            _ => {
+                // Only this complete server-authored template may carry a number.
+                // Do not pass through stored provider bodies, prefixes or suffixes.
+                if let Some(status) = error
+                    .strip_prefix("The AI provider returned HTTP ")
+                    .and_then(|rest| rest.strip_suffix(". Check the model, endpoint, and API key."))
+                    .filter(|status| {
+                        status.len() == 3 && status.bytes().all(|b| b.is_ascii_digit())
+                    })
+                    .and_then(|status| status.parse::<u16>().ok())
+                    .filter(|status| (100..=599).contains(status))
+                {
+                    return (
+                        "model_http_error",
+                        format!(
+                            "The AI provider returned HTTP {status}. Check the model, endpoint, and API key."
+                        ),
+                    );
+                }
+                (
+                    "unknown_failure",
+                    "The summary could not complete. A safe failure reason was not recorded. Review the model and AI permissions before generating again.",
+                )
+            }
+        },
+        _ => (
+            "unknown_status",
+            "This summary job's outcome was not recorded in a recognized format.",
+        ),
+    };
+    (code, message.into())
+}
+fn summary_job(owner: &str, job: &Value) -> Value {
+    let status = summary_status(job);
+    let (code, diagnostic) = summary_diagnostic(status, string(job, "error"));
+    let id = job["id"]
+        .as_str()
+        .filter(|id| !id.trim().is_empty())
+        .map(|id| {
+            // An opaque account-bound reference, never a stored mail/provider id.
+            format!(
+                "{:x}",
+                Sha256::digest(json!(["morrow-summary-activity-v1", owner, id]).to_string())
+            )
+        });
+    let kind = match string(job, "kind") {
+        kind @ ("manual" | "arrival" | "scheduled") => kind,
+        _ => "unknown",
+    };
+    json!({
+        "id":id,"accountId":owner,"kind":kind,"status":status,
+        "createdAt":timestamp(&[&job["createdAt"]]),
+        "startedAt":timestamp(&[&job["runningAt"]]),
+        "finishedAt":timestamp(&[&job["finishedAt"],&job["completedAt"]]),
+        "updatedAt":timestamp(&[&job["finishedAt"],&job["completedAt"],&job["updatedAt"]]),
+        "messageCount":job["messageIds"].as_array().map(Vec::len),
+        "diagnosticCode":code,"diagnostic":diagnostic,"automaticRetry":false
+    })
 }
 fn retain(tasks: &mut Vec<Value>) {
     let mut excess = tasks
@@ -213,8 +363,9 @@ impl Runtime {
                 .rev()
                 .find(|job| job.is_object() && !pending(job))
             {
-                let status = phase(job);
-                tasks.push(json!({"id":format!("last-summary:{owner}"),"accountId":owner,"kind":"ai","label":"Last AI summary","status":status,"detail":if job["status"]=="skipped" {"Context changed; the result was discarded. Review Summaries to run again."} else {"Results in AI Studio → Summaries"},"completed":if ["complete","completed"].contains(&status){Some(1)}else{None},"total":1,"updatedAt":timestamp(&[&job["updatedAt"],&job["completedAt"],&job["createdAt"]]),"error":if failure(status) {json!("Analysis did not complete. Review Summaries; no automatic retry.")} else {Value::Null}}));
+                let summary = summary_job(owner, job);
+                let status = string(&summary, "status");
+                tasks.push(json!({"id":format!("last-summary:{owner}"),"accountId":owner,"kind":"ai","label":"Last AI summary","status":status,"detail":"Saved summary job details. This job is not retried automatically.","completed":if status == "completed"{Some(1)}else{None},"total":1,"updatedAt":timestamp(&[&summary["updatedAt"],&summary["startedAt"],&summary["createdAt"]]),"error":if status != "completed" {summary["diagnostic"].clone()} else {Value::Null},"summaryJob":summary}));
             }
             let style = &config["styleLearning"][owner]["preview"];
             if style.is_object() {
