@@ -21,11 +21,12 @@ a hard storage quota, a global offline mode or complete provider coverage.
 Repair eligibility requires a matching current IMAP origin. Opaque connection
 and history-job references reject stale panel actions after reconnect or job
 replacement, while already-downloaded bodies still shortened by size limits
-remain explained without offering a redundant download. The macOS repair follow-up
-refreshes shared metadata and the still-selected reader from local records; it
-keeps page/selection ownership and rejects late connection or presentation
-results without marking mail read again. Its new native transport checks await
-matching-source macOS CI.
+remain explained without offering a redundant download. The repair follow-up
+refreshes shared metadata and the still-selected reader from local records on
+both platforms; it preserves committed page/search and selection ownership,
+rejects late connection or presentation results, and restores only the original
+page controls after an abandoned read. It does not mark mail read again. New
+synthetic transport checks still require matching-source native CI.
 See [behavior and remaining decisions](docs/DOWNLOAD_CONTROLS.md) and
 [verification](VERIFICATION.md#download-controls-and-local-recovery--15-october-2026).
 

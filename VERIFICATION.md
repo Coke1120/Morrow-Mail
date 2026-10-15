@@ -1,5 +1,30 @@
 # Verification — 15 October 2026
 
+## Windows download repair and guarded page cleanup — 15 October 2026
+
+The Downloads repair now refreshes shared local state, the committed mail/search
+page and the still-owned selected detail after its explicitly reviewed POST.
+Owner, connection, presentation, page and selection epochs reject obsolete work.
+It preserves unsubmitted search edits, bounded retained-unread metadata and the
+existing mark-on-open boundary; repair itself makes no read/flag write or new
+provider-work hint.
+
+A guarded page read can be invalidated after transport releases its write guard
+and before UI adoption. Its cleanup now restores the five page controls only
+while the captured owner/generation/page/content/control identities and request
+ticket still match. Integration with contextual selection commands preserves
+the existing loading-state updates at start/completion and updates them after
+owned abandonment. An older request cannot re-enable a newer page's controls.
+This is a source-supported scheduling correction, not a native race replay.
+
+The original 63 portable production-coroutine controls retain their evidence.
+The additional actual-loadPage suite passed 67 controls with ASan/UBSan and
+-Werror; its former-cleanup mutation failed the restoration assertion as
+expected. Native row rendering, WinRT and transport use explicit portable fakes.
+A native fictional-service regression is prepared under the existing smoke
+bound. Source-specific Windows SDK and runtime results remain pending; neither
+portable tests nor mutation failure establish live-account acceptance.
+
 ## Windows Today stale-control fixture receipt — 15 October 2026
 
 PR59 Windows job `116452990553` tested head `269882f` through synthetic merge
