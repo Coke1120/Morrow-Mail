@@ -112,7 +112,7 @@ import SwiftUI
         return result
     }
     @MainActor static func controlLabels(_ element: NSAccessibilityProtocol) -> [String] {
-        var labels = [element.accessibilityLabel(), element.accessibilityTitle(), (element as? NSButton)?.title].compactMap { $0 }
+        var labels = [element.accessibilityLabel(), element.accessibilityTitle(), (element as? NSButton)?.title, (element as? NSButtonCell)?.title].compactMap { $0 }
         func texts(_ node: NSAccessibilityProtocol, depth: Int) {
             for case let child as NSAccessibilityProtocol in node.accessibilityChildren() ?? [] {
                 if let role = child.accessibilityRole(), [NSAccessibility.Role.staticText, .textField].contains(role) {
@@ -125,13 +125,23 @@ import SwiftUI
     }
     @MainActor static func control(_ label: String, in root: NSView) -> NSAccessibilityProtocol? {
         root.layoutSubtreeIfNeeded()
-        let matches = accessibilityNodes(root).filter { element in
+        // NSButton's accessibility object is its cell, which the hosting view's
+        // element walk can omit. Include every mounted button and that cell.
+        var candidates: [NSAccessibilityProtocol] = accessibilityNodes(root)
+        for button in nativeViews(root, NSButton.self) {
+            candidates.append(button)
+            if let cell = button.cell as? NSAccessibilityProtocol { candidates.append(cell) }
+        }
+        let matches = candidates.filter { element in
             guard let role = element.accessibilityRole(), [NSAccessibility.Role.button, .checkBox, .popUpButton].contains(role) else { return false }
             return controlLabels(element).contains(label) && !element.isAccessibilityHidden()
                 && !element.accessibilityFrame().isEmpty
                 && root.window?.frame.intersects(element.accessibilityFrame()) == true
         }
-        return matches.first { $0 is NSButton } ?? matches.first
+        return matches.first { $0 is NSButton && $0.isAccessibilityEnabled() }
+            ?? matches.first { $0.isAccessibilityEnabled() }
+            ?? matches.first { $0 is NSButton }
+            ?? matches.first
     }
     @MainActor static func mountedText(_ root: NSView) -> [String] {
         accessibilityNodes(root).flatMap { element -> [String] in
@@ -141,8 +151,22 @@ import SwiftUI
             return [element.accessibilityValue() as? String, element.accessibilityLabel()].compactMap { $0 }
         }
     }
+    @MainActor static func controlDiagnostics(_ label: String, in root: NSView) -> String {
+        let buttons = nativeViews(root, NSButton.self)
+        let focused = buttons.filter { $0.title == label || $0.title.contains("Review") || ($0.accessibilityLabel() ?? "").contains("Review") }
+        let shown = (focused.isEmpty ? buttons : focused).prefix(6).map { button -> String in
+            let cell = button.cell as? NSAccessibilityProtocol
+            return "title=\(button.title.prefix(60)) on=\(button.isEnabled) axOn=\(button.isAccessibilityEnabled()) hidden=\(button.isHiddenOrHasHiddenAncestor) role=\(button.accessibilityRole()?.rawValue ?? "nil") frame=\(NSStringFromRect(button.frame)) ax=\(NSStringFromRect(button.accessibilityFrame())) cellRole=\(cell?.accessibilityRole()?.rawValue ?? "nil") cellOn=\(cell?.isAccessibilityEnabled() ?? false) cellHidden=\(cell?.isAccessibilityHidden() ?? true) cellAx=\(NSStringFromRect(cell?.accessibilityFrame() ?? .zero)) cellLabel=\((cell?.accessibilityLabel() ?? "").prefix(60))"
+        }
+        return "Control probe \(label): window=\(root.window.map { NSStringFromRect($0.frame) } ?? "nil") host=\(NSStringFromRect(root.frame)) nodes=\(accessibilityNodes(root).count) buttons=\(buttons.count) " + shown.joined(separator: " || ")
+    }
     @MainActor static func pressControl(_ label: String, in root: NSView) async throws {
-        try await settle("Mounted enabled control missing: " + label) { control(label, in: root)?.isAccessibilityEnabled() == true }
+        do {
+            try await settle("Mounted enabled control missing: " + label) { control(label, in: root)?.isAccessibilityEnabled() == true }
+        } catch {
+            print(controlDiagnostics(label, in: root)); fflush(stdout)
+            throw error
+        }
         guard let button = control(label, in: root) else { throw APIError("Lost mounted control: " + label) }
         try require(button.accessibilityPerformPress(), "Native accessibility action failed: " + label)
     }
@@ -668,17 +692,28 @@ import SwiftUI
         try require(!ReviewProtocol.recordedTraffic().contains { $0["path"] == "/api/send" || $0["path"] == "/api/ai" || $0["path"]?.contains("/organize") == true }, "Opening grouped controls issued a send, AI or provider write")
         print("Mounted reader menus retain every command, invoke layout/owned organization and reply variants, and disable forbidden history/stale AI.")
     }
-    // GeometryReader's ideal size collapses an unsized hosting view, so the
-    // header button's accessibility frame never meets the window.
+    // GeometryReader's minimum becomes the window minimum while this host is the
+    // content view, which leaves the header button outside the window.
     @MainActor static func mountReview<V: View>(_ view: V, width: CGFloat, height: CGFloat) -> (NSWindow, NSView) {
+        let size = NSSize(width: width, height: height)
         let window = NSWindow(contentRect: NSRect(x: 30, y: 30, width: width, height: height), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         let host = NSHostingView(rootView: AnyView(view.frame(width: width, height: height)))
-        host.sizingOptions = []
         window.contentView = host
-        window.setContentSize(NSSize(width: width, height: height))
+        window.contentMinSize = size
+        window.contentMaxSize = size
+        window.setContentSize(size)
         window.makeKeyAndOrderFront(nil)
-        host.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        host.frame = NSRect(origin: .zero, size: size)
+        host.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        // Freeze after the button has a fitted frame. Leaving min/max active lets
+        // GeometryReader pull the window down on the next layout.
+        host.sizingOptions = []
+        window.contentMinSize = size
+        window.contentMaxSize = size
+        window.setContentSize(size)
+        host.frame = NSRect(origin: .zero, size: size)
         host.layoutSubtreeIfNeeded()
         return (window, host)
     }

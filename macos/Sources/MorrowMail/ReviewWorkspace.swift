@@ -71,7 +71,8 @@ struct ReviewScrollMemory: NSViewRepresentable {
     }
 }
 
-// Bordered SwiftUI buttons leave this title off the AX button the review press reads.
+// A new NSButton's fitting size stays empty until sizeToFit, so fixedSize locks
+// an empty accessibility frame. The press reads that frame on the button or its cell.
 struct ReviewActionButton: NSViewRepresentable {
     var title: String
     var enabled = true
@@ -84,16 +85,29 @@ struct ReviewActionButton: NSViewRepresentable {
         let button = NSButton(title: title, target: context.coordinator, action: #selector(Coordinator.press))
         button.bezelStyle = .rounded
         button.bezelColor = .controlAccentColor
+        button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        button.setContentCompressionResistancePriority(.required, for: .vertical)
         updateNSView(button, context: context)
+        button.sizeToFit()
         return button
+    }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSButton, context: Context) -> CGSize? {
+        nsView.sizeToFit()
+        var size = nsView.bounds.size
+        if size.width < 8 || size.height < 8 {
+            let font = nsView.font ?? NSFont.systemFont(ofSize: NSFont.systemFontSize)
+            let text = NSAttributedString(string: nsView.title, attributes: [.font: font]).size()
+            size = NSSize(width: ceil(text.width) + 32, height: max(28, ceil(text.height) + 14))
+            nsView.setFrameSize(size)
+        }
+        return size
     }
     func updateNSView(_ button: NSButton, context: Context) {
         context.coordinator.action = action
-        button.title = title
-        button.setAccessibilityElement(true)
-        button.setAccessibilityHidden(false)
+        if button.title != title { button.title = title; button.invalidateIntrinsicContentSize() }
         button.setAccessibilityLabel(title)
         button.cell?.setAccessibilityLabel(title)
+        button.cell?.setAccessibilityRole(.button)
         if !identifier.isEmpty { button.setAccessibilityIdentifier(identifier) }
         button.keyEquivalent = keyEquivalent
         button.keyEquivalentModifierMask = keyModifiers
