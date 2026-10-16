@@ -11,6 +11,10 @@ const state = {
   draftId: null,
   busy: false,
   snoozed: new Map(),
+  signatures: [],
+  signatureText: "",
+  translateLang: "English",
+  translate: null,
 };
 
 let accountGen = 0;
@@ -18,6 +22,8 @@ let listGen = 0;
 let openGen = 0;
 let reloadTimer = null;
 let undoOpIds = null;
+let translateSeq = 0;
+let signatureGen = 0;
 
 function $(id) {
   return document.getElementById(id);
@@ -179,6 +185,93 @@ function removalPayload(email, threaded) {
 function usesThread(email, members) {
   if (!email) return false;
   return (members || []).some((row) => row && row.id && row.id !== email.id);
+}
+
+const TRANSLATE_LANGS = ["English", "Spanish", "French", "German", "Chinese", "Japanese"];
+
+function bodyNodes(text) {
+  return String(text || "")
+    .split(/\n\s*\n/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part, index) => ({ node_id: `n${index}`, text: part }));
+}
+
+function applyTranslate(view, event) {
+  if (!view || !view.pending || !event || event.reqId !== view.reqId) return view;
+  if (event.type === "progress") {
+    if (typeof event.current === "number") view.current = event.current;
+    if (typeof event.total === "number") view.total = event.total;
+    return view;
+  }
+  if (event.type === "node") {
+    const text = event.status === "success" ? String(event.translatedText || "") : "";
+    view.texts[event.nodeId] = text;
+    if (!text && event.error) view.error = String(event.error);
+    return view;
+  }
+  if (event.type === "error") {
+    view.error = String(event.message || "Translation failed.");
+    view.pending = false;
+    return view;
+  }
+  if (event.type === "done") view.pending = false;
+  return view;
+}
+
+function translationText(view) {
+  if (!view || !Array.isArray(view.nodes)) return "";
+  return view.nodes.map((node) => (view.texts && view.texts[node.node_id]) || "").filter(Boolean).join("\n\n");
+}
+
+// shortcut: rows are {id, name, text|html}, upgrade when the host documents another shape.
+function signatureRows(pack) {
+  const rows = pack && Array.isArray(pack.signatures) ? pack.signatures : [];
+  return rows.filter((row) => row && row.id);
+}
+
+function chosenSignatureId(pack, accountId) {
+  const per = pack && pack.defaultSignaturePerAccount;
+  const fromAccount = per && accountId ? per[accountId] : null;
+  if (fromAccount) return String(fromAccount);
+  if (pack && pack.defaultSignatureId) return String(pack.defaultSignatureId);
+  return "";
+}
+
+function signatureName(row) {
+  const name = row && row.name ? String(row.name).trim() : "";
+  return name || "Signature";
+}
+
+function signaturePlain(row) {
+  if (!row) return "";
+  if (typeof row.text === "string" && row.text.trim()) return row.text.trim();
+  const html = typeof row.html === "string" ? row.html : "";
+  return html
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .trim();
+}
+
+// shortcut: only an untouched signature at the end of the body is replaced, upgrade if edits inside it must be tracked.
+function applySignature(body, previous, next) {
+  let base = String(body || "");
+  const prev = String(previous || "");
+  if (prev) {
+    if (base === prev) base = "";
+    else {
+      const tail = `\n\n${prev}`;
+      if (base.endsWith(tail)) base = base.slice(0, -tail.length);
+    }
+  }
+  const added = String(next || "");
+  if (!added) return base;
+  return base ? `${base}\n\n${added}` : added;
 }
 
 function people(value) {
@@ -436,8 +529,12 @@ function renderActions(pane, email) {
 
 function renderReader(focus) {
   const pane = $("reader");
-  pane.replaceChildren();
   const email = state.email;
+  if (state.translate && (!email || state.translate.emailId !== email.id)) {
+    stopTranslate();
+    state.translate = null;
+  }
+  pane.replaceChildren();
   if (!email) {
     const empty = document.createElement("p");
     empty.className = "empty";
@@ -474,14 +571,152 @@ function renderReader(focus) {
   }
   renderThread(pane, email);
   renderAttachments(pane, email);
-  const body = document.createElement("pre");
-  body.className = "body";
-  body.textContent = readable(email);
-  pane.appendChild(body);
+  renderTranslate(pane, email);
+  renderBody(pane, readable(email));
+  const translated = document.createElement("div");
+  translated.className = "translation";
+  translated.setAttribute("role", "status");
+  translated.hidden = true;
+  pane.appendChild(translated);
+  paintTranslation();
   if (focus) {
     heading.tabIndex = -1;
     heading.focus();
   }
+}
+
+function renderBody(pane, text) {
+  const wrap = document.createElement("div");
+  wrap.className = "body";
+  for (const node of bodyNodes(text)) {
+    const block = document.createElement("p");
+    block.dataset.nodeId = node.node_id;
+    block.textContent = node.text;
+    wrap.appendChild(block);
+  }
+  pane.appendChild(wrap);
+}
+
+function renderTranslate(pane, email) {
+  const bar = document.createElement("div");
+  bar.className = "translate";
+  const select = document.createElement("select");
+  select.dataset.action = "translate-lang";
+  select.setAttribute("aria-label", "Translate into");
+  for (const lang of TRANSLATE_LANGS) select.append(option(lang, lang));
+  select.value = state.translateLang || "English";
+  select.addEventListener("change", () => {
+    state.translateLang = select.value;
+  });
+  const go = document.createElement("button");
+  go.type = "button";
+  go.className = "ghost";
+  go.dataset.action = "translate";
+  go.textContent = "Translate";
+  go.addEventListener("click", () => {
+    startTranslate(email).catch((error) => showStatus(error.message, true));
+  });
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "ghost";
+  cancel.dataset.action = "translate-cancel";
+  cancel.textContent = "Cancel";
+  cancel.hidden = true;
+  cancel.addEventListener("click", () => {
+    cancelTranslate().catch((error) => showStatus(error.message, true));
+  });
+  bar.append(select, go, cancel);
+  pane.appendChild(bar);
+}
+
+function paintTranslation() {
+  const box = $("reader").querySelector(".translation");
+  const view = state.translate;
+  const email = state.email;
+  const active = !!(view && email && view.emailId === email.id);
+  const cancel = $("reader").querySelector("[data-action='translate-cancel']");
+  const go = $("reader").querySelector("[data-action='translate']");
+  if (cancel) cancel.hidden = !(active && view.pending);
+  if (go) go.disabled = !!(active && view.pending);
+  if (!box) return;
+  box.replaceChildren();
+  if (!active) {
+    box.hidden = true;
+    return;
+  }
+  const text = translationText(view);
+  const show = !!(view.pending || view.error || text);
+  box.hidden = !show;
+  if (!show) return;
+  if (view.pending) {
+    const line = document.createElement("p");
+    const total = view.total || view.nodes.length;
+    const current = view.current || 0;
+    line.textContent = total ? `Translating… ${current}/${total}` : "Translating…";
+    box.appendChild(line);
+  }
+  if (view.error) {
+    const line = document.createElement("p");
+    line.className = "error";
+    line.textContent = view.error;
+    box.appendChild(line);
+  }
+  if (text) {
+    const pre = document.createElement("pre");
+    pre.textContent = text;
+    box.appendChild(pre);
+  }
+}
+
+function onTranslateEvent(event) {
+  applyTranslate(state.translate, event);
+  paintTranslation();
+}
+
+function stopTranslate() {
+  const current = state.translate;
+  if (!current || !current.pending) return;
+  current.pending = false;
+  call("mail:translateCancel", { reqId: current.reqId }).catch(() => {});
+}
+
+async function startTranslate(email) {
+  const nodes = bodyNodes(readable(email));
+  if (!nodes.length) {
+    showStatus("This message has no text to translate.", true);
+    return;
+  }
+  stopTranslate();
+  const reqId = `tr-${Date.now().toString(36)}-${translateSeq += 1}`;
+  const targetLanguage = state.translateLang || "English";
+  state.translate = {
+    reqId,
+    emailId: email.id,
+    nodes,
+    texts: {},
+    error: "",
+    pending: true,
+    current: 0,
+    total: nodes.length,
+  };
+  paintTranslation();
+  try {
+    await call("mail:translateStart", { reqId, targetLanguage, nodes });
+  } catch (error) {
+    if (!state.translate || state.translate.reqId !== reqId) return;
+    state.translate.pending = false;
+    state.translate.error = error instanceof Error ? error.message : String(error);
+    paintTranslation();
+  }
+}
+
+async function cancelTranslate() {
+  const current = state.translate;
+  if (!current || !current.pending) return;
+  const reqId = current.reqId;
+  current.pending = false;
+  paintTranslation();
+  await call("mail:translateCancel", { reqId });
 }
 
 function renderThread(pane, email) {
@@ -880,13 +1115,64 @@ function syncCompose() {
   $("compose-send").disabled = !live;
 }
 
+function showSignatureEmpty(message) {
+  const select = $("signature");
+  select.hidden = true;
+  select.replaceChildren();
+  const empty = $("signature-empty");
+  empty.hidden = false;
+  empty.textContent = message;
+}
+
+async function fillSignatures() {
+  const gen = signatureGen += 1;
+  const accountId = state.accountId;
+  let pack = null;
+  try {
+    pack = await call("mail:listSignatures", accountId ? { accountId } : {});
+  } catch (error) {
+    if (gen !== signatureGen) return;
+    state.signatures = [];
+    showSignatureEmpty(error instanceof Error ? error.message : String(error));
+    return;
+  }
+  if (gen !== signatureGen) return;
+  const rows = signatureRows(pack);
+  state.signatures = rows;
+  if (!rows.length) {
+    showSignatureEmpty("No signatures.");
+    return;
+  }
+  const select = $("signature");
+  $("signature-empty").hidden = true;
+  select.hidden = false;
+  select.replaceChildren();
+  select.append(option("", "No signature"));
+  for (const row of rows) select.append(option(String(row.id), signatureName(row)));
+  const id = chosenSignatureId(pack, accountId);
+  const match = rows.find((row) => String(row.id) === id);
+  select.value = match ? String(match.id) : "";
+  const text = signaturePlain(match);
+  $("compose-body").value = applySignature($("compose-body").value, state.signatureText, text);
+  state.signatureText = text;
+}
+
+function onSignatureChange() {
+  const row = state.signatures.find((item) => String(item.id) === $("signature").value);
+  const text = signaturePlain(row);
+  $("compose-body").value = applySignature($("compose-body").value, state.signatureText, text);
+  state.signatureText = text;
+}
+
 function openCompose() {
   state.draftId = null;
+  state.signatureText = "";
   $("compose-to").value = "";
   $("compose-subject").value = "";
   $("compose-body").value = "";
   syncCompose();
   openDialog("compose");
+  return fillSignatures();
 }
 
 async function saveDraft() {
@@ -1068,7 +1354,10 @@ function wire() {
   $("oauth-google").addEventListener("click", () => guard(() => connectOAuth("google")));
   $("oauth-microsoft").addEventListener("click", () => guard(() => connectOAuth("microsoft")));
   $("remove").addEventListener("click", () => guard(removeAccount));
-  $("compose-open").addEventListener("click", openCompose);
+  $("compose-open").addEventListener("click", () => {
+    openCompose().catch((error) => showStatus(error.message, true));
+  });
+  $("signature").addEventListener("change", onSignatureChange);
   $("compose-close").addEventListener("click", () => closeDialog("compose"));
   $("compose-save").addEventListener("click", () => guard(saveDraft));
   $("compose-form").addEventListener("submit", (event) => {
@@ -1085,6 +1374,7 @@ async function boot() {
   wire();
   api.on("mail:accountsUpdated", scheduleReload);
   api.on("mail:emailsUpdated", scheduleReload);
+  api.on("mail:translate:event", onTranslateEvent);
   try {
     const version = await api.invoke("app:getVersion");
     $("version").textContent = typeof version === "string" ? version : "";

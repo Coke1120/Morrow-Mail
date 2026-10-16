@@ -27,11 +27,15 @@ const INVOKE = [
   "mail:listSnoozed",
   "mail:upsertDraft",
   "mail:send",
+  "mail:listSignatures",
+  "mail:translateStart",
+  "mail:translateCancel",
 ];
 
 const EVENTS = [
   "mail:accountsUpdated",
   "mail:emailsUpdated",
+  "mail:translate:event",
 ];
 
 const invokeSet = new Set(INVOKE);

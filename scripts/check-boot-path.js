@@ -244,4 +244,85 @@ mailbox.answer("mail:unsnoozeThread", [{ accountId: "gmail-ada", threadId: "m-sa
 assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-salon"));
 assert.ok(!mailbox.answer("mail:listSnoozed", [{ accountId: "gmail-ada" }]).data.records.some((row) => row.threadId === "m-salon"));
 
+const bodyNodes = extractFunction(appJs, "bodyNodes");
+assert.deepStrictEqual(bodyNodes("One\n\nTwo"), [
+  { node_id: "n0", text: "One" },
+  { node_id: "n1", text: "Two" },
+]);
+assert.deepStrictEqual(bodyNodes("  "), []);
+assert.deepStrictEqual(bodyNodes("Line"), [{ node_id: "n0", text: "Line" }]);
+
+const applyTranslate = extractFunction(appJs, "applyTranslate");
+const translationText = extractFunction(appJs, "translationText");
+const view = {
+  reqId: "t",
+  nodes: [{ node_id: "n0", text: "Hi" }],
+  texts: {},
+  error: "",
+  pending: true,
+};
+applyTranslate(view, { reqId: "other", type: "error", message: "nope" });
+applyTranslate(view, { reqId: "t", type: "progress", current: 0, total: 1 });
+applyTranslate(view, { reqId: "t", type: "node", nodeId: "n0", translatedText: "Hola", status: "success" });
+applyTranslate(view, { reqId: "t", type: "done" });
+assert.strictEqual(translationText(view), "Hola");
+assert.strictEqual(view.pending, false);
+assert.strictEqual(view.current, 0);
+applyTranslate(view, { reqId: "t", type: "error", message: "late" });
+assert.strictEqual(view.error, "");
+const missingKey = {
+  reqId: "t",
+  nodes: [{ node_id: "n0", text: "Hi" }],
+  texts: {},
+  error: "",
+  pending: true,
+};
+applyTranslate(missingKey, { reqId: "t", type: "error", message: "Add an API key in GenMail → AI Setup." });
+assert.strictEqual(missingKey.pending, false);
+assert.strictEqual(missingKey.error, "Add an API key in GenMail → AI Setup.");
+assert.strictEqual(translationText(missingKey), "");
+
+const signatureRows = extractFunction(appJs, "signatureRows");
+const chosenSignatureId = extractFunction(appJs, "chosenSignatureId");
+const signaturePlain = extractFunction(appJs, "signaturePlain");
+const applySignature = extractFunction(appJs, "applySignature");
+const pack = {
+  signatures: [
+    { id: "s1", name: "Work", html: "<p>Thanks,<br>Ada</p>" },
+    { id: "s2", name: "Short", text: "— Ada" },
+  ],
+  defaultSignatureId: "s2",
+  defaultSignaturePerAccount: { "gmail-ada": "s1" },
+};
+assert.strictEqual(chosenSignatureId(pack, "gmail-ada"), "s1");
+assert.strictEqual(chosenSignatureId(pack, "other"), "s2");
+assert.strictEqual(chosenSignatureId({ signatures: [] }, "a"), "");
+assert.strictEqual(signaturePlain(pack.signatures[0]), "Thanks,\nAda");
+assert.strictEqual(signaturePlain(pack.signatures[1]), "— Ada");
+assert.strictEqual(applySignature("Hello", "", "— Ada"), "Hello\n\n— Ada");
+assert.strictEqual(applySignature("Hello\n\n— Ada", "— Ada", "Thanks,\nAda"), "Hello\n\nThanks,\nAda");
+assert.strictEqual(applySignature("— Ada", "— Ada", ""), "");
+assert.deepStrictEqual(signatureRows({ signatures: [] }), []);
+assert.deepStrictEqual(signatureRows(null), []);
+const listedSignatures = mailbox.answer("mail:listSignatures", [{ accountId: "gmail-ada" }]);
+assert.deepStrictEqual(listedSignatures.data, {
+  signatures: [],
+  defaultSignatureId: null,
+  defaultSignaturePerAccount: {},
+});
+assert.deepStrictEqual(signatureRows(listedSignatures.data), []);
+
+for (const channel of [
+  "mail:listSignatures",
+  "mail:translateStart",
+  "mail:translateCancel",
+  "mail:translate:event",
+]) {
+  assert.ok(registered.has(channel), `preload does not register ${channel}`);
+  assert.ok(used.has(channel), `renderer does not call ${channel}`);
+}
+assert.ok(appJs.includes('"Translate"') && appJs.includes('"Cancel"') && appJs.includes('"No signatures."'));
+assert.ok(html.includes('id="signature"') && html.includes("No signatures."));
+assert.ok(css.includes(".translate") && css.includes(".translation") && css.includes(".body p"));
+
 console.log("ui-path-ok");

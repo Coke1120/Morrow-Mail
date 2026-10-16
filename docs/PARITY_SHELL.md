@@ -17,8 +17,10 @@ First-party `renderer/` chrome for the three-pane mail shell. Layout follows the
 - Snooze presets are 1 hour, tonight, and tomorrow morning (`mail:snoozeThread`). Unsnooze (`mail:unsnoozeThread`) shows when `mail:listSnoozed` says that thread is snoozed. Tonight is 18:00, then 22:00, then the next 18:00.
 - Undo (`mail:undoRemoval`) appears when archive, trash, or move returns `opIds`.
 - The folder and message panes drag-resize. Each folder row has an icon. At about 1100×700 the three panes stay side by side.
+- Translate sits in the reading pane: a short language list, Translate, and Cancel. Visible body paragraphs go to `mail:translateStart` as `{ node_id, text }` nodes. `mail:translate:event` fills the result under the original text. A missing AI key shows the host error. Cancel calls `mail:translateCancel`. AI Setup stays the separate host window.
+- Compose calls `mail:listSignatures`. An empty list shows “No signatures.” A row is `{ id, name, text }` or `{ id, name, html }`. The picker inserts the account default (`defaultSignaturePerAccount`, otherwise `defaultSignatureId`) and can switch or clear it. The signature text is part of the message body.
 
 ## Deferred
 
-- Settings panes, AI Studio, calendar, Email Brain, AI write, translate UI, signatures editor, scheduled send.
+- Settings panes, AI Studio, calendar, Email Brain, AI write, signatures editor, scheduled send.
 - A pixel match to `GenmailSpace-*.css`. This shell only uses the first-party layout.

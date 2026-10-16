@@ -318,6 +318,30 @@ button.thread-item[aria-current="true"] { background: #efe7fb; }
   padding-bottom: 24px;
 }
 
+.body p { margin: 0 0 0.75em; }
+
+.translate {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px 0;
+}
+
+.translate select { width: auto; padding: 4px 8px; }
+
+.translation { padding: 4px 16px 16px; }
+
+.translation p { margin: 0 0 6px; }
+
+.translation .error { color: #9f1239; }
+
+.translation pre {
+  white-space: pre-wrap;
+  font: inherit;
+  margin: 0;
+}
+
 .sr {
   position: absolute;
   width: 1px;
