@@ -18,6 +18,12 @@ const state = {
   translate: null,
   draftWrite: null,
   suggestions: null,
+  prefs: {
+    chips: true,
+    aiReply: false,
+    gmailOpen: true,
+    outlookOpen: false,
+  },
 };
 
 let accountGen = 0;
@@ -76,6 +82,35 @@ function foldersOf(account) {
 function inboxOf(account) {
   const folders = foldersOf(account);
   return folders.find((folder) => folder.wellKnownName === "inbox") || folders[0] || null;
+}
+
+// shortcut: chips are Inbox, Sent, and Drafts, upgrade when every primary folder should be a chip.
+function chipFolders(account) {
+  const folders = account && account.folders;
+  const primary = folders && Array.isArray(folders.primary) ? folders.primary : [];
+  const more = folders && Array.isArray(folders.more) ? folders.more : [];
+  const list = primary.length ? primary : more;
+  const names = new Set(["inbox", "sent", "sentitems", "drafts", "draft"]);
+  return list.filter((folder) => folder && names.has(String(folder.wellKnownName || "").toLowerCase()));
+}
+
+function folderProvider(account) {
+  const platform = String((account && account.platform) || "").toLowerCase();
+  if (platform === "gmail" || platform === "outlook") return platform;
+  const profile = String((account && (account.imapSmtpProfile || account.profile)) || "").toLowerCase();
+  if (profile === "gmail" || profile === "outlook") return profile;
+  return "";
+}
+
+function providerExpanded(provider, prefs) {
+  const flags = prefs || {};
+  if (provider === "gmail") return flags.gmailOpen !== false;
+  if (provider === "outlook") return flags.outlookOpen === true;
+  return true;
+}
+
+function opensAiWrite(seed, prefs) {
+  return !!(seed && seed.aiWrite && prefs && prefs.aiReply === true);
 }
 
 function envelopeError(result) {
@@ -471,6 +506,7 @@ function composeSeed(email, kind, self) {
     to: replyAddresses(message, self, all),
     subject: prefixedSubject(message.subject, "Re:"),
     body: replyBody(message),
+    aiWrite: true,
   };
   if (message.messageId) seed.inReplyTo = message.messageId;
   if (message.threadId) seed.threadId = message.threadId;
@@ -592,8 +628,25 @@ function renderAccounts() {
     return;
   }
   for (const account of state.accounts) {
-    const heading = document.createElement("h2");
-    heading.textContent = account.email || account.id;
+    const provider = folderProvider(account);
+    const expanded = providerExpanded(provider, state.prefs);
+    let heading;
+    if (provider) {
+      heading = document.createElement("button");
+      heading.type = "button";
+      heading.className = "account";
+      heading.setAttribute("aria-expanded", expanded ? "true" : "false");
+      const mark = document.createElement("span");
+      mark.setAttribute("aria-hidden", "true");
+      mark.textContent = expanded ? "▾ " : "▸ ";
+      heading.append(mark, account.email || account.id);
+      heading.addEventListener("click", () => {
+        toggleProviderFolders(provider).catch((error) => showStatus(error.message, true));
+      });
+    } else {
+      heading = document.createElement("h2");
+      heading.textContent = account.email || account.id;
+    }
     nav.appendChild(heading);
     if (account.needsReauth && account.reauthReason) {
       const note = document.createElement("p");
@@ -601,6 +654,7 @@ function renderAccounts() {
       note.textContent = account.reauthReason;
       nav.appendChild(note);
     }
+    if (!expanded) continue;
     for (const folder of foldersOf(account)) {
       const button = document.createElement("button");
       button.type = "button";
@@ -649,6 +703,30 @@ function threadMembers(fromOpen, listed) {
   return Array.isArray(listed) ? listed.filter((row) => row && row.id) : [];
 }
 
+function renderChips(list, account) {
+  if (!state.prefs.chips || !account) return;
+  const folders = chipFolders(account);
+  if (!folders.length) return;
+  const row = document.createElement("div");
+  row.className = "chips";
+  row.setAttribute("role", "group");
+  row.setAttribute("aria-label", "Primary folders");
+  for (const folder of folders) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "chip";
+    button.textContent = folder.name || folder.id;
+    if (account.id === state.accountId && folder.id === state.folderId) {
+      button.setAttribute("aria-current", "true");
+    }
+    button.addEventListener("click", () => {
+      selectFolder(account.id, folder.id).catch((error) => showStatus(error.message, true));
+    });
+    row.appendChild(button);
+  }
+  list.appendChild(row);
+}
+
 function renderList() {
   const list = $("messages");
   list.replaceChildren();
@@ -658,6 +736,7 @@ function renderList() {
   title.className = "list-title";
   title.textContent = state.query ? `Search: ${state.query}` : ((folder && (folder.name || folder.id)) || "Messages");
   list.appendChild(title);
+  renderChips(list, account);
   if (!state.emails.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
@@ -1801,6 +1880,13 @@ async function openCompose(seed) {
   openDialog("compose");
   await Promise.all([fillSignatures(), loadScheduled()]);
   if (!$("compose").open) return;
+  const write = document.querySelector(".ai-write");
+  const openWrite = opensAiWrite(fields, state.prefs);
+  if (write) write.classList.toggle("open", openWrite);
+  if (openWrite) {
+    $("ai-prompt").focus();
+    return;
+  }
   if ($("compose-to").value.trim()) {
     const body = $("compose-body");
     body.focus();
@@ -2081,6 +2167,43 @@ async function installUpdate() {
   }
 }
 
+const SHELL_PREFS = {
+  "genmail:configGetShowFolderChips": "chips",
+  "genmail:configGetAiWriteAutoOpenOnReply": "aiReply",
+  "genmail:configGetSidebarGmailFoldersExpanded": "gmailOpen",
+  "genmail:configGetSidebarOutlookFoldersExpanded": "outlookOpen",
+};
+
+async function loadShellPrefs() {
+  const next = { ...state.prefs };
+  try {
+    for (const [channel, key] of Object.entries(SHELL_PREFS)) {
+      next[key] = (await api.invoke(channel)) === true;
+    }
+  } catch (error) {
+    showStatus(error instanceof Error ? error.message : String(error), true);
+    return;
+  }
+  state.prefs = next;
+}
+
+async function toggleProviderFolders(provider) {
+  const spec = provider === "gmail"
+    ? ["gmailOpen", "genmail:configSetSidebarGmailFoldersExpanded"]
+    : ["outlookOpen", "genmail:configSetSidebarOutlookFoldersExpanded"];
+  const key = spec[0];
+  const next = !state.prefs[key];
+  state.prefs[key] = next;
+  renderAccounts();
+  try {
+    state.prefs[key] = (await api.invoke(spec[1], next)) === true;
+  } catch (error) {
+    showStatus(error instanceof Error ? error.message : String(error), true);
+    await loadShellPrefs();
+  }
+  renderAccounts();
+}
+
 function prefRows() {
   return [
     ["pref-theme", "config:getTheme", "config:setTheme", "select"],
@@ -2137,6 +2260,12 @@ async function savePref(row) {
     applyPref(kind, $(id), await api.invoke(getChannel));
     status.textContent = "";
     status.classList.remove("error");
+    const key = SHELL_PREFS[getChannel];
+    if (key) {
+      state.prefs[key] = $(id).checked === true;
+      renderAccounts();
+      renderList();
+    }
   } catch (error) {
     status.textContent = error instanceof Error ? error.message : String(error);
     status.classList.add("error");
@@ -2720,6 +2849,12 @@ function wire() {
   $("refresh").addEventListener("click", () => guard(refresh));
   $("settings-open").addEventListener("click", openSettings);
   $("settings-close").addEventListener("click", () => closeDialog("settings"));
+  $("settings").addEventListener("close", () => {
+    loadShellPrefs().then(() => {
+      renderAccounts();
+      renderList();
+    }).catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
+  });
   for (const row of prefRows()) {
     $(row[0]).addEventListener("change", () => {
       savePref(row);
@@ -2843,6 +2978,7 @@ async function boot() {
     bumpUpdate({ error: error instanceof Error ? error.message : String(error) });
   }
   await loadPresets();
+  await loadShellPrefs();
   await loadAccounts();
 }
 

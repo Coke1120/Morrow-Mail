@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { userDataDir } = require("./paths");
 
-// shortcut: stored only, apply in the shell when a pane reads the flag
+// shortcut: theme, images, undo, snooze, and tidy stay stored only, upgrade when a pane reads them
 const DEFAULTS = {
   theme: "light",
   accent: "#7C3AED",
