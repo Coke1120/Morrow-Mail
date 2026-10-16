@@ -71,8 +71,24 @@ struct ReviewScrollMemory: NSViewRepresentable {
     }
 }
 
-// A new NSButton's fitting size stays empty until sizeToFit, so fixedSize locks
-// an empty accessibility frame. The press reads that frame on the button or its cell.
+// A new NSButton's fitting size stays empty until sizeToFit, and the cell can
+// accept the accessibility press without sending the button action.
+final class ReviewActionControl: NSButton {
+    override func accessibilityRole() -> NSAccessibility.Role? { .button }
+    override func accessibilityLabel() -> String? { title }
+    override func isAccessibilityEnabled() -> Bool { isEnabled }
+    override func isAccessibilityHidden() -> Bool { isHiddenOrHasHiddenAncestor }
+    override func accessibilityFrame() -> NSRect {
+        guard let window, bounds.width > 0, bounds.height > 0 else { return super.accessibilityFrame() }
+        return window.convertToScreen(convert(bounds, to: nil))
+    }
+    override func accessibilityPerformPress() -> Bool {
+        guard isEnabled else { return false }
+        performClick(nil)
+        return true
+    }
+}
+
 struct ReviewActionButton: NSViewRepresentable {
     var title: String
     var enabled = true
@@ -82,7 +98,7 @@ struct ReviewActionButton: NSViewRepresentable {
     var action: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(action) }
     func makeNSView(context: Context) -> NSButton {
-        let button = NSButton(title: title, target: context.coordinator, action: #selector(Coordinator.press))
+        let button = ReviewActionControl(title: title, target: context.coordinator, action: #selector(Coordinator.press))
         button.bezelStyle = .rounded
         button.bezelColor = .controlAccentColor
         button.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -107,7 +123,6 @@ struct ReviewActionButton: NSViewRepresentable {
         if button.title != title { button.title = title; button.invalidateIntrinsicContentSize() }
         button.setAccessibilityLabel(title)
         button.cell?.setAccessibilityLabel(title)
-        button.cell?.setAccessibilityRole(.button)
         if !identifier.isEmpty { button.setAccessibilityIdentifier(identifier) }
         button.keyEquivalent = keyEquivalent
         button.keyEquivalentModifierMask = keyModifiers

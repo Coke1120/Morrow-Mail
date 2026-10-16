@@ -138,10 +138,13 @@ import SwiftUI
                 && !element.accessibilityFrame().isEmpty
                 && root.window?.frame.intersects(element.accessibilityFrame()) == true
         }
-        return matches.first { $0 is NSButton && $0.isAccessibilityEnabled() }
+        let match = matches.first { $0 is NSButton && $0.isAccessibilityEnabled() }
             ?? matches.first { $0.isAccessibilityEnabled() }
             ?? matches.first { $0 is NSButton }
             ?? matches.first
+        // The cell can be the enabled element while its press does not send the action.
+        if let cell = match as? NSCell, let owner = nativeViews(root, NSButton.self).first(where: { $0.cell === cell }) { return owner }
+        return match
     }
     @MainActor static func mountedText(_ root: NSView) -> [String] {
         accessibilityNodes(root).flatMap { element -> [String] in

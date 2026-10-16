@@ -76,13 +76,11 @@ presses. The Today, send-review, and Review & Send actions are now accent
 hosting view to the window size so a GeometryReader does not collapse the
 header outside the window. This VM still has no Swift or AppKit run.
 
-Run `38858445956` on `c2192de` failed the same check. Marking the `NSButton`
-view as the accessibility element hides the cell the press actually reads, and
-a new button's fitting size stays empty until `sizeToFit`, so that press still
-sees no enabled frame inside the window. The button keeps AppKit's cell, the
-representable reports the fitted size, and the fixture pins the window content
-size and includes mounted button cells. A miss prints those frames. No AppKit
-run was available here.
+Run `38858445956` on `c2192de` failed the same check. Run `38863778088` then
+found an enabled `Review replies (3)` and failed `accessibilityPerformPress`.
+The button is sized with `sizeToFit`, reports its own screen frame, and the
+press performs the button click. The fixture pins the window and, when the
+match is the cell, presses the button that owns it.
 
 ## PR #58 macOS review fixture completion — 15 October 2026
 
