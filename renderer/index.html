@@ -86,6 +86,19 @@
         <input id="compose-subject" type="text" />
         <label for="compose-body">Message</label>
         <textarea id="compose-body"></textarea>
+        <div class="ai-write">
+          <label for="ai-mode">AI write</label>
+          <select id="ai-mode">
+            <option value="rewrite">Rewrite</option>
+            <option value="continue">Continue</option>
+            <option value="custom">Custom</option>
+          </select>
+          <label class="sr" for="ai-prompt">Prompt</label>
+          <input id="ai-prompt" type="text" placeholder="Prompt" />
+          <button type="button" class="ghost" id="ai-generate">Generate</button>
+          <button type="button" class="ghost" id="ai-cancel" hidden>Cancel</button>
+          <p id="ai-write-error" class="error" role="status" hidden></p>
+        </div>
         <label for="signature">Signature</label>
         <select id="signature" hidden></select>
         <p id="signature-empty" class="hint" hidden>No signatures.</p>

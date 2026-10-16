@@ -16,6 +16,8 @@ const state = {
   signatureText: "",
   translateLang: "English",
   translate: null,
+  draftWrite: null,
+  suggestions: null,
 };
 
 let accountGen = 0;
@@ -24,6 +26,8 @@ let openGen = 0;
 let reloadTimer = null;
 let undoOpIds = null;
 let translateSeq = 0;
+let draftSeq = 0;
+let suggestGen = 0;
 let signatureGen = 0;
 let scheduledGen = 0;
 let appVersion = "";
@@ -431,6 +435,78 @@ function composeSeed(email, kind, self) {
   return seed;
 }
 
+function withSuggestion(seed, text) {
+  const line = String(text || "").trim();
+  if (!line) return seed;
+  const body = seed && seed.body ? String(seed.body) : "";
+  return { ...seed, body: body ? `${line}${body}` : line };
+}
+
+function suggestionItems(data) {
+  const list = data && Array.isArray(data.suggestions) ? data.suggestions : [];
+  return list.map((item) => String(item || "").trim()).filter(Boolean);
+}
+
+function suggestionEmail(email) {
+  return {
+    subject: (email && email.subject) || "",
+    from: (email && email.from) || "",
+    snippet: (email && (email.snippet || email.textBody)) || "",
+    text_body: readable(email),
+  };
+}
+
+function draftBlockReason(mode, prompt, existing) {
+  const instruction = String(prompt || "").trim();
+  const body = String(existing || "").trim();
+  if (mode === "custom" && !instruction) return "Add a prompt.";
+  if (mode !== "custom" && !body && !instruction) return "Add some text, or a prompt.";
+  return "";
+}
+
+function draftInstruction(mode, prompt, existing, subject) {
+  return {
+    mode: mode || "custom",
+    user_prompt: String(prompt || "").trim(),
+    existing_draft_content: String(existing || ""),
+    subject: String(subject || ""),
+  };
+}
+
+// shortcut: continue appends model text; rewrite and custom replace the body. Upgrade if continue must keep a partial model reply beside the old draft.
+function draftBase(mode, existing) {
+  return mode === "continue" ? String(existing || "") : "";
+}
+
+function shownDraft(view) {
+  if (!view) return "";
+  if (!view.text) return typeof view.previous === "string" ? view.previous : view.base;
+  return view.base + view.text;
+}
+
+function htmlChunkToText(html) {
+  return String(html || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function applyDraftEvent(view, event) {
+  if (!view || !view.pending || !event || event.reqId !== view.reqId) return view;
+  if (event.type === "chunk") {
+    view.text += htmlChunkToText(event.data);
+    return view;
+  }
+  if (event.type === "error") {
+    view.error = String(event.message || "The draft failed.");
+    view.pending = false;
+    return view;
+  }
+  if (event.type === "done") view.pending = false;
+  return view;
+}
+
 function fillPresets(cards) {
   const select = $("profile");
   select.replaceChildren();
@@ -682,6 +758,96 @@ function renderActions(pane, email) {
   pane.appendChild(bar);
 }
 
+function renderSuggestions(pane, email) {
+  const box = document.createElement("div");
+  box.className = "suggestions";
+  box.setAttribute("aria-label", "Reply suggestions");
+  const status = document.createElement("p");
+  status.className = "hint";
+  status.dataset.role = "suggest-status";
+  status.setAttribute("role", "status");
+  status.hidden = true;
+  const list = document.createElement("div");
+  list.className = "suggest-list";
+  box.append(status, list);
+  pane.appendChild(box);
+  const cached = state.suggestions;
+  const same = cached && cached.emailId === email.id;
+  if (!same || (cached.error && !cached.pending)) {
+    state.suggestions = { emailId: email.id, items: [], error: "", pending: true };
+    loadSuggestions(email);
+  }
+  paintSuggestions(email);
+}
+
+async function loadSuggestions(email) {
+  const gen = suggestGen += 1;
+  const id = email.id;
+  try {
+    const data = await call("aiDraftWrite:replySuggestions", { email: suggestionEmail(email) });
+    if (gen !== suggestGen || !state.email || state.email.id !== id) return;
+    state.suggestions = { emailId: id, items: suggestionItems(data), error: "", pending: false };
+  } catch (error) {
+    if (gen !== suggestGen || !state.email || state.email.id !== id) return;
+    state.suggestions = {
+      emailId: id,
+      items: [],
+      error: error instanceof Error ? error.message : String(error),
+      pending: false,
+    };
+  }
+  if (state.email && state.email.id === id) paintSuggestions(state.email);
+}
+
+function paintSuggestions(email) {
+  const box = $("reader").querySelector(".suggestions");
+  if (!box) return;
+  const view = state.suggestions;
+  const active = !!(email && view && view.emailId === email.id);
+  const status = box.querySelector("[data-role='suggest-status']");
+  const list = box.querySelector(".suggest-list");
+  if (!status || !list) return;
+  list.replaceChildren();
+  if (!active) {
+    box.hidden = true;
+    return;
+  }
+  if (view.pending) {
+    box.hidden = false;
+    status.hidden = false;
+    status.className = "hint";
+    status.textContent = "Suggesting replies…";
+    return;
+  }
+  if (view.error) {
+    box.hidden = false;
+    status.hidden = false;
+    status.className = "hint error";
+    status.textContent = view.error;
+    return;
+  }
+  status.hidden = true;
+  status.textContent = "";
+  if (!view.items.length) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
+  const self = (account && (account.preferredFromAddress || account.email)) || "";
+  for (const text of view.items) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost";
+    button.textContent = text;
+    button.addEventListener("click", () => {
+      openCompose(withSuggestion(composeSeed(email, "reply", self), text))
+        .catch((error) => showStatus(error.message, true));
+    });
+    list.appendChild(button);
+  }
+}
+
 function renderReader(focus) {
   const pane = $("reader");
   const email = state.email;
@@ -698,6 +864,7 @@ function renderReader(focus) {
     return;
   }
   renderActions(pane, email);
+  renderSuggestions(pane, email);
   const heading = document.createElement("h2");
   heading.textContent = email.subject || "(no subject)";
   const from = document.createElement("p");
@@ -1345,8 +1512,99 @@ function onSignatureChange() {
   state.signatureText = text;
 }
 
+function stopDraftWrite() {
+  const current = state.draftWrite;
+  if (!current || !current.pending) return;
+  current.pending = false;
+  call("aiDraftWrite:cancel", { reqId: current.reqId }).catch(() => {});
+}
+
+function resetDraftWrite() {
+  stopDraftWrite();
+  state.draftWrite = null;
+  const error = $("ai-write-error");
+  if (error) {
+    error.hidden = true;
+    error.textContent = "";
+  }
+  const cancel = $("ai-cancel");
+  if (cancel) cancel.hidden = true;
+  const go = $("ai-generate");
+  if (go) go.disabled = false;
+  const body = $("compose-body");
+  if (body) body.readOnly = false;
+}
+
+function paintDraft() {
+  const view = state.draftWrite;
+  const pending = !!(view && view.pending);
+  const cancel = $("ai-cancel");
+  const go = $("ai-generate");
+  const error = $("ai-write-error");
+  const body = $("compose-body");
+  if (cancel) cancel.hidden = !pending;
+  if (go) go.disabled = pending;
+  if (body) body.readOnly = pending;
+  if (error) {
+    const message = view && view.error ? view.error : "";
+    error.hidden = !message;
+    error.textContent = message;
+  }
+  if (view && body) body.value = shownDraft(view);
+}
+
+function onDraftEvent(event) {
+  applyDraftEvent(state.draftWrite, event);
+  if (!$("compose").open) return;
+  paintDraft();
+}
+
+async function startDraftWrite() {
+  const mode = $("ai-mode").value || "custom";
+  const prompt = $("ai-prompt").value;
+  const existing = $("compose-body").value;
+  const reason = draftBlockReason(mode, prompt, existing);
+  stopDraftWrite();
+  if (reason) {
+    state.draftWrite = { reqId: "", pending: false, error: reason, text: "", base: existing, previous: existing };
+    paintDraft();
+    return;
+  }
+  const reqId = `dw-${Date.now().toString(36)}-${draftSeq += 1}`;
+  state.draftWrite = {
+    reqId,
+    pending: true,
+    error: "",
+    text: "",
+    base: draftBase(mode, existing),
+    previous: existing,
+  };
+  paintDraft();
+  try {
+    await call("aiDraftWrite:start", {
+      reqId,
+      body: draftInstruction(mode, prompt, existing, $("compose-subject").value),
+    });
+  } catch (error) {
+    if (!state.draftWrite || state.draftWrite.reqId !== reqId) return;
+    state.draftWrite.pending = false;
+    state.draftWrite.error = error instanceof Error ? error.message : String(error);
+    paintDraft();
+  }
+}
+
+async function cancelDraftWrite() {
+  const current = state.draftWrite;
+  if (!current || !current.pending) return;
+  const reqId = current.reqId;
+  current.pending = false;
+  paintDraft();
+  await call("aiDraftWrite:cancel", { reqId });
+}
+
 async function openCompose(seed) {
   const fields = seed || {};
+  resetDraftWrite();
   state.draftId = null;
   state.signatureText = "";
   state.composeMeta = {
@@ -1357,6 +1615,7 @@ async function openCompose(seed) {
   $("compose-to").value = fields.to || "";
   $("compose-subject").value = fields.subject || "";
   $("compose-body").value = fields.body || "";
+  $("ai-prompt").value = "";
   $("schedule-preset").value = "1h";
   $("schedule-at").value = "";
   syncScheduleFields();
@@ -1727,7 +1986,19 @@ function wire() {
   });
   $("signature").addEventListener("change", onSignatureChange);
   $("schedule-preset").addEventListener("change", syncScheduleFields);
+  $("compose").addEventListener("close", () => stopDraftWrite());
   $("compose-close").addEventListener("click", () => closeDialog("compose"));
+  $("ai-generate").addEventListener("click", () => {
+    startDraftWrite().catch((error) => showStatus(error.message, true));
+  });
+  $("ai-cancel").addEventListener("click", () => {
+    cancelDraftWrite().catch((error) => showStatus(error.message, true));
+  });
+  $("ai-prompt").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    startDraftWrite().catch((error) => showStatus(error.message, true));
+  });
   $("compose-save").addEventListener("click", () => guard(saveDraft));
   $("compose-schedule").addEventListener("click", () => guard(scheduleMail));
   $("compose-form").addEventListener("submit", (event) => {
@@ -1745,6 +2016,7 @@ async function boot() {
   api.on("mail:accountsUpdated", scheduleReload);
   api.on("mail:emailsUpdated", scheduleReload);
   api.on("mail:translate:event", onTranslateEvent);
+  api.on("aiDraftWrite:event", onDraftEvent);
   try {
     const version = await api.invoke("app:getVersion");
     appVersion = typeof version === "string" ? version : "";

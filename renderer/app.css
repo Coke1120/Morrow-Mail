@@ -369,6 +369,21 @@ button.thread-item[aria-current="true"] { background: #efe7fb; }
   margin: 0;
 }
 
+.suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px 0;
+}
+
+.suggestions .hint { flex-basis: 100%; margin: 0; }
+
+.suggestions .error { color: #9f1239; }
+
+.suggest-list { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.suggest-list button { text-align: left; }
+
 .sr {
   position: absolute;
   width: 1px;
@@ -424,6 +439,25 @@ label.check input { width: auto; }
 textarea { min-height: 140px; resize: vertical; }
 
 #compose textarea { min-height: 88px; }
+
+.ai-write {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.ai-write label { margin: 0; }
+
+.ai-write select,
+.ai-write input { width: auto; flex: 1 1 120px; }
+
+.ai-write .error {
+  flex-basis: 100%;
+  margin: 0;
+  color: #9f1239;
+}
 
 .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
 

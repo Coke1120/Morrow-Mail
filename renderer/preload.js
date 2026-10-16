@@ -41,12 +41,16 @@ const INVOKE = [
   "mail:listSignatures",
   "mail:translateStart",
   "mail:translateCancel",
+  "aiDraftWrite:start",
+  "aiDraftWrite:cancel",
+  "aiDraftWrite:replySuggestions",
 ];
 
 const EVENTS = [
   "mail:accountsUpdated",
   "mail:emailsUpdated",
   "mail:translate:event",
+  "aiDraftWrite:event",
 ];
 
 const invokeSet = new Set(INVOKE);

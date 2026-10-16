@@ -40,7 +40,7 @@ for (const match of preload.matchAll(/"([a-zA-Z][\w-]*:[^"\n]{1,180})"/g)) {
 }
 const appJs = fs.readFileSync(path.join(root, "renderer/app.js"), "utf8");
 const used = new Set();
-for (const match of appJs.matchAll(/"((?:mail|app|host|genmail|config):[^"]+)"/g)) used.add(match[1]);
+for (const match of appJs.matchAll(/"((?:mail|app|host|genmail|config|aiDraftWrite):[^"]+)"/g)) used.add(match[1]);
 assert.ok(used.size >= 8, "renderer stopped calling mail IPC");
 for (const channel of used) {
   assert.ok(registered.has(channel), `preload does not register ${channel}`);
@@ -612,4 +612,150 @@ for (const channel of ["mail:reply", "mail:forward"]) {
   assert.ok(!preload.includes(channel), `preload registers ${channel}`);
 }
 
-console.log("ui-path-ok");
+const ai = loadFunctions(appJs, [
+  "readable",
+  "withSuggestion",
+  "suggestionItems",
+  "suggestionEmail",
+  "draftBlockReason",
+  "draftInstruction",
+  "draftBase",
+  "shownDraft",
+  "htmlChunkToText",
+  "applyDraftEvent",
+]);
+assert.strictEqual(ai.draftBlockReason("custom", "  ", "Hello"), "Add a prompt.");
+assert.strictEqual(ai.draftBlockReason("rewrite", "", "  "), "Add some text, or a prompt.");
+assert.strictEqual(ai.draftBlockReason("continue", "go on", ""), "");
+assert.strictEqual(ai.draftBlockReason("rewrite", "", "Hello"), "");
+assert.deepStrictEqual(ai.draftInstruction("rewrite", " shorter ", "Hello", "Hi"), {
+  mode: "rewrite",
+  user_prompt: "shorter",
+  existing_draft_content: "Hello",
+  subject: "Hi",
+});
+assert.strictEqual(ai.draftBase("continue", "Hello"), "Hello");
+assert.strictEqual(ai.draftBase("rewrite", "Hello"), "");
+assert.strictEqual(ai.draftBase("custom", "Hello"), "");
+assert.strictEqual(ai.shownDraft({ pending: true, text: "", base: "", previous: "Hello" }), "Hello");
+assert.strictEqual(ai.shownDraft({ pending: true, text: "Hi", base: "", previous: "Hello" }), "Hi");
+assert.strictEqual(ai.shownDraft({ pending: false, text: "", base: "", previous: "Hello", error: "no key" }), "Hello");
+assert.strictEqual(ai.shownDraft({ pending: true, text: " more", base: "Hello", previous: "Hello" }), "Hello more");
+assert.strictEqual(ai.shownDraft(null), "");
+assert.strictEqual(ai.htmlChunkToText("Hi<br>there"), "Hi\nthere");
+assert.strictEqual(ai.htmlChunkToText("A &amp; B &lt;tag&gt;"), "A & B <tag>");
+const streamed = { reqId: "d", pending: true, error: "", text: "", base: "Keep\n" };
+ai.applyDraftEvent(streamed, { reqId: "other", type: "chunk", data: "nope" });
+ai.applyDraftEvent(streamed, { reqId: "d", type: "chunk", data: "Hi &amp; you<br>" });
+ai.applyDraftEvent(streamed, { reqId: "d", type: "chunk", data: "Next" });
+assert.strictEqual(streamed.base + streamed.text, "Keep\nHi & you\nNext");
+assert.strictEqual(streamed.pending, true);
+ai.applyDraftEvent(streamed, { reqId: "d", type: "done" });
+assert.strictEqual(streamed.pending, false);
+ai.applyDraftEvent(streamed, { reqId: "d", type: "chunk", data: "late" });
+assert.strictEqual(streamed.text.endsWith("Next"), true);
+const failedDraft = { reqId: "d", pending: true, error: "", text: "Hi", base: "" };
+ai.applyDraftEvent(failedDraft, { reqId: "d", type: "error", message: "Add an API key in GenMail → AI Setup." });
+assert.strictEqual(failedDraft.pending, false);
+assert.strictEqual(failedDraft.error, "Add an API key in GenMail → AI Setup.");
+assert.strictEqual(failedDraft.text, "Hi");
+ai.applyDraftEvent(failedDraft, { reqId: "d", type: "chunk", data: "more" });
+assert.strictEqual(failedDraft.text, "Hi");
+assert.deepStrictEqual(ai.suggestionItems({ suggestions: [" Thanks ", "", "Ask"] }), ["Thanks", "Ask"]);
+assert.deepStrictEqual(ai.suggestionItems(null), []);
+assert.deepStrictEqual(ai.suggestionItems({ suggestions: "nope" }), []);
+const suggestMail = ai.suggestionEmail({
+  subject: "Notes",
+  from: "Ada <ada@example.com>",
+  snippet: "short",
+  textBody: "longer",
+  htmlBody: "<p>Ready &amp; waiting.</p>",
+});
+assert.strictEqual(suggestMail.subject, "Notes");
+assert.strictEqual(suggestMail.snippet, "short");
+assert.strictEqual(suggestMail.text_body, "Ready & waiting.");
+const suggested = ai.withSuggestion(compose.composeSeed({
+  from: "Charles Babbage <charles@example.com>",
+  subject: "Notes",
+  textBody: "See you",
+}, "reply", "ada.lovelace@example.com"), "Thanks, I'll read it.");
+assert.strictEqual(suggested.title, "Reply");
+assert.strictEqual(suggested.to, "Charles Babbage <charles@example.com>");
+assert.ok(suggested.body.startsWith("Thanks, I'll read it.\n\n"));
+assert.ok(suggested.body.includes("> See you"));
+assert.strictEqual(ai.withSuggestion(suggested, "  "), suggested);
+for (const channel of [
+  "aiDraftWrite:start",
+  "aiDraftWrite:cancel",
+  "aiDraftWrite:replySuggestions",
+  "aiDraftWrite:event",
+]) {
+  assert.ok(registered.has(channel), `preload does not register ${channel}`);
+  assert.ok(used.has(channel), `renderer does not call ${channel}`);
+}
+assert.ok(html.includes('id="ai-mode"') && html.includes('id="ai-prompt"') && html.includes('id="ai-generate"') && html.includes('id="ai-cancel"'));
+assert.ok(html.includes(">Generate<") && html.includes(">Cancel<") && html.includes(">Rewrite<") && html.includes(">Continue<") && html.includes(">Custom<"));
+assert.ok(appJs.includes("Suggesting replies…") && appJs.includes('"Add a prompt."'));
+assert.ok(css.includes(".ai-write") && css.includes(".suggestions") && css.includes(".suggest-list"));
+assert.ok(fs.readFileSync(path.join(root, "docs/PARITY_SHELL.md"), "utf8").includes("aiDraftWrite:replySuggestions"));
+
+async function checkAiDraft() {
+  delete process.env.GENMAIL_AI_API_KEY;
+  delete process.env.XAI_API_KEY;
+  const os = require("os");
+  process.env.GENMAIL_AI_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "genmail-ai-"));
+  const Module = require("module");
+  const originalRequire = Module.prototype.require;
+  const sent = [];
+  Module.prototype.require = function (id) {
+    if (id === "electron") {
+      return {
+        BrowserWindow: {
+          getAllWindows() {
+            return [{
+              isDestroyed() { return false; },
+              webContents: {
+                send(channel, payload) { sent.push({ channel, payload }); },
+              },
+            }];
+          },
+        },
+      };
+    }
+    return originalRequire.apply(this, arguments);
+  };
+  const draft = require("../host/draft-write");
+  const missing = await draft.answer("aiDraftWrite:replySuggestions", [{
+    email: { subject: "Hi", from: "Ada <ada@example.com>", snippet: "Hello there" },
+  }]);
+  assert.strictEqual(missing.success, false);
+  assert.match(missing.error.message, /API key/);
+  const chunk = draft.escapeHtml("Hi <Ada> &\nNext").replace(/\n/g, "<br>");
+  assert.strictEqual(ai.htmlChunkToText(chunk), "Hi <Ada> &\nNext");
+  const started = await draft.answer("aiDraftWrite:start", [{
+    reqId: "boot-draft",
+    body: ai.draftInstruction("rewrite", "shorter", "Hello", "Hi"),
+  }]);
+  assert.strictEqual(started.success, true);
+  assert.strictEqual(started.data.reqId, "boot-draft");
+  await new Promise((resolve) => setImmediate(resolve));
+  const errorEvent = sent.find((row) => row.payload && row.payload.type === "error" && row.payload.reqId === "boot-draft");
+  assert.ok(errorEvent, "missing-key draft did not emit an error");
+  assert.strictEqual(errorEvent.channel, "aiDraftWrite:event");
+  assert.match(errorEvent.payload.message, /API key/);
+  const hostError = { reqId: "boot-draft", pending: true, error: "", text: "", base: "" };
+  ai.applyDraftEvent(hostError, errorEvent.payload);
+  assert.strictEqual(hostError.pending, false);
+  assert.match(hostError.error, /API key/);
+  const cancelled = await draft.answer("aiDraftWrite:cancel", [{ reqId: "boot-draft" }]);
+  assert.strictEqual(cancelled.success, true);
+  const noId = await draft.answer("aiDraftWrite:start", [{}]);
+  assert.strictEqual(noId.success, false);
+}
+
+checkAiDraft().then(() => {
+  console.log("ui-path-ok");
+}).catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
