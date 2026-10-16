@@ -136,16 +136,16 @@ struct ReplySuggestionEditor: View {
                     if review.stale.contains(key) {
                         Text("The suggestion or its evidence changed. Your draft is retained. Recheck the original before reviewing a send.").foregroundStyle(.orange)
                         if let fresh = value["proposals"].array.first(where: { review.key($0) == key || (proposal["conversationKey"].nonempty && $0["conversationKey"] == proposal["conversationKey"]) }) {
-                            Button("Keep edits and refresh evidence") { Task {
+                            ReviewActionButton(title: "Keep edits and refresh evidence", bordered: false) { Task {
                                 await review.refreshKeepingEdits(proposal, fresh: fresh, model: model)
                                 finishUpdate(fresh, keepingEdits: true)
-                            } }
-                            Button("Review updated suggestion…") {
+                            } }.fixedSize()
+                            ReviewActionButton(title: "Review updated suggestion…", bordered: false) {
                                 if review.savedPayloads[key] == review.drafts[key]?.payload || model.confirmDiscard("Replace this draft with the updated suggestion?") { Task {
                                     await review.inspect(fresh, model: model, replace: true)
                                     finishUpdate(fresh, keepingEdits: false)
                                 } }
-                            }
+                            }.fixedSize()
                         }
                     }
                     if let draft = review.drafts[key] {
@@ -167,11 +167,11 @@ struct ReplySuggestionEditor: View {
             }
             Divider()
             HStack {
-                Button("Skip suggestion") {
+                ReviewActionButton(title: "Skip suggestion", bordered: false, enabled: !model.busy && !review.writing) {
                     model.perform {
                         await review.dismiss(proposal, model: model)
                     }
-                }.disabled(model.busy || review.writing)
+                }.fixedSize()
                 Spacer()
                 Button("Save draft") { review.save(key, model: model) }.keyboardShortcut("s").disabled(review.drafts[key] == nil || review.writing || model.busy || !model.accounts.contains { $0.id == owner })
                 ReviewActionButton(title: "Review sending…", enabled: !(review.drafts[key] == nil || review.drafts[key]?.body.lowercased().contains("[decision needed") == true || !review.reviewedFacts.contains(key) || review.stale.contains(key) || review.preparing.contains(key) || review.writing || model.busy || !model.accounts.contains { $0.id == owner })) { Task { await review.reviewSending(proposal, model: model) } }

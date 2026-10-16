@@ -63,7 +63,7 @@ private struct TodayReviewWorkspace: View {
                             VStack(spacing: 0) { closeReply; replyEditor(selectedReply) }.frame(minWidth: 360, idealWidth: 420)
                         }
                     } else if let source, area.size.width < 780 {
-                        VStack(spacing: 0) { Button("Back to Today") { review.originalSelection[review.scope] = nil }.keyboardShortcut(.cancelAction).padding(12); original(source) }
+                        VStack(spacing: 0) { ReviewActionButton(title: "Back to Today", bordered: false, keyEquivalent: "\u{1b}") { review.originalSelection[review.scope] = nil }.fixedSize().padding(12); original(source) }
                     } else if let source {
                         HSplitView { content(context.date).frame(minWidth: 350); original(source).frame(minWidth: 320, idealWidth: 380) }
                     } else { content(context.date) }
@@ -98,7 +98,7 @@ private struct TodayReviewWorkspace: View {
     }
     private var closeReply: some View {
         HStack {
-            Button("Back to Today") { replySelection = nil }.keyboardShortcut(.cancelAction).accessibilityIdentifier("today.closeReply")
+            ReviewActionButton(title: "Back to Today", bordered: false, identifier: "today.closeReply", keyEquivalent: "\u{1b}") { replySelection = nil }.fixedSize()
             Spacer()
             Text("Draft edits stay with their mailbox").font(.caption).foregroundStyle(.secondary)
         }.padding(12)

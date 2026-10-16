@@ -79,12 +79,13 @@ header outside the window. This VM still has no Swift or AppKit run.
 Run `38858445956` on `c2192de` failed the same check. Run `38863778088` found
 an enabled `Review replies (3)` and failed its press; the button now performs
 that click. Run `38864512045` pressed Review replies, then missed
-`personal@fixture.invalid, not selected`. Run `38865608800` on `a2eab49` still
-missed it: the probe listed no `review.account` node and no "not selected"
-label, so SwiftUI `accessibilityLabel` / `accessibilityRepresentation` never
-enter this hosting view's AX tree. Scope tabs and suggested-reply cards now
-use the same mounted `NSButton` the fixture already finds, with the press
-title on `axLabel`. No AppKit run was available here.
+`personal@fixture.invalid, not selected`. Run `38865608800` on `a2eab49` still missed it: the probe listed no
+`review.account` node, so SwiftUI accessibility labels never enter this
+hosting view's AX tree. Run `38867290790` on `db57869` pressed the scope tab
+(the label was on an `NSButton`) and then missed `Back to Today`, which was
+still a SwiftUI button. The remaining presses in this fixture — Back, Skip,
+update, refresh, Delete, and Add Cc — use that same mounted button. No
+AppKit run was available here.
 
 ## PR #58 macOS review fixture completion — 15 October 2026
 

@@ -428,10 +428,9 @@ struct MailWorkspace: View {
                 } label: { Label("Sort", systemImage: "arrow.up.arrow.down") }.fixedSize().accessibilityIdentifier("mail.sortMenu").disabled(!model.searchResponse.isNull)
                 Spacer(minLength: 0)
                 if !model.selectedMailRows.isEmpty {
-                Button { model.trashMessages(model.selectedMailRows) } label: { Label("Delete (\(model.selectedMailRows.count))", systemImage: "trash") }
-                    .disabled(!model.canNavigate || model.selectedMailRows.isEmpty || !model.selectedMailRows.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" })
+                ReviewActionButton(title: "Delete (\(model.selectedMailRows.count))", bordered: false, enabled: model.canNavigate && model.selectedMailRows.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" }, identifier: "mail.deleteSelection") { model.trashMessages(model.selectedMailRows) }
+                    .fixedSize()
                     .help("Move selected mail to provider Trash · Undo within one minute (⌘Z)")
-                    .accessibilityIdentifier("mail.deleteSelection")
                 }
             }.menuStyle(.borderlessButton).controlSize(.small).disabled(model.busy).padding(.horizontal, 14).padding(.bottom, 8)
             Divider()
@@ -1132,8 +1131,8 @@ struct ComposeView: View {
                     recipientField("Cc", text: $draft.cc, placeholder: "Copy recipients")
                     recipientField("Bcc", text: $draft.bcc, placeholder: "Hidden recipients")
                 } else {
-                    Button("Add Cc or Bcc") { showCopyRecipients = true }
-                        .accessibilityIdentifier("compose.addCopyRecipients")
+                    ReviewActionButton(title: "Add Cc or Bcc", bordered: false, identifier: "compose.addCopyRecipients") { showCopyRecipients = true }
+                        .fixedSize()
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 Text("Use plain email addresses separated by commas or semicolons (100 recipients total). Bcc recipients are hidden from other recipients.").font(.caption).foregroundStyle(.secondary)

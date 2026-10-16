@@ -156,7 +156,10 @@ import SwiftUI
     }
     @MainActor static func controlDiagnostics(_ label: String, in root: NSView) -> String {
         let window = root.window
-        let buttons = nativeViews(root, NSButton.self).prefix(12).map { button -> String in
+        let buttons = nativeViews(root, NSButton.self)
+        let matched = buttons.filter { $0.title == label || $0.accessibilityLabel() == label }
+        let listed = matched + buttons.filter { button in !matched.contains { $0 === button } }
+        let buttonDump = listed.prefix(16).map { button -> String in
             "title=\(button.title.prefix(50)) label=\((button.accessibilityLabel() ?? "").prefix(70)) on=\(button.isEnabled) axOn=\(button.isAccessibilityEnabled()) hidden=\(button.isHiddenOrHasHiddenAncestor) ax=\(NSStringFromRect(button.accessibilityFrame())) hit=\(window?.frame.intersects(button.accessibilityFrame()) == true)"
         }
         let named = accessibilityNodes(root).filter { element in
@@ -165,7 +168,7 @@ import SwiftUI
             let frame = element.accessibilityFrame()
             return "role=\(element.accessibilityRole()?.rawValue ?? "nil") id=\((element.accessibilityIdentifier() ?? "").prefix(40)) labels=\(controlLabels(element).prefix(2).map { String($0.prefix(60)) }) on=\(element.isAccessibilityEnabled()) hidden=\(element.isAccessibilityHidden()) hit=\(window?.frame.intersects(frame) == true) ax=\(NSStringFromRect(frame))"
         }
-        return "Control probe \(label): window=\(window.map { NSStringFromRect($0.frame) } ?? "nil") host=\(NSStringFromRect(root.frame)) nodes=\(accessibilityNodes(root).count) " + buttons.joined(separator: " || ") + " ## " + named.joined(separator: " || ")
+        return "Control probe \(label): window=\(window.map { NSStringFromRect($0.frame) } ?? "nil") host=\(NSStringFromRect(root.frame)) nodes=\(accessibilityNodes(root).count) " + buttonDump.joined(separator: " || ") + " ## " + named.joined(separator: " || ")
     }
     @MainActor static func pressControl(_ label: String, in root: NSView) async throws {
         do {
