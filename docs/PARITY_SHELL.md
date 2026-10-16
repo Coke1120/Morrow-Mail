@@ -11,9 +11,14 @@ First-party `renderer/` chrome for the three-pane mail shell. Layout follows the
 - Search: the toolbar box submits `mail:search` with `query`, `limit`, and `filters`. Results replace the message list. Clearing the box, or choosing a folder, loads that folder again with `mail:listFromCache`.
 - Conversation: the reader uses `threadMessages` from `mail:openEmail` when the host sends any. If that list is empty and the message has `threadId`, it calls `mail:listThreadMessages`. Two or more members are listed; the message you opened stays the body.
 - Attachments: the reader lists `attachments` from the open message (name and size). Save calls `mail:downloadAttachment`. Open calls `mail:openAttachmentExternally`. A message that only sets `hasAttachments` shows that fact with no buttons.
+- Star on the open message (`mail:toggleStar`). A starred row shows a star. In the sample mailbox, the Starred folder lists starred mail.
+- Archive and Trash. One message uses `mail:archive` or `mail:delete`. A conversation uses `mail:threadArchive` or `mail:threadTrash`.
+- Move (`mail:moveToFolder`) picks a folder from the open message's account.
+- Snooze presets are 1 hour, tonight, and tomorrow morning (`mail:snoozeThread`). Unsnooze (`mail:unsnoozeThread`) shows when `mail:listSnoozed` says that thread is snoozed. Tonight is 18:00, then 22:00, then the next 18:00.
+- Undo (`mail:undoRemoval`) appears when archive, trash, or move returns `opIds`.
+- The folder and message panes drag-resize. Each folder row has an icon. At about 1100×700 the three panes stay side by side.
 
 ## Deferred
 
-- Settings panes, AI Studio, and the rest of GenmailSpace: calendar, Email Brain, AI write, translate, snooze UI, signatures, scheduled send.
+- Settings panes, AI Studio, calendar, Email Brain, AI write, translate UI, signatures editor, scheduled send.
 - A pixel match to `GenmailSpace-*.css`. This shell only uses the first-party layout.
-- Resizable panes and folder icons.

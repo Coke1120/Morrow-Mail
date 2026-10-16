@@ -10,12 +10,14 @@ const state = {
   query: "",
   draftId: null,
   busy: false,
+  snoozed: new Map(),
 };
 
 let accountGen = 0;
 let listGen = 0;
 let openGen = 0;
 let reloadTimer = null;
+let undoOpIds = null;
 
 function $(id) {
   return document.getElementById(id);
@@ -121,6 +123,64 @@ function nextRow(length, index, delta) {
   return next;
 }
 
+function paneWidth(current, delta, min, max) {
+  const next = current + delta;
+  if (next < min) return min;
+  if (next > max) return max;
+  return next;
+}
+
+function folderIcon(wellKnownName) {
+  switch (String(wellKnownName || "").toLowerCase()) {
+    case "inbox": return "📥";
+    case "starred": return "⭐";
+    case "sentitems":
+    case "sent": return "📤";
+    case "drafts":
+    case "draft": return "📝";
+    case "archive": return "📦";
+    case "deleteditems":
+    case "trash":
+    case "deleted": return "🗑️";
+    case "junkemail":
+    case "spam":
+    case "junk": return "🚫";
+    case "important": return "❗";
+    default: return "📁";
+  }
+}
+
+// shortcut: tonight is 18:00, else 22:00, else the next 18:00, upgrade if a named late-night preset is needed.
+function snoozeUntil(preset, now) {
+  const start = now instanceof Date ? new Date(now.getTime()) : new Date(now);
+  if (preset === "1h") return new Date(start.getTime() + 60 * 60 * 1000);
+  if (preset === "tonight") {
+    const at = new Date(start);
+    at.setHours(18, 0, 0, 0);
+    if (at.getTime() <= start.getTime() + 1000) at.setHours(22, 0, 0, 0);
+    if (at.getTime() <= start.getTime() + 1000) {
+      at.setDate(at.getDate() + 1);
+      at.setHours(18, 0, 0, 0);
+    }
+    return at;
+  }
+  const morning = new Date(start);
+  morning.setDate(morning.getDate() + 1);
+  morning.setHours(8, 0, 0, 0);
+  return morning;
+}
+
+function removalPayload(email, threaded) {
+  const payload = { accountId: email.accountId, emailId: email.id };
+  if (threaded) payload.threadId = email.threadId || email.id;
+  return payload;
+}
+
+function usesThread(email, members) {
+  if (!email) return false;
+  return (members || []).some((row) => row && row.id && row.id !== email.id);
+}
+
 function people(value) {
   if (Array.isArray(value)) return value.filter(Boolean).join(", ");
   return value ? String(value) : "";
@@ -202,9 +262,17 @@ function renderAccounts() {
       if (account.id === state.accountId && folder.id === state.folderId) {
         button.setAttribute("aria-current", "true");
       }
+      const label = document.createElement("span");
+      label.className = "folder-label";
+      const icon = document.createElement("span");
+      icon.className = "folder-icon";
+      icon.setAttribute("aria-hidden", "true");
+      icon.textContent = folderIcon(folder.wellKnownName);
       const name = document.createElement("span");
+      name.className = "name";
       name.textContent = folder.name || folder.id;
-      button.appendChild(name);
+      label.append(icon, name);
+      button.appendChild(label);
       if (folder.unreadCount) {
         const count = document.createElement("span");
         count.className = "count";
@@ -264,9 +332,22 @@ function renderList() {
       flag.textContent = "Unread";
       button.appendChild(flag);
     }
+    if (email.isStarred) {
+      const flag = document.createElement("span");
+      flag.className = "sr";
+      flag.textContent = "Starred";
+      button.appendChild(flag);
+    }
     const from = document.createElement("span");
     from.className = "from";
-    from.textContent = senderName(email.from);
+    if (email.isStarred) {
+      const star = document.createElement("span");
+      star.className = "star";
+      star.setAttribute("aria-hidden", "true");
+      star.textContent = "★";
+      from.appendChild(star);
+    }
+    from.append(senderName(email.from));
     const when = document.createElement("time");
     when.className = "when";
     if (email.date) when.dateTime = email.date;
@@ -287,6 +368,72 @@ function renderList() {
   if (current) current.scrollIntoView({ block: "nearest" });
 }
 
+function snoozedUntilOf(email) {
+  if (!email) return "";
+  return state.snoozed.get(email.threadId || email.id) || "";
+}
+
+function option(value, text) {
+  const node = document.createElement("option");
+  node.value = value;
+  node.textContent = text;
+  return node;
+}
+
+function renderActions(pane, email) {
+  const bar = document.createElement("div");
+  bar.className = "reader-actions";
+  const star = document.createElement("button");
+  star.type = "button";
+  star.className = "ghost";
+  star.dataset.action = "star";
+  star.textContent = email.isStarred ? "Unstar" : "Star";
+  star.setAttribute("aria-pressed", email.isStarred ? "true" : "false");
+  star.addEventListener("click", () => guard(() => toggleStar(email)));
+  const archive = document.createElement("button");
+  archive.type = "button";
+  archive.className = "ghost";
+  archive.dataset.action = "archive";
+  archive.textContent = "Archive";
+  archive.addEventListener("click", () => guard(() => archiveOpen(email)));
+  const trash = document.createElement("button");
+  trash.type = "button";
+  trash.className = "ghost";
+  trash.dataset.action = "trash";
+  trash.textContent = "Trash";
+  trash.addEventListener("click", () => guard(() => trashOpen(email)));
+  const move = document.createElement("select");
+  move.dataset.action = "move";
+  move.setAttribute("aria-label", "Move to folder");
+  move.append(option("", "Move"));
+  const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
+  for (const folder of foldersOf(account)) {
+    if (!folder || folder.id === email.folderId) continue;
+    move.append(option(folder.id, folder.name || folder.id));
+  }
+  move.addEventListener("change", () => {
+    const target = move.value;
+    move.value = "";
+    if (!target) return;
+    guard(() => moveOpen(email, target));
+  });
+  const snooze = document.createElement("select");
+  snooze.dataset.action = "snooze";
+  snooze.setAttribute("aria-label", "Snooze");
+  const until = snoozedUntilOf(email);
+  snooze.append(option("", until ? "Snoozed" : "Snooze"));
+  if (until) snooze.append(option("clear", "Unsnooze"));
+  snooze.append(option("1h", "1 hour"), option("tonight", "Tonight"), option("morning", "Tomorrow morning"));
+  snooze.addEventListener("change", () => {
+    const preset = snooze.value;
+    snooze.value = "";
+    if (!preset) return;
+    guard(() => (preset === "clear" ? unsnoozeOpen(email) : snoozeOpen(email, preset)));
+  });
+  bar.append(star, archive, trash, move, snooze);
+  pane.appendChild(bar);
+}
+
 function renderReader(focus) {
   const pane = $("reader");
   pane.replaceChildren();
@@ -298,6 +445,7 @@ function renderReader(focus) {
     pane.appendChild(empty);
     return;
   }
+  renderActions(pane, email);
   const heading = document.createElement("h2");
   heading.textContent = email.subject || "(no subject)";
   const from = document.createElement("p");
@@ -308,6 +456,14 @@ function renderReader(focus) {
   const date = email.date ? new Date(email.date) : null;
   when.textContent = date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : "";
   pane.append(heading, from, when);
+  const until = snoozedUntilOf(email);
+  const untilDate = until ? new Date(until) : null;
+  if (untilDate && !Number.isNaN(untilDate.getTime())) {
+    const snooze = document.createElement("p");
+    snooze.className = "meta";
+    snooze.textContent = `Snoozed until ${untilDate.toLocaleString()}`;
+    pane.appendChild(snooze);
+  }
   for (const [label, value] of [["To", email.to], ["Cc", email.cc]]) {
     const text = people(value);
     if (!text) continue;
@@ -410,6 +566,122 @@ async function useAttachment(channel, email, file) {
   showStatus(channel === "mail:downloadAttachment" ? "Saved." : "Opened.");
 }
 
+function showUndo(text, opIds) {
+  undoOpIds = opIds && opIds.length ? opIds.slice() : null;
+  $("undo").hidden = !undoOpIds;
+  showStatus(text);
+}
+
+function clearUndo() {
+  undoOpIds = null;
+  $("undo").hidden = true;
+}
+
+function focusAction(name) {
+  const control = $("reader").querySelector(`[data-action="${name}"]`);
+  if (control) control.focus();
+}
+
+async function toggleStar(email) {
+  const isStarred = !email.isStarred;
+  await call("mail:toggleStar", { emailId: email.id, accountId: email.accountId, isStarred });
+  email.isStarred = isStarred;
+  const row = state.emails.find((item) => item.id === email.id);
+  if (row) row.isStarred = isStarred;
+  renderList();
+  renderReader(false);
+  focusAction("star");
+}
+
+async function finishRemoval(email, label, data) {
+  const opIds = data && Array.isArray(data.opIds) ? data.opIds.filter(Boolean) : [];
+  if (state.email && state.email.id === email.id) {
+    state.email = null;
+    state.thread = [];
+  }
+  renderReader(false);
+  if (opIds.length) showUndo(label, opIds);
+  else {
+    clearUndo();
+    showStatus(label);
+  }
+  await loadList();
+}
+
+async function removeOpen(email, channel, label) {
+  const threaded = channel === "mail:threadArchive" || channel === "mail:threadTrash";
+  await finishRemoval(email, label, await call(channel, removalPayload(email, threaded)));
+}
+
+async function archiveOpen(email) {
+  const threaded = usesThread(email, state.thread);
+  await removeOpen(email, threaded ? "mail:threadArchive" : "mail:archive", "Archived.");
+}
+
+async function trashOpen(email) {
+  const threaded = usesThread(email, state.thread);
+  await removeOpen(email, threaded ? "mail:threadTrash" : "mail:delete", "Moved to Trash.");
+}
+
+async function moveOpen(email, targetFolderId) {
+  await finishRemoval(email, "Moved.", await call("mail:moveToFolder", {
+    emailId: email.id,
+    accountId: email.accountId,
+    targetFolderId,
+    folderId: email.folderId,
+  }));
+}
+
+async function undoRemoval() {
+  const opIds = undoOpIds;
+  if (!opIds || !opIds.length) return;
+  clearUndo();
+  await call("mail:undoRemoval", { opIds, kind: "move" });
+  showStatus("Undone.");
+  await loadList();
+}
+
+async function snoozeOpen(email, preset) {
+  const threadId = email.threadId || email.id;
+  const snoozedUntil = snoozeUntil(preset, new Date()).toISOString();
+  const data = await call("mail:snoozeThread", { accountId: email.accountId, threadId, snoozedUntil });
+  state.snoozed.set(threadId, (data && data.snoozedUntil) || snoozedUntil);
+  const when = new Date(state.snoozed.get(threadId));
+  showStatus(Number.isNaN(when.getTime()) ? "Snoozed." : `Snoozed until ${when.toLocaleString()}.`);
+  await loadList();
+  renderReader(false);
+  focusAction("snooze");
+}
+
+async function unsnoozeOpen(email) {
+  const threadId = email.threadId || email.id;
+  await call("mail:unsnoozeThread", { accountId: email.accountId, threadId });
+  state.snoozed.delete(threadId);
+  showStatus("Unsnoozed.");
+  await loadList();
+  renderReader(false);
+  focusAction("snooze");
+}
+
+async function loadSnoozed() {
+  const account = selectedAccount();
+  if (!account) {
+    state.snoozed = new Map();
+    return;
+  }
+  try {
+    const data = await call("mail:listSnoozed", { accountId: account.id });
+    const records = data && Array.isArray(data.records) ? data.records : [];
+    const next = new Map();
+    for (const row of records) {
+      if (row && row.threadId) next.set(row.threadId, row.snoozedUntil || "snoozed");
+    }
+    state.snoozed = next;
+  } catch {
+    // Keep the marks already shown when this account has no snooze list.
+  }
+}
+
 function rememberSelection(preferredId) {
   if (preferredId && state.accounts.some((account) => account.id === preferredId)) {
     state.accountId = preferredId;
@@ -465,6 +737,8 @@ async function loadAccounts(preferredId) {
   renderAccounts();
   renderBanner();
   syncRemove();
+  await loadSnoozed();
+  if (gen !== accountGen) return;
   await loadList();
   if (gen !== accountGen) return;
   renderReader(false);
@@ -480,7 +754,8 @@ async function selectFolder(accountId, folderId) {
   renderAccounts();
   syncRemove();
   renderReader(false);
-  showStatus("");
+  if (!undoOpIds) showStatus("");
+  await loadSnoozed();
   await loadList();
 }
 
@@ -565,6 +840,7 @@ function connectPayload() {
 }
 
 async function connectImap() {
+  clearUndo();
   showStatus("Connecting…");
   const view = await call("mail:connectImapSmtp", connectPayload());
   $("password").value = "";
@@ -574,6 +850,7 @@ async function connectImap() {
 }
 
 async function connectOAuth(provider) {
+  clearUndo();
   showStatus("Waiting for the browser sign-in…");
   const view = await call("mail:addAccount", { provider });
   closeDialog("connect");
@@ -641,6 +918,7 @@ async function removeAccount() {
   if (!isLive(account)) return;
   const label = account.email || account.id;
   if (!window.confirm(`Remove ${label} from GenMail REA? Messages stay on the server.`)) return;
+  clearUndo();
   showStatus("Removing account…");
   await call("mail:removeAccount", { accountId: account.id });
   state.accountId = null;
@@ -706,7 +984,7 @@ function onShellKey(event) {
   if (event.key === "Enter") {
     const buttons = messageButtons();
     if (buttons.includes(document.activeElement)) return;
-    if (event.target.closest && event.target.closest("nav, header, dialog, #reader")) return;
+    if (event.target.closest && event.target.closest("nav, header, dialog, #reader, #notice, .split")) return;
     const target = buttons.find((button) => button.classList.contains("cursor"))
       || buttons.find((button) => button.getAttribute("aria-current") === "true");
     if (!target) return;
@@ -718,8 +996,58 @@ function onShellKey(event) {
   moveCursor(event.key === "ArrowDown" ? 1 : -1);
 }
 
+function setPane(which, width) {
+  const shell = document.querySelector(".shell");
+  if (!shell) return;
+  const total = shell.getBoundingClientRect().width;
+  const folders = $("folders").getBoundingClientRect().width;
+  const list = $("messages").getBoundingClientRect().width;
+  const readerMin = 260;
+  const handle = 12;
+  if (which === "folders") {
+    const max = Math.max(140, total - list - readerMin - handle);
+    shell.style.setProperty("--folders", `${Math.round(paneWidth(width, 0, 140, max))}px`);
+    return;
+  }
+  const max = Math.max(200, total - folders - readerMin - handle);
+  shell.style.setProperty("--list", `${Math.round(paneWidth(width, 0, 200, max))}px`);
+}
+
+function wireSplits() {
+  for (const handle of document.querySelectorAll(".split")) {
+    handle.addEventListener("keydown", (event) => {
+      const step = event.key === "ArrowRight" ? 24 : event.key === "ArrowLeft" ? -24 : 0;
+      if (!step) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const pane = handle.dataset.split === "folders" ? $("folders") : $("messages");
+      setPane(handle.dataset.split, pane.getBoundingClientRect().width + step);
+    });
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const which = handle.dataset.split;
+      const startX = event.clientX;
+      const start = (which === "folders" ? $("folders") : $("messages")).getBoundingClientRect().width;
+      function move(ev) {
+        setPane(which, start + ev.clientX - startX);
+      }
+      function stop() {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", stop);
+        window.removeEventListener("pointercancel", stop);
+      }
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", stop);
+      window.addEventListener("pointercancel", stop);
+    });
+  }
+}
+
 function wire() {
   document.addEventListener("keydown", onShellKey);
+  wireSplits();
+  $("undo").addEventListener("click", () => guard(undoRemoval));
   $("profile").addEventListener("change", syncCustomFields);
   $("search-form").addEventListener("submit", (event) => {
     event.preventDefault();

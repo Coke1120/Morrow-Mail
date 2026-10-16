@@ -25,10 +25,15 @@
         <button type="button" class="primary" id="compose-open">New Mail</button>
       </div>
     </header>
-    <div id="status" role="status"></div>
+    <div id="notice">
+      <p id="status" role="status"></p>
+      <button type="button" class="ghost" id="undo" hidden>Undo</button>
+    </div>
     <div class="shell">
       <nav id="folders" aria-label="Folders"></nav>
+      <div class="split" data-split="folders" role="separator" aria-orientation="vertical" aria-label="Resize folders" tabindex="0"></div>
       <div id="messages" aria-label="Messages"></div>
+      <div class="split" data-split="messages" role="separator" aria-orientation="vertical" aria-label="Resize message list" tabindex="0"></div>
       <article id="reader" aria-label="Message"></article>
     </div>
 

@@ -283,14 +283,20 @@ function selectEmails(params) {
   const category = query.category || "all";
   return emails.filter((email) => {
     if (query.accountId && email.accountId !== query.accountId) return false;
-    if (query.folderKey && email.folderKey !== query.folderKey) return false;
-    if (query.folderId && email.folderId !== query.folderId && !(email.folders || []).includes(query.folderId)) {
-      return false;
+    const starredFolder = query.folderId === "starred" || String(query.folderId || "").endsWith(":starred");
+    if (starredFolder) {
+      const inFolder = email.folderId === query.folderId || (email.folders || []).includes(query.folderId);
+      if (!email.isStarred && !inFolder) return false;
+    } else {
+      if (query.folderKey && email.folderKey !== query.folderKey) return false;
+      if (query.folderId && email.folderId !== query.folderId && !(email.folders || []).includes(query.folderId)) {
+        return false;
+      }
     }
     if (category !== "all" && email.unifiedCategory !== category) return false;
     if (query.filterUnread && !email.unread) return false;
     if (query.filterFlagged && !email.isStarred) return false;
-    const viewingInbox = query.folderKey === "inbox" || (query.folderId && String(query.folderId).endsWith(":inbox"));
+    const viewingInbox = !starredFolder && (query.folderKey === "inbox" || (query.folderId && String(query.folderId).endsWith(":inbox")));
     if (viewingInbox && snoozedActive(email.threadId)) return false;
     return true;
   }).sort((a, b) => b.listSortTs - a.listSortTs);
@@ -598,6 +604,22 @@ function answer(channel, args) {
       if (params && params.threadId) snoozes.delete(params.threadId);
       notifyList(params && params.accountId);
       return { success: true, data: true };
+    case "mail:listSnoozed": {
+      const accountId = params && params.accountId;
+      const records = [];
+      for (const [threadId, until] of snoozes) {
+        if (!snoozedActive(threadId)) continue;
+        const email = emails.find((row) => row.threadId === threadId && (!accountId || row.accountId === accountId));
+        if (!email) continue;
+        records.push({
+          threadId,
+          accountId: email.accountId,
+          state: "snoozed",
+          snoozedUntil: until,
+        });
+      }
+      return ok({ records });
+    }
     case "mail:fetchAttachmentBytes": {
       const email = findEmail(params && (params.messageId || params.emailId));
       const attachment = email && (email.attachments || []).find((item) => item.id === (params && params.attachmentId));
