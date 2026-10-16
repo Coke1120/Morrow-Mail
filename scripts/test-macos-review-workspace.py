@@ -126,10 +126,11 @@ with tempfile.TemporaryDirectory(prefix="morrow-review-check-") as temporary:
     # Exercise the exact production Button action, including AppModel.perform
     # and the service request/reload. No handwritten replica of its handler.
     view = overrides.get("ReplySuggestionsView.swift", sources / "ReplySuggestionsView.swift").read_text()
-    marker = 'Button("Skip suggestion") {'
+    # Baseline still has the SwiftUI button. Production mounts an NSButton; the handler body stays the extracted action.
+    marker, end = ('Button("Skip suggestion") {', '}.disabled(') if baseline else ('ReviewActionButton(title: "Skip suggestion", enabled: !model.busy && !review.writing, bordered: false) {', '}.fixedSize()')
     if view.count(marker) != 1:
         raise RuntimeError("The production Skip action seam changed")
-    action = view.split(marker, 1)[1].split('}.disabled(', 1)[0]
+    action = view.split(marker, 1)[1].split(end, 1)[0]
     invoke = fixture / "InvokeReviewSkip.swift"
     invoke.write_text('''import SwiftUI
 @MainActor func invokeReviewSkip(_ proposal: JSON, model: AppModel) async throws {
