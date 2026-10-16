@@ -174,7 +174,7 @@ function buildEmails() {
       subject: "Notes on the Analytical Engine",
       snippet: "The table of operations is ready for a second reading.",
       unifiedCategory: "primary",
-      htmlBody: "<p>The table of operations is ready for a second reading.</p>",
+      htmlBody: "<p>The table of operations is ready for a second reading.</p><img alt=\"Charles Babbage\" src=\"https://upload.wikimedia.org/wikipedia/commons/thumb/a/af/Charles_Babbage.jpg/330px-Charles_Babbage.jpg\">",
       textBody: "The table of operations is ready for a second reading.",
     }),
     message({

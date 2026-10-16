@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { userDataDir } = require("./paths");
 
-// shortcut: theme, images, undo, snooze, and tidy stay stored only, upgrade when a pane reads them
+// shortcut: tidy stays stored only, upgrade when the host has a tidy action
 const DEFAULTS = {
   theme: "light",
   accent: "#7C3AED",

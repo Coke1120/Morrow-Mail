@@ -23,6 +23,12 @@ const state = {
     aiReply: false,
     gmailOpen: true,
     outlookOpen: false,
+    theme: "light",
+    accent: "#7C3AED",
+    conversation: true,
+    images: false,
+    undoSend: 5,
+    snooze: true,
   },
 };
 
@@ -37,6 +43,8 @@ let suggestGen = 0;
 let signatureGen = 0;
 let signatureEditId = "";
 let scheduledGen = 0;
+let sendTimer = null;
+let sendGen = 0;
 let appVersion = "";
 let updateGen = 0;
 let updateTimer = null;
@@ -852,19 +860,22 @@ function renderActions(pane, email) {
     if (!target) return;
     guard(() => moveOpen(email, target));
   });
-  const snooze = document.createElement("select");
-  snooze.dataset.action = "snooze";
-  snooze.setAttribute("aria-label", "Snooze");
-  const until = snoozedUntilOf(email);
-  snooze.append(option("", until ? "Snoozed" : "Snooze"));
-  if (until) snooze.append(option("clear", "Unsnooze"));
-  snooze.append(option("1h", "1 hour"), option("tonight", "Tonight"), option("morning", "Tomorrow morning"));
-  snooze.addEventListener("change", () => {
-    const preset = snooze.value;
-    snooze.value = "";
-    if (!preset) return;
-    guard(() => (preset === "clear" ? unsnoozeOpen(email) : snoozeOpen(email, preset)));
-  });
+  let snooze = null;
+  if (state.prefs.snooze !== false) {
+    snooze = document.createElement("select");
+    snooze.dataset.action = "snooze";
+    snooze.setAttribute("aria-label", "Snooze");
+    const until = snoozedUntilOf(email);
+    snooze.append(option("", until ? "Snoozed" : "Snooze"));
+    if (until) snooze.append(option("clear", "Unsnooze"));
+    snooze.append(option("1h", "1 hour"), option("tonight", "Tonight"), option("morning", "Tomorrow morning"));
+    snooze.addEventListener("change", () => {
+      const preset = snooze.value;
+      snooze.value = "";
+      if (!preset) return;
+      guard(() => (preset === "clear" ? unsnoozeOpen(email) : snoozeOpen(email, preset)));
+    });
+  }
   const self = (account && (account.preferredFromAddress || account.email)) || "";
   const replyTo = replyAddresses(email, self, false);
   const everyone = replyAddresses(email, self, true);
@@ -872,10 +883,11 @@ function renderActions(pane, email) {
   const forward = readerButton("forward", "Forward", () => openCompose(composeSeed(email, "forward", self)));
   if (everyone !== replyTo) {
     const replyAll = readerButton("reply-all", "Reply All", () => openCompose(composeSeed(email, "all", self)));
-    bar.append(reply, replyAll, forward, star, archive, trash, move, snooze);
+    bar.append(reply, replyAll, forward, star, archive, trash, move);
   } else {
-    bar.append(reply, forward, star, archive, trash, move, snooze);
+    bar.append(reply, forward, star, archive, trash, move);
   }
+  if (snooze) bar.append(snooze);
   pane.appendChild(bar);
 }
 
@@ -998,7 +1010,7 @@ function renderReader(focus) {
   pane.append(heading, from, when);
   const until = snoozedUntilOf(email);
   const untilDate = until ? new Date(until) : null;
-  if (untilDate && !Number.isNaN(untilDate.getTime())) {
+  if (state.prefs.snooze !== false && untilDate && !Number.isNaN(untilDate.getTime())) {
     const snooze = document.createElement("p");
     snooze.className = "meta";
     snooze.textContent = `Snoozed until ${untilDate.toLocaleString()}`;
@@ -1015,7 +1027,7 @@ function renderReader(focus) {
   renderThread(pane, email);
   renderAttachments(pane, email);
   renderTranslate(pane, email);
-  renderBody(pane, readable(email));
+  renderBody(pane, email);
   const translated = document.createElement("div");
   translated.className = "translation";
   translated.setAttribute("role", "status");
@@ -1028,14 +1040,24 @@ function renderReader(focus) {
   }
 }
 
-function renderBody(pane, text) {
+function renderBody(pane, email) {
   const wrap = document.createElement("div");
   wrap.className = "body";
-  for (const node of bodyNodes(text)) {
+  for (const node of bodyNodes(readable(email))) {
     const block = document.createElement("p");
     block.dataset.nodeId = node.node_id;
     block.textContent = node.text;
     wrap.appendChild(block);
+  }
+  if (state.prefs.images === true) {
+    for (const image of remoteImageSrcs(email && email.htmlBody)) {
+      const img = document.createElement("img");
+      img.className = "remote";
+      img.alt = image.alt;
+      img.referrerPolicy = "no-referrer";
+      img.src = image.src;
+      wrap.appendChild(img);
+    }
   }
   pane.appendChild(wrap);
 }
@@ -1163,6 +1185,7 @@ async function cancelTranslate() {
 }
 
 function renderThread(pane, email) {
+  if (state.prefs.conversation === false) return;
   const members = state.thread.slice().sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
   if (members.length < 2) return;
   const list = document.createElement("div");
@@ -1432,12 +1455,12 @@ async function selectFolder(accountId, folderId) {
   renderAccounts();
   syncRemove();
   renderReader(false);
-  if (!undoOpIds) showStatus("");
+  if (!undoOpIds && !sendTimer) showStatus("");
   await loadSnoozed();
   await loadList();
 }
 
-async function openMessage(emailId) {
+async function openMessage(emailId, focus) {
   const gen = ++openGen;
   const data = await call("mail:openEmail", { emailId });
   if (gen !== openGen) return;
@@ -1445,7 +1468,7 @@ async function openMessage(emailId) {
   if (!email) throw new Error("That message is no longer in the mailbox.");
   let listed = null;
   const fromOpen = data && data.threadMessages;
-  if ((!Array.isArray(fromOpen) || !fromOpen.length) && email.threadId) {
+  if (shouldListThread(state.prefs.conversation, fromOpen, email.threadId)) {
     try {
       listed = await call("mail:listThreadMessages", {
         threadId: email.threadId,
@@ -1458,8 +1481,8 @@ async function openMessage(emailId) {
     if (gen !== openGen) return;
   }
   state.email = email;
-  state.thread = threadMembers(fromOpen, listed);
-  renderReader(true);
+  state.thread = state.prefs.conversation === false ? [] : threadMembers(fromOpen, listed);
+  renderReader(focus !== false);
   renderList();
   if (!email.unread) return;
   try {
@@ -1940,6 +1963,31 @@ async function saveDraft() {
   showStatus("Draft saved.");
 }
 
+function hideUndoSend() {
+  sendGen += 1;
+  if (sendTimer) clearTimeout(sendTimer);
+  sendTimer = null;
+  const button = $("undo-send");
+  if (button) button.hidden = true;
+}
+
+function cancelUndoSend() {
+  if (!sendTimer) return false;
+  hideUndoSend();
+  showStatus("Send canceled.");
+  return true;
+}
+
+async function deliverMail(payload) {
+  showStatus("Sending…");
+  await call("mail:send", payload);
+  state.draftId = null;
+  closeDialog("compose");
+  showStatus("Sent.");
+  await loadList();
+}
+
+// shortcut: the wait is local; mail:send is immediate once it starts, upgrade when the host can recall a send
 async function sendMail() {
   const account = selectedAccount();
   if (!isLive(account)) return;
@@ -1947,12 +1995,24 @@ async function sendMail() {
     showStatus("Add a recipient.", true);
     return;
   }
-  showStatus("Sending…");
-  await call("mail:send", composePayload(account));
-  state.draftId = null;
+  const payload = composePayload(account);
+  const delay = sendDelayMs(state.prefs.undoSend);
+  hideUndoSend();
+  if (!delay) {
+    await deliverMail(payload);
+    return;
+  }
   closeDialog("compose");
-  showStatus("Sent.");
-  await loadList();
+  const gen = ++sendGen;
+  showStatus(`Undo send for ${delay / 1000}s.`);
+  $("undo-send").hidden = false;
+  sendTimer = setTimeout(() => {
+    sendTimer = null;
+    const button = $("undo-send");
+    if (button) button.hidden = true;
+    if (gen !== sendGen) return;
+    guard(() => deliverMail(payload));
+  }, delay);
 }
 
 async function removeAccount() {
@@ -1960,6 +2020,7 @@ async function removeAccount() {
   if (!isLive(account)) return;
   const label = account.email || account.id;
   if (!window.confirm(`Remove ${label} from GenMail REA? Messages stay on the server.`)) return;
+  hideUndoSend();
   clearUndo();
   showStatus("Removing account…");
   await call("mail:removeAccount", { accountId: account.id });
@@ -2167,11 +2228,61 @@ async function installUpdate() {
   }
 }
 
+function shellLook(prefs) {
+  const src = prefs && typeof prefs === "object" ? prefs : {};
+  const theme = String(src.theme || "").trim().toLowerCase() === "dark" ? "dark" : "light";
+  const raw = typeof src.accent === "string" ? src.accent.trim() : "";
+  const accent = /^#[0-9A-Fa-f]{6}$/.test(raw) ? raw.toUpperCase() : "#7C3AED";
+  return { theme, accent };
+}
+
+function applyLook(prefs) {
+  const look = shellLook(prefs);
+  const root = document.documentElement;
+  root.dataset.theme = look.theme;
+  root.style.setProperty("--accent", look.accent);
+}
+
+function shouldListThread(conversation, fromOpen, threadId) {
+  if (conversation === false) return false;
+  if (Array.isArray(fromOpen) && fromOpen.length > 0) return false;
+  return !!threadId;
+}
+
+// shortcut: CSP allows http/https images; the reader omits them when remote images is off. Upgrade when the document policy can change without a reload.
+function remoteImageSrcs(html) {
+  const srcs = [];
+  const re = /<img\b([^>]*)>/gi;
+  let match;
+  while ((match = re.exec(String(html || "")))) {
+    const tag = match[1] || "";
+    const srcMatch = tag.match(/\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i);
+    const src = srcMatch ? (srcMatch[1] || srcMatch[2] || srcMatch[3] || "").trim() : "";
+    if (!/^https?:\/\/\S+$/i.test(src)) continue;
+    const altMatch = tag.match(/\balt\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/i);
+    const alt = altMatch ? (altMatch[1] || altMatch[2] || altMatch[3] || "").trim() : "";
+    srcs.push({ src, alt });
+  }
+  return srcs;
+}
+
+function sendDelayMs(seconds) {
+  const n = typeof seconds === "number" ? seconds : (typeof seconds === "string" && /^-?\d+$/.test(seconds) ? Number(seconds) : NaN);
+  if (!Number.isInteger(n) || n < 0 || n > 30) return 5000;
+  return n * 1000;
+}
+
 const SHELL_PREFS = {
   "genmail:configGetShowFolderChips": "chips",
   "genmail:configGetAiWriteAutoOpenOnReply": "aiReply",
   "genmail:configGetSidebarGmailFoldersExpanded": "gmailOpen",
   "genmail:configGetSidebarOutlookFoldersExpanded": "outlookOpen",
+};
+
+const READER_PREFS = {
+  "genmail:configGetConversationViewEnabled": "conversation",
+  "genmail:configGetAutoLoadRemoteImages": "images",
+  "genmail:configGetSnoozeEffective": "snooze",
 };
 
 async function loadShellPrefs() {
@@ -2180,11 +2291,67 @@ async function loadShellPrefs() {
     for (const [channel, key] of Object.entries(SHELL_PREFS)) {
       next[key] = (await api.invoke(channel)) === true;
     }
+    const look = shellLook({
+      theme: await api.invoke("config:getTheme"),
+      accent: await api.invoke("genmail:configGetAccent"),
+    });
+    next.theme = look.theme;
+    next.accent = look.accent;
+    for (const [channel, key] of Object.entries(READER_PREFS)) {
+      next[key] = (await api.invoke(channel)) === true;
+    }
+    next.undoSend = sendDelayMs(await api.invoke("genmail:configGetUndoSendDelaySeconds")) / 1000;
   } catch (error) {
     showStatus(error instanceof Error ? error.message : String(error), true);
     return;
   }
   state.prefs = next;
+  applyLook(next);
+}
+
+function refreshReader() {
+  const email = state.email;
+  if (!email) return;
+  if (state.prefs.conversation === false) {
+    state.thread = [];
+    renderReader(false);
+    return;
+  }
+  const have = state.thread.some((row) => row && row.id === email.id);
+  if (email.threadId && state.thread.length < 2 && !have) {
+    openMessage(email.id, false).catch((error) => showStatus(error.message, true));
+    return;
+  }
+  renderReader(false);
+}
+
+function takePref(getChannel, kind, control) {
+  const key = SHELL_PREFS[getChannel] || READER_PREFS[getChannel];
+  if (key) {
+    state.prefs[key] = control.checked === true;
+    return true;
+  }
+  if (getChannel === "config:getTheme" || getChannel === "genmail:configGetAccent") {
+    const look = shellLook({
+      theme: getChannel === "config:getTheme" ? control.value : state.prefs.theme,
+      accent: getChannel === "genmail:configGetAccent" ? control.value : state.prefs.accent,
+    });
+    state.prefs.theme = look.theme;
+    state.prefs.accent = look.accent;
+    return true;
+  }
+  if (getChannel === "genmail:configGetUndoSendDelaySeconds") {
+    state.prefs.undoSend = sendDelayMs(readPref(kind, control)) / 1000;
+    return true;
+  }
+  return false;
+}
+
+function paintPrefs() {
+  applyLook(state.prefs);
+  renderAccounts();
+  renderList();
+  refreshReader();
 }
 
 async function toggleProviderFolders(provider) {
@@ -2260,12 +2427,7 @@ async function savePref(row) {
     applyPref(kind, $(id), await api.invoke(getChannel));
     status.textContent = "";
     status.classList.remove("error");
-    const key = SHELL_PREFS[getChannel];
-    if (key) {
-      state.prefs[key] = $(id).checked === true;
-      renderAccounts();
-      renderList();
-    }
+    if (takePref(getChannel, kind, $(id))) paintPrefs();
   } catch (error) {
     status.textContent = error instanceof Error ? error.message : String(error);
     status.classList.add("error");
@@ -2836,6 +2998,7 @@ function wire() {
   document.addEventListener("keydown", onShellKey);
   wireSplits();
   $("undo").addEventListener("click", () => guard(undoRemoval));
+  $("undo-send").addEventListener("click", cancelUndoSend);
   $("profile").addEventListener("change", syncCustomFields);
   $("search-form").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -2851,8 +3014,7 @@ function wire() {
   $("settings-close").addEventListener("click", () => closeDialog("settings"));
   $("settings").addEventListener("close", () => {
     loadShellPrefs().then(() => {
-      renderAccounts();
-      renderList();
+      paintPrefs();
     }).catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
   });
   for (const row of prefRows()) {
