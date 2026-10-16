@@ -926,7 +926,11 @@ function answer(channel, args) {
     case "mail:listFailedDraftIds":
       return ok([]);
     case "mail:listSignatures":
+      // shortcut: IMAP has no signature store, upgrade when a server can persist them.
       return ok({ signatures: [], defaultSignatureId: null, defaultSignaturePerAccount: {} });
+    case "mail:upsertSignature":
+    case "mail:deleteSignature":
+      return fail("imap_signatures_unsupported", "Signatures are kept only for the sample mailbox.");
     case "mail:ops:queueSummary":
       return ok({ pending: 0, dead: 0, sends: 0 });
     case "mail:ops:getNetworkState":

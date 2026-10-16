@@ -176,6 +176,14 @@ async function run() {
   if (!scheduled || !scheduled.error || scheduled.error.code !== "imap_schedule_send_unsupported") {
     problem(problems, "schedule send");
   }
+  const signatureWrite = answer("mail:upsertSignature", [{ name: "Work", text: "Thanks" }]);
+  if (!signatureWrite || !signatureWrite.error || signatureWrite.error.code !== "imap_signatures_unsupported") {
+    problem(problems, "signature write");
+  }
+  const signatureList = answer("mail:listSignatures", [{ accountId: "imap-test" }]);
+  if (!signatureList || !signatureList.data || signatureList.data.signatures.length !== 0) {
+    problem(problems, "signature list");
+  }
   await answer("mail:deleteDraft", [{ emailId: draftId }]);
   const draftGone = answer("mail:listFromCache", [{ accountId: "imap-test", folderId: "Drafts", limit: 50 }]);
   if (!draftGone || draftGone.data.emails.length !== 0) problem(problems, "draft delete");

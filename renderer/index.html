@@ -20,6 +20,7 @@
         </form>
         <button type="button" class="ghost" id="refresh">Refresh</button>
         <button type="button" class="ghost" id="settings-open">Settings</button>
+        <button type="button" class="ghost" id="signatures-open">Signatures</button>
         <button type="button" class="ghost" id="brain-open" aria-label="Email Brain">Brain</button>
         <button type="button" class="ghost" id="connect-open">Connect account</button>
         <button type="button" class="ghost" id="remove" hidden>Remove account</button>
@@ -100,7 +101,10 @@
           <button type="button" class="ghost" id="ai-cancel" hidden>Cancel</button>
           <p id="ai-write-error" class="error" role="status" hidden></p>
         </div>
-        <label for="signature">Signature</label>
+        <div class="signature-head">
+          <label for="signature">Signature</label>
+          <button type="button" class="ghost" id="signatures-from-compose">Signatures</button>
+        </div>
         <select id="signature" hidden></select>
         <p id="signature-empty" class="hint" hidden>No signatures.</p>
         <label for="schedule-preset">Send later</label>
@@ -134,6 +138,25 @@
           <button type="button" class="ghost" id="brain-cancel" hidden>Cancel</button>
           <button type="button" class="ghost" id="brain-refresh">Refresh</button>
           <button type="button" class="ghost" id="brain-close">Close</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="signatures" aria-labelledby="signatures-title">
+      <h2 id="signatures-title">Signatures</h2>
+      <p class="hint">Sample signatures stay in memory. A connected IMAP account does not store them.</p>
+      <p id="signatures-status" role="status"></p>
+      <div id="signature-list"></div>
+      <form id="signature-form">
+        <label for="signature-name">Name</label>
+        <input id="signature-name" type="text" autocomplete="off" />
+        <label for="signature-body">Text</label>
+        <textarea id="signature-body"></textarea>
+        <label class="check" for="signature-html"><input id="signature-html" type="checkbox" /> HTML</label>
+        <label class="check" for="signature-default"><input id="signature-default" type="checkbox" /> Default</label>
+        <div class="row">
+          <button type="submit" class="primary" id="signature-save">Add</button>
+          <button type="button" class="ghost" id="signature-cancel" hidden>Cancel</button>
+          <button type="button" class="ghost" id="signatures-close">Close</button>
         </div>
       </form>
     </dialog>

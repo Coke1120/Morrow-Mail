@@ -39,6 +39,8 @@ const INVOKE = [
   "mail:scheduleSend",
   "mail:listScheduled",
   "mail:listSignatures",
+  "mail:upsertSignature",
+  "mail:deleteSignature",
   "mail:translateStart",
   "mail:translateCancel",
   "aiDraftWrite:start",

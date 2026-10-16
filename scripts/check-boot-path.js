@@ -311,13 +311,124 @@ assert.strictEqual(applySignature("Hello\n\n— Ada", "— Ada", "Thanks,\nAda")
 assert.strictEqual(applySignature("— Ada", "— Ada", ""), "");
 assert.deepStrictEqual(signatureRows({ signatures: [] }), []);
 assert.deepStrictEqual(signatureRows(null), []);
-const listedSignatures = mailbox.answer("mail:listSignatures", [{ accountId: "gmail-ada" }]);
-assert.deepStrictEqual(listedSignatures.data, {
+const signatureDraft = extractFunction(appJs, "signatureDraft");
+const signatureFields = extractFunction(appJs, "signatureFields");
+assert.deepStrictEqual(signatureDraft({ name: " Work ", body: "Hi", html: false, isDefault: true }), {
+  name: "Work",
+  text: "Hi",
+  isDefault: true,
+});
+assert.deepStrictEqual(signatureDraft({ id: "s1", name: "Work", body: "<p>Hi</p>", html: true, isDefault: false }), {
+  id: "s1",
+  name: "Work",
+  html: "<p>Hi</p>",
+  isDefault: false,
+});
+assert.deepStrictEqual(signatureFields(null, true), { id: "", name: "", body: "", html: false, isDefault: false });
+assert.deepStrictEqual(signatureFields({ id: "s1", name: "Work", html: "<p>Hi</p>", text: "nope" }, true), {
+  id: "s1",
+  name: "Work",
+  body: "<p>Hi</p>",
+  html: true,
+  isDefault: true,
+});
+assert.deepStrictEqual(signatureFields({ id: "s2", name: "Short", text: "— Ada" }, false), {
+  id: "s2",
+  name: "Short",
+  body: "— Ada",
+  html: false,
+  isDefault: false,
+});
+const emptySignatures = {
   signatures: [],
   defaultSignatureId: null,
   defaultSignaturePerAccount: {},
-});
-assert.deepStrictEqual(signatureRows(listedSignatures.data), []);
+};
+assert.deepStrictEqual(mailbox.answer("mail:listSignatures", [{ accountId: "gmail-ada" }]).data, emptySignatures);
+assert.strictEqual(mailbox.answer("mail:upsertSignature", [{ text: "Hi" }]).error.code, "invalid");
+assert.strictEqual(mailbox.answer("mail:upsertSignature", [{ name: "  ", text: "Hi" }]).error.code, "invalid");
+assert.strictEqual(mailbox.answer("mail:upsertSignature", [{ name: "Work", text: "  ", html: "" }]).error.code, "invalid");
+assert.strictEqual(mailbox.answer("mail:upsertSignature", [{ name: "Work", text: 1 }]).error.code, "invalid");
+assert.strictEqual(mailbox.answer("mail:deleteSignature", [{}]).error.code, "not-found");
+const createdSignature = mailbox.answer("mail:upsertSignature", [{
+  name: " Work ",
+  text: "Thanks,\nAda",
+  isDefault: true,
+}]);
+assert.strictEqual(createdSignature.success, true);
+assert.strictEqual(createdSignature.data.name, "Work");
+assert.strictEqual(createdSignature.data.text, "Thanks,\nAda");
+assert.strictEqual(createdSignature.data.html, undefined);
+const createdSignatureId = createdSignature.data.id;
+const listedSignatures = mailbox.answer("mail:listSignatures", [{ accountId: "gmail-ada" }]);
+assert.strictEqual(listedSignatures.data.defaultSignatureId, createdSignatureId);
+assert.deepStrictEqual(signatureRows(listedSignatures.data).map((row) => row.name), ["Work"]);
+assert.strictEqual(chosenSignatureId(listedSignatures.data, "gmail-ada"), createdSignatureId);
+listedSignatures.data.signatures[0].name = "mutated";
+assert.strictEqual(mailbox.answer("mail:listSignatures", []).data.signatures[0].name, "Work");
+const htmlSignature = mailbox.answer("mail:upsertSignature", [{
+  id: createdSignatureId,
+  name: "Work",
+  html: "<p>Thanks,<br>Ada</p>",
+  text: "ignored",
+  isDefault: true,
+}]);
+assert.strictEqual(htmlSignature.success, true);
+assert.strictEqual(htmlSignature.data.html, "<p>Thanks,<br>Ada</p>");
+assert.strictEqual(htmlSignature.data.text, undefined);
+assert.strictEqual(signaturePlain(htmlSignature.data), "Thanks,\nAda");
+const textAgain = mailbox.answer("mail:upsertSignature", [{
+  id: createdSignatureId,
+  name: "Work",
+  text: "Thanks,\nAda",
+  isDefault: true,
+}]);
+assert.strictEqual(textAgain.success, true);
+assert.strictEqual(textAgain.data.text, "Thanks,\nAda");
+assert.strictEqual(textAgain.data.html, undefined);
+const secondSignature = mailbox.answer("mail:upsertSignature", [{
+  name: "Short",
+  text: "— Ada",
+  isDefault: true,
+}]);
+assert.strictEqual(secondSignature.success, true);
+const bothSignatures = mailbox.answer("mail:listSignatures", [{ accountId: "outlook-grace" }]);
+assert.deepStrictEqual(bothSignatures.data.signatures.map((row) => row.id), [createdSignatureId, secondSignature.data.id]);
+assert.strictEqual(bothSignatures.data.defaultSignatureId, secondSignature.data.id);
+assert.deepStrictEqual(bothSignatures.data.defaultSignaturePerAccount, {});
+const keptDefault = mailbox.answer("mail:upsertSignature", [{
+  id: createdSignatureId,
+  name: "Work",
+  text: "Thanks,\nAda",
+  isDefault: false,
+}]);
+assert.strictEqual(keptDefault.success, true);
+assert.strictEqual(mailbox.answer("mail:listSignatures", []).data.defaultSignatureId, secondSignature.data.id);
+const clearedDefault = mailbox.answer("mail:upsertSignature", [{
+  id: secondSignature.data.id,
+  name: "Short",
+  text: "— Ada",
+  isDefault: false,
+}]);
+assert.strictEqual(clearedDefault.success, true);
+assert.strictEqual(mailbox.answer("mail:listSignatures", []).data.defaultSignatureId, null);
+const missingSignature = mailbox.answer("mail:upsertSignature", [{ id: "missing", name: "Nope", text: "x" }]);
+assert.strictEqual(missingSignature.success, false);
+assert.strictEqual(missingSignature.error.code, "not-found");
+assert.strictEqual(mailbox.answer("mail:deleteSignature", [{ id: secondSignature.data.id }]).success, true);
+assert.deepStrictEqual(mailbox.answer("mail:listSignatures", []).data.signatures.map((row) => row.id), [createdSignatureId]);
+assert.strictEqual(mailbox.answer("mail:listSignatures", []).data.defaultSignatureId, null);
+const deletedTwice = mailbox.answer("mail:deleteSignature", [{ id: secondSignature.data.id }]);
+assert.strictEqual(deletedTwice.success, false);
+assert.strictEqual(deletedTwice.error.code, "not-found");
+assert.strictEqual(mailbox.answer("mail:upsertSignature", [{
+  id: createdSignatureId,
+  name: "Work",
+  text: "Thanks,\nAda",
+  isDefault: true,
+}]).data.id, createdSignatureId);
+assert.strictEqual(mailbox.answer("mail:deleteSignature", [{ id: createdSignatureId }]).success, true);
+assert.deepStrictEqual(mailbox.answer("mail:listSignatures", []).data, emptySignatures);
 
 for (const channel of [
   "mail:listSignatures",
@@ -331,6 +442,16 @@ for (const channel of [
 assert.ok(appJs.includes('"Translate"') && appJs.includes('"Cancel"') && appJs.includes('"No signatures."'));
 assert.ok(html.includes('id="signature"') && html.includes("No signatures."));
 assert.ok(css.includes(".translate") && css.includes(".translation") && css.includes(".body p"));
+for (const channel of ["mail:upsertSignature", "mail:deleteSignature"]) {
+  assert.ok(registered.has(channel), `preload does not register ${channel}`);
+  assert.ok(used.has(channel), `renderer does not call ${channel}`);
+}
+assert.ok(html.includes('id="signatures"') && html.includes('id="signature-name"') && html.includes('id="signature-body"'));
+assert.ok(html.includes('id="signature-html"') && html.includes('id="signature-default"') && html.includes('id="signatures-open"'));
+assert.ok(html.includes('id="signatures-from-compose"'));
+assert.ok(html.includes("Sample signatures stay in memory"));
+assert.ok(appJs.includes('"Add a name."') && appJs.includes('"Add signature text."'));
+assert.ok(css.includes(".signature-row") && css.includes("#signatures-status") && css.includes("#signature-form textarea"));
 
 const updateView = extractFunction(appJs, "updateView");
 const idle = updateView({}, "0.1.0");
@@ -480,6 +601,9 @@ const engineSrc = fs.readFileSync(path.join(root, "host/mail/engine.js"), "utf8"
 assert.ok(engineSrc.includes('case "mail:scheduleSend"'));
 assert.ok(engineSrc.includes('case "mail:listScheduled"'));
 assert.ok(engineSrc.includes("imap_schedule_send_unsupported"));
+assert.ok(engineSrc.includes('case "mail:upsertSignature"'));
+assert.ok(engineSrc.includes('case "mail:deleteSignature"'));
+assert.ok(engineSrc.includes("imap_signatures_unsupported"));
 for (const name of ["mail:cancelScheduled", "mail:deleteScheduled", "mail:unschedule", "mail:cancelScheduleSend"]) {
   assert.ok(!engineSrc.includes(name), `${name} appeared`);
   assert.ok(!appJs.includes(name), `renderer calls ${name}`);
@@ -748,6 +872,8 @@ assert.ok(css.includes(".brain-row") && css.includes("#brain-status"));
 const parity = fs.readFileSync(path.join(root, "docs/PARITY_SHELL.md"), "utf8");
 assert.ok(parity.includes("emailBrain:getCached") && parity.includes("emailBrain:addWritingRule"));
 assert.ok(parity.includes("full Brain category/skills UI"));
+assert.ok(parity.includes("mail:upsertSignature") && parity.includes("imap_signatures_unsupported"));
+assert.ok(!parity.includes("signatures editor"));
 
 async function checkAiDraft() {
   delete process.env.GENMAIL_AI_API_KEY;

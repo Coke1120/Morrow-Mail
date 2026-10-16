@@ -29,6 +29,7 @@ let translateSeq = 0;
 let draftSeq = 0;
 let suggestGen = 0;
 let signatureGen = 0;
+let signatureEditId = "";
 let scheduledGen = 0;
 let appVersion = "";
 let updateGen = 0;
@@ -296,6 +297,32 @@ function signaturePlain(row) {
     .replace(/&gt;/g, ">")
     .replace(/&amp;/g, "&")
     .trim();
+}
+
+function signatureDraft(input) {
+  const source = input || {};
+  const payload = {
+    name: String(source.name || "").trim(),
+    isDefault: source.isDefault === true,
+  };
+  if (source.id) payload.id = String(source.id);
+  const body = String(source.body || "");
+  if (source.html === true) payload.html = body;
+  else payload.text = body;
+  return payload;
+}
+
+function signatureFields(row, isDefault) {
+  if (!row || !row.id) return { id: "", name: "", body: "", html: false, isDefault: false };
+  const html = typeof row.html === "string" && row.html.trim() ? row.html : "";
+  const text = typeof row.text === "string" ? row.text : "";
+  return {
+    id: String(row.id),
+    name: row.name ? String(row.name) : "",
+    body: html || text,
+    html: !!html,
+    isDefault: isDefault === true,
+  };
 }
 
 // shortcut: only an untouched signature at the end of the body is replaced, upgrade if edits inside it must be tracked.
@@ -1499,6 +1526,8 @@ async function fillSignatures() {
   state.signatures = rows;
   if (!rows.length) {
     showSignatureEmpty("No signatures.");
+    $("compose-body").value = applySignature($("compose-body").value, state.signatureText, "");
+    state.signatureText = "";
     return;
   }
   const select = $("signature");
@@ -1520,6 +1549,140 @@ function onSignatureChange() {
   const text = signaturePlain(row);
   $("compose-body").value = applySignature($("compose-body").value, state.signatureText, text);
   state.signatureText = text;
+}
+
+function showSignatureStatus(text, isError) {
+  const el = $("signatures-status");
+  el.textContent = text || "";
+  el.classList.toggle("error", !!isError && !!text);
+}
+
+function clearSignatureForm() {
+  signatureEditId = "";
+  $("signature-name").value = "";
+  $("signature-body").value = "";
+  $("signature-html").checked = false;
+  $("signature-default").checked = false;
+  $("signature-save").textContent = "Add";
+  $("signature-cancel").hidden = true;
+}
+
+function paintSignatures(pack) {
+  const root = $("signature-list");
+  root.replaceChildren();
+  const rows = signatureRows(pack);
+  const def = pack && pack.defaultSignatureId ? String(pack.defaultSignatureId) : "";
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "No signatures.";
+    root.appendChild(empty);
+  }
+  for (const row of rows) {
+    const line = document.createElement("div");
+    line.className = "signature-row";
+    const isDefault = String(row.id) === def;
+    const text = document.createElement("p");
+    text.textContent = signatureName(row) + (isDefault ? " · Default" : "");
+    const name = signatureName(row);
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "ghost";
+    edit.textContent = "Edit";
+    edit.setAttribute("aria-label", "Edit " + name);
+    edit.addEventListener("click", () => startSignatureEdit(row, isDefault));
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "ghost";
+    del.textContent = "Delete";
+    del.setAttribute("aria-label", "Delete " + name);
+    del.addEventListener("click", () => {
+      removeSignature(row.id).catch((error) => {
+        showSignatureStatus(error instanceof Error ? error.message : String(error), true);
+      });
+    });
+    line.append(text, edit, del);
+    root.appendChild(line);
+  }
+  $("signature-save").textContent = signatureEditId ? "Save" : "Add";
+  $("signature-cancel").hidden = !signatureEditId;
+}
+
+function startSignatureEdit(row, isDefault) {
+  const fields = signatureFields(row, isDefault);
+  signatureEditId = fields.id;
+  $("signature-name").value = fields.name;
+  $("signature-body").value = fields.body;
+  $("signature-html").checked = fields.html;
+  $("signature-default").checked = fields.isDefault;
+  $("signature-save").textContent = "Save";
+  $("signature-cancel").hidden = false;
+  $("signature-name").focus();
+}
+
+async function loadSignatureEditor() {
+  const accountId = state.accountId;
+  const pack = await call("mail:listSignatures", accountId ? { accountId } : {});
+  if ($("signatures").open) paintSignatures(pack);
+  return pack;
+}
+
+function openSignatures() {
+  clearSignatureForm();
+  showSignatureStatus("");
+  openDialog("signatures");
+  loadSignatureEditor().catch((error) => {
+    showSignatureStatus(error instanceof Error ? error.message : String(error), true);
+  });
+}
+
+async function refreshComposeSignatures() {
+  if (!$("compose").open) return;
+  const select = $("signature");
+  const hadPicker = !select.hidden;
+  const selected = select.value;
+  await fillSignatures();
+  if ($("signature").hidden || !hadPicker) return;
+  if (![...$("signature").options].some((opt) => opt.value === selected)) return;
+  if ($("signature").value === selected) return;
+  $("signature").value = selected;
+  onSignatureChange();
+}
+
+async function submitSignature(event) {
+  event.preventDefault();
+  const draft = signatureDraft({
+    id: signatureEditId,
+    name: $("signature-name").value,
+    body: $("signature-body").value,
+    html: $("signature-html").checked,
+    isDefault: $("signature-default").checked,
+  });
+  if (!draft.name) {
+    showSignatureStatus("Add a name.", true);
+    return;
+  }
+  if (!String(draft.html || draft.text || "").trim()) {
+    showSignatureStatus("Add signature text.", true);
+    return;
+  }
+  try {
+    const saved = await call("mail:upsertSignature", draft);
+    signatureEditId = saved && saved.id ? String(saved.id) : "";
+    showSignatureStatus("Saved.");
+    await loadSignatureEditor();
+    await refreshComposeSignatures();
+  } catch (error) {
+    showSignatureStatus(error instanceof Error ? error.message : String(error), true);
+  }
+}
+
+async function removeSignature(id) {
+  await call("mail:deleteSignature", { id });
+  if (signatureEditId === id) clearSignatureForm();
+  showSignatureStatus("Deleted.");
+  await loadSignatureEditor();
+  await refreshComposeSignatures();
 }
 
 function stopDraftWrite() {
@@ -2181,6 +2344,17 @@ function wire() {
   $("refresh").addEventListener("click", () => guard(refresh));
   $("settings-open").addEventListener("click", openSettings);
   $("settings-close").addEventListener("click", () => closeDialog("settings"));
+  $("signatures-open").addEventListener("click", openSignatures);
+  $("signatures-close").addEventListener("click", () => closeDialog("signatures"));
+  $("signatures").addEventListener("close", () => {
+    signatureEditId = "";
+  });
+  $("signature-cancel").addEventListener("click", clearSignatureForm);
+  $("signature-form").addEventListener("submit", (event) => {
+    submitSignature(event).catch((error) => {
+      showSignatureStatus(error instanceof Error ? error.message : String(error), true);
+    });
+  });
   $("brain-open").addEventListener("click", openBrain);
   $("brain-close").addEventListener("click", () => closeDialog("brain"));
   $("brain").addEventListener("close", () => {
@@ -2219,6 +2393,7 @@ function wire() {
     openCompose().catch((error) => showStatus(error.message, true));
   });
   $("signature").addEventListener("change", onSignatureChange);
+  $("signatures-from-compose").addEventListener("click", openSignatures);
   $("schedule-preset").addEventListener("change", syncScheduleFields);
   $("compose").addEventListener("close", () => stopDraftWrite());
   $("compose-close").addEventListener("click", () => closeDialog("compose"));

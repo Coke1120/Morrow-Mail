@@ -273,6 +273,10 @@ const SNOOZE_MAX_MS = 365 * 24 * 60 * 60 * 1000;
 // shortcut: scheduled sample mail stays in memory and is not sent, upgrade when IMAP can send it later.
 const scheduled = [];
 let scheduleSeq = 0;
+// shortcut: sample signatures stay in memory, upgrade when IMAP can store them.
+const signatures = [];
+let signatureSeq = 0;
+let defaultSignatureId = null;
 
 function ok(data) {
   return { success: true, data };
@@ -285,6 +289,23 @@ function fail(code, message) {
 function scheduleTo(value) {
   if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean).join(", ");
   return String(value || "").trim();
+}
+
+function signatureText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function signaturePack() {
+  return {
+    signatures: signatures.map((row) => ({ ...row })),
+    defaultSignatureId,
+    defaultSignaturePerAccount: {},
+  };
+}
+
+function applySignatureDefault(id, flag) {
+  if (flag === true) defaultSignatureId = id;
+  else if (flag === false && defaultSignatureId === id) defaultSignatureId = null;
 }
 
 function inboxUnread(accountId) {
@@ -527,11 +548,39 @@ function answer(channel, args) {
     case "mail:listFailedDraftIds":
       return ok([]);
     case "mail:listSignatures":
-      return ok({
-        signatures: [],
-        defaultSignatureId: null,
-        defaultSignaturePerAccount: {},
-      });
+      return ok(signaturePack());
+    case "mail:upsertSignature": {
+      const name = signatureText(params && params.name);
+      const text = signatureText(params && params.text);
+      const html = signatureText(params && params.html);
+      if (!name) return fail("invalid", "Add a name.");
+      if (!text && !html) return fail("invalid", "Add signature text.");
+      const id = params && params.id ? String(params.id) : "";
+      let row = id ? signatures.find((item) => item.id === id) : null;
+      if (id && !row) return fail("not-found", "That signature is gone.");
+      if (!row) {
+        row = { id: `sig-${++signatureSeq}` };
+        signatures.push(row);
+      }
+      row.name = name;
+      if (html) {
+        row.html = html;
+        delete row.text;
+      } else {
+        row.text = text;
+        delete row.html;
+      }
+      applySignatureDefault(row.id, params && params.isDefault);
+      return ok({ ...row });
+    }
+    case "mail:deleteSignature": {
+      const id = params && params.id ? String(params.id) : "";
+      const index = signatures.findIndex((item) => item.id === id);
+      if (index < 0) return fail("not-found", "That signature is gone.");
+      signatures.splice(index, 1);
+      if (defaultSignatureId === id) defaultSignatureId = null;
+      return ok(true);
+    }
     case "mail:ops:queueSummary":
       return ok({ pending: 0, dead: 0, sends: 0 });
     case "mail:ops:getNetworkState":

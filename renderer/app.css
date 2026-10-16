@@ -100,22 +100,41 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 #prefs .error { color: #9f1239; }
 
-#brain-status:empty { display: none; }
+#brain-status:empty,
+#signatures-status:empty { display: none; }
 
-#brain-status.error { color: #9f1239; }
+#brain-status.error,
+#signatures-status.error { color: #9f1239; }
 
 #brain-sections h3 { margin: 12px 0 4px; font-size: 13px; }
 
-.brain-row {
+.brain-row,
+.signature-row {
   display: flex;
   align-items: flex-start;
   gap: 8px;
   margin: 4px 0;
 }
 
-.brain-row p { flex: 1; margin: 0; overflow-wrap: anywhere; }
+.brain-row p,
+.signature-row p { flex: 1; margin: 0; overflow-wrap: anywhere; }
 
-.brain-row button { padding: 2px 8px; }
+.brain-row button,
+.signature-row button { padding: 2px 8px; }
+
+#signature-form textarea { min-height: 88px; }
+
+.signature-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.signature-head label { margin: 0; }
+
+.signature-head button { padding: 2px 8px; }
 
 #notice {
   display: flex;
