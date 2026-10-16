@@ -84,8 +84,9 @@ that click. Run `38864512045` pressed Review replies, then missed
 hosting view's AX tree. Run `38867290790` on `db57869` pressed the scope tab
 (the label was on an `NSButton`) and then missed `Back to Today`, which was
 still a SwiftUI button. The remaining presses in this fixture — Back, Skip,
-update, refresh, Delete, and Add Cc — use that same mounted button. No
-AppKit run was available here.
+update, refresh, Delete, and Add Cc — use that same mounted button. The
+Skip seam extracts that button's handler; the pinned baseline still reads
+the old SwiftUI button. No AppKit run was available here.
 
 ## PR #58 macOS review fixture completion — 15 October 2026
 
