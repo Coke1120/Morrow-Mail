@@ -22,3 +22,4 @@ jobs:
           files=(host/**/*.js shared/**/*.js scripts/*.js)
           test ${#files[@]} -gt 0
           for f in "${files[@]}"; do node --check "$f"; done
+      - run: node scripts/check-boot-path.js

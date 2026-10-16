@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:;" />
+    <title>GenMail REA</title>
+    <link rel="stylesheet" href="./app.css" />
+  </head>
+  <body data-ui="first-party">
+    <header>
+      <div class="brand">
+        <h1>GenMail REA</h1>
+        <p id="version"></p>
+      </div>
+      <p id="banner"></p>
+      <div class="actions">
+        <button type="button" class="ghost" id="refresh">Refresh</button>
+        <button type="button" class="ghost" id="connect-open">Connect account</button>
+        <button type="button" class="ghost" id="remove" hidden>Remove account</button>
+        <button type="button" class="primary" id="compose-open">New Mail</button>
+      </div>
+    </header>
+    <div id="status" role="status"></div>
+    <div class="shell">
+      <nav id="folders" aria-label="Folders"></nav>
+      <div id="messages" aria-label="Messages"></div>
+      <article id="reader" aria-label="Message"></article>
+    </div>
+
+    <dialog id="connect" aria-labelledby="connect-title">
+      <form id="connect-form">
+        <h2 id="connect-title">Connect account</h2>
+        <p class="hint">IMAP password, or Google / Microsoft in the browser. The password stays in this app's keychain.</p>
+        <label for="profile">Provider</label>
+        <select id="profile" name="profile"></select>
+        <div id="custom-fields" hidden>
+          <label for="imap-host">IMAP host</label>
+          <input id="imap-host" name="imap-host" spellcheck="false" autocomplete="off" />
+          <label for="imap-port">IMAP port</label>
+          <input id="imap-port" name="imap-port" inputmode="numeric" value="993" />
+          <label class="check" for="imap-tls"><input id="imap-tls" type="checkbox" checked /> IMAP TLS</label>
+          <label for="smtp-host">SMTP host</label>
+          <input id="smtp-host" name="smtp-host" spellcheck="false" autocomplete="off" />
+          <label for="smtp-port">SMTP port</label>
+          <input id="smtp-port" name="smtp-port" inputmode="numeric" value="465" />
+          <label class="check" for="smtp-tls"><input id="smtp-tls" type="checkbox" checked /> SMTP TLS</label>
+        </div>
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" autocomplete="username" spellcheck="false" required />
+        <label for="username">Username <span class="optional">(optional)</span></label>
+        <input id="username" name="username" autocomplete="off" spellcheck="false" />
+        <label for="password">Password or app password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required />
+        <div class="row">
+          <button type="submit" class="primary" id="connect-submit">Connect</button>
+          <button type="button" class="ghost" id="oauth-google">Google</button>
+          <button type="button" class="ghost" id="oauth-microsoft">Microsoft</button>
+          <button type="button" class="ghost" id="connect-close">Cancel</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="compose" aria-labelledby="compose-title">
+      <form id="compose-form">
+        <h2 id="compose-title">New message</h2>
+        <p id="compose-note" class="hint"></p>
+        <label for="compose-to">To</label>
+        <input id="compose-to" type="text" autocomplete="email" spellcheck="false" />
+        <label for="compose-subject">Subject</label>
+        <input id="compose-subject" type="text" />
+        <label for="compose-body">Message</label>
+        <textarea id="compose-body"></textarea>
+        <div class="row">
+          <button type="submit" class="primary" id="compose-send">Send</button>
+          <button type="button" class="ghost" id="compose-save">Save draft</button>
+          <button type="button" class="ghost" id="compose-close">Close</button>
+        </div>
+      </form>
+    </dialog>
+    <script src="./app.js"></script>
+  </body>
+</html>

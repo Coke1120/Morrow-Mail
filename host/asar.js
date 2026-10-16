@@ -7,40 +7,25 @@ const fs = (() => {
     return require("fs");
   }
 })();
-const path = require("path");
 
-const DEFAULT_GENSPARK_ASAR =
-  "/Applications/Genspark Super App.app/Contents/Resources/app.asar";
-
-function bundledUiAsar() {
-  try {
-    const { app } = require("electron");
-    if (app) {
-      const candidate = path.join(process.resourcesPath || "", "ui.asar");
-      if (fs.existsSync(candidate)) return candidate;
-    }
-  } catch {
-    // plain node
-  }
-  const local = path.join(__dirname, "..", "resources", "ui.asar");
-  if (fs.existsSync(local)) return local;
-  return null;
-}
-
+// External UI archives are opt-in. An empty result means the host should
+// load the bundled renderer instead.
 function resolveAsarPath(explicit) {
-  const fromEnv = (process.env.GENMAIL_ASAR || "").trim();
   if (explicit) return explicit;
-  if (fromEnv) return fromEnv;
-  const bundled = bundledUiAsar();
-  if (bundled) return bundled;
-  return DEFAULT_GENSPARK_ASAR;
+  const fromEnv = (process.env.GENMAIL_ASAR || "").trim();
+  return fromEnv || null;
 }
 
 function openAsar(asarPath = resolveAsarPath()) {
   const target = asarPath;
+  if (!target) {
+    throw new Error(
+      "GENMAIL_ASAR is not set. Leave it unset to boot the bundled renderer, or set it to an app.asar path (see docs/INDEPENDENT_UI.md)."
+    );
+  }
   if (!fs.existsSync(target)) {
     throw new Error(
-      `UI asar missing at ${target}. Install Genspark Super App, set GENMAIL_ASAR, or place resources/ui.asar (see docs/PACKAGING.md).`
+      `UI asar missing at ${target}. Unset GENMAIL_ASAR to use the bundled renderer (see docs/INDEPENDENT_UI.md).`
     );
   }
   const fd = fs.openSync(target, "r");
@@ -74,9 +59,7 @@ function readFile(archive, rel) {
 }
 
 module.exports = {
-  ASAR: DEFAULT_GENSPARK_ASAR,
   resolveAsarPath,
   openAsar,
   readFile,
-  bundledUiAsar,
 };

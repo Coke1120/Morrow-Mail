@@ -6,15 +6,17 @@ Private Electron rewrite of GenMail Exact (pre-rebrand). Not the public [Morrow-
 
 ```bash
 npm install
-# macOS with Genspark Super App installed, or:
-# export GENMAIL_ASAR=/path/to/app.asar
 npm start
 ```
+
+`npm start` boots the bundled renderer in `renderer/`. No Genspark install is required.
+
+Optional: set `GENMAIL_ASAR` to an `app.asar` path to load that external UI instead (for example Genspark Super App's `Contents/Resources/app.asar`). Leave the variable unset for the first-party shell. See [docs/INDEPENDENT_UI.md](docs/INDEPENDENT_UI.md).
 
 Secrets: macOS Keychain / Windows DPAPI (`genmail-exact` service), or env `GENMAIL_AI_API_KEY` / `XAI_API_KEY`. OAuth: see [docs/OAUTH.md](docs/OAUTH.md). Packaging: [docs/PACKAGING.md](docs/PACKAGING.md).
 
 ## Status
 
-- Host: IMAP engine + AI + GenMail UI loaded from external/bundled asar
+- Host: IMAP engine + AI + bundled first-party UI (`GENMAIL_ASAR` optional)
 - Packaging: electron-builder + electron-updater (unsigned alpha)
 - OAuth: Google/Microsoft browser loopback (IMAP XOAUTH2); Microsoft client ID bundled; Google JSON via env

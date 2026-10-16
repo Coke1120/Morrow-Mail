@@ -1,14 +1,10 @@
 # Packaging & in-app updater
 
-## Critical: UI asar
+## UI
 
-This host does **not** ship a renderer. At runtime it opens either:
+The packaged app boots the first-party renderer shipped in `renderer/` (see [INDEPENDENT_UI.md](INDEPENDENT_UI.md)). `electron-builder` includes that directory via `build.files`.
 
-1. `GENMAIL_ASAR` env path, or
-2. `resources/ui.asar` next to the packaged app (`extraResources`), or
-3. macOS default `/Applications/Genspark Super App.app/Contents/Resources/app.asar`
-
-**A GitHub Release of the Electron shell alone will not boot** without one of the above. Bundling Genspark’s asar has licensing implications — Leo must approve before we vendor it.
+`GENMAIL_ASAR` is an optional override that loads an external `app.asar` instead. The app does not look for Genspark Super App or `resources/ui.asar` on its own. Do not commit an external asar.
 
 ## Build (unsigned alpha)
 

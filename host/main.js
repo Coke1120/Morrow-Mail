@@ -13,6 +13,9 @@ const { answer: draftAnswer, escapeHtml } = require("./draft-write");
 const LOG = path.join(os.homedir(), ".hermes/tmp/genmail-exact/2026-10-16/ipc.log");
 const { preloadPath } = require("./paths");
 const PRELOAD_OUT = preloadPath();
+const FIRST_PARTY_DIR = path.join(__dirname, "..", "renderer");
+const FIRST_PARTY_PRELOAD = path.join(FIRST_PARTY_DIR, "preload.js");
+const FIRST_PARTY_HTML = path.join(FIRST_PARTY_DIR, "index.html");
 const updater = require("./updater");
 
 protocol.registerSchemesAsPrivileged([
@@ -94,10 +97,17 @@ function registerProtocol() {
   });
 }
 
-function attachIpc() {
+function externalAsarPath() {
+  return (process.env.GENMAIL_ASAR || "").trim();
+}
+
+function attachIpc(preloadFile) {
+  if (!fs.existsSync(preloadFile)) {
+    throw new Error(`Renderer preload missing at ${preloadFile}`);
+  }
   const bus = createIpc(LOG);
   fs.writeFileSync(LOG, "");
-  const src = fs.readFileSync(PRELOAD_OUT, "utf8");
+  const src = fs.readFileSync(preloadFile, "utf8");
   const channels = new Set();
   for (const match of src.matchAll(/"([a-zA-Z][\w-]*:[^"\n]{1,180})"/g)) {
     channels.add(match[1]);
@@ -229,20 +239,21 @@ function runAiSelfTest() {
   return 0;
 }
 
-async function createWindow() {
+async function createWindow(preloadFile, mode) {
+  const external = mode === "asar";
   const winOpts = {
-    width: 1720,
-    height: 1040,
+    width: external ? 1720 : 1200,
+    height: external ? 1040 : 800,
     title: "GenMail REA",
-    backgroundColor: "#4c1d95",
+    backgroundColor: external ? "#4c1d95" : "#f6f3fb",
     webPreferences: {
-      preload: PRELOAD_OUT,
+      preload: preloadFile,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
     },
   };
-  if (process.platform === "darwin") {
+  if (external && process.platform === "darwin") {
     winOpts.titleBarStyle = "hiddenInset";
     winOpts.trafficLightPosition = { x: 14, y: 16 };
   }
@@ -257,7 +268,8 @@ async function createWindow() {
     fs.appendFileSync(LOG, text + "\n");
     console.error(text);
   });
-  await win.loadURL("genmail://local/index.html#/shell");
+  if (external) await win.loadURL("genmail://local/index.html#/shell");
+  else await win.loadFile(FIRST_PARTY_HTML);
   return win;
 }
 
@@ -282,68 +294,80 @@ app.whenReady().then(async () => {
     app.exit(code);
     return;
   }
-  archive = openAsar();
-  extractPreload();
-  registerProtocol();
-  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    callback({ responseHeaders: details.responseHeaders });
-  });
-  attachIpc();
-  const win = await createWindow();
-  startBackgroundSync();
-  if (process.env.GENMAIL_BOOT_EXIT === "1") {
-    setTimeout(async () => {
-      try {
-        const info = await win.webContents.executeJavaScript(`({
-          href: location.href,
-          title: document.title,
-          text: (document.body && document.body.innerText || "").slice(0, 1800)
-        })`);
-        fs.writeFileSync(path.join(path.dirname(LOG), "boot.json"), JSON.stringify(info, null, 2));
-        const image = await win.webContents.capturePage();
-        fs.writeFileSync(path.join(path.dirname(LOG), "boot.png"), image.toPNG());
-        console.log("BOOT_TEXT_START");
-        console.log(info.text);
-        console.log("BOOT_TEXT_END");
-        await win.webContents.executeJavaScript(`(() => {
-          const row = document.querySelector('[data-testid="mail-list-message-row"]');
-          if (row) row.click();
-        })()`);
-        await new Promise((resolve) => setTimeout(resolve, 800));
-        const readerImage = await win.webContents.capturePage();
-        fs.writeFileSync(path.join(path.dirname(LOG), "reader.png"), readerImage.toPNG());
-        await win.webContents.executeJavaScript(`(() => {
-          const button = [...document.querySelectorAll("button")].find((el) => (el.innerText || "").includes("New Mail"));
-          if (button) button.click();
-        })()`);
-        await new Promise((resolve) => setTimeout(resolve, 800));
-        const composeImage = await win.webContents.capturePage();
-        fs.writeFileSync(path.join(path.dirname(LOG), "compose.png"), composeImage.toPNG());
-        const composeText = await win.webContents.executeJavaScript(`(document.body && document.body.innerText || "").slice(0, 2200)`);
-        console.log("COMPOSE_TEXT_START");
-        console.log(composeText);
-        console.log("COMPOSE_TEXT_END");
-        await win.webContents.executeJavaScript(`(() => {
-          const button = document.querySelector('[aria-label="Email Brain"]');
-          if (button) button.click();
-        })()`);
-        await new Promise((resolve) => setTimeout(resolve, 1200));
-        const brainText = await win.webContents.executeJavaScript(`(document.body && document.body.innerText || "").slice(0, 2200)`);
-        fs.writeFileSync(path.join(path.dirname(LOG), "brain.txt"), brainText);
-        const brainImage = await win.webContents.capturePage();
-        fs.writeFileSync(path.join(path.dirname(LOG), "brain.png"), brainImage.toPNG());
-        console.log("BRAIN_TEXT_START");
-        console.log(brainText);
-        console.log("BRAIN_TEXT_END");
-        await win.webContents.executeJavaScript(`(() => {
-          const button = document.querySelector('[aria-label="Mail"]');
-          if (button) button.click();
-        })()`);
-        await new Promise((resolve) => setTimeout(resolve, 600));
-      } catch (error) {
-        console.error("capture failed", error);
-      }
-      app.exit(0);
-    }, 8000);
+  try {
+    const asarPath = externalAsarPath();
+    let preloadFile = FIRST_PARTY_PRELOAD;
+    let mode = "bundled";
+    if (asarPath) {
+      archive = openAsar(asarPath);
+      extractPreload();
+      registerProtocol();
+      preloadFile = PRELOAD_OUT;
+      mode = "asar";
+    }
+    session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+      callback({ responseHeaders: details.responseHeaders });
+    });
+    attachIpc(preloadFile);
+    const win = await createWindow(preloadFile, mode);
+    startBackgroundSync();
+    if (process.env.GENMAIL_BOOT_EXIT === "1") {
+      setTimeout(async () => {
+        try {
+          const info = await win.webContents.executeJavaScript(`({
+            href: location.href,
+            title: document.title,
+            text: (document.body && document.body.innerText || "").slice(0, 1800)
+          })`);
+          fs.writeFileSync(path.join(path.dirname(LOG), "boot.json"), JSON.stringify(info, null, 2));
+          const image = await win.webContents.capturePage();
+          fs.writeFileSync(path.join(path.dirname(LOG), "boot.png"), image.toPNG());
+          console.log("BOOT_TEXT_START");
+          console.log(info.text);
+          console.log("BOOT_TEXT_END");
+          await win.webContents.executeJavaScript(`(() => {
+            const row = document.querySelector('[data-testid="mail-list-message-row"]');
+            if (row) row.click();
+          })()`);
+          await new Promise((resolve) => setTimeout(resolve, 800));
+          const readerImage = await win.webContents.capturePage();
+          fs.writeFileSync(path.join(path.dirname(LOG), "reader.png"), readerImage.toPNG());
+          await win.webContents.executeJavaScript(`(() => {
+            const button = [...document.querySelectorAll("button")].find((el) => (el.innerText || "").includes("New Mail"));
+            if (button) button.click();
+          })()`);
+          await new Promise((resolve) => setTimeout(resolve, 800));
+          const composeImage = await win.webContents.capturePage();
+          fs.writeFileSync(path.join(path.dirname(LOG), "compose.png"), composeImage.toPNG());
+          const composeText = await win.webContents.executeJavaScript(`(document.body && document.body.innerText || "").slice(0, 2200)`);
+          console.log("COMPOSE_TEXT_START");
+          console.log(composeText);
+          console.log("COMPOSE_TEXT_END");
+          await win.webContents.executeJavaScript(`(() => {
+            const button = document.querySelector('[aria-label="Email Brain"]');
+            if (button) button.click();
+          })()`);
+          await new Promise((resolve) => setTimeout(resolve, 1200));
+          const brainText = await win.webContents.executeJavaScript(`(document.body && document.body.innerText || "").slice(0, 2200)`);
+          fs.writeFileSync(path.join(path.dirname(LOG), "brain.txt"), brainText);
+          const brainImage = await win.webContents.capturePage();
+          fs.writeFileSync(path.join(path.dirname(LOG), "brain.png"), brainImage.toPNG());
+          console.log("BRAIN_TEXT_START");
+          console.log(brainText);
+          console.log("BRAIN_TEXT_END");
+          await win.webContents.executeJavaScript(`(() => {
+            const button = document.querySelector('[aria-label="Mail"]');
+            if (button) button.click();
+          })()`);
+          await new Promise((resolve) => setTimeout(resolve, 600));
+        } catch (error) {
+          console.error("capture failed", error);
+        }
+        app.exit(0);
+      }, 8000);
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error);
+    app.exit(1);
   }
 });

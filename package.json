@@ -8,6 +8,7 @@
   "license": "UNLICENSED",
   "scripts": {
     "start": "electron .",
+    "check": "node scripts/check-boot-path.js",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
     "dist:mac": "electron-builder --mac dir zip",
@@ -36,6 +37,7 @@
     },
     "files": [
       "host/**/*",
+      "renderer/**/*",
       "shared/**/*",
       "package.json",
       "!host/**/*.test.js",
