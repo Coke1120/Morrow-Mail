@@ -11,7 +11,9 @@ const { answer: brainAnswer } = require("./brain");
 const { answer: draftAnswer, escapeHtml } = require("./draft-write");
 
 const LOG = path.join(os.homedir(), ".hermes/tmp/genmail-exact/2026-10-16/ipc.log");
-const PRELOAD_OUT = path.join(os.homedir(), "Library/Application Support/GenMail Exact/preload.mjs");
+const { preloadPath } = require("./paths");
+const PRELOAD_OUT = preloadPath();
+const updater = require("./updater");
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -228,12 +230,10 @@ function runAiSelfTest() {
 }
 
 async function createWindow() {
-  const win = new BrowserWindow({
+  const winOpts = {
     width: 1720,
     height: 1040,
-    title: "GenMail",
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 14, y: 16 },
+    title: "GenMail REA",
     backgroundColor: "#4c1d95",
     webPreferences: {
       preload: PRELOAD_OUT,
@@ -241,7 +241,12 @@ async function createWindow() {
       nodeIntegration: false,
       sandbox: false,
     },
-  });
+  };
+  if (process.platform === "darwin") {
+    winOpts.titleBarStyle = "hiddenInset";
+    winOpts.trafficLightPosition = { x: 14, y: 16 };
+  }
+  const win = new BrowserWindow(winOpts);
   win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
     const text = `[console ${level}] ${message} (${sourceId}:${line})`;
     fs.appendFileSync(LOG, text + "\n");
@@ -259,6 +264,8 @@ async function createWindow() {
 app.whenReady().then(async () => {
   installMenu();
   registerHostAi();
+  updater.registerIpc();
+  updater.init();
   if (process.env.GENMAIL_AI_SELFTEST === "1") {
     const code = runAiSelfTest();
     app.exit(code);

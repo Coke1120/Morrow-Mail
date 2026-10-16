@@ -9,6 +9,7 @@ const remote = require("./remote");
 const secrets = process.env.GENMAIL_MAIL_SECRETS === "memory"
   ? require("./memory-secrets")
   : require("./secrets");
+const oauth = require("./oauth");
 
 const PRIMARY_ORDER = ["inbox", "sentitems", "drafts", "deleteditems", "archive", "junkemail"];
 const KEY_TO_WELL = {
@@ -44,7 +45,7 @@ function dataFile() {
   } catch {
     dir = "";
   }
-  if (!dir) dir = path.join(os.homedir(), "Library/Application Support/genmail-exact");
+  if (!dir) dir = require("../paths").userDataDir("genmail-exact");
   return path.join(dir, "mail.sqlite");
 }
 
@@ -285,7 +286,30 @@ function listPayload(params) {
   };
 }
 
+async function secretFor(account) {
+  const stored = secrets.getPassword(account.id);
+  if (!stored) {
+    const error = new Error("The password for this account is not in the keychain. Connect the account again.");
+    error.code = "auth";
+    throw error;
+  }
+  if (account.auth_kind !== "oauth2") return stored;
+  const result = await oauth.accessTokenFor(account, stored);
+  if (typeof result === "string") return result;
+  if (result && result.store) {
+    try { secrets.setPassword(account.id, result.store); } catch { /* best effort */ }
+    return result.token;
+  }
+  throw new Error("Could not refresh OAuth access token.");
+}
+
+/** @deprecated sync callers — use secretFor */
 function passwordFor(account) {
+  if (account.auth_kind === "oauth2") {
+    const error = new Error("OAuth accounts need async secretFor()");
+    error.code = "auth";
+    throw error;
+  }
   const password = secrets.getPassword(account.id);
   if (!password) {
     const error = new Error("The password for this account is not in the keychain. Connect the account again.");
@@ -306,7 +330,7 @@ function emitFolderSync(accountId, folderPath, okFlag) {
 
 async function syncFolderPath(account, folderPath, options) {
   return exclusive(account.id, async () => {
-    const password = passwordFor(account);
+    const password = await secretFor(account);
     try {
       const report = await remote.withClient(account, password, (client) => remote.syncFolder(client, folderPath, options || {}));
       db.applyFolderSync(account.id, folderPath, report);
@@ -320,7 +344,7 @@ async function syncFolderPath(account, folderPath, options) {
 }
 
 async function syncAccount(account, options) {
-  const password = passwordFor(account);
+  const password = await secretFor(account);
   await exclusive(account.id, async () => {
     await remote.withClient(account, password, async (client) => {
       const listed = await remote.listFolderRecords(client);
@@ -378,6 +402,98 @@ function startBackgroundSync() {
   };
   setTimeout(tick, 400);
   if (!pollTimer) pollTimer = setInterval(tick, 45000);
+}
+
+
+async function connectOAuthAccount(providerInput) {
+  const signed = await oauth.signIn(providerInput);
+  const draft = {
+    id: `oauth-${crypto.randomBytes(8).toString("hex")}`,
+    email: signed.email,
+    username: signed.username,
+    profile: signed.profile,
+    auth_kind: "oauth2",
+    imap_host: signed.imap.host,
+    imap_port: signed.imap.port,
+    imap_tls: signed.imap.tls ? 1 : 0,
+    smtp_host: signed.smtp.host,
+    smtp_port: signed.smtp.port,
+    smtp_tls: signed.smtp.tls ? 1 : 0,
+  };
+  const blob = JSON.stringify({
+    provider: signed.provider,
+    refreshToken: signed.refreshToken,
+    accessToken: signed.accessToken,
+    expiresAt: signed.expiresAt,
+    grantedScopes: signed.grantedScopes,
+  });
+  try {
+    await remote.withClient(draft, signed.accessToken, async (client) => {
+      const listed = await remote.listFolderRecords(client);
+      draft.folders = listed.folders;
+      draft.delimiter = listed.delimiter;
+    });
+    try {
+      await remote.verifySmtp(draft, signed.accessToken);
+    } catch (error) {
+      const message = remote.explain(error, signed.accessToken);
+      if (/rejected/i.test(message)) throw error;
+    }
+  } catch (error) {
+    return fail("auth", remote.explain(error, signed.accessToken));
+  }
+  const existing = db.accountByEmail(signed.email);
+  const id = existing ? existing.id : draft.id;
+  if (existing) {
+    db.updateAccountLogin(id, {
+      username: draft.username,
+      profile: draft.profile,
+      imapHost: draft.imap_host,
+      imapPort: draft.imap_port,
+      imapTls: draft.imap_tls === 1,
+      smtpHost: draft.smtp_host,
+      smtpPort: draft.smtp_port,
+      smtpTls: draft.smtp_tls === 1,
+      authKind: "oauth2",
+    });
+  } else {
+    db.insertAccount({
+      id,
+      email: draft.email,
+      username: draft.username,
+      profile: draft.profile,
+      imapHost: draft.imap_host,
+      imapPort: draft.imap_port,
+      imapTls: draft.imap_tls === 1,
+      smtpHost: draft.smtp_host,
+      smtpPort: draft.smtp_port,
+      smtpTls: draft.smtp_tls === 1,
+      delimiter: draft.delimiter || "/",
+      createdAt: Date.now(),
+      authKind: "oauth2",
+    });
+  }
+  try {
+    secrets.setPassword(id, blob);
+  } catch (error) {
+    if (!existing) db.removeAccount(id);
+    return fail("keychain", error instanceof Error ? error.message : "Could not save OAuth tokens.");
+  }
+  db.replaceFolders(id, draft.folders || [], draft.delimiter || "/");
+  const account = db.accountById(id);
+  const inbox = db.folderByWellKnown(id, "inbox");
+  if (inbox) {
+    try {
+      await syncFolderPath(account, inbox.path, { limit: INBOX_LIMIT });
+    } catch (error) {
+      db.setAuthError(id, remote.explain(error, signed.accessToken));
+    }
+  }
+  emitAccounts();
+  setTimeout(() => {
+    syncAccount(db.accountById(id), {}).then(() => emitAccounts()).catch(() => {});
+  }, 200);
+  return ok(accountView(db.accountById(id), 0));
 }
 
 async function connectAccount(params) {
@@ -565,7 +681,7 @@ async function moveRow(row, destination, wellKnown) {
     return;
   }
   await exclusive(account.id, async () => {
-    const password = passwordFor(account);
+    const password = await secretFor(account);
     const next = await remote.withClient(account, password, (client) => remote.moveUid(client, row.folder_path, row.uid, destination));
     db.updateMessage(row.id, {
       folder_path: destination,
@@ -604,7 +720,7 @@ async function ensureBody(row) {
   if (!account) return row;
   try {
     return await exclusive(account.id, async () => {
-    const password = passwordFor(account);
+    const password = await secretFor(account);
     const fetched = await remote.withClient(account, password, (client) => remote.fetchSource(client, row.folder_path, row.uid));
     if (!fetched) return row;
     db.updateMessage(row.id, {
@@ -627,7 +743,7 @@ async function mutateFlags(row, add, remove, patch) {
   const account = db.accountById(row.account_id);
   if (account && row.uid) {
     await exclusive(account.id, async () => {
-      const password = passwordFor(account);
+      const password = await secretFor(account);
       await remote.withClient(account, password, (client) => remote.changeFlags(client, row.folder_path, row.uid, add, remove));
       db.updateMessage(row.id, patch);
     });
@@ -678,7 +794,7 @@ async function searchServer(params) {
   for (const account of accounts) {
     try {
       await exclusive(account.id, async () => {
-        const password = passwordFor(account);
+        const password = await secretFor(account);
         await remote.withClient(account, password, async (client) => {
           const folders = db.foldersFor(account.id).filter((folder) => (
             folder.well_known === "inbox"
@@ -723,7 +839,7 @@ async function bytesFor(params) {
   if (!row.uid) return null;
   const account = db.accountById(row.account_id);
   const data = await exclusive(account.id, async () => {
-    const password = passwordFor(account);
+    const password = await secretFor(account);
     return remote.withClient(account, password, (client) => remote.readPart(client, row.folder_path, row.uid, wanted.id));
   });
   return { filename: params.filename || wanted.filename || "attachment", data };
@@ -743,10 +859,15 @@ function answer(channel, args) {
     return ok(true);
   }
   if (channel === "mail:addAccount") {
-    return fail(
-      "oauth_unavailable",
-      "Google and Microsoft one-click sign-in stays on Genspark. Choose an IMAP provider and use an app password."
-    );
+    return (async () => {
+      try {
+        const provider = (params && (params.provider || params.platform || params.type)) || "google";
+        const result = await connectOAuthAccount(provider);
+        return result;
+      } catch (error) {
+        return fail("oauth", error instanceof Error ? error.message : String(error));
+      }
+    })();
   }
   if (!db.hasAccounts()) return undefined;
 
@@ -916,7 +1037,7 @@ function answer(channel, args) {
               if (!row) continue;
               const account = db.accountById(row.account_id);
               if (account && row.uid) {
-                const password = passwordFor(account);
+                const password = await secretFor(account);
                 await remote.withClient(account, password, (client) => remote.removeUid(client, row.folder_path, row.uid));
               }
               db.deleteMessage(id);
@@ -1030,7 +1151,7 @@ function answer(channel, args) {
         if (db.folderByPath(account.id, folderPath)) return fail("DUPLICATE_NAME", "A folder with that name already exists.");
         try {
           await exclusive(account.id, async () => {
-            const password = passwordFor(account);
+            const password = await secretFor(account);
             await remote.withClient(account, password, async (client) => {
               await remote.createBox(client, folderPath);
               const listed = await remote.listFolderRecords(client);
@@ -1125,7 +1246,7 @@ function answer(channel, args) {
         }
         try {
           await exclusive(account.id, async () => {
-            const password = passwordFor(account);
+            const password = await secretFor(account);
             const raw = await remote.buildRaw({ ...mimeOptions(account, params, files), messageId });
             const appended = await remote.withClient(account, password, async (client) => {
               if (existing && existing.uid) {
@@ -1156,7 +1277,7 @@ function answer(channel, args) {
             const account = db.accountById(row.account_id);
             if (account && row.uid) {
               await exclusive(account.id, async () => {
-                const password = passwordFor(account);
+                const password = await secretFor(account);
                 await remote.withClient(account, password, (client) => remote.removeUid(client, row.folder_path, row.uid));
               });
             }
@@ -1181,7 +1302,7 @@ function answer(channel, args) {
         }
         try {
           const sentResult = await exclusive(account.id, async () => {
-            const password = passwordFor(account);
+            const password = await secretFor(account);
             const messageId = rfcMessageId(account.email);
             const info = await remote.sendSmtp(account, password, { ...options, messageId });
             const sent = db.folderByWellKnown(account.id, "sentitems");
@@ -1240,7 +1361,7 @@ function answer(channel, args) {
             try {
               if (draft.uid) {
                 await exclusive(account.id, async () => {
-                  const password = passwordFor(account);
+                  const password = await secretFor(account);
                   await remote.withClient(account, password, (client) => remote.removeUid(client, draft.folder_path, draft.uid));
                 });
               }

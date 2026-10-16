@@ -1,7 +1,7 @@
 // IMAP/SMTP endpoints for the settings wizard.
 // The renderer adds its own Custom card, so this list must not include
 // profile "custom". credentialKind must not be "oauth2" or the card is hidden.
-// Gmail and Outlook one-click OAuth stay on mail:addAccount (Genspark's broker).
+// Gmail/Outlook one-click OAuth: mail:addAccount → host/mail/oauth.js (IMAP XOAUTH2).
 
 const HOSTS = {
   gmail: {

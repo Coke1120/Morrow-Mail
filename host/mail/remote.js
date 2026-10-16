@@ -10,7 +10,7 @@ function explain(error, secret) {
   let message = error instanceof Error ? error.message : String(error || "");
   if (secret && message.includes(secret)) message = message.split(secret).join("");
   if (/auth|invalid credentials|LOGIN failed|AUTHENTICATIONFAILED|535|Invalid login/i.test(message)) {
-    return "The server rejected the password. Gmail and iCloud need an app password. Outlook.com has mostly turned off password sign-in.";
+    return "The server rejected the credentials. Gmail/iCloud need an app password, or use Google/Microsoft OAuth. Outlook.com has mostly turned off password sign-in.";
   }
   if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(message)) return "The mail server address could not be found.";
   if (/certificate|self signed|UNABLE_TO_VERIFY/i.test(message)) return "The server certificate could not be verified.";
@@ -18,15 +18,19 @@ function explain(error, secret) {
   return message.replace(/\s+/g, " ").trim().slice(0, 280) || "The mail server refused the connection.";
 }
 
-function makeClient(account, password) {
+
+function makeClient(account, secret) {
   const tls = account.imap_tls === 1;
   const secure = tls && account.imap_port !== 143;
+  const auth = account.auth_kind === "oauth2"
+    ? { user: account.username, accessToken: secret }
+    : { user: account.username, pass: secret };
   return new ImapFlow({
     host: account.imap_host,
     port: account.imap_port,
     secure,
     doSTARTTLS: tls && !secure,
-    auth: { user: account.username, pass: password },
+    auth,
     logger: false,
     emitLogs: false,
     connectionTimeout: 20000,
@@ -46,16 +50,19 @@ async function withClient(account, password, fn) {
   }
 }
 
-function transport(account, password) {
+function transport(account, secret) {
   const tls = account.smtp_tls === 1;
   const secure = tls && account.smtp_port === 465;
+  const auth = account.auth_kind === "oauth2"
+    ? { type: "OAuth2", user: account.username, accessToken: secret }
+    : { user: account.username, pass: secret };
   return nodemailer.createTransport({
     host: account.smtp_host,
     port: account.smtp_port,
     secure,
     requireTLS: tls && !secure,
     ignoreTLS: !tls,
-    auth: { user: account.username, pass: password },
+    auth,
     connectionTimeout: 20000,
     greetingTimeout: 15000,
     socketTimeout: 30000,

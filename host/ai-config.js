@@ -11,13 +11,7 @@ const DEFAULTS = {
 function userDataDir() {
   const override = (process.env.GENMAIL_AI_CONFIG_DIR || "").trim();
   if (override) return override;
-  try {
-    const { app } = require("electron");
-    if (app && app.isReady()) return app.getPath("userData");
-  } catch {
-    // Used from a plain node test before Electron is running.
-  }
-  return path.join(os.homedir(), "Library/Application Support/genmail-exact");
+  return require("./paths").userDataDir("genmail-exact");
 }
 
 function configPath() {

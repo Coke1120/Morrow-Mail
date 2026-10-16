@@ -1,22 +1,84 @@
 {
-  "name": "genmail-exact",
-  "version": "1.0.0",
-  "description": "",
+  "name": "genmail-rea",
+  "version": "0.1.0-alpha.1",
+  "description": "GenMail Exact Electron host rewrite (pre-rebrand). Private.",
   "main": "host/main.js",
   "private": true,
+  "author": "Leo Ho",
+  "license": "UNLICENSED",
   "scripts": {
-    "start": "electron ."
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "devDependencies": {
-    "electron": "^33.4.11"
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac dir zip",
+    "dist:win": "electron-builder --win nsis portable --x64",
+    "dist:unsigned": "CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dir zip",
+    "publish:github": "electron-builder --publish always"
   },
   "dependencies": {
+    "electron-updater": "^6.3.9",
     "imapflow": "^2.5.0",
     "mailparser": "^3.9.39",
     "nodemailer": "^10.1.1",
     "sql.js": "^1.15.0"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.coke1120.genmail-rea",
+    "productName": "GenMail REA",
+    "copyright": "Copyright © Leo Ho",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "host/**/*",
+      "shared/**/*",
+      "package.json",
+      "!host/**/*.test.js",
+      "!**/*.map"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/",
+        "to": ".",
+        "filter": ["**/*", "!**/.gitkeep"]
+      }
+    ],
+    "asar": true,
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Coke1120",
+        "repo": "genmail-rea",
+        "releaseType": "prerelease"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": ["dir", "zip"],
+      "identity": null,
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    },
+    "linux": {
+      "target": ["AppImage"],
+      "category": "Office"
+    }
   }
 }

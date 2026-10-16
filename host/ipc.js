@@ -147,6 +147,20 @@ function redact(value) {
 }
 
 function fallback(channel, args) {
+  if (channel === "update:getState" || channel === "app:getVersion") {
+    try {
+      const updater = require("./updater");
+      if (channel === "update:getState") return updater.snapshot();
+      if (channel === "app:getVersion") {
+        try {
+          const { app } = require("electron");
+          return app.getVersion();
+        } catch {
+          return require("../package.json").version;
+        }
+      }
+    } catch { /* keep stub */ }
+  }
   const live = liveAnswer(channel, args);
   if (live !== undefined) return live;
   const mail = mailAnswer(channel, args);

@@ -12,3 +12,6 @@ out/
 *.sqlite3
 .hermes/
 Library/
+resources/ui.asar
+resources/google-oauth.json
+.env

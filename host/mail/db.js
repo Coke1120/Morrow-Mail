@@ -58,6 +58,14 @@ function migrate() {
     auth_error TEXT,
     created_at INTEGER NOT NULL
   )`);
+  
+  try {
+    const cols = all("PRAGMA table_info(accounts)").map((row) => row.name);
+    if (!cols.includes("auth_kind")) {
+      run("ALTER TABLE accounts ADD COLUMN auth_kind TEXT NOT NULL DEFAULT 'password'");
+    }
+  } catch { /* fresh DB */ }
+
   run(`CREATE TABLE IF NOT EXISTS folders (
     account_id TEXT NOT NULL,
     path TEXT NOT NULL,
@@ -156,13 +164,14 @@ function insertAccount(row) {
     run(
       `INSERT INTO accounts (
         id, email, username, profile, imap_host, imap_port, imap_tls,
-        smtp_host, smtp_port, smtp_tls, delimiter, auth_error, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+        smtp_host, smtp_port, smtp_tls, delimiter, auth_error, created_at, auth_kind
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
       [
         row.id, row.email, row.username, row.profile,
         row.imapHost, row.imapPort, row.imapTls ? 1 : 0,
         row.smtpHost, row.smtpPort, row.smtpTls ? 1 : 0,
         row.delimiter || "/", row.createdAt,
+        row.authKind || "password",
       ]
     );
   });
@@ -173,11 +182,14 @@ function updateAccountLogin(id, row) {
     run(
       `UPDATE accounts SET
         username = ?, profile = ?, imap_host = ?, imap_port = ?, imap_tls = ?,
-        smtp_host = ?, smtp_port = ?, smtp_tls = ?, auth_error = NULL
+        smtp_host = ?, smtp_port = ?, smtp_tls = ?, auth_error = NULL,
+        auth_kind = COALESCE(?, auth_kind)
       WHERE id = ?`,
       [
         row.username, row.profile, row.imapHost, row.imapPort, row.imapTls ? 1 : 0,
-        row.smtpHost, row.smtpPort, row.smtpTls ? 1 : 0, id,
+        row.smtpHost, row.smtpPort, row.smtpTls ? 1 : 0,
+        row.authKind || null,
+        id,
       ]
     );
   });

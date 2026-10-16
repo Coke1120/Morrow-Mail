@@ -1,5 +1,5 @@
 // Electron patches `fs` so paths inside an asar are virtual. Reading the
-// Genspark archive itself has to go through the unpatched module.
+// Genspark (or bundled) archive itself has to go through the unpatched module.
 const fs = (() => {
   try {
     return require("original-fs");
@@ -7,11 +7,43 @@ const fs = (() => {
     return require("fs");
   }
 })();
+const path = require("path");
 
-const ASAR = "/Applications/Genspark Super App.app/Contents/Resources/app.asar";
+const DEFAULT_GENSPARK_ASAR =
+  "/Applications/Genspark Super App.app/Contents/Resources/app.asar";
 
-function openAsar(path = ASAR) {
-  const fd = fs.openSync(path, "r");
+function bundledUiAsar() {
+  try {
+    const { app } = require("electron");
+    if (app) {
+      const candidate = path.join(process.resourcesPath || "", "ui.asar");
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  } catch {
+    // plain node
+  }
+  const local = path.join(__dirname, "..", "resources", "ui.asar");
+  if (fs.existsSync(local)) return local;
+  return null;
+}
+
+function resolveAsarPath(explicit) {
+  const fromEnv = (process.env.GENMAIL_ASAR || "").trim();
+  if (explicit) return explicit;
+  if (fromEnv) return fromEnv;
+  const bundled = bundledUiAsar();
+  if (bundled) return bundled;
+  return DEFAULT_GENSPARK_ASAR;
+}
+
+function openAsar(asarPath = resolveAsarPath()) {
+  const target = asarPath;
+  if (!fs.existsSync(target)) {
+    throw new Error(
+      `UI asar missing at ${target}. Install Genspark Super App, set GENMAIL_ASAR, or place resources/ui.asar (see docs/PACKAGING.md).`
+    );
+  }
+  const fd = fs.openSync(target, "r");
   const head = Buffer.alloc(8);
   fs.readSync(fd, head, 0, 8, 0);
   if (head.readUInt32LE(0) !== 4) {
@@ -30,7 +62,7 @@ function openAsar(path = ASAR) {
       else files.set(rel, { offset: Number(child.offset), size: child.size });
     }
   })(tree, "");
-  return { fd, dataOffset: 8 + headerSize, files, path };
+  return { fd, dataOffset: 8 + headerSize, files, path: target };
 }
 
 function readFile(archive, rel) {
@@ -41,4 +73,10 @@ function readFile(archive, rel) {
   return buf;
 }
 
-module.exports = { ASAR, openAsar, readFile };
+module.exports = {
+  ASAR: DEFAULT_GENSPARK_ASAR,
+  resolveAsarPath,
+  openAsar,
+  readFile,
+  bundledUiAsar,
+};
