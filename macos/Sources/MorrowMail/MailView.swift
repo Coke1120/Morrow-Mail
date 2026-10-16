@@ -428,9 +428,10 @@ struct MailWorkspace: View {
                 } label: { Label("Sort", systemImage: "arrow.up.arrow.down") }.fixedSize().accessibilityIdentifier("mail.sortMenu").disabled(!model.searchResponse.isNull)
                 Spacer(minLength: 0)
                 if !model.selectedMailRows.isEmpty {
-                ReviewActionButton(title: "Delete (\(model.selectedMailRows.count))", enabled: model.canNavigate && model.selectedMailRows.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" }, identifier: "mail.deleteSelection", bordered: false) { model.trashMessages(model.selectedMailRows) }
-                    .fixedSize()
+                Button { model.trashMessages(model.selectedMailRows) } label: { Label("Delete (\(model.selectedMailRows.count))", systemImage: "trash") }
+                    .disabled(!model.canNavigate || model.selectedMailRows.isEmpty || !model.selectedMailRows.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" })
                     .help("Move selected mail to provider Trash · Undo within one minute (⌘Z)")
+                    .accessibilityIdentifier("mail.deleteSelection")
                 }
             }.menuStyle(.borderlessButton).controlSize(.small).disabled(model.busy).padding(.horizontal, 14).padding(.bottom, 8)
             Divider()

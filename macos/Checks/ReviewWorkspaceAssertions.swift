@@ -879,7 +879,13 @@ import SwiftUI
         try require(control("Delete (1)", in: host) == nil && control("Delete (2)", in: host) == nil, "Empty selection exposed a delete command")
         for count in [1, 2] {
             model.selectMailMessages(Set(rows.prefix(count).map(\.viewID)))
-            try await settle("Selected mail did not expose its owned delete command") { control("Delete (\(count))", in: host)?.isAccessibilityEnabled() == true }
+            let deleteLabel = "Delete (\(count))"
+            do {
+                try await settle("Selected mail did not expose its owned delete command") { control(deleteLabel, in: host)?.isAccessibilityEnabled() == true }
+            } catch {
+                print(controlDiagnostics(deleteLabel, in: host)); fflush(stdout)
+                throw error
+            }
             try require(model.selectedMailRows.count == count, "Selection action count is not the actual selection")
         }
         model.busy = true
