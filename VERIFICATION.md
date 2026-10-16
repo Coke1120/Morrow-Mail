@@ -84,7 +84,8 @@ that click. Run `38864512045` pressed Review replies, then missed
 hosting view's AX tree. Run `38867290790` on `db57869` pressed the scope tab
 (the label was on an `NSButton`) and then missed `Back to Today`, which was
 still a SwiftUI button. Back, Skip, update, refresh, and Add Cc now use
-that mounted button. Delete stays the list-bar label; a miss prints the
+that mounted button. Delete is the same kind of button beside the list
+menus, because the menu bar did not publish the label. A miss prints the
 mounted buttons. The Skip seam extracts the mounted handler; the pinned
 baseline still reads the old SwiftUI button. No AppKit run was available here.
 

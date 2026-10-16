@@ -859,6 +859,10 @@ import SwiftUI
     @MainActor static func mountedSelection(session: URLSession) async throws {
         let model = AppModel(session: session), owner = ReviewFixture.owners[0]
         model.state = ReviewFixture.state(owner: owner); model.starting = false
+        // Search resets its response on appear, so the cached rows need the same provider id.
+        var stored = model.state["messages"].array
+        for index in stored.indices { stored[index]["remoteId"] = .string("imap:1:\(index + 1)") }
+        model.state["messages"] = .array(stored)
         let rows = (0..<2).map { index -> JSON in
             var row = ReviewFixture.message(index, owner: owner)
             row["remoteId"] = .string("imap:1:\(index + 1)")

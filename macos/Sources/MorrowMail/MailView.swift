@@ -427,7 +427,7 @@ struct MailWorkspace: View {
                         Button { model.preference("sort", option.0) } label: { Label(option.1, systemImage: model.preferences["sort"].string == option.0 ? "checkmark" : "arrow.up.arrow.down") }
                     }
                 } label: { Label("Sort", systemImage: "arrow.up.arrow.down") }.fixedSize().accessibilityIdentifier("mail.sortMenu").disabled(!model.searchResponse.isNull)
-                }.menuStyle(.borderlessButton).controlSize(.small)
+                }.menuStyle(.borderlessButton).controlSize(.small).disabled(model.busy)
                 Spacer(minLength: 0)
                 if !model.selectedMailRows.isEmpty {
                     // The menu bar does not publish this label as a button the fixture can press.
@@ -435,7 +435,7 @@ struct MailWorkspace: View {
                         .frame(width: 110, height: 28)
                         .help("Move selected mail to provider Trash · Undo within one minute (⌘Z)")
                 }
-            }.disabled(model.busy).padding(.horizontal, 14).padding(.bottom, 8)
+            }.padding(.horizontal, 14).padding(.bottom, 8)
             Divider()
             if filtered.isEmpty {
                 VStack {
