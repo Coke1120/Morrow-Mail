@@ -21,8 +21,9 @@
 - Inserts a host signature in compose (`mail:listSignatures`), or shows an empty state when the mailbox has none
 - Shows the app version and checks or installs updates (`app:getVersion`, `host:updateGetState`, `host:updateCheck`, `host:updateInstall`)
 - Shows a few host preferences (`config:getTheme`, `genmail:configGet*`). API keys stay in AI Setup
+- Schedules a send from New Mail (`mail:scheduleSend`) and lists it (`mail:listScheduled`). The sample list stays in memory. A connected IMAP account reports that scheduled send is unavailable
 
-With no connected account the host answers from the built-in sample mailbox in `host/mailbox.js`, including star, archive, trash, move, and snooze. Translate shows the host error when no API key is set, and compose shows no signatures. That mail is not yours and Send stays disabled. Connecting an account switches the same channels over to the live IMAP engine.
+With no connected account the host answers from the built-in sample mailbox in `host/mailbox.js`, including star, archive, trash, move, snooze, and scheduled send. Translate shows the host error when no API key is set, and compose shows no signatures. That mail is not yours and Send stays disabled. Scheduling a sample message only adds it to the list in New Mail. Connecting an account switches the same channels over to the live IMAP engine.
 
 `GENMAIL_ASAR=/absolute/path/to/app.asar` still boots that external renderer and its preload. That is the only fallback.
 
@@ -32,5 +33,5 @@ Not in this slice, and not matching GenMail inside the Genspark launcher yet:
 
 - Visual parity with that GenMail shell beyond the three-pane chrome in [PARITY_SHELL.md](PARITY_SHELL.md)
 - Calendar, Email Brain, and AI Write in this window
-- Signatures editor, scheduled send
+- Signatures editor
 - Writing settings, or changing API keys, from this window (AI Setup remains on the application menu)

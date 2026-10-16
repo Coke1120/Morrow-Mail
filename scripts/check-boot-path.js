@@ -57,7 +57,7 @@ assert.ok(main.includes("loadFile(FIRST_PARTY_HTML)"));
 const pkg = require("../package.json");
 assert.ok(pkg.build.files.includes("renderer/**/*"));
 
-function extractFunction(source, name) {
+function functionSource(source, name) {
   const start = source.indexOf(`function ${name}(`);
   assert.ok(start >= 0, `missing ${name}`);
   let depth = 0;
@@ -66,12 +66,19 @@ function extractFunction(source, name) {
     if (ch === "{") depth += 1;
     else if (ch === "}") {
       depth -= 1;
-      if (depth === 0) {
-        return new Function(`${source.slice(start, i + 1)}; return ${name};`)();
-      }
+      if (depth === 0) return source.slice(start, i + 1);
     }
   }
   throw new Error(`unclosed ${name}`);
+}
+
+function extractFunction(source, name) {
+  return new Function(`${functionSource(source, name)}; return ${name};`)();
+}
+
+function loadFunctions(source, names) {
+  const body = names.map((name) => functionSource(source, name)).join("\n");
+  return new Function(`${body}; return { ${names.join(", ")} };`)();
 }
 
 const senderName = extractFunction(appJs, "senderName");
@@ -393,5 +400,98 @@ assert.ok(html.includes('id="updates"') && html.includes('id="update-check"') &&
 assert.ok(html.includes("Check for updates") && html.includes(">Install<"));
 assert.ok(html.includes('id="settings"') && html.includes('id="prefs"') && html.includes("AI Setup"));
 assert.ok(css.includes("#updates") && css.includes("#prefs"));
+
+const timing = loadFunctions(appJs, ["snoozeUntil", "scheduleAt"]);
+const laterAfternoon = new Date("2026-10-16T15:00:00");
+assert.strictEqual(timing.scheduleAt("1h", "", laterAfternoon).getTime(), snoozeUntil("1h", laterAfternoon).getTime());
+assert.strictEqual(timing.scheduleAt("tonight", "", laterAfternoon).getHours(), 18);
+assert.strictEqual(timing.scheduleAt("morning", "", laterAfternoon).getHours(), 8);
+const picked = timing.scheduleAt("custom", "2026-10-17T09:30", laterAfternoon);
+assert.strictEqual(picked.getFullYear(), 2026);
+assert.strictEqual(picked.getMonth(), 9);
+assert.strictEqual(picked.getDate(), 17);
+assert.strictEqual(picked.getHours(), 9);
+assert.strictEqual(picked.getMinutes(), 30);
+assert.strictEqual(timing.scheduleAt("custom", "2026-10-16T14:00", laterAfternoon), null);
+assert.strictEqual(timing.scheduleAt("custom", "", laterAfternoon), null);
+assert.strictEqual(timing.scheduleAt("custom", "nope", laterAfternoon), null);
+assert.strictEqual(timing.scheduleAt("nope", "", laterAfternoon), null);
+
+const scheduledRows = extractFunction(appJs, "scheduledRows");
+const scheduledLine = extractFunction(appJs, "scheduledLine");
+assert.deepStrictEqual(scheduledRows(null), []);
+assert.deepStrictEqual(scheduledRows({ records: [] }), []);
+assert.deepStrictEqual(scheduledRows([{ id: "a" }, null, { subject: "no id" }]).map((row) => row.id), ["a"]);
+const line = scheduledLine({ subject: "Hi", to: "ada@example.com", sendAt: "2026-10-17T09:30:00" });
+assert.ok(line.includes("Hi") && line.includes("ada@example.com"));
+assert.strictEqual(scheduledLine({ subject: "  ", to: "" }), "(no subject)");
+assert.strictEqual(scheduledLine({ subject: "Hi", to: ["ada@example.com", "grace@example.com"] }).includes("ada@example.com, grace@example.com"), true);
+
+const future = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+assert.deepStrictEqual(mailbox.answer("mail:listScheduled").data, []);
+const first = mailbox.answer("mail:scheduleSend", [{
+  accountId: "gmail-ada",
+  to: "grace@example.com",
+  subject: "Later",
+  sendAt: future,
+}]);
+assert.strictEqual(first.success, true);
+assert.ok(first.data.id);
+const second = mailbox.answer("mail:scheduleSend", [{
+  accountId: "outlook-grace",
+  to: ["ada@example.com"],
+  subject: "Also later",
+  sendAt: future,
+}]);
+assert.strictEqual(second.success, true);
+assert.strictEqual(second.data.to, "ada@example.com");
+const bare = mailbox.answer("mail:scheduleSend", [{
+  accountId: "gmail-ada",
+  to: "grace@example.com",
+  sendAt: future,
+}]);
+assert.strictEqual(bare.success, true);
+assert.strictEqual(bare.data.subject, "");
+const adaScheduled = mailbox.answer("mail:listScheduled", [{ accountId: "gmail-ada" }]);
+assert.strictEqual(adaScheduled.success, true);
+assert.deepStrictEqual(adaScheduled.data.map((row) => row.subject), ["Later", ""]);
+assert.strictEqual(adaScheduled.data[0].to, "grace@example.com");
+assert.strictEqual(adaScheduled.data[0].sendAt, future);
+assert.strictEqual(mailbox.answer("mail:listScheduled", [{ accountId: "outlook-grace" }]).data.length, 1);
+assert.strictEqual(mailbox.answer("mail:listScheduled", [{}]).data.length, 3);
+const pastSend = mailbox.answer("mail:scheduleSend", [{
+  accountId: "gmail-ada",
+  to: "grace@example.com",
+  sendAt: new Date(Date.now() - 1000).toISOString(),
+}]);
+assert.strictEqual(pastSend.success, false);
+assert.strictEqual(pastSend.error.code, "send_at_in_past");
+const nobodySend = mailbox.answer("mail:scheduleSend", [{
+  accountId: "gmail-ada",
+  to: "  ",
+  sendAt: future,
+}]);
+assert.strictEqual(nobodySend.success, false);
+assert.strictEqual(nobodySend.error.code, "invalid");
+assert.strictEqual(mailbox.answer("mail:scheduleSend", [{ accountId: "gmail-ada", to: "a@b.c" }]).success, false);
+assert.strictEqual(mailbox.answer("mail:listScheduled").data.length, 3);
+
+const engineSrc = fs.readFileSync(path.join(root, "host/mail/engine.js"), "utf8");
+assert.ok(engineSrc.includes('case "mail:scheduleSend"'));
+assert.ok(engineSrc.includes('case "mail:listScheduled"'));
+assert.ok(engineSrc.includes("imap_schedule_send_unsupported"));
+for (const name of ["mail:cancelScheduled", "mail:deleteScheduled", "mail:unschedule", "mail:cancelScheduleSend"]) {
+  assert.ok(!engineSrc.includes(name), `${name} appeared`);
+  assert.ok(!appJs.includes(name), `renderer calls ${name}`);
+}
+for (const channel of ["mail:scheduleSend", "mail:listScheduled"]) {
+  assert.ok(registered.has(channel), `preload does not register ${channel}`);
+  assert.ok(used.has(channel), `renderer does not call ${channel}`);
+}
+assert.ok(appJs.includes("Nothing scheduled."));
+assert.ok(html.includes('id="schedule-preset"') && html.includes('id="schedule-at"') && html.includes('id="compose-schedule"') && html.includes('id="scheduled"'));
+assert.ok(html.includes("Schedule send") && html.includes("In 1 hour") && html.includes("Pick a time") && html.includes("Tomorrow morning"));
+assert.ok(css.includes("#scheduled") && css.includes("#compose textarea") && css.includes("max-height: calc(100vh - 32px)"));
+assert.ok(css.includes("[hidden] { display: none !important; }"));
 
 console.log("ui-path-ok");

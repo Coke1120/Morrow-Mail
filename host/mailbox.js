@@ -269,9 +269,21 @@ const emails = buildEmails();
 const snoozes = new Map();
 const undos = new Map();
 const SNOOZE_MAX_MS = 365 * 24 * 60 * 60 * 1000;
+// shortcut: scheduled sample mail stays in memory and is not sent, upgrade when IMAP can send it later.
+const scheduled = [];
+let scheduleSeq = 0;
 
 function ok(data) {
   return { success: true, data };
+}
+
+function fail(code, message) {
+  return { success: false, error: { code, message, status: 0, retryable: false } };
+}
+
+function scheduleTo(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean).join(", ");
+  return String(value || "").trim();
 }
 
 function inboxUnread(accountId) {
@@ -636,6 +648,28 @@ function answer(channel, args) {
       });
     case "mail:send":
       return ok({ emailId: "sent-local", messageId: "sent-local" });
+    case "mail:scheduleSend": {
+      const to = scheduleTo(params && params.to);
+      if (!to) return fail("invalid", "Add a recipient.");
+      const when = Date.parse(params && params.sendAt);
+      if (!Number.isFinite(when) || when <= Date.now() + 1000) {
+        return fail("send_at_in_past", "Pick a time in the future.");
+      }
+      const row = {
+        id: `sched-${++scheduleSeq}`,
+        accountId: (params && params.accountId) || "",
+        to,
+        subject: params && params.subject ? String(params.subject).trim() : "",
+        sendAt: new Date(when).toISOString(),
+      };
+      scheduled.push(row);
+      return ok(row);
+    }
+    case "mail:listScheduled": {
+      const accountId = params && params.accountId;
+      const rows = accountId ? scheduled.filter((row) => row.accountId === accountId) : scheduled;
+      return ok(rows.slice());
+    }
     default:
       return undefined;
   }

@@ -24,6 +24,7 @@ let reloadTimer = null;
 let undoOpIds = null;
 let translateSeq = 0;
 let signatureGen = 0;
+let scheduledGen = 0;
 let appVersion = "";
 let updateGen = 0;
 let updateTimer = null;
@@ -177,6 +178,27 @@ function snoozeUntil(preset, now) {
   morning.setDate(morning.getDate() + 1);
   morning.setHours(8, 0, 0, 0);
   return morning;
+}
+
+function scheduleAt(preset, custom, now) {
+  const start = now instanceof Date ? new Date(now.getTime()) : new Date(now);
+  let when = null;
+  if (preset === "1h" || preset === "tonight" || preset === "morning") when = snoozeUntil(preset, start);
+  else if (preset === "custom") when = new Date(custom);
+  if (!when || Number.isNaN(when.getTime()) || when.getTime() <= start.getTime() + 1000) return null;
+  return when;
+}
+
+function scheduledRows(data) {
+  return Array.isArray(data) ? data.filter((row) => row && row.id) : [];
+}
+
+function scheduledLine(row) {
+  const subject = String((row && row.subject) || "").trim() || "(no subject)";
+  const to = Array.isArray(row && row.to) ? row.to.filter(Boolean).join(", ") : String((row && row.to) || "").trim();
+  const when = row && row.sendAt ? new Date(row.sendAt) : null;
+  const time = when && !Number.isNaN(when.getTime()) ? when.toLocaleString() : "";
+  return [subject, to, time].filter(Boolean).join(" · ");
 }
 
 function removalPayload(email, threaded) {
@@ -1113,9 +1135,31 @@ function syncCompose() {
   const live = isLive(account);
   $("compose-note").textContent = live
     ? `From ${account.email}`
-    : "Sample mailbox. Connect an account before saving or sending.";
+    : "Sample mailbox. Connect an account before saving or sending. A scheduled message stays in the list below.";
   $("compose-save").disabled = !live;
   $("compose-send").disabled = !live;
+}
+
+function syncScheduleFields() {
+  const custom = $("schedule-preset").value === "custom";
+  $("schedule-at").hidden = !custom;
+  $("schedule-at-label").hidden = !custom;
+}
+
+function renderScheduled(rows) {
+  const list = $("scheduled");
+  list.replaceChildren();
+  if (!rows.length) {
+    const item = document.createElement("li");
+    item.textContent = "Nothing scheduled.";
+    list.append(item);
+    return;
+  }
+  for (const row of rows) {
+    const item = document.createElement("li");
+    item.textContent = scheduledLine(row);
+    list.append(item);
+  }
 }
 
 function showSignatureEmpty(message) {
@@ -1173,9 +1217,47 @@ function openCompose() {
   $("compose-to").value = "";
   $("compose-subject").value = "";
   $("compose-body").value = "";
+  $("schedule-preset").value = "1h";
+  $("schedule-at").value = "";
+  syncScheduleFields();
   syncCompose();
   openDialog("compose");
-  return fillSignatures();
+  return Promise.all([fillSignatures(), loadScheduled()]);
+}
+
+async function loadScheduled() {
+  const gen = scheduledGen += 1;
+  const account = selectedAccount();
+  let data = null;
+  try {
+    data = await call("mail:listScheduled", account ? { accountId: account.id } : {});
+  } catch (error) {
+    if (gen !== scheduledGen) return;
+    renderScheduled([]);
+    showStatus(error instanceof Error ? error.message : String(error), true);
+    return;
+  }
+  if (gen !== scheduledGen) return;
+  renderScheduled(scheduledRows(data));
+}
+
+// shortcut: no cancel, host only has mail:scheduleSend and mail:listScheduled, upgrade when a cancel channel exists.
+async function scheduleMail() {
+  const account = selectedAccount();
+  if (!account) return;
+  if (!$("compose-to").value.trim()) {
+    showStatus("Add a recipient.", true);
+    return;
+  }
+  const when = scheduleAt($("schedule-preset").value, $("schedule-at").value, new Date());
+  if (!when) {
+    showStatus("Pick a time in the future.", true);
+    return;
+  }
+  showStatus("Scheduling…");
+  await call("mail:scheduleSend", { ...composePayload(account), sendAt: when.toISOString() });
+  showStatus(`Scheduled for ${when.toLocaleString()}.`);
+  await loadScheduled();
 }
 
 async function saveDraft() {
@@ -1496,8 +1578,10 @@ function wire() {
     openCompose().catch((error) => showStatus(error.message, true));
   });
   $("signature").addEventListener("change", onSignatureChange);
+  $("schedule-preset").addEventListener("change", syncScheduleFields);
   $("compose-close").addEventListener("click", () => closeDialog("compose"));
   $("compose-save").addEventListener("click", () => guard(saveDraft));
+  $("compose-schedule").addEventListener("click", () => guard(scheduleMail));
   $("compose-form").addEventListener("submit", (event) => {
     event.preventDefault();
     guard(sendMail);

@@ -381,7 +381,16 @@ button.thread-item[aria-current="true"] { background: #efe7fb; }
 }
 
 dialog {
+  position: fixed;
+  inset: auto;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
   width: min(480px, calc(100vw - 24px));
+  height: auto;
+  max-height: calc(100vh - 32px);
+  margin: 0;
+  overflow: auto;
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 20px;
@@ -392,6 +401,8 @@ dialog::backdrop { background: rgba(31, 22, 48, 0.35); }
 dialog h2 { margin-bottom: 8px; }
 
 label { display: block; font-weight: 600; margin: 12px 0 4px; }
+
+[hidden] { display: none !important; }
 
 label.check {
   display: flex;
@@ -412,7 +423,24 @@ label.check input { width: auto; }
 
 textarea { min-height: 140px; resize: vertical; }
 
+#compose textarea { min-height: 88px; }
+
 .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+
+#compose .row {
+  position: sticky;
+  bottom: 0;
+  margin-top: 12px;
+  padding-top: 8px;
+  background: var(--paper);
+}
+
+#scheduled {
+  max-height: 120px;
+  overflow: auto;
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
 
 @media (max-width: 800px) {
   .actions { margin-left: 0; }

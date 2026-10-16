@@ -19,10 +19,11 @@ First-party `renderer/` chrome for the three-pane mail shell. Layout follows the
 - The folder and message panes drag-resize. Each folder row has an icon. At about 1100×700 the three panes stay side by side.
 - Translate sits in the reading pane: a short language list, Translate, and Cancel. Visible body paragraphs go to `mail:translateStart` as `{ node_id, text }` nodes. `mail:translate:event` fills the result under the original text. A missing AI key shows the host error. Cancel calls `mail:translateCancel`. AI Setup stays the separate host window.
 - Compose calls `mail:listSignatures`. An empty list shows “No signatures.” A row is `{ id, name, text }` or `{ id, name, html }`. The picker inserts the account default (`defaultSignaturePerAccount`, otherwise `defaultSignatureId`) and can switch or clear it. The signature text is part of the message body.
+- Compose schedules a send for 1 hour, tonight, tomorrow morning, or a chosen date and time (`mail:scheduleSend` with the compose fields and `sendAt`). Tonight uses the same 18:00, then 22:00, then next 18:00 rule as snooze. The dialog lists `mail:listScheduled` (subject, recipient, time). The sample mailbox keeps that list in memory and does not send it. A connected IMAP account returns `imap_schedule_send_unsupported`. The host has no cancel or delete channel for a scheduled send.
 - Updater strip: the running version from `app:getVersion`, Check (`host:updateCheck`), and Install (`host:updateInstall`) when `host:updateGetState` reports a downloaded update. The same snapshot supplies the idle, checking, downloading, and error lines. An unpackaged build stays on the host stub (`enabled: false`).
 - Settings lists theme, accent, conversation view, remote images, undo send, and snooze from `config:getTheme` and the existing `genmail:configGet*` stubs. The host has no matching set channels, so the list is read-only. API keys stay in AI Setup on the GenMail menu.
 
 ## Deferred
 
-- Full settings, AI Studio, calendar, Email Brain, AI write, signatures editor, scheduled send.
+- Full settings, AI Studio, calendar, Email Brain, AI write, signatures editor.
 - A pixel match to `GenmailSpace-*.css`. This shell only uses the first-party layout.

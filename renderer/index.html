@@ -89,8 +89,20 @@
         <label for="signature">Signature</label>
         <select id="signature" hidden></select>
         <p id="signature-empty" class="hint" hidden>No signatures.</p>
+        <label for="schedule-preset">Send later</label>
+        <select id="schedule-preset">
+          <option value="1h">In 1 hour</option>
+          <option value="tonight">Tonight</option>
+          <option value="morning">Tomorrow morning</option>
+          <option value="custom">Pick a time</option>
+        </select>
+        <label for="schedule-at" id="schedule-at-label" hidden>Date and time</label>
+        <input id="schedule-at" type="datetime-local" hidden />
+        <p id="scheduled-heading" class="hint">Scheduled</p>
+        <ul id="scheduled" aria-labelledby="scheduled-heading"></ul>
         <div class="row">
           <button type="submit" class="primary" id="compose-send">Send</button>
+          <button type="button" class="ghost" id="compose-schedule">Schedule send</button>
           <button type="button" class="ghost" id="compose-save">Save draft</button>
           <button type="button" class="ghost" id="compose-close">Close</button>
         </div>
