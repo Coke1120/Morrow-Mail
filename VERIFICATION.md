@@ -68,6 +68,14 @@ on this head. WinUI measurement was already green and was not changed.
 `NSHostingView` and still returns that row hosting view. No Swift run here,
 so this compile fix is also unproven until CI.
 
+Run `38854453486` on `efb9b3e` still failed
+`Mounted enabled control missing: Review replies (3)` after the accessibility
+label was added. That label never became the button element `control()`
+presses. The Today, send-review, and Review & Send actions are now accent
+`NSButton`s whose title is that string. The Today fixture also pins the
+hosting view to the window size so a GeometryReader does not collapse the
+header outside the window. This VM still has no Swift or AppKit run.
+
 ## PR #58 macOS review fixture completion — 15 October 2026
 
 Focused run `38760958694`, job `116511781887`, reported success for head

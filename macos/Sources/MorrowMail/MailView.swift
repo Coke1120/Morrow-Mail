@@ -1207,14 +1207,13 @@ struct ComposeView: View {
                 if model.busy { ProgressView().controlSize(.small) }
                 Button("Save Draft") { save() }.keyboardShortcut("s").disabled(frozen)
                 if (scheduleEnabled || defaultDelay > 0 || scheduleAttempt != nil) && !draft.unconfirmed {
-                    Button(scheduleAttempt == nil ? "Review & Send Later" : "Retry Same Schedule") {
+                    ReviewActionButton(title: scheduleAttempt == nil ? "Review & Send Later" : "Retry Same Schedule", enabled: !(model.busy || draft.scheduleLocked || [draft.to, draft.cc, draft.bcc].allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } || draft.body.isEmpty || (scheduleEnabled && scheduleAttempt == nil && sendAt <= Date())), keyEquivalent: "d", keyModifiers: [.command, .shift]) {
                         if !scheduleEnabled && scheduleAttempt == nil { sendAt = Date().addingTimeInterval(Double(defaultDelay) * 3600) }
                         confirmSchedule = true
-                    }
-                        .keyboardShortcut("d", modifiers: [.command, .shift]).buttonStyle(.borderedProminent).disabled(model.busy || draft.scheduleLocked || [draft.to, draft.cc, draft.bcc].allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } || draft.body.isEmpty || (scheduleEnabled && scheduleAttempt == nil && sendAt <= Date()))
+                    }.fixedSize()
                 } else {
-                  Button(draft.unconfirmed ? "Review Retry" : "Review & Send") { confirmSend = true }
-                    .keyboardShortcut("d", modifiers: [.command, .shift]).buttonStyle(.borderedProminent).disabled(model.busy || draft.scheduleLocked || [draft.to, draft.cc, draft.bcc].allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } || draft.body.isEmpty || (draft.unconfirmed && !reviewed))
+                  ReviewActionButton(title: draft.unconfirmed ? "Review Retry" : "Review & Send", enabled: !(model.busy || draft.scheduleLocked || [draft.to, draft.cc, draft.bcc].allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } || draft.body.isEmpty || (draft.unconfirmed && !reviewed)), keyEquivalent: "d", keyModifiers: [.command, .shift]) { confirmSend = true }
+                    .fixedSize()
                 }
             }.padding(20)
         }.frame(width: min(initial.replyToID.isEmpty ? 740 : 1180, (NSScreen.main?.visibleFrame.width ?? 1280) - 80), height: min(820, (NSScreen.main?.visibleFrame.height ?? 900) - 100))

@@ -111,15 +111,27 @@ import SwiftUI
         visit(root)
         return result
     }
+    @MainActor static func controlLabels(_ element: NSAccessibilityProtocol) -> [String] {
+        var labels = [element.accessibilityLabel(), element.accessibilityTitle(), (element as? NSButton)?.title].compactMap { $0 }
+        func texts(_ node: NSAccessibilityProtocol, depth: Int) {
+            for case let child as NSAccessibilityProtocol in node.accessibilityChildren() ?? [] {
+                if let role = child.accessibilityRole(), [NSAccessibility.Role.staticText, .textField].contains(role) {
+                    labels.append(contentsOf: [child.accessibilityLabel(), child.accessibilityTitle(), child.accessibilityValue() as? String].compactMap { $0 })
+                } else if depth < 2 { texts(child, depth: depth + 1) }
+            }
+        }
+        texts(element, depth: 0)
+        return labels
+    }
     @MainActor static func control(_ label: String, in root: NSView) -> NSAccessibilityProtocol? {
         root.layoutSubtreeIfNeeded()
-        return accessibilityNodes(root).first { element in
+        let matches = accessibilityNodes(root).filter { element in
             guard let role = element.accessibilityRole(), [NSAccessibility.Role.button, .checkBox, .popUpButton].contains(role) else { return false }
-            let labels = [element.accessibilityLabel(), element.accessibilityTitle(), (element as? NSButton)?.title].compactMap { $0 }
-            return labels.contains(label) && !element.isAccessibilityHidden()
+            return controlLabels(element).contains(label) && !element.isAccessibilityHidden()
                 && !element.accessibilityFrame().isEmpty
                 && root.window?.frame.intersects(element.accessibilityFrame()) == true
         }
+        return matches.first { $0 is NSButton } ?? matches.first
     }
     @MainActor static func mountedText(_ root: NSView) -> [String] {
         accessibilityNodes(root).flatMap { element -> [String] in
@@ -656,15 +668,27 @@ import SwiftUI
         try require(!ReviewProtocol.recordedTraffic().contains { $0["path"] == "/api/send" || $0["path"] == "/api/ai" || $0["path"]?.contains("/organize") == true }, "Opening grouped controls issued a send, AI or provider write")
         print("Mounted reader menus retain every command, invoke layout/owned organization and reply variants, and disable forbidden history/stale AI.")
     }
+    // GeometryReader's ideal size collapses an unsized hosting view, so the
+    // header button's accessibility frame never meets the window.
+    @MainActor static func mountReview<V: View>(_ view: V, width: CGFloat, height: CGFloat) -> (NSWindow, NSView) {
+        let window = NSWindow(contentRect: NSRect(x: 30, y: 30, width: width, height: height), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: AnyView(view.frame(width: width, height: height)))
+        host.sizingOptions = []
+        window.contentView = host
+        window.setContentSize(NSSize(width: width, height: height))
+        window.makeKeyAndOrderFront(nil)
+        host.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        host.layoutSubtreeIfNeeded()
+        return (window, host)
+    }
     @MainActor static func mountedToday(session: URLSession, width: CGFloat) async throws {
         ReviewProtocol.resetLifecycle()
         let first = ReviewFixture.owners[0], second = ReviewFixture.owners[1]
         let model = AppModel(session: session); model.state = ReviewFixture.state(owner: first); model.starting = false; model.section = "today"
         let review = model.review
         review.pickScope(first); await review.load(first, model: model)
-        let window = NSWindow(contentRect: NSRect(x: 30, y: 30, width: width, height: 780), styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        let host = NSHostingView(rootView: TodayView().environmentObject(model)); window.contentView = host; window.makeKeyAndOrderFront(nil)
+        let (window, host) = mountReview(TodayView().environmentObject(model), width: width, height: 780)
         defer { window.close(); window.contentView = nil }
         try await pressControl("Review replies (3)", in: host)
         let key = review.key(ReviewFixture.proposal(0, owner: first))
@@ -722,9 +746,7 @@ import SwiftUI
         model.state["today"]["events"] = .array([])
         ReviewProtocol.setProposals([clicked], owner: owner)
         try require(review.drafts[clickedKey] == nil && (cachedFirst ? review.selected(model).map(review.key) == previousKey : review.selected(model) == nil), "Exact-selection negative control lost its stale queue precondition")
-        let window = NSWindow(contentRect: NSRect(x: 30, y: 30, width: 1120, height: 900), styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        let host = NSHostingView(rootView: TodayView().environmentObject(model)); window.contentView = host; window.makeKeyAndOrderFront(nil)
+        let (window, host) = mountReview(TodayView().environmentObject(model), width: 1120, height: 900)
         defer { window.close(); window.contentView = nil }
         try await pressControl("Review suggested reply: " + clicked["message"]["subject"].string, in: host)
         try await settle("Today did not mount the exact clicked suggestion after a stale queue") {
@@ -756,9 +778,7 @@ import SwiftUI
         model.state["today"]["replySuggestions"] = .array([initial]); model.state["today"]["events"] = .array([])
         model.state["today"]["replySuggestionCounts"] = .object([owner: .number(1)])
         review.pickScope(owner); ReviewProtocol.setProposals([initial], owner: owner); await review.load(owner, model: model)
-        let window = NSWindow(contentRect: NSRect(x: 30, y: 30, width: 1120, height: 900), styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        let host = NSHostingView(rootView: TodayView().environmentObject(model)); window.contentView = host; window.makeKeyAndOrderFront(nil)
+        let (window, host) = mountReview(TodayView().environmentObject(model), width: 1120, height: 900)
         defer { window.close(); window.contentView = nil }
         try await pressControl("Review suggested reply: " + initial["message"]["subject"].string, in: host)
         try await settle("Updated-selection control did not open its initial editor") { review.drafts[oldKey] != nil && !review.preparing.contains(oldKey) }

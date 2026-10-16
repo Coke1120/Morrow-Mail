@@ -174,8 +174,8 @@ struct ReplySuggestionEditor: View {
                 }.disabled(model.busy || review.writing)
                 Spacer()
                 Button("Save draft") { review.save(key, model: model) }.keyboardShortcut("s").disabled(review.drafts[key] == nil || review.writing || model.busy || !model.accounts.contains { $0.id == owner })
-                Button("Review sending…") { Task { await review.reviewSending(proposal, model: model) } }.buttonStyle(.borderedProminent)
-                    .disabled(review.drafts[key] == nil || review.drafts[key]?.body.lowercased().contains("[decision needed") == true || !review.reviewedFacts.contains(key) || review.stale.contains(key) || review.preparing.contains(key) || review.writing || model.busy || !model.accounts.contains { $0.id == owner })
+                ReviewActionButton(title: "Review sending…", enabled: !(review.drafts[key] == nil || review.drafts[key]?.body.lowercased().contains("[decision needed") == true || !review.reviewedFacts.contains(key) || review.stale.contains(key) || review.preparing.contains(key) || review.writing || model.busy || !model.accounts.contains { $0.id == owner })) { Task { await review.reviewSending(proposal, model: model) } }
+                    .fixedSize()
             }.padding(14)
         }
     }

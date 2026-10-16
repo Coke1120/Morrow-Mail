@@ -71,6 +71,41 @@ struct ReviewScrollMemory: NSViewRepresentable {
     }
 }
 
+// Bordered SwiftUI buttons leave this title off the AX button the review press reads.
+struct ReviewActionButton: NSViewRepresentable {
+    var title: String
+    var enabled = true
+    var identifier = ""
+    var keyEquivalent = ""
+    var keyModifiers: NSEvent.ModifierFlags = []
+    var action: () -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(action) }
+    func makeNSView(context: Context) -> NSButton {
+        let button = NSButton(title: title, target: context.coordinator, action: #selector(Coordinator.press))
+        button.bezelStyle = .rounded
+        button.bezelColor = .controlAccentColor
+        updateNSView(button, context: context)
+        return button
+    }
+    func updateNSView(_ button: NSButton, context: Context) {
+        context.coordinator.action = action
+        button.title = title
+        button.setAccessibilityElement(true)
+        button.setAccessibilityHidden(false)
+        button.setAccessibilityLabel(title)
+        button.cell?.setAccessibilityLabel(title)
+        if !identifier.isEmpty { button.setAccessibilityIdentifier(identifier) }
+        button.keyEquivalent = keyEquivalent
+        button.keyEquivalentModifierMask = keyModifiers
+        button.isEnabled = enabled
+    }
+    final class Coordinator: NSObject {
+        var action: () -> Void
+        init(_ action: @escaping () -> Void) { self.action = action }
+        @objc func press() { action() }
+    }
+}
+
 struct OriginalReviewMessage: View {
     @EnvironmentObject var model: AppModel
     let message: JSON

@@ -35,22 +35,21 @@ private struct TodayReviewWorkspace: View {
     }
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
-            GeometryReader { area in
+            VStack(spacing: 0) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) { Text("Today").font(.title.weight(.semibold)); Text(context.date.formatted(date: .complete, time: .omitted) + " · " + TimeZone.current.identifier).font(.callout).foregroundStyle(.secondary).lineLimit(1) }
+                    Spacer()
+                    if let first = replies.first {
+                        ReviewActionButton(title: "Review replies (\(replyCount))", enabled: !model.busy && !review.writing, identifier: "today.reviewReplies") { openReply(first) }
+                            .fixedSize().layoutPriority(1)
+                    }
+                    Menu("More") {
+                        Button("Summarize now…") { showSummaryReview = true }.disabled(model.busy || model.backgroundBusy || accounts.isEmpty)
+                        Button("Reload saved suggestions") { Task { await review.load(review.scope, model: model) } }.disabled(review.writing)
+                    }.fixedSize().accessibilityLabel("More Today actions").accessibilityIdentifier("today.moreMenu")
+                }.padding(.horizontal, 24).padding(.vertical, 16)
+                GeometryReader { area in
                 VStack(spacing: 0) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) { Text("Today").font(.title.weight(.semibold)); Text(context.date.formatted(date: .complete, time: .omitted) + " · " + TimeZone.current.identifier).font(.callout).foregroundStyle(.secondary) }
-                        Spacer()
-                        if let first = replies.first {
-                            Button("Review replies (\(replyCount))") { openReply(first) }.buttonStyle(.borderedProminent)
-                                .disabled(model.busy || review.writing)
-                                .accessibilityLabel("Review replies (\(replyCount))")
-                                .accessibilityIdentifier("today.reviewReplies")
-                        }
-                        Menu("More") {
-                            Button("Summarize now…") { showSummaryReview = true }.disabled(model.busy || model.backgroundBusy || accounts.isEmpty)
-                            Button("Reload saved suggestions") { Task { await review.load(review.scope, model: model) } }.disabled(review.writing)
-                        }.fixedSize().accessibilityLabel("More Today actions").accessibilityIdentifier("today.moreMenu")
-                    }.padding(.horizontal, 24).padding(.vertical, 16)
                     ReviewAccountTabs(review: review)
                     if let error = review.errors[review.scope] {
                         HStack { Text(error).font(.callout).foregroundStyle(.red); Spacer(); Button("Reload suggestions") { Task { await review.load(review.scope, model: model) } }.disabled(review.writing) }.padding(12)
@@ -69,6 +68,7 @@ private struct TodayReviewWorkspace: View {
                         HSplitView { content(context.date).frame(minWidth: 350); original(source).frame(minWidth: 320, idealWidth: 380) }
                     } else { content(context.date) }
                 }
+                }.frame(maxHeight: .infinity)
             }
         }.sheet(isPresented: $showSummaryReview) { TodaySummaryReview().environmentObject(model) }
         .task(id: replySelection?.id) {
