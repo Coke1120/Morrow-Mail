@@ -1,6 +1,8 @@
 #include "pch.h"
 #include "Ui.h"
 #include <winrt/Microsoft.UI.Xaml.Automation.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
 #include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
 #include <winrt/Microsoft.UI.Xaml.Input.h>
 #include <winrt/Windows.System.h>
@@ -33,9 +35,13 @@ struct Page : std::enable_shared_from_this<Page> {
     Grid columns{nullptr}; StackPanel queue{nullptr},editor{nullptr},actions{nullptr};
     ScrollViewer listScroll{nullptr}; Grid detail{nullptr}; ContentControl detailHost{nullptr};
     ContentControl optionsHost{nullptr}; hstring optionsPaint;
-    TextBlock notice{nullptr},detailNotice{nullptr}; TextBox body{nullptr}; CheckBox facts{nullptr}; Button send{nullptr},replace{nullptr};
+    TextBlock notice{nullptr},detailNotice{nullptr}; TextBox body{nullptr}; CheckBox facts{nullptr}; Button send{nullptr},replace{nullptr},refreshEvidence{nullptr};
+    DropDownButton replyMore{nullptr};
+    uint64_t replyToken=0;
     std::vector<Json> rows;
-    bool current() const { return live && !shell->closing && shell->generation==generation && shell->section==kind && shell->review->scope==scope; }
+    bool current() const { return live && armed(); }
+    // Click can run after Unloaded clears live and the More button; generation and scope still identify this page.
+    bool armed() const { return !shell->closing && shell->generation==generation && shell->section==kind && shell->review->scope==scope; }
     void say(hstring const& value) { if (current()) notice.Text(value); }
 };
 using P=std::shared_ptr<Page>;
@@ -50,6 +56,17 @@ IAsyncAction reviewSend(P page);
 IAsyncAction saveOptions(P page,Json model);
 void paintQueue(P const& page);
 void reflow(P const& page);
+void showDecision(P const& page, Json item, bool task);
+MenuFlyout summaryMailboxMenu(P const& p) {
+    MenuFlyout menu;
+    for(auto const& value:array(p->shell->state,L"accounts")) {
+        auto owner=text(value.GetObject(),L"id");
+        if(!p->shell->connected(owner) || (p->scope!=L"all" && p->scope!=owner))continue;
+        auto item=menuItem(owner,[weak=std::weak_ptr<Page>(p),owner]{if(auto page=weak.lock();page && page->current() && !page->shell->review->writing)summarizeNow(page->shell,owner);});
+        item.Tag(box_value(owner));menu.Items().Append(item);
+    }
+    return menu;
+}
 void owned(Json const& message,hstring const& owner,hstring const& id) { require(text(message,L"accountId")==owner && text(message,L"id")==id,L"The original message owner could not be verified."); }
 bool validProposal(Json const& response,Json const& proposal) {
     if (text(response,L"owner")!=ownerOf(proposal)) return false;
@@ -98,7 +115,7 @@ void mountOriginal(P const& p,StackPanel const& panel,Json const& message) {
     appendAttachmentControls(p->shell,panel,message);
 }
 void paintEditor(P const& p,hstring const& key) {
-    if (!p->current() || p->selectedKey!=key) return;
+    if (!p->current() || p->selectedKey!=key || p->shell->review->detailKinds[std::wstring(p->scope)]!=L"reply") return;
     auto& entry=p->shell->review->entries[std::wstring(key)];
     auto owner=ownerOf(entry.proposal);
     auto content=stack(14); content.Margin(xaml::Thickness{18,10,18,14});
@@ -110,14 +127,18 @@ void paintEditor(P const& p,hstring const& key) {
     auto body=field(L"Edit suggested reply",text(entry.draft,L"body"),true); body.MinHeight(190); body.MaxHeight(260); body.MaxLength(100000); p->body=body;
     body.IsEnabled(!p->shell->review->writing);
     body.TextChanged([weak=std::weak_ptr<Page>(p),key](auto const& sender,auto const&) {
-        if(auto page=weak.lock();page && page->current() && !page->shell->review->writing && page->selectedKey==key) {
-            auto& current=page->shell->review->entries[std::wstring(key)]; put(current.draft,L"body",sender.template as<TextBox>().Text()); current.reviewed=false;
+        if(auto page=weak.lock();page && page->current() && !page->shell->review->writing && page->selectedKey==key
+            && page->body==sender.template as<TextBox>() && page->shell->review->detailKinds[std::wstring(page->scope)]==L"reply"
+            && page->shell->review->details[std::wstring(page->scope)]) {
+            auto& current=page->shell->review->entries[std::wstring(key)]; auto next=sender.template as<TextBox>().Text(); if(text(current.draft,L"body")==next) return; put(current.draft,L"body",next); current.reviewed=false;
             if(page->facts) page->facts.IsChecked(false); if(page->send) page->send.IsEnabled(false);
         }
     }); content.Children().Append(body);
     CheckBox facts; facts.Content(box_value(L"I checked the facts, missing answers and commitments")); facts.IsChecked(entry.reviewed); facts.IsEnabled(!entry.stale); p->facts=facts;
     auto updateFacts=[weak=std::weak_ptr<Page>(p),key](auto const& sender,auto const&) {
-        if(auto page=weak.lock();page && page->current() && page->selectedKey==key) {
+        if(auto page=weak.lock();page && page->current() && page->selectedKey==key
+            && page->facts==sender.template as<CheckBox>() && page->shell->review->detailKinds[std::wstring(page->scope)]==L"reply"
+            && page->shell->review->details[std::wstring(page->scope)]) {
             auto& current=page->shell->review->entries[std::wstring(key)]; current.reviewed=checked(sender.template as<CheckBox>());
             if(page->send) page->send.IsEnabled(current.reviewed && !current.stale && !page->shell->review->writing && !needsDecision(current.draft));
         }
@@ -132,19 +153,38 @@ void paintEditor(P const& p,hstring const& key) {
     evidence.Content(quotes); content.Children().Append(evidence);
     auto warning=label(entry.stale ? L"Sources changed. Your draft is retained; review a fresh suggestion before sending.":L"Edits stay with this mailbox. Sending still requires the normal recipient and delivery confirmation.",12); p->detailNotice=warning; content.Children().Append(warning);
     auto replace=button(L"Load latest suggestion…",[weak=std::weak_ptr<Page>(p)]{ if(auto page=weak.lock();page && page->current()) replaceReply(page); }); p->replace=replace; replace.Visibility(entry.stale ? xaml::Visibility::Visible:xaml::Visibility::Collapsed); content.Children().Append(replace);
-    content.Children().Append(button(L"Keep edits and refresh evidence",[weak=std::weak_ptr<Page>(p)]{if(auto page=weak.lock();page && page->current())keepEdits(page);}));
+    MenuFlyout more;auto moreButton=actionMenu(L"More",more,L"More actions for this suggested reply");auto token=++p->replyToken;p->replyMore=moreButton;
+    auto replyContext=[weak=std::weak_ptr<Page>(p),token,key,owner,
+        scope=p->scope,generation=p->generation,sequence=p->selection,keptId=proposalId(entry.proposal),keptText=text(entry.proposal,L"text")]() -> P {
+        auto page=weak.lock();
+        // An open flyout can drop a weak anchor; the token still rejects a replaced More button.
+        if(!page || !page->armed() || page->replyToken!=token
+            || page->generation!=generation || page->selection!=sequence
+            || page->scope!=scope || page->selectedKey!=key || !page->shell->connected(owner)
+            || page->shell->review->detailKinds[std::wstring(scope)]!=L"reply" || !page->shell->review->details[std::wstring(scope)])return {};
+        auto found=page->shell->review->entries.find(std::wstring(key));
+        if(found==page->shell->review->entries.end() || ownerOf(found->second.proposal)!=owner || keyOf(found->second.proposal)!=key
+            || proposalId(found->second.proposal)!=keptId || text(found->second.proposal,L"text")!=keptText)return {};
+        return page;
+    };
+    auto refreshEvidence=button(L"Keep edits and refresh evidence",[replyContext]{if(auto page=replyContext())keepEdits(page);});
+    p->refreshEvidence=refreshEvidence; refreshEvidence.Visibility(entry.stale ? Visibility::Visible : Visibility::Collapsed); content.Children().Append(refreshEvidence);
+    more.Items().Append(menuItem(L"Keep edits and refresh evidence",[replyContext]{if(auto page=replyContext())keepEdits(page);})); // keepEdits waits until Invoke closes this flyout.
+    xaml::Automation::AutomationProperties::SetAutomationId(moreButton,L"review.reply.more"); content.Children().Append(moreButton);
     p->detailHost.Content(rememberScroll(p,content,L"reply-detail:"+key));
     auto buttons=stack(8); p->actions=buttons; buttons.Orientation(p->compact ? Orientation::Vertical:Orientation::Horizontal); buttons.Margin(ThicknessHelper::FromUniformLength(12));
-    buttons.Children().Append(button(L"Back to suggestions",[weak=std::weak_ptr<Page>(p)]{ if(auto page=weak.lock();page && page->current()){ page->shell->review->details[std::wstring(page->scope)]=false; reflow(page); page->listScroll.Focus(xaml::FocusState::Programmatic); } }));
+    buttons.Children().Append(button(p->kind==L"today" ? L"Back to Today" : L"Back to suggestions",[weak=std::weak_ptr<Page>(p)]{ if(auto page=weak.lock();page && page->current()){ page->shell->review->details[std::wstring(page->scope)]=false; reflow(page); page->listScroll.Focus(xaml::FocusState::Programmatic); } }));
     buttons.Children().Append(button(L"Save draft",[weak=std::weak_ptr<Page>(p)]{ if(auto page=weak.lock();page && page->current()) saveDraft(page); }));
     auto send=button(L"Review sending…",[weak=std::weak_ptr<Page>(p)]{ if(auto page=weak.lock();page && page->current()) reviewSend(page); }); p->send=send;
+    xaml::Automation::AutomationProperties::SetAutomationId(send,L"review.reply.send");
     send.IsEnabled(entry.reviewed && !entry.stale && !p->shell->review->writing && !needsDecision(entry.draft));
     buttons.Children().Append(send); Grid::SetRow(buttons,1);
     while(p->detail.Children().Size()>1) p->detail.Children().RemoveAtEnd(); p->detail.Children().Append(buttons);
 }
 IAsyncAction selectReply(P p,Json proposal) {
     auto owner=ownerOf(proposal),key=keyOf(proposal),id=text(proposal,L"messageId");
-    if(!p->current() || p->busy || !p->shell->connected(owner) || id.empty()) co_return;
+    if(!p->current() || p->busy || p->shell->review->writing || !p->shell->connected(owner) || id.empty() || (p->scope!=L"all" && p->scope!=owner)) co_return;
+    p->shell->review->detailKinds[std::wstring(p->scope)]=L"reply";
     p->selectedKey=key; p->shell->review->selections[std::wstring(p->scope)]=key; p->shell->review->details[std::wstring(p->scope)]=true;
     ++p->shell->selectionGeneration; p->shell->readerImageOverride.reset(); auto sequence=++p->selection;
     auto& entry=p->shell->review->entries[std::wstring(key)];
@@ -166,7 +206,8 @@ IAsyncAction selectReply(P p,Json proposal) {
     } catch(hresult_error const& error) { if(p->current()){ p->say(error.message()); entry.stale=true; auto retry=button(L"Reload original and suggestion",[weak=std::weak_ptr<Page>(p),proposal]{ if(auto page=weak.lock();page && page->current()) selectReply(page,proposal); }); p->queue.Children().Append(retry); } }
 }
 IAsyncAction replaceReply(P p) {
-    if(!p->current() || p->busy || p->shell->review->writing || p->selectedKey.empty()) co_return;
+    if(!p->current() || p->busy || p->shell->review->writing || p->selectedKey.empty()
+        || p->shell->review->detailKinds[std::wstring(p->scope)]!=L"reply" || !p->shell->review->details[std::wstring(p->scope)]) co_return;
     auto key=p->selectedKey; auto& entry=p->shell->review->entries[std::wstring(key)];
     auto owner=ownerOf(entry.proposal),id=text(entry.proposal,L"messageId");
     if(!p->shell->connected(owner)) co_return;
@@ -186,7 +227,10 @@ IAsyncAction replaceReply(P p) {
 }
 IAsyncAction selectOriginal(P p,Json metadata) {
     auto owner=text(metadata,L"accountId"),id=text(metadata,L"id");
-    if(!p->current() || !p->shell->connected(owner) || id.empty()) co_return;
+    if(!p->current() || p->busy || p->shell->review->writing || !p->shell->connected(owner) || id.empty() || (p->scope!=L"all" && p->scope!=owner)) co_return;
+    bool backToReply=p->shell->review->detailKinds[std::wstring(p->scope)]==L"reply";
+    p->shell->review->detailKinds[std::wstring(p->scope)]=L"original";
+    p->body=nullptr;p->facts=nullptr;p->send=nullptr;p->replace=nullptr;p->refreshEvidence=nullptr;p->replyMore=nullptr;
     auto sequence=++p->selection; ++p->shell->selectionGeneration; p->shell->readerImageOverride.reset();
     p->shell->review->originals[std::wstring(p->scope)]=copy(metadata); p->shell->review->details[std::wstring(p->scope)]=true;
     while(p->detail.Children().Size()>1) p->detail.Children().RemoveAtEnd(); p->actions=nullptr;
@@ -196,8 +240,8 @@ IAsyncAction selectOriginal(P p,Json metadata) {
         if(!p->current() || sequence!=p->selection) co_return;
         auto message=object(result,L"message"); owned(message,owner,id); panel.Children().Clear();
         words(panel,owner,12); mountOriginal(p,panel,message);
-        panel.Children().Append(button(p->kind==L"reply-suggestions" ? L"Back to reply":L"Close original",[weak=std::weak_ptr<Page>(p)] { if(auto page=weak.lock();page && page->current()) {
-            if(page->kind==L"reply-suggestions" && !page->selectedKey.empty()){ auto entry=page->shell->review->entries.find(std::wstring(page->selectedKey)); if(entry!=page->shell->review->entries.end()){ selectReply(page,entry->second.proposal); return; } }
+        panel.Children().Append(button(backToReply ? L"Back to reply":L"Close original",[weak=std::weak_ptr<Page>(p),backToReply] { if(auto page=weak.lock();page && page->current()) {
+            if(backToReply && !page->selectedKey.empty()){ auto entry=page->shell->review->entries.find(std::wstring(page->selectedKey)); if(entry!=page->shell->review->entries.end()){ selectReply(page,entry->second.proposal); return; } }
             page->shell->review->details[std::wstring(page->scope)]=false; reflow(page);
         } }));
         panel.Children().Append(button(L"Open in mailbox…",[weak=p->shell->weak_from_this(),metadata]{ if(auto shell=weak.lock()) shell->openSource(metadata); }));
@@ -207,21 +251,24 @@ struct WriteGuard {
     std::shared_ptr<Shell> shell;
     P page;
     explicit WriteGuard(P const& p):shell(p->shell),page(p) { shell->review->writing=true; shell->navigation.IsEnabled(false);if(p->body)p->body.IsEnabled(false);if(p->facts)p->facts.IsEnabled(false);if(p->send)p->send.IsEnabled(false); }
-    ~WriteGuard(){ shell->review->writing=false; if(!shell->closing) shell->navigation.IsEnabled(true);if(page->current()){if(page->body)page->body.IsEnabled(true);auto found=shell->review->entries.find(std::wstring(page->selectedKey));if(found!=shell->review->entries.end()){auto const& entry=found->second;if(page->facts)page->facts.IsEnabled(!entry.stale);if(page->send)page->send.IsEnabled(entry.reviewed&&!entry.stale&&!needsDecision(entry.draft));}} }
+    // Re-enable the editor before clearing writing so that event cannot rewrite the retained draft.
+    ~WriteGuard(){ if(page->current()){if(page->body)page->body.IsEnabled(true);auto found=shell->review->entries.find(std::wstring(page->selectedKey));if(found!=shell->review->entries.end()){auto const& entry=found->second;if(page->facts)page->facts.IsEnabled(!entry.stale);if(page->send)page->send.IsEnabled(entry.reviewed&&!entry.stale&&!needsDecision(entry.draft));}} shell->review->writing=false; if(!shell->closing) shell->navigation.IsEnabled(true); }
 };
-IAsyncAction keepEdits(P p) {
-    if(!p->current()||p->busy||p->shell->review->writing||p->selectedKey.empty())co_return;
+IAsyncAction keepEditsNow(P p) {
+    if(!p->armed()||p->busy||p->shell->review->writing||p->selectedKey.empty()
+        ||p->shell->review->detailKinds[std::wstring(p->scope)]!=L"reply"||!p->shell->review->details[std::wstring(p->scope)])co_return;
     auto oldKey=p->selectedKey;auto old=p->shell->review->entries[std::wstring(oldKey)];auto owner=ownerOf(old.proposal);if(!old.draft.Size()||!p->shell->connected(owner))co_return;
     WriteGuard guard(p);
     try{
-        auto response=co_await p->shell->service->request(L"/reply-suggestions",owner);if(!p->current())co_return;
+        auto response=co_await p->shell->service->request(L"/reply-suggestions",owner);if(!p->armed())co_return;
         require(text(response,L"owner")==owner,L"The refreshed mailbox changed.");Json fresh;bool found=false;
         for(auto const& value:array(response,L"proposals")){auto row=value.GetObject();if(ownerOf(row)==owner&&(text(row,L"messageId")==text(old.proposal,L"messageId")||(!text(old.proposal,L"conversationKey").empty()&&text(row,L"conversationKey")==text(old.proposal,L"conversationKey")))){fresh=copy(row);found=true;break;}}
-        require(found,L"No current reply is suggested for this conversation. Your edits can still be saved.");auto id=text(fresh,L"messageId"),key=keyOf(fresh);
-        auto original=co_await p->shell->service->request(L"/messages/"+escaped(id),owner);if(!p->current())co_return;auto message=object(original,L"message");owned(message,owner,id);
-        Json input;put(input,L"messageId",id);put(input,L"mode",L"reply");put(input,L"body",text(old.draft,L"body"));auto prepared=co_await p->shell->service->request(L"/drafts/prepare",owner,L"POST",input);if(!p->current())co_return;auto draft=object(prepared,L"draft");
+        if(!found){p->say(L"No current reply is suggested for this conversation. Your edits can still be saved.");co_return;}
+        auto id=text(fresh,L"messageId"),key=keyOf(fresh);
+        auto original=co_await p->shell->service->request(L"/messages/"+escaped(id),owner);if(!p->armed())co_return;auto message=object(original,L"message");owned(message,owner,id);
+        Json input;put(input,L"messageId",id);put(input,L"mode",L"reply");put(input,L"body",text(old.draft,L"body"));auto prepared=co_await p->shell->service->request(L"/drafts/prepare",owner,L"POST",input);if(!p->armed())co_return;auto draft=object(prepared,L"draft");
         require(text(draft,L"accountId")==owner&&text(draft,L"replyToId")==id&&text(draft,L"body")==text(old.draft,L"body")&&text(draft,L"bcc").empty(),L"The refreshed reply owner could not be verified.");
-        auto latest=co_await p->shell->service->request(L"/reply-suggestions",owner);require(p->current()&&validProposal(latest,fresh),L"The conversation changed again. Your original edits remain intact.");
+        auto latest=co_await p->shell->service->request(L"/reply-suggestions",owner);require(p->armed()&&validProposal(latest,fresh),L"The conversation changed again. Your original edits remain intact.");
         for(auto field:{L"footer",L"attachments"})if(old.draft.HasKey(field))draft.Insert(field,old.draft.GetNamedValue(field));if(id==text(old.draft,L"replyToId")&&!text(old.draft,L"id").empty())put(draft,L"id",text(old.draft,L"id"));
         ReviewEntry updated;updated.proposal=copy(fresh);updated.message=copy(message);updated.draft=copy(draft);updated.reviewed=false;updated.stale=false;
         if(key!=oldKey){updated.saved=copy(draft);put(updated.saved,L"body",text(fresh,L"text"));}else updated.saved=copy(old.saved);
@@ -229,8 +276,15 @@ IAsyncAction keepEdits(P p) {
         p->selectedKey=key;p->shell->review->selections[std::wstring(p->scope)]=key;p->shell->review->values[std::wstring(p->scope)]=copy(latest);++p->shell->selectionGeneration;paintEditor(p,key);p->say(L"Latest evidence loaded. Your text is preserved; check the new recipient, facts and commitments again.");
     }catch(hresult_error const& error){p->say(error.message());}
 }
+IAsyncAction keepEdits(P p) {
+    // MenuFlyoutItem::Invoke raises Click before Close. Disabling navigation in that Click drops the close.
+    auto root=p->shell->root;
+    if(root && root.DispatcherQueue().TryEnqueue([p]{ keepEditsNow(p); })) co_return;
+    co_await keepEditsNow(p);
+}
 IAsyncAction saveDraft(P p) {
-    if(!p->current() || p->busy || p->shell->review->writing || p->selectedKey.empty()) co_return;
+    if(!p->current() || p->busy || p->shell->review->writing || p->selectedKey.empty()
+        || p->shell->review->detailKinds[std::wstring(p->scope)]!=L"reply" || !p->shell->review->details[std::wstring(p->scope)]) co_return;
     auto key=p->selectedKey; auto& entry=p->shell->review->entries[std::wstring(key)]; auto owner=text(entry.draft,L"accountId");
     if(!entry.draft.Size() || !p->shell->connected(owner)) co_return;
     WriteGuard guard(p); auto draft=copy(entry.draft); auto payload=copy(draft); payload.Remove(L"accountId");
@@ -242,9 +296,11 @@ IAsyncAction saveDraft(P p) {
     } catch(hresult_error const& error){ p->say(error.message()); }
 }
 IAsyncAction reviewSend(P p) {
-    if(!p->current() || p->busy || p->shell->review->writing || p->selectedKey.empty()) co_return;
+    if(!p->current() || p->busy || p->shell->review->writing || p->selectedKey.empty()
+        || p->shell->review->detailKinds[std::wstring(p->scope)]!=L"reply" || !p->shell->review->details[std::wstring(p->scope)]) co_return;
     auto key=p->selectedKey; auto& entry=p->shell->review->entries[std::wstring(key)];
-    if(!entry.reviewed || entry.stale || needsDecision(entry.draft)) co_return;
+    if(!entry.reviewed || entry.stale || needsDecision(entry.draft) || !p->shell->connected(ownerOf(entry.proposal))
+        || (p->scope!=L"all" && p->scope!=ownerOf(entry.proposal))) co_return;
     auto owner=ownerOf(entry.proposal); auto draft=copy(entry.draft); p->busy=true;
     try {
         auto latest=co_await p->shell->service->request(L"/reply-suggestions",owner);
@@ -304,12 +360,8 @@ void eventCard(P const& p,StackPanel const& parent,Json event) {
     words(card,text(event,L"title"),16); words(card,text(event,L"action",text(event,L"summary")));
     words(card,text(event,L"accountId")+L" · "+stateName(text(event,L"state")),12);
     auto deadline=object(event,L"deadline"); if(!text(deadline,L"quote").empty()) words(card,L"Deadline, original wording: "+text(deadline,L"quote"),12);
-    Json metadata; put(metadata,L"id",text(event,L"messageId")); put(metadata,L"accountId",text(event,L"accountId"));
-    card.Children().Append(button(L"View original message",[weak=std::weak_ptr<Page>(p),metadata]{ if(auto page=weak.lock();page && page->current()) selectOriginal(page,metadata); }));
-    Expander details; details.Header(box_value(flag(event,L"grounded") ? L"Evidence":L"Older summary · decision status needs review")); auto evidence=stack(8);
-    for(auto const& value:array(event,L"evidence")) words(evidence,text(value.GetObject(),L"quote"));
-    for(auto const& question:array(event,L"questions")) words(evidence,L"Needs your answer: "+question.GetString());
-    details.Content(evidence); card.Children().Append(details); parent.Children().Append(card);
+    card.Children().Append(button(L"Review",[weak=std::weak_ptr<Page>(p),event]{ if(auto page=weak.lock();page && page->current()) showDecision(page,event,false); }));
+    parent.Children().Append(card);
 }
 void paintToday(P const& p);
 fire_and_forget reviewTodo(P page, hstring path, hstring owner, hstring id, hstring title, hstring confirmTitle, hstring done) {
@@ -324,10 +376,46 @@ fire_and_forget reviewTodo(P page, hstring path, hstring owner, hstring id, hstr
         if (!page->current()) { page->busy = false; co_return; }
         if (text(object(result, L"account"), L"id") == page->shell->owner) page->shell->state = result;
         else if (result.HasKey(L"today")) page->shell->state.Insert(L"today", object(result, L"today"));
-        paintToday(page); page->say(done);
+        page->shell->review->details[std::wstring(page->scope)]=false;
+        paintToday(page); reflow(page); page->say(done);
     } catch (hresult_error const& error) { if (page->current()) page->say(error.message()); }
     catch (...) { if (page->current()) page->say(L"The suggestion could not be updated. Mail was not changed."); }
     page->busy = false;
+}
+void showDecision(P const& p,Json item,bool task) {
+    auto owner=text(item,L"accountId");
+    if(!p->current() || p->busy || p->shell->review->writing || !p->shell->connected(owner) || (p->scope!=L"all" && p->scope!=owner)) return;
+    ++p->selection; p->shell->review->detailKinds[std::wstring(p->scope)]=L"decision";
+    p->selectedKey={};p->originalOwner={};p->originalId={};
+    p->body=nullptr;p->facts=nullptr;p->send=nullptr;p->replace=nullptr;p->refreshEvidence=nullptr;p->replyMore=nullptr;
+    Json retained;retained.Insert(L"item",copy(item));retained.Insert(L"task",Value::CreateBooleanValue(task));
+    p->shell->review->decisions[std::wstring(p->scope)]=retained;
+    p->shell->review->details[std::wstring(p->scope)]=true;
+    auto panel=stack(12); panel.Margin(xaml::Thickness{18,10,18,14});
+    words(panel,text(item,L"title"),20); words(panel,owner,12);
+    words(panel,task ? text(item,L"detail") : text(item,L"action",text(item,L"summary")));
+    if(!task) {
+        words(panel,stateName(text(item,L"state")),12);
+        for(auto const& value:array(item,L"evidence")) words(panel,text(value.GetObject(),L"quote"));
+        for(auto const& question:array(item,L"questions")) words(panel,L"Needs your answer: "+question.GetString());
+    }
+    Json metadata; put(metadata,L"id",text(item,L"messageId")); put(metadata,L"accountId",owner);
+    panel.Children().Append(button(L"Open original message",[weak=std::weak_ptr<Page>(p),metadata]{ if(auto page=weak.lock();page && page->current())selectOriginal(page,metadata); }));
+    if(task) {
+        words(panel,L"Completing this suggestion does not mark mail read, send mail, or change Email Brain.",12);
+        auto complete=button(L"Complete suggestion…",[weak=std::weak_ptr<Page>(p),item,owner]{
+            if(auto page=weak.lock();page && page->current()) {
+                bool retained=false;
+                for(auto const& value:array(object(page->shell->state,L"today"),L"todos")) if(value.GetObject().Stringify()==item.Stringify())retained=true;
+                if(!retained){page->say(L"This saved suggestion changed. Return to Today and review the current item.");return;}
+                reviewTodo(page,L"/workspace/todos/complete",owner,text(item,L"id"),text(item,L"title"),L"Complete this suggestion?",L"Suggestion completed. The message was not marked read.");
+            }
+        });
+        xaml::Automation::AutomationProperties::SetAutomationId(complete,L"review.today.complete");panel.Children().Append(complete);
+    }
+    panel.Children().Append(button(L"Back to Today",[weak=std::weak_ptr<Page>(p)]{if(auto page=weak.lock();page && page->current()){page->shell->review->details[std::wstring(page->scope)]=false;reflow(page);page->listScroll.Focus(xaml::FocusState::Programmatic);}}));
+    while(p->detail.Children().Size()>1)p->detail.Children().RemoveAtEnd();p->actions=nullptr;
+    p->detailHost.Content(scroll(panel)); reflow(p);
 }
 void paintToday(P const& p) {
     auto today=object(p->shell->state,L"today"); p->queue.Children().Clear();
@@ -342,12 +430,13 @@ void paintToday(P const& p) {
         if((state==L"waiting_on_user" || state==L"uncertain") && shown++<3) eventCard(p,p->queue,event);
         else eventCard(p,more,event);
     }
-    if(!shown) words(p->queue,L"No saved decisions waiting on you. Review a mailbox with Summarize now, or enable summaries in AI & Privacy.");
+    if(!shown) words(p->queue,L"No saved decisions waiting on you. More offers a reviewed summary for one mailbox; saved AI settings remain unchanged.");
     words(p->queue,L"Replies to review",20); unsigned preview=0;
     for(auto const& value:array(today,L"replySuggestions")) {
         auto proposal=value.GetObject(); if(p->scope!=L"all" && ownerOf(proposal)!=p->scope) continue; if(preview++>=3) break;
         words(p->queue,text(object(proposal,L"message"),L"subject"),15); words(p->queue,ownerOf(proposal)+L" · "+text(proposal,L"reason"),12);
-        p->queue.Children().Append(button(L"Review suggested reply",[weak=p->shell->weak_from_this(),proposal]{ if(auto shell=weak.lock()){ shell->review->selections[std::wstring(shell->review->scope)]=keyOf(proposal); shell->review->details[std::wstring(shell->review->scope)]=true; shell->navigate(L"reply-suggestions"); } }));
+        auto review=button(L"Review suggested reply",[weak=std::weak_ptr<Page>(p),proposal]{ if(auto page=weak.lock();page && page->current())selectReply(page,proposal); });
+        xaml::Automation::AutomationProperties::SetAutomationId(review,L"review.today.reply."+keyOf(proposal));p->queue.Children().Append(review);
     }
     p->queue.Children().Append(button(L"View all replies to review",[weak=p->shell->weak_from_this()]{ if(auto shell=weak.lock()) shell->navigate(L"reply-suggestions"); }));
     words(p->queue, L"Suggested tasks", 20);
@@ -358,14 +447,8 @@ void paintToday(P const& p) {
         words(p->queue, text(todo, L"title"), 15);
         words(p->queue, text(todo, L"categoryName") + L" · " + text(todo, L"accountId"), 12);
         words(p->queue, text(todo, L"detail"), 12);
-        auto id = text(todo, L"id"), owner = text(todo, L"accountId"), title = text(todo, L"title");
-        p->queue.Children().Append(button(L"Complete suggestion…", [weak = std::weak_ptr<Page>(p), id, owner, title] {
-            if (auto page = weak.lock()) reviewTodo(page, L"/workspace/todos/complete", owner, id, title, L"Complete this suggestion?", L"Suggestion completed. The message was not marked read.");
-        }));
-        Json metadata; put(metadata, L"id", text(todo, L"messageId")); put(metadata, L"accountId", owner);
-        p->queue.Children().Append(button(L"View original message", [weak = std::weak_ptr<Page>(p), metadata] {
-            if (auto page = weak.lock(); page && page->current()) selectOriginal(page, metadata);
-        }));
+        auto review=button(L"Review",[weak=std::weak_ptr<Page>(p),todo]{if(auto page=weak.lock();page && page->current())showDecision(page,todo,true);});
+        xaml::Automation::AutomationProperties::SetAutomationId(review,L"review.today.task."+text(todo,L"accountId")+L"."+text(todo,L"id"));p->queue.Children().Append(review);
     }
     if (!suggestions) words(p->queue, L"No open suggestions in this scope.");
     Expander completed; completed.Header(box_value(L"Completed suggestions")); auto doneList = stack(8);
@@ -385,6 +468,25 @@ void paintToday(P const& p) {
     Expander summaries; summaries.Header(box_value(L"Full summary details")); auto reports=stack(12);
     for(auto const& value:array(today,L"summaries")) { auto report=value.GetObject(); if(p->scope!=L"all" && text(report,L"accountId")!=p->scope) continue; words(reports,text(report,L"accountId"),12); words(reports,text(report,L"text")); }
     words(reports,L"Latest 20 valid saved summary jobs per mailbox. All accounts aggregates results; AI context and identity stay separate.",12); summaries.Content(reports); p->queue.Children().Append(summaries);
+    bool hasSummary=false;for(auto const& value:array(today,L"summaries"))if(p->scope==L"all" || text(value.GetObject(),L"accountId")==p->scope)hasSummary=true;
+    if(!hasSummary && !shown && !preview && !suggestions) {
+        auto choices=summaryMailboxMenu(p);auto start=actionMenu(L"Review a mailbox for a summary…",choices,L"Review downloaded mail before generating a summary");
+        start.IsEnabled(choices.Items().Size()!=0);p->queue.Children().Append(start);
+    }
+}
+void reconcileReply(P const& p,Json const& response) {
+    if(p->selectedKey.empty())return;
+    auto memory=p->shell->review;auto existing=memory->entries.find(std::wstring(p->selectedKey));
+    if(existing==memory->entries.end() || !existing->second.draft.Size())return;
+    auto ownedResponse=copy(response);put(ownedResponse,L"owner",ownerOf(existing->second.proposal));
+    bool valid=validProposal(ownedResponse,existing->second.proposal);
+    if((!valid && !flag(response,L"limited")) || !p->shell->connected(ownerOf(existing->second.proposal))) {
+        existing->second.stale=true;existing->second.reviewed=false;
+        if(p->facts)p->facts.IsChecked(false);if(p->send)p->send.IsEnabled(false);
+        if(p->replace)p->replace.Visibility(Visibility::Visible);
+        if(p->refreshEvidence)p->refreshEvidence.Visibility(Visibility::Visible);
+        if(p->detailNotice)p->detailNotice.Text(L"Sources changed. Local edits are retained; review fresh evidence before sending.");
+    }
 }
 void paintQueue(P const& p) {
     if(!p->current()) return;
@@ -413,18 +515,27 @@ void paintQueue(P const& p) {
         else if(!flag(response,L"modelReady") || !flag(response,L"permitted")) p->queue.Children().Append(button(L"Review AI connection and privacy",[weak=p->shell->weak_from_this(),scope=p->scope]{ if(auto shell=weak.lock()) shell->navigate(L"policy",scope); }));
         words(p->queue,text(response,L"automaticStatus"),12);
     } else words(p->queue,L"All accounts is read-only. Select a mailbox for setup and account-specific checks.",12);
-    if(!p->selectedKey.empty()) {
-        auto existing=memory->entries.find(std::wstring(p->selectedKey));
-        if(existing!=memory->entries.end() && existing->second.draft.Size()) {
-            bool valid=false; for(auto const& value:rows) { auto row=value.GetObject(); if(keyOf(row)==p->selectedKey && proposalId(row)==proposalId(existing->second.proposal) && text(row,L"text")==text(existing->second.proposal,L"text")) valid=true; }
-            if(!valid && !flag(response,L"limited")){ existing->second.stale=true; existing->second.reviewed=false; if(p->facts) p->facts.IsChecked(false); if(p->send) p->send.IsEnabled(false); if(p->replace) p->replace.Visibility(xaml::Visibility::Visible); if(p->detailNotice) p->detailNotice.Text(L"Sources changed. Local edits are retained; review fresh evidence before sending."); }
-        }
-    }
+    reconcileReply(p,response);
 }
 IAsyncAction refresh(P p) {
     if(!p->current() || p->polling || p->shell->review->writing) co_return; p->polling=true;
     try {
-        if(p->kind==L"today") { paintToday(p); p->say(L"Saved results. Reading Today has not started an AI request."); }
+        if(p->kind==L"today") {
+            paintToday(p);
+            if(p->shell->review->detailKinds[std::wstring(p->scope)]==L"reply" && p->shell->review->details[std::wstring(p->scope)]) {
+                auto found=p->shell->review->entries.find(std::wstring(p->selectedKey));
+                if(found!=p->shell->review->entries.end()) {
+                    auto key=p->selectedKey;auto sequence=p->selection;auto owner=ownerOf(found->second.proposal);
+                    if(p->shell->connected(owner)) {
+                        auto response=co_await p->shell->service->request(L"/reply-suggestions",owner);
+                        if(!p->current() || p->selection!=sequence || p->selectedKey!=key){p->polling=false;co_return;}
+                        require(text(response,L"owner")==owner,L"The suggestion mailbox changed.");
+                        reconcileReply(p,response);
+                    } else { Json absent;reconcileReply(p,absent); }
+                }
+            }
+            p->say(L"Saved results. Reading Today has not started an AI request.");
+        }
         else {
             auto response=co_await p->shell->service->request(L"/reply-suggestions",p->scope);
             if(!p->current()){p->polling=false;co_return;}
@@ -436,6 +547,70 @@ IAsyncAction refresh(P p) {
     p->polling=false;
 }
 IAsyncAction completed() { co_return; }
+IAsyncAction invokeReviewButton(std::shared_ptr<Shell> shell,Button target) {
+    apartment_context ui;auto deadline=GetTickCount64()+5000;target.StartBringIntoView();shell->root.UpdateLayout();
+    while((!target.IsLoaded() || !target.ActualWidth() || !target.ActualHeight()) && GetTickCount64()<deadline) {
+        co_await resume_after(std::chrono::milliseconds(10));co_await ui;shell->root.UpdateLayout();
+    }
+    require(target.IsLoaded() && target.ActualWidth() && target.ActualHeight() && target.Focus(FocusState::Keyboard),L"The review action did not become a focusable mounted native button.");
+    auto peer=xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(target);
+    peer.GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).as<xaml::Automation::Provider::IInvokeProvider>().Invoke();
+}
+IAsyncAction staleReplyFlyoutChecks(P p,Json first,Json next) {
+    apartment_context ui;auto more=p->replyMore;auto menu=more.Flyout().as<MenuFlyout>();
+    require(p->selectedKey==keyOf(first) && p->shell->navigation.IsEnabled() && !p->shell->review->writing,L"The stale-reply fixture did not start with the first idle reply.");
+    auto opened=std::make_shared<bool>(false),closed=std::make_shared<bool>(false);
+    auto openEvent=menu.Opened(auto_revoke,[opened](auto const&,auto const&){*opened=true;});
+    auto closeEvent=menu.Closed(auto_revoke,[closed](auto const&,auto const&){*closed=true;});
+    auto deadline=GetTickCount64()+5000;more.StartBringIntoView();p->shell->root.UpdateLayout();
+    while((!more.IsLoaded() || !more.ActualWidth()) && GetTickCount64()<deadline){co_await resume_after(std::chrono::milliseconds(10));co_await ui;p->shell->root.UpdateLayout();}
+    require(more.IsLoaded() && more.ActualWidth() && more.Focus(FocusState::Keyboard),L"The original reply More control did not mount.");
+    menu.ShowAt(more);while(!*opened && GetTickCount64()<deadline){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+    require(*opened && menu.IsOpen(),L"The original reply flyout did not open.");
+    auto item=menu.Items().GetAt(0).as<MenuFlyoutItem>();auto invoked=std::make_shared<unsigned>(0);
+    auto clickEvent=item.Click(auto_revoke,[invoked](auto const&,auto const&){if(*invoked<2)++*invoked;});
+    auto invoke=xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(item).GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).as<xaml::Automation::Provider::IInvokeProvider>();
+    menu.Hide();deadline=GetTickCount64()+5000;while(!*closed && GetTickCount64()<deadline){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+    require(*closed && !menu.IsOpen(),L"The retained reply flyout did not close.");
+    co_await invokeReviewButton(p->shell,p->actions.Children().GetAt(0).as<Button>());
+    Button choose{nullptr};for(auto const& child:p->queue.Children())if(auto candidate=child.try_as<Button>();candidate && xaml::Automation::AutomationProperties::GetAutomationId(candidate)==L"review.today.reply."+keyOf(next))choose=candidate;
+    require(bool(choose),L"The replacement reply has no mounted Today card.");co_await invokeReviewButton(p->shell,choose);
+    require(p->current() && p->selectedKey==keyOf(next) && p->replyMore!=more,L"The replacement reply did not invalidate the original More control.");
+    auto firstDraft=p->shell->review->entries.at(std::wstring(keyOf(first))).draft.Stringify();
+    auto nextDraft=p->shell->review->entries.at(std::wstring(keyOf(next))).draft.Stringify();
+    auto disabled=std::make_shared<unsigned>(0);auto nav=p->shell->navigation;auto navOn=std::make_shared<bool>(nav.IsEnabled());
+    auto token=nav.RegisterPropertyChangedCallback(Control::IsEnabledProperty(),[disabled,navOn](auto const& sender,auto const&){
+        auto on=sender.template as<Control>().IsEnabled(); if(*navOn && !on && *disabled<2)++*disabled; *navOn=on; });
+    struct Unregister {NavigationView nav;int64_t token;~Unregister(){nav.UnregisterPropertyChangedCallback(Control::IsEnabledProperty(),token);}} unregister{nav,token};
+    invoke.Invoke();deadline=GetTickCount64()+5000;while(!*invoked && GetTickCount64()<deadline){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+    co_await resume_after(std::chrono::milliseconds(10));co_await ui;
+    require(*invoked==1 && *disabled==0 && !p->shell->review->writing && p->shell->navigation.IsEnabled()
+        && p->selectedKey==keyOf(next) && p->shell->review->entries.at(std::wstring(keyOf(first))).draft.Stringify()==firstDraft
+        && p->shell->review->entries.at(std::wstring(keyOf(next))).draft.Stringify()==nextDraft,L"A retained reply flyout refreshed/rebased the replacement reply or entered its write guard.");
+    // The matching, newly mounted menu must still reach the original handler.
+    // These fictional proposal IDs have no stored suggestion; its local GET
+    // must finish with the retained draft intact, without preparing or sending.
+    auto active=p->replyMore;auto activeMenu=active.Flyout().as<MenuFlyout>();
+    auto activeOpened=std::make_shared<bool>(false),activeClosed=std::make_shared<bool>(false);
+    auto activeOpenEvent=activeMenu.Opened(auto_revoke,[activeOpened](auto const&,auto const&){*activeOpened=true;});
+    auto activeCloseEvent=activeMenu.Closed(auto_revoke,[activeClosed](auto const&,auto const&){*activeClosed=true;});
+    deadline=GetTickCount64()+5000;active.StartBringIntoView();p->shell->root.UpdateLayout();
+    while((!active.IsLoaded() || !active.ActualWidth()) && GetTickCount64()<deadline){co_await resume_after(std::chrono::milliseconds(10));co_await ui;p->shell->root.UpdateLayout();}
+    require(active.IsLoaded() && active.ActualWidth() && active.Focus(FocusState::Keyboard),L"The replacement reply More control did not mount.");
+    activeMenu.ShowAt(active);while(!*activeOpened && GetTickCount64()<deadline){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+    require(*activeOpened && activeMenu.IsOpen(),L"The replacement reply flyout did not open.");
+    auto activeItem=activeMenu.Items().GetAt(0).as<MenuFlyoutItem>();
+    xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(activeItem).GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).as<xaml::Automation::Provider::IInvokeProvider>().Invoke();
+    deadline=GetTickCount64()+5000;auto held=std::make_shared<bool>(false);
+    while(((*disabled==0 && !*held) || !*activeClosed || p->shell->review->writing) && GetTickCount64()<deadline){
+        if(!nav.IsEnabled())*held=true; co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+    auto kept=p->shell->review->entries.at(std::wstring(keyOf(next))).draft.Stringify()==nextDraft;
+    auto idle=!p->shell->review->writing && nav.IsEnabled(); auto same=p->selectedKey==keyOf(next);
+    auto ok=(*disabled==1 || (*disabled==0 && *held)) && *activeClosed && !activeMenu.IsOpen() && idle && same && kept;
+    hstring why=L"The current reply More action was blocked or did not retain the fictional draft after its local lookup.";
+    if(!ok) why=why+L" ("+to_hstring(*disabled)+L","+to_hstring(*held)+L","+to_hstring(*activeClosed)+L","+to_hstring(activeMenu.IsOpen())+L","+to_hstring(idle)+L","+to_hstring(same)+L","+to_hstring(kept)+L")";
+    require(ok,why.c_str());
+}
 }
 
 IAsyncAction reviewPage(std::shared_ptr<Shell> shell,hstring kind) {
@@ -445,17 +620,18 @@ IAsyncAction reviewPage(std::shared_ptr<Shell> shell,hstring kind) {
     Grid root; root.Margin(xaml::Thickness{20,16,20,16});
     for(unsigned i=0;i<4;++i){ RowDefinition row; row.Height(GridLengthHelper::FromValueAndType(i==3 ? 1:0,i==3 ? GridUnitType::Star:GridUnitType::Auto)); root.RowDefinitions().Append(row); }
     auto header=stack(8); header.Orientation(Orientation::Horizontal); words(header,kind==L"today" ? L"Today":L"Reply suggestions",26);
-    if (kind == L"today") { auto place = label(L"In Agent", 12); place.Opacity(0.75); xaml::Automation::AutomationProperties::SetName(place, L"Today is in Agent"); header.Children().Append(place); }
-    auto reload=button(L"Reload",[weak=std::weak_ptr<Page>(p)]{ if(auto page=weak.lock();page && page->current()) refresh(page); }); header.Children().Append(reload);
+    MenuFlyout housekeeping;
+    housekeeping.Items().Append(menuItem(L"Reload saved results",[weak=std::weak_ptr<Page>(p)]{if(auto page=weak.lock();page && page->current())refresh(page);}));
     if(kind==L"today") {
-        auto summarize=button(L"Summarize now…",[]{}); MenuFlyout mailboxes;
+        MenuFlyoutSubItem summarize; summarize.Text(L"Generate a summary…");
         xaml::Automation::AutomationProperties::SetAutomationId(summarize,L"review.summarize");
-        for(auto const& value:array(shell->state,L"accounts")){ auto account=value.GetObject(); auto owner=text(account,L"id"); if(!shell->connected(owner)) continue; MenuFlyoutItem item; item.Text(owner); item.Tag(box_value(owner)); item.Click([weak=shell->weak_from_this(),owner](auto const&,auto const&){ if(auto host=weak.lock()) summarizeNow(host,owner); }); mailboxes.Items().Append(item); }
-        summarize.Flyout(mailboxes); header.Children().Append(summarize);
-        auto sync=button(L"Sync All",[weak=shell->weak_from_this()]{if(auto host=weak.lock())host->sync();});xaml::Automation::AutomationProperties::SetAutomationId(sync,L"mail.syncAll");header.Children().Append(sync);
+        auto choices=summaryMailboxMenu(p);while(choices.Items().Size()){auto item=choices.Items().GetAt(0);choices.Items().RemoveAt(0);summarize.Items().Append(item);}
+        summarize.IsEnabled(summarize.Items().Size()!=0);housekeeping.Items().Append(summarize);
     }
+    auto more=actionMenu(L"More",housekeeping,kind==L"today" ? L"Today summary and saved-result actions" : L"Reply suggestion saved-result actions");
+    xaml::Automation::AutomationProperties::SetAutomationId(more,L"review.more");header.Children().Append(more);
     root.Children().Append(header);
-    auto tabs=stack(7); tabs.Orientation(Orientation::Horizontal); std::vector<hstring> owners{L"all"}; for(auto const& value:array(shell->state,L"accounts")) owners.push_back(text(value.GetObject(),L"id"));
+    auto tabs=stack(7); tabs.Orientation(Orientation::Horizontal); words(tabs,L"Review mailbox:",12); std::vector<hstring> owners{L"all"}; for(auto const& value:array(shell->state,L"accounts")) owners.push_back(text(value.GetObject(),L"id"));
     for(auto const& owner:owners) {
         controls::Primitives::ToggleButton tab; tab.Content(box_value(owner==L"all" ? hstring(L"All accounts"):owner)); tab.IsChecked(owner==p->scope); tab.IsTabStop(owner==p->scope);
         xaml::Automation::AutomationProperties::SetAutomationId(tab,L"review.scope."+owner);
@@ -477,23 +653,25 @@ IAsyncAction reviewPage(std::shared_ptr<Shell> shell,hstring kind) {
     auto queue=stack(12); queue.Margin(xaml::Thickness{0,14,14,0}); p->queue=queue; auto list=stack(14); list.Children().Append(queue); ContentControl options; p->optionsHost=options; list.Children().Append(options); p->listScroll=rememberScroll(p,list,kind+L":list:"+p->scope); columns.Children().Append(p->listScroll);
     Grid detail; RowDefinition content; content.Height(GridLengthHelper::FromValueAndType(1,GridUnitType::Star)); RowDefinition actions; actions.Height(GridLengthHelper::FromValueAndType(0,GridUnitType::Auto)); detail.RowDefinitions().Append(content); detail.RowDefinitions().Append(actions);
     ContentControl host; host.HorizontalContentAlignment(xaml::HorizontalAlignment::Stretch); host.VerticalContentAlignment(xaml::VerticalAlignment::Stretch); host.Content(label(L"Choose a suggestion to view the original message and edit its account-owned reply.")); p->detailHost=host; detail.Children().Append(host); p->detail=detail; columns.Children().Append(detail);
-    if(kind==L"reply-suggestions") {
+    {
         xaml::Input::KeyboardAccelerator save; save.Key(VirtualKey::S); save.Modifiers(VirtualKeyModifiers::Control); save.Invoked([weak=std::weak_ptr<Page>(p)](auto const&,auto const& args){ if(auto page=weak.lock();page && page->current()) { saveDraft(page); args.Handled(true); } }); root.KeyboardAccelerators().Append(save);
         xaml::Input::KeyboardAccelerator send; send.Key(VirtualKey::Enter); send.Modifiers(VirtualKeyModifiers::Control); send.Invoked([weak=std::weak_ptr<Page>(p)](auto const&,auto const& args){ if(auto page=weak.lock();page && page->current()) { reviewSend(page); args.Handled(true); } }); root.KeyboardAccelerators().Append(send);
     }
     columns.SizeChanged([weak=std::weak_ptr<Page>(p)](auto const&,auto const&){if(auto page=weak.lock()) reflow(page);});
-    root.Unloaded([p](auto const&,auto const&){ p->live=false; p->columns=nullptr; p->queue=nullptr; p->editor=nullptr; p->actions=nullptr; p->listScroll=nullptr; p->detail=nullptr; p->detailHost=nullptr; p->optionsHost=nullptr; p->notice=nullptr; p->detailNotice=nullptr; p->body=nullptr; p->facts=nullptr; p->send=nullptr; p->replace=nullptr; });
+    root.Unloaded([p](auto const&,auto const&){ p->live=false; p->columns=nullptr; p->queue=nullptr; p->editor=nullptr; p->actions=nullptr; p->listScroll=nullptr; p->detail=nullptr; p->detailHost=nullptr; p->optionsHost=nullptr; p->notice=nullptr; p->detailNotice=nullptr; p->body=nullptr; p->facts=nullptr; p->send=nullptr; p->replace=nullptr; p->refreshEvidence=nullptr; p->replyMore=nullptr; });
     root.KeyDown([weak=std::weak_ptr<Page>(p)](auto const&,xaml::Input::KeyRoutedEventArgs const& args){if(auto page=weak.lock();page && page->current() && args.Key()==VirtualKey::Escape && page->compact){ page->shell->review->details[std::wstring(page->scope)]=false; reflow(page); args.Handled(true); }});
     std::weak_ptr<Page> weak=p;
     shell->refreshReview=[weak] { if(auto page=weak.lock()) return refresh(page); return completed(); };
     mountedReview=p;shell->show(root); reflow(p);
     if(kind==L"reply-suggestions") paintQueue(p); else paintToday(p);
     co_await refresh(p); if(!p->current()) co_return;
-    if(kind==L"reply-suggestions" && !p->selectedKey.empty()) {
+    if((kind==L"reply-suggestions" || (shell->review->detailKinds[std::wstring(p->scope)]==L"reply" && shell->review->details[std::wstring(p->scope)])) && !p->selectedKey.empty()) {
         if(auto cached=shell->review->entries.find(std::wstring(p->selectedKey));cached!=shell->review->entries.end()) co_await selectReply(p,cached->second.proposal);
         else for(auto const& row:p->rows) if(keyOf(row)==p->selectedKey){co_await selectReply(p,row);break;}
-    } else if(kind==L"today") {
+    } else if(kind==L"today" && shell->review->detailKinds[std::wstring(p->scope)]==L"original") {
         if(auto found=shell->review->originals.find(std::wstring(p->scope));found!=shell->review->originals.end() && shell->review->details[std::wstring(p->scope)]) co_await selectOriginal(p,found->second);
+    } else if(kind==L"today" && shell->review->detailKinds[std::wstring(p->scope)]==L"decision") {
+        if(auto found=shell->review->decisions.find(std::wstring(p->scope));found!=shell->review->decisions.end() && shell->review->details[std::wstring(p->scope)]) showDecision(p,object(found->second,L"item"),flag(found->second,L"task"));
     }
 }
 
@@ -503,7 +681,7 @@ IAsyncAction reviewWorkspaceChecks(std::shared_ptr<Shell> shell) {
     auto owner=text(accounts.GetAt(0).GetObject(),L"id"),other=text(accounts.GetAt(1).GetObject(),L"id");
     require(std::wstring_view(owner).ends_with(L"@fixture.invalid")&&std::wstring_view(other).ends_with(L"@fixture.invalid"),L"Review checks require owned fictional accounts.");
     auto saved=shell->review;auto globalOwner=shell->owner;bool timerRunning=shell->timer&&shell->timer.IsEnabled();if(timerRunning)shell->timer.Stop();shell->review=std::make_shared<ReviewMemory>();shell->review->scope=owner;
-    struct Restore {std::shared_ptr<Shell> shell;std::shared_ptr<ReviewMemory> saved;bool timerRunning;~Restore(){shell->review=saved;if(timerRunning)shell->timer.Start();}} restore{shell,saved,timerRunning};
+    struct Restore {std::shared_ptr<Shell> shell;std::shared_ptr<ReviewMemory> saved;Json today;bool timerRunning;~Restore(){shell->review=saved;shell->state.Insert(L"today",today);if(timerRunning)shell->timer.Start();}} restore{shell,saved,copy(object(shell->state,L"today")),timerRunning};
     apartment_context ui;co_await reviewPage(shell,L"reply-suggestions");co_await ui;
     auto page=mountedReview.lock();require(page&&page->current(),L"The review page did not mount.");
     Json proposal,message,draft;put(proposal,L"id",L"fixture-proposal");put(proposal,L"proposalId",L"fixture-proposal");put(proposal,L"accountId",owner);put(proposal,L"messageId",L"same-id");put(proposal,L"text",L"Original proposed text");
@@ -527,6 +705,177 @@ IAsyncAction reviewWorkspaceChecks(std::shared_ptr<Shell> shell) {
     memory->scope=owner;co_await reviewPage(shell,L"reply-suggestions");co_await ui;
     require(text(memory->entries[std::wstring(key)].draft,L"body")==L"User edit preserved across accounts."&&memory->selections[std::wstring(owner)]==key&&memory->options[std::wstring(owner)].GetNamedNumber(L"dailyTokenBudget")==200000&&memory->hasEdits(),L"A/B/A lost retained draft, selection or dirty budget.");
     auto back=mountedReview.lock();require(back&&back->current(),L"The returned review page did not mount.");auto& entry=memory->entries[std::wstring(key)];entry.stale=false;put(entry.draft,L"body",L"[decision needed: choose an answer]");paintEditor(back,key);back->facts.IsChecked(true);require(!back->send.IsEnabled(),L"Unanswered decision entered sending review.");
+    // Mount the actual Today card and invoke it through its native peer. The
+    // cached fictional draft avoids model/provider work, as in the editor checks above.
+    Json today;JsonArray suggestions;suggestions.Append(proposal);today.Insert(L"replySuggestions",suggestions);shell->state.Insert(L"today",today);
+    memory->details[std::wstring(owner)]=false;memory->detailKinds[std::wstring(owner)]={};
+    co_await reviewPage(shell,L"today");co_await ui;auto inlinePage=mountedReview.lock();require(inlinePage&&inlinePage->current(),L"Today did not mount for inline review.");
+    auto todayGeneration=shell->generation;Button review{nullptr};
+    for(auto const& child:inlinePage->queue.Children())if(auto candidate=child.try_as<Button>();candidate && xaml::Automation::AutomationProperties::GetAutomationId(candidate)==L"review.today.reply."+key)review=candidate;
+    require(bool(review),L"Today has no named review entry for its saved reply.");co_await invokeReviewButton(shell,review);
+    ready=GetTickCount64()+5000;
+    while((!inlinePage->body || !inlinePage->body.IsLoaded())&&GetTickCount64()<ready){co_await resume_after(std::chrono::milliseconds(20));co_await ui;shell->root.UpdateLayout();}
+    require(inlinePage->current() && inlinePage->body && inlinePage->body.IsLoaded() && shell->section==L"today" && shell->generation==todayGeneration && shell->owner==globalOwner,
+        L"Reviewing a Today reply navigated away or changed the sending mailbox.");
+    require(text(entry.draft,L"body")==L"[decision needed: choose an answer]" && !inlinePage->send.IsEnabled(),L"Inline Today review replaced retained text or bypassed missing-answer approval.");
+    auto retainedSend=inlinePage->send;auto retainedDraft=entry.draft.Stringify();
+    Json newer=copy(proposal);put(newer,L"proposalId",L"new-today-proposal");Json updated;put(updated,L"owner",owner);JsonArray newerRows;newerRows.Append(newer);updated.Insert(L"proposals",newerRows);reconcileReply(inlinePage,updated);
+    require(entry.stale && !entry.reviewed && !retainedSend.IsEnabled() && inlinePage->refreshEvidence.Visibility()==Visibility::Visible && entry.draft.Stringify()==retainedDraft,
+        L"A stale Today reply lost its draft or hid evidence recovery.");
+    auto retainedBody=inlinePage->body;auto retainedFacts=inlinePage->facts;
+    co_await invokeReviewButton(shell,inlinePage->actions.Children().GetAt(0).as<Button>());
+    require(!memory->details[std::wstring(owner)] && inlinePage->listScroll.Visibility()==Visibility::Visible,L"Back to Today did not restore the review queue.");
+    Json task;put(task,L"id",L"fictional-inline-task");put(task,L"accountId",owner);put(task,L"messageId",L"same-id");put(task,L"title",L"Fictional decision retained in Today");put(task,L"detail",L"Review this saved task without changing mail.");
+    JsonArray todos;todos.Append(task);today.Insert(L"todos",todos);shell->state.Insert(L"today",today);paintToday(inlinePage);
+    Button taskReview{nullptr};for(auto const& child:inlinePage->queue.Children())if(auto candidate=child.try_as<Button>();candidate && xaml::Automation::AutomationProperties::GetAutomationId(candidate)==L"review.today.task."+owner+L".fictional-inline-task")taskReview=candidate;
+    require(bool(taskReview),L"Today has no native Review entry for its saved task.");
+    {
+    struct StaleEvents {
+        unsigned taskClicks=0,text=0,matchingText=0,facts=0,checkedFacts=0;
+        bool textSender=true,textCurrent=true,textIdle=true,textKey=true,textBody=true,textReply=true,textClosed=true;
+        bool textOwned=true,textLoaded=true,textSized=true,textBeforeTask=true,textDraft=true,textUnreviewed=true;
+        bool taskSender=true,factsSender=true,factsAfterTask=true,textInTime=true,taskInTime=true,factsInTime=true;
+    };
+    auto events=std::make_shared<StaleEvents>();
+    auto count=[](unsigned& value){if(value<16)++value;};
+    auto taskClick=taskReview.Click(auto_revoke,[&,events,count,taskReview](auto const& sender,auto const&){
+        count(events->taskClicks);events->taskSender&=sender.template try_as<Button>()==taskReview;events->taskInTime&=GetTickCount64()<ready;
+    });
+    auto expectedTask=task.Stringify();
+    auto ownsReply=[&] {
+        return inlinePage->shell==shell && shell->review==memory && memory->scope==owner && inlinePage->scope==owner && shell->owner==globalOwner
+            && ownerOf(entry.proposal)==owner && text(entry.draft,L"accountId")==owner;
+    };
+    auto adopted=[&] {
+        auto kind=memory->detailKinds.find(std::wstring(owner));auto detail=memory->details.find(std::wstring(owner));
+        auto decision=memory->decisions.find(std::wstring(owner));
+        return inlinePage->current() && memory->scope==owner && kind!=memory->detailKinds.end() && kind->second==L"decision"
+            && detail!=memory->details.end() && detail->second && decision!=memory->decisions.end()
+            && flag(decision->second,L"task") && object(decision->second,L"item").Stringify()==expectedTask;
+    };
+    auto receipt=[&] {
+        Json value;
+        value.Insert(L"taskClicks",Value::CreateNumberValue(events->taskClicks));
+        value.Insert(L"textEvents",Value::CreateNumberValue(events->text));
+        value.Insert(L"matchingTextEvents",Value::CreateNumberValue(events->matchingText));
+        value.Insert(L"factsEvents",Value::CreateNumberValue(events->facts));
+        value.Insert(L"checkedFactsEvents",Value::CreateNumberValue(events->checkedFacts));
+        value.Insert(L"current",Value::CreateBooleanValue(inlinePage->current()));
+        value.Insert(L"taskAdopted",Value::CreateBooleanValue(adopted()));
+        value.Insert(L"selectedKeyEmpty",Value::CreateBooleanValue(inlinePage->selectedKey.empty()));
+        value.Insert(L"bodyCleared",Value::CreateBooleanValue(!inlinePage->body));
+        value.Insert(L"factsCleared",Value::CreateBooleanValue(!inlinePage->facts));
+        value.Insert(L"draftUnchanged",Value::CreateBooleanValue(entry.draft.Stringify()==retainedDraft));
+        value.Insert(L"reviewed",Value::CreateBooleanValue(entry.reviewed));
+        value.Insert(L"oldBodyLoaded",Value::CreateBooleanValue(retainedBody.IsLoaded()));
+        value.Insert(L"oldBodySized",Value::CreateBooleanValue(retainedBody.ActualWidth()>0 && retainedBody.ActualHeight()>0));
+        value.Insert(L"oldFactsLoaded",Value::CreateBooleanValue(retainedFacts.IsLoaded()));
+        value.Insert(L"deadlineExpired",Value::CreateBooleanValue(GetTickCount64()>=ready));
+        for(auto const& [name,flag]:{std::pair{L"textSenderExact",events->textSender},
+            {L"textCurrent",events->textCurrent},{L"textNotWriting",events->textIdle},{L"textKeyMatches",events->textKey},
+            {L"textBodyMatches",events->textBody},{L"textKindReply",events->textReply},{L"textDetailsClosed",events->textClosed},
+            {L"textOwnersMatch",events->textOwned},{L"textBodyLoaded",events->textLoaded},{L"textBodySized",events->textSized},
+            {L"textBeforeTask",events->textBeforeTask},{L"textDraftUnchanged",events->textDraft},{L"textUnreviewed",events->textUnreviewed},
+            {L"taskSenderExact",events->taskSender},{L"factsSenderExact",events->factsSender},{L"factsAfterTask",events->factsAfterTask},
+            {L"textBeforeDeadline",events->textInTime},{L"taskBeforeDeadline",events->taskInTime},{L"factsBeforeDeadline",events->factsInTime}})
+            value.Insert(name,Value::CreateBooleanValue(flag));
+        return value.Stringify();
+    };
+    auto observed=[&](bool condition,wchar_t const* message){if(!condition)throw hresult_error(E_FAIL,hstring(message)+L" "+receipt());};
+    // Prepare the same mounted native peer before the shared event budget.
+    // Invoking it below must not start another helper's five-second mount wait.
+    auto mountDeadline=GetTickCount64()+5000;taskReview.StartBringIntoView();shell->root.UpdateLayout();
+    while((!taskReview.IsLoaded() || !taskReview.ActualWidth() || !taskReview.ActualHeight()) && GetTickCount64()<mountDeadline) {
+        co_await resume_after(std::chrono::milliseconds(10));co_await ui;shell->root.UpdateLayout();
+    }
+    require(taskReview.IsLoaded() && taskReview.ActualWidth() && taskReview.ActualHeight() && taskReview.Focus(FocusState::Keyboard),
+        L"The stale-input task action did not become a focusable mounted native button.");
+    auto taskPeer=xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(taskReview);
+    auto taskInvoke=taskPeer.GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).as<xaml::Automation::Provider::IInvokeProvider>();
+    hstring staleText=L"An obsolete editor must not update a task or retained reply.";
+    auto changedEvent=retainedBody.TextChanged(auto_revoke,[&,events,count,staleText,retainedBody](auto const& sender,auto const&){
+        count(events->text);auto target=sender.template try_as<TextBox>();events->textSender&=target==retainedBody;
+        if(target && target.Text()==staleText) {
+            count(events->matchingText);
+            auto kind=memory->detailKinds.find(std::wstring(owner));auto detail=memory->details.find(std::wstring(owner));
+            events->textCurrent&=inlinePage->current();events->textIdle&=!memory->writing;
+            events->textKey&=inlinePage->selectedKey==key;events->textBody&=inlinePage->body==target;
+            events->textReply&=kind!=memory->detailKinds.end() && kind->second==L"reply";
+            events->textClosed&=detail!=memory->details.end() && !detail->second;events->textOwned&=ownsReply();
+            events->textLoaded&=target.IsLoaded();events->textSized&=target.ActualWidth()>0 && target.ActualHeight()>0;
+            events->textBeforeTask&=!events->taskClicks && !adopted();events->textDraft&=entry.draft.Stringify()==retainedDraft;
+            events->textUnreviewed&=!entry.reviewed;events->textInTime&=GetTickCount64()<ready;
+        }
+    });
+    auto checkedEvent=retainedFacts.Checked(auto_revoke,[&,events,count,retainedFacts](auto const& sender,auto const&){
+        count(events->facts);auto target=sender.template try_as<CheckBox>();events->factsSender&=target==retainedFacts;
+        if(target && checked(target)) {
+            count(events->checkedFacts);events->factsAfterTask&=events->taskClicks>0 && adopted()
+                && inlinePage->selectedKey.empty() && !inlinePage->body && !inlinePage->facts && ownsReply()
+                && entry.draft.Stringify()==retainedDraft && !entry.reviewed;events->factsInTime&=GetTickCount64()<ready;
+        }
+    });
+    // Back closed the reply scope without replacing its loaded controls. Prove
+    // an actual matching native TextChanged is rejected by the details guard.
+    // No post-task/unloaded TextChanged delivery is assumed or claimed.
+    ready=GetTickCount64()+5000;
+    observed(GetTickCount64()<ready && inlinePage->current() && !memory->writing && ownsReply()
+        && inlinePage->selectedKey==key && inlinePage->body==retainedBody && inlinePage->facts==retainedFacts
+        && memory->detailKinds[std::wstring(owner)]==L"reply" && !memory->details[std::wstring(owner)]
+        && retainedBody.IsLoaded() && retainedBody.ActualWidth()>0 && retainedBody.ActualHeight()>0
+        && retainedBody.Text()!=staleText && !events->taskClicks && entry.draft.Stringify()==retainedDraft && !entry.reviewed
+        && !checked(retainedFacts),L"Back did not retain the loaded reply with only its details guard revoked.");
+    observed(GetTickCount64()<ready,L"The stale reply text assignment exceeded the shared deadline.");
+    retainedBody.Text(staleText);
+    while(!events->matchingText && GetTickCount64()<ready){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+    observed(GetTickCount64()<ready && events->matchingText>0 && events->textSender && events->textCurrent && events->textIdle
+        && events->textKey && events->textBody && events->textReply && events->textClosed && events->textOwned
+        && events->textLoaded && events->textSized && events->textBeforeTask && events->textDraft && events->textUnreviewed && events->textInTime
+        && !events->taskClicks && entry.draft.Stringify()==retainedDraft && !entry.reviewed,
+        L"The closed loaded reply did not deliver unchanged, account-owned native text input.");
+    observed(GetTickCount64()<ready,L"The native task action exceeded the shared stale-input deadline.");
+    taskInvoke.Invoke();
+    while((!adopted() || !events->taskClicks) && GetTickCount64()<ready){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+    observed(GetTickCount64()<ready && adopted() && events->taskClicks==1 && events->taskSender && events->taskInTime,
+        L"The native task action did not adopt its captured decision after closed-reply input.");
+    observed(inlinePage->selectedKey.empty() && !inlinePage->body && !inlinePage->facts && ownsReply()
+        && entry.draft.Stringify()==retainedDraft && !entry.reviewed,L"Task review did not revoke the reply controls while retaining its draft and approval.");
+    observed(GetTickCount64()<ready && !checked(retainedFacts),L"The retained facts control was not reset within the shared stale-input deadline.");
+    retainedFacts.IsChecked(true);
+    while(!events->checkedFacts && GetTickCount64()<ready){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+    observed(GetTickCount64()<ready && events->checkedFacts>0 && events->factsSender && events->factsAfterTask && events->factsInTime,
+        L"The detached reply facts control did not deliver native checked input after task adoption.");
+    observed(GetTickCount64()<ready && adopted() && inlinePage->selectedKey.empty() && !inlinePage->body && !inlinePage->facts && ownsReply()
+        && entry.draft.Stringify()==retainedDraft && !entry.reviewed,L"A detached reply control changed the retained draft or approval from task review.");
+    }
+    co_await reviewPage(shell,L"today");co_await ui;inlinePage=mountedReview.lock();
+    require(inlinePage && inlinePage->current() && memory->detailKinds[std::wstring(owner)]==L"decision" && inlinePage->selectedKey.empty() && !inlinePage->body,L"Returning to Today restored an unrelated reply or original instead of its selected task.");
+    auto decision=inlinePage->detailHost.Content().as<ScrollViewer>().Content().as<StackPanel>();
+    require(decision.Children().GetAt(0).as<TextBlock>().Text()==text(task,L"title"),L"Today did not retain the captured task detail.");
+    co_await invokeReviewButton(shell,decision.Children().GetAt(decision.Children().Size()-1).as<Button>());
+    // Re-open the same reply through its mounted card before checking scope revocation.
+    review=nullptr;for(auto const& child:inlinePage->queue.Children())if(auto candidate=child.try_as<Button>();candidate && xaml::Automation::AutomationProperties::GetAutomationId(candidate)==L"review.today.reply."+key)review=candidate;
+    require(bool(review),L"Returning from task detail lost the saved reply entry.");co_await invokeReviewButton(shell,review);
+    require(inlinePage->body && !inlinePage->send.IsEnabled() && entry.draft.Stringify()==retainedDraft,L"Returning from task review lost the stale reply guard or retained text.");
+    auto inlineTabs=shell->page.Content().as<Grid>().Children().GetAt(1).as<ScrollViewer>().Content().as<StackPanel>();
+    for(auto const& tab:inlineTabs.Children())if(xaml::Automation::AutomationProperties::GetAutomationId(tab)==L"review.scope."+other)tab.as<controls::Primitives::ToggleButton>().IsChecked(true);
+    ready=GetTickCount64()+5000;while(memory->scope!=other&&GetTickCount64()<ready){co_await resume_after(std::chrono::milliseconds(20));co_await ui;}
+    require(memory->scope==other && !inlinePage->current() && shell->section==L"today" && shell->owner==globalOwner,L"Today account switching left the prior detail current.");
+    co_await reviewSend(inlinePage);require(!shell->dialogOpen && entry.draft.Stringify()==retainedDraft,L"An obsolete Today review opened sending or modified its draft.");
+    // Both replies have cached fictional drafts. No preparation or model call
+    // is needed to exercise A -> B and combined-scope duplicate message IDs.
+    for(bool combined:{false,true}) {
+        auto nextOwner=combined ? other : owner;auto nextMessage=copy(message);put(nextMessage,L"accountId",nextOwner);put(nextMessage,L"id",combined ? L"same-id" : L"second-fixture-message");
+        auto nextProposal=copy(proposal);put(nextProposal,L"accountId",nextOwner);put(nextProposal,L"messageId",text(nextMessage,L"id"));put(nextProposal,L"proposalId",L"second-fixture-proposal");nextProposal.Insert(L"message",nextMessage);
+        auto nextDraft=copy(draft);put(nextDraft,L"accountId",nextOwner);put(nextDraft,L"replyToId",text(nextMessage,L"id"));put(nextDraft,L"body",L"Retained second fictional reply.");
+        memory->entries[std::wstring(keyOf(nextProposal))]={copy(nextProposal),copy(nextMessage),copy(nextDraft),copy(nextDraft),false,false};
+        Json menuToday;JsonArray cards;cards.Append(proposal);cards.Append(nextProposal);menuToday.Insert(L"replySuggestions",cards);shell->state.Insert(L"today",menuToday);
+        memory->scope=combined ? hstring(L"all") : owner;memory->details[std::wstring(memory->scope)]=false;memory->detailKinds[std::wstring(memory->scope)]={};
+        co_await reviewPage(shell,L"today");co_await ui;auto menuPage=mountedReview.lock();Button first{nullptr};
+        for(auto const& child:menuPage->queue.Children())if(auto candidate=child.try_as<Button>();candidate && xaml::Automation::AutomationProperties::GetAutomationId(candidate)==L"review.today.reply."+key)first=candidate;
+        require(bool(first),L"The stale-flyout fixture lost its first Today card.");co_await invokeReviewButton(shell,first);
+        co_await staleReplyFlyoutChecks(menuPage,proposal,nextProposal);
+    }
     // Synthetic transfer through the same commit operation used after the
     // full authenticated refresh. Existing persisted draft data is a separate
     // value and is never passed to the cleanup operation.

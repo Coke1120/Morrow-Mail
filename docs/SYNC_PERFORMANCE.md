@@ -1,5 +1,11 @@
 # Incremental synchronization and synthetic evidence
 
+This page preserves historical 0.7.4 measurements and their original datasets.
+The 50k changed-flags fixture starts from a seeded warm cache; it is not a 50k
+download. The separate 50-row provider fixture and service HTTP benchmark do not
+measure native UI latency. For current-source empty-cache downloads and explicit
+native/platform evidence gates, use the [controlled acceptance harness](MAILBOX_ACCEPTANCE.md).
+
 The 0.7.4 work starts from remote main `5438edf9cd1b04578744edd1b5110c178372bb1f`
 on 12 October 2026. The published 0.7.3 commit is
 `1f9306e0a177cd9892e23641e9b86b41b682df0f`. Local development uses isolated

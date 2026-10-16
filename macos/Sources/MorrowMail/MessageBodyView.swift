@@ -44,12 +44,8 @@ struct SecureMessageBody: View {
                 }
             }
             if showPlain || !message["bodyHtml"].nonempty {
-                Text(Self.linkedText(message["body"].string)).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .environment(\.openURL, OpenURLAction { url in
-                        MessageHTMLView.openLink(url)
-                        return .handled
-                    })
+                ReaderText(text: Self.linkedText(message["body"].string))
+                    .frame(maxWidth: .infinity, minHeight: 18, alignment: .leading)
             }
         }
         .onChange(of: message["viewId"].string + message["accountId"].string + message.id) { _ in
@@ -65,14 +61,76 @@ struct SecureMessageBody: View {
         }
     }
 
-    static func linkedText(_ text: String) -> AttributedString {
+    static func linkedText(_ text: String) -> NSAttributedString {
         let value = NSMutableAttributedString(string: text)
+        let whole = NSRange(location: 0, length: value.length)
+        if whole.length > 0 {
+            value.addAttribute(.font, value: NSFont.systemFont(ofSize: 13), range: whole)
+            value.addAttribute(.foregroundColor, value: NSColor.labelColor, range: whole)
+        }
         if let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) {
             for match in detector.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
                 if let url = match.url, MessageHTMLView.allowedLink(url) { value.addAttribute(.link, value: url, range: match.range) }
             }
         }
-        return AttributedString(value)
+        return value
+    }
+}
+
+// Plain reader text has to be a real text view. SwiftUI Text is not one, so the
+// same display check that reads list fields cannot see the subject or body.
+struct ReaderText: NSViewRepresentable {
+    var text: NSAttributedString
+    func makeNSView(context: Context) -> ReaderTextView {
+        let view = ReaderTextView(frame: .zero)
+        view.isEditable = false
+        view.isSelectable = true
+        view.isRichText = true
+        view.drawsBackground = false
+        view.importsGraphics = false
+        view.textContainerInset = .zero
+        view.textContainer?.lineFragmentPadding = 0
+        view.textContainer?.widthTracksTextView = true
+        view.isHorizontallyResizable = false
+        view.isVerticallyResizable = true
+        view.isAutomaticLinkDetectionEnabled = false
+        view.isAutomaticDataDetectionEnabled = false
+        view.linkTextAttributes = [.foregroundColor: NSColor.linkColor, .underlineStyle: NSUnderlineStyle.single.rawValue]
+        view.delegate = context.coordinator
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return view
+    }
+    func updateNSView(_ view: ReaderTextView, context: Context) {
+        guard !view.attributedString().isEqual(text) else { return }
+        view.textStorage?.setAttributedString(text)
+        view.invalidateIntrinsicContentSize()
+    }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
+        func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            if let url = link as? URL { MessageHTMLView.openLink(url) }
+            return true
+        }
+    }
+}
+
+final class ReaderTextView: NSTextView {
+    private var laidOutHeight: CGFloat = -1
+    override var intrinsicContentSize: NSSize {
+        // shortcut: height stays one line until the view has a width, upgrade if a message stays clipped.
+        guard let container = textContainer, let manager = layoutManager, bounds.width > 1 else {
+            return NSSize(width: NSView.noIntrinsicMetric, height: 18)
+        }
+        manager.ensureLayout(for: container)
+        return NSSize(width: NSView.noIntrinsicMetric, height: max(18, ceil(manager.usedRect(for: container).height)))
+    }
+    override func layout() {
+        super.layout()
+        let height = intrinsicContentSize.height
+        if abs(height - laidOutHeight) > 0.5 {
+            laidOutHeight = height
+            invalidateIntrinsicContentSize()
+        }
     }
 }
 

@@ -79,6 +79,17 @@ Button button(hstring const& value, std::function<void()> action) {
     result.Click([action = std::move(action)](auto const&, auto const&) { action(); });
     return result;
 }
+MenuFlyoutItem menuItem(hstring const& value, std::function<void()> action) {
+    MenuFlyoutItem result; result.Text(value);
+    Automation::AutomationProperties::SetName(result, value);
+    result.Click([action = std::move(action)](auto const&, auto const&) { action(); });
+    return result;
+}
+DropDownButton actionMenu(hstring const& value, MenuFlyout const& menu, hstring const& accessibleName) {
+    DropDownButton result; result.Content(box_value(value)); result.Flyout(menu);
+    Automation::AutomationProperties::SetName(result, accessibleName.empty() ? value : accessibleName);
+    return result;
+}
 StackPanel stack(double gap) { StackPanel result; result.Spacing(gap); return result; }
 ListViewItem clickedListItem(ListView const& list, IInspectable const& clicked) {
     // WinUI returns Content when an item is its own container.
@@ -467,19 +478,31 @@ IAsyncAction Shell::start() {
         timer.Start();
     } catch (...) { error(errorText()); }
 }
-IAsyncAction Shell::refresh(bool rebuild) {
-    if (closing || refreshing || (!rebuild && (loading || syncing || dialogOpen || !dirty.empty()
-        || service->writing() || !navigation.IsEnabled() || pendingRead.Size()))) co_return;
+IAsyncOperation<bool> Shell::refresh(bool rebuild, WorkspaceReadGuard validity) {
+    if (closing || (refreshing && !validity) || (validity && !validity(state)) || (!rebuild && (loading || syncing || dialogOpen || !dirty.empty()
+        || service->writing() || !navigation.IsEnabled() || pendingRead.Size()))) co_return false;
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
     auto before = state.Stringify();
+    auto ticket = ++workspaceRefreshTicket, pageTicket = mailLoadTicket;
     refreshing = true;
-    struct Refreshing { bool& value; ~Refreshing() { value = false; } } guard{refreshing};
+    struct Refreshing {
+        Shell& shell; uint64_t ticket;
+        ~Refreshing() { if (shell.workspaceRefreshTicket == ticket) shell.refreshing = false; }
+    } guard{*this,ticket};
     try {
-        co_await publishSyncPriority();
+        // A completed download refreshes local views without submitting another
+        // provider-work hint. It supersedes an older coalesced workspace read.
+        if (!validity) co_await publishSyncPriority();
+        if (validity && !validity(state)) co_return false;
         auto result = co_await service->request(L"/state", captured);
-        if (!current(version, captured) || state.Stringify() != before) co_return;
+        if (!current(version, captured) || workspaceRefreshTicket != ticket
+            || (validity && (mailLoadTicket != pageTicket || !validity(state) || !validity(result)))) co_return false;
+        if (state.Stringify() != before) {
+            if (validity) throw hresult_error(E_ABORT,L"The mailbox changed during its local refresh. Refresh it again.");
+            co_return false;
+        }
         if (!rebuild && (loading || syncing || dialogOpen || !dirty.empty()
-            || service->writing() || !navigation.IsEnabled() || pendingRead.Size())) co_return;
+            || service->writing() || !navigation.IsEnabled() || pendingRead.Size())) co_return false;
         bool changedAccounts = array(result, L"accounts").Stringify() != array(state, L"accounts").Stringify();
         bool changedFolders = object(result, L"serverFolders").Stringify() != object(state, L"serverFolders").Stringify();
         state = result;
@@ -494,13 +517,22 @@ IAsyncAction Shell::refresh(bool rebuild) {
         if (rebuild || changedAccounts || changedFolders) rebuildNavigation();
         if (!connected(owner) && owner != L"all") selected = Json();
         error(L"");
-        if (section == L"activity") co_await workspacePage(lifetime, section);
-        else if ((section == L"today" || section == L"reply-suggestions") && refreshReview) co_await refreshReview();
+        if (!validity && section == L"activity") co_await workspacePage(lifetime, section);
+        else if (!validity && (section == L"today" || section == L"reply-suggestions") && refreshReview) co_await refreshReview();
         else if (section == L"mail" && owner == captured && rows && !loading && !dialogOpen
             && dirty.empty() && navigation.IsEnabled() && !pendingRead.Size()
-            && search.Text() == mailSearchQuery
-            && (rebuild || mailRevision != text(state, L"revision"))) co_await loadPage(0, true);
-    } catch (...) { if (current(version, captured)) error(errorText()); }
+            && (validity || search.Text() == mailSearchQuery)
+            && (rebuild || mailRevision != text(state, L"revision"))) {
+            if (!(co_await loadPage(0, true, false, validity)) && validity) co_return false;
+        }
+        if (current(version,captured) && workspaceRefreshTicket==ticket && (!validity || validity(state))) co_return true;
+    } catch (...) {
+        if (current(version, captured) && workspaceRefreshTicket == ticket) {
+            if (validity) { if (validity(state)) throw; }
+            else error(errorText());
+        }
+    }
+    co_return false;
 }
 void Shell::rebuildNavigation() {
     selectingNavigation = true;
@@ -574,7 +606,7 @@ void Shell::rebuildNavigation() {
         appendDestination({L"Categories", L"categories", L"\uE8EC"}, section == L"categories");
     } else {
     NavigationViewItemHeader header; header.Content(box_value(L"Workspace")); navigation.MenuItems().Append(header);
-    for (auto const& entry : {Destination{L"Today — Moved to Agent", L"today", L"\uE706"}, {L"Reply Suggestions", L"reply-suggestions", L"\uE8F2"},
+    for (auto const& entry : {Destination{L"Today", L"today", L"\uE706"}, {L"Reply Suggestions", L"reply-suggestions", L"\uE8F2"},
         {L"Out of Office", L"out-of-office", L"\uE708"},
         {L"Calendar", L"calendar", L"\uE787"}, {L"Outbox", L"scheduled", L"\uE823"}}) {
         appendDestination(entry, section == entry.id && std::wstring_view(entry.id) != L"today");
@@ -790,7 +822,13 @@ void Shell::mailPage() {
         if (event.Key() == Windows::System::VirtualKey::Enter) if (auto self = weak.lock(); self && !self->loading) { self->loadPage(0, false, true); event.Handled(true); }
     });
     auto searchButtons = actions(); searchButtons.Spacing(8);
-    searchButtons.Children().Append(button(L"Clear", [weak] { if (auto self = weak.lock(); self && !self->loading) { self->search.Text(L""); self->loadPage(0, false, true); } }));
+    auto clearSearch = button(L"Clear", [weak] { if (auto self = weak.lock(); self && !self->loading) { self->search.Text(L""); self->loadPage(0, false, true); } });
+    clearSearch.Visibility(Visibility::Collapsed);
+    Automation::AutomationProperties::SetAutomationId(clearSearch, L"mail.search.clear");
+    search.TextChanged([clear = make_weak(clearSearch)](auto const& sender, auto const&) {
+        if (auto control = clear.get()) control.Visibility(sender.template as<TextBox>().Text().empty() ? Visibility::Collapsed : Visibility::Visible);
+    });
+    searchButtons.Children().Append(clearSearch);
     searchButtons.Children().Append(button(L"Search", submitSearch));
     Grid::SetColumn(searchButtons, 1); searchBar.Children().Append(searchButtons); layout.Children().Append(searchBar);
     Grid body; mailBody = body; body.Margin(ThicknessHelper::FromLengths(0, 12, 0, 0));
@@ -819,33 +857,44 @@ void Shell::mailPage() {
     unreadFilter.Click([submitSearch](auto const&, auto const&) { submitSearch(); });
     Grid::SetColumn(unreadFilter, 1); listTitle.Children().Append(unreadFilter); heading.Children().Append(listTitle);
     auto toolbar = actions(); toolbar.Spacing(4);
-    DropDownButton view; view.Content(box_value(L"View")); MenuFlyout viewMenu;
+    DropDownButton view; view.Content(box_value(L"View · Newest")); Flyout viewMenu; auto viewOptions = stack(8);
+    Automation::AutomationProperties::SetName(view, L"View and sort mail");
+    Automation::AutomationProperties::SetAutomationId(view, L"mail.view");
     for (auto const& option : {std::pair{L"Reader on right",L"right"}, {L"Reader below",L"bottom"}, {L"Focused reading",L"focus"}}) {
-        MenuFlyoutItem choice; choice.Text(option.first);
-        choice.Click([weak, value = hstring(option.second)](auto const&, auto const&) {
+        auto choice = button(option.first, [weak, value = hstring(option.second), flyout = make_weak(viewMenu)] {
             if (auto self = weak.lock()) {
                 self->mailLayout = value; self->applyMailLayout();
                 try { self->service->saveClientState(L"morrow.mail.layout", value); } catch (...) { self->error(errorText()); }
             }
-        }); viewMenu.Items().Append(choice);
+            if (auto open = flyout.get()) open.Hide();
+        }); viewOptions.Children().Append(choice);
     }
     for (auto const& option : {std::pair{L"Wider sidebar",60.0}, {L"Narrower sidebar",-60.0}}) {
-        MenuFlyoutItem choice; choice.Text(option.first);
-        choice.Click([weak, delta = option.second](auto const&, auto const&) { if (auto self = weak.lock()) self->resizeSidebar(self->navigation.OpenPaneLength() + delta); });
-        viewMenu.Items().Append(choice);
+        viewOptions.Children().Append(button(option.first, [weak, delta = option.second] { if (auto self = weak.lock()) self->resizeSidebar(self->navigation.OpenPaneLength() + delta); }));
     }
-    view.Flyout(viewMenu); toolbar.Children().Append(view);
     sorting = ComboBox(); Automation::AutomationProperties::SetName(sorting, L"Sort mail");
-    sorting.Width(100);
+    sorting.Width(200); sorting.Header(box_value(L"Sort mail"));
     for (auto sort : {L"Newest",L"Oldest",L"Sender",L"Subject",L"Unread first",L"Starred first"}) sorting.Items().Append(box_value(sort));
     sorting.SelectedIndex(0);
-    sorting.SelectionChanged([weak](auto const&, auto const&) { if (auto self = weak.lock(); self && !self->loading) self->loadPage(0, false, true); });
-    toolbar.Children().Append(sorting);
-    toolbar.Children().Append(iconButton(L"\uE74D", L"Move selected messages to provider Trash", [weak] { if (auto self = weak.lock()) self->trashMessages(self->selectedMessages()); }));
+    sorting.SelectionChanged([weak, target = make_weak(view)](auto const& sender, auto const&) {
+        if (auto control = target.get()) control.Content(box_value(L"View · " + unbox_value_or<hstring>(sender.template as<ComboBox>().SelectedItem(), L"Newest")));
+        if (auto self = weak.lock(); self && !self->loading) self->loadPage(0, false, true);
+    });
+    viewOptions.Children().Append(sorting); viewMenu.Content(viewOptions); view.Flyout(viewMenu); toolbar.Children().Append(view);
     heading.Children().Append(toolbar); list.Children().Append(heading);
+    mailSelectionActions = stack(4); mailSelectionActions.Visibility(Visibility::Collapsed);
+    Automation::AutomationProperties::SetAutomationId(mailSelectionActions, L"mail.selection.actions");
+    mailSelectionCount = label(L"", 12); mailSelectionActions.Children().Append(mailSelectionCount);
+    auto selectionButtons=actions();
+    selectionMenu = actionMenu(L"Actions", mailActionsMenu(Json()), L"Actions for selected messages");
+    Automation::AutomationProperties::SetAutomationId(selectionMenu, L"mail.selection.menu"); selectionButtons.Children().Append(selectionMenu);
+    selectionDelete = button(L"Delete", [weak] { if (auto self = weak.lock()) self->trashMessages(self->selectedMessages()); });
+    Automation::AutomationProperties::SetName(selectionDelete, L"Move selected messages to provider Trash");
+    selectionButtons.Children().Append(selectionDelete);mailSelectionActions.Children().Append(selectionButtons); heading.Children().Append(mailSelectionActions);
     rows = ListView(); rows.SelectionMode(ListViewSelectionMode::Extended);
     Automation::AutomationProperties::SetName(rows, L"Mail list");
     rows.SelectionChanged([weak](auto const&, SelectionChangedEventArgs const&) {
+        if (auto self = weak.lock()) self->updateMailSelectionActions();
         if (auto self = weak.lock(); self && !self->loading && !self->dialogOpen && self->dirty.empty()) {
             auto messages = self->selectedMessages();
             if ((self->pendingRead.Size() || (self->reader && !self->reader.IsEnabled())) && (messages.size() != 1
@@ -901,6 +950,15 @@ void Shell::mailPage() {
     });
     applyMailLayout(); Grid::SetRow(body, 1); layout.Children().Append(body); show(layout);
 }
+void Shell::updateMailSelectionActions() {
+    if (!mailSelectionActions || !rows || section != L"mail") return;
+    auto messages = selectedMessages();
+    mailSelectionActions.Visibility(messages.empty() ? Visibility::Collapsed : Visibility::Visible);
+    mailSelectionCount.Text(to_hstring(messages.size()) + L" selected");
+    bool enabled = !loading && !dialogOpen && !closing && dirty.empty();
+    selectionMenu.IsEnabled(enabled);
+    selectionDelete.IsEnabled(enabled && !messages.empty() && std::all_of(messages.begin(), messages.end(), [&](auto const& row) { return canTrash(row); }));
+}
 void Shell::applyMailLayout() {
     if (!mailBody || !mailList || !readerPane || !mailDivider) return;
     mailBody.RowDefinitions().Clear(); mailBody.ColumnDefinitions().Clear();
@@ -933,28 +991,48 @@ void Shell::applyMailLayout() {
         Grid::SetColumn(mailDivider, 1); Grid::SetColumn(readerPane, 2);
     }
 }
-IAsyncAction Shell::loadPage(int pageDelta, bool refreshReader, bool reset) {
+IAsyncOperation<bool> Shell::loadPage(int pageDelta, bool refreshReader, bool reset, WorkspaceReadGuard validity) {
     auto lifetime = shared_from_this();
     auto weak = weak_from_this();
-    if (navigationLocked || section != L"mail" || !rows) co_return;
+    if (navigationLocked || section != L"mail" || !rows || (validity && !validity(state))) co_return false;
     auto version = generation; auto captured = owner; auto targetRows = rows; auto query = search.Text();
+    // A download refreshes the displayed query, never an unsubmitted edit.
+    auto requestQuery = validity ? mailSearchQuery : query;
+    auto previousPageTicket = mailLoadTicket;
     if (refreshReader) {
         // Capture a newly read selected row while the old unread page is still
         // mounted; updating the filtered page first would discard its selection.
-        co_await refreshMailReader();
+        if (!(co_await refreshMailReader(validity)) && validity) co_return false;
         if (!current(version, captured) || section != L"mail" || rows != targetRows || loading
             || dialogOpen || !dirty.empty() || !navigation.IsEnabled() || pendingRead.Size()
-            || service->writing() || search.Text() != query) co_return;
+            || service->writing() || search.Text() != query
+            || (validity && (mailLoadTicket != previousPageTicket || !validity(state)))) co_return false;
     }
     auto requested = reset ? std::vector<hstring>{L""} : cursors;
-    if (pageDelta < 0) { if (requested.size() < 2) co_return; requested.pop_back(); }
-    if (pageDelta > 0) { if (nextCursor.empty()) co_return; requested.push_back(nextCursor); }
+    if (pageDelta < 0) { if (requested.size() < 2) co_return false; requested.pop_back(); }
+    if (pageDelta > 0) { if (nextCursor.empty()) co_return false; requested.push_back(nextCursor); }
     if (refreshReader) for (auto& cursor : requested) cursor = L"";
-    auto ticket = ++mailLoadTicket; loading = true;
-    auto currentPage = [&] { return mailLoadTicket == ticket && current(version, captured) && section == L"mail" && rows == targetRows; };
-    auto releaseAbandonedPage = [&] { if (rows == targetRows && mailLoadTicket == ticket) loading = false; };
+    auto ticket = ++mailLoadTicket; loading = true; updateMailSelectionActions();
+    auto targetPage = page; auto targetContent = page ? page.Content() : IInspectable{nullptr};
+    auto targetPrevious = previous, targetNext = next;
+    auto targetSearch = search; auto targetSorting = sorting; auto targetUnreadFilter = unreadFilter;
+    // Scope invalidation still rejects the response, but the request must undo
+    // its disabled controls while it owns this mounted page. A replacement
+    // page/control or newer request owns its own loading and enabled states.
+    auto ownsPage = [&] { return mailLoadTicket == ticket && current(version, captured) && section == L"mail"
+        && rows == targetRows && page == targetPage && (!page || page.Content() == targetContent)
+        && previous == targetPrevious && next == targetNext && search == targetSearch
+        && sorting == targetSorting && unreadFilter == targetUnreadFilter; };
+    auto currentPage = [&] { return ownsPage() && (!validity || validity(state)); };
+    auto releaseAbandonedPage = [&] {
+        if (!ownsPage()) return;
+        previous.IsEnabled(cursors.size() > 1); next.IsEnabled(!nextCursor.empty());
+        search.IsEnabled(true); sorting.IsEnabled(search.Text().empty()); unreadFilter.IsEnabled(search.Text().empty());
+        loading = false; updateMailSelectionActions();
+    };
     previous.IsEnabled(false); next.IsEnabled(false);
     search.IsEnabled(false); sorting.IsEnabled(false); unreadFilter.IsEnabled(false);
+    std::exception_ptr refreshFailure;
     try {
         Json options; put(options, L"folder", folder); put(options, L"cursor", requested.back());
         if (requested.back().empty()) options.Insert(L"offset", Value::CreateNumberValue(static_cast<double>((requested.size() - 1) * 50)));
@@ -963,10 +1041,10 @@ IAsyncAction Shell::loadPage(int pageDelta, bool refreshReader, bool reset) {
         auto unread = unreadFilter.IsChecked(); options.Insert(L"unreadOnly", Value::CreateBooleanValue(unread && unread.Value()));
         put(options, L"locale", L"en");
         hstring path = L"/mail/page";
-        bool searching = !search.Text().empty();
-        if (searching) { path = L"/search"; options.Remove(L"unreadOnly"); if (options.HasKey(L"offset")) options.Remove(L"offset"); put(options, L"query", search.Text()); put(options, L"scope", L"folder"); put(options, L"sort", L"relevance"); options.Insert(L"page",Value::CreateNumberValue(static_cast<double>(requested.size()-1))); }
+        bool searching = !requestQuery.empty();
+        if (searching) { path = L"/search"; options.Remove(L"unreadOnly"); if (options.HasKey(L"offset")) options.Remove(L"offset"); put(options, L"query", requestQuery); put(options, L"scope", L"folder"); put(options, L"sort", L"relevance"); options.Insert(L"page",Value::CreateNumberValue(static_cast<double>(requested.size()-1))); }
         auto response = co_await service->requestWithStatus(path, captured, L"POST", options);
-        if (!currentPage()) { releaseAbandonedPage(); co_return; }
+        if (!currentPage()) { releaseAbandonedPage(); co_return false; }
         auto status = static_cast<unsigned>(response.GetNamedNumber(L"status", 0));
         auto result = object(response, L"body");
         bool expired = !requested.back().empty() && status == 409
@@ -981,7 +1059,7 @@ IAsyncAction Shell::loadPage(int pageDelta, bool refreshReader, bool reset) {
             options.Insert(searching ? L"page" : L"offset", Value::CreateNumberValue(static_cast<double>((requested.size() - 1) * (searching ? 1 : 50))));
             result = co_await service->request(path, captured, L"POST", options);
         }
-        if (!currentPage()) { releaseAbandonedPage(); co_return; }
+        if (!currentPage()) { releaseAbandonedPage(); co_return false; }
         bool retain = !reset && pageDelta == 0 && !searching && unread && unread.Value()
             && retainedUnread.Size() && text(retainedUnread, L"viewId") == text(selected, L"viewId");
         if (array(result, L"messages").Size() == 0 && requested.size() > 1 && !retain) {
@@ -990,7 +1068,7 @@ IAsyncAction Shell::loadPage(int pageDelta, bool refreshReader, bool reset) {
                 requested.assign(last + 1, L""); put(options, L"cursor", L"");
                 options.Insert(searching ? L"page" : L"offset", Value::CreateNumberValue(static_cast<double>(last * (searching ? 1 : 50))));
                 result = co_await service->request(path, captured, L"POST", options);
-                if (!currentPage()) { releaseAbandonedPage(); co_return; }
+                if (!currentPage()) { releaseAbandonedPage(); co_return false; }
             }
         }
         std::set<std::wstring> selectedIds;
@@ -1042,11 +1120,8 @@ IAsyncAction Shell::loadPage(int pageDelta, bool refreshReader, bool reset) {
             quick.Children().Append(iconButton(unread ? L"\uE8C3" : L"\uE715", unread ? L"Mark read" : L"Mark unread", [weak, message, unread] {
                 if (auto self = weak.lock()) { Json changes; changes.Insert(L"read", Value::CreateBooleanValue(unread)); self->patch(message, changes); }
             }));
-            auto replyAll = iconButton(L"\uE8A6", L"Reply all", [weak, message] { if (auto self = weak.lock()) self->prepare(message, L"replyAll"); });
-            replyAll.IsEnabled(text(message, L"folder") != L"drafts"); quick.Children().Append(replyAll);
-            auto trash = iconButton(L"\uE74D", L"Move to provider Trash", [weak, message] { if (auto self = weak.lock()) self->organize(message, L"trash"); });
-            trash.IsEnabled(canTrash(message));
-            quick.Children().Append(trash); Grid::SetColumn(quick, 2); subjectLine.Children().Append(quick); row.Children().Append(subjectLine);
+            auto more = actionMenu(L"More", mailActionsMenu(message), L"More actions for message: " + text(message, L"subject", L"(No subject)"));
+            more.FontSize(12); quick.Children().Append(more); Grid::SetColumn(quick, 2); subjectLine.Children().Append(quick); row.Children().Append(subjectLine);
             row.Tag(quick);
             if (density != L"compact") {
                 auto preview = label(text(message, L"preview"), 12, false);
@@ -1092,19 +1167,27 @@ IAsyncAction Shell::loadPage(int pageDelta, bool refreshReader, bool reset) {
         if (reset || pageDelta != 0) retainedUnread = Json();
         nextCursor = text(result, L"nextCursor");
         mailRevision = text(result, L"revision");
-        mailSearchQuery = search.Text();
+        mailSearchQuery = requestQuery;
         previous.IsEnabled(cursors.size() > 1); next.IsEnabled(!nextCursor.empty());
         auto pageNumber = to_hstring(cursors.size());
         auto messageCount = to_hstring(static_cast<uint64_t>(result.GetNamedNumber(L"total", 0)));
         pageLabel.Text(L"Page " + pageNumber + L" · " + messageCount + L" messages");
         Automation::AutomationProperties::SetName(pageLabel, L"Page " + pageNumber + L", " + messageCount + L" messages");
         error(text(result, L"warning"));
-    } catch (...) { if (currentPage()) error(errorText()); }
-    if (!currentPage()) { releaseAbandonedPage(); co_return; }
+    } catch (...) {
+        if (currentPage()) {
+            if (validity) refreshFailure = std::current_exception();
+            else error(errorText());
+        }
+    }
+    if (!currentPage()) { releaseAbandonedPage(); co_return false; }
     previous.IsEnabled(cursors.size() > 1); next.IsEnabled(!nextCursor.empty());
     search.IsEnabled(true); sorting.IsEnabled(search.Text().empty()); unreadFilter.IsEnabled(search.Text().empty());
     if (mailLoadTicket == ticket) loading = false;
-    publishSyncPriority();
+    updateMailSelectionActions();
+    if (refreshFailure) std::rethrow_exception(refreshFailure);
+    if (!validity) publishSyncPriority();
+    co_return true;
 }
 Json refreshedReaderMessage(Json const& previous, Json message) {
     // Raw downloads contain a reader-only CID copy. Keep that explicitly
@@ -1126,33 +1209,43 @@ Json refreshedReaderMessage(Json const& previous, Json message) {
     }
     return message;
 }
-IAsyncAction Shell::refreshMailReader() {
+IAsyncOperation<bool> Shell::refreshMailReader(WorkspaceReadGuard validity) {
     if (closing || loading || dialogOpen || !dirty.empty() || !navigation.IsEnabled()
-        || service->writing() || section != L"mail" || pendingRead.Size() || !reader || !reader.IsEnabled() || !selected.Size()) co_return;
+        || service->writing() || section != L"mail" || pendingRead.Size() || !reader || !reader.IsEnabled()
+        || (validity && !validity(state))) co_return false;
+    if (!selected.Size()) co_return true;
     auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
     auto sequence = selectionGeneration; auto request = ++readGeneration;
     auto account = text(selected, L"accountId"), id = text(selected, L"id");
     auto before = selected.Stringify();
     if (!connected(account) || (captured != L"all" && account != captured)) {
-        selected = Json(); retainedUnread = Json(); renderReader(selected); co_return;
+        selected = Json(); retainedUnread = Json(); renderReader(selected); co_return false;
     }
     try {
         auto result = co_await service->request(L"/messages/" + escaped(id), account);
         if (!current(version, captured) || sequence != selectionGeneration || request != readGeneration
-            || selected.Stringify() != before || dialogOpen || !dirty.empty() || !navigation.IsEnabled() || service->writing()) co_return;
+            || selected.Stringify() != before || dialogOpen || !dirty.empty() || !navigation.IsEnabled() || service->writing()
+            || (validity && !validity(state))) co_return false;
         auto message = object(result, L"message");
-        if (text(message, L"accountId") != account || text(message, L"id") != id) throw hresult_error(E_FAIL, L"The message owner changed. Open it again.");
+        if (text(message, L"accountId") != account || text(message, L"id") != id
+            || (validity && text(message, L"viewId") != text(selected, L"viewId"))) throw hresult_error(E_FAIL, L"The message owner changed. Open it again.");
         message = refreshedReaderMessage(selected, message);
+        auto sameFolder = text(message, L"folder") == text(selected, L"folder");
         if (message.Stringify() != selected.Stringify()) {
-            auto sameFolder = text(message, L"folder") == text(selected, L"folder");
             selected = message;
-            if (sameFolder) retainReadRow(message); else retainedUnread = Json();
+            if (sameFolder) { if (!validity) retainReadRow(message); } else retainedUnread = Json();
             renderReader(message);
         }
+        if (validity && sameFolder) retainReadRow(message,true);
         // A revision refresh never invokes mark-on-open or changes readerFocused.
+        co_return true;
     } catch (...) {
-        if (current(version, captured) && sequence == selectionGeneration && request == readGeneration) error(errorText());
+        if (current(version, captured) && sequence == selectionGeneration && request == readGeneration) {
+            if (validity) { if (validity(state)) throw; }
+            else error(errorText());
+        }
     }
+    co_return false;
 }
 IAsyncAction Shell::openSource(Json metadata) {
     auto self = shared_from_this(); auto account = text(metadata,L"accountId"), id = text(metadata,L"id");
@@ -1299,43 +1392,84 @@ void Shell::renderReader(Json const& message) {
     auto weak = weak_from_this(); auto replies = actions(); replies.Spacing(8);
     auto back = button(L"Back to list", [weak] { if (auto self = weak.lock()) { self->readerFocused = false; self->applyMailLayout(); self->focusMail(); } });
     readerBack = back; replies.Children().Append(back);
-    if (flag(message, L"providerDraft")) replies.Children().Append(button(L"Copy to local draft", [weak, message] { if (auto self = weak.lock()) self->prepare(message, L"copy"); }));
-    else for (auto const& option : {std::pair{L"Reply", L"reply"}, {L"Reply all",L"replyAll"}, {L"Forward",L"forward"}})
-        replies.Children().Append(button(option.first, [weak, message, mode = hstring(option.second)] { if (auto self = weak.lock()) self->prepare(message, mode); }));
-    auto markers = actions();
-    for (auto const& option : {std::pair{L"Read",L"read"}, {L"Starred",L"starred"}, {L"Pending",L"pending"}, {L"Read later",L"lowPriority"}}) {
-        Primitives::ToggleButton toggle; toggle.Content(box_value(option.first)); toggle.IsChecked(flag(message, option.second));
-        if (std::wstring_view(option.second) == L"lowPriority" && text(message,L"folder") != L"inbox" && text(message,L"folder") != L"archive") toggle.IsEnabled(false);
-        toggle.Click([weak, message, key = std::wstring(option.second)](auto const&, auto const&) { if (auto self = weak.lock()) { Json change; change.Insert(key, Value::CreateBooleanValue(!flag(message, key.c_str()))); self->patch(message, change); } });
-        markers.Children().Append(toggle);
+    // A native flyout can outlive the row that opened it. Keep its commands
+    // bound to the mounted message as well as the handlers' existing write guards.
+    auto context = [weak, message, version = generation, sequence = selectionGeneration, captured = owner]() -> std::shared_ptr<Shell> {
+        auto self = weak.lock();
+        if (!self || !self->current(version, captured) || self->section != L"mail"
+            || self->selectionGeneration != sequence
+            || text(self->selected, L"accountId") != text(message, L"accountId")
+            || text(self->selected, L"id") != text(message, L"id")
+            || self->selected.Stringify() != message.Stringify()
+            || !self->connected(text(message, L"accountId"))) return {};
+        return self;
+    };
+    if (flag(message, L"providerDraft")) replies.Children().Append(button(L"Copy to local draft", [context, message] { if (auto self = context()) self->prepare(message, L"copy"); }));
+    else {
+        MenuFlyout reply;
+        for (auto const& option : {std::pair{L"Reply", L"reply"}, {L"Reply all",L"replyAll"}, {L"Forward",L"forward"}}) {
+            auto command = menuItem(option.first, [context, message, mode = hstring(option.second)] { if (auto self = context()) self->prepare(message, mode); });
+            Automation::AutomationProperties::SetAutomationId(command, L"reader.reply." + hstring(option.second)); reply.Items().Append(command);
+        }
+        auto control = actionMenu(L"Reply", reply, L"Reply to this message");
+        Automation::AutomationProperties::SetAutomationId(control, L"reader.reply"); replies.Children().Append(control);
     }
-    content.Children().Append(markers);
     auto remote = text(message, L"remoteId", text(message, L"id"));
-    auto remove = button(L"Move to provider Trash", [weak, message] { if (auto self = weak.lock()) self->trash(message); });
-    remove.IsEnabled(canTrash(message)); replies.Children().Append(remove);
     if (std::wstring_view(remote).starts_with(L"google:") || std::wstring_view(remote).starts_with(L"microsoft:") || std::wstring_view(remote).starts_with(L"imap:")) {
-        DropDownButton organizeButton; organizeButton.Content(box_value(L"Organize email")); organizeButton.Flyout(organizationMenu(message)); replies.Children().Append(organizeButton);
+        auto menu = organizationMenu(message, [context] { return bool(context()); });
+        menu.Items().Append(MenuFlyoutSeparator());
+        auto remove = menuItem(L"Move to provider Trash", [context, message] { if (auto self = context()) self->trash(message); });
+        remove.IsEnabled(canTrash(message)); menu.Items().Append(remove);
+        auto organizeButton = actionMenu(L"Organize", menu, L"Organize this message at its mail provider");
+        Automation::AutomationProperties::SetAutomationId(organizeButton, L"reader.organize"); replies.Children().Append(organizeButton);
     }
-    auto local = actions();
+    MenuFlyout more;
+    for (auto const& option : {std::tuple{L"Mark read",L"Mark unread",L"read"}, {L"Star",L"Unstar",L"starred"}, {L"Mark Pending",L"Clear Pending",L"pending"}, {L"Read later",L"Clear Read later",L"lowPriority"}}) {
+        auto key = std::wstring(std::get<2>(option)); bool on = flag(message, key.c_str());
+        auto item = menuItem(on ? std::get<1>(option) : std::get<0>(option), [context, message, key, on] {
+            if (auto self = context()) { Json change; change.Insert(key, Value::CreateBooleanValue(!on)); self->patch(message, change); }
+        });
+        if (key == L"lowPriority" && text(message,L"folder") != L"inbox" && text(message,L"folder") != L"archive") item.IsEnabled(false);
+        Automation::AutomationProperties::SetAutomationId(item, L"reader.marker." + hstring(key)); more.Items().Append(item);
+    }
+    MenuFlyoutSubItem local; local.Text(L"On this device only");
     if (text(message, L"folder") != L"drafts" && text(message, L"folder") != L"sent") {
         auto destination = text(message, L"folder") == L"archive" || text(message, L"folder") == L"trash" ? hstring(L"inbox") : hstring(L"archive");
-        local.Children().Append(button(destination == L"inbox" ? L"Move to Inbox locally" : L"Archive locally", [weak, message, destination] { if (auto self = weak.lock()) { Json changes; put(changes, L"folder", destination); self->patch(message, changes); } }));
+        local.Items().Append(menuItem(destination == L"inbox" ? L"Move to Inbox locally" : L"Archive locally", [context, message, destination] { if (auto self = context()) { Json changes; put(changes, L"folder", destination); self->patch(message, changes); } }));
     }
-    if (text(message, L"folder") != L"trash") local.Children().Append(button(L"Trash locally", [weak, message] { if (auto self = weak.lock()) { Json changes; put(changes, L"folder", L"trash"); self->patch(message, changes); } }));
-    content.Children().Append(local);
+    if (text(message, L"folder") != L"trash") local.Items().Append(menuItem(L"Move to local Trash", [context, message] { if (auto self = context()) { Json changes; put(changes, L"folder", L"trash"); self->patch(message, changes); } }));
+    if (local.Items().Size()) { more.Items().Append(MenuFlyoutSeparator()); more.Items().Append(local); }
+    auto focus = menuItem(readerFocused ? L"Show mail list" : L"Focus on this message", [context] {
+        if (auto self = context()) { self->readerFocused = !self->readerFocused; self->applyMailLayout(); }
+    });
+    more.Items().Append(focus);
+    more.Opening([context,target=make_weak(focus)](auto const&,auto const&) {
+        if(auto self=context())if(auto item=target.get())item.Text(self->readerFocused ? L"Show mail list" : L"Focus on this message");
+    });
+    auto moreButton = actionMenu(L"More", more, L"More actions for message: " + text(message, L"subject", L"(No subject)"));
+    Automation::AutomationProperties::SetAutomationId(moreButton, L"reader.more"); replies.Children().Append(moreButton);
     auto undo=object(message,L"localFolderUndo");
     if(!text(undo,L"token").empty()) {
         content.Children().Append(label(L"Moved locally; the provider location was not changed.",12));
-        content.Children().Append(button(L"Undo local move to "+text(undo,L"from"),[weak,message,undo] {if(auto self=weak.lock()) {Json changes;put(changes,L"undoLocalMove",text(undo,L"token"));self->patch(message,changes);}}));
+        content.Children().Append(button(L"Undo local move to "+text(undo,L"from"),[context,message,undo] {if(auto self=context()) {Json changes;put(changes,L"undoLocalMove",text(undo,L"token"));self->patch(message,changes);}}));
     }
-    auto assistance = actions();
-    for (auto const& option : {std::pair{L"Summarize",L"summary"}, {L"Suggest reply",L"reply"}, {L"Translate",L"translate"}})
-        assistance.Children().Append(button(option.first, [weak, message, mode = hstring(option.second)] { if (auto self = weak.lock()) self->messageAI(message, mode); }));
-    assistance.Children().Append(button(L"Suggest with History", [weak, message] { if (auto self = weak.lock()) self->messageAI(message, L"reply", true); }));
-    content.Children().Append(assistance);
     auto summary = object(message, L"aiSummary");
     if (!text(summary, L"text").empty()) { Expander expanded; expanded.Header(box_value(L"Saved AI summary")); expanded.Content(label(text(summary, L"text"))); content.Children().Append(expanded); }
     appendReader(shared_from_this(), content, message);
+    MenuFlyout assistance;
+    auto settings = object(state, L"settings"), policy = object(settings, L"policy");
+    bool aiReady = flag(object(settings, L"ai"), L"configured") && flag(policy, L"enabled");
+    if (aiReady) {
+        for (auto const& option : {std::pair{L"Summarize",L"summary"}, {L"Draft reply",L"reply"}, {L"Translate",L"translate"}}) {
+            auto item = menuItem(option.first, [context, message, mode = hstring(option.second)] { if (auto self = context()) self->messageAI(message, mode); });
+            item.IsEnabled(flag(object(policy, L"behaviors"), option.second)); assistance.Items().Append(item);
+        }
+        auto history = menuItem(L"Draft reply with permitted history…", [context, message] { if (auto self = context()) self->messageAI(message, L"reply", true); });
+        history.IsEnabled(flag(object(policy, L"behaviors"), L"reply") && flag(object(policy, L"content"), L"sender")); assistance.Items().Append(history);
+    }
+    assistance.Items().Append(menuItem(aiReady ? L"AI settings and permissions…" : L"Set up AI and permissions…", [context, account = text(message, L"accountId")] { if (auto self = context()) self->navigate(L"policy", account); }));
+    auto ai = actionMenu(L"AI help", assistance, L"AI help for this message");
+    Automation::AutomationProperties::SetAutomationId(ai, L"reader.ai"); content.Children().Append(ai);
     ScrollViewer actionScroll; actionScroll.Content(replies);
     actionScroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto);
     actionScroll.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled);
@@ -1348,15 +1482,26 @@ void Shell::renderReader(Json const& message) {
 IAsyncAction Shell::patch(Json message, Json changes) {
     co_await patchMessages({message}, changes);
 }
-void Shell::retainReadRow(Json const& message) {
+void Shell::retainReadRow(Json const& message, bool refreshMetadata) {
     if (text(message, L"viewId") != text(selected, L"viewId")) return;
     if (!flag(message, L"read")) { retainedUnread = Json(); return; }
-    if (!unreadFilter.IsChecked().Value() || !search.Text().empty()) return;
+    if (!unreadFilter.IsChecked().Value() || !(refreshMetadata ? mailSearchQuery : search.Text()).empty()) return;
     for (uint32_t i = 0; i < rows.Items().Size(); ++i) {
         auto row = rows.Items().GetAt(i).as<ListViewItem>().Tag().as<Json>();
         if (text(row, L"viewId") == text(message, L"viewId")) {
             retainedUnread = Json::Parse(row.Stringify());
             for (auto key : {L"read", L"starred", L"pending"}) retainedUnread.Insert(key, Value::CreateBooleanValue(flag(message, key)));
+            if (refreshMetadata) {
+                // Downloaded content changes the preview even when an active
+                // read row is retained outside the unread page. Keep it bounded
+                // metadata; full bodies and attachment bytes stay in the reader.
+                auto preview = std::wstring(text(message,L"preview"));
+                if (preview.size()>240) {
+                    preview.resize(240);
+                    if (preview.back()>=0xd800 && preview.back()<=0xdbff) preview.pop_back();
+                }
+                put(retainedUnread,L"preview",hstring(preview));
+            }
             retainedUnreadIndex = i; break;
         }
     }
@@ -1383,26 +1528,60 @@ MenuFlyout Shell::mailActionsMenu(Json message) {
     MenuFlyout menu;
     menu.Opening([weak = weak_from_this(), message, weakMenu = make_weak(menu)](auto const&, auto const&) {
         auto self = weak.lock(); auto menu = weakMenu.get(); if (!self || !menu) return;
-        menu.Items().Clear(); auto messages = self->selectedMessages(message);
-        bool enabled = !self->loading && !self->dialogOpen && !self->closing && self->dirty.empty() && !self->service->writing();
+        menu.Items().Clear();
+        auto target=menu.Target();auto sourcePage=self->page.Content().try_as<DependencyObject>();
+        if(!target || !sourcePage || !self->rows)return;
+        auto mounted=[weak,weakMenu,control=make_weak(target),page=make_weak(sourcePage),rows=make_weak(self->rows)]() -> std::shared_ptr<Shell> {
+            auto current=weak.lock();auto menu=weakMenu.get();auto target=control.get();auto sourcePage=page.get();auto sourceRows=rows.get();
+            if(!current || !menu || !target || !target.IsLoaded() || current->section!=L"mail" || current->closing
+                || current->page.Content()!=sourcePage || current->rows!=sourceRows || !sourcePage)return {};
+            bool assigned=target.ContextFlyout()==menu;
+            if(auto dropdown=target.try_as<DropDownButton>())assigned=assigned || dropdown.Flyout()==menu;
+            if(!assigned)return {};
+            auto ancestor=target.try_as<DependencyObject>();
+            while(ancestor && ancestor!=sourcePage)ancestor=Media::VisualTreeHelper::GetParent(ancestor);
+            return ancestor ? current : std::shared_ptr<Shell>{};
+        };
+        if(!mounted())return;
+        // Compose restores the same mail page with a new generation. Bind a
+        // fresh opening to that mounted page, then freeze its generation for
+        // every command; retained old flyouts must still fail after navigation.
+        auto version=self->generation;auto captured=self->owner;
+        auto messages = self->selectedMessages(message);
+        auto context=[mounted,version,captured,message,messages]() -> std::shared_ptr<Shell> {
+            auto current=mounted();if(!current || !current->current(version,captured) || !current->rows)return {};
+            if(message.Size()) {
+                bool present=false;for(auto const& item:current->rows.Items()) {
+                    auto row=item.as<ListViewItem>().Tag().as<Json>();
+                    if(text(row,L"accountId")==text(message,L"accountId") && text(row,L"id")==text(message,L"id"))present=true;
+                }
+                if(!present)return {};
+            }
+            auto selected=current->selectedMessages(message);if(selected.size()!=messages.size())return {};
+            for(auto const& row:messages)if(!current->connected(text(row,L"accountId")) || std::none_of(selected.begin(),selected.end(),[&](auto const& next){return text(next,L"accountId")==text(row,L"accountId") && text(next,L"id")==text(row,L"id");}))return {};
+            return current;
+        };
+        bool enabled = !messages.empty() && !self->loading && !self->dialogOpen && !self->closing && self->dirty.empty() && !self->service->writing();
         if (messages.size() == 1) {
-            auto organization = self->organizationMenu(messages[0]);
+            auto replyAll=menuItem(L"Reply all",[context,message=messages[0]] {if(auto self=context())self->prepare(message,L"replyAll");});
+            replyAll.IsEnabled(enabled && text(messages[0],L"folder")!=L"drafts");menu.Items().Append(replyAll);
+            auto organization = self->organizationMenu(messages[0],[context]{return bool(context());});
             while (organization.Items().Size()) { auto item = organization.Items().GetAt(0); organization.Items().RemoveAt(0); menu.Items().Append(item); }
         }
-        MenuFlyoutItem remove; remove.Text(L"Move to provider Trash");
-        remove.IsEnabled(enabled && std::all_of(messages.begin(), messages.end(), [&](auto const& row) { return self->canTrash(row); }));
-        remove.Click([weak, messages](auto const&, auto const&) { if (auto self = weak.lock()) self->trashMessages(messages); }); menu.Items().Append(remove);
+        MenuFlyoutItem remove; remove.Text(L"Delete");
+        remove.IsEnabled(enabled && !messages.empty() && std::all_of(messages.begin(), messages.end(), [&](auto const& row) { return self->canTrash(row); }));
+        remove.Click([context, messages](auto const&, auto const&) { if (auto self = context()) self->trashMessages(messages); }); menu.Items().Append(remove);
         menu.Items().Append(MenuFlyoutSeparator());
         for (auto const& choice : {std::tuple{L"Mark read", L"read", true}, {L"Mark unread", L"read", false}, {L"Star", L"starred", true}, {L"Unstar", L"starred", false}, {L"Mark Pending", L"pending", true}, {L"Clear Pending", L"pending", false}}) {
             MenuFlyoutItem item; item.Text(std::get<0>(choice)); item.IsEnabled(enabled);
-            item.Click([weak, messages, key = hstring(std::get<1>(choice)), value = std::get<2>(choice)](auto const&, auto const&) {
-                if (auto self = weak.lock()) { Json changes; changes.Insert(key, Value::CreateBooleanValue(value)); self->patchMessages(messages, changes); }
+            item.Click([context, messages, key = hstring(std::get<1>(choice)), value = std::get<2>(choice)](auto const&, auto const&) {
+                if (auto self = context()) { Json changes; changes.Insert(key, Value::CreateBooleanValue(value)); self->patchMessages(messages, changes); }
             }); menu.Items().Append(item);
         }
         for (auto const& choice : {std::pair{L"Archive locally", L"archive"}, {L"Move to local Trash", L"trash"}}) {
             MenuFlyoutItem item; item.Text(choice.first);
             item.IsEnabled(enabled && (choice.second == std::wstring_view(L"trash") || std::none_of(messages.begin(), messages.end(), [](auto const& row) { return text(row, L"folder") == L"drafts"; })));
-            item.Click([weak, messages, folder = hstring(choice.second)](auto const&, auto const&) { if (auto self = weak.lock()) { Json changes; put(changes, L"folder", folder); self->patchMessages(messages, changes); } }); menu.Items().Append(item);
+            item.Click([context, messages, folder = hstring(choice.second)](auto const&, auto const&) { if (auto self = context()) { Json changes; put(changes, L"folder", folder); self->patchMessages(messages, changes); } }); menu.Items().Append(item);
         }
     });
     return menu;

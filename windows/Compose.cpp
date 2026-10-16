@@ -16,6 +16,7 @@ using namespace winrt;
 using namespace Windows::Foundation;
 using namespace Windows::Data::Json;
 using namespace controls;
+IAsyncAction returnedMailActionsChecks(std::shared_ptr<Shell> shell);
 namespace {
 Json copy(Json const& value) { return Json::Parse(value.Stringify()); }
 void require(bool value, wchar_t const* message) {
@@ -133,7 +134,7 @@ struct Composer {
     std::optional<bool> returnImages;
     Json message, scheduleAttempt;
     bool busy = false, uncertain = false, bound = false, initializing = false;
-    bool historyLoading = false;
+    bool historyLoading = false, optionalRecipients = false;
     weak_ref<StackPanel> history, attachmentPanel;
     weak_ref<Button> addAttachment;
     std::vector<weak_ref<Button>> attachmentRemovals;
@@ -148,6 +149,7 @@ struct Composer {
     weak_ref<TimePicker> time;
     weak_ref<Button> save, send, removeFooter, generate, useAI, close;
     weak_ref<Button> foundSent, dismissDelivery;
+    weak_ref<Button> revealRecipients;
     hstring suggestion;
     bool live(std::shared_ptr<Shell> const& host) const {
         return host && !host->closing && host->generation == generation
@@ -172,6 +174,9 @@ struct Composer {
         auto host = shell.lock();
         if (!live(host)) return;
         auto isFrozen = frozen();
+        if (!text(message,L"cc").empty() || !text(message,L"bcc").empty()) optionalRecipients=true;
+        if (fields.size() >= 3) for (size_t i : {size_t(1),size_t(2)}) if(auto view=fields[i].get()) view.Visibility(optionalRecipients ? xaml::Visibility::Visible : xaml::Visibility::Collapsed);
+        if(auto view=revealRecipients.get()) view.Visibility(optionalRecipients ? xaml::Visibility::Collapsed : xaml::Visibility::Visible);
         for (auto const& reference : fields) if (auto view = reference.get()) view.IsReadOnly(isFrozen);
         if (auto view = from.get()) view.IsEnabled(!isFrozen && !bound && text(message, L"id").empty() && !array(message, L"attachments").Size());
         if (auto view = addAttachment.get()) view.IsEnabled(!isFrozen && host->connected(owner));
@@ -573,6 +578,13 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
         if (flag(draft, L"forwarding")) panel.Children().Append(label(L"Forwarding message text and downloaded attachments. Review the attachment list before sending."));
         if (text(draft, L"id").empty() && !draft.HasKey(L"footer"))
             state->message.Insert(L"footer", object(object(shell->state, L"settings"), L"footer"));
+        auto recipients=button(L"Add Cc or Bcc",[state] {
+            if(auto host=state->shell.lock(); state->live(host)) {
+                state->optionalRecipients=true;state->update();
+                if(state->fields.size()>1)if(auto cc=state->fields[1].get())cc.Focus(xaml::FocusState::Programmatic);
+            }
+        });
+        xaml::Automation::AutomationProperties::SetAutomationId(recipients,L"compose.recipients.optional");state->revealRecipients=make_weak(recipients);
         for (auto name : { L"to", L"cc", L"bcc", L"subject", L"body" }) {
             auto title = wcscmp(name, L"to") == 0 ? L"To" : wcscmp(name, L"cc") == 0 ? L"Cc"
                 : wcscmp(name, L"bcc") == 0 ? L"Bcc" : wcscmp(name, L"subject") == 0 ? L"Subject" : L"Message";
@@ -581,9 +593,11 @@ IAsyncAction compose(std::shared_ptr<Shell> shell, Json draft) {
             if (wcscmp(name, L"body") == 0) { input.MinHeight(240); input.MaxLength(100000); }
             if (wcscmp(name, L"subject") == 0) input.MaxLength(500);
             input.Text(text(draft, name));
+            xaml::Automation::AutomationProperties::SetAutomationId(input,L"compose.field."+hstring(name));
             state->fields.push_back(make_weak(input));
             input.TextChanged([state, name](auto const& sender, auto const&) { state->edit(name, sender.template as<TextBox>().Text()); });
             panel.Children().Append(input);
+            if(wcscmp(name,L"to")==0)panel.Children().Append(recipients);
         }
         auto attachmentPanel = stack(4); state->attachmentPanel = make_weak(attachmentPanel);
         panel.Children().Append(attachmentPanel);
@@ -807,6 +821,12 @@ IAsyncAction composerReturnChecks(std::shared_ptr<Shell> shell) {
             if (auto b = findClose(xaml::Media::VisualTreeHelper::GetChild(node, i))) return b;
         return nullptr;
     };
+    std::function<xaml::FrameworkElement(xaml::DependencyObject,hstring const&)> findControl;
+    findControl=[&findControl](xaml::DependencyObject node,hstring const& id)->xaml::FrameworkElement {
+        if(auto view=node.try_as<xaml::FrameworkElement>();view && xaml::Automation::AutomationProperties::GetAutomationId(view)==id)return view;
+        for(int i=0;i<xaml::Media::VisualTreeHelper::GetChildrenCount(node);++i)if(auto view=findControl(xaml::Media::VisualTreeHelper::GetChild(node,i),id))return view;
+        return nullptr;
+    };
     apartment_context ui;
     auto previousLayout = shell->mailLayout;
     for (auto const& [layout, interrupted] : {std::pair{L"right", false}, {L"right", true}, {L"focus", false}, {L"focus", true}}) {
@@ -828,8 +848,25 @@ IAsyncAction composerReturnChecks(std::shared_ptr<Shell> shell) {
         require(returnFocus.Focus(xaml::FocusState::Keyboard), L"The composer fixture could not focus its originating mail control.");
         Json draft; put(draft, L"accountId", text(message, L"accountId"));
         if (!interrupted) put(draft, L"replyToId", text(message, L"id"));
+        else { // View-only fictional saved metadata; this fixture never saves or sends it.
+            put(draft,L"id",L"native-optional-recipient-display-only");put(draft,L"cc",L"visible@fixture.invalid");put(draft,L"bcc",L"hidden@fixture.invalid");
+        }
         co_await compose(shell, draft);
         shell->root.UpdateLayout();
+        auto cc=findControl(shell->page.Content().as<xaml::DependencyObject>(),L"compose.field.cc").as<TextBox>();
+        auto bcc=findControl(shell->page.Content().as<xaml::DependencyObject>(),L"compose.field.bcc").as<TextBox>();
+        auto reveal=findControl(shell->page.Content().as<xaml::DependencyObject>(),L"compose.recipients.optional").as<Button>();
+        if(interrupted) require(cc.Visibility()==xaml::Visibility::Visible && bcc.Visibility()==xaml::Visibility::Visible
+            && cc.Text()==L"visible@fixture.invalid" && bcc.Text()==L"hidden@fixture.invalid" && reveal.Visibility()==xaml::Visibility::Collapsed,
+            L"A saved Cc or Bcc recipient was hidden by optional-field disclosure.");
+        else {
+            require(cc.Visibility()==xaml::Visibility::Collapsed && bcc.Visibility()==xaml::Visibility::Collapsed && reveal.Visibility()==xaml::Visibility::Visible,
+                L"Empty optional recipients are not behind their named entry.");
+            auto revealPeer=xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(reveal);
+            revealPeer.GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).as<xaml::Automation::Provider::IInvokeProvider>().Invoke();
+            shell->root.UpdateLayout();require(cc.Visibility()==xaml::Visibility::Visible && bcc.Visibility()==xaml::Visibility::Visible && shell->dirty.empty(),
+                L"Opening optional recipients hid a field or changed the draft.");
+        }
         auto close = findClose(shell->page.Content().as<xaml::DependencyObject>());
         require(close && shell->dirty.empty(), L"The unchanged fictional composer cannot close without a dialog.");
         require(close.Focus(xaml::FocusState::Keyboard), L"The composer fixture could not focus Close.");
@@ -869,6 +906,7 @@ IAsyncAction composerReturnChecks(std::shared_ptr<Shell> shell) {
                 + L"; loaded: " + to_hstring(back && back.IsLoaded()) + L"; enabled: " + to_hstring(back && back.IsEnabled())
                 + L"; visible: " + to_hstring(back && back.Visibility() == xaml::Visibility::Visible) + L"; mounted: " + to_hstring(mounted));
         }
+        co_await returnedMailActionsChecks(shell);
     }
     shell->mailLayout = previousLayout; shell->applyMailLayout();
 }

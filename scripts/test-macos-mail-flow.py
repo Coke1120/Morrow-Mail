@@ -28,7 +28,10 @@ def bounded(arguments, *, cwd, env, timeout):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--baseline-search", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--baseline-search", action="store_true")
+    mode.add_argument("--download-repair-negative-control", action="store_true",
+                      help="Privately omit the repair's shared refresh and require the stale-reader regression.")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     sources = root / "macos/Sources/MorrowMail"
@@ -38,6 +41,13 @@ def main():
         seam = "private(set) var baseURL: URL?"
         if model.count(seam) != 1:
             raise RuntimeError("Fixture-only transport initialization seam changed.")
+        if args.download_repair_negative_control:
+            # Mutation control, not a claim that the historical UI was executed:
+            # keep the actual owner-bound download, omit only its shared refresh.
+            anchor = "        // Invalidate a pre-download reload; do not coalesce this read into it or"
+            if model.count(anchor) != 1:
+                raise RuntimeError("The private repair negative-control seam changed.")
+            model = model.replace(anchor, "        return\n" + anchor, 1)
         # Only the initial URL changes in this private compiler input. The
         # injected session intercepts every request and rejects unexpected paths.
         # No service is started and no real mailbox/data directory is opened.
@@ -54,14 +64,22 @@ def main():
             (fixture / "SearchView.swift").write_text(search)
             inputs.append(str(fixture / "SearchView.swift"))
         inputs.append(str(root / "macos/Checks/MailFlowAssertions.swift"))
+        inputs.append(str(root / "macos/Checks/DownloadRepairAssertions.swift"))
         executable = fixture / "mail-flow-checks"
         environment = os.environ.copy()
         environment["MORROW_DATA_DIR"] = str(fixture / "fictional-workspace")
         bounded(["swiftc", "-D", "MORROW_WINDOW_CHECKS", "-parse-as-library",
                         *inputs, "-o", str(executable)],
                 cwd=root, env=environment, timeout=180)
-        bounded([str(executable), *(["--expect-baseline-reset"] if args.baseline_search else [])],
-                cwd=fixture, env=environment, timeout=30)
+        if args.download_repair_negative_control:
+            bounded([str(executable), "--download-repair", "--expect-download-repair-regression"],
+                    cwd=fixture, env=environment, timeout=30)
+        else:
+            bounded([str(executable), *(["--expect-baseline-reset"] if args.baseline_search else [])],
+                    cwd=fixture, env=environment, timeout=30)
+        if not args.baseline_search and not args.download_repair_negative_control:
+            bounded([str(executable), "--download-repair"],
+                    cwd=fixture, env=environment, timeout=30)
 
 
 if __name__ == "__main__":

@@ -107,7 +107,9 @@ struct Intelligence : std::enable_shared_from_this<Intelligence> {
     uint64_t generation = 0, revision = 0, learningRevision = 0;
     bool live = true, busy = false, polling = false, cancelling = false, generatingStyle = false, selecting = false, agentRecovering = false;
     Json state, suggestions, workflow, output, outputMessage, outputSource, memoryPreview;
-    std::set<std::wstring> selectedMemories;
+    std::set<std::wstring> selectedMemories, editingRules;
+    weak_ref<StackPanel> categoryEditor;
+    weak_ref<Expander> skillEditor;
     weak_ref<StackPanel> memoryPanel, writingRuleList;
     hstring outputAction, outputContext, workflowContext, workflowOwner;
     std::map<std::wstring, Editor> forms;
@@ -276,6 +278,10 @@ Button action(Page const& p, StackPanel const& panel, hstring const& caption, st
     std::weak_ptr<Intelligence> weak = p;
     auto control = button(caption, [weak, task = std::move(task)] { if (auto p = weak.lock()) perform(p, task); });
     panel.Children().Append(control); return control;
+}
+MenuFlyoutItem menuAction(Page const& p, MenuFlyout const& menu, hstring const& caption, std::function<IAsyncAction(Page)> task) {
+    auto item = menuItem(caption, [weak = std::weak_ptr<Intelligence>(p), task = std::move(task)] { if (auto page = weak.lock()) perform(page, task); });
+    menu.Items().Append(item); return item;
 }
 IAsyncAction changePage(Page p, hstring target) {
     if (!p->current() || p->busy || p->cancelling) co_return;
@@ -595,12 +601,20 @@ void renderWritingRules(Page const& p) {
             }
         });
         row.Children().Append(enabled);
+        MenuFlyout management;
         if (!learned) {
             if (!p->forms.contains(formName)) editor(p, formName.c_str(), subset(rule, {L"text"}));
-            auto edit = editText(p, row, formName.c_str(), L"text", L"Edit writing rule", 500, true);
+            Expander editorPanel; editorPanel.Header(box_value(L"Edit writing rule"));
+            editorPanel.IsExpanded(p->editingRules.contains(formName) || p->forms[formName].dirty());
+            editorPanel.Expanding([weak, formName](auto const&, auto const&) { if(auto page=weak.lock(); page && page->current()) page->editingRules.insert(formName); });
+            editorPanel.Collapsed([weak, formName](auto const&, auto const&) { if(auto page=weak.lock(); page && page->current()) page->editingRules.erase(formName); });
+            auto fields=stack(8); editorPanel.Content(fields); row.Children().Append(editorPanel);
+            auto edit = editText(p, fields, formName.c_str(), L"text", L"Edit writing rule", 500, true);
             edit.MinHeight(72); edit.MaxHeight(120);
             xaml::Automation::AutomationProperties::SetAutomationId(edit, L"writing-rule.text." + id);
-            auto save = action(p, row, L"Save rule", [id, formName](Page page) -> IAsyncAction {
+            auto reveal=menuItem(L"Edit rule",[weak, formName, editor=make_weak(editorPanel)] { if(auto page=weak.lock();page && page->current() && !page->busy) {page->editingRules.insert(formName);if(auto view=editor.get())view.IsExpanded(true);} });
+            xaml::Automation::AutomationProperties::SetAutomationId(reveal,L"writing-rule.edit."+id);management.Items().Append(reveal);
+            auto save = action(p, fields, L"Save rule", [id, formName](Page page) -> IAsyncAction {
                 auto submitted = clone(page->forms.at(formName).value);
                 auto value = trim(text(submitted, L"text"));
                 require(!value.empty() && value.size() <= 500, L"Enter a writing rule of at most 500 characters.");
@@ -608,15 +622,17 @@ void renderWritingRules(Page const& p) {
                 co_await commitWritingRule(page, L"POST", L"/workspace/brain/writing-rules/" + escaped(id), input, formName, submitted);
             });
             xaml::Automation::AutomationProperties::SetAutomationId(save, L"writing-rule.save." + id);
-            auto cancel = action(p, row, L"Discard rule edits", [formName](Page page) -> IAsyncAction {
+            auto cancel = action(p, fields, L"Discard rule edits", [formName](Page page) -> IAsyncAction {
                 page->forms.at(formName).accept(page->forms.at(formName).saved); page->dirty(); co_return;
             });
             xaml::Automation::AutomationProperties::SetAutomationId(cancel, L"writing-rule.discard." + id);
         }
-        action(p, row, L"Delete rule", [id, formName](Page page) -> IAsyncAction {
+        menuAction(p, management, L"Delete rule…", [id, formName](Page page) -> IAsyncAction {
             if (!(co_await page->shell->confirm(L"Delete this writing rule?", L"It will stop guiding drafts and replies for this mailbox. Nothing is sent.", L"Delete rule")) || !page->current()) co_return;
             co_await commitWritingRule(page, L"DELETE", L"/workspace/brain/writing-rules/" + escaped(id), Json(), formName);
         });
+        auto more=actionMenu(L"More",management,L"More actions for writing rule");
+        xaml::Automation::AutomationProperties::SetAutomationId(more,L"writing-rule.more."+id);row.Children().Append(more);
         panel.Children().Append(row);
     }
 }
@@ -837,12 +853,13 @@ void renderSkills(Page const& p) {
         auto schedule = object(skill, L"schedule");
         if (schedule.Size()) words(item, L"Schedule: " + text(schedule, L"cadence") + L" " + text(schedule, L"time") + L" " + text(schedule, L"timeZone") + (flag(schedule, L"enabled") ? L" · on" : L" · off"));
         words(item, flag(skill, L"autoExecute") ? L"When due, this skill joins the review queue. It does not send mail." : L"Manual only until you turn on review queueing.");
-        action(p, item, L"Edit skill", [skill](Page page) -> IAsyncAction {
+        MenuFlyout management;
+        menuAction(p, management, L"Edit skill", [skill](Page page) -> IAsyncAction {
             if (page->forms[L"skill"].dirty() && !(co_await page->shell->confirm(L"Discard current skill edits?", L"Load this saved skill into the editor below.", L"Edit saved skill"))) co_return;
             if (!page->current()) co_return;
-            page->forms[L"skill"].accept(skillFields(skill)); page->dirty(); page->tell(L"Saved skill loaded in the editor below.");
+            page->forms[L"skill"].accept(skillFields(skill)); if(auto editor=page->skillEditor.get())editor.IsExpanded(true); page->dirty(); page->tell(L"Saved skill loaded in the editor below.");
         });
-        action(p, item, L"Delete skill…", [id, name = text(skill, L"name")](Page page) -> IAsyncAction {
+        menuAction(p, management, L"Delete skill…", [id, name = text(skill, L"name")](Page page) -> IAsyncAction {
             if (!(co_await page->shell->confirm(L"Delete this skill?", page->owner + L"\n" + name + L"\nMessages are retained. Pending AI results using the old skill will be rejected.", L"Delete skill")) || !page->current()) co_return;
             auto result = co_await page->shell->service->request(L"/skills/" + escaped(id), page->owner, L"DELETE");
             if (!page->current()) co_return; acceptState(page, result);
@@ -855,12 +872,13 @@ void renderSkills(Page const& p) {
             auto result = co_await page->shell->service->request(L"/workspace/skill-reviews", page->owner, L"POST", input);
             if (!page->current()) co_return; acceptState(page, result); renderSkills(page); page->tell(L"Queued for review. Nothing was sent.");
         });
-        action(p, item, flag(skill, L"autoExecute") ? L"Stop queueing when due" : L"Queue when due", [id, enabled = flag(skill, L"autoExecute")](Page page) -> IAsyncAction {
+        menuAction(p, management, flag(skill, L"autoExecute") ? L"Stop queueing when due" : L"Queue when due", [id, enabled = flag(skill, L"autoExecute")](Page page) -> IAsyncAction {
             Json input; truth(input, L"enabled", !enabled); put(input, L"autoExecuteMode", L"review");
             auto result = co_await page->shell->service->request(L"/skills/" + escaped(id) + L"/auto-execute", page->owner, L"POST", input);
             if (!page->current()) co_return; acceptState(page, result); renderSkills(page);
             page->tell(enabled ? L"Review queueing is off. Saved mail was not changed." : L"When the schedule is due, a review is queued. Nothing is sent.");
         });
+        item.Children().Append(actionMenu(L"More",management,L"More actions for skill: "+text(skill,L"name")));
     }
     words(list, L"Skill library", 20);
     words(list, L"Install a prepared instruction set for this mailbox. Installing does not run it.");
@@ -901,7 +919,8 @@ void buildSkills(Page const& p, StackPanel const& body) {
     words(body, L"My email skills", 24);
     words(body, L"Save reusable instructions, then run one yourself or queue a review. A schedule never sends mail or updates Email Brain. Keep at most 20 skills.");
     editor(p, L"skill", skillFields()); auto list = stack(16); body.Children().Append(list); p->skillList = make_weak(list);
-    auto fields = group(body, L"Create / edit skill");
+    Expander skillEditor; skillEditor.Header(box_value(L"Create or edit a skill")); auto fields=stack(12);
+    skillEditor.Content(fields);body.Children().Append(skillEditor);p->skillEditor=make_weak(skillEditor);
     editText(p, fields, L"skill", L"name", L"Name", 80);
     editText(p, fields, L"skill", L"instructions", L"Instructions", 4000, true);
     editCheck(p, fields, L"skill", L"enabled", L"Enable this skill");
@@ -1362,17 +1381,18 @@ void renderCategories(Page const& p) {
         auto item = group(list, text(category, L"name") + (flag(category, L"enabled") ? L"" : L" — disabled"));
         auto priority = text(category, L"priority");
         words(item, (priority.empty() ? hstring(L"No priority") : priority) + L" · " + text(category, L"description"));
-        action(p, item, L"Edit", [category](Page page) -> IAsyncAction {
+        MenuFlyout management;
+        menuAction(p, management, L"Edit", [category](Page page) -> IAsyncAction {
             if (page->forms[L"category"].dirty() && !(co_await page->shell->confirm(L"Discard unsaved category edits?", L"Load this saved category into the editor below.", L"Edit saved category"))) co_return;
             if (!page->current()) co_return;
             Json value = blankCategory();
             put(value, L"id", text(category, L"id")); put(value, L"name", text(category, L"name"));
             put(value, L"description", text(category, L"description")); put(value, L"priority", text(category, L"priority"));
             truth(value, L"enabled", flag(category, L"enabled"));
-            page->forms[L"category"].accept(value); page->dirty(); page->tell(L"Category loaded. Save to keep changes.");
+            page->forms[L"category"].accept(value); if(auto editor=page->categoryEditor.get())editor.Visibility(xaml::Visibility::Visible); page->dirty(); page->tell(L"Category loaded. Save to keep changes.");
             co_return;
         });
-        action(p, item, L"Delete…", [id, name = text(category, L"name")](Page page) -> IAsyncAction {
+        menuAction(p, management, L"Delete…", [id, name = text(category, L"name")](Page page) -> IAsyncAction {
             auto editing = text(page->forms[L"category"].value, L"id") == id;
             auto detail = name + L"\nMail is not changed." + (editing && page->forms[L"category"].dirty() ? L" Unsaved edits to this category will be discarded." : L"");
             if (!(co_await page->shell->confirm(L"Delete this category?", detail, L"Delete category")) || !page->current()) co_return;
@@ -1381,32 +1401,45 @@ void renderCategories(Page const& p) {
             if (text(page->forms[L"category"].value, L"id") == id) page->forms[L"category"].accept(blankCategory());
             renderCategories(page); page->dirty(); page->tell(L"Category deleted.");
         });
-        if (index > 0) action(p, item, L"Move up", [ids, index](Page page) -> IAsyncAction {
+        if (index > 0) menuAction(p, management, L"Move up", [ids, index](Page page) -> IAsyncAction {
             auto order = ids; auto moved = order[index - 1]; order[index - 1] = order[index]; order[index] = moved;
             Json input; Array values; for (auto const& saved : order) values.Append(Value::CreateStringValue(saved)); input.Insert(L"ids", values);
             auto result = co_await page->shell->service->request(L"/workspace/categories/reorder", page->owner, L"POST", input);
             if (!page->current()) co_return; acceptState(page, result); renderCategories(page);
         });
-        if (index + 1 < ids.size()) action(p, item, L"Move down", [ids, index](Page page) -> IAsyncAction {
+        if (index + 1 < ids.size()) menuAction(p, management, L"Move down", [ids, index](Page page) -> IAsyncAction {
             auto order = ids; auto moved = order[index + 1]; order[index + 1] = order[index]; order[index] = moved;
             Json input; Array values; for (auto const& saved : order) values.Append(Value::CreateStringValue(saved)); input.Insert(L"ids", values);
             auto result = co_await page->shell->service->request(L"/workspace/categories/reorder", page->owner, L"POST", input);
             if (!page->current()) co_return; acceptState(page, result); renderCategories(page);
         });
+        auto more=actionMenu(L"More",management,L"More actions for category: "+text(category,L"name"));
+        xaml::Automation::AutomationProperties::SetAutomationId(more,L"category.more."+id);item.Children().Append(more);
     }
 }
 void buildCategories(Page const& p, StackPanel const& body) {
     words(body, L"Mail categories", 24);
     words(body, L"These labels order Today suggestions for this mailbox. Saving them does not call a model, send mail, or change Email Brain.");
     auto list = stack(12); body.Children().Append(list); p->categoryList = make_weak(list);
-    auto fields = group(body, L"Add or edit a category");
+    auto fields=stack(12);fields.Visibility(xaml::Visibility::Collapsed);p->categoryEditor=make_weak(fields);
+    xaml::Automation::AutomationProperties::SetAutomationId(fields,L"category.editor");
+    auto add=action(p,body,L"Add category",[](Page page) -> IAsyncAction {
+        if(page->forms[L"category"].dirty() && !(co_await page->shell->confirm(L"Discard unsaved category edits?",L"Start a new category without changing the saved category.",L"Add new category")))co_return;
+        if(!page->current())co_return;
+        page->forms[L"category"].accept(blankCategory());
+        if(auto editor=page->categoryEditor.get())editor.Visibility(xaml::Visibility::Visible);
+        page->dirty();page->tell(L"New category. Save to add it to this mailbox.");
+    });
+    xaml::Automation::AutomationProperties::SetAutomationId(add,L"category.add");
+    words(fields,L"Add or edit a category",20);body.Children().Append(fields);
     editor(p, L"category", blankCategory());
-    editText(p, fields, L"category", L"name", L"Name", 80);
+    auto name=editText(p, fields, L"category", L"name", L"Name", 80);
+    xaml::Automation::AutomationProperties::SetAutomationId(name,L"category.name");
     editText(p, fields, L"category", L"description", L"Description", 240);
     editChoice(p, fields, L"category", L"priority", L"Priority", {{L"", L"None"}, {L"P0", L"P0"}, {L"P1", L"P1"}, {L"P2", L"P2"}, {L"P3", L"P3"}, {L"P4", L"P4"}});
     editCheck(p, fields, L"category", L"enabled", L"Enabled");
     editText(p, fields, L"category", L"prompt", L"Draft a name without calling a model", 80);
-    action(p, fields, L"Save category", [](Page page) -> IAsyncAction {
+    auto save=action(p, fields, L"Save category", [](Page page) -> IAsyncAction {
         auto value = page->forms[L"category"].value;
         require(!trim(text(value, L"name")).empty(), L"Enter a category name.");
         Json input; put(input, L"name", trim(text(value, L"name"))); put(input, L"description", text(value, L"description")); put(input, L"priority", text(value, L"priority"));
@@ -1417,6 +1450,7 @@ void buildCategories(Page const& p, StackPanel const& body) {
         if (!page->current()) co_return; acceptState(page, result); page->forms[L"category"].accept(blankCategory());
         renderCategories(page); page->dirty(); page->tell(L"Category saved for this mailbox.");
     });
+    xaml::Automation::AutomationProperties::SetAutomationId(save,L"category.save");
     action(p, fields, L"Clear form", [](Page page) -> IAsyncAction {
         if (page->forms[L"category"].dirty() && !(co_await page->shell->confirm(L"Discard unsaved category edits?", L"Clear the category form without saving it.", L"Clear form"))) co_return;
         if (!page->current()) co_return;
@@ -1582,12 +1616,13 @@ IAsyncAction buildAgent(Page p, StackPanel const& body) {
     for (auto const& entry : array(listed, L"recents")) {
         auto row = entry.GetObject(); auto id = text(row, L"id");
         if (id == selected) found = true;
-        auto line = group(body, text(row, L"title", L"New conversation"));
-        words(line, text(row, L"status") + (text(row, L"pendingKind").empty() ? L"" : L" · " + text(row, L"pendingKind")));
-        action(p, line, L"Open", [id](Page page) -> IAsyncAction {
+        auto line=stack(6);body.Children().Append(line);auto status=text(row,L"status");
+        words(line,status==L"running" ? L"Working" : status==L"awaiting" ? L"Waiting for your review" : status==L"confirming" ? L"Applying your confirmation" : L"Ready");
+        action(p, line, text(row,L"title",L"New conversation"), [id](Page page) -> IAsyncAction {
             page->shell->agentConversation = id; auto shell = page->shell; page->stop(); co_await intelligencePage(shell, L"agent");
         });
-        action(p, line, L"Delete", [id](Page page) -> IAsyncAction {
+        MenuFlyout management;
+        menuAction(p, management, L"Delete conversation…", [id](Page page) -> IAsyncAction {
             auto revision = page->revision;
             if (!(co_await page->shell->confirm(L"Delete this conversation?", L"Saved mail stays in the mailbox. This only removes the local chat.", L"Delete"))) co_return;
             if (!page->current() || page->revision != revision) co_return;
@@ -1597,6 +1632,7 @@ IAsyncAction buildAgent(Page p, StackPanel const& body) {
             if (page->shell->agentConversation == id) page->shell->agentConversation = {};
             auto shell = page->shell; page->stop(); co_await intelligencePage(shell, L"agent");
         });
+        line.Children().Append(actionMenu(L"More",management,L"More actions for conversation: "+text(row,L"title",L"New conversation")));
     }
     if (!found) { p->shell->agentConversation = {}; selected = {}; }
     Json conversation;
@@ -1661,7 +1697,9 @@ IAsyncAction buildAgent(Page p, StackPanel const& body) {
     }
     if (state != L"running" && state != L"confirming") {
         auto name = field(L"Conversation title", text(conversation, L"title"), false);
-        name.MaxLength(80); body.Children().Append(name);
+        name.MaxLength(80);auto renameFields=stack(8);renameFields.Visibility(xaml::Visibility::Collapsed);renameFields.Children().Append(name);
+        MenuFlyout management;management.Items().Append(menuItem(L"Rename conversation…",[weak=std::weak_ptr<Intelligence>(p),fields=make_weak(renameFields)]{if(auto page=weak.lock();page && page->current() && !page->busy)if(auto panel=fields.get())panel.Visibility(xaml::Visibility::Visible);}));
+        body.Children().Append(actionMenu(L"More",management,L"Manage this conversation"));body.Children().Append(renameFields);
         auto rename = button(L"Rename", [weak = std::weak_ptr<Intelligence>(p), name] {
             if (auto page = weak.lock()) perform(page, [title = trim(name.Text())](Page page) -> IAsyncAction {
                 require(!title.empty(), L"Enter a title.");
@@ -1673,12 +1711,12 @@ IAsyncAction buildAgent(Page p, StackPanel const& body) {
                 auto shell = page->shell; page->stop(); co_await intelligencePage(shell, L"agent");
             });
         });
-        body.Children().Append(rename);
+        renameFields.Children().Append(rename);
     }
     if (state != L"awaiting" && state != L"running" && state != L"confirming") {
         auto compose = field(L"Message to Inbox Agent", {}, true);
         compose.MaxLength(4000); compose.MinHeight(96); body.Children().Append(compose);
-        auto send = button(L"Send", [weak = std::weak_ptr<Intelligence>(p), compose] {
+        auto send = button(L"Ask assistant", [weak = std::weak_ptr<Intelligence>(p), compose] {
             if (auto page = weak.lock()) perform(page, [message = trim(compose.Text())](Page page) -> IAsyncAction {
                 require(!message.empty(), L"Enter a message.");
                 require(!page->shell->agentConversation.empty(), L"Start or open a conversation first.");
@@ -1734,7 +1772,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
     words(root, agentShell ? L"Agent" : brainShell ? L"Brain" : L"AI Studio", 28);
     words(root, agentShell ? L"Inbox Agent, Today, and reusable skills. Sending still waits for your review."
         : brainShell ? L"Persona, writing rules, and mail categories for one mailbox."
-        : L"Advanced tools. Inbox Agent, skills, writing rules, and categories have moved to Agent and Brain.");
+        : L"Advanced AI tools and explicitly labeled local simulations. Choose a tool and review its scope before running it.");
     auto accountTabs = stack(7); accountTabs.Orientation(Orientation::Horizontal);
     std::vector<hstring> owners{L"all"};
     for (auto const& entry : array(shell->state, L"accounts")) owners.push_back(text(entry.GetObject(), L"id"));
@@ -1785,7 +1823,7 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
     ComboBox more; more.PlaceholderText(L"More");
     xaml::Automation::AutomationProperties::SetName(more, L"More AI Studio pages");
     for (auto const& [id, caption] : std::initializer_list<std::pair<wchar_t const*, wchar_t const*>>{
-        {L"brain", L"Writing style & notes — Moved to Brain"}, {L"agent", L"Inbox Agent — Moved to Agent"}, {L"reply-suggestions", L"Reply suggestions"}, {L"rules",L"Local Inbox Rules"}, {L"skills", L"Reusable skills — Moved to Agent"}, {L"categories", L"Mail categories — Moved to Brain"}, {L"simulations", L"Local simulations"}, {L"records", L"Simulation history"}}) {
+        {L"brain", L"Writing style & notes"}, {L"agent", L"Inbox Agent"}, {L"reply-suggestions", L"Reply suggestions"}, {L"rules",L"Local Inbox Rules"}, {L"skills", L"Reusable skills"}, {L"categories", L"Mail categories"}, {L"simulations", L"Local simulations"}, {L"records", L"Simulation history"}}) {
         ComboBoxItem item; item.Content(box_value(caption)); item.Tag(box_value(hstring(id))); more.Items().Append(item);
         if (kind == id) { known = true; more.SelectedItem(item); }
     }
@@ -1795,6 +1833,12 @@ IAsyncAction intelligencePage(std::shared_ptr<Shell> shell, hstring kind) {
     } }); tabs.Children().Append(more);
     }
     ScrollViewer tabScroll; tabScroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto); tabScroll.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled); tabScroll.Content(tabs); root.Children().Append(tabScroll);
+    xaml::Automation::AutomationProperties::SetAutomationId(tabScroll,L"intelligence.navigation");
+    auto updateTabs=[weak,control=make_weak(tabScroll),redundant=agentShell||brainShell] {if(auto page=weak.lock();page && page->current())if(auto view=control.get())view.Visibility(redundant && page->shell->navigation.IsPaneOpen() && page->shell->navigation.DisplayMode()==NavigationViewDisplayMode::Expanded ? xaml::Visibility::Collapsed : xaml::Visibility::Visible);};
+    updateTabs();
+    auto paneToken=shell->navigation.RegisterPropertyChangedCallback(NavigationView::IsPaneOpenProperty(),[updateTabs](auto const&,auto const&){updateTabs();});
+    auto displayToken=shell->navigation.DisplayModeChanged([updateTabs](auto const&,auto const&){updateTabs();});
+    root.Unloaded([weak,paneToken,displayToken](auto const&,auto const&){if(auto page=weak.lock()){page->shell->navigation.UnregisterPropertyChangedCallback(NavigationView::IsPaneOpenProperty(),paneToken);page->shell->navigation.DisplayModeChanged(displayToken);}});
     auto notice = label(L"Loading this account’s saved context…"); root.Children().Append(notice); p->notice = notice;
     xaml::Automation::AutomationProperties::SetAutomationId(notice, L"intelligence.notice");
     xaml::Automation::AutomationProperties::SetLiveSetting(notice, xaml::Automation::Peers::AutomationLiveSetting::Polite);

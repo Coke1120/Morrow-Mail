@@ -75,15 +75,15 @@ struct MailWorkspace: View {
                             }.padding(30)
                         } else if model.section == "today" {
                             VStack(spacing: 0) {
-                                ShellSectionBar(mode: "agent", current: model.section) { destination in
+                                if !sidebarVisible { ShellSectionBar(mode: "agent", current: model.section) { destination in
                                     guard model.canNavigate else { return }
                                     model.section = destination
-                                }.padding(.horizontal, 20).padding(.top, 12)
+                                }.padding(.horizontal, 20).padding(.top, 12) }
                                 TodayView()
                             }
                         } else if model.section == "agent" || model.section == "skills" || model.section == "brain" || model.section == "categories" || model.section == "studio" {
                             GeometryReader { area in
-                                StudioView(review: model.review).id(model.account)
+                                StudioView(review: model.review, showSectionNavigation: !sidebarVisible).id(model.account)
                                     .frame(width: area.size.width, height: area.size.height)
                             }
                         }
@@ -251,7 +251,6 @@ struct MailWorkspace: View {
                     }
                 } else {
                 Section("Workspace") {
-                    if sidebarShows("Today — Moved to Agent") { Label("Today — Moved to Agent", systemImage: "sun.max").tag("today").accessibilityIdentifier("workspace.today.moved") }
                     Label("Reply Suggestions", systemImage: "text.bubble").tag("reply-suggestions").accessibilityIdentifier("workspace.reply-suggestions")
                     Label("Out of Office", systemImage: "moon").tag("out-of-office").accessibilityIdentifier("workspace.out-of-office")
                     Label("Calendar", systemImage: "calendar").tag("calendar")
@@ -411,6 +410,7 @@ struct MailWorkspace: View {
             HStack { VStack(alignment: .leading, spacing: 3) { Text(model.mailSectionTitle).font(.headline); Text(model.combined ? "All accounts" : model.account).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }; Spacer(); Toggle(isOn: $model.unreadOnly) { Image(systemName: "line.3.horizontal.decrease.circle") }.toggleStyle(.button).controlSize(.small).help("Show unread only").accessibilityLabel("Show unread only").disabled(!model.searchResponse.isNull) }.padding(.horizontal, 14).padding(.vertical, 10)
             if model.section.hasPrefix("provider:") { Text("Labels and folders refresh automatically. Messages shown here are downloaded mail; import history to add older messages.").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.bottom, 8) }
             HStack(spacing: 12) {
+                HStack(spacing: 12) {
                 Menu {
                     Picker("Reading layout", selection: $readerLayout) {
                         Label("Reader on Right", systemImage: "rectangle.lefthalf.inset.filled").tag("right")
@@ -427,11 +427,15 @@ struct MailWorkspace: View {
                         Button { model.preference("sort", option.0) } label: { Label(option.1, systemImage: model.preferences["sort"].string == option.0 ? "checkmark" : "arrow.up.arrow.down") }
                     }
                 } label: { Label("Sort", systemImage: "arrow.up.arrow.down") }.fixedSize().accessibilityIdentifier("mail.sortMenu").disabled(!model.searchResponse.isNull)
+                }.menuStyle(.borderlessButton).controlSize(.small).disabled(model.busy)
                 Spacer(minLength: 0)
-                Button { model.trashMessages(model.selectedMailRows) } label: { Label("Move to Provider Trash", systemImage: "trash") }
-                    .disabled(!model.canNavigate || model.selectedMailRows.isEmpty || !model.selectedMailRows.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" })
-                    .help("Move selected mail to provider Trash · Undo within one minute (⌘Z)")
-            }.menuStyle(.borderlessButton).controlSize(.small).disabled(model.busy).padding(.horizontal, 14).padding(.bottom, 8)
+                if !model.selectedMailRows.isEmpty {
+                    // The menu bar does not publish this label as a button the fixture can press.
+                    ReviewActionButton(title: "Delete (\(model.selectedMailRows.count))", enabled: model.canNavigate && model.selectedMailRows.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" }, identifier: "mail.deleteSelection", bordered: false) { model.trashMessages(model.selectedMailRows) }
+                        .frame(width: 110, height: 28)
+                        .help("Move selected mail to provider Trash · Undo within one minute (⌘Z)")
+                }
+            }.padding(.horizontal, 14).padding(.bottom, 8)
             Divider()
             if filtered.isEmpty {
                 VStack {
@@ -451,9 +455,9 @@ struct MailWorkspace: View {
                                     .fontWeight(message["read"].bool ? .regular : .bold).lineLimit(1)
                                     .help(["sent", "drafts"].contains(message["folder"].string) ? message["to"].string : message["fromEmail"].string)
                                 if model.combined || !model.searchResponse.isNull {
-                                    Text(message["accountId"].string).font(.caption2).foregroundStyle(.secondary)
-                                        .lineLimit(1).truncationMode(.middle).frame(maxWidth: 160, alignment: .leading)
-                                        .help("Mailbox: " + message["accountId"].string).accessibilityLabel("Mailbox: " + message["accountId"].string)
+                                    RowLabel(text: message["accountId"].string, accessibility: "Mailbox: " + message["accountId"].string, secondary: true)
+                                        .frame(maxWidth: 160, alignment: .leading)
+                                        .help("Mailbox: " + message["accountId"].string)
                                 }
                             }
                             Spacer(minLength: 0)
@@ -463,7 +467,11 @@ struct MailWorkspace: View {
                                 .help(dateLabel(message["date"].string))
                         }
                         HStack(spacing: 6) {
-                            searchHighlighted(message["searchSubject"], fallback: message["subject"].nonempty ? message["subject"].string : "(No subject)").font(.system(size: 13)).fontWeight(message["read"].bool ? .regular : .bold).lineLimit(1)
+                            if message["searchSubject"].array.isEmpty {
+                                RowLabel(text: message["subject"].nonempty ? message["subject"].string : "(No subject)", bold: !message["read"].bool)
+                            } else {
+                                searchHighlighted(message["searchSubject"], fallback: message["subject"].nonempty ? message["subject"].string : "(No subject)").font(.system(size: 13)).fontWeight(message["read"].bool ? .regular : .bold).lineLimit(1)
+                            }
                             Spacer(minLength: 2)
                             if message["starred"].bool { Image(systemName: "star.fill").foregroundStyle(.orange).font(.caption) }
                             if message["pending"].bool { Image(systemName: "clock.fill").foregroundStyle(morrowGreen).font(.caption).accessibilityLabel("Pending") }
@@ -589,6 +597,48 @@ private struct MailFolderDrop: DropDelegate {
     }
 }
 
+// List Text is not an NSTextField or an accessibility text leaf.
+private struct RowLabel: NSViewRepresentable {
+    var text: String
+    var accessibility: String?
+    var bold = false
+    var secondary = false
+    func makeNSView(context: Context) -> NSTextField {
+        let field = RowLabelField(labelWithString: "")
+        field.maximumNumberOfLines = 1
+        field.lineBreakMode = .byTruncatingTail
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        apply(field)
+        return field
+    }
+    func updateNSView(_ field: NSTextField, context: Context) { apply(field) }
+    private func apply(_ field: NSTextField) {
+        if field.stringValue != text { field.stringValue = text }
+        field.font = NSFont.systemFont(ofSize: secondary ? 10 : 13, weight: bold ? .bold : .regular)
+        field.textColor = secondary ? .secondaryLabelColor : .labelColor
+        if let accessibility, field.accessibilityLabel() != accessibility { field.setAccessibilityLabel(accessibility) }
+    }
+}
+// NSHostingView is generic, so a bare cast cannot name the row's Content.
+private protocol RowHostingView {}
+extension NSHostingView: RowHostingView {}
+private final class RowLabelField: NSTextField {
+    // A nil hit stops on this field's wrapper, so the row gesture never sees the click.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard super.hitTest(point) != nil else { return nil }
+        var view = superview
+        var belowRow: NSView?
+        var host: NSView?
+        while let current = view {
+            if current is RowHostingView { host = current }
+            if current is NSTableRowView { return host ?? belowRow ?? current }
+            belowRow = current
+            view = current.superview
+        }
+        return nil
+    }
+}
+
 struct MessageReader: View {
     @EnvironmentObject var model: AppModel
     let message: JSON
@@ -609,28 +659,46 @@ struct MessageReader: View {
                     }
                 }
                 else {
-                    Button { Task { await model.openDraft(message: message, mode: "reply") } } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }.labelStyle(.iconOnly).help("Reply")
-                    Button { Task { await model.openDraft(message: message, mode: "replyAll") } } label: { Label("Reply All", systemImage: "arrowshape.turn.up.left.2") }.labelStyle(.iconOnly).help("Reply All")
-                    Button { Task { await model.openDraft(message: message, mode: "forward") } } label: { Label("Forward", systemImage: "arrowshape.turn.up.right") }.labelStyle(.iconOnly).help("Forward")
+                    Menu {
+                        Button("Reply") { Task { await model.openDraft(message: message, mode: "reply") } }
+                        Button("Reply All") { Task { await model.openDraft(message: message, mode: "replyAll") } }
+                        Button("Forward") { Task { await model.openDraft(message: message, mode: "forward") } }
+                    } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") } primaryAction: {
+                        Task { await model.openDraft(message: message, mode: "reply") }
+                    }
+                    .help("Reply; open the menu for Reply All or Forward")
+                    .accessibilityIdentifier("reader.replyMenu")
+                    .disabled(!model.canNavigate || model.preparingDraft)
                 }
                 Spacer()
-                if model.canOrganize(message) { Menu { MessageOrganizationActions(message: message) } label: { Label("Organize email", systemImage: "folder") }.labelStyle(.iconOnly).help("Move or label this email") }
-                Button { model.patch(message, .object(["starred": .bool(!message["starred"].bool)])) } label: { Image(systemName: message["starred"].bool ? "star.fill" : "star") }.help("Toggle star").accessibilityLabel("Toggle star")
-                Button { model.patch(message, .object(["pending": .bool(!message["pending"].bool)])) } label: { Image(systemName: message["pending"].bool ? "clock.fill" : "clock") }.help(message["pending"].bool ? "Clear Pending" : "Mark Pending locally").accessibilityLabel(message["pending"].bool ? "Clear Pending" : "Mark Pending")
-                if message["folder"].string != "drafts" {
-                    Button { model.patch(message, .object(["folder": .string(message["folder"].string == "inbox" ? "archive" : "inbox")])) } label: { Image(systemName: message["folder"].string == "inbox" ? "archivebox" : "tray") }.help(message["folder"].string == "inbox" ? "Archive locally; provider unchanged" : "Move to Inbox locally; provider unchanged").accessibilityLabel(message["folder"].string == "inbox" ? "Archive locally" : "Move to Inbox locally")
+                if model.canOrganize(message) {
+                    Menu {
+                        MessageOrganizationActions(message: message)
+                        Divider()
+                        Button("Move to provider Trash") { model.beginOrganize(message, preferredKind: "trash") }
+                            .disabled(!model.canNavigate || message["folder"].string == "trash")
+                    } label: { Label("Organize", systemImage: "folder") }
+                    .help("Move or label at your provider. Trash supports Undo for one minute (⌘Z).")
+                    .accessibilityIdentifier("reader.organizeMenu")
+                    .disabled(!model.canNavigate)
                 }
-                Button { model.beginOrganize(message, preferredKind: "trash") } label: { Image(systemName: "trash") }
-                    .help("Move to provider Trash · Undo within one minute (⌘Z)").accessibilityLabel("Move to Provider Trash")
-                    .disabled(!model.canOrganize(message) || !model.canNavigate || message["folder"].string == "trash")
-                Divider().frame(height: 14)
-                Button(action: onExpand) { Label(expanded ? "Restore Panes" : "Expand Reader", systemImage: expanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right") }.labelStyle(.iconOnly).help(expanded ? "Restore Panes" : "Expand Reader")
+                Menu {
+                    Button(message["starred"].bool ? "Remove star" : "Star") { model.patch(message, .object(["starred": .bool(!message["starred"].bool)])) }.disabled(!model.canNavigate)
+                    Button(message["pending"].bool ? "Clear Pending" : "Mark Pending locally") { model.patch(message, .object(["pending": .bool(!message["pending"].bool)])) }.disabled(!model.canNavigate)
+                    if message["folder"].string != "drafts" {
+                        Button(message["folder"].string == "inbox" ? "Archive locally" : "Move to Inbox locally") { model.patch(message, .object(["folder": .string(message["folder"].string == "inbox" ? "archive" : "inbox")])) }.disabled(!model.canNavigate)
+                    }
+                    Divider()
+                    Button(expanded ? "Restore Panes" : "Expand Reader", action: onExpand)
+                } label: { Label("More", systemImage: "ellipsis.circle") }
+                .help("Markers, local organization and reader layout")
+                .accessibilityIdentifier("reader.moreMenu")
             }.buttonStyle(.borderless).controlSize(.small).padding(.horizontal, 16).padding(.vertical, 10).disabled(model.busy)
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text(message["subject"].nonempty ? message["subject"].string : "(No subject)")
-                        .font(.system(size: 21, weight: .semibold)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    ReaderText(text: NSAttributedString(string: message["subject"].nonempty ? message["subject"].string : "(No subject)", attributes: [.font: NSFont.systemFont(ofSize: 21, weight: .semibold), .foregroundColor: NSColor.labelColor]))
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     if message["localFolderUndo"]["token"].nonempty {
                         HStack {
                             Text("Moved locally; the provider location was not changed.").font(.caption).foregroundStyle(.secondary)
@@ -657,7 +725,7 @@ struct MessageReader: View {
                     } label: {
                         HStack(spacing: 8) {
                             Text("Details")
-                            Text("To: " + message["to"].string).foregroundStyle(.secondary).lineLimit(1)
+                            RowLabel(text: "To: " + message["to"].string, secondary: true)
                         }.font(.caption)
                     }
                     if !message["aiSummary"].isNull {
@@ -681,14 +749,15 @@ struct MessageReader: View {
                     AttachmentReader(message: message).id(message.viewID)
                     FooterPreview(footer: message["footer"])
                     Divider()
-                    LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)], alignment: .leading, spacing: 8) {
+                    Menu {
                         ForEach(["summary", "reply", "history", "translate"], id: \.self) { action in
                             Button(action == "summary" ? "Summarize" : action == "reply" ? "Suggest Reply" : action == "history" ? "Suggest with History" : "Translate") {
                                 model.openAssistant(action == "history" ? "reply" : action, message: message, includeHistory: action == "history")
                             }.disabled(!model.canNavigate || model.messageDetail.viewID != message.viewID || !model.allowed(action == "history" ? "reply" : action) || !model.policy["folders"][message["folder"].string].bool || (action == "history" && !model.policy["content"]["sender"].bool))
                                 .help(action == "history" ? "Review downloaded same-sender mail in this account, within saved AI permissions. Sender access is required." : "Open AI assistance for this message")
                         }
-                    }.controlSize(.small).frame(maxWidth: 400, alignment: .leading)
+                    } label: { Label("AI help", systemImage: "sparkles") }
+                    .controlSize(.small).fixedSize().accessibilityIdentifier("reader.aiMenu")
                     Text("AI uses your saved permissions. Generated text is yours to review.").font(.caption).foregroundStyle(.secondary)
                 }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -997,6 +1066,7 @@ struct ComposeView: View {
     @State private var draft: Draft
     @State private var saved: JSON
     @State private var reviewed = false
+    @State private var showCopyRecipients = false
     @State private var aiPrompt = ""
     @State private var aiResult = ""
     @State private var aiSource = ""
@@ -1014,6 +1084,7 @@ struct ComposeView: View {
         self.initial = initial; _draft = State(initialValue: initial); _saved = State(initialValue: initial.payload)
         _sendAt = State(initialValue: initial.scheduleDate ?? Date().addingTimeInterval(3600))
         _scheduleEnabled = State(initialValue: initial.scheduleDate != nil)
+        _showCopyRecipients = State(initialValue: !initial.cc.isEmpty || !initial.bcc.isEmpty)
     }
     var dirty: Bool { scheduleEnabled || scheduleAttempt != nil || draft.payload != saved || (draft.savedID.isEmpty && (!draft.to.isEmpty || !draft.cc.isEmpty || !draft.bcc.isEmpty || !draft.subject.isEmpty || !draft.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)) }
     private var frozen: Bool { model.busy || draft.unconfirmed || draft.scheduleLocked || scheduleAttempt != nil }
@@ -1059,8 +1130,14 @@ struct ComposeView: View {
             }
             VStack(spacing: 12) {
                 recipientField("To", text: $draft.to, placeholder: "Email addresses, separated by commas")
-                recipientField("Cc", text: $draft.cc, placeholder: "Copy recipients")
-                recipientField("Bcc", text: $draft.bcc, placeholder: "Hidden recipients")
+                if showCopyRecipients || !draft.cc.isEmpty || !draft.bcc.isEmpty {
+                    recipientField("Cc", text: $draft.cc, placeholder: "Copy recipients")
+                    recipientField("Bcc", text: $draft.bcc, placeholder: "Hidden recipients")
+                } else {
+                    ReviewActionButton(title: "Add Cc or Bcc", identifier: "compose.addCopyRecipients", bordered: false) { showCopyRecipients = true }
+                        .fixedSize()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
                 Text("Use plain email addresses separated by commas or semicolons (100 recipients total). Bcc recipients are hidden from other recipients.").font(.caption).foregroundStyle(.secondary)
                 TextField("Subject", text: $draft.subject)
                 TextArea(title: "Message", text: $draft.body, height: 210)
@@ -1132,14 +1209,13 @@ struct ComposeView: View {
                 if model.busy { ProgressView().controlSize(.small) }
                 Button("Save Draft") { save() }.keyboardShortcut("s").disabled(frozen)
                 if (scheduleEnabled || defaultDelay > 0 || scheduleAttempt != nil) && !draft.unconfirmed {
-                    Button(scheduleAttempt == nil ? "Review & Send Later" : "Retry Same Schedule") {
+                    ReviewActionButton(title: scheduleAttempt == nil ? "Review & Send Later" : "Retry Same Schedule", enabled: !(model.busy || draft.scheduleLocked || [draft.to, draft.cc, draft.bcc].allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } || draft.body.isEmpty || (scheduleEnabled && scheduleAttempt == nil && sendAt <= Date())), keyEquivalent: "d", keyModifiers: [.command, .shift]) {
                         if !scheduleEnabled && scheduleAttempt == nil { sendAt = Date().addingTimeInterval(Double(defaultDelay) * 3600) }
                         confirmSchedule = true
-                    }
-                        .keyboardShortcut("d", modifiers: [.command, .shift]).buttonStyle(.borderedProminent).disabled(model.busy || draft.scheduleLocked || [draft.to, draft.cc, draft.bcc].allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } || draft.body.isEmpty || (scheduleEnabled && scheduleAttempt == nil && sendAt <= Date()))
+                    }.fixedSize()
                 } else {
-                  Button(draft.unconfirmed ? "Review Retry" : "Review & Send") { confirmSend = true }
-                    .keyboardShortcut("d", modifiers: [.command, .shift]).buttonStyle(.borderedProminent).disabled(model.busy || draft.scheduleLocked || [draft.to, draft.cc, draft.bcc].allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } || draft.body.isEmpty || (draft.unconfirmed && !reviewed))
+                  ReviewActionButton(title: draft.unconfirmed ? "Review Retry" : "Review & Send", enabled: !(model.busy || draft.scheduleLocked || [draft.to, draft.cc, draft.bcc].allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } || draft.body.isEmpty || (draft.unconfirmed && !reviewed)), keyEquivalent: "d", keyModifiers: [.command, .shift]) { confirmSend = true }
+                    .fixedSize()
                 }
             }.padding(20)
         }.frame(width: min(initial.replyToID.isEmpty ? 740 : 1180, (NSScreen.main?.visibleFrame.width ?? 1280) - 80), height: min(820, (NSScreen.main?.visibleFrame.height ?? 900) - 100))

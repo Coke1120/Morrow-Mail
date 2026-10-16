@@ -10,7 +10,8 @@ enum ReviewFixture {
     static let originals = ["Hi Alex,\n\nWe have attached the final artwork for Friday's launch. Could you confirm the visual direction by 3 pm today? We will export the production files after your approval.\n\nThanks,\nMaya", "Hi Alex,\n\nHere is the revised estimate for October. Please check the extra workshop materials and confirm whether the new total is approved.\n\nThanks,\nSam", "Hi Alex,\n\nWould you like to catch up for lunch next week? Tuesday or Wednesday would work for me. Let me know which is best.\n\nJordan", "Hi Alex,\n\nWe are waiting for the venue to confirm the workshop time.\n\nMaya", "The event has been cancelled. No attendance confirmation is needed.\n\nSam", "Here are our weekend photographs for your information.\n\nJordan"]
     static var stamp: String { utcDate(Date()) }
     static func message(_ index: Int, owner: String) -> JSON {
-        .object(["id":.string("mail-\(index)"), "viewId":.string(owner+"/mail-\(index)"), "accountId":.string(owner), "subject":.string(subjects[index % subjects.count]), "fromName":.string(["Maya Chen","Sam Lee","Jordan Park"][index % 3]), "fromEmail":.string(["maya","sam","jordan"][index % 3]+"@example.invalid"), "to":.string(owner), "cc":.string(""), "bcc":.string(""), "body":.string(originals[index % 6]), "date":.string(stamp), "folder":.string("inbox"), "read":.bool(false), "starred":.bool(false), "pending":.bool(false), "labels":.array([]), "attachments":.array([])])
+        // Page refresh rebuilds these rows after search clears, so the provider id has to live on the message itself.
+        .object(["id":.string("mail-\(index)"), "remoteId":.string("imap:1:\(index + 1)"), "viewId":.string(owner+"/mail-\(index)"), "accountId":.string(owner), "subject":.string(subjects[index % subjects.count]), "fromName":.string(["Maya Chen","Sam Lee","Jordan Park"][index % 3]), "fromEmail":.string(["maya","sam","jordan"][index % 3]+"@example.invalid"), "to":.string(owner), "cc":.string(""), "bcc":.string(""), "body":.string(originals[index % 6]), "date":.string(stamp), "folder":.string("inbox"), "read":.bool(false), "starred":.bool(false), "pending":.bool(false), "labels":.array([]), "attachments":.array([])])
     }
     static func proposal(_ index: Int, owner: String) -> JSON {
         .object(["id":.string("proposal-\(index)"), "proposalId":.string("proposal-\(index)"), "accountId":.string(owner), "messageId":.string("mail-\(index)"), "message":message(index,owner:owner), "reason":.string(reasons[index % 3]), "text":.string(replies[index % 3]), "questions":.array([.string(["Do you approve the final artwork?","Is the revised amount approved?","Which day suits you?"][index % 3])]), "evidence":.array([.object(["messageId":.string("mail-\(index)"),"field":.string("body"),"quote":.string(originals[index % 3])])]), "sourceMessages":.array([.object(["id":.string("mail-\(index)"),"accountId":.string(owner),"subject":.string(subjects[index % subjects.count]),"date":.string(stamp),"reference":.number(1)])]), "approvedStyleUsed":.bool(true)])
@@ -56,7 +57,7 @@ final class ReviewProtocol: URLProtocol {
             guard account.isEmpty || account == "all" || ReviewFixture.owners.contains(account) else { throw APIError("Unexpected fixture owner") }
             let body = try Self.body(request)
             Self.lock.lock(); defer { Self.lock.unlock() }
-            Self.traffic.append(["path":path,"method":request.httpMethod ?? "GET","account":account])
+            Self.traffic.append(["path":path,"method":request.httpMethod ?? "GET","account":account,"mode":body["mode"].string])
             var response: JSON = .null
             var status = 200
             switch path {
@@ -82,7 +83,10 @@ final class ReviewProtocol: URLProtocol {
             case "/api/drafts/prepare":
                 let i = Int(body["messageId"].string.split(separator:"-").last ?? "0") ?? 0
                 let m = ReviewFixture.message(i,owner:account)
-                response = .object(["draft":.object(["accountId":.string(account),"to":m["fromEmail"],"cc":.string(""),"bcc":.string(""),"subject":.string("Re: "+m["subject"].string),"body":body["body"],"replyToId":body["messageId"]])])
+                var draft: JSON = .object(["accountId":.string(account),"to":m["fromEmail"],"cc":.string(""),"bcc":.string(""),"subject":.string("Re: "+m["subject"].string),"body":.string(body["body"].string)])
+                if body["mode"].string == "forward" { draft["forwarding"] = .bool(true); draft["to"] = .string("") }
+                else { draft["replyToId"] = body["messageId"] }
+                response = .object(["draft":draft])
                 if Self.wrongDraftOwner { response["draft"]["accountId"] = .string(ReviewFixture.owners.first { $0 != account }!) }
             case "/api/account/select": Self.owner=body["accountId"].string; response=ReviewFixture.state(owner:Self.owner)
             case "/api/state": response=ReviewFixture.state(owner:Self.owner)

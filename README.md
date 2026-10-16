@@ -12,6 +12,8 @@
 
 Morrow is a local, single-user app: **SwiftUI on macOS**, **WinUI 3 on Windows**, and a shared **Rust service**. Desktop packages include their runtime; no Node, Electron or Rust installation is needed to use them.
 
+The current [contextual actions](docs/CONTEXTUAL_ACTIONS.md) group secondary reader and management commands into named menus, shows mail actions when a selection exists, and opens reply review directly on Today. Empty Cc/Bcc fields can be revealed when needed. Account ownership, source validation, send review and existing recovery behavior are retained. These actions were not included in the published v0.8.2 downloads. Each combined source requires its own native validation.
+
 The IMAP identity follow-up separates cached mail by server endpoint and login,
 so reconnecting the same email to another server cannot reuse old UIDs or local
 state. Proven legacy messages keep their IDs; unverified copies remain readable
@@ -20,30 +22,33 @@ workspace schema 2 is incompatible with the prior service. See
 [migration and recovery limits](docs/IMAP_SERVER_IDENTITY.md).
 This source change is not a release or live-account acceptance claim.
 
-The v0.8.2 source includes the merged Mail | Agent | Brain navigation shell and activity-recovery fixes from PRs #48–50. Cancellation remains scoped to its mailbox and work type, and delayed cancellation or settings responses cannot stop replacement work. Release preparation changes only the common version and documentation; summary-job diagnostics, IMAP/mailbox improvements and the separate Today follow-up are excluded. See [validation](VERIFICATION.md#v082-release-preparation--15-october-2026) and [release notes and known limits](docs/releases/v0.8.2.md). Publication requires fresh paired v0.8.2 tag checks and the existing signed-manifest publisher. macOS remains ad-hoc signed without Developer ID notarization, Windows unsigned, and live-account/manual accessibility acceptance incomplete.
+The 0.8.3 source combines saved summary diagnostics, IMAP server identity, bounded read sessions, selected-folder sync, IDLE hints, Downloads and move recovery with contextual native actions. It retains the Mail | Agent | Brain navigation and mailbox-scoped activity cancellation from v0.8.2. See the [0.8.3 release notes and upgrade limits](docs/releases/v0.8.3.md). Publication uses fresh paired tagged checks and the existing signed-manifest publisher; source changes and synthetic checks alone do not establish publication or live-account acceptance. macOS remains ad-hoc signed without Developer ID notarization, Windows unsigned, and manual accessibility acceptance incomplete. The [v0.8.2 notes](docs/releases/v0.8.2.md) remain historical evidence for that earlier download.
 
-[Published v0.8.1](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.8.1) corrected the v0.8.0 Gmail history authorization regression: the first history resource-API 401 stops the import for manual recovery while preserving its checkpoint and cached mail. Routine token-expiry refresh and other Gmail read/reconnect fixes remain. Writing rules, Today suggestions and categories, skill review queues and the local Inbox Agent with explicit action/send review are retained. Today still keeps 200 completion markers and exposes the latest 20 per mailbox; old suggestions can reappear after eviction, and unread-task priority ordering remains limited. See the [v0.8.1 notes](docs/releases/v0.8.1.md). Older tags and assets remain unchanged.
+[Published v0.8.1](https://github.com/Coke1120/Morrow-Mail/releases/tag/v0.8.1) corrected the v0.8.0 Gmail history authorization regression: the first history resource-API 401 stops the import for manual recovery while preserving its checkpoint and cached mail. Routine token-expiry refresh and other Gmail read/reconnect fixes remain. Writing rules, Today suggestions and categories, skill review queues and the local Inbox Agent with explicit action/send review are retained. Today still keeps 200 completion markers and exposes the latest 20 per mailbox; old suggestions can reappear after eviction, and unread-task priority ordering remains limited. Its paired tagged checks, publisher and public-asset verification completed on 14 October; see [publication evidence](docs/releases/v0.8.1-verification.md) and the [v0.8.1 notes](docs/releases/v0.8.1.md). Older tags and assets remain unchanged.
 
 The v0.8.2 source adds a Mail | Agent | Brain navigation shell on macOS and Windows. Cold start stays on the Mail three-pane. Agent reuses Inbox Agent, Today, and Skills; Brain reuses persona, writing rules, and categories. AI Studio is an advanced footer and Settings entry, and its More menu keeps one-release Moved to Agent / Moved to Brain hints. Review-before-send is unchanged; publication follows the paired tag gates above.
 
-The [IMAP read-session candidate](docs/IMAP_READ_SESSIONS.md) reuses one owned
+The [IMAP read sessions](docs/IMAP_READ_SESSIONS.md) reuses one owned
 connection for change discovery and cached-mail flag reconciliation, with
 connection checks and bounded deadlines. It closes the socket after the round
-and discards failed or cancelled reads. IDLE remains a separate implementation
-unit; persistent connection pooling is not added here.
+and discards failed or cancelled reads. [IDLE notifications](docs/IMAP_IDLE_NOTIFICATIONS.md)
+have a separate bounded lifecycle; read-session reuse adds no persistent pool.
 
-The [IMAP move-recovery candidate](docs/IMAP_MOVE_RECOVERY.md) adds a durable,
+The [IMAP move recovery](docs/IMAP_MOVE_RECOVERY.md) adds a durable,
 explicitly reviewed fallback for servers with UIDPLUS but no MOVE. It records
 each COPY/delete/UID EXPUNGE step before sending it and never replays uncertain
 work. Interrupted moves may leave two copies; native recovery can check the exact
 recorded copies, finish a reviewed removal, apply an already confirmed result, or
 record that the user handled it in the provider. Opening recovery is local-only.
-This separate draft source is not part of v0.8.2 or live-account acceptance.
+This feature was not included in v0.8.2. Synthetic checks do not establish
+live-account acceptance.
 
 The download-controls follow-up adds account-owned downloaded-content coverage,
 logical storage totals and a 30-record repair list to both native clients. It
-reuses reviewed history controls and explicit single-message downloads. Local
-archive/Trash changes gain a restart-safe last-move undo while their location
+reuses reviewed history controls and explicit single-message downloads. The
+repair follow-up refreshes the current reader and shared mailbox metadata from
+local records on both platforms, preserving the selected owner, page and search
+query without another mark-read action. Local archive/Trash changes gain a restart-safe last-move undo while their location
 and connection remain unchanged. Provider Trash keeps its separate one-minute
 undo. No cache deletion, quota or global offline mode is introduced. See
 [controls and remaining limits](docs/DOWNLOAD_CONTROLS.md).
@@ -86,7 +91,9 @@ Current source adds explicit [selected custom IMAP folder sync](docs/SELECTED_IM
 
 The [Thunderbird-informed IMAP follow-up](docs/THUNDERBIRD_IMAP_SYNC.md) discovers changed cached UIDs in bounded MODSEQ windows, prioritizes their flags within the existing 50-message background budget, and commits pending work with message updates. Unchanged MODSEQ reads use the provider snapshot, preserving local-only stars; missing snapshots reread flags. Legacy proof migration, capability fallback and UIDVALIDITY resets retain cached content. 0.7.8 includes this follow-up and the later reconcile-stall repairs. The synthetic comparison does not establish live-account or native UI acceptance; see the [0.7.8 release notes](docs/releases/v0.7.8.md).
 
-[Current-page synchronization](docs/SYNC_PRIORITY_AND_INCREMENTAL.md) in the 0.7.3 source prioritizes the selected message and visible page while retaining older-cache checks. Recent IMAP/Outlook pages reuse proven immutable cached bodies; drafts and uncertain content still fetch normally. Sync preserves reviewed sent payloads and owned downloaded attachments. The 0.7.4 follow-up implements bounded incremental polling. A separate [IMAP notification candidate](docs/IMAP_IDLE_NOTIFICATIONS.md) rotates eligible Inbox and selected custom folders under the existing automatic-sync opt-in, with at most four accounts and one folder per account watched at once. Coalesced hints use the existing bounded sync path; selected folders need a committed UIDVALIDITY baseline, fresh catalog and current recovery/backoff eligibility. The candidate passed its Linux synthetic Rust checks; native SDK and live-provider acceptance remain pending. It is excluded from the separate v0.8.2 release. Publication requires fresh paired tagged checks; see the [0.7.3 release notes](docs/releases/v0.7.3.md).
+The opt-in [controlled mailbox acceptance harness](docs/MAILBOX_ACCEPTANCE.md) separates empty-cache IMAP downloads, service resource measurements and actual native event/layout timing. It supports explicit 1k/10k/50k protocol runs and isolated macOS/Windows native fixtures; missing platform measurements or caller-approved limits keeps the aggregate incomplete. Existing seeded benchmarks do not prove full download completeness or UI performance.
+
+[Current-page synchronization](docs/SYNC_PRIORITY_AND_INCREMENTAL.md) in the 0.7.3 source prioritizes the selected message and visible page while retaining older-cache checks. Recent IMAP/Outlook pages reuse proven immutable cached bodies; drafts and uncertain content still fetch normally. Sync preserves reviewed sent payloads and owned downloaded attachments. The 0.7.4 follow-up implements bounded incremental polling. Current [IMAP notifications](docs/IMAP_IDLE_NOTIFICATIONS.md) rotate eligible Inbox and selected custom folders under the existing automatic-sync opt-in, with at most four accounts and one folder per account watched at once. Coalesced hints use the existing bounded sync path; selected folders need a committed UIDVALIDITY baseline, fresh catalog and current recovery/backoff eligibility. The original Linux synthetic results and subsequent source-specific native checks are recorded separately; live-provider acceptance remains incomplete. This feature was not included in v0.8.2. Publication requires fresh paired tagged checks; see the [0.7.3 release notes](docs/releases/v0.7.3.md).
 
 ## Download
 

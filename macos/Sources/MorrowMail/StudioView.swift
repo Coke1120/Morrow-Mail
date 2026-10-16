@@ -4,6 +4,7 @@ import AppKit
 struct StudioView: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var review: ReviewWorkspaceState
+    var showSectionNavigation = true
     private var tab: String {
         switch model.section {
         case "agent": return "agent"
@@ -28,7 +29,7 @@ struct StudioView: View {
         switch model.section {
         case "agent", "skills": return "Inbox Agent, Today, and reusable skills. Sending still waits for your review."
         case "brain", "categories": return "Persona, writing rules, and mail categories for one mailbox."
-        default: return "Advanced tools. Inbox Agent, skills, writing rules, and categories have moved to Agent and Brain."
+        default: return "Advanced assistance, local rules and simulations for your mailbox."
         }
     }
     @State private var action = "ask"
@@ -133,19 +134,15 @@ struct StudioView: View {
                 owner == review.scope || !studioDirty || model.confirmDiscard("Discard unsaved Studio changes?")
             })
             if model.section == "agent" || model.section == "skills" {
-                ShellSectionBar(mode: "agent", current: model.section) { navigate($0) }
+                if showSectionNavigation { ShellSectionBar(mode: "agent", current: model.section) { navigate($0) } }
             } else if model.section == "brain" || model.section == "categories" {
-                ShellSectionBar(mode: "brain", current: model.section) { navigate($0) }
+                if showSectionNavigation { ShellSectionBar(mode: "brain", current: model.section) { navigate($0) } }
             } else {
             HStack {
                 Button("Assistant") { navigate("tools") }.disabled(tab == "tools")
                 Spacer()
                 Menu("More") {
-                    Button("Writing style & notes — Moved to Brain") { navigate("brain") }
-                    Button("Inbox Agent — Moved to Agent") { navigate("agent") }
                     Button("Local Inbox Rules") { navigate("rules") }
-                    Button("Reusable skills — Moved to Agent") { navigate("skills") }
-                    Button("Mail categories — Moved to Brain") { navigate("categories") }
                     Button("Local Simulations") { navigate("simulations") }
                     Button("Simulation History") { navigate("activity") }
                 }.fixedSize().accessibilityLabel("More AI Studio pages")
@@ -438,7 +435,7 @@ struct StudioView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(category["name"].string + (category["enabled"].bool ? "" : " — disabled")).font(.headline)
                             Text((category["priority"].nonempty ? category["priority"].string : "No priority") + " · " + category["description"].string).foregroundStyle(.secondary)
-                            HStack {
+                            Menu("Category actions") {
                                 Button("Edit") {
                                     guard confirmCategoryDiscard() else { return }
                                     loadCategoryEditor(category)
@@ -457,7 +454,7 @@ struct StudioView: View {
                                 }
                                 Button("Move Up") { reorderCategories(index, by: -1) }.disabled(index == 0)
                                 Button("Move Down") { reorderCategories(index, by: 1) }.disabled(index + 1 == workspace["categories"].array.count)
-                            }
+                            }.fixedSize().accessibilityLabel("Actions for category " + category["name"].string)
                         }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
@@ -562,36 +559,38 @@ struct StudioView: View {
                                     model.pendingSkillID = skill.id
                                     navigate("tools")
                                 }.disabled(!skill["enabled"].bool)
-                                Button("Edit") { skillEditor = SkillEdit(value: skill) }
-                                Button("Queue Review") {
-                                    guard model.confirm("Queue “\(skill["name"].string)” for review?", detail: "This adds a review item. It does not send mail or update Email Brain.") else { return }
-                                    let owner = scope, id = skill.id
-                                    guard !operationBusy else { return }
-                                    model.perform {
-                                        let next = try await model.request("/workspace/skill-reviews", method: "POST", body: .object(["skillId": .string(id), "confirm": .bool(true)]), mailbox: owner)
-                                        guard review.scope == owner else { return }
-                                        store(next, owner: owner); model.notice = "Queued for review. Nothing was sent."
+                                Menu("Skill actions") {
+                                    Button("Edit") { skillEditor = SkillEdit(value: skill) }
+                                    Button("Queue Review") {
+                                        guard model.confirm("Queue “\(skill["name"].string)” for review?", detail: "This adds a review item. It does not send mail or update Email Brain.") else { return }
+                                        let owner = scope, id = skill.id
+                                        guard !operationBusy else { return }
+                                        model.perform {
+                                            let next = try await model.request("/workspace/skill-reviews", method: "POST", body: .object(["skillId": .string(id), "confirm": .bool(true)]), mailbox: owner)
+                                            guard review.scope == owner else { return }
+                                            store(next, owner: owner); model.notice = "Queued for review. Nothing was sent."
+                                        }
+                                    }.disabled(!skill["enabled"].bool)
+                                    Button(skill["autoExecute"].bool ? "Stop Queueing When Due" : "Queue When Due") {
+                                        let owner = scope, id = skill.id, enabled = !skill["autoExecute"].bool
+                                        guard !operationBusy else { return }
+                                        model.perform {
+                                            let next = try await model.request("/skills/" + encodedPath(id) + "/auto-execute", method: "POST", body: .object(["enabled": .bool(enabled), "autoExecuteMode": .string("review")]), mailbox: owner)
+                                            guard review.scope == owner else { return }
+                                            store(next, owner: owner)
+                                        }
                                     }
-                                }.disabled(!skill["enabled"].bool)
-                                Button(skill["autoExecute"].bool ? "Stop Queueing When Due" : "Queue When Due") {
-                                    let owner = scope, id = skill.id, enabled = !skill["autoExecute"].bool
-                                    guard !operationBusy else { return }
-                                    model.perform {
-                                        let next = try await model.request("/skills/" + encodedPath(id) + "/auto-execute", method: "POST", body: .object(["enabled": .bool(enabled), "autoExecuteMode": .string("review")]), mailbox: owner)
-                                        guard review.scope == owner else { return }
-                                        store(next, owner: owner)
+                                    Button("Delete") {
+                                        guard model.confirm("Delete “\(skill["name"].string)” ?", detail: "This removes the saved instructions.") else { return }
+                                        let owner = scope, id = skill.id
+                                        guard !operationBusy else { return }
+                                        model.perform {
+                                            let next = try await model.request("/skills/" + encodedPath(id), method: "DELETE", body: .object([:]), mailbox: owner)
+                                            guard review.scope == owner else { return }
+                                            store(next, owner: owner)
+                                        }
                                     }
-                                }
-                                Button("Delete") {
-                                    guard model.confirm("Delete “\(skill["name"].string)” ?", detail: "This removes the saved instructions.") else { return }
-                                    let owner = scope, id = skill.id
-                                    guard !operationBusy else { return }
-                                    model.perform {
-                                        let next = try await model.request("/skills/" + encodedPath(id), method: "DELETE", body: .object([:]), mailbox: owner)
-                                        guard review.scope == owner else { return }
-                                        store(next, owner: owner)
-                                    }
-                                }
+                                }.fixedSize().accessibilityLabel("Actions for skill " + skill["name"].string)
                             }
                         }.padding(12).frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -913,13 +912,15 @@ struct StudioView: View {
                                     guard enabled != rule["enabled"].bool else { return }
                                     changeWritingRule("POST", "/workspace/brain/writing-rules/" + encodedPath(rule.id), .object(["enabled": .bool(enabled)]))
                                 })).toggleStyle(.checkbox)
-                                if rule["source"].string != "learned" && writingRuleEdits.rows[rule.id] == nil {
-                                    Button("Edit") { writingRuleEdits.begin(rule.id, savedText: rule["text"].string) }
-                                }
-                                Button("Delete", role: .destructive) {
-                                    guard model.confirm("Delete this writing rule?", detail: "It will stop guiding drafts and replies for this mailbox. Nothing is sent.") else { return }
-                                    changeWritingRule("DELETE", "/workspace/brain/writing-rules/" + encodedPath(rule.id), .object([:]), deletedRule: rule.id)
-                                }
+                                Menu("Rule actions") {
+                                    if rule["source"].string != "learned" && writingRuleEdits.rows[rule.id] == nil {
+                                        Button("Edit") { writingRuleEdits.begin(rule.id, savedText: rule["text"].string) }
+                                    }
+                                    Button("Delete", role: .destructive) {
+                                        guard model.confirm("Delete this writing rule?", detail: "It will stop guiding drafts and replies for this mailbox. Nothing is sent.") else { return }
+                                        changeWritingRule("DELETE", "/workspace/brain/writing-rules/" + encodedPath(rule.id), .object([:]), deletedRule: rule.id)
+                                    }
+                                }.fixedSize()
                             }
                         }.padding(8).frame(maxWidth: .infinity, alignment: .leading)
                         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))

@@ -1,5 +1,390 @@
 # Verification — 15 October 2026
 
+## PR #58 reply More local lookup — 16 October 2026
+
+Windows run `38877967473` on `b95bec3` failed “The current reply More action was
+blocked or did not retain the fictional draft after its local lookup.” The log
+did not record which clause failed. `MenuFlyoutItem::Invoke` raises Click and
+only then closes the flyout. That Click started the reply refresh, whose write
+guard disables navigation before `Close`. The refresh now waits until that
+Click returns. A missing suggestion still leaves the fictional draft unchanged
+and does not prepare or send. A failed check appends guard, close, and draft
+flags. This VM cannot run WinUI. `reader-ownership-preflight` is unchanged.
+
+## PR #58 AppKit run loop, disabled menu items, and list text — 15 October 2026
+
+Runs `38765785512`, `38765785713` and `38765785507` on head `1e65f35` failed
+three checks. The macOS review fixture printed `Menu tracking begin` and
+`Menu tracking end` for `reader.replyMenu`, then exited 0 with no completion
+receipt and no assertion error. The 1,000-row measurement had 50 loaded visible
+rows and no accepted subject or owner text. Both executables created
+`NSApplication` but never called `NSApp.run()`, so menu tracking stopped the
+async-main run loop.
+
+`825c8c4` starts those checks from `applicationDidFinishLaunching` inside
+`NSApp.run()`. Run `38791296596` then reached `Menu tracking complete` and
+failed later: `Suggest with History` was `enabled=false` with no action, and
+the matcher required an action. SwiftUI `.disabled` clears that action. The
+disabled match now accepts a visible titled item with `isEnabled == false`.
+Enabled commands still require an action. The five-second deadline and receipt
+matching are unchanged.
+
+Run `38791296552` still had no text leaves in the list cell (`nodes=7`,
+`nativeEdges=6`, `axEdges=0`). Plain list subjects and combined mailbox captions
+are now non-editable `NSTextField`s that do not take clicks. Search-hit
+subjects stay SwiftUI text. The ten-second predicate is unchanged. Head
+`2026882` did not compile: `accessibilityLabel` is a method on this AppKit
+surface. The label now uses `accessibilityLabel()` and `setAccessibilityLabel`,
+the same calls as the AppKit checks.
+
+The Windows review phase on `2026882` still failed with “The current reply More
+action was blocked or did not retain the fictional draft after its local
+lookup,” after the loaded and XamlRoot checks were already gone. The open item
+keeps page, generation, selection, scope, owner, detail and the current reply.
+It no longer requires a weak anchor or a full JSON snapshot; a per-editor token
+still rejects a replaced More button, and proposal identity is the id and text.
+Unchanged body text does not rewrite the draft, and the editor is re-enabled
+before the write guard clears. A missing suggestion still keeps the fictional
+draft and does not prepare or send. Which clause failed was not logged, and
+this was not executed on WinUI.
+
+No AppKit or WinUI run was available here. Fresh exact-source primary CI,
+complete native menu/event/measurement execution, and the matching-source
+1k/10k/50k matrix remain required. WinUI event/layout evidence was already
+green and this change does not touch that measurement.
+
+## PR #58 row selection and Today review control — 16 October 2026
+
+AppKit run `38844093144` on `a0638ddd` mounted the 1,000-row page and both
+paging actions, then failed `Native row selection did not load its owned reader.`
+The posted click lands on the list subject field. That field returned no hit,
+so the click stopped on its wrapper and the row gesture never saw it. A hit
+inside a list field now goes to that row's hosting view. A field outside the
+list still passes the click through. The same display check only accepts native text leaves;
+list SwiftUI text already failed that check. The reader subject, plain body,
+and collapsed `To:` line are now those leaves. Plain-text links still open
+through the existing confirmation. The ten-second predicate is unchanged.
+
+Review run `38844093134` tracked every reader menu, then failed
+`Mounted enabled control missing: Review replies (3)`. The Today button's
+title was not on the button element that press inspects. The button now has
+that exact accessibility label. The five-second settle and the label text are
+unchanged.
+
+This VM has no Swift or AppKit run. These two checks stay unproven until CI
+on this head. WinUI measurement was already green and was not changed.
+
+`cf79a0e` then failed to compile: a bare `NSHostingView` cast cannot infer
+`Content`. The same hit test now recognizes a marker conformance on
+`NSHostingView` and still returns that row hosting view. No Swift run here,
+so this compile fix is also unproven until CI.
+
+Run `38854453486` on `efb9b3e` still failed
+`Mounted enabled control missing: Review replies (3)` after the accessibility
+label was added. That label never became the button element `control()`
+presses. The Today, send-review, and Review & Send actions are now accent
+`NSButton`s whose title is that string. The Today fixture also pins the
+hosting view to the window size so a GeometryReader does not collapse the
+header outside the window. This VM still has no Swift or AppKit run.
+
+Run `38858445956` on `c2192de` failed the same check. Run `38863778088` found
+an enabled `Review replies (3)` and failed its press; the button now performs
+that click. Run `38864512045` pressed Review replies, then missed
+`personal@fixture.invalid, not selected`. Run `38865608800` on `a2eab49` still missed it: the probe listed no
+`review.account` node, so SwiftUI accessibility labels never enter this
+hosting view's AX tree. Run `38867290790` on `db57869` pressed the scope tab
+(the label was on an `NSButton`) and then missed `Back to Today`, which was
+still a SwiftUI button. Back, Skip, update, refresh, and Add Cc now use
+that mounted button. Delete is the same kind of button beside the list
+menus. Run `38872162441` found it disabled: search clears its response on
+appear, and the cached rows had no provider id. Stamping only those cached
+rows was not enough: run `38875613246` still showed `Delete (2)` mounted and
+disabled after `/mail/page` replaced the list with fresh fixture messages.
+Those messages now carry the same `imap:` id. A miss prints the mounted buttons. The Skip seam extracts the mounted handler; the pinned
+baseline still reads the old SwiftUI button. No AppKit run was available here.
+
+## PR #58 macOS review fixture completion — 15 October 2026
+
+Focused run `38760958694`, job `116511781887`, reported success for head
+`baebe119`. Its actual checkout was synthetic merge `ee446c4` with prior PR52
+identity base `6cc684d`; canonical main was `692bb8d`. The tested source tree
+matched the frozen head. SDK compilation and the three positive/five negative
+legacy dispatch controls passed, along with the inherited lifecycle, selector,
+snapshot, owner and mounting controls. The full log SHA-256 is
+`467ff68fad3104b18a223b7dbfd707fe311b4d59dc5c1c296b6adbd7a17ccd0d`.
+
+The production log stops after mounting controls, about 0.124 seconds before job
+cleanup. It contains no Reader, Today, composer or final workspace completion
+receipt and no assertion error. The baseline process printed its own final
+workspace line earlier. The driver accepted only a zero process exit status,
+so that workflow success does **not** establish completion of the native suite.
+The cause of the missing native completion remains unproved.
+
+Each driver launch now supplies a fresh, noncredential nonce and requires
+exactly one matching baseline/production final receipt. The fixture emits it
+only after all assertions and the existing final workspace line. Production
+also requires a completion receipt for each of the four real Reader menus
+before its final receipt. Those menu receipts follow the existing actual
+tracking begin/end, current-owner and command-inspection gates. Fixed, flushed
+before/after-action and begin/end observations help locate a future incomplete
+execution. The action, ownership rules, assertions and five-second menu limit
+remain unchanged. Production clears any inherited baseline override.
+
+The driver forwards complete combined native stdout/stderr on success, failure
+and timeout before rejecting missing/mismatched receipts or a nonzero exit.
+The compiler's 180-second and native process's 45-second limits remain. Its
+explicit `--completion-receipt-controls` mode uses real Python subprocesses;
+two complete cases and ten missing/wrong/duplicate/truncated/early/incomplete,
+nonzero and timeout cases passed on Linux, retaining their child output. These
+controls establish only the driver contract. This candidate has not compiled
+or run with AppKit locally and requires fresh matching-source macOS CI. The
+original modern-Bool failure and the incomplete baebe119 log remain evidence;
+no native event-loop cause or runtime repair is claimed.
+
+## PR #58 macOS visible-text failure trace — 15 October 2026
+
+Combined measurement run `38760958928` compiled source `baebe119` and reached
+the 1,000-row dataset, then failed `Initial owned native page did not mount.`
+The selected native table had 50 rows, width 340, five visible rows and a visible
+row0 peer, with 50 loaded model rows and `mailLoading=false`. Neither exact
+subject nor owner was observed by the accepted text collector. The raw AX scan
+visited only its root; it does not traverse native subviews and cannot identify
+the cause. The workflow retained only the first 1,024 characters of the earlier
+diagnostic line. Full original job logs and their source receipts are preserved.
+
+The fixture now emits two fixed failure-only JSON lines, each at most 1,023 bytes
+including its prefix and newline (at most 2,046 bytes combined). The first keeps
+loading, transport, table and accepted/raw text observations in fixed tuples.
+The second counts the actual collector's root, budget/dedup, native window,
+descendant, visibility/clip, cell-owner and AX hidden/clip guard exits, and reached
+AX-child/native-subview edges. Its default nil callback repeats no native getter;
+the original guard evaluation order, values and returns are preserved.
+
+At most two existing column row0 views and the existing whole row view are
+compared diagnostically using `makeIfNecessary: false`, the same owned native
+window/table boundary, and bounded native scans (256 nodes, depth 16, child prefix
+256). Only fixed counts, booleans and allowlisted roles are emitted. Exact subject
+and owner flags still use the original visible-text collector; these comparisons
+never satisfy acceptance. No container-label, role, frame, identity, ownership or
+deadline gate is relaxed. All existing synthetic controls and measurement inputs
+remain unchanged. Source erasure checks and conservative encoded budget checks
+are local evidence only; no Swift SDK build or native execution was available.
+The initial-page cause remains unknown and fresh matching-source macOS CI is
+required. The prior passing 13 runner tests were not rerun for this fixture-only
+diagnostic change.
+
+## PR #58 macOS initial-page diagnostic — 15 October 2026
+
+Measurement run `38756565340`, macOS job `116496439274`, compiled exact source
+`80093a98590027e6e9a149c772091d2c99be7120` and failed with `Initial owned native
+page did not mount.` Its before/after source digest was
+`d2aeec2d2d242f1f440c90ac03ff6bb4a008a73e324b45bf6e5e08588c3a3a77`.
+The earlier synthetic oracle, including actual offscreen placement, rejection
+and restoration, returned before that dataset failure. The repeated error
+does not identify which dataset size failed or establish any completed sample.
+
+Source review of the actual combined base `93bf058` found no confirmed cause.
+The production list supplies subject Text and a combined-view mailbox label;
+the fixture still requires actual visible exact subject and owner evidence.
+The unchanged ten-second initial predicate now emits one failure-only diagnostic
+before rethrowing the same error. Its fixed fields cover allowlisted size,
+loading/transport counts, bounded table/row0 state, exact versus contained
+subject/owner observations and allowlisted roles/ownership. The entire line is
+capped at 2048 bytes and emits no UI/mail text, identifiers, paths or class names.
+Containment flags are diagnostic only and cannot satisfy an identity gate.
+
+The v2 diagnostic also inspects only the first reported table's owned row0 AX
+subtree, bounded to 256 nodes, depth 16 and 256 children per node. Raw cell-owner
+rejection counters and raw text-leaf comparison flags can expose candidates
+rejected before the accepted-text observer. They never feed acceptance. The
+second table retains a rowcount/width qualification summary. The complete v1
+patch, freeze and report were preserved separately before this improvement.
+
+The prior 13 passing Python runner/evidence contract tests were retained without
+rerunning unchanged tests. Linux source checks include `git diff --check`.
+Source comparison confirms that removing the diagnostic and its catch/rethrow
+wrapper restores the original Swift file exactly. No production code, synthetic
+oracle, latency sampling gate, identity predicate or deadline changed. This
+diagnostic has not run on a macOS SDK locally; fresh matching-source macOS CI
+is required. The source800 failure remains unresolved.
+
+## Windows download repair and guarded page cleanup — 15 October 2026
+
+The Downloads repair now refreshes shared local state, the committed mail/search
+page and the still-owned selected detail after its explicitly reviewed POST.
+Owner, connection, presentation, page and selection epochs reject obsolete work.
+It preserves unsubmitted search edits, bounded retained-unread metadata and the
+existing mark-on-open boundary; repair itself makes no read/flag write or new
+provider-work hint.
+
+A guarded page read can be invalidated after transport releases its write guard
+and before UI adoption. Its cleanup now restores the five page controls only
+while the captured owner/generation/page/content/control identities and request
+ticket still match. Integration with contextual selection commands preserves
+the existing loading-state updates at start/completion and updates them after
+owned abandonment. An older request cannot re-enable a newer page's controls.
+This is a source-supported scheduling correction, not a native race replay.
+
+The original 63 portable production-coroutine controls retain their evidence.
+The additional actual-loadPage suite passed 67 controls with ASan/UBSan and
+-Werror; its former-cleanup mutation failed the restoration assertion as
+expected. Native row rendering, WinRT and transport use explicit portable fakes.
+Head `ea3c620` ran through synthetic merge `8676a76` in primary run `38757223443`,
+Windows job `116498716082`. Rust checks and SDK package build passed. The owned
+walkthrough reached its later review-workspace phase, so the earlier sequential
+`downloadRefreshChecks` returned successfully, including its synthetic native
+page-abandonment check. The walkthrough then failed on the separate retained
+TextBox event receipt below. This control-flow evidence does not establish a
+queued-Sync race replay, provider download or live-account acceptance.
+
+## Windows Today stale-control fixture receipt — 15 October 2026
+
+PR59 Windows job `116452990553` tested head `269882f` through synthetic merge
+`e3b8f1c1210b427adde629e2f5df95c052278795`. Rust checks and native compilation
+completed, but native acceptance failed during review-workspace ownership and
+retention. The original assertion combined receipt of a retained TextBox event
+with unchanged draft/approval and cleared active reply controls. Its single
+error did not identify which condition failed. The complete original log is
+retained with SHA-256
+`522ef6556215421c7230df5422b08e47bb1c3d14530e749de69191531297f912`.
+
+The later exact-head run `38757223443`, Windows job `116498716082`, compiled
+`ea3c620` through merge `8676a76` and failed the matching TextChanged receipt at
+the shared five-second deadline. The real task Click and adoption were observed
+once; the old facts Checked event arrived once. TextChanged and matching-text
+counts were zero, and the retained TextBox was unloaded. Draft and approval
+remained unchanged. Full log SHA-256 is
+`9abcdf750e12ed100802d8bb2e62fd23010b0328d3c372e4fcf59baed2b915ab`.
+That failed delivery gate remains failed; it did not demonstrate corrupted
+retained state or a production ownership-guard regression.
+
+The revised fixture first uses the real Back action to close reply details
+without replacing the loaded editor. Its one Text assignment must deliver a
+matching native TextChanged from the exact old control while current page,
+owner, key, body identity, reply kind and non-writing guards all still match.
+Only the production `details` guard is false. The callback records these facts
+and unchanged draft/approval; assertions run afterward in the coroutine. This
+is a source-derived isolation of the closed-details guard, not an executed
+mutation. If loaded-but-collapsed text input is not delivered, the case fails.
+
+The fixture then invokes the actual prepared task peer once, requires its
+native Click and captured-task adoption, changes the old facts checkbox once,
+and requires its native Checked event with cleared reply controls and unchanged
+owned draft/approval. It makes no post-task TextChanged delivery claim. Task
+peer mounting is prepared before the original single five-second event budget;
+text delivery, task invocation/adoption and facts delivery share that one
+absolute deadline. Each action, callback and final success checks the budget.
+
+Production handlers and all subsequent lifecycle checks are unchanged. The old
+controls are not reparented, handlers are not called directly, and there is no
+fallback or deadline extension. Failure receipts contain capped counts and
+fixed guard/state/layout booleans without message, draft, task, account or
+control text. The revised fixture has not run on a Windows SDK locally and
+requires fresh matching-source native CI; source review establishes no native
+event-delivery or release-readiness claim.
+
+## PR #59 macOS advertised menu action dispatch — 15 October 2026
+
+Focused run `38757223868`, macOS job `116498717711`, compiled head `ea3c620`
+through synthetic merge `8676a76` into `692bb8d`; its source tree matched the head.
+Its lifecycle, 13 selector graph cases, single-getter snapshot, concrete native
+owner and mounted-control checks passed. The Reader selected the secondary
+`NSAccessibilitySegment`, which advertised `AXPress` and `AXShowMenu`, but the
+modern `accessibilityPerformShowMenu()` returned false. Native menu tracking
+began zero times and did not end. The original full log remains evidence with
+SHA-256 `a364bd961d1b5f0c0df9c23a99053f1203a5071d6fdc93659e4c7457172b0577`.
+
+The fixture now pairs the public informal `accessibilityActionNames` query with
+the corresponding public `accessibilityPerformAction(_:)` dispatcher, checking
+runtime selector availability. Apple's [Supporting Actions documentation](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/Accessibility/cocoaAXSupportingActions/cocoaAXSupportActions.html)
+documents that pair and its Void return. The previous Bool-return assertion is
+incompatible with this API contract; it is replaced by the existing requirement
+for exactly one actual NSMenu tracking begin/end, owned-control revalidation and
+native command inspection within the same five-second deadline. A Void return
+does not establish success. There is still one advertised action on the proven
+secondary/named node, without a fallback or second dispatch. All graph, primary
+Reply isolation and command checks, and the driver's 45-second limit remain.
+
+Prepared native synthetic controls invoke this same dispatcher, recording the
+exact legacy action and rejecting any modern callback. They cover Show Menu,
+Press and Show Menu precedence, plus unavailable advertisement/dispatch selectors,
+empty/unsupported advertisements and the existing action-list bound. Their Void
+probe only records dispatch; the real Reader still has to prove menu tracking.
+This API-family correction is source-supported, but the internal cause of the
+recorded failure is unproved. The new controls and candidate have **not** been
+compiled or run with an AppKit SDK locally; fresh matching-source macOS CI is
+required. No production source, workflow, deadline or service code changed.
+
+## PR #59 macOS menu snapshot identity — 15 October 2026
+
+At head `269882f`, both the focused review run `38744078319` (job
+`116452991105`) and primary run `38744078202` (macOS job `116452991115`)
+compiled the fixture but failed before activating `reader.replyMenu`. Their
+actual checkout was synthetic merge `e3b8f1c`, merging `269882f` into `05cf409`.
+Both logs show the Reply and secondary menu nodes pointing to group 2, while a
+second query of that group's children reports two `outside` identities.
+Menu tracking began zero times. The preceding lifecycle, 13 synthetic graph
+cases and mounted-control gates passed; this does not establish a menu action
+pass or a product UI failure.
+
+The fixture previously enumerated accessibility children, then queried those
+children again while mapping their object identities into the first enumeration.
+It now retains the parent/child edges from one getter result per snapshot.
+The split Reply menu also retains its actual mounted `NSSegmentedControl` and
+exact `NSCell`, with the proven secondary child slot, rather than comparing
+virtual child wrapper addresses across snapshots. Role, label, reciprocal
+links, owner, visibility, enabled state, unique candidate and five-second gates
+remain required. Replacement controls cannot inherit the captured identity.
+The one advertised action, menu tracking, command checks and outer 45-second
+fixture limit remain unchanged; no fallback action or deadline extension was
+added. No production view, handler, provider permission or service code changed.
+
+Prepared controls cover a synthetic getter that returns fresh wrappers, the
+old second-getter mismatch, invalid parent/overflow, and real native owner/cell
+retention with wrong slot, ambiguous owner, wrong label, disabled, hidden,
+detached and replacement negatives. These controls and the corrected real
+Reader menu checks have **not run on an SDK locally**. Linux source/diff checks
+only establish the unchanged gates and fixture-only scope. The two original
+failure logs remain evidence; the exact candidate still requires fresh macOS
+compilation and runtime CI, plus separate visual/keyboard/accessibility review.
+
+## macOS download repair shared-state follow-up — 15 October 2026
+
+PR #55 review `discussion_r4282982883` identified a source-confirmed defect in
+integrated base `05cf409`: a successful full-content download refreshed only the
+Downloads sheet, discarding its returned message and leaving AppModel's reader
+and mailbox snapshots unchanged. This candidate retains the existing download
+confirmation and explicit connection/owner request. It then refreshes the local
+paged state and current mail page, and reads the still-selected message through
+a read-only GET. It does not call mark-read-on-open or the onboarding account
+selector, copy reader HTML/attachments into list metadata, or replay the POST's
+potentially older flags. Old state reads are invalidated; selection epochs,
+view/connection/presentation and caller-ticket guards reject obsolete work.
+The retained row in an unread-only page also receives fresh bounded metadata.
+
+`DownloadRepairAssertions.swift` adds 24 fictional URLProtocol cases using the
+actual AppModel handler, including held pre-download reloads, duplicate IDs,
+unselected repairs, selection A→B→A, modal replacement, reconnect/disconnect,
+cancellation, queued revocation, response identity, late page/detail responses,
+and newer shared-state changes. One case uses actual first-open/loadMessage to
+establish the retained unread row; repair must add no further mark-read PATCH.
+Another mounts NativeMailSearch and checks that the repaired body, current
+query and second page survive its state-triggered refresh. Unexpected routes
+fail the transport, and no provider, model or real workspace is used.
+
+The existing mail-flow driver compiles these assertions with the production
+sources and runs them as a separate process with the same 30-second limit;
+existing search/read/reply limits and assertions remain intact. Its explicit
+`--download-repair-negative-control` mode inserts a return after the validated
+POST only in a temporary compiler input, and requires the exact stale-reader
+failure. This is a mutation control, not an execution claim about historical UI.
+
+Local Python syntax/driver-preparation and diff checks are recorded outside the
+repository. This Linux environment has no SwiftUI/AppKit SDK; the new candidate,
+24 native cases and negative control have **not** been compiled or run on macOS.
+They require matching-source native CI before acceptance. No Rust/provider,
+Windows, signing, visual/accessibility or live-account result is inferred.
+
 ## IDLE with selected folders, Downloads and move recovery — 15 October 2026
 
 This normal integration combines IDLE/fixture-cleanup parent `b9691f9` with
@@ -297,6 +682,239 @@ counts and enabled/mounted booleans without mailbox or message content.
 The original failure is preserved; the corrected native source still needs its
 own CI run. No SDK test was rerun in the Linux editing environment.
 
+## Contextual actions candidate — 15 October 2026
+
+This separate UI candidate starts from main `337a2f7`. It groups secondary
+reader/management actions, keeps selection controls contextual, hosts owned
+reply review on Today, and reveals initially empty Cc/Bcc fields. It does not
+change the service, provider permissions, summary retention or release version.
+
+Independent source review checks account and proposal identities, stale control
+callbacks, draft retention and existing confirmation/uncertain-send behavior.
+The existing native fixtures gain actual menu/button/control operations for
+these paths. Their added assertions have not yet run on macOS or Windows;
+source inspection and unchanged-handler comparisons are not native acceptance.
+The historical macOS lifecycle negative control retains its pinned Today view
+with its pinned reply view, while the formal fixture compiles current sources.
+Both complete SDK/native jobs are still required; no screenshot, measured
+learning-curve improvement, keyboard traversal or screen-reader pass is claimed.
+
+The final independent source pass corrected four candidate defects: Today
+could select a different cached reply, a retained Windows reply menu could act
+on a newly selected reply, the selection Actions menu could expire on return
+from composing, and Add category could retain an existing category ID. The
+fixtures now exercise the corresponding exact-target and retained-control
+paths. These are source-level closures; their new native controls still need
+SDK execution. Today's cancelled-inspection overlap is handled with a
+cancellable local wait, but held-request close/reopen timing is not yet measured.
+
+The six existing category replacement/navigation source contracts pass after
+adapting their handler boundary to native menus. The immutable original
+`e59d331` control still fails eight assertions. The two edited Python runners
+parse successfully, and `git diff --check` passes. All 17 authored native files
+match the independently reviewed final manifests. No Rust source changed and
+no local Rust rerun is claimed for this UI candidate.
+
+The separately retained Today completion-policy work is not part of this
+candidate. See [interaction behavior](docs/CONTEXTUAL_ACTIONS.md) for scope.
+
+### Initial PR #59 Windows compilation and narrow correction
+
+[Run 38721478130](https://github.com/Coke1120/Morrow-Mail/actions/runs/38721478130),
+attempt 1, tested head `4dd180b9c2b0b00c1facf98b90d46cbb889c3e4b` through
+synthetic merge `06c0e24738c52d39d6ee94139e12466b279d7766`. Windows job
+`116376822306` passed 428 Rust tests, with zero failures and four ignored tests,
+then failed package compilation with C2039 at `windows/App.cpp:923`:
+`StackPanel` has no `IsEnabled` member. The native walkthrough, relocated
+PowerShell 5.1 check and benchmark were skipped. This result does not validate
+the new mounted-control fixtures or the candidate's rendered appearance.
+
+The narrow correction stores the existing Actions `DropDownButton` and applies
+the shared loading/dialog/closing/unsaved-edit gate to that button and Delete.
+Delete retains the additional all-selected-messages-can-Trash predicate. The
+layout, action handlers and lifecycle checks are unchanged. The existing
+selection fixture gains mounted-control checks for all four gates and recovery
+of the original Trash eligibility, with failure-safe fixture-state restoration.
+These new checks and the corrected sources still require a fresh exact-head
+Windows SDK build and native run. Linux source inspection and `git diff --check`
+do not establish SDK, visual, keyboard-traversal or screen-reader acceptance.
+
+### Initial PR #59 focused lifecycle compilation
+
+[Focused run 38721478166](https://github.com/Coke1120/Morrow-Mail/actions/runs/38721478166),
+job `116376822040`, tested the same `4dd180b9` head and `06c0e247` synthetic merge.
+Its pinned-baseline step failed before execution: old `TodayView.swift:123`
+redeclared `JSON.isObject`, already provided by current `Models.swift:49`.
+The old lifecycle negative controls did not run, and the current-production
+step was skipped. This compiler failure does not establish a lifecycle or
+rendered-layout assertion failure.
+
+The runner now removes only that byte-identical redundant helper from its
+temporary pinned Today copy, in baseline mode only. Exact occurrence guards
+require one old extension and one matching current property; absent, changed
+or duplicate definitions fail closed. The pinned reply/state handlers,
+current-production input path, fixture assertions and 180/45-second limits
+are unchanged. Controlled source checks exercise the valid adaptation and
+missing, duplicated and changed helper rejection on Linux; these are not Swift
+compilation or native execution. Both focused stages still require a fresh
+SDK run. The separate main-job review-workspace failure remains unclassified
+until its terminal log is available.
+
+### Initial PR #59 main macOS runtime failure
+
+The original `4dd180b9` main run is now terminal: macOS job `116376821996`
+passed 432 Rust tests in 47 result groups, with zero failures and four ignored.
+The formal SwiftUI package, native search/read/reply and native acceptance
+steps passed. The review fixture compiled and ran its existing lifecycle suite,
+then failed with `Review fixture: Reader menus did not mount`. The initial menu
+oracle read `NSButton.menu` without opening a native menu; its failure alone
+does not distinguish a SwiftUI bridge/lazy-menu mismatch from a UI defect.
+The later Today, replacement/retarget, selection and Compose controls were not
+reached and are not validated by this run.
+
+The separate strict reader batch passed all 40 samples: 20 cold and 20 warm,
+unique sequences, zero exits, complete untruncated captures, zero observed
+network, 180,000 characters at one pixel, matching modes/same WebView and no
+errors. All parent/child timings were under 30 seconds. Parent cold timings
+were 15.125–19.424 seconds and warm timings 15.253–18.340 seconds. The two
+diagnostic reader steps also passed; the overall job still failed.
+
+The fixture-only menu correction locates the unique visible enabled control by
+its existing accessibility identifier and owned window, requests its native
+Show Menu action, and requires that activation's begin/end tracking events.
+It inspects and invokes the actual menu items inside native tracking, retaining
+the command, owner, sender-permission and stale-reader assertions. Reply never
+falls back to Press, which could invoke its primary reply action. A five-second
+watchdog also runs in the event-tracking mode, cancels the observed menu, removes
+observers and fails the isolated fixture if synchronous tracking cannot return.
+Bounded diagnostics report only the fictional fixture's controls/menu entries.
+The current source correction has not yet compiled or run with the macOS SDK;
+no product view, provider handler, global 180/45-second limit or assertion gate
+was changed to accept the original failure.
+
+The original run retained one reader-observations artifact; its metadata and
+185-file upload count were read, but its images were not downloaded or inspected.
+The four earlier snapshot calls returned before the lifecycle marker, which
+establishes the capture path, not a visual review. Open menus, inline Today
+review, Compose, keyboard traversal and VoiceOver remain pending actual visual
+and interactive verification. No denied artifact-download route was retried.
+
+### PR #59 native menu selector follow-up
+
+[Focused run 38731593839](https://github.com/Coke1120/Morrow-Mail/actions/runs/38731593839),
+job `116410435652`, tested head `484eb592` through synthetic checkout
+`e19ea980c3ad88da2863230e1b731b74f7316306`; both have tree
+`bf7d702d2d7527921b73fe78ace724da0b8ba887`. The pinned baseline now compiled
+and reproduced the full Skip/second-404 and retarget/save negative controls.
+Current source also compiled and passed its existing lifecycle assertions,
+then failed before menu activation: `Expected one mounted enabled menu control:
+reader.replyMenu`. Native diagnostics show an `AXButton` Reply primary and an
+`AXMenuButton` secondary, with empty identifiers; Organize/More also expose
+`AXMenuButton`. The identifier-only selector did not match those actual controls.
+Current Reader-completion and subsequent Today/selection/Compose markers are
+absent. The baseline's final general workspace marker is not a current UI pass.
+
+The next fixture-only correction matches exact named menu labels and requires
+Reply's reciprocal parent/primary/secondary relationship, unique target,
+owned visible enabled window/subtree and stable captured identities. It reads
+the target's advertised accessibility actions through the public NSObject
+informal API, with selector and result-type checks. Only that proven menu
+target may receive its advertised Show Menu or Press action; the primary Reply
+button is never a substitute and a failed action is not retried with another.
+The existing begin/end tracking, command/owner/stale checks and five-second
+watchdog remain. Inspection-only menu opens also assert that no draft was
+prepared. Bounded diagnostics now include parent/child links and action names.
+
+The fixture gains synthetic graph/action controls and mounted native rejection
+controls for disabled/hidden/offscreen/foreign controls. These additions have
+not yet executed with the SDK; Linux source/whitespace checks are not native
+acceptance. Product views, lifecycle handlers, fictional transport and the
+180/45-second runner limits remain unchanged. Visual, keyboard and screen-reader
+inspection remains a separate pending requirement.
+
+### PR #59 Windows search event settlement
+
+[Run 38731593826](https://github.com/Coke1120/Morrow-Mail/actions/runs/38731593826),
+Windows job `116410435704`, tested the same `484eb592` head and `e19ea980`
+synthetic checkout. Its 50 Rust result groups contain 445 passing tests, zero
+failures and four ignored tests. The formal WinUI/Rust package compiled, then
+the native walkthrough failed in `contextual-reader-and-selection-actions`:
+`A query cannot reach Clear.` The relocated PowerShell 5.1 check was skipped;
+the separate fictional 1k/10k/50k service benchmark passed. The earlier
+composer-return controls completed, including optional recipients and retained
+selection actions. The later Reader menus and Today contextual checks were not
+reached. The original terminal log contains no TextChanged delivery trace.
+
+The failing fixture assigned Text, forced layout and immediately inspected
+Clear. WinUI TextChanged is asynchronous, so that sequence does not establish
+event completion ([Microsoft event contract](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.textbox.textchanging?view=windows-app-sdk-1.8)).
+A fixture-only correction first verifies the captured
+TextBox is loaded, enabled and has positive dimensions, then subscribes to its
+exact sender/value event before each changed value's single assignment. It
+waits at most five seconds for the event and expected visibility, within the
+unchanged 180-second walkthrough limit. Same page, mailbox, generation,
+TextBox/Clear identities and the unsubmitted search query are revalidated.
+The original Visible/Collapsed assertions remain; unchanged text does not
+require a nonexistent change event. Normal restoration uses the same event
+path, and exception cleanup only restores the retained fixture TextBox.
+
+Production handlers, search submission and provider actions are unchanged.
+Fixed boolean failure details distinguish event, identity and visibility
+failures without recording query or message contents. Linux whitespace and
+unchanged-source checks are not a Windows SDK or native UI pass. The event
+settlement correction, remaining contextual fixtures and rendered/keyboard/
+screen-reader behavior still require their actual platform verification.
+
+### PR #59 integration with mailbox feature candidates
+
+The UI candidate at `5079af8b803d2b6983bcf6d198f8a105b93e96c6` is integrated by
+a normal merge with `05cf409641f005bef077fcec7c277b8c4835d113`, preserving selected
+folder sync, Downloads/local Undo, non-MOVE recovery and bounded notifications.
+The 121 tracked Rust files (111 `.rs` sources) match that feature parent byte for
+byte, including the Windows fixture cleanup; no new local Cargo run is claimed.
+Named contextual actions retain their existing handlers and state guards. The
+new Windows local Undo and move-review entries also use the captured reader or
+menu context. The exact nine-command selection fixture retains the UI's Delete
+label and all other items; incoming feature-check entry points remain present.
+
+On Linux, all six category source contracts and eight baseline helper controls
+passed. The existing portable fixture compiled and exercised the actual Windows
+Stop/recovery coroutines under AddressSanitizer successfully. Four Python
+runners parse, source manifests match, and whitespace checks pass. The macOS
+review runner still includes all Swift sources; search retains its baseline
+seven/current eight button oracle and the fixed update-restart compiler inputs
+retain MoveRecoveryState. These results do not establish Swift/WinUI compilation
+or mounted native interaction on this combined source. New paired and focused
+SDK CI, rendered review, keyboard traversal and screen-reader checks remain
+required; successful fragments of the earlier failed `484eb592` run are not a
+combined-candidate pass.
+
+## PR #58 synthetic offscreen-window setup — 15 October 2026
+
+The macOS measurement job `116488981153` in run `38754431904`, at exact
+checkout `b73696bece0630e7773778d1dd2327ad1264feaf`, compiled the native
+fixture and reached the synthetic oracle's offscreen-window setup check.
+It failed because the window still intersected a display. All preceding
+sequential synthetic gates, including the accessibility-hidden body and its
+restoration, had passed. This identifies a fixture setup failure; it does
+not prove that AppKit's frame constraints caused that observed placement.
+
+Only the synthetic oracle window now uses an `NSWindow` subclass whose public
+`constrainFrameRect(_:to:)` override permits the requested frame during the
+explicit offscreen negative. Initial setup and restoration retain normal
+AppKit constraints. Dataset and production windows are unchanged. The actual
+all-display nonintersection check and reader-oracle rejection remain required,
+with added visible-window ownership and exact-frame restoration checks.
+The original restored row/reader positive still gates success. Failure-only
+diagnostics contain fixed bounded geometry and boolean observations.
+
+Linux ran `python3 -B scripts/test-mailbox-acceptance.py` with 13 tests passing,
+and `git diff --check` passed. These harness/source checks do not execute Swift.
+This correction has not been compiled or run with a macOS SDK locally and does
+not establish actual native placement, oracle rejection, restoration or dataset
+measurements. Fresh matching-source macOS CI remains required; the original
+job remains failed.
+
 ## IMAP server identity and safe migration — 15 October 2026
 
 This source follow-up starts from main
@@ -511,6 +1129,283 @@ macOS remains ad-hoc signed without notarization; Windows is unsigned.
 Live-account, clean-machine, manual accessibility and complete installed-updater
 acceptance remain incomplete. See [release notes](docs/releases/v0.8.2.md).
 
+## Controlled mailbox acceptance harness — 15 October 2026
+
+The new opt-in harness distinguishes actual empty-cache TLS downloads from seeded
+service benchmarks and native presentation timing. Its ordinary Rust contract
+uses 120 messages; only explicit runs at 1,000, 10,000 and 50,000 can satisfy those
+dataset gates. Python negative controls reject seeded or partial downloads,
+wrong UID/body digests, source/artifact changes, HTTP-as-UI samples, missing native
+platforms and absent/exceeded caller limits. The macOS entry compiles a standalone
+fixture using the production mail view and existing isolated transport seam.
+It observes real pagination buttons/table events through mounted layout/display,
+not compositor presentation or real service latency. The combined candidate also
+contains the Windows event-to-layout entry and an isolated, read-only PR workflow
+for both platforms; no native measurement evidence is included here.
+See [commands and exact scope](docs/MAILBOX_ACCEPTANCE.md).
+
+The initial checkpoint passed nine Python controls with Rust/native execution
+still pending. Subsequent Linux validation on identity head `01c1f0a` passed the
+related IMAP suite (45 passed, 3 ignored), the affected 120-message contract,
+formatting and strict all-target Clippy. Actual empty-cache 1k and 10k runs passed
+all assertions, including every body/digest, arrivals, both flag directions and
+reconnect controls. Their command wall times were 74.931 and 639.977 seconds.
+These are fictional loopback correctness runs, not a product speed comparison.
+
+The original 50k run naturally **failed** at the flag-round cap after 3,257.13
+test seconds on 15 October at 09:00 UTC; it did not time out. Source digest
+`08f4f0b0f7cb7ebf7c25bd3ae5c24e88a6761da62310e7125724fcddff0422c2`,
+the executable, full log, zero-byte result file and all 185 source files remain
+preserved in task evidence. A global `ceil(total/49)` undercounted independently
+drained 1,000-UID windows. The corrected fixture sums the rounded window work,
+retains the existing 16-round allowance, and adds boundary controls plus safe
+failure diagnostics. Dataset size and substantive assertions are unchanged.
+At that earlier checkpoint, the Rust correction and final stacked 1k/10k/50k
+matrix had not yet been rerun.
+
+Independent review also corrected the Mac selected-row/reader visibility oracle
+and compiler-input/adapter provenance. The applied Python controls pass 13/13;
+the new AppKit controls and production fixture remain uncompiled/unexecuted here.
+After stacking on harness commit `ae02ed0`, the combined source passed the same
+13 Python controls plus all seven Windows adapter/evidence controls. Enumerating
+the actual private compiler inputs succeeded for both platforms, including
+the newer Windows reader diagnostic headers. Those are Python/source checks,
+not Swift/WinUI compilation, control-event measurements or a new protocol run.
+Older-source protocol results cannot be combined with newer native source as a
+complete aggregate. Existing native reader/network/security gates and historical
+failures remain unchanged. Both platforms and reviewed performance targets are
+still required before claiming complete acceptance.
+
+The first PR #58 Windows measurement job (`38721001259`, job `116375238109`)
+failed before SDK compilation: Python's default `cp1252` decoding rejected the
+UTF-8 `windows/App.cpp` in an adapter source check. The workflow and documented
+Windows commands now explicitly use `python -X utf8 -B`, preserving all source
+checks and strict decoding. A controlled Linux ASCII-locale run of the unchanged
+seven-test script failed with a decoding error; the same script and locale with
+explicit UTF-8 mode passed all seven. That control verifies the encoding contract,
+not Windows execution. No runtime, fixture or harness source bytes changed; the
+191-file source digest remains
+`bad245df9546e2ea61dbced0d0fb5d8b793d5b77343a16a9a8db600d1f513f3a`.
+At that checkpoint, the matching-source 1k and 10k protocol runs had passed all
+assertions while the original 50k process continued after a tool-transport
+interruption. Its terminal outcome and both native jobs were pending. Historical
+failures above are preserved and are not converted into passes.
+
+The next Windows measurement job (`38723052135`, job `116382210212`, head
+`a8814a3`) passed the decoding point but failed the unchanged production-handler
+byte comparison: the checkout had CRLF while the private compiler copy had LF.
+Isolated local checkouts of that exact commit reproduced the same line-73
+assertion with `core.autocrlf=true` and passed all seven adapter controls with
+`core.autocrlf=false`. The measurement job now sets the latter before checkout;
+the ordinary native/security workflow is unchanged. This fixes the measurement
+input contract without changing runtime/test sources, normalizing the assertion
+or altering recorded source hashes. The next real Windows SDK run is pending.
+
+At head `2911380`, Windows job `116386213427` passed the adapter preflight:
+11 common controls passed with two explicit POSIX-only skips, and all seven
+Windows controls passed. The measurement step then failed, reporting only the
+path to its evidence artifact in the job log. The available log does not identify
+whether compilation, native execution or report validation failed. A workflow-only
+bounded diagnostic receipt now exposes selected status/source/exit/error fields
+and fixed build/native error lines on the next run. The original failure is
+retained; there is no root-cause or SDK success claim. Runtime/test sources, the
+191-file manifest, time limits and all assertions remain unchanged.
+
+
+At head `47cd609`, [measurement run 38726249987](https://github.com/Coke1120/Morrow-Mail/actions/runs/38726249987)
+failed on both platforms. Windows job `116392722978` passed preflight and its
+build command, then stopped at `Private compiler inputs changed during build`.
+Its projected `nativeProcessExitCode` is null and both source digests still match
+`bad245df9546e2ea61dbced0d0fb5d8b793d5b77343a16a9a8db600d1f513f3a`.
+The native measurement command had not started. The receipt lacks the changed
+paths, so no particular generated file is blamed or excluded. macOS job
+`116392723215` passed its 13 Python controls but reported only the failed evidence
+path and exit 1; its exact inner error remains unknown. Artifact sizes do not
+establish the failed phase. Both complete workflow logs are preserved locally;
+the original runner artifacts remain retained by CI and were not downloaded.
+
+The workflow now projects the same fixed-file bounded receipt/error diagnostics
+on macOS and a bounded private-input delta on Windows. Deltas include only
+relative paths and old/new hashes, with explicit overflow/incomplete states;
+symlinks/reparse points, file-count, file-size and total-read limits fail closed.
+The delta is observed after the stage, not retroactively labeled an immediate
+post-build snapshot. No source-manifest assertion, measurement command, timeout
+or failure gate is relaxed. Isolated local controls execute the actual extracted
+PowerShell/Python workflow blocks: 13 controls passed, covering typed receipts,
+exact added/removed/changed hashes, overflow, missing/oversized inputs, symlink
+rejection, total-read/file-count limits and both platform log projections. These
+Linux controls do not establish Windows SDK/AppKit or native measurement success.
+The next native run is still required.
+
+The matching-source Linux protocol matrix subsequently completed at original
+frozen head `3ff9451`: actual 1k, 10k and 50k empty-cache datasets all passed,
+including every body/digest, 120 arrivals, both flag directions and reconnect
+controls. The 50k run required 1,053 true-flag rounds and four false-flag rounds,
+within the corrected 1,069 bound. A tool-transport interruption did not restart
+the original child: its recorder retained process exit 0 and the complete result.
+Contracts, formatting and strict all-target Clippy passed. Those results do not
+convert the original 50k failure or either native failure into a pass, and the
+aggregate remains incomplete without both platform resource/native evidence
+and caller-approved performance limits.
+
+
+At head `2332256`, Windows measurement job `116404899031` again stopped before
+native execution at the unchanged private compiler manifest gate. The bounded
+receipt still matches the 191-file source digest. Its first delta diagnostic
+reached the 64 MiB cumulative-read limit and correctly reported incomplete, but
+it had not yet emitted the observed paths. The complete original log and this
+limited receipt remain preserved; no file type or size is inferred from them.
+The diagnostic now inventories names/types/sizes first, verifies existing inputs
+before added files, and retains up to 40 observed paths when hashing reaches a
+limit. Unknown hashes and incomplete-enumeration totals stay null with explicit
+status; all previous bounds and the manifest failure gate remain unchanged.
+Fifteen isolated controls passed using the actual extracted workflow blocks,
+including added files that exhaust the read budget, a changed existing source
+verified before those files, and partial enumeration with no fabricated totals.
+This remains diagnostic coverage, not a native measurement pass.
+
+At head `abbfa62`, [Windows measurement job 116412875608](https://github.com/Coke1120/Morrow-Mail/actions/runs/38732326971/job/116412875608)
+again completed the build command and stopped at the unchanged compiler-input
+manifest gate before native execution. The complete bounded inventory found
+1,510 added inputs, no removals and no changed original inputs (31 before,
+1,541 after). All 40 displayed added paths are projection headers under
+`windows/Generated Files/winrt/`; the diagnostic does not list the remaining
+1,470 paths. The receipt and complete log are retained with the earlier failures.
+
+The private fixture project now sets the fixed package's documented
+`GeneratedFilesDir` before SDK imports to its task-owned `build/` directory and
+checks the effective property before building. The production project/builder,
+complete input enumeration and strict pre/post-build/pre/post-run equality gates
+are unchanged. Ten Python controls pass, including the actual runner with
+controlled subprocesses: projection output in `build/` reaches the native step,
+where an intentional nonzero result remains failed; identical output under
+`windows/Generated Files/` stops before any native invocation. These controls
+are not MSBuild or WinUI execution. The updated adapter/tests change the scoped
+source digest, so the earlier `bad245df…` protocol matrix remains historical
+evidence and cannot supply a matching-source aggregate for this candidate.
+Actual native execution and a final same-source matrix remain pending.
+
+At head `59b19f3`, [Windows measurement job 116420652940](https://github.com/Coke1120/Morrow-Mail/actions/runs/38734620048/job/116420652940)
+completed SDK compilation and passed the original private-input manifest gate:
+31 files before and after, with zero added/removed/changed files. Native execution
+then failed at `phase=search size=1000 iteration=0 HRESULT=0x80004005`.
+The native process returned 0 but its report was failed, so the Python validator
+correctly failed the stage. Source before/after both matched `461e8cf7…`.
+The phase establishes that control flow reached Search; it is not a complete
+receipt for the preceding 18 actions or any finished dataset. The existing
+log cannot identify which Search predicate failed, and the original failure
+and complete logs remain retained.
+
+The fixture now records fixed assertion IDs, Search substeps and three bounded
+typed observation lines after failure, without arbitrary exception/control/mail
+text. Unavailable values remain null with group flags. The 10-second wait,
+native event/content checks and failed-report gate are unchanged. Local controls
+compile the actual pure C++ diagnostic helper and exercise fixed/unknown enums,
+missing observations and maximum integer values; they do not compile WinUI or
+prove a Search fix. The new fixture/test source requires another exact-head
+native run and cannot reuse an older digest as a complete acceptance aggregate.
+
+At head `67c9280`, [Windows measurement job 116430451278](https://github.com/Coke1120/Morrow-Mail/actions/runs/38737504560/job/116430451278)
+again passed SDK compilation and the unchanged 31-file private-input gate.
+The new receipt identifies `search-value-provider`, substep `value-peer`, at
+1,000 rows / iteration 0. The actual search control was loaded, enabled and
+current, but the query was not yet set and no Search Click occurred. Native
+exit 0 still produced a failed report and stage exit 1. Source before/after
+matched `c66ab1c0…`; no completed dataset or aggregate is inferred.
+
+The fixture now obtains TextBox's native Windows UIA Value pattern through a
+dedicated MTA client, rather than casting its WinRT peer pattern result to the
+unexposed projected provider interface. Lookup is confined to its owned HWND
+and one exact fixture AutomationId. PID, uniqueness, type, visibility, enabled
+and read-only checks precede setting the value; captured UI ownership/identity
+and an actual TextChanged event must still match before Search invocation.
+The original Search Invoke/Click, mounted row/owner checks and ten-second result
+deadline remain. Query setup separately uses two-second UIA call timeout settings
+and a ten-second fixture deadline. Only an OS-terminated worker is joined;
+an outstanding COM call at that deadline fails by terminating the isolated
+fixture itself with exit 124, without claiming COM cancellation. The unchanged
+outer watchdog remains necessary for a blocked UI dispatcher. Production
+projects, provider/network isolation and normal native gates remain unchanged.
+Portable controls exercise the actual no-write decision path and reject
+missing native Value/TextChanged receipts. Windows SDK execution of this new
+path remains pending; prior Linux protocol results are historical different-
+source evidence and cannot make this candidate's aggregate complete.
+
+At head `67c9280`, [macOS measurement job 116430451441](https://github.com/Coke1120/Morrow-Mail/actions/runs/38737504560/job/116430451441)
+passed all 13 Python controls and Swift compilation, then failed the synthetic
+label-only positive control before any production mailbox dataset began. The
+preceding mounted native row/reader positive control passed. The failing control
+cleared an `NSTextField` value and set its accessibility label; the production
+row instead uses nonempty SwiftUI `Text` with an owner label. The original log
+does not identify whether protocol, AX role/frame or label retrieval rejected
+the synthetic field. Its exact cause is not retroactively inferred, and source
+before/after remained `c66ab1c0…`.
+
+The fixture now reads a known native `NSTextField`'s public accessibility label
+in the same branch as its string value, after the existing same-window,
+root-descendant, hidden/alpha and screen-clipped view checks. Other AX peers
+retain their finite-frame and text-role checks; container labels still cannot
+supply identity. The synthetic positive first verifies its label getter and
+visible native frame, retains the wrong-label control and all ten original
+rejection controls, and adds a mounted group-label rejection required by the
+evidence validator. Failure diagnostics contain fixed booleans/nulls and an
+allowlisted role, bounded to 2 KiB; they contain no mail text or arbitrary errors.
+This repairs inconsistent native/AX text collection, not an observed product
+rendering defect. The new native controls and actual production pagination,
+selection and reader measurements still require matching-source macOS SDK CI;
+all 13 Python evidence controls pass locally, including rejection when the new
+required container control is false. No local AppKit execution or performance
+result is claimed.
+
+At head `353d2ae94c9e07c41e025bf0b914700935e1ac66`,
+[macOS measurement job 116464567947](https://github.com/Coke1120/Morrow-Mail/actions/runs/38747403941/job/116464567947)
+compiled and ran the native executable. The label-only and subsequent owner,
+container, hidden-view and offscreen-body controls passed in sequence, then
+the accessibility-hidden-body rejection failed before the production dataset
+loop. Source before/after matched `6072eb42…`. The log does not establish whether
+the hidden setter retained its value or which native/AX channel supplied the
+accepted body; no AppKit cause or completed measurement is inferred.
+
+The follow-up requires the synthetic hidden getter to read back true before
+testing rejection; failure still stops the executable. It also closes a static
+oracle gap: an `NSCell` reached through a flattened AX hierarchy must validate
+its `controlView` against the same window, root and existing visible-frame checks
+before supplying text. This extra fence does not establish that an NSCell caused
+the original failure. General SwiftUI AX peers keep their existing hidden,
+finite-frame, clip and text-role checks. All eleven earlier rejection receipts
+remain required. Three additional receipts cover real mounted cells with hidden
+owners, owners outside the reader and a different window, with visible positive
+controls before rejection. Hidden-state restoration is also asserted. These
+AppKit controls have not yet run on the follow-up source.
+
+Only a synthetic hidden-control failure can emit the added diagnostic: fixed
+channel/kind names, bounded counts and boolean/null fields, capped at 2 KiB,
+without UI text, paths or object identifiers. Original waits, action sequences,
+dataset sizes, production sources and network isolation remain unchanged.
+The thirteen Python evidence tests pass locally; twelve additional direct
+validator cases accept complete synthetic receipts and reject absent/false/
+nonboolean cell controls and an old eleven-control receipt, while preserving
+the Windows contract. These are evidence-validator checks, not AppKit execution
+or latency measurements. Matching-source macOS SDK and full measurement remain
+required; no Cargo, native SDK or live-account test ran locally.
+
+## v0.8.1 published — 14 October 2026
+
+[Tagged run 38624861643](https://github.com/Coke1120/Morrow-Mail/actions/runs/38624861643),
+attempt 1, passed both complete native jobs and the existing publisher at source
+`9621202966751cd8f5341411a2f7cdb5b7252ce1`. The release was published at
+20:19:49 UTC. All six assets downloaded successfully and their hashes, paired
+versions, pinned manifest signature and archive controls were verified. A
+task-only exact-case Windows DLL lookup first failed; its bounded correction
+passed thirteen negative/positive controls and reverified the same downloaded
+bytes without replacing any asset. Both results remain preserved in the
+[publication record](docs/releases/v0.8.1-verification.md).
+
+The preparation sections below retain their original pending-at-the-time
+checkpoints. This publication does not include later main navigation/activity
+changes or the new mailbox branches, and does not resolve historical native
+error-87/reader failures, signing or manual/live-account acceptance limits.
+
 ## IMAP move-recovery candidate — 15 October 2026
 
 This isolated candidate starts from read-session commit
@@ -577,9 +1472,31 @@ Rust/Cargo manifest; source and log hashes were checked after execution.
 The identity author's static cross-review confirmed the origin guards, filtered
 queries, import binding and atomic commit proofs remain intact.
 
-This is isolated Linux fixture evidence, not native or live-provider acceptance.
-Native CI and live-provider acceptance remain pending. The 90-second bound is
-covered with a controlled-deadline unit, not a real 90-second experiment.
+Those local runs are isolated Linux fixture evidence. The later
+[paired native run 38723970357](https://github.com/Coke1120/Morrow-Mail/actions/runs/38723970357),
+attempt 1, passed for PR #53 head
+`d602c2fc5693534508fe4968ddc49d1563fb1d16`. macOS job `116385148889` passed
+**461 Rust tests, 0 failures, 4 existing ignored benchmarks**, plus native mail
+flow, acceptance, review-workspace checks and the strict **40/40** reader batch
+(20 cold-view and 20 warm-view samples). Every reader sample had complete capture,
+zero observed network activity, matching mode and same-WebView evidence, no errors, and
+finished within the unchanged 30-second process bound. Windows job `116385148676`
+passed **457 Rust tests, 0 failures, 4 existing ignored benchmarks**, the native
+fresh/owned/restart walkthrough, relocated-package acceptance and synthetic service
+measurement. Its resource observations were complete, with **4/45/36 samples**
+(sample counts, not assertion counts); both owned reader traces completed the
+matching first document without overflow, truncation or missing milestones.
+
+Both platforms actually checked out `f55a7bec660d0c24f564d9dd498b1737afcd6d59`,
+the synthetic merge into the then-base `6cc684d983096d91be2e5ccafd4821b34d83f3bb`.
+Its tree `72618791eea82b1afab04d204be9e76aa5461eb4` exactly matches the PR head
+and the subsequent normal main merge `796b93f61d787e36eb299d0352611b0df5616fcb`.
+This evidence covers that exact tree; later combined release sources require
+their own acceptance. The earlier Windows failures remain recorded above, and
+this success does not establish their cause. Live-provider, clean-machine and
+manual accessibility acceptance, Developer ID/notarization and Windows code
+signing remain incomplete. The 90-second bound is covered with a controlled-deadline
+unit, not a real 90-second experiment.
 IDLE, persistent connection pooling
 and non-MOVE fallback are not implemented by this candidate. See
 [the precise scope](docs/IMAP_READ_SESSIONS.md).

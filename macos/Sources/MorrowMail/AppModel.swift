@@ -41,7 +41,7 @@ final class AppModel: ObservableObject {
     @Published var scheduledAccount = ""
     @Published var serverFolders: [String: [JSON]] = [:]
     @Published var selectedMessage: String? {
-        didSet { if selectedMessage != oldValue { openedMessage = nil; retainedUnread = nil; selectedMessages = selectedMessage.map { [$0] } ?? []; draftGeneration += 1; messageGeneration += 1; messageError = ""; queueSyncPriority() } }
+        didSet { if selectedMessage != oldValue { openedMessage = nil; retainedUnread = nil; selectedMessages = selectedMessage.map { [$0] } ?? []; draftGeneration += 1; messageGeneration += 1; selectionGeneration += 1; messageError = ""; queueSyncPriority() } }
     }
     @Published var selectedMessages: Set<String> = []
     @Published private var retainedUnread: (message: JSON, index: Int, scope: String, page: Int)?
@@ -64,6 +64,7 @@ final class AppModel: ObservableObject {
     @Published var mailCursors = [""]
     private var mailGeneration = 0
     private var messageGeneration = 0
+    private var selectionGeneration = 0
     private var mailPageKey = ""
     private var openedMessage: String?
     @Published var showSettings = false { didSet { if showSettings != oldValue { draftGeneration += 1; queueSyncPriority() } } }
@@ -192,6 +193,75 @@ final class AppModel: ObservableObject {
         guard downloadsPresentation == id else { return false }
         downloadsPresentation = nil
         return true
+    }
+
+    /// Downloads refreshes local snapshots without opening the message again:
+    /// loadMessage() also implements mark-read-on-open, which is not this action.
+    func repairDownloadedMessage(_ message: JSON, connectionRef: String, isCurrent: @escaping @MainActor () -> Bool) async throws {
+        let owner = message["accountId"].string, view = account, folder = section
+        let presentation = downloadsPresentation, selection = selectionGeneration
+        @MainActor func current() -> Bool {
+            !Task.isCancelled && isCurrent() && presentation != nil && downloadsPresentation == presentation &&
+                account == view && section == folder && !connectionRef.isEmpty &&
+                accounts.contains { $0.id == owner && $0["settings"]["connectionRef"].string == connectionRef }
+        }
+        func matches(_ value: JSON) -> Bool {
+            value.id == message.id && value["accountId"].string == owner && value["viewId"] == message["viewId"]
+        }
+        guard !owner.isEmpty, owner != "all", view == "all" || accounts.contains(where: { $0.id == view }),
+              !message.id.isEmpty, message["viewId"].nonempty, current() else { throw CancellationError() }
+        let path = "/messages/" + encodedPath(message.id)
+        let result = try await request(path + "/attachments", method: "POST", body: .object(["connectionRef": .string(connectionRef)]), mailbox: owner)
+        guard current() else { throw CancellationError() }
+        guard matches(result["message"]) else { throw APIError("Downloaded message ownership could not be confirmed.") }
+
+        // Invalidate a pre-download reload; do not coalesce this read into it or
+        // invoke reload's onboarding account-selection fallback. This endpoint
+        // returns paged metadata, never the reader copy's HTML/attachment data.
+        stateGeneration += 1
+        let generation = stateGeneration
+        let next = try await request("/state", mailbox: view)
+        guard current() else { throw CancellationError() }
+        guard generation == stateGeneration else { throw APIError("Content was downloaded, but the mailbox changed during refresh. Refresh local status before continuing.") }
+        guard next["account"]["id"].string == view, case .array = next["messages"], case .array = next["accounts"],
+              next["accounts"].array.contains(where: { $0.id == owner && $0["settings"]["connectionRef"].string == connectionRef }) else {
+            throw APIError("Content was downloaded, but the mailbox connection could not be confirmed. Close this panel and refresh the mailbox.")
+        }
+        // Refresh before publishing the new revision: MailView also observes
+        // that revision and must not supersede this request halfway through it.
+        if isMailSection || section == "studio" {
+            let refreshed = await refreshMailPage(isCurrent: current)
+            guard current() else { throw CancellationError() }
+            guard refreshed else { throw APIError("Content was downloaded, but the mail list could not be refreshed. Close this panel and refresh the mailbox.") }
+        }
+        guard current() else { throw CancellationError() }
+        var refreshedDetail: JSON?
+        if selection == selectionGeneration, selectedMessage == message.viewID {
+            // Read the latest saved record instead of replaying the POST
+            // response's flags. This GET has no mark-read side effect.
+            messageGeneration += 1
+            let detailTicket = messageGeneration
+            let detail = try await request(path, mailbox: owner)
+            guard current() else { throw CancellationError() }
+            guard matches(detail["message"]) else { throw APIError("Downloaded message ownership could not be confirmed.") }
+            if selection == selectionGeneration, selectedMessage == message.viewID, detailTicket == messageGeneration { refreshedDetail = detail["message"] }
+        }
+        guard current() else { throw CancellationError() }
+        guard generation == stateGeneration else { throw APIError("Content was downloaded, but the mailbox changed during refresh. Refresh local status before continuing.") }
+        state = next
+        if let refreshedDetail {
+            messageDetail = refreshedDetail; messageError = ""
+            if !refreshedDetail["read"].bool { retainedUnread = nil }
+            else if var retained = retainedUnread, matches(retained.message), retained.scope == mailScopeKey, retained.page == mailCursors.count {
+                // This row can be absent from the unread-only page after its
+                // original open. Keep its location and metadata-only shape.
+                retained.message["preview"] = .string(String(refreshedDetail["preview"].string.prefix(240)))
+                for key in ["read", "starred", "pending"] { retained.message[key] = refreshedDetail[key] }
+                retainedUnread = retained
+            }
+        }
+        // NativeMailSearch observes state and retains its query/page. Semantic
+        // searches refresh cached matching only, without a new model request.
     }
 
     func start() async {
@@ -401,19 +471,19 @@ final class AppModel: ObservableObject {
         if next != state { state = next }
     }
     @discardableResult
-    func loadMailPage(cursor: String = "", reset: Bool = true, offset: Int? = nil) async -> Bool {
-        guard (isMailSection || section == "studio"), baseURL != nil else { return false }
+    func loadMailPage(cursor: String = "", reset: Bool = true, offset: Int? = nil, isCurrent: @escaping @MainActor () -> Bool = { true }) async -> Bool {
+        guard (isMailSection || section == "studio"), baseURL != nil, isCurrent() else { return false }
         mailGeneration += 1
         let ticket = mailGeneration, query = mailQueryKey
         mailLoading = true; error = ""
         defer { if ticket == mailGeneration { mailLoading = false } }
         do {
             let result = try await request("/mail/page", method: "POST", body: .object(["folder": .string(section == "studio" ? "" : section), "sort": preferences["sort"], "unreadOnly": .bool(section != "studio" && unreadOnly), "cursor": .string(cursor), "offset": .number(Double(offset ?? 0)), "locale": .string(Locale.current.identifier(.bcp47))]))
-            guard !Task.isCancelled, ticket == mailGeneration, query == mailQueryKey else { return false }
+            guard !Task.isCancelled, ticket == mailGeneration, query == mailQueryKey, isCurrent() else { return false }
             let retainingPage = unreadOnly && retainedUnread?.scope == mailScopeKey && retainedUnread?.page == (offset ?? 0) / 50 + 1 && retainedUnread?.message.viewID == selectedMessage
             if let offset, offset > 0, result["messages"].array.isEmpty, !retainingPage {
                 let last = max(0, (Int(result["total"].number) - 1) / 50) * 50
-                if last < offset { return await loadMailPage(reset: false, offset: last) }
+                if last < offset { return await loadMailPage(reset: false, offset: last, isCurrent: isCurrent) }
             }
             if reset { mailCursors = [""] }
             if let offset { mailCursors = Array(repeating: "", count: offset / 50 + 1) }
@@ -422,16 +492,17 @@ final class AppModel: ObservableObject {
             selectedMessages.formIntersection(visibleMailRows.map(\.viewID))
             return true
         } catch {
-            guard !Task.isCancelled, ticket == mailGeneration, query == mailQueryKey else { return false }
+            guard !Task.isCancelled, ticket == mailGeneration, query == mailQueryKey, isCurrent() else { return false }
             self.error = error.localizedDescription
-            if !cursor.isEmpty { await loadMailPage(); notice = "Mail changed. Showing the first page." }
+            if !cursor.isEmpty { await loadMailPage(isCurrent: isCurrent); notice = "Mail changed. Showing the first page." }
             return false
         }
     }
-    func refreshMailPage() async {
+    func refreshMailPage() async { _ = await refreshMailPage(isCurrent: { true }) }
+    private func refreshMailPage(isCurrent: @escaping @MainActor () -> Bool) async -> Bool {
         // Keep the current rows visible while refreshing the same mailbox snapshot.
         let sameScope = mailPageKey == mailScopeKey
-        await loadMailPage(reset: !sameScope, offset: sameScope ? (mailCursors.count - 1) * 50 : 0)
+        return await loadMailPage(reset: !sameScope, offset: sameScope ? (mailCursors.count - 1) * 50 : 0, isCurrent: isCurrent)
     }
     func turnMailPage(next: Bool) async {
         let index = mailCursors.count - 1 + (next ? 1 : -1)

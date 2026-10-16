@@ -42,11 +42,11 @@ private struct ReplyReviewWorkspace: View {
                     if review.detailVisible[review.scope] == true, let selected {
                         VStack(spacing: 0) {
                             HStack { Button("Back to suggestions") { review.detailVisible[review.scope] = false; rowFocus = review.key(selected) }.keyboardShortcut(.cancelAction); Spacer(); Text("Drafts stay with their original mailbox").font(.caption).foregroundStyle(.secondary) }.padding(12)
-                            editor(selected)
+                            ReplySuggestionEditor(review: review, proposal: selected)
                         }
                     } else { list }
                 } else {
-                    HSplitView { list.frame(minWidth: 250, idealWidth: 280, maxWidth: 340); if let selected { editor(selected).frame(minWidth: 360) } }
+                    HSplitView { list.frame(minWidth: 250, idealWidth: 280, maxWidth: 340); if let selected { ReplySuggestionEditor(review: review, proposal: selected).frame(minWidth: 360) } }
                 }
             }
         }
@@ -84,57 +84,6 @@ private struct ReplyReviewWorkspace: View {
             let next = rows[max(0, min(rows.count - 1, index + (direction == .up ? -1 : 1)))]; rowFocus = review.key(next); review.selection[review.scope] = review.key(next); review.proposals[review.key(next)] = next
         }
     }
-    private func editor(_ proposal: JSON) -> some View {
-        let key = review.key(proposal), owner = review.owner(proposal)
-        return VStack(alignment: .leading, spacing: 0) {
-            HStack { Image(systemName: "lock.fill"); Text("From: " + owner).textSelection(.enabled); Spacer() }.font(.caption).foregroundStyle(.secondary).padding(14)
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    if let message = review.messages[key] {
-                        OriginalReviewMessage(message: message).frame(minHeight: 120)
-                    } else if review.preparing.contains(key) { ProgressView("Loading original message…") }
-                    if let error = review.errors[key] { Text(error).foregroundStyle(.red); Button("Reload original and suggestion") { Task { await review.inspect(proposal, model: model, replace: review.drafts[key] == nil) } } }
-                    if review.stale.contains(key) {
-                        Text("The suggestion or its evidence changed. Your draft is retained. Recheck the original before reviewing a send.").foregroundStyle(.orange)
-                        if let fresh = value["proposals"].array.first(where: { review.key($0) == key || (proposal["conversationKey"].nonempty && $0["conversationKey"] == proposal["conversationKey"]) }) {
-                            Button("Keep edits and refresh evidence") { Task { await review.refreshKeepingEdits(proposal, fresh: fresh, model: model) } }
-                            Button("Review updated suggestion…") {
-                                if review.savedPayloads[key] == review.drafts[key]?.payload || model.confirmDiscard("Replace this draft with the updated suggestion?") { Task { await review.inspect(fresh, model: model, replace: true) } }
-                            }
-                        }
-                    }
-                    if let draft = review.drafts[key] {
-                        HStack { Text("Suggested reply").font(.headline); Spacer(); Text(review.savedPayloads[key] == draft.payload ? "Ready to edit" : "Unsaved edits retained").font(.caption).foregroundStyle(.secondary) }
-                        Text("To: " + draft.to).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                        ForEach(Array(proposal["questions"].array.enumerated()), id: \.offset) { _, question in Label(question.string, systemImage: "questionmark.circle").font(.callout).foregroundStyle(.secondary) }
-                        TextEditor(text: Binding(get: { review.drafts[key]?.body ?? "" }, set: { body in guard !review.writing else { return }; review.drafts[key]?.body = body; review.reviewedFacts.remove(key) }))
-                            .font(.system(size: 14)).frame(minHeight: 190).padding(8).background(.background)
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary)).accessibilityLabel("Edit suggested reply from " + owner).disabled(review.writing)
-                        Toggle("I checked the facts, missing answers and commitments", isOn: Binding(get: { review.reviewedFacts.contains(key) }, set: { if $0 { review.reviewedFacts.insert(key) } else { review.reviewedFacts.remove(key) } })).toggleStyle(.checkbox).disabled(review.writing || review.stale.contains(key))
-                        DisclosureGroup("Evidence and permitted reference messages") {
-                            ForEach(Array(proposal["evidence"].array.enumerated()), id: \.offset) { _, quote in Text(quote["quote"].string).font(.callout).textSelection(.enabled) }
-                            SourceLinksView(sources: proposal["sourceMessages"].array)
-                            Text(proposal["approvedStyleUsed"].bool ? "Approved writing style used; style is not evidence of facts." : "No approved writing style was applied.").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(ReviewScrollMemory(key: "reply-detail:" + key, review: review))
-            }
-            Divider()
-            HStack {
-                Button("Skip suggestion") {
-                    model.perform {
-                        await review.dismiss(proposal, model: model)
-                    }
-                }.disabled(model.busy || review.writing)
-                Spacer()
-                Button("Save draft") { review.save(key, model: model) }.keyboardShortcut("s").disabled(review.drafts[key] == nil || review.writing || model.busy || !model.accounts.contains { $0.id == owner })
-                Button("Review sending…") { Task { await review.reviewSending(proposal, model: model) } }.buttonStyle(.borderedProminent)
-                    .disabled(review.drafts[key] == nil || review.drafts[key]?.body.lowercased().contains("[decision needed") == true || !review.reviewedFacts.contains(key) || review.stale.contains(key) || review.preparing.contains(key) || review.writing || model.busy || !model.accounts.contains { $0.id == owner })
-            }.padding(14)
-        }
-    }
     @ViewBuilder private var setup: some View {
         if review.scope != "all", !value.isNull {
             if !value["identityReady"].bool { Text("Confirm the identity for this mailbox first."); Button("Confirm this account's identity") { settings("learning") } }
@@ -162,5 +111,86 @@ private struct ReplyReviewWorkspace: View {
     private func settings(_ tab: String) {
         let owner = review.scope
         model.perform { try await model.selectAccount(owner); model.settings(tab) }
+    }
+}
+
+/// Shared by the queue and Today; all writes retain the original review workspace guards.
+@MainActor
+struct ReplySuggestionEditor: View {
+    @EnvironmentObject var model: AppModel
+    @ObservedObject var review: ReviewWorkspaceState
+    let proposal: JSON
+    var onUpdated: (@MainActor (JSON, JSON) -> Void)? = nil
+    private var value: JSON { review.values[review.scope] ?? .null }
+    var body: some View {
+        let key = review.key(proposal), owner = review.owner(proposal)
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack { Image(systemName: "lock.fill"); Text("From: " + owner).textSelection(.enabled); Spacer() }.font(.caption).foregroundStyle(.secondary).padding(14)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    if let message = review.messages[key] {
+                        OriginalReviewMessage(message: message).frame(minHeight: 120)
+                    } else if review.preparing.contains(key) { ProgressView("Loading original message…") }
+                    if let error = review.errors[key] { Text(error).foregroundStyle(.red); Button("Reload original and suggestion") { Task { await review.inspect(proposal, model: model, replace: review.drafts[key] == nil) } } }
+                    if review.stale.contains(key) {
+                        Text("The suggestion or its evidence changed. Your draft is retained. Recheck the original before reviewing a send.").foregroundStyle(.orange)
+                        if let fresh = value["proposals"].array.first(where: { review.key($0) == key || (proposal["conversationKey"].nonempty && $0["conversationKey"] == proposal["conversationKey"]) }) {
+                            ReviewActionButton(title: "Keep edits and refresh evidence", bordered: false) { Task {
+                                await review.refreshKeepingEdits(proposal, fresh: fresh, model: model)
+                                finishUpdate(fresh, keepingEdits: true)
+                            } }.fixedSize()
+                            ReviewActionButton(title: "Review updated suggestion…", bordered: false) {
+                                if review.savedPayloads[key] == review.drafts[key]?.payload || model.confirmDiscard("Replace this draft with the updated suggestion?") { Task {
+                                    await review.inspect(fresh, model: model, replace: true)
+                                    finishUpdate(fresh, keepingEdits: false)
+                                } }
+                            }.fixedSize()
+                        }
+                    }
+                    if let draft = review.drafts[key] {
+                        HStack { Text("Suggested reply").font(.headline); Spacer(); Text(review.savedPayloads[key] == draft.payload ? "Ready to edit" : "Unsaved edits retained").font(.caption).foregroundStyle(.secondary) }
+                        Text("To: " + draft.to).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        ForEach(Array(proposal["questions"].array.enumerated()), id: \.offset) { _, question in Label(question.string, systemImage: "questionmark.circle").font(.callout).foregroundStyle(.secondary) }
+                        TextEditor(text: Binding(get: { review.drafts[key]?.body ?? "" }, set: { body in guard !review.writing else { return }; review.drafts[key]?.body = body; review.reviewedFacts.remove(key) }))
+                            .font(.system(size: 14)).frame(minHeight: 190).padding(8).background(.background)
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary)).accessibilityLabel("Edit suggested reply from " + owner).disabled(review.writing)
+                        Toggle("I checked the facts, missing answers and commitments", isOn: Binding(get: { review.reviewedFacts.contains(key) }, set: { if $0 { review.reviewedFacts.insert(key) } else { review.reviewedFacts.remove(key) } })).toggleStyle(.checkbox).disabled(review.writing || review.stale.contains(key))
+                        DisclosureGroup("Evidence and permitted reference messages") {
+                            ForEach(Array(proposal["evidence"].array.enumerated()), id: \.offset) { _, quote in Text(quote["quote"].string).font(.callout).textSelection(.enabled) }
+                            SourceLinksView(sources: proposal["sourceMessages"].array)
+                            Text(proposal["approvedStyleUsed"].bool ? "Approved writing style used; style is not evidence of facts." : "No approved writing style was applied.").font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(ReviewScrollMemory(key: "reply-detail:" + key, review: review))
+            }
+            Divider()
+            HStack {
+                ReviewActionButton(title: "Skip suggestion", enabled: !model.busy && !review.writing, bordered: false) {
+                    model.perform {
+                        await review.dismiss(proposal, model: model)
+                    }
+                }.fixedSize()
+                Spacer()
+                Button("Save draft") { review.save(key, model: model) }.keyboardShortcut("s").disabled(review.drafts[key] == nil || review.writing || model.busy || !model.accounts.contains { $0.id == owner })
+                ReviewActionButton(title: "Review sending…", enabled: !(review.drafts[key] == nil || review.drafts[key]?.body.lowercased().contains("[decision needed") == true || !review.reviewedFacts.contains(key) || review.stale.contains(key) || review.preparing.contains(key) || review.writing || model.busy || !model.accounts.contains { $0.id == owner })) { Task { await review.reviewSending(proposal, model: model) } }
+                    .fixedSize()
+            }.padding(14)
+        }
+    }
+    private func finishUpdate(_ fresh: JSON, keepingEdits: Bool) {
+        let oldKey = review.key(proposal), newKey = review.key(fresh), owner = review.owner(proposal)
+        guard !Task.isCancelled, review.owner(fresh) == owner,
+              model.accounts.contains(where: { $0.id == owner }),
+              review.proposals[newKey] == fresh, review.errors[newKey] == nil,
+              let draft = review.drafts[newKey], draft.accountID == owner, draft.replyToID == fresh["messageId"].string,
+              review.messages[newKey]?["accountId"].string == owner,
+              review.messages[newKey]?.id == fresh["messageId"].string,
+              !review.preparing.contains(newKey) else { return }
+        if keepingEdits, newKey != oldKey {
+            guard review.proposals[oldKey] == nil, review.drafts[oldKey] == nil, review.messages[oldKey] == nil else { return }
+        }
+        onUpdated?(proposal, fresh)
     }
 }
