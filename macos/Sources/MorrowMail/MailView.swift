@@ -618,7 +618,20 @@ private struct RowLabel: NSViewRepresentable {
     }
 }
 private final class RowLabelField: NSTextField {
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    // A nil hit stops on this field's wrapper, so the row gesture never sees the click.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard super.hitTest(point) != nil else { return nil }
+        var view = superview
+        var belowRow: NSView?
+        var host: NSView?
+        while let current = view {
+            if current is NSHostingView { host = current }
+            if current is NSTableRowView { return host ?? belowRow ?? current }
+            belowRow = current
+            view = current.superview
+        }
+        return nil
+    }
 }
 
 struct MessageReader: View {
@@ -679,8 +692,8 @@ struct MessageReader: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text(message["subject"].nonempty ? message["subject"].string : "(No subject)")
-                        .font(.system(size: 21, weight: .semibold)).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    ReaderText(text: NSAttributedString(string: message["subject"].nonempty ? message["subject"].string : "(No subject)", attributes: [.font: NSFont.systemFont(ofSize: 21, weight: .semibold), .foregroundColor: NSColor.labelColor]))
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     if message["localFolderUndo"]["token"].nonempty {
                         HStack {
                             Text("Moved locally; the provider location was not changed.").font(.caption).foregroundStyle(.secondary)
@@ -707,7 +720,7 @@ struct MessageReader: View {
                     } label: {
                         HStack(spacing: 8) {
                             Text("Details")
-                            Text("To: " + message["to"].string).foregroundStyle(.secondary).lineLimit(1)
+                            RowLabel(text: "To: " + message["to"].string, secondary: true)
                         }.font(.caption)
                     }
                     if !message["aiSummary"].isNull {

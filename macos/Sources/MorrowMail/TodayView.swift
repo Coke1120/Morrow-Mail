@@ -42,7 +42,9 @@ private struct TodayReviewWorkspace: View {
                         Spacer()
                         if let first = replies.first {
                             Button("Review replies (\(replyCount))") { openReply(first) }.buttonStyle(.borderedProminent)
-                                .disabled(model.busy || review.writing).accessibilityIdentifier("today.reviewReplies")
+                                .disabled(model.busy || review.writing)
+                                .accessibilityLabel("Review replies (\(replyCount))")
+                                .accessibilityIdentifier("today.reviewReplies")
                         }
                         Menu("More") {
                             Button("Summarize now…") { showSummaryReview = true }.disabled(model.busy || model.backgroundBusy || accounts.isEmpty)

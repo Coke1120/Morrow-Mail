@@ -42,6 +42,27 @@ complete native menu/event/measurement execution, and the matching-source
 1k/10k/50k matrix remain required. WinUI event/layout evidence was already
 green and this change does not touch that measurement.
 
+## PR #58 row selection and Today review control — 16 October 2026
+
+AppKit run `38844093144` on `a0638ddd` mounted the 1,000-row page and both
+paging actions, then failed `Native row selection did not load its owned reader.`
+The posted click lands on the list subject field. That field returned no hit,
+so the click stopped on its wrapper and the row gesture never saw it. A hit
+inside a list field now goes to that row's hosting view. A field outside the
+list still passes the click through. The same display check only accepts native text leaves;
+list SwiftUI text already failed that check. The reader subject, plain body,
+and collapsed `To:` line are now those leaves. Plain-text links still open
+through the existing confirmation. The ten-second predicate is unchanged.
+
+Review run `38844093134` tracked every reader menu, then failed
+`Mounted enabled control missing: Review replies (3)`. The Today button's
+title was not on the button element that press inspects. The button now has
+that exact accessibility label. The five-second settle and the label text are
+unchanged.
+
+This VM has no Swift or AppKit run. These two checks stay unproven until CI
+on this head. WinUI measurement was already green and was not changed.
+
 ## PR #58 macOS review fixture completion — 15 October 2026
 
 Focused run `38760958694`, job `116511781887`, reported success for head
