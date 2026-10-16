@@ -9,6 +9,7 @@ const state = {
   thread: [],
   query: "",
   draftId: null,
+  composeMeta: null,
   busy: false,
   snoozed: new Map(),
   signatures: [],
@@ -321,6 +322,115 @@ function readable(email) {
   return (email && (email.textBody || email.snippet)) || "";
 }
 
+// shortcut: one string is one address, upgrade if the host sends a comma-separated To.
+function addressRows(value) {
+  const parts = Array.isArray(value) ? value : (value ? [value] : []);
+  const rows = [];
+  for (const item of parts) {
+    const text = String(item || "").trim();
+    if (!text) continue;
+    const angled = text.match(/<([^<>]+)>/);
+    const addr = (angled ? angled[1] : text).trim().toLowerCase();
+    if (!addr.includes("@")) continue;
+    rows.push({ addr, text });
+  }
+  return rows;
+}
+
+// shortcut: Reply All puts every other recipient in To, upgrade when compose has a Cc field.
+function replyAddresses(email, self, all) {
+  const mineRow = addressRows(self)[0];
+  const mine = mineRow ? mineRow.addr : String(self || "").trim().toLowerCase();
+  const seen = new Set();
+  const out = [];
+  const push = (row) => {
+    if (!row || seen.has(row.addr) || row.addr === mine) return;
+    seen.add(row.addr);
+    out.push(row.text);
+  };
+  const from = addressRows(email && email.from)[0];
+  const extras = addressRows(email && email.to).concat(addressRows(email && email.cc));
+  if (from) push(from);
+  if (all) {
+    for (const row of extras) push(row);
+  }
+  if (!out.length) {
+    for (const row of extras) push(row);
+  }
+  return out.join(", ");
+}
+
+function prefixedSubject(subject, prefix) {
+  const text = String(subject || "").trim();
+  if (!text) return prefix;
+  if (prefix === "Re:" && /^re\s*:/i.test(text)) return text;
+  if (prefix === "Fwd:" && /^(?:fwd|fw)\s*:/i.test(text)) return text;
+  return `${prefix} ${text}`;
+}
+
+function quoteBlock(text) {
+  const body = String(text || "").trim();
+  if (!body) return "";
+  return body.split("\n").map((line) => `> ${line}`).join("\n");
+}
+
+function replyBody(email) {
+  const quoted = quoteBlock(readable(email));
+  if (!quoted) return "";
+  const who = String((email && email.from) || "").trim() || "the sender";
+  return `\n\n${who} wrote:\n${quoted}`;
+}
+
+// shortcut: names only, upgrade when compose can attach the open message's blobs.
+function attachmentNote(email) {
+  const files = ((email && email.attachments) || []).filter((item) => item && (item.filename || item.id));
+  if (files.length) {
+    return `Attachments: ${files.map((item) => item.filename || "attachment").join(", ")}`;
+  }
+  if (email && email.hasAttachments) return "This message has attachments.";
+  return "";
+}
+
+function forwardBody(email) {
+  const lines = ["---------- Forwarded message ----------"];
+  const from = String((email && email.from) || "").trim();
+  if (from) lines.push(`From: ${from}`);
+  if (email && email.date) lines.push(`Date: ${email.date}`);
+  const subject = String((email && email.subject) || "").trim();
+  if (subject) lines.push(`Subject: ${subject}`);
+  const to = people(email && email.to);
+  if (to) lines.push(`To: ${to}`);
+  const cc = people(email && email.cc);
+  if (cc) lines.push(`Cc: ${cc}`);
+  const quoted = String(readable(email) || "").trim();
+  if (quoted) lines.push("", quoted);
+  const note = attachmentNote(email);
+  if (note) lines.push("", note);
+  return `\n\n${lines.join("\n")}`;
+}
+
+function composeSeed(email, kind, self) {
+  const message = email || {};
+  if (kind === "forward") {
+    return {
+      title: "Forward",
+      to: "",
+      subject: prefixedSubject(message.subject, "Fwd:"),
+      body: forwardBody(message),
+    };
+  }
+  const all = kind === "all";
+  const seed = {
+    title: all ? "Reply All" : "Reply",
+    to: replyAddresses(message, self, all),
+    subject: prefixedSubject(message.subject, "Re:"),
+    body: replyBody(message),
+  };
+  if (message.messageId) seed.inReplyTo = message.messageId;
+  if (message.threadId) seed.threadId = message.threadId;
+  return seed;
+}
+
 function fillPresets(cards) {
   const select = $("profile");
   select.replaceChildren();
@@ -498,6 +608,16 @@ function option(value, text) {
   return node;
 }
 
+function readerButton(action, label, run) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost";
+  button.dataset.action = action;
+  button.textContent = label;
+  button.addEventListener("click", () => guard(run));
+  return button;
+}
+
 function renderActions(pane, email) {
   const bar = document.createElement("div");
   bar.className = "reader-actions";
@@ -548,7 +668,17 @@ function renderActions(pane, email) {
     if (!preset) return;
     guard(() => (preset === "clear" ? unsnoozeOpen(email) : snoozeOpen(email, preset)));
   });
-  bar.append(star, archive, trash, move, snooze);
+  const self = (account && (account.preferredFromAddress || account.email)) || "";
+  const replyTo = replyAddresses(email, self, false);
+  const everyone = replyAddresses(email, self, true);
+  const reply = readerButton("reply", "Reply", () => openCompose(composeSeed(email, "reply", self)));
+  const forward = readerButton("forward", "Forward", () => openCompose(composeSeed(email, "forward", self)));
+  if (everyone !== replyTo) {
+    const replyAll = readerButton("reply-all", "Reply All", () => openCompose(composeSeed(email, "all", self)));
+    bar.append(reply, replyAll, forward, star, archive, trash, move, snooze);
+  } else {
+    bar.append(reply, forward, star, archive, trash, move, snooze);
+  }
   pane.appendChild(bar);
 }
 
@@ -1119,7 +1249,8 @@ async function connectOAuth(provider) {
 }
 
 function composePayload(account) {
-  return {
+  const meta = state.composeMeta || {};
+  const payload = {
     accountId: account.id,
     to: $("compose-to").value.trim(),
     subject: $("compose-subject").value,
@@ -1128,6 +1259,9 @@ function composePayload(account) {
     draftId: state.draftId || undefined,
     emailId: state.draftId || undefined,
   };
+  if (meta.inReplyTo) payload.inReplyTo = meta.inReplyTo;
+  if (meta.threadId) payload.threadId = meta.threadId;
+  return payload;
 }
 
 function syncCompose() {
@@ -1211,18 +1345,32 @@ function onSignatureChange() {
   state.signatureText = text;
 }
 
-function openCompose() {
+async function openCompose(seed) {
+  const fields = seed || {};
   state.draftId = null;
   state.signatureText = "";
-  $("compose-to").value = "";
-  $("compose-subject").value = "";
-  $("compose-body").value = "";
+  state.composeMeta = {
+    inReplyTo: fields.inReplyTo || "",
+    threadId: fields.threadId || "",
+  };
+  $("compose-title").textContent = fields.title || "New message";
+  $("compose-to").value = fields.to || "";
+  $("compose-subject").value = fields.subject || "";
+  $("compose-body").value = fields.body || "";
   $("schedule-preset").value = "1h";
   $("schedule-at").value = "";
   syncScheduleFields();
   syncCompose();
   openDialog("compose");
-  return Promise.all([fillSignatures(), loadScheduled()]);
+  await Promise.all([fillSignatures(), loadScheduled()]);
+  if (!$("compose").open) return;
+  if ($("compose-to").value.trim()) {
+    const body = $("compose-body");
+    body.focus();
+    body.setSelectionRange(0, 0);
+  } else {
+    $("compose-to").focus();
+  }
 }
 
 async function loadScheduled() {

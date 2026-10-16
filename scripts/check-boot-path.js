@@ -494,4 +494,122 @@ assert.ok(html.includes("Schedule send") && html.includes("In 1 hour") && html.i
 assert.ok(css.includes("#scheduled") && css.includes("#compose textarea") && css.includes("max-height: calc(100vh - 32px)"));
 assert.ok(css.includes("[hidden] { display: none !important; }"));
 
+const compose = loadFunctions(appJs, [
+  "people",
+  "readable",
+  "addressRows",
+  "replyAddresses",
+  "prefixedSubject",
+  "quoteBlock",
+  "replyBody",
+  "attachmentNote",
+  "forwardBody",
+  "composeSeed",
+]);
+const ada = "ada.lovelace@example.com";
+const engineMail = mailbox.answer("mail:openEmail", [{ emailId: "m-engine" }]).data.email;
+assert.deepStrictEqual(engineMail.cc, ["Mary Somerville <mary@example.com>"]);
+const reply = compose.composeSeed(engineMail, "reply", ada);
+assert.strictEqual(reply.title, "Reply");
+assert.strictEqual(reply.to, "Charles Babbage <charles@example.com>");
+assert.strictEqual(reply.subject, "Re: Notes on the Analytical Engine");
+assert.ok(reply.body.includes("Charles Babbage <charles@example.com> wrote:"));
+assert.ok(reply.body.includes("> The table of operations is ready for a second reading."));
+assert.ok(!reply.body.includes("mary@example.com"));
+assert.strictEqual(reply.threadId, "m-engine");
+assert.strictEqual(reply.inReplyTo, undefined);
+const replyAll = compose.composeSeed(engineMail, "all", ada);
+assert.strictEqual(replyAll.title, "Reply All");
+assert.strictEqual(replyAll.to, "Charles Babbage <charles@example.com>, Mary Somerville <mary@example.com>");
+assert.ok(!replyAll.to.toLowerCase().includes(ada));
+assert.ok(!compose.replyAddresses(engineMail, "Ada Lovelace <ada.lovelace@example.com>", true).toLowerCase().includes(ada));
+const own = mailbox.answer("mail:openEmail", [{ emailId: "m-compiler-2" }]).data.email;
+assert.strictEqual(compose.composeSeed(own, "reply", ada).to, "Grace Hopper <grace.hopper@example.com>");
+assert.strictEqual(compose.composeSeed(own, "reply", ada).subject, "Re: A compiler is just another program");
+assert.strictEqual(
+  compose.replyAddresses(own, ada, true),
+  compose.replyAddresses(own, ada, false),
+);
+const compiler = mailbox.answer("mail:openEmail", [{ emailId: "m-compiler" }]).data.email;
+const forwarded = compose.composeSeed(compiler, "forward", ada);
+assert.strictEqual(forwarded.to, "");
+assert.strictEqual(forwarded.subject, "Fwd: A compiler is just another program");
+assert.ok(forwarded.body.includes("---------- Forwarded message ----------"));
+assert.ok(forwarded.body.includes("From: Grace Hopper <grace.hopper@example.com>"));
+assert.ok(forwarded.body.includes("Once the machine can read its own instructions, the rest follows."));
+assert.ok(forwarded.body.includes("Attachments: notes.txt"));
+assert.strictEqual(forwarded.inReplyTo, undefined);
+assert.strictEqual(forwarded.threadId, undefined);
+assert.ok(!Object.hasOwn(forwarded, "attachments"));
+assert.strictEqual(compose.prefixedSubject("Re: Already", "Re:"), "Re: Already");
+assert.strictEqual(compose.prefixedSubject("FW: Already", "Fwd:"), "FW: Already");
+assert.strictEqual(compose.prefixedSubject("Re: Keep", "Fwd:"), "Fwd: Re: Keep");
+assert.strictEqual(compose.prefixedSubject("", "Re:"), "Re:");
+assert.strictEqual(compose.prefixedSubject("Regarding this", "Re:"), "Re: Regarding this");
+const htmlReply = compose.composeSeed({
+  from: "Charles Babbage <charles@example.com>",
+  subject: "Notes",
+  htmlBody: "<p>Ready &amp; waiting.</p><p>Second line</p>",
+  messageId: "<abc@example.com>",
+  threadId: "t-notes",
+}, "reply", ada);
+assert.ok(htmlReply.body.includes("> Ready & waiting."));
+assert.ok(htmlReply.body.includes("> Second line"));
+assert.ok(!htmlReply.body.includes("<p>"));
+assert.strictEqual(htmlReply.inReplyTo, "<abc@example.com>");
+assert.strictEqual(htmlReply.threadId, "t-notes");
+assert.strictEqual(compose.composeSeed({
+  from: "Lovelace, Ada <ada.lovelace@example.com>",
+  to: ["Grace Hopper <grace.hopper@example.com>"],
+  subject: "Sent",
+  textBody: "See you",
+}, "reply", ada).to, "Grace Hopper <grace.hopper@example.com>");
+const namedOnly = compose.composeSeed({
+  from: "A <a@b.c>",
+  subject: "File",
+  textBody: "See attached",
+  hasAttachments: true,
+}, "forward", "");
+assert.ok(namedOnly.body.includes("This message has attachments."));
+assert.ok(!namedOnly.body.includes("Attachments:"));
+assert.strictEqual(compose.attachmentNote({ attachments: [{ id: "x" }] }), "Attachments: attachment");
+assert.strictEqual(compose.composeSeed({ subject: "Hi" }, "reply", ada).to, "");
+assert.strictEqual(compose.composeSeed({ subject: "Hi" }, "forward", ada).body.includes("Forwarded message"), true);
+const scheduledReply = mailbox.answer("mail:scheduleSend", [{
+  accountId: "gmail-ada",
+  to: reply.to,
+  subject: reply.subject,
+  sendAt: future,
+  threadId: reply.threadId,
+}]);
+assert.strictEqual(scheduledReply.success, true);
+assert.strictEqual(scheduledReply.data.subject, "Re: Notes on the Analytical Engine");
+assert.strictEqual(scheduledReply.data.to, reply.to);
+assert.strictEqual(mailbox.answer("mail:upsertDraft", [{
+  accountId: "gmail-ada",
+  to: reply.to,
+  subject: reply.subject,
+  body: "<p>Thanks</p>",
+  threadId: reply.threadId,
+}]).success, true);
+assert.strictEqual(mailbox.answer("mail:send", [{
+  accountId: "gmail-ada",
+  to: reply.to,
+  subject: reply.subject,
+  body: "<p>Thanks</p>",
+  threadId: reply.threadId,
+}]).success, true);
+assert.strictEqual(mailbox.answer("mail:scheduleSend", [{
+  accountId: "gmail-ada",
+  to: "",
+  subject: forwarded.subject,
+  sendAt: future,
+}]).success, false);
+assert.ok(appJs.includes('readerButton("reply"') && appJs.includes('readerButton("reply-all"') && appJs.includes('readerButton("forward"'));
+assert.ok(appJs.includes("inReplyTo") && appJs.includes("threadId"));
+for (const channel of ["mail:reply", "mail:forward"]) {
+  assert.ok(!appJs.includes(channel), `renderer invented ${channel}`);
+  assert.ok(!preload.includes(channel), `preload registers ${channel}`);
+}
+
 console.log("ui-path-ok");
