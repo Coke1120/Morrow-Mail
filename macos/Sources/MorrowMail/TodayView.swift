@@ -141,20 +141,17 @@ private struct TodayReviewWorkspace: View {
                 HStack { Text("Replies to review").font(.headline); Spacer(); Button("View all \(replyCount) →") { model.section = "reply-suggestions" }.disabled(!model.canNavigate) }
                 if replies.isEmpty { Text("No current suggestions for this scope. Automatic checks and setup live on Reply suggestions.").foregroundStyle(.secondary) }
                 ForEach(Array(replies.prefix(3)), id: \.viewID) { proposal in
-                    Button {
-                        openReply(proposal)
-                    } label: {
+                    let subject = proposal["message"]["subject"].string
+                    HStack(alignment: .center, spacing: 8) {
                         VStack(alignment: .leading, spacing: 5) {
-                            HStack {
-                                Text(proposal["message"]["subject"].nonempty ? proposal["message"]["subject"].string : "(Subject withheld)").font(.system(size: 14, weight: .semibold))
-                                Spacer(minLength: 8)
-                                Label("Review", systemImage: "chevron.right").font(.caption)
-                            }
+                            Text(proposal["message"]["subject"].nonempty ? subject : "(Subject withheld)").font(.system(size: 14, weight: .semibold))
                             Text(review.owner(proposal) + " · " + proposal["reason"].string).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                        }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(.quaternary.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: 9))
-                    }.buttonStyle(.plain).disabled(model.busy || review.writing)
-                        .accessibilityIdentifier("today.reviewReply." + review.key(proposal))
-                        .accessibilityRepresentation { Button("Review suggested reply: " + proposal["message"]["subject"].string) { openReply(proposal) }.disabled(model.busy || review.writing) }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                            .onTapGesture { if !model.busy, !review.writing { openReply(proposal) } }
+                        ReviewActionButton(title: "Review", axLabel: "Review suggested reply: " + subject, enabled: !model.busy && !review.writing, identifier: "today.reviewReply." + review.key(proposal), bordered: false) { openReply(proposal) }
+                            .fixedSize().layoutPriority(1)
+                    }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(.quaternary.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: 9))
                 }
                 Text("Suggested tasks").font(.headline)
                 Text("From saved summaries and unread Inbox mail on this device. Completing a suggestion does not mark mail read.").font(.caption).foregroundStyle(.secondary)

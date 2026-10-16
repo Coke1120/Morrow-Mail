@@ -14,20 +14,16 @@ struct ReviewAccountTabs: View {
                 HStack(spacing: 7) {
                     Text("Mailbox scope").font(.caption).foregroundStyle(.secondary)
                     ForEach(owners, id: \.self) { owner in
-                        Button { choose(owner) } label: {
-                            HStack(spacing: 7) {
-                                Text(owner == "all" ? "All accounts" : owner).lineLimit(1)
-                                let counts = model.state["today"]["replySuggestionCounts"]
-                                let count = counts.isNull ? model.state["today"]["replySuggestions"].array.filter { owner == "all" || review.owner($0) == owner }.count : owner == "all" ? counts.object.values.reduce(0) { $0 + Int($1.number) } : Int(counts[owner].number)
-                                Text(count.formatted()).font(.caption.monospacedDigit()).foregroundStyle(.secondary).help("Replies waiting for review")
-                            }.padding(.horizontal, 12).padding(.vertical, 8)
-                                .background(review.scope == owner ? morrowGreen.opacity(0.13) : .clear).clipShape(RoundedRectangle(cornerRadius: 8))
-                        }.buttonStyle(.plain).id(owner).focused($focused, equals: owner).help(owner)
-                            .accessibilityIdentifier("review.account.\(owner)")
-                            .disabled(review.writing)
-                            // The visible label is the address plus a count. The press looks up
-                            // "address, not selected", which never becomes that button's AX title.
-                            .accessibilityRepresentation { Button(scopeLabel(owner)) { choose(owner) }.disabled(review.writing) }
+                        let counts = model.state["today"]["replySuggestionCounts"]
+                        let count = counts.isNull ? model.state["today"]["replySuggestions"].array.filter { owner == "all" || review.owner($0) == owner }.count : owner == "all" ? counts.object.values.reduce(0) { $0 + Int($1.number) } : Int(counts[owner].number)
+                        // SwiftUI accessibilityLabel never appears in this host's AX tree.
+                        HStack(spacing: 7) {
+                            ReviewActionButton(title: owner == "all" ? "All accounts" : owner, axLabel: scopeLabel(owner), enabled: !review.writing, identifier: "review.account.\(owner)", bordered: false) { choose(owner) }
+                                .fixedSize().layoutPriority(1)
+                            Text(count.formatted()).font(.caption.monospacedDigit()).foregroundStyle(.secondary).help("Replies waiting for review")
+                        }.padding(.horizontal, 12).padding(.vertical, 8)
+                            .background(review.scope == owner ? morrowGreen.opacity(0.13) : .clear).clipShape(RoundedRectangle(cornerRadius: 8))
+                            .id(owner).focused($focused, equals: owner).help(owner)
                     }
                 }.padding(.horizontal, 24)
             }.frame(height: 48)
@@ -79,8 +75,9 @@ struct ReviewScrollMemory: NSViewRepresentable {
 // A new NSButton's fitting size stays empty until sizeToFit, and the cell can
 // accept the accessibility press without sending the button action.
 final class ReviewActionControl: NSButton {
+    var axLabel = ""
     override func accessibilityRole() -> NSAccessibility.Role? { .button }
-    override func accessibilityLabel() -> String? { title }
+    override func accessibilityLabel() -> String? { axLabel.isEmpty ? title : axLabel }
     override func isAccessibilityEnabled() -> Bool { isEnabled }
     override func isAccessibilityHidden() -> Bool { isHiddenOrHasHiddenAncestor }
     override func accessibilityFrame() -> NSRect {
@@ -96,16 +93,16 @@ final class ReviewActionControl: NSButton {
 
 struct ReviewActionButton: NSViewRepresentable {
     var title: String
+    var axLabel = ""
     var enabled = true
     var identifier = ""
+    var bordered = true
     var keyEquivalent = ""
     var keyModifiers: NSEvent.ModifierFlags = []
     var action: () -> Void
     func makeCoordinator() -> Coordinator { Coordinator(action) }
     func makeNSView(context: Context) -> NSButton {
         let button = ReviewActionControl(title: title, target: context.coordinator, action: #selector(Coordinator.press))
-        button.bezelStyle = .rounded
-        button.bezelColor = .controlAccentColor
         button.setContentCompressionResistancePriority(.required, for: .horizontal)
         button.setContentCompressionResistancePriority(.required, for: .vertical)
         updateNSView(button, context: context)
@@ -125,9 +122,13 @@ struct ReviewActionButton: NSViewRepresentable {
     }
     func updateNSView(_ button: NSButton, context: Context) {
         context.coordinator.action = action
+        button.isBordered = bordered
+        if bordered { button.bezelStyle = .rounded; button.bezelColor = .controlAccentColor }
         if button.title != title { button.title = title; button.invalidateIntrinsicContentSize() }
-        button.setAccessibilityLabel(title)
-        button.cell?.setAccessibilityLabel(title)
+        let label = axLabel.isEmpty ? title : axLabel
+        (button as? ReviewActionControl)?.axLabel = label
+        button.setAccessibilityLabel(label)
+        button.cell?.setAccessibilityLabel(label)
         if !identifier.isEmpty { button.setAccessibilityIdentifier(identifier) }
         button.keyEquivalent = keyEquivalent
         button.keyEquivalentModifierMask = keyModifiers

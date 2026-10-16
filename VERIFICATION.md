@@ -76,11 +76,15 @@ presses. The Today, send-review, and Review & Send actions are now accent
 hosting view to the window size so a GeometryReader does not collapse the
 header outside the window. This VM still has no Swift or AppKit run.
 
-Run `38858445956` on `c2192de` failed the same check. Run `38863778088` then
-found an enabled `Review replies (3)` and failed `accessibilityPerformPress`.
-The button is sized with `sizeToFit`, reports its own screen frame, and the
-press performs the button click. The fixture pins the window and, when the
-match is the cell, presses the button that owns it.
+Run `38858445956` on `c2192de` failed the same check. Run `38863778088` found
+an enabled `Review replies (3)` and failed its press; the button now performs
+that click. Run `38864512045` pressed Review replies, then missed
+`personal@fixture.invalid, not selected`. Run `38865608800` on `a2eab49` still
+missed it: the probe listed no `review.account` node and no "not selected"
+label, so SwiftUI `accessibilityLabel` / `accessibilityRepresentation` never
+enter this hosting view's AX tree. Scope tabs and suggested-reply cards now
+use the same mounted `NSButton` the fixture already finds, with the press
+title on `axLabel`. No AppKit run was available here.
 
 ## PR #58 macOS review fixture completion — 15 October 2026
 
