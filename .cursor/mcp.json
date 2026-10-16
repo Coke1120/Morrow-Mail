@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "codebase-memory-mcp": {
+      "type": "stdio",
+      "command": "/home/ubuntu/.local/share/codebase-memory-mcp/codebase-memory-mcp",
+      "args": []
+    }
+  }
+}
