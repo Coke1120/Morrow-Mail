@@ -1,0 +1,22 @@
+{
+  "name": "genmail-exact",
+  "version": "1.0.0",
+  "description": "",
+  "main": "host/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron ."
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "electron": "^33.4.11"
+  },
+  "dependencies": {
+    "imapflow": "^2.5.0",
+    "mailparser": "^3.9.39",
+    "nodemailer": "^10.1.1",
+    "sql.js": "^1.15.0"
+  }
+}

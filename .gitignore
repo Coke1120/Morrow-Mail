@@ -1,0 +1,14 @@
+node_modules/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+dist/
+out/
+*.asar
+*.db
+*.sqlite
+*.sqlite3
+.hermes/
+Library/
