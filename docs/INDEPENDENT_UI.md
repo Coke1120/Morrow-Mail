@@ -20,7 +20,7 @@ With no connected account the host answers from the built-in sample mailbox in `
 
 Not in this slice, and not matching GenMail inside the Genspark launcher yet:
 
-- Visual parity with that GenMail shell
+- Visual parity with that GenMail shell beyond the three-pane chrome in [PARITY_SHELL.md](PARITY_SHELL.md)
 - Calendar, Email Brain, AI Write, and translate in this window
 - Search, snooze, conversation view, attachment open/save, signatures, scheduled send
 - Updater controls here (AI Setup remains on the application menu)

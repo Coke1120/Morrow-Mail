@@ -56,4 +56,40 @@ assert.ok(main.includes("loadFile(FIRST_PARTY_HTML)"));
 
 const pkg = require("../package.json");
 assert.ok(pkg.build.files.includes("renderer/**/*"));
+
+function extractFunction(source, name) {
+  const start = source.indexOf(`function ${name}(`);
+  assert.ok(start >= 0, `missing ${name}`);
+  let depth = 0;
+  for (let i = source.indexOf("{", start); i < source.length; i++) {
+    const ch = source[i];
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return new Function(`${source.slice(start, i + 1)}; return ${name};`)();
+      }
+    }
+  }
+  throw new Error(`unclosed ${name}`);
+}
+
+const senderName = extractFunction(appJs, "senderName");
+assert.strictEqual(senderName(""), "(unknown sender)");
+assert.strictEqual(senderName("charles@example.com"), "charles@example.com");
+assert.strictEqual(senderName("Charles Babbage <charles@example.com>"), "Charles Babbage");
+assert.strictEqual(senderName('"Ada Lovelace" <ada@example.com>'), "Ada Lovelace");
+
+const nextRow = extractFunction(appJs, "nextRow");
+assert.strictEqual(nextRow(0, -1, 1), -1);
+assert.strictEqual(nextRow(3, -1, 1), 0);
+assert.strictEqual(nextRow(3, -1, -1), 2);
+assert.strictEqual(nextRow(3, 0, -1), 0);
+assert.strictEqual(nextRow(3, 2, 1), 2);
+assert.strictEqual(nextRow(3, 1, 1), 2);
+
+assert.ok(appJs.includes('className = "when"'), "message list does not render a date");
+assert.ok(appJs.includes("ArrowDown") && appJs.includes("moveCursor"), "message list has no arrow-key cursor");
+const css = fs.readFileSync(path.join(root, "renderer/app.css"), "utf8");
+assert.ok(css.includes(".list-title") && css.includes(".when"), "shell css missing dense list styles");
 console.log("ui-path-ok");

@@ -90,6 +90,41 @@ function toHtml(text) {
     .replace(/\n/g, "<br>");
 }
 
+function senderName(from) {
+  const text = String(from || "").trim();
+  if (!text) return "(unknown sender)";
+  const cut = text.indexOf("<");
+  const name = (cut > 0 ? text.slice(0, cut) : text).trim().replaceAll('"', "");
+  return name || text;
+}
+
+function listWhen(iso) {
+  const date = iso ? new Date(iso) : null;
+  if (!date || Number.isNaN(date.getTime())) return "";
+  const now = new Date();
+  if (date.toDateString() === now.toDateString()) {
+    return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+  const sameYear = date.getFullYear() === now.getFullYear();
+  return date.toLocaleDateString([], sameYear
+    ? { month: "short", day: "numeric" }
+    : { year: "numeric", month: "short", day: "numeric" });
+}
+
+function nextRow(length, index, delta) {
+  if (length <= 0) return -1;
+  if (index < 0) return delta < 0 ? length - 1 : 0;
+  const next = index + delta;
+  if (next < 0) return 0;
+  if (next >= length) return length - 1;
+  return next;
+}
+
+function people(value) {
+  if (Array.isArray(value)) return value.filter(Boolean).join(", ");
+  return value ? String(value) : "";
+}
+
 function readable(email) {
   const html = email && email.htmlBody ? String(email.htmlBody) : "";
   if (html) {
@@ -188,6 +223,12 @@ function renderAccounts() {
 function renderList() {
   const list = $("messages");
   list.replaceChildren();
+  const account = selectedAccount();
+  const folder = foldersOf(account).find((item) => item.id === state.folderId);
+  const title = document.createElement("h2");
+  title.className = "list-title";
+  title.textContent = (folder && (folder.name || folder.id)) || "Messages";
+  list.appendChild(title);
   if (!state.emails.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
@@ -210,18 +251,25 @@ function renderList() {
     }
     const from = document.createElement("span");
     from.className = "from";
-    from.textContent = email.from || "(unknown sender)";
+    from.textContent = senderName(email.from);
+    const when = document.createElement("time");
+    when.className = "when";
+    if (email.date) when.dateTime = email.date;
+    when.textContent = listWhen(email.date);
     const subject = document.createElement("span");
+    subject.className = "subject";
     subject.textContent = email.subject || "(no subject)";
     const snippet = document.createElement("span");
     snippet.className = "snippet";
     snippet.textContent = email.snippet || "";
-    button.append(from, subject, snippet);
+    button.append(from, when, subject, snippet);
     button.addEventListener("click", () => {
       openMessage(email.id).catch((error) => showStatus(error.message, true));
     });
     list.appendChild(button);
   }
+  const current = list.querySelector('[aria-current="true"]');
+  if (current) current.scrollIntoView({ block: "nearest" });
 }
 
 function renderReader(focus) {
@@ -245,6 +293,14 @@ function renderReader(focus) {
   const date = email.date ? new Date(email.date) : null;
   when.textContent = date && !Number.isNaN(date.getTime()) ? date.toLocaleString() : "";
   pane.append(heading, from, when);
+  for (const [label, value] of [["To", email.to], ["Cc", email.cc]]) {
+    const text = people(value);
+    if (!text) continue;
+    const line = document.createElement("p");
+    line.className = "meta";
+    line.textContent = `${label} ${text}`;
+    pane.appendChild(line);
+  }
   if (state.threadCount > 1) {
     const thread = document.createElement("p");
     thread.className = "meta";
@@ -493,7 +549,50 @@ async function loadPresets() {
   }
 }
 
+function shellBlocked(target) {
+  if (!target || !target.closest) return true;
+  if (target.closest("input, textarea, select, [contenteditable='true']")) return true;
+  return !!document.querySelector("dialog[open]");
+}
+
+function messageButtons() {
+  return [...$("messages").querySelectorAll("button.message")];
+}
+
+function moveCursor(delta) {
+  const buttons = messageButtons();
+  if (!buttons.length) return;
+  let index = buttons.indexOf(document.activeElement);
+  if (index < 0) index = buttons.findIndex((button) => button.classList.contains("cursor"));
+  if (index < 0) index = buttons.findIndex((button) => button.getAttribute("aria-current") === "true");
+  const next = buttons[nextRow(buttons.length, index, delta)];
+  if (!next) return;
+  for (const button of buttons) button.classList.toggle("cursor", button === next);
+  next.focus();
+  next.scrollIntoView({ block: "nearest" });
+}
+
+function onShellKey(event) {
+  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Enter") return;
+  if (shellBlocked(event.target)) return;
+  if (event.key === "Enter") {
+    const buttons = messageButtons();
+    if (buttons.includes(document.activeElement)) return;
+    if (event.target.closest && event.target.closest("nav, header, dialog, #reader")) return;
+    const target = buttons.find((button) => button.classList.contains("cursor"))
+      || buttons.find((button) => button.getAttribute("aria-current") === "true");
+    if (!target) return;
+    event.preventDefault();
+    target.click();
+    return;
+  }
+  event.preventDefault();
+  moveCursor(event.key === "ArrowDown" ? 1 : -1);
+}
+
 function wire() {
+  document.addEventListener("keydown", onShellKey);
   $("profile").addEventListener("change", syncCustomFields);
   $("refresh").addEventListener("click", () => guard(refresh));
   $("connect-open").addEventListener("click", () => openDialog("connect"));
