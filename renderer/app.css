@@ -73,6 +73,33 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   outline-offset: 2px;
 }
 
+#updates {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+}
+
+#update-status.error { color: #9f1239; }
+
+#updates button { padding: 2px 8px; }
+
+#prefs {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 12px 0 0;
+}
+
+#prefs dt { font-weight: 600; }
+
+#prefs dd { margin: 0; }
+
+#prefs .error { color: #9f1239; }
+
 #notice {
   display: flex;
   flex-wrap: wrap;

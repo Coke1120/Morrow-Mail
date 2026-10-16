@@ -19,6 +19,8 @@
 - Snoozes a thread for 1 hour, tonight, or tomorrow morning, and unsnoozes it (`mail:snoozeThread`, `mail:unsnoozeThread`, `mail:listSnoozed`)
 - Translates the open message (`mail:translateStart`, `mail:translateCancel`, `mail:translate:event`). A missing API key is reported in the reading pane. The key itself is still set in AI Setup
 - Inserts a host signature in compose (`mail:listSignatures`), or shows an empty state when the mailbox has none
+- Shows the app version and checks or installs updates (`app:getVersion`, `host:updateGetState`, `host:updateCheck`, `host:updateInstall`)
+- Shows a few host preferences (`config:getTheme`, `genmail:configGet*`). API keys stay in AI Setup
 
 With no connected account the host answers from the built-in sample mailbox in `host/mailbox.js`, including star, archive, trash, move, and snooze. Translate shows the host error when no API key is set, and compose shows no signatures. That mail is not yours and Send stays disabled. Connecting an account switches the same channels over to the live IMAP engine.
 
@@ -31,4 +33,4 @@ Not in this slice, and not matching GenMail inside the Genspark launcher yet:
 - Visual parity with that GenMail shell beyond the three-pane chrome in [PARITY_SHELL.md](PARITY_SHELL.md)
 - Calendar, Email Brain, and AI Write in this window
 - Signatures editor, scheduled send
-- Updater controls here (AI Setup remains on the application menu)
+- Writing settings, or changing API keys, from this window (AI Setup remains on the application menu)

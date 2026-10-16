@@ -21,7 +21,7 @@ Artifacts land in `dist/`. Codesign / notarize / Authenticode are **not** config
 ## Updater
 
 - Library: `electron-updater` → GitHub Releases on private `Coke1120/genmail-rea`.
-- Packaged app checks on launch; IPC `update:getState` / `host:updateCheck` / `host:updateInstall`.
+- Packaged app checks on launch; IPC `update:getState` / `host:updateCheck` / `host:updateInstall`. The first-party shell reads `host:updateGetState` and calls `host:updateCheck` / `host:updateInstall`.
 - Private repo requires `GH_TOKEN` (or `GITHUB_TOKEN`) in the environment of the running app **or** publish with electron-builder’s GitHub token so latest.yml is readable.
 - Unpacked `npm start` keeps updater disabled (dev stub).
 

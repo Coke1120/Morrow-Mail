@@ -40,7 +40,7 @@ for (const match of preload.matchAll(/"([a-zA-Z][\w-]*:[^"\n]{1,180})"/g)) {
 }
 const appJs = fs.readFileSync(path.join(root, "renderer/app.js"), "utf8");
 const used = new Set();
-for (const match of appJs.matchAll(/"((?:mail|app):[^"]+)"/g)) used.add(match[1]);
+for (const match of appJs.matchAll(/"((?:mail|app|host|genmail|config):[^"]+)"/g)) used.add(match[1]);
 assert.ok(used.size >= 8, "renderer stopped calling mail IPC");
 for (const channel of used) {
   assert.ok(registered.has(channel), `preload does not register ${channel}`);
@@ -324,5 +324,74 @@ for (const channel of [
 assert.ok(appJs.includes('"Translate"') && appJs.includes('"Cancel"') && appJs.includes('"No signatures."'));
 assert.ok(html.includes('id="signature"') && html.includes("No signatures."));
 assert.ok(css.includes(".translate") && css.includes(".translation") && css.includes(".body p"));
+
+const updateView = extractFunction(appJs, "updateView");
+const idle = updateView({}, "0.1.0");
+assert.strictEqual(idle.version, "0.1.0");
+assert.strictEqual(idle.status, "Up to date.");
+assert.strictEqual(idle.error, "");
+assert.strictEqual(idle.install, false);
+assert.strictEqual(idle.busy, false);
+assert.strictEqual(updateView({ enabled: false }, "0.1.0").status, "Updater is off until the app is packaged.");
+const failed = updateView({ error: "network", downloaded: true }, "");
+assert.strictEqual(failed.status, "Update failed.");
+assert.strictEqual(failed.error, "network");
+assert.strictEqual(failed.install, false);
+assert.strictEqual(updateView({ downloaded: true, version: "0.2.0" }, "0.1.0").status, "Update 0.2.0 ready.");
+assert.strictEqual(updateView({ downloaded: true, version: "0.2.0" }, "0.1.0").install, true);
+assert.strictEqual(updateView({ downloaded: true }, "").status, "Update ready.");
+const downloading = updateView({ downloading: true, progress: 42.2 }, "");
+assert.strictEqual(downloading.status, "Downloading 42%…");
+assert.strictEqual(downloading.busy, true);
+assert.strictEqual(downloading.install, false);
+assert.strictEqual(updateView({ checking: true }, "").status, "Checking for updates…");
+assert.strictEqual(updateView({ checking: true }, "").busy, true);
+const installing = updateView({ installing: true, downloaded: true, version: "0.2.0" }, "");
+assert.strictEqual(installing.status, "Installing…");
+assert.strictEqual(installing.install, false);
+assert.strictEqual(installing.busy, true);
+assert.strictEqual(updateView({ available: true, version: "0.2.0" }, "").status, "Update 0.2.0 available.");
+assert.strictEqual(updateView({ available: true }, "").status, "Update available.");
+assert.strictEqual(updateView(null, 12).version, "");
+assert.strictEqual(updateView(null, 12).status, "Up to date.");
+assert.strictEqual(updateView({ downloading: true, progress: "nope" }, "").status, "Downloading 0%…");
+
+const prefRows = extractFunction(appJs, "prefRows");
+const prefText = extractFunction(appJs, "prefText");
+assert.strictEqual(prefText("bool", true), "On");
+assert.strictEqual(prefText("bool", false), "Off");
+assert.strictEqual(prefText("seconds", 5), "5 seconds");
+assert.strictEqual(prefText("seconds", "nope"), "—");
+assert.strictEqual(prefText("text", "#7C3AED"), "#7C3AED");
+assert.strictEqual(prefText("text", ""), "—");
+assert.strictEqual(prefText("text", null), "—");
+const ipcSrc = fs.readFileSync(path.join(root, "host/ipc.js"), "utf8");
+const prefs = prefRows();
+assert.ok(prefs.length >= 4, "settings lists too few preferences");
+for (const [channel, label, kind] of prefs) {
+  assert.ok(registered.has(channel), `preload does not register ${channel}`);
+  assert.ok(used.has(channel), `renderer does not call ${channel}`);
+  assert.ok(ipcSrc.includes('"' + channel + '"'), `host stub missing ${channel}`);
+  assert.strictEqual(typeof label, "string");
+  assert.ok(kind === "text" || kind === "bool" || kind === "seconds");
+}
+assert.ok(!ipcSrc.includes("configSet"), "host grew a set channel; settings is still read-only");
+assert.ok(!appJs.includes("configSet") && !appJs.includes("host:aiSaveConfig"));
+
+for (const channel of ["host:updateGetState", "host:updateCheck", "host:updateInstall"]) {
+  assert.ok(registered.has(channel), `preload does not register ${channel}`);
+  assert.ok(used.has(channel), `renderer does not call ${channel}`);
+}
+assert.ok(main.includes("directHost.has(channel)"), "attachIpc would register updater channels twice");
+const updaterSrc = fs.readFileSync(path.join(root, "host/updater.js"), "utf8");
+assert.ok(updaterSrc.includes("CHANNELS"));
+for (const channel of ["host:updateGetState", "host:updateCheck", "host:updateInstall"]) {
+  const count = updaterSrc.split('"' + channel + '"').length - 1;
+  assert.ok(count >= 2, channel + " must be registered and listed");
+}
+assert.ok(html.includes('id="updates"') && html.includes('id="update-check"') && html.includes('id="update-install"'));
+assert.ok(html.includes("Check for updates") && html.includes(">Install<"));
+assert.ok(html.includes('id="settings"') && html.includes('id="prefs"') && html.includes("AI Setup"));
+assert.ok(css.includes("#updates") && css.includes("#prefs"));
 
 console.log("ui-path-ok");

@@ -104,4 +104,6 @@ function registerIpc() {
   });
 }
 
-module.exports = { init, registerIpc, snapshot, state };
+const CHANNELS = ["host:updateGetState", "host:updateCheck", "host:updateInstall"];
+
+module.exports = { init, registerIpc, snapshot, state, CHANNELS };

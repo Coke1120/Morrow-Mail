@@ -2,6 +2,15 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 const INVOKE = [
   "app:getVersion",
+  "host:updateGetState",
+  "host:updateCheck",
+  "host:updateInstall",
+  "config:getTheme",
+  "genmail:configGetAccent",
+  "genmail:configGetConversationViewEnabled",
+  "genmail:configGetAutoLoadRemoteImages",
+  "genmail:configGetUndoSendDelaySeconds",
+  "genmail:configGetSnoozeEffective",
   "mail:listAccounts",
   "mail:listImapSmtpPresets",
   "mail:connectImapSmtp",

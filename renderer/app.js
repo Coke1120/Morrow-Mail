@@ -24,6 +24,9 @@ let reloadTimer = null;
 let undoOpIds = null;
 let translateSeq = 0;
 let signatureGen = 0;
+let appVersion = "";
+let updateGen = 0;
+let updateTimer = null;
 
 function $(id) {
   return document.getElementById(id);
@@ -1330,6 +1333,133 @@ function wireSplits() {
   }
 }
 
+function updateView(snapshot, version) {
+  const snap = snapshot && typeof snapshot === "object" ? snapshot : {};
+  const current = typeof version === "string" ? version : "";
+  let status = "Up to date.";
+  let install = false;
+  let busy = false;
+  const error = snap.error ? String(snap.error) : "";
+  if (error) {
+    status = "Update failed.";
+  } else if (snap.installing) {
+    status = "Installing…";
+    busy = true;
+  } else if (snap.downloaded) {
+    status = snap.version ? "Update " + snap.version + " ready." : "Update ready.";
+    install = true;
+  } else if (snap.downloading) {
+    const pct = typeof snap.progress === "number" ? Math.round(snap.progress) : 0;
+    status = "Downloading " + pct + "%…";
+    busy = true;
+  } else if (snap.checking) {
+    status = "Checking for updates…";
+    busy = true;
+  } else if (snap.available) {
+    status = snap.version ? "Update " + snap.version + " available." : "Update available.";
+  } else if (snap.enabled === false) {
+    status = "Updater is off until the app is packaged.";
+  }
+  return { version: current, status: status, error: error, install: install, busy: busy };
+}
+
+function paintUpdate(view) {
+  $("version").textContent = view.version ? "Version " + view.version : "";
+  const status = $("update-status");
+  status.textContent = view.error ? view.status + " " + view.error : view.status;
+  status.classList.toggle("error", !!view.error);
+  $("update-check").disabled = !!view.busy;
+  const install = $("update-install");
+  install.hidden = !view.install;
+  if (!view.install) install.disabled = false;
+}
+
+function showUpdate(snapshot) {
+  const view = updateView(snapshot, appVersion);
+  paintUpdate(view);
+  clearTimeout(updateTimer);
+  if (!view.busy) return;
+  const gen = updateGen;
+  updateTimer = setTimeout(() => {
+    api.invoke("host:updateGetState").then((next) => {
+      if (gen !== updateGen) return;
+      showUpdate(next);
+    }).catch((error) => {
+      if (gen !== updateGen) return;
+      showUpdate({ error: error instanceof Error ? error.message : String(error) });
+    });
+  }, 1000);
+}
+
+function bumpUpdate(snapshot) {
+  updateGen += 1;
+  showUpdate(snapshot);
+}
+
+async function checkForUpdates() {
+  $("update-check").disabled = true;
+  try {
+    bumpUpdate(await api.invoke("host:updateCheck"));
+  } catch (error) {
+    bumpUpdate({ error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+async function installUpdate() {
+  $("update-install").disabled = true;
+  try {
+    bumpUpdate(await api.invoke("host:updateInstall"));
+  } catch (error) {
+    bumpUpdate({ error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+function prefRows() {
+  return [
+    ["config:getTheme", "Theme", "text"],
+    ["genmail:configGetAccent", "Accent", "text"],
+    ["genmail:configGetConversationViewEnabled", "Conversation view", "bool"],
+    ["genmail:configGetAutoLoadRemoteImages", "Load remote images", "bool"],
+    ["genmail:configGetUndoSendDelaySeconds", "Undo send", "seconds"],
+    ["genmail:configGetSnoozeEffective", "Snooze", "bool"],
+  ];
+}
+
+function prefText(kind, value) {
+  if (kind === "bool") return value === true ? "On" : "Off";
+  if (kind === "seconds") {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "—";
+    return n + " seconds";
+  }
+  if (value == null || value === "") return "—";
+  return String(value);
+}
+
+async function loadSettings() {
+  const list = $("prefs");
+  list.replaceChildren();
+  for (const [channel, label, kind] of prefRows()) {
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const value = document.createElement("dd");
+    value.textContent = prefText(kind, await api.invoke(channel));
+    list.append(term, value);
+  }
+}
+
+function openSettings() {
+  openDialog("settings");
+  loadSettings().catch((error) => {
+    const list = $("prefs");
+    list.replaceChildren();
+    const note = document.createElement("p");
+    note.className = "error";
+    note.textContent = error instanceof Error ? error.message : String(error);
+    list.appendChild(note);
+  });
+}
+
 function wire() {
   document.addEventListener("keydown", onShellKey);
   wireSplits();
@@ -1345,6 +1475,14 @@ function wire() {
     applySearch();
   });
   $("refresh").addEventListener("click", () => guard(refresh));
+  $("settings-open").addEventListener("click", openSettings);
+  $("settings-close").addEventListener("click", () => closeDialog("settings"));
+  $("update-check").addEventListener("click", () => {
+    checkForUpdates();
+  });
+  $("update-install").addEventListener("click", () => {
+    installUpdate();
+  });
   $("connect-open").addEventListener("click", () => openDialog("connect"));
   $("connect-close").addEventListener("click", () => closeDialog("connect"));
   $("connect-form").addEventListener("submit", (event) => {
@@ -1377,9 +1515,14 @@ async function boot() {
   api.on("mail:translate:event", onTranslateEvent);
   try {
     const version = await api.invoke("app:getVersion");
-    $("version").textContent = typeof version === "string" ? version : "";
+    appVersion = typeof version === "string" ? version : "";
   } catch {
-    $("version").textContent = "";
+    appVersion = "";
+  }
+  try {
+    bumpUpdate(await api.invoke("host:updateGetState"));
+  } catch (error) {
+    bumpUpdate({ error: error instanceof Error ? error.message : String(error) });
   }
   await loadPresets();
   await loadAccounts();

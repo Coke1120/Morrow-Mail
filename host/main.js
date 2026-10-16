@@ -113,7 +113,10 @@ function attachIpc(preloadFile) {
     channels.add(match[1]);
   }
   fs.appendFileSync(LOG, `# channels ${channels.size}\n`);
+  // updater.registerIpc already owns these. A second ipcMain.handle throws.
+  const directHost = new Set(updater.CHANNELS);
   for (const channel of channels) {
+    if (directHost.has(channel)) continue;
     ipcMain.handle(channel, (event, ...args) => bus.handle(event, channel, ...args));
     ipcMain.on(channel, (event, ...args) => {
       bus.send(event, channel, ...args);
