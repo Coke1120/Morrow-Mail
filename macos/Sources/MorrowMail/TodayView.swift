@@ -98,7 +98,7 @@ private struct TodayReviewWorkspace: View {
     }
     private var closeReply: some View {
         HStack {
-            ReviewActionButton(title: "Back to Today", bordered: false, identifier: "today.closeReply", keyEquivalent: "\u{1b}") { replySelection = nil }.fixedSize()
+            ReviewActionButton(title: "Back to Today", identifier: "today.closeReply", bordered: false, keyEquivalent: "\u{1b}") { replySelection = nil }.fixedSize()
             Spacer()
             Text("Draft edits stay with their mailbox").font(.caption).foregroundStyle(.secondary)
         }.padding(12)

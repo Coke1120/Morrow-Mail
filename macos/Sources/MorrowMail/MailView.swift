@@ -428,7 +428,7 @@ struct MailWorkspace: View {
                 } label: { Label("Sort", systemImage: "arrow.up.arrow.down") }.fixedSize().accessibilityIdentifier("mail.sortMenu").disabled(!model.searchResponse.isNull)
                 Spacer(minLength: 0)
                 if !model.selectedMailRows.isEmpty {
-                ReviewActionButton(title: "Delete (\(model.selectedMailRows.count))", bordered: false, enabled: model.canNavigate && model.selectedMailRows.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" }, identifier: "mail.deleteSelection") { model.trashMessages(model.selectedMailRows) }
+                ReviewActionButton(title: "Delete (\(model.selectedMailRows.count))", enabled: model.canNavigate && model.selectedMailRows.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" }, identifier: "mail.deleteSelection", bordered: false) { model.trashMessages(model.selectedMailRows) }
                     .fixedSize()
                     .help("Move selected mail to provider Trash · Undo within one minute (⌘Z)")
                 }
@@ -1131,7 +1131,7 @@ struct ComposeView: View {
                     recipientField("Cc", text: $draft.cc, placeholder: "Copy recipients")
                     recipientField("Bcc", text: $draft.bcc, placeholder: "Hidden recipients")
                 } else {
-                    ReviewActionButton(title: "Add Cc or Bcc", bordered: false, identifier: "compose.addCopyRecipients") { showCopyRecipients = true }
+                    ReviewActionButton(title: "Add Cc or Bcc", identifier: "compose.addCopyRecipients", bordered: false) { showCopyRecipients = true }
                         .fixedSize()
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }

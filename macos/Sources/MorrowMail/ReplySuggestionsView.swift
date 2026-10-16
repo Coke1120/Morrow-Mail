@@ -167,7 +167,7 @@ struct ReplySuggestionEditor: View {
             }
             Divider()
             HStack {
-                ReviewActionButton(title: "Skip suggestion", bordered: false, enabled: !model.busy && !review.writing) {
+                ReviewActionButton(title: "Skip suggestion", enabled: !model.busy && !review.writing, bordered: false) {
                     model.perform {
                         await review.dismiss(proposal, model: model)
                     }
