@@ -7,6 +7,11 @@ on:
   pull_request:
 permissions:
   contents: read
+# One run per pull request, or per ref for main, tags, and manual dispatch.
+# A newer push cancels the previous macOS and Windows jobs in that run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 # Explicit owner waiver for this prerelease only; future tags retain all tests.
 env:
   SKIP_TESTS: ${{ github.ref == 'refs/tags/v0.6.0-beta.18' }}
