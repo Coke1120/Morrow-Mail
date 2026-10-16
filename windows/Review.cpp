@@ -37,6 +37,7 @@ struct Page : std::enable_shared_from_this<Page> {
     ContentControl optionsHost{nullptr}; hstring optionsPaint;
     TextBlock notice{nullptr},detailNotice{nullptr}; TextBox body{nullptr}; CheckBox facts{nullptr}; Button send{nullptr},replace{nullptr},refreshEvidence{nullptr};
     DropDownButton replyMore{nullptr};
+    uint64_t replyToken=0;
     std::vector<Json> rows;
     bool current() const { return live && !shell->closing && shell->generation==generation && shell->section==kind && shell->review->scope==scope; }
     void say(hstring const& value) { if (current()) notice.Text(value); }
@@ -127,7 +128,7 @@ void paintEditor(P const& p,hstring const& key) {
         if(auto page=weak.lock();page && page->current() && !page->shell->review->writing && page->selectedKey==key
             && page->body==sender.template as<TextBox>() && page->shell->review->detailKinds[std::wstring(page->scope)]==L"reply"
             && page->shell->review->details[std::wstring(page->scope)]) {
-            auto& current=page->shell->review->entries[std::wstring(key)]; put(current.draft,L"body",sender.template as<TextBox>().Text()); current.reviewed=false;
+            auto& current=page->shell->review->entries[std::wstring(key)]; auto next=sender.template as<TextBox>().Text(); if(text(current.draft,L"body")==next) return; put(current.draft,L"body",next); current.reviewed=false;
             if(page->facts) page->facts.IsChecked(false); if(page->send) page->send.IsEnabled(false);
         }
     }); content.Children().Append(body);
@@ -150,18 +151,18 @@ void paintEditor(P const& p,hstring const& key) {
     evidence.Content(quotes); content.Children().Append(evidence);
     auto warning=label(entry.stale ? L"Sources changed. Your draft is retained; review a fresh suggestion before sending.":L"Edits stay with this mailbox. Sending still requires the normal recipient and delivery confirmation.",12); p->detailNotice=warning; content.Children().Append(warning);
     auto replace=button(L"Load latest suggestion…",[weak=std::weak_ptr<Page>(p)]{ if(auto page=weak.lock();page && page->current()) replaceReply(page); }); p->replace=replace; replace.Visibility(entry.stale ? xaml::Visibility::Visible:xaml::Visibility::Collapsed); content.Children().Append(replace);
-    MenuFlyout more;auto moreButton=actionMenu(L"More",more,L"More actions for this suggested reply");p->replyMore=moreButton;
-    auto replyContext=[weak=std::weak_ptr<Page>(p),control=make_weak(moreButton),key,owner,
-        scope=p->scope,generation=p->generation,sequence=p->selection,proposal=entry.proposal.Stringify()]() -> P {
-        auto page=weak.lock();auto target=control.get();
-        // Open flyout can mark this anchor unloaded or give it another XamlRoot; replyMore still rejects a replacement.
-        if(!page || !page->current() || !target || page->replyMore!=target
+    MenuFlyout more;auto moreButton=actionMenu(L"More",more,L"More actions for this suggested reply");auto token=++p->replyToken;p->replyMore=moreButton;
+    auto replyContext=[weak=std::weak_ptr<Page>(p),token,key,owner,
+        scope=p->scope,generation=p->generation,sequence=p->selection,keptId=proposalId(entry.proposal),keptText=text(entry.proposal,L"text")]() -> P {
+        auto page=weak.lock();
+        // An open flyout can drop a weak anchor; the token still rejects a replaced More button.
+        if(!page || !page->current() || page->replyToken!=token || !page->replyMore
             || page->generation!=generation || page->selection!=sequence
             || page->scope!=scope || page->selectedKey!=key || !page->shell->connected(owner)
             || page->shell->review->detailKinds[std::wstring(scope)]!=L"reply" || !page->shell->review->details[std::wstring(scope)])return {};
         auto found=page->shell->review->entries.find(std::wstring(key));
         if(found==page->shell->review->entries.end() || ownerOf(found->second.proposal)!=owner || keyOf(found->second.proposal)!=key
-            || found->second.proposal.Stringify()!=proposal)return {};
+            || proposalId(found->second.proposal)!=keptId || text(found->second.proposal,L"text")!=keptText)return {};
         return page;
     };
     auto refreshEvidence=button(L"Keep edits and refresh evidence",[replyContext]{if(auto page=replyContext())keepEdits(page);});
@@ -248,7 +249,8 @@ struct WriteGuard {
     std::shared_ptr<Shell> shell;
     P page;
     explicit WriteGuard(P const& p):shell(p->shell),page(p) { shell->review->writing=true; shell->navigation.IsEnabled(false);if(p->body)p->body.IsEnabled(false);if(p->facts)p->facts.IsEnabled(false);if(p->send)p->send.IsEnabled(false); }
-    ~WriteGuard(){ shell->review->writing=false; if(!shell->closing) shell->navigation.IsEnabled(true);if(page->current()){if(page->body)page->body.IsEnabled(true);auto found=shell->review->entries.find(std::wstring(page->selectedKey));if(found!=shell->review->entries.end()){auto const& entry=found->second;if(page->facts)page->facts.IsEnabled(!entry.stale);if(page->send)page->send.IsEnabled(entry.reviewed&&!entry.stale&&!needsDecision(entry.draft));}} }
+    // Re-enable the editor before clearing writing so that event cannot rewrite the retained draft.
+    ~WriteGuard(){ if(page->current()){if(page->body)page->body.IsEnabled(true);auto found=shell->review->entries.find(std::wstring(page->selectedKey));if(found!=shell->review->entries.end()){auto const& entry=found->second;if(page->facts)page->facts.IsEnabled(!entry.stale);if(page->send)page->send.IsEnabled(entry.reviewed&&!entry.stale&&!needsDecision(entry.draft));}} shell->review->writing=false; if(!shell->closing) shell->navigation.IsEnabled(true); }
 };
 IAsyncAction keepEdits(P p) {
     if(!p->current()||p->busy||p->shell->review->writing||p->selectedKey.empty()

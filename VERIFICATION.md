@@ -21,18 +21,21 @@ matching are unchanged.
 Run `38791296552` still had no text leaves in the list cell (`nodes=7`,
 `nativeEdges=6`, `axEdges=0`). Plain list subjects and combined mailbox captions
 are now non-editable `NSTextField`s that do not take clicks. Search-hit
-subjects stay SwiftUI text. The ten-second predicate is unchanged.
+subjects stay SwiftUI text. The ten-second predicate is unchanged. Head
+`2026882` did not compile: `accessibilityLabel` is a method on this AppKit
+surface. The label now uses `accessibilityLabel()` and `setAccessibilityLabel`,
+the same calls as the AppKit checks.
 
-The Windows review phase failed with “The current reply More action was blocked
-or did not retain the fictional draft after its local lookup.” The open item
-uses the same context as the visible button. That context required the anchor
-to be loaded and to share the shell `XamlRoot`, which an open flyout can fail
-while the button is still the current reply and `keepEdits` is skipped. Those
-two checks are removed. Page, control identity, generation, selection, scope,
-owner, detail and proposal checks remain, and a replaced More control still
-does not refresh. The not-found lookup still keeps the fictional draft and
-does not prepare or send. Which clause failed was not logged, and this was
-not executed on WinUI.
+The Windows review phase on `2026882` still failed with “The current reply More
+action was blocked or did not retain the fictional draft after its local
+lookup,” after the loaded and XamlRoot checks were already gone. The open item
+keeps page, generation, selection, scope, owner, detail and the current reply.
+It no longer requires a weak anchor or a full JSON snapshot; a per-editor token
+still rejects a replaced More button, and proposal identity is the id and text.
+Unchanged body text does not rewrite the draft, and the editor is re-enabled
+before the write guard clears. A missing suggestion still keeps the fictional
+draft and does not prepare or send. Which clause failed was not logged, and
+this was not executed on WinUI.
 
 No AppKit or WinUI run was available here. Fresh exact-source primary CI,
 complete native menu/event/measurement execution, and the matching-source

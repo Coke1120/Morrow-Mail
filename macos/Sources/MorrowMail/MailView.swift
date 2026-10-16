@@ -614,7 +614,7 @@ private struct RowLabel: NSViewRepresentable {
         if field.stringValue != text { field.stringValue = text }
         field.font = NSFont.systemFont(ofSize: secondary ? 10 : 13, weight: bold ? .bold : .regular)
         field.textColor = secondary ? .secondaryLabelColor : .labelColor
-        if let accessibility, field.accessibilityLabel != accessibility { field.accessibilityLabel = accessibility }
+        if let accessibility, field.accessibilityLabel() != accessibility { field.setAccessibilityLabel(accessibility) }
     }
 }
 private final class RowLabelField: NSTextField {
