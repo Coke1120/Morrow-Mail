@@ -115,9 +115,16 @@ nav h2 {
   margin: 0;
   padding: 6px 10px;
   font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   background: var(--paper);
   border-bottom: 1px solid var(--line);
 }
+
+#search-form { display: flex; align-items: center; }
+
+#search-query { width: 11rem; padding: 4px 8px; }
 
 nav .reauth {
   margin: 0 8px 6px;
@@ -213,6 +220,52 @@ button.message.unread .from::before {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
+
+.thread {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 12px 8px;
+}
+
+button.thread-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  padding: 3px 6px;
+}
+
+button.thread-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button.thread-item .when { color: var(--muted); font-size: 12px; }
+
+button.thread-item[aria-current="true"] { background: #efe7fb; }
+
+.attachments {
+  list-style: none;
+  margin: 0;
+  padding: 4px 16px 8px;
+}
+
+.attachments li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+}
+
+.attachments button { padding: 2px 8px; }
 
 .empty, .meta, .body { padding: 0 16px; }
 

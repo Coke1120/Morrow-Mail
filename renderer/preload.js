@@ -11,6 +11,10 @@ const INVOKE = [
   "mail:listFromNetwork",
   "mail:openEmail",
   "mail:markRead",
+  "mail:search",
+  "mail:listThreadMessages",
+  "mail:downloadAttachment",
+  "mail:openAttachmentExternally",
   "mail:upsertDraft",
   "mail:send",
 ];

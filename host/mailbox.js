@@ -154,7 +154,7 @@ function message(partial) {
     providerCategory: partial.unifiedCategory || "primary",
     htmlBody: partial.htmlBody,
     textBody: partial.textBody,
-    attachments: [],
+    attachments: partial.attachments || [],
   };
 }
 

@@ -6,7 +6,8 @@ const state = {
   folderId: null,
   emails: [],
   email: null,
-  threadCount: 0,
+  thread: [],
+  query: "",
   draftId: null,
   busy: false,
 };
@@ -220,6 +221,20 @@ function renderAccounts() {
   }
 }
 
+function fileSize(size) {
+  const n = Number(size);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${Math.round(n / 1024)} KB`;
+  return `${(n / 1048576).toFixed(1)} MB`;
+}
+
+function threadMembers(fromOpen, listed) {
+  const open = Array.isArray(fromOpen) ? fromOpen.filter((row) => row && row.id) : [];
+  if (open.length) return open;
+  return Array.isArray(listed) ? listed.filter((row) => row && row.id) : [];
+}
+
 function renderList() {
   const list = $("messages");
   list.replaceChildren();
@@ -227,12 +242,12 @@ function renderList() {
   const folder = foldersOf(account).find((item) => item.id === state.folderId);
   const title = document.createElement("h2");
   title.className = "list-title";
-  title.textContent = (folder && (folder.name || folder.id)) || "Messages";
+  title.textContent = state.query ? `Search: ${state.query}` : ((folder && (folder.name || folder.id)) || "Messages");
   list.appendChild(title);
   if (!state.emails.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
-    empty.textContent = "No messages in this folder.";
+    empty.textContent = state.query ? "No messages match that search." : "No messages in this folder.";
     list.appendChild(empty);
     return;
   }
@@ -301,19 +316,8 @@ function renderReader(focus) {
     line.textContent = `${label} ${text}`;
     pane.appendChild(line);
   }
-  if (state.threadCount > 1) {
-    const thread = document.createElement("p");
-    thread.className = "meta";
-    thread.textContent = `This thread has ${state.threadCount} messages. Showing the one you opened.`;
-    pane.appendChild(thread);
-  }
-  const names = (email.attachments || []).map((item) => item && item.filename).filter(Boolean);
-  if (names.length) {
-    const files = document.createElement("p");
-    files.className = "meta";
-    files.textContent = `Attachments: ${names.join(", ")}`;
-    pane.appendChild(files);
-  }
+  renderThread(pane, email);
+  renderAttachments(pane, email);
   const body = document.createElement("pre");
   body.className = "body";
   body.textContent = readable(email);
@@ -322,6 +326,88 @@ function renderReader(focus) {
     heading.tabIndex = -1;
     heading.focus();
   }
+}
+
+function renderThread(pane, email) {
+  const members = state.thread.slice().sort((a, b) => String(a.date || "").localeCompare(String(b.date || "")));
+  if (members.length < 2) return;
+  const list = document.createElement("div");
+  list.className = "thread";
+  list.setAttribute("aria-label", `${members.length} messages in this conversation`);
+  for (const member of members) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "thread-item";
+    if (member.id === email.id) button.setAttribute("aria-current", "true");
+    const who = document.createElement("span");
+    who.textContent = `${senderName(member.from)} — ${member.subject || "(no subject)"}`;
+    const when = document.createElement("time");
+    when.className = "when";
+    if (member.date) when.dateTime = member.date;
+    when.textContent = listWhen(member.date);
+    button.append(who, when);
+    button.addEventListener("click", () => {
+      if (member.id === email.id) return;
+      openMessage(member.id).catch((error) => showStatus(error.message, true));
+    });
+    list.appendChild(button);
+  }
+  pane.appendChild(list);
+}
+
+function renderAttachments(pane, email) {
+  const files = (email.attachments || []).filter((item) => item && (item.filename || item.id));
+  if (!files.length) {
+    if (!email.hasAttachments) return;
+    const note = document.createElement("p");
+    note.className = "meta";
+    note.textContent = "This message has attachments.";
+    pane.appendChild(note);
+    return;
+  }
+  const list = document.createElement("ul");
+  list.className = "attachments";
+  for (const file of files) {
+    const item = document.createElement("li");
+    const name = document.createElement("span");
+    const size = fileSize(file.size);
+    const label = file.filename || "attachment";
+    name.textContent = size ? `${label} (${size})` : label;
+    item.appendChild(name);
+    if (file.id) {
+      const save = document.createElement("button");
+      save.type = "button";
+      save.className = "ghost";
+      save.textContent = "Save";
+      save.setAttribute("aria-label", `Save ${label}`);
+      save.addEventListener("click", () => guard(() => useAttachment("mail:downloadAttachment", email, file)));
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "ghost";
+      open.textContent = "Open";
+      open.setAttribute("aria-label", `Open ${label}`);
+      open.addEventListener("click", () => guard(() => useAttachment("mail:openAttachmentExternally", email, file)));
+      item.append(save, open);
+    }
+    list.appendChild(item);
+  }
+  pane.appendChild(list);
+}
+
+async function useAttachment(channel, email, file) {
+  try {
+    await call(channel, {
+      emailId: email.id,
+      messageId: email.id,
+      attachmentId: file.id,
+      filename: file.filename,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === "cancelled") return;
+    throw error;
+  }
+  showStatus(channel === "mail:downloadAttachment" ? "Saved." : "Opened.");
 }
 
 function rememberSelection(preferredId) {
@@ -334,19 +420,26 @@ function rememberSelection(preferredId) {
     const inbox = first ? inboxOf(first) : null;
     state.folderId = inbox ? inbox.id : null;
     state.email = null;
-    state.threadCount = 0;
+    state.thread = [];
     return;
   }
   if (!foldersOf(selectedAccount()).some((folder) => folder.id === state.folderId)) {
     const inbox = inboxOf(selectedAccount());
     state.folderId = inbox ? inbox.id : null;
     state.email = null;
-    state.threadCount = 0;
+    state.thread = [];
   }
 }
 
 async function loadList() {
   const gen = ++listGen;
+  if (state.query) {
+    const data = await call("mail:search", { query: state.query, limit: 30, filters: {} });
+    if (gen !== listGen) return;
+    state.emails = Array.isArray(data) ? data : [];
+    renderList();
+    return;
+  }
   const account = selectedAccount();
   if (!account || !state.folderId) {
     state.emails = [];
@@ -380,11 +473,14 @@ async function loadAccounts(preferredId) {
 async function selectFolder(accountId, folderId) {
   state.accountId = accountId;
   state.folderId = folderId;
+  state.query = "";
+  $("search-query").value = "";
   state.email = null;
-  state.threadCount = 0;
+  state.thread = [];
   renderAccounts();
   syncRemove();
   renderReader(false);
+  showStatus("");
   await loadList();
 }
 
@@ -394,8 +490,22 @@ async function openMessage(emailId) {
   if (gen !== openGen) return;
   const email = data && data.email;
   if (!email) throw new Error("That message is no longer in the mailbox.");
+  let listed = null;
+  const fromOpen = data && data.threadMessages;
+  if ((!Array.isArray(fromOpen) || !fromOpen.length) && email.threadId) {
+    try {
+      listed = await call("mail:listThreadMessages", {
+        threadId: email.threadId,
+        accountId: email.accountId,
+        headersOnly: true,
+      });
+    } catch {
+      // The opened message still renders when the thread list fails.
+    }
+    if (gen !== openGen) return;
+  }
   state.email = email;
-  state.threadCount = data && Array.isArray(data.threadMessages) ? data.threadMessages.length : 1;
+  state.thread = threadMembers(fromOpen, listed);
   renderReader(true);
   renderList();
   if (!email.unread) return;
@@ -404,6 +514,21 @@ async function openMessage(emailId) {
   } catch {
     // The message is already on screen.
   }
+}
+
+async function applySearch() {
+  const query = $("search-query").value.trim();
+  state.query = query;
+  if (query) showStatus("Searching…");
+  try {
+    await loadList();
+  } catch (error) {
+    if (state.query !== query) return;
+    showStatus(error instanceof Error ? error.message : String(error), true);
+    return;
+  }
+  if (state.query !== query) return;
+  showStatus("");
 }
 
 function scheduleReload() {
@@ -520,8 +645,10 @@ async function removeAccount() {
   await call("mail:removeAccount", { accountId: account.id });
   state.accountId = null;
   state.folderId = null;
+  state.query = "";
+  $("search-query").value = "";
   state.email = null;
-  state.threadCount = 0;
+  state.thread = [];
   showStatus("Account removed.");
   await loadAccounts();
 }
@@ -594,6 +721,15 @@ function onShellKey(event) {
 function wire() {
   document.addEventListener("keydown", onShellKey);
   $("profile").addEventListener("change", syncCustomFields);
+  $("search-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    applySearch();
+  });
+  $("search-query").addEventListener("search", () => {
+    if ($("search-query").value.trim()) return;
+    if (!state.query) return;
+    applySearch();
+  });
   $("refresh").addEventListener("click", () => guard(refresh));
   $("connect-open").addEventListener("click", () => openDialog("connect"));
   $("connect-close").addEventListener("click", () => closeDialog("connect"));
