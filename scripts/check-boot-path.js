@@ -937,6 +937,7 @@ const brainUi = loadFunctions(appJs, [
   "removeCategory",
   "categoryFromCommand",
   "defaultCategoryHint",
+  "brainSkillLists",
 ]);
 assert.deepStrictEqual(brainUi.brainSections(null), []);
 assert.deepStrictEqual(brainUi.brainSections({ persona: {} }), []);
@@ -1000,6 +1001,8 @@ for (const channel of [
   "emailBrain:getCategories",
   "emailBrain:saveCategories",
   "emailBrain:addCategoryViaPrompt",
+  "emailBrain:getSkills",
+  "emailBrain:getLibrarySkills",
   "emailBrain:updated",
   "emailBrain:refreshState",
   "emailBrain:rebuildState",
@@ -1011,10 +1014,20 @@ assert.ok(html.includes('id="brain"') && html.includes('id="brain-rule"') && htm
 assert.ok(html.includes(">Brain<") && html.includes(">Add<") && html.includes("Writing rule"));
 assert.ok(html.includes('id="brain-category-list"') && html.includes('id="brain-category-name"') && html.includes('id="brain-category-description"'));
 assert.ok(html.includes('id="brain-category-collapse"') && html.includes('id="brain-category-save"') && html.includes('id="brain-category-ai"'));
+assert.ok(html.includes('id="brain-skills"') && html.includes('id="brain-home-skills"') && html.includes('id="brain-library-skills"') && html.includes('id="brain-skill-status"'));
+assert.deepStrictEqual(brainUi.brainSkillLists().map((row) => row[1]), [
+  "emailBrain:getSkills",
+  "emailBrain:getLibrarySkills",
+]);
+assert.deepStrictEqual(brainUi.brainSkillLists().map((row) => row[2]), [
+  "No home skills.",
+  "No library skills.",
+]);
 assert.ok(html.includes("Categories") && html.includes("Collapse view") && html.includes("Save categories") && html.includes("Use defaults"));
 assert.ok(appJs.includes("No writing rules yet.") && appJs.includes("Needs an AI key."));
 assert.ok(appJs.includes("No categories.") && appJs.includes("A category needs a name.") && appJs.includes("Describe a category."));
 assert.ok(css.includes(".brain-row") && css.includes("#brain-status") && css.includes("#brain-category-status") && css.includes("#brain-categories"));
+assert.ok(css.includes("#brain-skill-status") && css.includes("#brain-skills") && css.includes(".brain-skill"));
 const parity = fs.readFileSync(path.join(root, "docs/PARITY_SHELL.md"), "utf8");
 const studioUi = loadFunctions(appJs, ["skillRows", "skillLine", "studioLists", "envelopeError"]);
 assert.deepStrictEqual(studioUi.studioLists().map((row) => row[1]), [
@@ -1051,7 +1064,9 @@ assert.ok(css.includes("#studio-status") && css.includes(".studio-row"));
 assert.ok(parity.includes("emailBrain:getCached") && parity.includes("emailBrain:addWritingRule"));
 assert.ok(parity.includes("emailBrain:getCategories") && parity.includes("emailBrain:saveCategories") && parity.includes("emailBrain:addCategoryViaPrompt"));
 assert.ok(parity.includes("nativeAgent:home:skills") && parity.includes("nativeAgent:home:librarySkills"));
-assert.ok(parity.includes("calendar") && parity.includes("full skills library"));
+assert.ok(parity.includes("emailBrain:getSkills") && parity.includes("emailBrain:getLibrarySkills"));
+assert.ok(parity.includes("calendar") && parity.includes("Other host preferences") && parity.includes("full agent skill runner"));
+assert.ok(!parity.includes("full skills library"));
 assert.ok(!parity.includes("AI Studio, calendar"));
 assert.ok(parity.includes("skills library"));
 assert.ok(parity.includes("config:setTheme") && parity.includes("genmail:configSetSnoozeEffective"));
@@ -1115,6 +1130,19 @@ async function checkAiDraft() {
   const brain = require("../host/brain");
   const { loadConfig } = require("../host/ai-config");
   assert.strictEqual(loadConfig().apiKey, "");
+  const brainHome = brain.answer("emailBrain:getSkills", []);
+  const brainLibrary = brain.answer("emailBrain:getLibrarySkills", []);
+  assert.strictEqual(brainHome.success, true);
+  assert.strictEqual(brainLibrary.success, true);
+  assert.deepStrictEqual(studioUi.skillRows(brainHome.data).map(studioUi.skillLine), [
+    "Match my tone — Replies follow your writing rules.",
+    "Sort new mail — Files messages with your categories.",
+  ]);
+  assert.deepStrictEqual(studioUi.skillRows(brainLibrary.data).map(studioUi.skillLine), [
+    "Follow up — Threads still waiting on a reply.",
+    "Morning digest — What arrived overnight.",
+  ]);
+  assert.ok(!fs.existsSync(path.join(process.env.GENMAIL_AI_CONFIG_DIR, "brain.json")));
   const cached = brain.answer("emailBrain:getCached", []);
   assert.strictEqual(cached.success, true);
   const cachedSections = brainUi.brainSections(cached.data);

@@ -2500,6 +2500,12 @@ function openBrain() {
     if (gen !== brainCategoryGen) return;
     showCategoryStatus(error instanceof Error ? error.message : String(error), true);
   });
+  const skillStatus = $("brain-skill-status");
+  skillStatus.textContent = "";
+  skillStatus.classList.remove("error");
+  loadBrainSkills().catch((error) => {
+    if ($("brain").open) paintBrainSkills({}, error instanceof Error ? error.message : String(error));
+  });
 }
 
 async function submitBrainRule(event) {
@@ -2599,6 +2605,51 @@ function studioLists() {
     ["studio-home", "nativeAgent:home:skills", "No home skills."],
     ["studio-library", "nativeAgent:home:librarySkills", "No library skills."],
   ];
+}
+
+function brainSkillLists() {
+  return [
+    ["brain-home-skills", "emailBrain:getSkills", "No home skills."],
+    ["brain-library-skills", "emailBrain:getLibrarySkills", "No library skills."],
+  ];
+}
+
+function paintBrainSkills(lists, errorText) {
+  const status = $("brain-skill-status");
+  status.textContent = errorText || "";
+  status.classList.toggle("error", !!errorText);
+  const byId = lists || {};
+  for (const [id, , empty] of brainSkillLists()) {
+    const root = $(id);
+    root.replaceChildren();
+    const rows = skillRows(byId[id]);
+    if (!rows.length) {
+      const note = document.createElement("p");
+      note.className = "hint";
+      note.textContent = empty;
+      root.appendChild(note);
+      continue;
+    }
+    for (const row of rows) {
+      const line = document.createElement("p");
+      line.className = "brain-skill";
+      line.textContent = skillLine(row) || "Skill";
+      root.appendChild(line);
+    }
+  }
+}
+
+async function loadBrainSkills() {
+  const lists = {};
+  const errors = [];
+  for (const [id, channel] of brainSkillLists()) {
+    try {
+      lists[id] = await call(channel);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  if ($("brain").open) paintBrainSkills(lists, errors.filter(Boolean).join(" "));
 }
 
 function paintStudio(lists, errorText) {

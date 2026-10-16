@@ -11,6 +11,17 @@ const DEFAULT_CATEGORIES = [
   { id: "cat-social", name: "Social", description: "Invitations and personal notes.", collapseView: true },
 ];
 
+// shortcut: static sample list, replace when a skill write channel exists
+const HOME_SKILLS = [
+  { id: "skill-tone", name: "Match my tone", description: "Replies follow your writing rules." },
+  { id: "skill-sort", name: "Sort new mail", description: "Files messages with your categories." },
+];
+
+const LIBRARY_SKILLS = [
+  { id: "lib-follow-up", name: "Follow up", description: "Threads still waiting on a reply." },
+  { id: "lib-digest", name: "Morning digest", description: "What arrived overnight." },
+];
+
 function storePath() {
   return path.join(userDataDir(), "brain.json");
 }
@@ -278,8 +289,9 @@ function answer(channel, args) {
     case "emailBrain:fixItem":
       return fixItem(params);
     case "emailBrain:getSkills":
+      return ok(HOME_SKILLS);
     case "emailBrain:getLibrarySkills":
-      return ok([]);
+      return ok(LIBRARY_SKILLS);
     case "emailBrain:getAiDraftEditLog":
       return ok({ entries: [] });
     case "emailBrain:recordAiDraftEdit":

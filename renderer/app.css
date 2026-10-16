@@ -99,11 +99,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 #brain-status:empty,
 #brain-category-status:empty,
+#brain-skill-status:empty,
 #studio-status:empty,
 #signatures-status:empty { display: none; }
 
 #brain-status.error,
 #brain-category-status.error,
+#brain-skill-status.error,
 #studio-status.error,
 #signatures-status.error { color: #9f1239; }
 
@@ -111,9 +113,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 dialog h3 { margin: 12px 0 4px; font-size: 13px; }
 
-.studio-row { margin: 4px 0; overflow-wrap: anywhere; }
+.studio-row,
+.brain-skill { margin: 4px 0; overflow-wrap: anywhere; }
 
-#brain-categories {
+#brain-categories,
+#brain-skills {
   margin-top: 16px;
   padding-top: 4px;
   border-top: 1px solid var(--line);

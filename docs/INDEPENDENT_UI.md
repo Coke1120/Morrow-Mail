@@ -24,11 +24,12 @@
 - Shows the app version and checks or installs updates (`app:getVersion`, `host:updateGetState`, `host:updateCheck`, `host:updateInstall`)
 - Edits theme, accent, conversation view, remote images, undo send, and snooze (`config:setTheme`, `genmail:configSet*`). API keys stay in AI Setup
 - Email Brain lists cached sections and writing rules (`emailBrain:getCached`). A user rule can be added, edited, or deleted. Refresh says it needs an AI key when the host returns `accepted: false`. Categories in that dialog load from `emailBrain:getCategories`, edit locally, and save with `emailBrain:saveCategories`. Add with AI needs an API key and shows the host error when the key is missing
+- Email Brain skills library lists home and library skills in that same dialog (`emailBrain:getSkills`, `emailBrain:getLibrarySkills`). The sample host returns a short in-memory list with no API key. The list is read-only. A host error shows in the dialog
 - AI Studio lists home and library skills (`nativeAgent:home:skills`, `nativeAgent:home:librarySkills`). Empty lists stay empty. A host error is shown in the dialog. This host does not run an agent
 - Schedules a send from New Mail (`mail:scheduleSend`) and lists it (`mail:listScheduled`). The sample list stays in memory. A connected IMAP account reports that scheduled send is unavailable
 - Replies or forwards the open message in that same dialog. Reply All adds other To and Cc addresses. Forward names attachments and does not upload them. The sample mailbox can fill and schedule either one
 
-With no connected account the host answers from the built-in sample mailbox in `host/mailbox.js`, including star, archive, trash, move, snooze, and scheduled send. Translate, AI write, and reply suggestions show the host error when no API key is set. Email Brain still lists the cached snapshot, with an empty writing list, and refresh says it needs an AI key. Categories still load, edit, and save with no key. Compose lists signatures saved on the sample mailbox. That mail is not yours and Send stays disabled. Scheduling a sample message only adds it to the list in New Mail. Connecting an account switches the same channels over to the live IMAP engine.
+With no connected account the host answers from the built-in sample mailbox in `host/mailbox.js`, including star, archive, trash, move, snooze, and scheduled send. Translate, AI write, and reply suggestions show the host error when no API key is set. Email Brain still lists the cached snapshot, with an empty writing list, and refresh says it needs an AI key. Categories still load, edit, and save with no key. Skills still list with no key. Compose lists signatures saved on the sample mailbox. That mail is not yours and Send stays disabled. Scheduling a sample message only adds it to the list in New Mail. Connecting an account switches the same channels over to the live IMAP engine.
 
 `GENMAIL_ASAR=/absolute/path/to/app.asar` still boots that external renderer and its preload. That is the only fallback.
 
@@ -37,5 +38,6 @@ With no connected account the host answers from the built-in sample mailbox in `
 Not in this slice, and not matching GenMail inside the Genspark launcher yet:
 
 - Visual parity with that GenMail shell beyond the three-pane chrome in [PARITY_SHELL.md](PARITY_SHELL.md)
-- Calendar and the Email Brain skills library
+- Calendar and other host preferences
+- The full agent skill runner
 - Changing API keys from this window (AI Setup remains on the application menu)

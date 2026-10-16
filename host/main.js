@@ -359,6 +359,18 @@ app.whenReady().then(async () => {
           console.log(brainText);
           console.log("BRAIN_TEXT_END");
           await win.webContents.executeJavaScript(`(() => {
+            const section = document.getElementById("brain-skills");
+            if (section) section.scrollIntoView({ block: "start" });
+          })()`);
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          const skillsText = await win.webContents.executeJavaScript(`(document.getElementById("brain-skills") && document.getElementById("brain-skills").innerText || "").slice(0, 1200)`);
+          fs.writeFileSync(path.join(path.dirname(LOG), "skills.txt"), skillsText);
+          const skillsImage = await win.webContents.capturePage();
+          fs.writeFileSync(path.join(path.dirname(LOG), "skills.png"), skillsImage.toPNG());
+          console.log("SKILLS_TEXT_START");
+          console.log(skillsText);
+          console.log("SKILLS_TEXT_END");
+          await win.webContents.executeJavaScript(`(() => {
             for (const open of document.querySelectorAll("dialog[open]")) open.close();
             const button = document.getElementById("studio-open");
             if (button) button.click();
