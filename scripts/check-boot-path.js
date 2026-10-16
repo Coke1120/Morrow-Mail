@@ -158,6 +158,13 @@ assert.strictEqual(opensAiWrite({ aiWrite: true }, { aiReply: true }), true);
 assert.strictEqual(opensAiWrite({ aiWrite: true }, { aiReply: false }), false);
 assert.strictEqual(opensAiWrite({ aiWrite: true }, null), false);
 assert.strictEqual(opensAiWrite({}, { aiReply: true }), false);
+const showTidy = extractFunction(appJs, "showTidy");
+assert.strictEqual(showTidy({ tidy: true }, "inbox", ""), true);
+assert.strictEqual(showTidy({ tidy: true }, "Inbox", ""), true);
+assert.strictEqual(showTidy({ tidy: false }, "inbox", ""), false);
+assert.strictEqual(showTidy({ tidy: true }, "archive", ""), false);
+assert.strictEqual(showTidy({ tidy: true }, "inbox", "promo"), false);
+assert.strictEqual(showTidy(null, "inbox", ""), false);
 
 const shellLook = extractFunction(appJs, "shellLook");
 const shouldListThread = extractFunction(appJs, "shouldListThread");
@@ -313,6 +320,33 @@ assert.ok(snoozeList.data.records.some((row) => row.threadId === "m-salon" && ro
 mailbox.answer("mail:unsnoozeThread", [{ accountId: "gmail-ada", threadId: "m-salon" }]);
 assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-salon"));
 assert.ok(!mailbox.answer("mail:listSnoozed", [{ accountId: "gmail-ada" }]).data.records.some((row) => row.threadId === "m-salon"));
+
+assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-promo"));
+assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-news"));
+const skipped = mailbox.answer("mail:tidyInbox", [{ accountId: "outlook-grace" }]);
+assert.strictEqual(skipped.success, true);
+assert.strictEqual(skipped.data.accepted, true);
+assert.strictEqual(skipped.data.archived, 0);
+assert.deepStrictEqual(skipped.data.opIds, []);
+assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-promo"));
+const tidied = mailbox.answer("mail:tidyInbox", [{ accountId: "gmail-ada" }]);
+assert.strictEqual(tidied.data.accepted, true);
+assert.strictEqual(tidied.data.archived, 2);
+assert.deepStrictEqual(tidied.data.ids.slice().sort(), ["m-news", "m-promo"]);
+assert.ok(tidied.data.opIds.length === 1);
+assert.ok(!idsIn("gmail-ada", "gmail-ada:inbox").includes("m-promo"));
+assert.ok(!idsIn("gmail-ada", "gmail-ada:inbox").includes("m-news"));
+assert.ok(idsIn("gmail-ada", "gmail-ada:archive").includes("m-promo"));
+assert.ok(idsIn("gmail-ada", "gmail-ada:archive").includes("m-news"));
+assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-engine"));
+assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-salon"));
+const again = mailbox.answer("mail:tidyInbox", [{ accountId: "gmail-ada" }]);
+assert.strictEqual(again.data.archived, 0);
+assert.deepStrictEqual(again.data.opIds, []);
+assert.strictEqual(mailbox.answer("mail:undoRemoval", [{ opIds: tidied.data.opIds, kind: "move" }]).success, true);
+assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-promo"));
+assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-news"));
+assert.ok(!idsIn("gmail-ada", "gmail-ada:archive").includes("m-promo"));
 
 const bodyNodes = extractFunction(appJs, "bodyNodes");
 assert.deepStrictEqual(bodyNodes("One\n\nTwo"), [
@@ -1162,6 +1196,9 @@ for (const channel of studioUi.studioLists().map((row) => row[1])) {
   assert.ok(used.has(channel), `renderer does not call ${channel}`);
   assert.ok(ipcSrc.includes('"' + channel + '"'), `host stub missing ${channel}`);
 }
+assert.ok(html.includes('id="tidy"') && html.includes("One-click tidy"));
+assert.ok(registered.has("mail:tidyInbox") && used.has("mail:tidyInbox"));
+assert.ok(registered.has("genmail:configGetShowOneClickTidyEffective") && used.has("genmail:configGetShowOneClickTidyEffective"));
 assert.ok(html.includes('id="studio"') && html.includes('id="studio-open"') && html.includes('id="studio-home"') && html.includes('id="studio-library"'));
 assert.ok(html.includes(">Studio<") && html.includes("Home skills") && html.includes("Library skills") && html.includes("no agent loop"));
 assert.ok(appJs.includes("No home skills.") && appJs.includes("No library skills."));
@@ -1175,7 +1212,9 @@ assert.ok(parity.includes("genmail:configSetAiWriteAutoOpenOnReply") && parity.i
 assert.ok(parity.includes("genmail:configSetShowOneClickTidy") && parity.includes("genmail:configSetSidebarGmailFoldersExpanded"));
 assert.ok(parity.includes("genmail:configSetSidebarOutlookFoldersExpanded"));
 assert.ok(parity.includes("above the message list") && parity.includes("open the compose AI write controls"));
-assert.ok(parity.includes("does not add a button") && parity.includes("genmail:configGetShowOneClickTidyEffective"));
+assert.ok(parity.includes("mail:tidyInbox") && parity.includes("accepted: false"));
+assert.ok(parity.includes("genmail:configGetShowOneClickTidyEffective"));
+assert.ok(!parity.includes("does not add a button"));
 assert.ok(css.includes(".chips") && css.includes("button.account") && css.includes(".ai-write.open"));
 assert.ok(parity.includes("genmail:configGetDogfoodPrefs") && parity.includes("genmail:configGetShowJevClassification"));
 assert.ok(parity.includes("genmail:configGetShowOneClickTidyEffective") && parity.includes("genmail:configGetCalendarSidebarOrder"));
@@ -1348,7 +1387,66 @@ async function checkAiDraft() {
   assert.strictEqual(studioUi.envelopeError(homeSkills), null);
 }
 
-checkAiDraft().then(() => {
+async function checkTidy() {
+  const os = require("os");
+  const prev = {
+    GENMAIL_USER_DATA: process.env.GENMAIL_USER_DATA,
+    GENMAIL_MAIL_DIR: process.env.GENMAIL_MAIL_DIR,
+    GENMAIL_AI_CONFIG_DIR: process.env.GENMAIL_AI_CONFIG_DIR,
+    GENMAIL_MAIL_SECRETS: process.env.GENMAIL_MAIL_SECRETS,
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "genmail-tidy-"));
+  process.env.GENMAIL_USER_DATA = dir;
+  process.env.GENMAIL_MAIL_DIR = dir;
+  process.env.GENMAIL_AI_CONFIG_DIR = dir;
+  process.env.GENMAIL_MAIL_SECRETS = "memory";
+  try {
+    const { answer: settingsAnswer } = require("../host/settings");
+    assert.strictEqual(settingsAnswer("genmail:configSetShowOneClickTidy", [true]), true);
+    assert.strictEqual(mailbox.answer("genmail:configGetShowOneClickTidyEffective", []), true);
+    assert.strictEqual(settingsAnswer("genmail:configSetShowOneClickTidy", [false]), false);
+    assert.strictEqual(mailbox.answer("genmail:configGetShowOneClickTidyEffective", []), false);
+    assert.strictEqual(settingsAnswer("genmail:configSetShowOneClickTidy", [true]), true);
+    const engine = require("../host/mail/engine");
+    const db = require("../host/mail/db");
+    const { createIpc } = require("../host/ipc");
+    await engine.init();
+    assert.strictEqual(engine.answer("genmail:configGetShowOneClickTidyEffective", []), undefined);
+    assert.strictEqual(engine.answer("mail:tidyInbox", []), undefined);
+    const ipc = createIpc(path.join(dir, "ipc.log"));
+    assert.strictEqual(ipc.handle({}, "genmail:configGetShowOneClickTidyEffective"), true);
+    db.insertAccount({
+      id: "imap-test",
+      email: "ada@example.com",
+      username: "ada@example.com",
+      profile: "custom",
+      imapHost: "imap.example.test",
+      imapPort: 993,
+      imapTls: true,
+      smtpHost: "smtp.example.test",
+      smtpPort: 465,
+      smtpTls: true,
+      delimiter: "/",
+      createdAt: Date.now(),
+    });
+    assert.strictEqual(engine.answer("genmail:configGetShowOneClickTidyEffective", []), false);
+    assert.strictEqual(ipc.handle({}, "genmail:configGetShowOneClickTidyEffective"), false);
+    const live = await ipc.handle({}, "mail:tidyInbox", { accountId: "imap-test" });
+    assert.strictEqual(live.success, true);
+    assert.strictEqual(live.data.accepted, false);
+    assert.deepStrictEqual(live.data.opIds, []);
+    assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-promo"));
+    assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-news"));
+    assert.strictEqual(mailbox.answer("genmail:configGetShowOneClickTidyEffective", []), true);
+  } finally {
+    for (const [key, value] of Object.entries(prev)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+checkAiDraft().then(() => checkTidy()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);

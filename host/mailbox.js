@@ -62,7 +62,7 @@ function account(partial, primary, more) {
 function gmailFolders() {
   const id = (key) => `${ACCOUNT_GMAIL}:${key}`;
   return [
-    folder(id("inbox"), "Inbox", "inbox", 2, 4),
+    folder(id("inbox"), "Inbox", "inbox", 2, 6),
     folder("starred", "Starred", "starred", 0, 1),
     folder(id("sent"), "Sent", "sentitems", 0, 0),
     folder(id("archive"), "Archive", "archive", 0, 0),
@@ -262,6 +262,34 @@ function buildEmails() {
       htmlBody: "<p>Bring the diagram. The room is booked from four.</p>",
       textBody: "Bring the diagram. The room is booked from four.",
     }),
+    message({
+      id: "m-promo",
+      accountId: ACCOUNT_GMAIL,
+      folderId: gmailInbox,
+      when: atLocal(0, 9, 20),
+      unread: false,
+      from: "Slide Rule Shop <deals@example.com>",
+      to: ["Ada Lovelace <ada.lovelace@example.com>"],
+      subject: "50% off slide rules this week",
+      snippet: "Promo ends Sunday. Free shipping on brass rules.",
+      unifiedCategory: "promo",
+      htmlBody: "<p>Promo ends Sunday. Free shipping on brass rules.</p>",
+      textBody: "Promo ends Sunday. Free shipping on brass rules.",
+    }),
+    message({
+      id: "m-news",
+      accountId: ACCOUNT_GMAIL,
+      folderId: gmailInbox,
+      when: atLocal(0, 9, 10),
+      unread: false,
+      from: "Analytical Society <news@example.com>",
+      to: ["Ada Lovelace <ada.lovelace@example.com>"],
+      subject: "Newsletter: this month's tables",
+      snippet: "The monthly newsletter lists the new operation tables.",
+      unifiedCategory: "newsletter",
+      htmlBody: "<p>The monthly newsletter lists the new operation tables.</p>",
+      textBody: "The monthly newsletter lists the new operation tables.",
+    }),
   ];
 }
 
@@ -430,6 +458,17 @@ function idsForMove(params) {
     return emails.filter((email) => email.threadId === params.emailId).map((email) => email.id);
   }
   return [];
+}
+
+// shortcut: promo and newsletter tags on the sample mailbox, upgrade when IMAP can file the same tags.
+const TIDY_CATEGORIES = new Set(["promo", "newsletter"]);
+
+function tidyInboxIds(accountId) {
+  return emails.filter((email) => (
+    email.folderKey === "inbox"
+    && TIDY_CATEGORIES.has(email.unifiedCategory)
+    && (!accountId || email.accountId === accountId)
+  )).map((email) => email.id);
 }
 
 function moveMany(ids, dest) {
@@ -619,6 +658,15 @@ function answer(channel, args) {
     }
     case "mail:search":
       return ok(searchRows(params));
+    case "mail:tidyInbox": {
+      // mail:tidyInbox archives sample inbox mail tagged promo or newsletter.
+      // Live IMAP answers { accepted: false } from the mail engine and does not move mail.
+      const ids = tidyInboxIds(params && params.accountId);
+      const opId = moveMany(ids, "archive");
+      return ok({ accepted: true, opIds: opId ? [opId] : [], archived: ids.length, ids });
+    }
+    case "genmail:configGetShowOneClickTidyEffective":
+      return require("./settings").answer("genmail:configGetShowOneClickTidy", []) === true;
     case "mail:archive":
     case "mail:threadArchive": {
       const opId = moveMany(idsForMove(params), "archive");

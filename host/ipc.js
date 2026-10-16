@@ -58,7 +58,6 @@ const OVERRIDES = {
   "genmail:configGetShowJevClassification": false,
   "genmail:configGetShowJevSemanticSearch": false,
   "genmail:configGetShowJevSemanticSearchEffective": false,
-  "genmail:configGetShowOneClickTidyEffective": false,
   "genmail:configGetSidebarFolderOrder": null,
   "genmail:configGetCalendarSidebarOrder": {},
   "genmail:configGetAiWriteAgenticEnabled": false,

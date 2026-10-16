@@ -29,6 +29,7 @@ const state = {
     images: false,
     undoSend: 5,
     snooze: true,
+    tidy: false,
   },
 };
 
@@ -90,6 +91,15 @@ function foldersOf(account) {
 function inboxOf(account) {
   const folders = foldersOf(account);
   return folders.find((folder) => folder.wellKnownName === "inbox") || folders[0] || null;
+}
+
+function showTidy(prefs, wellKnownName, query) {
+  return !!(prefs && prefs.tidy === true && !query && String(wellKnownName || "").toLowerCase() === "inbox");
+}
+
+function syncTidy() {
+  const folder = foldersOf(selectedAccount()).find((item) => item.id === state.folderId);
+  $("tidy").hidden = !showTidy(state.prefs, folder && folder.wellKnownName, state.query);
 }
 
 // shortcut: chips are Inbox, Sent, and Drafts, upgrade when every primary folder should be a chip.
@@ -736,6 +746,7 @@ function renderChips(list, account) {
 }
 
 function renderList() {
+  syncTidy();
   const list = $("messages");
   list.replaceChildren();
   const account = selectedAccount();
@@ -1317,6 +1328,25 @@ async function removeOpen(email, channel, label) {
 async function archiveOpen(email) {
   const threaded = usesThread(email, state.thread);
   await removeOpen(email, threaded ? "mail:threadArchive" : "mail:archive", "Archived.");
+}
+
+async function tidyInbox() {
+  const data = await call("mail:tidyInbox", { accountId: state.accountId });
+  if (!data || data.accepted === false) {
+    showStatus("One-click tidy is not available for this mailbox.", true);
+    return;
+  }
+  const ids = Array.isArray(data.ids) ? data.ids : [];
+  if (state.email && ids.includes(state.email.id)) {
+    state.email = null;
+    state.thread = [];
+    renderReader(false);
+  }
+  const n = Number.isInteger(data.archived) ? data.archived : ids.length;
+  const opIds = Array.isArray(data.opIds) ? data.opIds.filter(Boolean) : [];
+  if (opIds.length) showUndo(n === 1 ? "Tidied 1 message." : "Tidied " + n + " messages.", opIds);
+  else showStatus("Nothing to tidy.");
+  await loadAccounts();
 }
 
 async function trashOpen(email) {
@@ -2277,6 +2307,7 @@ const SHELL_PREFS = {
   "genmail:configGetAiWriteAutoOpenOnReply": "aiReply",
   "genmail:configGetSidebarGmailFoldersExpanded": "gmailOpen",
   "genmail:configGetSidebarOutlookFoldersExpanded": "outlookOpen",
+  "genmail:configGetShowOneClickTidyEffective": "tidy",
 };
 
 const READER_PREFS = {
@@ -2428,6 +2459,10 @@ async function savePref(row) {
     status.textContent = "";
     status.classList.remove("error");
     if (takePref(getChannel, kind, $(id))) paintPrefs();
+    if (getChannel === "genmail:configGetShowOneClickTidy") {
+      state.prefs.tidy = (await api.invoke("genmail:configGetShowOneClickTidyEffective")) === true;
+      paintPrefs();
+    }
   } catch (error) {
     status.textContent = error instanceof Error ? error.message : String(error);
     status.classList.add("error");
@@ -3010,6 +3045,7 @@ function wire() {
     applySearch();
   });
   $("refresh").addEventListener("click", () => guard(refresh));
+  $("tidy").addEventListener("click", () => guard(tidyInbox));
   $("settings-open").addEventListener("click", openSettings);
   $("settings-close").addEventListener("click", () => closeDialog("settings"));
   $("settings").addEventListener("close", () => {

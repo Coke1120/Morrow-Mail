@@ -2,7 +2,6 @@ const fs = require("fs");
 const path = require("path");
 const { userDataDir } = require("./paths");
 
-// shortcut: tidy stays stored only, upgrade when the host has a tidy action
 const DEFAULTS = {
   theme: "light",
   accent: "#7C3AED",

@@ -872,6 +872,11 @@ function answer(channel, args) {
   if (!db.hasAccounts()) return undefined;
 
   switch (channel) {
+    case "genmail:configGetShowOneClickTidyEffective":
+      return false;
+    case "mail:tidyInbox":
+      // shortcut: no live tidy rule, upgrade when promo/newsletter can be filed on the server.
+      return ok({ accepted: false, opIds: [], archived: 0, ids: [] });
     case "mail:refreshAccounts":
       setTimeout(() => { syncAll().catch(() => {}); }, 0);
       return ok({ refreshed: true, refreshedAt: Date.now() });
