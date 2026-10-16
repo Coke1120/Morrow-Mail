@@ -829,6 +829,13 @@ const brainUi = loadFunctions(appJs, [
   "brainRowText",
   "brainMessage",
   "brainRefreshChannels",
+  "blankCategory",
+  "categoryLine",
+  "readCategoryPayload",
+  "upsertCategory",
+  "removeCategory",
+  "categoryFromCommand",
+  "defaultCategoryHint",
 ]);
 assert.deepStrictEqual(brainUi.brainSections(null), []);
 assert.deepStrictEqual(brainUi.brainSections({ persona: {} }), []);
@@ -851,6 +858,37 @@ assert.strictEqual(brainUi.brainMessage({ refreshing: true }).text, "Refreshing�
 assert.strictEqual(brainUi.brainMessage({ rebuilding: true, percent: 15, refreshing: true }).text, "Rebuilding 15%…");
 assert.strictEqual(brainUi.brainMessage({ accepted: true }).text, "");
 assert.deepStrictEqual(brainUi.brainRefreshChannels(), ["emailBrain:refresh", "emailBrain:rebuild"]);
+assert.strictEqual(brainUi.blankCategory({ name: "  News ", description: "  d".repeat(250), collapseView: "yes" }, 3).name, "News");
+assert.strictEqual(brainUi.blankCategory({ name: "n".repeat(90), description: "d".repeat(500), collapseView: true }, 0).name.length, 80);
+assert.strictEqual(brainUi.blankCategory({ description: "d".repeat(500) }, 0).description.length, 400);
+assert.strictEqual(brainUi.blankCategory({ description: "d".repeat(500) }, 0).collapseView, false);
+assert.strictEqual(brainUi.blankCategory({ id: "cat-news", name: "News", collapseView: true }, 0).collapseView, true);
+assert.strictEqual(brainUi.blankCategory(null, 0).id, "cat-1");
+assert.strictEqual(brainUi.categoryLine({ id: "cat-primary", name: "Primary", description: "People", collapseView: false }), "cat-primary — Primary — People — shown");
+assert.strictEqual(brainUi.categoryLine({ id: "cat-updates", name: "Updates", description: "Receipts", collapseView: true }), "cat-updates — Updates — Receipts — collapsed");
+const categoryPayload = brainUi.readCategoryPayload({
+  categories: [{ id: "cat-a", name: "A", description: "", collapseView: false }],
+  defaultCategories: [{ id: "cat-primary", name: "Primary", description: "People", collapseView: false }],
+});
+assert.strictEqual(categoryPayload.categories[0].id, "cat-a");
+assert.strictEqual(brainUi.defaultCategoryHint(categoryPayload.defaults), "Defaults: Primary.");
+assert.strictEqual(brainUi.defaultCategoryHint([]), "");
+assert.deepStrictEqual(brainUi.readCategoryPayload(null), { categories: [], defaults: [] });
+assert.strictEqual(brainUi.readCategoryPayload([{ id: "cat-b", name: "B" }]).categories[0].name, "B");
+const categoryAdded = brainUi.upsertCategory([], { id: "cat-news", name: "News", description: "Headlines", collapseView: true }, -1);
+assert.strictEqual(categoryAdded.error, "");
+assert.strictEqual(categoryAdded.categories[0].collapseView, true);
+assert.strictEqual(brainUi.upsertCategory([], { name: "  " }, -1).error, "A category needs a name.");
+const categoryEdited = brainUi.upsertCategory(categoryAdded.categories, { name: "Briefs", description: "Short", collapseView: false }, 0);
+assert.strictEqual(categoryEdited.categories[0].id, "cat-news");
+assert.strictEqual(categoryEdited.categories[0].name, "Briefs");
+assert.strictEqual(categoryEdited.categories[0].collapseView, false);
+assert.deepStrictEqual(brainUi.removeCategory(categoryEdited.categories, 0), []);
+assert.strictEqual(brainUi.removeCategory(categoryEdited.categories, 4).length, 1);
+assert.strictEqual(brainUi.categoryFromCommand({ command: { kind: "add_category", name: "Social", description: "Notes", collapseView: true } }).name, "Social");
+assert.strictEqual(brainUi.categoryFromCommand({ command: { kind: "add_category", name: "  " } }), null);
+assert.strictEqual(brainUi.categoryFromCommand({ command: { kind: "nope", name: "Social" } }), null);
+assert.strictEqual(brainUi.categoryFromCommand(null), null);
 for (const channel of [
   "emailBrain:getCached",
   "emailBrain:refresh",
@@ -858,6 +896,9 @@ for (const channel of [
   "emailBrain:addWritingRule",
   "emailBrain:setWritingRule",
   "emailBrain:deleteWritingRule",
+  "emailBrain:getCategories",
+  "emailBrain:saveCategories",
+  "emailBrain:addCategoryViaPrompt",
   "emailBrain:updated",
   "emailBrain:refreshState",
   "emailBrain:rebuildState",
@@ -867,11 +908,17 @@ for (const channel of [
 }
 assert.ok(html.includes('id="brain"') && html.includes('id="brain-rule"') && html.includes('id="brain-add"') && html.includes('id="brain-refresh"'));
 assert.ok(html.includes(">Brain<") && html.includes(">Add<") && html.includes("Writing rule"));
+assert.ok(html.includes('id="brain-category-list"') && html.includes('id="brain-category-name"') && html.includes('id="brain-category-description"'));
+assert.ok(html.includes('id="brain-category-collapse"') && html.includes('id="brain-category-save"') && html.includes('id="brain-category-ai"'));
+assert.ok(html.includes("Categories") && html.includes("Collapse view") && html.includes("Save categories") && html.includes("Use defaults"));
 assert.ok(appJs.includes("No writing rules yet.") && appJs.includes("Needs an AI key."));
-assert.ok(css.includes(".brain-row") && css.includes("#brain-status"));
+assert.ok(appJs.includes("No categories.") && appJs.includes("A category needs a name.") && appJs.includes("Describe a category."));
+assert.ok(css.includes(".brain-row") && css.includes("#brain-status") && css.includes("#brain-category-status") && css.includes("#brain-categories"));
 const parity = fs.readFileSync(path.join(root, "docs/PARITY_SHELL.md"), "utf8");
 assert.ok(parity.includes("emailBrain:getCached") && parity.includes("emailBrain:addWritingRule"));
-assert.ok(parity.includes("full Brain category/skills UI"));
+assert.ok(parity.includes("emailBrain:getCategories") && parity.includes("emailBrain:saveCategories") && parity.includes("emailBrain:addCategoryViaPrompt"));
+assert.ok(parity.includes("skills library"));
+assert.ok(!parity.includes("full Brain category/skills UI"));
 assert.ok(parity.includes("mail:upsertSignature") && parity.includes("imap_signatures_unsupported"));
 assert.ok(!parity.includes("signatures editor"));
 
@@ -965,6 +1012,48 @@ async function checkAiDraft() {
   const emptyRule = brain.answer("emailBrain:addWritingRule", [{ text: "  " }]);
   assert.strictEqual(emptyRule.success, false);
   assert.ok(fs.existsSync(path.join(process.env.GENMAIL_AI_CONFIG_DIR, "brain.json")));
+  const listed = brain.answer("emailBrain:getCategories", []);
+  assert.strictEqual(listed.success, true);
+  assert.ok(listed.data.categories.some((row) => row.id === "cat-primary"));
+  assert.ok(listed.data.defaultCategories.some((row) => row.id === "cat-primary" && row.collapseView === false));
+  const kept = brain.answer("emailBrain:addWritingRule", [{ text: "Keep categories apart." }]);
+  assert.strictEqual(kept.success, true);
+  const saved = brain.answer("emailBrain:saveCategories", [{
+    categories: [
+      { id: "cat-news", name: "News", description: "Headlines", collapseView: true },
+      { name: "Notes", description: "Personal", collapseView: false },
+    ],
+  }]);
+  assert.strictEqual(saved.success, true);
+  assert.strictEqual(saved.data[0].id, "cat-news");
+  assert.strictEqual(saved.data[0].name, "News");
+  assert.strictEqual(saved.data[0].description, "Headlines");
+  assert.strictEqual(saved.data[0].collapseView, true);
+  assert.strictEqual(saved.data[1].id, "cat-2");
+  assert.strictEqual(saved.data[1].collapseView, false);
+  const again = brain.answer("emailBrain:getCategories", []);
+  assert.strictEqual(again.success, true);
+  assert.deepStrictEqual(again.data.categories.map((row) => row.id), ["cat-news", "cat-2"]);
+  assert.strictEqual(again.data.categories[1].description, "Personal");
+  const still = brain.answer("emailBrain:getCached", []);
+  assert.ok(brainUi.brainUserRules(brainUi.brainSections(still.data)).some((row) => row.value === "Keep categories apart."));
+  const long = brain.answer("emailBrain:saveCategories", [{
+    categories: [{ id: "cat-long", name: "n".repeat(100), description: "d".repeat(500), collapseView: "yes" }],
+  }]);
+  assert.strictEqual(long.data[0].name.length, 80);
+  assert.strictEqual(long.data[0].description.length, 400);
+  assert.strictEqual(long.data[0].collapseView, false);
+  const prompted = await brain.answer("emailBrain:addCategoryViaPrompt", [{ prompt: "newsletters" }]);
+  assert.strictEqual(prompted.success, false);
+  assert.match(prompted.error.message, /API key/);
+  const unchanged = brain.answer("emailBrain:getCategories", []);
+  assert.strictEqual(unchanged.data.categories[0].id, "cat-long");
+  const emptied = brain.answer("emailBrain:saveCategories", [{ categories: [] }]);
+  assert.deepStrictEqual(emptied.data, []);
+  const restored = brain.answer("emailBrain:getCategories", []);
+  assert.ok(restored.data.categories.some((row) => row.id === "cat-primary"));
+  const afterEmpty = brain.answer("emailBrain:getCached", []);
+  assert.ok(brainUi.brainUserRules(brainUi.brainSections(afterEmpty.data)).some((row) => row.value === "Keep categories apart."));
 }
 
 checkAiDraft().then(() => {

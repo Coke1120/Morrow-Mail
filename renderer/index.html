@@ -140,6 +140,32 @@
           <button type="button" class="ghost" id="brain-close">Close</button>
         </div>
       </form>
+      <section id="brain-categories" aria-labelledby="brain-categories-title">
+        <h3 id="brain-categories-title">Categories</h3>
+        <p id="brain-category-defaults" class="hint"></p>
+        <p id="brain-category-status" role="status"></p>
+        <div id="brain-category-list"></div>
+        <form id="brain-category-form">
+          <label for="brain-category-name">Name</label>
+          <input id="brain-category-name" type="text" autocomplete="off" />
+          <label for="brain-category-description">Description</label>
+          <input id="brain-category-description" type="text" autocomplete="off" />
+          <label class="check" for="brain-category-collapse"><input id="brain-category-collapse" type="checkbox" /> Collapse view</label>
+          <div class="row">
+            <button type="submit" class="primary" id="brain-category-add">Add</button>
+            <button type="button" class="ghost" id="brain-category-cancel" hidden>Cancel</button>
+            <button type="button" class="primary" id="brain-category-save">Save categories</button>
+            <button type="button" class="ghost" id="brain-category-defaults-btn" hidden>Use defaults</button>
+          </div>
+        </form>
+        <form id="brain-category-ai-form">
+          <label for="brain-category-prompt">Describe a category</label>
+          <input id="brain-category-prompt" type="text" autocomplete="off" />
+          <div class="row">
+            <button type="submit" class="ghost" id="brain-category-ai">Add with AI</button>
+          </div>
+        </form>
+      </section>
     </dialog>
     <dialog id="signatures" aria-labelledby="signatures-title">
       <h2 id="signatures-title">Signatures</h2>

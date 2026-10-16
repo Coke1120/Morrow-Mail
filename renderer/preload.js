@@ -52,6 +52,9 @@ const INVOKE = [
   "emailBrain:addWritingRule",
   "emailBrain:setWritingRule",
   "emailBrain:deleteWritingRule",
+  "emailBrain:getCategories",
+  "emailBrain:saveCategories",
+  "emailBrain:addCategoryViaPrompt",
 ];
 
 const EVENTS = [

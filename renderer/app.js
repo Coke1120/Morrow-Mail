@@ -36,6 +36,11 @@ let updateGen = 0;
 let updateTimer = null;
 let brainSnapshot = null;
 let brainEditId = "";
+let brainCategories = [];
+let brainCategoryDefaults = [];
+let brainCategoryIndex = -1;
+let brainCategoryGen = 0;
+let brainCategoriesReady = false;
 let brainView = {
   accepted: null,
   refreshing: false,
@@ -2163,6 +2168,67 @@ function brainRefreshChannels() {
   return ["emailBrain:refresh", "emailBrain:rebuild"];
 }
 
+function blankCategory(category, index) {
+  const row = category && typeof category === "object" ? category : {};
+  const fallback = "cat-" + ((index || 0) + 1);
+  const id = String(row.id || fallback).trim().slice(0, 80);
+  return {
+    id: id || fallback,
+    name: String(row.name || "").trim().slice(0, 80),
+    description: String(row.description || "").trim().slice(0, 400),
+    collapseView: row.collapseView === true,
+  };
+}
+
+function categoryLine(category) {
+  const row = blankCategory(category, 0);
+  const view = row.collapseView ? "collapsed" : "shown";
+  return row.id + " — " + row.name + " — " + row.description + " — " + view;
+}
+
+function readCategoryPayload(data) {
+  const payload = data && typeof data === "object" && !Array.isArray(data) ? data : {};
+  const categories = Array.isArray(data) ? data : payload.categories;
+  const defaults = payload.defaultCategories;
+  return {
+    categories: (Array.isArray(categories) ? categories : []).map((row, index) => blankCategory(row, index)),
+    defaults: (Array.isArray(defaults) ? defaults : []).map((row, index) => blankCategory(row, index)),
+  };
+}
+
+function upsertCategory(list, draft, index) {
+  const rows = (Array.isArray(list) ? list : []).map((row, i) => blankCategory(row, i));
+  const next = blankCategory(draft, rows.length);
+  if (!next.name) return { categories: rows, error: "A category needs a name." };
+  if (Number.isInteger(index) && index >= 0 && index < rows.length) {
+    next.id = rows[index].id;
+    rows[index] = next;
+  } else {
+    rows.push(next);
+  }
+  return { categories: rows, error: "" };
+}
+
+function removeCategory(list, index) {
+  const rows = (Array.isArray(list) ? list : []).map((row, i) => blankCategory(row, i));
+  if (!Number.isInteger(index) || index < 0 || index >= rows.length) return rows;
+  return rows.filter((_row, i) => i !== index);
+}
+
+function categoryFromCommand(data) {
+  const command = data && data.command;
+  if (!command || command.kind !== "add_category") return null;
+  const row = blankCategory(command, 0);
+  return row.name ? row : null;
+}
+
+function defaultCategoryHint(defaults) {
+  const names = (Array.isArray(defaults) ? defaults : [])
+    .map((row) => String((row && row.name) || "").trim())
+    .filter(Boolean);
+  return names.length ? "Defaults: " + names.join(", ") + "." : "";
+}
+
 function paintBrain(snapshot, view) {
   const message = brainMessage(view);
   const status = $("brain-status");
@@ -2244,11 +2310,176 @@ async function loadBrain() {
   if ($("brain").open) paintBrain(brainSnapshot, brainView);
 }
 
+function showCategoryStatus(text, isError) {
+  const el = $("brain-category-status");
+  el.textContent = text || "";
+  el.classList.toggle("error", !!isError && !!text);
+}
+
+function resetCategoryForm() {
+  brainCategoryIndex = -1;
+  $("brain-category-name").value = "";
+  $("brain-category-description").value = "";
+  $("brain-category-collapse").checked = false;
+}
+
+function paintCategories() {
+  const root = $("brain-category-list");
+  root.replaceChildren();
+  const hint = $("brain-category-defaults");
+  hint.textContent = defaultCategoryHint(brainCategoryDefaults);
+  const defaultsBtn = $("brain-category-defaults-btn");
+  defaultsBtn.hidden = brainCategoryDefaults.length === 0;
+  defaultsBtn.disabled = !brainCategoriesReady;
+  if (!brainCategories.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = brainCategoriesReady ? "No categories." : "Loading categories…";
+    root.appendChild(empty);
+  }
+  brainCategories.forEach((category, index) => {
+    const line = document.createElement("div");
+    line.className = "brain-row";
+    const text = document.createElement("p");
+    text.textContent = categoryLine(category);
+    line.appendChild(text);
+    const name = String(category.name || category.id || "category").slice(0, 80);
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "ghost";
+    edit.textContent = "Edit";
+    edit.setAttribute("aria-label", "Edit category " + name);
+    edit.addEventListener("click", () => startCategoryEdit(index));
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "ghost";
+    del.textContent = "Delete";
+    del.setAttribute("aria-label", "Delete category " + name);
+    del.addEventListener("click", () => deleteLocalCategory(index));
+    line.append(edit, del);
+    root.appendChild(line);
+  });
+  $("brain-category-add").textContent = brainCategoryIndex >= 0 ? "Update" : "Add";
+  $("brain-category-add").disabled = !brainCategoriesReady;
+  $("brain-category-cancel").hidden = brainCategoryIndex < 0;
+  $("brain-category-save").disabled = !brainCategoriesReady;
+  $("brain-category-ai").disabled = !brainCategoriesReady;
+}
+
+function startCategoryEdit(index) {
+  const row = brainCategories[index];
+  if (!row) return;
+  brainCategoryIndex = index;
+  $("brain-category-name").value = row.name;
+  $("brain-category-description").value = row.description;
+  $("brain-category-collapse").checked = row.collapseView === true;
+  paintCategories();
+  $("brain-category-name").focus();
+}
+
+function deleteLocalCategory(index) {
+  if (!brainCategoriesReady) return;
+  const editing = brainCategoryIndex;
+  brainCategories = removeCategory(brainCategories, index);
+  if (editing === index) resetCategoryForm();
+  else if (editing > index) brainCategoryIndex = editing - 1;
+  showCategoryStatus("Save to keep this list.", false);
+  paintCategories();
+}
+
+function submitCategory(event) {
+  event.preventDefault();
+  if (!brainCategoriesReady) return;
+  const existing = brainCategoryIndex >= 0 ? brainCategories[brainCategoryIndex] : null;
+  const draft = {
+    id: existing ? existing.id : "cat-" + Date.now().toString(36),
+    name: $("brain-category-name").value,
+    description: $("brain-category-description").value,
+    collapseView: $("brain-category-collapse").checked,
+  };
+  const next = upsertCategory(brainCategories, draft, brainCategoryIndex);
+  if (next.error) {
+    showCategoryStatus(next.error, true);
+    return;
+  }
+  brainCategories = next.categories;
+  resetCategoryForm();
+  showCategoryStatus("Save to keep this list.", false);
+  paintCategories();
+}
+
+function useDefaultCategories() {
+  if (!brainCategoriesReady || !brainCategoryDefaults.length) return;
+  brainCategories = brainCategoryDefaults.map((row, index) => blankCategory(row, index));
+  resetCategoryForm();
+  showCategoryStatus("Defaults loaded. Save to keep them.", false);
+  paintCategories();
+}
+
+async function loadBrainCategories(gen) {
+  const parsed = readCategoryPayload(await call("emailBrain:getCategories"));
+  if (gen !== brainCategoryGen) return;
+  brainCategories = parsed.categories;
+  brainCategoryDefaults = parsed.defaults;
+  brainCategoriesReady = true;
+  if ($("brain").open) paintCategories();
+}
+
+async function saveBrainCategories() {
+  if (!brainCategoriesReady) return;
+  const wasEmpty = brainCategories.length === 0;
+  await call("emailBrain:saveCategories", { categories: brainCategories });
+  const gen = brainCategoryGen;
+  const parsed = readCategoryPayload(await call("emailBrain:getCategories"));
+  if (gen !== brainCategoryGen) return;
+  brainCategories = parsed.categories;
+  brainCategoryDefaults = parsed.defaults;
+  resetCategoryForm();
+  // shortcut: an empty save reads back as the host defaults, change readStore if an empty list must stick
+  showCategoryStatus(wasEmpty ? "Saved. An empty list uses the defaults." : "Saved.", false);
+  paintCategories();
+}
+
+async function addCategoryFromPrompt(event) {
+  event.preventDefault();
+  if (!brainCategoriesReady) return;
+  const prompt = $("brain-category-prompt").value.trim();
+  if (!prompt) {
+    showCategoryStatus("Describe a category.", true);
+    return;
+  }
+  try {
+    const data = await call("emailBrain:addCategoryViaPrompt", { prompt });
+    const row = categoryFromCommand(data);
+    if (!row) throw new Error("The model did not return a category.");
+    const next = upsertCategory(brainCategories, { ...row, id: "cat-" + Date.now().toString(36) }, -1);
+    if (next.error) throw new Error(next.error);
+    brainCategories = next.categories;
+    $("brain-category-prompt").value = "";
+    showCategoryStatus("Save to keep this list.", false);
+    paintCategories();
+  } catch (error) {
+    showCategoryStatus(error instanceof Error ? error.message : String(error), true);
+  }
+}
+
 function openBrain() {
   openDialog("brain");
+  brainCategoriesReady = false;
+  brainCategories = [];
+  brainCategoryDefaults = [];
+  resetCategoryForm();
+  $("brain-category-prompt").value = "";
+  showCategoryStatus("", false);
+  paintCategories();
+  const gen = brainCategoryGen += 1;
   loadBrain().catch((error) => {
     brainView = { ...brainView, error: error instanceof Error ? error.message : String(error) };
     paintBrain(brainSnapshot, brainView);
+  });
+  loadBrainCategories(gen).catch((error) => {
+    if (gen !== brainCategoryGen) return;
+    showCategoryStatus(error instanceof Error ? error.message : String(error), true);
   });
 }
 
@@ -2360,6 +2591,25 @@ function wire() {
   $("brain").addEventListener("close", () => {
     brainEditId = "";
     $("brain-rule").value = "";
+    brainCategoryIndex = -1;
+  });
+  $("brain-category-cancel").addEventListener("click", () => {
+    resetCategoryForm();
+    paintCategories();
+  });
+  $("brain-category-form").addEventListener("submit", (event) => {
+    submitCategory(event);
+  });
+  $("brain-category-save").addEventListener("click", () => {
+    saveBrainCategories().catch((error) => {
+      showCategoryStatus(error instanceof Error ? error.message : String(error), true);
+    });
+  });
+  $("brain-category-defaults-btn").addEventListener("click", useDefaultCategories);
+  $("brain-category-ai-form").addEventListener("submit", (event) => {
+    addCategoryFromPrompt(event).catch((error) => {
+      showCategoryStatus(error instanceof Error ? error.message : String(error), true);
+    });
   });
   $("brain-cancel").addEventListener("click", clearBrainEdit);
   $("brain-refresh").addEventListener("click", () => {

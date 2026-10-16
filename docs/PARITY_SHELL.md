@@ -26,8 +26,9 @@ First-party `renderer/` chrome for the three-pane mail shell. Layout follows the
 - Updater strip: the running version from `app:getVersion`, Check (`host:updateCheck`), and Install (`host:updateInstall`) when `host:updateGetState` reports a downloaded update. The same snapshot supplies the idle, checking, downloading, and error lines. An unpackaged build stays on the host stub (`enabled: false`).
 - Settings lists theme, accent, conversation view, remote images, undo send, and snooze from `config:getTheme` and the existing `genmail:configGet*` stubs. The host has no matching set channels, so the list is read-only. API keys stay in AI Setup on the GenMail menu.
 - Email Brain is the toolbar Brain dialog. It lists sections from `emailBrain:getCached`, including writing rules. Add calls `emailBrain:addWritingRule`. A user rule with an id can be edited (`emailBrain:setWritingRule`) or deleted (`emailBrain:deleteWritingRule`). Refresh calls `emailBrain:refresh`, then `emailBrain:rebuild` only when the first was not accepted. With no API key each returns `accepted: false` and the panel says it needs an AI key. The dialog listens for `emailBrain:updated`, `emailBrain:refreshState`, and `emailBrain:rebuildState`. No IMAP account and no API key still show the cached sections and an empty writing list.
+- Categories sit in that same dialog. The list shows id, name, description, and whether the row is collapsed. Add, edit, and delete stay in the dialog until Save (`emailBrain:saveCategories`). Open loads `emailBrain:getCategories` and shows the host defaults. Use defaults copies those into the list. Add with AI calls `emailBrain:addCategoryViaPrompt` and keeps the result local until Save. With no API key that call shows the host error, and the list still saves. No IMAP account and no API key can still edit categories in the local store.
 
 ## Deferred
 
-- Full settings writes, AI Studio, calendar, full Brain category/skills UI.
+- Full settings writes, AI Studio, calendar, skills library.
 - A pixel match to `GenmailSpace-*.css`. This shell only uses the first-party layout.
