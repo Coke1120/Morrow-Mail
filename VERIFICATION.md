@@ -1,5 +1,16 @@
 # Verification — 15 October 2026
 
+## PR #58 reply More local lookup — 16 October 2026
+
+Windows run `38877967473` on `b95bec3` failed “The current reply More action was
+blocked or did not retain the fictional draft after its local lookup.” The log
+did not record which clause failed. `MenuFlyoutItem::Invoke` raises Click and
+only then closes the flyout. That Click started the reply refresh, whose write
+guard disables navigation before `Close`. The refresh now waits until that
+Click returns. A missing suggestion still leaves the fictional draft unchanged
+and does not prepare or send. A failed check appends guard, close, and draft
+flags. This VM cannot run WinUI. `reader-ownership-preflight` is unchanged.
+
 ## PR #58 AppKit run loop, disabled menu items, and list text — 15 October 2026
 
 Runs `38765785512`, `38765785713` and `38765785507` on head `1e65f35` failed

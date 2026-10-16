@@ -39,7 +39,9 @@ struct Page : std::enable_shared_from_this<Page> {
     DropDownButton replyMore{nullptr};
     uint64_t replyToken=0;
     std::vector<Json> rows;
-    bool current() const { return live && !shell->closing && shell->generation==generation && shell->section==kind && shell->review->scope==scope; }
+    bool current() const { return live && armed(); }
+    // Click can run after Unloaded clears live and the More button; generation and scope still identify this page.
+    bool armed() const { return !shell->closing && shell->generation==generation && shell->section==kind && shell->review->scope==scope; }
     void say(hstring const& value) { if (current()) notice.Text(value); }
 };
 using P=std::shared_ptr<Page>;
@@ -156,7 +158,7 @@ void paintEditor(P const& p,hstring const& key) {
         scope=p->scope,generation=p->generation,sequence=p->selection,keptId=proposalId(entry.proposal),keptText=text(entry.proposal,L"text")]() -> P {
         auto page=weak.lock();
         // An open flyout can drop a weak anchor; the token still rejects a replaced More button.
-        if(!page || !page->current() || page->replyToken!=token || !page->replyMore
+        if(!page || !page->armed() || page->replyToken!=token
             || page->generation!=generation || page->selection!=sequence
             || page->scope!=scope || page->selectedKey!=key || !page->shell->connected(owner)
             || page->shell->review->detailKinds[std::wstring(scope)]!=L"reply" || !page->shell->review->details[std::wstring(scope)])return {};
@@ -167,7 +169,7 @@ void paintEditor(P const& p,hstring const& key) {
     };
     auto refreshEvidence=button(L"Keep edits and refresh evidence",[replyContext]{if(auto page=replyContext())keepEdits(page);});
     p->refreshEvidence=refreshEvidence; refreshEvidence.Visibility(entry.stale ? Visibility::Visible : Visibility::Collapsed); content.Children().Append(refreshEvidence);
-    more.Items().Append(menuItem(L"Keep edits and refresh evidence",[replyContext]{if(auto page=replyContext())keepEdits(page);}));
+    more.Items().Append(menuItem(L"Keep edits and refresh evidence",[replyContext]{if(auto page=replyContext())keepEdits(page);})); // keepEdits waits until Invoke closes this flyout.
     xaml::Automation::AutomationProperties::SetAutomationId(moreButton,L"review.reply.more"); content.Children().Append(moreButton);
     p->detailHost.Content(rememberScroll(p,content,L"reply-detail:"+key));
     auto buttons=stack(8); p->actions=buttons; buttons.Orientation(p->compact ? Orientation::Vertical:Orientation::Horizontal); buttons.Margin(ThicknessHelper::FromUniformLength(12));
@@ -252,26 +254,33 @@ struct WriteGuard {
     // Re-enable the editor before clearing writing so that event cannot rewrite the retained draft.
     ~WriteGuard(){ if(page->current()){if(page->body)page->body.IsEnabled(true);auto found=shell->review->entries.find(std::wstring(page->selectedKey));if(found!=shell->review->entries.end()){auto const& entry=found->second;if(page->facts)page->facts.IsEnabled(!entry.stale);if(page->send)page->send.IsEnabled(entry.reviewed&&!entry.stale&&!needsDecision(entry.draft));}} shell->review->writing=false; if(!shell->closing) shell->navigation.IsEnabled(true); }
 };
-IAsyncAction keepEdits(P p) {
-    if(!p->current()||p->busy||p->shell->review->writing||p->selectedKey.empty()
+IAsyncAction keepEditsNow(P p) {
+    if(!p->armed()||p->busy||p->shell->review->writing||p->selectedKey.empty()
         ||p->shell->review->detailKinds[std::wstring(p->scope)]!=L"reply"||!p->shell->review->details[std::wstring(p->scope)])co_return;
     auto oldKey=p->selectedKey;auto old=p->shell->review->entries[std::wstring(oldKey)];auto owner=ownerOf(old.proposal);if(!old.draft.Size()||!p->shell->connected(owner))co_return;
     WriteGuard guard(p);
     try{
-        auto response=co_await p->shell->service->request(L"/reply-suggestions",owner);if(!p->current())co_return;
+        auto response=co_await p->shell->service->request(L"/reply-suggestions",owner);if(!p->armed())co_return;
         require(text(response,L"owner")==owner,L"The refreshed mailbox changed.");Json fresh;bool found=false;
         for(auto const& value:array(response,L"proposals")){auto row=value.GetObject();if(ownerOf(row)==owner&&(text(row,L"messageId")==text(old.proposal,L"messageId")||(!text(old.proposal,L"conversationKey").empty()&&text(row,L"conversationKey")==text(old.proposal,L"conversationKey")))){fresh=copy(row);found=true;break;}}
-        require(found,L"No current reply is suggested for this conversation. Your edits can still be saved.");auto id=text(fresh,L"messageId"),key=keyOf(fresh);
-        auto original=co_await p->shell->service->request(L"/messages/"+escaped(id),owner);if(!p->current())co_return;auto message=object(original,L"message");owned(message,owner,id);
-        Json input;put(input,L"messageId",id);put(input,L"mode",L"reply");put(input,L"body",text(old.draft,L"body"));auto prepared=co_await p->shell->service->request(L"/drafts/prepare",owner,L"POST",input);if(!p->current())co_return;auto draft=object(prepared,L"draft");
+        if(!found){p->say(L"No current reply is suggested for this conversation. Your edits can still be saved.");co_return;}
+        auto id=text(fresh,L"messageId"),key=keyOf(fresh);
+        auto original=co_await p->shell->service->request(L"/messages/"+escaped(id),owner);if(!p->armed())co_return;auto message=object(original,L"message");owned(message,owner,id);
+        Json input;put(input,L"messageId",id);put(input,L"mode",L"reply");put(input,L"body",text(old.draft,L"body"));auto prepared=co_await p->shell->service->request(L"/drafts/prepare",owner,L"POST",input);if(!p->armed())co_return;auto draft=object(prepared,L"draft");
         require(text(draft,L"accountId")==owner&&text(draft,L"replyToId")==id&&text(draft,L"body")==text(old.draft,L"body")&&text(draft,L"bcc").empty(),L"The refreshed reply owner could not be verified.");
-        auto latest=co_await p->shell->service->request(L"/reply-suggestions",owner);require(p->current()&&validProposal(latest,fresh),L"The conversation changed again. Your original edits remain intact.");
+        auto latest=co_await p->shell->service->request(L"/reply-suggestions",owner);require(p->armed()&&validProposal(latest,fresh),L"The conversation changed again. Your original edits remain intact.");
         for(auto field:{L"footer",L"attachments"})if(old.draft.HasKey(field))draft.Insert(field,old.draft.GetNamedValue(field));if(id==text(old.draft,L"replyToId")&&!text(old.draft,L"id").empty())put(draft,L"id",text(old.draft,L"id"));
         ReviewEntry updated;updated.proposal=copy(fresh);updated.message=copy(message);updated.draft=copy(draft);updated.reviewed=false;updated.stale=false;
         if(key!=oldKey){updated.saved=copy(draft);put(updated.saved,L"body",text(fresh,L"text"));}else updated.saved=copy(old.saved);
         p->shell->review->moveEntry(oldKey,key,std::move(updated));
         p->selectedKey=key;p->shell->review->selections[std::wstring(p->scope)]=key;p->shell->review->values[std::wstring(p->scope)]=copy(latest);++p->shell->selectionGeneration;paintEditor(p,key);p->say(L"Latest evidence loaded. Your text is preserved; check the new recipient, facts and commitments again.");
     }catch(hresult_error const& error){p->say(error.message());}
+}
+IAsyncAction keepEdits(P p) {
+    // MenuFlyoutItem::Invoke raises Click before Close. Disabling navigation in that Click drops the close.
+    auto root=p->shell->root;
+    if(root && root.DispatcherQueue().TryEnqueue([p]{ keepEditsNow(p); })) co_return;
+    co_await keepEditsNow(p);
 }
 IAsyncAction saveDraft(P p) {
     if(!p->current() || p->busy || p->shell->review->writing || p->selectedKey.empty()
@@ -569,8 +578,9 @@ IAsyncAction staleReplyFlyoutChecks(P p,Json first,Json next) {
     require(p->current() && p->selectedKey==keyOf(next) && p->replyMore!=more,L"The replacement reply did not invalidate the original More control.");
     auto firstDraft=p->shell->review->entries.at(std::wstring(keyOf(first))).draft.Stringify();
     auto nextDraft=p->shell->review->entries.at(std::wstring(keyOf(next))).draft.Stringify();
-    auto disabled=std::make_shared<unsigned>(0);auto nav=p->shell->navigation;
-    auto token=nav.RegisterPropertyChangedCallback(Control::IsEnabledProperty(),[disabled](auto const& sender,auto const&){if(!sender.template as<Control>().IsEnabled() && *disabled<2)++*disabled;});
+    auto disabled=std::make_shared<unsigned>(0);auto nav=p->shell->navigation;auto navOn=std::make_shared<bool>(nav.IsEnabled());
+    auto token=nav.RegisterPropertyChangedCallback(Control::IsEnabledProperty(),[disabled,navOn](auto const& sender,auto const&){
+        auto on=sender.template as<Control>().IsEnabled(); if(*navOn && !on && *disabled<2)++*disabled; *navOn=on; });
     struct Unregister {NavigationView nav;int64_t token;~Unregister(){nav.UnregisterPropertyChangedCallback(Control::IsEnabledProperty(),token);}} unregister{nav,token};
     invoke.Invoke();deadline=GetTickCount64()+5000;while(!*invoked && GetTickCount64()<deadline){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
     co_await resume_after(std::chrono::milliseconds(10));co_await ui;
@@ -591,11 +601,15 @@ IAsyncAction staleReplyFlyoutChecks(P p,Json first,Json next) {
     require(*activeOpened && activeMenu.IsOpen(),L"The replacement reply flyout did not open.");
     auto activeItem=activeMenu.Items().GetAt(0).as<MenuFlyoutItem>();
     xaml::Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(activeItem).GetPattern(xaml::Automation::Peers::PatternInterface::Invoke).as<xaml::Automation::Provider::IInvokeProvider>().Invoke();
-    deadline=GetTickCount64()+5000;
-    while((!*disabled || !*activeClosed || p->shell->review->writing) && GetTickCount64()<deadline){co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
-    require(*disabled==1 && *activeClosed && !activeMenu.IsOpen() && !p->shell->review->writing && p->shell->navigation.IsEnabled()
-        && p->selectedKey==keyOf(next) && p->shell->review->entries.at(std::wstring(keyOf(next))).draft.Stringify()==nextDraft,
-        L"The current reply More action was blocked or did not retain the fictional draft after its local lookup.");
+    deadline=GetTickCount64()+5000;auto held=std::make_shared<bool>(false);
+    while(((*disabled==0 && !*held) || !*activeClosed || p->shell->review->writing) && GetTickCount64()<deadline){
+        if(!nav.IsEnabled())*held=true; co_await resume_after(std::chrono::milliseconds(10));co_await ui;}
+    auto kept=p->shell->review->entries.at(std::wstring(keyOf(next))).draft.Stringify()==nextDraft;
+    auto idle=!p->shell->review->writing && nav.IsEnabled(); auto same=p->selectedKey==keyOf(next);
+    auto ok=(*disabled==1 || (*disabled==0 && *held)) && *activeClosed && !activeMenu.IsOpen() && idle && same && kept;
+    hstring why=L"The current reply More action was blocked or did not retain the fictional draft after its local lookup.";
+    if(!ok) why=why+L" ("+to_hstring(*disabled)+L","+to_hstring(*held)+L","+to_hstring(*activeClosed)+L","+to_hstring(activeMenu.IsOpen())+L","+to_hstring(idle)+L","+to_hstring(same)+L","+to_hstring(kept)+L")";
+    require(ok,why.c_str());
 }
 }
 
