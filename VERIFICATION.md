@@ -86,8 +86,10 @@ hosting view's AX tree. Run `38867290790` on `db57869` pressed the scope tab
 still a SwiftUI button. Back, Skip, update, refresh, and Add Cc now use
 that mounted button. Delete is the same kind of button beside the list
 menus. Run `38872162441` found it disabled: search clears its response on
-appear, and the cached rows had no provider id. Those rows now carry the
-same `imap:` id. A miss prints the mounted buttons. The Skip seam extracts the mounted handler; the pinned
+appear, and the cached rows had no provider id. Stamping only those cached
+rows was not enough: run `38875613246` still showed `Delete (2)` mounted and
+disabled after `/mail/page` replaced the list with fresh fixture messages.
+Those messages now carry the same `imap:` id. A miss prints the mounted buttons. The Skip seam extracts the mounted handler; the pinned
 baseline still reads the old SwiftUI button. No AppKit run was available here.
 
 ## PR #58 macOS review fixture completion — 15 October 2026

@@ -665,7 +665,7 @@ import SwiftUI
         ReviewProtocol.resetLifecycle()
         let first = ReviewFixture.owners[0], owner = ReviewFixture.owners[1]
         let model = AppModel(session: session); model.state = ReviewFixture.state(owner: first); model.starting = false
-        var message = ReviewFixture.message(0, owner: owner); message["remoteId"] = .string("imap:1:1")
+        let message = ReviewFixture.message(0, owner: owner)
         model.state["messages"] = .array([message]); model.selectedMessage = message.viewID; model.messageDetail = message
         var expanded = 0
         let window = NSWindow(contentRect: NSRect(x: 30, y: 30, width: 720, height: 760), styleMask: [.titled], backing: .buffered, defer: false)
@@ -859,15 +859,7 @@ import SwiftUI
     @MainActor static func mountedSelection(session: URLSession) async throws {
         let model = AppModel(session: session), owner = ReviewFixture.owners[0]
         model.state = ReviewFixture.state(owner: owner); model.starting = false
-        // Search resets its response on appear, so the cached rows need the same provider id.
-        var stored = model.state["messages"].array
-        for index in stored.indices { stored[index]["remoteId"] = .string("imap:1:\(index + 1)") }
-        model.state["messages"] = .array(stored)
-        let rows = (0..<2).map { index -> JSON in
-            var row = ReviewFixture.message(index, owner: owner)
-            row["remoteId"] = .string("imap:1:\(index + 1)")
-            return row
-        }
+        let rows = (0..<2).map { ReviewFixture.message($0, owner: owner) }
         model.searchResponse = .object(["messages": .array(rows), "total": .number(2), "page": .number(0)])
         let defaults = UserDefaults.standard, priorLayout = defaults.object(forKey: "mailReaderLayout"), priorSidebar = defaults.object(forKey: "mailSidebarVisible")
         defaults.set("right", forKey: "mailReaderLayout"); defaults.set(true, forKey: "mailSidebarVisible")
