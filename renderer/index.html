@@ -188,8 +188,22 @@
     </dialog>
     <dialog id="settings" aria-labelledby="settings-title">
       <h2 id="settings-title">Settings</h2>
-      <dl id="prefs"></dl>
-      <p class="hint">API keys stay in AI Setup, on the GenMail menu. This list shows the preferences the host already stores.</p>
+      <div id="prefs">
+        <label for="pref-theme">Theme</label>
+        <select id="pref-theme">
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+        <label for="pref-accent">Accent</label>
+        <input id="pref-accent" type="text" maxlength="7" spellcheck="false" autocomplete="off" />
+        <label class="check" for="pref-conversation"><input id="pref-conversation" type="checkbox" /> Conversation view</label>
+        <label class="check" for="pref-images"><input id="pref-images" type="checkbox" /> Load remote images</label>
+        <label for="pref-undo">Undo send (seconds)</label>
+        <input id="pref-undo" type="number" min="0" max="30" step="1" />
+        <label class="check" for="pref-snooze"><input id="pref-snooze" type="checkbox" /> Snooze</label>
+        <p id="settings-status" role="status"></p>
+      </div>
+      <p class="hint">API keys stay in AI Setup, on the GenMail menu. These preferences are saved on this computer.</p>
       <div class="row">
         <button type="button" class="ghost" id="settings-close">Close</button>
       </div>

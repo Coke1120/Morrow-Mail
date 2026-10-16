@@ -22,7 +22,7 @@
 - Edits those signatures from the toolbar (`mail:upsertSignature`, `mail:deleteSignature`): name plus text or HTML, and an optional default. The sample list stays in memory. A connected IMAP account keeps an empty list and rejects writes
 - Drafts with AI from compose (`aiDraftWrite:start`, `aiDraftWrite:cancel`, `aiDraftWrite:event`) and lists reply suggestions on the open message (`aiDraftWrite:replySuggestions`). A missing API key is reported in place
 - Shows the app version and checks or installs updates (`app:getVersion`, `host:updateGetState`, `host:updateCheck`, `host:updateInstall`)
-- Shows a few host preferences (`config:getTheme`, `genmail:configGet*`). API keys stay in AI Setup
+- Edits theme, accent, conversation view, remote images, undo send, and snooze (`config:setTheme`, `genmail:configSet*`). API keys stay in AI Setup
 - Email Brain lists cached sections and writing rules (`emailBrain:getCached`). A user rule can be added, edited, or deleted. Refresh says it needs an AI key when the host returns `accepted: false`. Categories in that dialog load from `emailBrain:getCategories`, edit locally, and save with `emailBrain:saveCategories`. Add with AI needs an API key and shows the host error when the key is missing
 - Schedules a send from New Mail (`mail:scheduleSend`) and lists it (`mail:listScheduled`). The sample list stays in memory. A connected IMAP account reports that scheduled send is unavailable
 - Replies or forwards the open message in that same dialog. Reply All adds other To and Cc addresses. Forward names attachments and does not upload them. The sample mailbox can fill and schedule either one
@@ -37,4 +37,4 @@ Not in this slice, and not matching GenMail inside the Genspark launcher yet:
 
 - Visual parity with that GenMail shell beyond the three-pane chrome in [PARITY_SHELL.md](PARITY_SHELL.md)
 - Calendar and the Email Brain skills library
-- Writing settings, or changing API keys, from this window (AI Setup remains on the application menu)
+- Changing API keys from this window (AI Setup remains on the application menu)

@@ -485,26 +485,127 @@ assert.strictEqual(updateView(null, 12).status, "Up to date.");
 assert.strictEqual(updateView({ downloading: true, progress: "nope" }, "").status, "Downloading 0%…");
 
 const prefRows = extractFunction(appJs, "prefRows");
-const prefText = extractFunction(appJs, "prefText");
-assert.strictEqual(prefText("bool", true), "On");
-assert.strictEqual(prefText("bool", false), "Off");
-assert.strictEqual(prefText("seconds", 5), "5 seconds");
-assert.strictEqual(prefText("seconds", "nope"), "—");
-assert.strictEqual(prefText("text", "#7C3AED"), "#7C3AED");
-assert.strictEqual(prefText("text", ""), "—");
-assert.strictEqual(prefText("text", null), "—");
+const readPref = extractFunction(appJs, "readPref");
+const applyPref = extractFunction(appJs, "applyPref");
+const control = { checked: false, value: "" };
+applyPref("bool", control, true);
+assert.strictEqual(readPref("bool", control), true);
+applyPref("bool", control, false);
+assert.strictEqual(readPref("bool", control), false);
+applyPref("seconds", control, 0);
+assert.strictEqual(readPref("seconds", control), 0);
+applyPref("seconds", control, 30);
+assert.strictEqual(readPref("seconds", control), 30);
+control.value = "nope";
+assert.strictEqual(readPref("seconds", control), "nope");
+applyPref("text", control, "#7C3AED");
+assert.strictEqual(readPref("text", control), "#7C3AED");
+applyPref("select", control, "dark");
+assert.strictEqual(readPref("select", control), "dark");
+applyPref("text", control, null);
+assert.strictEqual(control.value, "");
 const ipcSrc = fs.readFileSync(path.join(root, "host/ipc.js"), "utf8");
+const settingsSrc = fs.readFileSync(path.join(root, "host/settings.js"), "utf8");
 const prefs = prefRows();
-assert.ok(prefs.length >= 4, "settings lists too few preferences");
-for (const [channel, label, kind] of prefs) {
-  assert.ok(registered.has(channel), `preload does not register ${channel}`);
-  assert.ok(used.has(channel), `renderer does not call ${channel}`);
-  assert.ok(ipcSrc.includes('"' + channel + '"'), `host stub missing ${channel}`);
-  assert.strictEqual(typeof label, "string");
-  assert.ok(kind === "text" || kind === "bool" || kind === "seconds");
+assert.strictEqual(prefs.length, 6);
+const prefKinds = new Set();
+for (const [id, getChannel, setChannel, kind] of prefs) {
+  assert.ok(html.includes('id="' + id + '"'), `settings control missing ${id}`);
+  assert.ok(registered.has(getChannel), `preload does not register ${getChannel}`);
+  assert.ok(registered.has(setChannel), `preload does not register ${setChannel}`);
+  assert.ok(used.has(getChannel) && used.has(setChannel), `renderer does not call ${setChannel}`);
+  assert.ok(settingsSrc.includes('"' + getChannel + '"'), `settings store missing ${getChannel}`);
+  assert.ok(settingsSrc.includes('"' + setChannel + '"'), `settings store missing ${setChannel}`);
+  assert.ok(kind === "select" || kind === "text" || kind === "bool" || kind === "seconds");
+  prefKinds.add(kind);
 }
-assert.ok(!ipcSrc.includes("configSet"), "host grew a set channel; settings is still read-only");
-assert.ok(!appJs.includes("configSet") && !appJs.includes("host:aiSaveConfig"));
+assert.ok(prefKinds.has("select") && prefKinds.has("text") && prefKinds.has("bool") && prefKinds.has("seconds"));
+const settingsHtml = html.slice(html.indexOf('id="settings"'), html.indexOf("</dialog>", html.indexOf('id="settings"')));
+assert.ok(settingsHtml.includes("<select") && settingsHtml.includes('type="checkbox"') && settingsHtml.includes('type="number"'));
+assert.ok(!appJs.includes("host:aiSaveConfig"));
+assert.ok(!preload.includes("host:aiSaveConfig"));
+const settingsCall = ipcSrc.indexOf("settingsAnswer(channel, args)");
+const overrideCall = ipcSrc.indexOf("hasOwnProperty.call(OVERRIDES, channel)");
+assert.ok(ipcSrc.includes('require("./settings")'));
+assert.ok(settingsCall > 0 && settingsCall < overrideCall);
+assert.ok(settingsCall < ipcSrc.indexOf("/Effective$|Enabled$/"));
+assert.ok(!ipcSrc.includes('"config:getTheme"'));
+checkSettingsRoundTrip();
+
+function checkSettingsRoundTrip() {
+  const os = require("os");
+  const prev = {
+    GENMAIL_USER_DATA: process.env.GENMAIL_USER_DATA,
+    GENMAIL_MAIL_DIR: process.env.GENMAIL_MAIL_DIR,
+    GENMAIL_AI_CONFIG_DIR: process.env.GENMAIL_AI_CONFIG_DIR,
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "genmail-settings-"));
+  process.env.GENMAIL_USER_DATA = dir;
+  delete process.env.GENMAIL_MAIL_DIR;
+  delete process.env.GENMAIL_AI_CONFIG_DIR;
+  try {
+    const { answer } = require("../host/settings");
+    const file = path.join(dir, "settings.json");
+    assert.strictEqual(fs.existsSync(file), false);
+    assert.strictEqual(answer("config:getTheme", []), "light");
+    assert.strictEqual(answer("genmail:configGetAccent", []), "#7C3AED");
+    assert.strictEqual(answer("genmail:configGetConversationViewEnabled", []), true);
+    assert.strictEqual(answer("genmail:configGetAutoLoadRemoteImages", []), false);
+    assert.strictEqual(answer("genmail:configGetUndoSendDelaySeconds", []), 5);
+    assert.strictEqual(answer("genmail:configGetSnoozeEffective", []), true);
+    assert.strictEqual(fs.existsSync(file), false);
+    assert.strictEqual(answer("config:setTheme", ["dark"]), "dark");
+    assert.strictEqual(answer("genmail:configSetAccent", ["#112233"]), "#112233");
+    assert.strictEqual(answer("genmail:configSetConversationViewEnabled", [false]), false);
+    assert.strictEqual(answer("genmail:configSetAutoLoadRemoteImages", [true]), true);
+    assert.strictEqual(answer("genmail:configSetUndoSendDelaySeconds", [0]), 0);
+    assert.strictEqual(answer("genmail:configSetSnoozeEffective", [false]), false);
+    assert.strictEqual(answer("config:getTheme", []), "dark");
+    assert.strictEqual(answer("genmail:configGetAccent", []), "#112233");
+    assert.strictEqual(answer("genmail:configGetConversationViewEnabled", []), false);
+    assert.strictEqual(answer("genmail:configGetAutoLoadRemoteImages", []), true);
+    assert.strictEqual(answer("genmail:configGetUndoSendDelaySeconds", []), 0);
+    assert.strictEqual(answer("genmail:configGetSnoozeEffective", []), false);
+    assert.strictEqual(answer("genmail:configSetAccent", ["#abcdef"]), "#ABCDEF");
+    const reloaded = spawnSync(process.execPath, ["-e", `
+      const { answer } = require(${JSON.stringify(path.join(root, "host/settings.js"))});
+      process.stdout.write(JSON.stringify({
+        theme: answer("config:getTheme", []),
+        accent: answer("genmail:configGetAccent", []),
+        conversation: answer("genmail:configGetConversationViewEnabled", []),
+        images: answer("genmail:configGetAutoLoadRemoteImages", []),
+        undo: answer("genmail:configGetUndoSendDelaySeconds", []),
+        snooze: answer("genmail:configGetSnoozeEffective", []),
+      }));
+    `], { encoding: "utf8" });
+    assert.strictEqual(reloaded.status, 0, reloaded.stderr);
+    assert.deepStrictEqual(JSON.parse(reloaded.stdout), {
+      theme: "dark",
+      accent: "#ABCDEF",
+      conversation: false,
+      images: true,
+      undo: 0,
+      snooze: false,
+    });
+    assert.throws(() => answer("config:setTheme", ["neon"]), /light or dark/);
+    assert.strictEqual(answer("config:getTheme", []), "dark");
+    assert.throws(() => answer("genmail:configSetAccent", ["purple"]), /#RRGGBB/);
+    assert.strictEqual(answer("genmail:configGetAccent", []), "#ABCDEF");
+    assert.throws(() => answer("genmail:configSetUndoSendDelaySeconds", [31]), /0 to 30/);
+    assert.strictEqual(answer("genmail:configGetUndoSendDelaySeconds", []), 0);
+    assert.throws(() => answer("genmail:configSetSnoozeEffective", ["yes"]), /on or off/);
+    assert.strictEqual(answer("genmail:configGetSnoozeEffective", []), false);
+    fs.writeFileSync(file, "{");
+    assert.strictEqual(answer("config:getTheme", []), "light");
+    assert.strictEqual(answer("config:setTheme", ["dark"]), "dark");
+    assert.strictEqual(answer("config:getTheme", []), "dark");
+  } finally {
+    for (const [key, value] of Object.entries(prev)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
 
 for (const channel of ["host:updateGetState", "host:updateCheck", "host:updateInstall"]) {
   assert.ok(registered.has(channel), `preload does not register ${channel}`);
@@ -520,7 +621,7 @@ for (const channel of ["host:updateGetState", "host:updateCheck", "host:updateIn
 assert.ok(html.includes('id="updates"') && html.includes('id="update-check"') && html.includes('id="update-install"'));
 assert.ok(html.includes("Check for updates") && html.includes(">Install<"));
 assert.ok(html.includes('id="settings"') && html.includes('id="prefs"') && html.includes("AI Setup"));
-assert.ok(css.includes("#updates") && css.includes("#prefs"));
+assert.ok(css.includes("#updates") && css.includes("#prefs") && css.includes("#settings-status"));
 
 const timing = loadFunctions(appJs, ["snoozeUntil", "scheduleAt"]);
 const laterAfternoon = new Date("2026-10-16T15:00:00");
@@ -918,6 +1019,8 @@ const parity = fs.readFileSync(path.join(root, "docs/PARITY_SHELL.md"), "utf8");
 assert.ok(parity.includes("emailBrain:getCached") && parity.includes("emailBrain:addWritingRule"));
 assert.ok(parity.includes("emailBrain:getCategories") && parity.includes("emailBrain:saveCategories") && parity.includes("emailBrain:addCategoryViaPrompt"));
 assert.ok(parity.includes("skills library"));
+assert.ok(parity.includes("config:setTheme") && parity.includes("genmail:configSetSnoozeEffective"));
+assert.ok(!parity.includes("the list is read-only"));
 assert.ok(!parity.includes("full Brain category/skills UI"));
 assert.ok(parity.includes("mail:upsertSignature") && parity.includes("imap_signatures_unsupported"));
 assert.ok(!parity.includes("signatures editor"));

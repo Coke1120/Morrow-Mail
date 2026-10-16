@@ -87,18 +87,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 #updates button { padding: 2px 8px; }
 
-#prefs {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 6px 16px;
-  margin: 12px 0 0;
-}
+#prefs { margin: 12px 0 0; }
 
-#prefs dt { font-weight: 600; }
+#prefs label { margin: 10px 0 4px; }
 
-#prefs dd { margin: 0; }
+#prefs label.check { margin: 8px 0; }
 
-#prefs .error { color: #9f1239; }
+#settings-status:empty { display: none; }
+
+#settings-status.error { color: #9f1239; }
 
 #brain-status:empty,
 #brain-category-status:empty,

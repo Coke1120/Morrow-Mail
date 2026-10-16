@@ -2083,48 +2083,67 @@ async function installUpdate() {
 
 function prefRows() {
   return [
-    ["config:getTheme", "Theme", "text"],
-    ["genmail:configGetAccent", "Accent", "text"],
-    ["genmail:configGetConversationViewEnabled", "Conversation view", "bool"],
-    ["genmail:configGetAutoLoadRemoteImages", "Load remote images", "bool"],
-    ["genmail:configGetUndoSendDelaySeconds", "Undo send", "seconds"],
-    ["genmail:configGetSnoozeEffective", "Snooze", "bool"],
+    ["pref-theme", "config:getTheme", "config:setTheme", "select"],
+    ["pref-accent", "genmail:configGetAccent", "genmail:configSetAccent", "text"],
+    ["pref-conversation", "genmail:configGetConversationViewEnabled", "genmail:configSetConversationViewEnabled", "bool"],
+    ["pref-images", "genmail:configGetAutoLoadRemoteImages", "genmail:configSetAutoLoadRemoteImages", "bool"],
+    ["pref-undo", "genmail:configGetUndoSendDelaySeconds", "genmail:configSetUndoSendDelaySeconds", "seconds"],
+    ["pref-snooze", "genmail:configGetSnoozeEffective", "genmail:configSetSnoozeEffective", "bool"],
   ];
 }
 
-function prefText(kind, value) {
-  if (kind === "bool") return value === true ? "On" : "Off";
+function readPref(kind, control) {
+  if (kind === "bool") return control.checked === true;
   if (kind === "seconds") {
-    const n = Number(value);
-    if (!Number.isFinite(n)) return "—";
-    return n + " seconds";
+    const raw = String(control.value).trim();
+    if (!/^-?\d+$/.test(raw)) return raw;
+    return Number(raw);
   }
-  if (value == null || value === "") return "—";
-  return String(value);
+  return control.value;
+}
+
+function applyPref(kind, control, value) {
+  if (kind === "bool") {
+    control.checked = value === true;
+    return;
+  }
+  control.value = value == null ? "" : String(value);
 }
 
 async function loadSettings() {
-  const list = $("prefs");
-  list.replaceChildren();
-  for (const [channel, label, kind] of prefRows()) {
-    const term = document.createElement("dt");
-    term.textContent = label;
-    const value = document.createElement("dd");
-    value.textContent = prefText(kind, await api.invoke(channel));
-    list.append(term, value);
+  const status = $("settings-status");
+  status.textContent = "";
+  status.classList.remove("error");
+  try {
+    for (const [id, channel, , kind] of prefRows()) {
+      applyPref(kind, $(id), await api.invoke(channel));
+    }
+  } catch (error) {
+    status.textContent = error instanceof Error ? error.message : String(error);
+    status.classList.add("error");
+  }
+}
+
+async function savePref(row) {
+  const [id, getChannel, setChannel, kind] = row;
+  const status = $("settings-status");
+  try {
+    await api.invoke(setChannel, readPref(kind, $(id)));
+    applyPref(kind, $(id), await api.invoke(getChannel));
+    status.textContent = "";
+    status.classList.remove("error");
+  } catch (error) {
+    status.textContent = error instanceof Error ? error.message : String(error);
+    status.classList.add("error");
+    try {
+      applyPref(kind, $(id), await api.invoke(getChannel));
+    } catch { /* status already shows the failure */ }
   }
 }
 
 function openSettings() {
   openDialog("settings");
-  loadSettings().catch((error) => {
-    const list = $("prefs");
-    list.replaceChildren();
-    const note = document.createElement("p");
-    note.className = "error";
-    note.textContent = error instanceof Error ? error.message : String(error);
-    list.appendChild(note);
-  });
+  loadSettings();
 }
 
 function brainSections(snapshot) {
@@ -2575,6 +2594,11 @@ function wire() {
   $("refresh").addEventListener("click", () => guard(refresh));
   $("settings-open").addEventListener("click", openSettings);
   $("settings-close").addEventListener("click", () => closeDialog("settings"));
+  for (const row of prefRows()) {
+    $(row[0]).addEventListener("change", () => {
+      savePref(row);
+    });
+  }
   $("signatures-open").addEventListener("click", openSignatures);
   $("signatures-close").addEventListener("click", () => closeDialog("signatures"));
   $("signatures").addEventListener("close", () => {

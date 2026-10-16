@@ -5,6 +5,7 @@ const { answer: mailAnswer } = require("./mailbox");
 const { answer: draftAnswer } = require("./draft-write");
 const { answer: brainAnswer } = require("./brain");
 const { answer: translateAnswer } = require("./translate");
+const { answer: settingsAnswer } = require("./settings");
 
 const SESSION = {
   userId: "local-user",
@@ -36,7 +37,6 @@ const OVERRIDES = {
   "shell:getDogfoodGate": "disabled",
   "shell:getDeviceControlGate": "disabled",
   "shell:getGenmailBadgeDetail": null,
-  "config:getTheme": "light",
   "config:getDistributionSource": "genmail",
   "config:getEnv": { domain: "https://www.genspark.ai", name: "local" },
   "config:getLocale": "en-US",
@@ -54,13 +54,8 @@ const OVERRIDES = {
     success: false,
     error: { code: "disabled", status: 0, retryable: false },
   },
-  "genmail:configGetAccent": "#7C3AED",
-  "genmail:configGetAutoLoadRemoteImages": false,
   "genmail:configGetAiWriteAutoOpenOnReply": false,
-  "genmail:configGetUndoSendDelaySeconds": 5,
-  "genmail:configGetSnoozeEffective": true,
   "genmail:configGetDogfoodPrefs": {},
-  "genmail:configGetConversationViewEnabled": true,
   "genmail:configGetShowJevClassification": false,
   "genmail:configGetShowJevSemanticSearch": false,
   "genmail:configGetShowJevSemanticSearchEffective": false,
@@ -171,6 +166,9 @@ function fallback(channel, args) {
   if (brain !== undefined) return brain;
   const translated = translateAnswer(channel, args);
   if (translated !== undefined) return translated;
+  // The Enabled/Effective fallback below would answer these getters with false.
+  const setting = settingsAnswer(channel, args);
+  if (setting !== undefined) return setting;
   if (Object.prototype.hasOwnProperty.call(OVERRIDES, channel)) {
     return OVERRIDES[channel];
   }
