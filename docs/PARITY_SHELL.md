@@ -25,8 +25,9 @@ First-party `renderer/` chrome for the three-pane mail shell. Layout follows the
 - The open message loads `aiDraftWrite:replySuggestions`. Each suggestion opens Reply with that text above the quote. A missing AI key shows on that row. The sample mailbox still opens with no key and no live IMAP.
 - Updater strip: the running version from `app:getVersion`, Check (`host:updateCheck`), and Install (`host:updateInstall`) when `host:updateGetState` reports a downloaded update. The same snapshot supplies the idle, checking, downloading, and error lines. An unpackaged build stays on the host stub (`enabled: false`).
 - Settings lists theme, accent, conversation view, remote images, undo send, and snooze from `config:getTheme` and the existing `genmail:configGet*` stubs. The host has no matching set channels, so the list is read-only. API keys stay in AI Setup on the GenMail menu.
+- Email Brain is the toolbar Brain dialog. It lists sections from `emailBrain:getCached`, including writing rules. Add calls `emailBrain:addWritingRule`. A user rule with an id can be edited (`emailBrain:setWritingRule`) or deleted (`emailBrain:deleteWritingRule`). Refresh calls `emailBrain:refresh`, then `emailBrain:rebuild` only when the first was not accepted. With no API key each returns `accepted: false` and the panel says it needs an AI key. The dialog listens for `emailBrain:updated`, `emailBrain:refreshState`, and `emailBrain:rebuildState`. No IMAP account and no API key still show the cached sections and an empty writing list.
 
 ## Deferred
 
-- Full settings writes, AI Studio, calendar, Email Brain panel, signatures editor.
+- Full settings writes, AI Studio, calendar, signatures editor, full Brain category/skills UI.
 - A pixel match to `GenmailSpace-*.css`. This shell only uses the first-party layout.

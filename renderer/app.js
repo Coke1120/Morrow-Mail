@@ -33,6 +33,16 @@ let scheduledGen = 0;
 let appVersion = "";
 let updateGen = 0;
 let updateTimer = null;
+let brainSnapshot = null;
+let brainEditId = "";
+let brainView = {
+  accepted: null,
+  refreshing: false,
+  rebuilding: false,
+  phase: "",
+  percent: null,
+  error: "",
+};
 
 function $(id) {
   return document.getElementById(id);
@@ -1949,6 +1959,211 @@ function openSettings() {
   });
 }
 
+function brainSections(snapshot) {
+  const persona = snapshot && snapshot.persona;
+  const sections = persona && persona.profile && persona.profile.sections;
+  return Array.isArray(sections) ? sections : [];
+}
+
+function brainUserRules(sections) {
+  const rules = [];
+  const list = Array.isArray(sections) ? sections : [];
+  for (const section of list) {
+    const rows = section && Array.isArray(section.rows) ? section.rows : [];
+    for (const row of rows) {
+      if (row && row.source === "user" && row.id) rules.push(row);
+    }
+  }
+  return rules;
+}
+
+function brainRowText(row) {
+  const label = String((row && row.label) || "").trim();
+  const value = String((row && row.value) || "").trim();
+  if (label && value) return label + " — " + value;
+  return value || label;
+}
+
+function brainMessage(view) {
+  const state = view || {};
+  if (state.error) return { text: String(state.error), error: true };
+  if (state.refreshing || state.rebuilding) {
+    const pct = typeof state.percent === "number" ? " " + Math.round(state.percent) + "%" : "";
+    const label = state.rebuilding ? "Rebuilding" : "Refreshing";
+    return { text: label + pct + "…", error: false };
+  }
+  if (state.accepted === false) return { text: "Needs an AI key.", error: true };
+  return { text: "", error: false };
+}
+
+function brainRefreshChannels() {
+  return ["emailBrain:refresh", "emailBrain:rebuild"];
+}
+
+function paintBrain(snapshot, view) {
+  const message = brainMessage(view);
+  const status = $("brain-status");
+  status.textContent = message.text;
+  status.classList.toggle("error", message.error);
+  const root = $("brain-sections");
+  root.replaceChildren();
+  const sections = brainSections(snapshot);
+  if (!sections.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = "No writing rules yet.";
+    root.appendChild(empty);
+  }
+  for (const section of sections) {
+    const block = document.createElement("section");
+    const title = document.createElement("h3");
+    title.textContent = section.title || "Section";
+    block.appendChild(title);
+    const rows = Array.isArray(section.rows) ? section.rows : [];
+    if (!rows.length && section.id === "how-you-write") {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = "No writing rules yet.";
+      block.appendChild(empty);
+    }
+    for (const row of rows) {
+      const line = document.createElement("div");
+      line.className = "brain-row";
+      const text = document.createElement("p");
+      text.textContent = brainRowText(row);
+      line.appendChild(text);
+      if (row && row.source === "user" && row.id) {
+        const name = brainRowText(row).slice(0, 80);
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.className = "ghost";
+        edit.textContent = "Edit";
+        edit.setAttribute("aria-label", "Edit " + name);
+        edit.addEventListener("click", () => startBrainEdit(row));
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "ghost";
+        del.textContent = "Delete";
+        del.setAttribute("aria-label", "Delete " + name);
+        del.addEventListener("click", () => {
+          deleteBrainRule(row.id).catch((error) => {
+            brainView = { ...brainView, error: error instanceof Error ? error.message : String(error) };
+            paintBrain(brainSnapshot, brainView);
+          });
+        });
+        line.append(edit, del);
+      }
+      block.appendChild(line);
+    }
+    root.appendChild(block);
+  }
+  $("brain-add").textContent = brainEditId ? "Save" : "Add";
+  $("brain-cancel").hidden = !brainEditId;
+  $("brain-refresh").disabled = !!(view && (view.refreshing || view.rebuilding));
+}
+
+function startBrainEdit(row) {
+  brainEditId = row.id;
+  $("brain-rule").value = String(row.value || "");
+  $("brain-add").textContent = "Save";
+  $("brain-cancel").hidden = false;
+  $("brain-rule").focus();
+}
+
+function clearBrainEdit() {
+  brainEditId = "";
+  $("brain-rule").value = "";
+  if ($("brain").open) paintBrain(brainSnapshot, brainView);
+}
+
+async function loadBrain() {
+  brainSnapshot = await call("emailBrain:getCached");
+  if ($("brain").open) paintBrain(brainSnapshot, brainView);
+}
+
+function openBrain() {
+  openDialog("brain");
+  loadBrain().catch((error) => {
+    brainView = { ...brainView, error: error instanceof Error ? error.message : String(error) };
+    paintBrain(brainSnapshot, brainView);
+  });
+}
+
+async function submitBrainRule(event) {
+  event.preventDefault();
+  const text = $("brain-rule").value.trim();
+  const itemId = brainEditId;
+  try {
+    if (!text) throw new Error("A writing rule needs text");
+    if (itemId) await call("emailBrain:setWritingRule", { itemId, text });
+    else await call("emailBrain:addWritingRule", { text });
+    brainEditId = "";
+    $("brain-rule").value = "";
+    brainView = { ...brainView, error: "", accepted: null };
+    await loadBrain();
+  } catch (error) {
+    brainView = { ...brainView, error: error instanceof Error ? error.message : String(error) };
+    paintBrain(brainSnapshot, brainView);
+  }
+}
+
+async function deleteBrainRule(itemId) {
+  await call("emailBrain:deleteWritingRule", { itemId });
+  if (brainEditId === itemId) {
+    brainEditId = "";
+    $("brain-rule").value = "";
+  }
+  brainView = { ...brainView, error: "", accepted: null };
+  await loadBrain();
+}
+
+async function refreshBrain() {
+  $("brain-refresh").disabled = true;
+  brainView = { ...brainView, error: "" };
+  try {
+    let accepted = false;
+    for (const channel of brainRefreshChannels()) {
+      const result = await call(channel);
+      accepted = !!(result && result.accepted);
+      if (accepted) break;
+    }
+    brainView = { ...brainView, accepted };
+  } catch (error) {
+    brainView = { ...brainView, error: error instanceof Error ? error.message : String(error) };
+  }
+  if ($("brain").open) paintBrain(brainSnapshot, brainView);
+}
+
+function onBrainRefreshState(payload) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  brainView = {
+    ...brainView,
+    refreshing: data.refreshing === true,
+    error: data.error ? String(data.error) : "",
+  };
+  if ($("brain").open) paintBrain(brainSnapshot, brainView);
+}
+
+function onBrainRebuildState(payload) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  brainView = {
+    ...brainView,
+    rebuilding: data.rebuilding === true,
+    phase: typeof data.phase === "string" ? data.phase : "",
+    percent: typeof data.percent === "number" ? data.percent : null,
+    error: data.error ? String(data.error) : "",
+  };
+  if ($("brain").open) paintBrain(brainSnapshot, brainView);
+}
+
+function onBrainUpdated() {
+  if (!$("brain").open) return;
+  loadBrain().catch((error) => {
+    brainView = { ...brainView, error: error instanceof Error ? error.message : String(error) };
+    paintBrain(brainSnapshot, brainView);
+  });
+}
+
 function wire() {
   document.addEventListener("keydown", onShellKey);
   wireSplits();
@@ -1966,6 +2181,25 @@ function wire() {
   $("refresh").addEventListener("click", () => guard(refresh));
   $("settings-open").addEventListener("click", openSettings);
   $("settings-close").addEventListener("click", () => closeDialog("settings"));
+  $("brain-open").addEventListener("click", openBrain);
+  $("brain-close").addEventListener("click", () => closeDialog("brain"));
+  $("brain").addEventListener("close", () => {
+    brainEditId = "";
+    $("brain-rule").value = "";
+  });
+  $("brain-cancel").addEventListener("click", clearBrainEdit);
+  $("brain-refresh").addEventListener("click", () => {
+    refreshBrain().catch((error) => {
+      brainView = { ...brainView, error: error instanceof Error ? error.message : String(error) };
+      paintBrain(brainSnapshot, brainView);
+    });
+  });
+  $("brain-rule-form").addEventListener("submit", (event) => {
+    submitBrainRule(event).catch((error) => {
+      brainView = { ...brainView, error: error instanceof Error ? error.message : String(error) };
+      paintBrain(brainSnapshot, brainView);
+    });
+  });
   $("update-check").addEventListener("click", () => {
     checkForUpdates();
   });
@@ -2017,6 +2251,9 @@ async function boot() {
   api.on("mail:emailsUpdated", scheduleReload);
   api.on("mail:translate:event", onTranslateEvent);
   api.on("aiDraftWrite:event", onDraftEvent);
+  api.on("emailBrain:updated", onBrainUpdated);
+  api.on("emailBrain:refreshState", onBrainRefreshState);
+  api.on("emailBrain:rebuildState", onBrainRebuildState);
   try {
     const version = await api.invoke("app:getVersion");
     appVersion = typeof version === "string" ? version : "";

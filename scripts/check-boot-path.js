@@ -40,7 +40,7 @@ for (const match of preload.matchAll(/"([a-zA-Z][\w-]*:[^"\n]{1,180})"/g)) {
 }
 const appJs = fs.readFileSync(path.join(root, "renderer/app.js"), "utf8");
 const used = new Set();
-for (const match of appJs.matchAll(/"((?:mail|app|host|genmail|config|aiDraftWrite):[^"]+)"/g)) used.add(match[1]);
+for (const match of appJs.matchAll(/"((?:mail|app|host|genmail|config|aiDraftWrite|emailBrain):[^"]+)"/g)) used.add(match[1]);
 assert.ok(used.size >= 8, "renderer stopped calling mail IPC");
 for (const channel of used) {
   assert.ok(registered.has(channel), `preload does not register ${channel}`);
@@ -699,6 +699,56 @@ assert.ok(appJs.includes("Suggesting replies…") && appJs.includes('"Add a prom
 assert.ok(css.includes(".ai-write") && css.includes(".suggestions") && css.includes(".suggest-list"));
 assert.ok(fs.readFileSync(path.join(root, "docs/PARITY_SHELL.md"), "utf8").includes("aiDraftWrite:replySuggestions"));
 
+const brainUi = loadFunctions(appJs, [
+  "brainSections",
+  "brainUserRules",
+  "brainRowText",
+  "brainMessage",
+  "brainRefreshChannels",
+]);
+assert.deepStrictEqual(brainUi.brainSections(null), []);
+assert.deepStrictEqual(brainUi.brainSections({ persona: {} }), []);
+assert.deepStrictEqual(brainUi.brainUserRules(null), []);
+assert.deepStrictEqual(brainUi.brainUserRules([{
+  rows: [
+    { id: "how-you-write:user:1", value: "Short", source: "user" },
+    { id: "how-you-write:0", value: "Auto", source: "auto" },
+    { value: "No id", source: "user" },
+  ],
+}]).map((row) => row.id), ["how-you-write:user:1"]);
+assert.strictEqual(brainUi.brainRowText({ label: "Tone", value: "Warm" }), "Tone — Warm");
+assert.strictEqual(brainUi.brainRowText({ value: "Short" }), "Short");
+assert.strictEqual(brainUi.brainRowText(null), "");
+assert.strictEqual(brainUi.brainMessage(null).text, "");
+assert.strictEqual(brainUi.brainMessage({ accepted: false }).text, "Needs an AI key.");
+assert.strictEqual(brainUi.brainMessage({ accepted: false }).error, true);
+assert.strictEqual(brainUi.brainMessage({ error: "host down", accepted: false }).text, "host down");
+assert.strictEqual(brainUi.brainMessage({ refreshing: true }).text, "Refreshing…");
+assert.strictEqual(brainUi.brainMessage({ rebuilding: true, percent: 15, refreshing: true }).text, "Rebuilding 15%…");
+assert.strictEqual(brainUi.brainMessage({ accepted: true }).text, "");
+assert.deepStrictEqual(brainUi.brainRefreshChannels(), ["emailBrain:refresh", "emailBrain:rebuild"]);
+for (const channel of [
+  "emailBrain:getCached",
+  "emailBrain:refresh",
+  "emailBrain:rebuild",
+  "emailBrain:addWritingRule",
+  "emailBrain:setWritingRule",
+  "emailBrain:deleteWritingRule",
+  "emailBrain:updated",
+  "emailBrain:refreshState",
+  "emailBrain:rebuildState",
+]) {
+  assert.ok(registered.has(channel), `preload does not register ${channel}`);
+  assert.ok(used.has(channel), `renderer does not call ${channel}`);
+}
+assert.ok(html.includes('id="brain"') && html.includes('id="brain-rule"') && html.includes('id="brain-add"') && html.includes('id="brain-refresh"'));
+assert.ok(html.includes(">Brain<") && html.includes(">Add<") && html.includes("Writing rule"));
+assert.ok(appJs.includes("No writing rules yet.") && appJs.includes("Needs an AI key."));
+assert.ok(css.includes(".brain-row") && css.includes("#brain-status"));
+const parity = fs.readFileSync(path.join(root, "docs/PARITY_SHELL.md"), "utf8");
+assert.ok(parity.includes("emailBrain:getCached") && parity.includes("emailBrain:addWritingRule"));
+assert.ok(parity.includes("full Brain category/skills UI"));
+
 async function checkAiDraft() {
   delete process.env.GENMAIL_AI_API_KEY;
   delete process.env.XAI_API_KEY;
@@ -751,6 +801,44 @@ async function checkAiDraft() {
   assert.strictEqual(cancelled.success, true);
   const noId = await draft.answer("aiDraftWrite:start", [{}]);
   assert.strictEqual(noId.success, false);
+  const brain = require("../host/brain");
+  const { loadConfig } = require("../host/ai-config");
+  assert.strictEqual(loadConfig().apiKey, "");
+  const cached = brain.answer("emailBrain:getCached", []);
+  assert.strictEqual(cached.success, true);
+  const cachedSections = brainUi.brainSections(cached.data);
+  assert.ok(cachedSections.some((section) => section.id === "how-you-write"));
+  assert.deepStrictEqual(brainUi.brainUserRules(cachedSections), []);
+  const before = sent.length;
+  const refreshed = brain.answer("emailBrain:refresh", []);
+  assert.strictEqual(refreshed.success, true);
+  assert.strictEqual(refreshed.data.accepted, false);
+  const rebuilt = brain.answer("emailBrain:rebuild", []);
+  assert.strictEqual(rebuilt.success, true);
+  assert.strictEqual(rebuilt.data.accepted, false);
+  await new Promise((resolve) => setImmediate(resolve));
+  const refreshEvents = sent.slice(before);
+  assert.ok(refreshEvents.some((row) => row.channel === "emailBrain:refreshState"));
+  assert.ok(refreshEvents.some((row) => row.channel === "emailBrain:rebuildState"));
+  assert.ok(refreshEvents.every((row) => !row.payload || !row.payload.error));
+  const added = brain.answer("emailBrain:addWritingRule", [{ text: "Keep it short." }]);
+  assert.strictEqual(added.success, true);
+  const addedRules = brainUi.brainUserRules(brainUi.brainSections(added.data));
+  assert.strictEqual(addedRules.length, 1);
+  assert.strictEqual(addedRules[0].value, "Keep it short.");
+  assert.ok(addedRules[0].id);
+  const edited = brain.answer("emailBrain:setWritingRule", [{ itemId: addedRules[0].id, text: "Keep it brief." }]);
+  assert.strictEqual(edited.success, true);
+  const editedRules = brainUi.brainUserRules(brainUi.brainSections(edited.data));
+  assert.strictEqual(editedRules[0].id, addedRules[0].id);
+  assert.strictEqual(editedRules[0].value, "Keep it brief.");
+  const removed = brain.answer("emailBrain:deleteWritingRule", [{ itemId: addedRules[0].id }]);
+  assert.strictEqual(removed.success, true);
+  const after = brain.answer("emailBrain:getCached", []);
+  assert.deepStrictEqual(brainUi.brainUserRules(brainUi.brainSections(after.data)), []);
+  const emptyRule = brain.answer("emailBrain:addWritingRule", [{ text: "  " }]);
+  assert.strictEqual(emptyRule.success, false);
+  assert.ok(fs.existsSync(path.join(process.env.GENMAIL_AI_CONFIG_DIR, "brain.json")));
 }
 
 checkAiDraft().then(() => {

@@ -44,6 +44,12 @@ const INVOKE = [
   "aiDraftWrite:start",
   "aiDraftWrite:cancel",
   "aiDraftWrite:replySuggestions",
+  "emailBrain:getCached",
+  "emailBrain:refresh",
+  "emailBrain:rebuild",
+  "emailBrain:addWritingRule",
+  "emailBrain:setWritingRule",
+  "emailBrain:deleteWritingRule",
 ];
 
 const EVENTS = [
@@ -51,6 +57,9 @@ const EVENTS = [
   "mail:emailsUpdated",
   "mail:translate:event",
   "aiDraftWrite:event",
+  "emailBrain:updated",
+  "emailBrain:refreshState",
+  "emailBrain:rebuildState",
 ];
 
 const invokeSet = new Set(INVOKE);

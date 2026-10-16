@@ -100,6 +100,23 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 #prefs .error { color: #9f1239; }
 
+#brain-status:empty { display: none; }
+
+#brain-status.error { color: #9f1239; }
+
+#brain-sections h3 { margin: 12px 0 4px; font-size: 13px; }
+
+.brain-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 4px 0;
+}
+
+.brain-row p { flex: 1; margin: 0; overflow-wrap: anywhere; }
+
+.brain-row button { padding: 2px 8px; }
+
 #notice {
   display: flex;
   flex-wrap: wrap;

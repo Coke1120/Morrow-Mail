@@ -20,6 +20,7 @@
         </form>
         <button type="button" class="ghost" id="refresh">Refresh</button>
         <button type="button" class="ghost" id="settings-open">Settings</button>
+        <button type="button" class="ghost" id="brain-open" aria-label="Email Brain">Brain</button>
         <button type="button" class="ghost" id="connect-open">Connect account</button>
         <button type="button" class="ghost" id="remove" hidden>Remove account</button>
         <button type="button" class="primary" id="compose-open">New Mail</button>
@@ -118,6 +119,21 @@
           <button type="button" class="ghost" id="compose-schedule">Schedule send</button>
           <button type="button" class="ghost" id="compose-save">Save draft</button>
           <button type="button" class="ghost" id="compose-close">Close</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="brain" aria-labelledby="brain-title">
+      <h2 id="brain-title">Email Brain</h2>
+      <p id="brain-status" role="status"></p>
+      <div id="brain-sections"></div>
+      <form id="brain-rule-form">
+        <label for="brain-rule">Writing rule</label>
+        <input id="brain-rule" type="text" autocomplete="off" />
+        <div class="row">
+          <button type="submit" class="primary" id="brain-add">Add</button>
+          <button type="button" class="ghost" id="brain-cancel" hidden>Cancel</button>
+          <button type="button" class="ghost" id="brain-refresh">Refresh</button>
+          <button type="button" class="ghost" id="brain-close">Close</button>
         </div>
       </form>
     </dialog>
