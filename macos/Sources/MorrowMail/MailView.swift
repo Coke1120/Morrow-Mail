@@ -410,6 +410,7 @@ struct MailWorkspace: View {
             HStack { VStack(alignment: .leading, spacing: 3) { Text(model.mailSectionTitle).font(.headline); Text(model.combined ? "All accounts" : model.account).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }; Spacer(); Toggle(isOn: $model.unreadOnly) { Image(systemName: "line.3.horizontal.decrease.circle") }.toggleStyle(.button).controlSize(.small).help("Show unread only").accessibilityLabel("Show unread only").disabled(!model.searchResponse.isNull) }.padding(.horizontal, 14).padding(.vertical, 10)
             if model.section.hasPrefix("provider:") { Text("Labels and folders refresh automatically. Messages shown here are downloaded mail; import history to add older messages.").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.bottom, 8) }
             HStack(spacing: 12) {
+                HStack(spacing: 12) {
                 Menu {
                     Picker("Reading layout", selection: $readerLayout) {
                         Label("Reader on Right", systemImage: "rectangle.lefthalf.inset.filled").tag("right")
@@ -426,14 +427,15 @@ struct MailWorkspace: View {
                         Button { model.preference("sort", option.0) } label: { Label(option.1, systemImage: model.preferences["sort"].string == option.0 ? "checkmark" : "arrow.up.arrow.down") }
                     }
                 } label: { Label("Sort", systemImage: "arrow.up.arrow.down") }.fixedSize().accessibilityIdentifier("mail.sortMenu").disabled(!model.searchResponse.isNull)
+                }.menuStyle(.borderlessButton).controlSize(.small)
                 Spacer(minLength: 0)
                 if !model.selectedMailRows.isEmpty {
-                Button { model.trashMessages(model.selectedMailRows) } label: { Label("Delete (\(model.selectedMailRows.count))", systemImage: "trash") }
-                    .disabled(!model.canNavigate || model.selectedMailRows.isEmpty || !model.selectedMailRows.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" })
-                    .help("Move selected mail to provider Trash · Undo within one minute (⌘Z)")
-                    .accessibilityIdentifier("mail.deleteSelection")
+                    // The menu bar does not publish this label as a button the fixture can press.
+                    ReviewActionButton(title: "Delete (\(model.selectedMailRows.count))", enabled: model.canNavigate && model.selectedMailRows.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" }, identifier: "mail.deleteSelection", bordered: false) { model.trashMessages(model.selectedMailRows) }
+                        .frame(width: 110, height: 28)
+                        .help("Move selected mail to provider Trash · Undo within one minute (⌘Z)")
                 }
-            }.menuStyle(.borderlessButton).controlSize(.small).disabled(model.busy).padding(.horizontal, 14).padding(.bottom, 8)
+            }.disabled(model.busy).padding(.horizontal, 14).padding(.bottom, 8)
             Divider()
             if filtered.isEmpty {
                 VStack {
