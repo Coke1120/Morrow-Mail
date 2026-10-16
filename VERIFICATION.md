@@ -85,8 +85,9 @@ hosting view's AX tree. Run `38867290790` on `db57869` pressed the scope tab
 (the label was on an `NSButton`) and then missed `Back to Today`, which was
 still a SwiftUI button. Back, Skip, update, refresh, and Add Cc now use
 that mounted button. Delete is the same kind of button beside the list
-menus, because the menu bar did not publish the label. A miss prints the
-mounted buttons. The Skip seam extracts the mounted handler; the pinned
+menus. Run `38872162441` found it disabled: search clears its response on
+appear, and the cached rows had no provider id. Those rows now carry the
+same `imap:` id. A miss prints the mounted buttons. The Skip seam extracts the mounted handler; the pinned
 baseline still reads the old SwiftUI button. No AppKit run was available here.
 
 ## PR #58 macOS review fixture completion — 15 October 2026
