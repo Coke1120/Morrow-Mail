@@ -23,9 +23,11 @@ struct ReviewAccountTabs: View {
                             }.padding(.horizontal, 12).padding(.vertical, 8)
                                 .background(review.scope == owner ? morrowGreen.opacity(0.13) : .clear).clipShape(RoundedRectangle(cornerRadius: 8))
                         }.buttonStyle(.plain).id(owner).focused($focused, equals: owner).help(owner)
-                            .accessibilityLabel("\(owner == "all" ? "All accounts" : owner), \(review.scope == owner ? "selected" : "not selected")")
                             .accessibilityIdentifier("review.account.\(owner)")
                             .disabled(review.writing)
+                            // The visible label is the address plus a count. The press looks up
+                            // "address, not selected", which never becomes that button's AX title.
+                            .accessibilityRepresentation { Button(scopeLabel(owner)) { choose(owner) }.disabled(review.writing) }
                     }
                 }.padding(.horizontal, 24)
             }.frame(height: 48)
@@ -35,6 +37,9 @@ struct ReviewAccountTabs: View {
                     choose(owners[max(0,min(owners.count - 1,index + (direction == .left ? -1 : 1)))])
                 }
         }
+    }
+    private func scopeLabel(_ owner: String) -> String {
+        "\(owner == "all" ? "All accounts" : owner), \(review.scope == owner ? "selected" : "not selected")"
     }
     private func choose(_ owner: String) {
         guard !review.writing, owner != review.scope, canPick?(owner) ?? true else { return }

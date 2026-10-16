@@ -152,8 +152,9 @@ private struct TodayReviewWorkspace: View {
                             }
                             Text(review.owner(proposal) + " · " + proposal["reason"].string).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                         }.padding(14).frame(maxWidth: .infinity, alignment: .leading).background(.quaternary.opacity(0.3)).clipShape(RoundedRectangle(cornerRadius: 9))
-                    }.buttonStyle(.plain).disabled(model.busy || review.writing).accessibilityLabel("Review suggested reply: " + proposal["message"]["subject"].string)
+                    }.buttonStyle(.plain).disabled(model.busy || review.writing)
                         .accessibilityIdentifier("today.reviewReply." + review.key(proposal))
+                        .accessibilityRepresentation { Button("Review suggested reply: " + proposal["message"]["subject"].string) { openReply(proposal) }.disabled(model.busy || review.writing) }
                 }
                 Text("Suggested tasks").font(.headline)
                 Text("From saved summaries and unread Inbox mail on this device. Completing a suggestion does not mark mail read.").font(.caption).foregroundStyle(.secondary)

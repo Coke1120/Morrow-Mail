@@ -155,13 +155,17 @@ import SwiftUI
         }
     }
     @MainActor static func controlDiagnostics(_ label: String, in root: NSView) -> String {
-        let buttons = nativeViews(root, NSButton.self)
-        let focused = buttons.filter { $0.title == label || $0.title.contains("Review") || ($0.accessibilityLabel() ?? "").contains("Review") }
-        let shown = (focused.isEmpty ? buttons : focused).prefix(6).map { button -> String in
-            let cell = button.cell as? NSAccessibilityProtocol
-            return "title=\(button.title.prefix(60)) on=\(button.isEnabled) axOn=\(button.isAccessibilityEnabled()) hidden=\(button.isHiddenOrHasHiddenAncestor) role=\(button.accessibilityRole()?.rawValue ?? "nil") frame=\(NSStringFromRect(button.frame)) ax=\(NSStringFromRect(button.accessibilityFrame())) cellRole=\(cell?.accessibilityRole()?.rawValue ?? "nil") cellOn=\(cell?.isAccessibilityEnabled() ?? false) cellHidden=\(cell?.isAccessibilityHidden() ?? true) cellAx=\(NSStringFromRect(cell?.accessibilityFrame() ?? .zero)) cellLabel=\((cell?.accessibilityLabel() ?? "").prefix(60))"
+        let window = root.window
+        let buttons = nativeViews(root, NSButton.self).prefix(12).map { button -> String in
+            "title=\(button.title.prefix(50)) label=\((button.accessibilityLabel() ?? "").prefix(70)) on=\(button.isEnabled) axOn=\(button.isAccessibilityEnabled()) hidden=\(button.isHiddenOrHasHiddenAncestor) ax=\(NSStringFromRect(button.accessibilityFrame())) hit=\(window?.frame.intersects(button.accessibilityFrame()) == true)"
         }
-        return "Control probe \(label): window=\(root.window.map { NSStringFromRect($0.frame) } ?? "nil") host=\(NSStringFromRect(root.frame)) nodes=\(accessibilityNodes(root).count) buttons=\(buttons.count) " + shown.joined(separator: " || ")
+        let named = accessibilityNodes(root).filter { element in
+            (element.accessibilityIdentifier() ?? "").contains("review.account") || controlLabels(element).contains { $0.contains("not selected") || $0.contains("suggested reply") }
+        }.prefix(8).map { element -> String in
+            let frame = element.accessibilityFrame()
+            return "role=\(element.accessibilityRole()?.rawValue ?? "nil") id=\((element.accessibilityIdentifier() ?? "").prefix(40)) labels=\(controlLabels(element).prefix(2).map { String($0.prefix(60)) }) on=\(element.isAccessibilityEnabled()) hidden=\(element.isAccessibilityHidden()) hit=\(window?.frame.intersects(frame) == true) ax=\(NSStringFromRect(frame))"
+        }
+        return "Control probe \(label): window=\(window.map { NSStringFromRect($0.frame) } ?? "nil") host=\(NSStringFromRect(root.frame)) nodes=\(accessibilityNodes(root).count) " + buttons.joined(separator: " || ") + " ## " + named.joined(separator: " || ")
     }
     @MainActor static func pressControl(_ label: String, in root: NSView) async throws {
         do {
