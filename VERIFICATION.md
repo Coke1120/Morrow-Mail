@@ -63,6 +63,11 @@ unchanged.
 This VM has no Swift or AppKit run. These two checks stay unproven until CI
 on this head. WinUI measurement was already green and was not changed.
 
+`cf79a0e` then failed to compile: a bare `NSHostingView` cast cannot infer
+`Content`. The same hit test now recognizes a marker conformance on
+`NSHostingView` and still returns that row hosting view. No Swift run here,
+so this compile fix is also unproven until CI.
+
 ## PR #58 macOS review fixture completion — 15 October 2026
 
 Focused run `38760958694`, job `116511781887`, reported success for head

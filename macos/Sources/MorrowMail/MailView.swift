@@ -617,6 +617,9 @@ private struct RowLabel: NSViewRepresentable {
         if let accessibility, field.accessibilityLabel() != accessibility { field.setAccessibilityLabel(accessibility) }
     }
 }
+// NSHostingView is generic, so a bare cast cannot name the row's Content.
+private protocol RowHostingView {}
+extension NSHostingView: RowHostingView {}
 private final class RowLabelField: NSTextField {
     // A nil hit stops on this field's wrapper, so the row gesture never sees the click.
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -625,7 +628,7 @@ private final class RowLabelField: NSTextField {
         var belowRow: NSView?
         var host: NSView?
         while let current = view {
-            if current is NSHostingView { host = current }
+            if current is RowHostingView { host = current }
             if current is NSTableRowView { return host ?? belowRow ?? current }
             belowRow = current
             view = current.superview
