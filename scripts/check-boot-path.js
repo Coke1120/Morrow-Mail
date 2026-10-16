@@ -507,7 +507,7 @@ assert.strictEqual(control.value, "");
 const ipcSrc = fs.readFileSync(path.join(root, "host/ipc.js"), "utf8");
 const settingsSrc = fs.readFileSync(path.join(root, "host/settings.js"), "utf8");
 const prefs = prefRows();
-assert.strictEqual(prefs.length, 6);
+assert.strictEqual(prefs.length, 11);
 const prefKinds = new Set();
 for (const [id, getChannel, setChannel, kind] of prefs) {
   assert.ok(html.includes('id="' + id + '"'), `settings control missing ${id}`);
@@ -530,6 +530,15 @@ assert.ok(ipcSrc.includes('require("./settings")'));
 assert.ok(settingsCall > 0 && settingsCall < overrideCall);
 assert.ok(settingsCall < ipcSrc.indexOf("/Effective$|Enabled$/"));
 assert.ok(!ipcSrc.includes('"config:getTheme"'));
+for (const channel of [
+  "genmail:configGetAiWriteAutoOpenOnReply",
+  "genmail:configGetShowFolderChips",
+  "genmail:configGetShowOneClickTidy",
+  "genmail:configGetSidebarGmailFoldersExpanded",
+  "genmail:configGetSidebarOutlookFoldersExpanded",
+]) {
+  assert.ok(!ipcSrc.includes('"' + channel + '"'), channel + " still stubbed in ipc");
+}
 checkSettingsRoundTrip();
 
 function checkSettingsRoundTrip() {
@@ -553,6 +562,11 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("genmail:configGetAutoLoadRemoteImages", []), false);
     assert.strictEqual(answer("genmail:configGetUndoSendDelaySeconds", []), 5);
     assert.strictEqual(answer("genmail:configGetSnoozeEffective", []), true);
+    assert.strictEqual(answer("genmail:configGetAiWriteAutoOpenOnReply", []), false);
+    assert.strictEqual(answer("genmail:configGetShowFolderChips", []), true);
+    assert.strictEqual(answer("genmail:configGetShowOneClickTidy", []), false);
+    assert.strictEqual(answer("genmail:configGetSidebarGmailFoldersExpanded", []), true);
+    assert.strictEqual(answer("genmail:configGetSidebarOutlookFoldersExpanded", []), false);
     assert.strictEqual(fs.existsSync(file), false);
     assert.strictEqual(answer("config:setTheme", ["dark"]), "dark");
     assert.strictEqual(answer("genmail:configSetAccent", ["#112233"]), "#112233");
@@ -560,12 +574,22 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("genmail:configSetAutoLoadRemoteImages", [true]), true);
     assert.strictEqual(answer("genmail:configSetUndoSendDelaySeconds", [0]), 0);
     assert.strictEqual(answer("genmail:configSetSnoozeEffective", [false]), false);
+    assert.strictEqual(answer("genmail:configSetAiWriteAutoOpenOnReply", [true]), true);
+    assert.strictEqual(answer("genmail:configSetShowFolderChips", [false]), false);
+    assert.strictEqual(answer("genmail:configSetShowOneClickTidy", [true]), true);
+    assert.strictEqual(answer("genmail:configSetSidebarGmailFoldersExpanded", [false]), false);
+    assert.strictEqual(answer("genmail:configSetSidebarOutlookFoldersExpanded", [true]), true);
     assert.strictEqual(answer("config:getTheme", []), "dark");
     assert.strictEqual(answer("genmail:configGetAccent", []), "#112233");
     assert.strictEqual(answer("genmail:configGetConversationViewEnabled", []), false);
     assert.strictEqual(answer("genmail:configGetAutoLoadRemoteImages", []), true);
     assert.strictEqual(answer("genmail:configGetUndoSendDelaySeconds", []), 0);
     assert.strictEqual(answer("genmail:configGetSnoozeEffective", []), false);
+    assert.strictEqual(answer("genmail:configGetAiWriteAutoOpenOnReply", []), true);
+    assert.strictEqual(answer("genmail:configGetShowFolderChips", []), false);
+    assert.strictEqual(answer("genmail:configGetShowOneClickTidy", []), true);
+    assert.strictEqual(answer("genmail:configGetSidebarGmailFoldersExpanded", []), false);
+    assert.strictEqual(answer("genmail:configGetSidebarOutlookFoldersExpanded", []), true);
     assert.strictEqual(answer("genmail:configSetAccent", ["#abcdef"]), "#ABCDEF");
     const reloaded = spawnSync(process.execPath, ["-e", `
       const { answer } = require(${JSON.stringify(path.join(root, "host/settings.js"))});
@@ -576,6 +600,11 @@ function checkSettingsRoundTrip() {
         images: answer("genmail:configGetAutoLoadRemoteImages", []),
         undo: answer("genmail:configGetUndoSendDelaySeconds", []),
         snooze: answer("genmail:configGetSnoozeEffective", []),
+        aiReply: answer("genmail:configGetAiWriteAutoOpenOnReply", []),
+        chips: answer("genmail:configGetShowFolderChips", []),
+        tidy: answer("genmail:configGetShowOneClickTidy", []),
+        gmailFolders: answer("genmail:configGetSidebarGmailFoldersExpanded", []),
+        outlookFolders: answer("genmail:configGetSidebarOutlookFoldersExpanded", []),
       }));
     `], { encoding: "utf8" });
     assert.strictEqual(reloaded.status, 0, reloaded.stderr);
@@ -586,6 +615,11 @@ function checkSettingsRoundTrip() {
       images: true,
       undo: 0,
       snooze: false,
+      aiReply: true,
+      chips: false,
+      tidy: true,
+      gmailFolders: false,
+      outlookFolders: true,
     });
     assert.throws(() => answer("config:setTheme", ["neon"]), /light or dark/);
     assert.strictEqual(answer("config:getTheme", []), "dark");
@@ -595,6 +629,8 @@ function checkSettingsRoundTrip() {
     assert.strictEqual(answer("genmail:configGetUndoSendDelaySeconds", []), 0);
     assert.throws(() => answer("genmail:configSetSnoozeEffective", ["yes"]), /on or off/);
     assert.strictEqual(answer("genmail:configGetSnoozeEffective", []), false);
+    assert.throws(() => answer("genmail:configSetShowFolderChips", ["yes"]), /on or off/);
+    assert.strictEqual(answer("genmail:configGetShowFolderChips", []), false);
     fs.writeFileSync(file, "{");
     assert.strictEqual(answer("config:getTheme", []), "light");
     assert.strictEqual(answer("config:setTheme", ["dark"]), "dark");
@@ -1065,7 +1101,13 @@ assert.ok(parity.includes("emailBrain:getCached") && parity.includes("emailBrain
 assert.ok(parity.includes("emailBrain:getCategories") && parity.includes("emailBrain:saveCategories") && parity.includes("emailBrain:addCategoryViaPrompt"));
 assert.ok(parity.includes("nativeAgent:home:skills") && parity.includes("nativeAgent:home:librarySkills"));
 assert.ok(parity.includes("emailBrain:getSkills") && parity.includes("emailBrain:getLibrarySkills"));
-assert.ok(parity.includes("calendar") && parity.includes("Other host preferences") && parity.includes("full agent skill runner"));
+assert.ok(parity.includes("calendar") && parity.includes("full agent skill runner"));
+assert.ok(parity.includes("genmail:configSetAiWriteAutoOpenOnReply") && parity.includes("genmail:configSetShowFolderChips"));
+assert.ok(parity.includes("genmail:configSetShowOneClickTidy") && parity.includes("genmail:configSetSidebarGmailFoldersExpanded"));
+assert.ok(parity.includes("genmail:configSetSidebarOutlookFoldersExpanded"));
+assert.ok(parity.includes("genmail:configGetDogfoodPrefs") && parity.includes("genmail:configGetShowJevClassification"));
+assert.ok(parity.includes("genmail:configGetShowOneClickTidyEffective") && parity.includes("genmail:configGetCalendarSidebarOrder"));
+assert.ok(!parity.includes("Other host preferences, calendar"));
 assert.ok(!parity.includes("full skills library"));
 assert.ok(!parity.includes("AI Studio, calendar"));
 assert.ok(parity.includes("skills library"));

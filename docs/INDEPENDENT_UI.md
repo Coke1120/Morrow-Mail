@@ -22,7 +22,7 @@
 - Edits those signatures from the toolbar (`mail:upsertSignature`, `mail:deleteSignature`): name plus text or HTML, and an optional default. The sample list stays in memory. A connected IMAP account keeps an empty list and rejects writes
 - Drafts with AI from compose (`aiDraftWrite:start`, `aiDraftWrite:cancel`, `aiDraftWrite:event`) and lists reply suggestions on the open message (`aiDraftWrite:replySuggestions`). A missing API key is reported in place
 - Shows the app version and checks or installs updates (`app:getVersion`, `host:updateGetState`, `host:updateCheck`, `host:updateInstall`)
-- Edits theme, accent, conversation view, remote images, undo send, and snooze (`config:setTheme`, `genmail:configSet*`). API keys stay in AI Setup
+- Edits theme, accent, conversation view, remote images, undo send, snooze, AI write on reply, folder chips, one-click tidy, and sidebar folder expansion (`config:setTheme`, `genmail:configSet*`). API keys stay in AI Setup
 - Email Brain lists cached sections and writing rules (`emailBrain:getCached`). A user rule can be added, edited, or deleted. Refresh says it needs an AI key when the host returns `accepted: false`. Categories in that dialog load from `emailBrain:getCategories`, edit locally, and save with `emailBrain:saveCategories`. Add with AI needs an API key and shows the host error when the key is missing
 - Email Brain skills library lists home and library skills in that same dialog (`emailBrain:getSkills`, `emailBrain:getLibrarySkills`). The sample host returns a short in-memory list with no API key. The list is read-only. A host error shows in the dialog
 - AI Studio lists home and library skills (`nativeAgent:home:skills`, `nativeAgent:home:librarySkills`). Empty lists stay empty. A host error is shown in the dialog. This host does not run an agent
@@ -38,6 +38,6 @@ With no connected account the host answers from the built-in sample mailbox in `
 Not in this slice, and not matching GenMail inside the Genspark launcher yet:
 
 - Visual parity with that GenMail shell beyond the three-pane chrome in [PARITY_SHELL.md](PARITY_SHELL.md)
-- Calendar and other host preferences
+- Calendar, and the host preferences still unread in [PARITY_SHELL.md](PARITY_SHELL.md)
 - The full agent skill runner
 - Changing API keys from this window (AI Setup remains on the application menu)

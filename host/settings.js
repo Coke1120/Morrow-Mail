@@ -2,7 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { userDataDir } = require("./paths");
 
-// shortcut: stored only, the shell applies theme, images, undo, and snooze when it reads them
+// shortcut: stored only, apply in the shell when a pane reads the flag
 const DEFAULTS = {
   theme: "light",
   accent: "#7C3AED",
@@ -10,6 +10,11 @@ const DEFAULTS = {
   remoteImages: false,
   undoSendDelaySeconds: 5,
   snooze: true,
+  aiWriteAutoOpenOnReply: false,
+  showFolderChips: true,
+  showOneClickTidy: false,
+  sidebarGmailFoldersExpanded: true,
+  sidebarOutlookFoldersExpanded: false,
 };
 
 const GET = {
@@ -19,6 +24,11 @@ const GET = {
   "genmail:configGetAutoLoadRemoteImages": "remoteImages",
   "genmail:configGetUndoSendDelaySeconds": "undoSendDelaySeconds",
   "genmail:configGetSnoozeEffective": "snooze",
+  "genmail:configGetAiWriteAutoOpenOnReply": "aiWriteAutoOpenOnReply",
+  "genmail:configGetShowFolderChips": "showFolderChips",
+  "genmail:configGetShowOneClickTidy": "showOneClickTidy",
+  "genmail:configGetSidebarGmailFoldersExpanded": "sidebarGmailFoldersExpanded",
+  "genmail:configGetSidebarOutlookFoldersExpanded": "sidebarOutlookFoldersExpanded",
 };
 
 const SET = {
@@ -28,9 +38,23 @@ const SET = {
   "genmail:configSetAutoLoadRemoteImages": "remoteImages",
   "genmail:configSetUndoSendDelaySeconds": "undoSendDelaySeconds",
   "genmail:configSetSnoozeEffective": "snooze",
+  "genmail:configSetAiWriteAutoOpenOnReply": "aiWriteAutoOpenOnReply",
+  "genmail:configSetShowFolderChips": "showFolderChips",
+  "genmail:configSetShowOneClickTidy": "showOneClickTidy",
+  "genmail:configSetSidebarGmailFoldersExpanded": "sidebarGmailFoldersExpanded",
+  "genmail:configSetSidebarOutlookFoldersExpanded": "sidebarOutlookFoldersExpanded",
 };
 
-const BOOLS = new Set(["conversationView", "remoteImages", "snooze"]);
+const BOOLS = new Set([
+  "conversationView",
+  "remoteImages",
+  "snooze",
+  "aiWriteAutoOpenOnReply",
+  "showFolderChips",
+  "showOneClickTidy",
+  "sidebarGmailFoldersExpanded",
+  "sidebarOutlookFoldersExpanded",
+]);
 
 function storePath() {
   return path.join(userDataDir("genmail-exact"), "settings.json");

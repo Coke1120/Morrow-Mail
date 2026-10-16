@@ -2089,6 +2089,11 @@ function prefRows() {
     ["pref-images", "genmail:configGetAutoLoadRemoteImages", "genmail:configSetAutoLoadRemoteImages", "bool"],
     ["pref-undo", "genmail:configGetUndoSendDelaySeconds", "genmail:configSetUndoSendDelaySeconds", "seconds"],
     ["pref-snooze", "genmail:configGetSnoozeEffective", "genmail:configSetSnoozeEffective", "bool"],
+    ["pref-ai-reply", "genmail:configGetAiWriteAutoOpenOnReply", "genmail:configSetAiWriteAutoOpenOnReply", "bool"],
+    ["pref-folder-chips", "genmail:configGetShowFolderChips", "genmail:configSetShowFolderChips", "bool"],
+    ["pref-tidy", "genmail:configGetShowOneClickTidy", "genmail:configSetShowOneClickTidy", "bool"],
+    ["pref-gmail-folders", "genmail:configGetSidebarGmailFoldersExpanded", "genmail:configSetSidebarGmailFoldersExpanded", "bool"],
+    ["pref-outlook-folders", "genmail:configGetSidebarOutlookFoldersExpanded", "genmail:configSetSidebarOutlookFoldersExpanded", "bool"],
   ];
 }
 
