@@ -24,6 +24,7 @@
 - Shows the app version and checks or installs updates (`app:getVersion`, `host:updateGetState`, `host:updateCheck`, `host:updateInstall`)
 - Edits theme, accent, conversation view, remote images, undo send, and snooze (`config:setTheme`, `genmail:configSet*`). API keys stay in AI Setup
 - Email Brain lists cached sections and writing rules (`emailBrain:getCached`). A user rule can be added, edited, or deleted. Refresh says it needs an AI key when the host returns `accepted: false`. Categories in that dialog load from `emailBrain:getCategories`, edit locally, and save with `emailBrain:saveCategories`. Add with AI needs an API key and shows the host error when the key is missing
+- AI Studio lists home and library skills (`nativeAgent:home:skills`, `nativeAgent:home:librarySkills`). Empty lists stay empty. A host error is shown in the dialog. This host does not run an agent
 - Schedules a send from New Mail (`mail:scheduleSend`) and lists it (`mail:listScheduled`). The sample list stays in memory. A connected IMAP account reports that scheduled send is unavailable
 - Replies or forwards the open message in that same dialog. Reply All adds other To and Cc addresses. Forward names attachments and does not upload them. The sample mailbox can fill and schedule either one
 

@@ -40,7 +40,7 @@ for (const match of preload.matchAll(/"([a-zA-Z][\w-]*:[^"\n]{1,180})"/g)) {
 }
 const appJs = fs.readFileSync(path.join(root, "renderer/app.js"), "utf8");
 const used = new Set();
-for (const match of appJs.matchAll(/"((?:mail|app|host|genmail|config|aiDraftWrite|emailBrain):[^"]+)"/g)) used.add(match[1]);
+for (const match of appJs.matchAll(/"((?:mail|app|host|genmail|config|aiDraftWrite|emailBrain|nativeAgent):[^"]+)"/g)) used.add(match[1]);
 assert.ok(used.size >= 8, "renderer stopped calling mail IPC");
 for (const channel of used) {
   assert.ok(registered.has(channel), `preload does not register ${channel}`);
@@ -1016,8 +1016,43 @@ assert.ok(appJs.includes("No writing rules yet.") && appJs.includes("Needs an AI
 assert.ok(appJs.includes("No categories.") && appJs.includes("A category needs a name.") && appJs.includes("Describe a category."));
 assert.ok(css.includes(".brain-row") && css.includes("#brain-status") && css.includes("#brain-category-status") && css.includes("#brain-categories"));
 const parity = fs.readFileSync(path.join(root, "docs/PARITY_SHELL.md"), "utf8");
+const studioUi = loadFunctions(appJs, ["skillRows", "skillLine", "studioLists", "envelopeError"]);
+assert.deepStrictEqual(studioUi.studioLists().map((row) => row[1]), [
+  "nativeAgent:home:skills",
+  "nativeAgent:home:librarySkills",
+]);
+assert.deepStrictEqual(studioUi.skillRows(null), []);
+assert.deepStrictEqual(studioUi.skillRows(undefined), []);
+assert.deepStrictEqual(studioUi.skillRows({ nope: true }), []);
+assert.deepStrictEqual(studioUi.skillRows({ skills: null }), []);
+assert.deepStrictEqual(studioUi.skillRows([]), []);
+assert.deepStrictEqual(studioUi.skillRows(["", "  ", null, "Catch Me Up"]).map(studioUi.skillLine), ["Catch Me Up"]);
+assert.deepStrictEqual(studioUi.skillRows({
+  items: [{ name: "Morning Brief", description: "Today" }, [], { id: "s1", summary: "Later" }],
+}).map(studioUi.skillLine), ["Morning Brief — Today", "s1 — Later"]);
+assert.strictEqual(studioUi.skillLine({ title: "Plan" }), "Plan");
+assert.strictEqual(studioUi.skillLine("  Catch Me Up  "), "Catch Me Up");
+assert.strictEqual(studioUi.skillLine(null), "");
+assert.strictEqual(studioUi.envelopeError({ success: true, data: null }), null);
+assert.strictEqual(studioUi.envelopeError(null), "No response from the mail host.");
+assert.strictEqual(
+  studioUi.envelopeError({ success: false, error: { message: "Add an API key in GenMail → AI Setup." } }),
+  "Add an API key in GenMail → AI Setup.",
+);
+for (const channel of studioUi.studioLists().map((row) => row[1])) {
+  assert.ok(registered.has(channel), `preload does not register ${channel}`);
+  assert.ok(used.has(channel), `renderer does not call ${channel}`);
+  assert.ok(ipcSrc.includes('"' + channel + '"'), `host stub missing ${channel}`);
+}
+assert.ok(html.includes('id="studio"') && html.includes('id="studio-open"') && html.includes('id="studio-home"') && html.includes('id="studio-library"'));
+assert.ok(html.includes(">Studio<") && html.includes("Home skills") && html.includes("Library skills") && html.includes("no agent loop"));
+assert.ok(appJs.includes("No home skills.") && appJs.includes("No library skills."));
+assert.ok(css.includes("#studio-status") && css.includes(".studio-row"));
 assert.ok(parity.includes("emailBrain:getCached") && parity.includes("emailBrain:addWritingRule"));
 assert.ok(parity.includes("emailBrain:getCategories") && parity.includes("emailBrain:saveCategories") && parity.includes("emailBrain:addCategoryViaPrompt"));
+assert.ok(parity.includes("nativeAgent:home:skills") && parity.includes("nativeAgent:home:librarySkills"));
+assert.ok(parity.includes("calendar") && parity.includes("full skills library"));
+assert.ok(!parity.includes("AI Studio, calendar"));
 assert.ok(parity.includes("skills library"));
 assert.ok(parity.includes("config:setTheme") && parity.includes("genmail:configSetSnoozeEffective"));
 assert.ok(!parity.includes("the list is read-only"));
@@ -1157,6 +1192,18 @@ async function checkAiDraft() {
   assert.ok(restored.data.categories.some((row) => row.id === "cat-primary"));
   const afterEmpty = brain.answer("emailBrain:getCached", []);
   assert.ok(brainUi.brainUserRules(brainUi.brainSections(afterEmpty.data)).some((row) => row.value === "Keep categories apart."));
+  const { createIpc } = require("../host/ipc");
+  const ipc = createIpc(path.join(os.tmpdir(), "genmail-studio-ipc.log"));
+  const homeSkills = ipc.handle({}, "nativeAgent:home:skills");
+  const librarySkills = ipc.handle({}, "nativeAgent:home:librarySkills");
+  const otherAgent = ipc.handle({}, "nativeAgent:home");
+  assert.deepStrictEqual(homeSkills, { success: true, data: [] });
+  assert.deepStrictEqual(librarySkills, { success: true, data: [] });
+  assert.deepStrictEqual(otherAgent, { success: true, data: null });
+  assert.deepStrictEqual(studioUi.skillRows(homeSkills.data), []);
+  assert.deepStrictEqual(studioUi.skillRows(librarySkills.data), []);
+  assert.deepStrictEqual(studioUi.skillRows(otherAgent.data), []);
+  assert.strictEqual(studioUi.envelopeError(homeSkills), null);
 }
 
 checkAiDraft().then(() => {

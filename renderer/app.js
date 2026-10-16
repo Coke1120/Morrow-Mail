@@ -2577,6 +2577,76 @@ function onBrainUpdated() {
   });
 }
 
+function skillRows(data) {
+  const list = Array.isArray(data) ? data : (data && (data.skills || data.items));
+  if (!Array.isArray(list)) return [];
+  return list.filter((row) => {
+    if (typeof row === "string") return row.trim() !== "";
+    return !!row && typeof row === "object" && !Array.isArray(row);
+  });
+}
+
+function skillLine(row) {
+  if (!row || typeof row !== "object") return String(row || "").trim();
+  const name = String(row.name || row.title || row.id || "").trim();
+  const detail = String(row.description || row.summary || "").trim();
+  if (name && detail) return name + " — " + detail;
+  return name || detail;
+}
+
+function studioLists() {
+  return [
+    ["studio-home", "nativeAgent:home:skills", "No home skills."],
+    ["studio-library", "nativeAgent:home:librarySkills", "No library skills."],
+  ];
+}
+
+function paintStudio(lists, errorText) {
+  const status = $("studio-status");
+  status.textContent = errorText || "";
+  status.classList.toggle("error", !!errorText);
+  const byId = lists || {};
+  for (const [id, , empty] of studioLists()) {
+    const root = $(id);
+    root.replaceChildren();
+    const rows = skillRows(byId[id]);
+    if (!rows.length) {
+      const note = document.createElement("p");
+      note.className = "hint";
+      note.textContent = empty;
+      root.appendChild(note);
+      continue;
+    }
+    for (const row of rows) {
+      const line = document.createElement("p");
+      line.className = "studio-row";
+      line.textContent = skillLine(row) || "Skill";
+      root.appendChild(line);
+    }
+  }
+}
+
+async function loadStudio() {
+  const lists = {};
+  const errors = [];
+  for (const [id, channel] of studioLists()) {
+    try {
+      lists[id] = await call(channel);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  if ($("studio").open) paintStudio(lists, errors.filter(Boolean).join(" "));
+}
+
+function openStudio() {
+  openDialog("studio");
+  paintStudio({}, "");
+  loadStudio().catch((error) => {
+    paintStudio({}, error instanceof Error ? error.message : String(error));
+  });
+}
+
 function wire() {
   document.addEventListener("keydown", onShellKey);
   wireSplits();
@@ -2611,6 +2681,8 @@ function wire() {
     });
   });
   $("brain-open").addEventListener("click", openBrain);
+  $("studio-open").addEventListener("click", openStudio);
+  $("studio-close").addEventListener("click", () => closeDialog("studio"));
   $("brain-close").addEventListener("click", () => closeDialog("brain"));
   $("brain").addEventListener("close", () => {
     brainEditId = "";

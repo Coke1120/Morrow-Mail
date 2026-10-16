@@ -22,6 +22,7 @@
         <button type="button" class="ghost" id="settings-open">Settings</button>
         <button type="button" class="ghost" id="signatures-open">Signatures</button>
         <button type="button" class="ghost" id="brain-open" aria-label="Email Brain">Brain</button>
+        <button type="button" class="ghost" id="studio-open" aria-label="AI Studio">Studio</button>
         <button type="button" class="ghost" id="connect-open">Connect account</button>
         <button type="button" class="ghost" id="remove" hidden>Remove account</button>
         <button type="button" class="primary" id="compose-open">New Mail</button>
@@ -166,6 +167,18 @@
           </div>
         </form>
       </section>
+    </dialog>
+    <dialog id="studio" aria-labelledby="studio-title">
+      <h2 id="studio-title">AI Studio</h2>
+      <p class="hint">Reads skill lists only. This host has no agent loop.</p>
+      <p id="studio-status" role="status"></p>
+      <h3>Home skills</h3>
+      <div id="studio-home"></div>
+      <h3>Library skills</h3>
+      <div id="studio-library"></div>
+      <div class="row">
+        <button type="button" class="ghost" id="studio-close">Close</button>
+      </div>
     </dialog>
     <dialog id="signatures" aria-labelledby="signatures-title">
       <h2 id="signatures-title">Signatures</h2>

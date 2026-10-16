@@ -99,15 +99,19 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 #brain-status:empty,
 #brain-category-status:empty,
+#studio-status:empty,
 #signatures-status:empty { display: none; }
 
 #brain-status.error,
 #brain-category-status.error,
+#studio-status.error,
 #signatures-status.error { color: #9f1239; }
 
 #brain { width: min(560px, calc(100vw - 24px)); }
 
-#brain h3 { margin: 12px 0 4px; font-size: 13px; }
+dialog h3 { margin: 12px 0 4px; font-size: 13px; }
+
+.studio-row { margin: 4px 0; overflow-wrap: anywhere; }
 
 #brain-categories {
   margin-top: 16px;

@@ -359,6 +359,19 @@ app.whenReady().then(async () => {
           console.log(brainText);
           console.log("BRAIN_TEXT_END");
           await win.webContents.executeJavaScript(`(() => {
+            for (const open of document.querySelectorAll("dialog[open]")) open.close();
+            const button = document.getElementById("studio-open");
+            if (button) button.click();
+          })()`);
+          await new Promise((resolve) => setTimeout(resolve, 800));
+          const studioText = await win.webContents.executeJavaScript(`(document.body && document.body.innerText || "").slice(0, 2200)`);
+          fs.writeFileSync(path.join(path.dirname(LOG), "studio.txt"), studioText);
+          const studioImage = await win.webContents.capturePage();
+          fs.writeFileSync(path.join(path.dirname(LOG), "studio.png"), studioImage.toPNG());
+          console.log("STUDIO_TEXT_START");
+          console.log(studioText);
+          console.log("STUDIO_TEXT_END");
+          await win.webContents.executeJavaScript(`(() => {
             const button = document.querySelector('[aria-label="Mail"]');
             if (button) button.click();
           })()`);
