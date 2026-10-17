@@ -183,6 +183,18 @@ assert.ok(fs.existsSync(path.join(root, "renderer/motion.bundle.js")), "Motion b
 assert.ok(fs.readFileSync(path.join(root, "renderer/motion.bundle.js"), "utf8").includes("genmailMotion"), "Motion bundle missing genmailMotion");
 assert.ok(appJs.includes("genmailMotion") && appJs.includes("wantsCloseMotion"), "shell does not call Motion");
 assert.ok(css.includes("margin: 0 auto"), "dialog is not centered without a transform");
+assert.ok(css.includes(".dialog-body") && css.includes(".row-actions"), "shell css missing dialog scroll or row actions");
+assert.ok(html.includes('id="list-filter"') && html.includes("Does not search the server."), "message list has no loaded-mail filter");
+assert.ok(appJs.includes('className = "row-actions"') && appJs.includes("Mark unread"), "message rows have no hover actions");
+const filteredEmails = extractFunction(appJs, "filteredEmails");
+assert.deepStrictEqual(filteredEmails([
+  { subject: "Engine", from: "Charles", snippet: "table" },
+  { subject: "Hello", from: "Ada", snippet: "notes" },
+], "engine").map((row) => row.subject), ["Engine"]);
+assert.strictEqual(filteredEmails([{ subject: "Engine", from: "Charles", snippet: "" }], "charles").length, 1);
+assert.strictEqual(filteredEmails([{ subject: "Engine", from: "A", snippet: "snippet" }], "SNIPPET").length, 1);
+assert.strictEqual(filteredEmails([{ subject: "Engine", from: "A", snippet: "B" }], "  ").length, 1);
+assert.strictEqual(filteredEmails(null, "x").length, 0);
 
 const threadMembers = extractFunction(appJs, "threadMembers");
 assert.deepStrictEqual(threadMembers([{ id: "a" }, { id: "b" }], [{ id: "c" }]).map((row) => row.id), ["a", "b"]);

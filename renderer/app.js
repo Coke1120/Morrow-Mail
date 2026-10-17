@@ -1183,88 +1183,138 @@ function renderChips(list, account) {
   list.appendChild(row);
 }
 
+// shortcut: subject, from, and snippet of messages already loaded. Upgrade when the filter should call mail:search.
+function filteredEmails(emails, query) {
+  const q = String(query || "").trim().toLowerCase();
+  const rows = Array.isArray(emails) ? emails : [];
+  if (!q) return rows;
+  return rows.filter((email) => {
+    const subject = email && email.subject ? String(email.subject) : "";
+    const from = email && email.from ? String(email.from) : "";
+    const snippet = email && email.snippet ? String(email.snippet) : "";
+    return (subject + "\n" + from + "\n" + snippet).toLowerCase().includes(q);
+  });
+}
+
+function rowAction(action, label, run) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "row-action";
+  button.dataset.action = action;
+  button.textContent = label;
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    guard(run);
+  });
+  return button;
+}
+
+function messageRow(email) {
+  const row = document.createElement("div");
+  row.className = "message-row";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "message";
+  button.setAttribute("data-testid", "mail-list-message-row");
+  if (email.unread) button.classList.add("unread");
+  if (state.email && state.email.id === email.id) button.setAttribute("aria-current", "true");
+  if (email.unread) {
+    const flag = document.createElement("span");
+    flag.className = "sr";
+    flag.textContent = "Unread";
+    button.appendChild(flag);
+  }
+  if (email.isStarred) {
+    const flag = document.createElement("span");
+    flag.className = "sr";
+    flag.textContent = "Starred";
+    button.appendChild(flag);
+  }
+  const name = senderName(email.from);
+  const gutter = document.createElement("span");
+  gutter.className = "gutter";
+  gutter.setAttribute("aria-hidden", "true");
+  if (email.unread) {
+    const dot = document.createElement("span");
+    dot.className = "unread-dot";
+    gutter.appendChild(dot);
+  }
+  const avatar = document.createElement("span");
+  avatar.className = "avatar";
+  avatar.setAttribute("aria-hidden", "true");
+  avatar.textContent = senderInitial(name);
+  avatar.style.backgroundColor = avatarColor(name);
+  const main = document.createElement("span");
+  main.className = "row-main";
+  const from = document.createElement("span");
+  from.className = "from";
+  if (email.isStarred) {
+    const star = document.createElement("span");
+    star.className = "star";
+    star.setAttribute("aria-hidden", "true");
+    star.textContent = "★";
+    from.appendChild(star);
+  }
+  from.append(name);
+  const subjectLine = document.createElement("span");
+  subjectLine.className = "subject-line";
+  const subject = document.createElement("span");
+  subject.className = "subject";
+  subject.textContent = email.subject || "(no subject)";
+  const when = document.createElement("time");
+  when.className = "when";
+  if (email.date) when.dateTime = email.date;
+  when.textContent = listWhen(email.date);
+  subjectLine.append(subject, when);
+  const snippet = document.createElement("span");
+  snippet.className = "snippet";
+  snippet.textContent = email.snippet || "";
+  main.append(from, subjectLine, snippet);
+  button.append(gutter, avatar, main);
+  button.addEventListener("click", () => {
+    openMessage(email.id).catch((error) => showStatus(error.message, true));
+  });
+  const actions = document.createElement("div");
+  actions.className = "row-actions";
+  actions.setAttribute("data-testid", "mail-row-actions");
+  const unread = !!email.unread;
+  actions.append(
+    rowAction("read", unread ? "Mark read" : "Mark unread", () => setRead(email, unread)),
+    rowAction("delete", "Delete", () => deleteFromList(email)),
+    rowAction("reply", "Reply", () => replyFromList(email, "reply")),
+    rowAction("reply-all", "Reply All", () => replyFromList(email, "all")),
+  );
+  row.append(button, actions);
+  return row;
+}
+
 function renderList() {
   syncTidy();
   const list = $("messages");
-  list.replaceChildren();
+  const head = $("list-head");
+  for (const node of [...list.children]) {
+    if (node !== head) node.remove();
+  }
   const account = selectedAccount();
   const folder = foldersOf(account).find((item) => item.id === state.folderId);
-  const title = document.createElement("h2");
-  title.className = "list-title";
-  title.textContent = state.query ? `Search: ${state.query}` : ((folder && (folder.name || folder.id)) || "Messages");
-  list.appendChild(title);
+  const title = $("list-title");
+  if (title) {
+    title.textContent = state.query ? `Search: ${state.query}` : ((folder && (folder.name || folder.id)) || "Messages");
+  }
   renderChips(list, account);
-  if (!state.emails.length) {
+  const shown = filteredEmails(state.emails, $("list-filter") ? $("list-filter").value : "");
+  if (!shown.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
-    empty.textContent = state.query ? "No messages match that search." : "No messages in this folder.";
+    if (!state.emails.length) {
+      empty.textContent = state.query ? "No messages match that search." : "No messages in this folder.";
+    } else {
+      empty.textContent = "No loaded messages match that filter.";
+    }
     list.appendChild(empty);
   } else {
-  for (const email of state.emails) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "message";
-    button.setAttribute("data-testid", "mail-list-message-row");
-    if (email.unread) button.classList.add("unread");
-    if (state.email && state.email.id === email.id) button.setAttribute("aria-current", "true");
-    if (email.unread) {
-      const flag = document.createElement("span");
-      flag.className = "sr";
-      flag.textContent = "Unread";
-      button.appendChild(flag);
-    }
-    if (email.isStarred) {
-      const flag = document.createElement("span");
-      flag.className = "sr";
-      flag.textContent = "Starred";
-      button.appendChild(flag);
-    }
-    const name = senderName(email.from);
-    const gutter = document.createElement("span");
-    gutter.className = "gutter";
-    gutter.setAttribute("aria-hidden", "true");
-    if (email.unread) {
-      const dot = document.createElement("span");
-      dot.className = "unread-dot";
-      gutter.appendChild(dot);
-    }
-    const avatar = document.createElement("span");
-    avatar.className = "avatar";
-    avatar.setAttribute("aria-hidden", "true");
-    avatar.textContent = senderInitial(name);
-    avatar.style.backgroundColor = avatarColor(name);
-    const main = document.createElement("span");
-    main.className = "row-main";
-    const from = document.createElement("span");
-    from.className = "from";
-    if (email.isStarred) {
-      const star = document.createElement("span");
-      star.className = "star";
-      star.setAttribute("aria-hidden", "true");
-      star.textContent = "★";
-      from.appendChild(star);
-    }
-    from.append(name);
-    const subjectLine = document.createElement("span");
-    subjectLine.className = "subject-line";
-    const subject = document.createElement("span");
-    subject.className = "subject";
-    subject.textContent = email.subject || "(no subject)";
-    const when = document.createElement("time");
-    when.className = "when";
-    if (email.date) when.dateTime = email.date;
-    when.textContent = listWhen(email.date);
-    subjectLine.append(subject, when);
-    const snippet = document.createElement("span");
-    snippet.className = "snippet";
-    snippet.textContent = email.snippet || "";
-    main.append(from, subjectLine, snippet);
-    button.append(gutter, avatar, main);
-    button.addEventListener("click", () => {
-      openMessage(email.id).catch((error) => showStatus(error.message, true));
-    });
-    list.appendChild(button);
-  }
+    for (const email of shown) list.appendChild(messageRow(email));
   }
   const motionKey = [
     state.accountId || "",
@@ -1278,7 +1328,8 @@ function renderList() {
     if (motion) motion.rows(list.querySelectorAll("button.message"));
   }
   const current = list.querySelector('[aria-current="true"]');
-  if (current) current.scrollIntoView({ block: "nearest" });
+  const filtering = document.activeElement && document.activeElement.id === "list-filter";
+  if (current && !filtering) current.scrollIntoView({ block: "nearest" });
 }
 
 function snoozedUntilOf(email) {
@@ -1822,6 +1873,33 @@ async function toggleStar(email) {
   focusAction("star");
 }
 
+async function setRead(email, isRead) {
+  await call("mail:markRead", { emailId: email.id, accountId: email.accountId, isRead });
+  email.unread = !isRead;
+  email.isRead = isRead;
+  if (state.email && state.email.id === email.id) {
+    state.email.unread = email.unread;
+    state.email.isRead = email.isRead;
+  }
+  renderList();
+}
+
+async function deleteFromList(email) {
+  await finishRemoval(email, "Moved to Trash.", await call("mail:delete", removalPayload(email, false)));
+}
+
+async function replyFromList(email, kind) {
+  let opened = state.email && state.email.id === email.id ? state.email : null;
+  if (!opened) {
+    const data = await call("mail:openEmail", { emailId: email.id });
+    opened = data && data.email;
+  }
+  if (!opened) throw new Error("That message is no longer in the mailbox.");
+  const account = state.accounts.find((item) => item.id === opened.accountId) || selectedAccount();
+  const self = (account && (account.preferredFromAddress || account.email)) || "";
+  await openCompose(composeSeed(opened, kind, self));
+}
+
 async function finishRemoval(email, label, data) {
   const opIds = data && Array.isArray(data.opIds) ? data.opIds.filter(Boolean) : [];
   if (state.email && state.email.id === email.id) {
@@ -2075,6 +2153,8 @@ async function selectFolder(accountId, folderId) {
   state.folderId = folderId;
   state.query = "";
   $("search-query").value = "";
+  const listFilter = $("list-filter");
+  if (listFilter) listFilter.value = "";
   state.email = null;
   state.thread = [];
   renderAccounts();
@@ -2699,6 +2779,8 @@ async function removeAccount() {
   state.folderId = null;
   state.query = "";
   $("search-query").value = "";
+  const listFilter = $("list-filter");
+  if (listFilter) listFilter.value = "";
   state.email = null;
   state.thread = [];
   showStatus("Account removed.");
@@ -2767,6 +2849,7 @@ function onShellKey(event) {
   if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
   if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Enter") return;
   if (shellBlocked(event.target)) return;
+  if (event.target.closest && event.target.closest(".row-actions")) return;
   if (event.key === "Enter") {
     const buttons = messageButtons();
     if (buttons.includes(document.activeElement)) return;
@@ -5043,6 +5126,11 @@ function wire() {
     if (!state.query) return;
     applySearch();
   });
+  const listFilter = $("list-filter");
+  if (listFilter) {
+    listFilter.addEventListener("input", () => renderList());
+    listFilter.addEventListener("search", () => renderList());
+  }
   $("refresh").addEventListener("click", () => guard(refresh));
   $("tidy").addEventListener("click", () => guard(tidyInbox));
   $("settings-open").addEventListener("click", openSettings);

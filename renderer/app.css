@@ -304,16 +304,16 @@ textarea:focus-visible {
 
 .brain-tabs {
   display: flex;
-  gap: 4px;
-  margin: 14px 0 8px;
-  padding: 3px;
+  gap: 2px;
+  margin: 8px 0 6px;
+  padding: 2px;
   border-radius: 10px;
   background: var(--hover);
 }
 
 .brain-tabs button {
   flex: 1;
-  height: 32px;
+  height: 28px;
   border: 0;
   border-radius: 8px;
   background: transparent;
@@ -761,20 +761,37 @@ button.chip[aria-current="true"] {
   font-weight: 600;
 }
 
-.list-title {
+.list-head {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 3;
+  padding: 12px 16px 8px;
+  background: var(--paper);
+}
+
+.list-title {
   margin: 0;
-  padding: 14px 16px 8px;
+  padding: 0;
   font-size: 17px;
   font-weight: 700;
   letter-spacing: -0.01em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  background: var(--paper);
   color: var(--ink);
+}
+
+.list-filter { margin-top: 8px; }
+
+.list-filter input {
+  height: 32px;
+  padding: 0 10px;
+}
+
+.list-filter-note {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--muted);
 }
 
 #search-form { display: flex; align-items: center; margin-left: auto; }
@@ -848,13 +865,69 @@ button.message {
   color: var(--ink);
 }
 
-button.message:hover { background: var(--hover); }
+button.message:hover,
+.message-row:hover button.message,
+.message-row:focus-within button.message { background: var(--hover); }
 
-button.message[aria-current="true"] { background: var(--selected); }
+button.message[aria-current="true"],
+.message-row:hover button.message[aria-current="true"],
+.message-row:focus-within button.message[aria-current="true"] { background: var(--selected); }
 
 button.message.cursor { box-shadow: inset 3px 0 0 var(--accent); }
 
 button.message:focus-visible { outline-offset: -2px; }
+
+.message-row { position: relative; }
+
+.message-row:hover,
+.message-row:focus-within { z-index: 2; }
+
+.row-actions {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 2px;
+  width: max-content;
+  max-width: 148px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--paper);
+  box-shadow: 0 0 0 1px var(--line);
+  visibility: hidden;
+}
+
+.message-row:hover .row-actions,
+.message-row:focus-within .row-actions { visibility: visible; }
+
+.message-row:hover .row-main,
+.message-row:focus-within .row-main { padding-right: 152px; }
+
+.message-row:hover .when,
+.message-row:focus-within .when { display: none; }
+
+.row-action {
+  width: auto;
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 22px;
+  white-space: nowrap;
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+.row-action:hover,
+.row-action:focus-visible { background: var(--hover); }
+
+.row-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .gutter {
   flex: none;
@@ -1098,6 +1171,11 @@ button.thread-item[aria-current="true"] { background: var(--selected); }
   color: inherit;
 }
 
+:root[data-theme="dark"] .message-row:hover button.message:not([aria-current="true"]),
+:root[data-theme="dark"] .message-row:focus-within button.message:not([aria-current="true"]) {
+  background: var(--hover);
+}
+
 .translate {
   display: flex;
   flex-wrap: wrap;
@@ -1143,7 +1221,7 @@ button.thread-item[aria-current="true"] { background: var(--selected); }
 dialog {
   position: fixed;
   inset: auto;
-  top: 8vh;
+  top: 16px;
   left: 0;
   right: 0;
   width: min(520px, calc(100vw - 24px));
@@ -1151,13 +1229,20 @@ dialog {
   max-height: calc(100vh - 32px);
   /* Auto margins center the dialog so Motion can animate transform. */
   margin: 0 auto;
-  overflow: auto;
+  overflow: hidden;
   border: 0;
   border-radius: 16px;
-  padding: 20px 22px;
+  padding: 0;
   background: var(--paper);
   color: var(--ink);
   box-shadow: var(--shadow-pop);
+}
+
+dialog > form,
+.dialog-body {
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 20px 22px;
 }
 
 dialog::backdrop { background: rgba(26, 15, 38, 0.45); }
