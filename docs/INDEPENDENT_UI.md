@@ -5,7 +5,7 @@
 ## What this shell does
 
 - Lists accounts, folders, and messages (`mail:listAccounts`, `mail:listFromCache`). A filter above the list matches subject, from, and snippet of messages already loaded and does not call `mail:search`
-- Message rows show Mark read or unread (`mail:markRead`), Delete (`mail:delete`), Reply, and Reply All on hover and when the row is focused. Reply uses the open message, or `mail:openEmail`, then the compose dialog
+- Message rows show icon buttons labeled Mark read or unread (`mail:markRead`), Delete (`mail:delete`), Reply, and Reply All on hover and when the row is focused. Reply uses the open message, or `mail:openEmail`, then the compose dialog
 - Refreshes the open folder (`mail:listFromNetwork`)
 - Reads a message (`mail:openEmail`) and marks it read (`mail:markRead`). The reading toolbar is icon buttons for Reply, Reply All, Forward, Star, Archive, and Trash. Reply All is always there. Remote `http` and `https` images stay blocked until Load remote content on that message, unless remote images are on in Settings. That allow lasts for the session and is not saved
 - Connects an IMAP account (`mail:listImapSmtpPresets`, `mail:connectImapSmtp`), including a Custom IMAP / SMTP card

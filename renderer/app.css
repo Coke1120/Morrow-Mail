@@ -884,19 +884,18 @@ button.message:focus-visible { outline-offset: -2px; }
 
 .row-actions {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 50%;
+  right: 6px;
   z-index: 1;
   display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 2px;
-  width: max-content;
-  max-width: 148px;
+  align-items: center;
+  gap: 1px;
   padding: 2px;
   border-radius: 8px;
   background: var(--paper);
+  color: var(--ink);
   box-shadow: 0 0 0 1px var(--line);
+  transform: translateY(-50%);
   visibility: hidden;
 }
 
@@ -904,25 +903,24 @@ button.message:focus-visible { outline-offset: -2px; }
 .message-row:focus-within .row-actions { visibility: visible; }
 
 .message-row:hover .row-main,
-.message-row:focus-within .row-main { padding-right: 152px; }
+.message-row:focus-within .row-main { padding-right: 124px; }
 
 .message-row:hover .when,
 .message-row:focus-within .when { display: none; }
 
 .row-action {
-  width: auto;
-  height: 22px;
-  padding: 0 6px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
   border: 0;
   border-radius: 6px;
-  background: var(--paper);
+  background: transparent;
   color: var(--ink);
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 22px;
-  white-space: nowrap;
-  box-shadow: 0 0 0 1px var(--line);
 }
+
+.row-action svg { display: block; }
 
 .row-action:hover,
 .row-action:focus-visible { background: var(--hover); }

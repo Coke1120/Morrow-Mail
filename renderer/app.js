@@ -1204,12 +1204,39 @@ function filteredEmails(emails, query) {
   });
 }
 
+const ROW_ICON = {
+  "Mark read": "M4 11h16v8H4v-8Zm0 0 8 5 8-5M4 11 12 5l8 6",
+  "Mark unread": "M4 7h16v11H4V7Zm0 0 8 6 8-6",
+  Delete: "M5 7h14M9.5 7V4.5h5V7M7 7l1 13h8l1-13",
+  Reply: "M9 17 4 12 9 7M20 18v-2a4 4 0 0 0-4-4H4",
+  "Reply All": "M8 17 3 12 8 7M13 17 8 12 13 7M21 18v-2a4 4 0 0 0-4-4H8",
+};
+
+function rowIcon(label) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "1.8");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  path.setAttribute("d", ROW_ICON[label] || "");
+  svg.appendChild(path);
+  return svg;
+}
+
 function rowAction(action, label, run) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "row-action";
   button.dataset.action = action;
-  button.textContent = label;
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  button.appendChild(rowIcon(label));
   button.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();

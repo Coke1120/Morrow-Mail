@@ -185,7 +185,11 @@ assert.ok(appJs.includes("genmailMotion") && appJs.includes("wantsCloseMotion"),
 assert.ok(css.includes("margin: 0 auto"), "dialog is not centered without a transform");
 assert.ok(css.includes(".dialog-body") && css.includes(".row-actions"), "shell css missing dialog scroll or row actions");
 assert.ok(html.includes('id="list-filter"') && html.includes("Does not search the server."), "message list has no loaded-mail filter");
+const rowActionSrc = functionSource(appJs, "rowAction");
+assert.ok(!rowActionSrc.includes("textContent"), "row actions still render text labels");
+assert.ok(rowActionSrc.includes('setAttribute("aria-label", label)') && rowActionSrc.includes("button.title = label"), "row actions missing accessible names");
 assert.ok(appJs.includes('className = "row-actions"') && appJs.includes("Mark unread"), "message rows have no hover actions");
+assert.ok(css.includes(".row-action svg"), "row actions are not icon buttons");
 const filteredEmails = extractFunction(appJs, "filteredEmails");
 assert.deepStrictEqual(filteredEmails([
   { subject: "Engine", from: "Charles", snippet: "table" },
