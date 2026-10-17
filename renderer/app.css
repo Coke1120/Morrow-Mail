@@ -290,7 +290,77 @@ textarea:focus-visible {
 #studio-status:empty,
 #signatures-status:empty { display: none; }
 
-#brain { width: min(560px, calc(100vw - 24px)); }
+#brain { width: min(640px, calc(100vw - 24px)); }
+
+.brain-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.brain-head h2 { margin: 0; }
+
+.brain-tabs {
+  display: flex;
+  gap: 4px;
+  margin: 14px 0 8px;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--hover);
+}
+
+.brain-tabs button {
+  flex: 1;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-mid);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.brain-tabs button[aria-selected="true"] {
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.brain-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--hover);
+}
+
+.brain-meta dt {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.brain-meta dd { margin: 0; font-size: 13px; }
+
+#brain-progress {
+  height: 4px;
+  margin: 8px 0;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+#brain-progress span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+}
 
 dialog h3 { margin: 12px 0 4px; font-size: 13px; }
 
@@ -305,12 +375,27 @@ button.brain-skill {
 
 #brain-skill-status { white-space: pre-wrap; }
 
+#brain-profile,
 #brain-categories,
-#brain-skills {
-  margin-top: 16px;
-  padding-top: 4px;
-  border-top: 1px solid var(--line);
+#brain-skills { margin-top: 4px; }
+
+.row.brain-actions { margin-top: 0; }
+
+.row.brain-skill-actions { margin-top: 8px; }
+
+#brain .brain-actions button,
+#brain .brain-skill-actions button { height: 28px; padding: 0 10px; font-size: 12px; }
+
+.brain-skill-card {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
 }
+
+.brain-skill-card .brain-skill { margin: 0; font-weight: 600; }
+
+.brain-skill-card .hint { margin: 4px 0 0; }
 
 .brain-row,
 .signature-row {

@@ -217,21 +217,37 @@
       </form>
     </dialog>
     <dialog id="brain" aria-labelledby="brain-title">
-      <h2 id="brain-title">Email Brain</h2>
-      <p id="brain-status" role="status"></p>
-      <div id="brain-sections"></div>
-      <form id="brain-rule-form">
-        <label for="brain-rule">Writing rule</label>
-        <input id="brain-rule" type="text" autocomplete="off" />
-        <div class="row">
-          <button type="submit" class="primary" id="brain-add">Add</button>
-          <button type="button" class="ghost" id="brain-cancel" hidden>Cancel</button>
-          <button type="button" class="ghost" id="brain-refresh">Refresh</button>
-          <button type="button" class="ghost" id="brain-close">Close</button>
-        </div>
-      </form>
-      <section id="brain-categories" aria-labelledby="brain-categories-title">
+      <div class="brain-head">
+        <h2 id="brain-title">Email Brain</h2>
+        <button type="button" class="ghost" id="brain-close">Close</button>
+      </div>
+      <div class="brain-tabs" id="brain-tabs" role="tablist" aria-label="Email Brain sections">
+        <button type="button" class="brain-tab" role="tab" id="brain-tab-profile" aria-controls="brain-profile" aria-selected="true">Profile</button>
+        <button type="button" class="brain-tab" role="tab" id="brain-tab-categories" aria-controls="brain-categories" aria-selected="false" tabindex="-1">Categories</button>
+        <button type="button" class="brain-tab" role="tab" id="brain-tab-skills" aria-controls="brain-skills" aria-selected="false" tabindex="-1">Skills</button>
+      </div>
+      <section id="brain-profile" role="tabpanel" aria-labelledby="brain-tab-profile">
+        <p id="brain-status" role="status"></p>
+        <div id="brain-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><span></span></div>
+        <dl id="brain-meta" class="brain-meta" hidden></dl>
+        <div id="brain-sections"></div>
+        <form id="brain-rule-form">
+          <label for="brain-rule">Writing rule</label>
+          <input id="brain-rule" type="text" autocomplete="off" />
+          <div class="row">
+            <button type="submit" class="primary" id="brain-add">Add</button>
+            <button type="button" class="ghost" id="brain-cancel" hidden>Cancel</button>
+            <button type="button" class="ghost" id="brain-refresh">Refresh</button>
+            <button type="button" class="ghost" id="brain-rebuild">Rebuild</button>
+          </div>
+        </form>
+        <label for="brain-fix-note">Fix note <span class="optional">(optional)</span></label>
+        <input id="brain-fix-note" type="text" autocomplete="off" />
+        <p class="hint">Fix rewrites a learned row. Forget removes it. A missing AI key points to GenMail → AI Setup. Rebuild uses a connected mailbox and never sample mail.</p>
+      </section>
+      <section id="brain-categories" role="tabpanel" aria-labelledby="brain-tab-categories" hidden>
         <h3 id="brain-categories-title">Categories</h3>
+        <p class="hint">Edits stay here until Save. The next Agent triage uses the saved list. Add with AI and Fix need an API key.</p>
         <p id="brain-category-defaults" class="hint"></p>
         <p id="brain-category-status" role="status"></p>
         <div id="brain-category-list"></div>
@@ -256,7 +272,7 @@
           </div>
         </form>
       </section>
-      <section id="brain-skills" aria-labelledby="brain-skills-title">
+      <section id="brain-skills" role="tabpanel" aria-labelledby="brain-tab-skills" hidden>
         <h3 id="brain-skills-title">Skills</h3>
         <p class="hint">Only when I ask. Auto-run is off. A skill needs an API key and a connected mailbox. Nothing is sent.</p>
         <p id="brain-skill-status" role="status"></p>

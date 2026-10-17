@@ -368,8 +368,8 @@ app.whenReady().then(async () => {
           console.log(brainText);
           console.log("BRAIN_TEXT_END");
           await win.webContents.executeJavaScript(`(() => {
-            const section = document.getElementById("brain-skills");
-            if (section) section.scrollIntoView({ block: "start" });
+            const tab = document.getElementById("brain-tab-skills");
+            if (tab) tab.click();
           })()`);
           await new Promise((resolve) => setTimeout(resolve, 300));
           const skillsText = await win.webContents.executeJavaScript(`(document.getElementById("brain-skills") && document.getElementById("brain-skills").innerText || "").slice(0, 1200)`);

@@ -1147,6 +1147,9 @@ const brainUi = loadFunctions(appJs, [
   "brainUserRules",
   "brainRowText",
   "brainMessage",
+  "brainProfileMeta",
+  "brainLearnedRow",
+  "brainPaneIds",
   "brainRefreshChannels",
   "blankCategory",
   "categoryLine",
@@ -1154,6 +1157,7 @@ const brainUi = loadFunctions(appJs, [
   "upsertCategory",
   "removeCategory",
   "categoryFromCommand",
+  "categoryFromFix",
   "defaultCategoryHint",
   "brainSkillLists",
   "skillIdOf",
@@ -1173,8 +1177,20 @@ assert.strictEqual(brainUi.brainRowText({ label: "Tone", value: "Warm" }), "Tone
 assert.strictEqual(brainUi.brainRowText({ value: "Short" }), "Short");
 assert.strictEqual(brainUi.brainRowText(null), "");
 assert.strictEqual(brainUi.brainMessage(null).text, "");
-assert.strictEqual(brainUi.brainMessage({ accepted: false }).text, "Needs an AI key.");
+assert.strictEqual(brainUi.brainMessage({ accepted: false }).text, "Needs an AI key. Open GenMail → AI Setup.");
 assert.strictEqual(brainUi.brainMessage({ accepted: false }).error, true);
+assert.strictEqual(brainUi.brainMessage({ fixing: true }).text, "Fixing…");
+assert.deepStrictEqual(brainUi.brainProfileMeta(null), []);
+assert.deepStrictEqual(brainUi.brainProfileMeta({
+  persona: { profile: { meta: { ownerName: " Ada ", emailsAnalyzed: 3, factsLearned: 2, updatedAt: "2026-01-01T00:00:00.000Z" } } },
+}).map((row) => row.key), ["ownerName", "emailsAnalyzed", "factsLearned", "updatedAt"]);
+assert.strictEqual(brainUi.brainProfileMeta({ persona: { profile: { meta: { ownerName: "Ada", emailsAnalyzed: "3" } } } })[0].key, "ownerName");
+assert.strictEqual(brainUi.brainLearnedRow({ id: "how-you-write" }, { id: "how-you-write:0", source: "auto" }), true);
+assert.strictEqual(brainUi.brainLearnedRow({ id: "priorities" }, { id: "priorities:0", source: "learned" }), true);
+assert.strictEqual(brainUi.brainLearnedRow({ id: "ai-setup" }, { id: "ai-setup:0", source: "auto" }), false);
+assert.strictEqual(brainUi.brainLearnedRow({ id: "recent-mail" }, { id: "recent-mail:0", source: "auto" }), false);
+assert.strictEqual(brainUi.brainLearnedRow({ id: "how-you-write" }, { id: "how-you-write:user:1", source: "user" }), false);
+assert.deepStrictEqual(brainUi.brainPaneIds().map((row) => row[0]), ["profile", "categories", "skills"]);
 assert.strictEqual(brainUi.brainMessage({ error: "host down", accepted: false }).text, "host down");
 assert.strictEqual(brainUi.brainMessage({ refreshing: true }).text, "Refreshing…");
 assert.strictEqual(brainUi.brainMessage({ rebuilding: true, percent: 15, refreshing: true }).text, "Rebuilding 15%…");
@@ -1211,6 +1227,9 @@ assert.strictEqual(brainUi.categoryFromCommand({ command: { kind: "add_category"
 assert.strictEqual(brainUi.categoryFromCommand({ command: { kind: "add_category", name: "  " } }), null);
 assert.strictEqual(brainUi.categoryFromCommand({ command: { kind: "nope", name: "Social" } }), null);
 assert.strictEqual(brainUi.categoryFromCommand(null), null);
+assert.strictEqual(brainUi.categoryFromFix(null), null);
+assert.strictEqual(brainUi.categoryFromFix({ category: { name: "  " } }), null);
+assert.strictEqual(brainUi.categoryFromFix({ category: { id: "needs-you", name: "Needs you", description: "Reply", collapseView: true } }).collapseView, true);
 for (const channel of [
   "emailBrain:getCached",
   "emailBrain:refresh",
@@ -1218,9 +1237,12 @@ for (const channel of [
   "emailBrain:addWritingRule",
   "emailBrain:setWritingRule",
   "emailBrain:deleteWritingRule",
+  "emailBrain:fixItem",
+  "emailBrain:forgetItem",
   "emailBrain:getCategories",
   "emailBrain:saveCategories",
   "emailBrain:addCategoryViaPrompt",
+  "emailBrain:fixCategory",
   "emailBrain:getSkills",
   "emailBrain:getLibrarySkills",
   "emailBrain:runSkill",
@@ -1231,7 +1253,9 @@ for (const channel of [
   assert.ok(registered.has(channel), `preload does not register ${channel}`);
   assert.ok(used.has(channel), `renderer does not call ${channel}`);
 }
-assert.ok(html.includes('id="brain"') && html.includes('id="brain-rule"') && html.includes('id="brain-add"') && html.includes('id="brain-refresh"'));
+assert.ok(html.includes('id="brain"') && html.includes('id="brain-rule"') && html.includes('id="brain-add"') && html.includes('id="brain-refresh"') && html.includes('id="brain-rebuild"'));
+assert.ok(html.includes('id="brain-tab-profile"') && html.includes('id="brain-tab-categories"') && html.includes('id="brain-tab-skills"') && html.includes('id="brain-meta"'));
+assert.ok(html.includes(">Profile<") && html.includes(">Categories<") && html.includes(">Skills<"));
 assert.ok(html.includes(">Brain<") && html.includes(">Add<") && html.includes("Writing rule"));
 assert.ok(html.includes('id="brain-category-list"') && html.includes('id="brain-category-name"') && html.includes('id="brain-category-description"'));
 assert.ok(html.includes('id="brain-category-collapse"') && html.includes('id="brain-category-save"') && html.includes('id="brain-category-ai"'));
@@ -1281,6 +1305,9 @@ assert.strictEqual(agentUi.proposalLine({ subject: "Hello", labelName: "FYI" }),
 assert.match(agentUi.runModeLabel({ schedule: "disabled", runMode: "on_demand" }), /Auto-run is off/);
 assert.ok(html.includes("Categories") && html.includes("Collapse view") && html.includes("Save categories") && html.includes("Use defaults"));
 assert.ok(appJs.includes("No writing rules yet.") && appJs.includes("Needs an AI key."));
+assert.ok(appJs.includes("emailBrain:fixItem") && appJs.includes("emailBrain:forgetItem") && appJs.includes("emailBrain:fixCategory"));
+assert.ok(appJs.includes(">Fix<") || appJs.includes('textContent = "Fix"'));
+assert.ok(appJs.includes('textContent = "Forget"') && appJs.includes('textContent = "Install"') && appJs.includes('textContent = "Run"'));
 assert.ok(appJs.includes("No categories.") && appJs.includes("A category needs a name.") && appJs.includes("Describe a category."));
 assert.ok(css.includes(".brain-row") && css.includes("#brain-status") && css.includes("#brain-category-status") && css.includes("#brain-categories"));
 assert.ok(css.includes("#brain-skill-status") && css.includes("#brain-skills") && css.includes(".brain-skill"));
@@ -1335,6 +1362,9 @@ assert.ok(brainDoc.includes("Morning Brief") && brainDoc.includes("Meeting Prep"
 assert.ok(brainDoc.includes("on_demand") && /never send|Nothing is sent/i.test(brainDoc));
 assert.ok(brainDoc.includes("Brief This Person") && brainDoc.includes("Plan My Week") && brainDoc.includes("Newsletter Digest"));
 assert.ok(brainDoc.includes("Catch Me Up"));
+assert.ok(brainDoc.includes("emailBrain:fixItem") && brainDoc.includes("emailBrain:forgetItem") && brainDoc.includes("emailBrain:fixCategory"));
+assert.ok(parity.includes("emailBrain:fixItem") && parity.includes("emailBrain:forgetItem") && parity.includes("emailBrain:fixCategory"));
+assert.ok(parity.includes("ownerName") && parity.includes("emailsAnalyzed") && parity.includes("factsLearned"));
 assert.ok(parity.includes("genmail:configSetAiWriteAutoOpenOnReply") && parity.includes("genmail:configSetShowFolderChips"));
 assert.ok(parity.includes("genmail:configSetShowOneClickTidy") && parity.includes("genmail:configSetSidebarGmailFoldersExpanded"));
 assert.ok(parity.includes("genmail:configSetSidebarOutlookFoldersExpanded"));
@@ -1959,6 +1989,17 @@ async function checkAiDraft() {
   assert.ok(restored.data.categories.some((row) => row.id === "needs-you"));
   const afterEmpty = brain.answer("emailBrain:getCached", []);
   assert.ok(brainUi.brainUserRules(brainUi.brainSections(afterEmpty.data)).some((row) => row.value === "Keep categories apart."));
+  assert.ok(brainUi.brainProfileMeta(afterEmpty.data).some((row) => row.key === "factsLearned"));
+  const fixedItem = await brain.answer("emailBrain:fixItem", [{ itemId: "how-you-write:0", prompt: "shorter" }]);
+  assert.strictEqual(fixedItem.success, false);
+  assert.match(fixedItem.error.message, /API key/);
+  const fixedCategory = await brain.answer("emailBrain:fixCategory", [{ itemId: "needs-you", prompt: "shorter" }]);
+  assert.strictEqual(fixedCategory.success, false);
+  assert.match(fixedCategory.error.message, /API key/);
+  const forgotten = brain.answer("emailBrain:forgetItem", [{ itemId: "missing-row" }]);
+  assert.strictEqual(forgotten.success, true);
+  const keptAfterForget = brain.answer("emailBrain:getCached", []);
+  assert.ok(brainUi.brainUserRules(brainUi.brainSections(keptAfterForget.data)).some((row) => row.value === "Keep categories apart."));
   const { createIpc } = require("../host/ipc");
   const ipc = createIpc(path.join(os.tmpdir(), "genmail-studio-ipc.log"));
   const homeSkills = ipc.handle({}, "nativeAgent:home:skills");

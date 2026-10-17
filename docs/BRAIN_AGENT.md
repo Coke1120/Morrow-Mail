@@ -32,6 +32,12 @@ Needs an AI key, needs a mailbox, and an empty inbox cache are empty states. The
 
 ## Profile
 
-Writing rules, categories, Fix, and rebuild stay on Email Brain. Rebuild and Fix call the model when a key is set. Rebuild refuses sample mail. Forget removes a stored row.
+The Brain dialog has three panes: Profile, Categories, and Skills. It opens and closes from the toolbar Brain button. Opening loads the cached persona, categories, and home and library skills.
 
-Channels: `emailBrain:getSkills`, `emailBrain:getLibrarySkills`, `emailBrain:installSkill`, `emailBrain:removeSkill`, `emailBrain:runSkill`, `emailBrain:confirmProposal`, `emailBrain:dismissProposal`, `nativeAgent:getTriage`, `nativeAgent:triage`, `nativeAgent:history`, `nativeAgent:home:skills`, `nativeAgent:home:librarySkills`.
+Profile shows `ownerName`, `emailsAnalyzed`, `factsLearned`, and `updatedAt` when the cached persona includes them. Writing rules are added, edited, and deleted there. Learned rows (source `auto`) use Fix and Forget. Fix calls the model and replaces that stored row. Forget removes it. Refresh tries `emailBrain:refresh`, then `emailBrain:rebuild` when refresh is not accepted. Rebuild calls `emailBrain:rebuild`. Progress is the refresh and rebuild events. Rebuild and Fix call the model when a key is set. Rebuild refuses sample mail. No mailbox and an empty cache are host errors, not stand-in mail. A missing key tells you to open GenMail → AI Setup.
+
+Categories edit locally until Save, which replaces the stored list. That list is the taxonomy the next Agent triage uses. Add with AI and Fix category stay local until Save. They need an API key and show the host error when the key is missing. Use defaults copies the host defaults into the list, still unsaved until Save.
+
+## Channels
+
+`emailBrain:getCached`, `emailBrain:refresh`, `emailBrain:rebuild`, `emailBrain:addWritingRule`, `emailBrain:setWritingRule`, `emailBrain:deleteWritingRule`, `emailBrain:fixItem`, `emailBrain:forgetItem`, `emailBrain:getCategories`, `emailBrain:saveCategories`, `emailBrain:addCategoryViaPrompt`, `emailBrain:fixCategory`, `emailBrain:getSkills`, `emailBrain:getLibrarySkills`, `emailBrain:installSkill`, `emailBrain:removeSkill`, `emailBrain:runSkill`, `emailBrain:confirmProposal`, `emailBrain:dismissProposal`, `nativeAgent:getTriage`, `nativeAgent:triage`, `nativeAgent:history`, `nativeAgent:home:skills`, `nativeAgent:home:librarySkills`. The dialog also listens for `emailBrain:updated`, `emailBrain:refreshState`, and `emailBrain:rebuildState`.

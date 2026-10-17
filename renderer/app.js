@@ -63,6 +63,9 @@ let brainCategoryDefaults = [];
 let brainCategoryIndex = -1;
 let brainCategoryGen = 0;
 let brainSkillBusy = false;
+let brainFixBusy = false;
+let brainCategoryBusy = false;
+let brainSkillCache = {};
 let brainCategoriesReady = false;
 let calendarGen = 0;
 let agentGen = 0;
@@ -3083,13 +3086,59 @@ function brainRowText(row) {
 function brainMessage(view) {
   const state = view || {};
   if (state.error) return { text: String(state.error), error: true };
+  if (state.fixing) return { text: "Fixing…", error: false };
   if (state.refreshing || state.rebuilding) {
     const pct = typeof state.percent === "number" ? " " + Math.round(state.percent) + "%" : "";
     const label = state.rebuilding ? "Rebuilding" : "Refreshing";
     return { text: label + pct + "…", error: false };
   }
-  if (state.accepted === false) return { text: "Needs an AI key.", error: true };
+  if (state.accepted === false) return { text: "Needs an AI key. Open GenMail → AI Setup.", error: true };
   return { text: "", error: false };
+}
+
+function brainProfileMeta(snapshot) {
+  const persona = snapshot && snapshot.persona;
+  const profile = persona && persona.profile;
+  const meta = profile && profile.meta;
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return [];
+  const rows = [];
+  const owner = String(meta.ownerName || "").trim();
+  if (owner) rows.push({ key: "ownerName", label: "Owner", value: owner });
+  if (typeof meta.emailsAnalyzed === "number" && Number.isFinite(meta.emailsAnalyzed)) {
+    rows.push({ key: "emailsAnalyzed", label: "Emails analyzed", value: String(meta.emailsAnalyzed) });
+  }
+  if (typeof meta.factsLearned === "number" && Number.isFinite(meta.factsLearned)) {
+    rows.push({ key: "factsLearned", label: "Facts learned", value: String(meta.factsLearned) });
+  }
+  const updated = meta.updatedAt == null ? "" : String(meta.updatedAt).trim();
+  if (updated) rows.push({ key: "updatedAt", label: "Updated", value: updated });
+  return rows;
+}
+
+function brainLearnedRow(section, row) {
+  if (!row || !row.id || row.source === "user") return false;
+  const sectionId = section && section.id;
+  if (sectionId === "ai-setup" || sectionId === "recent-mail") return false;
+  return row.source === "auto" || row.source === "learned";
+}
+
+function brainPaneIds() {
+  return [
+    ["profile", "brain-profile"],
+    ["categories", "brain-categories"],
+    ["skills", "brain-skills"],
+  ];
+}
+
+function formatBrainTime(value) {
+  const text = String(value || "").trim();
+  const date = new Date(text);
+  if (!text || Number.isNaN(date.getTime())) return text;
+  try {
+    return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+  } catch {
+    return text;
+  }
 }
 
 function brainRefreshChannels() {
@@ -3150,6 +3199,29 @@ function categoryFromCommand(data) {
   return row.name ? row : null;
 }
 
+function categoryFromFix(data) {
+  const category = data && data.category;
+  if (!category || typeof category !== "object" || Array.isArray(category)) return null;
+  const row = blankCategory(category, 0);
+  return row.name ? row : null;
+}
+
+function showBrainPane(name) {
+  const panes = brainPaneIds();
+  const known = panes.some((row) => row[0] === name);
+  const next = known ? name : "profile";
+  for (const row of panes) {
+    const on = row[0] === next;
+    const tab = $("brain-tab-" + row[0]);
+    const panel = $(row[1]);
+    if (tab) {
+      tab.setAttribute("aria-selected", on ? "true" : "false");
+      tab.tabIndex = on ? 0 : -1;
+    }
+    if (panel) panel.hidden = !on;
+  }
+}
+
 function defaultCategoryHint(defaults) {
   const names = (Array.isArray(defaults) ? defaults : [])
     .map((row) => String((row && row.name) || "").trim())
@@ -3157,11 +3229,39 @@ function defaultCategoryHint(defaults) {
   return names.length ? "Defaults: " + names.join(", ") + "." : "";
 }
 
+function paintBrainProgress(view) {
+  const bar = $("brain-progress");
+  if (!bar) return;
+  const active = !!(view && (view.refreshing || view.rebuilding) && !view.error);
+  const pct = view && typeof view.percent === "number" ? Math.max(0, Math.min(100, Math.round(view.percent))) : 0;
+  bar.hidden = !active;
+  bar.setAttribute("aria-valuenow", String(active ? pct : 0));
+  const fill = bar.firstElementChild;
+  if (fill) fill.style.width = (active ? pct : 0) + "%";
+}
+
+function paintBrainMeta(snapshot) {
+  const root = $("brain-meta");
+  if (!root) return;
+  root.replaceChildren();
+  const rows = brainProfileMeta(snapshot);
+  root.hidden = rows.length === 0;
+  for (const row of rows) {
+    const term = document.createElement("dt");
+    term.textContent = row.label;
+    const detail = document.createElement("dd");
+    detail.textContent = row.key === "updatedAt" ? formatBrainTime(row.value) : row.value;
+    root.append(term, detail);
+  }
+}
+
 function paintBrain(snapshot, view) {
   const message = brainMessage(view);
   const status = $("brain-status");
   status.textContent = message.text;
   status.classList.toggle("error", message.error);
+  paintBrainProgress(view);
+  paintBrainMeta(snapshot);
   const root = $("brain-sections");
   root.replaceChildren();
   const sections = brainSections(snapshot);
@@ -3208,15 +3308,44 @@ function paintBrain(snapshot, view) {
             paintBrain(brainSnapshot, brainView);
           });
         });
-        line.append(edit, del);
+        const actions = document.createElement("div");
+        actions.className = "row brain-actions";
+        actions.append(edit, del);
+        line.appendChild(actions);
+      } else if (brainLearnedRow(section, row)) {
+        const name = brainRowText(row).slice(0, 80);
+        const actions = document.createElement("div");
+        actions.className = "row brain-actions";
+        const fix = document.createElement("button");
+        fix.type = "button";
+        fix.className = "ghost";
+        fix.textContent = "Fix";
+        fix.setAttribute("aria-label", "Fix " + name);
+        fix.disabled = brainFixBusy;
+        fix.addEventListener("click", () => {
+          fixBrainItem(row);
+        });
+        const forget = document.createElement("button");
+        forget.type = "button";
+        forget.className = "ghost";
+        forget.textContent = "Forget";
+        forget.setAttribute("aria-label", "Forget " + name);
+        forget.disabled = brainFixBusy;
+        forget.addEventListener("click", () => {
+          forgetBrainItem(row);
+        });
+        actions.append(fix, forget);
+        line.appendChild(actions);
       }
       block.appendChild(line);
     }
     root.appendChild(block);
   }
+  const busy = brainFixBusy || !!(view && (view.refreshing || view.rebuilding || view.fixing));
   $("brain-add").textContent = brainEditId ? "Save" : "Add";
   $("brain-cancel").hidden = !brainEditId;
-  $("brain-refresh").disabled = !!(view && (view.refreshing || view.rebuilding));
+  $("brain-refresh").disabled = busy;
+  $("brain-rebuild").disabled = busy;
 }
 
 function startBrainEdit(row) {
@@ -3258,7 +3387,7 @@ function paintCategories() {
   hint.textContent = defaultCategoryHint(brainCategoryDefaults);
   const defaultsBtn = $("brain-category-defaults-btn");
   defaultsBtn.hidden = brainCategoryDefaults.length === 0;
-  defaultsBtn.disabled = !brainCategoriesReady;
+  defaultsBtn.disabled = !brainCategoriesReady || brainCategoryBusy;
   if (!brainCategories.length) {
     const empty = document.createElement("p");
     empty.className = "hint";
@@ -3277,21 +3406,36 @@ function paintCategories() {
     edit.className = "ghost";
     edit.textContent = "Edit";
     edit.setAttribute("aria-label", "Edit category " + name);
+    edit.disabled = !brainCategoriesReady || brainCategoryBusy;
     edit.addEventListener("click", () => startCategoryEdit(index));
     const del = document.createElement("button");
     del.type = "button";
     del.className = "ghost";
     del.textContent = "Delete";
     del.setAttribute("aria-label", "Delete category " + name);
+    del.disabled = !brainCategoriesReady || brainCategoryBusy;
     del.addEventListener("click", () => deleteLocalCategory(index));
-    line.append(edit, del);
+    const fix = document.createElement("button");
+    fix.type = "button";
+    fix.className = "ghost";
+    fix.textContent = "Fix";
+    fix.setAttribute("aria-label", "Fix category " + name);
+    fix.disabled = !brainCategoriesReady || brainCategoryBusy;
+    fix.addEventListener("click", () => {
+      fixBrainCategory(category);
+    });
+    const actions = document.createElement("div");
+    actions.className = "row brain-actions";
+    actions.append(edit, fix, del);
+    line.appendChild(actions);
     root.appendChild(line);
   });
+  const locked = !brainCategoriesReady || brainCategoryBusy;
   $("brain-category-add").textContent = brainCategoryIndex >= 0 ? "Update" : "Add";
-  $("brain-category-add").disabled = !brainCategoriesReady;
+  $("brain-category-add").disabled = locked;
   $("brain-category-cancel").hidden = brainCategoryIndex < 0;
-  $("brain-category-save").disabled = !brainCategoriesReady;
-  $("brain-category-ai").disabled = !brainCategoriesReady;
+  $("brain-category-save").disabled = locked;
+  $("brain-category-ai").disabled = locked;
 }
 
 function startCategoryEdit(index) {
@@ -3368,14 +3512,48 @@ async function saveBrainCategories() {
   paintCategories();
 }
 
+async function fixBrainCategory(category) {
+  if (!brainCategoriesReady || brainCategoryBusy || !category || !category.id) return;
+  brainCategoryBusy = true;
+  paintCategories();
+  const promptInput = $("brain-category-prompt");
+  const typed = promptInput ? promptInput.value.trim() : "";
+  const prompt = typed || [category.name, category.description].filter(Boolean).join(". ");
+  showCategoryStatus("Fixing category…", false);
+  try {
+    const data = await call("emailBrain:fixCategory", { itemId: category.id, prompt: prompt });
+    const row = categoryFromFix(data);
+    if (!row) throw new Error("The model did not return a category.");
+    const index = brainCategories.findIndex((item) => item.id === category.id);
+    if (index < 0) throw new Error("That category is no longer in the list.");
+    const next = upsertCategory(brainCategories, {
+      id: category.id,
+      name: row.name,
+      description: row.description,
+      collapseView: row.collapseView,
+    }, index);
+    if (next.error) throw new Error(next.error);
+    brainCategories = next.categories;
+    if (promptInput && typed) promptInput.value = "";
+    showCategoryStatus("Save to keep this list.", false);
+  } catch (error) {
+    showCategoryStatus(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    brainCategoryBusy = false;
+    paintCategories();
+  }
+}
+
 async function addCategoryFromPrompt(event) {
   event.preventDefault();
-  if (!brainCategoriesReady) return;
+  if (!brainCategoriesReady || brainCategoryBusy) return;
   const prompt = $("brain-category-prompt").value.trim();
   if (!prompt) {
     showCategoryStatus("Describe a category.", true);
     return;
   }
+  brainCategoryBusy = true;
+  paintCategories();
   try {
     const data = await call("emailBrain:addCategoryViaPrompt", { prompt });
     const row = categoryFromCommand(data);
@@ -3385,14 +3563,17 @@ async function addCategoryFromPrompt(event) {
     brainCategories = next.categories;
     $("brain-category-prompt").value = "";
     showCategoryStatus("Save to keep this list.", false);
-    paintCategories();
   } catch (error) {
     showCategoryStatus(error instanceof Error ? error.message : String(error), true);
+  } finally {
+    brainCategoryBusy = false;
+    paintCategories();
   }
 }
 
 function openBrain() {
   openDialog("brain");
+  showBrainPane("profile");
   brainCategoriesReady = false;
   brainCategories = [];
   brainCategoryDefaults = [];
@@ -3412,6 +3593,8 @@ function openBrain() {
   const skillStatus = $("brain-skill-status");
   skillStatus.textContent = "";
   skillStatus.classList.remove("error");
+  const skillResult = $("brain-skill-result");
+  if (skillResult) skillResult.replaceChildren();
   loadBrainSkills().catch((error) => {
     if ($("brain").open) paintBrainSkills({}, error instanceof Error ? error.message : String(error));
   });
@@ -3445,21 +3628,87 @@ async function deleteBrainRule(itemId) {
   await loadBrain();
 }
 
-async function refreshBrain() {
-  $("brain-refresh").disabled = true;
-  brainView = { ...brainView, error: "" };
+async function requestBrainRebuild(channels, mode) {
+  const refresh = $("brain-refresh");
+  const rebuild = $("brain-rebuild");
+  if (refresh) refresh.disabled = true;
+  if (rebuild) rebuild.disabled = true;
+  brainView = { ...brainView, error: "", fixing: false };
   try {
     let accepted = false;
-    for (const channel of brainRefreshChannels()) {
+    const list = Array.isArray(channels) && channels.length ? channels : brainRefreshChannels();
+    for (const channel of list) {
       const result = await call(channel);
       accepted = !!(result && result.accepted);
       if (accepted) break;
     }
-    brainView = { ...brainView, accepted };
+    brainView = {
+      ...brainView,
+      accepted,
+      refreshing: accepted && mode !== "rebuild",
+      rebuilding: accepted && mode === "rebuild",
+      percent: accepted ? 15 : null,
+      error: "",
+    };
   } catch (error) {
-    brainView = { ...brainView, error: error instanceof Error ? error.message : String(error) };
+    brainView = {
+      ...brainView,
+      error: error instanceof Error ? error.message : String(error),
+      refreshing: false,
+      rebuilding: false,
+      percent: null,
+    };
   }
   if ($("brain").open) paintBrain(brainSnapshot, brainView);
+}
+
+async function refreshBrain() {
+  await requestBrainRebuild(brainRefreshChannels(), "refresh");
+}
+
+async function rebuildBrain() {
+  await requestBrainRebuild(["emailBrain:rebuild"], "rebuild");
+}
+
+async function fixBrainItem(row) {
+  if (brainFixBusy || !row || !row.id) return;
+  brainFixBusy = true;
+  brainView = { ...brainView, fixing: true, error: "", accepted: null };
+  if ($("brain").open) paintBrain(brainSnapshot, brainView);
+  try {
+    const noteEl = $("brain-fix-note");
+    const note = noteEl ? noteEl.value.trim() : "";
+    await call("emailBrain:fixItem", {
+      itemId: row.id,
+      label: String(row.label || ""),
+      value: String(row.value || ""),
+      prompt: note || "Rewrite this profile row. Keep it short.",
+    });
+    if (noteEl) noteEl.value = "";
+    brainView = { ...brainView, fixing: false, error: "", accepted: null };
+    await loadBrain();
+  } catch (error) {
+    brainView = { ...brainView, fixing: false, error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    brainFixBusy = false;
+    if ($("brain").open) paintBrain(brainSnapshot, brainView);
+  }
+}
+
+async function forgetBrainItem(row) {
+  if (!row || !row.id) return;
+  try {
+    await call("emailBrain:forgetItem", { itemId: row.id });
+    if (brainEditId === row.id) {
+      brainEditId = "";
+      $("brain-rule").value = "";
+    }
+    brainView = { ...brainView, error: "", accepted: null, fixing: false };
+    await loadBrain();
+  } catch (error) {
+    brainView = { ...brainView, error: error instanceof Error ? error.message : String(error) };
+    if ($("brain").open) paintBrain(brainSnapshot, brainView);
+  }
 }
 
 function onBrainRefreshState(payload) {
@@ -3723,14 +3972,28 @@ function paintProposals(root, proposals, append) {
     confirm.className = "primary";
     confirm.textContent = "Confirm move";
     confirm.addEventListener("click", () => {
-      confirmProposal(proposal).then(() => wrap.remove()).catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
+      confirmProposal(proposal).then((data) => {
+        wrap.remove();
+        if ($("brain").open) setSkillStatus((data && data.detail) || "Move confirmed.", false);
+      }).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        if ($("brain").open) setSkillStatus(message, true);
+        else showStatus(message, true);
+      });
     });
     const dismiss = document.createElement("button");
     dismiss.type = "button";
     dismiss.className = "ghost";
     dismiss.textContent = "Dismiss";
     dismiss.addEventListener("click", () => {
-      dismissProposal(proposal).then(() => wrap.remove()).catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
+      dismissProposal(proposal).then(() => {
+        wrap.remove();
+        if ($("brain").open) setSkillStatus("Move dismissed.", false);
+      }).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        if ($("brain").open) setSkillStatus(message, true);
+        else showStatus(message, true);
+      });
     });
     actions.append(confirm, dismiss);
     wrap.appendChild(actions);
@@ -3807,6 +4070,80 @@ function paintSkillList(root, rows, empty, mode) {
   }
 }
 
+function paintBrainSkillList(root, rows, empty, mode) {
+  root.replaceChildren();
+  if (!rows.length) {
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = empty;
+    root.appendChild(note);
+    return;
+  }
+  for (const row of rows) {
+    const skillId = skillIdOf(row);
+    const card = document.createElement("article");
+    card.className = "brain-skill-card";
+    const title = document.createElement("p");
+    title.className = "brain-skill";
+    const name = row && typeof row === "object" ? String(row.name || row.title || "").trim() : "";
+    title.textContent = name || skillLine(row) || "Skill";
+    card.appendChild(title);
+    const description = row && typeof row === "object" ? String(row.description || "").trim() : "";
+    if (description) {
+      const detail = document.createElement("p");
+      detail.className = "hint";
+      detail.textContent = description;
+      card.appendChild(detail);
+    }
+    const demand = runModeLabel(row);
+    if (demand) {
+      const modeLine = document.createElement("p");
+      modeLine.className = "hint";
+      modeLine.textContent = demand;
+      card.appendChild(modeLine);
+    }
+    if (!skillId) {
+      root.appendChild(card);
+      continue;
+    }
+    const actions = document.createElement("div");
+    actions.className = "row brain-skill-actions";
+    if (mode === "install") {
+      const install = document.createElement("button");
+      install.type = "button";
+      install.className = "primary";
+      install.textContent = "Install";
+      install.setAttribute("aria-label", "Install " + title.textContent);
+      install.addEventListener("click", () => {
+        installBrainSkill(row).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
+      });
+      actions.appendChild(install);
+    } else {
+      const run = document.createElement("button");
+      run.type = "button";
+      run.className = "primary";
+      run.textContent = "Run";
+      run.disabled = brainSkillBusy;
+      run.setAttribute("aria-label", "Run " + title.textContent);
+      run.addEventListener("click", () => {
+        runBrainSkill(row).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
+      });
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "ghost";
+      remove.textContent = "Remove";
+      remove.disabled = brainSkillBusy;
+      remove.setAttribute("aria-label", "Remove " + title.textContent);
+      remove.addEventListener("click", () => {
+        removeBrainSkill(row).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
+      });
+      actions.append(run, remove);
+    }
+    card.appendChild(actions);
+    root.appendChild(card);
+  }
+}
+
 function paintBrainSkills(lists, errorText) {
   const status = $("brain-skill-status");
   if (errorText) {
@@ -3814,9 +4151,10 @@ function paintBrainSkills(lists, errorText) {
     status.classList.add("error");
   }
   const byId = lists || {};
+  brainSkillCache = byId;
   for (const [id, , empty] of brainSkillLists()) {
     const mode = id === "brain-library-skills" ? "install" : "run";
-    paintSkillList($(id), skillRows(byId[id]), empty, mode);
+    paintBrainSkillList($(id), skillRows(byId[id]), empty, mode);
   }
 }
 
@@ -3854,6 +4192,7 @@ async function runBrainSkill(row) {
   if (brainSkillBusy) return;
   brainSkillBusy = true;
   setSkillStatus("Running…", false);
+  if ($("brain").open) paintBrainSkills(brainSkillCache, "");
   try {
     const data = await call("emailBrain:runSkill", skillPayload(row));
     const message = skillResultMessage(data);
@@ -3865,6 +4204,7 @@ async function runBrainSkill(row) {
     setSkillStatus(error instanceof Error ? error.message : String(error), true);
   } finally {
     brainSkillBusy = false;
+    if ($("brain").open) paintBrainSkills(brainSkillCache, "");
   }
 }
 
@@ -3890,6 +4230,7 @@ async function confirmProposal(proposal) {
   showStatus((data && data.detail) || "Move confirmed.", false);
   paintProposals($("agent-proposals"), data && data.proposals);
   if ($("agent-panel") && !$("agent-panel").hidden) await loadAgent();
+  return data;
 }
 
 async function dismissProposal(proposal) {
@@ -4317,8 +4658,30 @@ function wire() {
     });
   });
   $("brain-cancel").addEventListener("click", clearBrainEdit);
+  $("brain-tabs").addEventListener("keydown", (event) => {
+    const names = brainPaneIds().map((row) => row[0]);
+    const current = names.findIndex((name) => $("brain-tab-" + name).getAttribute("aria-selected") === "true");
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft" && event.key !== "Home" && event.key !== "End") return;
+    event.preventDefault();
+    let next = current < 0 ? 0 : current;
+    if (event.key === "ArrowRight") next = (next + 1) % names.length;
+    if (event.key === "ArrowLeft") next = (next + names.length - 1) % names.length;
+    if (event.key === "Home") next = 0;
+    if (event.key === "End") next = names.length - 1;
+    showBrainPane(names[next]);
+    $("brain-tab-" + names[next]).focus();
+  });
+  for (const name of brainPaneIds().map((row) => row[0])) {
+    $("brain-tab-" + name).addEventListener("click", () => showBrainPane(name));
+  }
   $("brain-refresh").addEventListener("click", () => {
     refreshBrain().catch((error) => {
+      brainView = { ...brainView, error: error instanceof Error ? error.message : String(error) };
+      paintBrain(brainSnapshot, brainView);
+    });
+  });
+  $("brain-rebuild").addEventListener("click", () => {
+    rebuildBrain().catch((error) => {
       brainView = { ...brainView, error: error instanceof Error ? error.message : String(error) };
       paintBrain(brainSnapshot, brainView);
     });
