@@ -65,6 +65,7 @@ let brainCategoryGen = 0;
 let brainSkillBusy = false;
 let brainCategoriesReady = false;
 let calendarGen = 0;
+let agentGen = 0;
 let brainView = {
   accepted: null,
   refreshing: false,
@@ -3396,91 +3397,369 @@ function skillResultMessage(data) {
     const err = data && data.error;
     return { text: String(err || "That skill did not run."), error: true };
   }
-  const text = String(data.text || "").trim();
+  const text = String(data.summary || data.text || data.title || "").trim();
   return { text: text || "Done.", error: false };
+}
+
+function skillBlocks(data) {
+  if (!data || data.accepted === false) return [];
+  const blocks = [];
+  if (data.summary) blocks.push({ kind: "summary", text: String(data.summary) });
+  if (data.note) blocks.push({ kind: "note", text: String(data.note) });
+  const sections = Array.isArray(data.sections) ? data.sections : [];
+  for (const section of sections) {
+    blocks.push({
+      kind: "section",
+      title: String((section && section.title) || ""),
+      items: Array.isArray(section && section.items) ? section.items.map((item) => String(item)) : [],
+    });
+  }
+  return blocks;
+}
+
+function agentSections(payload) {
+  const sections = payload && payload.sections;
+  return Array.isArray(sections) ? sections : [];
+}
+
+function agentItemLine(item) {
+  const from = String((item && item.from) || "").trim();
+  const subject = String((item && item.subject) || "").trim();
+  const summary = String((item && item.summary) || "").trim();
+  return [from, subject, summary].filter(Boolean).join(" — ");
+}
+
+function agentStatusCopy(payload) {
+  const data = payload && typeof payload === "object" ? payload : {};
+  if (data.reason === "needs_key") {
+    return { text: String(data.error || "Add an API key in GenMail → AI Setup."), error: true };
+  }
+  if (data.reason === "needs_mailbox") {
+    return { text: String(data.error || "Connect a mailbox. Sample mail is not used."), error: true };
+  }
+  if (data.reason === "empty") {
+    return { text: String(data.error || "The inbox cache is empty. Refresh mail, then triage again."), error: false };
+  }
+  if (data.accepted === false && data.error) return { text: String(data.error), error: true };
+  if (data.updatedAt) return { text: "Updated " + data.updatedAt, error: false };
+  return { text: "Triage has not run yet.", error: false };
+}
+
+function sectionEmptyCopy(reason) {
+  if (reason === "ready" || reason === "empty") return "Nothing in this section.";
+  return "";
+}
+
+function historyLine(run) {
+  if (!run || typeof run !== "object") return "";
+  const name = String(run.name || run.skillId || "Run").trim();
+  const summary = String(run.summary || "").trim();
+  if (name && summary) return name + " — " + summary;
+  return name || summary;
+}
+
+function proposalLine(proposal) {
+  if (!proposal || typeof proposal !== "object") return "";
+  const subject = String(proposal.subject || proposal.messageId || "").trim();
+  const label = String(proposal.labelName || "").trim();
+  if (subject && label) return subject + " → " + label;
+  return subject || label;
+}
+
+function runModeLabel(row) {
+  if (row && row.schedule === "disabled") return "Only when I ask. Auto-run is off.";
+  if (row && row.runMode === "on_demand") return "Only when I ask.";
+  return "";
+}
+
+function skillPayload(row) {
+  const email = state.email;
+  const account = email
+    ? (state.accounts.find((item) => item.id === email.accountId) || selectedAccount())
+    : selectedAccount();
+  const payload = { skillId: skillIdOf(row) };
+  if (account && account.id && isLive(account)) payload.accountId = account.id;
+  if (email && email.id) {
+    payload.email = {
+      id: email.id,
+      subject: email.subject || "",
+      from: email.from || "",
+      snippet: email.snippet || "",
+    };
+  }
+  return payload;
+}
+
+function setSkillStatus(text, isError) {
+  for (const id of ["brain-skill-status", "agent-skill-status"]) {
+    const status = $(id);
+    if (!status) continue;
+    status.textContent = text || "";
+    status.classList.toggle("error", !!isError && !!text);
+  }
+}
+
+function followButton(follow, draft) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost";
+  const kind = follow ? follow.kind : "draft";
+  button.textContent = (follow && follow.label) || (draft ? "Review draft" : "Open");
+  button.addEventListener("click", () => {
+    const run = kind === "draft" || draft
+      ? reviewDraft(draft || follow)
+      : openFollowUp((follow && follow.messageId) || "");
+    Promise.resolve(run).catch((error) => {
+      showStatus(error instanceof Error ? error.message : String(error), true);
+    });
+  });
+  return button;
+}
+
+function paintSkillBlocks(root, data) {
+  if (!root) return;
+  root.replaceChildren();
+  if (!data || data.accepted === false) return;
+  for (const block of skillBlocks(data)) {
+    const wrap = document.createElement("div");
+    wrap.className = "skill-block";
+    if (block.kind === "section") {
+      const title = document.createElement("h3");
+      title.textContent = block.title || "Notes";
+      wrap.appendChild(title);
+      for (const item of block.items) {
+        const line = document.createElement("p");
+        line.textContent = item;
+        wrap.appendChild(line);
+      }
+    } else {
+      const line = document.createElement("p");
+      line.textContent = block.text;
+      wrap.appendChild(line);
+    }
+    root.appendChild(wrap);
+  }
+  const drafts = Array.isArray(data.drafts) ? data.drafts : [];
+  for (const draft of drafts) {
+    const wrap = document.createElement("div");
+    wrap.className = "skill-block";
+    const line = document.createElement("p");
+    line.textContent = draft.subject || "Draft reply";
+    wrap.appendChild(line);
+    const row = document.createElement("div");
+    row.className = "row";
+    row.appendChild(followButton(null, draft));
+    wrap.appendChild(row);
+    root.appendChild(wrap);
+  }
+  const follows = Array.isArray(data.followUps) ? data.followUps : [];
+  if (follows.length) {
+    const row = document.createElement("div");
+    row.className = "row";
+    for (const follow of follows) row.appendChild(followButton(follow));
+    root.appendChild(row);
+  }
+  paintProposals(root, data.proposals, true);
+}
+
+function paintProposals(root, proposals, append) {
+  if (!root) return;
+  if (!append) root.replaceChildren();
+  const rows = Array.isArray(proposals) ? proposals.filter((item) => item && item.status !== "dismissed" && item.status !== "confirmed") : [];
+  if (!rows.length) {
+    if (append) return;
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = "No moves waiting.";
+    root.appendChild(note);
+    return;
+  }
+  for (const proposal of rows) {
+    const wrap = document.createElement("div");
+    wrap.className = "proposal-row";
+    const line = document.createElement("p");
+    line.textContent = proposalLine(proposal) || "Proposed move";
+    wrap.appendChild(line);
+    const actions = document.createElement("div");
+    actions.className = "row";
+    const confirm = document.createElement("button");
+    confirm.type = "button";
+    confirm.className = "primary";
+    confirm.textContent = "Confirm move";
+    confirm.addEventListener("click", () => {
+      confirmProposal(proposal).then(() => wrap.remove()).catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
+    });
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.className = "ghost";
+    dismiss.textContent = "Dismiss";
+    dismiss.addEventListener("click", () => {
+      dismissProposal(proposal).then(() => wrap.remove()).catch((error) => showStatus(error instanceof Error ? error.message : String(error), true));
+    });
+    actions.append(confirm, dismiss);
+    wrap.appendChild(actions);
+    root.appendChild(wrap);
+  }
+}
+
+function paintHistory(root, runs) {
+  if (!root) return;
+  root.replaceChildren();
+  const rows = Array.isArray(runs) ? runs : [];
+  if (!rows.length) {
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = "No runs yet.";
+    root.appendChild(note);
+    return;
+  }
+  for (const run of rows.slice(0, 12)) {
+    const line = document.createElement("p");
+    line.className = "history-row";
+    line.textContent = historyLine(run) || "Run";
+    root.appendChild(line);
+  }
+}
+
+function paintSkillList(root, rows, empty, mode) {
+  root.replaceChildren();
+  if (!rows.length) {
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = empty;
+    root.appendChild(note);
+    return;
+  }
+  for (const row of rows) {
+    const label = skillLine(row) || "Skill";
+    const skillId = skillIdOf(row);
+    const wrap = document.createElement("div");
+    wrap.className = "studio-row";
+    if (!skillId) {
+      const line = document.createElement("p");
+      line.className = "brain-skill";
+      line.textContent = label;
+      wrap.appendChild(line);
+      root.appendChild(wrap);
+      continue;
+    }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost brain-skill";
+    button.textContent = mode === "install" ? "Install " + label : label;
+    button.addEventListener("click", () => {
+      const action = mode === "install" ? installBrainSkill(row) : runBrainSkill(row);
+      action.catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
+    });
+    wrap.appendChild(button);
+    if (mode === "run") {
+      const modeLine = document.createElement("p");
+      modeLine.className = "hint";
+      modeLine.textContent = runModeLabel(row);
+      if (modeLine.textContent) wrap.appendChild(modeLine);
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "ghost";
+      remove.textContent = "Remove";
+      remove.setAttribute("aria-label", "Remove " + (row.name || skillId));
+      remove.addEventListener("click", () => {
+        removeBrainSkill(row).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
+      });
+      wrap.appendChild(remove);
+    }
+    root.appendChild(wrap);
+  }
 }
 
 function paintBrainSkills(lists, errorText) {
   const status = $("brain-skill-status");
-  status.textContent = errorText || "";
-  status.classList.toggle("error", !!errorText);
+  if (errorText) {
+    status.textContent = errorText;
+    status.classList.add("error");
+  }
   const byId = lists || {};
   for (const [id, , empty] of brainSkillLists()) {
-    const root = $(id);
-    root.replaceChildren();
-    const rows = skillRows(byId[id]);
-    if (!rows.length) {
-      const note = document.createElement("p");
-      note.className = "hint";
-      note.textContent = empty;
-      root.appendChild(note);
-      continue;
-    }
-    for (const row of rows) {
-      const label = skillLine(row) || "Skill";
-      const skillId = skillIdOf(row);
-      if (!skillId) {
-        const line = document.createElement("p");
-        line.className = "brain-skill";
-        line.textContent = label;
-        root.appendChild(line);
-        continue;
-      }
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "ghost brain-skill";
-      button.textContent = label;
-      button.addEventListener("click", () => {
-        runBrainSkill(row).catch((error) => {
-          const status = $("brain-skill-status");
-          status.textContent = error instanceof Error ? error.message : String(error);
-          status.classList.add("error");
-        });
-      });
-      root.appendChild(button);
-    }
+    const mode = id === "brain-library-skills" ? "install" : "run";
+    paintSkillList($(id), skillRows(byId[id]), empty, mode);
   }
 }
 
+async function reviewDraft(draft) {
+  const body = String((draft && (draft.body || draft.text)) || "").trim();
+  if (!body) throw new Error("That draft is empty.");
+  const email = state.email;
+  const account = email
+    ? (state.accounts.find((item) => item.id === email.accountId) || selectedAccount())
+    : selectedAccount();
+  const self = (account && (account.preferredFromAddress || account.email)) || "";
+  const seed = email && email.id
+    ? composeSeed(email, "reply", self)
+    : {
+      title: "New message",
+      to: (draft && draft.to) || "",
+      subject: (draft && draft.subject) || "",
+      body: "",
+    };
+  await openCompose(withSuggestion(seed, body));
+}
+
+async function openFollowUp(messageId) {
+  if (!messageId) throw new Error("That message is not in the mailbox.");
+  showMail();
+  await openMessage(messageId, true);
+}
+
 async function runBrainSkill(row) {
-  const status = $("brain-skill-status");
   const skillId = skillIdOf(row);
   if (!skillId) {
-    status.textContent = "That skill has no id.";
-    status.classList.add("error");
+    setSkillStatus("That skill has no id.", true);
     return;
   }
   if (brainSkillBusy) return;
   brainSkillBusy = true;
-  status.classList.remove("error");
-  status.textContent = "Running…";
+  setSkillStatus("Running…", false);
   try {
-    const email = state.email;
-    const account = email
-      ? (state.accounts.find((item) => item.id === email.accountId) || selectedAccount())
-      : selectedAccount();
-    const payload = { skillId };
-    if (account && account.id) payload.accountId = account.id;
-    if (email) {
-      payload.email = {
-        subject: email.subject || "",
-        from: email.from || "",
-        snippet: email.snippet || "",
-      };
-    }
-    const data = await call("emailBrain:runSkill", payload);
+    const data = await call("emailBrain:runSkill", skillPayload(row));
     const message = skillResultMessage(data);
-    status.textContent = message.text;
-    status.classList.toggle("error", message.error);
-    if (message.error || !data || data.draft !== true || !email) return;
-    const self = (account && (account.preferredFromAddress || account.email)) || "";
-    await openCompose(withSuggestion(composeSeed(email, "reply", self), data.text));
+    setSkillStatus(message.text, message.error);
+    paintSkillBlocks($("brain-skill-result"), data);
+    paintSkillBlocks($("agent-result"), data);
+    if (data && Array.isArray(data.proposals)) paintProposals($("agent-proposals"), data.proposals);
   } catch (error) {
-    status.textContent = error instanceof Error ? error.message : String(error);
-    status.classList.add("error");
+    setSkillStatus(error instanceof Error ? error.message : String(error), true);
   } finally {
     brainSkillBusy = false;
   }
+}
+
+async function installBrainSkill(row) {
+  const skillId = skillIdOf(row);
+  if (!skillId) throw new Error("That skill has no id.");
+  await call("emailBrain:installSkill", { skillId });
+  setSkillStatus("Installed " + (row.name || skillId) + ".", false);
+  await Promise.all([loadBrainSkills(), loadStudio()]);
+}
+
+async function removeBrainSkill(row) {
+  const skillId = skillIdOf(row);
+  if (!skillId) throw new Error("That skill has no id.");
+  await call("emailBrain:removeSkill", { skillId });
+  setSkillStatus("Removed " + (row.name || skillId) + ". It is in the library.", false);
+  await Promise.all([loadBrainSkills(), loadStudio()]);
+}
+
+async function confirmProposal(proposal) {
+  const data = await call("emailBrain:confirmProposal", { proposalId: proposal && proposal.id });
+  if (data && data.accepted === false) throw new Error(data.error || "That move was not applied.");
+  showStatus((data && data.detail) || "Move confirmed.", false);
+  paintProposals($("agent-proposals"), data && data.proposals);
+  if ($("agent-panel") && !$("agent-panel").hidden) await loadAgent();
+}
+
+async function dismissProposal(proposal) {
+  const data = await call("emailBrain:dismissProposal", { proposalId: proposal && proposal.id });
+  paintProposals($("agent-proposals"), data && data.proposals);
+  if ($("agent-panel") && !$("agent-panel").hidden) await loadAgent();
 }
 
 async function loadBrainSkills() {
@@ -3497,27 +3776,13 @@ async function loadBrainSkills() {
 }
 
 function paintStudio(lists, errorText) {
-  const status = $("studio-status");
-  status.textContent = errorText || "";
-  status.classList.toggle("error", !!errorText);
+  if (errorText) setSkillStatus(errorText, true);
   const byId = lists || {};
   for (const [id, , empty] of studioLists()) {
     const root = $(id);
-    root.replaceChildren();
-    const rows = skillRows(byId[id]);
-    if (!rows.length) {
-      const note = document.createElement("p");
-      note.className = "hint";
-      note.textContent = empty;
-      root.appendChild(note);
-      continue;
-    }
-    for (const row of rows) {
-      const line = document.createElement("p");
-      line.className = "studio-row";
-      line.textContent = skillLine(row) || "Skill";
-      root.appendChild(line);
-    }
+    if (!root) continue;
+    const mode = id === "studio-library" ? "install" : "run";
+    paintSkillList(root, skillRows(byId[id]), empty, mode);
   }
 }
 
@@ -3531,14 +3796,89 @@ async function loadStudio() {
       errors.push(error instanceof Error ? error.message : String(error));
     }
   }
-  if ($("studio").open) paintStudio(lists, errors.filter(Boolean).join(" "));
+  const panel = $("agent-panel");
+  if (panel && !panel.hidden) paintStudio(lists, errors.filter(Boolean).join(" "));
 }
 
-function openStudio() {
-  openDialog("studio");
-  paintStudio({}, "");
-  loadStudio().catch((error) => {
-    paintStudio({}, error instanceof Error ? error.message : String(error));
+function paintAgent(payload, errorText) {
+  const status = $("agent-status");
+  const copy = errorText ? { text: errorText, error: true } : agentStatusCopy(payload);
+  status.textContent = copy.text;
+  status.classList.toggle("error", copy.error);
+  const root = $("agent-sections");
+  root.replaceChildren();
+  const reason = payload && payload.reason;
+  for (const section of agentSections(payload)) {
+    const block = document.createElement("section");
+    block.className = "agent-section";
+    const title = document.createElement("h3");
+    title.textContent = section.name || "Section";
+    block.appendChild(title);
+    const items = Array.isArray(section.items) ? section.items : [];
+    const empty = sectionEmptyCopy(reason);
+    if (!items.length && empty) {
+      const note = document.createElement("p");
+      note.className = "hint";
+      note.textContent = empty;
+      block.appendChild(note);
+    }
+    for (const item of items) {
+      const card = document.createElement("div");
+      card.className = "agent-item";
+      const line = document.createElement("p");
+      line.textContent = agentItemLine(item) || "(no subject)";
+      card.appendChild(line);
+      const follows = Array.isArray(item.followUps) ? item.followUps : [];
+      if (follows.length) {
+        const actions = document.createElement("div");
+        actions.className = "agent-actions row";
+        for (const follow of follows) actions.appendChild(followButton(follow));
+        card.appendChild(actions);
+      }
+      block.appendChild(card);
+    }
+    root.appendChild(block);
+  }
+  paintProposals($("agent-proposals"), payload && payload.proposals);
+  paintHistory($("agent-history"), payload && payload.runs);
+}
+
+async function loadAgent() {
+  const gen = ++agentGen;
+  const triage = await call("nativeAgent:getTriage");
+  const history = await call("nativeAgent:history");
+  if (gen !== agentGen) return;
+  const payload = Object.assign({}, triage, {
+    runs: history && Array.isArray(history.runs) ? history.runs : triage && triage.runs,
+  });
+  if ($("agent-panel") && !$("agent-panel").hidden) paintAgent(payload, "");
+  await loadStudio();
+}
+
+async function runTriage() {
+  const button = $("agent-triage");
+  button.disabled = true;
+  $("agent-status").textContent = "Triaging…";
+  $("agent-status").classList.remove("error");
+  try {
+    const data = await call("nativeAgent:triage");
+    paintAgent(data, "");
+    await loadStudio();
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function showAgent() {
+  state.view = "agent";
+  $("shell").hidden = true;
+  $("calendar-panel").hidden = true;
+  $("agent-panel").hidden = false;
+  $("rail-mail").setAttribute("aria-current", "false");
+  $("rail-calendar").setAttribute("aria-current", "false");
+  $("rail-agent").setAttribute("aria-current", "page");
+  loadAgent().catch((error) => {
+    paintAgent(null, error instanceof Error ? error.message : String(error));
   });
 }
 
@@ -3662,17 +4002,21 @@ async function loadCalendar() {
 function showMail() {
   state.view = "mail";
   $("calendar-panel").hidden = true;
+  $("agent-panel").hidden = true;
   $("shell").hidden = false;
   $("rail-mail").setAttribute("aria-current", "page");
   $("rail-calendar").setAttribute("aria-current", "false");
+  $("rail-agent").setAttribute("aria-current", "false");
 }
 
 function showCalendar() {
   state.view = "calendar";
   if (!state.calendarCursor) state.calendarCursor = new Date();
   $("shell").hidden = true;
+  $("agent-panel").hidden = true;
   $("calendar-panel").hidden = false;
   $("rail-mail").setAttribute("aria-current", "false");
+  $("rail-agent").setAttribute("aria-current", "false");
   $("rail-calendar").setAttribute("aria-current", "page");
   loadCalendar().catch((error) => showStatus(error.message, true));
 }
@@ -3728,6 +4072,12 @@ function wire() {
     if (row) row.focus();
     else $("search-query").focus();
   });
+  $("rail-agent").addEventListener("click", showAgent);
+  $("agent-open").addEventListener("click", showAgent);
+  $("agent-mail").addEventListener("click", showMail);
+  $("agent-triage").addEventListener("click", () => {
+    runTriage().catch((error) => paintAgent(null, error instanceof Error ? error.message : String(error)));
+  });
   $("rail-calendar").addEventListener("click", showCalendar);
   $("calendar-prev").addEventListener("click", () => shiftMonth(-1));
   $("calendar-next").addEventListener("click", () => shiftMonth(1));
@@ -3781,8 +4131,6 @@ function wire() {
     });
   });
   $("brain-open").addEventListener("click", openBrain);
-  $("studio-open").addEventListener("click", openStudio);
-  $("studio-close").addEventListener("click", () => closeDialog("studio"));
   $("brain-close").addEventListener("click", () => closeDialog("brain"));
   $("brain").addEventListener("close", () => {
     brainEditId = "";

@@ -640,6 +640,48 @@ function recentForAi(limit) {
   }));
 }
 
+function inboxRow(row) {
+  return {
+    id: row.id,
+    accountId: row.account_id,
+    from: row.from_addr || "",
+    subject: row.subject || "",
+    snippet: String(row.snippet || "").slice(0, 280),
+    date: row.date_iso || "",
+    unread: row.unread === 1,
+    starred: row.starred === 1,
+    hasAttachments: row.has_attachments === 1,
+    threadId: row.thread_id || "",
+    folderPath: row.folder_path || "",
+  };
+}
+
+function recentInbox(limit) {
+  if (!db) return [];
+  const n = Math.min(Math.max(Number(limit) || 20, 1), 40);
+  const columns = `m.id, m.account_id, m.subject, m.snippet, m.from_addr, m.date_iso,
+            m.unread, m.starred, m.has_attachments, m.thread_id, m.folder_path`;
+  const inbox = all(
+    `SELECT ${columns}
+     FROM messages m
+     JOIN folders f ON f.account_id = m.account_id AND f.path = m.folder_path
+     WHERE f.well_known = 'inbox'
+     ORDER BY m.list_sort_ts DESC
+     LIMIT ?`,
+    [n]
+  );
+  if (inbox.length) return inbox.map(inboxRow);
+  return all(
+    `SELECT id, account_id, subject, snippet, from_addr, date_iso,
+            unread, starred, has_attachments, thread_id, folder_path
+     FROM messages
+     WHERE lower(folder_path) IN ('inbox', 'inbox/')
+     ORDER BY list_sort_ts DESC
+     LIMIT ?`,
+    [n]
+  ).map(inboxRow);
+}
+
 module.exports = {
   open,
   close,
@@ -677,6 +719,7 @@ module.exports = {
   saveOp,
   readOp,
   recentForAi,
+  recentInbox,
   jsonList,
   newMessageId,
   WELL_TO_KEY,

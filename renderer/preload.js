@@ -87,9 +87,17 @@ const INVOKE = [
   "emailBrain:addCategoryViaPrompt",
   "emailBrain:getSkills",
   "emailBrain:getLibrarySkills",
+  "emailBrain:installSkill",
+  "emailBrain:removeSkill",
   "emailBrain:runSkill",
+  "emailBrain:confirmProposal",
+  "emailBrain:dismissProposal",
+  "nativeAgent:home",
   "nativeAgent:home:skills",
   "nativeAgent:home:librarySkills",
+  "nativeAgent:getTriage",
+  "nativeAgent:triage",
+  "nativeAgent:history",
 ];
 
 const EVENTS = [

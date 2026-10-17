@@ -17,6 +17,8 @@ const syntax = [
   "host/mail/provider-api.js",
   "host/mail/calendar-api.js",
   "host/mail/sidecar.js",
+  "host/brain.js",
+  "host/agent.js",
   "renderer/preload.js",
   "renderer/app.js",
 ];
@@ -1223,7 +1225,7 @@ assert.deepStrictEqual(brainUi.brainSkillLists().map((row) => row[2]), [
   "No home skills.",
   "No library skills.",
 ]);
-assert.strictEqual(brainUi.skillIdOf({ id: " skill-tone " }), "skill-tone");
+assert.strictEqual(brainUi.skillIdOf({ id: " morning-brief " }), "morning-brief");
 assert.strictEqual(brainUi.skillIdOf("Match my tone"), "");
 assert.strictEqual(brainUi.skillIdOf(null), "");
 assert.deepStrictEqual(brainUi.skillResultMessage({ accepted: true, text: " Hi " }), { text: "Hi", error: false });
@@ -1233,6 +1235,31 @@ assert.deepStrictEqual(
 );
 assert.strictEqual(brainUi.skillResultMessage(null).error, true);
 assert.strictEqual(brainUi.skillResultMessage({ accepted: true, text: "  " }).text, "Done.");
+assert.strictEqual(brainUi.skillResultMessage({ accepted: true, summary: " Two notes " }).text, "Two notes");
+const agentUi = loadFunctions(appJs, [
+  "skillBlocks",
+  "agentSections",
+  "agentItemLine",
+  "agentStatusCopy",
+  "sectionEmptyCopy",
+  "historyLine",
+  "proposalLine",
+  "runModeLabel",
+]);
+assert.deepStrictEqual(agentUi.skillBlocks(null), []);
+assert.deepStrictEqual(agentUi.skillBlocks({ accepted: false, summary: "nope" }), []);
+assert.strictEqual(agentUi.skillBlocks({ accepted: true, summary: "Hi", note: "Mail only", sections: [{ title: "Today", items: ["Ada"] }] })[2].title, "Today");
+assert.deepStrictEqual(agentUi.agentSections(null), []);
+assert.strictEqual(agentUi.agentItemLine({ from: "Ada", subject: "Hi", summary: "Reply" }), "Ada — Hi — Reply");
+assert.strictEqual(agentUi.agentStatusCopy({ reason: "needs_key", error: "Add an API key in GenMail → AI Setup." }).error, true);
+assert.match(agentUi.agentStatusCopy({ reason: "needs_mailbox" }).text, /Connect a mailbox/);
+assert.strictEqual(agentUi.agentStatusCopy({ reason: "empty" }).error, false);
+assert.strictEqual(agentUi.agentStatusCopy({ reason: "idle" }).text, "Triage has not run yet.");
+assert.strictEqual(agentUi.sectionEmptyCopy("ready"), "Nothing in this section.");
+assert.strictEqual(agentUi.sectionEmptyCopy("needs_key"), "");
+assert.strictEqual(agentUi.historyLine({ name: "Morning Brief", summary: "Two notes" }), "Morning Brief — Two notes");
+assert.strictEqual(agentUi.proposalLine({ subject: "Hello", labelName: "FYI" }), "Hello → FYI");
+assert.match(agentUi.runModeLabel({ schedule: "disabled", runMode: "on_demand" }), /Auto-run is off/);
 assert.ok(html.includes("Categories") && html.includes("Collapse view") && html.includes("Save categories") && html.includes("Use defaults"));
 assert.ok(appJs.includes("No writing rules yet.") && appJs.includes("Needs an AI key."));
 assert.ok(appJs.includes("No categories.") && appJs.includes("A category needs a name.") && appJs.includes("Describe a category."));
@@ -1270,8 +1297,11 @@ for (const channel of studioUi.studioLists().map((row) => row[1])) {
 assert.ok(html.includes('id="tidy"') && html.includes("One-click tidy"));
 assert.ok(registered.has("mail:tidyInbox") && used.has("mail:tidyInbox"));
 assert.ok(registered.has("genmail:configGetShowOneClickTidyEffective") && used.has("genmail:configGetShowOneClickTidyEffective"));
-assert.ok(html.includes('id="studio"') && html.includes('id="studio-open"') && html.includes('id="studio-home"') && html.includes('id="studio-library"'));
-assert.ok(html.includes(">Studio<") && html.includes("Home skills") && html.includes("Library skills") && html.includes("no agent loop"));
+assert.ok(html.includes('id="agent-panel"') && html.includes('id="agent-open"') && html.includes('id="studio-home"') && html.includes('id="studio-library"'));
+assert.ok(html.includes('id="rail-agent"') && html.includes('id="agent-sections"') && html.includes('id="agent-triage"'));
+assert.ok(html.includes(">Agent<") && html.includes("Home skills") && html.includes("Library skills") && html.includes("Only when I ask"));
+assert.ok(!html.includes("no agent loop"));
+assert.ok(!html.includes("Sample mail runs"));
 assert.ok(appJs.includes("No home skills.") && appJs.includes("No library skills."));
 assert.ok(css.includes("#studio-status") && css.includes(".studio-row"));
 assert.ok(parity.includes("emailBrain:getCached") && parity.includes("emailBrain:addWritingRule"));
@@ -1279,7 +1309,13 @@ assert.ok(parity.includes("emailBrain:getCategories") && parity.includes("emailB
 assert.ok(parity.includes("nativeAgent:home:skills") && parity.includes("nativeAgent:home:librarySkills"));
 assert.ok(parity.includes("emailBrain:getSkills") && parity.includes("emailBrain:getLibrarySkills"));
 assert.ok(parity.includes("emailBrain:runSkill"));
-assert.ok(parity.includes("calendar") && parity.includes("full agent skill runner"));
+assert.ok(parity.includes("calendar") && parity.includes("nativeAgent:triage") && parity.includes("Needs You"));
+assert.ok(!parity.includes("full agent skill runner"));
+const brainDoc = fs.readFileSync(path.join(root, "docs/BRAIN_AGENT.md"), "utf8");
+assert.ok(brainDoc.includes("Morning Brief") && brainDoc.includes("Meeting Prep") && brainDoc.includes("Organize Inbox"));
+assert.ok(brainDoc.includes("on_demand") && /never send|Nothing is sent/i.test(brainDoc));
+assert.ok(brainDoc.includes("Brief This Person") && brainDoc.includes("Plan My Week") && brainDoc.includes("Newsletter Digest"));
+assert.ok(brainDoc.includes("Catch Me Up"));
 assert.ok(parity.includes("genmail:configSetAiWriteAutoOpenOnReply") && parity.includes("genmail:configSetShowFolderChips"));
 assert.ok(parity.includes("genmail:configSetShowOneClickTidy") && parity.includes("genmail:configSetSidebarGmailFoldersExpanded"));
 assert.ok(parity.includes("genmail:configSetSidebarOutlookFoldersExpanded"));
@@ -1654,56 +1690,166 @@ async function checkAiDraft() {
   const brain = require("../host/brain");
   const { loadConfig } = require("../host/ai-config");
   assert.strictEqual(loadConfig().apiKey, "");
+  const agent = require("../host/agent");
+  const agentSrc = fs.readFileSync(path.join(root, "host/agent.js"), "utf8");
+  assert.ok(!agentSrc.includes("mail:send"));
+  assert.ok(!agentSrc.includes("skill-tone") && !agentSrc.includes("Match my tone"));
   const brainHome = brain.answer("emailBrain:getSkills", []);
   const brainLibrary = brain.answer("emailBrain:getLibrarySkills", []);
   assert.strictEqual(brainHome.success, true);
   assert.strictEqual(brainLibrary.success, true);
   assert.deepStrictEqual(studioUi.skillRows(brainHome.data).map(studioUi.skillLine), [
-    "Match my tone — Replies follow your writing rules.",
-    "Sort new mail — Files messages with your categories.",
+    "Morning Brief — What needs you this morning.",
+    "Catch Me Up — Summarize recent inbox mail.",
+    "Organize Inbox — Propose label or folder moves for you to confirm.",
+    "Plan My Week — Plan the week from calendar or mail.",
+    "Newsletter Digest — Summarize newsletters in the inbox.",
+    "Brief This Person — A short brief on one sender.",
+    "Meeting Prep — Prep from upcoming events and related mail.",
   ]);
-  assert.deepStrictEqual(studioUi.skillRows(brainLibrary.data).map(studioUi.skillLine), [
-    "Follow up — Threads still waiting on a reply.",
-    "Morning digest — What arrived overnight.",
-  ]);
-  const tone = brain.answer("emailBrain:runSkill", [{
-    skillId: "skill-tone",
-    accountId: "gmail-ada",
-    email: { subject: "Notes on the Analytical Engine", from: "Charles Babbage <charles@example.com>" },
-  }]);
-  assert.strictEqual(tone.success, true);
-  assert.strictEqual(tone.data.accepted, true);
-  assert.strictEqual(tone.data.draft, true);
-  assert.match(tone.data.text, /Analytical Engine/);
-  assert.match(tone.data.text, /Charles Babbage/);
-  const bareTone = brain.answer("emailBrain:runSkill", [{ skillId: "skill-tone" }]);
-  assert.match(bareTone.data.text, /Thanks/);
-  const sorted = brain.answer("emailBrain:runSkill", [{ skillId: "skill-sort" }]);
-  assert.strictEqual(sorted.data.accepted, true);
-  assert.strictEqual(sorted.data.draft, false);
-  assert.match(sorted.data.text, /Primary/);
-  assert.match(sorted.data.text, /Updates/);
-  const follow = brain.answer("emailBrain:runSkill", [{ skillId: "lib-follow-up" }]);
-  assert.match(follow.data.text, /Still waiting\n- /);
-  const digest = brain.answer("emailBrain:runSkill", [{ skillId: "lib-digest" }]);
-  assert.match(digest.data.text, /Overnight\n- /);
-  assert.strictEqual(brain.answer("emailBrain:runSkill", [{}]).success, false);
-  assert.strictEqual(brain.answer("emailBrain:runSkill", [{ skillId: "nope" }]).success, false);
-  assert.strictEqual(brain.answer("emailBrain:getSkills", []).data.length, brainHome.data.length);
+  assert.deepStrictEqual(studioUi.skillRows(brainLibrary.data), []);
+  assert.ok(brainHome.data.every((row) => row.runMode === "on_demand" && row.schedule === "disabled"));
+  const removedSkill = brain.answer("emailBrain:removeSkill", [{ skillId: "newsletter-digest" }]);
+  assert.strictEqual(removedSkill.success, true);
+  assert.ok(removedSkill.data.library.some((row) => row.id === "newsletter-digest"));
+  assert.ok(!removedSkill.data.skills.some((row) => row.id === "newsletter-digest"));
+  const installedSkill = brain.answer("emailBrain:installSkill", [{ skillId: "newsletter-digest" }]);
+  assert.strictEqual(installedSkill.success, true);
+  assert.ok(installedSkill.data.skills.some((row) => row.id === "newsletter-digest"));
+  assert.deepStrictEqual(installedSkill.data.library, []);
+  assert.strictEqual(brain.answer("emailBrain:installSkill", [{ skillId: "skill-tone" }]).success, false);
+  const missingKey = await brain.answer("emailBrain:runSkill", [{ skillId: "morning-brief" }]);
+  assert.strictEqual(missingKey.success, true);
+  assert.strictEqual(missingKey.data.accepted, false);
+  assert.match(missingKey.data.error, /API key/);
+  assert.strictEqual((await brain.answer("emailBrain:runSkill", [{}])).success, false);
+  assert.strictEqual((await brain.answer("emailBrain:runSkill", [{ skillId: "nope" }])).success, false);
+  assert.strictEqual((await brain.answer("emailBrain:runSkill", [{ skillId: "skill-sort" }])).success, false);
+  const needsKeyHome = agent.answer("nativeAgent:getTriage", []);
+  assert.strictEqual(needsKeyHome.data.reason, "needs_key");
+  assert.strictEqual(needsKeyHome.data.sections.length, 5);
+  assert.ok(needsKeyHome.data.sections.every((section) => section.items.length === 0));
+  assert.ok(!JSON.stringify(needsKeyHome.data).includes("Analytical Engine"));
+  const grouped = agent.groupTriage(
+    [{ id: "needs-you", name: "Needs You" }, { id: "other", name: "Other" }],
+    [
+      { id: "m-live", from: "Ada", subject: "Need the notes", snippet: "Can you send the notes?" },
+      { id: "m-other", from: "Bea", subject: "FYI", snippet: "Receipt" },
+    ],
+    [{ messageId: "m-live", categoryId: "needs-you", summary: "Ada needs a reply." }, { messageId: "made-up", summary: "Invented" }],
+  );
+  assert.strictEqual(grouped[0].items.length, 1);
+  assert.strictEqual(grouped[0].items[0].messageId, "m-live");
+  assert.strictEqual(grouped[1].items[0].messageId, "m-other");
+  assert.ok(!JSON.stringify(grouped).includes("Invented"));
+  const dropped = agent.normalizeSkillResult(
+    { moves: true, name: "Organize Inbox" },
+    { title: "Organize", summary: "One move.", moves: [{ messageId: "made-up", labelName: "FYI" }, { messageId: "m-live", labelName: "FYI", reason: "Bulk" }] },
+    { messages: [{ id: "m-live" }] },
+  );
+  assert.strictEqual(dropped.moves.length, 1);
+  assert.strictEqual(dropped.moves[0].messageId, "m-live");
+  process.env.GENMAIL_AI_API_KEY = "sk-test";
+  const originalFetch = global.fetch;
+  global.fetch = async () => { throw new Error("rebuild must not call the model without a mailbox"); };
+  try {
+    const noMailbox = await brain.answer("emailBrain:runSkill", [{ skillId: "morning-brief" }]);
+    assert.strictEqual(noMailbox.data.accepted, false);
+    assert.match(noMailbox.data.error, /mailbox/i);
+    assert.strictEqual(agent.answer("nativeAgent:getTriage", []).data.reason, "needs_mailbox");
+    const rebuildBefore = sent.length;
+    const rebuildAccepted = brain.answer("emailBrain:rebuild", []);
+    assert.strictEqual(rebuildAccepted.data.accepted, true);
+    await new Promise((resolve) => setImmediate(resolve));
+    const rebuildEvents = sent.slice(rebuildBefore);
+    assert.ok(rebuildEvents.some((row) => row.payload && /mailbox/i.test(String(row.payload.error || ""))));
+  } finally {
+    global.fetch = originalFetch;
+  }
   const db = require("../host/mail/db");
   const hadAccounts = db.hasAccounts;
+  const hadInbox = db.recentInbox;
   db.hasAccounts = () => true;
+  db.recentInbox = () => [{
+    id: "m-live",
+    accountId: "acct-1",
+    from: "Ada Lovelace <ada@example.com>",
+    subject: "Need the notes",
+    snippet: "Can you send the notes?",
+    date: "2026-10-17T08:00:00.000Z",
+    unread: true,
+    starred: false,
+    hasAttachments: true,
+    threadId: "t1",
+    folderPath: "INBOX",
+  }];
+  const seenBodies = [];
+  global.fetch = async (_url, opts) => {
+    const body = String(opts && opts.body || "");
+    seenBodies.push(body);
+    const content = body.includes("Assign each message")
+      ? JSON.stringify({
+        items: [{
+          messageId: "m-live",
+          categoryId: "needs-you",
+          summary: "Ada needs a reply.",
+          followUps: [{ messageId: "m-live", kind: "draft", label: "Reply", body: "I will look." }],
+        }, { messageId: "made-up", categoryId: "fyi", summary: "Invented row." }],
+      })
+      : JSON.stringify({
+        title: "Skill result",
+        summary: "Ada asked for the notes.",
+        sections: [{ title: "Needs You", items: ["Reply to Ada"] }],
+        drafts: [{ messageId: "m-live", to: "ada@example.com", subject: "Re: Need the notes", body: "I will look." }],
+        moves: body.includes("Organize Inbox")
+          ? [{ messageId: "m-live", labelName: "FYI", reason: "Bulk" }, { messageId: "made-up", labelName: "FYI", reason: "nope" }]
+          : [],
+        followUps: [{ messageId: "m-live", kind: "open", label: "Open" }],
+      });
+    return {
+      ok: true,
+      json: async () => ({ choices: [{ message: { content } }] }),
+      text: async () => "",
+    };
+  };
   try {
-    const live = brain.answer("emailBrain:runSkill", [{ skillId: "skill-sort" }]);
-    assert.strictEqual(live.success, true);
-    assert.strictEqual(live.data.accepted, false);
-    assert.match(live.data.error, /API key/);
-    process.env.GENMAIL_AI_API_KEY = "sk-test";
-    const liveKey = brain.answer("emailBrain:runSkill", [{ skillId: "skill-tone" }]);
-    assert.strictEqual(liveKey.data.accepted, false);
-    assert.match(liveKey.data.error, /connected mailbox/);
+    const morning = await brain.answer("emailBrain:runSkill", [{ skillId: "morning-brief" }]);
+    assert.strictEqual(morning.data.accepted, true);
+    assert.strictEqual(morning.data.runMode, "on_demand");
+    assert.strictEqual(morning.data.summary, "Ada asked for the notes.");
+    assert.ok(seenBodies.some((body) => body.includes("Need the notes")));
+    assert.ok(!JSON.stringify(morning.data).includes("Analytical Engine"));
+    const week = await brain.answer("emailBrain:runSkill", [{ skillId: "plan-my-week" }]);
+    assert.strictEqual(week.data.accepted, true);
+    assert.match(week.data.note, /mail only/);
+    const personMissing = await brain.answer("emailBrain:runSkill", [{ skillId: "brief-this-person" }]);
+    assert.strictEqual(personMissing.data.accepted, false);
+    assert.match(personMissing.data.error, /contact email|Select a message/);
+    const person = await brain.answer("emailBrain:runSkill", [{ skillId: "brief-this-person", contactEmail: "ada@example.com" }]);
+    assert.strictEqual(person.data.accepted, true);
+    assert.strictEqual(person.data.summary, "Ada asked for the notes.");
+    const organized = await brain.answer("emailBrain:runSkill", [{ skillId: "organize-inbox" }]);
+    assert.strictEqual(organized.data.accepted, true);
+    assert.strictEqual(organized.data.proposals.length, 1);
+    assert.strictEqual(organized.data.proposals[0].messageId, "m-live");
+    assert.strictEqual(organized.data.proposals[0].status, "pending");
+    const confirmed = await brain.answer("emailBrain:confirmProposal", [{ proposalId: organized.data.proposals[0].id }]);
+    assert.strictEqual(confirmed.data.accepted, false);
+    assert.match(confirmed.data.error, /not in the local mailbox/);
+    assert.ok(confirmed.data.proposals.some((row) => row.id === organized.data.proposals[0].id));
+    const triaged = await agent.answer("nativeAgent:triage", []);
+    assert.strictEqual(triaged.data.reason, "ready");
+    const needsYou = triaged.data.sections.find((section) => section.id === "needs-you");
+    assert.strictEqual(needsYou.items.length, 1);
+    assert.strictEqual(needsYou.items[0].summary, "Ada needs a reply.");
+    assert.ok(!JSON.stringify(triaged.data.sections).includes("Invented"));
+    assert.ok(!JSON.stringify(triaged.data.sections).includes("made-up"));
+    const history = agent.answer("nativeAgent:history", []);
+    assert.ok(history.data.runs.some((row) => row.skillId === "morning-brief" && row.accepted === true));
   } finally {
     db.hasAccounts = hadAccounts;
+    db.recentInbox = hadInbox;
+    global.fetch = originalFetch;
     delete process.env.GENMAIL_AI_API_KEY;
   }
   assert.ok(!fs.existsSync(path.join(process.env.GENMAIL_AI_CONFIG_DIR, "brain.json")));
@@ -1744,8 +1890,12 @@ async function checkAiDraft() {
   assert.ok(fs.existsSync(path.join(process.env.GENMAIL_AI_CONFIG_DIR, "brain.json")));
   const listed = brain.answer("emailBrain:getCategories", []);
   assert.strictEqual(listed.success, true);
-  assert.ok(listed.data.categories.some((row) => row.id === "cat-primary"));
-  assert.ok(listed.data.defaultCategories.some((row) => row.id === "cat-primary" && row.collapseView === false));
+  assert.ok(listed.data.categories.some((row) => row.id === "needs-you" && row.name === "Needs You"));
+  assert.ok(listed.data.defaultCategories.some((row) => row.id === "needs-you" && row.collapseView === false));
+  assert.ok(listed.data.categories.some((row) => row.name === "Upcoming Today"));
+  assert.ok(listed.data.categories.some((row) => row.name === "Worth a look"));
+  assert.ok(listed.data.categories.some((row) => row.name === "FYI"));
+  assert.ok(listed.data.categories.some((row) => row.name === "Other"));
   const kept = brain.answer("emailBrain:addWritingRule", [{ text: "Keep categories apart." }]);
   assert.strictEqual(kept.success, true);
   const saved = brain.answer("emailBrain:saveCategories", [{
@@ -1781,7 +1931,7 @@ async function checkAiDraft() {
   const emptied = brain.answer("emailBrain:saveCategories", [{ categories: [] }]);
   assert.deepStrictEqual(emptied.data, []);
   const restored = brain.answer("emailBrain:getCategories", []);
-  assert.ok(restored.data.categories.some((row) => row.id === "cat-primary"));
+  assert.ok(restored.data.categories.some((row) => row.id === "needs-you"));
   const afterEmpty = brain.answer("emailBrain:getCached", []);
   assert.ok(brainUi.brainUserRules(brainUi.brainSections(afterEmpty.data)).some((row) => row.value === "Keep categories apart."));
   const { createIpc } = require("../host/ipc");
@@ -1789,13 +1939,15 @@ async function checkAiDraft() {
   const homeSkills = ipc.handle({}, "nativeAgent:home:skills");
   const librarySkills = ipc.handle({}, "nativeAgent:home:librarySkills");
   const otherAgent = ipc.handle({}, "nativeAgent:home");
-  assert.deepStrictEqual(homeSkills, { success: true, data: [] });
-  assert.deepStrictEqual(librarySkills, { success: true, data: [] });
-  assert.deepStrictEqual(otherAgent, { success: true, data: null });
-  assert.deepStrictEqual(studioUi.skillRows(homeSkills.data), []);
-  assert.deepStrictEqual(studioUi.skillRows(librarySkills.data), []);
-  assert.deepStrictEqual(studioUi.skillRows(otherAgent.data), []);
+  assert.strictEqual(homeSkills.success, true);
+  assert.ok(homeSkills.data.some((row) => row.name === "Morning Brief" && row.runMode === "on_demand"));
+  assert.deepStrictEqual(librarySkills.data, []);
+  assert.strictEqual(otherAgent.success, true);
+  assert.strictEqual(otherAgent.data.reason, "needs_key");
+  assert.ok(otherAgent.data.sections.every((section) => section.items.length === 0));
+  assert.ok(!JSON.stringify(otherAgent.data).includes("Analytical Engine"));
   assert.strictEqual(studioUi.envelopeError(homeSkills), null);
+  assert.ok(studioUi.skillRows(homeSkills.data).length >= 7);
 }
 
 async function checkTidy() {

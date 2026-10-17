@@ -3,23 +3,13 @@ const path = require("path");
 const { BrowserWindow } = require("electron");
 const { loadConfig, userDataDir } = require("./ai-config");
 const { complete, extractJson } = require("./openai-client");
-const { messagesForAi } = require("./mailbox");
 
 const DEFAULT_CATEGORIES = [
-  { id: "cat-primary", name: "Primary", description: "People and conversations that need a reply.", collapseView: false },
-  { id: "cat-updates", name: "Updates", description: "Receipts, notices, and automated mail.", collapseView: true },
-  { id: "cat-social", name: "Social", description: "Invitations and personal notes.", collapseView: true },
-];
-
-// shortcut: static sample list, replace when a skill write channel exists
-const HOME_SKILLS = [
-  { id: "skill-tone", name: "Match my tone", description: "Replies follow your writing rules." },
-  { id: "skill-sort", name: "Sort new mail", description: "Files messages with your categories." },
-];
-
-const LIBRARY_SKILLS = [
-  { id: "lib-follow-up", name: "Follow up", description: "Threads still waiting on a reply." },
-  { id: "lib-digest", name: "Morning digest", description: "What arrived overnight." },
+  { id: "needs-you", name: "Needs You", description: "Messages that need a reply or a decision from you.", collapseView: false },
+  { id: "upcoming-today", name: "Upcoming Today", description: "Meetings, deadlines, and mail tied to today.", collapseView: false },
+  { id: "worth-a-look", name: "Worth a look", description: "Useful mail that can wait a little.", collapseView: false },
+  { id: "fyi", name: "FYI", description: "Newsletters, receipts, and notices to skim.", collapseView: true },
+  { id: "other", name: "Other", description: "Everything else.", collapseView: true },
 ];
 
 function storePath() {
@@ -30,14 +20,20 @@ function emptyStore() {
   return { userRules: [], generated: null, categories: DEFAULT_CATEGORIES.map((row) => ({ ...row })) };
 }
 
+function legacyCategories(categories) {
+  if (!Array.isArray(categories) || categories.length !== 3) return false;
+  return categories.map((row) => row && row.id).join(",") === "cat-primary,cat-updates,cat-social";
+}
+
 function readStore() {
   try {
     const parsed = JSON.parse(fs.readFileSync(storePath(), "utf8"));
+    const stored = Array.isArray(parsed.categories) ? parsed.categories : [];
     return {
       userRules: Array.isArray(parsed.userRules) ? parsed.userRules : [],
       generated: parsed.generated && typeof parsed.generated === "object" ? parsed.generated : null,
-      categories: Array.isArray(parsed.categories) && parsed.categories.length
-        ? parsed.categories
+      categories: stored.length && !legacyCategories(stored)
+        ? stored
         : DEFAULT_CATEGORIES.map((row) => ({ ...row })),
     };
   } catch {
@@ -70,7 +66,6 @@ function row(sectionId, index, partial) {
 function personaFrom(store) {
   const cfg = loadConfig();
   const generated = store.generated;
-  const mail = messagesForAi();
   const writingRows = [
     ...store.userRules.map((rule, index) => row("how-you-write", index, {
       id: rule.id,
@@ -110,10 +105,7 @@ function personaFrom(store) {
       id: "recent-mail",
       title: "Recent mail",
       kind: "rows",
-      rows: mail.map((message, index) => row("recent-mail", index, {
-        label: message.from,
-        value: `${message.subject} — ${message.snippet}`,
-      })),
+      rows: recentMailSection(),
     });
   }
   return {
@@ -123,13 +115,39 @@ function personaFrom(store) {
     profile: {
       meta: {
         ownerName: (generated && generated.ownerName) || "",
-        emailsAnalyzed: generated ? generated.emailsAnalyzed || mail.length : 0,
+        emailsAnalyzed: generated ? generated.emailsAnalyzed || 0 : 0,
         factsLearned: writingRows.length + learned.reduce((n, section) => n + (section.rows || []).length, 0),
         updatedAt: (generated && generated.updatedAt) || null,
       },
       sections,
     },
   };
+}
+
+function recentMailSection() {
+  let agent;
+  try {
+    agent = require("./agent");
+  } catch {
+    agent = null;
+  }
+  if (!agent || !agent.mailboxConnected()) {
+    return [row("recent-mail", 0, {
+      label: "No mailbox",
+      value: "Connect a mailbox. Sample mail is not used for this profile.",
+    })];
+  }
+  const mail = agent.liveProfileMail(8);
+  if (!mail.length) {
+    return [row("recent-mail", 0, {
+      label: "Empty cache",
+      value: "Refresh the inbox, then rebuild.",
+    })];
+  }
+  return mail.map((message, index) => row("recent-mail", index, {
+    label: message.from,
+    value: `${message.subject} — ${message.snippet}`,
+  }));
 }
 
 function writingBrief() {
@@ -159,9 +177,22 @@ function fail(error) {
 }
 
 async function rebuildFromMail() {
-  const mail = messagesForAi(16);
   emit("emailBrain:refreshState", { refreshing: true, error: null });
   emit("emailBrain:rebuildState", { rebuilding: true, phase: "rebuilding", percent: 15, error: null });
+  const agent = require("./agent");
+  if (!agent.mailboxConnected()) {
+    const message = "Connect a mailbox before rebuilding. Sample mail is not used.";
+    emit("emailBrain:rebuildState", { rebuilding: false, phase: "failed", percent: null, error: message });
+    emit("emailBrain:refreshState", { refreshing: false, error: message });
+    return;
+  }
+  const mail = agent.liveProfileMail(16);
+  if (!mail.length) {
+    const message = "The mailbox cache is empty. Refresh the inbox, then rebuild.";
+    emit("emailBrain:rebuildState", { rebuilding: false, phase: "failed", percent: null, error: message });
+    emit("emailBrain:refreshState", { refreshing: false, error: message });
+    return;
+  }
   try {
     const text = await complete([
       {
@@ -206,56 +237,13 @@ async function rebuildFromMail() {
   }
 }
 
-function liveMailbox() {
-  try {
-    return require("./mail/db").hasAccounts() === true;
-  } catch {
-    return false;
-  }
-}
-
-function skillById(skillId) {
-  return HOME_SKILLS.find((row) => row.id === skillId) || LIBRARY_SKILLS.find((row) => row.id === skillId) || null;
-}
-
-function toneText(email) {
-  const subject = email && typeof email.subject === "string" ? email.subject.trim() : "";
-  const from = email && typeof email.from === "string" ? email.from.trim() : "";
-  const who = from.replace(/<[^>]*>/g, "").trim();
-  const hello = who ? `Hi ${who} - ` : "";
-  if (subject) return `${hello}Thanks for "${subject}". I'll keep this short.`;
-  return `${hello}Thanks - I'll keep this short.`;
-}
-
-function sortText() {
-  const names = readStore().categories.map((row) => String(row.name || "").trim()).filter(Boolean);
-  return names.length ? `New mail filed under ${names.join(", ")}.` : "New mail is filed. No categories are set.";
-}
-
-function digestText(heading) {
-  const lines = messagesForAi(3).map((row) => `- ${String((row && row.subject) || "").trim() || "(no subject)"}`);
-  if (!lines.length) lines.push("- Nothing new.");
-  return `${heading}\n${lines.join("\n")}`;
-}
-
-// shortcut: canned sample text, upgrade when a live skill runner exists
-function runSkill(params) {
-  const skillId = params && typeof params.skillId === "string" ? params.skillId.trim() : "";
-  if (!skillId) return fail(new Error("A skill id is required."));
-  if (!skillById(skillId)) return fail(new Error("That skill is not on this host."));
-  if (liveMailbox()) {
-    const error = loadConfig().apiKey
-      ? "This host does not run skills on a connected mailbox."
-      : "Add an API key in GenMail → AI Setup.";
-    return ok({ accepted: false, skillId, error });
-  }
-  const email = params && params.email;
-  let text = "";
-  if (skillId === "skill-tone") text = toneText(email);
-  else if (skillId === "skill-sort") text = sortText();
-  else if (skillId === "lib-follow-up") text = digestText("Still waiting");
-  else if (skillId === "lib-digest") text = digestText("Overnight");
-  return ok({ accepted: true, skillId, draft: skillId === "skill-tone", text });
+function taxonomy() {
+  return readStore().categories.map((category) => ({
+    id: category.id,
+    name: category.name,
+    description: category.description,
+    collapseView: category.collapseView === true,
+  }));
 }
 
 function answer(channel, args) {
@@ -341,11 +329,19 @@ function answer(channel, args) {
     case "emailBrain:fixItem":
       return fixItem(params);
     case "emailBrain:getSkills":
-      return ok(HOME_SKILLS);
+      return ok(require("./agent").listHomeSkills());
     case "emailBrain:getLibrarySkills":
-      return ok(LIBRARY_SKILLS);
+      return ok(require("./agent").listLibrarySkills());
+    case "emailBrain:installSkill":
+      return require("./agent").installSkill(params);
+    case "emailBrain:removeSkill":
+      return require("./agent").removeSkill(params);
     case "emailBrain:runSkill":
-      return runSkill(params);
+      return require("./agent").runSkill(params);
+    case "emailBrain:confirmProposal":
+      return require("./agent").confirmProposal(params);
+    case "emailBrain:dismissProposal":
+      return require("./agent").dismissProposal(params);
     case "emailBrain:getAiDraftEditLog":
       return ok({ entries: [] });
     case "emailBrain:recordAiDraftEdit":
@@ -449,4 +445,4 @@ async function fixItem(params) {
   }
 }
 
-module.exports = { answer, personaFrom, writingBrief };
+module.exports = { answer, personaFrom, writingBrief, taxonomy };

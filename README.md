@@ -18,5 +18,6 @@ Secrets: macOS Keychain / Windows DPAPI (`genmail-exact` service), or env `GENMA
 ## Status
 
 - Host: IMAP engine + AI + bundled first-party UI (`GENMAIL_ASAR` optional)
+- Agent triage and Email Brain skills: [docs/BRAIN_AGENT.md](docs/BRAIN_AGENT.md)
 - Packaging: electron-builder + electron-updater (unsigned alpha). Windows feed: Actions → **release** → Run workflow ([docs/PACKAGING.md](docs/PACKAGING.md))
 - OAuth: IMAP XOAUTH2 baseline, Gmail/Graph label side-car, and a separate calendar grant. Google Desktop JSON stays out of git. See [docs/OAUTH.md](docs/OAUTH.md)

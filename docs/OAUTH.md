@@ -68,3 +68,5 @@ Work and school mailboxes cannot grant those delegated permissions until an admi
 - `mail:listProviderFolders`, create, rename, and delete call Gmail labels or Graph `mailFolders` only when the organize marker is granted.
 - `mail:modifyMessageLabels` and `mail:moveProviderMessage` use the provider message id looked up by RFC Message-ID.
 - `calendar:list` and `calendar:createEvent` call the calendar APIs for a month range.
+
+Plan My Week and Meeting Prep call `calendar:list` only when that calendar grant is already stored. Organize Inbox proposes a move, then Confirm uses `mail:modifyMessageLabels` or `mail:moveProviderMessage` when the organize grant is present, or an existing IMAP folder of the same name. No grant and no matching folder leaves the proposal pending. Skills never send mail. See [BRAIN_AGENT.md](BRAIN_AGENT.md).

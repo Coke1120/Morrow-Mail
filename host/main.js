@@ -371,8 +371,19 @@ app.whenReady().then(async () => {
           console.log(skillsText);
           console.log("SKILLS_TEXT_END");
           await win.webContents.executeJavaScript(`(() => {
+            const button = document.querySelector("#brain-home-skills button");
+            if (button) button.click();
+          })()`);
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          const skillStatus = await win.webContents.executeJavaScript(`(document.getElementById("brain-skill-status") && document.getElementById("brain-skill-status").innerText || "")`);
+          console.log("SKILL_RUN_STATUS_START");
+          console.log(skillStatus);
+          console.log("SKILL_RUN_STATUS_END");
+          const skillRunImage = await win.webContents.capturePage();
+          fs.writeFileSync(path.join(path.dirname(LOG), "skill-run.png"), skillRunImage.toPNG());
+          await win.webContents.executeJavaScript(`(() => {
             for (const open of document.querySelectorAll("dialog[open]")) open.close();
-            const button = document.getElementById("studio-open");
+            const button = document.getElementById("agent-open");
             if (button) button.click();
           })()`);
           await new Promise((resolve) => setTimeout(resolve, 800));

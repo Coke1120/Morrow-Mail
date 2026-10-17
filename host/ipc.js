@@ -4,6 +4,7 @@ const { answer: liveAnswer } = require("./mail/engine");
 const { answer: mailAnswer } = require("./mailbox");
 const { answer: draftAnswer } = require("./draft-write");
 const { answer: brainAnswer } = require("./brain");
+const { answer: agentAnswer } = require("./agent");
 const { answer: translateAnswer } = require("./translate");
 const { answer: settingsAnswer } = require("./settings");
 
@@ -158,6 +159,8 @@ function fallback(channel, args) {
   if (draft !== undefined) return draft;
   const brain = brainAnswer(channel, args);
   if (brain !== undefined) return brain;
+  const agent = agentAnswer(channel, args);
+  if (agent !== undefined) return agent;
   const translated = translateAnswer(channel, args);
   if (translated !== undefined) return translated;
   // The Enabled/Effective fallback below would answer these getters with false.

@@ -12,6 +12,12 @@
     <nav class="rail" aria-label="Mail">
       <div class="rail-logo" aria-hidden="true">G</div>
       <div class="rail-rule" aria-hidden="true"></div>
+      <button type="button" class="rail-btn" id="rail-agent" aria-current="false" aria-label="Agent">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+          <path fill="currentColor" d="M12 3a3 3 0 0 1 3 3v1h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h2V6a3 3 0 0 1 3-3Zm-1 4h2V6a1 1 0 1 0-2 0v1Zm-4 3v9h10V10H7Zm2 2h2v2H9v-2Zm4 0h2v2h-2v-2Z" />
+        </svg>
+        <span class="sr">Agent</span>
+      </button>
       <button type="button" class="rail-btn" id="rail-mail" aria-current="page">
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
           <path fill="currentColor" d="M3.5 6.2 12 12.2l8.5-6V17a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3.5 17V6.2Zm1.7-.7h13.6L12 10.6 5.2 5.5Z" />
@@ -42,7 +48,7 @@
         <button type="button" class="ghost" id="settings-open">Settings</button>
         <button type="button" class="ghost" id="signatures-open">Signatures</button>
         <button type="button" class="ghost" id="brain-open" aria-label="Email Brain">Brain</button>
-        <button type="button" class="ghost" id="studio-open" aria-label="AI Studio">Studio</button>
+        <button type="button" class="ghost" id="agent-open" aria-label="Agent">Agent</button>
         <button type="button" class="ghost" id="connect-open">Connect account</button>
         <button type="button" class="ghost" id="remove" hidden>Remove account</button>
         <form id="search-form" role="search">
@@ -56,7 +62,7 @@
       <button type="button" class="ghost" id="undo" hidden>Undo</button>
       <button type="button" class="ghost" id="undo-send" hidden>Undo send</button>
     </div>
-    <div class="shell">
+    <div class="shell" id="shell">
       <div class="side">
         <nav id="folders" aria-label="Folders"></nav>
         <div id="updates" role="region" aria-label="Updates">
@@ -96,6 +102,35 @@
           <button type="submit" class="primary">Add event</button>
         </div>
       </form>
+    </section>
+    <section id="agent-panel" hidden aria-label="Agent">
+      <div class="agent-bar">
+        <h2>Agent</h2>
+        <button type="button" class="primary" id="agent-triage">Triage inbox</button>
+        <button type="button" class="ghost" id="agent-mail">Mail</button>
+      </div>
+      <p class="hint">Sorts recent inbox mail into your Brain categories. Follow-ups are proposals. Nothing is sent.</p>
+      <p id="agent-status" role="status"></p>
+      <div id="agent-sections"></div>
+      <section id="agent-proposals-wrap" aria-labelledby="agent-proposals-title">
+        <h3 id="agent-proposals-title">Proposed moves</h3>
+        <p class="hint">Nothing moves until you confirm. Auto-run is off.</p>
+        <div id="agent-proposals"></div>
+      </section>
+      <section aria-labelledby="agent-skills-title">
+        <h3 id="agent-skills-title">Skills</h3>
+        <p class="hint">Only when I ask. Auto-run is off. Drafts stay in compose until you send them yourself.</p>
+        <p id="agent-skill-status" role="status"></p>
+        <div id="agent-result"></div>
+        <h3>Home skills</h3>
+        <div id="studio-home"></div>
+        <h3>Library skills</h3>
+        <div id="studio-library"></div>
+      </section>
+      <section aria-labelledby="agent-history-title">
+        <h3 id="agent-history-title">Run history</h3>
+        <div id="agent-history"></div>
+      </section>
     </section>
     </div>
     </div>
@@ -223,25 +258,14 @@
       </section>
       <section id="brain-skills" aria-labelledby="brain-skills-title">
         <h3 id="brain-skills-title">Skills</h3>
-        <p class="hint">Click a skill. Sample mail runs with no API key.</p>
+        <p class="hint">Only when I ask. Auto-run is off. A skill needs an API key and a connected mailbox. Nothing is sent.</p>
         <p id="brain-skill-status" role="status"></p>
+        <div id="brain-skill-result"></div>
         <h3>Home skills</h3>
         <div id="brain-home-skills"><p class="hint">Loading skills…</p></div>
         <h3>Library skills</h3>
         <div id="brain-library-skills"><p class="hint">Loading skills…</p></div>
       </section>
-    </dialog>
-    <dialog id="studio" aria-labelledby="studio-title">
-      <h2 id="studio-title">AI Studio</h2>
-      <p class="hint">Reads skill lists only. This host has no agent loop.</p>
-      <p id="studio-status" role="status"></p>
-      <h3>Home skills</h3>
-      <div id="studio-home"></div>
-      <h3>Library skills</h3>
-      <div id="studio-library"></div>
-      <div class="row">
-        <button type="button" class="ghost" id="studio-close">Close</button>
-      </div>
     </dialog>
     <dialog id="signatures" aria-labelledby="signatures-title">
       <h2 id="signatures-title">Signatures</h2>

@@ -266,6 +266,8 @@ textarea:focus-visible {
 #brain-status.error,
 #brain-category-status.error,
 #brain-skill-status.error,
+#agent-status.error,
+#agent-skill-status.error,
 #studio-status.error,
 #signatures-status.error,
 .ai-write .error,
@@ -275,6 +277,8 @@ textarea:focus-visible {
 #brain-status:empty,
 #brain-category-status:empty,
 #brain-skill-status:empty,
+#agent-status:empty,
+#agent-skill-status:empty,
 #studio-status:empty,
 #signatures-status:empty { display: none; }
 
@@ -357,7 +361,8 @@ button.brain-skill {
 
 #undo, #undo-send { padding: 2px 8px; }
 
-#calendar-panel {
+#calendar-panel,
+#agent-panel {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
@@ -368,6 +373,39 @@ button.brain-skill {
   color: var(--ink);
   box-shadow: var(--shadow-card);
 }
+
+.agent-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.agent-bar h2 { font-size: 18px; }
+
+.agent-section {
+  margin: 12px 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.agent-item,
+.proposal-row,
+.history-row,
+.skill-block {
+  margin: 6px 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-item p,
+.proposal-row p,
+.history-row p,
+.skill-block p { margin: 0 0 4px; }
+
+.agent-actions,
+.proposal-row .row,
+.skill-block .row { margin-top: 4px; }
 
 .calendar-bar {
   display: flex;
