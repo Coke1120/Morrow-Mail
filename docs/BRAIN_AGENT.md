@@ -24,7 +24,7 @@ No API key returns `accepted: false` with the AI Setup error. No connected mailb
 
 ## Agent
 
-The Agent chat lives in the left sidebar, next to Folders and Brain. The rail Agent button and the toolbar Agent button open that sidebar. The transcript is the primary surface: your turns and the agent's, with a composer at the bottom. Triage, home skills, library skills, proposals, and run history stay in that same chrome.
+The Agent chat opens from the leftmost rail, in the same strip as Mail, Calendar, and Brain. The toolbar Agent button opens that same pane. The folder column stays folders and labels, and the mail list stays up. The transcript is the primary surface: your turns and the agent's, with a composer at the bottom. Triage, home skills, library skills, proposals, and run history stay in that same chrome.
 
 A message is routed on the host. Naming a home skill runs that skill. "Triage inbox" (or "sort the inbox") runs triage. Anything else is a question. Each question sends a system prompt that must not invent mail and must not send, the last few turns, standing notes, and snippets from the cached inbox and calendar. Sample mail is not included. The transcript is `agent-chat.json` in the AI config directory. Standing notes are `agent-memory.json` in that same directory. Both survive a relaunch.
 
@@ -34,7 +34,7 @@ Needs an AI key, needs a mailbox, and an empty inbox cache are empty states. The
 
 ## Profile
 
-Email Brain sits in that same left sidebar, with Profile, Categories, and Skills. It opens from the sidebar Brain tab and the toolbar Brain button. Close returns to the folder list. Opening loads the cached persona, categories, and home and library skills.
+Email Brain is the leftmost rail entry after Calendar, with Profile, Categories, and Skills. It opens from that rail button and the toolbar Brain button. Close returns to Mail and leaves the folder list in place. Opening loads the cached persona, categories, and home and library skills.
 
 Profile shows `ownerName`, `emailsAnalyzed`, `factsLearned`, and `updatedAt` when the cached persona includes them. Writing rules are added, edited, and deleted there. Learned rows (source `auto`) use Fix and Forget. Fix calls the model and replaces that stored row. Forget removes it. Refresh tries `emailBrain:refresh`, then `emailBrain:rebuild` when refresh is not accepted. Rebuild calls `emailBrain:rebuild`. Progress is the refresh and rebuild events. Rebuild and Fix call the model when a key is set. Rebuild refuses sample mail. No mailbox and an empty cache are host errors, not stand-in mail. A missing key tells you to open GenMail → AI Setup.
 

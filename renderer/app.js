@@ -4707,7 +4707,7 @@ async function reviewDraft(draft) {
 
 async function openFollowUp(messageId) {
   if (!messageId) throw new Error("That message is not in the mailbox.");
-  showMail();
+  if (state.view === "calendar") showMail();
   await openMessage(messageId, true);
 }
 
@@ -5052,31 +5052,42 @@ function markSide(name) {
   state.side = name;
   const shell = $("shell");
   if (shell) shell.dataset.side = name;
-  const mail = $("side-mail");
-  if (mail) mail.hidden = name !== "folders";
-  const brain = $("brain");
-  if (brain) brain.hidden = name !== "brain";
-  for (const [id, pane] of [["side-folders", "folders"], ["side-agent", "agent"], ["side-brain", "brain"]]) {
-    const button = $(id);
-    if (button) button.setAttribute("aria-selected", pane === name ? "true" : "false");
+  const panel = $("chrome-panel");
+  const open = (name === "agent" || name === "brain") && state.view !== "calendar";
+  if (panel) panel.hidden = !open;
+  if (name !== "agent") {
+    const agent = $("agent-panel");
+    if (agent) agent.hidden = true;
   }
-  if (state.view !== "calendar") {
-    $("rail-mail").setAttribute("aria-current", name === "agent" ? "false" : "page");
-    $("rail-agent").setAttribute("aria-current", name === "agent" ? "page" : "false");
-    $("rail-calendar").setAttribute("aria-current", "false");
+  if (name !== "brain") {
+    const brain = $("brain");
+    if (brain) brain.hidden = true;
   }
+  if (state.view === "calendar") return;
+  $("rail-mail").setAttribute("aria-current", name === "folders" ? "page" : "false");
+  $("rail-agent").setAttribute("aria-current", name === "agent" ? "page" : "false");
+  $("rail-brain").setAttribute("aria-current", name === "brain" ? "page" : "false");
+  $("rail-calendar").setAttribute("aria-current", "false");
 }
 
 function showSide(name) {
   showMailShell();
   const agent = $("agent-panel");
-  const reveal = name === "agent" && agent && agent.hidden;
+  const brain = $("brain");
+  const revealAgent = name === "agent" && agent && agent.hidden;
+  const revealBrain = name === "brain" && brain && brain.hidden;
   markSide(name);
   if (name === "agent") {
-    if (reveal) revealPanel("agent-panel");
+    if (revealAgent) revealPanel("agent-panel");
     else if (agent) agent.hidden = false;
+    hidePane("brain");
+  } else if (name === "brain") {
+    if (revealBrain) revealPanel("brain");
+    else if (brain) brain.hidden = false;
+    hidePane("agent-panel");
   } else {
     hidePane("agent-panel");
+    hidePane("brain");
   }
 }
 
@@ -5320,11 +5331,14 @@ function showCalendar() {
   state.view = "calendar";
   if (!state.calendarCursor) state.calendarCursor = new Date();
   hidePane("shell");
+  hidePane("chrome-panel");
   hidePane("agent-panel");
+  hidePane("brain");
   if (swap) revealPanel("calendar-panel");
   else $("calendar-panel").hidden = false;
   $("rail-mail").setAttribute("aria-current", "false");
   $("rail-agent").setAttribute("aria-current", "false");
+  $("rail-brain").setAttribute("aria-current", "false");
   $("rail-calendar").setAttribute("aria-current", "page");
   loadCalendar().catch((error) => showStatus(error.message, true));
 }
@@ -5408,10 +5422,8 @@ function wire() {
     else $("search-query").focus();
   });
   $("rail-agent").addEventListener("click", showAgent);
+  $("rail-brain").addEventListener("click", openBrain);
   $("agent-open").addEventListener("click", showAgent);
-  $("side-folders").addEventListener("click", showMail);
-  $("side-agent").addEventListener("click", showAgent);
-  $("side-brain").addEventListener("click", openBrain);
   $("agent-mail").addEventListener("click", showMail);
   $("agent-triage").addEventListener("click", () => {
     runTriage().catch((error) => paintAgent(null, error instanceof Error ? error.message : String(error)));
