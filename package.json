@@ -1,6 +1,6 @@
 {
   "name": "genmail-rea",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "description": "GenMail Exact Electron host rewrite (pre-rebrand). Private.",
   "main": "host/main.js",
   "private": true,

@@ -29,4 +29,4 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:win
 CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac
 ```
 
-A Mac publish that writes `latest-mac.yml` is `CSC_IDENTITY_AUTO_DISCOVERY=false GH_TOKEN=… npx electron-builder --mac dir zip --publish always`. The Windows release job does not build that feed. Apple codesign dialogs stay on the MBA.
+The **release** workflow publishes unsigned `latest-mac.yml` with the Mac zip. Apple codesign stays on the MBA.

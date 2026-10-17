@@ -8,7 +8,7 @@ The packaged app boots the first-party renderer shipped in `renderer/` (see [IND
 
 ## Windows alpha (Leo)
 
-Workflow: `.github/workflows/release.yml` (Actions tab → **release**). It runs on **Run workflow** and on a `v*` tag push. Pull requests stay on the `ci` check job.
+Workflow: `.github/workflows/release.yml` (Actions tab → **release**). It runs on **Run workflow** and on a `v*` tag push. One run publishes Windows and an unsigned macOS zip to the same prerelease. Pull requests stay on the `ci` check job.
 
 1. Bump `package.json` `version` (the first alpha is already `0.1.0-alpha.1`) and merge to `main`. The GitHub tag is `v` plus that version.
 2. Actions → **release** → **Run workflow**, branch `main`.
@@ -43,17 +43,21 @@ electron-builder attaches files to an existing release only for about two hours 
 
 ## macOS
 
-Build on the MBA. The release workflow has no Apple codesign step.
+The same **release** workflow runs on `macos-latest` after the Windows job, and publishes an unsigned zip plus `latest-mac.yml` (and a blockmap when electron-builder writes one) to that prerelease. Windows creates the prerelease first. `build.mac.identity` is `null`. The job sets `CSC_IDENTITY_AUTO_DISCOVERY=false` and does not codesign or notarize. The zip arch is the runner's (Apple silicon on `macos-latest`).
+
+```bash
+CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac -- --publish always
+```
+
+Apple codesign and notarization stay on the MBA, locally, for a later step. Unsigned zip only, no upload:
 
 ```bash
 CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac
 ```
 
-Publishing a Mac feed (`latest-mac.yml`) stays a local `electron-builder --mac` publish, or a later job.
-
 ## Updater reads (private repo)
 
-`build.publish` is GitHub `Coke1120/genmail-rea`, `private: true`, `releaseType: prerelease`. The packaged app writes that into `resources/app-update.yml`. With `private: true` and a token in the environment, `electron-updater` uses the GitHub API and reads `latest.yml` from the newest prerelease.
+`build.publish` is GitHub `Coke1120/genmail-rea`, `private: true`, `releaseType: prerelease`. The packaged app writes that into `resources/app-update.yml`. With `private: true` and a token in the environment, `electron-updater` uses the GitHub API and reads `latest.yml` (macOS: `latest-mac.yml`) from the newest prerelease.
 
 The installed app needs `GH_TOKEN` or `GITHUB_TOKEN` set to a PAT that can read this private repo (`repo` scope, or contents read). The Actions token that uploads the release is not shipped inside the app. `npm start` leaves the updater off.
 
