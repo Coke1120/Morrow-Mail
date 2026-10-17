@@ -62,7 +62,8 @@ Work and school mailboxes cannot grant those delegated permissions until an admi
 
 - No Google Desktop JSON: Google buttons explain that OAuth is not configured. Microsoft can still start.
 - No `gmail.modify` / `Mail.ReadWrite`: the sidebar says so and offers the second consent. IMAP folders stay. No stand-in label list.
-- No calendar grant: the calendar page says it needs a grant. It does not draw a month of events. After a grant, the month grid shows only events returned by Google Calendar or Graph for that range. An empty month says there are no events.
+- No mailbox: the calendar page says to connect a Google or Microsoft account. It does not draw events.
+- No calendar grant: the calendar page says it needs a grant. It does not draw a month of events. After a grant, the month grid and agenda show only events returned by Google Calendar or Graph for that range, including time and location. An empty month says there are no events.
 
 ## Wire-up
 

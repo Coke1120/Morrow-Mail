@@ -281,6 +281,20 @@ function sanitizeFollowUps(list, allowed) {
   }).filter(Boolean);
 }
 
+function triageItem(message, summary, followUps) {
+  return {
+    messageId: message.id,
+    accountId: message.accountId || "",
+    from: message.from || "",
+    subject: message.subject || "",
+    summary: summary || "",
+    date: message.date || "",
+    unread: message.unread === true,
+    hasAttachments: message.hasAttachments === true,
+    followUps: followUps || [],
+  };
+}
+
 function groupTriage(categories, messages, assignments) {
   const sections = blankSections(categories);
   const byId = new Map(sections.map((section) => [section.id, section]));
@@ -293,27 +307,17 @@ function groupTriage(categories, messages, assignments) {
     seen.add(message.id);
     const bucket = byId.get(row.categoryId) || other;
     if (!bucket) continue;
-    bucket.items.push({
-      messageId: message.id,
-      accountId: message.accountId || "",
-      from: message.from || "",
-      subject: message.subject || "",
-      summary: clip(row.summary, 280) || clip(message.snippet, 280),
-      followUps: sanitizeFollowUps(row.followUps, new Set([message.id])),
-    });
+    bucket.items.push(triageItem(
+      message,
+      clip(row.summary, 280) || clip(message.snippet, 280),
+      sanitizeFollowUps(row.followUps, new Set([message.id])),
+    ));
   }
   for (const message of messages || []) {
     if (!message || seen.has(message.id)) continue;
     const bucket = other || sections[0];
     if (!bucket) continue;
-    bucket.items.push({
-      messageId: message.id,
-      accountId: message.accountId || "",
-      from: message.from || "",
-      subject: message.subject || "",
-      summary: clip(message.snippet, 280),
-      followUps: [],
-    });
+    bucket.items.push(triageItem(message, clip(message.snippet, 280), []));
   }
   return sections;
 }

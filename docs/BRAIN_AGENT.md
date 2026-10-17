@@ -28,7 +28,7 @@ The Agent rail tab and the toolbar Agent button show triage sections from Brain 
 
 Triage reads recent inbox messages already in the local cache. Each row is a short summary, a category, and follow-ups (review a reply, open the message, or open an attachment). Those follow-ups are proposals.
 
-Needs an AI key, needs a mailbox, and an empty inbox cache are empty states. They do not show stand-in messages. Run history is the local list of skill and triage runs.
+Needs an AI key, needs a mailbox, and an empty inbox cache are empty states. They do not show stand-in messages. Each triage row can open its message. Brief This Person uses the open message or a contact email from the panel. Run history is the local list of skill and triage runs, and choosing a row shows the summary, sections, and drafts that were saved.
 
 ## Profile
 

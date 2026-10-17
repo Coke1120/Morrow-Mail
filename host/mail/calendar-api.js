@@ -54,38 +54,55 @@ function normalizeGoogleEvent(item, calendarId) {
   };
 }
 
+function zonedDateTime(value, timeZone, allDay) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (allDay) return raw.slice(0, 10);
+  if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(raw)) return raw;
+  if (String(timeZone || "").toUpperCase() === "UTC") return raw.replace(/\.\d+$/, "") + "Z";
+  return raw;
+}
+
 function normalizeGraphEvent(item, calendarId) {
   if (!item || !safeId(item.id)) return null;
   const rawStart = item.start && item.start.dateTime || "";
   const rawEnd = item.end && item.end.dateTime || "";
   if (!rawStart) return null;
   const allDay = item.isAllDay === true;
+  const startZone = item.start && item.start.timeZone;
+  const endZone = item.end && item.end.timeZone;
   return {
     id: safeId(item.id),
     calendarId: safeId(calendarId) || "",
     title: cleanName(item.subject) || "(no title)",
-    start: allDay ? String(rawStart).slice(0, 10) : rawStart,
-    end: rawEnd ? (allDay ? String(rawEnd).slice(0, 10) : rawEnd) : "",
+    start: zonedDateTime(rawStart, startZone, allDay),
+    end: rawEnd ? zonedDateTime(rawEnd, endZone, allDay) : "",
     allDay,
     location: cleanName(item.location && item.location.displayName) || "",
   };
 }
 
 function googleEventBody(draft) {
-  return {
+  const body = {
     summary: draft.title,
     start: { dateTime: draft.start, timeZone: "UTC" },
     end: { dateTime: draft.end, timeZone: "UTC" },
   };
+  const location = cleanName(draft && draft.location);
+  if (location) body.location = location;
+  return body;
 }
 
 function graphEventBody(draft) {
-  return {
+  const body = {
     subject: draft.title,
     start: { dateTime: draft.start, timeZone: "UTC" },
     end: { dateTime: draft.end, timeZone: "UTC" },
     isAllDay: false,
   };
+  const location = cleanName(draft && draft.location);
+  if (location) body.location = { displayName: location };
+  return body;
 }
 
 function pageToken(value) {
@@ -238,6 +255,8 @@ async function createEvent(provider, accessToken, calendarId, draft, fetchImpl) 
     throw error;
   }
   const body = { title, start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString() };
+  const location = cleanName(draft && draft.location);
+  if (location) body.location = location;
   if (provider === "google") {
     const url = calendarPath("google", calendarId, "/events");
     const json = await apiJson(url, accessToken, { method: "POST", fetchImpl, body: googleEventBody(body) });

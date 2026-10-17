@@ -1327,9 +1327,61 @@ assert.strictEqual(agentUi.agentStatusCopy({ reason: "empty" }).error, false);
 assert.strictEqual(agentUi.agentStatusCopy({ reason: "idle" }).text, "Triage has not run yet.");
 assert.strictEqual(agentUi.sectionEmptyCopy("ready"), "Nothing in this section.");
 assert.strictEqual(agentUi.sectionEmptyCopy("needs_key"), "");
+assert.strictEqual(agentUi.sectionEmptyCopy("idle"), "Run triage to sort the inbox.");
 assert.strictEqual(agentUi.historyLine({ name: "Morning Brief", summary: "Two notes" }), "Morning Brief — Two notes");
 assert.strictEqual(agentUi.proposalLine({ subject: "Hello", labelName: "FYI" }), "Hello → FYI");
 assert.match(agentUi.runModeLabel({ schedule: "disabled", runMode: "on_demand" }), /Auto-run is off/);
+const requestUi = loadFunctions(appJs, [
+  "skillIdOf",
+  "isLive",
+  "agentContact",
+  "agentContextCopy",
+  "agentFollowUps",
+  "agentWhen",
+  "skillName",
+  "skillDetail",
+  "skillRequest",
+  "historyRunView",
+  "sectionItemsAreMail",
+]);
+assert.strictEqual(requestUi.agentContact("Ada <ada@example.com>"), "ada@example.com");
+assert.strictEqual(requestUi.agentContact("not an email"), "");
+assert.deepStrictEqual(requestUi.skillRequest({ id: "brief-this-person" }, {
+  account: { id: "acct", platform: "imap" },
+  email: { id: "m1", subject: "Hi", from: "Ada", snippet: "Yo" },
+  contact: "Ada <ada@example.com>",
+}), {
+  skillId: "brief-this-person",
+  accountId: "acct",
+  email: { id: "m1", subject: "Hi", from: "Ada", snippet: "Yo" },
+  contactEmail: "ada@example.com",
+});
+assert.ok(!requestUi.skillRequest({ id: "morning-brief" }, { contact: "ada@example.com" }).contactEmail);
+assert.match(requestUi.agentContextCopy(null), /No message is open/);
+assert.match(requestUi.agentContextCopy({ id: "m1", from: "Ada", subject: "Hi" }), /Ada — Hi/);
+assert.strictEqual(requestUi.agentFollowUps({ messageId: "m1", followUps: [] }).length, 1);
+assert.strictEqual(requestUi.agentFollowUps({
+  messageId: "m1",
+  followUps: [{ kind: "open", messageId: "m1", label: "Open" }],
+}).length, 1);
+assert.strictEqual(requestUi.agentFollowUps({ followUps: [{ kind: "open", messageId: "m1" }] }).length, 1);
+assert.strictEqual(requestUi.agentWhen(""), "");
+assert.ok(requestUi.agentWhen("2026-10-17T08:00:00.000Z"));
+assert.strictEqual(requestUi.skillName({ name: "Morning Brief" }), "Morning Brief");
+assert.strictEqual(requestUi.skillDetail({ description: "Today" }), "Today");
+assert.strictEqual(requestUi.sectionItemsAreMail({ items: [{ messageId: "m1" }] }), true);
+assert.strictEqual(requestUi.sectionItemsAreMail({ items: ["Ada"] }), false);
+const viewed = requestUi.historyRunView({
+  name: "Morning Brief",
+  summary: "Two notes",
+  accepted: true,
+  sections: [{ title: "Today", items: ["Ada"] }],
+  drafts: [{ body: "Hi" }],
+});
+assert.strictEqual(viewed.summary, "Two notes");
+assert.strictEqual(viewed.sections[0].items[0], "Ada");
+assert.strictEqual(requestUi.historyRunView(null), null);
+assert.strictEqual(requestUi.historyRunView({ accepted: false, summary: "nope" }).accepted, false);
 assert.ok(html.includes("Categories") && html.includes("Collapse view") && html.includes("Save categories") && html.includes("Use defaults"));
 assert.ok(appJs.includes("No writing rules yet.") && appJs.includes("Needs an AI key."));
 assert.ok(appJs.includes("emailBrain:fixItem") && appJs.includes("emailBrain:forgetItem") && appJs.includes("emailBrain:fixCategory"));
@@ -1420,12 +1472,20 @@ const providerUi = loadFunctions(appJs, [
   "showOrganizeGrant",
   "calendarMode",
   "calendarCopy",
+  "calendarConnection",
   "calendarView",
   "monthRange",
   "monthCells",
   "dayKey",
   "eventDay",
+  "eventCoversDay",
   "eventsOnDay",
+  "clockLabel",
+  "formatEventWhen",
+  "eventChip",
+  "agendaEvents",
+  "agendaLine",
+  "sameDay",
   "calendarDraft",
 ]);
 assert.deepStrictEqual(providerUi.oauthButtonState(null, "google"), { disabled: false, reason: "" });
@@ -1494,12 +1554,52 @@ assert.strictEqual(providerUi.showOrganizeGrant("imap_only"), false);
 const needsAuth = providerUi.calendarView({ api: false, reason: "needs_auth" });
 assert.strictEqual(needsAuth.showGrid, false);
 assert.strictEqual(needsAuth.showForm, false);
+assert.strictEqual(needsAuth.error, false);
 assert.deepStrictEqual(needsAuth.events, []);
+assert.strictEqual(providerUi.calendarView({
+  api: false,
+  reason: "error",
+  message: "Outlook did not return events.",
+}).status, "Outlook did not return events.");
+assert.strictEqual(providerUi.calendarView({ api: false, reason: "error" }).error, true);
+assert.strictEqual(providerUi.calendarView({ api: false, reason: "no_account" }).showGrid, false);
 assert.strictEqual(
   needsAuth.status,
   "Calendar needs a calendar grant. This view does not keep events of its own.",
 );
 assert.strictEqual(providerUi.calendarCopy("oauth_not_ready"), "Google Desktop OAuth is not configured, so calendar stays offline.");
+assert.strictEqual(providerUi.calendarCopy("no_account"), "Connect a Google or Microsoft mailbox. Calendar does not keep events of its own.");
+assert.strictEqual(
+  providerUi.calendarCopy("needs_auth", "ada@example.com"),
+  "Calendar needs a calendar grant for ada@example.com. This view does not keep events of its own.",
+);
+assert.deepStrictEqual(providerUi.calendarConnection(null, null), {
+  connected: false,
+  canGrant: false,
+  reason: "Connect a Google or Microsoft mailbox first.",
+  label: "Grant calendar access",
+});
+assert.deepStrictEqual(providerUi.calendarConnection({
+  accounts: [{ id: "a", calendar: true }],
+}, { id: "a", platform: "imap", profile: "outlook" }, null), {
+  connected: true,
+  canGrant: true,
+  reason: "",
+  label: "Update calendar access",
+});
+assert.strictEqual(providerUi.calendarConnection({
+  accounts: [{ id: "a", calendar: false, calendarReason: "needs_auth" }],
+}, { id: "a", platform: "imap", profile: "outlook" }).label, "Grant calendar access");
+assert.strictEqual(providerUi.calendarConnection(null, {
+  id: "a",
+  platform: "imap",
+  profile: "gmail",
+}, { api: true }).connected, true);
+assert.strictEqual(providerUi.calendarConnection({ google: false }, {
+  id: "a",
+  platform: "imap",
+  imapSmtpProfile: "gmail",
+}, { api: true }).canGrant, false);
 assert.strictEqual(providerUi.calendarView({
   api: true,
   calendars: [],
@@ -1545,7 +1645,35 @@ assert.deepStrictEqual(providerUi.eventsOnDay([
   { id: "a", start: "2026-10-03", allDay: true },
   { id: "b", start: "2026-10-04", allDay: true },
 ], "2026-10-03").map((event) => event.id), ["a"]);
+assert.deepStrictEqual(providerUi.eventsOnDay([
+  { id: "span", start: "2026-10-03", end: "2026-10-05", allDay: true },
+], "2026-10-04").map((event) => event.id), ["span"]);
+assert.deepStrictEqual(providerUi.eventsOnDay([
+  { id: "span", start: "2026-10-03", end: "2026-10-05", allDay: true },
+], "2026-10-05"), []);
+const timedDay = { start: new Date(2026, 9, 3, 15, 0).toISOString() };
+assert.strictEqual(providerUi.eventCoversDay(timedDay, providerUi.dayKey(2026, 9, 3)), true);
+assert.strictEqual(providerUi.eventCoversDay(timedDay, providerUi.dayKey(2026, 9, 4)), false);
 assert.deepStrictEqual(providerUi.eventsOnDay(null, "2026-10-03"), []);
+assert.strictEqual(providerUi.formatEventWhen({ allDay: true, start: "2026-10-03" }), "All day");
+assert.strictEqual(providerUi.formatEventWhen(null), "");
+assert.strictEqual(providerUi.formatEventWhen({
+  start: new Date(2026, 9, 5, 15, 0).toISOString(),
+  end: new Date(2026, 9, 5, 16, 30).toISOString(),
+}), "3:00 PM–4:30 PM");
+assert.strictEqual(providerUi.eventChip({ allDay: true, title: "Offsite", start: "2026-10-03" }), "Offsite");
+assert.deepStrictEqual(providerUi.agendaEvents([
+  { id: "b", start: "2026-10-04T10:00:00Z" },
+  { id: "a", start: "2026-10-03", allDay: true },
+]).map((event) => event.id), ["a", "b"]);
+assert.match(providerUi.agendaLine({
+  title: "Offsite",
+  start: "2026-10-03",
+  allDay: true,
+  location: "HQ",
+}), /All day/);
+assert.strictEqual(providerUi.sameDay(2026, 9, 17, new Date(2026, 9, 17, 12)), true);
+assert.strictEqual(providerUi.sameDay(2026, 9, 16, new Date(2026, 9, 17, 12)), false);
 assert.strictEqual(providerUi.calendarDraft({}).error, "Connect a Google or Microsoft mailbox first.");
 assert.strictEqual(providerUi.calendarDraft({ accountId: "a" }).error, "Choose a calendar.");
 assert.strictEqual(providerUi.calendarDraft({ accountId: "a", calendarId: "c" }).error, "Add a title.");
@@ -1565,7 +1693,16 @@ const drafted = providerUi.calendarDraft({
 });
 assert.strictEqual(drafted.error, "");
 assert.strictEqual(drafted.title, "Hi");
+assert.strictEqual(drafted.location, "");
 assert.ok(drafted.start < drafted.end);
+assert.strictEqual(providerUi.calendarDraft({
+  accountId: "a",
+  calendarId: "c",
+  title: "Hi",
+  location: " Room 2 ",
+  start: "2026-10-17T10:00",
+  end: "2026-10-17T11:00",
+}).location, "Room 2");
 for (const channel of [
   "mail:oauthStatus",
   "mail:grantOrganize",
@@ -1591,6 +1728,7 @@ for (const channel of [
   "mail:deleteProviderFolder",
   "mail:modifyMessageLabels",
   "mail:moveProviderMessage",
+  "calendar:status",
   "calendar:connect",
   "calendar:list",
   "calendar:createEvent",
@@ -1600,6 +1738,8 @@ for (const channel of [
 assert.ok(html.includes('id="rail-calendar"') && html.includes('id="calendar-panel"'));
 assert.ok(html.includes('id="calendar-grant"') && html.includes("Grant calendar access"));
 assert.ok(html.includes('id="calendar-create"') && html.includes('id="calendar-pick"'));
+assert.ok(html.includes('id="calendar-today"') && html.includes('id="calendar-agenda"') && html.includes('id="calendar-location"'));
+assert.ok(html.includes('id="agent-contact"') && html.includes('id="agent-context"'));
 assert.ok(appJs.includes("Grant Gmail labels") && appJs.includes("Grant Outlook folders"));
 assert.ok(css.includes("#calendar-panel") && css.includes(".calendar-grid") && css.includes(".provider-block"));
 assert.ok(!appJs.includes("Team sync") && !html.includes("Team sync"));
@@ -1817,14 +1957,17 @@ async function checkAiDraft() {
   const grouped = agent.groupTriage(
     [{ id: "needs-you", name: "Needs You" }, { id: "other", name: "Other" }],
     [
-      { id: "m-live", from: "Ada", subject: "Need the notes", snippet: "Can you send the notes?" },
+      { id: "m-live", from: "Ada", subject: "Need the notes", snippet: "Can you send the notes?", date: "2026-10-17T08:00:00.000Z", unread: true },
       { id: "m-other", from: "Bea", subject: "FYI", snippet: "Receipt" },
     ],
     [{ messageId: "m-live", categoryId: "needs-you", summary: "Ada needs a reply." }, { messageId: "made-up", summary: "Invented" }],
   );
   assert.strictEqual(grouped[0].items.length, 1);
   assert.strictEqual(grouped[0].items[0].messageId, "m-live");
+  assert.strictEqual(grouped[0].items[0].date, "2026-10-17T08:00:00.000Z");
+  assert.strictEqual(grouped[0].items[0].unread, true);
   assert.strictEqual(grouped[1].items[0].messageId, "m-other");
+  assert.strictEqual(grouped[1].items[0].date, "");
   assert.ok(!JSON.stringify(grouped).includes("Invented"));
   const dropped = agent.normalizeSkillResult(
     { moves: true, name: "Organize Inbox" },
@@ -2231,6 +2374,48 @@ async function checkProviderApi() {
       { id: "other" },
       { id: "primary", primary: true },
     ]), "primary");
+    assert.strictEqual(calendarApi.googleEventBody({
+      title: "Standup",
+      start: "2026-10-17T10:00:00.000Z",
+      end: "2026-10-17T11:00:00.000Z",
+    }).location, undefined);
+    assert.strictEqual(calendarApi.graphEventBody({
+      title: "Standup",
+      start: "2026-10-17T10:00:00.000Z",
+      end: "2026-10-17T11:00:00.000Z",
+      location: "Room 2",
+    }).location.displayName, "Room 2");
+    const utcEvent = calendarApi.normalizeGraphEvent({
+      id: "evt-utc",
+      subject: "UTC",
+      start: { dateTime: "2026-10-06T15:00:00.0000000", timeZone: "UTC" },
+      end: { dateTime: "2026-10-06T16:00:00.0000000", timeZone: "UTC" },
+      isAllDay: false,
+      location: { displayName: "Room 2" },
+    }, "cal-ms");
+    assert.strictEqual(utcEvent.start, "2026-10-06T15:00:00Z");
+    assert.strictEqual(utcEvent.end, "2026-10-06T16:00:00Z");
+    assert.strictEqual(utcEvent.location, "Room 2");
+    const posted = [];
+    const createdEvent = await calendarApi.createEvent("google", "token", "cal-1", {
+      title: "Standup",
+      start: "2026-10-17T10:00:00.000Z",
+      end: "2026-10-17T11:00:00.000Z",
+      location: "Room 2",
+    }, async (_url, init) => {
+      posted.push(JSON.parse(init.body));
+      return jsonResponse({
+        id: "evt-new",
+        summary: "Standup",
+        location: "Room 2",
+        start: { dateTime: "2026-10-17T10:00:00Z" },
+        end: { dateTime: "2026-10-17T11:00:00Z" },
+      });
+    });
+    assert.strictEqual(posted[0].location, "Room 2");
+    assert.strictEqual(posted[0].start.timeZone, "UTC");
+    assert.strictEqual(createdEvent.location, "Room 2");
+    assert.strictEqual(createdEvent.id, "evt-new");
     assert.strictEqual(sidecar.monthWindow("2026-01-01T00:00:00.000Z", "2026-06-01T00:00:00.000Z"), null);
     assert.ok(sidecar.monthWindow(october.timeMin, october.timeMax));
 

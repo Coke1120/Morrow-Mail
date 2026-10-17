@@ -83,17 +83,27 @@
         <button type="button" class="ghost" id="calendar-prev">Previous month</button>
         <h2 id="calendar-heading">Calendar</h2>
         <button type="button" class="ghost" id="calendar-next">Next month</button>
+        <button type="button" class="ghost" id="calendar-today">Today</button>
         <label class="sr" for="calendar-account">Account</label>
         <select id="calendar-account"></select>
         <button type="button" class="ghost" id="calendar-grant">Grant calendar access</button>
       </div>
       <p id="calendar-status" role="status"></p>
-      <div id="calendar-body"></div>
+      <div id="calendar-layout" hidden>
+        <div id="calendar-body"></div>
+        <div id="calendar-side">
+          <h3>Agenda</h3>
+          <div id="calendar-agenda"></div>
+        </div>
+      </div>
+      <div id="calendar-detail" hidden></div>
       <form id="calendar-create" hidden>
         <label for="calendar-pick">Calendar</label>
         <select id="calendar-pick"></select>
         <label for="calendar-event-title">Title</label>
         <input id="calendar-event-title" type="text" maxlength="200" />
+        <label for="calendar-location">Location <span class="optional">(optional)</span></label>
+        <input id="calendar-location" type="text" maxlength="200" />
         <label for="calendar-start">Start</label>
         <input id="calendar-start" type="datetime-local" />
         <label for="calendar-end">End</label>
@@ -111,6 +121,7 @@
       </div>
       <p class="hint">Sorts recent inbox mail into your Brain categories. Follow-ups are proposals. Nothing is sent.</p>
       <p id="agent-status" role="status"></p>
+      <p id="agent-context" class="hint"></p>
       <div id="agent-sections"></div>
       <section id="agent-proposals-wrap" aria-labelledby="agent-proposals-title">
         <h3 id="agent-proposals-title">Proposed moves</h3>
@@ -122,6 +133,8 @@
         <p class="hint">Only when I ask. Auto-run is off. Drafts stay in compose until you send them yourself.</p>
         <p id="agent-skill-status" role="status"></p>
         <div id="agent-result"></div>
+        <label for="agent-contact">Person <span class="optional">(Brief This Person)</span></label>
+        <input id="agent-contact" type="email" spellcheck="false" autocomplete="off" placeholder="name@example.com" />
         <h3>Home skills</h3>
         <div id="studio-home"></div>
         <h3>Library skills</h3>

@@ -39,6 +39,9 @@ const state = {
   calendarCursor: null,
   calendarAccountId: "",
   calendarId: "",
+  calendarEventId: "",
+  calendarStatus: null,
+  calendarPayload: null,
 };
 
 let accountGen = 0;
@@ -219,24 +222,57 @@ function calendarMode(payload) {
   return { mode: events.length ? "events" : "empty", reason: "", events, calendars };
 }
 
-function calendarCopy(reason) {
+function calendarCopy(reason, email) {
   if (reason === "oauth_not_ready") return "Google Desktop OAuth is not configured, so calendar stays offline.";
   if (reason === "imap_only") return "Calendar needs a Google or Microsoft account.";
+  if (reason === "no_account") return "Connect a Google or Microsoft mailbox. Calendar does not keep events of its own.";
   if (reason === "error") return "Calendar could not be loaded.";
-  return "Calendar needs a calendar grant. This view does not keep events of its own.";
+  const who = email ? ` for ${email}` : "";
+  return `Calendar needs a calendar grant${who}. This view does not keep events of its own.`;
+}
+
+function calendarConnection(status, account, listed) {
+  const grant = calendarGrantState(status, account);
+  if (!account || grant.disabled) {
+    return { connected: false, canGrant: false, reason: grant.reason, label: "Grant calendar access" };
+  }
+  const rows = status && Array.isArray(status.accounts) ? status.accounts : [];
+  const row = rows.find((item) => item && item.id === account.id);
+  const connected = (row && row.calendar === true) || (listed && listed.api === true);
+  return {
+    connected,
+    canGrant: true,
+    reason: connected ? "" : ((row && row.calendarReason) || "needs_auth"),
+    label: connected ? "Update calendar access" : "Grant calendar access",
+  };
 }
 
 function calendarView(payload) {
   const mode = calendarMode(payload);
   if (mode.mode === "needs-auth") {
-    return { showGrid: false, showForm: false, status: calendarCopy(mode.reason), events: [], calendars: [] };
+    const hostMessage = mode.reason === "error" && payload && payload.message ? String(payload.message) : "";
+    return {
+      showGrid: false,
+      showForm: false,
+      status: hostMessage || calendarCopy(mode.reason),
+      error: mode.reason === "error",
+      events: [],
+      calendars: [],
+    };
   }
   if (!mode.calendars.length) {
-    return { showGrid: false, showForm: false, status: "No calendars on this account.", events: [], calendars: [] };
+    return { showGrid: false, showForm: false, status: "No calendars on this account.", error: false, events: [], calendars: [] };
   }
   const status = mode.mode === "empty" ? "No events this month." : "";
   const truncated = payload && payload.truncated ? " The provider returned a partial list." : "";
-  return { showGrid: true, showForm: true, status: `${status}${truncated}`.trim(), events: mode.events, calendars: mode.calendars };
+  return {
+    showGrid: true,
+    showForm: true,
+    status: `${status}${truncated}`.trim(),
+    error: false,
+    events: mode.events,
+    calendars: mode.calendars,
+  };
 }
 
 function monthRange(year, month) {
@@ -273,8 +309,68 @@ function eventDay(event) {
   return dayKey(date.getFullYear(), date.getMonth(), date.getDate());
 }
 
+function eventCoversDay(event, key) {
+  const startKey = eventDay(event);
+  if (!startKey || !key) return false;
+  if (event && event.allDay) {
+    const end = String(event.end || "").slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(end) && end > startKey) return key >= startKey && key < end;
+  }
+  return startKey === key;
+}
+
 function eventsOnDay(events, key) {
-  return (Array.isArray(events) ? events : []).filter((event) => eventDay(event) === key);
+  return (Array.isArray(events) ? events : []).filter((event) => eventCoversDay(event, key));
+}
+
+function clockLabel(value) {
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) return "";
+  const date = new Date(time);
+  let hour = date.getHours();
+  const minute = String(date.getMinutes()).padStart(2, "0");
+  const suffix = hour >= 12 ? "PM" : "AM";
+  hour = hour % 12 || 12;
+  return `${hour}:${minute} ${suffix}`;
+}
+
+function formatEventWhen(event) {
+  if (!event || !event.start) return "";
+  if (event.allDay) return "All day";
+  const start = clockLabel(event.start);
+  const end = clockLabel(event.end);
+  if (start && end) return `${start}–${end}`;
+  return start;
+}
+
+function eventChip(event) {
+  const title = (event && event.title) || "(no title)";
+  if (!event || event.allDay) return title;
+  const when = formatEventWhen(event);
+  return when ? `${when} ${title}` : title;
+}
+
+function agendaEvents(events) {
+  return (Array.isArray(events) ? events : []).slice().sort((left, right) => {
+    return String((left && left.start) || "").localeCompare(String((right && right.start) || ""));
+  });
+}
+
+function agendaLine(event) {
+  if (!event) return "";
+  const parts = [eventDay(event), formatEventWhen(event), event.title || "(no title)"];
+  if (event.location) parts.push(event.location);
+  return parts.filter(Boolean).join(" · ");
+}
+
+function sameDay(year, month, day, now) {
+  const date = now instanceof Date ? now : new Date();
+  return date.getFullYear() === year && date.getMonth() === month && date.getDate() === day;
+}
+
+function calendarNameOf(calendars, id) {
+  const row = (Array.isArray(calendars) ? calendars : []).find((item) => item && item.id === id);
+  return row ? (row.name || row.id) : "";
 }
 
 function calendarDraft(input) {
@@ -286,6 +382,7 @@ function calendarDraft(input) {
   if (!accountId) return { error: "Connect a Google or Microsoft mailbox first." };
   if (!calendarId) return { error: "Choose a calendar." };
   if (!title) return { error: "Add a title." };
+  const location = String((input && input.location) || "").trim();
   const start = Date.parse(startRaw);
   const end = Date.parse(endRaw);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return { error: "Pick a start and a later end." };
@@ -294,6 +391,7 @@ function calendarDraft(input) {
     accountId,
     calendarId,
     title,
+    location,
     start: new Date(start).toISOString(),
     end: new Date(end).toISOString(),
   };
@@ -2608,6 +2706,18 @@ async function removeAccount() {
 }
 
 async function refresh() {
+  if (state.view === "calendar") {
+    showStatus("Refreshing…");
+    await loadCalendar();
+    showStatus("");
+    return;
+  }
+  if (state.view === "agent") {
+    showStatus("Refreshing…");
+    await loadAgent();
+    showStatus("");
+    return;
+  }
   const account = selectedAccount();
   if (!account || !state.folderId) return;
   showStatus("Refreshing…");
@@ -3889,7 +3999,66 @@ function agentStatusCopy(payload) {
 
 function sectionEmptyCopy(reason) {
   if (reason === "ready" || reason === "empty") return "Nothing in this section.";
+  if (reason === "idle") return "Run triage to sort the inbox.";
   return "";
+}
+
+function agentWhen(value) {
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) return "";
+  return new Date(time).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function agentFollowUps(item) {
+  const follows = Array.isArray(item && item.followUps) ? item.followUps.filter((follow) => follow && follow.messageId) : [];
+  const messageId = item && item.messageId ? String(item.messageId) : "";
+  if (!messageId) return follows;
+  if (follows.some((follow) => follow.kind === "open" && follow.messageId === messageId)) return follows;
+  return follows.concat([{ kind: "open", messageId, label: "Open" }]);
+}
+
+function agentContextCopy(email) {
+  if (!email || !email.id) return "No message is open. Brief This Person can use an email address, or open a message in Mail first.";
+  const subject = String(email.subject || "").trim() || "(no subject)";
+  const from = String(email.from || "").trim();
+  return from ? `Open message: ${from} — ${subject}` : `Open message: ${subject}`;
+}
+
+function agentContact(value) {
+  const match = String(value || "").match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  return match ? match[0] : "";
+}
+
+function skillName(row) {
+  if (!row || typeof row !== "object") return String(row || "").trim();
+  return String(row.name || row.title || row.id || "").trim();
+}
+
+function skillDetail(row) {
+  if (!row || typeof row !== "object") return "";
+  return String(row.description || row.summary || "").trim();
+}
+
+function historyRunView(run) {
+  if (!run || typeof run !== "object" || Array.isArray(run)) return null;
+  const sections = (Array.isArray(run.sections) ? run.sections : []).map((section) => ({
+    title: String((section && (section.title || section.name)) || ""),
+    items: Array.isArray(section && section.items) ? section.items : [],
+  })).filter((section) => section.title || section.items.length);
+  return {
+    accepted: run.accepted !== false,
+    name: String(run.name || run.skillId || "Run"),
+    summary: String(run.summary || ""),
+    note: String(run.note || ""),
+    sections,
+    drafts: Array.isArray(run.drafts) ? run.drafts : [],
+    followUps: Array.isArray(run.followUps) ? run.followUps : [],
+  };
+}
+
+function sectionItemsAreMail(section) {
+  const items = section && section.items;
+  return Array.isArray(items) && items.some((item) => item && typeof item === "object" && item.messageId);
 }
 
 function historyLine(run) {
@@ -3914,13 +4083,12 @@ function runModeLabel(row) {
   return "";
 }
 
-function skillPayload(row) {
-  const email = state.email;
-  const account = email
-    ? (state.accounts.find((item) => item.id === email.accountId) || selectedAccount())
-    : selectedAccount();
+function skillRequest(row, options) {
+  const opts = options && typeof options === "object" ? options : {};
   const payload = { skillId: skillIdOf(row) };
+  const account = opts.account;
   if (account && account.id && isLive(account)) payload.accountId = account.id;
+  const email = opts.email;
   if (email && email.id) {
     payload.email = {
       id: email.id,
@@ -3929,7 +4097,24 @@ function skillPayload(row) {
       snippet: email.snippet || "",
     };
   }
+  if (skillIdOf(row) === "brief-this-person") {
+    const contact = agentContact(opts.contact);
+    if (contact) payload.contactEmail = contact;
+  }
   return payload;
+}
+
+function skillPayload(row) {
+  const email = state.email;
+  const account = email
+    ? (state.accounts.find((item) => item.id === email.accountId) || selectedAccount())
+    : selectedAccount();
+  const contact = $("agent-contact");
+  return skillRequest(row, {
+    account,
+    email,
+    contact: contact ? contact.value : "",
+  });
 }
 
 function setSkillStatus(text, isError) {
@@ -4058,6 +4243,88 @@ function paintProposals(root, proposals, append) {
   }
 }
 
+function setAgentSkillStatus(text, isError) {
+  const status = $("agent-skill-status");
+  if (!status) return;
+  status.textContent = text || "";
+  status.classList.toggle("error", !!isError && !!text);
+}
+
+function agentCard(item) {
+  const card = document.createElement("div");
+  card.className = "agent-item";
+  if (item && item.unread) card.classList.add("unread");
+  const from = document.createElement("p");
+  from.className = "agent-from";
+  from.textContent = (item && item.from) || "(unknown sender)";
+  const subject = document.createElement("p");
+  subject.className = "agent-subject";
+  subject.textContent = (item && item.subject) || "(no subject)";
+  card.append(from, subject);
+  const when = agentWhen(item && item.date);
+  if (when) {
+    const time = document.createElement("p");
+    time.className = "hint";
+    time.textContent = when;
+    card.appendChild(time);
+  }
+  const summary = String((item && item.summary) || "").trim();
+  if (summary) {
+    const line = document.createElement("p");
+    line.textContent = summary;
+    card.appendChild(line);
+  }
+  if (item && item.hasAttachments) {
+    const line = document.createElement("p");
+    line.className = "hint";
+    line.textContent = "Has an attachment.";
+    card.appendChild(line);
+  }
+  const follows = agentFollowUps(item);
+  if (follows.length) {
+    const actions = document.createElement("div");
+    actions.className = "agent-actions row";
+    for (const follow of follows) actions.appendChild(followButton(follow));
+    card.appendChild(actions);
+  }
+  return card;
+}
+
+function paintStoredRun(run) {
+  const view = historyRunView(run);
+  const root = $("agent-result");
+  if (!root || !view) return;
+  if (!view.accepted) setAgentSkillStatus(view.summary || "That run did not finish.", true);
+  else setAgentSkillStatus(view.summary || view.name, false);
+  const mailSections = view.sections.filter(sectionItemsAreMail);
+  if (mailSections.length) {
+    root.replaceChildren();
+    for (const section of mailSections) {
+      const block = document.createElement("section");
+      block.className = "agent-section";
+      const title = document.createElement("h3");
+      title.textContent = section.title || "Section";
+      block.appendChild(title);
+      for (const item of section.items) {
+        if (item && typeof item === "object" && item.messageId) block.appendChild(agentCard(item));
+      }
+      root.appendChild(block);
+    }
+    return;
+  }
+  paintSkillBlocks(root, {
+    accepted: view.accepted,
+    summary: view.summary,
+    note: view.note,
+    sections: view.sections.map((section) => ({
+      title: section.title,
+      items: section.items.map((item) => (typeof item === "string" ? item : agentItemLine(item))).filter(Boolean),
+    })),
+    drafts: view.drafts,
+    followUps: view.followUps,
+  });
+}
+
 function paintHistory(root, runs) {
   if (!root) return;
   root.replaceChildren();
@@ -4070,9 +4337,11 @@ function paintHistory(root, runs) {
     return;
   }
   for (const run of rows.slice(0, 12)) {
-    const line = document.createElement("p");
+    const line = document.createElement("button");
+    line.type = "button";
     line.className = "history-row";
     line.textContent = historyLine(run) || "Run";
+    line.addEventListener("click", () => paintStoredRun(run));
     root.appendChild(line);
   }
 }
@@ -4087,42 +4356,56 @@ function paintSkillList(root, rows, empty, mode) {
     return;
   }
   for (const row of rows) {
-    const label = skillLine(row) || "Skill";
+    const name = skillName(row) || "Skill";
+    const detail = skillDetail(row);
     const skillId = skillIdOf(row);
     const wrap = document.createElement("div");
     wrap.className = "studio-row";
+    const copy = document.createElement("div");
+    copy.className = "studio-copy";
+    const title = document.createElement("p");
+    title.className = "brain-skill";
+    title.textContent = name;
+    copy.appendChild(title);
+    if (detail && detail !== name) {
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent = detail;
+      copy.appendChild(hint);
+    }
+    const modeLine = document.createElement("p");
+    modeLine.className = "hint";
+    modeLine.textContent = runModeLabel(row);
+    if (modeLine.textContent) copy.appendChild(modeLine);
+    wrap.appendChild(copy);
     if (!skillId) {
-      const line = document.createElement("p");
-      line.className = "brain-skill";
-      line.textContent = label;
-      wrap.appendChild(line);
       root.appendChild(wrap);
       continue;
     }
+    const actions = document.createElement("div");
+    actions.className = "studio-actions";
     const button = document.createElement("button");
     button.type = "button";
-    button.className = "ghost brain-skill";
-    button.textContent = mode === "install" ? "Install " + label : label;
+    button.className = mode === "install" ? "ghost" : "primary";
+    button.textContent = mode === "install" ? "Install" : "Run";
+    button.setAttribute("aria-label", (mode === "install" ? "Install " : "Run ") + name);
     button.addEventListener("click", () => {
       const action = mode === "install" ? installBrainSkill(row) : runBrainSkill(row);
       action.catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
     });
-    wrap.appendChild(button);
+    actions.appendChild(button);
     if (mode === "run") {
-      const modeLine = document.createElement("p");
-      modeLine.className = "hint";
-      modeLine.textContent = runModeLabel(row);
-      if (modeLine.textContent) wrap.appendChild(modeLine);
       const remove = document.createElement("button");
       remove.type = "button";
       remove.className = "ghost";
       remove.textContent = "Remove";
-      remove.setAttribute("aria-label", "Remove " + (row.name || skillId));
+      remove.setAttribute("aria-label", "Remove " + name);
       remove.addEventListener("click", () => {
         removeBrainSkill(row).catch((error) => setSkillStatus(error instanceof Error ? error.message : String(error), true));
       });
-      wrap.appendChild(remove);
+      actions.appendChild(remove);
     }
+    wrap.appendChild(actions);
     root.appendChild(wrap);
   }
 }
@@ -4257,6 +4540,10 @@ async function runBrainSkill(row) {
     paintSkillBlocks($("brain-skill-result"), data);
     paintSkillBlocks($("agent-result"), data);
     if (data && Array.isArray(data.proposals)) paintProposals($("agent-proposals"), data.proposals);
+    if ($("agent-panel") && !$("agent-panel").hidden) {
+      const history = await call("nativeAgent:history");
+      paintHistory($("agent-history"), history && history.runs);
+    }
   } catch (error) {
     setSkillStatus(error instanceof Error ? error.message : String(error), true);
   } finally {
@@ -4339,6 +4626,8 @@ function paintAgent(payload, errorText) {
   const copy = errorText ? { text: errorText, error: true } : agentStatusCopy(payload);
   status.textContent = copy.text;
   status.classList.toggle("error", copy.error);
+  const context = $("agent-context");
+  if (context) context.textContent = agentContextCopy(state.email);
   const root = $("agent-sections");
   root.replaceChildren();
   const reason = payload && payload.reason;
@@ -4356,21 +4645,7 @@ function paintAgent(payload, errorText) {
       note.textContent = empty;
       block.appendChild(note);
     }
-    for (const item of items) {
-      const card = document.createElement("div");
-      card.className = "agent-item";
-      const line = document.createElement("p");
-      line.textContent = agentItemLine(item) || "(no subject)";
-      card.appendChild(line);
-      const follows = Array.isArray(item.followUps) ? item.followUps : [];
-      if (follows.length) {
-        const actions = document.createElement("div");
-        actions.className = "agent-actions row";
-        for (const follow of follows) actions.appendChild(followButton(follow));
-        card.appendChild(actions);
-      }
-      block.appendChild(card);
-    }
+    for (const item of items) block.appendChild(agentCard(item));
     root.appendChild(block);
   }
   paintProposals($("agent-proposals"), payload && payload.proposals);
@@ -4452,19 +4727,97 @@ function fillCalendarPick(calendars) {
   }
 }
 
+function selectedCalendarEvent(payload) {
+  const events = payload && Array.isArray(payload.events) ? payload.events : [];
+  return events.find((event) => event && event.id === state.calendarEventId) || null;
+}
+
+function paintCalendarDetail(event, calendarName) {
+  const root = $("calendar-detail");
+  if (!root) return;
+  root.replaceChildren();
+  if (!event) {
+    root.hidden = true;
+    return;
+  }
+  root.hidden = false;
+  const title = document.createElement("h3");
+  title.textContent = event.title || "(no title)";
+  root.appendChild(title);
+  const when = document.createElement("p");
+  when.textContent = formatEventWhen(event) || "Time not provided.";
+  root.appendChild(when);
+  if (event.location) {
+    const where = document.createElement("p");
+    where.textContent = event.location;
+    root.appendChild(where);
+  }
+  if (calendarName) {
+    const name = document.createElement("p");
+    name.className = "hint";
+    name.textContent = calendarName;
+    root.appendChild(name);
+  }
+}
+
+function paintAgenda(events) {
+  const root = $("calendar-agenda");
+  if (!root) return;
+  root.replaceChildren();
+  const rows = agendaEvents(events);
+  if (!rows.length) {
+    const note = document.createElement("p");
+    note.className = "hint";
+    note.textContent = "No events this month.";
+    root.appendChild(note);
+    return;
+  }
+  for (const event of rows) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "agenda-item";
+    if (event.id === state.calendarEventId) button.classList.add("is-selected");
+    button.textContent = agendaLine(event);
+    button.addEventListener("click", () => selectCalendarEvent(event));
+    root.appendChild(button);
+  }
+}
+
+function selectCalendarEvent(event) {
+  state.calendarEventId = event && event.id ? event.id : "";
+  if (state.calendarPayload) paintCalendar(state.calendarPayload);
+}
+
 function paintCalendar(payload) {
   const view = calendarView(payload);
   const cursor = state.calendarCursor || new Date();
-  const range = monthRange(cursor.getFullYear(), cursor.getMonth());
-  $("calendar-heading").textContent = view.showGrid ? range.label : "Calendar";
-  $("calendar-status").textContent = view.status;
+  const year = cursor.getFullYear();
+  const month = cursor.getMonth();
+  const range = monthRange(year, month);
+  const account = calendarAccount();
+  const connection = calendarConnection(state.calendarStatus || state.oauthStatus, account, payload);
+  let status = view.status;
+  if (!view.showGrid && payload && payload.reason === "needs_auth" && account && account.email) {
+    status = calendarCopy("needs_auth", account.email);
+  }
+  $("calendar-heading").textContent = range.label;
+  const statusEl = $("calendar-status");
+  statusEl.textContent = status;
+  statusEl.classList.toggle("error", view.error === true);
+  statusEl.classList.toggle("is-empty", !view.showGrid);
   $("calendar-create").hidden = !view.showForm;
-  const grant = calendarGrantState(state.oauthStatus, calendarAccount());
-  $("calendar-grant").disabled = grant.disabled;
-  $("calendar-grant").title = grant.reason;
+  const grant = $("calendar-grant");
+  grant.disabled = !connection.canGrant;
+  grant.textContent = connection.label;
+  grant.title = connection.canGrant ? "" : connection.reason;
+  const layout = $("calendar-layout");
+  if (layout) layout.hidden = !view.showGrid;
   const body = $("calendar-body");
   body.replaceChildren();
-  if (!view.showGrid) return;
+  if (!view.showGrid) {
+    paintCalendarDetail(null, "");
+    return;
+  }
   fillCalendarPick(view.calendars);
   const grid = document.createElement("div");
   grid.className = "calendar-grid";
@@ -4476,7 +4829,7 @@ function paintCalendar(payload) {
     head.textContent = name;
     grid.appendChild(head);
   }
-  for (const day of monthCells(cursor.getFullYear(), cursor.getMonth())) {
+  for (const day of monthCells(year, month)) {
     const cell = document.createElement("div");
     cell.className = "calendar-day";
     if (!day) {
@@ -4484,28 +4837,45 @@ function paintCalendar(payload) {
       grid.appendChild(cell);
       continue;
     }
+    if (sameDay(year, month, day)) cell.classList.add("today");
     const num = document.createElement("span");
     num.className = "calendar-num";
     num.textContent = String(day);
     cell.appendChild(num);
-    for (const event of eventsOnDay(view.events, dayKey(cursor.getFullYear(), cursor.getMonth(), day))) {
-      const item = document.createElement("p");
+    for (const event of eventsOnDay(view.events, dayKey(year, month, day))) {
+      const item = document.createElement("button");
+      item.type = "button";
       item.className = "calendar-event";
-      item.textContent = event.title || "(no title)";
+      if (event.id === state.calendarEventId) item.classList.add("is-selected");
+      item.textContent = eventChip(event);
+      const tip = [event.title || "(no title)", event.location].filter(Boolean).join(" — ");
+      if (tip) item.title = tip;
+      item.addEventListener("click", () => selectCalendarEvent(event));
       cell.appendChild(item);
     }
     grid.appendChild(cell);
   }
   body.appendChild(grid);
+  paintAgenda(view.events);
+  const selected = selectedCalendarEvent(payload);
+  paintCalendarDetail(selected, calendarNameOf(view.calendars, (selected && selected.calendarId) || state.calendarId));
 }
 
 async function loadCalendar() {
   const gen = ++calendarGen;
   fillCalendarAccounts();
   const account = calendarAccount();
+  let calStatus = state.oauthStatus;
+  try {
+    calStatus = await call("calendar:status");
+  } catch {
+    // The month list still says when the grant is missing.
+  }
+  if (gen !== calendarGen) return;
+  state.calendarStatus = calStatus;
   if (!account) {
-    if (gen !== calendarGen) return;
-    paintCalendar({ api: false, reason: "needs_auth", events: [], calendars: [] });
+    state.calendarPayload = { api: false, reason: "no_account", events: [], calendars: [] };
+    paintCalendar(state.calendarPayload);
     return;
   }
   state.calendarAccountId = account.id;
@@ -4521,17 +4891,16 @@ async function loadCalendar() {
     });
     if (gen !== calendarGen) return;
     if (payload && payload.calendarId) state.calendarId = payload.calendarId;
+    const events = Array.isArray(payload && payload.events) ? payload.events : [];
+    if (!events.some((event) => event && event.id === state.calendarEventId)) state.calendarEventId = "";
+    state.calendarPayload = payload;
     paintCalendar(payload);
   } catch (error) {
     if (gen !== calendarGen) return;
-    paintCalendar({
-      api: false,
-      reason: "error",
-      message: error instanceof Error ? error.message : String(error),
-      events: [],
-      calendars: [],
-    });
-    $("calendar-status").textContent = error instanceof Error ? error.message : String(error);
+    const message = error instanceof Error ? error.message : String(error);
+    state.calendarEventId = "";
+    state.calendarPayload = { api: false, reason: "error", message, events: [], calendars: [] };
+    paintCalendar(state.calendarPayload);
   }
 }
 
@@ -4577,12 +4946,18 @@ async function submitCalendarEvent(event) {
     accountId: account && account.id,
     calendarId: state.calendarId || $("calendar-pick").value,
     title: $("calendar-event-title").value,
+    location: $("calendar-location").value,
     start: $("calendar-start").value,
     end: $("calendar-end").value,
   });
-  if (draft.error) throw new Error(draft.error);
+  if (draft.error) {
+    $("calendar-status").textContent = draft.error;
+    $("calendar-status").classList.add("error");
+    throw new Error(draft.error);
+  }
   await call("calendar:createEvent", draft);
   $("calendar-event-title").value = "";
+  $("calendar-location").value = "";
   showStatus("Event saved on the calendar.");
   await loadCalendar();
 }
@@ -4590,6 +4965,12 @@ async function submitCalendarEvent(event) {
 function shiftMonth(delta) {
   const cursor = state.calendarCursor || new Date();
   state.calendarCursor = new Date(cursor.getFullYear(), cursor.getMonth() + delta, 1);
+  loadCalendar().catch((error) => showStatus(error.message, true));
+}
+
+function showCalendarToday() {
+  state.calendarCursor = new Date();
+  state.calendarEventId = "";
   loadCalendar().catch((error) => showStatus(error.message, true));
 }
 
@@ -4636,11 +5017,13 @@ function wire() {
   $("rail-calendar").addEventListener("click", showCalendar);
   $("calendar-prev").addEventListener("click", () => shiftMonth(-1));
   $("calendar-next").addEventListener("click", () => shiftMonth(1));
+  $("calendar-today").addEventListener("click", showCalendarToday);
   $("calendar-grant").addEventListener("click", () => guard(grantCalendar));
   $("calendar-create").addEventListener("submit", (event) => guard(() => submitCalendarEvent(event)));
   $("calendar-account").addEventListener("change", () => {
     state.calendarAccountId = $("calendar-account").value;
     state.calendarId = "";
+    state.calendarEventId = "";
     loadCalendar().catch((error) => showStatus(error.message, true));
   });
   $("calendar-pick").addEventListener("change", () => {
