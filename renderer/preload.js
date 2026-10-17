@@ -106,6 +106,11 @@ const INVOKE = [
   "nativeAgent:getTriage",
   "nativeAgent:triage",
   "nativeAgent:history",
+  "nativeAgent:chat",
+  "nativeAgent:chatHistory",
+  "nativeAgent:chatShow",
+  "nativeAgent:memoryGet",
+  "nativeAgent:memorySet",
 ];
 
 const EVENTS = [

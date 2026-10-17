@@ -495,6 +495,7 @@ async function runSkill(params) {
           instruction: skill.instruction,
           categories: taxonomy(),
           writingRules: writingBrief(),
+          notes: readMemory().notes,
           person: ctx.person || "",
           calendarNote: note,
           events: calendar ? calendar.events : [],
@@ -602,6 +603,7 @@ async function triage() {
           instruction: "Assign each message to one categoryId.",
           categories,
           writingRules: writingBrief(),
+          notes: readMemory().notes,
           messages,
         }),
       },
@@ -755,6 +757,256 @@ async function applyMove(message, labelName) {
   return { ok: true, detail: `Moved to “${labelName}”.` };
 }
 
+const CHAT_SYSTEM = [
+  "You are the local GenMail assistant.",
+  "Use only the JSON in the user message.",
+  "Never invent messages, people, or events.",
+  "Never send mail. Never claim a message was sent.",
+  "Drafts are proposals the user reviews in compose.",
+  "If messages is empty, say there is no cached inbox mail.",
+  "Reply in plain text.",
+].join(" ");
+
+const CHAT_KEEP = 40;
+
+function chatPath() {
+  return path.join(userDataDir(), "agent-chat.json");
+}
+
+function memoryPath() {
+  return path.join(userDataDir(), "agent-memory.json");
+}
+
+function readJsonFile(file, fallback) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function readTurns() {
+  const parsed = readJsonFile(chatPath(), { turns: [] });
+  const turns = Array.isArray(parsed.turns) ? parsed.turns : [];
+  return turns.filter((turn) => turn && (turn.role === "user" || turn.role === "agent"));
+}
+
+function writeTurns(turns) {
+  const dest = chatPath();
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.writeFileSync(dest, JSON.stringify({ version: 1, turns: turns.slice(-CHAT_KEEP) }, null, 2));
+}
+
+function readMemory() {
+  const parsed = readJsonFile(memoryPath(), { notes: "" });
+  return { notes: clip(parsed.notes, 2000) };
+}
+
+function writeMemory(params) {
+  const notes = clip(params && params.notes, 2000);
+  const dest = memoryPath();
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.writeFileSync(dest, JSON.stringify({ notes }, null, 2));
+  return ok({ notes });
+}
+
+function appendChat(turn) {
+  const turns = readTurns();
+  const next = {
+    id: newId("turn"),
+    at: new Date().toISOString(),
+    role: turn && turn.role === "user" ? "user" : "agent",
+    kind: clip(turn && turn.kind, 20) || "chat",
+    text: clip(turn && turn.text, 4000),
+    error: !!(turn && turn.error),
+    name: clip(turn && turn.name, 120),
+    skillId: clip(turn && turn.skillId, 80),
+    note: clip(turn && turn.note, 400),
+    sections: Array.isArray(turn && turn.sections) ? turn.sections : [],
+    drafts: Array.isArray(turn && turn.drafts) ? turn.drafts : [],
+    followUps: Array.isArray(turn && turn.followUps) ? turn.followUps : [],
+    proposals: Array.isArray(turn && turn.proposals) ? turn.proposals : [],
+    triage: turn && turn.triage && typeof turn.triage === "object" ? turn.triage : null,
+  };
+  turns.push(next);
+  writeTurns(turns);
+  return next;
+}
+
+function publicTurns() {
+  return readTurns().slice(-CHAT_KEEP);
+}
+
+function routeChat(text, skills) {
+  const raw = clip(text, 2000);
+  const folded = raw.toLowerCase();
+  if (!folded) return { kind: "empty" };
+  if (/^(triage|triage inbox|sort inbox|sort my inbox|sort the inbox)$/.test(folded)) {
+    return { kind: "triage" };
+  }
+  const rows = Array.isArray(skills) ? skills : [];
+  const contact = addressIn(raw);
+  let best = null;
+  for (const row of rows) {
+    const name = String(row && row.name || "").trim().toLowerCase();
+    const id = String(row && row.id || "").trim().toLowerCase();
+    const named = name && (folded === name || folded === `run ${name}` || (name.length > 3 && folded.includes(name)));
+    const ident = id && (folded === id || folded === `run ${id}`);
+    if (named || ident) {
+      if (!best || name.length > String(best.name || "").length) best = row;
+    }
+  }
+  if (best) return { kind: "skill", skillId: best.id, name: best.name || best.id, contact };
+  return { kind: "chat" };
+}
+
+function turnFromSkill(data) {
+  const accepted = !!(data && data.accepted !== false && !data.error);
+  const text = accepted
+    ? (data.summary || data.text || data.title || "Done.")
+    : ((data && data.error) || "That skill did not run.");
+  return {
+    role: "agent",
+    kind: "skill",
+    text,
+    error: !accepted,
+    name: data && data.name || "",
+    skillId: data && data.skillId || "",
+    note: accepted ? (data && data.note) || "" : "",
+    sections: accepted && Array.isArray(data && data.sections) ? data.sections : [],
+    drafts: accepted && Array.isArray(data && data.drafts) ? data.drafts : [],
+    followUps: accepted && Array.isArray(data && data.followUps) ? data.followUps : [],
+    proposals: accepted && Array.isArray(data && data.proposals) ? data.proposals : [],
+  };
+}
+
+function triageCopy(data) {
+  if (!data) return { text: "Triage did not finish.", error: true };
+  if (data.reason === "needs_key") return { text: data.error || KEY_ERROR, error: true };
+  if (data.reason === "needs_mailbox") return { text: data.error || MAIL_ERROR, error: true };
+  if (data.reason === "empty") return { text: data.error || "The inbox cache is empty. Refresh mail, then triage again.", error: false };
+  if (data.accepted === false && data.error) return { text: data.error, error: true };
+  if (data.updatedAt) return { text: "Updated " + data.updatedAt, error: false };
+  return { text: "Triage finished.", error: false };
+}
+
+function turnFromTriage(data) {
+  const copy = triageCopy(data);
+  return {
+    role: "agent",
+    kind: "triage",
+    text: copy.text,
+    error: copy.error,
+    name: "Inbox triage",
+    triage: copy.error ? null : {
+      reason: data && data.reason || "",
+      sections: data && Array.isArray(data.sections) ? data.sections : [],
+    },
+    proposals: data && Array.isArray(data.proposals) ? data.proposals : [],
+  };
+}
+
+function turnFromRun(run) {
+  const triage = run && run.kind === "triage";
+  return {
+    role: "agent",
+    kind: triage ? "triage" : "skill",
+    text: (run && (run.summary || run.name)) || "Run",
+    error: !!(run && run.accepted === false),
+    name: run && run.name || "",
+    skillId: run && run.skillId || "",
+    note: run && run.note || "",
+    sections: !triage && Array.isArray(run && run.sections) ? run.sections : [],
+    drafts: Array.isArray(run && run.drafts) ? run.drafts : [],
+    followUps: Array.isArray(run && run.followUps) ? run.followUps : [],
+    triage: triage ? { reason: "ready", sections: Array.isArray(run.sections) ? run.sections : [] } : null,
+  };
+}
+
+async function answerQuestion(text) {
+  if (!hasKey()) return { text: KEY_ERROR, error: true };
+  const prior = readTurns().slice(-9, -1).map((turn) => ({
+    role: turn.role,
+    text: clip(turn.text, 500),
+  }));
+  const mail = inboxMessages(8).map((message) => ({
+    from: clip(message.from, 120),
+    subject: clip(message.subject, 160),
+    snippet: clip(message.snippet, 180),
+    date: clip(message.date, 40),
+  }));
+  let events = [];
+  let calendarNote = mailboxConnected() ? "" : MAIL_ERROR;
+  if (mailboxConnected()) {
+    const calendar = await calendarContext(accountIdFor({}));
+    events = calendar.events || [];
+    calendarNote = calendar.note || "";
+  }
+  try {
+    const reply = await complete([
+      { role: "system", content: CHAT_SYSTEM },
+      {
+        role: "user",
+        content: JSON.stringify({
+          memory: readMemory().notes,
+          history: prior,
+          question: text,
+          messages: mail,
+          events,
+          calendarNote,
+        }),
+      },
+    ], { temperature: 0.2 });
+    return { text: clip(reply, 4000) || "I don't have an answer from the cached mail.", error: false };
+  } catch (error) {
+    return { text: error instanceof Error ? error.message : String(error), error: true };
+  }
+}
+
+async function chat(params) {
+  const text = clip(params && params.text, 2000);
+  if (!text) return fail(new Error("Write a message first."));
+  const intent = routeChat(text, listHomeSkills());
+  appendChat({ role: "user", kind: intent.kind, text });
+  if (intent.kind === "skill") {
+    const result = await runSkill({
+      skillId: intent.skillId,
+      contactEmail: intent.contact || (params && params.contactEmail) || "",
+      accountId: params && params.accountId,
+      email: params && params.email,
+    });
+    const data = result && result.success ? result.data : {
+      accepted: false,
+      skillId: intent.skillId,
+      error: (result && result.error && result.error.message) || "That skill did not run.",
+    };
+    const turn = appendChat(turnFromSkill(data));
+    return ok({ intent: "skill", turn, turns: publicTurns(), result: data });
+  }
+  if (intent.kind === "triage") {
+    const result = await triage();
+    const data = result && result.success ? result.data : { accepted: false, reason: "error", error: "Triage did not finish." };
+    const turn = appendChat(turnFromTriage(data));
+    return ok({ intent: "triage", turn, turns: publicTurns(), triage: data });
+  }
+  const answer = await answerQuestion(text);
+  const turn = appendChat({ role: "agent", kind: "chat", text: answer.text, error: answer.error });
+  return ok({ intent: "chat", turn, turns: publicTurns() });
+}
+
+function chatHistory() {
+  return ok({ turns: publicTurns(), memory: readMemory() });
+}
+
+function chatShow(params) {
+  const runId = clip(params && params.runId, 80);
+  const run = readStore().runs.find((item) => item && item.id === runId);
+  if (!run) return fail(new Error("That run is not in history."));
+  const turn = appendChat(turnFromRun(run));
+  return ok({ intent: "history", turn, turns: publicTurns() });
+}
+
 function dismissProposal(params) {
   const proposalId = params && typeof params.proposalId === "string" ? params.proposalId.trim() : "";
   const store = readStore();
@@ -783,6 +1035,16 @@ function answer(channel, args) {
       return triage();
     case "nativeAgent:history":
       return history();
+    case "nativeAgent:chat":
+      return chat(params);
+    case "nativeAgent:chatHistory":
+      return chatHistory();
+    case "nativeAgent:chatShow":
+      return chatShow(params);
+    case "nativeAgent:memoryGet":
+      return ok(readMemory());
+    case "nativeAgent:memorySet":
+      return writeMemory(params);
     default:
       return undefined;
   }
@@ -799,6 +1061,7 @@ module.exports = {
   dismissProposal,
   triage,
   getTriage,
+  routeChat,
   mailboxConnected,
   liveProfileMail,
   groupTriage,

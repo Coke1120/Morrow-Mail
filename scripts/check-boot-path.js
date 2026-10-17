@@ -1470,6 +1470,9 @@ assert.ok(html.includes('id="tidy"') && html.includes("One-click tidy"));
 assert.ok(registered.has("mail:tidyInbox") && used.has("mail:tidyInbox"));
 assert.ok(registered.has("genmail:configGetShowOneClickTidyEffective") && used.has("genmail:configGetShowOneClickTidyEffective"));
 assert.ok(html.includes('id="agent-panel"') && html.includes('id="agent-open"') && html.includes('id="studio-home"') && html.includes('id="studio-library"'));
+assert.ok(html.includes('id="agent-composer"') && html.includes('id="agent-send"') && html.includes('id="agent-input"'));
+assert.ok(html.includes('id="agent-memory"') && html.includes('id="side-agent"') && html.includes('id="side-brain"') && html.includes('id="side-mail"'));
+assert.ok(appJs.includes("nativeAgent:chat") && appJs.includes("nativeAgent:memorySet") && appJs.includes("nativeAgent:chatHistory"));
 assert.ok(html.includes('id="rail-agent"') && html.includes('id="agent-sections"') && html.includes('id="agent-triage"'));
 assert.ok(html.includes(">Agent<") && html.includes("Home skills") && html.includes("Library skills") && html.includes("Only when I ask"));
 assert.ok(!html.includes("no agent loop"));
@@ -1964,6 +1967,8 @@ async function checkAiDraft() {
   const agent = require("../host/agent");
   const agentSrc = fs.readFileSync(path.join(root, "host/agent.js"), "utf8");
   assert.ok(!agentSrc.includes("mail:send"));
+  assert.ok(agentSrc.includes("agent-chat.json") && agentSrc.includes("agent-memory.json"));
+  assert.ok(!agentSrc.includes("openclaw") && !agentSrc.includes("OpenClaw"));
   assert.ok(!agentSrc.includes("skill-tone") && !agentSrc.includes("Match my tone"));
   const brainHome = brain.answer("emailBrain:getSkills", []);
   const brainLibrary = brain.answer("emailBrain:getLibrarySkills", []);
@@ -2070,7 +2075,9 @@ async function checkAiDraft() {
           followUps: [{ messageId: "m-live", kind: "draft", label: "Reply", body: "I will look." }],
         }, { messageId: "made-up", categoryId: "fyi", summary: "Invented row." }],
       })
-      : JSON.stringify({
+      : body.includes("question")
+        ? "Ada needs a reply about the notes."
+        : JSON.stringify({
         title: "Skill result",
         summary: "Ada asked for the notes.",
         sections: [{ title: "Needs You", items: ["Reply to Ada"] }],
@@ -2120,12 +2127,50 @@ async function checkAiDraft() {
     assert.ok(!JSON.stringify(triaged.data.sections).includes("made-up"));
     const history = agent.answer("nativeAgent:history", []);
     assert.ok(history.data.runs.some((row) => row.skillId === "morning-brief" && row.accepted === true));
+    assert.strictEqual(agent.routeChat("", []).kind, "empty");
+    assert.strictEqual(agent.routeChat("Triage inbox", []).kind, "triage");
+    assert.strictEqual(agent.routeChat("Morning Brief", agent.listHomeSkills()).skillId, "morning-brief");
+    assert.strictEqual(agent.routeChat("What is unread?", agent.listHomeSkills()).kind, "chat");
+    const savedMemory = agent.answer("nativeAgent:memorySet", [{ notes: "Prefer short replies." }]);
+    assert.strictEqual(savedMemory.data.notes, "Prefer short replies.");
+    const asked = await agent.answer("nativeAgent:chat", [{ text: "What should I handle?" }]);
+    assert.strictEqual(asked.data.intent, "chat");
+    assert.strictEqual(asked.data.turn.role, "agent");
+    assert.match(asked.data.turn.text, /Ada needs a reply about the notes/);
+    assert.ok(seenBodies.some((body) => body.includes("Prefer short replies.") && body.includes("Never invent")));
+    assert.ok(!JSON.stringify(asked.data).includes("Analytical Engine"));
+    const viaSkill = await agent.answer("nativeAgent:chat", [{ text: "Run Morning Brief" }]);
+    assert.strictEqual(viaSkill.data.intent, "skill");
+    assert.strictEqual(viaSkill.data.turn.kind, "skill");
+    assert.strictEqual(viaSkill.data.turn.error, false);
+    assert.ok(viaSkill.data.turn.drafts.some((row) => row.body === "I will look."));
+    const viaTriage = await agent.answer("nativeAgent:chat", [{ text: "sort the inbox" }]);
+    assert.strictEqual(viaTriage.data.intent, "triage");
+    assert.ok(viaTriage.data.turn.triage.sections.some((section) => section.items && section.items.length));
+    const chatFile = path.join(process.env.GENMAIL_AI_CONFIG_DIR, "agent-chat.json");
+    const disk = JSON.parse(fs.readFileSync(chatFile, "utf8"));
+    assert.ok(disk.turns.filter((turn) => turn.role === "user").length >= 3);
+    const loaded = agent.answer("nativeAgent:chatHistory", []);
+    assert.strictEqual(loaded.data.memory.notes, "Prefer short replies.");
+    assert.strictEqual(loaded.data.turns.length, disk.turns.length);
+    const briefRun = history.data.runs.find((row) => row.skillId === "morning-brief");
+    const shown = agent.answer("nativeAgent:chatShow", [{ runId: briefRun.id }]);
+    assert.strictEqual(shown.success, true);
+    assert.ok(shown.data.turns.length > loaded.data.turns.length);
   } finally {
     db.hasAccounts = hadAccounts;
     db.recentInbox = hadInbox;
     global.fetch = originalFetch;
     delete process.env.GENMAIL_AI_API_KEY;
   }
+  const blockedChat = await agent.answer("nativeAgent:chat", [{ text: "Hello from the sidebar" }]);
+  assert.strictEqual(blockedChat.data.intent, "chat");
+  assert.strictEqual(blockedChat.data.turn.error, true);
+  assert.match(blockedChat.data.turn.text, /API key/);
+  const keptChat = agent.answer("nativeAgent:chatHistory", []);
+  assert.ok(keptChat.data.turns.some((turn) => turn.text === "Hello from the sidebar"));
+  assert.strictEqual(keptChat.data.memory.notes, "Prefer short replies.");
+  assert.strictEqual((await agent.answer("nativeAgent:chat", [{ text: "  " }])).success, false);
   assert.ok(!fs.existsSync(path.join(process.env.GENMAIL_AI_CONFIG_DIR, "brain.json")));
   const cached = brain.answer("emailBrain:getCached", []);
   assert.strictEqual(cached.success, true);

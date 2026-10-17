@@ -37,6 +37,7 @@ const state = {
   oauthStatus: null,
   oauthPending: false,
   view: "mail",
+  side: "folders",
   calendarCursor: null,
   calendarAccountId: "",
   calendarId: "",
@@ -74,6 +75,9 @@ let brainSkillCache = {};
 let brainCategoriesReady = false;
 let calendarGen = 0;
 let agentGen = 0;
+let agentChatBusy = false;
+let agentTurns = [];
+let agentProposalIds = null;
 let listMotionKey = "";
 let brainView = {
   accepted: null,
@@ -2872,7 +2876,7 @@ async function refresh() {
     showStatus("");
     return;
   }
-  if (state.view === "agent") {
+  if (state.side === "agent") {
     showStatus("Refreshing…");
     await loadAgent();
     showStatus("");
@@ -2943,11 +2947,15 @@ function onShellKey(event) {
   moveCursor(event.key === "ArrowDown" ? 1 : -1);
 }
 
+function sideColumn() {
+  return document.querySelector(".side");
+}
+
 function setPane(which, width) {
   const shell = document.querySelector(".shell");
   if (!shell) return;
   const total = shell.getBoundingClientRect().width;
-  const folders = $("folders").getBoundingClientRect().width;
+  const folders = sideColumn().getBoundingClientRect().width;
   const list = $("messages").getBoundingClientRect().width;
   const readerMin = 260;
   const handle = 12;
@@ -2967,7 +2975,7 @@ function wireSplits() {
       if (!step) return;
       event.preventDefault();
       event.stopPropagation();
-      const pane = handle.dataset.split === "folders" ? $("folders") : $("messages");
+      const pane = handle.dataset.split === "folders" ? sideColumn() : $("messages");
       setPane(handle.dataset.split, pane.getBoundingClientRect().width + step);
     });
     handle.addEventListener("pointerdown", (event) => {
@@ -2975,7 +2983,7 @@ function wireSplits() {
       event.preventDefault();
       const which = handle.dataset.split;
       const startX = event.clientX;
-      const start = (which === "folders" ? $("folders") : $("messages")).getBoundingClientRect().width;
+      const start = (which === "folders" ? sideColumn() : $("messages")).getBoundingClientRect().width;
       function move(ev) {
         setPane(which, start + ev.clientX - startX);
       }
@@ -3695,12 +3703,12 @@ function startBrainEdit(row) {
 function clearBrainEdit() {
   brainEditId = "";
   $("brain-rule").value = "";
-  if ($("brain").open) paintBrain(brainSnapshot, brainView);
+  if (brainIsOpen()) paintBrain(brainSnapshot, brainView);
 }
 
 async function loadBrain() {
   brainSnapshot = await call("emailBrain:getCached");
-  if ($("brain").open) paintBrain(brainSnapshot, brainView);
+  if (brainIsOpen()) paintBrain(brainSnapshot, brainView);
 }
 
 function showCategoryStatus(text, isError) {
@@ -3830,7 +3838,7 @@ async function loadBrainCategories(gen) {
   brainCategories = parsed.categories;
   brainCategoryDefaults = parsed.defaults;
   brainCategoriesReady = true;
-  if ($("brain").open) paintCategories();
+  if (brainIsOpen()) paintCategories();
 }
 
 async function saveBrainCategories() {
@@ -3907,8 +3915,13 @@ async function addCategoryFromPrompt(event) {
   }
 }
 
+function brainIsOpen() {
+  const node = $("brain");
+  return !!(node && !node.hidden);
+}
+
 function openBrain() {
-  openDialog("brain");
+  showSide("brain");
   showBrainPane("profile");
   brainCategoriesReady = false;
   brainCategories = [];
@@ -3932,7 +3945,7 @@ function openBrain() {
   const skillResult = $("brain-skill-result");
   if (skillResult) skillResult.replaceChildren();
   loadBrainSkills().catch((error) => {
-    if ($("brain").open) paintBrainSkills({}, error instanceof Error ? error.message : String(error));
+    if (brainIsOpen()) paintBrainSkills({}, error instanceof Error ? error.message : String(error));
   });
 }
 
@@ -3995,7 +4008,7 @@ async function requestBrainRebuild(channels, mode) {
       percent: null,
     };
   }
-  if ($("brain").open) paintBrain(brainSnapshot, brainView);
+  if (brainIsOpen()) paintBrain(brainSnapshot, brainView);
 }
 
 async function refreshBrain() {
@@ -4010,7 +4023,7 @@ async function fixBrainItem(row) {
   if (brainFixBusy || !row || !row.id) return;
   brainFixBusy = true;
   brainView = { ...brainView, fixing: true, error: "", accepted: null };
-  if ($("brain").open) paintBrain(brainSnapshot, brainView);
+  if (brainIsOpen()) paintBrain(brainSnapshot, brainView);
   try {
     const noteEl = $("brain-fix-note");
     const note = noteEl ? noteEl.value.trim() : "";
@@ -4027,7 +4040,7 @@ async function fixBrainItem(row) {
     brainView = { ...brainView, fixing: false, error: error instanceof Error ? error.message : String(error) };
   } finally {
     brainFixBusy = false;
-    if ($("brain").open) paintBrain(brainSnapshot, brainView);
+    if (brainIsOpen()) paintBrain(brainSnapshot, brainView);
   }
 }
 
@@ -4043,7 +4056,7 @@ async function forgetBrainItem(row) {
     await loadBrain();
   } catch (error) {
     brainView = { ...brainView, error: error instanceof Error ? error.message : String(error) };
-    if ($("brain").open) paintBrain(brainSnapshot, brainView);
+    if (brainIsOpen()) paintBrain(brainSnapshot, brainView);
   }
 }
 
@@ -4054,7 +4067,7 @@ function onBrainRefreshState(payload) {
     refreshing: data.refreshing === true,
     error: data.error ? String(data.error) : "",
   };
-  if ($("brain").open) paintBrain(brainSnapshot, brainView);
+  if (brainIsOpen()) paintBrain(brainSnapshot, brainView);
 }
 
 function onBrainRebuildState(payload) {
@@ -4066,11 +4079,11 @@ function onBrainRebuildState(payload) {
     percent: typeof data.percent === "number" ? data.percent : null,
     error: data.error ? String(data.error) : "",
   };
-  if ($("brain").open) paintBrain(brainSnapshot, brainView);
+  if (brainIsOpen()) paintBrain(brainSnapshot, brainView);
 }
 
 function onBrainUpdated() {
-  if (!$("brain").open) return;
+  if (!brainIsOpen()) return;
   loadBrain().catch((error) => {
     brainView = { ...brainView, error: error instanceof Error ? error.message : String(error) };
     paintBrain(brainSnapshot, brainView);
@@ -4385,10 +4398,10 @@ function paintProposals(root, proposals, append) {
     confirm.addEventListener("click", () => {
       confirmProposal(proposal).then((data) => {
         wrap.remove();
-        if ($("brain").open) setSkillStatus((data && data.detail) || "Move confirmed.", false);
+        if (brainIsOpen()) setSkillStatus((data && data.detail) || "Move confirmed.", false);
       }).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
-        if ($("brain").open) setSkillStatus(message, true);
+        if (brainIsOpen()) setSkillStatus(message, true);
         else showStatus(message, true);
       });
     });
@@ -4399,10 +4412,10 @@ function paintProposals(root, proposals, append) {
     dismiss.addEventListener("click", () => {
       dismissProposal(proposal).then(() => {
         wrap.remove();
-        if ($("brain").open) setSkillStatus("Move dismissed.", false);
+        if (brainIsOpen()) setSkillStatus("Move dismissed.", false);
       }).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
-        if ($("brain").open) setSkillStatus(message, true);
+        if (brainIsOpen()) setSkillStatus(message, true);
         else showStatus(message, true);
       });
     });
@@ -4510,7 +4523,9 @@ function paintHistory(root, runs) {
     line.type = "button";
     line.className = "history-row";
     line.textContent = historyLine(run) || "Run";
-    line.addEventListener("click", () => paintStoredRun(run));
+    line.addEventListener("click", () => {
+      showStoredRun(run).catch((error) => setAgentSkillStatus(error instanceof Error ? error.message : String(error), true));
+    });
     root.appendChild(line);
   }
 }
@@ -4692,16 +4707,28 @@ async function openFollowUp(messageId) {
   await openMessage(messageId, true);
 }
 
+async function showStoredRun(run) {
+  if (run && run.id) {
+    applyChatPayload(await call("nativeAgent:chatShow", { runId: run.id }));
+    return;
+  }
+  paintStoredRun(run);
+}
+
 async function runBrainSkill(row) {
   const skillId = skillIdOf(row);
   if (!skillId) {
     setSkillStatus("That skill has no id.", true);
     return;
   }
+  if (!brainIsOpen() && state.side === "agent") {
+    await sendAgentText(skillName(row) || skillId);
+    return;
+  }
   if (brainSkillBusy) return;
   brainSkillBusy = true;
   setSkillStatus("Running…", false);
-  if ($("brain").open) paintBrainSkills(brainSkillCache, "");
+  if (brainIsOpen()) paintBrainSkills(brainSkillCache, "");
   try {
     const data = await call("emailBrain:runSkill", skillPayload(row));
     const message = skillResultMessage(data);
@@ -4717,7 +4744,7 @@ async function runBrainSkill(row) {
     setSkillStatus(error instanceof Error ? error.message : String(error), true);
   } finally {
     brainSkillBusy = false;
-    if ($("brain").open) paintBrainSkills(brainSkillCache, "");
+    if (brainIsOpen()) paintBrainSkills(brainSkillCache, "");
   }
 }
 
@@ -4762,7 +4789,7 @@ async function loadBrainSkills() {
       errors.push(error instanceof Error ? error.message : String(error));
     }
   }
-  if ($("brain").open) paintBrainSkills(lists, errors.filter(Boolean).join(" "));
+  if (brainIsOpen()) paintBrainSkills(lists, errors.filter(Boolean).join(" "));
 }
 
 function paintStudio(lists, errorText) {
@@ -4773,6 +4800,24 @@ function paintStudio(lists, errorText) {
     if (!root) continue;
     const mode = id === "studio-library" ? "install" : "run";
     paintSkillList(root, skillRows(byId[id]), empty, mode);
+  }
+  paintSkillChips(skillRows(byId["studio-home"]));
+}
+
+function paintSkillChips(rows) {
+  const root = $("agent-skill-chips");
+  if (!root) return;
+  root.replaceChildren();
+  for (const row of rows) {
+    const name = skillName(row);
+    if (!name || !skillIdOf(row)) continue;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = name;
+    button.addEventListener("click", () => {
+      sendAgentText(name).catch((error) => setAgentSkillStatus(error instanceof Error ? error.message : String(error), true));
+    });
+    root.appendChild(button);
   }
 }
 
@@ -4790,21 +4835,20 @@ async function loadStudio() {
   if (panel && !panel.hidden) paintStudio(lists, errors.filter(Boolean).join(" "));
 }
 
-function paintAgent(payload, errorText) {
-  const status = $("agent-status");
-  const copy = errorText ? { text: errorText, error: true } : agentStatusCopy(payload);
-  status.textContent = copy.text;
-  status.classList.toggle("error", copy.error);
-  const context = $("agent-context");
-  if (context) context.textContent = agentContextCopy(state.email);
-  const root = $("agent-sections");
-  root.replaceChildren();
+function shownProposals(list) {
+  const rows = Array.isArray(list) ? list.filter((item) => item && item.status !== "dismissed" && item.status !== "confirmed") : [];
+  if (!agentProposalIds) return rows;
+  const ids = new Set(agentProposalIds);
+  return rows.filter((item) => ids.has(item.id));
+}
+
+function appendTriage(root, payload) {
   const reason = payload && payload.reason;
   for (const section of agentSections(payload)) {
     const block = document.createElement("section");
     block.className = "agent-section";
     const title = document.createElement("h3");
-    title.textContent = section.name || "Section";
+    title.textContent = section.name || section.title || "Section";
     block.appendChild(title);
     const items = Array.isArray(section.items) ? section.items : [];
     const empty = sectionEmptyCopy(reason);
@@ -4814,18 +4858,173 @@ function paintAgent(payload, errorText) {
       note.textContent = empty;
       block.appendChild(note);
     }
-    for (const item of items) block.appendChild(agentCard(item));
+    for (const item of items) {
+      if (item && typeof item === "object") block.appendChild(agentCard(item));
+      else if (item) {
+        const line = document.createElement("p");
+        line.textContent = String(item);
+        block.appendChild(line);
+      }
+    }
     root.appendChild(block);
+  }
+}
+
+function paintTurn(turn) {
+  const article = document.createElement("article");
+  article.className = "agent-turn " + (turn && turn.role === "user" ? "is-user" : "is-agent");
+  if (turn && turn.error) article.classList.add("is-error");
+  const who = document.createElement("p");
+  who.className = "agent-who";
+  who.textContent = turn && turn.role === "user" ? "You" : "Agent";
+  article.appendChild(who);
+  if (turn && turn.text) {
+    const body = document.createElement("p");
+    body.textContent = turn.text;
+    article.appendChild(body);
+  }
+  if (turn && turn.kind === "triage" && turn.triage) appendTriage(article, turn.triage);
+  else if (turn && turn.role !== "user" && !turn.error) {
+    const slot = document.createElement("div");
+    paintSkillBlocks(slot, {
+      accepted: true,
+      note: turn.note,
+      sections: Array.isArray(turn.sections) ? turn.sections : [],
+      drafts: turn.drafts,
+      followUps: turn.followUps,
+      proposals: shownProposals(turn.proposals),
+    });
+    if (slot.childNodes.length) article.appendChild(slot);
+  }
+  return article;
+}
+
+function paintThread() {
+  const root = $("agent-sections");
+  if (!root) return;
+  root.replaceChildren();
+  if (!agentTurns.length) {
+    const empty = document.createElement("p");
+    empty.className = "agent-empty hint";
+    empty.textContent = "No messages yet. Ask for a skill or triage. Nothing is sent.";
+    root.appendChild(empty);
+    return;
+  }
+  for (const turn of agentTurns) root.appendChild(paintTurn(turn));
+  root.scrollTop = root.scrollHeight;
+}
+
+function paintAgent(payload, errorText) {
+  const status = $("agent-status");
+  const copy = errorText ? { text: errorText, error: true } : agentStatusCopy(payload);
+  if (status) {
+    status.textContent = copy.text;
+    status.classList.toggle("error", copy.error);
+  }
+  const context = $("agent-context");
+  if (context) context.textContent = agentContextCopy(state.email);
+  if (payload && Array.isArray(payload.proposals)) {
+    agentProposalIds = payload.proposals.map((item) => item && item.id).filter(Boolean);
   }
   paintProposals($("agent-proposals"), payload && payload.proposals);
   paintHistory($("agent-history"), payload && payload.runs);
+  paintThread();
+}
+
+function applyChatPayload(data) {
+  if (!data) return;
+  if (Array.isArray(data.turns)) agentTurns = data.turns;
+  const notes = $("agent-memory");
+  if (notes && data.memory && document.activeElement !== notes) notes.value = data.memory.notes || "";
+  if (data.triage) paintAgent(data.triage, "");
+  else {
+    const status = $("agent-status");
+    if (status) {
+      status.textContent = "";
+      status.classList.remove("error");
+    }
+    if (data.result && Array.isArray(data.result.proposals)) {
+      agentProposalIds = data.result.proposals.map((item) => item && item.id).filter(Boolean);
+      paintProposals($("agent-proposals"), data.result.proposals);
+    }
+    paintThread();
+  }
+  if (data.turn) setAgentSkillStatus(data.turn.text || "", !!data.turn.error);
+}
+
+function agentChatRequest(text) {
+  const email = state.email;
+  const account = email
+    ? (state.accounts.find((item) => item.id === email.accountId) || selectedAccount())
+    : selectedAccount();
+  const payload = { text: String(text || "").trim() };
+  if (account && account.id && isLive(account)) payload.accountId = account.id;
+  if (email && email.id) {
+    payload.email = {
+      id: email.id,
+      subject: email.subject || "",
+      from: email.from || "",
+      snippet: email.snippet || "",
+    };
+  }
+  const contact = $("agent-contact");
+  const address = agentContact(contact ? contact.value : "");
+  if (address) payload.contactEmail = address;
+  return payload;
+}
+
+function setAgentBusy(busy) {
+  agentChatBusy = busy;
+  const send = $("agent-send");
+  const triage = $("agent-triage");
+  const input = $("agent-input");
+  if (send) send.disabled = busy;
+  if (triage) triage.disabled = busy;
+  if (input) input.disabled = busy;
+}
+
+async function sendAgentText(text) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed || agentChatBusy) return;
+  setAgentBusy(true);
+  const input = $("agent-input");
+  if (input && input.value.trim() === trimmed) input.value = "";
+  const status = $("agent-status");
+  if (status) {
+    status.textContent = "Working…";
+    status.classList.remove("error");
+  }
+  try {
+    const data = await call("nativeAgent:chat", agentChatRequest(trimmed));
+    applyChatPayload(data);
+    if (data && (data.intent === "skill" || data.intent === "triage")) {
+      const history = await call("nativeAgent:history");
+      paintHistory($("agent-history"), history && history.runs);
+    }
+  } finally {
+    setAgentBusy(false);
+  }
+}
+
+async function saveAgentMemory() {
+  const notes = $("agent-memory");
+  const data = await call("nativeAgent:memorySet", { notes: notes ? notes.value : "" });
+  if (notes && data && typeof data.notes === "string") notes.value = data.notes;
+  const status = $("agent-memory-status");
+  if (status) status.textContent = "Notes saved.";
 }
 
 async function loadAgent() {
   const gen = ++agentGen;
-  const triage = await call("nativeAgent:getTriage");
-  const history = await call("nativeAgent:history");
+  const [triage, history, chat] = await Promise.all([
+    call("nativeAgent:getTriage"),
+    call("nativeAgent:history"),
+    call("nativeAgent:chatHistory"),
+  ]);
   if (gen !== agentGen) return;
+  agentTurns = chat && Array.isArray(chat.turns) ? chat.turns : [];
+  const notes = $("agent-memory");
+  if (notes && document.activeElement !== notes) notes.value = (chat && chat.memory && chat.memory.notes) || "";
   const payload = Object.assign({}, triage, {
     runs: history && Array.isArray(history.runs) ? history.runs : triage && triage.runs,
   });
@@ -4834,32 +5033,62 @@ async function loadAgent() {
 }
 
 async function runTriage() {
-  const button = $("agent-triage");
-  button.disabled = true;
-  $("agent-status").textContent = "Triaging…";
-  $("agent-status").classList.remove("error");
-  try {
-    const data = await call("nativeAgent:triage");
-    paintAgent(data, "");
-    await loadStudio();
-  } finally {
-    button.disabled = false;
+  await sendAgentText("Triage inbox");
+}
+
+function showMailShell() {
+  if (state.view !== "calendar") return;
+  state.view = "mail";
+  hidePane("calendar-panel");
+  $("shell").hidden = false;
+  $("rail-calendar").setAttribute("aria-current", "false");
+}
+
+function markSide(name) {
+  state.side = name;
+  const shell = $("shell");
+  if (shell) shell.dataset.side = name;
+  const mail = $("side-mail");
+  if (mail) mail.hidden = name !== "folders";
+  const brain = $("brain");
+  if (brain) brain.hidden = name !== "brain";
+  for (const [id, pane] of [["side-folders", "folders"], ["side-agent", "agent"], ["side-brain", "brain"]]) {
+    const button = $(id);
+    if (button) button.setAttribute("aria-selected", pane === name ? "true" : "false");
+  }
+  if (state.view !== "calendar") {
+    $("rail-mail").setAttribute("aria-current", name === "agent" ? "false" : "page");
+    $("rail-agent").setAttribute("aria-current", name === "agent" ? "page" : "false");
+    $("rail-calendar").setAttribute("aria-current", "false");
+  }
+}
+
+function showSide(name) {
+  showMailShell();
+  const agent = $("agent-panel");
+  const reveal = name === "agent" && agent && agent.hidden;
+  markSide(name);
+  if (name === "agent") {
+    if (reveal) revealPanel("agent-panel");
+    else if (agent) agent.hidden = false;
+  } else {
+    hidePane("agent-panel");
   }
 }
 
 function showAgent() {
-  const swap = state.view !== "agent";
-  state.view = "agent";
-  hidePane("shell");
-  hidePane("calendar-panel");
-  if (swap) revealPanel("agent-panel");
-  else $("agent-panel").hidden = false;
-  $("rail-mail").setAttribute("aria-current", "false");
-  $("rail-calendar").setAttribute("aria-current", "false");
-  $("rail-agent").setAttribute("aria-current", "page");
+  showSide("agent");
   loadAgent().catch((error) => {
     paintAgent(null, error instanceof Error ? error.message : String(error));
   });
+}
+
+function closeBrain() {
+  brainEditId = "";
+  const rule = $("brain-rule");
+  if (rule) rule.value = "";
+  brainCategoryIndex = -1;
+  showSide("folders");
 }
 
 function calendarAccount() {
@@ -5077,12 +5306,9 @@ function showMail() {
   const swap = state.view !== "mail";
   state.view = "mail";
   hidePane("calendar-panel");
-  hidePane("agent-panel");
   if (swap) revealPanel("shell");
   else $("shell").hidden = false;
-  $("rail-mail").setAttribute("aria-current", "page");
-  $("rail-calendar").setAttribute("aria-current", "false");
-  $("rail-agent").setAttribute("aria-current", "false");
+  showSide("folders");
 }
 
 function showCalendar() {
@@ -5179,9 +5405,29 @@ function wire() {
   });
   $("rail-agent").addEventListener("click", showAgent);
   $("agent-open").addEventListener("click", showAgent);
+  $("side-folders").addEventListener("click", showMail);
+  $("side-agent").addEventListener("click", showAgent);
+  $("side-brain").addEventListener("click", openBrain);
   $("agent-mail").addEventListener("click", showMail);
   $("agent-triage").addEventListener("click", () => {
     runTriage().catch((error) => paintAgent(null, error instanceof Error ? error.message : String(error)));
+  });
+  $("agent-composer").addEventListener("submit", (event) => {
+    event.preventDefault();
+    sendAgentText($("agent-input").value).catch((error) => {
+      paintAgent(null, error instanceof Error ? error.message : String(error));
+    });
+  });
+  $("agent-input").addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" || event.shiftKey) return;
+    event.preventDefault();
+    $("agent-composer").requestSubmit();
+  });
+  $("agent-memory-save").addEventListener("click", () => {
+    saveAgentMemory().catch((error) => {
+      const status = $("agent-memory-status");
+      if (status) status.textContent = error instanceof Error ? error.message : String(error);
+    });
   });
   $("rail-calendar").addEventListener("click", showCalendar);
   $("calendar-prev").addEventListener("click", () => shiftMonth(-1));
@@ -5252,12 +5498,7 @@ function wire() {
     });
   });
   $("brain-open").addEventListener("click", openBrain);
-  $("brain-close").addEventListener("click", () => closeDialog("brain"));
-  $("brain").addEventListener("close", () => {
-    brainEditId = "";
-    $("brain-rule").value = "";
-    brainCategoryIndex = -1;
-  });
+  $("brain-close").addEventListener("click", closeBrain);
   $("brain-category-cancel").addEventListener("click", () => {
     resetCategoryForm();
     paintCategories();

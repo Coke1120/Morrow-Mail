@@ -24,15 +24,17 @@ No API key returns `accepted: false` with the AI Setup error. No connected mailb
 
 ## Agent
 
-The Agent rail tab and the toolbar Agent button show triage sections from Brain categories. Defaults are Needs You, Upcoming Today, Worth a look, FYI, and Other. Editing categories in Brain changes the next triage.
+The Agent chat lives in the left sidebar, next to Folders and Brain. The rail Agent button and the toolbar Agent button open that sidebar. The transcript is the primary surface: your turns and the agent's, with a composer at the bottom. Triage, home skills, library skills, proposals, and run history stay in that same chrome.
 
-Triage reads recent inbox messages already in the local cache. Each row is a short summary, a category, and follow-ups (review a reply, open the message, or open an attachment). Those follow-ups are proposals.
+A message is routed on the host. Naming a home skill runs that skill. "Triage inbox" (or "sort the inbox") runs triage. Anything else is a question. Each question sends a system prompt that must not invent mail and must not send, the last few turns, standing notes, and snippets from the cached inbox and calendar. Sample mail is not included. The transcript is `agent-chat.json` in the AI config directory. Standing notes are `agent-memory.json` in that same directory. Both survive a relaunch.
 
-Needs an AI key, needs a mailbox, and an empty inbox cache are empty states. They do not show stand-in messages. Each triage row can open its message. Brief This Person uses the open message or a contact email from the panel. Run history is the local list of skill and triage runs, and choosing a row shows the summary, sections, and drafts that were saved.
+Triage still files recent inbox mail into Brain categories. Defaults are Needs You, Upcoming Today, Worth a look, FYI, and Other. Editing categories in Brain changes the next triage. Each row is a short summary, a category, and follow-ups (review a reply, open the message, or open an attachment). Those follow-ups are proposals. Drafts open in compose. Nothing is sent until you choose Send.
+
+Needs an AI key, needs a mailbox, and an empty inbox cache are empty states. They do not show stand-in messages. Each triage row can open its message. Brief This Person uses the open message or a contact email from the panel. Run history is the local list of skill and triage runs, and choosing a row adds that saved run to the transcript.
 
 ## Profile
 
-The Brain dialog has three panes: Profile, Categories, and Skills. It opens and closes from the toolbar Brain button. Opening loads the cached persona, categories, and home and library skills.
+Email Brain sits in that same left sidebar, with Profile, Categories, and Skills. It opens from the sidebar Brain tab and the toolbar Brain button. Close returns to the folder list. Opening loads the cached persona, categories, and home and library skills.
 
 Profile shows `ownerName`, `emailsAnalyzed`, `factsLearned`, and `updatedAt` when the cached persona includes them. Writing rules are added, edited, and deleted there. Learned rows (source `auto`) use Fix and Forget. Fix calls the model and replaces that stored row. Forget removes it. Refresh tries `emailBrain:refresh`, then `emailBrain:rebuild` when refresh is not accepted. Rebuild calls `emailBrain:rebuild`. Progress is the refresh and rebuild events. Rebuild and Fix call the model when a key is set. Rebuild refuses sample mail. No mailbox and an empty cache are host errors, not stand-in mail. A missing key tells you to open GenMail → AI Setup.
 
@@ -40,4 +42,4 @@ Categories edit locally until Save, which replaces the stored list. That list is
 
 ## Channels
 
-`emailBrain:getCached`, `emailBrain:refresh`, `emailBrain:rebuild`, `emailBrain:addWritingRule`, `emailBrain:setWritingRule`, `emailBrain:deleteWritingRule`, `emailBrain:fixItem`, `emailBrain:forgetItem`, `emailBrain:getCategories`, `emailBrain:saveCategories`, `emailBrain:addCategoryViaPrompt`, `emailBrain:fixCategory`, `emailBrain:getSkills`, `emailBrain:getLibrarySkills`, `emailBrain:installSkill`, `emailBrain:removeSkill`, `emailBrain:runSkill`, `emailBrain:confirmProposal`, `emailBrain:dismissProposal`, `nativeAgent:getTriage`, `nativeAgent:triage`, `nativeAgent:history`, `nativeAgent:home:skills`, `nativeAgent:home:librarySkills`. The dialog also listens for `emailBrain:updated`, `emailBrain:refreshState`, and `emailBrain:rebuildState`.
+`emailBrain:getCached`, `emailBrain:refresh`, `emailBrain:rebuild`, `emailBrain:addWritingRule`, `emailBrain:setWritingRule`, `emailBrain:deleteWritingRule`, `emailBrain:fixItem`, `emailBrain:forgetItem`, `emailBrain:getCategories`, `emailBrain:saveCategories`, `emailBrain:addCategoryViaPrompt`, `emailBrain:fixCategory`, `emailBrain:getSkills`, `emailBrain:getLibrarySkills`, `emailBrain:installSkill`, `emailBrain:removeSkill`, `emailBrain:runSkill`, `emailBrain:confirmProposal`, `emailBrain:dismissProposal`, `nativeAgent:getTriage`, `nativeAgent:triage`, `nativeAgent:history`, `nativeAgent:home:skills`, `nativeAgent:home:librarySkills`, `nativeAgent:chat`, `nativeAgent:chatHistory`, `nativeAgent:chatShow`, `nativeAgent:memoryGet`, `nativeAgent:memorySet`. The Brain pane also listens for `emailBrain:updated`, `emailBrain:refreshState`, and `emailBrain:rebuildState`.
