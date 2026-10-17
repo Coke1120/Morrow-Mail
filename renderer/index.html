@@ -43,14 +43,25 @@
         </button>
       </div>
       <div class="actions">
-        <button type="button" class="ghost" id="refresh">Refresh</button>
+        <button type="button" class="ghost icon-label" id="refresh" aria-label="Sync mail">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <polyline points="1 20 1 14 7 14"></polyline>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"></path>
+            <path d="M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+          </svg>
+          <span>Sync</span>
+        </button>
         <button type="button" class="ghost" id="tidy" hidden>One-click tidy</button>
-        <button type="button" class="ghost" id="settings-open">Settings</button>
-        <button type="button" class="ghost" id="signatures-open">Signatures</button>
+        <button type="button" class="ghost icon-label" id="settings-open">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+          <span>Settings</span>
+        </button>
         <button type="button" class="ghost" id="brain-open" aria-label="Email Brain">Brain</button>
         <button type="button" class="ghost" id="agent-open" aria-label="Agent">Agent</button>
-        <button type="button" class="ghost" id="connect-open">Connect account</button>
-        <button type="button" class="ghost" id="remove" hidden>Remove account</button>
         <form id="search-form" role="search">
           <label class="sr" for="search-query">Search mail</label>
           <input id="search-query" type="search" placeholder="Search mail" autocomplete="off" spellcheck="false" />
@@ -337,68 +348,115 @@
     </dialog>
     <dialog id="signatures" aria-labelledby="signatures-title">
       <div class="dialog-body">
-      <h2 id="signatures-title">Signatures</h2>
-      <p class="hint">Sample signatures stay in memory. A connected IMAP account does not store them.</p>
-      <p id="signatures-status" role="status"></p>
-      <div id="signature-list"></div>
-      <form id="signature-form">
-        <label for="signature-name">Name</label>
-        <input id="signature-name" type="text" autocomplete="off" />
-        <label for="signature-body">Text</label>
-        <textarea id="signature-body"></textarea>
-        <label class="check" for="signature-html"><input id="signature-html" type="checkbox" /> HTML</label>
-        <label class="check" for="signature-default"><input id="signature-default" type="checkbox" /> Default</label>
-        <div class="row">
-          <button type="submit" class="primary" id="signature-save">Add</button>
-          <button type="button" class="ghost" id="signature-cancel" hidden>Cancel</button>
-          <button type="button" class="ghost" id="signatures-close">Close</button>
+      <div class="sheet-head">
+        <h2 id="signatures-title">Signatures</h2>
+        <button type="button" class="ghost" id="signatures-close">Close</button>
+      </div>
+      <div class="settings-layout">
+        <div>
+          <p class="hint">Sample signatures stay in memory. A connected IMAP account does not store them.</p>
+          <p id="signatures-status" role="status"></p>
+          <div id="signature-list"></div>
         </div>
-      </form>
+        <form id="signature-form">
+          <label for="signature-name">Name</label>
+          <input id="signature-name" type="text" autocomplete="off" />
+          <label for="signature-body">Text</label>
+          <textarea id="signature-body"></textarea>
+          <label class="check" for="signature-html"><input id="signature-html" type="checkbox" /> HTML</label>
+          <label class="check" for="signature-default"><input id="signature-default" type="checkbox" /> Default</label>
+          <div class="row">
+            <button type="submit" class="primary" id="signature-save">Add</button>
+            <button type="button" class="ghost" id="signature-cancel" hidden>Cancel</button>
+          </div>
+        </form>
+      </div>
       </div>
     </dialog>
     <dialog id="settings" aria-labelledby="settings-title">
       <div class="dialog-body">
-      <h2 id="settings-title">Settings</h2>
-      <div id="prefs">
-        <label for="pref-theme">Theme</label>
-        <select id="pref-theme">
-          <option value="light">Light</option>
-          <option value="dark">Dark</option>
-        </select>
-        <label for="pref-accent">Accent</label>
-        <input id="pref-accent" type="text" maxlength="7" spellcheck="false" autocomplete="off" />
-        <label class="check" for="pref-conversation"><input id="pref-conversation" type="checkbox" /> Conversation view</label>
-        <label class="check" for="pref-images"><input id="pref-images" type="checkbox" /> Load remote images</label>
-        <label for="pref-undo">Undo send (seconds)</label>
-        <input id="pref-undo" type="number" min="0" max="30" step="1" />
-        <label class="check" for="pref-snooze"><input id="pref-snooze" type="checkbox" /> Snooze</label>
-        <label class="check" for="pref-ai-reply"><input id="pref-ai-reply" type="checkbox" /> Open AI write on reply</label>
-        <label class="check" for="pref-folder-chips"><input id="pref-folder-chips" type="checkbox" /> Folder chips</label>
-        <label class="check" for="pref-tidy"><input id="pref-tidy" type="checkbox" /> One-click tidy</label>
-        <label class="check" for="pref-gmail-folders"><input id="pref-gmail-folders" type="checkbox" /> Gmail folders expanded</label>
-        <label class="check" for="pref-outlook-folders"><input id="pref-outlook-folders" type="checkbox" /> Outlook folders expanded</label>
-        <p id="settings-status" role="status"></p>
-      </div>
-      <div id="ai-fields">
-        <h3>AI</h3>
-        <label for="ai-base">Base URL</label>
-        <input id="ai-base" type="text" spellcheck="false" autocomplete="off" />
-        <label for="ai-model">Model id</label>
-        <input id="ai-model" type="text" list="ai-model-list" spellcheck="false" autocomplete="off" />
-        <datalist id="ai-model-list"></datalist>
-        <label for="ai-key">API key</label>
-        <input id="ai-key" type="password" spellcheck="false" autocomplete="off" />
-        <div class="row">
-          <button type="button" class="primary" id="ai-save">Save AI</button>
-          <button type="button" class="ghost" id="ai-fetch">Fetch models</button>
-          <button type="button" class="ghost" id="ai-test">Test connection</button>
-        </div>
-        <p id="ai-status" role="status"></p>
-      </div>
-      <p class="hint">The API key stays in local AI config, the same store as GenMail → AI Setup. Leave the key blank to keep the saved one. Fetch models uses this form, or the saved key when the box is blank. Test connection uses the saved config — Save AI first if you changed these fields. Preferences are saved on this computer.</p>
-      <div class="row">
+      <div class="sheet-head">
+        <h2 id="settings-title">Settings</h2>
         <button type="button" class="ghost" id="settings-close">Close</button>
       </div>
+      <div class="settings-layout">
+        <section aria-labelledby="settings-prefs-title">
+          <h3 id="settings-prefs-title">Preferences</h3>
+          <div id="prefs">
+            <div class="field">
+              <label for="pref-theme">Theme</label>
+              <select id="pref-theme">
+                <option value="light">Light</option>
+                <option value="dark">Dark</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="pref-accent">Accent</label>
+              <input id="pref-accent" type="text" maxlength="7" spellcheck="false" autocomplete="off" />
+            </div>
+            <div class="field">
+              <label for="pref-undo">Undo send (seconds)</label>
+              <input id="pref-undo" type="number" min="0" max="30" step="1" />
+            </div>
+            <div class="checks">
+              <label class="check" for="pref-conversation"><input id="pref-conversation" type="checkbox" /> Conversation view</label>
+              <label class="check" for="pref-images"><input id="pref-images" type="checkbox" /> Load remote images</label>
+              <label class="check" for="pref-snooze"><input id="pref-snooze" type="checkbox" /> Snooze</label>
+              <label class="check" for="pref-ai-reply"><input id="pref-ai-reply" type="checkbox" /> Open AI write on reply</label>
+              <label class="check" for="pref-folder-chips"><input id="pref-folder-chips" type="checkbox" /> Folder chips</label>
+              <label class="check" for="pref-tidy"><input id="pref-tidy" type="checkbox" /> One-click tidy</label>
+              <label class="check" for="pref-gmail-folders"><input id="pref-gmail-folders" type="checkbox" /> Gmail folders expanded</label>
+              <label class="check" for="pref-outlook-folders"><input id="pref-outlook-folders" type="checkbox" /> Outlook folders expanded</label>
+            </div>
+            <p id="settings-status" role="status"></p>
+          </div>
+        </section>
+        <section aria-labelledby="settings-ai-title">
+          <h3 id="settings-ai-title">AI</h3>
+          <div id="ai-fields">
+            <label for="ai-base">Base URL</label>
+            <input id="ai-base" type="text" spellcheck="false" autocomplete="off" />
+            <label for="ai-model">Model id</label>
+            <input id="ai-model" type="text" list="ai-model-list" spellcheck="false" autocomplete="off" />
+            <datalist id="ai-model-list"></datalist>
+            <label for="ai-key">API key</label>
+            <input id="ai-key" type="password" spellcheck="false" autocomplete="off" />
+            <div class="row">
+              <button type="button" class="primary" id="ai-save">Save AI</button>
+              <button type="button" class="ghost" id="ai-fetch">Fetch models</button>
+              <button type="button" class="ghost" id="ai-test">Test connection</button>
+            </div>
+            <p id="ai-status" role="status"></p>
+          </div>
+          <h3 id="settings-mailbox-title">Mailbox</h3>
+          <div class="row mailbox-actions" role="group" aria-labelledby="settings-mailbox-title">
+            <button type="button" class="ghost icon-label" id="signatures-open">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 20h9"></path>
+                <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path>
+              </svg>
+              <span>Signatures</span>
+            </button>
+            <button type="button" class="ghost icon-label" id="connect-open">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+              </svg>
+              <span>Connect account</span>
+            </button>
+            <button type="button" class="ghost icon-label" id="remove" disabled>
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polyline points="3 6 5 6 21 6"></polyline>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                <line x1="10" y1="11" x2="10" y2="17"></line>
+                <line x1="14" y1="11" x2="14" y2="17"></line>
+              </svg>
+              <span>Remove account</span>
+            </button>
+          </div>
+        </section>
+      </div>
+      <p class="hint">The API key stays in local AI config, the same store as GenMail → AI Setup. Leave the key blank to keep the saved one. Fetch models uses this form, or the saved key when the box is blank. Test connection uses the saved config — Save AI first if you changed these fields. Preferences are saved on this computer.</p>
       </div>
     </dialog>
     <script src="./motion.bundle.js"></script>

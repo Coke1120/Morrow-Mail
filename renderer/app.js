@@ -970,15 +970,19 @@ function syncCustomFields() {
 
 function renderBanner() {
   const banner = $("banner");
-  if (!state.accounts.length) banner.textContent = "No mailbox yet. Connect an account.";
+  if (!state.accounts.length) banner.textContent = "No mailbox yet. Connect an account in Settings.";
   else if (state.accounts.some(isLive)) banner.textContent = "";
-  else banner.textContent = "Sample mailbox. Connect an account to use your own mail. Nothing here is sent.";
+  else banner.textContent = "Sample mailbox. Connect an account in Settings to use your own mail. Nothing here is sent.";
   banner.hidden = !banner.textContent;
   banner.title = banner.textContent;
 }
 
 function syncRemove() {
-  $("remove").hidden = !isLive(selectedAccount());
+  const button = $("remove");
+  const live = isLive(selectedAccount());
+  button.hidden = false;
+  button.disabled = !live;
+  button.title = live ? "Remove this account. Mail stays on the server." : "Connect a mailbox before removing one.";
 }
 
 function renderAccounts() {
@@ -2871,20 +2875,20 @@ async function removeAccount() {
 
 async function refresh() {
   if (state.view === "calendar") {
-    showStatus("Refreshing…");
+    showStatus("Syncing…");
     await loadCalendar();
     showStatus("");
     return;
   }
   if (state.side === "agent") {
-    showStatus("Refreshing…");
+    showStatus("Syncing…");
     await loadAgent();
     showStatus("");
     return;
   }
   const account = selectedAccount();
   if (!account || !state.folderId) return;
-  showStatus("Refreshing…");
+  showStatus("Syncing…");
   await call("mail:listFromNetwork", {
     accountId: account.id,
     folderId: state.folderId,

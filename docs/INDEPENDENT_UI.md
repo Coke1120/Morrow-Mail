@@ -6,7 +6,7 @@
 
 - Lists accounts, folders, and messages (`mail:listAccounts`, `mail:listFromCache`). A filter above the list matches subject, from, and snippet of messages already loaded and does not call `mail:search`
 - Message rows show icon buttons labeled Mark read or unread (`mail:markRead`), Delete (`mail:delete`), Reply, and Reply All on hover and when the row is focused. Reply uses the open message, or `mail:openEmail`, then the compose dialog
-- Refreshes the open folder (`mail:listFromNetwork`)
+- Syncs the open folder from the toolbar (`mail:listFromNetwork`)
 - Reads a message (`mail:openEmail`) and marks it read (`mail:markRead`). The reading toolbar is icon buttons for Reply, Reply All, Forward, Star, Archive, and Trash. Reply All is always there. Remote `http` and `https` images stay blocked until Load remote content on that message, unless remote images are on in Settings. That allow lasts for the session and is not saved
 - Connects an IMAP account (`mail:listImapSmtpPresets`, `mail:connectImapSmtp`), including a Custom IMAP / SMTP card
 - Starts Google or Microsoft sign-in in the browser (`mail:addAccount`) for the IMAP baseline. A second consent (`mail:grantOrganize`) loads Gmail labels or Outlook mail folders from the provider API. Without that grant the sidebar keeps the IMAP folders and does not invent labels
@@ -20,7 +20,7 @@
 - Snoozes a thread for 1 hour, tonight, or tomorrow morning, and unsnoozes it (`mail:snoozeThread`, `mail:unsnoozeThread`, `mail:listSnoozed`)
 - Translates the open message (`mail:translateStart`, `mail:translateCancel`, `mail:translate:event`). A missing API key is reported in the reading pane. The key is set in Settings or GenMail → AI Setup
 - Inserts a host signature in compose (`mail:listSignatures`), or shows an empty state when the mailbox has none
-- Edits those signatures from the toolbar (`mail:upsertSignature`, `mail:deleteSignature`): name plus text or HTML, and an optional default. The sample list stays in memory. A connected IMAP account keeps an empty list and rejects writes
+- Edits those signatures from Settings (`mail:upsertSignature`, `mail:deleteSignature`): name plus text or HTML, and an optional default. The sample list stays in memory. A connected IMAP account keeps an empty list and rejects writes
 - Drafts with AI from compose (`aiDraftWrite:start`, `aiDraftWrite:cancel`, `aiDraftWrite:event`) and lists reply suggestions on the open message (`aiDraftWrite:replySuggestions`). A missing API key is reported in place
 - Calendar (`calendar:status`, `calendar:list`, `calendar:createEvent`, `calendar:connect`) lists and creates events from Google Calendar or Microsoft Graph for the visible month. The grid and agenda show the provider's title, time, and location. With no mailbox, no token, or when Google Desktop OAuth is not configured, the page says what is missing and does not draw events
 - Shows the app version and checks or installs updates (`app:getVersion`, `host:updateGetState`, `host:updateCheck`, `host:updateInstall`)
