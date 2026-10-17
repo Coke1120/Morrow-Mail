@@ -6,18 +6,16 @@ const MICROSOFT_CLIENT_ID = fs
   .trim();
 
 // IMAP XOAUTH2 stays the mail baseline. Organize and calendar are extra consents.
-// Morrow-Mail's organize/calendar scope strings are the API side-car; IMAP scopes
-// stay on the organize consent too so XOAUTH2 still works when the provider grants both.
+// Microsoft organize is Graph-only: Entra invalid_scope if Graph names share an authorize URL with outlook.office.com IMAP/SMTP scopes.
 const SCOPES = {
   google: "openid email https://mail.google.com/",
   microsoft:
-    "offline_access https://outlook.office365.com/IMAP.AccessAsUser.All https://outlook.office365.com/SMTP.Send",
+    "offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send",
 };
 
 const ORGANIZE_SCOPES = {
   google: `${SCOPES.google} https://www.googleapis.com/auth/gmail.modify`,
-  microsoft:
-    "offline_access User.Read Mail.ReadWrite Mail.Send https://outlook.office365.com/IMAP.AccessAsUser.All https://outlook.office365.com/SMTP.Send",
+  microsoft: "offline_access User.Read Mail.ReadWrite Mail.Send",
 };
 
 const CALENDAR_SCOPES = {
@@ -29,7 +27,7 @@ const CALENDAR_SCOPES = {
 const MARKERS = {
   imap: {
     google: "https://mail.google.com/",
-    microsoft: "https://outlook.office365.com/IMAP.AccessAsUser.All",
+    microsoft: "https://outlook.office.com/IMAP.AccessAsUser.All",
   },
   organize: {
     google: "https://www.googleapis.com/auth/gmail.modify",
@@ -81,6 +79,12 @@ function parseGoogleDesktopJson(source) {
   return { clientId, clientSecret };
 }
 
+function googleClientFiles() {
+  const files = [path.join(__dirname, "..", "..", "resources", "google-oauth.json")];
+  if (process.resourcesPath) files.push(path.join(process.resourcesPath, "google-oauth.json"));
+  return files;
+}
+
 function loadGoogleClient() {
   const file = (process.env.GENMAIL_GOOGLE_OAUTH_FILE || process.env.MORROW_GOOGLE_OAUTH_FILE || "").trim();
   const raw = (
@@ -95,9 +99,8 @@ function loadGoogleClient() {
   if (raw) {
     return parseGoogleDesktopJson(raw);
   }
-  const bundled = path.join(__dirname, "..", "..", "resources", "google-oauth.json");
-  if (fs.existsSync(bundled)) {
-    return parseGoogleDesktopJson(fs.readFileSync(bundled, "utf8"));
+  for (const bundled of googleClientFiles()) {
+    if (fs.existsSync(bundled)) return parseGoogleDesktopJson(fs.readFileSync(bundled, "utf8"));
   }
   return null;
 }
@@ -213,7 +216,7 @@ function oauthReady() {
     source: {
       microsoft: "shared/microsoft-client-id.txt (from Morrow-Mail; public desktop client)",
       google:
-        "env GOOGLE_DESKTOP_OAUTH_JSON or GENMAIL_GOOGLE_OAUTH_JSON|FILE or resources/google-oauth.json (Morrow-Mail Desktop client; never commit)",
+        "env GOOGLE_DESKTOP_OAUTH_JSON or GENMAIL_GOOGLE_OAUTH_JSON|FILE, resources/google-oauth.json, or process.resourcesPath/google-oauth.json (packaged; never commit)",
     },
   };
 }
@@ -227,6 +230,7 @@ module.exports = {
   ENDPOINTS,
   IMAP_PRESETS,
   credentials,
+  googleClientFiles,
   loadGoogleClient,
   parseGoogleDesktopJson,
   oauthReady,

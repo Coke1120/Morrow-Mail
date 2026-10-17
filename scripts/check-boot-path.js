@@ -1571,16 +1571,22 @@ const oauthConfig = require("../host/mail/oauth-config");
 assert.strictEqual(oauthConfig.SCOPES.google, "openid email https://mail.google.com/");
 assert.strictEqual(
   oauthConfig.SCOPES.microsoft,
-  "offline_access https://outlook.office365.com/IMAP.AccessAsUser.All https://outlook.office365.com/SMTP.Send",
+  "offline_access https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send",
 );
+assert.strictEqual(oauthConfig.MARKERS.imap.microsoft, "https://outlook.office.com/IMAP.AccessAsUser.All");
+assert.ok(!oauthConfig.SCOPES.microsoft.includes("User.Read"));
+assert.strictEqual(oauthConfig.IMAP_PRESETS.microsoft.imap.host, "outlook.office365.com");
+assert.strictEqual(oauthConfig.IMAP_PRESETS.microsoft.smtp.host, "smtp.office365.com");
 assert.strictEqual(
   oauthConfig.ORGANIZE_SCOPES.google,
   `${oauthConfig.SCOPES.google} https://www.googleapis.com/auth/gmail.modify`,
 );
 assert.strictEqual(
   oauthConfig.ORGANIZE_SCOPES.microsoft,
-  "offline_access User.Read Mail.ReadWrite Mail.Send https://outlook.office365.com/IMAP.AccessAsUser.All https://outlook.office365.com/SMTP.Send",
+  "offline_access User.Read Mail.ReadWrite Mail.Send",
 );
+assert.ok(!oauthConfig.ORGANIZE_SCOPES.microsoft.includes("outlook.office"));
+assert.ok(!oauthConfig.CALENDAR_SCOPES.microsoft.includes("outlook.office"));
 assert.strictEqual(
   oauthConfig.CALENDAR_SCOPES.google,
   "openid email https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events",
@@ -2401,6 +2407,32 @@ function checkGoogleOauthAlias() {
       },
     });
     assert.strictEqual(oauth.loadGoogleClient().clientId, "genmail-primary.apps.googleusercontent.com");
+    for (const key of keys) delete process.env[key];
+    const os = require("os");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "genmail-gclient-"));
+    fs.writeFileSync(path.join(dir, "google-oauth.json"), JSON.stringify({
+      installed: {
+        client_id: "packaged-desktop.apps.googleusercontent.com",
+        client_secret: "packaged-desktop-secret",
+      },
+    }));
+    const prevResources = process.resourcesPath;
+    process.resourcesPath = dir;
+    try {
+      const files = oauth.googleClientFiles();
+      assert.strictEqual(files[0], path.join(root, "resources", "google-oauth.json"));
+      assert.strictEqual(files[1], path.join(dir, "google-oauth.json"));
+      process.env.GOOGLE_DESKTOP_OAUTH_JSON = `  ${desktop}  `;
+      assert.strictEqual(oauth.loadGoogleClient().clientId, "desktop-alias.apps.googleusercontent.com");
+      delete process.env.GOOGLE_DESKTOP_OAUTH_JSON;
+      if (!fs.existsSync(files[0])) {
+        assert.strictEqual(oauth.loadGoogleClient().clientId, "packaged-desktop.apps.googleusercontent.com");
+        assert.strictEqual(oauth.oauthReady().google, true);
+      }
+    } finally {
+      if (prevResources === undefined) delete process.resourcesPath;
+      else process.resourcesPath = prevResources;
+    }
   } finally {
     for (const key of keys) {
       if (prev[key] === undefined) delete process.env[key];

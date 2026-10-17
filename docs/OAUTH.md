@@ -6,15 +6,15 @@ GenMail REA keeps **IMAP XOAUTH2 as the mail baseline** and adds a provider API 
 
 | Purpose | What it unlocks | Google scopes | Microsoft scopes | Redirect path |
 |---------|-----------------|---------------|------------------|---------------|
-| IMAP (first consent, `mail:addAccount`) | IMAP and SMTP XOAUTH2 | `openid email https://mail.google.com/` | `offline_access` `https://outlook.office365.com/IMAP.AccessAsUser.All` `https://outlook.office365.com/SMTP.Send` | `/api/oauth/{google\|microsoft}/callback` |
-| Organize (second consent, `mail:grantOrganize`) | Gmail labels or Graph mailFolders | IMAP scopes plus `https://www.googleapis.com/auth/gmail.modify` | IMAP/SMTP scopes plus `offline_access User.Read Mail.ReadWrite Mail.Send` | same `/api/oauth/.../callback` path |
+| IMAP (first consent, `mail:addAccount`) | IMAP and SMTP XOAUTH2 | `openid email https://mail.google.com/` | `offline_access` `https://outlook.office.com/IMAP.AccessAsUser.All` `https://outlook.office.com/SMTP.Send` | `/api/oauth/{google\|microsoft}/callback` |
+| Organize (second consent, `mail:grantOrganize`) | Gmail labels or Graph mailFolders | IMAP scopes plus `https://www.googleapis.com/auth/gmail.modify` | `offline_access User.Read Mail.ReadWrite Mail.Send` | same `/api/oauth/.../callback` path |
 | Calendar (`calendar:connect`) | Google Calendar or Graph calendars | `openid email https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events` | `offline_access User.Read Calendars.ReadWrite` | `/api/calendar-oauth/{google\|microsoft}/callback` |
 
-The organize consent asks for the IMAP scopes again so one grant can keep XOAUTH2 when the provider returns both. If `gmail.modify` or `Mail.ReadWrite` is missing from `grantedScopes`, label and folder changes stay on the IMAP folder list. Calendar calls run only when the calendar marker is in that purpose's `grantedScopes`.
+Google's organize consent asks for the IMAP scopes again so one grant can keep XOAUTH2 when Google returns both. Microsoft organize stays on Graph scopes only. Entra returns `invalid_scope` when that authorize URL also includes `https://outlook.office.com` IMAP or SMTP scopes, so Outlook XOAUTH2 stays on the first consent. If `gmail.modify` or `Mail.ReadWrite` is missing from `grantedScopes`, label and folder changes stay on the IMAP folder list. Calendar calls run only when the calendar marker is in that purpose's `grantedScopes`.
 
 Tokens are stored per account and purpose (`grantedScopes`, refresh token, access token) in the keychain / DPAPI / `GENMAIL_MAIL_SECRETS=memory`. The renderer receives scope strings, not tokens.
 
-`oauthReady().google` is false until a Desktop client JSON is available. The app and `npm run check` run without that file. Live Google calls are refused with `oauth_not_ready` until it is set. Microsoft uses the public client id in `shared/microsoft-client-id.txt` and has no client secret.
+`oauthReady().google` is false until a Desktop client JSON is available. The app and `npm run check` run without that file. Live Google calls are refused with `oauth_not_ready` until it is set. A packaged build also reads `google-oauth.json` from `process.resourcesPath` (`Contents/Resources` next to `app.asar`). Microsoft uses the public client id in `shared/microsoft-client-id.txt` and has no client secret.
 
 ## Redirects
 
@@ -32,7 +32,7 @@ Do this in the same Desktop client Morrow-Mail uses. Do not paste the secret int
 1. OAuth consent screen. Add the scopes above: `openid`, `email` / `userinfo.email`, `https://mail.google.com/`, `https://www.googleapis.com/auth/gmail.modify`, `https://www.googleapis.com/auth/calendar.calendarlist.readonly`, and `https://www.googleapis.com/auth/calendar.events`.
 2. Enable the Gmail API and the Google Calendar API on the project.
 3. Create an OAuth client of type **Desktop**. Download the JSON (`installed.client_id` and `installed.client_secret`).
-4. Provide it at runtime as `GOOGLE_DESKTOP_OAUTH_JSON`, `GENMAIL_GOOGLE_OAUTH_JSON`, `GENMAIL_GOOGLE_OAUTH_FILE`, or `resources/google-oauth.json` (gitignored). `MORROW_GOOGLE_OAUTH_JSON` / `MORROW_GOOGLE_OAUTH_FILE` are accepted aliases.
+4. Provide it at runtime as `GOOGLE_DESKTOP_OAUTH_JSON`, `GENMAIL_GOOGLE_OAUTH_JSON`, `GENMAIL_GOOGLE_OAUTH_FILE`, dev `resources/google-oauth.json` (gitignored), or packaged `process.resourcesPath/google-oauth.json`. `MORROW_GOOGLE_OAUTH_JSON` / `MORROW_GOOGLE_OAUTH_FILE` are accepted aliases.
 
 ### Hard blocker: Testing and verification
 
@@ -48,6 +48,8 @@ The shared public client id stays `2ca9ca19-add5-4807-bfa1-c2a7ac3cc6bf` (`share
 2. Delegated permissions:
    - Office 365 Exchange Online: `IMAP.AccessAsUser.All`, `SMTP.Send`
    - Microsoft Graph: `User.Read`, `Mail.ReadWrite`, `Mail.Send`, `Calendars.ReadWrite`, `offline_access`
+
+   IMAP and SMTP scope URLs use the resource host `https://outlook.office.com`. The mailbox servers stay `outlook.office365.com` and `smtp.office365.com`. If the Entra app is missing those Exchange permissions, sign-in still fails with `invalid_scope`.
 3. Do not commit user refresh tokens.
 
 ### Hard blocker: admin consent
