@@ -1,9 +1,32 @@
-# Updater test checklist (macOS)
+# Updater test checklist
 
-1. Build two consecutive versions (e.g. `0.1.0-alpha.1` then bump to `0.1.0-alpha.2`).
-2. Publish alpha.1: `GH_TOKEN=… npm run publish:github` (or `gh release create` with electron-builder artifacts + `latest-mac.yml`).
-3. Install / run alpha.1 packaged app with `GH_TOKEN` available if the repo is private.
-4. Publish alpha.2; within ~minutes `update:getState` should show `available` / `downloaded`.
-5. Quit & relaunch or call `host:updateInstall`.
+The repo is private. The packaged app reads updates only when `GH_TOKEN` or `GITHUB_TOKEN` is set in that process. Use a PAT with read access to `Coke1120/genmail-rea`. Do not put the token in the repo or in the asar.
 
-**Blockers without Leo:** Apple codesign dialogs, private-release token in the installed app, and presence of `ui.asar` / Genspark.
+`host:updateGetState`, `host:updateCheck`, and `host:updateInstall` are the shell channels. `allowPrerelease` is on, so alpha prereleases count.
+
+## Windows
+
+1. From `main`, run Actions → **release** → **Run workflow** ([PACKAGING.md](PACKAGING.md)). For `0.1.0-alpha.1` the prerelease tag is `v0.1.0-alpha.1`.
+2. Confirm the prerelease has `latest.yml`, `GenMail-REA-Setup-0.1.0-alpha.1.exe` (dashes), that exe's `.blockmap`, and the portable exe. `latest.yml` `path` matches the dashed setup name.
+3. Install the NSIS setup. The portable exe does not take the in-app update.
+4. Launch the installed app with `GH_TOKEN` set. This version should report up to date.
+5. Bump `package.json` to the next alpha, merge to `main`, and run **release** again.
+6. Relaunch the older install with the same `GH_TOKEN`. After the check, the shell should show the new version available or downloaded. Install from the shell (`host:updateInstall`).
+
+Unsigned NSIS builds show a Windows SmartScreen warning. Authenticode is a later step.
+
+Local feed files, without uploading:
+
+```bash
+CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:win
+```
+
+`dist/latest.yml` should name the NSIS setup. `dist/win-unpacked/resources/app.asar` should contain `renderer/index.html`. `dist/win-unpacked/resources/app-update.yml` should include `provider: github` and `private: true`.
+
+## macOS (MBA)
+
+```bash
+CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac
+```
+
+A Mac publish that writes `latest-mac.yml` is `CSC_IDENTITY_AUTO_DISCOVERY=false GH_TOKEN=… npx electron-builder --mac dir zip --publish always`. The Windows release job does not build that feed. Apple codesign dialogs stay on the MBA.

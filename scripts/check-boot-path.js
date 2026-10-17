@@ -56,6 +56,29 @@ assert.ok(main.includes("loadFile(FIRST_PARTY_HTML)"));
 
 const pkg = require("../package.json");
 assert.ok(pkg.build.files.includes("renderer/**/*"));
+assert.strictEqual(pkg.build.detectUpdateChannel, false);
+assert.strictEqual(pkg.build.win.signAndEditExecutable, false);
+assert.deepStrictEqual(
+  pkg.build.win.target.map((target) => `${target.target}:${target.arch.join(",")}`),
+  ["nsis:x64", "portable:x64"],
+);
+const githubPublish = pkg.build.publish[0];
+assert.deepStrictEqual(
+  {
+    provider: githubPublish.provider,
+    owner: githubPublish.owner,
+    repo: githubPublish.repo,
+    private: githubPublish.private,
+    releaseType: githubPublish.releaseType,
+  },
+  {
+    provider: "github",
+    owner: "Coke1120",
+    repo: "genmail-rea",
+    private: true,
+    releaseType: "prerelease",
+  },
+);
 
 function functionSource(source, name) {
   const start = source.indexOf(`function ${name}(`);

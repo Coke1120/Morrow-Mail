@@ -18,5 +18,5 @@ Secrets: macOS Keychain / Windows DPAPI (`genmail-exact` service), or env `GENMA
 ## Status
 
 - Host: IMAP engine + AI + bundled first-party UI (`GENMAIL_ASAR` optional)
-- Packaging: electron-builder + electron-updater (unsigned alpha)
+- Packaging: electron-builder + electron-updater (unsigned alpha). Windows feed: Actions → **release** → Run workflow ([docs/PACKAGING.md](docs/PACKAGING.md))
 - OAuth: Google/Microsoft browser loopback (IMAP XOAUTH2); Microsoft client ID bundled; Google JSON via env

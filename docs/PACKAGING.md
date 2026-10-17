@@ -2,29 +2,61 @@
 
 ## UI
 
-The packaged app boots the first-party renderer shipped in `renderer/` (see [INDEPENDENT_UI.md](INDEPENDENT_UI.md)). `electron-builder` includes that directory via `build.files`.
+The packaged app boots the first-party renderer shipped in `renderer/` (see [INDEPENDENT_UI.md](INDEPENDENT_UI.md)). `electron-builder` includes that directory via `build.files`. A Genspark `app.asar` is not required.
 
 `GENMAIL_ASAR` is an optional override that loads an external `app.asar` instead. The app does not look for Genspark Super App or `resources/ui.asar` on its own. Do not commit an external asar.
 
-## Build (unsigned alpha)
+## Windows alpha (Leo)
+
+Workflow: `.github/workflows/release.yml` (Actions tab → **release**). It runs on **Run workflow** and on a `v*` tag push. Pull requests stay on the `ci` check job.
+
+1. Bump `package.json` `version` (the first alpha is already `0.1.0-alpha.1`) and merge to `main`. The GitHub tag is `v` plus that version.
+2. Actions → **release** → **Run workflow**, branch `main`.
+3. The job runs `npm run check`, then unsigned Windows x64:
 
 ```bash
-npm install
-# macOS (on MBA):
-CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac
-# Windows x64 (cross-compile from Linux/mac with electron-builder):
+CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:win -- --publish always
+```
+
+`dist:win` is `electron-builder --win nsis portable --x64`. `build.win.signAndEditExecutable` is `false`. Authenticode is not configured.
+
+4. The job uploads the NSIS setup exe, its `.blockmap`, the portable exe, and `latest.yml` to a **prerelease** on private `Coke1120/genmail-rea`. `latest.yml` is the Windows electron-updater feed and names the NSIS setup. The portable exe is a no-install download. `detectUpdateChannel` is `false`, so `0.1.0-alpha.N` still publishes `latest.yml`.
+
+The feed URL uses dashes (`GenMail-REA-Setup-0.1.0-alpha.1.exe`). That is the GitHub Release asset name. The copy in `dist/` keeps the spaces in `GenMail REA Setup 0.1.0-alpha.1.exe`.
+
+Run the workflow from `main`. electron-builder creates the release tag from the repo default branch when the tag does not already exist.
+
+Optional tag: push `v0.1.0-alpha.N` only when it matches `package.json` `version`. A mismatch fails the job before publish.
+
+Same unsigned build on a dev machine, without uploading:
+
+```bash
+npm ci
 CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:win
 ```
 
-Artifacts land in `dist/`. Codesign / notarize / Authenticode are **not** configured; supply Apple identity + Windows cert later.
+Artifacts land in `dist/` (`latest.yml`, `*Setup*.exe`, `*.exe.blockmap`, portable exe).
 
-## Updater
+On Linux, the NSIS uninstaller step needs Wine, including `wine32:i386`. The release job runs on `windows-latest` and does not use Wine.
 
-- Library: `electron-updater` → GitHub Releases on private `Coke1120/genmail-rea`.
-- Packaged app checks on launch; IPC `update:getState` / `host:updateCheck` / `host:updateInstall`. The first-party shell reads `host:updateGetState` and calls `host:updateCheck` / `host:updateInstall`.
-- Private repo requires `GH_TOKEN` (or `GITHUB_TOKEN`) in the environment of the running app **or** publish with electron-builder’s GitHub token so latest.yml is readable.
-- Unpacked `npm start` keeps updater disabled (dev stub).
+electron-builder attaches files to an existing release only for about two hours after publish. The next alpha needs a new `version`. Re-running the same version later skips the upload.
+
+## macOS
+
+Build on the MBA. The release workflow has no Apple codesign step.
+
+```bash
+CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac
+```
+
+Publishing a Mac feed (`latest-mac.yml`) stays a local `electron-builder --mac` publish, or a later job.
+
+## Updater reads (private repo)
+
+`build.publish` is GitHub `Coke1120/genmail-rea`, `private: true`, `releaseType: prerelease`. The packaged app writes that into `resources/app-update.yml`. With `private: true` and a token in the environment, `electron-updater` uses the GitHub API and reads `latest.yml` from the newest prerelease.
+
+The installed app needs `GH_TOKEN` or `GITHUB_TOKEN` set to a PAT that can read this private repo (`repo` scope, or contents read). The Actions token that uploads the release is not shipped inside the app. `npm start` leaves the updater off.
 
 ## Version
 
-`package.json` version drives both the app and release tags. Prefer `v0.1.0-alpha.N` prereleases until rebrand.
+`package.json` version drives the app and the release tag `v${version}`. Prefer `0.1.0-alpha.N` until rebrand.

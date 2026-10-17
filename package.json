@@ -51,11 +51,13 @@
       }
     ],
     "asar": true,
+    "detectUpdateChannel": false,
     "publish": [
       {
         "provider": "github",
         "owner": "Coke1120",
         "repo": "genmail-rea",
+        "private": true,
         "releaseType": "prerelease"
       }
     ],
