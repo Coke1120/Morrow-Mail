@@ -85,8 +85,10 @@ function storePath() {
   return path.join(userDataDir(), "agent.json");
 }
 
+const STALE_MS = 5 * 60 * 1000;
+
 function emptyStore() {
-  return { installedSkillIds: null, runs: [], triage: null, proposals: [] };
+  return { installedSkillIds: null, runs: [], triage: null, proposals: [], todos: {} };
 }
 
 function readStore() {
@@ -97,6 +99,7 @@ function readStore() {
       runs: Array.isArray(parsed.runs) ? parsed.runs : [],
       triage: parsed.triage && typeof parsed.triage === "object" ? parsed.triage : null,
       proposals: Array.isArray(parsed.proposals) ? parsed.proposals : [],
+      todos: parsed.todos && typeof parsed.todos === "object" && !Array.isArray(parsed.todos) ? parsed.todos : {},
     };
   } catch {
     return emptyStore();
@@ -222,23 +225,48 @@ function inboxMessages(limit) {
   }
 }
 
-function liveProfileMail(limit) {
-  const inbox = inboxMessages(limit);
-  if (inbox.length) {
-    return inbox.map((message) => ({
-      from: message.from,
-      subject: message.subject,
-      snippet: message.snippet,
-    }));
-  }
+function profileRow(message, folder) {
+  return {
+    id: message && message.id || "",
+    from: message && message.from || "",
+    subject: message && message.subject || "",
+    snippet: String(message && message.snippet || "").slice(0, 280),
+    date: message && message.date || "",
+    folder,
+    voice: folder === "sent",
+  };
+}
+
+function profileSample(mode) {
+  const rebuild = mode === "rebuild";
+  const sentLimit = rebuild ? 16 : 8;
+  const inboxLimit = rebuild ? 8 : 4;
+  let sent = [];
+  let inbox = [];
   try {
     const db = require("./mail/db");
-    if (!db.hasAccounts() || typeof db.recentForAi !== "function") return [];
-    const rows = db.recentForAi(limit);
-    return Array.isArray(rows) ? rows : [];
+    if (!db.hasAccounts()) return { messages: [], sentCount: 0, inboxCount: 0 };
+    if (typeof db.recentInWellKnown === "function") {
+      sent = db.recentInWellKnown("sentitems", sentLimit).map((message) => profileRow(message, "sent"));
+    }
+    if (typeof db.recentInbox === "function") {
+      inbox = db.recentInbox(inboxLimit).map((message) => profileRow(message, "inbox"));
+    }
+    if (!sent.length && !inbox.length && typeof db.recentForAi === "function") {
+      const rows = db.recentForAi(inboxLimit);
+      inbox = (Array.isArray(rows) ? rows : []).map((message) => profileRow(message, "inbox"));
+    }
   } catch {
-    return [];
+    return { messages: [], sentCount: 0, inboxCount: 0 };
   }
+  const cap = rebuild ? 24 : 12;
+  const messages = sent.concat(inbox).slice(0, cap);
+  const sentCount = messages.filter((message) => message.folder === "sent").length;
+  return { messages, sentCount, inboxCount: messages.length - sentCount };
+}
+
+function liveProfileMail(limit) {
+  return profileSample("refresh").messages.slice(0, limit || 8);
 }
 
 function addressIn(value) {
@@ -261,8 +289,44 @@ function blankSections(categories) {
   return (categories || []).map((category) => ({
     id: category.id,
     name: category.name,
+    description: category.description || "",
+    collapseView: category.collapseView === true,
     items: [],
   }));
+}
+
+function triageItems(snapshot) {
+  if (!snapshot) return [];
+  if (Array.isArray(snapshot.items)) return snapshot.items;
+  const items = [];
+  for (const section of snapshot.sections || []) {
+    for (const item of section.items || []) {
+      if (item && item.messageId) items.push(Object.assign({ categoryId: section.id }, item));
+    }
+  }
+  return items;
+}
+
+function projectSections(categories, items, todos) {
+  const sections = blankSections(categories);
+  const byId = new Map(sections.map((section) => [section.id, section]));
+  const other = sections.find((section) => section.id === "other" || /^other$/i.test(section.name)) || sections[sections.length - 1];
+  const hidden = todos && typeof todos === "object" ? todos : {};
+  for (const item of items || []) {
+    if (!item || !item.messageId) continue;
+    const mark = hidden[item.messageId];
+    if (mark && (mark.status === "done" || mark.status === "dismissed")) continue;
+    const bucket = byId.get(item.categoryId) || other;
+    if (bucket) bucket.items.push(item);
+  }
+  return sections;
+}
+
+function triageStale(snapshot) {
+  if (!snapshot || snapshot.stale === true || !snapshot.updatedAt) return true;
+  const at = Date.parse(snapshot.updatedAt);
+  if (!Number.isFinite(at)) return true;
+  return Date.now() - at > STALE_MS;
 }
 
 function sanitizeFollowUps(list, allowed) {
@@ -292,6 +356,27 @@ function triageItem(message, summary, followUps) {
     unread: message.unread === true,
     hasAttachments: message.hasAttachments === true,
     followUps: followUps || [],
+  };
+}
+
+function itemsFromSections(sections) {
+  const items = [];
+  for (const section of sections || []) {
+    for (const item of section.items || []) {
+      if (!item || !item.messageId) continue;
+      items.push(Object.assign({}, item, { categoryId: item.categoryId || section.id }));
+    }
+  }
+  return items;
+}
+
+function triageSnapshot(reason, sections) {
+  return {
+    reason,
+    updatedAt: new Date().toISOString(),
+    stale: false,
+    items: itemsFromSections(sections),
+    sections,
   };
 }
 
@@ -395,15 +480,19 @@ function homePayload(extra) {
   const store = readStore();
   const blocked = gate();
   const snapshot = !blocked && store.triage ? store.triage : null;
+  const sections = snapshot
+    ? projectSections(categories, triageItems(snapshot), store.todos)
+    : blankSections(categories);
   const base = {
     accepted: !blocked,
     reason: blocked ? blocked.reason : (snapshot ? snapshot.reason || "ready" : "idle"),
     error: blocked ? blocked.error : "",
     updatedAt: snapshot && snapshot.updatedAt || null,
+    stale: !blocked && triageStale(snapshot),
     runMode: "on_demand",
     schedule: "disabled",
     scheduleNote: SCHEDULE_NOTE,
-    sections: snapshot ? snapshot.sections : blankSections(categories),
+    sections,
     proposals: store.proposals.filter((item) => item.status === "pending"),
     runs: store.runs.slice(0, 30),
   };
@@ -576,11 +665,7 @@ async function triage() {
   const messages = inboxMessages(24);
   const categories = taxonomy();
   if (!messages.length) {
-    const snapshot = {
-      reason: "empty",
-      updatedAt: new Date().toISOString(),
-      sections: blankSections(categories),
-    };
+    const snapshot = triageSnapshot("empty", blankSections(categories));
     const store = readStore();
     store.triage = snapshot;
     writeStore(store);
@@ -611,11 +696,7 @@ async function triage() {
     const parsed = extractJson(text);
     const items = parsed && Array.isArray(parsed.items) ? parsed.items : [];
     const sections = groupTriage(categories, messages, items);
-    const snapshot = {
-      reason: "ready",
-      updatedAt: new Date().toISOString(),
-      sections,
-    };
+    const snapshot = triageSnapshot("ready", sections);
     const store = readStore();
     store.triage = snapshot;
     writeStore(store);
@@ -645,6 +726,28 @@ async function triage() {
 }
 
 function getTriage() {
+  return ok(homePayload());
+}
+
+function refreshTaxonomy() {
+  const store = readStore();
+  if (store.triage) {
+    store.triage = Object.assign({}, store.triage, { stale: true });
+    writeStore(store);
+  }
+  return ok(homePayload());
+}
+
+function setTodo(params) {
+  const messageId = clip(params && params.messageId, 120);
+  const status = String(params && params.status || "");
+  if (!messageId || (status !== "open" && status !== "done" && status !== "dismissed")) {
+    return fail(new Error("That todo needs a message and a status."));
+  }
+  const store = readStore();
+  if (status === "open") delete store.todos[messageId];
+  else store.todos[messageId] = { status, at: new Date().toISOString() };
+  writeStore(store);
   return ok(homePayload());
 }
 
@@ -858,6 +961,9 @@ function routeChat(text, skills) {
     }
   }
   if (best) return { kind: "skill", skillId: best.id, name: best.name || best.id, contact };
+  if (/^(draft|draft a reply|write a reply|reply to this|draft reply)$/.test(folded) || /^(draft a reply|write a reply|draft reply)\b/.test(folded)) {
+    return { kind: "draft" };
+  }
   return { kind: "chat" };
 }
 
@@ -922,6 +1028,64 @@ function turnFromRun(run) {
     followUps: Array.isArray(run && run.followUps) ? run.followUps : [],
     triage: triage ? { reason: "ready", sections: Array.isArray(run.sections) ? run.sections : [] } : null,
   };
+}
+
+const DRAFT_SYSTEM = [
+  "Draft one reply the user will review in compose.",
+  "Never send mail. Never claim a message was sent.",
+  "Use only the JSON in the user message. Do not invent people.",
+  "Reply with JSON only, no markdown.",
+  "Shape: {\"to\":string,\"subject\":string,\"body\":string,\"summary\":string}.",
+].join(" ");
+
+async function draftReply(params) {
+  const blocked = gate();
+  if (blocked) return ok({ accepted: false, error: blocked.error, drafts: [] });
+  const selected = trustedSelection(params);
+  try {
+    const text = await complete([
+      { role: "system", content: DRAFT_SYSTEM },
+      {
+        role: "user",
+        content: JSON.stringify({
+          draftReply: true,
+          instruction: "Draft a reply for review in compose. Do not send.",
+          email: selected ? {
+            id: selected.id,
+            from: selected.from,
+            subject: selected.subject,
+            snippet: selected.snippet,
+          } : null,
+          messages: inboxMessages(4).map((message) => ({
+            id: message.id,
+            from: clip(message.from, 120),
+            subject: clip(message.subject, 160),
+            snippet: clip(message.snippet, 180),
+          })),
+          writingRules: writingBrief(),
+        }),
+      },
+    ], { temperature: 0.2 });
+    const parsed = extractJson(text) || {};
+    const body = clip(parsed.body, 2000);
+    if (!body) return ok({ accepted: false, error: "The model did not return a draft.", drafts: [] });
+    return ok({
+      accepted: true,
+      summary: clip(parsed.summary, 400) || "Draft ready for review in compose.",
+      drafts: [{
+        messageId: selected && selected.id || "",
+        to: clip(parsed.to, 200) || (selected && addressIn(selected.from)) || "",
+        subject: clip(parsed.subject, 200) || (selected && selected.subject ? `Re: ${selected.subject}` : ""),
+        body,
+      }],
+    });
+  } catch (error) {
+    return ok({
+      accepted: false,
+      error: error instanceof Error ? error.message : String(error),
+      drafts: [],
+    });
+  }
 }
 
 async function answerQuestion(text) {
@@ -990,6 +1154,19 @@ async function chat(params) {
     const turn = appendChat(turnFromTriage(data));
     return ok({ intent: "triage", turn, turns: publicTurns(), triage: data });
   }
+  if (intent.kind === "draft") {
+    const result = await draftReply(params);
+    const data = result && result.success ? result.data : { accepted: false, error: "That draft did not finish.", drafts: [] };
+    const accepted = data.accepted !== false && !data.error;
+    const turn = appendChat({
+      role: "agent",
+      kind: "draft",
+      text: accepted ? (data.summary || "Draft ready for review in compose.") : (data.error || "That draft did not finish."),
+      error: !accepted,
+      drafts: accepted && Array.isArray(data.drafts) ? data.drafts : [],
+    });
+    return ok({ intent: "draft", turn, turns: publicTurns(), result: data });
+  }
   const answer = await answerQuestion(text);
   const turn = appendChat({ role: "agent", kind: "chat", text: answer.text, error: answer.error });
   return ok({ intent: "chat", turn, turns: publicTurns() });
@@ -1029,8 +1206,13 @@ function answer(channel, args) {
     case "nativeAgent:home:librarySkills":
       return ok(listLibrarySkills());
     case "nativeAgent:home":
+    case "nativeAgent:home:todosCached":
     case "nativeAgent:getTriage":
       return getTriage();
+    case "nativeAgent:home:refreshTaxonomy":
+      return refreshTaxonomy();
+    case "nativeAgent:home:todoUpdate":
+      return setTodo(params);
     case "nativeAgent:triage":
       return triage();
     case "nativeAgent:history":
@@ -1063,8 +1245,11 @@ module.exports = {
   getTriage,
   routeChat,
   mailboxConnected,
+  profileSample,
   liveProfileMail,
   groupTriage,
+  refreshTaxonomy,
+  setTodo,
   normalizeSkillResult,
   CATALOG,
 };

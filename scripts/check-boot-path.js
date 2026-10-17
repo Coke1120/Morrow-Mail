@@ -1390,10 +1390,11 @@ assert.strictEqual(agentUi.agentItemLine({ from: "Ada", subject: "Hi", summary: 
 assert.strictEqual(agentUi.agentStatusCopy({ reason: "needs_key", error: "Add an API key in GenMail → AI Setup." }).error, true);
 assert.match(agentUi.agentStatusCopy({ reason: "needs_mailbox" }).text, /Connect a mailbox/);
 assert.strictEqual(agentUi.agentStatusCopy({ reason: "empty" }).error, false);
-assert.strictEqual(agentUi.agentStatusCopy({ reason: "idle" }).text, "Triage has not run yet.");
+assert.strictEqual(agentUi.agentStatusCopy({ reason: "idle" }).text, "");
+assert.strictEqual(agentUi.agentStatusCopy({ reason: "idle", stale: true }).text, "Updating suggested todos…");
 assert.strictEqual(agentUi.sectionEmptyCopy("ready"), "Nothing in this section.");
 assert.strictEqual(agentUi.sectionEmptyCopy("needs_key"), "");
-assert.strictEqual(agentUi.sectionEmptyCopy("idle"), "Run triage to sort the inbox.");
+assert.strictEqual(agentUi.sectionEmptyCopy("idle"), "Nothing suggested yet.");
 assert.strictEqual(agentUi.historyLine({ name: "Morning Brief", summary: "Two notes" }), "Morning Brief — Two notes");
 assert.strictEqual(agentUi.proposalLine({ subject: "Hello", labelName: "FYI" }), "Hello → FYI");
 assert.match(agentUi.runModeLabel({ schedule: "disabled", runMode: "on_demand" }), /Auto-run is off/);
@@ -1490,13 +1491,18 @@ assert.ok(registered.has("mail:tidyInbox") && used.has("mail:tidyInbox"));
 assert.ok(registered.has("genmail:configGetShowOneClickTidyEffective") && used.has("genmail:configGetShowOneClickTidyEffective"));
 assert.ok(html.includes('id="agent-panel"') && html.includes('id="agent-open"') && html.includes('id="studio-home"') && html.includes('id="studio-library"'));
 assert.ok(html.includes('id="agent-composer"') && html.includes('id="agent-send"') && html.includes('id="agent-input"'));
-assert.ok(html.includes('id="agent-memory"') && html.includes('id="rail-brain"') && html.includes('id="chrome-panel"') && html.includes('id="side-mail"'));
+assert.ok(html.includes('id="agent-memory"') && html.includes('id="rail-brain"') && html.includes('id="agent-home"') && html.includes('id="side-mail"'));
 assert.ok(!html.includes('id="side-agent"') && !html.includes('id="side-brain"') && !html.includes("side-switch"));
+assert.ok(!html.includes('id="chrome-panel"') && !html.includes('id="agent-mail"') && !html.includes("Triage inbox"));
+assert.ok(html.includes("Ask GenMail Agent") && html.includes("Manage Skills") && html.includes("Refresh todos"));
 assert.ok(html.indexOf('id="rail-agent"') < html.indexOf('id="rail-mail"'));
 assert.ok(html.indexOf('id="rail-mail"') < html.indexOf('id="rail-calendar"'));
 assert.ok(html.indexOf('id="rail-calendar"') < html.indexOf('id="rail-brain"'));
-assert.ok(html.indexOf('id="chrome-panel"') < html.indexOf('id="folders"'));
-assert.ok(html.indexOf('id="agent-panel"') < html.indexOf('id="shell"'));
+assert.ok(html.indexOf('id="shell"') < html.indexOf('id="agent-panel"'));
+assert.ok(html.indexOf('id="calendar-panel"') < html.indexOf('id="brain"'));
+assert.ok(appJs.includes('["shell", "calendar-panel", "agent-panel", "brain"]') && appJs.includes("nativeAgent:home:todosCached"));
+assert.ok(appJs.includes("nativeAgent:home:refreshTaxonomy") && appJs.includes("nativeAgent:home:todoUpdate"));
+assert.ok(appJs.includes('source: "manual"') && appJs.includes('source: "open"'));
 assert.ok(appJs.includes("nativeAgent:chat") && appJs.includes("nativeAgent:memorySet") && appJs.includes("nativeAgent:chatHistory"));
 assert.ok(html.includes('id="rail-agent"') && html.includes('id="agent-sections"') && html.includes('id="agent-triage"'));
 assert.ok(html.includes(">Agent<") && html.includes("Home skills") && html.includes("Library skills") && html.includes("Only when I ask"));
@@ -2002,7 +2008,10 @@ async function checkAiDraft() {
   assert.strictEqual(loadConfig().apiKey, "");
   const agent = require("../host/agent");
   const agentSrc = fs.readFileSync(path.join(root, "host/agent.js"), "utf8");
-  assert.ok(!agentSrc.includes("mail:send"));
+  assert.ok(!agentSrc.includes("mail:send") && !agentSrc.includes("genmailSend"));
+  const brainSrc = fs.readFileSync(path.join(root, "host/brain.js"), "utf8");
+  assert.ok(brainSrc.includes("function refreshFromMail") && brainSrc.includes("function rebuildFromMail"));
+  assert.ok(!/case "emailBrain:refresh":\s*case "emailBrain:rebuild"/.test(brainSrc));
   assert.ok(agentSrc.includes("agent-chat.json") && agentSrc.includes("agent-memory.json"));
   assert.ok(!agentSrc.includes("openclaw") && !agentSrc.includes("OpenClaw"));
   assert.ok(!agentSrc.includes("skill-tone") && !agentSrc.includes("Match my tone"));
@@ -2084,7 +2093,21 @@ async function checkAiDraft() {
   const db = require("../host/mail/db");
   const hadAccounts = db.hasAccounts;
   const hadInbox = db.recentInbox;
+  const hadSent = db.recentInWellKnown;
   db.hasAccounts = () => true;
+  db.recentInWellKnown = () => [{
+    id: "m-sent",
+    accountId: "acct-1",
+    from: "Me <me@example.com>",
+    subject: "Notes",
+    snippet: "I'll send the notes today — short and direct.",
+    date: "2026-10-17T09:00:00.000Z",
+    unread: false,
+    starred: false,
+    hasAttachments: false,
+    threadId: "t-sent",
+    folderPath: "Sent",
+  }];
   db.recentInbox = () => [{
     id: "m-live",
     accountId: "acct-1",
@@ -2102,7 +2125,22 @@ async function checkAiDraft() {
   global.fetch = async (_url, opts) => {
     const body = String(opts && opts.body || "");
     seenBodies.push(body);
-    const content = body.includes("Assign each message")
+    const dossier = JSON.stringify({
+      ownerName: "Ada",
+      writing: ["Short and direct."],
+      voiceQuotes: ["I'll send the notes today."],
+      sections: [
+        { id: "communication-style", title: "Communication style", rows: [{ label: "Tone", value: "Direct" }] },
+        { id: "work-patterns", title: "Work patterns", rows: [{ label: "Hours", value: "Mornings" }] },
+        { id: "key-relationships", title: "Key relationships", rows: [{ label: "Ada", value: "Notes" }] },
+        { id: "decision-preferences", title: "Decision preferences", rows: [{ label: "Speed", value: "Decide fast" }] },
+      ],
+    });
+    const content = body.includes("personaMode")
+      ? dossier
+      : body.includes("draftReply")
+        ? JSON.stringify({ to: "ada@example.com", subject: "Re: Need the notes", body: "Draft only.", summary: "Draft ready." })
+        : body.includes("Assign each message")
       ? JSON.stringify({
         items: [{
           messageId: "m-live",
@@ -2193,9 +2231,62 @@ async function checkAiDraft() {
     const shown = agent.answer("nativeAgent:chatShow", [{ runId: briefRun.id }]);
     assert.strictEqual(shown.success, true);
     assert.ok(shown.data.turns.length > loaded.data.turns.length);
+    const sample = agent.profileSample("rebuild");
+    assert.strictEqual(sample.messages[0].folder, "sent");
+    assert.ok(sample.messages.some((row) => row.folder === "inbox"));
+    brain.answer("emailBrain:addWritingRule", [{ text: "Sticky rule." }]);
+    const rebuiltPersona = brain.answer("emailBrain:rebuild", []);
+    assert.strictEqual(rebuiltPersona.data.accepted, true);
+    assert.strictEqual(rebuiltPersona.data.mode, "rebuild");
+    async function settlePersona() {
+      for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setImmediate(resolve));
+    }
+    await settlePersona();
+    const afterRebuild = brain.answer("emailBrain:getCached", []);
+    const rebuiltSections = brainUi.brainSections(afterRebuild.data);
+    assert.ok(rebuiltSections.some((section) => section.id === "communication-style"));
+    assert.ok(brainUi.brainUserRules(rebuiltSections).some((row) => row.value === "Sticky rule."));
+    assert.ok((afterRebuild.data.persona.recentActivity || []).some((row) => row.kind === "rebuild"));
+    assert.ok(seenBodies.some((body) => body.includes("personaMode") && body.includes("rebuild") && body.includes("I'll send the notes today")));
+    const manual = brain.answer("emailBrain:refresh", [{ source: "manual" }]);
+    assert.strictEqual(manual.data.accepted, true);
+    assert.strictEqual(manual.data.mode, "refresh");
+    assert.ok(!manual.data.cached);
+    await settlePersona();
+    const afterRefresh = brain.answer("emailBrain:getCached", []);
+    assert.ok(brainUi.brainUserRules(brainUi.brainSections(afterRefresh.data)).some((row) => row.value === "Sticky rule."));
+    assert.ok((afterRefresh.data.persona.recentActivity || []).some((row) => row.kind === "refresh"));
+    assert.ok(seenBodies.some((body) => body.includes('"personaMode":"refresh"') || (body.includes("personaMode") && body.includes("refresh"))));
+    brain.answer("emailBrain:saveCategories", [{
+      categories: [
+        { id: "fyi", name: "FYI", description: "skim", collapseView: true },
+        { id: "needs-you", name: "Needs You", description: "reply", collapseView: false },
+      ],
+    }]);
+    const reordered = agent.answer("nativeAgent:home:refreshTaxonomy", []).data;
+    assert.strictEqual(reordered.stale, true);
+    assert.deepStrictEqual(reordered.sections.map((section) => section.id), ["fyi", "needs-you"]);
+    assert.strictEqual(reordered.sections[0].collapseView, true);
+    assert.strictEqual(reordered.sections.find((section) => section.id === "needs-you").items[0].messageId, "m-live");
+    const hiddenTodo = agent.answer("nativeAgent:home:todoUpdate", [{ messageId: "m-live", status: "done" }]).data;
+    assert.ok(!hiddenTodo.sections.some((section) => section.items.some((item) => item.messageId === "m-live")));
+    const openedTodo = agent.answer("nativeAgent:home:todoUpdate", [{ messageId: "m-live", status: "open" }]).data;
+    assert.ok(openedTodo.sections.some((section) => section.items.some((item) => item.messageId === "m-live")));
+    assert.strictEqual(agent.routeChat("draft a reply", agent.listHomeSkills()).kind, "draft");
+    const drafted = await agent.answer("nativeAgent:chat", [{ text: "draft a reply" }]);
+    assert.strictEqual(drafted.data.intent, "draft");
+    assert.strictEqual(drafted.data.turn.drafts[0].body, "Draft only.");
+    assert.ok(!JSON.stringify(drafted.data).includes("Analytical Engine"));
+    for (const channel of ["emailBrain:setSkillAutoExecute", "emailBrain:setSkillSchedule", "emailBrain:previewRuleMatches"]) {
+      const refused = brain.answer(channel, [{ skillId: "morning-brief", enabled: true }]);
+      assert.strictEqual(refused.data.accepted, false);
+      assert.match(refused.data.error, /only when you ask/i);
+    }
   } finally {
     db.hasAccounts = hadAccounts;
     db.recentInbox = hadInbox;
+    db.recentInWellKnown = hadSent;
+    fs.rmSync(path.join(process.env.GENMAIL_AI_CONFIG_DIR, "brain.json"), { force: true });
     global.fetch = originalFetch;
     delete process.env.GENMAIL_AI_API_KEY;
   }

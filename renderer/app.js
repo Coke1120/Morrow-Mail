@@ -78,6 +78,8 @@ let agentGen = 0;
 let agentChatBusy = false;
 let agentTurns = [];
 let agentProposalIds = null;
+let agentPoll = null;
+let brainDragIndex = -1;
 let listMotionKey = "";
 let brainView = {
   accepted: null,
@@ -2895,9 +2897,15 @@ async function refresh() {
     showStatus("");
     return;
   }
-  if (state.side === "agent") {
+  if (state.view === "agent") {
     showStatus("Syncing…");
     await loadAgent();
+    showStatus("");
+    return;
+  }
+  if (state.view === "brain") {
+    showStatus("Syncing…");
+    await loadBrain();
     showStatus("");
     return;
   }
@@ -3625,6 +3633,7 @@ function paintBrain(snapshot, view) {
   status.classList.toggle("error", message.error);
   paintBrainProgress(view);
   paintBrainMeta(snapshot);
+  paintBrainActivity(snapshot);
   const root = $("brain-sections");
   root.replaceChildren();
   const sections = brainSections(snapshot);
@@ -3711,6 +3720,23 @@ function paintBrain(snapshot, view) {
   $("brain-rebuild").disabled = busy;
 }
 
+function paintBrainActivity(snapshot) {
+  const wrap = $("brain-activity");
+  const root = $("brain-activity-list");
+  if (!wrap || !root) return;
+  const persona = snapshot && snapshot.persona;
+  const rows = persona && Array.isArray(persona.recentActivity) ? persona.recentActivity : [];
+  root.replaceChildren();
+  wrap.hidden = rows.length === 0;
+  for (const row of rows) {
+    const line = document.createElement("p");
+    const when = row && row.at ? formatBrainTime(row.at) : "";
+    const detail = String((row && row.detail) || (row && row.kind) || "").trim();
+    line.textContent = [when, detail].filter(Boolean).join(" — ");
+    root.appendChild(line);
+  }
+}
+
 function startBrainEdit(row) {
   brainEditId = row.id;
   $("brain-rule").value = String(row.value || "");
@@ -3787,10 +3813,36 @@ function paintCategories() {
     fix.addEventListener("click", () => {
       fixBrainCategory(category);
     });
+    const up = document.createElement("button");
+    up.type = "button";
+    up.className = "ghost";
+    up.textContent = "Up";
+    up.setAttribute("aria-label", "Move " + name + " up");
+    up.disabled = lockedMove(index) || index === 0;
+    up.addEventListener("click", () => moveCategory(index, -1));
+    const down = document.createElement("button");
+    down.type = "button";
+    down.className = "ghost";
+    down.textContent = "Down";
+    down.setAttribute("aria-label", "Move " + name + " down");
+    down.disabled = lockedMove(index) || index === brainCategories.length - 1;
+    down.addEventListener("click", () => moveCategory(index, 1));
     const actions = document.createElement("div");
     actions.className = "row brain-actions";
-    actions.append(edit, fix, del);
+    actions.append(up, down, edit, fix, del);
     line.appendChild(actions);
+    line.draggable = !lockedMove(index);
+    line.addEventListener("dragstart", () => {
+      brainDragIndex = index;
+    });
+    line.addEventListener("dragover", (event) => {
+      event.preventDefault();
+    });
+    line.addEventListener("drop", (event) => {
+      event.preventDefault();
+      reorderCategories(brainDragIndex, index);
+      brainDragIndex = -1;
+    });
     root.appendChild(line);
   });
   const locked = !brainCategoriesReady || brainCategoryBusy;
@@ -3799,6 +3851,29 @@ function paintCategories() {
   $("brain-category-cancel").hidden = brainCategoryIndex < 0;
   $("brain-category-save").disabled = locked;
   $("brain-category-ai").disabled = locked;
+}
+
+function lockedMove(index) {
+  return !brainCategoriesReady || brainCategoryBusy || !Number.isInteger(index);
+}
+
+function moveCategory(index, delta) {
+  reorderCategories(index, index + delta);
+}
+
+function reorderCategories(from, to) {
+  if (!brainCategoriesReady || brainCategoryBusy) return;
+  if (!Number.isInteger(from) || !Number.isInteger(to)) return;
+  if (from < 0 || to < 0 || from >= brainCategories.length || to >= brainCategories.length || from === to) return;
+  const rows = brainCategories.slice();
+  const [row] = rows.splice(from, 1);
+  rows.splice(to, 0, row);
+  brainCategories = rows;
+  if (brainCategoryIndex === from) brainCategoryIndex = to;
+  else if (from < brainCategoryIndex && to >= brainCategoryIndex) brainCategoryIndex -= 1;
+  else if (from > brainCategoryIndex && to <= brainCategoryIndex) brainCategoryIndex += 1;
+  showCategoryStatus("Save to keep this list.", false);
+  paintCategories();
 }
 
 function startCategoryEdit(index) {
@@ -3873,6 +3948,11 @@ async function saveBrainCategories() {
   // shortcut: an empty save reads back as the host defaults, change readStore if an empty list must stick
   showCategoryStatus(wasEmpty ? "Saved. An empty list uses the defaults." : "Saved.", false);
   paintCategories();
+  const home = await call("nativeAgent:home:refreshTaxonomy");
+  if (state.view === "agent") {
+    paintAgent(home, "");
+    await loadAgent();
+  }
 }
 
 async function fixBrainCategory(category) {
@@ -3939,9 +4019,10 @@ function brainIsOpen() {
   return !!(node && !node.hidden);
 }
 
-function openBrain() {
-  showSide("brain");
-  showBrainPane("profile");
+function openBrain(pane) {
+  const name = typeof pane === "string" ? pane : "profile";
+  showPrimary("brain", "brain");
+  showBrainPane(name);
   brainCategoriesReady = false;
   brainCategories = [];
   brainCategoryDefaults = [];
@@ -3950,7 +4031,10 @@ function openBrain() {
   showCategoryStatus("", false);
   paintCategories();
   const gen = brainCategoryGen += 1;
-  loadBrain().catch((error) => {
+  loadBrain().then(() => {
+    if (state.view !== "brain") return null;
+    return requestBrainJob(["emailBrain:refresh"], "refresh", { source: "open" });
+  }).catch((error) => {
     brainView = { ...brainView, error: error instanceof Error ? error.message : String(error) };
     paintBrain(brainSnapshot, brainView);
   });
@@ -3996,7 +4080,7 @@ async function deleteBrainRule(itemId) {
   await loadBrain();
 }
 
-async function requestBrainRebuild(channels, mode) {
+async function requestBrainJob(channels, mode, params) {
   const refresh = $("brain-refresh");
   const rebuild = $("brain-rebuild");
   if (refresh) refresh.disabled = true;
@@ -4004,18 +4088,20 @@ async function requestBrainRebuild(channels, mode) {
   brainView = { ...brainView, error: "", fixing: false };
   try {
     let accepted = false;
-    const list = Array.isArray(channels) && channels.length ? channels : brainRefreshChannels();
+    let cached = false;
+    const list = Array.isArray(channels) && channels.length ? channels : [];
     for (const channel of list) {
-      const result = await call(channel);
+      const result = await call(channel, params || {});
       accepted = !!(result && result.accepted);
+      cached = !!(result && result.cached);
       if (accepted) break;
     }
     brainView = {
       ...brainView,
       accepted,
-      refreshing: accepted && mode !== "rebuild",
+      refreshing: accepted && !cached && mode !== "rebuild",
       rebuilding: accepted && mode === "rebuild",
-      percent: accepted ? 15 : null,
+      percent: accepted && !cached ? 15 : null,
       error: "",
     };
   } catch (error) {
@@ -4031,11 +4117,12 @@ async function requestBrainRebuild(channels, mode) {
 }
 
 async function refreshBrain() {
-  await requestBrainRebuild(brainRefreshChannels(), "refresh");
+  await requestBrainJob(["emailBrain:refresh"], "refresh", { source: "manual" });
 }
 
 async function rebuildBrain() {
-  await requestBrainRebuild(["emailBrain:rebuild"], "rebuild");
+  if (!window.confirm("Rebuild Email Brain from scratch? Your writing rules stay. Learned profile rows are replaced.")) return;
+  await requestBrainJob(["emailBrain:rebuild"], "rebuild");
 }
 
 async function fixBrainItem(row) {
@@ -4065,6 +4152,8 @@ async function fixBrainItem(row) {
 
 async function forgetBrainItem(row) {
   if (!row || !row.id) return;
+  const name = brainRowText(row).slice(0, 80) || "this row";
+  if (!window.confirm("Forget “" + name + "”? This removes it from the profile.")) return;
   try {
     await call("emailBrain:forgetItem", { itemId: row.id });
     if (brainEditId === row.id) {
@@ -4194,13 +4283,23 @@ function agentStatusCopy(payload) {
     return { text: String(data.error || "The inbox cache is empty. Refresh mail, then triage again."), error: false };
   }
   if (data.accepted === false && data.error) return { text: String(data.error), error: true };
+  if (data.stale && data.reason !== "needs_key" && data.reason !== "needs_mailbox") {
+    return { text: "Updating suggested todos…", error: false };
+  }
   if (data.updatedAt) return { text: "Updated " + data.updatedAt, error: false };
-  return { text: "Triage has not run yet.", error: false };
+  return { text: "", error: false };
+}
+
+function agentGreeting() {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Good morning";
+  if (hour < 18) return "Good afternoon";
+  return "Good evening";
 }
 
 function sectionEmptyCopy(reason) {
   if (reason === "ready" || reason === "empty") return "Nothing in this section.";
-  if (reason === "idle") return "Run triage to sort the inbox.";
+  if (reason === "idle") return "Nothing suggested yet.";
   return "";
 }
 
@@ -4722,7 +4821,7 @@ async function reviewDraft(draft) {
 
 async function openFollowUp(messageId) {
   if (!messageId) throw new Error("That message is not in the mailbox.");
-  if (state.view === "calendar") showMail();
+  if (state.view !== "mail") showMail();
   await openMessage(messageId, true);
 }
 
@@ -4740,7 +4839,7 @@ async function runBrainSkill(row) {
     setSkillStatus("That skill has no id.", true);
     return;
   }
-  if (!brainIsOpen() && state.side === "agent") {
+  if (!brainIsOpen() && state.view === "agent") {
     await sendAgentText(skillName(row) || skillId);
     return;
   }
@@ -4925,7 +5024,7 @@ function paintThread() {
   if (!agentTurns.length) {
     const empty = document.createElement("p");
     empty.className = "agent-empty hint";
-    empty.textContent = "No messages yet. Ask for a skill or triage. Nothing is sent.";
+    empty.textContent = "No messages yet. Ask GenMail Agent, or run a skill. Nothing is sent.";
     root.appendChild(empty);
     return;
   }
@@ -4947,7 +5046,84 @@ function paintAgent(payload, errorText) {
   }
   paintProposals($("agent-proposals"), payload && payload.proposals);
   paintHistory($("agent-history"), payload && payload.runs);
+  paintAgentHome(payload);
   paintThread();
+}
+
+function paintAgentHome(payload) {
+  const root = $("agent-home");
+  if (!root) return;
+  const greet = $("agent-greeting");
+  if (greet) greet.textContent = agentGreeting();
+  root.replaceChildren();
+  const reason = payload && payload.reason;
+  for (const section of agentSections(payload)) {
+    const block = document.createElement("section");
+    block.className = "agent-section";
+    if (section.collapseView) block.classList.add("is-collapsed");
+    const items = Array.isArray(section.items) ? section.items : [];
+    const title = document.createElement("h3");
+    title.textContent = (section.name || section.title || "Section") + (items.length ? " · " + items.length : "");
+    block.appendChild(title);
+    if (section.description) {
+      const desc = document.createElement("p");
+      desc.className = "hint";
+      desc.textContent = section.description;
+      block.appendChild(desc);
+    }
+    if (section.collapseView && items.length) {
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "ghost";
+      toggle.textContent = "Show";
+      toggle.addEventListener("click", () => {
+        const collapsed = block.classList.toggle("is-collapsed");
+        toggle.textContent = collapsed ? "Show" : "Hide";
+      });
+      block.appendChild(toggle);
+    }
+    const empty = sectionEmptyCopy(reason);
+    if (!items.length && empty) {
+      const note = document.createElement("p");
+      note.className = "hint";
+      note.textContent = empty;
+      block.appendChild(note);
+    }
+    for (const item of items) {
+      if (item && typeof item === "object") block.appendChild(agentTodoCard(item));
+    }
+    root.appendChild(block);
+  }
+}
+
+function agentTodoCard(item) {
+  const card = agentCard(item);
+  const messageId = item && item.messageId ? String(item.messageId) : "";
+  if (!messageId) return card;
+  const actions = document.createElement("div");
+  actions.className = "agent-actions row";
+  const done = document.createElement("button");
+  done.type = "button";
+  done.className = "ghost";
+  done.textContent = "Done";
+  done.addEventListener("click", () => {
+    updateTodo(messageId, "done").catch((error) => paintAgent(null, error instanceof Error ? error.message : String(error)));
+  });
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "ghost";
+  dismiss.textContent = "Dismiss";
+  dismiss.addEventListener("click", () => {
+    updateTodo(messageId, "dismissed").catch((error) => paintAgent(null, error instanceof Error ? error.message : String(error)));
+  });
+  actions.append(done, dismiss);
+  card.appendChild(actions);
+  return card;
+}
+
+async function updateTodo(messageId, status) {
+  const data = await call("nativeAgent:home:todoUpdate", { messageId, status });
+  paintAgent(data, "");
 }
 
 function applyChatPayload(data) {
@@ -5036,78 +5212,92 @@ async function saveAgentMemory() {
 async function loadAgent() {
   const gen = ++agentGen;
   const [triage, history, chat] = await Promise.all([
-    call("nativeAgent:getTriage"),
+    call("nativeAgent:home:todosCached"),
     call("nativeAgent:history"),
     call("nativeAgent:chatHistory"),
   ]);
-  if (gen !== agentGen) return;
+  if (gen !== agentGen || state.view !== "agent") return;
   agentTurns = chat && Array.isArray(chat.turns) ? chat.turns : [];
   const notes = $("agent-memory");
   if (notes && document.activeElement !== notes) notes.value = (chat && chat.memory && chat.memory.notes) || "";
-  const payload = Object.assign({}, triage, {
-    runs: history && Array.isArray(history.runs) ? history.runs : triage && triage.runs,
-  });
-  if ($("agent-panel") && !$("agent-panel").hidden) paintAgent(payload, "");
+  const runs = history && Array.isArray(history.runs) ? history.runs : triage && triage.runs;
+  const payload = Object.assign({}, triage, { runs });
+  paintAgent(payload, "");
   await loadStudio();
+  const reason = triage && triage.reason;
+  if (gen !== agentGen || state.view !== "agent") return;
+  if (!(triage && triage.stale) || reason === "needs_key" || reason === "needs_mailbox") return;
+  const fresh = await call("nativeAgent:triage");
+  if (gen !== agentGen || state.view !== "agent") return;
+  paintAgent(Object.assign({}, fresh, { runs }), "");
 }
 
 async function runTriage() {
-  await sendAgentText("Triage inbox");
+  if (agentChatBusy) return;
+  setAgentBusy(true);
+  try {
+    const data = await call("nativeAgent:triage");
+    paintAgent(data, "");
+  } finally {
+    setAgentBusy(false);
+  }
 }
 
-function showMailShell() {
-  if (state.view !== "calendar") return;
-  state.view = "mail";
-  hidePane("calendar-panel");
-  $("shell").hidden = false;
-  $("rail-calendar").setAttribute("aria-current", "false");
+function stopAgentPoll() {
+  if (agentPoll) clearInterval(agentPoll);
+  agentPoll = null;
 }
 
-function markSide(name) {
-  state.side = name;
+function startAgentPoll() {
+  stopAgentPoll();
+  agentPoll = setInterval(() => {
+    if (state.view !== "agent") {
+      stopAgentPoll();
+      return;
+    }
+    loadAgent().catch(() => {});
+  }, 60000);
+}
+
+function markRail(view) {
+  state.view = view;
+  state.side = view === "mail" ? "folders" : view;
+  const workspace = document.querySelector(".workspace");
+  if (workspace) workspace.dataset.view = view;
   const shell = $("shell");
-  if (shell) shell.dataset.side = name;
-  const panel = $("chrome-panel");
-  const open = (name === "agent" || name === "brain") && state.view !== "calendar";
-  if (panel) panel.hidden = !open;
-  if (name !== "agent") {
-    const agent = $("agent-panel");
-    if (agent) agent.hidden = true;
+  if (shell) shell.dataset.side = state.side;
+  const current = {
+    mail: "rail-mail",
+    agent: "rail-agent",
+    calendar: "rail-calendar",
+    brain: "rail-brain",
+  }[view];
+  for (const id of ["rail-mail", "rail-agent", "rail-calendar", "rail-brain"]) {
+    const node = $(id);
+    if (node) node.setAttribute("aria-current", id === current ? "page" : "false");
   }
-  if (name !== "brain") {
-    const brain = $("brain");
-    if (brain) brain.hidden = true;
-  }
-  if (state.view === "calendar") return;
-  $("rail-mail").setAttribute("aria-current", name === "folders" ? "page" : "false");
-  $("rail-agent").setAttribute("aria-current", name === "agent" ? "page" : "false");
-  $("rail-brain").setAttribute("aria-current", name === "brain" ? "page" : "false");
-  $("rail-calendar").setAttribute("aria-current", "false");
 }
 
-function showSide(name) {
-  showMailShell();
-  const agent = $("agent-panel");
-  const brain = $("brain");
-  const revealAgent = name === "agent" && agent && agent.hidden;
-  const revealBrain = name === "brain" && brain && brain.hidden;
-  markSide(name);
-  if (name === "agent") {
-    if (revealAgent) revealPanel("agent-panel");
-    else if (agent) agent.hidden = false;
-    hidePane("brain");
-  } else if (name === "brain") {
-    if (revealBrain) revealPanel("brain");
-    else if (brain) brain.hidden = false;
-    hidePane("agent-panel");
-  } else {
-    hidePane("agent-panel");
-    hidePane("brain");
+function showPrimary(view, id) {
+  const swap = state.view !== view;
+  if (view !== "agent") stopAgentPoll();
+  markRail(view);
+  for (const pane of ["shell", "calendar-panel", "agent-panel", "brain"]) {
+    if (pane === id) continue;
+    hidePane(pane);
+  }
+  if (swap) revealPanel(id);
+  else {
+    const node = $(id);
+    if (node) node.hidden = false;
   }
 }
 
 function showAgent() {
-  showSide("agent");
+  showPrimary("agent", "agent-panel");
+  const greet = $("agent-greeting");
+  if (greet) greet.textContent = agentGreeting();
+  startAgentPoll();
   loadAgent().catch((error) => {
     paintAgent(null, error instanceof Error ? error.message : String(error));
   });
@@ -5118,7 +5308,7 @@ function closeBrain() {
   const rule = $("brain-rule");
   if (rule) rule.value = "";
   brainCategoryIndex = -1;
-  showSide("folders");
+  showMail();
 }
 
 function calendarAccount() {
@@ -5333,28 +5523,12 @@ async function loadCalendar() {
 }
 
 function showMail() {
-  const swap = state.view !== "mail";
-  state.view = "mail";
-  hidePane("calendar-panel");
-  if (swap) revealPanel("shell");
-  else $("shell").hidden = false;
-  showSide("folders");
+  showPrimary("mail", "shell");
 }
 
 function showCalendar() {
-  const swap = state.view !== "calendar";
-  state.view = "calendar";
   if (!state.calendarCursor) state.calendarCursor = new Date();
-  hidePane("shell");
-  hidePane("chrome-panel");
-  hidePane("agent-panel");
-  hidePane("brain");
-  if (swap) revealPanel("calendar-panel");
-  else $("calendar-panel").hidden = false;
-  $("rail-mail").setAttribute("aria-current", "false");
-  $("rail-agent").setAttribute("aria-current", "false");
-  $("rail-brain").setAttribute("aria-current", "false");
-  $("rail-calendar").setAttribute("aria-current", "page");
+  showPrimary("calendar", "calendar-panel");
   loadCalendar().catch((error) => showStatus(error.message, true));
 }
 
@@ -5437,9 +5611,9 @@ function wire() {
     else $("search-query").focus();
   });
   $("rail-agent").addEventListener("click", showAgent);
-  $("rail-brain").addEventListener("click", openBrain);
+  $("rail-brain").addEventListener("click", () => openBrain("profile"));
   $("agent-open").addEventListener("click", showAgent);
-  $("agent-mail").addEventListener("click", showMail);
+  $("agent-manage-skills").addEventListener("click", () => openBrain("skills"));
   $("agent-triage").addEventListener("click", () => {
     runTriage().catch((error) => paintAgent(null, error instanceof Error ? error.message : String(error)));
   });
@@ -5528,7 +5702,7 @@ function wire() {
       showSignatureStatus(error instanceof Error ? error.message : String(error), true);
     });
   });
-  $("brain-open").addEventListener("click", openBrain);
+  $("brain-open").addEventListener("click", () => openBrain("profile"));
   $("brain-close").addEventListener("click", closeBrain);
   $("brain-category-cancel").addEventListener("click", () => {
     resetCategoryForm();

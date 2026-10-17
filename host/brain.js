@@ -17,7 +17,7 @@ function storePath() {
 }
 
 function emptyStore() {
-  return { userRules: [], generated: null, categories: DEFAULT_CATEGORIES.map((row) => ({ ...row })) };
+  return { userRules: [], generated: null, categories: DEFAULT_CATEGORIES.map((row) => ({ ...row })), activity: [] };
 }
 
 function legacyCategories(categories) {
@@ -35,6 +35,7 @@ function readStore() {
       categories: stored.length && !legacyCategories(stored)
         ? stored
         : DEFAULT_CATEGORIES.map((row) => ({ ...row })),
+      activity: Array.isArray(parsed.activity) ? parsed.activity : [],
     };
   } catch {
     return emptyStore();
@@ -63,6 +64,11 @@ function row(sectionId, index, partial) {
   };
 }
 
+function writingKey(item, index) {
+  if (item && typeof item === "object" && item.id) return item.id;
+  return `how-you-write:${index}`;
+}
+
 function personaFrom(store) {
   const cfg = loadConfig();
   const generated = store.generated;
@@ -72,7 +78,11 @@ function personaFrom(store) {
       value: rule.value,
       source: "user",
     })),
-    ...((generated && generated.writing) || []).map((value, index) => row("how-you-write", index, { value, source: "auto" })),
+    ...((generated && generated.writing) || []).map((item, index) => row("how-you-write", index, {
+      id: writingKey(item, index),
+      value: item && typeof item === "object" ? item.value : item,
+      source: "auto",
+    })),
   ];
   const learned = (generated && generated.sections) || [];
   const sections = [
@@ -82,13 +92,22 @@ function personaFrom(store) {
       kind: "rows",
       rows: writingRows,
     },
-    ...learned.map((section) => ({
+      ...learned.map((section) => ({
       id: section.id,
       title: section.title,
       kind: "rows",
       rows: (section.rows || []).map((item, index) => row(section.id, index, item)),
     })),
   ];
+  const quotes = generated && Array.isArray(generated.voiceQuotes) ? generated.voiceQuotes : [];
+  if (quotes.length) {
+    sections.push({
+      id: "voice",
+      title: "Voice from sent mail",
+      kind: "rows",
+      rows: quotes.map((value, index) => row("voice", index, { value, source: "auto" })),
+    });
+  }
   if (!cfg.apiKey) {
     sections.push({
       id: "ai-setup",
@@ -111,7 +130,7 @@ function personaFrom(store) {
   return {
     status: "ready",
     updatedAt: (generated && generated.updatedAt) || new Date().toISOString(),
-    recentActivity: null,
+    recentActivity: (store.activity || []).slice(0, 12),
     profile: {
       meta: {
         ownerName: (generated && generated.ownerName) || "",
@@ -176,65 +195,211 @@ function fail(error) {
   return { success: false, error: { message: error instanceof Error ? error.message : String(error), code: error.code || "ai-error" } };
 }
 
-async function rebuildFromMail() {
-  emit("emailBrain:refreshState", { refreshing: true, error: null });
-  emit("emailBrain:rebuildState", { rebuilding: true, phase: "rebuilding", percent: 15, error: null });
-  const agent = require("./agent");
-  if (!agent.mailboxConnected()) {
-    const message = "Connect a mailbox before rebuilding. Sample mail is not used.";
-    emit("emailBrain:rebuildState", { rebuilding: false, phase: "failed", percent: null, error: message });
+const DOSSIER = [
+  { id: "communication-style", title: "Communication style" },
+  { id: "work-patterns", title: "Work patterns" },
+  { id: "key-relationships", title: "Key relationships" },
+  { id: "decision-preferences", title: "Decision preferences" },
+];
+
+const FRESH_MS = 30 * 60 * 1000;
+let livingTimer = null;
+
+function pushActivity(store, kind, detail) {
+  const list = Array.isArray(store.activity) ? store.activity : [];
+  list.unshift({
+    id: `act-${Date.now().toString(36)}-${list.length + 1}`,
+    kind,
+    at: new Date().toISOString(),
+    detail: String(detail || "").slice(0, 240),
+  });
+  store.activity = list.slice(0, 30);
+}
+
+function failJob(mode, message) {
+  if (mode === "refresh") {
     emit("emailBrain:refreshState", { refreshing: false, error: message });
     return;
   }
-  const mail = agent.liveProfileMail(16);
-  if (!mail.length) {
-    const message = "The mailbox cache is empty. Refresh the inbox, then rebuild.";
-    emit("emailBrain:rebuildState", { rebuilding: false, phase: "failed", percent: null, error: message });
-    emit("emailBrain:refreshState", { refreshing: false, error: message });
+  emit("emailBrain:rebuildState", { rebuilding: false, phase: "failed", percent: null, error: message });
+}
+
+function normalizeWriting(list) {
+  return (Array.isArray(list) ? list : [])
+    .map((item) => String(item && typeof item === "object" ? item.value : item || "").trim())
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function normalizeSections(list) {
+  const incoming = Array.isArray(list) ? list : [];
+  const byId = new Map();
+  for (const section of incoming) {
+    if (!section || typeof section !== "object") continue;
+    const id = String(section.id || "").trim().slice(0, 40);
+    if (id) byId.set(id, section);
+  }
+  const ordered = [];
+  for (const canon of DOSSIER) {
+    ordered.push(byId.get(canon.id) || { id: canon.id, title: canon.title, rows: [] });
+    byId.delete(canon.id);
+  }
+  for (const section of incoming) {
+    const id = section && String(section.id || "").trim();
+    if (id && byId.has(id)) ordered.push(byId.get(id));
+  }
+  return ordered.slice(0, 8).map((section) => {
+    const id = String(section.id || "section").slice(0, 40);
+    const rows = (Array.isArray(section.rows) ? section.rows : []).slice(0, 8).map((item, index) => ({
+      id: String((item && item.id) || `${id}:${index}`).slice(0, 80),
+      label: String((item && item.label) || "").slice(0, 80),
+      value: String((item && (item.value || item.text)) || "").slice(0, 400),
+    })).filter((entry) => entry.value || entry.label);
+    return { id, title: String(section.title || "Notes").slice(0, 80), rows };
+  });
+}
+
+function mergeRefreshSections(prior, next) {
+  const old = new Map((Array.isArray(prior) ? prior : []).map((section) => [section.id, section]));
+  return next.map((section) => {
+    if (section.rows.length) return section;
+    const kept = old.get(section.id);
+    return kept && Array.isArray(kept.rows) && kept.rows.length ? { ...section, rows: kept.rows } : section;
+  });
+}
+
+function generatedIsFresh(store) {
+  const at = store.generated && Date.parse(store.generated.updatedAt);
+  return Number.isFinite(at) && Date.now() - at < FRESH_MS;
+}
+
+async function runPersona(mode, sample, prior) {
+  const rebuilding = mode === "rebuild";
+  const system = rebuilding
+    ? [
+      "Build an Email Brain persona from scratch.",
+      "Weight sent mail and replies for voice. Short quotes from sent mail may show tone.",
+      "Do not treat inbox-only mail as the user's voice.",
+      "Do not invent facts that are not in the mail.",
+      "Reply with JSON only, no markdown.",
+      "Shape: {\"ownerName\":string,\"writing\":string[],\"voiceQuotes\":string[],\"sections\":[{\"id\":string,\"title\":string,\"rows\":[{\"label\":string,\"value\":string}]}]}.",
+      "sections must include communication-style, work-patterns, key-relationships, and decision-preferences.",
+      "writing is 3 to 6 short tone rules from sent mail.",
+    ].join(" ")
+    : [
+      "Update the living Email Brain profile.",
+      "Keep prior facts unless the new mail contradicts them.",
+      "Prefer new sent mail when the voice changes.",
+      "User writing rules are not in this JSON and must not be rewritten.",
+      "Reply with JSON only, no markdown.",
+      "Shape: {\"ownerName\":string,\"writing\":string[],\"voiceQuotes\":string[],\"sections\":[{\"id\":string,\"title\":string,\"rows\":[{\"label\":string,\"value\":string}]}]}.",
+    ].join(" ");
+  const text = await complete([
+    { role: "system", content: system },
+    {
+      role: "user",
+      content: JSON.stringify({
+        personaMode: mode,
+        sentCount: sample.sentCount,
+        inboxCount: sample.inboxCount,
+        prior: rebuilding ? null : {
+          ownerName: prior && prior.ownerName || "",
+          writing: prior && prior.writing || [],
+          sections: prior && prior.sections || [],
+          voiceQuotes: prior && prior.voiceQuotes || [],
+        },
+        messages: sample.messages,
+      }),
+    },
+  ], { temperature: 0.2 });
+  return extractJson(text);
+}
+
+function applyGenerated(store, parsed, sample, mode) {
+  const prior = store.generated;
+  let sections = normalizeSections(parsed && parsed.sections);
+  if (mode === "refresh" && prior) sections = mergeRefreshSections(prior.sections, sections);
+  const writing = normalizeWriting(parsed && parsed.writing);
+  const quotes = (Array.isArray(parsed && parsed.voiceQuotes) ? parsed.voiceQuotes : [])
+    .map((item) => String(item || "").trim().slice(0, 200))
+    .filter(Boolean)
+    .slice(0, 6);
+  const analyzed = mode === "rebuild"
+    ? sample.messages.length
+    : Math.min(500, ((prior && prior.emailsAnalyzed) || 0) + sample.messages.length);
+  store.generated = {
+    ownerName: typeof (parsed && parsed.ownerName) === "string" && parsed.ownerName.trim()
+      ? parsed.ownerName.trim().slice(0, 80)
+      : (prior && prior.ownerName) || "You",
+    writing: writing.length ? writing : (mode === "refresh" && prior && prior.writing) || [],
+    voiceQuotes: quotes.length ? quotes : (mode === "refresh" && prior && prior.voiceQuotes) || [],
+    sections,
+    emailsAnalyzed: analyzed,
+    updatedAt: new Date().toISOString(),
+    mode,
+  };
+}
+
+async function analyzeMail(mode) {
+  const refresh = mode === "refresh";
+  if (refresh) emit("emailBrain:refreshState", { refreshing: true, error: null });
+  else emit("emailBrain:rebuildState", { rebuilding: true, phase: "reading", percent: 15, error: null });
+  const agent = require("./agent");
+  if (!agent.mailboxConnected()) {
+    failJob(mode, refresh
+      ? "Connect a mailbox before refreshing. Sample mail is not used."
+      : "Connect a mailbox before rebuilding. Sample mail is not used.");
+    return;
+  }
+  const sample = typeof agent.profileSample === "function"
+    ? agent.profileSample(mode)
+    : { messages: agent.liveProfileMail(16), sentCount: 0, inboxCount: 0 };
+  if (!sample.messages.length) {
+    failJob(mode, "The mailbox cache is empty. Refresh the inbox, then rebuild.");
     return;
   }
   try {
-    const text = await complete([
-      {
-        role: "system",
-        content: [
-          "You summarize a mailbox into a writing profile.",
-          "Reply with JSON only, no markdown.",
-          "Shape: {\"ownerName\":string,\"writing\":string[],\"sections\":[{\"id\":string,\"title\":string,\"rows\":[{\"label\":string,\"value\":string}]}]}.",
-          "writing is 3 to 6 short rules about tone. sections cover identity and priorities. Do not invent private facts that are not in the mail.",
-        ].join(" "),
-      },
-      {
-        role: "user",
-        content: JSON.stringify(mail),
-      },
-    ]);
-    emit("emailBrain:rebuildState", { rebuilding: true, phase: "rebuilding", percent: 70, error: null });
-    const parsed = extractJson(text);
+    if (!refresh) emit("emailBrain:rebuildState", { rebuilding: true, phase: "rebuilding", percent: 55, error: null });
     const store = readStore();
-    store.generated = {
-      ownerName: typeof parsed.ownerName === "string" ? parsed.ownerName : "You",
-      writing: Array.isArray(parsed.writing) ? parsed.writing.map((item) => String(item)).filter(Boolean).slice(0, 8) : [],
-      sections: Array.isArray(parsed.sections) ? parsed.sections.slice(0, 6).map((section) => ({
-        id: String(section.id || "section").slice(0, 40),
-        title: String(section.title || "Notes").slice(0, 80),
-        rows: Array.isArray(section.rows) ? section.rows.slice(0, 8).map((item) => ({
-          label: String(item.label || "").slice(0, 80),
-          value: String(item.value || "").slice(0, 400),
-        })) : [],
-      })) : [],
-      emailsAnalyzed: mail.length,
-      updatedAt: new Date().toISOString(),
-    };
+    const parsed = await runPersona(mode, sample, store.generated);
+    if (!refresh) emit("emailBrain:rebuildState", { rebuilding: true, phase: "saving", percent: 85, error: null });
+    applyGenerated(store, parsed, sample, mode);
+    pushActivity(store, mode, refresh
+      ? `Updated from ${sample.sentCount} sent and ${sample.inboxCount} inbox messages.`
+      : `Rebuilt from ${sample.sentCount} sent and ${sample.inboxCount} inbox messages.`);
     writeStore(store);
-    emit("emailBrain:rebuildState", { rebuilding: false, phase: "ready", percent: 100, error: null });
-    emit("emailBrain:refreshState", { refreshing: false, error: null });
+    if (refresh) emit("emailBrain:refreshState", { refreshing: false, error: null });
+    else emit("emailBrain:rebuildState", { rebuilding: false, phase: "ready", percent: 100, error: null });
     emit("emailBrain:updated", {});
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    emit("emailBrain:rebuildState", { rebuilding: false, phase: "failed", percent: null, error: message });
-    emit("emailBrain:refreshState", { refreshing: false, error: message });
+    failJob(mode, error instanceof Error ? error.message : String(error));
   }
+}
+
+function refreshFromMail() {
+  return analyzeMail("refresh");
+}
+
+function rebuildFromMail() {
+  return analyzeMail("rebuild");
+}
+
+function scheduleLivingRefresh() {
+  if (livingTimer) return;
+  livingTimer = setInterval(() => {
+    if (!loadConfig().apiKey) return;
+    if (generatedIsFresh(readStore())) return;
+    refreshFromMail().catch(() => {});
+  }, 60 * 60 * 1000);
+  if (livingTimer.unref) livingTimer.unref();
+}
+
+function onDemandRefusal() {
+  return ok({
+    accepted: false,
+    runMode: "on_demand",
+    error: "Skills run only when you ask. Auto-run and scheduled send stay off.",
+  });
 }
 
 function taxonomy() {
@@ -252,16 +417,27 @@ function answer(channel, args) {
     case "emailBrain:getCached":
       return ok(snapshot());
     case "emailBrain:refresh":
-    case "emailBrain:rebuild":
       if (!loadConfig().apiKey) {
         emit("emailBrain:refreshState", { refreshing: false, error: null });
+        return ok({ accepted: false, mode: "refresh" });
+      }
+      if ((params && params.source) !== "manual" && generatedIsFresh(readStore())) {
+        emit("emailBrain:refreshState", { refreshing: false, error: null });
+        return ok({ accepted: true, mode: "refresh", cached: true });
+      }
+      setImmediate(() => {
+        refreshFromMail().catch(() => {});
+      });
+      return ok({ accepted: true, mode: "refresh" });
+    case "emailBrain:rebuild":
+      if (!loadConfig().apiKey) {
         emit("emailBrain:rebuildState", { rebuilding: false, phase: "ready", percent: null, error: null });
-        return ok({ accepted: false });
+        return ok({ accepted: false, mode: "rebuild" });
       }
       setImmediate(() => {
         rebuildFromMail().catch(() => {});
       });
-      return ok({ accepted: true });
+      return ok({ accepted: true, mode: "rebuild" });
     case "emailBrain:addWritingRule": {
       const text = params && typeof params.text === "string" ? params.text.trim() : "";
       if (!text) return fail(new Error("A writing rule needs text"));
@@ -279,9 +455,11 @@ function answer(channel, args) {
       if (rule && nextText !== null) rule.value = nextText;
       if (rule && params && typeof params.enabled === "boolean") rule.enabled = params.enabled;
       if (!rule && nextText !== null && store.generated && Array.isArray(store.generated.writing)) {
-        store.generated.writing = store.generated.writing.map((text, index) => (
-          `how-you-write:${index}` === itemId ? nextText : text
-        ));
+        store.generated.writing = store.generated.writing.map((item, index) => {
+          if (writingKey(item, index) !== itemId) return item;
+          if (item && typeof item === "object") return { ...item, value: nextText };
+          return nextText;
+        });
       }
       writeStore(store);
       emit("emailBrain:updated", {});
@@ -291,15 +469,21 @@ function answer(channel, args) {
     case "emailBrain:forgetItem": {
       const itemId = params && params.itemId;
       const store = readStore();
+      const before = JSON.stringify({ rules: store.userRules, generated: store.generated });
       store.userRules = store.userRules.filter((item) => item.id !== itemId);
       if (store.generated && Array.isArray(store.generated.writing)) {
-        store.generated.writing = store.generated.writing.filter((_value, index) => `how-you-write:${index}` !== itemId);
+        store.generated.writing = store.generated.writing.filter((item, index) => writingKey(item, index) !== itemId);
       }
       if (store.generated && Array.isArray(store.generated.sections)) {
         for (const section of store.generated.sections) {
           section.rows = (section.rows || []).filter((item, index) => (item.id || `${section.id}:${index}`) !== itemId);
         }
       }
+      if (store.generated && Array.isArray(store.generated.voiceQuotes)) {
+        store.generated.voiceQuotes = store.generated.voiceQuotes.filter((_value, index) => `voice:${index}` !== itemId);
+      }
+      const removed = before !== JSON.stringify({ rules: store.userRules, generated: store.generated });
+      if (removed && channel === "emailBrain:forgetItem") pushActivity(store, "forget", "Forgot one profile row.");
       writeStore(store);
       emit("emailBrain:updated", {});
       return ok(true);
@@ -343,12 +527,14 @@ function answer(channel, args) {
     case "emailBrain:dismissProposal":
       return require("./agent").dismissProposal(params);
     case "emailBrain:getAiDraftEditLog":
-      return ok({ entries: [] });
     case "emailBrain:recordAiDraftEdit":
     case "emailBrain:setLearningToastSilenced":
-      return ok(true);
     case "emailBrain:previewRuleMatches":
-      return ok({ applied: false, samples: [] });
+    case "emailBrain:setSkillAutoExecute":
+    case "emailBrain:setSkillSchedule":
+    case "emailBrain:setSkillTrigger":
+    case "emailBrain:deleteSkillSchedule":
+      return onDemandRefusal();
     default:
       if (channel.startsWith("emailBrain:")) {
         return fail(new Error("This Email Brain action is not available on a local model."));
@@ -410,9 +596,11 @@ function persistItemValue(store, itemId, value) {
     return;
   }
   if (store.generated && Array.isArray(store.generated.writing)) {
-    store.generated.writing = store.generated.writing.map((text, index) => (
-      `how-you-write:${index}` === itemId ? value : text
-    ));
+    store.generated.writing = store.generated.writing.map((item, index) => {
+      if (writingKey(item, index) !== itemId) return item;
+      if (item && typeof item === "object") return { ...item, value };
+      return value;
+    });
   }
   if (store.generated && Array.isArray(store.generated.sections)) {
     for (const section of store.generated.sections) {
@@ -437,6 +625,7 @@ async function fixItem(params) {
     if (!value) return fail(new Error("The model returned an empty rewrite."));
     const store = readStore();
     persistItemValue(store, params && params.itemId, value);
+    pushActivity(store, "fix", "Rewrote one profile row.");
     writeStore(store);
     emit("emailBrain:updated", {});
     return ok({ value });
@@ -445,4 +634,4 @@ async function fixItem(params) {
   }
 }
 
-module.exports = { answer, personaFrom, writingBrief, taxonomy };
+module.exports = { answer, personaFrom, writingBrief, taxonomy, scheduleLivingRefresh, refreshFromMail, rebuildFromMail };

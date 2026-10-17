@@ -736,6 +736,24 @@ function inboxRow(row) {
   };
 }
 
+function recentInWellKnown(wellKnown, limit) {
+  if (!db) return [];
+  const key = String(wellKnown || "").trim();
+  if (!key) return [];
+  const n = Math.min(Math.max(Number(limit) || 20, 1), 40);
+  const columns = `m.id, m.account_id, m.subject, m.snippet, m.from_addr, m.date_iso,
+            m.unread, m.starred, m.has_attachments, m.thread_id, m.folder_path`;
+  return all(
+    `SELECT ${columns}
+     FROM messages m
+     JOIN folders f ON f.account_id = m.account_id AND f.path = m.folder_path
+     WHERE f.well_known = ?
+     ORDER BY m.list_sort_ts DESC
+     LIMIT ?`,
+    [key, n]
+  ).map(inboxRow);
+}
+
 function recentInbox(limit) {
   if (!db) return [];
   const n = Math.min(Math.max(Number(limit) || 20, 1), 40);
@@ -803,6 +821,7 @@ module.exports = {
   saveOp,
   readOp,
   recentForAi,
+  recentInWellKnown,
   recentInbox,
   jsonList,
   newMessageId,

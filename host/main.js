@@ -326,6 +326,7 @@ app.whenReady().then(async () => {
     attachIpc(preloadFile);
     const win = await createWindow(preloadFile, mode);
     startBackgroundSync();
+    try { require("./brain").scheduleLivingRefresh(); } catch { /* brain store is optional at boot */ }
     if (process.env.GENMAIL_BOOT_EXIT === "1") {
       setTimeout(async () => {
         try {
