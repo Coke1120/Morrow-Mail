@@ -87,6 +87,30 @@ assert.strictEqual(senderName("charles@example.com"), "charles@example.com");
 assert.strictEqual(senderName("Charles Babbage <charles@example.com>"), "Charles Babbage");
 assert.strictEqual(senderName('"Ada Lovelace" <ada@example.com>'), "Ada Lovelace");
 
+const senderInitial = extractFunction(appJs, "senderInitial");
+assert.strictEqual(senderInitial("Charles Babbage"), "C");
+assert.strictEqual(senderInitial("charles@example.com"), "C");
+assert.strictEqual(senderInitial("(unknown sender)"), "U");
+assert.strictEqual(senderInitial(""), "?");
+assert.strictEqual(senderInitial("樂天Kobo"), "樂");
+
+const applyShellTheme = extractFunction(appJs, "applyShellTheme");
+const themeRoot = {
+  dataset: {},
+  style: {
+    props: {},
+    setProperty(key, value) { this.props[key] = value; },
+    removeProperty(key) { delete this.props[key]; },
+  },
+};
+assert.strictEqual(applyShellTheme(themeRoot, "dark", "#112233"), "dark");
+assert.strictEqual(themeRoot.dataset.theme, "dark");
+assert.strictEqual(themeRoot.style.props["--accent"], "#112233");
+assert.strictEqual(applyShellTheme(themeRoot, "neon", "nope"), "light");
+assert.strictEqual(themeRoot.dataset.theme, "light");
+assert.strictEqual(themeRoot.style.props["--accent"], undefined);
+assert.strictEqual(applyShellTheme(null, "dark", "#112233"), "light");
+
 const nextRow = extractFunction(appJs, "nextRow");
 assert.strictEqual(nextRow(0, -1, 1), -1);
 assert.strictEqual(nextRow(3, -1, 1), 0);
@@ -99,6 +123,8 @@ assert.ok(appJs.includes('className = "when"'), "message list does not render a 
 assert.ok(appJs.includes("ArrowDown") && appJs.includes("moveCursor"), "message list has no arrow-key cursor");
 const css = fs.readFileSync(path.join(root, "renderer/app.css"), "utf8");
 assert.ok(css.includes(".list-title") && css.includes(".when"), "shell css missing dense list styles");
+assert.ok(css.includes("#410c42") && css.includes("#572658") && css.includes("[data-theme=\"dark\"]"), "shell css missing GenMail plum tokens");
+assert.ok(appJs.includes("applyShellTheme(document.documentElement"), "shell does not paint theme or accent");
 assert.ok(css.includes(".thread") && css.includes(".attachments"), "shell css missing thread or attachment styles");
 const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
 assert.ok(html.includes('id="search-query"'), "toolbar has no search box");

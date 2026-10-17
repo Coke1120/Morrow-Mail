@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="light">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -8,16 +8,29 @@
     <link rel="stylesheet" href="./app.css" />
   </head>
   <body data-ui="first-party">
+    <div class="app">
+    <nav class="rail" aria-label="Mail">
+      <div class="rail-logo" aria-hidden="true">G</div>
+      <div class="rail-rule" aria-hidden="true"></div>
+      <button type="button" class="rail-btn" id="rail-mail" aria-current="page">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+          <path fill="currentColor" d="M3.5 6.2 12 12.2l8.5-6V17a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3.5 17V6.2Zm1.7-.7h13.6L12 10.6 5.2 5.5Z" />
+        </svg>
+        <span class="sr">Mail</span>
+      </button>
+    </nav>
+    <div class="workspace">
     <header>
-      <div class="brand">
-        <h1>GenMail REA</h1>
+      <h1 class="sr">GenMail REA</h1>
+      <div class="leading">
+        <button type="button" class="primary" id="compose-open">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+            <path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25ZM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83Z" />
+          </svg>
+          New Mail
+        </button>
       </div>
-      <p id="banner"></p>
       <div class="actions">
-        <form id="search-form" role="search">
-          <label class="sr" for="search-query">Search mail</label>
-          <input id="search-query" type="search" placeholder="Search mail" autocomplete="off" spellcheck="false" />
-        </form>
         <button type="button" class="ghost" id="refresh">Refresh</button>
         <button type="button" class="ghost" id="tidy" hidden>One-click tidy</button>
         <button type="button" class="ghost" id="settings-open">Settings</button>
@@ -26,26 +39,34 @@
         <button type="button" class="ghost" id="studio-open" aria-label="AI Studio">Studio</button>
         <button type="button" class="ghost" id="connect-open">Connect account</button>
         <button type="button" class="ghost" id="remove" hidden>Remove account</button>
-        <button type="button" class="primary" id="compose-open">New Mail</button>
+        <form id="search-form" role="search">
+          <label class="sr" for="search-query">Search mail</label>
+          <input id="search-query" type="search" placeholder="Search mail" autocomplete="off" spellcheck="false" />
+        </form>
       </div>
     </header>
-    <div id="updates" role="region" aria-label="Updates">
-      <p id="version"></p>
-      <p id="update-status" role="status"></p>
-      <button type="button" class="ghost" id="update-check">Check for updates</button>
-      <button type="button" class="ghost" id="update-install" hidden>Install</button>
-    </div>
     <div id="notice">
       <p id="status" role="status"></p>
       <button type="button" class="ghost" id="undo" hidden>Undo</button>
       <button type="button" class="ghost" id="undo-send" hidden>Undo send</button>
     </div>
     <div class="shell">
-      <nav id="folders" aria-label="Folders"></nav>
+      <div class="side">
+        <nav id="folders" aria-label="Folders"></nav>
+        <div id="updates" role="region" aria-label="Updates">
+          <p id="banner"></p>
+          <p id="version"></p>
+          <p id="update-status" role="status"></p>
+          <button type="button" class="ghost" id="update-check">Check for updates</button>
+          <button type="button" class="ghost" id="update-install" hidden>Install</button>
+        </div>
+      </div>
       <div class="split" data-split="folders" role="separator" aria-orientation="vertical" aria-label="Resize folders" tabindex="0"></div>
       <div id="messages" aria-label="Messages"></div>
       <div class="split" data-split="messages" role="separator" aria-orientation="vertical" aria-label="Resize message list" tabindex="0"></div>
       <article id="reader" aria-label="Message"></article>
+    </div>
+    </div>
     </div>
 
     <dialog id="connect" aria-labelledby="connect-title">

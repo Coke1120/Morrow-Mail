@@ -37,7 +37,7 @@ With no connected account the host answers from the built-in sample mailbox in `
 
 Not in this slice, and not matching GenMail inside the Genspark launcher yet:
 
-- Visual parity with that GenMail shell beyond the three-pane chrome in [PARITY_SHELL.md](PARITY_SHELL.md)
+- Visual gaps still listed in [PARITY_SHELL.md](PARITY_SHELL.md): category chips, toolbar mail actions, the mail-only rail, and the settings dialog
 - Calendar, and the host preferences still unread in [PARITY_SHELL.md](PARITY_SHELL.md)
 - The full agent skill runner
 - Changing API keys from this window (AI Setup remains on the application menu)

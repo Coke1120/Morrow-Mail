@@ -186,6 +186,29 @@ function senderName(from) {
   return name || text;
 }
 
+function senderInitial(name) {
+  const match = String(name || "").match(/\p{L}|\p{N}/u);
+  return match ? match[0].toUpperCase() : "?";
+}
+
+function avatarColor(name) {
+  const colors = ["#5b2a6e", "#1d4ed8", "#0f766e", "#b45309", "#be123c", "#0369a1", "#4d7c0f", "#9d174d"];
+  let hash = 0;
+  const text = String(name || "");
+  for (let i = 0; i < text.length; i += 1) hash = (hash + text.charCodeAt(i)) % 997;
+  return colors[hash % colors.length];
+}
+
+function applyShellTheme(root, theme, accent) {
+  if (!root || !root.dataset || !root.style) return "light";
+  const mode = theme === "dark" ? "dark" : "light";
+  root.dataset.theme = mode;
+  const color = typeof accent === "string" ? accent.trim() : "";
+  if (/^#[0-9A-Fa-f]{6}$/.test(color)) root.style.setProperty("--accent", color);
+  else root.style.removeProperty("--accent");
+  return mode;
+}
+
 function listWhen(iso) {
   const date = iso ? new Date(iso) : null;
   if (!date || Number.isNaN(date.getTime())) return "";
@@ -630,6 +653,7 @@ function renderBanner() {
   else if (state.accounts.some(isLive)) banner.textContent = "";
   else banner.textContent = "Sample mailbox. Connect an account to use your own mail. Nothing here is sent.";
   banner.hidden = !banner.textContent;
+  banner.title = banner.textContent;
 }
 
 function syncRemove() {
@@ -783,6 +807,22 @@ function renderList() {
       flag.textContent = "Starred";
       button.appendChild(flag);
     }
+    const name = senderName(email.from);
+    const gutter = document.createElement("span");
+    gutter.className = "gutter";
+    gutter.setAttribute("aria-hidden", "true");
+    if (email.unread) {
+      const dot = document.createElement("span");
+      dot.className = "unread-dot";
+      gutter.appendChild(dot);
+    }
+    const avatar = document.createElement("span");
+    avatar.className = "avatar";
+    avatar.setAttribute("aria-hidden", "true");
+    avatar.textContent = senderInitial(name);
+    avatar.style.backgroundColor = avatarColor(name);
+    const main = document.createElement("span");
+    main.className = "row-main";
     const from = document.createElement("span");
     from.className = "from";
     if (email.isStarred) {
@@ -792,18 +832,22 @@ function renderList() {
       star.textContent = "★";
       from.appendChild(star);
     }
-    from.append(senderName(email.from));
+    from.append(name);
+    const subjectLine = document.createElement("span");
+    subjectLine.className = "subject-line";
+    const subject = document.createElement("span");
+    subject.className = "subject";
+    subject.textContent = email.subject || "(no subject)";
     const when = document.createElement("time");
     when.className = "when";
     if (email.date) when.dateTime = email.date;
     when.textContent = listWhen(email.date);
-    const subject = document.createElement("span");
-    subject.className = "subject";
-    subject.textContent = email.subject || "(no subject)";
+    subjectLine.append(subject, when);
     const snippet = document.createElement("span");
     snippet.className = "snippet";
     snippet.textContent = email.snippet || "";
-    button.append(from, when, subject, snippet);
+    main.append(from, subjectLine, snippet);
+    button.append(gutter, avatar, main);
     button.addEventListener("click", () => {
       openMessage(email.id).catch((error) => showStatus(error.message, true));
     });
@@ -1002,10 +1046,27 @@ function renderReader(focus) {
   }
   pane.replaceChildren();
   if (!email) {
-    const empty = document.createElement("p");
-    empty.className = "empty";
-    empty.textContent = "Select a message to read it.";
-    pane.appendChild(empty);
+    const wrap = document.createElement("div");
+    wrap.className = "empty-read";
+    const mark = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    mark.setAttribute("class", "empty-mark");
+    mark.setAttribute("viewBox", "0 0 24 24");
+    mark.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "1.5");
+    path.setAttribute("stroke-linejoin", "round");
+    path.setAttribute("d", "M4 7h16v11H4V7Zm0 0 8 6 8-6");
+    mark.appendChild(path);
+    const title = document.createElement("p");
+    title.className = "empty-title";
+    title.textContent = "No conversation selected";
+    const hint = document.createElement("p");
+    hint.className = "empty";
+    hint.textContent = "Select a conversation to read.";
+    wrap.append(mark, title, hint);
+    pane.appendChild(wrap);
     return;
   }
   renderActions(pane, email);
@@ -2144,11 +2205,11 @@ function setPane(which, width) {
   const handle = 12;
   if (which === "folders") {
     const max = Math.max(140, total - list - readerMin - handle);
-    shell.style.setProperty("--folders", `${Math.round(paneWidth(width, 0, 140, max))}px`);
+    document.documentElement.style.setProperty("--folders", `${Math.round(paneWidth(width, 0, 140, max))}px`);
     return;
   }
   const max = Math.max(200, total - folders - readerMin - handle);
-  shell.style.setProperty("--list", `${Math.round(paneWidth(width, 0, 200, max))}px`);
+  document.documentElement.style.setProperty("--list", `${Math.round(paneWidth(width, 0, 200, max))}px`);
 }
 
 function wireSplits() {
@@ -2321,6 +2382,16 @@ const READER_PREFS = {
   "genmail:configGetSnoozeEffective": "snooze",
 };
 
+async function loadLook() {
+  try {
+    const theme = await api.invoke("config:getTheme");
+    const accent = await api.invoke("genmail:configGetAccent");
+    applyShellTheme(document.documentElement, theme, accent);
+  } catch (error) {
+    showStatus(error instanceof Error ? error.message : String(error), true);
+  }
+}
+
 async function loadShellPrefs() {
   const next = { ...state.prefs };
   try {
@@ -2474,6 +2545,9 @@ async function savePref(row) {
     try {
       applyPref(kind, $(id), await api.invoke(getChannel));
     } catch { /* status already shows the failure */ }
+  }
+  if (id === "pref-theme" || id === "pref-accent") {
+    applyShellTheme(document.documentElement, $("pref-theme").value, $("pref-accent").value);
   }
 }
 
@@ -3108,6 +3182,11 @@ function openStudio() {
 
 function wire() {
   document.addEventListener("keydown", onShellKey);
+  $("rail-mail").addEventListener("click", () => {
+    const row = $("messages").querySelector(".message");
+    if (row) row.focus();
+    else $("search-query").focus();
+  });
   wireSplits();
   $("undo").addEventListener("click", () => guard(undoRemoval));
   $("undo-send").addEventListener("click", cancelUndoSend);
@@ -3252,6 +3331,7 @@ async function boot() {
   } catch (error) {
     bumpUpdate({ error: error instanceof Error ? error.message : String(error) });
   }
+  await loadLook();
   await loadPresets();
   await loadShellPrefs();
   await loadAccounts();
