@@ -280,6 +280,9 @@ async function createWindow(preloadFile, mode) {
     fs.appendFileSync(LOG, text + "\n");
     console.error(text);
   });
+  win.on("close", () => {
+    try { require("./mail/engine").answer("mail:cancelOAuth", []); } catch { /* mail is not open */ }
+  });
   if (external) await win.loadURL("genmail://local/index.html#/shell");
   else await win.loadFile(FIRST_PARTY_HTML);
   return win;

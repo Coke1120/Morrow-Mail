@@ -289,10 +289,22 @@ async function grantPurpose(params, purpose) {
   } catch (error) {
     return failFrom(error);
   }
-  if (!sameEmail(signed.email, account.email)) {
-    return fail("account_mismatch", `That browser signed in ${signed.email}. This mailbox is ${account.email}.`);
+  let saved;
+  try {
+    if (!sameEmail(signed.email, account.email)) {
+      saved = fail("account_mismatch", `That browser signed in ${signed.email}. This mailbox is ${account.email}.`);
+    } else {
+      saved = await saveGrant(account, signed, purpose);
+    }
+  } catch (error) {
+    saved = failFrom(error);
   }
-  return saveGrant(account, signed, purpose);
+  if (signed.complete) {
+    const okGrant = saved && saved.success === true;
+    const message = okGrant ? "" : (saved && saved.error && saved.error.message) || "Sign-in not finished.";
+    try { signed.complete({ ok: okGrant, message }); } catch { /* the browser already left */ }
+  }
+  return saved;
 }
 
 async function withPurpose(params, purpose) {

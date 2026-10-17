@@ -34,6 +34,7 @@ const state = {
   providerFolders: null,
   providerRename: "",
   oauthStatus: null,
+  oauthPending: false,
   view: "mail",
   calendarCursor: null,
   calendarAccountId: "",
@@ -124,6 +125,19 @@ function chipFolders(account) {
   const list = primary.length ? primary : more;
   const names = new Set(["inbox", "sent", "sentitems", "drafts", "draft"]);
   return list.filter((folder) => folder && names.has(String(folder.wellKnownName || "").toLowerCase()));
+}
+
+function accountLabel(account) {
+  const email = (account && (account.email || account.displayEmail)) || "";
+  const name = (account && account.name) || "";
+  if (name && email && name !== email) return `${name} · ${email}`;
+  return email || name || (account && account.id) || "";
+}
+
+function preferredAccountId(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  const id = payload.activeAccountId;
+  return typeof id === "string" ? id : "";
 }
 
 function folderProvider(account) {
@@ -879,13 +893,13 @@ function renderAccounts() {
       const mark = document.createElement("span");
       mark.setAttribute("aria-hidden", "true");
       mark.textContent = expanded ? "▾ " : "▸ ";
-      heading.append(mark, account.email || account.id);
+      heading.append(mark, accountLabel(account));
       heading.addEventListener("click", () => {
         toggleProviderFolders(provider).catch((error) => showStatus(error.message, true));
       });
     } else {
       heading = document.createElement("h2");
-      heading.textContent = account.email || account.id;
+      heading.textContent = accountLabel(account);
     }
     nav.appendChild(heading);
     if (account.needsReauth && account.reauthReason) {
@@ -2021,11 +2035,32 @@ async function applySearch() {
   showStatus("");
 }
 
-function scheduleReload() {
+function scheduleReload(preferredId) {
+  const preferred = typeof preferredId === "string" && preferredId ? preferredId : "";
   clearTimeout(reloadTimer);
   reloadTimer = setTimeout(() => {
-    loadAccounts().catch((error) => showStatus(error.message, true));
+    loadAccounts(preferred || undefined).catch((error) => showStatus(error.message, true));
   }, 150);
+}
+
+function onAccountsUpdated(payload) {
+  const preferred = preferredAccountId(payload);
+  const accounts = payload && Array.isArray(payload.accounts) ? payload.accounts : null;
+  if (accounts) {
+    state.accounts = accounts;
+    rememberSelection(preferred);
+    renderAccounts();
+    renderBanner();
+    syncRemove();
+    if (preferred && state.oauthPending) {
+      const view = accounts.find((account) => account.id === preferred);
+      if (view && view.email) {
+        closeDialog("connect");
+        showStatus(`Connected ${view.email}`);
+      }
+    }
+  }
+  scheduleReload(preferred);
 }
 
 function connectPayload() {
@@ -2066,11 +2101,31 @@ async function connectImap() {
 
 async function connectOAuth(provider) {
   clearUndo();
+  state.oauthPending = true;
   showStatus("Waiting for the browser sign-in…");
-  const view = await call("mail:addAccount", { provider });
+  try {
+    const view = await call("mail:addAccount", { provider });
+    if (!view || !view.id || !view.email) throw new Error("Sign-in did not return an account.");
+    closeDialog("connect");
+    showStatus(`Connected ${view.email}`);
+    await loadAccounts(view.id);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (/cancel/i.test(message)) {
+      showStatus("Sign-in canceled.");
+      await loadAccounts();
+      return;
+    }
+    throw error;
+  } finally {
+    state.oauthPending = false;
+  }
+}
+
+function dismissConnect() {
   closeDialog("connect");
-  showStatus(view && view.email ? `Connected ${view.email}` : "Connected.");
-  await loadAccounts(view && view.id);
+  if (!state.oauthPending) return;
+  call("mail:cancelOAuth").catch(() => {});
 }
 
 function composePayload(account) {
@@ -2672,7 +2727,9 @@ function updateView(snapshot, version) {
   let install = false;
   let busy = false;
   const error = snap.error ? String(snap.error) : "";
-  if (error) {
+  if (snap.needsToken) {
+    status = "Private updates need a GitHub token.";
+  } else if (error) {
     status = "Update failed.";
   } else if (snap.installing) {
     status = "Installing…";
@@ -4553,6 +4610,11 @@ function wire() {
   if (motion) motion.bindChrome(document);
   for (const dialog of document.querySelectorAll("dialog")) {
     dialog.addEventListener("cancel", (event) => {
+      if (dialog.id === "connect") {
+        event.preventDefault();
+        dismissConnect();
+        return;
+      }
       const apiMotion = motionApi();
       if (!apiMotion || !apiMotion.wantsCloseMotion()) return;
       event.preventDefault();
@@ -4699,7 +4761,7 @@ function wire() {
     installUpdate();
   });
   $("connect-open").addEventListener("click", () => openDialog("connect"));
-  $("connect-close").addEventListener("click", () => closeDialog("connect"));
+  $("connect-close").addEventListener("click", () => dismissConnect());
   $("connect-form").addEventListener("submit", (event) => {
     event.preventDefault();
     guard(connectImap);
@@ -4740,8 +4802,8 @@ async function boot() {
     return;
   }
   wire();
-  api.on("mail:accountsUpdated", scheduleReload);
-  api.on("mail:emailsUpdated", scheduleReload);
+  api.on("mail:accountsUpdated", onAccountsUpdated);
+  api.on("mail:emailsUpdated", () => scheduleReload());
   api.on("mail:translate:event", onTranslateEvent);
   api.on("aiDraftWrite:event", onDraftEvent);
   api.on("emailBrain:updated", onBrainUpdated);

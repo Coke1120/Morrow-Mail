@@ -1,4 +1,5 @@
 const { app, ipcMain } = require("electron");
+const auth = require("./update-auth");
 
 const state = {
   checking: false,
@@ -10,6 +11,7 @@ const state = {
   error: null,
   installing: false,
   enabled: false,
+  needsToken: false,
   channel: "prerelease",
 };
 
@@ -21,10 +23,47 @@ function snapshot() {
 }
 
 function setError(err) {
-  state.error = err instanceof Error ? err.message : String(err || "update failed");
+  state.error = auth.explainUpdateError(err);
   state.checking = false;
   state.downloading = false;
   state.installing = false;
+  if (!state.downloaded) state.available = false;
+  if (state.error === auth.missingTokenMessage()) state.needsToken = true;
+}
+
+function applyFeed(updater, token) {
+  updater.setFeedURL({
+    provider: "github",
+    owner: auth.GITHUB_OWNER,
+    repo: auth.GITHUB_REPO,
+    private: true,
+    token,
+  });
+}
+
+function prepareUpdater() {
+  const token = auth.resolveGithubToken();
+  if (!token) {
+    state.enabled = true;
+    state.needsToken = true;
+    state.available = false;
+    state.checking = false;
+    state.downloading = false;
+    state.error = auth.missingTokenMessage();
+    return null;
+  }
+  state.needsToken = false;
+  if (!autoUpdater) {
+    ({ autoUpdater } = require("electron-updater"));
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.allowPrerelease = true;
+    bind(autoUpdater);
+  }
+  applyFeed(autoUpdater, token);
+  state.enabled = true;
+  state.error = null;
+  return autoUpdater;
 }
 
 function bind(updater) {
@@ -59,23 +98,14 @@ function init() {
   // Dev / unpackaged: keep stub state so GenMail UI update:getState stays safe.
   if (!app.isPackaged) {
     state.enabled = false;
+    state.needsToken = false;
     return snapshot();
   }
   try {
-    ({ autoUpdater } = require("electron-updater"));
-    autoUpdater.autoDownload = true;
-    autoUpdater.autoInstallOnAppQuit = true;
-    autoUpdater.allowPrerelease = true;
-    // Private GitHub Releases need GH_TOKEN or electron-builder publish token in env.
-    if (process.env.GH_TOKEN || process.env.GITHUB_TOKEN) {
-      autoUpdater.requestHeaders = {
-        Authorization: `token ${process.env.GH_TOKEN || process.env.GITHUB_TOKEN}`,
-      };
-    }
-    bind(autoUpdater);
-    state.enabled = true;
+    const updater = prepareUpdater();
+    if (!updater) return snapshot();
     setTimeout(() => {
-      autoUpdater.checkForUpdates().catch((err) => setError(err));
+      updater.checkForUpdates().catch((err) => setError(err));
     }, 4000);
   } catch (err) {
     setError(err);
@@ -87,10 +117,13 @@ function init() {
 function registerIpc() {
   ipcMain.handle("host:updateGetState", () => snapshot());
   ipcMain.handle("host:updateCheck", async () => {
-    if (!autoUpdater) return snapshot();
+    if (!app.isPackaged) return snapshot();
     try {
+      const updater = prepareUpdater();
+      if (!updater) return snapshot();
       state.checking = true;
-      await autoUpdater.checkForUpdates();
+      state.error = null;
+      await updater.checkForUpdates();
     } catch (err) {
       setError(err);
     }

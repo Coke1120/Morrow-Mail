@@ -12,6 +12,8 @@ const syntax = [
   "host/mail/engine.js",
   "host/mail/oauth.js",
   "host/mail/oauth-config.js",
+  "host/update-auth.js",
+  "host/updater.js",
   "host/mail/secrets.js",
   "host/mail/provider-http.js",
   "host/mail/provider-api.js",
@@ -120,6 +122,16 @@ assert.strictEqual(senderName(""), "(unknown sender)");
 assert.strictEqual(senderName("charles@example.com"), "charles@example.com");
 assert.strictEqual(senderName("Charles Babbage <charles@example.com>"), "Charles Babbage");
 assert.strictEqual(senderName('"Ada Lovelace" <ada@example.com>'), "Ada Lovelace");
+const accountLabel = extractFunction(appJs, "accountLabel");
+const preferredAccountId = extractFunction(appJs, "preferredAccountId");
+assert.strictEqual(accountLabel({ name: "Grace Hopper", email: "grace@example.com" }), "Grace Hopper · grace@example.com");
+assert.strictEqual(accountLabel({ email: "grace@example.com" }), "grace@example.com");
+assert.strictEqual(accountLabel({ name: "Grace", email: "Grace" }), "Grace");
+assert.strictEqual(preferredAccountId({ activeAccountId: "oauth-1", accountId: "other" }), "oauth-1");
+assert.strictEqual(preferredAccountId({ accountId: "other" }), "");
+assert.strictEqual(preferredAccountId(null), "");
+assert.ok(appJs.includes("mail:cancelOAuth"));
+assert.ok(appJs.includes("activeAccountId"));
 
 const senderInitial = extractFunction(appJs, "senderInitial");
 assert.strictEqual(senderInitial("Charles Babbage"), "C");
@@ -646,6 +658,13 @@ assert.strictEqual(installing.install, false);
 assert.strictEqual(installing.busy, true);
 assert.strictEqual(updateView({ available: true, version: "0.2.0" }, "").status, "Update 0.2.0 available.");
 assert.strictEqual(updateView({ available: true }, "").status, "Update available.");
+const needsToken = updateView({
+  needsToken: true,
+  available: true,
+  error: "404 releases.atom",
+}, "0.1.0");
+assert.strictEqual(needsToken.status, "Private updates need a GitHub token.");
+assert.ok(!needsToken.status.includes("available"));
 assert.strictEqual(updateView(null, 12).version, "");
 assert.strictEqual(updateView(null, 12).status, "Up to date.");
 assert.strictEqual(updateView({ downloading: true, progress: "nope" }, "").status, "Downloading 0%…");
@@ -825,6 +844,14 @@ for (const channel of ["host:updateGetState", "host:updateCheck", "host:updateIn
 assert.ok(main.includes("directHost.has(channel)"), "attachIpc would register updater channels twice");
 const updaterSrc = fs.readFileSync(path.join(root, "host/updater.js"), "utf8");
 assert.ok(updaterSrc.includes("CHANNELS"));
+assert.ok(updaterSrc.includes("setFeedURL"));
+assert.ok(updaterSrc.includes("resolveGithubToken"));
+assert.ok(updaterSrc.includes("needsToken"));
+assert.ok(!updaterSrc.includes("releases.atom"));
+assert.ok(!updaterSrc.includes("requestHeaders"));
+assert.ok(!/ghp_[A-Za-z0-9]{20,}/.test(updaterSrc));
+assert.ok(fs.readFileSync(path.join(root, "docs/PACKAGING.md"), "utf8").includes("github-update.json"));
+assert.ok(fs.readFileSync(path.join(root, "docs/UPDATER_TEST.md"), "utf8").includes("github-update.json"));
 for (const channel of ["host:updateGetState", "host:updateCheck", "host:updateInstall"]) {
   const count = updaterSrc.split('"' + channel + '"').length - 1;
   assert.ok(count >= 2, channel + " must be registered and listed");
@@ -1590,6 +1617,8 @@ for (const phrase of [
   "verification",
   "admin consent",
   "grantedScopes",
+  "https://outlook.office.com/api/v2.0/me",
+  "does not call Microsoft Graph",
 ]) {
   assert.ok(oauthDoc.includes(phrase), `OAUTH.md missing ${phrase}`);
 }
@@ -2412,6 +2441,49 @@ async function checkProviderApi() {
     assert.ok(status.data.accounts.some((account) => account.id === "outlook-live" && account.calendar === true && account.organize === true));
     assert.ok(status.data.grantedScopes === undefined);
     assert.ok(status.data.accounts.some((account) => account.id === "outlook-live" && account.grantedScopes.calendar.includes("Calendars.ReadWrite")));
+    db.insertAccount({
+      id: "oauth-draft",
+      email: "draft@example.com",
+      username: "draft@example.com",
+      profile: "outlook",
+      imapHost: "outlook.office365.com",
+      imapPort: 993,
+      imapTls: true,
+      smtpHost: "smtp.office365.com",
+      smtpPort: 587,
+      smtpTls: true,
+      delimiter: "/",
+      createdAt: Date.now(),
+      authKind: "oauth2",
+    });
+    db.insertAccount({
+      id: "named-oauth",
+      email: "named@example.com",
+      username: "named@example.com",
+      profile: "outlook",
+      imapHost: "outlook.office365.com",
+      imapPort: 993,
+      imapTls: true,
+      smtpHost: "smtp.office365.com",
+      smtpPort: 587,
+      smtpTls: true,
+      delimiter: "/",
+      createdAt: Date.now(),
+      authKind: "oauth2",
+      displayName: "Grace Hopper",
+    });
+    secrets.setPassword("named-oauth", JSON.stringify({ refreshToken: "keep" }));
+    const namedList = engine.answer("mail:listAccounts", []);
+    const named = namedList.data.find((account) => account.id === "named-oauth");
+    assert.strictEqual(named.name, "Grace Hopper");
+    assert.strictEqual(named.senderName, "Grace Hopper");
+    assert.ok(db.accountById("oauth-draft"));
+    const canceledDraft = engine.answer("mail:cancelOAuth", []);
+    assert.strictEqual(canceledDraft.success, true);
+    assert.strictEqual(canceledDraft.data.canceled, true);
+    assert.strictEqual(db.accountById("oauth-draft"), null);
+    assert.ok(db.accountById("named-oauth"));
+    assert.ok(db.accountById("outlook-live"));
     secrets.setPassword("gmail-live", "imap-secret");
     const removed = await engine.answer("mail:removeAccount", [{ accountId: "gmail-live" }]);
     assert.strictEqual(removed.success, true);
@@ -2580,9 +2652,223 @@ async function checkAiModels() {
   }
 }
 
-checkGoogleOauthAlias();
+function checkUpdateAuth() {
+  const os = require("os");
+  const auth = require("../host/update-auth");
+  const prev = {
+    GH_TOKEN: process.env.GH_TOKEN,
+    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+    GENMAIL_USER_DATA: process.env.GENMAIL_USER_DATA,
+    GENMAIL_MAIL_DIR: process.env.GENMAIL_MAIL_DIR,
+    GENMAIL_AI_CONFIG_DIR: process.env.GENMAIL_AI_CONFIG_DIR,
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "genmail-update-"));
+  const secret = "ghp_supersecretvalue1234567890";
+  try {
+    delete process.env.GH_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    process.env.GENMAIL_USER_DATA = dir;
+    process.env.GENMAIL_MAIL_DIR = dir;
+    process.env.GENMAIL_AI_CONFIG_DIR = dir;
+    assert.strictEqual(auth.resolveGithubToken(), "");
+    const missing = auth.missingTokenMessage();
+    assert.ok(missing.includes("github-update.json"));
+    assert.ok(missing.includes(dir));
+    assert.ok(missing.includes("GH_TOKEN"));
+    assert.ok(missing.includes("private"));
+    assert.ok(!missing.includes("releases.atom"));
+    assert.ok(!missing.includes(secret));
+    const explained = auth.explainUpdateError(new Error(
+      '404 "method: GET url: https://github.com/Coke1120/genmail-rea/releases.atom token ' + secret + '"'
+    ));
+    assert.ok(!explained.includes("releases.atom"));
+    assert.ok(!explained.includes(secret));
+    assert.ok(!explained.includes("available"));
+    assert.match(explained, /GH_TOKEN/);
+    assert.strictEqual(auth.explainUpdateError(new Error("Could not reach the mail server.")), "Could not reach the mail server.");
+    fs.writeFileSync(auth.tokenFile(), JSON.stringify({ token: secret }));
+    assert.strictEqual(auth.resolveGithubToken(), secret);
+    process.env.GITHUB_TOKEN = "env-token-wins";
+    assert.strictEqual(auth.resolveGithubToken(), "env-token-wins");
+    fs.writeFileSync(auth.tokenFile(), "{");
+    delete process.env.GITHUB_TOKEN;
+    assert.strictEqual(auth.resolveGithubToken(), "");
+  } finally {
+    for (const [key, value] of Object.entries(prev)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
 
-checkAiDraft().then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkAiModels()).then(() => {
+function fakeJwt(claims) {
+  return `aaa.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.sig`;
+}
+
+function hitLoopback(target) {
+  const http = require("http");
+  return new Promise((resolve, reject) => {
+    const req = http.get(target, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => resolve({
+        status: res.statusCode,
+        body: Buffer.concat(chunks).toString("utf8"),
+      }));
+    });
+    req.on("error", reject);
+  });
+}
+
+async function checkOauthSession() {
+  const http = require("http");
+  const oauthMod = require("../host/mail/oauth");
+  const originalFetch = global.fetch;
+  function callbackFrom(authUrl) {
+    const auth = new URL(authUrl);
+    const redirect = new URL(auth.searchParams.get("redirect_uri"));
+    redirect.hostname = "127.0.0.1";
+    redirect.searchParams.set("code", "abc");
+    redirect.searchParams.set("state", auth.searchParams.get("state"));
+    return redirect.toString();
+  }
+  try {
+    assert.strictEqual(oauthMod.cancelActive(), false);
+    const seen = [];
+    global.fetch = async (url) => {
+      const href = String(url);
+      seen.push(href);
+      if (href.includes("graph.microsoft.com")) throw new Error(`IMAP profile called Graph: ${href}`);
+      if (href.includes("login.microsoftonline.com")) {
+        return jsonResponse({
+          access_token: fakeJwt({ preferred_username: "fallback@example.com", name: "Fallback" }),
+          refresh_token: "refresh-imap",
+          expires_in: 3600,
+          scope: oauthConfig.SCOPES.microsoft,
+          id_token: fakeJwt({ name: "Grace Hopper" }),
+        });
+      }
+      if (href.startsWith("https://outlook.office.com/api/v2.0/me")) {
+        return jsonResponse({ EmailAddress: "grace@example.com", DisplayName: "Grace Hopper" });
+      }
+      throw new Error(`unexpected oauth fetch ${href}`);
+    };
+    let responded = false;
+    let pagePromise = null;
+    const signed = await oauthMod.signIn("microsoft", "imap", {
+      timeoutMs: 5000,
+      openBrowser: (url) => {
+        pagePromise = hitLoopback(callbackFrom(url)).then((page) => {
+          responded = true;
+          return page;
+        });
+        return Promise.resolve();
+      },
+    });
+    assert.strictEqual(signed.email, "grace@example.com");
+    assert.strictEqual(signed.displayName, "Grace Hopper");
+    assert.strictEqual(responded, false);
+    assert.ok(seen.some((href) => href.startsWith("https://outlook.office.com/api/v2.0/me")));
+    assert.ok(!seen.some((href) => href.includes("graph.microsoft.com")));
+    signed.complete({ ok: true });
+    const page = await pagePromise;
+    assert.strictEqual(page.status, 200);
+    assert.match(page.body, /<h1>Connected<\/h1>/);
+
+    seen.length = 0;
+    global.fetch = async (url) => {
+      const href = String(url);
+      seen.push(href);
+      if (href.includes("graph.microsoft.com")) throw new Error(`IMAP profile called Graph: ${href}`);
+      if (href.includes("login.microsoftonline.com")) {
+        return jsonResponse({
+          access_token: "opaque-token",
+          refresh_token: "refresh-imap",
+          expires_in: 3600,
+          scope: oauthConfig.SCOPES.microsoft,
+        });
+      }
+      return jsonResponse({ error: "denied" }, 401);
+    };
+    let failedPage = null;
+    await assert.rejects(
+      oauthMod.signIn("microsoft", "imap", {
+        timeoutMs: 5000,
+        openBrowser: (url) => {
+          failedPage = hitLoopback(callbackFrom(url));
+          return Promise.resolve();
+        },
+      }),
+      (error) => error && /could not read the Outlook account profile/i.test(error.message) && /outlook\.office\.com/.test(error.message) && !/graph\.microsoft\.com\/v1\.0\/me/.test(String(seen)),
+    );
+    const failed = await failedPage;
+    assert.strictEqual(failed.status, 400);
+    assert.ok(!failed.body.includes("<h1>Connected</h1>"));
+    assert.match(failed.body, /Sign-in not finished/);
+
+    seen.length = 0;
+    global.fetch = async (url) => {
+      const href = String(url);
+      seen.push(href);
+      if (href.includes("graph.microsoft.com")) throw new Error(`IMAP profile called Graph: ${href}`);
+      if (href.includes("login.microsoftonline.com")) {
+        return jsonResponse({
+          access_token: fakeJwt({ preferred_username: "live.com#ada@example.com", name: "Ada Lovelace" }),
+          refresh_token: "refresh-imap",
+          expires_in: 3600,
+          scope: oauthConfig.SCOPES.microsoft,
+        });
+      }
+      return jsonResponse({ error: "gone" }, 404);
+    };
+    const fallback = await oauthMod.fetchProfile(
+      "microsoft",
+      fakeJwt({ preferred_username: "live.com#ada@example.com", name: "Ada Lovelace" }),
+      "imap",
+      "",
+      global.fetch,
+    );
+    assert.strictEqual(fallback.email, "ada@example.com");
+    assert.strictEqual(fallback.displayName, "Ada Lovelace");
+    assert.ok(seen.some((href) => href.startsWith("https://outlook.office.com/")));
+    assert.ok(!seen.some((href) => href.includes("graph.microsoft.com")));
+
+    global.fetch = async (url) => {
+      assert.ok(String(url).includes("graph.microsoft.com"));
+      return jsonResponse({ mail: "grace@example.com", displayName: "Grace" });
+    };
+    const graph = await oauthMod.fetchProfile("microsoft", "graph-token", "organize");
+    assert.strictEqual(graph.email, "grace@example.com");
+    assert.strictEqual(graph.displayName, "Grace");
+
+    const pending = oauthMod.signIn("microsoft", "imap", {
+      timeoutMs: 5000,
+      openBrowser: async () => {},
+    });
+    const started = Date.now();
+    let aborted = false;
+    while (!aborted) {
+      aborted = oauthMod.cancelActive();
+      if (aborted) break;
+      if (Date.now() - started > 1000) throw new Error("oauth session did not start");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await assert.rejects(pending, (error) => error && error.code === "oauth_cancelled");
+    assert.strictEqual(oauthMod.cancelActive(), false);
+
+    await assert.rejects(
+      oauthMod.signIn("microsoft", "imap", { timeoutMs: 80, openBrowser: async () => {} }),
+      (error) => error && error.code === "oauth_timeout",
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+checkGoogleOauthAlias();
+checkUpdateAuth();
+
+checkAiDraft().then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);

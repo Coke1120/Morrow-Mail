@@ -36,6 +36,7 @@ const INVOKE = [
   "mail:listImapSmtpPresets",
   "mail:connectImapSmtp",
   "mail:addAccount",
+  "mail:cancelOAuth",
   "mail:oauthStatus",
   "mail:grantOrganize",
   "mail:listProviderFolders",

@@ -1,6 +1,6 @@
 # Updater test checklist
 
-The repo is private. The packaged app reads updates only when `GH_TOKEN` or `GITHUB_TOKEN` is set in that process. Use a PAT with read access to `Coke1120/genmail-rea`. Do not put the token in the repo or in the asar.
+The repo is private. The packaged app reads updates only when `GH_TOKEN` or `GITHUB_TOKEN` is set in that process, or when userData `github-update.json` contains `{"token":"..."}` (same folder as `settings.json`). Use a PAT with read access to `Coke1120/genmail-rea`. Do not put the token in the repo or in the asar. Without a token the shell asks for one and does not call the public `releases.atom` URL.
 
 `host:updateGetState`, `host:updateCheck`, and `host:updateInstall` are the shell channels. `allowPrerelease` is on, so alpha prereleases count.
 

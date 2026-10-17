@@ -61,6 +61,14 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:mac
 
 The installed app needs `GH_TOKEN` or `GITHUB_TOKEN` set to a PAT that can read this private repo (`repo` scope, or contents read). The Actions token that uploads the release is not shipped inside the app. `npm start` leaves the updater off.
 
+A Finder or Start Menu launch does not see a shell export. The same PAT can live in the app userData file `github-update.json` (the folder that holds `settings.json`):
+
+```json
+{ "token": "github_pat_..." }
+```
+
+Do not commit that file. The environment variable wins when both are set. With no token, the updater does not request `https://github.com/Coke1120/genmail-rea/releases.atom` (a private repo returns 404 there) and the shell says how to set the token. A token that cannot read the repo fails with that same explanation instead of an update-available state. `build.publish` stays `provider: github`, `private: true`, `releaseType: prerelease`. The token is passed to `electron-updater` in memory (`setFeedURL`); it is not written into `app-update.yml`.
+
 ## Version
 
 `package.json` version drives the app and the release tag `v${version}`. Prefer `0.1.0-alpha.N` until rebrand.

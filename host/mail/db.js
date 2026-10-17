@@ -56,13 +56,17 @@ function migrate() {
     smtp_tls INTEGER NOT NULL,
     delimiter TEXT NOT NULL DEFAULT '/',
     auth_error TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    display_name TEXT
   )`);
   
   try {
     const cols = all("PRAGMA table_info(accounts)").map((row) => row.name);
     if (!cols.includes("auth_kind")) {
       run("ALTER TABLE accounts ADD COLUMN auth_kind TEXT NOT NULL DEFAULT 'password'");
+    }
+    if (!cols.includes("display_name")) {
+      run("ALTER TABLE accounts ADD COLUMN display_name TEXT");
     }
   } catch { /* fresh DB */ }
 
@@ -164,14 +168,15 @@ function insertAccount(row) {
     run(
       `INSERT INTO accounts (
         id, email, username, profile, imap_host, imap_port, imap_tls,
-        smtp_host, smtp_port, smtp_tls, delimiter, auth_error, created_at, auth_kind
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+        smtp_host, smtp_port, smtp_tls, delimiter, auth_error, created_at, auth_kind, display_name
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
       [
         row.id, row.email, row.username, row.profile,
         row.imapHost, row.imapPort, row.imapTls ? 1 : 0,
         row.smtpHost, row.smtpPort, row.smtpTls ? 1 : 0,
         row.delimiter || "/", row.createdAt,
         row.authKind || "password",
+        row.displayName || null,
       ]
     );
   });
@@ -183,12 +188,14 @@ function updateAccountLogin(id, row) {
       `UPDATE accounts SET
         username = ?, profile = ?, imap_host = ?, imap_port = ?, imap_tls = ?,
         smtp_host = ?, smtp_port = ?, smtp_tls = ?, auth_error = NULL,
-        auth_kind = COALESCE(?, auth_kind)
+        auth_kind = COALESCE(?, auth_kind),
+        display_name = COALESCE(?, display_name)
       WHERE id = ?`,
       [
         row.username, row.profile, row.imapHost, row.imapPort, row.imapTls ? 1 : 0,
         row.smtpHost, row.smtpPort, row.smtpTls ? 1 : 0,
         row.authKind || null,
+        row.displayName == null ? null : String(row.displayName),
         id,
       ]
     );

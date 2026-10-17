@@ -53,6 +53,7 @@ function dataFile() {
 async function init() {
   await db.open(dataFile());
   ready = true;
+  purgeAbandonedAccounts();
 }
 
 const depths = new Map();
@@ -115,10 +116,10 @@ function accountView(row, index) {
     email: row.email,
     displayEmail: row.email,
     preferredFromAddress: row.email,
-    senderName: null,
-    defaultSenderName: null,
-    sendAs: [{ email: row.email, name: null, isDefault: true }],
-    name: null,
+    senderName: row.display_name || null,
+    defaultSenderName: row.display_name || null,
+    sendAs: [{ email: row.email, name: row.display_name || null, isDefault: true }],
+    name: row.display_name || null,
     platform: "imap",
     needsReauth: !!row.auth_error,
     reauthReason: row.auth_error || null,
@@ -392,6 +393,32 @@ async function syncAll(options) {
 
 let pollTimer = null;
 let syncing = false;
+let oauthGeneration = 0;
+
+function purgeAbandonedAccounts() {
+  if (!ready) return false;
+  let removed = false;
+  for (const row of db.listAccountRows()) {
+    if (row.auth_kind !== "oauth2") continue;
+    if (secrets.getPassword(row.id)) continue;
+    if (secrets.getPassword(`${row.id}:organize`)) continue;
+    if (secrets.getPassword(`${row.id}:calendar`)) continue;
+    secrets.deletePassword(row.id);
+    secrets.deletePassword(`${row.id}:organize`);
+    secrets.deletePassword(`${row.id}:calendar`);
+    db.removeAccount(row.id);
+    removed = true;
+  }
+  return removed;
+}
+
+function cancelOAuth() {
+  oauthGeneration += 1;
+  try { oauth.cancelActive(); } catch { /* no browser flow is waiting */ }
+  const removed = purgeAbandonedAccounts();
+  if (removed) emitAccounts();
+  return ok({ canceled: true });
+}
 
 function startBackgroundSync() {
   if (!ready) return;
@@ -407,8 +434,24 @@ function startBackgroundSync() {
 }
 
 
+function finishOAuthPage(signed, okFlag, message) {
+  if (!signed || typeof signed.complete !== "function") return;
+  try { signed.complete({ ok: okFlag === true, message: message || "" }); } catch { /* the browser already left */ }
+}
+
 async function connectOAuthAccount(providerInput) {
-  const signed = await oauth.signIn(providerInput);
+  const gen = ++oauthGeneration;
+  let signed;
+  try {
+    signed = await oauth.signIn(providerInput, "imap");
+  } catch (error) {
+    if (error && error.code === "oauth_cancelled") return fail("oauth_cancelled", "Sign-in canceled.");
+    return fail("oauth", error instanceof Error ? error.message : String(error));
+  }
+  if (gen !== oauthGeneration) {
+    finishOAuthPage(signed, false, "Sign-in canceled.");
+    return fail("oauth_cancelled", "Sign-in canceled.");
+  }
   const draft = {
     id: `oauth-${crypto.randomBytes(8).toString("hex")}`,
     email: signed.email,
@@ -444,10 +487,17 @@ async function connectOAuthAccount(providerInput) {
       if (/rejected/i.test(message)) throw error;
     }
   } catch (error) {
-    return fail("auth", remote.explain(error, signed.accessToken));
+    const message = remote.explain(error, signed.accessToken);
+    finishOAuthPage(signed, false, message);
+    return fail("auth", message);
+  }
+  if (gen !== oauthGeneration) {
+    finishOAuthPage(signed, false, "Sign-in canceled.");
+    return fail("oauth_cancelled", "Sign-in canceled.");
   }
   const existing = db.accountByEmail(signed.email);
   const id = existing ? existing.id : draft.id;
+  const displayName = signed.displayName || null;
   if (existing) {
     db.updateAccountLogin(id, {
       username: draft.username,
@@ -459,6 +509,7 @@ async function connectOAuthAccount(providerInput) {
       smtpPort: draft.smtp_port,
       smtpTls: draft.smtp_tls === 1,
       authKind: "oauth2",
+      displayName,
     });
   } else {
     db.insertAccount({
@@ -475,29 +526,32 @@ async function connectOAuthAccount(providerInput) {
       delimiter: draft.delimiter || "/",
       createdAt: Date.now(),
       authKind: "oauth2",
+      displayName,
     });
   }
   try {
     secrets.setPassword(id, blob);
   } catch (error) {
     if (!existing) db.removeAccount(id);
-    return fail("keychain", error instanceof Error ? error.message : "Could not save OAuth tokens.");
+    const message = error instanceof Error ? error.message : "Could not save OAuth tokens.";
+    finishOAuthPage(signed, false, message);
+    return fail("keychain", message);
   }
   db.replaceFolders(id, draft.folders || [], draft.delimiter || "/");
-  const account = db.accountById(id);
+  finishOAuthPage(signed, true);
+  const view = accountView(db.accountById(id), 0);
   const inbox = db.folderByWellKnown(id, "inbox");
-  if (inbox) {
-    try {
-      await syncFolderPath(account, inbox.path, { limit: INBOX_LIMIT });
-    } catch (error) {
-      db.setAuthError(id, remote.explain(error, signed.accessToken));
-    }
-  }
-  emitAccounts();
+  emitAccounts({ activeAccountId: id, folderId: inbox ? inbox.path : "" });
   setTimeout(() => {
-    syncAccount(db.accountById(id), {}).then(() => emitAccounts()).catch(() => {});
+    const account = db.accountById(id);
+    if (!account) return;
+    syncAccount(account, {}).then(() => emitAccounts()).catch((error) => {
+      const message = remote.explain(error, signed.accessToken);
+      if (/password|keychain|rejected/i.test(message)) db.setAuthError(id, message);
+      emitAccounts();
+    });
   }, 200);
-  return ok(accountView(db.accountById(id), 0));
+  return ok(view);
 }
 
 async function connectAccount(params) {
@@ -865,6 +919,7 @@ function answer(channel, args) {
     if (ready) db.clearAuthError(params && params.accountId);
     return ok(true);
   }
+  if (channel === "mail:cancelOAuth") return cancelOAuth();
   if (channel === "mail:addAccount") {
     return (async () => {
       try {
@@ -1454,4 +1509,5 @@ module.exports = {
   startBackgroundSync,
   accountViews,
   dataFile,
+  purgeAbandonedAccounts,
 };
