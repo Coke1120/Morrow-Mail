@@ -77,12 +77,50 @@ async function run() {
   if (!listed || !listed.data || listed.data.emails.length !== 1 || listed.data.emails[0].unread !== true) {
     problem(problems, "inbox list");
   }
-  const found = await answer("mail:search", [{ query: "analytical engine", limit: 10, filters: {} }]);
-  if (!found || found.success !== true || !Array.isArray(found.data) || found.data[0].id !== "m-test") {
-    problem(problems, "search must return an array of rows");
-  }
   const blank = await answer("mail:search", [{ query: "", limit: 10, filters: {} }]);
   if (!blank || !Array.isArray(blank.data) || blank.data.length !== 0) problem(problems, "empty search");
+  const remote = require("./remote");
+  const savedFind = remote.findText;
+  const savedClient = remote.withClient;
+  const prevSecrets = process.env.GENMAIL_MAIL_SECRETS;
+  process.env.GENMAIL_MAIL_SECRETS = "memory";
+  const secrets = require("./secrets");
+  secrets.setPassword("imap-test", "secret");
+  let served = false;
+  remote.withClient = async (_account, _password, fn) => fn({});
+  remote.findText = async () => {
+    if (served) return { messages: [], validity: 1, searched: true };
+    served = true;
+    return {
+      messages: [{
+        uid: 42,
+        threadId: "thr-server",
+        rfcMessageId: "<server-hit@example.test>",
+        subject: "Server hit",
+        snippet: "from the server",
+        from: "Server <server@example.com>",
+        to: [],
+        date: new Date().toISOString(),
+        listSortTs: Date.now(),
+        unread: false,
+        bodyComplete: false,
+      }],
+      validity: 1,
+      searched: true,
+    };
+  };
+  const found = await answer("mail:search", [{ query: "analytical engine", limit: 10, filters: {} }]);
+  if (!found || found.success !== true || !Array.isArray(found.data) || found.data.length !== 1 || found.data[0].subject !== "Server hit" || found.data[0].id === "m-test") {
+    problem(problems, "search must return the server hit, not a local-only row");
+  }
+  remote.findText = async () => ({ messages: [], validity: 1, searched: true });
+  const localOnly = await answer("mail:search", [{ query: "table of operations", limit: 10, filters: {} }]);
+  if (!localOnly || localOnly.success !== true || localOnly.data.length !== 0) problem(problems, "search must not fall back to local mail");
+  remote.findText = savedFind;
+  remote.withClient = savedClient;
+  secrets.deletePassword("imap-test");
+  if (prevSecrets === undefined) delete process.env.GENMAIL_MAIL_SECRETS;
+  else process.env.GENMAIL_MAIL_SECRETS = prevSecrets;
 
   const past = answer("mail:snoozeThread", [{ accountId: "imap-test", threadId: "thr-test", snoozedUntil: new Date(Date.now() - 60000).toISOString() }]);
   if (!past || past.success !== false || past.error.code !== "snoozed_until_in_past") problem(problems, "snooze past");

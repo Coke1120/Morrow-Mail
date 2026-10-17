@@ -116,6 +116,7 @@ const INVOKE = [
 const EVENTS = [
   "mail:accountsUpdated",
   "mail:emailsUpdated",
+  "mail:syncStatus",
   "mail:translate:event",
   "aiDraftWrite:event",
   "emailBrain:updated",

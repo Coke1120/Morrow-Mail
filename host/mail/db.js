@@ -79,6 +79,8 @@ function migrate() {
     unread INTEGER NOT NULL DEFAULT 0,
     total INTEGER NOT NULL DEFAULT 0,
     synced_at INTEGER,
+    uid_cursor INTEGER NOT NULL DEFAULT 0,
+    window_done INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (account_id, path)
   )`);
   run(`CREATE TABLE IF NOT EXISTS messages (
@@ -107,6 +109,16 @@ function migrate() {
     attachments_json TEXT NOT NULL DEFAULT '[]',
     body_complete INTEGER NOT NULL DEFAULT 0
   )`);
+  try {
+    const folderCols = all("PRAGMA table_info(folders)").map((row) => row.name);
+    if (!folderCols.includes("uid_cursor")) {
+      run("ALTER TABLE folders ADD COLUMN uid_cursor INTEGER NOT NULL DEFAULT 0");
+    }
+    if (!folderCols.includes("window_done")) {
+      run("ALTER TABLE folders ADD COLUMN window_done INTEGER NOT NULL DEFAULT 0");
+    }
+  } catch { /* fresh table already has the columns */ }
+
   run(`CREATE INDEX IF NOT EXISTS messages_folder ON messages(account_id, folder_path, list_sort_ts)`);
   run(`CREATE INDEX IF NOT EXISTS messages_thread ON messages(account_id, thread_id)`);
   run(`CREATE TABLE IF NOT EXISTS snooze (
@@ -293,18 +305,22 @@ function applyFolderSync(accountId, folderPath, report) {
     );
     if (previous && previous.uid_validity && report.validity && previous.uid_validity !== report.validity) {
       run("DELETE FROM messages WHERE account_id = ? AND folder_path = ?", [accountId, folderPath]);
+      run(
+        "UPDATE folders SET uid_cursor = 0, window_done = 0 WHERE account_id = ? AND path = ?",
+        [accountId, folderPath]
+      );
     }
     if (Array.isArray(report.uids) && !report.keepOthers) {
       const keep = new Set(report.uids.map((uid) => Number(uid)));
       const stored = all(
-        "SELECT id, uid FROM messages WHERE account_id = ? AND folder_path = ?",
+        "SELECT id, uid, list_sort_ts FROM messages WHERE account_id = ? AND folder_path = ?",
         [accountId, folderPath]
       );
       for (const row of stored) {
         // uid <= 0 is a local-only copy (a send or draft not yet given a server uid).
-        if (Number(row.uid) > 0 && !keep.has(Number(row.uid))) {
-          run("DELETE FROM messages WHERE id = ?", [row.id]);
-        }
+        if (Number(row.uid) <= 0 || keep.has(Number(row.uid))) continue;
+        if (report.retainOlderThan && Number(row.list_sort_ts) < report.retainOlderThan) continue;
+        run("DELETE FROM messages WHERE id = ?", [row.id]);
       }
     }
     for (const message of report.messages) {
@@ -331,11 +347,12 @@ function applyFolderSync(accountId, folderPath, report) {
       }
       const id = found ? found.id : (message.id || newMessageId());
       const fields = [
-        message.threadId, message.rfcMessageId, message.inReplyTo, message.subject, message.snippet,
-        message.from, JSON.stringify(message.to || []), JSON.stringify(message.cc || []),
-        JSON.stringify(message.bcc || []), message.date, message.listSortTs,
+        message.threadId || null, message.rfcMessageId || null, message.inReplyTo || null,
+        message.subject || "", message.snippet || "",
+        message.from || "", JSON.stringify(message.to || []), JSON.stringify(message.cc || []),
+        JSON.stringify(message.bcc || []), message.date || null, Number(message.listSortTs) || 0,
         message.unread ? 1 : 0, message.starred ? 1 : 0, message.isDraft ? 1 : 0,
-        message.hasAttachments ? 1 : 0, message.htmlBody, message.textBody,
+        message.hasAttachments ? 1 : 0, message.htmlBody || null, message.textBody || null,
         JSON.stringify(message.attachments || []), message.bodyComplete ? 1 : 0,
       ];
       if (found) {
@@ -363,7 +380,21 @@ function applyFolderSync(accountId, folderPath, report) {
         );
       }
     }
-    if (report.keepOthers) return;
+    const cursor = report.uidCursor == null ? null : Number(report.uidCursor);
+    const done = report.windowDone === true ? 1 : (report.windowDone === false ? 0 : null);
+    if (report.keepOthers) {
+      if (cursor != null || done != null || report.validity) {
+        run(
+          `UPDATE folders SET
+             uid_validity = COALESCE(?, uid_validity),
+             uid_cursor = COALESCE(?, uid_cursor),
+             window_done = COALESCE(?, window_done)
+           WHERE account_id = ? AND path = ?`,
+          [report.validity || null, Number.isFinite(cursor) ? cursor : null, done, accountId, folderPath]
+        );
+      }
+      return;
+    }
     const cachedUnread = get(
       "SELECT COUNT(*) AS n FROM messages WHERE account_id = ? AND folder_path = ? AND unread = 1",
       [accountId, folderPath]
@@ -374,10 +405,52 @@ function applyFolderSync(accountId, folderPath, report) {
       [accountId, folderPath]
     ).n;
     run(
-      `UPDATE folders SET uid_validity = ?, unread = ?, total = ?, synced_at = ?
+      `UPDATE folders SET uid_validity = ?, unread = ?, total = ?, synced_at = ?,
+         uid_cursor = COALESCE(?, uid_cursor), window_done = COALESCE(?, window_done)
        WHERE account_id = ? AND path = ?`,
-      [report.validity || null, unread, total, Date.now(), accountId, folderPath]
+      [
+        report.validity || null, unread, total, Date.now(),
+        Number.isFinite(cursor) ? cursor : null, done,
+        accountId, folderPath,
+      ]
     );
+  });
+}
+
+function uidsFor(accountId, folderPath) {
+  return all(
+    "SELECT uid FROM messages WHERE account_id = ? AND folder_path = ? AND uid > 0",
+    [accountId, folderPath]
+  ).map((row) => Number(row.uid));
+}
+
+function messageByUid(accountId, folderPath, uid, validity) {
+  return get(
+    "SELECT * FROM messages WHERE account_id = ? AND folder_path = ? AND uid = ? AND uid_validity = ?",
+    [accountId, folderPath, uid, validity]
+  );
+}
+
+function messageByRfc(accountId, rfcMessageId) {
+  if (!rfcMessageId) return null;
+  return get(
+    "SELECT * FROM messages WHERE account_id = ? AND rfc_message_id = ? ORDER BY uid DESC LIMIT 1",
+    [accountId, rfcMessageId]
+  );
+}
+
+function pruneMissing(accountId, folderPath, liveUids, retainOlderThan) {
+  const keep = new Set((liveUids || []).map((uid) => Number(uid)));
+  transaction(() => {
+    const stored = all(
+      "SELECT id, uid, list_sort_ts FROM messages WHERE account_id = ? AND folder_path = ?",
+      [accountId, folderPath]
+    );
+    for (const row of stored) {
+      if (Number(row.uid) <= 0 || keep.has(Number(row.uid))) continue;
+      if (retainOlderThan && Number(row.list_sort_ts) < retainOlderThan) continue;
+      run("DELETE FROM messages WHERE id = ?", [row.id]);
+    }
   });
 }
 
@@ -707,6 +780,10 @@ module.exports = {
   folderByWellKnown,
   pathsForKey,
   applyFolderSync,
+  uidsFor,
+  messageByUid,
+  messageByRfc,
+  pruneMissing,
   insertMessage,
   messageById,
   messagesByThread,

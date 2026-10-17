@@ -4,6 +4,7 @@ const GMAIL_ROOT = "https://gmail.googleapis.com/gmail/v1/users/me";
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0/me";
 const MAX_LABELS = 1000;
 const MAX_PAGES = 10;
+const SEARCH_CAP = 80;
 
 const GMAIL_WELL = {
   INBOX: "inbox",
@@ -361,10 +362,143 @@ async function moveMessage(accessToken, rfcMessageId, destinationId, fetchImpl) 
   return { messageId, destinationId: destination, id: safeId(json.id) || messageId };
 }
 
+function searchCap(limit) {
+  return Math.min(Math.max(Number(limit) || SEARCH_CAP, 1), SEARCH_CAP);
+}
+
+function gmailSearchUrl(query, limit, pageToken) {
+  const q = String(query || "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 400);
+  if (!q) return "";
+  const url = new URL(`${GMAIL_ROOT}/messages`);
+  url.searchParams.set("q", q);
+  url.searchParams.set("maxResults", String(searchCap(limit)));
+  if (pageToken) url.searchParams.set("pageToken", pageToken);
+  return url.toString();
+}
+
+function graphSearchUrl(query, limit) {
+  const q = String(query || "").replace(/["\\\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 200);
+  if (!q) return "";
+  const url = new URL(`${GRAPH_ROOT}/messages`);
+  url.searchParams.set("$search", `"${q}"`);
+  url.searchParams.set("$top", String(searchCap(limit)));
+  url.searchParams.set("$select", "id,subject,from,toRecipients,ccRecipients,receivedDateTime,bodyPreview,body,internetMessageId,isRead,conversationId,hasAttachments");
+  return url.toString();
+}
+
+function nextPageToken(value) {
+  const token = String(value || "");
+  if (!token || token.length > 2048 || /[\u0000-\u001f\u007f]/.test(token)) return "";
+  return token;
+}
+
+function headerValue(payload, name) {
+  const headers = payload && payload.payload && Array.isArray(payload.payload.headers) ? payload.payload.headers : [];
+  const found = headers.find((header) => header && String(header.name || "").toLowerCase() === name);
+  return found && found.value ? String(found.value) : "";
+}
+
+function addressList(value) {
+  if (!value) return [];
+  return String(value).split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function graphAddress(entry) {
+  const who = entry && entry.emailAddress;
+  if (!who) return "";
+  if (who.name && who.address) return `${who.name} <${who.address}>`;
+  return who.address || who.name || "";
+}
+
+function gmailHit(message) {
+  if (!message || !safeId(message.id)) return null;
+  const when = Number(message.internalDate);
+  return {
+    providerId: safeId(message.id),
+    rfcMessageId: headerValue(message, "message-id"),
+    subject: headerValue(message, "subject"),
+    from: headerValue(message, "from"),
+    to: addressList(headerValue(message, "to")),
+    cc: addressList(headerValue(message, "cc")),
+    date: Number.isFinite(when) ? new Date(when).toISOString() : (headerValue(message, "date") || new Date().toISOString()),
+    snippet: message.snippet || "",
+    unread: Array.isArray(message.labelIds) && message.labelIds.includes("UNREAD"),
+    threadId: message.threadId || safeId(message.id),
+    hasAttachments: false,
+  };
+}
+
+function graphHit(row) {
+  if (!row || !safeId(row.id)) return null;
+  const body = row.body && typeof row.body.content === "string" ? row.body.content : "";
+  const html = row.body && String(row.body.contentType || "").toLowerCase() === "text" ? "" : body;
+  return {
+    providerId: safeId(row.id),
+    rfcMessageId: row.internetMessageId || "",
+    subject: row.subject || "",
+    from: graphAddress(row.from),
+    to: (row.toRecipients || []).map(graphAddress).filter(Boolean),
+    cc: (row.ccRecipients || []).map(graphAddress).filter(Boolean),
+    date: row.receivedDateTime || new Date().toISOString(),
+    snippet: row.bodyPreview || "",
+    html: html || null,
+    text: html ? "" : body,
+    unread: row.isRead === false,
+    threadId: row.conversationId || safeId(row.id),
+    hasAttachments: row.hasAttachments === true,
+  };
+}
+
+async function searchGmail(accessToken, query, limit, fetchImpl) {
+  const cap = searchCap(limit);
+  const ids = [];
+  let token = "";
+  for (let page = 0; page < 4 && ids.length < cap; page += 1) {
+    const url = gmailSearchUrl(query, cap - ids.length, token);
+    if (!url) break;
+    const json = await apiJson(url, accessToken, { fetchImpl });
+    const rows = json && Array.isArray(json.messages) ? json.messages : [];
+    for (const row of rows) {
+      const id = safeId(row && row.id);
+      if (!id || ids.includes(id)) continue;
+      ids.push(id);
+      if (ids.length >= cap) break;
+    }
+    token = nextPageToken(json && json.nextPageToken);
+    if (!token || !rows.length) break;
+  }
+  const hits = [];
+  for (const id of ids) {
+    const meta = new URL(`${GMAIL_ROOT}/messages/${encodeURIComponent(id)}`);
+    meta.searchParams.set("format", "metadata");
+    for (const name of ["Subject", "From", "To", "Cc", "Date", "Message-ID"]) {
+      meta.searchParams.append("metadataHeaders", name);
+    }
+    const json = await apiJson(meta.toString(), accessToken, { fetchImpl });
+    const hit = gmailHit(json);
+    if (hit) hits.push(hit);
+  }
+  return hits;
+}
+
+async function searchGraph(accessToken, query, limit, fetchImpl) {
+  const url = graphSearchUrl(query, limit);
+  if (!url) return [];
+  const json = await apiJson(url, accessToken, {
+    fetchImpl,
+    headers: { ConsistencyLevel: "eventual" },
+  });
+  const rows = json && Array.isArray(json.value) ? json.value : [];
+  return rows.map(graphHit).filter(Boolean).slice(0, searchCap(limit));
+}
+
 module.exports = {
   GMAIL_ROOT,
   GRAPH_ROOT,
   GMAIL_LOCKED,
+  SEARCH_CAP,
+  gmailSearchUrl,
+  graphSearchUrl,
   gmailLabelUrl,
   gmailModifyUrl,
   gmailMessageQuery,
@@ -385,4 +519,6 @@ module.exports = {
   renameMailFolder,
   deleteMailFolder,
   moveMessage,
+  searchGmail,
+  searchGraph,
 };

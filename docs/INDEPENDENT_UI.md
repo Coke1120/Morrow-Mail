@@ -6,13 +6,13 @@
 
 - Lists accounts, folders, and messages (`mail:listAccounts`, `mail:listFromCache`). A filter above the list matches subject, from, and snippet of messages already loaded and does not call `mail:search`
 - Message rows show icon buttons labeled Mark read or unread (`mail:markRead`), Delete (`mail:delete`), Reply, and Reply All on hover and when the row is focused. Reply uses the open message, or `mail:openEmail`, then the compose dialog
-- Syncs the open folder from the toolbar (`mail:listFromNetwork`)
+- Syncs the open folder from the toolbar (`mail:listFromNetwork`). Each folder sync keeps about the last 30 days, paged, and background sync stays on inbox plus the active folder. A rate limit pauses that account. It does not download the whole mailbox
 - Reads a message (`mail:openEmail`) and marks it read (`mail:markRead`). The reading toolbar is icon buttons for Reply, Reply All, Forward, Star, Archive, and Trash. Reply All is always there. Remote `http` and `https` images stay blocked until Load remote content on that message, unless remote images are on in Settings. That allow lasts for the session and is not saved
 - Connects an IMAP account (`mail:listImapSmtpPresets`, `mail:connectImapSmtp`), including a Custom IMAP / SMTP card
 - Starts Google or Microsoft sign-in in the browser (`mail:addAccount`) for the IMAP baseline. A second consent (`mail:grantOrganize`) loads Gmail labels or Outlook mail folders from the provider API. Without that grant the sidebar keeps the IMAP folders and does not invent labels
 - Removes a connected account after a confirm (`mail:removeAccount`). Mail stays on the server
 - Compose stub for a connected account: save draft (`mail:upsertDraft`) and send (`mail:send`)
-- Searches mail (`mail:search`). Clearing the box returns to the open folder
+- Searches mail on the server (`mail:search`). Clearing the box returns to the open folder. The list filter stays on mail already downloaded
 - Lists a conversation when the host returns `threadMessages` or a `threadId` (`mail:listThreadMessages`)
 - Lists attachments and can save or open them (`mail:downloadAttachment`, `mail:openAttachmentExternally`)
 - Stars or unstars the open message (`mail:toggleStar`)

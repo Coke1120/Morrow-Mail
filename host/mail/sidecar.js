@@ -161,6 +161,19 @@ function monthWindow(timeMin, timeMax) {
   return { timeMin: new Date(start).toISOString(), timeMax: new Date(end).toISOString() };
 }
 
+async function organizeToken(account) {
+  if (!account) return null;
+  const gate = gateAccount(account, "organize");
+  if (!gate.ok) return null;
+  try {
+    const token = await tokenFor(account, "organize");
+    if (!token || !token.accessToken) return null;
+    return { accessToken: token.accessToken, provider: gate.provider };
+  } catch {
+    return null;
+  }
+}
+
 async function tokenFor(account, purpose) {
   const key = secretKey(account, purpose);
   const raw = secrets.getPassword(key);
@@ -563,4 +576,5 @@ module.exports = {
   providerOf,
   gateAccount,
   monthWindow,
+  organizeToken,
 };

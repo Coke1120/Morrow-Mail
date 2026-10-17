@@ -1212,6 +1212,16 @@ function filteredEmails(emails, query) {
   });
 }
 
+function syncStatusLabel(sync) {
+  if (!sync || !sync.state) return "";
+  if (sync.message) return sync.message;
+  if (sync.state === "syncing") return "Syncing…";
+  if (sync.state === "paused") return "Paused for rate limit";
+  if (sync.state === "done") return "Sync done";
+  if (sync.state === "error") return "Sync failed";
+  return "";
+}
+
 const ROW_ICON = {
   "Mark read": "M4 11h16v8H4v-8Zm0 0 8 5 8-5M4 11 12 5l8 6",
   "Mark unread": "M4 7h16v11H4V7Zm0 0 8 6 8-6",
@@ -2109,29 +2119,31 @@ function rememberSelection(preferredId) {
   }
 }
 
-async function loadList() {
+async function loadList(fromNetwork) {
   const gen = ++listGen;
   if (state.query) {
-    const data = await call("mail:search", { query: state.query, limit: 30, filters: {} });
-    if (gen !== listGen) return;
+    const data = await call("mail:search", { query: state.query, limit: 100, filters: {} });
+    if (gen !== listGen) return null;
     state.emails = Array.isArray(data) ? data : [];
     renderList();
-    return;
+    return null;
   }
   const account = selectedAccount();
   if (!account || !state.folderId) {
     state.emails = [];
     renderList();
-    return;
+    return null;
   }
-  const data = await call("mail:listFromCache", {
+  const channel = fromNetwork && isLive(account) ? "mail:listFromNetwork" : "mail:listFromCache";
+  const data = await call(channel, {
     accountId: account.id,
     folderId: state.folderId,
-    limit: 80,
+    limit: 500,
   });
-  if (gen !== listGen) return;
+  if (gen !== listGen) return data;
   state.emails = (data && data.emails) || [];
   renderList();
+  return data;
 }
 
 async function loadAccounts(preferredId) {
@@ -2240,9 +2252,12 @@ async function selectFolder(accountId, folderId) {
   renderAccounts();
   syncRemove();
   renderReader(false);
-  if (!undoOpIds && !sendTimer) showStatus("");
+  const live = isLive(selectedAccount());
+  if (live) showStatus("Syncing…");
+  else if (!undoOpIds && !sendTimer) showStatus("");
   await loadSnoozed();
-  await loadList();
+  const data = await loadList(live);
+  if (live && !undoOpIds && !sendTimer) showStatus(syncStatusLabel(data && data.sync));
   if (previous !== accountId) await loadProviderFolders(accountGen);
 }
 
@@ -2281,7 +2296,7 @@ async function openMessage(emailId, focus) {
 async function applySearch() {
   const query = $("search-query").value.trim();
   state.query = query;
-  if (query) showStatus("Searching…");
+  if (query) showStatus("Searching all mail…");
   try {
     await loadList();
   } catch (error) {
@@ -2889,13 +2904,13 @@ async function refresh() {
   const account = selectedAccount();
   if (!account || !state.folderId) return;
   showStatus("Syncing…");
-  await call("mail:listFromNetwork", {
+  const data = await call("mail:listFromNetwork", {
     accountId: account.id,
     folderId: state.folderId,
-    limit: 80,
+    limit: 500,
   });
   await loadAccounts();
-  showStatus("");
+  showStatus(syncStatusLabel(data && data.sync));
 }
 
 async function loadPresets() {
@@ -5618,6 +5633,12 @@ async function boot() {
   wire();
   api.on("mail:accountsUpdated", onAccountsUpdated);
   api.on("mail:emailsUpdated", () => scheduleReload());
+  api.on("mail:syncStatus", (payload) => {
+    if (state.query) return;
+    const label = syncStatusLabel(payload);
+    if (!label) return;
+    showStatus(label, !!(payload && payload.state === "error"));
+  });
   api.on("mail:translate:event", onTranslateEvent);
   api.on("aiDraftWrite:event", onDraftEvent);
   api.on("emailBrain:updated", onBrainUpdated);

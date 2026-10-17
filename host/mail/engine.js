@@ -11,6 +11,8 @@ const secrets = process.env.GENMAIL_MAIL_SECRETS === "memory"
   : require("./secrets");
 const oauth = require("./oauth");
 const sidecar = require("./sidecar");
+const http = require("./provider-http");
+const providerApi = require("./provider-api");
 
 const PRIMARY_ORDER = ["inbox", "sentitems", "drafts", "deleteditems", "archive", "junkemail"];
 const KEY_TO_WELL = {
@@ -22,8 +24,20 @@ const KEY_TO_WELL = {
   spam: "junkemail",
 };
 const SNOOZE_MAX_MS = 365 * 24 * 60 * 60 * 1000;
-const INBOX_LIMIT = 120;
-const OTHER_LIMIT = 40;
+const DAY_MS = 24 * 60 * 60 * 1000;
+// Bootstrap window. Older catch-up (out to ~180 days) is not implemented.
+const SYNC_DAYS = 30;
+const HEADER_BATCH = 100;
+const OUTLOOK_BATCH = 50;
+const REFRESH_PAGES = [20, 30, 30];
+const PAGE_DELAY_MS = 200;
+const MAX_PAGES = 50;
+const TICK_MS = 25000;
+const RATE_LIMIT_MS = 30000;
+const STORM_MS = 15 * 60 * 1000;
+const POLL_MS = 45000;
+const SEARCH_LIMIT = 100;
+const GMAIL_ALL = ["[Gmail]/All Mail", "[Google Mail]/All Mail"];
 
 let ready = false;
 const tails = new Map();
@@ -240,23 +254,15 @@ function queryFrom(params) {
   return out;
 }
 
+function windowOpen(folder) {
+  return !!(folder && Number(folder.window_done) === 1);
+}
+
 function serverHasMore(query) {
-  if (query.folderKey) {
-    const paths = db.pathsForKey(query.accountId, query.folderKey);
-    return paths.some((entry) => {
-      const folder = db.folderByPath(entry.account_id, entry.path);
-      if (!folder) return false;
-      const cached = db.countInFolder(entry.account_id, entry.path);
-      return folder.total > cached;
-    });
-  }
-  if (query.accountId && query.folderId) {
-    const folder = db.folderByPath(query.accountId, query.folderId);
-    if (!folder || !folder.synced_at) return false;
-    const cached = db.countInFolder(query.accountId, query.folderId);
-    return folder.total > cached;
-  }
-  return false;
+  const folders = query.folderKey
+    ? db.pathsForKey(query.accountId, query.folderKey).map((entry) => db.folderByPath(entry.account_id, entry.path))
+    : (query.accountId && query.folderId ? [db.folderByPath(query.accountId, query.folderId)] : []);
+  return folders.some((folder) => folder && !windowOpen(folder));
 }
 
 function synced(query) {
@@ -264,7 +270,7 @@ function synced(query) {
     ? db.pathsForKey(query.accountId, query.folderKey).map((entry) => db.folderByPath(entry.account_id, entry.path))
     : (query.accountId && query.folderId ? [db.folderByPath(query.accountId, query.folderId)] : []);
   if (!folders.length) return true;
-  return folders.every((folder) => folder && folder.synced_at);
+  return folders.every((folder) => windowOpen(folder));
 }
 
 function listPayload(params) {
@@ -331,61 +337,308 @@ function emitFolderSync(accountId, folderPath, okFlag) {
   });
 }
 
-async function syncFolderPath(account, folderPath, options) {
-  return exclusive(account.id, async () => {
-    const password = await secretFor(account);
-    try {
-      const report = await remote.withClient(account, password, (client) => remote.syncFolder(client, folderPath, options || {}));
-      db.applyFolderSync(account.id, folderPath, report);
-      emitFolderSync(account.id, folderPath, true);
-      return report;
-    } catch (error) {
-      emitFolderSync(account.id, folderPath, false);
-      throw error;
-    }
+const activeFolder = new Map();
+const syncGates = new Map();
+let syncState = { state: "done", message: "Sync done", accountId: null, folderId: null };
+
+function emitSync(state, extra) {
+  const message = (extra && extra.message) || (
+    state === "syncing" ? "Syncing…"
+      : state === "paused" ? "Paused for rate limit"
+        : state === "done" ? "Sync done"
+          : "Sync failed"
+  );
+  syncState = {
+    state,
+    message,
+    accountId: (extra && extra.accountId) || null,
+    folderId: (extra && extra.folderId) || null,
+  };
+  broadcast("mail:syncStatus", syncState);
+}
+
+function publicSync() {
+  return { ...syncState };
+}
+
+function noteActive(accountId, folderId) {
+  if (accountId && folderId) activeFolder.set(accountId, folderId);
+}
+
+function batchSize(account) {
+  return account && account.profile === "outlook" ? OUTLOOK_BATCH : HEADER_BATCH;
+}
+
+function maxUid(uids, floor = 0) {
+  let cursor = floor;
+  for (const uid of uids || []) if (uid > cursor) cursor = uid;
+  return cursor;
+}
+
+function windowStart(now) {
+  return (Number.isFinite(now) ? now : Date.now()) - SYNC_DAYS * DAY_MS;
+}
+
+function pageDelayMs() {
+  const raw = process.env.GENMAIL_PAGE_DELAY_MS;
+  if (raw != null && raw !== "" && Number.isFinite(Number(raw)) && Number(raw) >= 0) return Number(raw);
+  return PAGE_DELAY_MS;
+}
+
+function sleep(ms) {
+  if (!ms) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function gateOpen(accountId) {
+  const row = syncGates.get(accountId);
+  return !row || row.until <= Date.now();
+}
+
+function noteRateLimit(accountId, error) {
+  const row = syncGates.get(accountId) || { until: 0, strikes: 0 };
+  row.strikes += 1;
+  const hinted = http.retryAfterMs(error);
+  const wait = row.strikes >= 3 ? STORM_MS : (hinted == null ? RATE_LIMIT_MS : hinted);
+  row.until = Date.now() + wait;
+  syncGates.set(accountId, row);
+  emitSync("paused", { accountId, message: "Paused for rate limit" });
+  return row;
+}
+
+function noteStorm(accountId) {
+  syncGates.set(accountId, { until: Date.now() + STORM_MS, strikes: 3 });
+  emitSync("paused", { accountId, message: "Paused after a mailbox reset" });
+}
+
+function clearStrikes(accountId) {
+  const row = syncGates.get(accountId);
+  if (row) row.strikes = 0;
+}
+
+function resetWindow(accountId, folderPath, found) {
+  db.applyFolderSync(accountId, folderPath, {
+    messages: [],
+    validity: found.validity,
+    exists: found.exists,
+    unseen: found.unseen,
+    windowDone: false,
+    uidCursor: 0,
   });
 }
 
+async function bootstrapFolder(client, account, folderPath, started) {
+  const since = new Date(windowStart());
+  const size = batchSize(account);
+  let pages = 0;
+  while (pages < MAX_PAGES && Date.now() - started < TICK_MS) {
+    const found = await remote.searchUids(client, folderPath, { since });
+    const folder = db.folderByPath(account.id, folderPath);
+    if (folder && folder.uid_validity && found.validity && folder.uid_validity !== found.validity) {
+      resetWindow(account.id, folderPath, found);
+      noteStorm(account.id);
+      return { paused: true, bootstrapped: false };
+    }
+    const have = new Set(db.uidsFor(account.id, folderPath));
+    const missing = found.uids.filter((uid) => !have.has(uid)).sort((a, b) => b - a);
+    const cursor = maxUid(found.uids);
+    if (!missing.length) {
+      db.applyFolderSync(account.id, folderPath, {
+        messages: [],
+        validity: found.validity,
+        exists: found.exists,
+        unseen: found.unseen,
+        uids: found.uids,
+        retainOlderThan: windowStart(),
+        windowDone: true,
+        uidCursor: cursor,
+      });
+      return { paused: false, bootstrapped: true };
+    }
+    if (pages > 0) await sleep(pageDelayMs());
+    const page = missing.slice(0, size);
+    const fetched = await remote.fetchMessages(client, folderPath, page);
+    if (fetched.validity && found.validity && fetched.validity !== found.validity) {
+      resetWindow(account.id, folderPath, fetched);
+      noteStorm(account.id);
+      return { paused: true, bootstrapped: false };
+    }
+    const highest = Math.max(Number(folder && folder.uid_cursor) || 0, ...page);
+    db.applyFolderSync(account.id, folderPath, {
+      messages: fetched.messages,
+      validity: fetched.validity || found.validity,
+      exists: found.exists,
+      unseen: found.unseen,
+      uids: found.uids,
+      retainOlderThan: windowStart(),
+      windowDone: missing.length <= size,
+      uidCursor: missing.length <= size ? cursor : highest,
+    });
+    emitFolderSync(account.id, folderPath, true);
+    broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folderPath, folderIds: [folderPath] });
+    pages += 1;
+    if (missing.length <= size) return { paused: false, bootstrapped: true };
+  }
+  return { paused: false, bootstrapped: false };
+}
+
+async function warmFolder(client, account, folder, started) {
+  let next = Number(folder.uid_cursor) || 0;
+  const since = new Date(windowStart());
+  for (let index = 0; index < REFRESH_PAGES.length; index += 1) {
+    if (Date.now() - started >= TICK_MS) break;
+    const found = await remote.searchUids(client, folder.path, { uid: `${next + 1}:*`, since });
+    if (folder.uid_validity && found.validity && folder.uid_validity !== found.validity) {
+      resetWindow(account.id, folder.path, found);
+      noteStorm(account.id);
+      return { paused: true, bootstrapped: false };
+    }
+    const fresh = found.uids.filter((uid) => uid > next).sort((a, b) => a - b);
+    if (!fresh.length) break;
+    if (index > 0) await sleep(pageDelayMs());
+    const page = fresh.slice(0, REFRESH_PAGES[index]);
+    const fetched = await remote.fetchMessages(client, folder.path, page);
+    next = Math.max(next, ...page);
+    db.applyFolderSync(account.id, folder.path, {
+      messages: fetched.messages,
+      validity: fetched.validity || found.validity,
+      keepOthers: true,
+      uidCursor: next,
+    });
+    broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folder.path, folderIds: [folder.path] });
+    if (fresh.length <= REFRESH_PAGES[index]) break;
+  }
+  const live = await remote.searchUids(client, folder.path, { since });
+  if (folder.uid_validity && live.validity && folder.uid_validity !== live.validity) {
+    resetWindow(account.id, folder.path, live);
+    noteStorm(account.id);
+    return { paused: true, bootstrapped: false };
+  }
+  db.pruneMissing(account.id, folder.path, live.uids, windowStart());
+  db.applyFolderSync(account.id, folder.path, {
+    messages: [],
+    validity: live.validity,
+    exists: live.exists,
+    unseen: live.unseen,
+    uids: live.uids,
+    retainOlderThan: windowStart(),
+    windowDone: true,
+    uidCursor: next,
+  });
+  return { paused: false, bootstrapped: true };
+}
+
+async function syncFolderPolicy(client, account, folderPath) {
+  if (!gateOpen(account.id)) {
+    emitSync("paused", { accountId: account.id, folderId: folderPath, message: "Paused for rate limit" });
+    return { paused: true, bootstrapped: false };
+  }
+  emitSync("syncing", { accountId: account.id, folderId: folderPath });
+  const started = Date.now();
+  try {
+    const folder = db.folderByPath(account.id, folderPath);
+    const result = folder && windowOpen(folder)
+      ? await warmFolder(client, account, folder, started)
+      : await bootstrapFolder(client, account, folderPath, started);
+    if (!result.paused) clearStrikes(account.id);
+    return result;
+  } catch (error) {
+    if (http.isRateLimit(error)) {
+      noteRateLimit(account.id, error);
+      return { paused: true, bootstrapped: false };
+    }
+    emitSync("error", { accountId: account.id, folderId: folderPath, message: remote.explain(error) });
+    emitFolderSync(account.id, folderPath, false);
+    throw error;
+  }
+}
+
+function finishSync(jobs, paused, allDone, accountId) {
+  if (paused || !jobs.length) return;
+  if (allDone) emitSync("done", { accountId });
+}
+
+async function syncFolderPath(account, folderPath) {
+  return exclusive(account.id, async () => {
+    const password = await secretFor(account);
+    const result = await remote.withClient(account, password, (client) => syncFolderPolicy(client, account, folderPath));
+    finishSync([folderPath], result && result.paused, result && result.bootstrapped, account.id);
+    return result;
+  });
+}
+
+function jobFolders(folders, options, accountId) {
+  const inbox = folders.find((folder) => folder.well_known === "inbox");
+  if (options && options.background) {
+    const jobs = [];
+    if (inbox) jobs.push(inbox);
+    const activePath = activeFolder.get(accountId);
+    const extra = activePath && folders.find((folder) => folder.path === activePath);
+    if (extra && extra !== inbox) jobs.push(extra);
+    return jobs;
+  }
+  const jobs = [];
+  const inboxWanted = !options
+    || options.folderKey === "inbox"
+    || (!options.folderKey && !options.onlyPath)
+    || (options.onlyPath && inbox && options.onlyPath === inbox.path);
+  if (inbox && inboxWanted) jobs.push(inbox);
+  if (!options || !options.onlyInbox) {
+    for (const folder of folders) {
+      if (folder === inbox) continue;
+      if (options && options.folderKey && KEY_TO_WELL[options.folderKey] !== folder.well_known) continue;
+      if (options && options.onlyPath && options.onlyPath !== folder.path) continue;
+      jobs.push(folder);
+    }
+  }
+  return jobs;
+}
+
 async function syncAccount(account, options) {
+  if (!gateOpen(account.id)) {
+    emitSync("paused", { accountId: account.id, message: "Paused for rate limit" });
+    return;
+  }
   const password = await secretFor(account);
   await exclusive(account.id, async () => {
+    let jobs = [];
+    let paused = false;
+    let allDone = true;
     await remote.withClient(account, password, async (client) => {
       const listed = await remote.listFolderRecords(client);
       db.replaceFolders(account.id, listed.folders, listed.delimiter);
       const folders = db.foldersFor(account.id);
-      const inbox = folders.find((folder) => folder.well_known === "inbox");
-      const rest = folders.filter((folder) => folder !== inbox);
-      const jobs = [];
-      if (inbox && (!options || options.folderKey === "inbox" || !options.folderKey && !options.onlyPath)) {
-        jobs.push(inbox);
-      }
-      if (!options || !options.onlyInbox) {
-        for (const folder of rest) {
-          if (options && options.folderKey && KEY_TO_WELL[options.folderKey] !== folder.well_known) continue;
-          if (options && options.onlyPath && options.onlyPath !== folder.path) continue;
-          jobs.push(folder);
-        }
-      }
+      jobs = jobFolders(folders, options, account.id);
       for (const folder of jobs) {
-        const limit = folder.well_known === "inbox" ? INBOX_LIMIT : OTHER_LIMIT;
-        const before = options && options.before && options.onlyPath === folder.path ? options.before : null;
-        const report = await remote.syncFolder(client, folder.path, { limit, before });
-        db.applyFolderSync(account.id, folder.path, report);
-        emitFolderSync(account.id, folder.path, true);
+        const result = await syncFolderPolicy(client, account, folder.path);
+        if (result && result.paused) {
+          paused = true;
+          break;
+        }
+        if (!result || !result.bootstrapped) allDone = false;
       }
     });
-    db.clearAuthError(account.id);
+    finishSync(jobs, paused, allDone, account.id);
+    if (!paused) db.clearAuthError(account.id);
   });
 }
 
 async function syncAll(options) {
+  const scope = options && (options.folderKey || options.onlyPath || options.onlyInbox || options.background)
+    ? options
+    : { background: true };
   const accounts = db.listAccountRows();
   for (const account of accounts) {
     try {
-      await syncAccount(account, options);
+      await syncAccount(account, scope);
     } catch (error) {
+      if (http.isRateLimit(error)) {
+        noteRateLimit(account.id, error);
+        continue;
+      }
       const message = remote.explain(error, secrets.getPassword(account.id));
       if (/password|keychain|rejected the password/i.test(message)) db.setAuthError(account.id, message);
+      else if (syncState.state !== "paused") emitSync("error", { accountId: account.id, message });
     }
   }
   emitAccounts();
@@ -425,12 +678,12 @@ function startBackgroundSync() {
   const tick = () => {
     if (syncing || !db.hasAccounts()) return;
     syncing = true;
-    syncAll().catch(() => {}).finally(() => {
+    syncAll({ background: true }).catch(() => {}).finally(() => {
       syncing = false;
     });
   };
   setTimeout(tick, 400);
-  if (!pollTimer) pollTimer = setInterval(tick, 45000);
+  if (!pollTimer) pollTimer = setInterval(tick, POLL_MS);
 }
 
 
@@ -539,19 +792,34 @@ async function connectOAuthAccount(providerInput) {
   }
   db.replaceFolders(id, draft.folders || [], draft.delimiter || "/");
   finishOAuthPage(signed, true);
-  const view = accountView(db.accountById(id), 0);
   const inbox = db.folderByWellKnown(id, "inbox");
+  if (inbox) noteActive(id, inbox.path);
+  const account = db.accountById(id);
+  if (inbox && account) {
+    try {
+      await syncFolderPath(account, inbox.path);
+    } catch (error) {
+      if (http.isRateLimit(error)) noteRateLimit(id, error);
+      else {
+        const message = remote.explain(error, signed.accessToken);
+        if (/password|keychain|rejected/i.test(message)) db.setAuthError(id, message);
+      }
+    }
+  }
   emitAccounts({ activeAccountId: id, folderId: inbox ? inbox.path : "" });
   setTimeout(() => {
-    const account = db.accountById(id);
-    if (!account) return;
-    syncAccount(account, {}).then(() => emitAccounts()).catch((error) => {
-      const message = remote.explain(error, signed.accessToken);
-      if (/password|keychain|rejected/i.test(message)) db.setAuthError(id, message);
+    const row = db.accountById(id);
+    if (!row) return;
+    syncAccount(row, { background: true }).then(() => emitAccounts()).catch((error) => {
+      if (http.isRateLimit(error)) noteRateLimit(id, error);
+      else {
+        const message = remote.explain(error, signed.accessToken);
+        if (/password|keychain|rejected/i.test(message)) db.setAuthError(id, message);
+      }
       emitAccounts();
     });
   }, 200);
-  return ok(view);
+  return ok(accountView(db.accountById(id), 0));
 }
 
 async function connectAccount(params) {
@@ -635,15 +903,21 @@ async function connectAccount(params) {
   const account = db.accountById(id);
   const inbox = db.folderByWellKnown(id, "inbox");
   if (inbox) {
+    noteActive(id, inbox.path);
     try {
-      await syncFolderPath(account, inbox.path, { limit: INBOX_LIMIT });
+      await syncFolderPath(account, inbox.path);
     } catch (error) {
-      db.setAuthError(id, remote.explain(error, password));
+      if (http.isRateLimit(error)) noteRateLimit(id, error);
+      else db.setAuthError(id, remote.explain(error, password));
     }
   }
   emitAccounts();
   setTimeout(() => {
-    syncAccount(db.accountById(id), {}).then(() => emitAccounts()).catch(() => {});
+    const row = db.accountById(id);
+    if (!row) return;
+    syncAccount(row, { background: true }).then(() => emitAccounts()).catch((error) => {
+      if (http.isRateLimit(error)) noteRateLimit(id, error);
+    });
   }, 200);
   const view = accountView(db.accountById(id), 0);
   return ok(view);
@@ -821,62 +1095,146 @@ async function applyFlags(row, add, remove, patch) {
   }
 }
 
-function searchRows(params) {
-  const filters = (params && params.filters) || {};
-  const tokens = String((params && params.query) || "")
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 8)
-    .map((token) => token.replace(/[%_\\]/g, ""))
-    .filter(Boolean);
-  if (!tokens.length && !filters.participant && !filters.unread && !filters.hasAttachment && !filters.fromMe) {
-    return [];
+function pushRows(into, rows, limit) {
+  const seen = new Set(into.map((row) => row.id));
+  for (const row of rows || []) {
+    if (!row || seen.has(row.id)) continue;
+    into.push(row);
+    seen.add(row.id);
+    if (into.length >= limit) break;
   }
-  return db.selectMessages({
-    tokens,
-    filterUnread: filters.unread === true,
-    filterAttachments: filters.hasAttachment ? true : undefined,
-    sinceTs: Number.isFinite(filters.sinceMs) ? filters.sinceMs : null,
-    participant: filters.participant ? String(filters.participant).toLowerCase() : null,
-    fromMe: filters.fromMe === true,
-    limit: (params && params.limit) || 30,
-    offset: 0,
-  }).map(listRow);
 }
 
-async function searchServer(params) {
-  const text = String((params && params.query) || "").trim();
-  if (!text) return;
-  const accounts = params.accountId
-    ? [db.accountById(params.accountId)].filter(Boolean)
-    : db.listAccountRows();
-  for (const account of accounts) {
-    try {
-      await exclusive(account.id, async () => {
-        const password = await secretFor(account);
-        await remote.withClient(account, password, async (client) => {
-          const folders = db.foldersFor(account.id).filter((folder) => (
-            folder.well_known === "inbox"
-            || folder.well_known === "sentitems"
-            || folder.well_known === "archive"
-            || folder.well_known === "drafts"
-          )).slice(0, 8);
-          for (const folder of folders) {
-            const found = await remote.findText(client, folder.path, text, 30);
-            if (!found || !found.messages.length) continue;
-            db.applyFolderSync(account.id, folder.path, {
-              messages: found.messages,
-              validity: found.validity,
-              keepOthers: true,
-            });
-          }
-        });
-      });
-    } catch {
-      // A server search miss still leaves the local cache results.
+function storeImapHits(account, folderPath, found) {
+  const messages = found && Array.isArray(found.messages) ? found.messages : [];
+  if (!messages.length) return [];
+  db.applyFolderSync(account.id, folderPath, {
+    messages,
+    validity: found.validity,
+    keepOthers: true,
+  });
+  const rows = [];
+  for (const message of messages) {
+    const row = db.messageByUid(account.id, folderPath, message.uid, found.validity);
+    if (row) rows.push(listRow(row));
+  }
+  return rows;
+}
+
+function rememberApiHit(account, hit) {
+  const rfc = hit && hit.rfcMessageId ? String(hit.rfcMessageId).trim() : "";
+  if (rfc) {
+    const existing = db.messageByRfc(account.id, rfc);
+    if (existing) return listRow(existing);
+  }
+  const when = Date.parse(hit && hit.date);
+  const id = `m-${crypto.randomBytes(8).toString("hex")}`;
+  db.insertMessage({
+    id,
+    accountId: account.id,
+    folderPath: "__search__",
+    uid: 0,
+    uidValidity: 0,
+    threadId: (hit && hit.threadId) || id,
+    rfcMessageId: rfc || null,
+    subject: (hit && hit.subject) || "",
+    snippet: (hit && hit.snippet) || "",
+    from: (hit && hit.from) || "",
+    to: (hit && hit.to) || [],
+    cc: (hit && hit.cc) || [],
+    date: (hit && hit.date) || new Date().toISOString(),
+    listSortTs: Number.isFinite(when) ? when : Date.now(),
+    unread: !!(hit && hit.unread),
+    hasAttachments: !!(hit && hit.hasAttachments),
+    htmlBody: hit && hit.html ? hit.html : null,
+    textBody: hit && hit.text ? hit.text : null,
+    bodyComplete: !!(hit && (hit.html || hit.text)),
+  });
+  const row = db.messageById(id);
+  return row ? listRow(row) : null;
+}
+
+async function searchImap(account, text, limit) {
+  const password = await secretFor(account);
+  return exclusive(account.id, () => remote.withClient(account, password, async (client) => {
+    if (account.profile === "gmail") {
+      for (const box of GMAIL_ALL) {
+        let found = null;
+        try {
+          found = await remote.findText(client, box, text, limit, { gmail: true });
+        } catch (error) {
+          if (http.isRateLimit(error)) throw error;
+          found = null;
+        }
+        if (found && found.searched) return storeImapHits(account, box, found).slice(0, limit);
+      }
+      const token = await sidecar.organizeToken(account);
+      if (token && token.provider === "google") {
+        const hits = await providerApi.searchGmail(token.accessToken, text, Math.min(limit, providerApi.SEARCH_CAP));
+        return hits.map((hit) => rememberApiHit(account, hit)).filter(Boolean).slice(0, limit);
+      }
+    }
+    const rows = [];
+    for (const folder of db.foldersFor(account.id)) {
+      if (rows.length >= limit) break;
+      let found = null;
+      try {
+        found = await remote.findText(client, folder.path, text, limit - rows.length);
+      } catch (error) {
+        if (http.isRateLimit(error)) throw error;
+        continue;
+      }
+      if (!found || !found.searched) continue;
+      pushRows(rows, storeImapHits(account, folder.path, found), limit);
+    }
+    return rows;
+  }));
+}
+
+async function searchAccount(account, text, limit) {
+  if (account.profile === "outlook") {
+    const token = await sidecar.organizeToken(account);
+    if (token && token.provider === "microsoft") {
+      const hits = await providerApi.searchGraph(token.accessToken, text, Math.min(limit, providerApi.SEARCH_CAP));
+      return hits.map((hit) => rememberApiHit(account, hit)).filter(Boolean).slice(0, limit);
     }
   }
+  return searchImap(account, text, limit);
+}
+
+async function searchRemote(params) {
+  const text = String((params && params.query) || "").trim();
+  if (!text) return [];
+  const limit = Math.min(Math.max(Number(params && params.limit) || SEARCH_LIMIT, 1), SEARCH_LIMIT);
+  const accounts = params && params.accountId
+    ? [db.accountById(params.accountId)].filter(Boolean)
+    : db.listAccountRows();
+  const rows = [];
+  let paused = false;
+  for (const account of accounts) {
+    if (rows.length >= limit) break;
+    if (!gateOpen(account.id)) {
+      emitSync("paused", { accountId: account.id, message: "Paused for rate limit" });
+      paused = true;
+      continue;
+    }
+    try {
+      pushRows(rows, await searchAccount(account, text, limit - rows.length), limit);
+    } catch (error) {
+      if (http.isRateLimit(error)) {
+        noteRateLimit(account.id, error);
+        paused = true;
+        continue;
+      }
+      throw error;
+    }
+  }
+  if (!rows.length && paused) {
+    const error = new Error("Paused for rate limit");
+    error.code = "rate_limit";
+    throw error;
+  }
+  return rows.slice(0, limit);
 }
 
 function saveUpload(params) {
@@ -950,25 +1308,25 @@ function answer(channel, args) {
     case "mail:listFromCache":
     case "mail:listWindowRead":
     case "mail:loadMoreAggregate":
+      if (params && params.accountId && params.folderId) noteActive(params.accountId, params.folderId);
       return ok(listPayload(params));
     case "mail:listFromNetwork":
       return (async () => {
         const query = params || {};
         const account = query.accountId ? db.accountById(query.accountId) : null;
+        if (account && query.folderId) noteActive(account.id, query.folderId);
         try {
           if (account && query.folderId) {
-            await syncFolderPath(account, query.folderId, {
-              limit: query.beforeDate ? 50 : INBOX_LIMIT,
-              before: query.beforeDate || null,
-            });
+            await syncFolderPath(account, query.folderId);
           } else if (account) {
-            await syncAccount(account, { onlyInbox: !query.folderId });
+            await syncAccount(account, { onlyInbox: true });
           }
         } catch (error) {
-          if (db.countMessages(queryFrom(query)) === 0) return fail("sync", remote.explain(error));
+          if (http.isRateLimit(error) && account) noteRateLimit(account.id, error);
+          else if (db.countMessages(queryFrom(query)) === 0) return fail("sync", remote.explain(error));
         }
         emitAccounts();
-        return ok(listPayload(query));
+        return ok({ ...listPayload(query), sync: publicSync() });
       })();
     case "mail:kickoffAggregateSync":
       setTimeout(() => { syncAll({ folderKey: params && params.folderKey }).catch(() => {}); }, 0);
@@ -1004,8 +1362,14 @@ function answer(channel, args) {
       return ok({ state: "connected" });
     case "mail:search":
       return (async () => {
-        await searchServer(params || {});
-        return ok(searchRows(params || {}));
+        try {
+          return ok(await searchRemote(params || {}));
+        } catch (error) {
+          if (http.isRateLimit(error) || (error && error.code === "rate_limit")) {
+            return fail("rate_limit", "Paused for rate limit");
+          }
+          return fail("search", remote.explain(error));
+        }
       })();
     case "mail:openEmail":
       return (async () => {
@@ -1502,6 +1866,13 @@ function messagesForAi(limit = 12) {
   return db.recentForAi(limit);
 }
 
+async function syncAccountById(id, options) {
+  const account = db.accountById(id);
+  if (!account) return null;
+  await syncAccount(account, options || { background: true });
+  return publicSync();
+}
+
 module.exports = {
   init,
   answer,
@@ -1510,4 +1881,20 @@ module.exports = {
   accountViews,
   dataFile,
   purgeAbandonedAccounts,
+  syncGates,
+  noteActive,
+  syncAccountById,
+  syncPolicy: {
+    syncDays: SYNC_DAYS,
+    headerBatch: HEADER_BATCH,
+    outlookBatch: OUTLOOK_BATCH,
+    refreshPages: REFRESH_PAGES.slice(),
+    pageDelayMs: PAGE_DELAY_MS,
+    maxPages: MAX_PAGES,
+    tickMs: TICK_MS,
+    rateLimitMs: RATE_LIMIT_MS,
+    stormMs: STORM_MS,
+    pollMs: POLL_MS,
+    searchLimit: SEARCH_LIMIT,
+  },
 };

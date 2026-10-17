@@ -961,6 +961,25 @@ assert.strictEqual(ccOnly.data.to, "");
 assert.strictEqual(ccOnly.data.cc, "mary@example.com");
 
 const engineSrc = fs.readFileSync(path.join(root, "host/mail/engine.js"), "utf8");
+assert.ok(!engineSrc.includes("INBOX_LIMIT") && !engineSrc.includes("OTHER_LIMIT"));
+assert.ok(engineSrc.includes("const REFRESH_PAGES = [20, 30, 30]"));
+assert.ok(engineSrc.includes("const SYNC_DAYS = 30"));
+assert.ok(engineSrc.includes("const POLL_MS = 45000"));
+assert.ok(engineSrc.includes("mail:syncStatus"));
+assert.ok(engineSrc.includes("limit: 40"));
+const independentDoc = fs.readFileSync(path.join(root, "docs/INDEPENDENT_UI.md"), "utf8");
+const parityDoc = fs.readFileSync(path.join(root, "docs/PARITY_SHELL.md"), "utf8");
+assert.ok(independentDoc.includes("does not download the whole mailbox"));
+assert.ok(independentDoc.includes("already downloaded"));
+assert.ok(parityDoc.includes("30-day window"));
+assert.ok(parityDoc.includes("does not call `mail:search`"));
+assert.ok(appJs.includes("Searching all mail"));
+assert.ok(html.includes("Search all mail"));
+assert.ok(registered.has("mail:syncStatus"));
+const syncStatusLabel = extractFunction(appJs, "syncStatusLabel");
+assert.strictEqual(syncStatusLabel({ state: "paused", message: "Paused for rate limit" }), "Paused for rate limit");
+assert.strictEqual(syncStatusLabel({ state: "done" }), "Sync done");
+assert.strictEqual(syncStatusLabel(null), "");
 assert.ok(engineSrc.includes('case "mail:scheduleSend"'));
 assert.ok(engineSrc.includes('case "mail:listScheduled"'));
 assert.ok(engineSrc.includes("imap_schedule_send_unsupported"));
@@ -1826,12 +1845,23 @@ assert.strictEqual(http.safeNext("https://evil.example/next", "graph.microsoft.c
 assert.strictEqual(http.safeNext("http://graph.microsoft.com/next", "graph.microsoft.com"), "");
 assert.strictEqual(http.safeNext("https://user:pass@graph.microsoft.com/next", "graph.microsoft.com"), "");
 assert.ok(http.safeNext("https://graph.microsoft.com/v1.0/me/calendars?$skiptoken=abc", "graph.microsoft.com").includes("skiptoken"));
+assert.strictEqual(http.isRateLimit({ status: 429 }), true);
+assert.strictEqual(http.isRateLimit({ code: "rate_limit" }), true);
+assert.strictEqual(http.isRateLimit({ serverResponseCode: "OVERQUOTA" }), true);
+assert.strictEqual(http.isRateLimit({ message: "temporary throttle" }), true);
+assert.strictEqual(http.isRateLimit({ message: "login failed" }), false);
+assert.strictEqual(http.retryAfterMs({ retryAfterMs: 5000 }), 5000);
+assert.strictEqual(http.retryAfterMs({ retryAfterMs: 60 * 60 * 1000 }), 15 * 60 * 1000);
+assert.strictEqual(http.retryAfterMs({ headers: { get(name) { return String(name).toLowerCase() === "retry-after" ? "12" : ""; } } }), 12000);
+assert.strictEqual(http.retryAfterMs({}), null);
 const gmailApi = require("../host/mail/provider-api");
 assert.strictEqual(gmailApi.normalizeGmailLabel({ id: "Label_x", type: "user" }), null);
 assert.strictEqual(gmailApi.normalizeGmailLabel({ id: "INBOX", type: "system" }).name, "INBOX");
 assert.strictEqual(gmailApi.normalizeGmailLabel({ id: "INBOX", type: "system" }).editable, false);
 assert.throws(() => gmailApi.normalizeGmailLabels({}), /label list/);
 assert.ok(gmailApi.gmailModifyUrl("msg-1").endsWith("/messages/msg-1/modify"));
+assert.ok(decodeURIComponent(gmailApi.graphSearchUrl('say "hi"', 10)).includes('$search="say+hi"'));
+assert.strictEqual(gmailApi.SEARCH_CAP, 80);
 const oauthConfig = require("../host/mail/oauth-config");
 assert.strictEqual(oauthConfig.SCOPES.google, "openid email https://mail.google.com/");
 assert.strictEqual(
@@ -2299,6 +2329,7 @@ async function checkTidy() {
   process.env.GENMAIL_MAIL_DIR = dir;
   process.env.GENMAIL_AI_CONFIG_DIR = dir;
   process.env.GENMAIL_MAIL_SECRETS = "memory";
+  let savedRemote = null;
   try {
     const { answer: settingsAnswer } = require("../host/settings");
     assert.strictEqual(settingsAnswer("genmail:configSetShowOneClickTidy", [true]), true);
@@ -2337,7 +2368,199 @@ async function checkTidy() {
     assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-promo"));
     assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-news"));
     assert.strictEqual(mailbox.answer("genmail:configGetShowOneClickTidyEffective", []), true);
+
+    process.env.GENMAIL_PAGE_DELAY_MS = "0";
+    const remote = require("../host/mail/remote");
+    const secrets = require("../host/mail/secrets");
+    savedRemote = {
+      withClient: remote.withClient,
+      searchUids: remote.searchUids,
+      fetchMessages: remote.fetchMessages,
+      listFolderRecords: remote.listFolderRecords,
+      findText: remote.findText,
+    };
+    const folders = [
+      { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+      { path: "Notes", name: "Notes", wellKnown: null },
+    ];
+    remote.listFolderRecords = async () => ({ folders, delimiter: "/" });
+    remote.withClient = async (_account, _password, fn) => fn({});
+    function header(uid) {
+      return {
+        uid,
+        threadId: `t-${uid}`,
+        rfcMessageId: `<${uid}@example.test>`,
+        subject: `S${uid}`,
+        snippet: "body",
+        from: "Ada <ada@example.com>",
+        to: [],
+        cc: [],
+        bcc: [],
+        date: new Date().toISOString(),
+        listSortTs: Date.now(),
+        unread: false,
+        htmlBody: null,
+        textBody: null,
+        bodyComplete: true,
+      };
+    }
+    secrets.setPassword("imap-test", "pw");
+    const first = [];
+    const inboxUids = Array.from({ length: 150 }, (_item, index) => index + 1);
+    remote.searchUids = async () => ({ uids: inboxUids.slice(), validity: 7, exists: 500, unseen: 0 });
+    remote.fetchMessages = async (_client, _folder, page) => {
+      first.push(page.slice());
+      return { validity: 7, messages: page.map(header) };
+    };
+    await engine.syncAccountById("imap-test", { onlyPath: "INBOX" });
+    assert.deepStrictEqual(first.map((page) => page.length), [100, 50]);
+    const inbox = db.folderByPath("imap-test", "INBOX");
+    assert.strictEqual(inbox.window_done, 1);
+    assert.strictEqual(inbox.uid_cursor, 150);
+    first.length = 0;
+    await engine.syncAccountById("imap-test", { onlyPath: "INBOX" });
+    assert.deepStrictEqual(first, []);
+    const burst = [];
+    remote.searchUids = async (_client, _folder, query) => {
+      if (query && query.uid) {
+        return { uids: Array.from({ length: 100 }, (_item, index) => 151 + index), validity: 7, exists: 250, unseen: 0 };
+      }
+      return { uids: Array.from({ length: 250 }, (_item, index) => index + 1), validity: 7, exists: 250, unseen: 0 };
+    };
+    remote.fetchMessages = async (_client, _folder, page) => {
+      burst.push(page.slice());
+      return { validity: 7, messages: page.map(header) };
+    };
+    await engine.syncAccountById("imap-test", { onlyPath: "INBOX" });
+    assert.deepStrictEqual(burst.map((page) => page.length), [20, 30, 30]);
+    assert.strictEqual(db.folderByPath("imap-test", "INBOX").uid_cursor, 230);
+
+    db.insertAccount({
+      id: "imap-ol",
+      email: "ol@example.com",
+      username: "ol@example.com",
+      profile: "outlook",
+      imapHost: "imap.example.test",
+      imapPort: 993,
+      imapTls: true,
+      smtpHost: "smtp.example.test",
+      smtpPort: 587,
+      smtpTls: true,
+      delimiter: "/",
+      createdAt: Date.now(),
+    });
+    secrets.setPassword("imap-ol", "pw");
+    const outlookPages = [];
+    remote.searchUids = async () => ({ uids: Array.from({ length: 60 }, (_item, index) => index + 1), validity: 3, exists: 60, unseen: 0 });
+    remote.fetchMessages = async (_client, _folder, page) => {
+      outlookPages.push(page.length);
+      return { validity: 3, messages: page.map(header) };
+    };
+    await engine.syncAccountById("imap-ol", { onlyPath: "INBOX" });
+    assert.deepStrictEqual(outlookPages, [50, 10]);
+    assert.strictEqual(db.folderByPath("imap-ol", "INBOX").window_done, 1);
+
+    const touched = [];
+    remote.searchUids = async (_client, folder) => {
+      touched.push(folder);
+      return { uids: [], validity: 7, exists: 0, unseen: 0 };
+    };
+    remote.fetchMessages = async () => { throw new Error("background fetched a body"); };
+    await engine.syncAccountById("imap-test", { background: true });
+    assert.deepStrictEqual([...new Set(touched)], ["INBOX"]);
+    engine.noteActive("imap-test", "Notes");
+    touched.length = 0;
+    await engine.syncAccountById("imap-test", { background: true });
+    assert.deepStrictEqual([...new Set(touched)].sort(), ["INBOX", "Notes"]);
+
+    const limited = Object.assign(new Error("slow down"), { status: 429, retryAfterMs: 0 });
+    remote.searchUids = async () => { throw limited; };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await engine.syncAccountById("imap-ol", { onlyPath: "INBOX" });
+    }
+    const gate = engine.syncGates.get("imap-ol");
+    assert.strictEqual(gate.strikes, 3);
+    assert.ok(gate.until - Date.now() > 14 * 60 * 1000);
+    let blocked = 0;
+    remote.searchUids = async () => {
+      blocked += 1;
+      return { uids: [], validity: 3, exists: 0, unseen: 0 };
+    };
+    await engine.syncAccountById("imap-ol", { onlyPath: "INBOX" });
+    assert.strictEqual(blocked, 0);
+    assert.strictEqual(engine.syncPolicy.syncDays, 30);
+    assert.deepStrictEqual(engine.syncPolicy.refreshPages, [20, 30, 30]);
+    assert.strictEqual(engine.syncPolicy.headerBatch, 100);
+    assert.strictEqual(engine.syncPolicy.outlookBatch, 50);
+    assert.strictEqual(engine.syncPolicy.pollMs, 45000);
+    assert.strictEqual(engine.syncPolicy.rateLimitMs, 30000);
+    assert.strictEqual(engine.syncPolicy.stormMs, 15 * 60 * 1000);
+
+    db.insertMessage({
+      id: "m-local-only",
+      accountId: "imap-test",
+      folderPath: "INBOX",
+      uid: 0,
+      uidValidity: 7,
+      threadId: "thr-local",
+      subject: "Local only secret",
+      snippet: "not on the server",
+      from: "Local <local@example.com>",
+      date: new Date().toISOString(),
+      listSortTs: Date.now(),
+      unread: true,
+      bodyComplete: true,
+    });
+    let served = false;
+    remote.findText = async () => {
+      if (served) return { messages: [], validity: 7, searched: true };
+      served = true;
+      return { messages: [header(9)], validity: 7, searched: true };
+    };
+    const hit = await engine.answer("mail:search", [{ accountId: "imap-test", query: "Local only secret", limit: 10, filters: {} }]);
+    assert.strictEqual(hit.success, true);
+    assert.strictEqual(hit.data.length, 1);
+    assert.strictEqual(hit.data[0].subject, "S9");
+    assert.notStrictEqual(hit.data[0].id, "m-local-only");
+    remote.findText = async () => ({ messages: [], validity: 7, searched: true });
+    const miss = await engine.answer("mail:search", [{ accountId: "imap-test", query: "not on the server", limit: 10, filters: {} }]);
+    assert.strictEqual(miss.success, true);
+    assert.deepStrictEqual(miss.data, []);
+
+    db.insertAccount({
+      id: "imap-gm",
+      email: "gm@example.com",
+      username: "gm@example.com",
+      profile: "gmail",
+      imapHost: "imap.example.test",
+      imapPort: 993,
+      imapTls: true,
+      smtpHost: "smtp.example.test",
+      smtpPort: 465,
+      smtpTls: true,
+      delimiter: "/",
+      createdAt: Date.now(),
+    });
+    secrets.setPassword("imap-gm", "pw");
+    const boxes = [];
+    remote.findText = async (_client, folder) => {
+      boxes.push(folder);
+      return { messages: [], validity: 4, searched: true };
+    };
+    const gmail = await engine.answer("mail:search", [{ accountId: "imap-gm", query: "anything", limit: 5, filters: {} }]);
+    assert.strictEqual(gmail.success, true);
+    assert.deepStrictEqual(gmail.data, []);
+    assert.deepStrictEqual(boxes, ["[Gmail]/All Mail"]);
   } finally {
+    if (savedRemote) {
+      const remote = require("../host/mail/remote");
+      remote.withClient = savedRemote.withClient;
+      remote.searchUids = savedRemote.searchUids;
+      remote.fetchMessages = savedRemote.fetchMessages;
+      remote.listFolderRecords = savedRemote.listFolderRecords;
+      remote.findText = savedRemote.findText;
+    }
+    delete process.env.GENMAIL_PAGE_DELAY_MS;
     for (const [key, value] of Object.entries(prev)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -2356,6 +2579,25 @@ function jsonResponse(body, status = 200) {
 }
 
 async function checkProviderApi() {
+  const gmailHits = await gmailApi.searchGmail("token", "needle", 80, async (url) => {
+    const href = String(url);
+    if (href.includes("format=metadata")) {
+      return jsonResponse({
+        id: "m1",
+        internalDate: "1700000000000",
+        snippet: "hello",
+        payload: { headers: [
+          { name: "Subject", value: "Hello" },
+          { name: "From", value: "a@b.c" },
+          { name: "Message-ID", value: "<a@b.c>" },
+        ] },
+      });
+    }
+    return jsonResponse({ messages: [{ id: "m1" }] });
+  });
+  assert.strictEqual(gmailHits.length, 1);
+  assert.strictEqual(gmailHits[0].subject, "Hello");
+  assert.strictEqual(gmailHits[0].rfcMessageId, "<a@b.c>");
   const oauthMod = require("../host/mail/oauth");
   const calendarApi = require("../host/mail/calendar-api");
   const sidecar = require("../host/mail/sidecar");

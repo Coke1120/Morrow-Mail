@@ -2,6 +2,7 @@ const { ImapFlow } = require("imapflow");
 const nodemailer = require("nodemailer");
 const MailComposer = require("nodemailer/lib/mail-composer");
 const { simpleParser } = require("mailparser");
+const { isRateLimit } = require("./provider-http");
 
 const SOURCE_CAP = 96 * 1024;
 const FULL_CAP = 3 * 1024 * 1024;
@@ -255,6 +256,69 @@ async function readFetched(msg, validity, cap) {
   };
 }
 
+function throwRate(error) {
+  if (!isRateLimit(error)) return;
+  if (error && typeof error === "object") {
+    error.code = "rate_limit";
+    error.status = error.status || 429;
+  }
+  throw error;
+}
+
+const FETCH_FIELDS = {
+  uid: true,
+  flags: true,
+  envelope: true,
+  bodyStructure: true,
+  internalDate: true,
+  source: { maxLength: SOURCE_CAP },
+};
+
+async function searchUids(client, folderPath, query) {
+  const lock = await client.getMailboxLock(folderPath);
+  try {
+    const box = client.mailbox || {};
+    const validity = Number(box.uidValidity) || 0;
+    let uids = [];
+    try {
+      const criteria = query && Object.keys(query).length ? query : { all: true };
+      uids = await client.search(criteria, { uid: true });
+    } catch (error) {
+      throwRate(error);
+      throw error;
+    }
+    return {
+      uids: (uids || []).map(Number).filter((uid) => uid > 0),
+      validity,
+      exists: Number(box.exists) || 0,
+      unseen: typeof box.unseen === "number" ? box.unseen : null,
+    };
+  } finally {
+    lock.release();
+  }
+}
+
+async function fetchMessages(client, folderPath, uids) {
+  const list = (uids || []).map(Number).filter((uid) => uid > 0);
+  const lock = await client.getMailboxLock(folderPath);
+  try {
+    const validity = Number((client.mailbox || {}).uidValidity) || 0;
+    if (!list.length) return { messages: [], validity };
+    const messages = [];
+    try {
+      for await (const msg of client.fetch(list.join(","), FETCH_FIELDS, { uid: true })) {
+        messages.push(await readFetched(msg, validity));
+      }
+    } catch (error) {
+      throwRate(error);
+      throw error;
+    }
+    return { messages, validity };
+  } finally {
+    lock.release();
+  }
+}
+
 async function syncFolder(client, folderPath, options) {
   const lock = await client.getMailboxLock(folderPath);
   try {
@@ -264,7 +328,8 @@ async function syncFolder(client, folderPath, options) {
     let uids = null;
     try {
       uids = await client.search({ all: true }, { uid: true });
-    } catch {
+    } catch (error) {
+      throwRate(error);
       uids = null;
     }
     const limit = options.limit || 80;
@@ -386,32 +451,55 @@ async function appendRaw(client, folderPath, raw, flags) {
   return client.append(folderPath, raw, flags, new Date());
 }
 
-async function findText(client, folderPath, text, limit) {
+async function searchTextUids(client, needle, gmail) {
+  if (gmail) {
+    try {
+      return await client.search({ gmraw: needle }, { uid: true });
+    } catch (error) {
+      throwRate(error);
+    }
+    try {
+      return await client.search({ gmRaw: needle }, { uid: true });
+    } catch (error) {
+      throwRate(error);
+    }
+  }
+  return client.search({ text: needle }, { uid: true });
+}
+
+async function findText(client, folderPath, text, limit, options) {
   const needle = String(text || "").trim();
   if (!needle) return null;
   const lock = await client.getMailboxLock(folderPath);
   try {
     let uids = [];
     try {
-      uids = await client.search({ or: [{ subject: needle }, { body: needle }] }, { uid: true });
-    } catch {
+      uids = await searchTextUids(client, needle, !!(options && options.gmail));
+    } catch (error) {
+      throwRate(error);
       return null;
     }
-    const picked = (uids || []).map(Number).filter((uid) => uid > 0).sort((a, b) => b - a).slice(0, limit || 30);
-    if (!picked.length) return { messages: [], validity: Number((client.mailbox || {}).uidValidity) || 0 };
+    const cap = Math.min(Math.max(Number(limit) || 100, 1), 100);
+    const picked = (uids || []).map(Number).filter((uid) => uid > 0).sort((a, b) => b - a).slice(0, cap);
     const validity = Number((client.mailbox || {}).uidValidity) || 0;
+    if (!picked.length) return { messages: [], validity, searched: true };
     const messages = [];
-    for await (const msg of client.fetch(picked.join(","), {
-      uid: true,
-      flags: true,
-      envelope: true,
-      bodyStructure: true,
-      internalDate: true,
-      source: { maxLength: SOURCE_CAP },
-    }, { uid: true })) {
-      messages.push(await readFetched(msg, validity));
+    try {
+      for await (const msg of client.fetch(picked.join(","), {
+        uid: true,
+        flags: true,
+        envelope: true,
+        bodyStructure: true,
+        internalDate: true,
+        source: { maxLength: SOURCE_CAP },
+      }, { uid: true })) {
+        messages.push(await readFetched(msg, validity));
+      }
+    } catch (error) {
+      throwRate(error);
+      throw error;
     }
-    return { messages, validity };
+    return { messages, validity, searched: true };
   } finally {
     lock.release();
   }
@@ -437,6 +525,8 @@ module.exports = {
   verifySmtp,
   listFolderRecords,
   syncFolder,
+  searchUids,
+  fetchMessages,
   fetchSource,
   readPart,
   moveUid,

@@ -5,6 +5,36 @@ function providerFailure(status) {
   return "The provider rejected the request.";
 }
 
+function headerValue(headers, name) {
+  if (!headers) return "";
+  if (typeof headers.get === "function") return headers.get(name) || headers.get(name.toLowerCase()) || "";
+  return headers[name] || headers[name.toLowerCase()] || headers[name.toUpperCase()] || "";
+}
+
+function retryAfterMs(source) {
+  if (!source) return null;
+  if (Number.isFinite(source.retryAfterMs) && source.retryAfterMs >= 0) {
+    return Math.min(source.retryAfterMs, 15 * 60 * 1000);
+  }
+  const header = source.headers ? headerValue(source.headers, "retry-after") : "";
+  const raw = header || source.retryAfter || "";
+  if (raw == null || String(raw).trim() === "") return null;
+  const text = String(raw).trim();
+  if (/^\d+(\.\d+)?$/.test(text)) return Math.min(Number(text) * 1000, 15 * 60 * 1000);
+  const when = Date.parse(text);
+  if (Number.isFinite(when)) return Math.min(Math.max(when - Date.now(), 0), 15 * 60 * 1000);
+  return null;
+}
+
+function isRateLimit(error) {
+  if (!error) return false;
+  if (error.status === 429 || error.code === "rate_limit") return true;
+  const code = String(error.serverResponseCode || error.responseCode || "");
+  if (/^(LIMIT|OVERQUOTA|TOOMANY)$/i.test(code)) return true;
+  const text = `${error.message || ""} ${error.responseText || ""} ${error.response || ""}`;
+  return /rate.?limit|too many requests|throttl|bandwidth|try again later|\b429\b|OVERQUOTA/i.test(text);
+}
+
 function safeId(value) {
   const id = String(value || "").trim();
   if (!id || id.length > 512 || /[\u0000-\u001f\u007f]/.test(id)) return "";
@@ -53,8 +83,9 @@ async function apiJson(url, accessToken, options = {}) {
     response = await fetcher(url, {
       method: options.method || "GET",
       headers: {
-        authorization: `Bearer ${accessToken}`,
         accept: "application/json",
+        ...(options.headers || {}),
+        authorization: `Bearer ${accessToken}`,
         ...(options.body ? { "content-type": "application/json" } : {}),
       },
       body: options.body ? JSON.stringify(options.body) : undefined,
@@ -75,8 +106,11 @@ async function apiJson(url, accessToken, options = {}) {
   }
   if (!response.ok) {
     const error = new Error(providerFailure(response.status));
-    error.code = response.status === 401 || response.status === 403 ? "scope_missing" : "provider";
+    error.code = response.status === 429 ? "rate_limit" : (response.status === 401 || response.status === 403 ? "scope_missing" : "provider");
     error.status = response.status;
+    error.retryable = response.status === 429;
+    const wait = response.status === 429 ? retryAfterMs(response) : null;
+    if (wait != null) error.retryAfterMs = wait;
     throw error;
   }
   return json;
@@ -85,6 +119,8 @@ async function apiJson(url, accessToken, options = {}) {
 module.exports = {
   apiJson,
   providerFailure,
+  retryAfterMs,
+  isRateLimit,
   safeId,
   cleanName,
   idList,
