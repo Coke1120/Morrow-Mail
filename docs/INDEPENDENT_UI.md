@@ -8,7 +8,7 @@
 - Refreshes the open folder (`mail:listFromNetwork`)
 - Reads a message (`mail:openEmail`) and marks it read (`mail:markRead`)
 - Connects an IMAP account (`mail:listImapSmtpPresets`, `mail:connectImapSmtp`), including a Custom IMAP / SMTP card
-- Starts Google or Microsoft sign-in in the browser (`mail:addAccount`)
+- Starts Google or Microsoft sign-in in the browser (`mail:addAccount`) for the IMAP baseline. A second consent (`mail:grantOrganize`) loads Gmail labels or Outlook mail folders from the provider API. Without that grant the sidebar keeps the IMAP folders and does not invent labels
 - Removes a connected account after a confirm (`mail:removeAccount`). Mail stays on the server
 - Compose stub for a connected account: save draft (`mail:upsertDraft`) and send (`mail:send`)
 - Searches mail (`mail:search`). Clearing the box returns to the open folder
@@ -21,6 +21,7 @@
 - Inserts a host signature in compose (`mail:listSignatures`), or shows an empty state when the mailbox has none
 - Edits those signatures from the toolbar (`mail:upsertSignature`, `mail:deleteSignature`): name plus text or HTML, and an optional default. The sample list stays in memory. A connected IMAP account keeps an empty list and rejects writes
 - Drafts with AI from compose (`aiDraftWrite:start`, `aiDraftWrite:cancel`, `aiDraftWrite:event`) and lists reply suggestions on the open message (`aiDraftWrite:replySuggestions`). A missing API key is reported in place
+- Calendar (`calendar:list`, `calendar:createEvent`, `calendar:connect`) lists and creates events from Google Calendar or Microsoft Graph for the visible month. With no token, or when Google Desktop OAuth is not configured, the page says what is missing and does not draw events
 - Shows the app version and checks or installs updates (`app:getVersion`, `host:updateGetState`, `host:updateCheck`, `host:updateInstall`)
 - Edits theme, accent, conversation view, remote images, undo send, snooze, AI write on reply, folder chips, one-click tidy, and sidebar folder expansion (`config:setTheme`, `genmail:configSet*`). API keys stay in AI Setup
 - Email Brain lists cached sections and writing rules (`emailBrain:getCached`). A user rule can be added, edited, or deleted. Refresh says it needs an AI key when the host returns `accepted: false`. Categories in that dialog load from `emailBrain:getCategories`, edit locally, and save with `emailBrain:saveCategories`. Add with AI needs an API key and shows the host error when the key is missing
@@ -38,6 +39,6 @@ With no connected account the host answers from the built-in sample mailbox in `
 Not in this slice, and not matching GenMail inside the Genspark launcher yet:
 
 - Visual gaps still listed in [PARITY_SHELL.md](PARITY_SHELL.md): category chips, toolbar mail actions, the mail-only rail, and the settings dialog
-- Calendar, and the host preferences still unread in [PARITY_SHELL.md](PARITY_SHELL.md)
+- Host preferences still unread in [PARITY_SHELL.md](PARITY_SHELL.md)
 - The full agent skill runner
 - Changing API keys from this window (AI Setup remains on the application menu)

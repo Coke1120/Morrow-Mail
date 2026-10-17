@@ -1,6 +1,6 @@
 const SERVICE = "genmail-exact";
 
-function impl() {
+function backend() {
   if (process.env.GENMAIL_MAIL_SECRETS === "memory") {
     return require("./memory-secrets");
   }
@@ -12,11 +12,11 @@ function impl() {
   return require("./mac-secrets");
 }
 
-const backend = impl();
-
 module.exports = {
-  setPassword: (...a) => backend.setPassword(...a),
-  getPassword: (...a) => backend.getPassword(...a),
-  deletePassword: (...a) => backend.deletePassword(...a),
-  SERVICE: backend.SERVICE || SERVICE,
+  setPassword: (...args) => backend().setPassword(...args),
+  getPassword: (...args) => backend().getPassword(...args),
+  deletePassword: (...args) => backend().deletePassword(...args),
+  get SERVICE() {
+    return backend().SERVICE || SERVICE;
+  },
 };

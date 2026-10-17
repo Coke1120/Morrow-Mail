@@ -9,6 +9,14 @@ const syntax = [
   "host/main.js",
   "host/asar.js",
   "host/ipc.js",
+  "host/mail/engine.js",
+  "host/mail/oauth.js",
+  "host/mail/oauth-config.js",
+  "host/mail/secrets.js",
+  "host/mail/provider-http.js",
+  "host/mail/provider-api.js",
+  "host/mail/calendar-api.js",
+  "host/mail/sidecar.js",
   "renderer/preload.js",
   "renderer/app.js",
 ];
@@ -40,7 +48,7 @@ for (const match of preload.matchAll(/"([a-zA-Z][\w-]*:[^"\n]{1,180})"/g)) {
 }
 const appJs = fs.readFileSync(path.join(root, "renderer/app.js"), "utf8");
 const used = new Set();
-for (const match of appJs.matchAll(/"((?:mail|app|host|genmail|config|aiDraftWrite|emailBrain|nativeAgent):[^"]+)"/g)) used.add(match[1]);
+for (const match of appJs.matchAll(/"((?:mail|app|host|genmail|config|aiDraftWrite|emailBrain|nativeAgent|calendar):[^"]+)"/g)) used.add(match[1]);
 assert.ok(used.size >= 8, "renderer stopped calling mail IPC");
 for (const channel of used) {
   assert.ok(registered.has(channel), `preload does not register ${channel}`);
@@ -884,6 +892,7 @@ const engineSrc = fs.readFileSync(path.join(root, "host/mail/engine.js"), "utf8"
 assert.ok(engineSrc.includes('case "mail:scheduleSend"'));
 assert.ok(engineSrc.includes('case "mail:listScheduled"'));
 assert.ok(engineSrc.includes("imap_schedule_send_unsupported"));
+assert.ok(engineSrc.indexOf("if (sidecar.handles(channel))") < engineSrc.indexOf("if (!db.hasAccounts())"));
 assert.ok(engineSrc.includes('case "mail:upsertSignature"'));
 assert.ok(engineSrc.includes('case "mail:deleteSignature"'));
 assert.ok(engineSrc.includes("imap_signatures_unsupported"));
@@ -1291,6 +1300,305 @@ assert.ok(!parity.includes("full Brain category/skills UI"));
 assert.ok(parity.includes("mail:upsertSignature") && parity.includes("imap_signatures_unsupported"));
 assert.ok(!parity.includes("signatures editor"));
 
+const providerUi = loadFunctions(appJs, [
+  "oauthButtonState",
+  "calendarGrantState",
+  "providerFolderState",
+  "providerCopy",
+  "showOrganizeGrant",
+  "calendarMode",
+  "calendarCopy",
+  "calendarView",
+  "monthRange",
+  "monthCells",
+  "dayKey",
+  "eventDay",
+  "eventsOnDay",
+  "calendarDraft",
+]);
+assert.deepStrictEqual(providerUi.oauthButtonState(null, "google"), { disabled: false, reason: "" });
+assert.deepStrictEqual(providerUi.oauthButtonState({ google: true }, "google"), { disabled: false, reason: "" });
+assert.deepStrictEqual(providerUi.oauthButtonState({ google: false }, "google"), {
+  disabled: true,
+  reason: "Google Desktop OAuth is not configured.",
+});
+assert.deepStrictEqual(providerUi.oauthButtonState({ google: false }, "microsoft"), { disabled: false, reason: "" });
+assert.deepStrictEqual(providerUi.calendarGrantState(null, { platform: "gmail" }), {
+  disabled: true,
+  reason: "Connect a Google or Microsoft mailbox first.",
+});
+assert.deepStrictEqual(providerUi.calendarGrantState({ google: false }, {
+  platform: "imap",
+  imapSmtpProfile: "gmail",
+}), {
+  disabled: true,
+  reason: "Google Desktop OAuth is not configured.",
+});
+assert.deepStrictEqual(providerUi.calendarGrantState({ google: false }, {
+  platform: "imap",
+  profile: "outlook",
+}), { disabled: false, reason: "" });
+assert.deepStrictEqual(providerUi.calendarGrantState({}, {
+  platform: "imap",
+  profile: "icloud",
+}), {
+  disabled: true,
+  reason: "Calendar needs a Google or Microsoft account.",
+});
+assert.deepStrictEqual(providerUi.providerFolderState(null), {
+  mode: "degraded",
+  reason: "scope_missing",
+  folders: [],
+});
+assert.deepStrictEqual(providerUi.providerFolderState({ api: false, reason: "oauth_not_ready" }), {
+  mode: "degraded",
+  reason: "oauth_not_ready",
+  folders: [],
+});
+assert.deepStrictEqual(providerUi.providerFolderState({
+  api: true,
+  folders: [{ id: "Label_9", name: "Travel" }, { id: "blank" }, null],
+}), {
+  mode: "live",
+  reason: "",
+  folders: [{ id: "Label_9", name: "Travel" }],
+});
+assert.strictEqual(
+  providerUi.providerCopy("scope_missing", "gmail"),
+  "Gmail labels need the gmail.modify grant. This mailbox stays on IMAP until then.",
+);
+assert.strictEqual(
+  providerUi.providerCopy("scope_missing", "outlook"),
+  "Outlook folders need the Mail.ReadWrite grant. This mailbox stays on IMAP until then.",
+);
+assert.strictEqual(
+  providerUi.providerCopy("password_account", "gmail"),
+  "This mailbox uses a password. Grant the provider API to manage labels, or keep using IMAP folders.",
+);
+assert.strictEqual(providerUi.showOrganizeGrant("scope_missing"), true);
+assert.strictEqual(providerUi.showOrganizeGrant("password_account"), true);
+assert.strictEqual(providerUi.showOrganizeGrant("oauth_not_ready"), false);
+assert.strictEqual(providerUi.showOrganizeGrant("imap_only"), false);
+const needsAuth = providerUi.calendarView({ api: false, reason: "needs_auth" });
+assert.strictEqual(needsAuth.showGrid, false);
+assert.strictEqual(needsAuth.showForm, false);
+assert.deepStrictEqual(needsAuth.events, []);
+assert.strictEqual(
+  needsAuth.status,
+  "Calendar needs a calendar grant. This view does not keep events of its own.",
+);
+assert.strictEqual(providerUi.calendarCopy("oauth_not_ready"), "Google Desktop OAuth is not configured, so calendar stays offline.");
+assert.strictEqual(providerUi.calendarView({
+  api: true,
+  calendars: [],
+  events: [{ id: "fake", start: "2026-10-01", title: "Team sync" }],
+}).status, "No calendars on this account.");
+assert.strictEqual(providerUi.calendarView({
+  api: true,
+  calendars: [],
+  events: [{ id: "fake", start: "2026-10-01" }],
+}).showGrid, false);
+const emptyMonth = providerUi.calendarView({
+  api: true,
+  calendars: [{ id: "cal-1", name: "Ada" }],
+  events: [{ title: "Sample meeting", start: "2026-10-02" }],
+});
+assert.strictEqual(emptyMonth.showGrid, true);
+assert.strictEqual(emptyMonth.showForm, true);
+assert.strictEqual(emptyMonth.status, "No events this month.");
+assert.deepStrictEqual(emptyMonth.events, []);
+const partialMonth = providerUi.calendarView({
+  api: true,
+  truncated: true,
+  calendars: [{ id: "cal-1" }],
+  events: [{ id: "evt", start: "2026-10-02T15:00:00Z", title: "Design review" }],
+});
+assert.strictEqual(partialMonth.events.length, 1);
+assert.strictEqual(partialMonth.events[0].id, "evt");
+assert.ok(partialMonth.status.includes("The provider returned a partial list."));
+const october = providerUi.monthRange(2026, 9);
+assert.strictEqual(october.label.includes("2026"), true);
+assert.strictEqual(october.timeMin, new Date(2026, 9, 1).toISOString());
+assert.strictEqual(october.timeMax, new Date(2026, 10, 1).toISOString());
+const cells = providerUi.monthCells(2026, 9);
+assert.strictEqual(cells.length, 35);
+assert.strictEqual(cells[3], 0);
+assert.strictEqual(cells[4], 1);
+assert.strictEqual(cells[34], 31);
+assert.strictEqual(providerUi.eventDay({ start: "2026-10-03", allDay: true }), "2026-10-03");
+assert.strictEqual(providerUi.eventDay({ start: "" }), "");
+const midday = new Date(2026, 9, 5, 15, 0, 0);
+assert.strictEqual(providerUi.eventDay({ start: midday.toISOString() }), providerUi.dayKey(2026, 9, 5));
+assert.deepStrictEqual(providerUi.eventsOnDay([
+  { id: "a", start: "2026-10-03", allDay: true },
+  { id: "b", start: "2026-10-04", allDay: true },
+], "2026-10-03").map((event) => event.id), ["a"]);
+assert.deepStrictEqual(providerUi.eventsOnDay(null, "2026-10-03"), []);
+assert.strictEqual(providerUi.calendarDraft({}).error, "Connect a Google or Microsoft mailbox first.");
+assert.strictEqual(providerUi.calendarDraft({ accountId: "a" }).error, "Choose a calendar.");
+assert.strictEqual(providerUi.calendarDraft({ accountId: "a", calendarId: "c" }).error, "Add a title.");
+assert.strictEqual(providerUi.calendarDraft({
+  accountId: "a",
+  calendarId: "c",
+  title: "Hi",
+  start: "2026-10-17T11:00",
+  end: "2026-10-17T10:00",
+}).error, "Pick a start and a later end.");
+const drafted = providerUi.calendarDraft({
+  accountId: "a",
+  calendarId: "c",
+  title: " Hi ",
+  start: "2026-10-17T10:00",
+  end: "2026-10-17T11:00",
+});
+assert.strictEqual(drafted.error, "");
+assert.strictEqual(drafted.title, "Hi");
+assert.ok(drafted.start < drafted.end);
+for (const channel of [
+  "mail:oauthStatus",
+  "mail:grantOrganize",
+  "mail:listProviderFolders",
+  "mail:createProviderFolder",
+  "mail:renameProviderFolder",
+  "mail:deleteProviderFolder",
+  "mail:modifyMessageLabels",
+  "mail:moveProviderMessage",
+  "calendar:status",
+  "calendar:connect",
+  "calendar:list",
+  "calendar:createEvent",
+]) {
+  assert.ok(registered.has(channel), `preload does not register ${channel}`);
+}
+for (const channel of [
+  "mail:oauthStatus",
+  "mail:grantOrganize",
+  "mail:listProviderFolders",
+  "mail:createProviderFolder",
+  "mail:renameProviderFolder",
+  "mail:deleteProviderFolder",
+  "mail:modifyMessageLabels",
+  "mail:moveProviderMessage",
+  "calendar:connect",
+  "calendar:list",
+  "calendar:createEvent",
+]) {
+  assert.ok(used.has(channel), `renderer does not call ${channel}`);
+}
+assert.ok(html.includes('id="rail-calendar"') && html.includes('id="calendar-panel"'));
+assert.ok(html.includes('id="calendar-grant"') && html.includes("Grant calendar access"));
+assert.ok(html.includes('id="calendar-create"') && html.includes('id="calendar-pick"'));
+assert.ok(appJs.includes("Grant Gmail labels") && appJs.includes("Grant Outlook folders"));
+assert.ok(css.includes("#calendar-panel") && css.includes(".calendar-grid") && css.includes(".provider-block"));
+assert.ok(!appJs.includes("Team sync") && !html.includes("Team sync"));
+assert.ok(!appJs.includes("Sample meeting") && !html.includes("Sample meeting"));
+const oauthDoc = fs.readFileSync(path.join(root, "docs/OAUTH.md"), "utf8");
+for (const phrase of [
+  "IMAP",
+  "https://www.googleapis.com/auth/gmail.modify",
+  "https://www.googleapis.com/auth/calendar.events",
+  "Calendars.ReadWrite",
+  "Mail.ReadWrite",
+  "/api/calendar-oauth/google/callback",
+  "/api/calendar-oauth/microsoft/callback",
+  "Testing",
+  "verification",
+  "admin consent",
+  "grantedScopes",
+]) {
+  assert.ok(oauthDoc.includes(phrase), `OAUTH.md missing ${phrase}`);
+}
+assert.ok(!/"client_secret"\s*:/.test(oauthDoc));
+assert.ok(!oauthDoc.includes("ya29."));
+assert.ok(fs.readFileSync(path.join(root, ".gitignore"), "utf8").includes("resources/google-oauth.json"));
+const http = require("../host/mail/provider-http");
+assert.strictEqual(http.safeNext("https://evil.example/next", "graph.microsoft.com"), "");
+assert.strictEqual(http.safeNext("http://graph.microsoft.com/next", "graph.microsoft.com"), "");
+assert.strictEqual(http.safeNext("https://user:pass@graph.microsoft.com/next", "graph.microsoft.com"), "");
+assert.ok(http.safeNext("https://graph.microsoft.com/v1.0/me/calendars?$skiptoken=abc", "graph.microsoft.com").includes("skiptoken"));
+const gmailApi = require("../host/mail/provider-api");
+assert.strictEqual(gmailApi.normalizeGmailLabel({ id: "Label_x", type: "user" }), null);
+assert.strictEqual(gmailApi.normalizeGmailLabel({ id: "INBOX", type: "system" }).name, "INBOX");
+assert.strictEqual(gmailApi.normalizeGmailLabel({ id: "INBOX", type: "system" }).editable, false);
+assert.throws(() => gmailApi.normalizeGmailLabels({}), /label list/);
+assert.ok(gmailApi.gmailModifyUrl("msg-1").endsWith("/messages/msg-1/modify"));
+const oauthConfig = require("../host/mail/oauth-config");
+assert.strictEqual(oauthConfig.SCOPES.google, "openid email https://mail.google.com/");
+assert.strictEqual(
+  oauthConfig.SCOPES.microsoft,
+  "offline_access https://outlook.office365.com/IMAP.AccessAsUser.All https://outlook.office365.com/SMTP.Send",
+);
+assert.strictEqual(
+  oauthConfig.ORGANIZE_SCOPES.google,
+  `${oauthConfig.SCOPES.google} https://www.googleapis.com/auth/gmail.modify`,
+);
+assert.strictEqual(
+  oauthConfig.ORGANIZE_SCOPES.microsoft,
+  "offline_access User.Read Mail.ReadWrite Mail.Send https://outlook.office365.com/IMAP.AccessAsUser.All https://outlook.office365.com/SMTP.Send",
+);
+assert.strictEqual(
+  oauthConfig.CALENDAR_SCOPES.google,
+  "openid email https://www.googleapis.com/auth/calendar.calendarlist.readonly https://www.googleapis.com/auth/calendar.events",
+);
+assert.strictEqual(oauthConfig.CALENDAR_SCOPES.microsoft, "offline_access User.Read Calendars.ReadWrite");
+assert.strictEqual(oauthConfig.scopesFor("gmail", "imap"), oauthConfig.SCOPES.google);
+assert.strictEqual(oauthConfig.scopesFor("outlook", "organize"), oauthConfig.ORGANIZE_SCOPES.microsoft);
+assert.strictEqual(oauthConfig.scopesFor("google", "calendar"), oauthConfig.CALENDAR_SCOPES.google);
+assert.strictEqual(oauthConfig.normalizePurpose("mail-api"), "organize");
+assert.strictEqual(oauthConfig.normalizePurpose("api"), "organize");
+assert.strictEqual(oauthConfig.hasMarker("Mail.Read", "microsoft", "organize"), false);
+assert.strictEqual(oauthConfig.hasMarker(oauthConfig.ORGANIZE_SCOPES.microsoft, "outlook", "organize"), true);
+assert.strictEqual(oauthConfig.hasMarker(oauthConfig.ORGANIZE_SCOPES.google, "gmail", "organize"), true);
+assert.strictEqual(oauthConfig.hasMarker(oauthConfig.SCOPES.google, "google", "organize"), false);
+assert.strictEqual(oauthConfig.hasMarker(oauthConfig.CALENDAR_SCOPES.google, "google", "calendar"), true);
+assert.strictEqual(oauthConfig.hasMarker(oauthConfig.CALENDAR_SCOPES.microsoft, "microsoft", "calendar"), true);
+assert.strictEqual(oauthConfig.hasMarker(oauthConfig.SCOPES.google, "google", "imap"), true);
+assert.strictEqual(oauthConfig.redirectPath("google", "imap"), "/api/oauth/google/callback");
+assert.strictEqual(oauthConfig.redirectPath("google", "organize"), "/api/oauth/google/callback");
+assert.strictEqual(oauthConfig.redirectPath("microsoft", "calendar"), "/api/calendar-oauth/microsoft/callback");
+assert.strictEqual(oauthConfig.redirectPath("google", "calendar"), "/api/calendar-oauth/google/callback");
+assert.strictEqual(oauthConfig.redirectUri(0, "google", "imap"), "");
+assert.strictEqual(
+  oauthConfig.redirectUri(42813, "google", "calendar"),
+  "http://localhost:42813/api/calendar-oauth/google/callback",
+);
+assert.strictEqual(
+  oauthConfig.profileUrl("google", "calendar"),
+  "https://openidconnect.googleapis.com/v1/userinfo",
+);
+assert.strictEqual(
+  oauthConfig.profileUrl("google", "imap"),
+  "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+);
+const authFields = {
+  clientId: "check.apps.googleusercontent.com",
+  state: "state",
+  challenge: "challenge",
+};
+const googleAuth = new URL(oauthConfig.authorizeUrl("google", "organize", {
+  ...authFields,
+  redirectUri: "http://localhost:1/api/oauth/google/callback",
+}));
+assert.strictEqual(googleAuth.searchParams.get("include_granted_scopes"), "true");
+assert.strictEqual(googleAuth.searchParams.get("prompt"), "consent");
+assert.strictEqual(googleAuth.searchParams.get("access_type"), "offline");
+assert.strictEqual(googleAuth.searchParams.get("scope"), oauthConfig.ORGANIZE_SCOPES.google);
+const microsoftImap = new URL(oauthConfig.authorizeUrl("microsoft", "imap", {
+  ...authFields,
+  clientId: oauthConfig.MICROSOFT_CLIENT_ID,
+  redirectUri: "http://localhost:1/api/oauth/microsoft/callback",
+}));
+assert.strictEqual(microsoftImap.searchParams.get("prompt"), "select_account");
+assert.strictEqual(microsoftImap.searchParams.get("scope"), oauthConfig.SCOPES.microsoft);
+const microsoftCalendar = new URL(oauthConfig.authorizeUrl("microsoft", "calendar", {
+  ...authFields,
+  clientId: oauthConfig.MICROSOFT_CLIENT_ID,
+  redirectUri: "http://localhost:1/api/calendar-oauth/microsoft/callback",
+}));
+assert.strictEqual(microsoftCalendar.searchParams.get("prompt"), "consent");
+assert.strictEqual(microsoftCalendar.searchParams.get("scope"), oauthConfig.CALENDAR_SCOPES.microsoft);
+assert.strictEqual(oauthConfig.MICROSOFT_CLIENT_ID, "2ca9ca19-add5-4807-bfa1-c2a7ac3cc6bf");
+
 async function checkAiDraft() {
   delete process.env.GENMAIL_AI_API_KEY;
   delete process.env.XAI_API_KEY;
@@ -1549,6 +1857,358 @@ async function checkTidy() {
   }
 }
 
+function jsonResponse(body, status = 200) {
+  const text = JSON.stringify(body);
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    async text() { return text; },
+    async json() { return JSON.parse(text); },
+  };
+}
+
+async function checkProviderApi() {
+  const oauthMod = require("../host/mail/oauth");
+  const calendarApi = require("../host/mail/calendar-api");
+  const sidecar = require("../host/mail/sidecar");
+  const envKeys = [
+    "GENMAIL_GOOGLE_OAUTH_JSON",
+    "GENMAIL_GOOGLE_OAUTH_FILE",
+    "MORROW_GOOGLE_OAUTH_JSON",
+    "MORROW_GOOGLE_OAUTH_FILE",
+    "GOOGLE_DESKTOP_OAUTH_JSON",
+    "GENMAIL_MAIL_SECRETS",
+  ];
+  const prev = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+  const originalFetch = global.fetch;
+  for (const key of envKeys) delete process.env[key];
+  process.env.GENMAIL_MAIL_SECRETS = "memory";
+  const seen = [];
+  global.fetch = async (url, init) => {
+    seen.push({ url: String(url), body: init && init.body ? String(init.body) : "" });
+    return jsonResponse({ access_token: "access-new", expires_in: 3600 });
+  };
+  try {
+    const bundled = path.join(root, "resources", "google-oauth.json");
+    if (!fs.existsSync(bundled)) assert.strictEqual(oauthConfig.oauthReady().google, false);
+    assert.strictEqual(oauthConfig.oauthReady().microsoft, true);
+    const kept = await oauthMod.refresh(
+      "google",
+      { clientId: "check.apps.googleusercontent.com", clientSecret: "check-secret" },
+      "refresh-1",
+      oauthConfig.SCOPES.google,
+      oauthConfig.ORGANIZE_SCOPES.google,
+    );
+    assert.strictEqual(kept.grantedScopes, oauthConfig.ORGANIZE_SCOPES.google);
+    assert.ok(!seen[0].body.includes("scope="), "Google refresh must not send scope");
+    const microsoftRefresh = await oauthMod.refresh(
+      "microsoft",
+      { clientId: oauthConfig.MICROSOFT_CLIENT_ID, clientSecret: "" },
+      "refresh-ms",
+      oauthConfig.CALENDAR_SCOPES.microsoft,
+      oauthConfig.CALENDAR_SCOPES.microsoft,
+    );
+    assert.ok(microsoftRefresh.grantedScopes.includes("Calendars.ReadWrite"));
+    assert.ok(seen[1].body.includes("Calendars.ReadWrite"));
+    const freshCount = seen.length;
+    const fresh = await oauthMod.accessTokenFor({ profile: "gmail" }, JSON.stringify({
+      provider: "google",
+      refreshToken: "refresh-gmail",
+      accessToken: "still-good",
+      expiresAt: Date.now() + 5 * 60 * 1000,
+      grantedScopes: oauthConfig.SCOPES.google,
+    }));
+    assert.strictEqual(fresh, "still-good");
+    assert.strictEqual(seen.length, freshCount);
+    if (!fs.existsSync(bundled)) {
+      await assert.rejects(
+        () => oauthMod.accessTokenFor({ profile: "gmail" }, JSON.stringify({
+          provider: "google",
+          refreshToken: "refresh-gmail",
+          accessToken: "old",
+          expiresAt: Date.now() - 1000,
+          grantedScopes: oauthConfig.SCOPES.google,
+        })),
+        (error) => error && error.code === "oauth_not_ready",
+      );
+      assert.strictEqual(seen.length, freshCount);
+    }
+
+    let labelBody = null;
+    const created = await gmailApi.createLabel("token", "Travel", async (url, init) => {
+      assert.strictEqual(init.method, "POST");
+      assert.ok(String(url).endsWith("/labels"));
+      labelBody = JSON.parse(init.body);
+      return jsonResponse({ id: "Label_1", name: "Travel", type: "user" });
+    });
+    assert.strictEqual(labelBody.name, "Travel");
+    assert.strictEqual(labelBody.labelListVisibility, "labelShow");
+    assert.strictEqual(created.id, "Label_1");
+    assert.strictEqual(created.editable, true);
+    const modifyUrls = [];
+    const modified = await gmailApi.modifyLabels("token", "<abc@example.com>", ["Label_1"], [], async (url, init) => {
+      modifyUrls.push(String(url));
+      if (String(url).includes("rfc822msgid")) return jsonResponse({ messages: [{ id: "gm1" }] });
+      assert.strictEqual(init.method, "POST");
+      assert.deepStrictEqual(JSON.parse(init.body), { addLabelIds: ["Label_1"], removeLabelIds: [] });
+      return jsonResponse({});
+    });
+    assert.strictEqual(modified.messageId, "gm1");
+    assert.ok(modifyUrls.some((url) => url.endsWith("/messages/gm1/modify")));
+    const dropped = await calendarApi.listEvents("google", "token", "cal-1", {
+      timeMin: "2026-10-01T00:00:00.000Z",
+      timeMax: "2026-11-01T00:00:00.000Z",
+    }, async (url) => {
+      const href = String(url);
+      if (href.includes("pageToken=page2")) {
+        return jsonResponse({
+          items: [
+            { id: "e2", status: "cancelled", summary: "Gone", start: { dateTime: "2026-10-03T10:00:00Z" }, end: { dateTime: "2026-10-03T11:00:00Z" } },
+            { summary: "No id", start: { dateTime: "2026-10-03T10:00:00Z" }, end: { dateTime: "2026-10-03T11:00:00Z" } },
+            { id: "e3", summary: "Two", start: { dateTime: "2026-10-04T10:00:00Z" }, end: { dateTime: "2026-10-04T11:00:00Z" } },
+          ],
+        });
+      }
+      return jsonResponse({
+        items: [
+          { id: "e1", summary: "One", start: { dateTime: "2026-10-02T10:00:00Z" }, end: { dateTime: "2026-10-02T11:00:00Z" } },
+        ],
+        nextPageToken: "page2",
+      });
+    });
+    assert.deepStrictEqual(dropped.events.map((event) => event.id), ["e1", "e3"]);
+    assert.strictEqual(dropped.truncated, false);
+    assert.strictEqual(calendarApi.pageToken("ok_token-1"), "ok_token-1");
+    assert.strictEqual(calendarApi.pageToken("../evil"), "");
+    assert.strictEqual(calendarApi.preferredCalendarId([
+      { id: "other" },
+      { id: "primary", primary: true },
+    ]), "primary");
+    assert.strictEqual(sidecar.monthWindow("2026-01-01T00:00:00.000Z", "2026-06-01T00:00:00.000Z"), null);
+    assert.ok(sidecar.monthWindow(october.timeMin, october.timeMax));
+
+    const engine = require("../host/mail/engine");
+    const db = require("../host/mail/db");
+    const secrets = require("../host/mail/secrets");
+    function liveAccount(row) {
+      db.insertAccount({
+        username: row.email,
+        imapHost: "imap.example.test",
+        imapPort: 993,
+        imapTls: true,
+        smtpHost: "smtp.example.test",
+        smtpPort: 465,
+        smtpTls: true,
+        delimiter: "/",
+        createdAt: Date.now(),
+        ...row,
+      });
+    }
+    const calls = [];
+    function route(url, init) {
+      const href = String(url);
+      const method = (init && init.method) || "GET";
+      calls.push({ href, method });
+      if (href.startsWith("https://gmail.googleapis.com/gmail/v1/users/me/labels") && method === "GET" && !href.includes("/labels/")) {
+        return jsonResponse({
+          labels: [
+            { id: "Label_9", name: "Travel", type: "user" },
+            { id: "INBOX", name: "INBOX", type: "system" },
+            { id: "Label_blank", type: "user" },
+          ],
+        });
+      }
+      if (href.includes("rfc822msgid")) return jsonResponse({ messages: [{ id: "msg-1" }] });
+      if (method === "POST" && href.includes("/messages/msg-1/modify")) return jsonResponse({});
+      if (href.startsWith("https://graph.microsoft.com/v1.0/me/mailFolders") && method === "GET") {
+        return jsonResponse({ value: [{ id: "folder-1", displayName: "Projects" }] });
+      }
+      if (href.startsWith("https://graph.microsoft.com/v1.0/me/calendars") && !href.includes("/calendarView") && method === "GET") {
+        return jsonResponse({ value: [{ id: "cal-ms", name: "Grace", isDefaultCalendar: true }] });
+      }
+      if (href.includes("/calendarView")) {
+        return jsonResponse({
+          value: [{
+            id: "evt-1",
+            subject: "Design review",
+            start: { dateTime: "2026-10-06T15:00:00Z" },
+            end: { dateTime: "2026-10-06T16:00:00Z" },
+            isAllDay: false,
+          }],
+        });
+      }
+      throw new Error(`unexpected provider fetch ${method} ${href}`);
+    }
+    global.fetch = async (url, init) => route(url, init);
+
+    liveAccount({
+      id: "gmail-pass",
+      email: "pass@example.com",
+      profile: "gmail",
+      authKind: "password",
+    });
+    const passwordList = await engine.answer("mail:listProviderFolders", [{ accountId: "gmail-pass" }]);
+    assert.strictEqual(passwordList.success, true);
+    assert.strictEqual(passwordList.data.api, false);
+    assert.strictEqual(passwordList.data.reason, "scope_missing");
+    assert.match(passwordList.data.message, /password/i);
+    assert.deepStrictEqual(passwordList.data.folders, []);
+    const customList = await engine.answer("mail:listProviderFolders", [{ accountId: "imap-test" }]);
+    assert.strictEqual(customList.data.api, false);
+    assert.strictEqual(customList.data.reason, "imap_only");
+    assert.strictEqual(calls.length, 0);
+
+    liveAccount({
+      id: "gmail-live",
+      email: "ada.live@example.com",
+      profile: "gmail",
+      authKind: "oauth2",
+    });
+    db.insertMessage({
+      id: "m-live",
+      accountId: "gmail-live",
+      folderPath: "INBOX",
+      uid: 1,
+      date: "2026-10-17T12:00:00.000Z",
+      listSortTs: Date.now(),
+      rfcMessageId: "<live@example.com>",
+      subject: "Hi",
+      from: "Ada <ada.live@example.com>",
+    });
+    const missingScope = await engine.answer("mail:modifyMessageLabels", [{
+      accountId: "gmail-live",
+      emailId: "m-live",
+      addLabelIds: ["Label_9"],
+    }]);
+    assert.strictEqual(missingScope.success, false);
+    assert.strictEqual(missingScope.error.code, "scope_missing");
+    assert.strictEqual(calls.length, 0);
+    const noCalendar = await engine.answer("calendar:list", [{
+      accountId: "gmail-live",
+      timeMin: october.timeMin,
+      timeMax: october.timeMax,
+    }]);
+    assert.strictEqual(noCalendar.success, true);
+    assert.strictEqual(noCalendar.data.api, false);
+    assert.strictEqual(noCalendar.data.reason, "needs_auth");
+    assert.deepStrictEqual(noCalendar.data.events, []);
+    const deniedCreate = await engine.answer("calendar:createEvent", [{
+      accountId: "gmail-live",
+      calendarId: "cal-1",
+      title: "Nope",
+      start: "2026-10-17T10:00:00.000Z",
+      end: "2026-10-17T11:00:00.000Z",
+    }]);
+    assert.strictEqual(deniedCreate.success, false);
+    assert.strictEqual(calls.length, 0);
+
+    secrets.setPassword("gmail-live:organize", JSON.stringify({
+      provider: "google",
+      purpose: "organize",
+      refreshToken: "refresh-gmail",
+      accessToken: "access-gmail",
+      expiresAt: Date.now() + 10 * 60 * 1000,
+      grantedScopes: oauthConfig.ORGANIZE_SCOPES.google,
+      requestedScopes: oauthConfig.ORGANIZE_SCOPES.google,
+    }));
+    if (!fs.existsSync(bundled)) {
+      const blocked = await engine.answer("mail:listProviderFolders", [{ accountId: "gmail-live" }]);
+      assert.strictEqual(blocked.success, true);
+      assert.strictEqual(blocked.data.api, false);
+      assert.strictEqual(blocked.data.reason, "oauth_not_ready");
+      assert.strictEqual(calls.length, 0);
+    }
+    process.env.GENMAIL_GOOGLE_OAUTH_JSON = JSON.stringify({
+      installed: {
+        client_id: "check-provider.apps.googleusercontent.com",
+        client_secret: "check-provider-secret",
+      },
+    });
+    const listed = await engine.answer("mail:listProviderFolders", [{ accountId: "gmail-live" }]);
+    assert.strictEqual(listed.success, true);
+    assert.strictEqual(listed.data.api, true);
+    assert.strictEqual(listed.data.source, "gmail");
+    assert.ok(listed.data.folders.some((folder) => folder.id === "Label_9" && folder.name === "Travel"));
+    assert.ok(!listed.data.folders.some((folder) => folder.id === "Label_blank"));
+    const changed = await engine.answer("mail:modifyMessageLabels", [{
+      accountId: "gmail-live",
+      emailId: "m-live",
+      addLabelIds: ["Label_9"],
+    }]);
+    assert.strictEqual(changed.success, true);
+    assert.ok(calls.some((call) => call.href.includes("/messages/msg-1/modify")));
+
+    liveAccount({
+      id: "outlook-live",
+      email: "grace.live@example.com",
+      profile: "outlook",
+      authKind: "oauth2",
+    });
+    secrets.setPassword("outlook-live:organize", JSON.stringify({
+      provider: "microsoft",
+      purpose: "organize",
+      refreshToken: "refresh-ms",
+      accessToken: "access-ms",
+      expiresAt: Date.now() + 10 * 60 * 1000,
+      grantedScopes: oauthConfig.ORGANIZE_SCOPES.microsoft,
+      requestedScopes: oauthConfig.ORGANIZE_SCOPES.microsoft,
+    }));
+    secrets.setPassword("outlook-live:calendar", JSON.stringify({
+      provider: "microsoft",
+      purpose: "calendar",
+      refreshToken: "refresh-cal",
+      accessToken: "access-cal",
+      expiresAt: Date.now() + 10 * 60 * 1000,
+      grantedScopes: oauthConfig.CALENDAR_SCOPES.microsoft,
+      requestedScopes: oauthConfig.CALENDAR_SCOPES.microsoft,
+    }));
+    const folders = await engine.answer("mail:listProviderFolders", [{ accountId: "outlook-live" }]);
+    assert.strictEqual(folders.success, true);
+    assert.strictEqual(folders.data.api, true);
+    assert.strictEqual(folders.data.source, "graph");
+    assert.ok(folders.data.folders.some((folder) => folder.id === "folder-1" && folder.name === "Projects" && folder.editable === true));
+    const month = await engine.answer("calendar:list", [{
+      accountId: "outlook-live",
+      timeMin: october.timeMin,
+      timeMax: october.timeMax,
+    }]);
+    assert.strictEqual(month.success, true);
+    assert.strictEqual(month.data.api, true);
+    assert.strictEqual(month.data.events.length, 1);
+    assert.strictEqual(month.data.events[0].id, "evt-1");
+    assert.strictEqual(month.data.events[0].title, "Design review");
+    assert.strictEqual(month.data.calendars[0].id, "cal-ms");
+    const wide = await engine.answer("calendar:list", [{
+      accountId: "outlook-live",
+      timeMin: "2026-01-01T00:00:00.000Z",
+      timeMax: "2026-06-01T00:00:00.000Z",
+    }]);
+    assert.strictEqual(wide.success, false);
+    assert.strictEqual(wide.error.code, "invalid");
+    const status = engine.answer("mail:oauthStatus", []);
+    const statusText = JSON.stringify(status);
+    assert.ok(!statusText.includes("refresh-cal"));
+    assert.ok(!statusText.includes("access-cal"));
+    assert.ok(!statusText.includes("check-provider-secret"));
+    assert.ok(status.data.accounts.some((account) => account.id === "gmail-live" && account.organize === true && account.calendar === false));
+    assert.ok(status.data.accounts.some((account) => account.id === "outlook-live" && account.calendar === true && account.organize === true));
+    assert.ok(status.data.grantedScopes === undefined);
+    assert.ok(status.data.accounts.some((account) => account.id === "outlook-live" && account.grantedScopes.calendar.includes("Calendars.ReadWrite")));
+    secrets.setPassword("gmail-live", "imap-secret");
+    const removed = await engine.answer("mail:removeAccount", [{ accountId: "gmail-live" }]);
+    assert.strictEqual(removed.success, true);
+    assert.strictEqual(secrets.getPassword("gmail-live"), null);
+    assert.strictEqual(secrets.getPassword("gmail-live:organize"), null);
+    assert.strictEqual(secrets.getPassword("gmail-live:calendar"), null);
+  } finally {
+    global.fetch = originalFetch;
+    for (const key of envKeys) {
+      if (prev[key] === undefined) delete process.env[key];
+      else process.env[key] = prev[key];
+    }
+  }
+}
+
 function checkGoogleOauthAlias() {
   const oauth = require("../host/mail/oauth-config");
   const keys = [
@@ -1590,7 +2250,7 @@ function checkGoogleOauthAlias() {
 
 checkGoogleOauthAlias();
 
-checkAiDraft().then(() => checkTidy()).then(() => {
+checkAiDraft().then(() => checkTidy()).then(() => checkProviderApi()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);

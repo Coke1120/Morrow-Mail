@@ -18,6 +18,12 @@
         </svg>
         <span class="sr">Mail</span>
       </button>
+      <button type="button" class="rail-btn" id="rail-calendar" aria-current="false">
+        <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+          <path fill="currentColor" d="M7 2h2v2h6V2h2v2h3v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4h3V2Zm11 8H6v10h12V10Z" />
+        </svg>
+        <span class="sr">Calendar</span>
+      </button>
     </nav>
     <div class="workspace">
     <header>
@@ -66,13 +72,38 @@
       <div class="split" data-split="messages" role="separator" aria-orientation="vertical" aria-label="Resize message list" tabindex="0"></div>
       <article id="reader" aria-label="Message"></article>
     </div>
+    <section id="calendar-panel" hidden aria-label="Calendar">
+      <div class="calendar-bar">
+        <button type="button" class="ghost" id="calendar-prev">Previous month</button>
+        <h2 id="calendar-heading">Calendar</h2>
+        <button type="button" class="ghost" id="calendar-next">Next month</button>
+        <label class="sr" for="calendar-account">Account</label>
+        <select id="calendar-account"></select>
+        <button type="button" class="ghost" id="calendar-grant">Grant calendar access</button>
+      </div>
+      <p id="calendar-status" role="status"></p>
+      <div id="calendar-body"></div>
+      <form id="calendar-create" hidden>
+        <label for="calendar-pick">Calendar</label>
+        <select id="calendar-pick"></select>
+        <label for="calendar-event-title">Title</label>
+        <input id="calendar-event-title" type="text" maxlength="200" />
+        <label for="calendar-start">Start</label>
+        <input id="calendar-start" type="datetime-local" />
+        <label for="calendar-end">End</label>
+        <input id="calendar-end" type="datetime-local" />
+        <div class="row">
+          <button type="submit" class="primary">Add event</button>
+        </div>
+      </form>
+    </section>
     </div>
     </div>
 
     <dialog id="connect" aria-labelledby="connect-title">
       <form id="connect-form">
         <h2 id="connect-title">Connect account</h2>
-        <p class="hint">IMAP password, or Google / Microsoft in the browser. The password stays in this app's keychain.</p>
+        <p class="hint">IMAP password, or Google / Microsoft in the browser. Labels and calendar each ask for a second consent. The password stays in this app's keychain.</p>
         <label for="profile">Provider</label>
         <select id="profile" name="profile"></select>
         <div id="custom-fields" hidden>

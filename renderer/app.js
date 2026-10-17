@@ -31,6 +31,13 @@ const state = {
     snooze: true,
     tidy: false,
   },
+  providerFolders: null,
+  providerRename: "",
+  oauthStatus: null,
+  view: "mail",
+  calendarCursor: null,
+  calendarAccountId: "",
+  calendarId: "",
 };
 
 let accountGen = 0;
@@ -57,6 +64,7 @@ let brainCategoryIndex = -1;
 let brainCategoryGen = 0;
 let brainSkillBusy = false;
 let brainCategoriesReady = false;
+let calendarGen = 0;
 let brainView = {
   accepted: null,
   refreshing: false,
@@ -130,6 +138,146 @@ function providerExpanded(provider, prefs) {
 
 function opensAiWrite(seed, prefs) {
   return !!(seed && seed.aiWrite && prefs && prefs.aiReply === true);
+}
+
+function oauthButtonState(status, provider) {
+  if (provider === "microsoft") return { disabled: false, reason: "" };
+  if (status && status.google === true) return { disabled: false, reason: "" };
+  if (status && status.google === false) return { disabled: true, reason: "Google Desktop OAuth is not configured." };
+  return { disabled: false, reason: "" };
+}
+
+function calendarGrantState(status, account) {
+  if (!account || account.platform !== "imap") return { disabled: true, reason: "Connect a Google or Microsoft mailbox first." };
+  const profile = String((account.imapSmtpProfile || account.profile || "")).toLowerCase();
+  const provider = profile === "gmail" || profile === "outlook" ? profile : "";
+  if (!provider) return { disabled: true, reason: "Calendar needs a Google or Microsoft account." };
+  if (provider === "gmail" && status && status.google === false) return { disabled: true, reason: "Google Desktop OAuth is not configured." };
+  return { disabled: false, reason: "" };
+}
+
+function providerFolderState(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload) || payload.api !== true) {
+    return { mode: "degraded", reason: (payload && payload.reason) || "scope_missing", folders: [] };
+  }
+  const folders = (Array.isArray(payload.folders) ? payload.folders : []).filter((folder) => folder && folder.id && folder.name);
+  return { mode: "live", reason: "", folders };
+}
+
+function providerCopy(reason, provider) {
+  const outlook = provider === "outlook";
+  if (reason === "loading") return outlook ? "Checking Outlook folders…" : "Checking Gmail labels…";
+  if (reason === "scope_missing") {
+    return outlook
+      ? "Outlook folders need the Mail.ReadWrite grant. This mailbox stays on IMAP until then."
+      : "Gmail labels need the gmail.modify grant. This mailbox stays on IMAP until then.";
+  }
+  if (reason === "password_account") return "This mailbox uses a password. Grant the provider API to manage labels, or keep using IMAP folders.";
+  if (reason === "oauth_not_ready") return "Google Desktop OAuth is not configured, so Gmail labels stay on IMAP.";
+  if (reason === "imap_only") return "Labels stay on IMAP for this account.";
+  if (reason === "no_account") return "Connect a mailbox to load provider labels.";
+  if (reason === "error") return "The provider label list failed. IMAP folders are unchanged.";
+  return outlook
+    ? "Outlook folders are unavailable. IMAP folders are unchanged."
+    : "Gmail labels are unavailable. IMAP folders are unchanged.";
+}
+
+function showOrganizeGrant(reason) {
+  return reason === "scope_missing" || reason === "password_account";
+}
+
+function calendarMode(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload) || payload.api !== true) {
+    return {
+      mode: "needs-auth",
+      reason: (payload && payload.reason) || "needs_auth",
+      events: [],
+      calendars: [],
+    };
+  }
+  const events = (Array.isArray(payload.events) ? payload.events : []).filter((event) => event && event.id && event.start);
+  const calendars = (Array.isArray(payload.calendars) ? payload.calendars : []).filter((calendar) => calendar && calendar.id);
+  return { mode: events.length ? "events" : "empty", reason: "", events, calendars };
+}
+
+function calendarCopy(reason) {
+  if (reason === "oauth_not_ready") return "Google Desktop OAuth is not configured, so calendar stays offline.";
+  if (reason === "imap_only") return "Calendar needs a Google or Microsoft account.";
+  if (reason === "error") return "Calendar could not be loaded.";
+  return "Calendar needs a calendar grant. This view does not keep events of its own.";
+}
+
+function calendarView(payload) {
+  const mode = calendarMode(payload);
+  if (mode.mode === "needs-auth") {
+    return { showGrid: false, showForm: false, status: calendarCopy(mode.reason), events: [], calendars: [] };
+  }
+  if (!mode.calendars.length) {
+    return { showGrid: false, showForm: false, status: "No calendars on this account.", events: [], calendars: [] };
+  }
+  const status = mode.mode === "empty" ? "No events this month." : "";
+  const truncated = payload && payload.truncated ? " The provider returned a partial list." : "";
+  return { showGrid: true, showForm: true, status: `${status}${truncated}`.trim(), events: mode.events, calendars: mode.calendars };
+}
+
+function monthRange(year, month) {
+  const start = new Date(year, month, 1);
+  const end = new Date(year, month + 1, 1);
+  return {
+    timeMin: start.toISOString(),
+    timeMax: end.toISOString(),
+    label: start.toLocaleString("en-US", { month: "long", year: "numeric" }),
+    year,
+    month,
+  };
+}
+
+function monthCells(year, month) {
+  const pad = new Date(year, month, 1).getDay();
+  const days = new Date(year, month + 1, 0).getDate();
+  const cells = [];
+  for (let i = 0; i < pad; i += 1) cells.push(0);
+  for (let day = 1; day <= days; day += 1) cells.push(day);
+  return cells;
+}
+
+function dayKey(year, month, day) {
+  return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function eventDay(event) {
+  if (!event || !event.start) return "";
+  if (event.allDay && /^\d{4}-\d{2}-\d{2}/.test(event.start)) return String(event.start).slice(0, 10);
+  const time = Date.parse(event.start);
+  if (!Number.isFinite(time)) return "";
+  const date = new Date(time);
+  return dayKey(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function eventsOnDay(events, key) {
+  return (Array.isArray(events) ? events : []).filter((event) => eventDay(event) === key);
+}
+
+function calendarDraft(input) {
+  const title = String((input && input.title) || "").trim();
+  const startRaw = String((input && input.start) || "").trim();
+  const endRaw = String((input && input.end) || "").trim();
+  const calendarId = String((input && input.calendarId) || "").trim();
+  const accountId = String((input && input.accountId) || "").trim();
+  if (!accountId) return { error: "Connect a Google or Microsoft mailbox first." };
+  if (!calendarId) return { error: "Choose a calendar." };
+  if (!title) return { error: "Add a title." };
+  const start = Date.parse(startRaw);
+  const end = Date.parse(endRaw);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return { error: "Pick a start and a later end." };
+  return {
+    error: "",
+    accountId,
+    calendarId,
+    title,
+    start: new Date(start).toISOString(),
+    end: new Date(end).toISOString(),
+  };
 }
 
 function envelopeError(result) {
@@ -697,7 +845,7 @@ function renderAccounts() {
       note.textContent = account.reauthReason;
       nav.appendChild(note);
     }
-    if (!expanded) continue;
+    if (expanded) {
     for (const folder of foldersOf(account)) {
       const button = document.createElement("button");
       button.type = "button";
@@ -729,7 +877,111 @@ function renderAccounts() {
       });
       nav.appendChild(button);
     }
+    }
+    appendProviderBlock(nav, account);
   }
+}
+
+function providerPayloadFor(account) {
+  const payload = state.providerFolders;
+  if (payload && payload.accountId === account.id) return payload;
+  return { accountId: account.id, api: false, reason: "loading", folders: [] };
+}
+
+function appendProviderBlock(nav, account) {
+  if (!isLive(account) || account.id !== state.accountId) return;
+  const provider = folderProvider(account);
+  if (provider !== "gmail" && provider !== "outlook") return;
+  const payload = providerPayloadFor(account);
+  const view = providerFolderState(payload);
+  const block = document.createElement("section");
+  block.className = "provider-block";
+  block.id = "provider-folders";
+  const title = document.createElement("h2");
+  title.textContent = provider === "outlook" ? "Outlook folders" : "Gmail labels";
+  block.appendChild(title);
+  if (view.mode !== "live") {
+    const note = document.createElement("p");
+    note.className = "provider-note";
+    note.textContent = payload.message || providerCopy(view.reason, provider);
+    block.appendChild(note);
+    if (showOrganizeGrant(view.reason)) {
+      const grant = document.createElement("button");
+      grant.type = "button";
+      grant.className = "provider-grant";
+      grant.textContent = provider === "outlook" ? "Grant Outlook folders" : "Grant Gmail labels";
+      grant.addEventListener("click", () => guard(grantOrganize));
+      block.appendChild(grant);
+    }
+    nav.appendChild(block);
+    return;
+  }
+  if (!view.folders.length) {
+    const note = document.createElement("p");
+    note.className = "provider-note";
+    note.textContent = provider === "outlook" ? "No Outlook folders returned." : "No Gmail labels returned.";
+    block.appendChild(note);
+  }
+  for (const folder of view.folders) {
+    const row = document.createElement("div");
+    row.className = "provider-row";
+    if (state.providerRename === folder.id && folder.editable) {
+      const form = document.createElement("form");
+      form.className = "provider-create";
+      const input = document.createElement("input");
+      input.value = folder.name;
+      input.setAttribute("aria-label", "Rename");
+      input.maxLength = 200;
+      const save = document.createElement("button");
+      save.type = "submit";
+      save.className = "provider-mini";
+      save.textContent = "Save";
+      form.append(input, save);
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        guard(() => renameProviderFolder(folder.id, input.value));
+      });
+      row.appendChild(form);
+    } else {
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = folder.name;
+      row.appendChild(name);
+      if (folder.editable) {
+        const rename = document.createElement("button");
+        rename.type = "button";
+        rename.className = "provider-mini";
+        rename.textContent = "Rename";
+        rename.addEventListener("click", () => {
+          state.providerRename = folder.id;
+          renderAccounts();
+        });
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "provider-mini";
+        remove.textContent = "Delete";
+        remove.addEventListener("click", () => guard(() => deleteProviderFolder(folder.id)));
+        row.append(rename, remove);
+      }
+    }
+    block.appendChild(row);
+  }
+  const form = document.createElement("form");
+  form.className = "provider-create";
+  const input = document.createElement("input");
+  input.maxLength = 200;
+  input.setAttribute("aria-label", provider === "outlook" ? "New Outlook folder" : "New Gmail label");
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.className = "provider-mini";
+  submit.textContent = provider === "outlook" ? "Add folder" : "Add label";
+  form.append(input, submit);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    guard(() => createProviderFolder(input.value));
+  });
+  block.appendChild(form);
+  nav.appendChild(block);
 }
 
 function fileSize(size) {
@@ -944,7 +1196,38 @@ function renderActions(pane, email) {
     bar.append(reply, forward, star, archive, trash, move);
   }
   if (snooze) bar.append(snooze);
+  appendLabelActions(bar, email);
   pane.appendChild(bar);
+}
+
+function appendLabelActions(bar, email) {
+  const payload = state.providerFolders;
+  if (!payload || payload.accountId !== email.accountId) return;
+  const view = providerFolderState(payload);
+  if (view.mode !== "live") return;
+  if (payload.source === "gmail" || payload.provider === "google") {
+    const editable = view.folders.filter((folder) => folder.editable);
+    bar.append(labelSelect("Add Gmail label", "Add label", editable, (id) => changeLabels(email, [id], [])));
+    bar.append(labelSelect("Remove Gmail label", "Remove label", editable, (id) => changeLabels(email, [], [id])));
+    return;
+  }
+  if (payload.source === "graph" || payload.provider === "microsoft") {
+    bar.append(labelSelect("Move in Outlook", "Move in Outlook", view.folders, (id) => moveOutlook(email, id)));
+  }
+}
+
+function labelSelect(aria, placeholder, folders, run) {
+  const select = document.createElement("select");
+  select.setAttribute("aria-label", aria);
+  select.append(option("", placeholder));
+  for (const folder of folders) select.append(option(folder.id, folder.name));
+  select.addEventListener("change", () => {
+    const id = select.value;
+    select.value = "";
+    if (!id) return;
+    guard(() => run(id));
+  });
+  return select;
 }
 
 function renderSuggestions(pane, email) {
@@ -1534,10 +1817,88 @@ async function loadAccounts(preferredId) {
   if (gen !== accountGen) return;
   await loadList();
   if (gen !== accountGen) return;
+  await loadProviderFolders(gen);
+  if (gen !== accountGen) return;
   renderReader(false);
 }
 
+async function loadProviderFolders(gen) {
+  const account = selectedAccount();
+  if (!isLive(account)) {
+    state.providerFolders = null;
+    state.providerRename = "";
+    renderAccounts();
+    return;
+  }
+  const requestId = account.id;
+  try {
+    const payload = await call("mail:listProviderFolders", { accountId: requestId });
+    if (gen !== accountGen || state.accountId !== requestId) return;
+    state.providerFolders = { ...(payload || {}), accountId: requestId };
+  } catch (error) {
+    if (gen !== accountGen || state.accountId !== requestId) return;
+    state.providerFolders = {
+      accountId: requestId,
+      api: false,
+      reason: "error",
+      message: error instanceof Error ? error.message : String(error),
+      folders: [],
+    };
+  }
+  renderAccounts();
+}
+
+async function grantOrganize() {
+  const account = selectedAccount();
+  if (!isLive(account)) throw new Error("Connect a Google or Microsoft mailbox first.");
+  showStatus("Waiting for the mail API consent…");
+  await call("mail:grantOrganize", { accountId: account.id });
+  showStatus("Mail API connected.");
+  await loadProviderFolders(accountGen);
+}
+
+async function createProviderFolder(name) {
+  await call("mail:createProviderFolder", { accountId: state.accountId, name });
+  state.providerRename = "";
+  showStatus("Saved on the provider.");
+  await loadProviderFolders(accountGen);
+}
+
+async function renameProviderFolder(folderId, name) {
+  await call("mail:renameProviderFolder", { accountId: state.accountId, folderId, name });
+  state.providerRename = "";
+  showStatus("Saved on the provider.");
+  await loadProviderFolders(accountGen);
+}
+
+async function deleteProviderFolder(folderId) {
+  await call("mail:deleteProviderFolder", { accountId: state.accountId, folderId });
+  state.providerRename = "";
+  showStatus("Removed on the provider.");
+  await loadProviderFolders(accountGen);
+}
+
+async function changeLabels(email, addLabelIds, removeLabelIds) {
+  await call("mail:modifyMessageLabels", {
+    accountId: email.accountId,
+    emailId: email.id,
+    addLabelIds,
+    removeLabelIds,
+  });
+  showStatus(addLabelIds.length ? "Label added in Gmail." : "Label removed in Gmail.");
+}
+
+async function moveOutlook(email, destinationId) {
+  await call("mail:moveProviderMessage", {
+    accountId: email.accountId,
+    emailId: email.id,
+    destinationId,
+  });
+  showStatus("Moved in Outlook. Refresh to update the IMAP list.");
+}
+
 async function selectFolder(accountId, folderId) {
+  const previous = state.accountId;
   state.accountId = accountId;
   state.folderId = folderId;
   state.query = "";
@@ -1550,6 +1911,7 @@ async function selectFolder(accountId, folderId) {
   if (!undoOpIds && !sendTimer) showStatus("");
   await loadSnoozed();
   await loadList();
+  if (previous !== accountId) await loadProviderFolders(accountGen);
 }
 
 async function openMessage(emailId, focus) {
@@ -3180,12 +3542,205 @@ function openStudio() {
   });
 }
 
+function calendarAccount() {
+  const rows = state.accounts.filter(isLive);
+  return rows.find((account) => account.id === state.calendarAccountId)
+    || rows.find((account) => account.id === state.accountId)
+    || rows[0]
+    || null;
+}
+
+function fillCalendarAccounts() {
+  const select = $("calendar-account");
+  const rows = state.accounts.filter(isLive);
+  select.replaceChildren();
+  if (!rows.length) {
+    select.append(option("", "No mailbox"));
+    select.disabled = true;
+    return;
+  }
+  select.disabled = false;
+  for (const account of rows) select.append(option(account.id, account.email || account.id));
+  const current = calendarAccount();
+  if (current) select.value = current.id;
+}
+
+function fillCalendarPick(calendars) {
+  const select = $("calendar-pick");
+  select.replaceChildren();
+  for (const calendar of calendars) select.append(option(calendar.id, calendar.name || calendar.id));
+  if (state.calendarId && calendars.some((calendar) => calendar.id === state.calendarId)) {
+    select.value = state.calendarId;
+  } else if (select.value) {
+    state.calendarId = select.value;
+  }
+}
+
+function paintCalendar(payload) {
+  const view = calendarView(payload);
+  const cursor = state.calendarCursor || new Date();
+  const range = monthRange(cursor.getFullYear(), cursor.getMonth());
+  $("calendar-heading").textContent = view.showGrid ? range.label : "Calendar";
+  $("calendar-status").textContent = view.status;
+  $("calendar-create").hidden = !view.showForm;
+  const grant = calendarGrantState(state.oauthStatus, calendarAccount());
+  $("calendar-grant").disabled = grant.disabled;
+  $("calendar-grant").title = grant.reason;
+  const body = $("calendar-body");
+  body.replaceChildren();
+  if (!view.showGrid) return;
+  fillCalendarPick(view.calendars);
+  const grid = document.createElement("div");
+  grid.className = "calendar-grid";
+  grid.setAttribute("role", "grid");
+  grid.setAttribute("aria-label", range.label);
+  for (const name of ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) {
+    const head = document.createElement("div");
+    head.className = "calendar-dow";
+    head.textContent = name;
+    grid.appendChild(head);
+  }
+  for (const day of monthCells(cursor.getFullYear(), cursor.getMonth())) {
+    const cell = document.createElement("div");
+    cell.className = "calendar-day";
+    if (!day) {
+      cell.classList.add("pad");
+      grid.appendChild(cell);
+      continue;
+    }
+    const num = document.createElement("span");
+    num.className = "calendar-num";
+    num.textContent = String(day);
+    cell.appendChild(num);
+    for (const event of eventsOnDay(view.events, dayKey(cursor.getFullYear(), cursor.getMonth(), day))) {
+      const item = document.createElement("p");
+      item.className = "calendar-event";
+      item.textContent = event.title || "(no title)";
+      cell.appendChild(item);
+    }
+    grid.appendChild(cell);
+  }
+  body.appendChild(grid);
+}
+
+async function loadCalendar() {
+  const gen = ++calendarGen;
+  fillCalendarAccounts();
+  const account = calendarAccount();
+  if (!account) {
+    if (gen !== calendarGen) return;
+    paintCalendar({ api: false, reason: "needs_auth", events: [], calendars: [] });
+    return;
+  }
+  state.calendarAccountId = account.id;
+  const cursor = state.calendarCursor || new Date();
+  state.calendarCursor = cursor;
+  const range = monthRange(cursor.getFullYear(), cursor.getMonth());
+  try {
+    const payload = await call("calendar:list", {
+      accountId: account.id,
+      timeMin: range.timeMin,
+      timeMax: range.timeMax,
+      calendarId: state.calendarId || undefined,
+    });
+    if (gen !== calendarGen) return;
+    if (payload && payload.calendarId) state.calendarId = payload.calendarId;
+    paintCalendar(payload);
+  } catch (error) {
+    if (gen !== calendarGen) return;
+    paintCalendar({
+      api: false,
+      reason: "error",
+      message: error instanceof Error ? error.message : String(error),
+      events: [],
+      calendars: [],
+    });
+    $("calendar-status").textContent = error instanceof Error ? error.message : String(error);
+  }
+}
+
+function showMail() {
+  state.view = "mail";
+  $("calendar-panel").hidden = true;
+  $("shell").hidden = false;
+  $("rail-mail").setAttribute("aria-current", "page");
+  $("rail-calendar").setAttribute("aria-current", "false");
+}
+
+function showCalendar() {
+  state.view = "calendar";
+  if (!state.calendarCursor) state.calendarCursor = new Date();
+  $("shell").hidden = true;
+  $("calendar-panel").hidden = false;
+  $("rail-mail").setAttribute("aria-current", "false");
+  $("rail-calendar").setAttribute("aria-current", "page");
+  loadCalendar().catch((error) => showStatus(error.message, true));
+}
+
+async function grantCalendar() {
+  const account = calendarAccount();
+  if (!account) throw new Error("Connect a Google or Microsoft mailbox first.");
+  showStatus("Waiting for the calendar consent…");
+  await call("calendar:connect", { accountId: account.id });
+  showStatus("Calendar connected.");
+  await loadCalendar();
+}
+
+async function submitCalendarEvent(event) {
+  event.preventDefault();
+  const account = calendarAccount();
+  const draft = calendarDraft({
+    accountId: account && account.id,
+    calendarId: state.calendarId || $("calendar-pick").value,
+    title: $("calendar-event-title").value,
+    start: $("calendar-start").value,
+    end: $("calendar-end").value,
+  });
+  if (draft.error) throw new Error(draft.error);
+  await call("calendar:createEvent", draft);
+  $("calendar-event-title").value = "";
+  showStatus("Event saved on the calendar.");
+  await loadCalendar();
+}
+
+function shiftMonth(delta) {
+  const cursor = state.calendarCursor || new Date();
+  state.calendarCursor = new Date(cursor.getFullYear(), cursor.getMonth() + delta, 1);
+  loadCalendar().catch((error) => showStatus(error.message, true));
+}
+
+async function loadOauthStatus() {
+  try {
+    state.oauthStatus = await call("mail:oauthStatus");
+  } catch {
+    state.oauthStatus = null;
+  }
+  const google = oauthButtonState(state.oauthStatus, "google");
+  $("oauth-google").disabled = google.disabled;
+  $("oauth-google").title = google.reason;
+}
+
 function wire() {
   document.addEventListener("keydown", onShellKey);
   $("rail-mail").addEventListener("click", () => {
+    showMail();
     const row = $("messages").querySelector(".message");
     if (row) row.focus();
     else $("search-query").focus();
+  });
+  $("rail-calendar").addEventListener("click", showCalendar);
+  $("calendar-prev").addEventListener("click", () => shiftMonth(-1));
+  $("calendar-next").addEventListener("click", () => shiftMonth(1));
+  $("calendar-grant").addEventListener("click", () => guard(grantCalendar));
+  $("calendar-create").addEventListener("submit", (event) => guard(() => submitCalendarEvent(event)));
+  $("calendar-account").addEventListener("change", () => {
+    state.calendarAccountId = $("calendar-account").value;
+    state.calendarId = "";
+    loadCalendar().catch((error) => showStatus(error.message, true));
+  });
+  $("calendar-pick").addEventListener("change", () => {
+    state.calendarId = $("calendar-pick").value;
+    loadCalendar().catch((error) => showStatus(error.message, true));
   });
   wireSplits();
   $("undo").addEventListener("click", () => guard(undoRemoval));
@@ -3333,6 +3888,7 @@ async function boot() {
   }
   await loadLook();
   await loadPresets();
+  await loadOauthStatus();
   await loadShellPrefs();
   await loadAccounts();
 }

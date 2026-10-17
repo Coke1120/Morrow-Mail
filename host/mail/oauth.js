@@ -1,13 +1,19 @@
 const http = require("http");
 const crypto = require("crypto");
 const { URL } = require("url");
-const { shell } = require("electron");
 const {
   SCOPES,
   ENDPOINTS,
   IMAP_PRESETS,
   credentials,
   oauthReady,
+  scopesFor,
+  redirectPath,
+  redirectUri,
+  profileUrl,
+  authorizeUrl,
+  normalizePurpose,
+  providerKey,
 } = require("./oauth-config");
 
 function b64url(buf) {
@@ -29,7 +35,12 @@ function listenOnce() {
   });
 }
 
-function waitForCode(server, expectedState, timeoutMs = 180000) {
+function openBrowser(url) {
+  const { shell } = require("electron");
+  return shell.openExternal(url);
+}
+
+function waitForCode(server, expectedState, expectedPath, timeoutMs = 180000) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       try { server.close(); } catch { /* */ }
@@ -39,7 +50,7 @@ function waitForCode(server, expectedState, timeoutMs = 180000) {
     server.on("request", (req, res) => {
       try {
         const url = new URL(req.url, "http://127.0.0.1");
-        if (!url.pathname.endsWith("/callback")) {
+        if (url.pathname !== expectedPath) {
           res.writeHead(404);
           res.end("Not found");
           return;
@@ -72,16 +83,16 @@ function waitForCode(server, expectedState, timeoutMs = 180000) {
   });
 }
 
-async function exchange(provider, creds, code, redirectUri, verifier) {
+async function exchange(provider, creds, code, redirect, verifier, scope) {
   const body = new URLSearchParams({
     grant_type: "authorization_code",
     code,
-    redirect_uri: redirectUri,
+    redirect_uri: redirect,
     client_id: creds.clientId,
     code_verifier: verifier,
   });
   if (creds.clientSecret) body.set("client_secret", creds.clientSecret);
-  if (provider === "microsoft") body.set("scope", SCOPES.microsoft);
+  if (provider === "microsoft") body.set("scope", scope || SCOPES.microsoft);
 
   const res = await fetch(ENDPOINTS[provider].token, {
     method: "POST",
@@ -97,18 +108,18 @@ async function exchange(provider, creds, code, redirectUri, verifier) {
     accessToken: json.access_token,
     refreshToken: json.refresh_token || "",
     expiresAt: Date.now() + Number(json.expires_in || 3600) * 1000,
-    grantedScopes: json.scope || SCOPES[provider],
+    grantedScopes: json.scope || scope || SCOPES[provider],
   };
 }
 
-async function refresh(provider, creds, refreshToken) {
+async function refresh(provider, creds, refreshToken, scope, previousGranted) {
   const body = new URLSearchParams({
     grant_type: "refresh_token",
     refresh_token: refreshToken,
     client_id: creds.clientId,
   });
   if (creds.clientSecret) body.set("client_secret", creds.clientSecret);
-  if (provider === "microsoft") body.set("scope", SCOPES.microsoft);
+  if (provider === "microsoft") body.set("scope", scope || SCOPES.microsoft);
   const res = await fetch(ENDPOINTS[provider].token, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -122,17 +133,17 @@ async function refresh(provider, creds, refreshToken) {
     accessToken: json.access_token,
     refreshToken: json.refresh_token || refreshToken,
     expiresAt: Date.now() + Number(json.expires_in || 3600) * 1000,
-    grantedScopes: json.scope || SCOPES[provider],
+    grantedScopes: json.scope || previousGranted || scope || SCOPES[provider],
   };
 }
 
-async function fetchEmail(provider, accessToken) {
-  const res = await fetch(ENDPOINTS[provider].profile, {
+async function fetchEmail(provider, accessToken, purpose) {
+  const res = await fetch(profileUrl(provider, purpose), {
     headers: { authorization: `Bearer ${accessToken}` },
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error("Could not read the account profile after OAuth.");
-  if (provider === "google") return String(json.emailAddress || json.email || "").trim();
+  if (provider === "google") return String(json.email || json.emailAddress || "").trim();
   return String(json.mail || json.userPrincipalName || "").trim();
 }
 
@@ -147,51 +158,46 @@ function normalizeProvider(input) {
  * Browser loopback OAuth (PKCE), same shape as Morrow-Mail desktop clients.
  * Returns tokens + IMAP preset fields for engine.connectOAuthAccount.
  */
-async function signIn(providerInput) {
+async function signIn(providerInput, purposeInput) {
   const provider = normalizeProvider(providerInput);
   if (!provider) throw new Error("Choose Google or Microsoft.");
+  const purpose = normalizePurpose(purposeInput);
   const creds = credentials(provider);
+  const scope = scopesFor(provider, purpose);
   const { server, port } = await listenOnce();
-  // Match Morrow-Mail path prefix so the same Entra redirect registration works
-  // when Leo adds IMAP scopes; Google Desktop ignores exact localhost port.
-  const redirectUri = `http://localhost:${port}/api/oauth/${provider}/callback`;
+  // Paths stay stable so Entra registrations match. The port is chosen here.
+  const pathName = redirectPath(provider, purpose);
+  const redirect = redirectUri(port, provider, purpose);
   const state = b64url(crypto.randomBytes(24));
   const verifier = b64url(crypto.randomBytes(32));
   const challenge = b64url(crypto.createHash("sha256").update(verifier).digest());
+  const url = authorizeUrl(provider, purpose, {
+    clientId: creds.clientId,
+    redirectUri: redirect,
+    state,
+    challenge,
+  });
 
-  const url = new URL(ENDPOINTS[provider].authorize);
-  url.searchParams.set("client_id", creds.clientId);
-  url.searchParams.set("redirect_uri", redirectUri);
-  url.searchParams.set("response_type", "code");
-  url.searchParams.set("scope", SCOPES[provider]);
-  url.searchParams.set("state", state);
-  url.searchParams.set("code_challenge", challenge);
-  url.searchParams.set("code_challenge_method", "S256");
-  if (provider === "google") {
-    url.searchParams.set("access_type", "offline");
-    url.searchParams.set("prompt", "consent");
-  } else {
-    url.searchParams.set("prompt", "select_account");
-  }
-
-  const codePromise = waitForCode(server, state);
-  await shell.openExternal(url.toString());
+  const codePromise = waitForCode(server, state, pathName);
+  await openBrowser(url);
   const code = await codePromise;
-  const tokens = await exchange(provider, creds, code, redirectUri, verifier);
-  if (!tokens.refreshToken) {
+  const tokens = await exchange(provider, creds, code, redirect, verifier, scope);
+  if (!tokens.refreshToken && purpose !== "organize") {
     throw new Error("Provider did not return a refresh token. Approve offline access and try again.");
   }
-  const email = await fetchEmail(provider, tokens.accessToken);
+  const email = await fetchEmail(provider, tokens.accessToken, purpose);
   if (!email) throw new Error("Provider did not return an email address.");
   const preset = IMAP_PRESETS[provider];
   return {
     provider,
+    purpose,
     email,
     username: email,
     profile: preset.profile,
     imap: preset.imap,
     smtp: preset.smtp,
     authKind: "oauth2",
+    requestedScopes: scope,
     ...tokens,
   };
 }
@@ -204,13 +210,30 @@ async function accessTokenFor(account, secretBlob) {
     throw new Error("Stored OAuth secret is corrupt. Connect the account again.");
   }
   if (!parsed.refreshToken) throw new Error("Missing refresh token. Connect the account again.");
-  const provider = normalizeProvider(account.profile === "gmail" ? "google" : account.profile === "outlook" ? "microsoft" : parsed.provider);
-  const creds = credentials(provider);
+  const provider = normalizeProvider(
+    parsed.provider || (account.profile === "gmail" ? "google" : account.profile === "outlook" ? "microsoft" : "")
+  ) || providerKey(account && account.profile);
+  if (!provider) throw new Error("Stored OAuth secret is missing a provider. Connect the account again.");
   if (parsed.expiresAt && parsed.accessToken && Date.now() < parsed.expiresAt - 60000) {
     return parsed.accessToken;
   }
-  const next = await refresh(provider, creds, parsed.refreshToken);
-  return { token: next.accessToken, store: JSON.stringify({ ...parsed, ...next, provider }) };
+  if (provider === "google" && !oauthReady().google) {
+    const error = new Error("Google Desktop OAuth is not configured.");
+    error.code = "oauth_not_ready";
+    throw error;
+  }
+  const creds = credentials(provider);
+  const scope = parsed.requestedScopes || parsed.grantedScopes || SCOPES[provider];
+  const next = await refresh(provider, creds, parsed.refreshToken, scope, parsed.grantedScopes);
+  return {
+    token: next.accessToken,
+    store: JSON.stringify({
+      ...parsed,
+      ...next,
+      provider,
+      requestedScopes: parsed.requestedScopes || scope,
+    }),
+  };
 }
 
 module.exports = {
@@ -219,5 +242,6 @@ module.exports = {
   accessTokenFor,
   oauthReady,
   normalizeProvider,
+  normalizePurpose,
   SCOPES,
 };

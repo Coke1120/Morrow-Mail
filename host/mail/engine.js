@@ -10,6 +10,7 @@ const secrets = process.env.GENMAIL_MAIL_SECRETS === "memory"
   ? require("./memory-secrets")
   : require("./secrets");
 const oauth = require("./oauth");
+const sidecar = require("./sidecar");
 
 const PRIMARY_ORDER = ["inbox", "sentitems", "drafts", "deleteditems", "archive", "junkemail"];
 const KEY_TO_WELL = {
@@ -131,6 +132,7 @@ function accountView(row, index) {
     groups: [],
     imapSmtpProfile: row.profile,
     imapUsername: row.username,
+    authKind: row.auth_kind || "password",
   };
   if (row.profile === "custom") {
     view.imapSmtpCustom = {
@@ -422,10 +424,12 @@ async function connectOAuthAccount(providerInput) {
   };
   const blob = JSON.stringify({
     provider: signed.provider,
+    purpose: signed.purpose || "imap",
     refreshToken: signed.refreshToken,
     accessToken: signed.accessToken,
     expiresAt: signed.expiresAt,
     grantedScopes: signed.grantedScopes,
+    requestedScopes: signed.requestedScopes || signed.grantedScopes,
   });
   try {
     await remote.withClient(draft, signed.accessToken, async (client) => {
@@ -595,6 +599,8 @@ async function removeAccount(params) {
   const id = params && (params.accountId || params.id);
   if (!id || !db.accountById(id)) return undefined;
   secrets.deletePassword(id);
+  secrets.deletePassword(`${id}:organize`);
+  secrets.deletePassword(`${id}:calendar`);
   db.removeAccount(id);
   emitAccounts();
   return ok(true);
@@ -847,6 +853,7 @@ async function bytesFor(params) {
 
 function answer(channel, args) {
   if (!ready) return undefined;
+  if (sidecar.handles(channel)) return sidecar.answer(channel, args);
   const params = args && args.length ? args[0] : undefined;
   if (channel === "mail:listImapSmtpPresets") return ok(presets.CARDS);
   if (channel === "mail:connectImapSmtp") return connectAccount(params || {});
