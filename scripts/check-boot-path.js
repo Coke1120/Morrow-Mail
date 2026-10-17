@@ -1549,6 +1549,47 @@ async function checkTidy() {
   }
 }
 
+function checkGoogleOauthAlias() {
+  const oauth = require("../host/mail/oauth-config");
+  const keys = [
+    "GENMAIL_GOOGLE_OAUTH_JSON",
+    "GENMAIL_GOOGLE_OAUTH_FILE",
+    "MORROW_GOOGLE_OAUTH_JSON",
+    "MORROW_GOOGLE_OAUTH_FILE",
+    "GOOGLE_DESKTOP_OAUTH_JSON",
+  ];
+  const prev = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const desktop = JSON.stringify({
+    installed: {
+      client_id: "desktop-alias.apps.googleusercontent.com",
+      client_secret: "desktop-alias-secret",
+    },
+  });
+  try {
+    for (const key of keys) delete process.env[key];
+    process.env.GOOGLE_DESKTOP_OAUTH_JSON = `  ${desktop}  `;
+    assert.deepStrictEqual(oauth.loadGoogleClient(), {
+      clientId: "desktop-alias.apps.googleusercontent.com",
+      clientSecret: "desktop-alias-secret",
+    });
+    assert.strictEqual(oauth.credentials("google").clientId, "desktop-alias.apps.googleusercontent.com");
+    process.env.GENMAIL_GOOGLE_OAUTH_JSON = JSON.stringify({
+      installed: {
+        client_id: "genmail-primary.apps.googleusercontent.com",
+        client_secret: "genmail-primary-secret",
+      },
+    });
+    assert.strictEqual(oauth.loadGoogleClient().clientId, "genmail-primary.apps.googleusercontent.com");
+  } finally {
+    for (const key of keys) {
+      if (prev[key] === undefined) delete process.env[key];
+      else process.env[key] = prev[key];
+    }
+  }
+}
+
+checkGoogleOauthAlias();
+
 checkAiDraft().then(() => checkTidy()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
