@@ -1114,10 +1114,28 @@ button.thread-item[aria-current="true"] { background: var(--selected); }
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
   margin: 8px 12px 0;
   padding: 0 0 8px;
   border-bottom: 1px solid var(--line);
+}
+
+.reader-actions .icon-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.reader-actions .icon-btn svg { display: block; flex: none; }
+
+.reader-menus {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
 }
 
 .reader-actions select,
@@ -1161,6 +1179,25 @@ button.thread-item[aria-current="true"] { background: var(--selected); }
   max-width: min(100%, 330px);
   height: auto;
   margin: 0 0 12px;
+}
+
+.remote-gate {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 20px 0;
+  padding: 8px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--hover);
+}
+
+.remote-gate p {
+  margin: 0;
+  flex: 1 1 160px;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 :root[data-theme="dark"] button.folder:not([aria-current="true"]),
@@ -1217,6 +1254,8 @@ button.thread-item[aria-current="true"] { background: var(--selected); }
   clip: rect(0, 0, 0, 0);
   border: 0;
 }
+
+#compose { width: min(680px, calc(100vw - 24px)); }
 
 dialog {
   position: fixed;
@@ -1281,7 +1320,43 @@ label.check input { width: auto; accent-color: var(--accent); }
 
 textarea { min-height: 140px; resize: vertical; }
 
-#compose textarea { min-height: 88px; }
+#compose textarea { min-height: 160px; margin-top: 10px; }
+
+.compose-fields {
+  margin-top: 8px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  min-height: 36px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.field-row:last-child { border-bottom: 0; }
+
+.field-row:focus-within { background: var(--hover); }
+
+.field-row label {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.field-row input {
+  border: 0;
+  border-radius: 0;
+  padding: 8px 0;
+  background: transparent;
+}
+
+.field-row input:focus { outline: none; }
 
 .ai-write {
   display: flex;

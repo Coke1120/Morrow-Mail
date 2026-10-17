@@ -947,6 +947,14 @@ assert.strictEqual(nobodySend.success, false);
 assert.strictEqual(nobodySend.error.code, "invalid");
 assert.strictEqual(mailbox.answer("mail:scheduleSend", [{ accountId: "gmail-ada", to: "a@b.c" }]).success, false);
 assert.strictEqual(mailbox.answer("mail:listScheduled").data.length, 3);
+const ccOnly = mailbox.answer("mail:scheduleSend", [{
+  accountId: "gmail-ada",
+  cc: "mary@example.com",
+  sendAt: future,
+}]);
+assert.strictEqual(ccOnly.success, true);
+assert.strictEqual(ccOnly.data.to, "");
+assert.strictEqual(ccOnly.data.cc, "mary@example.com");
 
 const engineSrc = fs.readFileSync(path.join(root, "host/mail/engine.js"), "utf8");
 assert.ok(engineSrc.includes('case "mail:scheduleSend"'));
@@ -974,7 +982,8 @@ const compose = loadFunctions(appJs, [
   "people",
   "readable",
   "addressRows",
-  "replyAddresses",
+  "replyParties",
+  "remoteVisible",
   "prefixedSubject",
   "quoteBlock",
   "replyBody",
@@ -1000,16 +1009,35 @@ assert.strictEqual(replyAll.title, "Reply All");
 assert.strictEqual(replyAll.aiWrite, true);
 assert.strictEqual(opensAiWrite(replyAll, { aiReply: true }), true);
 assert.strictEqual(opensAiWrite(reply, { aiReply: false }), false);
-assert.strictEqual(replyAll.to, "Charles Babbage <charles@example.com>, Mary Somerville <mary@example.com>");
-assert.ok(!replyAll.to.toLowerCase().includes(ada));
-assert.ok(!compose.replyAddresses(engineMail, "Ada Lovelace <ada.lovelace@example.com>", true).toLowerCase().includes(ada));
+assert.strictEqual(reply.cc, "");
+assert.strictEqual(replyAll.to, "Charles Babbage <charles@example.com>");
+assert.strictEqual(replyAll.cc, "Mary Somerville <mary@example.com>");
+assert.ok(!`${replyAll.to} ${replyAll.cc}`.toLowerCase().includes(ada));
+const namedReply = compose.replyParties(engineMail, "Ada Lovelace <ada.lovelace@example.com>", true);
+assert.ok(!`${namedReply.to} ${namedReply.cc}`.toLowerCase().includes(ada));
 const own = mailbox.answer("mail:openEmail", [{ emailId: "m-compiler-2" }]).data.email;
 assert.strictEqual(compose.composeSeed(own, "reply", ada).to, "Grace Hopper <grace.hopper@example.com>");
 assert.strictEqual(compose.composeSeed(own, "reply", ada).subject, "Re: A compiler is just another program");
-assert.strictEqual(
-  compose.replyAddresses(own, ada, true),
-  compose.replyAddresses(own, ada, false),
-);
+assert.deepStrictEqual(compose.replyParties(own, ada, true), compose.replyParties(own, ada, false));
+assert.deepStrictEqual(compose.replyParties(own, ada, false), {
+  to: "Grace Hopper <grace.hopper@example.com>",
+  cc: "",
+});
+const sentAll = compose.replyParties({
+  from: "Ada Lovelace <ada.lovelace@example.com>",
+  to: ["Grace Hopper <grace.hopper@example.com>", "Mary Somerville <mary@example.com>"],
+  cc: ["Charles Babbage <charles@example.com>", "Ada Lovelace <ada.lovelace@example.com>"],
+}, ada, true);
+assert.strictEqual(sentAll.to, "Grace Hopper <grace.hopper@example.com>, Mary Somerville <mary@example.com>");
+assert.strictEqual(sentAll.cc, "Charles Babbage <charles@example.com>");
+assert.strictEqual(compose.replyParties({
+  from: "Ada Lovelace <ada.lovelace@example.com>",
+  to: ["Grace Hopper <grace.hopper@example.com>", "Mary Somerville <mary@example.com>"],
+  cc: ["Charles Babbage <charles@example.com>"],
+}, ada, false).cc, "");
+assert.strictEqual(compose.remoteVisible(false, false), false);
+assert.strictEqual(compose.remoteVisible(false, true), true);
+assert.strictEqual(compose.remoteVisible(true, false), true);
 const compiler = mailbox.answer("mail:openEmail", [{ emailId: "m-compiler" }]).data.email;
 const forwarded = compose.composeSeed(compiler, "forward", ada);
 assert.strictEqual(forwarded.to, "");
@@ -1088,6 +1116,9 @@ assert.strictEqual(mailbox.answer("mail:scheduleSend", [{
   sendAt: future,
 }]).success, false);
 assert.ok(appJs.includes('readerButton("reply"') && appJs.includes('readerButton("reply-all"') && appJs.includes('readerButton("forward"'));
+assert.ok(appJs.includes("Load remote content") && appJs.includes("remote-gate"));
+assert.ok(html.includes('id="compose-cc"') && html.includes('id="compose-bcc"') && html.includes('class="compose-fields"'));
+assert.ok(css.includes(".icon-btn") && css.includes(".remote-gate") && css.includes(".compose-fields") && css.includes(".field-row"));
 assert.ok(appJs.includes("inReplyTo") && appJs.includes("threadId"));
 for (const channel of ["mail:reply", "mail:forward"]) {
   assert.ok(!appJs.includes(channel), `renderer invented ${channel}`);

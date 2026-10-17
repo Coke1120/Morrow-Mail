@@ -748,7 +748,9 @@ function answer(channel, args) {
       return ok({ emailId: "sent-local", messageId: "sent-local" });
     case "mail:scheduleSend": {
       const to = scheduleTo(params && params.to);
-      if (!to) return fail("invalid", "Add a recipient.");
+      const cc = scheduleTo(params && params.cc);
+      const bcc = scheduleTo(params && params.bcc);
+      if (!to && !cc && !bcc) return fail("invalid", "Add a recipient.");
       const when = Date.parse(params && params.sendAt);
       if (!Number.isFinite(when) || when <= Date.now() + 1000) {
         return fail("send_at_in_past", "Pick a time in the future.");
@@ -760,6 +762,8 @@ function answer(channel, args) {
         subject: params && params.subject ? String(params.subject).trim() : "",
         sendAt: new Date(when).toISOString(),
       };
+      if (cc) row.cc = cc;
+      if (bcc) row.bcc = bcc;
       scheduled.push(row);
       return ok(row);
     }

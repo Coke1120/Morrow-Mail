@@ -18,6 +18,7 @@ const state = {
   translate: null,
   draftWrite: null,
   suggestions: null,
+  remoteAllowed: {},
   prefs: {
     chips: true,
     aiReply: false,
@@ -769,27 +770,31 @@ function addressRows(value) {
   return rows;
 }
 
-// shortcut: Reply All puts every other recipient in To, upgrade when compose has a Cc field.
-function replyAddresses(email, self, all) {
+// shortcut: Reply puts the sender in To. Reply All keeps other To and Cc in Cc. Upgrade if Reply-To should replace From.
+function replyParties(email, self, all) {
   const mineRow = addressRows(self)[0];
   const mine = mineRow ? mineRow.addr : String(self || "").trim().toLowerCase();
   const seen = new Set();
-  const out = [];
-  const push = (row) => {
-    if (!row || seen.has(row.addr) || row.addr === mine) return;
-    seen.add(row.addr);
-    out.push(row.text);
+  const take = (value) => {
+    const out = [];
+    for (const row of addressRows(value)) {
+      if (!row || seen.has(row.addr) || row.addr === mine) continue;
+      seen.add(row.addr);
+      out.push(row.text);
+    }
+    return out;
   };
   const from = addressRows(email && email.from)[0];
-  const extras = addressRows(email && email.to).concat(addressRows(email && email.cc));
-  if (from) push(from);
-  if (all) {
-    for (const row of extras) push(row);
+  const fromOther = from && from.addr !== mine ? from : null;
+  if (fromOther) seen.add(fromOther.addr);
+  const toRows = take(email && email.to);
+  const ccRows = take(email && email.cc);
+  if (!all) {
+    if (fromOther) return { to: fromOther.text, cc: "" };
+    return { to: toRows.concat(ccRows).join(", "), cc: "" };
   }
-  if (!out.length) {
-    for (const row of extras) push(row);
-  }
-  return out.join(", ");
+  if (fromOther) return { to: fromOther.text, cc: toRows.concat(ccRows).join(", ") };
+  return { to: toRows.join(", "), cc: ccRows.join(", ") };
 }
 
 function prefixedSubject(subject, prefix) {
@@ -847,14 +852,17 @@ function composeSeed(email, kind, self) {
     return {
       title: "Forward",
       to: "",
+      cc: "",
       subject: prefixedSubject(message.subject, "Fwd:"),
       body: forwardBody(message),
     };
   }
   const all = kind === "all";
+  const parties = replyParties(message, self, all);
   const seed = {
     title: all ? "Reply All" : "Reply",
-    to: replyAddresses(message, self, all),
+    to: parties.to,
+    cc: parties.cc,
     subject: prefixedSubject(message.subject, "Re:"),
     body: replyBody(message),
     aiWrite: true,
@@ -1344,12 +1352,42 @@ function option(value, text) {
   return node;
 }
 
+const READER_ICON = {
+  reply: "M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z",
+  "reply-all": "M7 8V5l-7 7 7 7v-3l-4-4 4-4zm6 1V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z",
+  forward: "M14 9V5l7 7-7 7v-4.1c-5 0-8.5 1.6-11 5.1 1-5 4-10 11-11z",
+  star: "m12 3.2 2.47 5.01 5.53.8-4 3.9.94 5.5L12 15.9l-4.94 2.51.94-5.5-4-3.9 5.53-.8L12 3.2z",
+  archive: "M4 4h16v3H4V4zm1 5h14v10H5V9zm4 2v2h6v-2H9z",
+  trash: "M9 3h6l1 2h4v2H4V5h4l1-2zm-2 6h10l-.8 12H7.8L7 9zm3 2v8h2v-8H10zm4 0v8h2v-8h-2z",
+};
+
+function readerIcon(name) {
+  const d = READER_ICON[name];
+  if (!d) return null;
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "16");
+  svg.setAttribute("height", "16");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("fill", "currentColor");
+  path.setAttribute("d", d);
+  svg.appendChild(path);
+  return svg;
+}
+
 function readerButton(action, label, run) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "ghost";
+  button.className = "ghost icon-btn";
   button.dataset.action = action;
-  button.textContent = label;
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  const icon = readerIcon(action);
+  if (icon) button.appendChild(icon);
+  const text = document.createElement("span");
+  text.textContent = label;
+  button.appendChild(text);
   button.addEventListener("click", () => guard(run));
   return button;
 }
@@ -1357,25 +1395,10 @@ function readerButton(action, label, run) {
 function renderActions(pane, email) {
   const bar = document.createElement("div");
   bar.className = "reader-actions";
-  const star = document.createElement("button");
-  star.type = "button";
-  star.className = "ghost";
-  star.dataset.action = "star";
-  star.textContent = email.isStarred ? "Unstar" : "Star";
+  const star = readerButton("star", email.isStarred ? "Unstar" : "Star", () => toggleStar(email));
   star.setAttribute("aria-pressed", email.isStarred ? "true" : "false");
-  star.addEventListener("click", () => guard(() => toggleStar(email)));
-  const archive = document.createElement("button");
-  archive.type = "button";
-  archive.className = "ghost";
-  archive.dataset.action = "archive";
-  archive.textContent = "Archive";
-  archive.addEventListener("click", () => guard(() => archiveOpen(email)));
-  const trash = document.createElement("button");
-  trash.type = "button";
-  trash.className = "ghost";
-  trash.dataset.action = "trash";
-  trash.textContent = "Trash";
-  trash.addEventListener("click", () => guard(() => trashOpen(email)));
+  const archive = readerButton("archive", "Archive", () => archiveOpen(email));
+  const trash = readerButton("trash", "Trash", () => trashOpen(email));
   const move = document.createElement("select");
   move.dataset.action = "move";
   move.setAttribute("aria-label", "Move to folder");
@@ -1408,17 +1431,14 @@ function renderActions(pane, email) {
     });
   }
   const self = (account && (account.preferredFromAddress || account.email)) || "";
-  const replyTo = replyAddresses(email, self, false);
-  const everyone = replyAddresses(email, self, true);
   const reply = readerButton("reply", "Reply", () => openCompose(composeSeed(email, "reply", self)));
+  const replyAll = readerButton("reply-all", "Reply All", () => openCompose(composeSeed(email, "all", self)));
   const forward = readerButton("forward", "Forward", () => openCompose(composeSeed(email, "forward", self)));
-  if (everyone !== replyTo) {
-    const replyAll = readerButton("reply-all", "Reply All", () => openCompose(composeSeed(email, "all", self)));
-    bar.append(reply, replyAll, forward, star, archive, trash, move);
-  } else {
-    bar.append(reply, forward, star, archive, trash, move);
-  }
-  if (snooze) bar.append(snooze);
+  const menus = document.createElement("div");
+  menus.className = "reader-menus";
+  menus.append(move);
+  if (snooze) menus.append(snooze);
+  bar.append(reply, replyAll, forward, star, archive, trash, menus);
   appendLabelActions(bar, email);
   pane.appendChild(bar);
 }
@@ -1606,6 +1626,7 @@ function renderReader(focus) {
   renderThread(pane, email);
   renderAttachments(pane, email);
   renderTranslate(pane, email);
+  renderRemoteGate(pane, email);
   renderBody(pane, email);
   const translated = document.createElement("div");
   translated.className = "translation";
@@ -1628,7 +1649,8 @@ function renderBody(pane, email) {
     block.textContent = node.text;
     wrap.appendChild(block);
   }
-  if (state.prefs.images === true) {
+  const allowed = !!(email && state.remoteAllowed && state.remoteAllowed[email.id]);
+  if (remoteVisible(state.prefs.images, allowed)) {
     for (const image of remoteImageSrcs(email && email.htmlBody)) {
       const img = document.createElement("img");
       img.className = "remote";
@@ -1639,6 +1661,29 @@ function renderBody(pane, email) {
     }
   }
   pane.appendChild(wrap);
+}
+
+function renderRemoteGate(pane, email) {
+  const images = remoteImageSrcs(email && email.htmlBody);
+  const allowed = !!(email && state.remoteAllowed && state.remoteAllowed[email.id]);
+  if (!images.length || remoteVisible(state.prefs.images, allowed)) return;
+  const bar = document.createElement("div");
+  bar.className = "remote-gate";
+  const note = document.createElement("p");
+  note.textContent = images.length === 1
+    ? "1 remote image is blocked."
+    : `${images.length} remote images are blocked.`;
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost";
+  button.dataset.action = "remote";
+  button.textContent = "Load remote content";
+  button.addEventListener("click", () => {
+    state.remoteAllowed[email.id] = true;
+    renderReader(false);
+  });
+  bar.append(note, button);
+  pane.appendChild(bar);
 }
 
 function renderTranslate(pane, email) {
@@ -2317,6 +2362,10 @@ function composePayload(account) {
     draftId: state.draftId || undefined,
     emailId: state.draftId || undefined,
   };
+  const cc = $("compose-cc").value.trim();
+  const bcc = $("compose-bcc").value.trim();
+  if (cc) payload.cc = cc;
+  if (bcc) payload.bcc = bcc;
   if (meta.inReplyTo) payload.inReplyTo = meta.inReplyTo;
   if (meta.threadId) payload.threadId = meta.threadId;
   return payload;
@@ -2640,6 +2689,8 @@ async function openCompose(seed) {
   };
   $("compose-title").textContent = fields.title || "New message";
   $("compose-to").value = fields.to || "";
+  $("compose-cc").value = fields.cc || "";
+  $("compose-bcc").value = fields.bcc || "";
   $("compose-subject").value = fields.subject || "";
   $("compose-body").value = fields.body || "";
   $("ai-prompt").value = "";
@@ -2690,7 +2741,7 @@ async function loadScheduled() {
 async function scheduleMail() {
   const account = selectedAccount();
   if (!account) return;
-  if (!$("compose-to").value.trim()) {
+  if (!composeHasRecipient()) {
     showStatus("Add a recipient.", true);
     return;
   }
@@ -2742,7 +2793,7 @@ async function deliverMail(payload) {
 async function sendMail() {
   const account = selectedAccount();
   if (!isLive(account)) return;
-  if (!$("compose-to").value.trim()) {
+  if (!composeHasRecipient()) {
     showStatus("Add a recipient.", true);
     return;
   }
@@ -3017,7 +3068,15 @@ function shouldListThread(conversation, fromOpen, threadId) {
   return !!threadId;
 }
 
-// shortcut: CSP allows http/https images; the reader omits them when remote images is off. Upgrade when the document policy can change without a reload.
+function remoteVisible(auto, allowed) {
+  return auto === true || allowed === true;
+}
+
+function composeHasRecipient() {
+  return ["compose-to", "compose-cc", "compose-bcc"].some((id) => $(id).value.trim());
+}
+
+// shortcut: CSP allows http/https images. They stay out until this message is allowed or remote images is on.
 function remoteImageSrcs(html) {
   const srcs = [];
   const re = /<img\b([^>]*)>/gi;
