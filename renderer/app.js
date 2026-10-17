@@ -2887,6 +2887,86 @@ async function loadSettings() {
     status.textContent = error instanceof Error ? error.message : String(error);
     status.classList.add("error");
   }
+  loadAiSettings();
+}
+
+function setAiStatus(text, isError) {
+  const status = $("ai-status");
+  status.textContent = text || "";
+  status.classList.toggle("error", !!isError && !!text);
+}
+
+function aiKeyPlaceholder(cfg) {
+  if (cfg && cfg.hasKey) return "Saved " + (cfg.keyHint || "••••") + ". Leave blank to keep it.";
+  return "sk-…";
+}
+
+async function loadAiSettings() {
+  setAiStatus("", false);
+  $("ai-key").value = "";
+  $("ai-model-list").replaceChildren();
+  try {
+    const cfg = await api.invoke("host:aiGetConfig");
+    $("ai-base").value = cfg && cfg.baseUrl ? cfg.baseUrl : "";
+    $("ai-model").value = cfg && cfg.model ? cfg.model : "";
+    $("ai-key").placeholder = aiKeyPlaceholder(cfg);
+  } catch (error) {
+    setAiStatus(error instanceof Error ? error.message : String(error), true);
+  }
+}
+
+async function saveAiSettings() {
+  setAiStatus("Saving…", false);
+  try {
+    const saved = await api.invoke("host:aiSaveConfig", {
+      baseUrl: $("ai-base").value,
+      model: $("ai-model").value,
+      apiKey: $("ai-key").value,
+    });
+    $("ai-key").value = "";
+    $("ai-base").value = saved && saved.baseUrl ? saved.baseUrl : $("ai-base").value;
+    $("ai-model").value = saved && saved.model ? saved.model : $("ai-model").value;
+    $("ai-key").placeholder = aiKeyPlaceholder(saved);
+    setAiStatus("Saved.", false);
+  } catch (error) {
+    setAiStatus(error instanceof Error ? error.message : String(error), true);
+  }
+}
+
+async function fetchAiModels() {
+  setAiStatus("Fetching models…", false);
+  try {
+    const result = await api.invoke("host:aiListModels", {
+      baseUrl: $("ai-base").value,
+      apiKey: $("ai-key").value,
+    });
+    if (!result || result.ok !== true) {
+      setAiStatus((result && result.message) || "Could not list models.", true);
+      return;
+    }
+    const ids = Array.isArray(result.models) ? result.models : [];
+    const list = $("ai-model-list");
+    list.replaceChildren();
+    for (const id of ids) {
+      const option = document.createElement("option");
+      option.value = id;
+      list.appendChild(option);
+    }
+    setAiStatus(ids.length ? "Fetched " + ids.length + " models. Pick one or type an id." : "No models returned. Type a model id.", false);
+  } catch (error) {
+    setAiStatus(error instanceof Error ? error.message : String(error), true);
+  }
+}
+
+async function testAiConnection() {
+  setAiStatus("Contacting the model…", false);
+  try {
+    const result = await api.invoke("host:aiTest");
+    if (result && result.ok) setAiStatus("Connected. " + (result.preview || ""), false);
+    else setAiStatus((result && result.message) || "Connection failed.", true);
+  } catch (error) {
+    setAiStatus(error instanceof Error ? error.message : String(error), true);
+  }
 }
 
 async function savePref(row) {
@@ -4109,6 +4189,15 @@ function wire() {
   $("tidy").addEventListener("click", () => guard(tidyInbox));
   $("settings-open").addEventListener("click", openSettings);
   $("settings-close").addEventListener("click", () => closeDialog("settings"));
+  $("ai-save").addEventListener("click", () => {
+    saveAiSettings().catch((error) => setAiStatus(error instanceof Error ? error.message : String(error), true));
+  });
+  $("ai-fetch").addEventListener("click", () => {
+    fetchAiModels().catch((error) => setAiStatus(error instanceof Error ? error.message : String(error), true));
+  });
+  $("ai-test").addEventListener("click", () => {
+    testAiConnection().catch((error) => setAiStatus(error instanceof Error ? error.message : String(error), true));
+  });
   $("settings").addEventListener("close", () => {
     loadShellPrefs().then(() => {
       paintPrefs();

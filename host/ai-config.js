@@ -90,12 +90,19 @@ function completionsUrl(baseUrl) {
   return `${base}/chat/completions`;
 }
 
+function modelsUrl(baseUrl) {
+  const base = String(baseUrl || "").replace(/\/+$/, "");
+  if (/\/models$/.test(base)) return base;
+  return `${base}/models`;
+}
+
 module.exports = {
   DEFAULTS,
   loadConfig,
   publicConfig,
   saveConfig,
   completionsUrl,
+  modelsUrl,
   configPath,
   userDataDir,
 };

@@ -17,13 +17,13 @@
 - Stars or unstars the open message (`mail:toggleStar`)
 - Archives, trashes, or moves it (`mail:archive`, `mail:threadArchive`, `mail:delete`, `mail:threadTrash`, `mail:moveToFolder`) and can undo when the host returns `opIds` (`mail:undoRemoval`)
 - Snoozes a thread for 1 hour, tonight, or tomorrow morning, and unsnoozes it (`mail:snoozeThread`, `mail:unsnoozeThread`, `mail:listSnoozed`)
-- Translates the open message (`mail:translateStart`, `mail:translateCancel`, `mail:translate:event`). A missing API key is reported in the reading pane. The key itself is still set in AI Setup
+- Translates the open message (`mail:translateStart`, `mail:translateCancel`, `mail:translate:event`). A missing API key is reported in the reading pane. The key is set in Settings or GenMail → AI Setup
 - Inserts a host signature in compose (`mail:listSignatures`), or shows an empty state when the mailbox has none
 - Edits those signatures from the toolbar (`mail:upsertSignature`, `mail:deleteSignature`): name plus text or HTML, and an optional default. The sample list stays in memory. A connected IMAP account keeps an empty list and rejects writes
 - Drafts with AI from compose (`aiDraftWrite:start`, `aiDraftWrite:cancel`, `aiDraftWrite:event`) and lists reply suggestions on the open message (`aiDraftWrite:replySuggestions`). A missing API key is reported in place
 - Calendar (`calendar:list`, `calendar:createEvent`, `calendar:connect`) lists and creates events from Google Calendar or Microsoft Graph for the visible month. With no token, or when Google Desktop OAuth is not configured, the page says what is missing and does not draw events
 - Shows the app version and checks or installs updates (`app:getVersion`, `host:updateGetState`, `host:updateCheck`, `host:updateInstall`)
-- Edits theme, accent, conversation view, remote images, undo send, snooze, AI write on reply, folder chips, one-click tidy, and sidebar folder expansion (`config:setTheme`, `genmail:configSet*`). API keys stay in AI Setup
+- Edits theme, accent, conversation view, remote images, undo send, snooze, AI write on reply, folder chips, one-click tidy, and sidebar folder expansion (`config:setTheme`, `genmail:configSet*`). Base URL, model id, and API key are set in that same Settings dialog (`host:aiGetConfig`, `host:aiSaveConfig`, `host:aiListModels`, `host:aiTest`) and in GenMail → AI Setup. The key stays in local `ai.json`, not `settings.json`
 - Email Brain lists cached sections and writing rules (`emailBrain:getCached`). A user rule can be added, edited, or deleted. Refresh says it needs an AI key when the host returns `accepted: false`. Categories in that dialog load from `emailBrain:getCategories`, edit locally, and save with `emailBrain:saveCategories`. Add with AI needs an API key and shows the host error when the key is missing
 - Email Brain skills library lists home and library skills in that same dialog (`emailBrain:getSkills`, `emailBrain:getLibrarySkills`). Install and remove persist in the local brain store (`emailBrain:installSkill`, `emailBrain:removeSkill`). Running a skill (`emailBrain:runSkill`) calls the configured model with cached mailbox context. No API key or no mailbox returns `accepted: false`. Drafts open in compose for review. Organize moves wait for confirm
 - Agent is the rail tab and the toolbar Agent button. Triage (`nativeAgent:triage`) files recent inbox mail into Brain categories. Home and library skills use `nativeAgent:home:skills` and `nativeAgent:home:librarySkills`. Run history uses `nativeAgent:history`. Missing key, missing mailbox, and an empty cache stay empty of mail
@@ -41,4 +41,3 @@ Not in this slice, and not matching GenMail inside the Genspark launcher yet:
 - Visual gaps still listed in [PARITY_SHELL.md](PARITY_SHELL.md): category chips, toolbar mail actions, the mail-only rail, and the settings dialog
 - Host preferences still unread in [PARITY_SHELL.md](PARITY_SHELL.md)
 - Unattended skill schedules (skills run only when you ask)
-- Changing API keys from this window (AI Setup remains on the application menu)

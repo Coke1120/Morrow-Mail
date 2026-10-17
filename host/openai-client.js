@@ -1,4 +1,4 @@
-const { loadConfig, completionsUrl } = require("./ai-config");
+const { loadConfig, completionsUrl, modelsUrl } = require("./ai-config");
 
 function requireConfig() {
   const cfg = loadConfig();
@@ -128,6 +128,45 @@ async function stream(messages, onChunk, options = {}) {
   }
 }
 
+function modelIds(payload) {
+  const rows = payload && Array.isArray(payload.data) ? payload.data : [];
+  const ids = [];
+  for (const row of rows) {
+    const id = row && typeof row.id === "string" ? row.id.trim() : "";
+    if (!id || ids.includes(id)) continue;
+    ids.push(id);
+  }
+  return ids;
+}
+
+async function listModels(input) {
+  const saved = loadConfig();
+  const draft = input && typeof input === "object" ? input : {};
+  const baseUrl = typeof draft.baseUrl === "string" && draft.baseUrl.trim()
+    ? draft.baseUrl.trim()
+    : saved.baseUrl;
+  const apiKey = typeof draft.apiKey === "string" && draft.apiKey.trim()
+    ? draft.apiKey.trim()
+    : saved.apiKey;
+  if (!apiKey) return { ok: false, message: "Add an API key in GenMail → AI Setup." };
+  if (!baseUrl) return { ok: false, message: "Base URL is required" };
+  let response;
+  try {
+    response = await fetch(modelsUrl(baseUrl), {
+      method: "GET",
+      headers: { authorization: `Bearer ${apiKey}` },
+    });
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
+  if (!response.ok) return { ok: false, message: await readError(response) };
+  try {
+    return { ok: true, models: modelIds(await response.json()) };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function extractJson(text) {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const raw = fenced ? fenced[1] : text;
@@ -144,4 +183,4 @@ function extractJson(text) {
   return JSON.parse(raw.slice(start, end + 1));
 }
 
-module.exports = { complete, stream, extractJson, requireConfig };
+module.exports = { complete, stream, extractJson, requireConfig, listModels, modelIds };

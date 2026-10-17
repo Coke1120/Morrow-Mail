@@ -259,9 +259,17 @@ textarea:focus-visible {
 
 #prefs label.check { margin: 8px 0; }
 
-#settings-status:empty { display: none; }
+#settings-status:empty,
+#ai-status:empty { display: none; }
+
+#ai-fields {
+  margin-top: 16px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
 
 #settings-status.error,
+#ai-status.error,
 #status.error,
 #brain-status.error,
 #brain-category-status.error,

@@ -308,7 +308,23 @@
         <label class="check" for="pref-outlook-folders"><input id="pref-outlook-folders" type="checkbox" /> Outlook folders expanded</label>
         <p id="settings-status" role="status"></p>
       </div>
-      <p class="hint">API keys stay in AI Setup, on the GenMail menu. These preferences are saved on this computer.</p>
+      <div id="ai-fields">
+        <h3>AI</h3>
+        <label for="ai-base">Base URL</label>
+        <input id="ai-base" type="text" spellcheck="false" autocomplete="off" />
+        <label for="ai-model">Model id</label>
+        <input id="ai-model" type="text" list="ai-model-list" spellcheck="false" autocomplete="off" />
+        <datalist id="ai-model-list"></datalist>
+        <label for="ai-key">API key</label>
+        <input id="ai-key" type="password" spellcheck="false" autocomplete="off" />
+        <div class="row">
+          <button type="button" class="primary" id="ai-save">Save AI</button>
+          <button type="button" class="ghost" id="ai-fetch">Fetch models</button>
+          <button type="button" class="ghost" id="ai-test">Test connection</button>
+        </div>
+        <p id="ai-status" role="status"></p>
+      </div>
+      <p class="hint">The API key stays in local AI config, the same store as GenMail → AI Setup. Leave the key blank to keep the saved one. Fetch models uses this form, or the saved key when the box is blank. Test connection uses the saved config — Save AI first if you changed these fields. Preferences are saved on this computer.</p>
       <div class="row">
         <button type="button" class="ghost" id="settings-close">Close</button>
       </div>

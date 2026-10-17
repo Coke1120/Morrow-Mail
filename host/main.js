@@ -4,8 +4,10 @@ const os = require("os");
 const path = require("path");
 const { openAsar, readFile } = require("./asar");
 const { createIpc } = require("./ipc");
-const { publicConfig, saveConfig, completionsUrl, DEFAULTS } = require("./ai-config");
-const { complete, extractJson } = require("./openai-client");
+const { publicConfig, saveConfig, completionsUrl, modelsUrl, DEFAULTS } = require("./ai-config");
+const { complete, extractJson, modelIds, listModels } = require("./openai-client");
+
+const AI_CHANNELS = ["host:aiGetConfig", "host:aiSaveConfig", "host:aiTest", "host:aiListModels"];
 const { init: initMail, startBackgroundSync } = require("./mail/engine");
 const { answer: brainAnswer } = require("./brain");
 const { answer: draftAnswer, escapeHtml } = require("./draft-write");
@@ -113,8 +115,8 @@ function attachIpc(preloadFile) {
     channels.add(match[1]);
   }
   fs.appendFileSync(LOG, `# channels ${channels.size}\n`);
-  // updater.registerIpc already owns these. A second ipcMain.handle throws.
-  const directHost = new Set(updater.CHANNELS);
+  // registerHostAi and updater.registerIpc already own these. A second ipcMain.handle throws.
+  const directHost = new Set([...updater.CHANNELS, ...AI_CHANNELS]);
   for (const channel of channels) {
     if (directHost.has(channel)) continue;
     ipcMain.handle(channel, (event, ...args) => bus.handle(event, channel, ...args));
@@ -193,6 +195,7 @@ function registerHostAi() {
       return { ok: false, message: error instanceof Error ? error.message : String(error) };
     }
   });
+  ipcMain.handle("host:aiListModels", (_event, input) => listModels(input));
 }
 
 function runAiSelfTest() {
@@ -226,6 +229,12 @@ function runAiSelfTest() {
   if (completionsUrl("https://example.com/v1/chat/completions") !== "https://example.com/v1/chat/completions") {
     problems.push("completions url already complete");
   }
+  if (modelsUrl("https://api.x.ai/v1/") !== "https://api.x.ai/v1/models") problems.push("models url");
+  if (modelsUrl("https://example.com/v1/models") !== "https://example.com/v1/models") {
+    problems.push("models url already complete");
+  }
+  const ids = modelIds({ data: [{ id: "grok-4.7" }, { id: " grok-4 " }, { id: "grok-4.7" }, { id: "" }] });
+  if (!ids || ids.join(",") !== "grok-4.7,grok-4") problems.push("model ids");
   if (escapeHtml("<b>") !== "&lt;b&gt;") problems.push("escapeHtml");
   const labels = [];
   const menu = Menu.getApplicationMenu();

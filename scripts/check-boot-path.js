@@ -678,8 +678,17 @@ for (const [id, getChannel, setChannel, kind] of prefs) {
 assert.ok(prefKinds.has("select") && prefKinds.has("text") && prefKinds.has("bool") && prefKinds.has("seconds"));
 const settingsHtml = html.slice(html.indexOf('id="settings"'), html.indexOf("</dialog>", html.indexOf('id="settings"')));
 assert.ok(settingsHtml.includes("<select") && settingsHtml.includes('type="checkbox"') && settingsHtml.includes('type="number"'));
-assert.ok(!appJs.includes("host:aiSaveConfig"));
-assert.ok(!preload.includes("host:aiSaveConfig"));
+assert.ok(settingsHtml.includes('id="ai-base"') && settingsHtml.includes('id="ai-model"') && settingsHtml.includes('id="ai-key"'));
+assert.ok(settingsHtml.includes('type="password"') && settingsHtml.includes('list="ai-model-list"'));
+assert.ok(settingsHtml.includes("Save AI") && settingsHtml.includes("Fetch models") && settingsHtml.includes("Test connection"));
+assert.ok(settingsHtml.includes("saved config"));
+for (const channel of ["host:aiGetConfig", "host:aiSaveConfig", "host:aiTest", "host:aiListModels"]) {
+  assert.ok(appJs.includes('"' + channel + '"'), channel);
+  assert.ok(registered.has(channel), `preload does not register ${channel}`);
+  assert.ok(main.split('"' + channel + '"').length - 1 >= 2, channel + " must be listed and handled");
+}
+assert.ok(main.includes("[...updater.CHANNELS, ...AI_CHANNELS]"));
+assert.ok(!settingsSrc.includes("apiKey"));
 const settingsCall = ipcSrc.indexOf("settingsAnswer(channel, args)");
 const overrideCall = ipcSrc.indexOf("hasOwnProperty.call(OVERRIDES, channel)");
 assert.ok(ipcSrc.includes('require("./settings")'));
@@ -2400,9 +2409,97 @@ function checkGoogleOauthAlias() {
   }
 }
 
+async function checkAiModels() {
+  const os = require("os");
+  const { modelsUrl, publicConfig, saveConfig, configPath } = require("../host/ai-config");
+  const { modelIds, listModels } = require("../host/openai-client");
+  assert.strictEqual(modelsUrl("https://api.x.ai/v1/"), "https://api.x.ai/v1/models");
+  assert.strictEqual(modelsUrl("https://api.x.ai/v1"), "https://api.x.ai/v1/models");
+  assert.strictEqual(modelsUrl("https://example.com/v1/models"), "https://example.com/v1/models");
+  assert.deepStrictEqual(
+    modelIds({ data: [{ id: "grok-4.7" }, { id: " grok-4 " }, { id: "grok-4.7" }, {}, { id: "" }] }),
+    ["grok-4.7", "grok-4"],
+  );
+  assert.deepStrictEqual(modelIds(null), []);
+  const keys = ["GENMAIL_AI_CONFIG_DIR", "GENMAIL_AI_API_KEY", "GENMAIL_AI_BASE_URL", "GENMAIL_AI_MODEL", "XAI_API_KEY"];
+  const prev = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "genmail-ai-"));
+  const originalFetch = global.fetch;
+  try {
+    process.env.GENMAIL_AI_CONFIG_DIR = dir;
+    for (const key of keys.slice(1)) delete process.env[key];
+    const empty = publicConfig();
+    assert.strictEqual(empty.hasKey, false);
+    assert.strictEqual(empty.keyHint, "");
+    assert.ok(!Object.prototype.hasOwnProperty.call(empty, "apiKey"));
+    const missing = await listModels({ baseUrl: "https://api.x.ai/v1", apiKey: "" });
+    assert.deepStrictEqual(missing, { ok: false, message: "Add an API key in GenMail → AI Setup." });
+    let seen = null;
+    global.fetch = async (url, opts) => {
+      seen = { url, auth: opts.headers.authorization };
+      return {
+        ok: true,
+        async json() {
+          return { data: [{ id: "grok-4.7" }, { id: "grok-4.7" }] };
+        },
+      };
+    };
+    const drafted = await listModels({ baseUrl: "https://api.x.ai/v1/", apiKey: "sk-draft-key" });
+    assert.deepStrictEqual(drafted, { ok: true, models: ["grok-4.7"] });
+    assert.strictEqual(seen.url, "https://api.x.ai/v1/models");
+    assert.strictEqual(seen.auth, "Bearer sk-draft-key");
+    assert.ok(!JSON.stringify(drafted).includes("sk-draft"));
+    const saved = saveConfig({ baseUrl: "https://example.test/v1/", model: "demo-model", apiKey: "sk-file-key" });
+    assert.strictEqual(saved.baseUrl, "https://example.test/v1/");
+    assert.strictEqual(saved.model, "demo-model");
+    assert.strictEqual(saved.hasKey, true);
+    assert.strictEqual(saved.keyHint, "••••-key");
+    assert.ok(!Object.prototype.hasOwnProperty.call(saved, "apiKey"));
+    assert.strictEqual(JSON.parse(fs.readFileSync(configPath(), "utf8")).apiKey, "sk-file-key");
+    assert.strictEqual(fs.existsSync(path.join(dir, "settings.json")), false);
+    const kept = saveConfig({ baseUrl: "https://example.test/v1", model: "demo-model", apiKey: "  " });
+    assert.strictEqual(JSON.parse(fs.readFileSync(configPath(), "utf8")).apiKey, "sk-file-key");
+    assert.strictEqual(kept.keyHint, "••••-key");
+    global.fetch = async (url, opts) => {
+      seen = { url, auth: opts.headers.authorization };
+      return { ok: false, status: 401, async text() { return "bad key"; } };
+    };
+    const failed = await listModels({ baseUrl: "", apiKey: "" });
+    assert.strictEqual(failed.ok, false);
+    assert.match(failed.message, /bad key/);
+    assert.ok(!Object.prototype.hasOwnProperty.call(failed, "models"));
+    assert.strictEqual(seen.auth, "Bearer sk-file-key");
+    assert.strictEqual(seen.url, "https://example.test/v1/models");
+    process.env.GENMAIL_AI_API_KEY = "sk-env-override-zz";
+    const hinted = publicConfig();
+    assert.strictEqual(hinted.hasKey, true);
+    assert.strictEqual(hinted.keyHint, "••••e-zz");
+    assert.ok(!JSON.stringify(hinted).includes("sk-env"));
+    assert.ok(!JSON.stringify(hinted).includes("sk-file"));
+    global.fetch = async (_url, opts) => {
+      seen = { auth: opts.headers.authorization };
+      return { ok: true, async json() { return { data: [] }; } };
+    };
+    const fromEnv = await listModels({});
+    assert.deepStrictEqual(fromEnv, { ok: true, models: [] });
+    assert.strictEqual(seen.auth, "Bearer sk-env-override-zz");
+    global.fetch = async () => { throw new Error("offline"); };
+    const offline = await listModels({ apiKey: "sk-draft-key", baseUrl: "https://api.x.ai/v1" });
+    assert.strictEqual(offline.ok, false);
+    assert.match(offline.message, /offline/);
+    assert.ok(!JSON.stringify(offline).includes("sk-draft"));
+  } finally {
+    global.fetch = originalFetch;
+    for (const key of keys) {
+      if (prev[key] === undefined) delete process.env[key];
+      else process.env[key] = prev[key];
+    }
+  }
+}
+
 checkGoogleOauthAlias();
 
-checkAiDraft().then(() => checkTidy()).then(() => checkProviderApi()).then(() => {
+checkAiDraft().then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkAiModels()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);
