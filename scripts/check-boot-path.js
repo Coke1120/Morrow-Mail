@@ -21,6 +21,7 @@ const syntax = [
   "host/agent.js",
   "renderer/preload.js",
   "renderer/app.js",
+  "renderer/motion-ui.js",
 ];
 for (const file of syntax) {
   const result = spawnSync(process.execPath, ["--check", path.join(root, file)], { stdio: "inherit" });
@@ -161,6 +162,15 @@ assert.ok(appJs.includes("applyShellTheme(document.documentElement"), "shell doe
 assert.ok(css.includes(".thread") && css.includes(".attachments"), "shell css missing thread or attachment styles");
 const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
 assert.ok(html.includes('id="search-query"'), "toolbar has no search box");
+assert.ok(html.includes('src="./motion.bundle.js"'), "renderer does not load the Motion bundle");
+assert.ok(pkg.dependencies && pkg.dependencies.motion, "motion is not a dependency");
+const motionSrc = fs.readFileSync(path.join(root, "renderer/motion-ui.js"), "utf8");
+assert.ok(motionSrc.includes('from "motion"'), "Motion UI does not import motion");
+assert.ok(motionSrc.includes("prefers-reduced-motion: reduce"), "Motion UI ignores reduced motion");
+assert.ok(fs.existsSync(path.join(root, "renderer/motion.bundle.js")), "Motion bundle was not built");
+assert.ok(fs.readFileSync(path.join(root, "renderer/motion.bundle.js"), "utf8").includes("genmailMotion"), "Motion bundle missing genmailMotion");
+assert.ok(appJs.includes("genmailMotion") && appJs.includes("wantsCloseMotion"), "shell does not call Motion");
+assert.ok(css.includes("margin: 0 auto"), "dialog is not centered without a transform");
 
 const threadMembers = extractFunction(appJs, "threadMembers");
 assert.deepStrictEqual(threadMembers([{ id: "a" }, { id: "b" }], [{ id: "c" }]).map((row) => row.id), ["a", "b"]);

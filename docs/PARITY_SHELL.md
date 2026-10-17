@@ -10,6 +10,7 @@ First-party `renderer/` chrome for the three-pane mail shell. Layout follows the
 - An empty reading pane shows an envelope and “No conversation selected”.
 - Settings, Brain, Studio, Compose, Connect, and Signatures share that font, paper surface, 16px radius, and accent primary buttons.
 - `data-theme="dark"` switches the canvas to `#141414` and the cards to `#1f1f1f`. The saved accent sets `--accent` on unread text, the unread dot, stars, focus, and dialog primary buttons. The plum chrome stays put.
+- Motion fades the first screen of message rows, the mail, calendar, and agent panels, and open dialogs. New Mail, the rail, and dialog primary buttons scale slightly on hover and press. `prefers-reduced-motion: reduce` skips that motion. Row height stays 68px.
 
 `shortcut: accent does not reskin the chrome into the other GenMail skins, upgrade when a skin map is worth it.`
 

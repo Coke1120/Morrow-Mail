@@ -983,12 +983,13 @@ dialog {
   position: fixed;
   inset: auto;
   top: 8vh;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
+  right: 0;
   width: min(520px, calc(100vw - 24px));
   height: auto;
   max-height: calc(100vh - 32px);
-  margin: 0;
+  /* Auto margins center the dialog so Motion can animate transform. */
+  margin: 0 auto;
   overflow: auto;
   border: 0;
   border-radius: 16px;

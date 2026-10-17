@@ -66,6 +66,7 @@ let brainSkillBusy = false;
 let brainCategoriesReady = false;
 let calendarGen = 0;
 let agentGen = 0;
+let listMotionKey = "";
 let brainView = {
   accepted: null,
   refreshing: false,
@@ -309,14 +310,58 @@ async function guard(fn) {
   }
 }
 
+function motionApi() {
+  const motion = window.genmailMotion;
+  return motion && typeof motion.rows === "function" ? motion : null;
+}
+
+function hidePane(id) {
+  const el = $(id);
+  el.hidden = true;
+  if (el.getAnimations) {
+    for (const animation of el.getAnimations()) animation.cancel();
+  }
+  el.style.opacity = "";
+  el.style.transform = "";
+  el.style.transformOrigin = "";
+}
+
+function revealPanel(id) {
+  const el = $(id);
+  const motion = motionApi();
+  if (motion) motion.prepare(el);
+  el.hidden = false;
+  if (motion) motion.enter(el);
+}
+
 function openDialog(id) {
   const dialog = $(id);
-  if (!dialog.open) dialog.showModal();
+  if (!dialog || dialog.open) return;
+  const motion = motionApi();
+  if (motion) motion.prepare(dialog);
+  dialog.showModal();
+  if (motion) motion.dialogIn(dialog);
 }
 
 function closeDialog(id) {
   const dialog = $(id);
-  if (dialog.open) dialog.close();
+  if (!dialog || !dialog.open || dialog.dataset.closing === "1") return;
+  const motion = motionApi();
+  if (!motion || !motion.wantsCloseMotion()) {
+    dialog.close();
+    return;
+  }
+  dialog.dataset.closing = "1";
+  motion.dialogOut(dialog).then(() => {
+    if (dialog.open) dialog.close();
+    if (dialog.getAnimations) {
+      for (const animation of dialog.getAnimations()) animation.cancel();
+    }
+    dialog.style.opacity = "";
+    dialog.style.transform = "";
+    dialog.style.transformOrigin = "";
+    delete dialog.dataset.closing;
+  });
 }
 
 function toHtml(text) {
@@ -1039,8 +1084,7 @@ function renderList() {
     empty.className = "empty";
     empty.textContent = state.query ? "No messages match that search." : "No messages in this folder.";
     list.appendChild(empty);
-    return;
-  }
+  } else {
   for (const email of state.emails) {
     const button = document.createElement("button");
     button.type = "button";
@@ -1105,6 +1149,18 @@ function renderList() {
       openMessage(email.id).catch((error) => showStatus(error.message, true));
     });
     list.appendChild(button);
+  }
+  }
+  const motionKey = [
+    state.accountId || "",
+    state.folderId || "",
+    state.query,
+    state.emails.map((email) => (email && email.id) || "").join("\n"),
+  ].join("\0");
+  if (motionKey !== listMotionKey) {
+    listMotionKey = motionKey;
+    const motion = motionApi();
+    if (motion) motion.rows(list.querySelectorAll("button.message"));
   }
   const current = list.querySelector('[aria-current="true"]');
   if (current) current.scrollIntoView({ block: "nearest" });
@@ -3950,10 +4006,12 @@ async function runTriage() {
 }
 
 function showAgent() {
+  const swap = state.view !== "agent";
   state.view = "agent";
-  $("shell").hidden = true;
-  $("calendar-panel").hidden = true;
-  $("agent-panel").hidden = false;
+  hidePane("shell");
+  hidePane("calendar-panel");
+  if (swap) revealPanel("agent-panel");
+  else $("agent-panel").hidden = false;
   $("rail-mail").setAttribute("aria-current", "false");
   $("rail-calendar").setAttribute("aria-current", "false");
   $("rail-agent").setAttribute("aria-current", "page");
@@ -4080,21 +4138,25 @@ async function loadCalendar() {
 }
 
 function showMail() {
+  const swap = state.view !== "mail";
   state.view = "mail";
-  $("calendar-panel").hidden = true;
-  $("agent-panel").hidden = true;
-  $("shell").hidden = false;
+  hidePane("calendar-panel");
+  hidePane("agent-panel");
+  if (swap) revealPanel("shell");
+  else $("shell").hidden = false;
   $("rail-mail").setAttribute("aria-current", "page");
   $("rail-calendar").setAttribute("aria-current", "false");
   $("rail-agent").setAttribute("aria-current", "false");
 }
 
 function showCalendar() {
+  const swap = state.view !== "calendar";
   state.view = "calendar";
   if (!state.calendarCursor) state.calendarCursor = new Date();
-  $("shell").hidden = true;
-  $("agent-panel").hidden = true;
-  $("calendar-panel").hidden = false;
+  hidePane("shell");
+  hidePane("agent-panel");
+  if (swap) revealPanel("calendar-panel");
+  else $("calendar-panel").hidden = false;
   $("rail-mail").setAttribute("aria-current", "false");
   $("rail-agent").setAttribute("aria-current", "false");
   $("rail-calendar").setAttribute("aria-current", "page");
@@ -4146,6 +4208,16 @@ async function loadOauthStatus() {
 
 function wire() {
   document.addEventListener("keydown", onShellKey);
+  const motion = motionApi();
+  if (motion) motion.bindChrome(document);
+  for (const dialog of document.querySelectorAll("dialog")) {
+    dialog.addEventListener("cancel", (event) => {
+      const apiMotion = motionApi();
+      if (!apiMotion || !apiMotion.wantsCloseMotion()) return;
+      event.preventDefault();
+      closeDialog(dialog.id);
+    });
+  }
   $("rail-mail").addEventListener("click", () => {
     showMail();
     const row = $("messages").querySelector(".message");
