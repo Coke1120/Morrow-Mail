@@ -17,6 +17,7 @@ Secrets: macOS Keychain / Windows DPAPI (`genmail-exact` service), or env `GENMA
 
 ## Status
 
+- Project skills for Cursor and Cloud Agents: `.agents/skills/`
 - Host: IMAP engine + AI + bundled first-party UI (`GENMAIL_ASAR` optional)
 - Agent triage and Email Brain skills: [docs/BRAIN_AGENT.md](docs/BRAIN_AGENT.md)
 - Packaging: electron-builder + electron-updater (unsigned alpha). Windows feed: Actions → **release** → Run workflow ([docs/PACKAGING.md](docs/PACKAGING.md))
