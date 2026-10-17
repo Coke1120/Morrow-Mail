@@ -55,6 +55,7 @@ let brainCategories = [];
 let brainCategoryDefaults = [];
 let brainCategoryIndex = -1;
 let brainCategoryGen = 0;
+let brainSkillBusy = false;
 let brainCategoriesReady = false;
 let brainView = {
   accepted: null,
@@ -1937,6 +1938,9 @@ async function openCompose(seed) {
   const openWrite = opensAiWrite(fields, state.prefs);
   if (write) write.classList.toggle("open", openWrite);
   if (openWrite) {
+    const body = $("compose-body");
+    body.setSelectionRange(0, 0);
+    body.scrollTop = 0;
     $("ai-prompt").focus();
     return;
   }
@@ -1944,6 +1948,7 @@ async function openCompose(seed) {
     const body = $("compose-body");
     body.focus();
     body.setSelectionRange(0, 0);
+    body.scrollTop = 0;
   } else {
     $("compose-to").focus();
   }
@@ -2945,6 +2950,20 @@ function brainSkillLists() {
   ];
 }
 
+function skillIdOf(row) {
+  if (!row || typeof row !== "object" || Array.isArray(row)) return "";
+  return String(row.id || "").trim();
+}
+
+function skillResultMessage(data) {
+  if (!data || data.accepted === false) {
+    const err = data && data.error;
+    return { text: String(err || "That skill did not run."), error: true };
+  }
+  const text = String(data.text || "").trim();
+  return { text: text || "Done.", error: false };
+}
+
 function paintBrainSkills(lists, errorText) {
   const status = $("brain-skill-status");
   status.textContent = errorText || "";
@@ -2962,11 +2981,69 @@ function paintBrainSkills(lists, errorText) {
       continue;
     }
     for (const row of rows) {
-      const line = document.createElement("p");
-      line.className = "brain-skill";
-      line.textContent = skillLine(row) || "Skill";
-      root.appendChild(line);
+      const label = skillLine(row) || "Skill";
+      const skillId = skillIdOf(row);
+      if (!skillId) {
+        const line = document.createElement("p");
+        line.className = "brain-skill";
+        line.textContent = label;
+        root.appendChild(line);
+        continue;
+      }
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "ghost brain-skill";
+      button.textContent = label;
+      button.addEventListener("click", () => {
+        runBrainSkill(row).catch((error) => {
+          const status = $("brain-skill-status");
+          status.textContent = error instanceof Error ? error.message : String(error);
+          status.classList.add("error");
+        });
+      });
+      root.appendChild(button);
     }
+  }
+}
+
+async function runBrainSkill(row) {
+  const status = $("brain-skill-status");
+  const skillId = skillIdOf(row);
+  if (!skillId) {
+    status.textContent = "That skill has no id.";
+    status.classList.add("error");
+    return;
+  }
+  if (brainSkillBusy) return;
+  brainSkillBusy = true;
+  status.classList.remove("error");
+  status.textContent = "Running…";
+  try {
+    const email = state.email;
+    const account = email
+      ? (state.accounts.find((item) => item.id === email.accountId) || selectedAccount())
+      : selectedAccount();
+    const payload = { skillId };
+    if (account && account.id) payload.accountId = account.id;
+    if (email) {
+      payload.email = {
+        subject: email.subject || "",
+        from: email.from || "",
+        snippet: email.snippet || "",
+      };
+    }
+    const data = await call("emailBrain:runSkill", payload);
+    const message = skillResultMessage(data);
+    status.textContent = message.text;
+    status.classList.toggle("error", message.error);
+    if (message.error || !data || data.draft !== true || !email) return;
+    const self = (account && (account.preferredFromAddress || account.email)) || "";
+    await openCompose(withSuggestion(composeSeed(email, "reply", self), data.text));
+  } catch (error) {
+    status.textContent = error instanceof Error ? error.message : String(error);
+    status.classList.add("error");
+  } finally {
+    brainSkillBusy = false;
   }
 }
 

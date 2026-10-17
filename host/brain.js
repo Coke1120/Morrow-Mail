@@ -206,6 +206,58 @@ async function rebuildFromMail() {
   }
 }
 
+function liveMailbox() {
+  try {
+    return require("./mail/db").hasAccounts() === true;
+  } catch {
+    return false;
+  }
+}
+
+function skillById(skillId) {
+  return HOME_SKILLS.find((row) => row.id === skillId) || LIBRARY_SKILLS.find((row) => row.id === skillId) || null;
+}
+
+function toneText(email) {
+  const subject = email && typeof email.subject === "string" ? email.subject.trim() : "";
+  const from = email && typeof email.from === "string" ? email.from.trim() : "";
+  const who = from.replace(/<[^>]*>/g, "").trim();
+  const hello = who ? `Hi ${who} - ` : "";
+  if (subject) return `${hello}Thanks for "${subject}". I'll keep this short.`;
+  return `${hello}Thanks - I'll keep this short.`;
+}
+
+function sortText() {
+  const names = readStore().categories.map((row) => String(row.name || "").trim()).filter(Boolean);
+  return names.length ? `New mail filed under ${names.join(", ")}.` : "New mail is filed. No categories are set.";
+}
+
+function digestText(heading) {
+  const lines = messagesForAi(3).map((row) => `- ${String((row && row.subject) || "").trim() || "(no subject)"}`);
+  if (!lines.length) lines.push("- Nothing new.");
+  return `${heading}\n${lines.join("\n")}`;
+}
+
+// shortcut: canned sample text, upgrade when a live skill runner exists
+function runSkill(params) {
+  const skillId = params && typeof params.skillId === "string" ? params.skillId.trim() : "";
+  if (!skillId) return fail(new Error("A skill id is required."));
+  if (!skillById(skillId)) return fail(new Error("That skill is not on this host."));
+  if (liveMailbox()) {
+    const error = loadConfig().apiKey
+      ? "This host does not run skills on a connected mailbox."
+      : "Add an API key in GenMail → AI Setup.";
+    return ok({ accepted: false, skillId, error });
+  }
+  const email = params && params.email;
+  let text = "";
+  if (skillId === "skill-tone") text = toneText(email);
+  else if (skillId === "skill-sort") text = sortText();
+  else if (skillId === "lib-follow-up") text = digestText("Still waiting");
+  else if (skillId === "lib-digest") text = digestText("Overnight");
+  return ok({ accepted: true, skillId, draft: skillId === "skill-tone", text });
+}
+
 function answer(channel, args) {
   const params = args && args.length ? args[0] : undefined;
   switch (channel) {
@@ -292,6 +344,8 @@ function answer(channel, args) {
       return ok(HOME_SKILLS);
     case "emailBrain:getLibrarySkills":
       return ok(LIBRARY_SKILLS);
+    case "emailBrain:runSkill":
+      return runSkill(params);
     case "emailBrain:getAiDraftEditLog":
       return ok({ entries: [] });
     case "emailBrain:recordAiDraftEdit":

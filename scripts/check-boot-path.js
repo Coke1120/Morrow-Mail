@@ -1077,6 +1077,8 @@ const brainUi = loadFunctions(appJs, [
   "categoryFromCommand",
   "defaultCategoryHint",
   "brainSkillLists",
+  "skillIdOf",
+  "skillResultMessage",
 ]);
 assert.deepStrictEqual(brainUi.brainSections(null), []);
 assert.deepStrictEqual(brainUi.brainSections({ persona: {} }), []);
@@ -1142,6 +1144,7 @@ for (const channel of [
   "emailBrain:addCategoryViaPrompt",
   "emailBrain:getSkills",
   "emailBrain:getLibrarySkills",
+  "emailBrain:runSkill",
   "emailBrain:updated",
   "emailBrain:refreshState",
   "emailBrain:rebuildState",
@@ -1162,6 +1165,16 @@ assert.deepStrictEqual(brainUi.brainSkillLists().map((row) => row[2]), [
   "No home skills.",
   "No library skills.",
 ]);
+assert.strictEqual(brainUi.skillIdOf({ id: " skill-tone " }), "skill-tone");
+assert.strictEqual(brainUi.skillIdOf("Match my tone"), "");
+assert.strictEqual(brainUi.skillIdOf(null), "");
+assert.deepStrictEqual(brainUi.skillResultMessage({ accepted: true, text: " Hi " }), { text: "Hi", error: false });
+assert.deepStrictEqual(
+  brainUi.skillResultMessage({ accepted: false, error: "Add an API key in GenMail → AI Setup." }),
+  { text: "Add an API key in GenMail → AI Setup.", error: true },
+);
+assert.strictEqual(brainUi.skillResultMessage(null).error, true);
+assert.strictEqual(brainUi.skillResultMessage({ accepted: true, text: "  " }).text, "Done.");
 assert.ok(html.includes("Categories") && html.includes("Collapse view") && html.includes("Save categories") && html.includes("Use defaults"));
 assert.ok(appJs.includes("No writing rules yet.") && appJs.includes("Needs an AI key."));
 assert.ok(appJs.includes("No categories.") && appJs.includes("A category needs a name.") && appJs.includes("Describe a category."));
@@ -1207,6 +1220,7 @@ assert.ok(parity.includes("emailBrain:getCached") && parity.includes("emailBrain
 assert.ok(parity.includes("emailBrain:getCategories") && parity.includes("emailBrain:saveCategories") && parity.includes("emailBrain:addCategoryViaPrompt"));
 assert.ok(parity.includes("nativeAgent:home:skills") && parity.includes("nativeAgent:home:librarySkills"));
 assert.ok(parity.includes("emailBrain:getSkills") && parity.includes("emailBrain:getLibrarySkills"));
+assert.ok(parity.includes("emailBrain:runSkill"));
 assert.ok(parity.includes("calendar") && parity.includes("full agent skill runner"));
 assert.ok(parity.includes("genmail:configSetAiWriteAutoOpenOnReply") && parity.includes("genmail:configSetShowFolderChips"));
 assert.ok(parity.includes("genmail:configSetShowOneClickTidy") && parity.includes("genmail:configSetSidebarGmailFoldersExpanded"));
@@ -1295,6 +1309,46 @@ async function checkAiDraft() {
     "Follow up — Threads still waiting on a reply.",
     "Morning digest — What arrived overnight.",
   ]);
+  const tone = brain.answer("emailBrain:runSkill", [{
+    skillId: "skill-tone",
+    accountId: "gmail-ada",
+    email: { subject: "Notes on the Analytical Engine", from: "Charles Babbage <charles@example.com>" },
+  }]);
+  assert.strictEqual(tone.success, true);
+  assert.strictEqual(tone.data.accepted, true);
+  assert.strictEqual(tone.data.draft, true);
+  assert.match(tone.data.text, /Analytical Engine/);
+  assert.match(tone.data.text, /Charles Babbage/);
+  const bareTone = brain.answer("emailBrain:runSkill", [{ skillId: "skill-tone" }]);
+  assert.match(bareTone.data.text, /Thanks/);
+  const sorted = brain.answer("emailBrain:runSkill", [{ skillId: "skill-sort" }]);
+  assert.strictEqual(sorted.data.accepted, true);
+  assert.strictEqual(sorted.data.draft, false);
+  assert.match(sorted.data.text, /Primary/);
+  assert.match(sorted.data.text, /Updates/);
+  const follow = brain.answer("emailBrain:runSkill", [{ skillId: "lib-follow-up" }]);
+  assert.match(follow.data.text, /Still waiting\n- /);
+  const digest = brain.answer("emailBrain:runSkill", [{ skillId: "lib-digest" }]);
+  assert.match(digest.data.text, /Overnight\n- /);
+  assert.strictEqual(brain.answer("emailBrain:runSkill", [{}]).success, false);
+  assert.strictEqual(brain.answer("emailBrain:runSkill", [{ skillId: "nope" }]).success, false);
+  assert.strictEqual(brain.answer("emailBrain:getSkills", []).data.length, brainHome.data.length);
+  const db = require("../host/mail/db");
+  const hadAccounts = db.hasAccounts;
+  db.hasAccounts = () => true;
+  try {
+    const live = brain.answer("emailBrain:runSkill", [{ skillId: "skill-sort" }]);
+    assert.strictEqual(live.success, true);
+    assert.strictEqual(live.data.accepted, false);
+    assert.match(live.data.error, /API key/);
+    process.env.GENMAIL_AI_API_KEY = "sk-test";
+    const liveKey = brain.answer("emailBrain:runSkill", [{ skillId: "skill-tone" }]);
+    assert.strictEqual(liveKey.data.accepted, false);
+    assert.match(liveKey.data.error, /connected mailbox/);
+  } finally {
+    db.hasAccounts = hadAccounts;
+    delete process.env.GENMAIL_AI_API_KEY;
+  }
   assert.ok(!fs.existsSync(path.join(process.env.GENMAIL_AI_CONFIG_DIR, "brain.json")));
   const cached = brain.answer("emailBrain:getCached", []);
   assert.strictEqual(cached.success, true);

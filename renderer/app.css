@@ -129,6 +129,14 @@ dialog h3 { margin: 12px 0 4px; font-size: 13px; }
 .studio-row,
 .brain-skill { margin: 4px 0; overflow-wrap: anywhere; }
 
+button.brain-skill {
+  display: block;
+  width: 100%;
+  text-align: left;
+}
+
+#brain-skill-status { white-space: pre-wrap; }
+
 #brain-categories,
 #brain-skills {
   margin-top: 16px;

@@ -75,6 +75,7 @@ const INVOKE = [
   "emailBrain:addCategoryViaPrompt",
   "emailBrain:getSkills",
   "emailBrain:getLibrarySkills",
+  "emailBrain:runSkill",
   "nativeAgent:home:skills",
   "nativeAgent:home:librarySkills",
 ];
