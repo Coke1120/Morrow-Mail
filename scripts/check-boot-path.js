@@ -2561,8 +2561,15 @@ assert.strictEqual(providerUi.vacationView({
   settings: { mode: "always" },
   scheduleWarning: "",
 }).canDisable, true);
-assert.match(providerUi.vacationConfirm("save", "ada@example.com", { provider: "imap", mode: "always" }).body, /No mail is sent by this button/);
+assert.match(providerUi.vacationConfirm("save", "ada@example.com", { provider: "imap", mode: "always" }).body, /Your mail server will send these automatic replies/);
 assert.strictEqual(providerUi.vacationConfirm("disable", "ada@example.com", { provider: "google" }).needsName, false);
+const oooReview = providerUi.vacationConfirm("save", "ada@example.com", { provider: "imap", mode: "scheduled", start: "2090-03-10T10:30:00.000Z", end: "2090-03-11T12:00:00.000Z", message: "Away today" }).body;
+assert.match(oooReview, /2090-03-10 00:00 UTC/);
+assert.match(oooReview, /2090-03-12 00:00 UTC \(exclusive\)/);
+assert.match(oooReview, /All senders.*[\s\S]*Away today/);
+assert.match(providerUi.vacationConfirm("disable", "ada@example.com", { provider: "google" }).body, /New automatic replies will stop/);
+assert.doesNotMatch(providerUi.vacationConfirm("disable", "ada@example.com", { provider: "google" }).body, /continue while Morrow/);
+
 for (const channel of [
   "mail:oauthStatus",
   "mail:grantOrganize",

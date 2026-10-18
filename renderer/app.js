@@ -1022,7 +1022,7 @@ function vacationView(payload) {
     canDisable: row.supported === true && row.requiresReconnect !== true && ((mode && mode !== "disabled") || !!row.scheduleWarning),
     note: row.detail || row.scheduleWarning || "",
     help: provider === "imap"
-      ? "Plain text only. Morrow installs one script named morrow-vacation and will not replace a different active Sieve script."
+      ? "Plain text only. Dates take effect on whole UTC days: start rounds down, end rounds up unless already midnight UTC. The final review shows effective dates. Morrow installs only morrow-vacation and will not replace a different active Sieve script."
       : "Plain text only. Save replaces rich formatting. Outlook keeps separate internal and external messages. Disable keeps the provider’s existing templates.",
   };
 }
@@ -1030,7 +1030,7 @@ function vacationView(payload) {
 function vacationConfirm(kind, owner, options) {
   const who = owner || "this mailbox";
   const provider = options && options.provider;
-  const closed = "Enabled replies continue while Morrow is closed. No mail is sent by this button.";
+  const closed = "Your mail server will send these automatic replies to the audience below, including while Morrow is closed.";
   if (kind === "grant") {
     const scope = options && options.scope ? options.scope : "the provider settings permission";
     return {
@@ -1045,19 +1045,38 @@ function vacationConfirm(kind, owner, options) {
     const kept = provider === "imap" ? "Only Morrow’s own vacation script is removed." : "Existing templates are retained.";
     return {
       title: "Disable automatic replies",
-      body: "Disable automatic replies for " + who + "?\n\n" + kept + "\n\n" + closed,
+      body: "Disable automatic replies for " + who + "?\n\nNew automatic replies will stop after the provider applies this change. " + kept,
       confirm: "Disable",
       cancel: "Cancel",
       needsName: false,
     };
   }
   const mode = options && options.mode ? options.mode : "disabled";
-  const where = provider === "imap"
-    ? "The IMAP server stores a ManageSieve vacation script if it offers one. Every sender can receive a reply. Dates use whole UTC days."
-    : "The provider stores these plain-text replies.";
+  const row = options || {};
+  const audience = provider === "imap" ? "All senders" : provider === "microsoft"
+    ? "Internal senders; external: " + ({ none: "no external replies", contacts: "contacts only", all: "all senders" }[row.audience] || "all senders")
+    : (row.audience === "contacts" ? "Contacts only" : "All senders") + (row.restrictToDomain ? "; within your Google Workspace domain only" : "");
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const date = (value, end) => {
+    if (!value) return end ? "No end" : "Immediately";
+    const time = new Date(value);
+    if (!Number.isFinite(time.getTime())) return "Unknown";
+    if (provider !== "imap") return time.toLocaleString() + " (" + zone + ")";
+    const midnight = Date.parse(time.toISOString().slice(0, 10) + "T00:00:00.000Z");
+    return new Date(midnight + (end && time.getTime() > midnight ? 86400000 : 0)).toISOString().slice(0, 10) + " 00:00 UTC" + (end ? " (exclusive)" : "");
+  };
+  const dates = mode === "scheduled" ? "Effective start: " + date(row.start, false) + "\nEffective end: " + date(row.end, true) : mode === "always" ? "Effective: immediately, until disabled." : "Automatic replies stay disabled.";
+  const excerpt = (text) => String(text || "").slice(0, 240) + (String(text || "").length > 240 ? "…" : "");
+  const where = "Provider: " + (provider === "imap" ? "IMAP / ManageSieve" : provider === "microsoft" ? "Microsoft" : "Google")
+    + ". Mode: " + mode + ".\n" + dates + "\nAudience: " + audience
+    + (provider === "imap" ? "\nDates use whole UTC days." : "\nSaving plain text replaces rich formatting.")
+    + (row.subject ? "\nSubject: " + excerpt(row.subject) : "")
+    + "\n" + (provider === "microsoft" ? "Internal reply: " : "Reply: ") + excerpt(row.message)
+    + (provider === "microsoft" ? "\nExternal reply: " + excerpt(row.externalMessage) : "");
   return {
     title: mode === "disabled" ? "Save disabled settings" : "Save and enable",
-    body: "Save automatic replies for " + who + "?\n\n" + where + " Mode: " + mode + ".\n\n" + closed,
+    body: (mode === "disabled" ? "Save disabled settings for " : "Enable automatic replies for ") + who + "?\n\n"
+      + (mode === "disabled" ? "These settings will not enable automatic replies." : closed) + "\n\n" + where,
     confirm: "Save",
     cancel: "Cancel",
     needsName: false,
@@ -6815,8 +6834,8 @@ async function saveVacation(kind) {
     if (draft.error) throw new Error(draft.error);
   }
   const answer = await askConfirm(vacationConfirm(kind === "disable" ? "disable" : "save", account.email || account.id, {
+    ...body,
     provider: vacationCache.provider,
-    mode: body.mode,
   }));
   if (!answer || !answer.ok) return;
   const current = selectedAccount();
