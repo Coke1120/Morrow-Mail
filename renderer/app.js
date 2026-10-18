@@ -612,7 +612,8 @@ function scheduledLine(row) {
   const to = Array.isArray(row && row.to) ? row.to.filter(Boolean).join(", ") : String((row && row.to) || "").trim();
   const when = row && row.sendAt ? new Date(row.sendAt) : null;
   const time = when && !Number.isNaN(when.getTime()) ? when.toLocaleString() : "";
-  return [subject, to, time].filter(Boolean).join(" · ");
+  const failed = row && row.status === "failed" ? (String(row.error || "").trim() || "Send failed.") : "";
+  return [subject, to, time, failed].filter(Boolean).join(" · ");
 }
 
 function removalPayload(email, threaded) {
@@ -970,11 +971,40 @@ function syncCustomFields() {
   $("custom-fields").hidden = $("profile").value !== "custom";
 }
 
+function connectButton() {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "primary empty-connect";
+  button.addEventListener("click", () => openDialog("connect"));
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("width", "15");
+  icon.setAttribute("height", "15");
+  icon.setAttribute("aria-hidden", "true");
+  const link = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  link.setAttribute("fill", "none");
+  link.setAttribute("stroke", "currentColor");
+  link.setAttribute("stroke-width", "2");
+  link.setAttribute("stroke-linecap", "round");
+  link.setAttribute("stroke-linejoin", "round");
+  link.setAttribute("d", "M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71");
+  const link2 = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  link2.setAttribute("fill", "none");
+  link2.setAttribute("stroke", "currentColor");
+  link2.setAttribute("stroke-width", "2");
+  link2.setAttribute("stroke-linecap", "round");
+  link2.setAttribute("stroke-linejoin", "round");
+  link2.setAttribute("d", "M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71");
+  icon.append(link, link2);
+  const label = document.createElement("span");
+  label.textContent = "Connect account";
+  button.append(icon, label);
+  return button;
+}
+
 function renderBanner() {
   const banner = $("banner");
-  if (!state.accounts.length) banner.textContent = "No mailbox yet. Connect an account in Settings.";
-  else if (state.accounts.some(isLive)) banner.textContent = "";
-  else banner.textContent = "Sample mailbox. Connect an account in Settings to use your own mail. Nothing here is sent.";
+  banner.textContent = state.accounts.length ? "" : "No mailbox yet. Connect an account.";
   banner.hidden = !banner.textContent;
   banner.title = banner.textContent;
 }
@@ -994,7 +1024,7 @@ function renderAccounts() {
     const empty = document.createElement("p");
     empty.className = "empty";
     empty.textContent = "No accounts.";
-    nav.appendChild(empty);
+    nav.append(empty, connectButton());
     return;
   }
   for (const account of state.accounts) {
@@ -1362,7 +1392,9 @@ function renderList() {
   if (!shown.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
-    if (!state.emails.length) {
+    if (!state.accounts.length && !state.query) {
+      empty.textContent = "No messages yet.";
+    } else if (!state.emails.length) {
       empty.textContent = state.query ? "No messages match that search." : "No messages in this folder.";
     } else {
       empty.textContent = "No loaded messages match that filter.";
@@ -1634,11 +1666,17 @@ function renderReader(focus) {
     mark.appendChild(path);
     const title = document.createElement("p");
     title.className = "empty-title";
-    title.textContent = "No conversation selected";
     const hint = document.createElement("p");
     hint.className = "empty";
-    hint.textContent = "Select a conversation to read.";
-    wrap.append(mark, title, hint);
+    if (!state.accounts.length) {
+      title.textContent = "No mailbox yet";
+      hint.textContent = "Connect an account to see your mail.";
+      wrap.append(mark, title, hint, connectButton());
+    } else {
+      title.textContent = "No conversation selected";
+      hint.textContent = "Select a conversation to read.";
+      wrap.append(mark, title, hint);
+    }
     pane.appendChild(wrap);
     return;
   }
@@ -2428,9 +2466,10 @@ function syncCompose() {
   const live = isLive(account);
   $("compose-note").textContent = live
     ? `From ${account.email}`
-    : "Sample mailbox. Connect an account before saving or sending. A scheduled message stays in the list below.";
+    : "Connect an account before saving or sending.";
   $("compose-save").disabled = !live;
   $("compose-send").disabled = !live;
+  $("compose-schedule").disabled = !live;
 }
 
 function syncScheduleFields() {
@@ -2450,7 +2489,20 @@ function renderScheduled(rows) {
   }
   for (const row of rows) {
     const item = document.createElement("li");
-    item.textContent = scheduledLine(row);
+    const text = document.createElement("span");
+    text.textContent = scheduledLine(row);
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "ghost";
+    cancel.textContent = "Cancel";
+    const subject = String((row && row.subject) || "").trim() || "(no subject)";
+    cancel.setAttribute("aria-label", `Cancel scheduled send ${subject}`);
+    cancel.addEventListener("click", () => {
+      cancelScheduled(row.id).catch((error) => {
+        showStatus(error instanceof Error ? error.message : String(error), true);
+      });
+    });
+    item.append(text, cancel);
     list.append(item);
   }
 }
@@ -2621,6 +2673,12 @@ async function submitSignature(event) {
     showSignatureStatus("Add signature text.", true);
     return;
   }
+  const account = selectedAccount();
+  if (!isLive(account)) {
+    showSignatureStatus("Connect an account before saving a signature.", true);
+    return;
+  }
+  draft.accountId = account.id;
   try {
     const saved = await call("mail:upsertSignature", draft);
     signatureEditId = saved && saved.id ? String(saved.id) : "";
@@ -2789,10 +2847,15 @@ async function loadScheduled() {
   renderScheduled(scheduledRows(data));
 }
 
-// shortcut: no cancel, host only has mail:scheduleSend and mail:listScheduled, upgrade when a cancel channel exists.
+async function cancelScheduled(id) {
+  await call("mail:cancelScheduled", { id });
+  showStatus("Scheduled send canceled.");
+  await loadScheduled();
+}
+
 async function scheduleMail() {
   const account = selectedAccount();
-  if (!account) return;
+  if (!isLive(account)) return;
   if (!composeHasRecipient()) {
     showStatus("Add a recipient.", true);
     return;

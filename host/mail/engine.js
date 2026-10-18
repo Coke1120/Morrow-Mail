@@ -36,6 +36,9 @@ const TICK_MS = 25000;
 const RATE_LIMIT_MS = 30000;
 const STORM_MS = 15 * 60 * 1000;
 const POLL_MS = 45000;
+// Due mail is sent on this interval while the process is running.
+// A sendAt that passes while the app is closed is sent the next time the app is open.
+const SCHEDULE_TICK_MS = 15000;
 const SEARCH_LIMIT = 100;
 const GMAIL_ALL = ["[Gmail]/All Mail", "[Google Mail]/All Mail"];
 
@@ -159,16 +162,7 @@ function accountView(row, index) {
 }
 
 function emitAccounts(extra) {
-  const own = accountViews();
-  let accounts = own;
-  if (!own.length) {
-    try {
-      accounts = require("../mailbox").accountList();
-    } catch {
-      accounts = [];
-    }
-  }
-  broadcast("mail:accountsUpdated", { source: "server", accounts, ...(extra || {}) });
+  broadcast("mail:accountsUpdated", { source: "server", accounts: accountViews(), ...(extra || {}) });
   broadcast("mail:emailsUpdated", { accountId: null, folderId: null, folderIds: null });
 }
 
@@ -645,7 +639,9 @@ async function syncAll(options) {
 }
 
 let pollTimer = null;
+let scheduleTimer = null;
 let syncing = false;
+let pumping = false;
 let oauthGeneration = 0;
 
 function purgeAbandonedAccounts() {
@@ -684,6 +680,14 @@ function startBackgroundSync() {
   };
   setTimeout(tick, 400);
   if (!pollTimer) pollTimer = setInterval(tick, POLL_MS);
+  startSchedulePump();
+}
+
+function startSchedulePump() {
+  if (scheduleTimer) return;
+  const tick = () => { pumpScheduled().catch(() => {}); };
+  setTimeout(tick, 800);
+  scheduleTimer = setInterval(tick, SCHEDULE_TICK_MS);
 }
 
 
@@ -1263,6 +1267,259 @@ async function bytesFor(params) {
   return { filename: params.filename || wanted.filename || "attachment", data };
 }
 
+function signatureText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function publicSignature(row) {
+  const out = { id: row.id, accountId: row.account_id, name: row.name };
+  if (row.body_html) out.html = row.body_html;
+  else out.text = row.body_text || "";
+  return out;
+}
+
+function signaturePack(accountId) {
+  const rows = db.listSignatures(accountId || null);
+  const per = {};
+  for (const row of db.signatureDefaults()) per[row.account_id] = row.id;
+  return {
+    signatures: rows.map(publicSignature),
+    defaultSignatureId: accountId ? (per[accountId] || null) : null,
+    defaultSignaturePerAccount: per,
+  };
+}
+
+function upsertSignature(params) {
+  const accountId = params && params.accountId ? String(params.accountId) : "";
+  const id = params && params.id ? String(params.id) : "";
+  const existing = id ? db.signatureById(id) : null;
+  if (id && !existing) return fail("not-found", "That signature is gone.");
+  const owner = accountId || (existing && existing.account_id) || "";
+  if (!owner || !db.accountById(owner)) return fail("not-found", "Connect an account before saving a signature.");
+  if (existing && existing.account_id !== owner) return fail("not-found", "That signature is gone.");
+  const name = signatureText(params && params.name);
+  const text = signatureText(params && params.text);
+  const html = signatureText(params && params.html);
+  if (!name) return fail("invalid", "Add a name.");
+  if (!text && !html) return fail("invalid", "Add signature text.");
+  const saved = db.saveSignature({
+    id: existing ? existing.id : `sig-${crypto.randomBytes(8).toString("hex")}`,
+    accountId: owner,
+    name,
+    bodyText: html ? null : text,
+    bodyHtml: html || null,
+    isDefault: params && params.isDefault,
+  });
+  return ok(publicSignature(saved));
+}
+
+function deleteSignature(params) {
+  const id = params && params.id ? String(params.id) : "";
+  const existing = db.signatureById(id);
+  if (!existing) return fail("not-found", "That signature is gone.");
+  const accountId = params && params.accountId ? String(params.accountId) : "";
+  if (accountId && existing.account_id !== accountId) return fail("not-found", "That signature is gone.");
+  db.deleteSignature(id);
+  return ok(true);
+}
+
+function displayAddress(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean).join(", ");
+  return String(value || "").trim();
+}
+
+function storedAddress(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
+  return String(value || "").trim();
+}
+
+function hasRecipient(to, cc, bcc) {
+  return !!(displayAddress(to) || displayAddress(cc) || displayAddress(bcc));
+}
+
+function storedAttachments(list) {
+  if (!Array.isArray(list)) return undefined;
+  return list.map((item) => {
+    if (!item || typeof item !== "object") return null;
+    const copy = { ...item };
+    delete copy.fileBytes;
+    delete copy.content;
+    return copy;
+  }).filter(Boolean);
+}
+
+function publicScheduled(row) {
+  let payload = {};
+  try { payload = JSON.parse(row.payload_json) || {}; } catch { payload = {}; }
+  const out = {
+    id: row.id,
+    accountId: row.account_id,
+    to: displayAddress(payload.to),
+    subject: payload.subject || "",
+    sendAt: new Date(row.send_at).toISOString(),
+    status: row.status || "pending",
+  };
+  const cc = displayAddress(payload.cc);
+  const bcc = displayAddress(payload.bcc);
+  if (cc) out.cc = cc;
+  if (bcc) out.bcc = bcc;
+  if (row.error) out.error = row.error;
+  return out;
+}
+
+function scheduleSend(params) {
+  const input = params || {};
+  const account = db.accountById(input.accountId);
+  if (!account) return fail("not-found", "Choose an account before scheduling.");
+  const to = storedAddress(input.to);
+  const cc = storedAddress(input.cc);
+  const bcc = storedAddress(input.bcc);
+  if (!hasRecipient(to, cc, bcc)) return fail("invalid", "Add a recipient.");
+  const when = Date.parse(input.sendAt);
+  if (!Number.isFinite(when) || when <= Date.now() + 1000) {
+    return fail("send_at_in_past", "Pick a time in the future.");
+  }
+  const payload = {
+    to,
+    cc,
+    bcc,
+    subject: input.subject ? String(input.subject).trim() : "",
+    body: typeof input.body === "string" ? input.body : "",
+    fromAddress: input.fromAddress || account.email,
+  };
+  if (input.draftId) payload.draftId = input.draftId;
+  if (input.emailId) payload.emailId = input.emailId;
+  if (input.inReplyTo) payload.inReplyTo = input.inReplyTo;
+  if (input.threadId) payload.threadId = input.threadId;
+  if (Array.isArray(input.references)) payload.references = input.references;
+  const attachments = storedAttachments(input.attachments);
+  if (attachments && attachments.length) payload.attachments = attachments;
+  const saved = db.insertScheduled({
+    id: `sched-${crypto.randomBytes(8).toString("hex")}`,
+    accountId: account.id,
+    payloadJson: JSON.stringify(payload),
+    sendAt: when,
+    createdAt: Date.now(),
+  });
+  return ok(publicScheduled(saved));
+}
+
+function listScheduled(params) {
+  const accountId = params && params.accountId ? String(params.accountId) : "";
+  return ok(db.listScheduled(accountId).map(publicScheduled));
+}
+
+function cancelScheduled(params) {
+  const id = params && params.id ? String(params.id) : "";
+  if (!db.deleteScheduled(id)) return fail("not-found", "That scheduled send is gone.");
+  return ok(true);
+}
+
+async function deliver(params) {
+  const account = db.accountById(params && params.accountId);
+  if (!account) return fail("not-found", "Choose an account before sending.");
+  const files = attachmentFiles(params && params.attachments);
+  const options = mimeOptions(account, params || {}, files);
+  if (!options.to.length && !options.cc.length && !options.bcc.length) {
+    return fail("invalid", "Add a recipient.");
+  }
+  try {
+    const sentResult = await exclusive(account.id, async () => {
+      const password = await secretFor(account);
+      const messageId = rfcMessageId(account.email);
+      const info = await remote.sendSmtp(account, password, { ...options, messageId });
+      const sent = db.folderByWellKnown(account.id, "sentitems");
+      const emailId = db.newMessageId();
+      const when = new Date();
+      const keptId = info.messageId || messageId;
+      if (sent) {
+        db.insertMessage({
+          id: emailId,
+          accountId: account.id,
+          folderPath: sent.path,
+          threadId: (params && params.threadId) || emailId,
+          rfcMessageId: keptId,
+          subject: options.subject,
+          snippet: plainFromHtml(options.html).slice(0, 180),
+          from: options.from,
+          to: options.to,
+          cc: options.cc,
+          bcc: options.bcc,
+          date: when.toISOString(),
+          listSortTs: when.getTime(),
+          isDraft: false,
+          hasAttachments: files.length > 0,
+          htmlBody: options.html,
+          textBody: options.text,
+          bodyComplete: true,
+          inReplyTo: params.inReplyTo || null,
+        });
+        if (account.profile !== "gmail") {
+          try {
+            const raw = await remote.buildRaw({ ...options, messageId: keptId });
+            const appended = await remote.withClient(account, password, (client) => remote.appendRaw(client, sent.path, raw, ["\\Seen"]));
+            if (appended && appended.uid) {
+              db.updateMessage(emailId, {
+                uid: Number(appended.uid),
+                uid_validity: Number(appended.uidValidity) || 0,
+              });
+            }
+          } catch {
+            // The SMTP send already succeeded. The next sync adopts the Sent copy by message id.
+          }
+        } else {
+          try {
+            const report = await remote.withClient(account, password, (client) => remote.syncFolder(client, sent.path, { limit: 40 }));
+            db.applyFolderSync(account.id, sent.path, report);
+          } catch {
+            // The local Sent row stays until a later sync can adopt it.
+          }
+        }
+      }
+      return { emailId, messageId: keptId };
+    });
+    const draftId = params && (params.draftId || params.emailId);
+    const draft = draftId ? db.messageById(draftId) : null;
+    if (draft && draft.is_draft === 1) {
+      try {
+        if (draft.uid) {
+          await exclusive(account.id, async () => {
+            const password = await secretFor(account);
+            await remote.withClient(account, password, (client) => remote.removeUid(client, draft.folder_path, draft.uid));
+          });
+        }
+      } catch { /* local removal still happens */ }
+      db.deleteMessage(draft.id);
+    }
+    emitAccounts();
+    return ok({ emailId: sentResult.emailId, messageId: sentResult.messageId, platform: "imap" });
+  } catch (error) {
+    return fail("send", remote.explain(error, secrets.getPassword(account.id)));
+  }
+}
+
+async function pumpScheduled() {
+  if (!ready || pumping) return;
+  pumping = true;
+  try {
+    const due = db.dueScheduled(Date.now());
+    for (const row of due) {
+      let payload = {};
+      try { payload = JSON.parse(row.payload_json) || {}; } catch { payload = {}; }
+      let result;
+      try {
+        result = await deliver({ ...payload, accountId: row.account_id });
+      } catch (error) {
+        result = fail("send", error instanceof Error ? error.message : String(error));
+      }
+      if (result && result.success) db.deleteScheduled(row.id);
+      else db.markScheduledFailed(row.id, (result && result.error && result.error.message) || "Send failed.");
+    }
+  } finally {
+    pumping = false;
+  }
+}
+
 function answer(channel, args) {
   if (!ready) return undefined;
   if (sidecar.handles(channel)) return sidecar.answer(channel, args);
@@ -1289,10 +1546,10 @@ function answer(channel, args) {
       }
     })();
   }
-  if (!db.hasAccounts()) return undefined;
 
   switch (channel) {
     case "genmail:configGetShowOneClickTidyEffective":
+      // Live tidy rules are not implemented, so the toolbar stays hidden.
       return false;
     case "mail:tidyInbox":
       // shortcut: no live tidy rule, upgrade when promo/newsletter can be filed on the server.
@@ -1351,11 +1608,11 @@ function answer(channel, args) {
     case "mail:listFailedDraftIds":
       return ok([]);
     case "mail:listSignatures":
-      // shortcut: IMAP has no signature store, upgrade when a server can persist them.
-      return ok({ signatures: [], defaultSignatureId: null, defaultSignaturePerAccount: {} });
+      return ok(signaturePack(params && params.accountId ? String(params.accountId) : ""));
     case "mail:upsertSignature":
+      return upsertSignature(params || {});
     case "mail:deleteSignature":
-      return fail("imap_signatures_unsupported", "Signatures are kept only for the sample mailbox.");
+      return deleteSignature(params || {});
     case "mail:ops:queueSummary":
       return ok({ pending: 0, dead: 0, sends: 0 });
     case "mail:ops:getNetworkState":
@@ -1727,90 +1984,11 @@ function answer(channel, args) {
     case "mail:getPendingDraft":
       return ok(null);
     case "mail:send":
-      return (async () => {
-        const account = db.accountById(params && params.accountId);
-        if (!account) return fail("not-found", "Choose an account before sending.");
-        const files = attachmentFiles(params && params.attachments);
-        const options = mimeOptions(account, params || {}, files);
-        if (!options.to.length && !options.cc.length && !options.bcc.length) {
-          return fail("invalid", "Add a recipient.");
-        }
-        try {
-          const sentResult = await exclusive(account.id, async () => {
-            const password = await secretFor(account);
-            const messageId = rfcMessageId(account.email);
-            const info = await remote.sendSmtp(account, password, { ...options, messageId });
-            const sent = db.folderByWellKnown(account.id, "sentitems");
-            const emailId = db.newMessageId();
-            const when = new Date();
-            const keptId = info.messageId || messageId;
-            if (sent) {
-              db.insertMessage({
-                id: emailId,
-                accountId: account.id,
-                folderPath: sent.path,
-                threadId: (params && params.threadId) || emailId,
-                rfcMessageId: keptId,
-                subject: options.subject,
-                snippet: plainFromHtml(options.html).slice(0, 180),
-                from: options.from,
-                to: options.to,
-                cc: options.cc,
-                bcc: options.bcc,
-                date: when.toISOString(),
-                listSortTs: when.getTime(),
-                isDraft: false,
-                hasAttachments: files.length > 0,
-                htmlBody: options.html,
-                textBody: options.text,
-                bodyComplete: true,
-                inReplyTo: params.inReplyTo || null,
-              });
-              if (account.profile !== "gmail") {
-                try {
-                  const raw = await remote.buildRaw({ ...options, messageId: keptId });
-                  const appended = await remote.withClient(account, password, (client) => remote.appendRaw(client, sent.path, raw, ["\\Seen"]));
-                  if (appended && appended.uid) {
-                    db.updateMessage(emailId, {
-                      uid: Number(appended.uid),
-                      uid_validity: Number(appended.uidValidity) || 0,
-                    });
-                  }
-                } catch {
-                  // The SMTP send already succeeded. The next sync adopts the Sent copy by message id.
-                }
-              } else {
-                try {
-                  const report = await remote.withClient(account, password, (client) => remote.syncFolder(client, sent.path, { limit: 40 }));
-                  db.applyFolderSync(account.id, sent.path, report);
-                } catch {
-                  // The local Sent row stays until a later sync can adopt it.
-                }
-              }
-            }
-            return { emailId, messageId: keptId };
-          });
-          const draftId = params && (params.draftId || params.emailId);
-          const draft = draftId ? db.messageById(draftId) : null;
-          if (draft && draft.is_draft === 1) {
-            try {
-              if (draft.uid) {
-                await exclusive(account.id, async () => {
-                  const password = await secretFor(account);
-                  await remote.withClient(account, password, (client) => remote.removeUid(client, draft.folder_path, draft.uid));
-                });
-              }
-            } catch { /* local removal still happens */ }
-            db.deleteMessage(draft.id);
-          }
-          emitAccounts();
-          return ok({ emailId: sentResult.emailId, messageId: sentResult.messageId, platform: "imap" });
-        } catch (error) {
-          return fail("send", remote.explain(error, secrets.getPassword(account.id)));
-        }
-      })();
+      return deliver(params || {});
     case "mail:scheduleSend":
-      return fail("imap_schedule_send_unsupported", "Scheduled send is not available for IMAP accounts.");
+      return scheduleSend(params || {});
+    case "mail:cancelScheduled":
+      return cancelScheduled(params || {});
     case "mail:downloadAttachment":
       return (async () => {
         try {
@@ -1855,7 +2033,7 @@ function answer(channel, args) {
         }
       })();
     case "mail:listScheduled":
-      return ok([]);
+      return listScheduled(params);
     default:
       return undefined;
   }
@@ -1877,6 +2055,7 @@ module.exports = {
   init,
   answer,
   messagesForAi,
+  pumpScheduled,
   startBackgroundSync,
   accountViews,
   dataFile,

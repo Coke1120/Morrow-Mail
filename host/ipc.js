@@ -1,7 +1,6 @@
 const fs = require("fs");
 const path = require("path");
 const { answer: liveAnswer } = require("./mail/engine");
-const { answer: mailAnswer } = require("./mailbox");
 const { answer: draftAnswer } = require("./draft-write");
 const { answer: brainAnswer } = require("./brain");
 const { answer: agentAnswer } = require("./agent");
@@ -153,8 +152,6 @@ function fallback(channel, args) {
   }
   const live = liveAnswer(channel, args);
   if (live !== undefined) return live;
-  const mail = mailAnswer(channel, args);
-  if (mail !== undefined) return mail;
   const draft = draftAnswer(channel, args);
   if (draft !== undefined) return draft;
   const brain = brainAnswer(channel, args);

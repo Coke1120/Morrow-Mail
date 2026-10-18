@@ -137,6 +137,27 @@ function migrate() {
     id TEXT PRIMARY KEY,
     payload_json TEXT NOT NULL
   )`);
+  run(`CREATE TABLE IF NOT EXISTS signatures (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    body_text TEXT,
+    body_html TEXT,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`);
+  run(`CREATE INDEX IF NOT EXISTS signatures_account ON signatures(account_id, created_at)`);
+  run(`CREATE TABLE IF NOT EXISTS scheduled_sends (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    send_at INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error TEXT,
+    created_at INTEGER NOT NULL
+  )`);
+  run(`CREATE INDEX IF NOT EXISTS scheduled_due ON scheduled_sends(status, send_at)`);
 }
 
 async function open(target) {
@@ -168,6 +189,7 @@ function listAccountRows() {
 }
 
 function accountById(id) {
+  if (!id) return null;
   return get("SELECT * FROM accounts WHERE id = ?", [id]);
 }
 
@@ -230,6 +252,8 @@ function removeAccount(id) {
     run("DELETE FROM messages WHERE account_id = ?", [id]);
     run("DELETE FROM folders WHERE account_id = ?", [id]);
     run("DELETE FROM snooze WHERE account_id = ?", [id]);
+    run("DELETE FROM signatures WHERE account_id = ?", [id]);
+    run("DELETE FROM scheduled_sends WHERE account_id = ?", [id]);
     run("DELETE FROM accounts WHERE id = ?", [id]);
   });
 }
@@ -484,6 +508,7 @@ function insertMessage(row) {
 }
 
 function messageById(id) {
+  if (!id) return null;
   return get("SELECT * FROM messages WHERE id = ?", [id]);
 }
 
@@ -754,6 +779,114 @@ function recentInWellKnown(wellKnown, limit) {
   ).map(inboxRow);
 }
 
+function listSignatures(accountId) {
+  if (!db) return [];
+  if (accountId) {
+    return all(
+      "SELECT * FROM signatures WHERE account_id = ? ORDER BY created_at ASC, id ASC",
+      [accountId]
+    );
+  }
+  return all("SELECT * FROM signatures ORDER BY created_at ASC, id ASC");
+}
+
+function signatureById(id) {
+  if (!db || !id) return null;
+  return get("SELECT * FROM signatures WHERE id = ?", [id]);
+}
+
+function signatureDefaults() {
+  if (!db) return [];
+  return all("SELECT id, account_id FROM signatures WHERE is_default = 1 ORDER BY account_id ASC");
+}
+
+function saveSignature(row) {
+  const now = Date.now();
+  transaction(() => {
+    const existing = get("SELECT id FROM signatures WHERE id = ?", [row.id]);
+    if (existing) {
+      run(
+        "UPDATE signatures SET name = ?, body_text = ?, body_html = ?, updated_at = ? WHERE id = ?",
+        [row.name, row.bodyText, row.bodyHtml, now, row.id]
+      );
+    } else {
+      run(
+        `INSERT INTO signatures (
+          id, account_id, name, body_text, body_html, is_default, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)`,
+        [row.id, row.accountId, row.name, row.bodyText, row.bodyHtml, now, now]
+      );
+    }
+    if (row.isDefault === true) {
+      run("UPDATE signatures SET is_default = 0 WHERE account_id = ?", [row.accountId]);
+      run("UPDATE signatures SET is_default = 1 WHERE id = ?", [row.id]);
+    } else if (row.isDefault === false) {
+      run("UPDATE signatures SET is_default = 0 WHERE id = ? AND account_id = ?", [row.id, row.accountId]);
+    }
+  });
+  return signatureById(row.id);
+}
+
+function deleteSignature(id) {
+  if (!signatureById(id)) return false;
+  transaction(() => run("DELETE FROM signatures WHERE id = ?", [id]));
+  return true;
+}
+
+function insertScheduled(row) {
+  transaction(() => {
+    run(
+      `INSERT INTO scheduled_sends (id, account_id, payload_json, send_at, status, error, created_at)
+       VALUES (?, ?, ?, ?, 'pending', NULL, ?)`,
+      [row.id, row.accountId, row.payloadJson, row.sendAt, row.createdAt]
+    );
+  });
+  return get("SELECT * FROM scheduled_sends WHERE id = ?", [row.id]);
+}
+
+function listScheduled(accountId) {
+  if (!db) return [];
+  if (accountId) {
+    return all(
+      `SELECT * FROM scheduled_sends
+       WHERE account_id = ? AND status IN ('pending', 'failed')
+       ORDER BY send_at ASC, created_at ASC`,
+      [accountId]
+    );
+  }
+  return all(
+    `SELECT * FROM scheduled_sends
+     WHERE status IN ('pending', 'failed')
+     ORDER BY send_at ASC, created_at ASC`
+  );
+}
+
+function dueScheduled(now) {
+  if (!db) return [];
+  return all(
+    `SELECT * FROM scheduled_sends
+     WHERE status = 'pending' AND send_at <= ?
+     ORDER BY send_at ASC, created_at ASC`,
+    [now]
+  );
+}
+
+function deleteScheduled(id) {
+  if (!db || !id || !get("SELECT id FROM scheduled_sends WHERE id = ?", [id])) return false;
+  transaction(() => run("DELETE FROM scheduled_sends WHERE id = ?", [id]));
+  return true;
+}
+
+function markScheduledFailed(id, message) {
+  transaction(() => {
+    run("UPDATE scheduled_sends SET status = 'failed', error = ? WHERE id = ?", [String(message || "Send failed."), id]);
+  });
+}
+
+function setScheduledSendAt(id, sendAt) {
+  transaction(() => run("UPDATE scheduled_sends SET send_at = ?, status = 'pending', error = NULL WHERE id = ?", [sendAt, id]));
+}
+
 function recentInbox(limit) {
   if (!db) return [];
   const n = Math.min(Math.max(Number(limit) || 20, 1), 40);
@@ -823,6 +956,17 @@ module.exports = {
   recentForAi,
   recentInWellKnown,
   recentInbox,
+  listSignatures,
+  signatureById,
+  signatureDefaults,
+  saveSignature,
+  deleteSignature,
+  insertScheduled,
+  listScheduled,
+  dueScheduled,
+  deleteScheduled,
+  markScheduledFailed,
+  setScheduledSendAt,
   jsonList,
   newMessageId,
   WELL_TO_KEY,

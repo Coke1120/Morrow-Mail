@@ -1632,6 +1632,24 @@ textarea { min-height: 140px; resize: vertical; }
   padding-left: 18px;
 }
 
+#scheduled li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+}
+
+#scheduled li span { flex: 1; overflow-wrap: anywhere; }
+
+.empty-connect {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 16px 0;
+}
+
+.empty-read .empty-connect { margin: 12px 0 0; }
+
 @media (max-width: 900px) {
   #calendar-layout,
   .settings-layout,

@@ -358,6 +358,7 @@
         <input id="schedule-at" type="datetime-local" hidden />
         <p id="scheduled-heading" class="hint">Scheduled</p>
         <ul id="scheduled" aria-labelledby="scheduled-heading"></ul>
+        <p class="hint" id="schedule-note">Sends while the app is open. If GenMail is closed at that time, it sends the next time you open it.</p>
         <div class="row">
           <button type="submit" class="primary" id="compose-send">Send</button>
           <button type="button" class="ghost" id="compose-schedule">Schedule send</button>
@@ -374,7 +375,7 @@
       </div>
       <div class="settings-layout">
         <div>
-          <p class="hint">Sample signatures stay in memory. A connected IMAP account does not store them.</p>
+          <p class="hint">Saved on this computer for the selected account. They are not stored on the mail server.</p>
           <p id="signatures-status" role="status"></p>
           <div id="signature-list"></div>
         </div>
@@ -384,7 +385,7 @@
           <label for="signature-body">Text</label>
           <textarea id="signature-body"></textarea>
           <label class="check" for="signature-html"><input id="signature-html" type="checkbox" /> HTML</label>
-          <label class="check" for="signature-default"><input id="signature-default" type="checkbox" /> Default</label>
+          <label class="check" for="signature-default"><input id="signature-default" type="checkbox" /> Default for this account</label>
           <div class="row">
             <button type="submit" class="primary" id="signature-save">Add</button>
             <button type="button" class="ghost" id="signature-cancel" hidden>Cancel</button>

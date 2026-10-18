@@ -73,6 +73,7 @@ const INVOKE = [
   "mail:send",
   "mail:scheduleSend",
   "mail:listScheduled",
+  "mail:cancelScheduled",
   "mail:listSignatures",
   "mail:upsertSignature",
   "mail:deleteSignature",

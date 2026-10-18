@@ -210,17 +210,44 @@ async function run() {
   if (!unsent || unsent.success !== false) problem(problems, "send without a password must not claim success");
   const sent = answer("mail:listFromCache", [{ accountId: "imap-test", folderId: "Sent", limit: 50 }]);
   if (!sent || sent.data.emails.length !== 0) problem(problems, "unsent mail was stored as sent");
-  const scheduled = answer("mail:scheduleSend", [{ accountId: "imap-test" }]);
-  if (!scheduled || !scheduled.error || scheduled.error.code !== "imap_schedule_send_unsupported") {
+  const future = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+  const scheduled = answer("mail:scheduleSend", [{
+    accountId: "imap-test",
+    to: "grace@example.com",
+    subject: "Later",
+    sendAt: future,
+  }]);
+  if (!scheduled || scheduled.success !== true || !scheduled.data || !scheduled.data.id) {
     problem(problems, "schedule send");
   }
-  const signatureWrite = answer("mail:upsertSignature", [{ name: "Work", text: "Thanks" }]);
-  if (!signatureWrite || !signatureWrite.error || signatureWrite.error.code !== "imap_signatures_unsupported") {
+  const scheduledId = scheduled && scheduled.data && scheduled.data.id;
+  const scheduledList = answer("mail:listScheduled", [{ accountId: "imap-test" }]);
+  if (!scheduledList || !scheduledList.data || !scheduledList.data.some((row) => row.id === scheduledId && row.subject === "Later")) {
+    problem(problems, "scheduled list");
+  }
+  const pastSend = answer("mail:scheduleSend", [{
+    accountId: "imap-test",
+    to: "grace@example.com",
+    sendAt: new Date(Date.now() - 1000).toISOString(),
+  }]);
+  if (!pastSend || !pastSend.error || pastSend.error.code !== "send_at_in_past") problem(problems, "schedule in the past");
+  const canceled = answer("mail:cancelScheduled", [{ id: scheduledId }]);
+  if (!canceled || canceled.success !== true) problem(problems, "cancel scheduled");
+  const signatureWrite = answer("mail:upsertSignature", [{
+    accountId: "imap-test",
+    name: "Work",
+    text: "Thanks",
+    isDefault: true,
+  }]);
+  if (!signatureWrite || signatureWrite.success !== true || signatureWrite.data.text !== "Thanks") {
     problem(problems, "signature write");
   }
   const signatureList = answer("mail:listSignatures", [{ accountId: "imap-test" }]);
-  if (!signatureList || !signatureList.data || signatureList.data.signatures.length !== 0) {
+  if (!signatureList || !signatureList.data || signatureList.data.signatures.length !== 1) {
     problem(problems, "signature list");
+  }
+  if (!signatureList.data.defaultSignaturePerAccount || signatureList.data.defaultSignaturePerAccount["imap-test"] !== signatureWrite.data.id) {
+    problem(problems, "per-account default signature");
   }
   await answer("mail:deleteDraft", [{ emailId: draftId }]);
   const draftGone = answer("mail:listFromCache", [{ accountId: "imap-test", folderId: "Drafts", limit: 50 }]);
@@ -245,7 +272,16 @@ async function run() {
 
   await answer("mail:removeAccount", [{ accountId: "imap-test" }]);
   if (db.hasAccounts()) problem(problems, "account was not removed");
-  if (answer("mail:listAccounts", []) !== undefined) problem(problems, "empty cache should leave the sample inbox in charge");
+  const emptyAccounts = answer("mail:listAccounts", []);
+  if (!emptyAccounts || emptyAccounts.success !== true || !Array.isArray(emptyAccounts.data) || emptyAccounts.data.length !== 0) {
+    problem(problems, "empty cache should list no accounts");
+  }
+  const emptyMail = answer("mail:listFromCache", [{ limit: 20 }]);
+  if (!emptyMail || !emptyMail.data || emptyMail.data.emails.length !== 0) {
+    problem(problems, "empty cache should not list sample mail");
+  }
+  const goneSignature = answer("mail:listSignatures", [{ accountId: "imap-test" }]);
+  if (!goneSignature || goneSignature.data.signatures.length !== 0) problem(problems, "removed account kept a signature");
 
   if (problems.length) {
     console.error(problems.join("\n"));

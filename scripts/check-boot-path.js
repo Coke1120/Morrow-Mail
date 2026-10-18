@@ -206,17 +206,6 @@ assert.deepStrictEqual(threadMembers([], [{ id: "a" }, { id: "b" }]).map((row) =
 assert.deepStrictEqual(threadMembers([{ id: "" }], null), []);
 assert.deepStrictEqual(threadMembers(null, null), []);
 
-const mailbox = require("../host/mailbox");
-const opened = mailbox.answer("mail:openEmail", [{ emailId: "m-compiler" }]);
-assert.strictEqual(opened.data.threadMessages.length, 0);
-assert.strictEqual(opened.data.email.threadId, "t-compiler");
-assert.strictEqual(opened.data.email.attachments[0].filename, "notes.txt");
-assert.strictEqual(opened.data.email.attachments[0]._bytes, undefined);
-const members = mailbox.answer("mail:listThreadMessages", [{ threadId: "t-compiler", accountId: "gmail-ada" }]);
-assert.ok(members.data.filter((row) => row.threadId === "t-compiler").length >= 2);
-const found = mailbox.answer("mail:search", [{ query: "compiler", limit: 10, filters: {} }]);
-assert.ok(found.data.some((row) => row.id === "m-compiler" && row.attachments[0].filename === "notes.txt"));
-
 const paneWidth = extractFunction(appJs, "paneWidth");
 assert.strictEqual(paneWidth(200, -80, 140, 400), 140);
 assert.strictEqual(paneWidth(200, 300, 140, 400), 400);
@@ -232,9 +221,29 @@ const chipFolders = extractFunction(appJs, "chipFolders");
 const folderProvider = extractFunction(appJs, "folderProvider");
 const providerExpanded = extractFunction(appJs, "providerExpanded");
 const opensAiWrite = extractFunction(appJs, "opensAiWrite");
-const sampleAccounts = mailbox.accountList();
-const gmailAccount = sampleAccounts.find((account) => account.platform === "gmail");
-const outlookAccount = sampleAccounts.find((account) => account.platform === "outlook");
+const gmailAccount = {
+  platform: "gmail",
+  folders: {
+    primary: [
+      { id: "in", wellKnownName: "inbox" },
+      { id: "sent", wellKnownName: "sentitems" },
+      { id: "drafts", wellKnownName: "drafts" },
+      { id: "arch", wellKnownName: "archive" },
+    ],
+    more: [],
+  },
+};
+const outlookAccount = {
+  platform: "outlook",
+  folders: {
+    primary: [
+      { id: "in", wellKnownName: "inbox" },
+      { id: "drafts", wellKnownName: "drafts" },
+      { id: "sent", wellKnownName: "sentitems" },
+    ],
+    more: [],
+  },
+};
 assert.deepStrictEqual(chipFolders(gmailAccount).map((folder) => folder.wellKnownName), ["inbox", "sentitems", "drafts"]);
 assert.deepStrictEqual(chipFolders(outlookAccount).map((folder) => folder.wellKnownName), ["inbox", "drafts", "sentitems"]);
 assert.deepStrictEqual(chipFolders(null), []);
@@ -283,7 +292,7 @@ assert.deepStrictEqual(remoteImageSrcs('<img src="data:image/png;base64,aaaa">')
 assert.deepStrictEqual(remoteImageSrcs('<img src="javascript:alert(1)">'), []);
 assert.deepStrictEqual(remoteImageSrcs("<img src=https://cdn.example/c.gif>"), [{ src: "https://cdn.example/c.gif", alt: "" }]);
 const babbage = "https://upload.wikimedia.org/wikipedia/commons/thumb/a/af/Charles_Babbage.jpg/330px-Charles_Babbage.jpg";
-assert.deepStrictEqual(remoteImageSrcs(mailbox.answer("mail:openEmail", [{ emailId: "m-engine" }]).data.email.htmlBody), [{ src: babbage, alt: "Charles Babbage" }]);
+assert.deepStrictEqual(remoteImageSrcs(`<p>Ready.</p><img alt="Charles Babbage" src="${babbage}">`), [{ src: babbage, alt: "Charles Babbage" }]);
 assert.strictEqual(sendDelayMs(0), 0);
 assert.strictEqual(sendDelayMs(5), 5000);
 assert.strictEqual(sendDelayMs(30), 30000);
@@ -342,108 +351,6 @@ for (const channel of [
 assert.ok(appJs.includes('"Unstar"') && appJs.includes('"Archive"') && appJs.includes('"Trash"') && appJs.includes('"Unsnooze"'));
 assert.ok(html.includes('id="undo"') && html.includes('class="split"'), "shell is missing undo or resize handles");
 assert.ok(css.includes("--folders") && css.includes("--list") && css.includes(".split") && css.includes(".folder-icon") && css.includes(".reader-actions"));
-
-function idsIn(accountId, folderId) {
-  const listed = mailbox.answer("mail:listFromCache", [{ accountId, folderId, limit: 20 }]);
-  assert.strictEqual(listed.success, true);
-  return listed.data.emails.map((row) => row.id);
-}
-
-assert.ok(idsIn("gmail-ada", "starred").includes("m-compiler"));
-const starred = mailbox.answer("mail:toggleStar", [{ emailId: "m-engine", accountId: "gmail-ada", isStarred: true }]);
-assert.strictEqual(starred.success, true);
-assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-engine"));
-assert.ok(mailbox.answer("mail:listFromCache", [{ accountId: "gmail-ada", folderId: "gmail-ada:inbox", limit: 20 }]).data.emails.some((row) => row.id === "m-engine" && row.isStarred === true));
-assert.ok(idsIn("gmail-ada", "starred").includes("m-engine"));
-mailbox.answer("mail:toggleStar", [{ emailId: "m-engine", accountId: "gmail-ada", isStarred: false }]);
-
-const archived = mailbox.answer("mail:archive", [{ emailId: "m-salon", accountId: "gmail-ada" }]);
-assert.ok(archived.data.opIds.length === 1);
-assert.ok(!idsIn("gmail-ada", "gmail-ada:inbox").includes("m-salon"));
-assert.ok(idsIn("gmail-ada", "gmail-ada:archive").includes("m-salon"));
-assert.strictEqual(mailbox.answer("mail:undoRemoval", [{ opIds: archived.data.opIds, kind: "move" }]).success, true);
-assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-salon"));
-
-const threaded = mailbox.answer("mail:threadArchive", [{ accountId: "gmail-ada", threadId: "t-compiler", emailId: "m-compiler" }]);
-assert.ok(threaded.data.opIds.length === 1);
-assert.ok(!idsIn("gmail-ada", "gmail-ada:inbox").some((id) => id === "m-compiler" || id === "m-compiler-2"));
-assert.strictEqual(idsIn("gmail-ada", "gmail-ada:archive").filter((id) => id === "m-compiler" || id === "m-compiler-2").length, 2);
-mailbox.answer("mail:undoRemoval", [{ opIds: threaded.data.opIds, kind: "move" }]);
-assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-compiler"));
-
-const trashed = mailbox.answer("mail:delete", [{ emailId: "m-trajectory", accountId: "outlook-grace" }]);
-assert.ok(trashed.data.opIds.length === 1);
-assert.ok(idsIn("outlook-grace", "outlook-grace:trash").includes("m-trajectory"));
-mailbox.answer("mail:undoRemoval", [{ opIds: trashed.data.opIds, kind: "move" }]);
-assert.ok(idsIn("outlook-grace", "outlook-grace:inbox").includes("m-trajectory"));
-
-const threadTrash = mailbox.answer("mail:threadTrash", [{ accountId: "outlook-grace", threadId: "m-apollo", emailId: "m-apollo" }]);
-assert.ok(threadTrash.data.opIds.length === 1);
-assert.ok(idsIn("outlook-grace", "outlook-grace:trash").includes("m-apollo"));
-mailbox.answer("mail:undoRemoval", [{ opIds: threadTrash.data.opIds, kind: "move" }]);
-assert.ok(idsIn("outlook-grace", "outlook-grace:inbox").includes("m-apollo"));
-
-const moved = mailbox.answer("mail:moveToFolder", [{
-  emailId: "m-engine",
-  accountId: "gmail-ada",
-  targetFolderId: "gmail-ada:notes",
-  folderId: "gmail-ada:inbox",
-}]);
-assert.ok(moved.data.opIds.length === 1);
-assert.ok(idsIn("gmail-ada", "gmail-ada:notes").includes("m-engine"));
-assert.ok(!idsIn("gmail-ada", "gmail-ada:inbox").includes("m-engine"));
-mailbox.answer("mail:undoRemoval", [{ opIds: moved.data.opIds, kind: "move" }]);
-assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-engine"));
-const toStar = mailbox.answer("mail:moveToFolder", [{
-  emailId: "m-engine",
-  accountId: "gmail-ada",
-  targetFolderId: "starred",
-  folderId: "gmail-ada:inbox",
-}]);
-assert.ok(idsIn("gmail-ada", "starred").includes("m-engine"));
-assert.ok(!idsIn("gmail-ada", "gmail-ada:inbox").includes("m-engine"));
-mailbox.answer("mail:undoRemoval", [{ opIds: toStar.data.opIds, kind: "move" }]);
-assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-engine"));
-
-const snoozed = mailbox.answer("mail:snoozeThread", [{
-  accountId: "gmail-ada",
-  threadId: "m-salon",
-  snoozedUntil: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
-}]);
-assert.strictEqual(snoozed.success, true);
-assert.ok(!idsIn("gmail-ada", "gmail-ada:inbox").includes("m-salon"));
-const snoozeList = mailbox.answer("mail:listSnoozed", [{ accountId: "gmail-ada" }]);
-assert.ok(snoozeList.data.records.some((row) => row.threadId === "m-salon" && row.state === "snoozed"));
-mailbox.answer("mail:unsnoozeThread", [{ accountId: "gmail-ada", threadId: "m-salon" }]);
-assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-salon"));
-assert.ok(!mailbox.answer("mail:listSnoozed", [{ accountId: "gmail-ada" }]).data.records.some((row) => row.threadId === "m-salon"));
-
-assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-promo"));
-assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-news"));
-const skipped = mailbox.answer("mail:tidyInbox", [{ accountId: "outlook-grace" }]);
-assert.strictEqual(skipped.success, true);
-assert.strictEqual(skipped.data.accepted, true);
-assert.strictEqual(skipped.data.archived, 0);
-assert.deepStrictEqual(skipped.data.opIds, []);
-assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-promo"));
-const tidied = mailbox.answer("mail:tidyInbox", [{ accountId: "gmail-ada" }]);
-assert.strictEqual(tidied.data.accepted, true);
-assert.strictEqual(tidied.data.archived, 2);
-assert.deepStrictEqual(tidied.data.ids.slice().sort(), ["m-news", "m-promo"]);
-assert.ok(tidied.data.opIds.length === 1);
-assert.ok(!idsIn("gmail-ada", "gmail-ada:inbox").includes("m-promo"));
-assert.ok(!idsIn("gmail-ada", "gmail-ada:inbox").includes("m-news"));
-assert.ok(idsIn("gmail-ada", "gmail-ada:archive").includes("m-promo"));
-assert.ok(idsIn("gmail-ada", "gmail-ada:archive").includes("m-news"));
-assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-engine"));
-assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-salon"));
-const again = mailbox.answer("mail:tidyInbox", [{ accountId: "gmail-ada" }]);
-assert.strictEqual(again.data.archived, 0);
-assert.deepStrictEqual(again.data.opIds, []);
-assert.strictEqual(mailbox.answer("mail:undoRemoval", [{ opIds: tidied.data.opIds, kind: "move" }]).success, true);
-assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-promo"));
-assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-news"));
-assert.ok(!idsIn("gmail-ada", "gmail-ada:archive").includes("m-promo"));
 
 const bodyNodes = extractFunction(appJs, "bodyNodes");
 assert.deepStrictEqual(bodyNodes("One\n\nTwo"), [
@@ -533,97 +440,6 @@ assert.deepStrictEqual(signatureFields({ id: "s2", name: "Short", text: "— Ada
   html: false,
   isDefault: false,
 });
-const emptySignatures = {
-  signatures: [],
-  defaultSignatureId: null,
-  defaultSignaturePerAccount: {},
-};
-assert.deepStrictEqual(mailbox.answer("mail:listSignatures", [{ accountId: "gmail-ada" }]).data, emptySignatures);
-assert.strictEqual(mailbox.answer("mail:upsertSignature", [{ text: "Hi" }]).error.code, "invalid");
-assert.strictEqual(mailbox.answer("mail:upsertSignature", [{ name: "  ", text: "Hi" }]).error.code, "invalid");
-assert.strictEqual(mailbox.answer("mail:upsertSignature", [{ name: "Work", text: "  ", html: "" }]).error.code, "invalid");
-assert.strictEqual(mailbox.answer("mail:upsertSignature", [{ name: "Work", text: 1 }]).error.code, "invalid");
-assert.strictEqual(mailbox.answer("mail:deleteSignature", [{}]).error.code, "not-found");
-const createdSignature = mailbox.answer("mail:upsertSignature", [{
-  name: " Work ",
-  text: "Thanks,\nAda",
-  isDefault: true,
-}]);
-assert.strictEqual(createdSignature.success, true);
-assert.strictEqual(createdSignature.data.name, "Work");
-assert.strictEqual(createdSignature.data.text, "Thanks,\nAda");
-assert.strictEqual(createdSignature.data.html, undefined);
-const createdSignatureId = createdSignature.data.id;
-const listedSignatures = mailbox.answer("mail:listSignatures", [{ accountId: "gmail-ada" }]);
-assert.strictEqual(listedSignatures.data.defaultSignatureId, createdSignatureId);
-assert.deepStrictEqual(signatureRows(listedSignatures.data).map((row) => row.name), ["Work"]);
-assert.strictEqual(chosenSignatureId(listedSignatures.data, "gmail-ada"), createdSignatureId);
-listedSignatures.data.signatures[0].name = "mutated";
-assert.strictEqual(mailbox.answer("mail:listSignatures", []).data.signatures[0].name, "Work");
-const htmlSignature = mailbox.answer("mail:upsertSignature", [{
-  id: createdSignatureId,
-  name: "Work",
-  html: "<p>Thanks,<br>Ada</p>",
-  text: "ignored",
-  isDefault: true,
-}]);
-assert.strictEqual(htmlSignature.success, true);
-assert.strictEqual(htmlSignature.data.html, "<p>Thanks,<br>Ada</p>");
-assert.strictEqual(htmlSignature.data.text, undefined);
-assert.strictEqual(signaturePlain(htmlSignature.data), "Thanks,\nAda");
-const textAgain = mailbox.answer("mail:upsertSignature", [{
-  id: createdSignatureId,
-  name: "Work",
-  text: "Thanks,\nAda",
-  isDefault: true,
-}]);
-assert.strictEqual(textAgain.success, true);
-assert.strictEqual(textAgain.data.text, "Thanks,\nAda");
-assert.strictEqual(textAgain.data.html, undefined);
-const secondSignature = mailbox.answer("mail:upsertSignature", [{
-  name: "Short",
-  text: "— Ada",
-  isDefault: true,
-}]);
-assert.strictEqual(secondSignature.success, true);
-const bothSignatures = mailbox.answer("mail:listSignatures", [{ accountId: "outlook-grace" }]);
-assert.deepStrictEqual(bothSignatures.data.signatures.map((row) => row.id), [createdSignatureId, secondSignature.data.id]);
-assert.strictEqual(bothSignatures.data.defaultSignatureId, secondSignature.data.id);
-assert.deepStrictEqual(bothSignatures.data.defaultSignaturePerAccount, {});
-const keptDefault = mailbox.answer("mail:upsertSignature", [{
-  id: createdSignatureId,
-  name: "Work",
-  text: "Thanks,\nAda",
-  isDefault: false,
-}]);
-assert.strictEqual(keptDefault.success, true);
-assert.strictEqual(mailbox.answer("mail:listSignatures", []).data.defaultSignatureId, secondSignature.data.id);
-const clearedDefault = mailbox.answer("mail:upsertSignature", [{
-  id: secondSignature.data.id,
-  name: "Short",
-  text: "— Ada",
-  isDefault: false,
-}]);
-assert.strictEqual(clearedDefault.success, true);
-assert.strictEqual(mailbox.answer("mail:listSignatures", []).data.defaultSignatureId, null);
-const missingSignature = mailbox.answer("mail:upsertSignature", [{ id: "missing", name: "Nope", text: "x" }]);
-assert.strictEqual(missingSignature.success, false);
-assert.strictEqual(missingSignature.error.code, "not-found");
-assert.strictEqual(mailbox.answer("mail:deleteSignature", [{ id: secondSignature.data.id }]).success, true);
-assert.deepStrictEqual(mailbox.answer("mail:listSignatures", []).data.signatures.map((row) => row.id), [createdSignatureId]);
-assert.strictEqual(mailbox.answer("mail:listSignatures", []).data.defaultSignatureId, null);
-const deletedTwice = mailbox.answer("mail:deleteSignature", [{ id: secondSignature.data.id }]);
-assert.strictEqual(deletedTwice.success, false);
-assert.strictEqual(deletedTwice.error.code, "not-found");
-assert.strictEqual(mailbox.answer("mail:upsertSignature", [{
-  id: createdSignatureId,
-  name: "Work",
-  text: "Thanks,\nAda",
-  isDefault: true,
-}]).data.id, createdSignatureId);
-assert.strictEqual(mailbox.answer("mail:deleteSignature", [{ id: createdSignatureId }]).success, true);
-assert.deepStrictEqual(mailbox.answer("mail:listSignatures", []).data, emptySignatures);
-
 for (const channel of [
   "mail:listSignatures",
   "mail:translateStart",
@@ -643,7 +459,19 @@ for (const channel of ["mail:upsertSignature", "mail:deleteSignature"]) {
 assert.ok(html.includes('id="signatures"') && html.includes('id="signature-name"') && html.includes('id="signature-body"'));
 assert.ok(html.includes('id="signature-html"') && html.includes('id="signature-default"') && html.includes('id="signatures-open"'));
 assert.ok(html.includes('id="signatures-from-compose"'));
-assert.ok(html.includes("Sample signatures stay in memory"));
+assert.ok(html.includes("Saved on this computer for the selected account"));
+assert.ok(html.includes("Default for this account"));
+assert.ok(html.includes("Sends while the app is open"));
+assert.ok(!html.includes("Sample signatures"));
+assert.ok(!appJs.includes("Sample mailbox"));
+assert.ok(appJs.includes("No mailbox yet"));
+assert.ok(appJs.includes("No messages yet."));
+assert.ok(appJs.includes("mail:cancelScheduled"));
+assert.ok(functionSource(appJs, "connectButton").includes("Connect account"));
+assert.ok(functionSource(appJs, "renderReader").includes("connectButton()"));
+assert.ok(functionSource(appJs, "renderAccounts").includes("connectButton()"));
+assert.ok(functionSource(appJs, "renderBanner").includes("No mailbox yet"));
+assert.ok(!functionSource(appJs, "renderBanner").includes("Sample"));
 assert.ok(appJs.includes('"Add a name."') && appJs.includes('"Add signature text."'));
 assert.ok(css.includes(".signature-row") && css.includes("#signatures-status") && css.includes("#signature-form textarea"));
 
@@ -903,63 +731,6 @@ assert.ok(line.includes("Hi") && line.includes("ada@example.com"));
 assert.strictEqual(scheduledLine({ subject: "  ", to: "" }), "(no subject)");
 assert.strictEqual(scheduledLine({ subject: "Hi", to: ["ada@example.com", "grace@example.com"] }).includes("ada@example.com, grace@example.com"), true);
 
-const future = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
-assert.deepStrictEqual(mailbox.answer("mail:listScheduled").data, []);
-const first = mailbox.answer("mail:scheduleSend", [{
-  accountId: "gmail-ada",
-  to: "grace@example.com",
-  subject: "Later",
-  sendAt: future,
-}]);
-assert.strictEqual(first.success, true);
-assert.ok(first.data.id);
-const second = mailbox.answer("mail:scheduleSend", [{
-  accountId: "outlook-grace",
-  to: ["ada@example.com"],
-  subject: "Also later",
-  sendAt: future,
-}]);
-assert.strictEqual(second.success, true);
-assert.strictEqual(second.data.to, "ada@example.com");
-const bare = mailbox.answer("mail:scheduleSend", [{
-  accountId: "gmail-ada",
-  to: "grace@example.com",
-  sendAt: future,
-}]);
-assert.strictEqual(bare.success, true);
-assert.strictEqual(bare.data.subject, "");
-const adaScheduled = mailbox.answer("mail:listScheduled", [{ accountId: "gmail-ada" }]);
-assert.strictEqual(adaScheduled.success, true);
-assert.deepStrictEqual(adaScheduled.data.map((row) => row.subject), ["Later", ""]);
-assert.strictEqual(adaScheduled.data[0].to, "grace@example.com");
-assert.strictEqual(adaScheduled.data[0].sendAt, future);
-assert.strictEqual(mailbox.answer("mail:listScheduled", [{ accountId: "outlook-grace" }]).data.length, 1);
-assert.strictEqual(mailbox.answer("mail:listScheduled", [{}]).data.length, 3);
-const pastSend = mailbox.answer("mail:scheduleSend", [{
-  accountId: "gmail-ada",
-  to: "grace@example.com",
-  sendAt: new Date(Date.now() - 1000).toISOString(),
-}]);
-assert.strictEqual(pastSend.success, false);
-assert.strictEqual(pastSend.error.code, "send_at_in_past");
-const nobodySend = mailbox.answer("mail:scheduleSend", [{
-  accountId: "gmail-ada",
-  to: "  ",
-  sendAt: future,
-}]);
-assert.strictEqual(nobodySend.success, false);
-assert.strictEqual(nobodySend.error.code, "invalid");
-assert.strictEqual(mailbox.answer("mail:scheduleSend", [{ accountId: "gmail-ada", to: "a@b.c" }]).success, false);
-assert.strictEqual(mailbox.answer("mail:listScheduled").data.length, 3);
-const ccOnly = mailbox.answer("mail:scheduleSend", [{
-  accountId: "gmail-ada",
-  cc: "mary@example.com",
-  sendAt: future,
-}]);
-assert.strictEqual(ccOnly.success, true);
-assert.strictEqual(ccOnly.data.to, "");
-assert.strictEqual(ccOnly.data.cc, "mary@example.com");
-
 const engineSrc = fs.readFileSync(path.join(root, "host/mail/engine.js"), "utf8");
 assert.ok(!engineSrc.includes("INBOX_LIMIT") && !engineSrc.includes("OTHER_LIMIT"));
 assert.ok(engineSrc.includes("const REFRESH_PAGES = [20, 30, 30]"));
@@ -982,16 +753,24 @@ assert.strictEqual(syncStatusLabel({ state: "done" }), "Sync done");
 assert.strictEqual(syncStatusLabel(null), "");
 assert.ok(engineSrc.includes('case "mail:scheduleSend"'));
 assert.ok(engineSrc.includes('case "mail:listScheduled"'));
-assert.ok(engineSrc.includes("imap_schedule_send_unsupported"));
-assert.ok(engineSrc.indexOf("if (sidecar.handles(channel))") < engineSrc.indexOf("if (!db.hasAccounts())"));
+assert.ok(engineSrc.includes('case "mail:cancelScheduled"'));
+assert.ok(!engineSrc.includes("imap_schedule_send_unsupported"));
+assert.ok(!engineSrc.includes("imap_signatures_unsupported"));
+assert.ok(!engineSrc.includes('require("../mailbox")'));
+assert.ok(!engineSrc.includes("if (!db.hasAccounts()) return undefined"));
+assert.ok(engineSrc.includes("defaultSignaturePerAccount"));
+assert.ok(engineSrc.includes("SCHEDULE_TICK_MS"));
+assert.ok(engineSrc.includes("while the app is closed"));
+assert.ok(engineSrc.indexOf("if (sidecar.handles(channel))") < engineSrc.indexOf('case "mail:listAccounts"'));
+assert.ok(!fs.existsSync(path.join(root, "host/mailbox.js")));
+assert.ok(!ipcSrc.includes("./mailbox"));
 assert.ok(engineSrc.includes('case "mail:upsertSignature"'));
 assert.ok(engineSrc.includes('case "mail:deleteSignature"'));
-assert.ok(engineSrc.includes("imap_signatures_unsupported"));
-for (const name of ["mail:cancelScheduled", "mail:deleteScheduled", "mail:unschedule", "mail:cancelScheduleSend"]) {
+for (const name of ["mail:deleteScheduled", "mail:unschedule", "mail:cancelScheduleSend"]) {
   assert.ok(!engineSrc.includes(name), `${name} appeared`);
   assert.ok(!appJs.includes(name), `renderer calls ${name}`);
 }
-for (const channel of ["mail:scheduleSend", "mail:listScheduled"]) {
+for (const channel of ["mail:scheduleSend", "mail:listScheduled", "mail:cancelScheduled"]) {
   assert.ok(registered.has(channel), `preload does not register ${channel}`);
   assert.ok(used.has(channel), `renderer does not call ${channel}`);
 }
@@ -1015,7 +794,16 @@ const compose = loadFunctions(appJs, [
   "composeSeed",
 ]);
 const ada = "ada.lovelace@example.com";
-const engineMail = mailbox.answer("mail:openEmail", [{ emailId: "m-engine" }]).data.email;
+const engineMail = {
+  id: "m-engine",
+  threadId: "m-engine",
+  from: "Charles Babbage <charles@example.com>",
+  to: ["Ada Lovelace <ada.lovelace@example.com>"],
+  cc: ["Mary Somerville <mary@example.com>"],
+  subject: "Notes on the Analytical Engine",
+  htmlBody: "<p>The table of operations is ready for a second reading.</p>",
+  textBody: "The table of operations is ready for a second reading.",
+};
 assert.deepStrictEqual(engineMail.cc, ["Mary Somerville <mary@example.com>"]);
 const reply = compose.composeSeed(engineMail, "reply", ada);
 assert.strictEqual(reply.title, "Reply");
@@ -1038,7 +826,12 @@ assert.strictEqual(replyAll.cc, "Mary Somerville <mary@example.com>");
 assert.ok(!`${replyAll.to} ${replyAll.cc}`.toLowerCase().includes(ada));
 const namedReply = compose.replyParties(engineMail, "Ada Lovelace <ada.lovelace@example.com>", true);
 assert.ok(!`${namedReply.to} ${namedReply.cc}`.toLowerCase().includes(ada));
-const own = mailbox.answer("mail:openEmail", [{ emailId: "m-compiler-2" }]).data.email;
+const own = {
+  from: "Ada Lovelace <ada.lovelace@example.com>",
+  to: ["Grace Hopper <grace.hopper@example.com>"],
+  subject: "Re: A compiler is just another program",
+  textBody: "I sketched the first pass as a table of substitutions.",
+};
 assert.strictEqual(compose.composeSeed(own, "reply", ada).to, "Grace Hopper <grace.hopper@example.com>");
 assert.strictEqual(compose.composeSeed(own, "reply", ada).subject, "Re: A compiler is just another program");
 assert.deepStrictEqual(compose.replyParties(own, ada, true), compose.replyParties(own, ada, false));
@@ -1061,7 +854,14 @@ assert.strictEqual(compose.replyParties({
 assert.strictEqual(compose.remoteVisible(false, false), false);
 assert.strictEqual(compose.remoteVisible(false, true), true);
 assert.strictEqual(compose.remoteVisible(true, false), true);
-const compiler = mailbox.answer("mail:openEmail", [{ emailId: "m-compiler" }]).data.email;
+const compiler = {
+  from: "Grace Hopper <grace.hopper@example.com>",
+  to: ["Ada Lovelace <ada.lovelace@example.com>"],
+  subject: "A compiler is just another program",
+  textBody: "Once the machine can read its own instructions, the rest follows.",
+  htmlBody: "<p>Once the machine can read its own instructions, the rest follows.</p>",
+  attachments: [{ id: "a-notes", filename: "notes.txt" }],
+};
 const forwarded = compose.composeSeed(compiler, "forward", ada);
 assert.strictEqual(forwarded.to, "");
 assert.strictEqual(forwarded.aiWrite, undefined);
@@ -1108,36 +908,6 @@ assert.ok(!namedOnly.body.includes("Attachments:"));
 assert.strictEqual(compose.attachmentNote({ attachments: [{ id: "x" }] }), "Attachments: attachment");
 assert.strictEqual(compose.composeSeed({ subject: "Hi" }, "reply", ada).to, "");
 assert.strictEqual(compose.composeSeed({ subject: "Hi" }, "forward", ada).body.includes("Forwarded message"), true);
-const scheduledReply = mailbox.answer("mail:scheduleSend", [{
-  accountId: "gmail-ada",
-  to: reply.to,
-  subject: reply.subject,
-  sendAt: future,
-  threadId: reply.threadId,
-}]);
-assert.strictEqual(scheduledReply.success, true);
-assert.strictEqual(scheduledReply.data.subject, "Re: Notes on the Analytical Engine");
-assert.strictEqual(scheduledReply.data.to, reply.to);
-assert.strictEqual(mailbox.answer("mail:upsertDraft", [{
-  accountId: "gmail-ada",
-  to: reply.to,
-  subject: reply.subject,
-  body: "<p>Thanks</p>",
-  threadId: reply.threadId,
-}]).success, true);
-assert.strictEqual(mailbox.answer("mail:send", [{
-  accountId: "gmail-ada",
-  to: reply.to,
-  subject: reply.subject,
-  body: "<p>Thanks</p>",
-  threadId: reply.threadId,
-}]).success, true);
-assert.strictEqual(mailbox.answer("mail:scheduleSend", [{
-  accountId: "gmail-ada",
-  to: "",
-  subject: forwarded.subject,
-  sendAt: future,
-}]).success, false);
 assert.ok(appJs.includes('readerButton("reply"') && appJs.includes('readerButton("reply-all"') && appJs.includes('readerButton("forward"'));
 assert.ok(appJs.includes("Load remote content") && appJs.includes("remote-gate"));
 assert.ok(html.includes('id="compose-cc"') && html.includes('id="compose-bcc"') && html.includes('class="compose-fields"'));
@@ -1542,7 +1312,18 @@ assert.ok(parity.includes("skills library"));
 assert.ok(parity.includes("config:setTheme") && parity.includes("genmail:configSetSnoozeEffective"));
 assert.ok(!parity.includes("the list is read-only"));
 assert.ok(!parity.includes("full Brain category/skills UI"));
-assert.ok(parity.includes("mail:upsertSignature") && parity.includes("imap_signatures_unsupported"));
+assert.ok(parity.includes("mail:upsertSignature") && parity.includes("defaultSignaturePerAccount"));
+assert.ok(parity.includes("mail:cancelScheduled"));
+assert.ok(parity.includes("while the app is open"));
+assert.ok(parity.includes("mail.sqlite"));
+assert.ok(!parity.includes("imap_signatures_unsupported"));
+assert.ok(!parity.includes("imap_schedule_send_unsupported"));
+assert.ok(!parity.includes("host/mailbox.js"));
+assert.ok(independentDoc.includes("while the app is open"));
+assert.ok(independentDoc.includes("mail.sqlite"));
+assert.ok(independentDoc.includes("mail:cancelScheduled"));
+assert.ok(!independentDoc.includes("host/mailbox.js"));
+assert.ok(brainDoc.includes("no sample mailbox"));
 assert.ok(!parity.includes("signatures editor"));
 
 const providerUi = loadFunctions(appJs, [
@@ -2407,6 +2188,231 @@ async function checkAiDraft() {
   assert.ok(studioUi.skillRows(homeSkills.data).length >= 7);
 }
 
+async function checkSignaturesAndSchedule(engine, db) {
+  const future = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+  assert.deepStrictEqual(engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]).data.signatures, []);
+  assert.strictEqual(engine.answer("mail:upsertSignature", [{ accountId: "imap-test", text: "Hi" }]).error.code, "invalid");
+  assert.strictEqual(engine.answer("mail:upsertSignature", [{ accountId: "imap-test", name: "  ", text: "Hi" }]).error.code, "invalid");
+  assert.strictEqual(engine.answer("mail:upsertSignature", [{ accountId: "imap-test", name: "Work", text: "  ", html: "" }]).error.code, "invalid");
+  assert.strictEqual(engine.answer("mail:upsertSignature", [{ accountId: "imap-test", name: "Work", text: 1 }]).error.code, "invalid");
+  assert.strictEqual(engine.answer("mail:deleteSignature", [{}]).error.code, "not-found");
+  const created = engine.answer("mail:upsertSignature", [{
+    accountId: "imap-test",
+    name: " Work ",
+    text: "Thanks,\nAda",
+    isDefault: true,
+  }]);
+  assert.strictEqual(created.success, true);
+  assert.strictEqual(created.data.name, "Work");
+  assert.strictEqual(created.data.text, "Thanks,\nAda");
+  assert.strictEqual(created.data.html, undefined);
+  assert.strictEqual(created.data.accountId, "imap-test");
+  const createdId = created.data.id;
+  const listed = engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]);
+  assert.strictEqual(listed.data.defaultSignatureId, createdId);
+  assert.deepStrictEqual(listed.data.defaultSignaturePerAccount, { "imap-test": createdId });
+  assert.deepStrictEqual(listed.data.signatures.map((row) => row.name), ["Work"]);
+  listed.data.signatures[0].name = "mutated";
+  assert.strictEqual(engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]).data.signatures[0].name, "Work");
+  const htmlSignature = engine.answer("mail:upsertSignature", [{
+    accountId: "imap-test",
+    id: createdId,
+    name: "Work",
+    html: "<p>Thanks,<br>Ada</p>",
+    text: "ignored",
+    isDefault: true,
+  }]);
+  assert.strictEqual(htmlSignature.data.html, "<p>Thanks,<br>Ada</p>");
+  assert.strictEqual(htmlSignature.data.text, undefined);
+  const textAgain = engine.answer("mail:upsertSignature", [{
+    accountId: "imap-test",
+    id: createdId,
+    name: "Work",
+    text: "Thanks,\nAda",
+    isDefault: true,
+  }]);
+  assert.strictEqual(textAgain.data.text, "Thanks,\nAda");
+  assert.strictEqual(textAgain.data.html, undefined);
+  const otherList = engine.answer("mail:listSignatures", [{ accountId: "imap-ol" }]);
+  assert.deepStrictEqual(otherList.data.signatures, []);
+  assert.strictEqual(otherList.data.defaultSignatureId, null);
+  assert.strictEqual(otherList.data.defaultSignaturePerAccount["imap-test"], createdId);
+  const second = engine.answer("mail:upsertSignature", [{
+    accountId: "imap-ol",
+    name: "Short",
+    text: "— Ada",
+    isDefault: true,
+  }]);
+  assert.strictEqual(second.success, true);
+  const both = engine.answer("mail:listSignatures", []);
+  assert.deepStrictEqual(both.data.signatures.map((row) => row.id), [createdId, second.data.id]);
+  assert.strictEqual(both.data.defaultSignatureId, null);
+  assert.deepStrictEqual(both.data.defaultSignaturePerAccount, {
+    "imap-test": createdId,
+    "imap-ol": second.data.id,
+  });
+  const keptDefault = engine.answer("mail:upsertSignature", [{
+    accountId: "imap-test",
+    id: createdId,
+    name: "Work",
+    text: "Thanks,\nAda",
+    isDefault: false,
+  }]);
+  assert.strictEqual(keptDefault.success, true);
+  assert.strictEqual(engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]).data.defaultSignatureId, null);
+  assert.strictEqual(engine.answer("mail:listSignatures", [{ accountId: "imap-ol" }]).data.defaultSignatureId, second.data.id);
+  assert.strictEqual(engine.answer("mail:upsertSignature", [{
+    accountId: "imap-ol",
+    id: createdId,
+    name: "Nope",
+    text: "x",
+  }]).error.code, "not-found");
+  assert.strictEqual(engine.answer("mail:upsertSignature", [{ id: "missing", accountId: "imap-test", name: "Nope", text: "x" }]).error.code, "not-found");
+  assert.strictEqual(engine.answer("mail:deleteSignature", [{ id: second.data.id }]).success, true);
+  assert.deepStrictEqual(engine.answer("mail:listSignatures", [{ accountId: "imap-ol" }]).data.signatures, []);
+  assert.strictEqual(engine.answer("mail:deleteSignature", [{ id: second.data.id }]).error.code, "not-found");
+  assert.strictEqual(engine.answer("mail:upsertSignature", [{
+    accountId: "imap-test",
+    id: createdId,
+    name: "Work",
+    text: "Thanks,\nAda",
+    isDefault: true,
+  }]).data.id, createdId);
+
+  assert.deepStrictEqual(engine.answer("mail:listScheduled").data, []);
+  const first = engine.answer("mail:scheduleSend", [{
+    accountId: "imap-test",
+    to: "grace@example.com",
+    subject: "Later",
+    body: "<p>Hi</p>",
+    sendAt: future,
+  }]);
+  assert.strictEqual(first.success, true);
+  assert.ok(first.data.id);
+  const secondSend = engine.answer("mail:scheduleSend", [{
+    accountId: "imap-ol",
+    to: ["ada@example.com"],
+    subject: "Also later",
+    sendAt: future,
+  }]);
+  assert.strictEqual(secondSend.success, true);
+  assert.strictEqual(secondSend.data.to, "ada@example.com");
+  const bare = engine.answer("mail:scheduleSend", [{
+    accountId: "imap-test",
+    to: "grace@example.com",
+    sendAt: future,
+  }]);
+  assert.strictEqual(bare.success, true);
+  assert.strictEqual(bare.data.subject, "");
+  const adaScheduled = engine.answer("mail:listScheduled", [{ accountId: "imap-test" }]);
+  assert.deepStrictEqual(adaScheduled.data.map((row) => row.subject), ["Later", ""]);
+  assert.strictEqual(adaScheduled.data[0].to, "grace@example.com");
+  assert.strictEqual(adaScheduled.data[0].sendAt, future);
+  assert.strictEqual(adaScheduled.data[0].status, "pending");
+  assert.strictEqual(engine.answer("mail:listScheduled", [{ accountId: "imap-ol" }]).data.length, 1);
+  assert.strictEqual(engine.answer("mail:listScheduled", [{}]).data.length, 3);
+  assert.strictEqual(engine.answer("mail:scheduleSend", [{
+    accountId: "imap-test",
+    to: "grace@example.com",
+    sendAt: new Date(Date.now() - 1000).toISOString(),
+  }]).error.code, "send_at_in_past");
+  assert.strictEqual(engine.answer("mail:scheduleSend", [{
+    accountId: "imap-test",
+    to: "  ",
+    sendAt: future,
+  }]).error.code, "invalid");
+  assert.strictEqual(engine.answer("mail:scheduleSend", [{ accountId: "imap-test", to: "a@b.c" }]).success, false);
+  assert.strictEqual(engine.answer("mail:listScheduled").data.length, 3);
+  const ccOnly = engine.answer("mail:scheduleSend", [{
+    accountId: "imap-test",
+    cc: "mary@example.com",
+    sendAt: future,
+  }]);
+  assert.strictEqual(ccOnly.success, true);
+  assert.strictEqual(ccOnly.data.to, "");
+  assert.strictEqual(ccOnly.data.cc, "mary@example.com");
+  assert.strictEqual(engine.answer("mail:cancelScheduled", [{ id: first.data.id }]).success, true);
+  assert.strictEqual(engine.answer("mail:cancelScheduled", [{ id: secondSend.data.id }]).success, true);
+  assert.strictEqual(engine.answer("mail:cancelScheduled", [{ id: bare.data.id }]).success, true);
+  assert.strictEqual(engine.answer("mail:cancelScheduled", [{ id: ccOnly.data.id }]).success, true);
+  assert.deepStrictEqual(engine.answer("mail:listScheduled").data, []);
+  assert.strictEqual(engine.answer("mail:cancelScheduled", [{ id: first.data.id }]).error.code, "not-found");
+
+  const queued = engine.answer("mail:scheduleSend", [{
+    accountId: "imap-test",
+    to: "grace@example.com",
+    subject: "After restart",
+    body: "<p>Later</p>",
+    threadId: "thr-later",
+    sendAt: future,
+  }]);
+  assert.strictEqual(queued.success, true);
+  db.close();
+  await db.open(db.file());
+  const againSig = engine.answer("mail:listSignatures", [{ accountId: "imap-test" }]);
+  assert.ok(againSig.data.signatures.some((row) => row.id === createdId && row.text === "Thanks,\nAda"));
+  assert.strictEqual(againSig.data.defaultSignaturePerAccount["imap-test"], createdId);
+  const againSched = engine.answer("mail:listScheduled", [{ accountId: "imap-test" }]);
+  assert.ok(againSched.data.some((row) => row.id === queued.data.id && row.subject === "After restart"));
+
+  const remote = require("../host/mail/remote");
+  const savedSend = remote.sendSmtp;
+  remote.sendSmtp = async () => ({ messageId: "<sched@example.test>" });
+  db.setScheduledSendAt(queued.data.id, Date.now() - 1000);
+  await engine.pumpScheduled();
+  assert.ok(!engine.answer("mail:listScheduled").data.some((row) => row.id === queued.data.id));
+  remote.sendSmtp = async () => { throw new Error("smtp down"); };
+  const doomed = engine.answer("mail:scheduleSend", [{
+    accountId: "imap-test",
+    to: "grace@example.com",
+    subject: "Will fail",
+    sendAt: future,
+  }]);
+  db.setScheduledSendAt(doomed.data.id, Date.now() - 1000);
+  await engine.pumpScheduled();
+  const failed = engine.answer("mail:listScheduled", [{ accountId: "imap-test" }]).data.find((row) => row.id === doomed.data.id);
+  assert.strictEqual(failed.status, "failed");
+  assert.match(failed.error, /smtp down/);
+  await engine.pumpScheduled();
+  assert.strictEqual(engine.answer("mail:listScheduled", [{ accountId: "imap-test" }]).data.filter((row) => row.id === doomed.data.id).length, 1);
+  assert.strictEqual(engine.answer("mail:cancelScheduled", [{ id: doomed.data.id }]).success, true);
+  remote.sendSmtp = savedSend;
+
+  db.insertAccount({
+    id: "imap-drop",
+    email: "drop@example.com",
+    username: "drop@example.com",
+    profile: "custom",
+    imapHost: "imap.example.test",
+    imapPort: 993,
+    imapTls: true,
+    smtpHost: "smtp.example.test",
+    smtpPort: 465,
+    smtpTls: true,
+    delimiter: "/",
+    createdAt: Date.now(),
+  });
+  const dropSig = engine.answer("mail:upsertSignature", [{
+    accountId: "imap-drop",
+    name: "Drop",
+    text: "Gone",
+  }]);
+  const dropSend = engine.answer("mail:scheduleSend", [{
+    accountId: "imap-drop",
+    to: "grace@example.com",
+    subject: "Drop",
+    sendAt: future,
+  }]);
+  assert.strictEqual(dropSig.success, true);
+  assert.strictEqual(dropSend.success, true);
+  const removed = await engine.answer("mail:removeAccount", [{ accountId: "imap-drop" }]);
+  assert.strictEqual(removed.success, true);
+  assert.deepStrictEqual(engine.answer("mail:listSignatures", [{ accountId: "imap-drop" }]).data.signatures, []);
+  assert.deepStrictEqual(engine.answer("mail:listScheduled", [{ accountId: "imap-drop" }]).data, []);
+  assert.ok(!engine.answer("mail:listAccounts").data.some((row) => row.id === "imap-drop"));
+  assert.ok(engine.answer("mail:listAccounts").data.some((row) => row.id === "imap-test"));
+}
+
 async function checkTidy() {
   const os = require("os");
   const prev = {
@@ -2424,18 +2430,42 @@ async function checkTidy() {
   try {
     const { answer: settingsAnswer } = require("../host/settings");
     assert.strictEqual(settingsAnswer("genmail:configSetShowOneClickTidy", [true]), true);
-    assert.strictEqual(mailbox.answer("genmail:configGetShowOneClickTidyEffective", []), true);
+    assert.strictEqual(settingsAnswer("genmail:configGetShowOneClickTidy", []), true);
     assert.strictEqual(settingsAnswer("genmail:configSetShowOneClickTidy", [false]), false);
-    assert.strictEqual(mailbox.answer("genmail:configGetShowOneClickTidyEffective", []), false);
+    assert.strictEqual(settingsAnswer("genmail:configGetShowOneClickTidy", []), false);
     assert.strictEqual(settingsAnswer("genmail:configSetShowOneClickTidy", [true]), true);
     const engine = require("../host/mail/engine");
     const db = require("../host/mail/db");
     const { createIpc } = require("../host/ipc");
     await engine.init();
-    assert.strictEqual(engine.answer("genmail:configGetShowOneClickTidyEffective", []), undefined);
-    assert.strictEqual(engine.answer("mail:tidyInbox", []), undefined);
+    assert.strictEqual(engine.answer("genmail:configGetShowOneClickTidyEffective", []), false);
+    const emptyTidy = engine.answer("mail:tidyInbox", []);
+    assert.strictEqual(emptyTidy.success, true);
+    assert.strictEqual(emptyTidy.data.accepted, false);
+    assert.deepStrictEqual(emptyTidy.data.ids, []);
     const ipc = createIpc(path.join(dir, "ipc.log"));
-    assert.strictEqual(ipc.handle({}, "genmail:configGetShowOneClickTidyEffective"), true);
+    assert.strictEqual(ipc.handle({}, "genmail:configGetShowOneClickTidyEffective"), false);
+    const emptyAccounts = ipc.handle({}, "mail:listAccounts");
+    assert.strictEqual(emptyAccounts.success, true);
+    assert.deepStrictEqual(emptyAccounts.data, []);
+    const emptyList = ipc.handle({}, "mail:listFromCache", { limit: 20 });
+    assert.strictEqual(emptyList.success, true);
+    assert.deepStrictEqual(emptyList.data.emails, []);
+    assert.ok(!JSON.stringify(emptyList.data).includes("Newsletter"));
+    assert.ok(!JSON.stringify(emptyList.data).includes("ada.lovelace@example.com"));
+    const blockedSend = await ipc.handle({}, "mail:send", { to: "a@b.c", subject: "x", body: "<p>x</p>" });
+    assert.strictEqual(blockedSend.success, false);
+    const blockedSchedule = engine.answer("mail:scheduleSend", [{
+      to: "a@b.c",
+      sendAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }]);
+    assert.strictEqual(blockedSchedule.success, false);
+    assert.strictEqual(engine.answer("mail:upsertSignature", [{ name: "Work", text: "Hi" }]).success, false);
+    assert.deepStrictEqual(engine.answer("mail:listSignatures", []).data, {
+      signatures: [],
+      defaultSignatureId: null,
+      defaultSignaturePerAccount: {},
+    });
     db.insertAccount({
       id: "imap-test",
       email: "ada@example.com",
@@ -2456,9 +2486,6 @@ async function checkTidy() {
     assert.strictEqual(live.success, true);
     assert.strictEqual(live.data.accepted, false);
     assert.deepStrictEqual(live.data.opIds, []);
-    assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-promo"));
-    assert.ok(idsIn("gmail-ada", "gmail-ada:inbox").includes("m-news"));
-    assert.strictEqual(mailbox.answer("genmail:configGetShowOneClickTidyEffective", []), true);
 
     process.env.GENMAIL_PAGE_DELAY_MS = "0";
     const remote = require("../host/mail/remote");
@@ -2642,6 +2669,7 @@ async function checkTidy() {
     assert.strictEqual(gmail.success, true);
     assert.deepStrictEqual(gmail.data, []);
     assert.deepStrictEqual(boxes, ["[Gmail]/All Mail"]);
+    await checkSignaturesAndSchedule(engine, db);
   } finally {
     if (savedRemote) {
       const remote = require("../host/mail/remote");
