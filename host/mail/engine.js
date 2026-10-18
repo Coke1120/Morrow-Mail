@@ -13,6 +13,7 @@ const oauth = require("./oauth");
 const sidecar = require("./sidecar");
 const http = require("./provider-http");
 const providerApi = require("./provider-api");
+const idle = require("./idle");
 
 const PRIMARY_ORDER = ["inbox", "sentitems", "drafts", "deleteditems", "archive", "junkemail"];
 const KEY_TO_WELL = {
@@ -154,6 +155,7 @@ function accountView(row, index) {
     delimiter: row.delimiter || "/",
     imapUsername: row.username,
     authKind: row.auth_kind || "password",
+    push: idlePush(row.id),
   };
   if (row.profile === "custom") {
     view.imapSmtpCustom = {
@@ -394,6 +396,15 @@ function gateOpen(accountId) {
   return !row || row.until <= Date.now();
 }
 
+function idlePush(accountId) {
+  if (!idleController || !idleController.healthy(accountId)) return "polling";
+  return "push";
+}
+
+function pauseIdle(accountId) {
+  if (idleController) idleController.notePause(accountId);
+}
+
 function noteRateLimit(accountId, error) {
   const row = syncGates.get(accountId) || { until: 0, strikes: 0 };
   row.strikes += 1;
@@ -402,12 +413,14 @@ function noteRateLimit(accountId, error) {
   row.until = Date.now() + wait;
   syncGates.set(accountId, row);
   emitSync("paused", { accountId, message: "Paused for rate limit" });
+  pauseIdle(accountId);
   return row;
 }
 
 function noteStorm(accountId) {
   syncGates.set(accountId, { until: Date.now() + STORM_MS, strikes: 3 });
   emitSync("paused", { accountId, message: "Paused after a mailbox reset" });
+  pauseIdle(accountId);
 }
 
 function clearStrikes(accountId) {
@@ -553,6 +566,7 @@ async function syncFolderPolicy(client, account, folderPath) {
     }
     emitSync("error", { accountId: account.id, folderId: folderPath, message: remote.explain(error) });
     emitFolderSync(account.id, folderPath, false);
+    if (error && typeof error === "object") error.syncReported = true;
     throw error;
   }
 }
@@ -633,6 +647,14 @@ async function syncAll(options) {
     : { background: true };
   const accounts = db.listAccountRows();
   for (const account of accounts) {
+    const pushed = !!(idleController && idleController.healthy(account.id));
+    if (scope.background && !idle.backgroundPollDue(
+      pushed,
+      idleSafetyAt.get(account.id) || 0,
+      Date.now(),
+      idle.IDLE_SAFETY_POLL_MS,
+    )) continue;
+    if (pushed) idleSafetyAt.set(account.id, Date.now());
     try {
       await syncAccount(account, scope);
     } catch (error) {
@@ -653,6 +675,79 @@ let scheduleTimer = null;
 let syncing = false;
 let pumping = false;
 let oauthGeneration = 0;
+let idleController = null;
+const idleSafetyAt = new Map();
+const idleReported = new Map();
+
+function onIdleStatus(accountId, mode) {
+  if (mode === "push") idleSafetyAt.set(accountId, Date.now());
+  if (idleReported.get(accountId) === mode) return;
+  idleReported.set(accountId, mode);
+  if (ready) emitAccounts();
+}
+
+function ensureIdle() {
+  if (idleController) return idleController;
+  idleController = idle.createIdleController({
+    listAccounts: () => db.listAccountRows(),
+    secretFor,
+    openClient: (account, secret) => remote.openIdleClient(account, secret),
+    syncFolder: async (account, folderPath) => {
+      const row = db.accountById(account.id);
+      if (!row) return null;
+      try {
+        return await syncFolderPath(row, folderPath);
+      } catch (error) {
+        if (http.isRateLimit(error)) throw error;
+        if (!error || !error.syncReported) {
+          emitSync("error", { accountId: row.id, folderId: folderPath, message: remote.explain(error) });
+        }
+        return null;
+      }
+    },
+    gateUntil: (accountId) => {
+      const row = syncGates.get(accountId);
+      return row && row.until > Date.now() ? row.until : 0;
+    },
+    inboxPath: (account) => {
+      const inbox = db.folderByWellKnown(account.id, "inbox");
+      return (inbox && inbox.path) || "INBOX";
+    },
+    onRateLimit: (accountId, error) => noteRateLimit(accountId, error),
+    onStatus: onIdleStatus,
+    isRateLimit: (error) => http.isRateLimit(error),
+  });
+  return idleController;
+}
+
+function watchIdle() {
+  if (!idleController) return;
+  idleController.syncAccounts().catch(() => {});
+}
+
+function idleSleep() {
+  if (idleController) idleController.sleep();
+}
+
+function idleWake() {
+  if (idleController && idleController.wake) idleController.wake();
+}
+
+function idleOffline() {
+  if (idleController) idleController.offline();
+}
+
+function idleOnline() {
+  if (idleController && idleController.online) idleController.online();
+}
+
+async function stopIdle() {
+  if (!idleController) return;
+  const controller = idleController;
+  idleController = null;
+  idleReported.clear();
+  await controller.stop();
+}
 
 function purgeAbandonedAccounts() {
   if (!ready) return false;
@@ -666,6 +761,9 @@ function purgeAbandonedAccounts() {
     secrets.deletePassword(`${row.id}:organize`);
     secrets.deletePassword(`${row.id}:calendar`);
     db.removeAccount(row.id);
+    if (idleController) idleController.forget(row.id).catch(() => {});
+    idleSafetyAt.delete(row.id);
+    idleReported.delete(row.id);
     removed = true;
   }
   return removed;
@@ -691,6 +789,7 @@ function startBackgroundSync() {
   setTimeout(tick, 400);
   if (!pollTimer) pollTimer = setInterval(tick, POLL_MS);
   startSchedulePump();
+  ensureIdle().start().catch(() => {});
 }
 
 function startSchedulePump() {
@@ -821,6 +920,7 @@ async function connectOAuthAccount(providerInput) {
     }
   }
   emitAccounts({ activeAccountId: id, folderId: inbox ? inbox.path : "" });
+  watchIdle();
   setTimeout(() => {
     const row = db.accountById(id);
     if (!row) return;
@@ -926,6 +1026,7 @@ async function connectAccount(params) {
     }
   }
   emitAccounts();
+  watchIdle();
   setTimeout(() => {
     const row = db.accountById(id);
     if (!row) return;
@@ -943,6 +1044,11 @@ async function removeAccount(params) {
   secrets.deletePassword(id);
   secrets.deletePassword(`${id}:organize`);
   secrets.deletePassword(`${id}:calendar`);
+  if (idleController) {
+    try { await idleController.forget(id); } catch { /* the connection is already gone */ }
+  }
+  idleSafetyAt.delete(id);
+  idleReported.delete(id);
   db.removeAccount(id);
   emitAccounts();
   return ok(true);
@@ -1545,6 +1651,12 @@ function answer(channel, args) {
     return ok(true);
   }
   if (channel === "mail:cancelOAuth") return cancelOAuth();
+  if (channel === "mail:setOnline") {
+    const online = !params || params.online !== false;
+    if (online) idleOnline();
+    else idleOffline();
+    return ok({ online });
+  }
   if (channel === "mail:addAccount") {
     return (async () => {
       try {
@@ -2116,6 +2228,11 @@ module.exports = {
   messagesForAi,
   pumpScheduled,
   startBackgroundSync,
+  stopIdle,
+  idleSleep,
+  idleWake,
+  idleOffline,
+  idleOnline,
   accountViews,
   dataFile,
   purgeAbandonedAccounts,
@@ -2133,6 +2250,9 @@ module.exports = {
     rateLimitMs: RATE_LIMIT_MS,
     stormMs: STORM_MS,
     pollMs: POLL_MS,
+    idleRenewMs: idle.IDLE_RENEW_MS,
+    idleSafetyPollMs: idle.IDLE_SAFETY_POLL_MS,
+    idleBackoffCapMs: idle.IDLE_BACKOFF_CAP_MS,
     searchLimit: SEARCH_LIMIT,
   },
 };

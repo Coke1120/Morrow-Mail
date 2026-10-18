@@ -48,6 +48,7 @@ const INVOKE = [
   "mail:modifyMessageLabels",
   "mail:moveProviderMessage",
   "mail:removeAccount",
+  "mail:setOnline",
   "calendar:status",
   "calendar:connect",
   "calendar:list",

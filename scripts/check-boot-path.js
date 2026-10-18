@@ -10,6 +10,8 @@ const syntax = [
   "host/asar.js",
   "host/ipc.js",
   "host/mail/engine.js",
+  "host/mail/idle.js",
+  "host/mail/remote.js",
   "host/mail/oauth.js",
   "host/mail/oauth-config.js",
   "host/update-auth.js",
@@ -736,6 +738,24 @@ assert.ok(!engineSrc.includes("INBOX_LIMIT") && !engineSrc.includes("OTHER_LIMIT
 assert.ok(engineSrc.includes("const REFRESH_PAGES = [20, 30, 30]"));
 assert.ok(engineSrc.includes("const SYNC_DAYS = 180"));
 assert.ok(engineSrc.includes("const POLL_MS = 45000"));
+assert.ok(engineSrc.includes('require("./idle")'));
+assert.ok(engineSrc.includes("backgroundPollDue"));
+assert.ok(engineSrc.includes("openIdleClient"));
+assert.ok(engineSrc.includes("stopIdle"));
+assert.ok(main.includes('powerMonitor.on("suspend"'));
+assert.ok(main.includes('powerMonitor.on("resume"'));
+assert.ok(main.includes("stopIdle"));
+assert.ok(html.includes('id="settings-accounts"'));
+assert.ok(appJs.includes("Push: on") && appJs.includes("Push: polling"));
+assert.ok(appJs.includes("mail:setOnline"));
+const pushStatusLabel = extractFunction(appJs, "pushStatusLabel");
+assert.strictEqual(pushStatusLabel({ push: "push", platform: "imap" }), "Push: on");
+assert.strictEqual(pushStatusLabel({ push: "polling", platform: "imap" }), "Push: polling");
+assert.strictEqual(pushStatusLabel({ platform: "imap" }), "Push: polling");
+assert.strictEqual(pushStatusLabel(null), "Push: polling");
+const remoteSrc = fs.readFileSync(path.join(root, "host/mail/remote.js"), "utf8");
+assert.ok(remoteSrc.includes("disableAutoIdle: true"));
+assert.ok(remoteSrc.includes("const IDLE_SOCKET_MS = 28 * 60 * 1000"));
 assert.ok(engineSrc.includes("mail:syncStatus"));
 assert.ok(engineSrc.includes("limit: 40"));
 assert.ok(engineSrc.includes("sync_horizon_days"));
@@ -746,6 +766,10 @@ const parityDoc = fs.readFileSync(path.join(root, "docs/PARITY_SHELL.md"), "utf8
 assert.ok(independentDoc.includes("does not download the whole mailbox"));
 assert.ok(independentDoc.includes("already downloaded"));
 assert.ok(independentDoc.includes("last 180 days"));
+assert.ok(independentDoc.includes("advertises IDLE"));
+assert.ok(parityDoc.includes("Push: on"));
+assert.ok(parityDoc.includes("Push: polling"));
+assert.ok(parityDoc.includes("about every 25 minutes"));
 assert.ok(!independentDoc.includes("last 30 days"));
 assert.ok(parityDoc.includes("180-day window"));
 assert.ok(parityDoc.includes("Older than 180 days is not downloaded."));
@@ -3164,6 +3188,12 @@ async function checkTidy() {
     assert.strictEqual(engine.syncPolicy.pollMs, 45000);
     assert.strictEqual(engine.syncPolicy.rateLimitMs, 30000);
     assert.strictEqual(engine.syncPolicy.stormMs, 15 * 60 * 1000);
+    assert.strictEqual(engine.syncPolicy.idleRenewMs, 25 * 60 * 1000);
+    assert.strictEqual(engine.syncPolicy.idleSafetyPollMs, 5 * 60 * 1000);
+    assert.ok(engine.syncPolicy.idleSafetyPollMs > engine.syncPolicy.pollMs);
+    assert.strictEqual(engine.syncPolicy.idleBackoffCapMs, 3 * 60 * 1000);
+    const pushed = engine.answer("mail:listAccounts").data.find((row) => row.id === "imap-test");
+    assert.strictEqual(pushed.push, "polling");
 
     db.insertMessage({
       id: "m-local-only",
@@ -4562,7 +4592,7 @@ async function checkOauthSession() {
 checkGoogleOauthAlias();
 checkUpdateAuth();
 
-checkAiDraft().then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => {
+checkAiDraft().then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);

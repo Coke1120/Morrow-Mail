@@ -20,12 +20,13 @@ function explain(error, secret) {
 }
 
 
-function makeClient(account, secret) {
+function makeClient(account, secret, options) {
   const tls = account.imap_tls === 1;
   const secure = tls && account.imap_port !== 143;
   const auth = account.auth_kind === "oauth2"
     ? { user: account.username, accessToken: secret }
     : { user: account.username, pass: secret };
+  const extra = options || {};
   return new ImapFlow({
     host: account.imap_host,
     port: account.imap_port,
@@ -34,9 +35,10 @@ function makeClient(account, secret) {
     auth,
     logger: false,
     emitLogs: false,
+    disableAutoIdle: extra.disableAutoIdle === true,
     connectionTimeout: 20000,
     greetingTimeout: 15000,
-    socketTimeout: 45000,
+    socketTimeout: extra.socketTimeout || 45000,
     tls: { rejectUnauthorized: true },
   });
 }
@@ -49,6 +51,74 @@ async function withClient(account, password, fn) {
   } finally {
     try { await client.logout(); } catch { client.close(); }
   }
+}
+
+// Longer than the 25 minute IDLE renew, shorter than a dead socket sitting forever.
+// maxIdleTime stays unset so a DONE returns from idle() instead of looping inside ImapFlow.
+const IDLE_SOCKET_MS = 28 * 60 * 1000;
+
+function settleIdle(client, resolve, reject) {
+  let finished = false;
+  const finish = (fn, value) => {
+    if (finished) return;
+    finished = true;
+    client.off("close", onClose);
+    client.off("error", onError);
+    fn(value);
+  };
+  const onClose = () => finish(reject, Object.assign(new Error("IMAP IDLE connection closed"), { code: "closed" }));
+  const onError = (error) => finish(reject, error || Object.assign(new Error("IMAP IDLE failed"), { code: "closed" }));
+  client.on("close", onClose);
+  client.on("error", onError);
+  return finish;
+}
+
+async function openIdleClient(account, secret) {
+  const client = makeClient(account, secret, {
+    disableAutoIdle: true,
+    socketTimeout: IDLE_SOCKET_MS,
+  });
+  try {
+    await client.connect();
+  } catch (error) {
+    try { client.close(); } catch { /* already closed */ }
+    throw error;
+  }
+  return {
+    capabilities() {
+      return client.capabilities;
+    },
+    async select(path) {
+      await client.mailboxOpen(path);
+    },
+    idle() {
+      return new Promise((resolve, reject) => {
+        const finish = settleIdle(client, resolve, reject);
+        client.idle().then((value) => {
+          if (value === false) finish(reject, Object.assign(new Error("IDLE failed"), { code: "idle_failed" }));
+          else finish(resolve, "done");
+        }).catch((error) => finish(reject, error));
+      });
+    },
+    async done() {
+      try {
+        if (typeof client.preCheck === "function") {
+          await client.preCheck();
+          return;
+        }
+      } catch { /* NOOP still ends a stuck IDLE */ }
+      if (typeof client.noop === "function") await client.noop();
+    },
+    on(event, fn) {
+      client.on(event === "fetch" ? "flags" : event, fn);
+    },
+    async logout() {
+      try { await client.logout(); } catch { try { client.close(); } catch { /* already closed */ } }
+    },
+    close() {
+      try { client.close(); } catch { /* already closed */ }
+    },
+  };
 }
 
 function transport(account, secret) {
@@ -526,6 +596,7 @@ async function sendSmtp(account, password, options) {
 module.exports = {
   explain,
   withClient,
+  openIdleClient,
   verifySmtp,
   listFolderRecords,
   syncFolder,

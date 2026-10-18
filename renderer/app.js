@@ -1626,6 +1626,7 @@ function syncRemove() {
 }
 
 function renderAccounts() {
+  renderSettingsAccounts();
   const nav = $("folders");
   nav.replaceChildren();
   if (!state.accounts.length) {
@@ -1852,6 +1853,72 @@ function filteredEmails(emails, query) {
     const snippet = email && email.snippet ? String(email.snippet) : "";
     return (subject + "\n" + from + "\n" + snippet).toLowerCase().includes(q);
   });
+}
+
+function pushStatusLabel(account) {
+  return account && account.push === "push" ? "Push: on" : "Push: polling";
+}
+
+function pushIcon() {
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  icon.setAttribute("viewBox", "0 0 24 24");
+  icon.setAttribute("width", "14");
+  icon.setAttribute("height", "14");
+  icon.setAttribute("aria-hidden", "true");
+  icon.setAttribute("fill", "none");
+  icon.setAttribute("stroke", "currentColor");
+  icon.setAttribute("stroke-width", "2");
+  icon.setAttribute("stroke-linecap", "round");
+  icon.setAttribute("stroke-linejoin", "round");
+  for (const d of [
+    "M5 12.55a11 11 0 0 1 14.08 0",
+    "M1.42 9a16 16 0 0 1 21.16 0",
+    "M8.53 16.11a6 6 0 0 1 6.95 0",
+  ]) {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", d);
+    icon.appendChild(path);
+  }
+  const dot = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  dot.setAttribute("x1", "12");
+  dot.setAttribute("y1", "20");
+  dot.setAttribute("x2", "12.01");
+  dot.setAttribute("y2", "20");
+  icon.appendChild(dot);
+  return icon;
+}
+
+function renderSettingsAccounts() {
+  const list = $("settings-accounts");
+  if (!list) return;
+  const rows = state.accounts.map((account) => `${account.id}\t${pushStatusLabel(account)}`);
+  const stamp = rows.join("\n") || "empty";
+  if (list.dataset.stamp === stamp) return;
+  list.dataset.stamp = stamp;
+  list.replaceChildren();
+  if (!state.accounts.length) {
+    const empty = document.createElement("li");
+    empty.className = "empty";
+    empty.textContent = "No mailbox connected.";
+    list.appendChild(empty);
+    return;
+  }
+  for (const account of state.accounts) {
+    const row = document.createElement("li");
+    row.className = "settings-account";
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = accountLabel(account);
+    const status = document.createElement("span");
+    status.className = "push";
+    const label = pushStatusLabel(account);
+    status.append(pushIcon(), document.createTextNode(label));
+    row.append(name, status);
+    list.appendChild(row);
+  }
+  const motion = motionApi();
+  const dialog = $("settings");
+  if (motion && dialog && dialog.open) motion.rows(list.querySelectorAll(".settings-account"));
 }
 
 function syncStatusLabel(sync) {
@@ -7262,12 +7329,23 @@ function wire() {
   });
 }
 
+function watchNetwork() {
+  if (!api || typeof navigator === "undefined") return;
+  const send = () => {
+    api.invoke("mail:setOnline", { online: navigator.onLine !== false }).catch(() => {});
+  };
+  window.addEventListener("online", send);
+  window.addEventListener("offline", send);
+  send();
+}
+
 async function boot() {
   if (!api) {
     showStatus("Mail preload is unavailable.", true);
     return;
   }
   wire();
+  watchNetwork();
   api.on("mail:accountsUpdated", onAccountsUpdated);
   api.on("mail:emailsUpdated", () => scheduleReload());
   api.on("mail:syncStatus", (payload) => {

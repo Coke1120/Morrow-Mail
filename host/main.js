@@ -1,4 +1,4 @@
-const { app, BrowserWindow, protocol, ipcMain, session, Menu } = require("electron");
+const { app, BrowserWindow, protocol, ipcMain, session, Menu, powerMonitor } = require("electron");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -288,6 +288,17 @@ async function createWindow(preloadFile, mode) {
   return win;
 }
 
+let idleStopped = false;
+app.on("before-quit", (event) => {
+  if (idleStopped) return;
+  event.preventDefault();
+  idleStopped = true;
+  Promise.resolve()
+    .then(() => require("./mail/engine").stopIdle())
+    .catch(() => {})
+    .finally(() => app.quit());
+});
+
 app.whenReady().then(async () => {
   installMenu();
   registerHostAi();
@@ -326,6 +337,14 @@ app.whenReady().then(async () => {
     attachIpc(preloadFile);
     const win = await createWindow(preloadFile, mode);
     startBackgroundSync();
+    try {
+      powerMonitor.on("suspend", () => {
+        try { require("./mail/engine").idleSleep(); } catch { /* mail is not open */ }
+      });
+      powerMonitor.on("resume", () => {
+        try { require("./mail/engine").idleWake(); } catch { /* mail is not open */ }
+      });
+    } catch { /* this platform does not emit power events */ }
     try { require("./brain").scheduleLivingRefresh(); } catch { /* brain store is optional at boot */ }
     if (process.env.GENMAIL_BOOT_EXIT === "1") {
       setTimeout(async () => {
