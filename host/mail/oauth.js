@@ -212,7 +212,7 @@ async function exchange(provider, creds, code, redirect, verifier, scope, fetchI
     accessToken: json.access_token,
     refreshToken: json.refresh_token || "",
     expiresAt: Date.now() + Number(json.expires_in || 3600) * 1000,
-    grantedScopes: json.scope || scope || SCOPES[provider],
+    grantedScopes: grantedScopeText(provider, json, scope || SCOPES[provider]),
     idToken: typeof json.id_token === "string" ? json.id_token : "",
   };
 }
@@ -238,8 +238,28 @@ async function refresh(provider, creds, refreshToken, scope, previousGranted) {
     accessToken: json.access_token,
     refreshToken: json.refresh_token || refreshToken,
     expiresAt: Date.now() + Number(json.expires_in || 3600) * 1000,
-    grantedScopes: json.scope || previousGranted || scope || SCOPES[provider],
+    grantedScopes: grantedScopeText(provider, json, previousGranted || scope || SCOPES[provider]),
   };
+}
+
+function scopeFieldText(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || "").trim()).filter(Boolean).join(" ");
+  }
+  if (typeof value === "string") return value.trim();
+  return "";
+}
+
+function grantedScopeText(provider, json, fallback) {
+  const parts = [];
+  const listed = scopeFieldText(json && json.scope);
+  if (listed) parts.push(listed);
+  if (provider === "microsoft") {
+    const scp = scopeFieldText(tokenClaims(json && json.access_token).scp);
+    if (scp) parts.push(scp);
+  }
+  if (parts.length) return parts.join(" ");
+  return fallback || "";
 }
 
 function tokenClaims(token) {
@@ -508,6 +528,7 @@ async function accessTokenFor(account, secretBlob) {
 
 module.exports = {
   signIn,
+  exchange,
   refresh,
   accessTokenFor,
   oauthReady,
