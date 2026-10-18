@@ -1,6 +1,6 @@
 # Morrow Mail
 
-Private Electron mail client. The npm package is `morrow-mail`. The GitHub repository may still be named `genmail-rea` until Leo renames it. This is not the public [Morrow-Mail](https://github.com/Coke1120/Morrow-Mail) Swift and Rust app (`org.morrowmail.desktop`).
+Private Electron mail client. The npm package is `morrow-mail`. The GitHub repository may still be named `genmail-rea` until Leo renames it. The app in this tree is Electron (`host/`, `renderer/`, `shared/`). The old SwiftUI, WinUI, and Rust snapshot is archival only, in [`legacy.zip`](legacy.zip). Do not unzip it for feature work. See [LEGACY.md](LEGACY.md).
 
 ## Run (dev)
 
