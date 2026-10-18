@@ -6353,7 +6353,7 @@ checkGoogleOauthAlias();
 checkUpdateAuth();
 require("./check-win-secrets").run();
 
-checkAiDraft().then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-account-recovery").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => {
+checkAiDraft().then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);

@@ -77,24 +77,11 @@ async function init() {
   markMissingOAuthSecrets();
 }
 
-const depths = new Map();
-
 function exclusive(accountId, fn) {
-  const entry = depths.get(accountId) || { depth: 0 };
-  depths.set(accountId, entry);
-  if (entry.depth > 0) {
-    entry.depth += 1;
-    return Promise.resolve().then(fn).finally(() => {
-      entry.depth -= 1;
-    });
-  }
+  // Every call site enters once. A concurrent IPC/sync request is not a nested
+  // call and must wait for the preceding operation on this account.
   const prev = tails.get(accountId) || Promise.resolve();
-  const run = prev.catch(() => {}).then(() => {
-    entry.depth = 1;
-    return Promise.resolve().then(fn).finally(() => {
-      entry.depth = 0;
-    });
-  });
+  const run = prev.catch(() => {}).then(fn);
   tails.set(accountId, run.catch(() => {}));
   return run;
 }
