@@ -17,6 +17,7 @@ const http = require("./provider-http");
 const providerApi = require("./provider-api");
 const idle = require("./idle");
 const debugLog = require("../debug-log");
+const composeIdentity = require("./compose-identity");
 
 const PRIMARY_ORDER = ["inbox", "sentitems", "drafts", "deleteditems", "archive", "junkemail"];
 // Not an IMAP mailbox. List queries with this id return starred rows for one account.
@@ -152,10 +153,9 @@ function accountView(row, index) {
     id: row.id,
     email: row.email,
     displayEmail: row.email,
-    preferredFromAddress: row.email,
     senderName: row.display_name || null,
     defaultSenderName: row.display_name || null,
-    sendAs: [{ email: row.email, name: row.display_name || null, isDefault: true }],
+    ...composeIdentity.accountIdentity(row),
     name: row.display_name || null,
     platform: "imap",
     needsReauth: !!row.auth_error,
@@ -227,6 +227,7 @@ function listRow(row) {
     attachments,
     messageId: row.rfc_message_id || null,
     inReplyTo: row.in_reply_to || null,
+    recipientHeaders: JSON.parse(row.recipient_headers_json || "{}"),
   };
 }
 
@@ -1334,7 +1335,7 @@ function attachmentFiles(list) {
 function mimeOptions(account, params, files) {
   const html = typeof params.body === "string" ? params.body : "";
   return {
-    from: params.fromAddress || account.email,
+    from: composeIdentity.outgoingFrom(account, params.fromAddress),
     to: addrList(params.to),
     cc: addrList(params.cc),
     bcc: addrList(params.bcc),
@@ -1416,7 +1417,7 @@ async function moveIds(ids, targetWell, targetPath) {
 }
 
 async function ensureBody(row) {
-  if (!row || row.body_complete === 1 || !row.uid) return row;
+  if (!row || (row.body_complete === 1 && row.recipient_headers_json != null) || !row.uid) return row;
   const account = db.accountById(row.account_id);
   if (!account) return row;
   try {
@@ -1432,6 +1433,7 @@ async function ensureBody(row) {
       has_attachments: fetched.hasAttachments ? 1 : 0,
       body_complete: fetched.bodyComplete ? 1 : 0,
       subject: fetched.subject || row.subject,
+      recipient_headers_json: JSON.stringify(fetched.recipientHeaders || {}),
     });
     return db.messageById(row.id);
     });
@@ -1745,6 +1747,9 @@ function scheduleSend(params) {
   const input = params || {};
   const account = db.accountById(input.accountId);
   if (!account) return fail("not-found", "Choose an account before scheduling.");
+  let fromAddress;
+  try { fromAddress = composeIdentity.outgoingFrom(account, input.fromAddress); }
+  catch (error) { return fail("invalid_from", error.message); }
   const to = storedAddress(input.to);
   const cc = storedAddress(input.cc);
   const bcc = storedAddress(input.bcc);
@@ -1759,7 +1764,7 @@ function scheduleSend(params) {
     bcc,
     subject: input.subject ? String(input.subject).trim() : "",
     body: typeof input.body === "string" ? input.body : "",
-    fromAddress: input.fromAddress || account.email,
+    fromAddress,
   };
   if (input.draftId) payload.draftId = input.draftId;
   if (input.emailId) payload.emailId = input.emailId;
@@ -1817,8 +1822,12 @@ function editScheduled(params) {
 }
 
 async function deliver(params) {
-  const account = db.accountById(params && params.accountId);
+  let account = db.accountById(params && params.accountId);
   if (!account) return fail("not-found", "Choose an account before sending.");
+  try { params = { ...params, fromAddress: await composeIdentity.sendingFrom(account, params.fromAddress) }; }
+  catch (error) { return fail("invalid_from", error.message); }
+  account = db.accountById(account.id);
+  if (!account) return fail("not-found", "That mailbox is no longer connected.");
   const files = attachmentFiles(params && params.attachments);
   const options = mimeOptions(account, params || {}, files);
   if (!options.to.length && !options.cc.length && !options.bcc.length) {
@@ -1960,6 +1969,20 @@ function answer(channel, args) {
   }
 
   switch (channel) {
+    case "mail:getComposeContext":
+      return (async () => {
+        const account = db.accountById(params && params.accountId);
+        if (!account) return fail("not-found", "Choose a connected mailbox.");
+        try {
+          let message = null;
+          if (params.sourceMessageId) {
+            const row = db.messageById(params.sourceMessageId);
+            if (!row || row.account_id !== account.id) return fail("invalid", "The source message does not belong to this mailbox.");
+            message = detailOf(await ensureBody(row));
+          }
+          return ok(await composeIdentity.context(account, message, params.kind || "new", params.fromAddress, params.refresh === true));
+        } catch (error) { return fail("compose_identity", error.message); }
+      })();
     case "mail:refreshAccounts":
       setTimeout(() => { syncAll().catch(() => {}); }, 0);
       return ok({ refreshed: true, refreshedAt: Date.now() });
@@ -2344,6 +2367,9 @@ function answer(channel, args) {
       return (async () => {
         const account = db.accountById(params && params.accountId);
         if (!account) return fail("not-found", "Choose an account before saving a draft.");
+        let fromAddress;
+        try { fromAddress = composeIdentity.outgoingFrom(account, params.fromAddress); }
+        catch (error) { return fail("invalid_from", error.message); }
         const drafts = db.folderByWellKnown(account.id, "drafts");
         if (!drafts) return fail("not-found", "This account has no Drafts folder.");
         const emailId = (params && params.emailId) || db.newMessageId();
@@ -2363,7 +2389,7 @@ function answer(channel, args) {
           rfcMessageId: messageId,
           subject: params.subject || "",
           snippet: plainFromHtml(html).slice(0, 180),
-          from: params.fromAddress || account.email,
+          from: fromAddress,
           to: addrList(params.to),
           cc: addrList(params.cc),
           bcc: addrList(params.bcc),

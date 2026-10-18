@@ -313,6 +313,7 @@ async function readFetched(msg, validity, cap) {
     to: formatList(envelope.to),
     cc: formatList(envelope.cc),
     bcc: formatList(envelope.bcc),
+    recipientHeaders: require("./recipient-headers").recipientHeaders(source),
     date: when.toISOString(),
     listSortTs: when.getTime(),
     unread: !seen,

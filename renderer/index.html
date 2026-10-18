@@ -279,6 +279,33 @@
         <div id="brain-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><span></span></div>
         <dl id="brain-meta" class="brain-meta" hidden></dl>
         <div id="brain-sections"></div>
+        <details id="brain-compose-settings">
+          <summary>Compose defaults and aliases</summary>
+          <form id="brain-compose-form">
+            <p class="hint">Default CC is chosen from your received alias for replies and forwards, or your From address for new mail. Review recipients before sending.</p>
+            <label for="brain-compose-domains">Default CC by domain — one domain per line</label>
+            <textarea id="brain-compose-domains" rows="4" placeholder="@hkbscl.com = colleague@hkbscl.com, team@example.com" spellcheck="false" disabled></textarea>
+            <label for="brain-compose-account">Mailbox for alias settings</label>
+            <select id="brain-compose-account" disabled></select>
+            <p id="brain-compose-identities" class="hint"></p>
+            <label for="brain-compose-aliases">Your aliases — one address per line, optionally = CC domain</label>
+            <textarea id="brain-compose-aliases" rows="3" placeholder="leo@hkbscl.com&#10;leo@gmail.com = hkbscl.com" spellcheck="false" disabled></textarea>
+            <p class="hint">Add only addresses belonging to this mailbox. Gmail must verify send-as aliases; Outlook needs send-as permission. Your SMTP provider may restrict the From address.</p>
+            <label for="brain-compose-from">Preferred From for new mail (optional)</label>
+            <input id="brain-compose-from" type="email" placeholder="Defaults to the provider's preferred address" disabled />
+            <label for="brain-compose-default-domain">Fallback CC domain for new mail (optional)</label>
+            <input id="brain-compose-default-domain" type="text" placeholder="Used when the From domain has no CC rule" disabled />
+            <p class="hint">Clearing or editing CC keeps your choice for the rest of that composition. Resumed drafts keep their saved recipients.</p>
+            <div class="row">
+              <button type="submit" class="primary" disabled>Save compose defaults</button>
+              <button type="button" class="ghost icon-label" id="brain-compose-refresh" disabled>
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                Refresh From addresses
+              </button>
+            </div>
+            <p id="brain-compose-status" class="hint" role="status" aria-live="polite"></p>
+          </form>
+        </details>
         <section id="brain-activity" aria-label="Recent updates" hidden>
           <h3>Recent updates</h3>
           <div id="brain-activity-list"></div>
@@ -510,6 +537,11 @@
           <div class="compose-draft">
             <p id="compose-quote-note" class="hint" hidden>The quoted original is still included when you save, send, or schedule.</p>
         <div class="compose-fields">
+          <div class="field-row">
+            <label for="compose-from">From</label>
+            <select id="compose-from" aria-describedby="compose-from-note"></select>
+          </div>
+          <p id="compose-from-note" class="hint" role="status"></p>
           <div class="field-row">
             <label for="compose-to">To</label>
             <input id="compose-to" type="text" autocomplete="email" spellcheck="false" />
@@ -889,6 +921,8 @@
       </form>
     </dialog>
     <script src="./motion.bundle.js"></script>
+    <script src="../shared/compose-policy.js"></script>
+    <script src="./brain-compose.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

@@ -4,10 +4,10 @@ async function run() {
   const nodes = new Map();
   const get = id => {
     if (!nodes.has(id)) nodes.set(id, {value:'',textContent:'',hidden:false,disabled:false,open:false,dataset:{},
-      classList:{toggle(){}},focus(){},setSelectionRange(){},close(){this.open=false;},showModal(){this.open=true;}});
+      classList:{toggle(){}},focus(){},setSelectionRange(){},replaceChildren(){},appendChild(){},close(){this.open=false;},showModal(){this.open=true;}});
     return nodes.get(id);
   };
-  const ui = renderer({document:{getElementById:get,querySelector:()=>null}});
+  const ui = renderer({document:{getElementById:get,querySelector:()=>null,createElement:()=>({})}});
   ui.run(`
     state.accounts = [{id:'a',email:'me@example.test',platform:'imap'}]; state.accountId='a';
     state.prefs.undoSend = 30;
@@ -17,6 +17,7 @@ async function run() {
     globalThis.calls=[]; globalThis.failSave=false; globalThis.failSend=false;
     call = async (channel,payload) => {
       calls.push({channel,payload});
+      if (channel === 'mail:getComposeContext') return {...window.morrowComposePolicy.resolve(state.accounts[0], null, {ccByDomain:{},accounts:{}}, 'new', payload.fromAddress), settings:{ccByDomain:{},accounts:{}}};
       if (channel === 'mail:upsertDraft') { if(failSave) throw new Error('Save failed; text retained'); return {draftId:'same-draft'}; }
       if (channel === 'mail:send' && failSend) throw new Error('Delivery failed');
       return {};
@@ -68,7 +69,9 @@ async function run() {
   assert.equal(get('ai-generate').disabled,true);
   assert.equal(ui.run(`calls.filter(x=>x.channel==='mail:send').length`),1);
   await ui.run('requestComposeClose()');
-  ui.run(`call=async(channel,payload)=>({email:{id:payload.emailId,isDraft:true,accountId:'a',to:['recipient@example.test'],subject:'Saved',textBody:'Saved body',inReplyTo:'source',threadId:'thread'}})`);
+  ui.run(`call=async(channel,payload)=>channel==='mail:getComposeContext'
+    ? {...window.morrowComposePolicy.resolve(state.accounts[0], null, {ccByDomain:{},accounts:{}}, 'new', payload.fromAddress), settings:{ccByDomain:{},accounts:{}}}
+    : {email:{id:payload.emailId,isDraft:true,accountId:'a',to:['recipient@example.test'],subject:'Saved',textBody:'Saved body',inReplyTo:'source',threadId:'thread'}}`);
   await ui.run(`resumeDraft({id:'saved-id',accountId:'a'})`);
   assert.equal(ui.run('state.draftId'),'saved-id');
   assert.equal(get('compose-body').value,'Saved body');

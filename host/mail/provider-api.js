@@ -142,6 +142,18 @@ async function listLabels(accessToken, fetchImpl) {
   return normalizeGmailLabels(json);
 }
 
+async function listSendAs(accessToken, fetchImpl) {
+  const json = await apiJson(`${GMAIL_ROOT}/settings/sendAs`, accessToken, {
+    fetchImpl: fetchImpl || ((url, options) => fetch(url, { ...options, signal: AbortSignal.timeout(8000) })),
+    maxBytes: 1024 * 1024,
+  });
+  if (!Array.isArray(json.sendAs)) throw new Error("Gmail did not return its send-as addresses.");
+  const { address } = require("../../shared/compose-policy");
+  return json.sendAs.filter((row) => row.isPrimary || row.verificationStatus === "accepted")
+    .map((row) => ({ email: address(row.sendAsEmail), name: row.displayName || "",
+      isDefault: row.isDefault === true, verified: true, source: "gmail" })).filter((row) => row.email);
+}
+
 async function createLabel(accessToken, name, fetchImpl) {
   const label = cleanName(name);
   if (!label) {
@@ -753,6 +765,7 @@ module.exports = {
   normalizeGraphFolder,
   normalizeGraphFolders,
   listLabels,
+  listSendAs,
   createLabel,
   renameLabel,
   deleteLabel,

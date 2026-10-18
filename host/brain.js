@@ -414,6 +414,10 @@ function taxonomy() {
 function answer(channel, args) {
   const params = args && args.length ? args[0] : undefined;
   switch (channel) {
+    case "emailBrain:getComposeSettings":
+    case "emailBrain:saveComposeSettings":
+      try { return ok(require("./settings").answer(channel, args)); }
+      catch (error) { return fail(error); }
     case "emailBrain:getCached":
       return ok(snapshot());
     case "emailBrain:refresh":

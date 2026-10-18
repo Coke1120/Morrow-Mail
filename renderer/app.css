@@ -1105,6 +1105,11 @@ button.brain-skill {
 
 #brain-activity { margin-top: 16px; }
 
+#brain-compose-settings { margin: 16px 0; }
+#brain-compose-form { display: grid; gap: 8px; padding: 12px 0; }
+#brain-compose-form textarea { min-height: 80px; }
+#compose-from-note { margin: 0; padding: 6px 10px; border-bottom: 1px solid var(--line); }
+
 #brain-activity-list p { margin: 0 0 6px; }
 
 .agent-item,
@@ -2582,7 +2587,7 @@ textarea { min-height: 140px; resize: vertical; }
   color: var(--muted);
 }
 
-.field-row input {
+.field-row input, .field-row select {
   border: 0;
   border-radius: 0;
   padding: 8px 0;
