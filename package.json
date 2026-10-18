@@ -1,6 +1,6 @@
 {
   "name": "morrow-mail",
-  "version": "0.1.0-alpha.6",
+  "version": "0.1.0-alpha.7",
   "description": "Morrow Mail. Private Electron client.",
   "main": "host/main.js",
   "private": true,
@@ -55,7 +55,10 @@
       {
         "from": "resources/",
         "to": ".",
-        "filter": ["**/*", "!**/.gitkeep"]
+        "filter": [
+          "**/*",
+          "!**/.gitkeep"
+        ]
       }
     ],
     "asar": true,
@@ -71,7 +74,10 @@
     ],
     "mac": {
       "category": "public.app-category.productivity",
-      "target": ["dir", "zip"],
+      "target": [
+        "dir",
+        "zip"
+      ],
       "icon": "build/icon.icns",
       "identity": null,
       "hardenedRuntime": false,
@@ -84,8 +90,18 @@
     "win": {
       "icon": "build/icon.ico",
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "signAndEditExecutable": false
     },
@@ -96,7 +112,9 @@
     },
     "linux": {
       "icon": "build/icon.png",
-      "target": ["AppImage"],
+      "target": [
+        "AppImage"
+      ],
       "category": "Office"
     }
   }
