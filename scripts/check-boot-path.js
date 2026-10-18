@@ -48,6 +48,8 @@ const syntax = [
   "renderer/app.js",
   "renderer/motion-ui.js",
   "scripts/check-vacation.js",
+  "scripts/bake-google-desktop-oauth.js",
+  "scripts/check-bake-google-oauth.js",
 ];
 for (const file of syntax) {
   const result = spawnSync(process.execPath, ["--check", path.join(root, file)], { stdio: "inherit" });
@@ -6625,6 +6627,7 @@ async function checkInboxRules() {
 }
 
 checkGoogleOauthAlias();
+require("./check-bake-google-oauth").run();
 require("./check-win-secrets").run();
 require("./check-bot-client").run();
 
