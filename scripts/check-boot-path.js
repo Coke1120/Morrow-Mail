@@ -2767,6 +2767,10 @@ async function checkAiDraft() {
   assert.strictEqual(removedSkill.success, true);
   assert.ok(removedSkill.data.library.some((row) => row.id === "newsletter-digest"));
   assert.ok(!removedSkill.data.skills.some((row) => row.id === "newsletter-digest"));
+  const secondRemoved = brain.answer("emailBrain:removeSkill", [{ skillId: "meeting-prep" }]);
+  assert.strictEqual(secondRemoved.data.library.length, 2);
+  assert.ok(secondRemoved.data.library.every((row) => row.runMode === "on_demand" && row.schedule === "disabled"));
+  brain.answer("emailBrain:installSkill", [{ skillId: "meeting-prep" }]);
   const installedSkill = brain.answer("emailBrain:installSkill", [{ skillId: "newsletter-digest" }]);
   assert.strictEqual(installedSkill.success, true);
   assert.ok(installedSkill.data.skills.some((row) => row.id === "newsletter-digest"));
@@ -3017,6 +3021,12 @@ async function checkAiDraft() {
     }
     assert.strictEqual(agent.cronMatches("0 8 * * 1", new Date(2026, 9, 19, 8, 0, 0)), true);
     assert.strictEqual(agent.cronMatches("0 8 * * 1", new Date(2026, 9, 19, 9, 0, 0)), false);
+    assert.strictEqual(agent.cronMatches("0 8 */2 * *", new Date(2026, 9, 19, 8)), true);
+    assert.strictEqual(agent.cronMatches("0 8 */2 * *", new Date(2026, 9, 20, 8)), false);
+    assert.strictEqual(agent.cronMatches("0 8 * */2 *", new Date(2026, 0, 1, 8)), true);
+    assert.strictEqual(agent.cronMatches("0 8 * */2 *", new Date(2026, 1, 1, 8)), false);
+    assert.strictEqual(agent.cronMatches("0 8 */2 * 1", new Date(2026, 9, 21, 8)), false);
+    assert.strictEqual(agent.cronMatches("0 8 20 * 1", new Date(2026, 9, 19, 8)), true);
     const nextMonday = agent.nextCron("0 8 * * 1-5", new Date(2026, 9, 17, 9, 0, 0));
     assert.strictEqual(nextMonday.getDay(), 1);
     assert.strictEqual(nextMonday.getHours(), 8);
