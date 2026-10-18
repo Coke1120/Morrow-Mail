@@ -20,6 +20,8 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npm run dist:win -- --publish always
 
 `dist:win` is `electron-builder --win nsis portable --x64`. `build.win.signAndEditExecutable` is `false`. Authenticode is not configured. SignPath Foundation signing is pending approval and is not in this workflow. See [Code signing policy](../CODE_SIGNING_POLICY.md) and [SIGNPATH.md](SIGNPATH.md).
 
+That flag also skips electron-builder's own resource edit, which would leave the installed `Morrow Mail.exe` as Electron's icon and product name. `build.afterPack` (`scripts/windows-icon.js`) writes `build/icon.ico` and the Morrow Mail version strings into that exe after the pack, and does not sign it. The NSIS installer and uninstaller icons are the same `build/icon.ico`. The taskbar, desktop shortcut, and installed exe use the icon inside `Morrow Mail.exe`.
+
 4. The job uploads the NSIS setup exe, its `.blockmap`, the portable exe, and `latest.yml` to a **prerelease** on public `Coke1120/Morrow-Mail`. `latest.yml` is the Windows electron-updater feed and names the NSIS setup. The portable exe is a no-install download. `detectUpdateChannel` is `false`, so `0.1.0-alpha.N` still publishes `latest.yml`.
 
 The feed URL uses dashes (`Morrow-Mail-Setup-0.1.0-alpha.4.exe`). That is the GitHub Release asset name. The copy in `dist/` keeps the spaces in `Morrow Mail Setup 0.1.0-alpha.4.exe`. This rename does not republish `0.1.0-alpha.4`; electron-builder will not replace assets already uploaded for that tag.
@@ -79,7 +81,24 @@ The app id is `com.coke1120.morrow-mail`. Install Morrow Mail as its own app. Th
 
 The GitHub publish repo is `Coke1120/Morrow-Mail`. The npm package name is `morrow-mail`.
 
-Icons are the original Morrow mark (forest green rounded square, pale envelope, rising sun): `build/icon.png` for Linux and as the 1024 source, `build/icon.icns` for macOS, and `build/icon.ico` for Windows. `build/morrow-icon.svg` is that same mark. The rail uses `renderer/morrow-icon.svg`.
+Icons are the Morrow Mail mark (forest green rounded square, pale envelope, rising sun):
+
+- `build/icon.png` is the 1024 source. Linux uses it. The pack copies it to `resources/icon.png` for the running app.
+- `build/icon.icns` is the macOS `.app` icon (`mac.icon`, `CFBundleIconFile`).
+- `build/icon.ico` is the Windows exe, taskbar, shortcut, and NSIS installer icon.
+- `build/morrow-icon.svg` matches `renderer/morrow-icon.svg`, which the rail uses.
+
+`host/main.js` points the window and About at `resources/icon.png` when the app is packaged, and at `build/icon.png` in a dev checkout. On macOS it calls `app.dock.setIcon` so the Dock shows that mark. `npm start` is the Electron binary, so without that call the Dock shows Electron's icon.
+
+A fresh install of the next release should show this mark on the `.app`, in the Dock, and on the Windows exe. If an older copy is already in `/Applications` or pinned in the Dock, macOS can keep the previous artwork until the icon cache is cleared:
+
+```bash
+touch "/Applications/Morrow Mail.app"
+rm -rf "$HOME/Library/Caches/com.apple.iconservices.store"
+killall Dock
+```
+
+Quit and reopen Morrow Mail after that. Launching the app also sets the Dock tile from `resources/icon.png`.
 
 Mail, settings, and `ai.json` follow Electron's userData path for Morrow Mail once the app is ready. This build does not copy files from an older application-support folder. Keychain storage is described in [OAUTH.md](OAUTH.md).
 

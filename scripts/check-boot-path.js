@@ -43,6 +43,7 @@ const syntax = [
   "host/bot/server.js",
   "host/bot/manage.js",
   "scripts/morrow-bot-call.js",
+  "scripts/windows-icon.js",
   "scripts/check-bot-bridge.js",
   "renderer/preload.js",
   "renderer/app.js",
@@ -95,6 +96,18 @@ const pkg = require("../package.json");
 assert.ok(pkg.build.files.includes("renderer/**/*"));
 assert.strictEqual(pkg.build.detectUpdateChannel, false);
 assert.strictEqual(pkg.build.win.signAndEditExecutable, false);
+assert.strictEqual(pkg.build.afterPack, "./scripts/windows-icon.js");
+assert.ok(pkg.build.extraResources.some((item) => item.from === "build/icon.png" && item.to === "icon.png"));
+assert.strictEqual(pkg.build.nsis.installerIcon, "build/icon.ico");
+assert.strictEqual(pkg.build.nsis.uninstallerIcon, "build/icon.ico");
+const windowsIcon = fs.readFileSync(path.join(root, "scripts/windows-icon.js"), "utf8");
+assert.ok(windowsIcon.includes('path.join(__dirname, "..", "build", "icon.ico")'));
+assert.ok(windowsIcon.includes("ProductName") && windowsIcon.includes("ignoreCert: true"));
+assert.ok(!windowsIcon.includes("signtool") && !windowsIcon.includes("generateExecutableWithSign"));
+const { windowsFileVersion } = require("./windows-icon");
+assert.deepStrictEqual(windowsFileVersion("0.1.0-alpha.11"), [0, 1, 0, 0]);
+assert.deepStrictEqual(windowsFileVersion("1.2.3.4"), [1, 2, 3, 4]);
+assert.throws(() => windowsFileVersion("alpha"), /numeric version/);
 assert.deepStrictEqual(
   pkg.build.win.target.map((target) => `${target.target}:${target.arch.join(",")}`),
   ["nsis:x64", "portable:x64"],
@@ -214,6 +227,10 @@ assert.strictEqual(pkg.build.mac.extendInfo.CFBundleDisplayName, "Morrow Mail");
 assert.strictEqual(pkg.build.mac.extendInfo.CFBundleName, "Morrow Mail");
 assert.ok(main.includes('title: "Morrow Mail"') && main.includes('label: "Morrow Mail"'));
 assert.ok(main.includes('applicationName: "Morrow Mail"') && main.includes("com.coke1120.morrow-mail"));
+assert.ok(main.includes('path.join(process.resourcesPath, "icon.png")'));
+assert.ok(main.includes('path.join(__dirname, "..", "build", "icon.png")'));
+assert.ok(main.includes("nativeImage.createFromPath(APP_ICON)") && main.includes("app.dock.setIcon(image)"));
+assert.ok(main.includes("applyDockIcon()"));
 assert.ok(html.includes("<title>Morrow Mail</title>"));
 assert.ok(html.includes('src="./morrow-icon.svg"') && html.includes('class="rail-logo"') && html.includes('title="Morrow Mail"'));
 assert.ok(html.includes('id="product-name"') && html.includes('class="product-name"') && html.includes(">Morrow Mail</p>"));
