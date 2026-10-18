@@ -1,0 +1,2420 @@
+#include "pch.h"
+#include "Ui.h"
+#include <microsoft.ui.xaml.window.h>
+#include <shobjidl.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.Peers.h>
+#include <winrt/Microsoft.UI.Xaml.Automation.Provider.h>
+#include <winrt/Microsoft.UI.Xaml.Controls.Primitives.h>
+#include <winrt/Microsoft.UI.Xaml.Input.h>
+#include <winrt/Microsoft.UI.Windowing.h>
+#include <winrt/Windows.System.h>
+#include <winrt/Windows.UI.Text.h>
+#include <winrt/Windows.Globalization.h>
+#include <winrt/Windows.ApplicationModel.DataTransfer.h>
+#include <winrt/Windows.UI.Xaml.Interop.h>
+#include <winrt/Microsoft.UI.Xaml.XamlTypeInfo.h>
+#include <fstream>
+#include <cmath>
+#include <cstdio>
+#include <cwctype>
+#include <tuple>
+
+#pragma comment(lib, "user32.lib")
+
+namespace {
+// Fixture-only startup diagnostics; never log mailbox data or service responses.
+void startupTrace(char const* phase) {
+    if (std::wstring_view(GetCommandLineW()).find(L"--native-smoke") == std::wstring_view::npos) return;
+    std::fprintf(stderr, "Native startup: %s\n", phase); std::fflush(stderr);
+}
+}
+
+namespace morrow {
+using namespace winrt;
+using namespace Windows::Foundation;
+using namespace controls;
+using namespace xaml;
+using namespace Windows::Data::Json;
+double windowScale(Window const& window) {
+    HWND handle{}; check_hresult(window.as<::IWindowNative>()->get_WindowHandle(&handle));
+    return static_cast<double>(GetDpiForWindow(handle)) / 96.0;
+}
+Windows::Graphics::RectInt32 mailWindowBounds(Window const& window, double width, double height) {
+    auto scale = windowScale(window);
+    auto work = Microsoft::UI::Windowing::DisplayArea::GetFromWindowId(window.AppWindow().Id(), Microsoft::UI::Windowing::DisplayAreaFallback::Nearest).WorkArea();
+    auto w = std::min(work.Width, static_cast<int>(std::lround(std::clamp(width, 1040.0, 2400.0) * scale)));
+    auto h = std::min(work.Height, static_cast<int>(std::lround(std::clamp(height, 700.0, 1600.0) * scale)));
+    return {work.X + (work.Width - w) / 2, work.Y + (work.Height - h) / 2, w, h};
+}
+void applyBrandResources(ResourceDictionary const& resources) {
+    // Same light/dark accent as morrowGreen in the SwiftUI app. Leave the
+    // HighContrast dictionary to WinUI's system-colour resources.
+    for (bool dark : {false, true}) {
+        ResourceDictionary palette;
+        auto green = dark ? Windows::UI::Color{255, 166, 212, 176} : Windows::UI::Color{255, 26, 74, 61};
+        for (auto key : {L"SystemAccentColor", L"SystemAccentColorDark1", L"SystemAccentColorDark2", L"SystemAccentColorDark3",
+            L"SystemAccentColorLight1", L"SystemAccentColorLight2", L"SystemAccentColorLight3"}) palette.Insert(box_value(key), box_value(green));
+        for (auto key : {L"AccentFillColorDefaultBrush", L"AccentFillColorSecondaryBrush", L"AccentFillColorTertiaryBrush",
+            L"AccentTextFillColorPrimaryBrush", L"AccentTextFillColorSecondaryBrush", L"AccentTextFillColorTertiaryBrush",
+            L"NavigationViewSelectionIndicatorForeground"}) {
+            Media::SolidColorBrush brush(green);
+            if (std::wstring_view(key).find(L"Secondary") != std::wstring_view::npos) brush.Opacity(0.9);
+            if (std::wstring_view(key).find(L"Tertiary") != std::wstring_view::npos) brush.Opacity(0.8);
+            palette.Insert(box_value(key), brush);
+        }
+        resources.ThemeDictionaries().Insert(box_value(dark ? L"Default" : L"Light"), palette);
+    }
+    resources.ThemeDictionaries().Insert(box_value(L"HighContrast"), ResourceDictionary());
+}
+TextBlock label(hstring const& value, double size, bool selectable) {
+    TextBlock result; result.Text(value); result.FontSize(size);
+    if (size >= 20) result.FontWeight(Windows::UI::Text::FontWeight{600});
+    result.TextWrapping(TextWrapping::Wrap); result.IsTextSelectionEnabled(selectable);
+    return result;
+}
+Button button(hstring const& value, std::function<void()> action) {
+    Button result; result.Content(box_value(value));
+    Automation::AutomationProperties::SetName(result, value);
+    result.Click([action = std::move(action)](auto const&, auto const&) { action(); });
+    return result;
+}
+MenuFlyoutItem menuItem(hstring const& value, std::function<void()> action) {
+    MenuFlyoutItem result; result.Text(value);
+    Automation::AutomationProperties::SetName(result, value);
+    result.Click([action = std::move(action)](auto const&, auto const&) { action(); });
+    return result;
+}
+DropDownButton actionMenu(hstring const& value, MenuFlyout const& menu, hstring const& accessibleName) {
+    DropDownButton result; result.Content(box_value(value)); result.Flyout(menu);
+    Automation::AutomationProperties::SetName(result, accessibleName.empty() ? value : accessibleName);
+    return result;
+}
+StackPanel stack(double gap) { StackPanel result; result.Spacing(gap); return result; }
+ListViewItem clickedListItem(ListView const& list, IInspectable const& clicked) {
+    // WinUI returns Content when an item is its own container.
+    // ponytail: native lists are bounded to 50 items; index content if they become unbounded.
+    for (auto const& value : list.Items()) {
+        auto item = value.try_as<ListViewItem>();
+        if (item && (item == clicked || item.Content() == clicked)) return item;
+    }
+    return nullptr;
+}
+TextBox field(hstring const& title, hstring const& value, bool multiline) {
+    TextBox result; result.Header(box_value(title)); result.Text(value);
+    result.AcceptsReturn(multiline); result.TextWrapping(multiline ? TextWrapping::Wrap : TextWrapping::NoWrap);
+    result.MaxLength(multiline ? 100000 : 4096);
+    if (multiline) { result.MinHeight(180); result.MaxHeight(600); }
+    Automation::AutomationProperties::SetName(result, title);
+    return result;
+}
+ScrollViewer scroll(UIElement const& child) {
+    ScrollViewer result; result.Content(child);
+    result.HorizontalScrollBarVisibility(ScrollBarVisibility::Disabled);
+    result.VerticalScrollBarVisibility(ScrollBarVisibility::Auto);
+    return result;
+}
+hstring errorText() {
+    try { throw; } catch (hresult_error const& error) { return error.message(); }
+    catch (...) { return L"The operation could not be completed. Your saved workspace has been retained."; }
+}
+namespace {
+StackPanel actions() { auto result = stack(); result.Orientation(Orientation::Horizontal); return result; }
+Button iconButton(hstring const& glyph, hstring const& name, std::function<void()> action) {
+    auto result = button(name, std::move(action));
+    FontIcon icon; icon.Glyph(glyph); icon.FontSize(14); result.Content(icon);
+    result.Width(30); result.Height(28); result.Padding(ThicknessHelper::FromUniformLength(0));
+    ToolTipService::SetToolTip(result, box_value(name));
+    return result;
+}
+StackPanel emptyMailReader() {
+    auto emptyReader = stack(14); emptyReader.HorizontalAlignment(HorizontalAlignment::Center); emptyReader.VerticalAlignment(VerticalAlignment::Center);
+    emptyReader.Margin(ThicknessHelper::FromUniformLength(36));
+    auto emptyIcon = Markup::XamlReader::Load(L"<FontIcon xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' Glyph='&#xE8C3;' FontSize='42' Foreground='{ThemeResource AccentTextFillColorPrimaryBrush}'/>").as<FontIcon>();
+    emptyIcon.HorizontalAlignment(HorizontalAlignment::Center);
+    Automation::AutomationProperties::SetAccessibilityView(emptyIcon, Automation::Peers::AccessibilityView::Raw);
+    emptyReader.Children().Append(emptyIcon);
+    auto emptyTitle = label(L"A little room to think", 22); emptyTitle.TextAlignment(TextAlignment::Center); emptyReader.Children().Append(emptyTitle);
+    auto emptyDetail = label(L"Choose a message to read, or compose something new."); emptyDetail.MaxWidth(380); emptyDetail.Opacity(0.7); emptyDetail.TextAlignment(TextAlignment::Center); emptyReader.Children().Append(emptyDetail);
+    return emptyReader;
+}
+void showRowActions(ListViewItem const& entry, bool visible) {
+    auto row = entry.Content().try_as<StackPanel>();
+    if (!row) return;
+    if (auto quick = row.Tag().try_as<StackPanel>()) quick.Visibility(visible ? Visibility::Visible : Visibility::Collapsed);
+}
+double minimumMailListHeight(Grid const& list) {
+    return std::max(200.0, list.RowDefinitions().GetAt(0).ActualHeight() + list.RowDefinitions().GetAt(2).ActualHeight() + 80.0);
+}
+void bold(TextBlock const& text, bool active) {
+    Windows::UI::Text::FontWeight weight{}; weight.Weight = active ? 600 : 400; text.FontWeight(weight);
+}
+NavigationViewItem navItem(hstring const& title, hstring const& section, hstring const& owner = {}, hstring const& folder = L"inbox", hstring const& glyph = L"\uE8A5") {
+    NavigationViewItem item; item.Content(box_value(title));
+    ToolTipService::SetToolTip(item, box_value(title));
+    FontIcon icon; icon.Glyph(glyph); item.Icon(icon);
+    Json tag; put(tag, L"section", section); put(tag, L"owner", owner); put(tag, L"folder", folder);
+    item.Tag(tag); return item;
+}
+IAsyncOperation<ContentDialogResult> showReaderPopup(std::shared_ptr<Shell> const& shell,
+    ContentDialog const& dialog, std::function<void()>& release) {
+    auto held = std::make_shared<bool>(true);
+    release = [shell, held] { if (std::exchange(*held, false)) shell->dialogOpen = false; };
+    dialog.Closed([release](auto const&, auto const&) { release(); });
+    shell->dialogOpen = true;
+    try { return dialog.ShowAsync(); }
+    catch (...) { release(); throw; }
+}
+bool sameDay(hstring const& iso) {
+    SYSTEMTIME utc{};
+    auto input = std::wstring(iso);
+    unsigned year, month, day, hour, minute, second;
+    if (swscanf_s(input.c_str(), L"%u-%u-%uT%u:%u:%u", &year, &month, &day, &hour, &minute, &second) != 6) return false;
+    utc.wYear = static_cast<WORD>(year); utc.wMonth = static_cast<WORD>(month); utc.wDay = static_cast<WORD>(day);
+    utc.wHour = static_cast<WORD>(hour); utc.wMinute = static_cast<WORD>(minute); utc.wSecond = static_cast<WORD>(second);
+    SYSTEMTIME local{}, now{};
+    if (!SystemTimeToTzSpecificLocalTime(nullptr, &utc, &local)) return false;
+    GetLocalTime(&now);
+    return local.wYear == now.wYear && local.wMonth == now.wMonth && local.wDay == now.wDay;
+}
+void setupKeyboardAccelerators(std::shared_ptr<Shell> const& shell) {
+    using Key = Windows::System::VirtualKey;
+    using Modifiers = Windows::System::VirtualKeyModifiers;
+    auto invoked = [weak = std::weak_ptr<Shell>(shell)](Input::KeyboardAccelerator const& shortcut, Input::KeyboardAcceleratorInvokedEventArgs const& event) -> fire_and_forget {
+        event.Handled(true);
+        auto self = weak.lock();
+        if (!self || self->closing || self->dialogOpen || self->navigationLocked || !self->service || !self->navigation.IsEnabled()) co_return;
+        auto key = shortcut.Key(); auto modifiers = shortcut.Modifiers();
+        bool sectionSwitch = key == Key::Number1 || key == Key::Number2 || key == Key::Number3 || key == Key::Number4 || key == Key::Number5;
+        if (!sectionSwitch && (self->loading || self->service->writing())) co_return;
+        auto captured = self->owner; auto version = self->generation;
+        try {
+            if (key == Key::N) co_await compose(self);
+            else if (key == Key::F) {
+                if (self->section != L"mail") {
+                    co_await self->navigate(L"mail", captured, self->folder);
+                    ++version;
+                }
+                if (self->current(version, captured) && self->section == L"mail"
+                    && !self->dialogOpen && !self->loading && !self->service->writing() && self->navigation.IsEnabled()
+                    && self->search && self->search.IsLoaded() && self->search.IsEnabled()) self->search.Focus(FocusState::Keyboard);
+            } else if (key == Key::R && modifiers == (Modifiers::Control | Modifiers::Shift)) {
+                auto message = self->selected; auto account = text(message, L"accountId");
+                if (self->section == L"mail" && self->reader && self->reader.IsEnabled() && !text(message, L"id").empty() && self->connected(account)
+                    && (captured == L"all" || captured == account) && !flag(message, L"providerDraft") && text(message, L"folder") != L"drafts")
+                    co_await self->prepare(message, L"reply");
+            } else if (key == Key::R) co_await self->sync();
+            else if (key == Key::Number1) co_await self->navigate(L"mail", captured, L"inbox");
+            else if (key == Key::Number2) co_await self->navigate(L"agent", captured);
+            else if (key == Key::Number3) co_await self->navigate(L"calendar", captured);
+            else if (key == Key::Number4) co_await self->navigate(L"today", captured);
+            else if (key == Key::Number5) co_await self->navigate(L"brain", captured);
+            else if (key == static_cast<Key>(VK_OEM_COMMA)) co_await self->navigate(L"preferences", captured);
+        } catch (...) { if (!self->closing) self->error(errorText()); }
+    };
+    // Native matching handles modifiers and IME; do not intercept ordinary typing with KeyDown.
+    for (auto key : {Key::N, Key::F, Key::R, static_cast<Key>(VK_OEM_COMMA), Key::Number1, Key::Number2, Key::Number3, Key::Number4, Key::Number5}) {
+        Input::KeyboardAccelerator shortcut; shortcut.Key(key); shortcut.Modifiers(Modifiers::Control);
+        shortcut.Invoked(invoked); shell->root.KeyboardAccelerators().Append(shortcut);
+    }
+    Input::KeyboardAccelerator reply; reply.Key(Key::R); reply.Modifiers(Modifiers::Control | Modifiers::Shift);
+    reply.Invoked(invoked); shell->root.KeyboardAccelerators().Append(reply);
+    Input::KeyboardAccelerator undo; undo.Key(Key::Z); undo.Modifiers(Modifiers::Control);
+    undo.Invoked([weak = std::weak_ptr<Shell>(shell)](auto const&, auto const& event) {
+        auto self = weak.lock();
+        if (!self || self->section != L"mail" || self->dialogOpen || self->loading || !self->dirty.empty() || self->closing || self->service->writing()) return;
+        auto focus = Input::FocusManager::GetFocusedElement(self->root.XamlRoot());
+        if (focus && (focus.try_as<TextBox>() || focus.try_as<RichEditBox>() || focus.try_as<PasswordBox>())) return;
+        self->updateTrashUndo();
+        if (!self->trashUndos.empty()) { event.Handled(true); self->undoTrash(); }
+    });
+    shell->root.KeyboardAccelerators().Append(undo);
+}
+}
+void Shell::error(hstring const& message) {
+    if (!status) return;
+    if (!message.empty()) { status.Text(message); return; }
+    hstring failures;
+    for (auto const& entry : array(state, L"syncErrors")) {
+        auto failure = entry.GetObject(); auto account = text(failure, L"accountId");
+        if (!connected(account) || (owner != L"all" && owner != account)) continue;
+        failures = failures + (failures.empty() ? L"Recent mail needs attention: " : L"\n")
+            + account + L": " + text(failure, L"error", L"Check connection and import settings.");
+        auto retry = text(failure, L"nextRetryAt");
+        if (!retry.empty()) failures = failures + L" Next retry: " + mailDateLabel(retry) + L".";
+    }
+    status.Text(failures);
+}
+bool Shell::connected(hstring const& account) const {
+    for (auto const& entry : array(state, L"accounts")) if (text(entry.GetObject(), L"id") == account && account != L"demo") return true;
+    return false;
+}
+bool Shell::current(uint64_t value, hstring const& account) const { return !closing && value == generation && owner == account; }
+void Shell::show(UIElement const& content) { page.Content(content); }
+hstring Shell::startMailDrag(Json message) {
+    mailDragToken = {}; mailDrag = Json();
+    auto account = text(message, L"accountId"); auto remote = text(message, L"remoteId", text(message, L"id"));
+    if (closing || loading || dialogOpen || !dirty.empty() || !service || service->writing() || !connected(account)
+        || section != L"mail" || (owner != L"all" && owner != account) || flag(message, L"providerFolderMissing")
+        || text(message, L"viewId").empty() || text(message, L"id").empty()) return {};
+    Json connection;
+    for (auto const& value : array(state, L"accounts")) {
+        auto entry = value.GetObject(); if (text(entry, L"id") != account) continue;
+        auto provider = text(entry, L"provider");
+        if (provider.empty() || !std::wstring_view(remote).starts_with(std::wstring(provider + L":"))) return {};
+        connection = object(entry, L"settings");
+    }
+    GUID token{}; check_hresult(CoCreateGuid(&token)); mailDragToken = to_hstring(token);
+    mailDrag = Json::Parse(message.Stringify()); mailDrag.Insert(L"dragConnection", Json::Parse(connection.Stringify()));
+    mailDragOwner = owner; mailDragGeneration = generation;
+    return mailDragToken;
+}
+hstring Shell::mailDropDestination(hstring const& account, hstring const& target) const {
+    if (account == L"all" || (target != L"inbox" && target != L"archive" && target != L"spam" && target != L"trash")) return {};
+    if (target == L"archive") for (auto const& value : array(state, L"accounts"))
+        if (text(value.GetObject(), L"id") == account && text(value.GetObject(), L"provider") == L"google") return L"__archive";
+    for (auto const& value : array(object(serverFolders, account.c_str()), L"folders")) {
+        auto entry = value.GetObject();
+        if (text(entry, L"kind") == target && !flag(entry, L"hidden") && (!entry.HasKey(L"selectable") || flag(entry, L"selectable"))) return text(entry, L"id");
+    }
+    return {};
+}
+Json Shell::mailDropMessage(hstring const& token, hstring const& account, hstring const& destination) const {
+    if (token.empty() || token != mailDragToken || destination.empty() || text(mailDrag, L"accountId") != account
+        || !current(mailDragGeneration, mailDragOwner) || section != L"mail" || closing || loading || dialogOpen || !dirty.empty()
+        || !service || service->writing() || !connected(account) || !rows) return Json();
+    hstring provider;
+    for (auto const& value : array(state, L"accounts")) if (auto entry = value.GetObject(); text(entry, L"id") == account) {
+        if (object(entry, L"settings").Stringify() != object(mailDrag, L"dragConnection").Stringify()) return Json();
+        provider = text(entry, L"provider");
+    }
+    bool valid = destination == L"__archive" && provider == L"google";
+    for (auto const& value : array(object(serverFolders, account.c_str()), L"folders")) {
+        auto entry = value.GetObject();
+        if (text(entry, L"id") == destination && !flag(entry, L"hidden") && (!entry.HasKey(L"selectable") || flag(entry, L"selectable"))) valid = true;
+    }
+    if (!valid) return Json();
+    for (auto const& value : rows.Items()) {
+        auto message = value.as<ListViewItem>().Tag().as<Json>();
+        if (text(message, L"viewId") == text(mailDrag, L"viewId") && text(message, L"id") == text(mailDrag, L"id") && text(message, L"accountId") == account
+            && !flag(message, L"providerFolderMissing") && !provider.empty()
+            && std::wstring_view(text(message, L"remoteId", text(message, L"id"))).starts_with(std::wstring(provider + L":"))) return message;
+    }
+    return Json();
+}
+IAsyncOperation<bool> Shell::confirm(hstring title, hstring detail, hstring accept) {
+    auto lifetime = shared_from_this();
+    if (dialogOpen || closing) co_return false;
+    dialogOpen = true;
+    ContentDialog dialog; dialog.XamlRoot(root.XamlRoot()); dialog.Title(box_value(title));
+    dialog.Content(scroll(label(detail))); dialog.PrimaryButtonText(accept); dialog.CloseButtonText(L"Cancel");
+    dialog.DefaultButton(ContentDialogButton::Close);
+    try { auto result = co_await dialog.ShowAsync(); dialogOpen = false; co_return result == ContentDialogResult::Primary; }
+    catch (...) { dialogOpen = false; throw; }
+}
+IAsyncAction Shell::alert(hstring title, hstring detail) {
+    auto lifetime = shared_from_this();
+    if (dialogOpen || closing) co_return;
+    dialogOpen = true;
+    ContentDialog dialog; dialog.XamlRoot(root.XamlRoot()); dialog.Title(box_value(title));
+    dialog.Content(scroll(label(detail))); dialog.CloseButtonText(L"Close");
+    try { co_await dialog.ShowAsync(); } catch (...) { error(errorText()); }
+    dialogOpen = false;
+}
+IAsyncAction Shell::start() {
+    auto lifetime = shared_from_this();
+    startupTrace("creating window");
+    window = Window(); window.Title(L"Morrow Mail");
+    startupTrace("creating navigation");
+    // NavigationView uses translucent/transparent surfaces; paint an opaque,
+    // live theme resource underneath them, including system high contrast.
+    root = Markup::XamlReader::Load(L"<Grid xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' Background='{ThemeResource SolidBackgroundFillColorBaseBrush}'/>").as<Grid>();
+    root.RowDefinitions().Append(RowDefinition());
+    RowDefinition statusRow; statusRow.Height(GridLengthHelper::Auto()); root.RowDefinitions().Append(statusRow);
+    navigation = NavigationView(); navigation.IsSettingsVisible(true);
+    navigation.IsBackButtonVisible(NavigationViewBackButtonVisible::Collapsed);
+    navigation.OpenPaneLength(230); navigation.PaneDisplayMode(NavigationViewPaneDisplayMode::Left);
+    auto brand = stack(10); brand.Margin(ThicknessHelper::FromLengths(12, 4, 12, 12));
+    brand.Children().Append(label(L"Morrow", 22));
+    brand.Children().Append(label(L"A calmer kind of inbox", 12));
+    auto modeButton = [weak = weak_from_this()](hstring title, hstring mode, hstring id) {
+        auto control = button(title, [weak, mode] { if (auto self = weak.lock()) self->openShell(mode); });
+        control.Padding(ThicknessHelper::FromLengths(6, 4, 6, 4));
+        control.MinWidth(0);
+        Automation::AutomationProperties::SetAutomationId(control, id);
+        return control;
+    };
+    auto modes = stack(4); modes.Orientation(Orientation::Horizontal);
+    shellMail = modeButton(L"Mail", L"mail", L"shell.mail");
+    shellAgent = modeButton(L"Agent", L"agent", L"shell.agent");
+    shellBrain = modeButton(L"Brain", L"brain", L"shell.brain");
+    modes.Children().Append(shellMail); modes.Children().Append(shellAgent); modes.Children().Append(shellBrain);
+    Automation::AutomationProperties::SetAutomationId(modes, L"shell.modes");
+    Automation::AutomationProperties::SetName(modes, L"Mail, Agent, and Brain");
+    brand.Children().Append(modes);
+    composeButton = button(L"Compose", [weak = weak_from_this()] {
+        if (auto self = weak.lock(); self && self->service && !self->loading && !self->dialogOpen
+            && self->navigation.IsEnabled() && !self->closing) compose(self);
+    });
+    composeButton.HorizontalAlignment(HorizontalAlignment::Stretch); composeButton.IsEnabled(false);
+    composeButton.Style(Application::Current().Resources().Lookup(box_value(L"AccentButtonStyle")).as<Style>());
+    Grid mailboxActions; mailboxActions.ColumnSpacing(8); mailboxActions.ColumnDefinitions().Append(ColumnDefinition());
+    ColumnDefinition syncColumn; syncColumn.Width(GridLengthHelper::Auto()); mailboxActions.ColumnDefinitions().Append(syncColumn);
+    mailboxActions.Children().Append(composeButton);
+    syncButton = button(L"Sync", [weak = weak_from_this()] { if (auto self = weak.lock()) self->sync(); });
+    syncButton.IsEnabled(false);
+    Automation::AutomationProperties::SetAutomationId(syncButton, L"mail.sync");
+    ToolTipService::SetToolTip(syncButton, box_value(L"Sync mail in the current account view (Ctrl+R); Today syncs all accounts. The selected message and current mail page are checked first, followed by recent mail and older downloaded messages."));
+    Grid::SetColumn(syncButton, 1); mailboxActions.Children().Append(syncButton);
+    brand.Children().Append(mailboxActions); navigation.PaneHeader(brand);
+    folderFilter = field(L"Filter labels / folders"); folderFilter.Header(nullptr); folderFilter.PlaceholderText(L"Filter labels / folders");
+    folderFilter.HorizontalAlignment(HorizontalAlignment::Stretch); brand.Children().Append(folderFilter);
+    folderFilter.TextChanged([weak = weak_from_this()](auto const&, auto const&) {
+        if (auto self = weak.lock()) self->root.DispatcherQueue().TryEnqueue([weak] {
+            if (auto self = weak.lock(); self && self->service && !self->closing) self->rebuildNavigation();
+        });
+    });
+    page = ContentControl(); page.HorizontalContentAlignment(HorizontalAlignment::Stretch); page.VerticalContentAlignment(VerticalAlignment::Stretch);
+    navigation.Content(page); root.Children().Append(navigation);
+    Primitives::Thumb sidebarResize; sidebarDivider = sidebarResize;
+    sidebarResize.Width(6); sidebarResize.HorizontalAlignment(HorizontalAlignment::Left); sidebarResize.VerticalAlignment(VerticalAlignment::Stretch); sidebarResize.IsTabStop(true);
+    sidebarResize.Template(Markup::XamlReader::Load(L"<ControlTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' TargetType='Thumb'><Border Background='{ThemeResource DividerStrokeColorDefaultBrush}'/></ControlTemplate>").as<ControlTemplate>());
+    Automation::AutomationProperties::SetName(sidebarResize, L"Resize sidebar"); ToolTipService::SetToolTip(sidebarResize, box_value(L"Drag to resize sidebar; arrow keys adjust width"));
+    sidebarResize.DragDelta([weak = weak_from_this()](auto const&, Primitives::DragDeltaEventArgs const& event) { if (auto self = weak.lock()) self->resizeSidebar(self->navigation.OpenPaneLength() + event.HorizontalChange(), false); });
+    sidebarResize.DragCompleted([weak = weak_from_this()](auto const&, auto const&) { if (auto self = weak.lock()) self->resizeSidebar(self->navigation.OpenPaneLength()); });
+    sidebarResize.KeyDown([weak = weak_from_this()](auto const&, Input::KeyRoutedEventArgs const& event) {
+        using Key = Windows::System::VirtualKey;
+        if (event.Key() == Key::Left || event.Key() == Key::Right) if (auto self = weak.lock()) {
+            self->resizeSidebar(self->navigation.OpenPaneLength() + (event.Key() == Key::Left ? -20 : 20)); event.Handled(true);
+        }
+    });
+    root.Children().Append(sidebarResize);
+    auto updateSidebar = [weak = weak_from_this()](auto const&, auto const&) {
+        if (auto self = weak.lock()) {
+            self->resizeSidebar(self->navigation.OpenPaneLength(), false);
+            if (self->mailBody && self->mailBody.IsLoaded()) self->applyMailLayout();
+        }
+    };
+    root.SizeChanged(updateSidebar); navigation.PaneOpened(updateSidebar); navigation.PaneClosed(updateSidebar); navigation.DisplayModeChanged(updateSidebar);
+    resizeSidebar(230, false);
+    status = label(L"Opening your private workspace…"); status.Margin(ThicknessHelper::FromLengths(16, 6, 16, 8));
+    Automation::AutomationProperties::SetLiveSetting(status, Automation::Peers::AutomationLiveSetting::Polite);
+    Grid footer; footer.ColumnDefinitions().Append(ColumnDefinition());
+    ColumnDefinition undoColumn; undoColumn.Width(GridLengthHelper::Auto()); footer.ColumnDefinitions().Append(undoColumn);
+    footer.Children().Append(status);
+    trashUndoButton = button(L"Undo Trash (Ctrl+Z) · 1 minute", [weak = weak_from_this()] { if (auto self = weak.lock()) self->undoTrash(); });
+    trashUndoButton.Margin(ThicknessHelper::FromLengths(8, 4, 16, 4)); trashUndoButton.Visibility(Visibility::Collapsed);
+    Grid::SetColumn(trashUndoButton, 1); footer.Children().Append(trashUndoButton);
+    Grid::SetRow(footer, 1); root.Children().Append(footer);
+    window.Content(root);
+    startupTrace("window content assigned");
+    window.AppWindow().MoveAndResize(mailWindowBounds(window, 1220, 800));
+    auto weak = weak_from_this();
+    window.AppWindow().Closing([weak](auto const&, Microsoft::UI::Windowing::AppWindowClosingEventArgs const& event) {
+        if (auto self = weak.lock(); self && !self->closeReady) { event.Cancel(true); if (!self->closing) self->shutdown(); }
+    });
+    navigation.ItemInvoked([weak](auto const&, NavigationViewItemInvokedEventArgs const& event) {
+        auto self = weak.lock(); if (!self || self->selectingNavigation) return;
+        hstring target, account, folder = L"inbox";
+        if (event.IsSettingsInvoked()) target = flag(self->updateResult, L"updateAvailable") ? L"about" : L"preferences";
+        else {
+            auto item = event.InvokedItemContainer().try_as<NavigationViewItem>();
+            if (!item || !item.Tag() || item.MenuItems().Size()) return;
+            auto tag = item.Tag().as<Json>();
+            target = text(tag, L"section"); account = text(tag, L"owner"); folder = text(tag, L"folder");
+        }
+        // Rebuilding MenuItems during ItemInvoked invalidates WinUI's active item.
+        auto version = self->generation; auto captured = self->owner;
+        self->root.DispatcherQueue().TryEnqueue([weak, version, captured, target, account, folder] {
+            if (auto self = weak.lock(); self && self->current(version, captured)) {
+                if (self->navigationLocked || self->dialogOpen || !self->navigation.IsEnabled()) {
+                    // WinUI has already selected the invoked item. Restore the
+                    // displayed mailbox only after its invocation has finished.
+                    self->rebuildNavigation();
+                    return;
+                }
+                if (target == L"manage-folders") self->manageFolders(account);
+                else if (target == L"folder-sync") self->manageFolderSync(account);
+                else self->navigate(target, account, folder);
+            }
+        });
+    });
+    window.Activate();
+    startupTrace("window activated");
+    try {
+        service = std::make_shared<Service>(Service::workspace());
+        if (std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos) {
+            auto directory = service->directory();
+            std::ifstream marker(directory / L"disposable-native-fixture");
+            std::string value((std::istreambuf_iterator<char>(marker)), {});
+            if (!directory.is_absolute() || std::filesystem::canonical(directory.parent_path()) != std::filesystem::canonical(std::filesystem::temp_directory_path()) || !directory.filename().wstring().starts_with(L"morrow-native-check-") || value != "Morrow native acceptance fixture")
+                throw hresult_error(E_ACCESSDENIED, L"Native acceptance requires a marked temporary workspace before starting the service.");
+        }
+        co_await service->start();
+        if (closing) co_return;
+        try {
+            auto size = service->windowState();
+            auto width = size.GetNamedNumber(L"width", 1220), height = size.GetNamedNumber(L"height", 800);
+            if (std::isfinite(width) && std::isfinite(height)) window.AppWindow().MoveAndResize(mailWindowBounds(window, width, height));
+        } catch (...) { error(L"The previous window size could not be restored."); }
+        auto savedLayout = text(service->clientState(), L"morrow.mail.layout");
+        if (savedLayout == L"right" || savedLayout == L"bottom" || savedLayout == L"focus") mailLayout = savedLayout;
+        auto savedSidebar = text(service->clientState(), L"morrow.sidebar.width");
+        if (!savedSidebar.empty()) try { size_t used; auto width = std::stod(std::wstring(savedSidebar), &used); if (used == savedSidebar.size()) resizeSidebar(width, false); } catch (...) { error(L"The previous sidebar width could not be restored."); }
+        co_await refresh(true);
+        setupKeyboardAccelerators(lifetime);
+        co_await navigate(L"mail");
+        if (GetCommandLineW() && std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos) { co_await smoke(); co_return; }
+        checkUpdates();
+        timer = DispatcherTimer(); timer.Interval(std::chrono::seconds(5));
+        timer.Tick([weak](auto const&, auto const&) {
+            if (auto self = weak.lock(); self && !self->closing) {
+                self->updateTrashUndo();
+                if (!self->service->alive()) { self->error(L"The private service stopped. Close and reopen Morrow Mail; saved data is retained."); return; }
+                if (!self->loading && self->dirty.empty() && !self->dialogOpen) self->refresh(false);
+                self->checkUpdates();
+            }
+        });
+        timer.Start();
+    } catch (...) { error(errorText()); }
+}
+IAsyncOperation<bool> Shell::refresh(bool rebuild, WorkspaceReadGuard validity) {
+    if (closing || (refreshing && !validity) || (validity && !validity(state)) || (!rebuild && (loading || syncing || dialogOpen || !dirty.empty()
+        || service->writing() || !navigation.IsEnabled() || pendingRead.Size()))) co_return false;
+    auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
+    auto before = state.Stringify();
+    auto ticket = ++workspaceRefreshTicket, pageTicket = mailLoadTicket;
+    refreshing = true;
+    struct Refreshing {
+        Shell& shell; uint64_t ticket;
+        ~Refreshing() { if (shell.workspaceRefreshTicket == ticket) shell.refreshing = false; }
+    } guard{*this,ticket};
+    try {
+        // A completed download refreshes local views without submitting another
+        // provider-work hint. It supersedes an older coalesced workspace read.
+        if (!validity) co_await publishSyncPriority();
+        if (validity && !validity(state)) co_return false;
+        auto result = co_await service->request(L"/state", captured);
+        if (!current(version, captured) || workspaceRefreshTicket != ticket
+            || (validity && (mailLoadTicket != pageTicket || !validity(state) || !validity(result)))) co_return false;
+        if (state.Stringify() != before) {
+            if (validity) throw hresult_error(E_ABORT,L"The mailbox changed during its local refresh. Refresh it again.");
+            co_return false;
+        }
+        if (!rebuild && (loading || syncing || dialogOpen || !dirty.empty()
+            || service->writing() || !navigation.IsEnabled() || pendingRead.Size())) co_return false;
+        bool changedAccounts = array(result, L"accounts").Stringify() != array(state, L"accounts").Stringify();
+        bool changedFolders = object(result, L"serverFolders").Stringify() != object(state, L"serverFolders").Stringify();
+        state = result;
+        if (state.HasKey(L"serverFolders")) serverFolders = object(state, L"serverFolders");
+        auto theme = text(object(object(state, L"settings"), L"preferences"), L"theme");
+        root.RequestedTheme(theme == L"dark" ? ElementTheme::Dark : theme == L"light" ? ElementTheme::Light : ElementTheme::Default);
+        if (owner.empty() || (!connected(owner) && owner != L"all")) {
+            auto active = text(object(state, L"account"), L"id");
+            owner = connected(active) || active == L"all" ? active : L"";
+            if (owner.empty() && array(state, L"accounts").Size()) owner = text(array(state, L"accounts").GetAt(0).GetObject(), L"id");
+        }
+        if (rebuild || changedAccounts || changedFolders) rebuildNavigation();
+        if (!connected(owner) && owner != L"all") selected = Json();
+        error(L"");
+        if (!validity && section == L"activity") co_await workspacePage(lifetime, section);
+        else if (!validity && (section == L"today" || section == L"reply-suggestions") && refreshReview) co_await refreshReview();
+        else if (section == L"mail" && owner == captured && rows && !loading && !dialogOpen
+            && dirty.empty() && navigation.IsEnabled() && !pendingRead.Size()
+            && (validity || search.Text() == mailSearchQuery)
+            && (rebuild || mailRevision != text(state, L"revision"))) {
+            if (!(co_await loadPage(0, true, false, validity)) && validity) co_return false;
+        }
+        if (current(version,captured) && workspaceRefreshTicket==ticket && (!validity || validity(state))) co_return true;
+    } catch (...) {
+        if (current(version, captured) && workspaceRefreshTicket == ticket) {
+            if (validity) { if (validity(state)) throw; }
+            else error(errorText());
+        }
+    }
+    co_return false;
+}
+void Shell::rebuildNavigation() {
+    selectingNavigation = true;
+    NavigationViewItem selectedItem{nullptr};
+    Json desktopState;
+    try { desktopState = service->clientState(); } catch (...) { error(errorText()); }
+    navigation.MenuItems().Clear();
+    auto matches = [&](hstring const& name) {
+        auto query = folderFilter ? folderFilter.Text() : hstring{};
+        return query.empty() || FindStringOrdinal(FIND_FROMSTART, name.c_str(), static_cast<int>(name.size()), query.c_str(), static_cast<int>(query.size()), TRUE) >= 0;
+    };
+    auto folderDrop = [weak = weak_from_this()](NavigationViewItem const& item, hstring account, hstring destination) {
+        if (destination.empty() || account == L"all") return;
+        using Windows::ApplicationModel::DataTransfer::DataPackageOperation;
+        item.AllowDrop(true);
+        auto messageFor = [weak, account, destination](DragEventArgs const& event) {
+            auto data = event.DataView();
+            if (auto self = weak.lock(); self && data.Contains(L"com.morrowmail.mail-row") && data.Properties().HasKey(L"com.morrowmail.mail-row"))
+                return self->mailDropMessage(unbox_value_or<hstring>(data.Properties().Lookup(L"com.morrowmail.mail-row"), {}), account, destination);
+            return Json();
+        };
+        item.DragOver([messageFor](auto const&, DragEventArgs const& event) {
+            bool valid = messageFor(event).Size() != 0;
+            event.AcceptedOperation(valid ? DataPackageOperation::Move : DataPackageOperation::None);
+            if (valid) { event.DragUIOverride().Caption(L"Review move here"); event.DragUIOverride().IsCaptionVisible(true); }
+            event.Handled(true);
+        });
+        item.Drop([weak, messageFor, destination](auto const&, DragEventArgs const& event) {
+            auto message = messageFor(event); event.Handled(true);
+            event.AcceptedOperation(message.Size() ? DataPackageOperation::Move : DataPackageOperation::None);
+            if (auto self = weak.lock(); self && message.Size()) { self->mailDragToken = {}; self->mailDrag = Json(); self->organize(message, {}, destination); }
+        });
+    };
+    auto folderActions = [&](NavigationViewItem const& item, hstring account, hstring id = {}) {
+        MenuFlyout menu; MenuFlyoutItem manage; manage.Text(L"Manage labels / folders…");
+        manage.Click([weak = weak_from_this(), account, id](auto const&, auto const&) { if (auto self = weak.lock()) self->manageFolders(account, id); }); menu.Items().Append(manage);
+        if (canReviewMoves(account)) {
+            MenuFlyoutItem recovery; recovery.Text(L"Review IMAP moves…");
+            recovery.Click([weak = weak_from_this(), account](auto const&, auto const&) { if (auto self = weak.lock()) self->reviewMoves(account); }); menu.Items().Append(recovery);
+        }
+        if (!id.empty()) {
+            MenuFlyoutItem move; move.Text(L"Move selected message here…");
+            menu.Opening([weak = weak_from_this(), move, account](auto const&, auto const&) { if (auto self = weak.lock()) move.IsEnabled(!self->loading && !self->dialogOpen && self->dirty.empty() && text(self->selected,L"accountId") == account && !text(self->selected,L"id").empty() && !flag(self->selected,L"providerFolderMissing")); });
+            move.Click([weak = weak_from_this(), account, id](auto const&, auto const&) { if (auto self = weak.lock(); self && text(self->selected,L"accountId") == account) self->organize(self->selected, {}, id); }); menu.Items().Append(move);
+        }
+        item.ContextFlyout(menu);
+    };
+    struct Destination { wchar_t const* title; wchar_t const* id; wchar_t const* glyph; };
+    auto appendDestination = [&](Destination const& entry, bool selected) {
+        if (!matches(entry.title)) return;
+        auto item = navItem(entry.title, entry.id, {}, L"inbox", entry.glyph);
+        item.IsSelected(selected); if (item.IsSelected()) selectedItem = item;
+        navigation.MenuItems().Append(item);
+    };
+    std::vector<Json> accounts;
+    for (auto const& value : array(state, L"accounts")) {
+        auto account = value.GetObject(); auto id = text(account, L"id");
+        if (!id.empty() && id != L"demo" && id != L"all") accounts.push_back(account);
+    }
+    if (composeButton) composeButton.IsEnabled(!accounts.empty());
+    if (syncButton) syncButton.IsEnabled(!accounts.empty() && !syncing);
+    auto mode = shellMode();
+    if (mode == L"agent") {
+        NavigationViewItemHeader header; header.Content(box_value(L"Agent")); navigation.MenuItems().Append(header);
+        appendDestination({L"Inbox Agent", L"agent", L"\uE8F2"}, section == L"agent");
+        appendDestination({L"Today", L"today", L"\uE706"}, section == L"today");
+        appendDestination({L"Skills", L"skills", L"\uE8F1"}, section == L"skills");
+    } else if (mode == L"brain") {
+        NavigationViewItemHeader header; header.Content(box_value(L"Brain")); navigation.MenuItems().Append(header);
+        appendDestination({L"Persona & writing rules", L"brain", L"\uE8D4"}, section == L"brain");
+        appendDestination({L"Categories", L"categories", L"\uE8EC"}, section == L"categories");
+    } else {
+    NavigationViewItemHeader header; header.Content(box_value(L"Workspace")); navigation.MenuItems().Append(header);
+    for (auto const& entry : {Destination{L"Today", L"today", L"\uE706"}, {L"Reply Suggestions", L"reply-suggestions", L"\uE8F2"},
+        {L"Out of Office", L"out-of-office", L"\uE708"},
+        {L"Calendar", L"calendar", L"\uE787"}, {L"Outbox", L"scheduled", L"\uE823"}}) {
+        appendDestination(entry, section == entry.id && std::wstring_view(entry.id) != L"today");
+    }
+    auto accountGroup = [&](hstring const& id, hstring const& title, hstring const& subtitle) {
+        auto item = navItem(title, L"mail", id, L"inbox", id == L"all" ? L"\uE8F1" : L"\uE715");
+        item.SelectsOnInvoked(false);
+        auto caption = stack(2); auto name = label(title, 12); bold(name, true); name.IsTextSelectionEnabled(false);
+        name.MaxLines(2); name.TextTrimming(TextTrimming::CharacterEllipsis);
+        auto detail = label(subtitle, 11); detail.IsTextSelectionEnabled(false);
+        caption.Children().Append(name); caption.Children().Append(detail); item.Content(caption);
+        Automation::AutomationProperties::SetName(item, title + L", " + subtitle);
+        if (canReviewMoves(id)) {
+            MenuFlyout menu; MenuFlyoutItem recovery; recovery.Text(L"Review IMAP moves…");
+            recovery.Click([weak = weak_from_this(), id](auto const&, auto const&) { if (auto self = weak.lock()) self->reviewMoves(id); }); menu.Items().Append(recovery); item.ContextFlyout(menu);
+        }
+        auto collapseKey = L"morrow.account.collapsed." + id;
+        item.IsExpanded((folderFilter && !folderFilter.Text().empty()) || text(desktopState, collapseKey.c_str()) != L"true");
+        item.RegisterPropertyChangedCallback(NavigationViewItem::IsExpandedProperty(), [weak = weak_from_this(), collapseKey](DependencyObject const& sender, DependencyProperty const&) {
+            if (auto self = weak.lock(); self && !self->selectingNavigation && !self->closing && (!self->folderFilter || self->folderFilter.Text().empty())) {
+                try { self->service->saveClientState(collapseKey, sender.as<NavigationViewItem>().IsExpanded() ? L"false" : L"true"); }
+                catch (...) { self->error(errorText()); }
+            }
+        });
+        for (auto const& mailbox : {Destination{L"Inbox",L"inbox",L"\uE715"}, {L"Starred",L"starred",L"\uE734"},
+            {L"Pending",L"pending",L"\uE823"}, {L"Later",L"later",L"\uE823"}, {L"Sent",L"sent",L"\uE724"}, {L"Drafts",L"drafts",L"\uE70F"},
+            {L"Archive",L"archive",L"\uE7B8"}, {L"Spam / Junk",L"spam",L"\uE7BA"}, {L"Trash",L"trash",L"\uE74D"}}) {
+            if (!matches(mailbox.title)) continue;
+            auto child = navItem(mailbox.title, L"mail", id, mailbox.id, mailbox.glyph);
+            uint64_t count = 0;
+            for (auto const& account : accounts) if (id == L"all" || text(account, L"id") == id)
+                count += static_cast<uint64_t>(mailbox.id == std::wstring_view(L"inbox") ? account.GetNamedNumber(L"unread", 0) : object(account, L"counts").GetNamedNumber(mailbox.id, 0));
+            if (count && (mailbox.id == std::wstring_view(L"inbox") || mailbox.id == std::wstring_view(L"pending") || mailbox.id == std::wstring_view(L"later") || mailbox.id == std::wstring_view(L"drafts"))) {
+                InfoBadge badge; badge.Value(static_cast<int32_t>(std::min<uint64_t>(count, INT32_MAX))); child.InfoBadge(badge);
+            }
+            child.IsSelected(section == L"mail" && owner == id && folder == mailbox.id);
+            if (child.IsSelected()) selectedItem = child;
+            folderDrop(child, id, mailDropDestination(id, mailbox.id));
+            item.MenuItems().Append(child);
+        }
+        if (id != L"all") {
+            auto outbox = navItem(L"Outbox", L"scheduled", id, L"inbox", L"\uE823");
+            outbox.IsSelected(section == L"scheduled" && owner == id); if (outbox.IsSelected()) selectedItem = outbox;
+            item.MenuItems().Append(outbox);
+            auto provider = text(object(serverFolders, id.c_str()), L"provider");
+            if (provider.empty()) for (auto const& account : accounts) if (text(account, L"id") == id) provider = text(account, L"provider");
+            auto remote = navItem(provider == L"google" ? L"Gmail labels" : L"Server folders", L"server-folders", id, L"inbox", L"\uE8B7");
+            folderActions(remote, id);
+            auto catalog = object(serverFolders, id.c_str());
+            remote.SelectsOnInvoked(false);
+            if (catalog.Size()) {
+                for (auto const& value : array(catalog, L"folders")) {
+                    auto entry = value.GetObject(); auto key = L"provider:" + text(entry, L"id");
+                    if (!matches(text(entry, L"name"))) continue;
+                    auto child = navItem(text(entry, L"name"), L"mail", id, key, L"\uE8B7");
+                    folderActions(child, id, text(entry,L"id"));
+                    folderDrop(child, id, text(entry,L"id"));
+                    child.IsSelected(section == L"mail" && owner == id && folder == key); if (child.IsSelected()) selectedItem = child;
+                    remote.MenuItems().Append(child);
+                }
+                remote.IsExpanded((folderFilter && !folderFilter.Text().empty()) || section == L"mail" && owner == id && std::wstring_view(folder).starts_with(L"provider:"));
+            }
+            if (!text(catalog, L"errorCode").empty() || text(catalog, L"updatedAt").empty()) {
+                auto pending = navItem(text(catalog, L"errorCode").empty() ? L"Loading labels / folders…" : L"Folder list could not refresh. Saved names are retained.", L"", id);
+                pending.IsEnabled(false); remote.MenuItems().Append(pending);
+            }
+            remote.MenuItems().Append(navItem(L"Refresh labels / folders", L"server-folders", id, L"inbox", L"\uE72C"));
+            remote.MenuItems().Append(navItem(L"Manage labels / folders…", L"manage-folders", id, L"inbox", L"\uE70F"));
+            for (auto const& account : accounts) if (text(account,L"id")==id && (text(account,L"provider").empty() || text(account,L"provider")==L"imap")) {
+                auto selection=navItem(L"Folders to sync…",L"folder-sync",id,L"inbox",L"\uE895"); selection.SelectsOnInvoked(false); remote.MenuItems().Append(selection);
+            }
+            item.MenuItems().Append(remote);
+        }
+        navigation.MenuItems().Append(item);
+    };
+    if (!accounts.empty()) accountGroup(L"all", L"All accounts", L"Combined mail");
+    for (auto const& account : accounts) {
+        auto provider = text(account, L"provider");
+        accountGroup(text(account, L"id"), text(account, L"email", text(account, L"id")), provider == L"google" ? L"Gmail" : provider == L"microsoft" ? L"Outlook" : L"IMAP");
+    }
+    }
+    navigation.FooterMenuItems().Clear();
+    auto studio = navItem(L"AI Studio", L"studio", {}, L"inbox", L"\uE734");
+    Automation::AutomationProperties::SetName(studio, section == L"studio" ? L"AI Studio, advanced, selected" : L"AI Studio, advanced");
+    studio.IsSelected(section == L"studio" || section == L"rules" || section == L"simulations" || section == L"records");
+    if (studio.IsSelected()) selectedItem = studio;
+    navigation.FooterMenuItems().Append(studio);
+    auto activity = navItem(L"Activity", L"activity", {}, L"inbox", L"\uE9D9"); activity.IsSelected(section == L"activity");
+    if (activity.IsSelected()) selectedItem = activity;
+    navigation.FooterMenuItems().Append(activity);
+    navigation.FooterMenuItems().Append(navItem(L"Add account", L"settings", {}, L"inbox", L"\uE710"));
+    if (auto settings = navigation.SettingsItem().try_as<NavigationViewItem>()) {
+        settings.Content(box_value(L"Settings & connections"));
+        settings.IsSelected(section == L"settings" || section == L"preferences" || section == L"policy" || section == L"about");
+        if (settings.IsSelected()) selectedItem = settings;
+    }
+    // Child IsSelected set before insertion is not sufficient for WinUI's
+    // selection model; restore the canonical item after all groups exist.
+    navigation.SelectedItem(selectedItem);
+    updateBadge();
+    markShellMode();
+    selectingNavigation = false;
+}
+hstring Shell::shellMode() const {
+    if (section == L"agent" || section == L"today" || section == L"skills") return L"agent";
+    if (section == L"brain" || section == L"categories" || section == L"learning") return L"brain";
+    return L"mail";
+}
+void Shell::markShellMode() {
+    auto paint = [](Button const& control, hstring title, bool selected) {
+        if (!control) return;
+        Windows::UI::Text::FontWeight weight{}; weight.Weight = selected ? 600 : 400;
+        control.FontWeight(weight);
+        Automation::AutomationProperties::SetName(control, selected ? title + L", selected" : title);
+    };
+    auto mode = shellMode();
+    paint(shellMail, L"Mail", mode == L"mail");
+    paint(shellAgent, L"Agent", mode == L"agent");
+    paint(shellBrain, L"Brain", mode == L"brain");
+}
+void Shell::openShell(hstring const& mode) {
+    if (closing || navigationLocked || dialogOpen || !navigation.IsEnabled()) return;
+    if (mode == L"agent") {
+        if (shellMode() != L"agent") navigate(L"agent");
+    } else if (mode == L"brain") {
+        if (shellMode() != L"brain") navigate(L"brain");
+    } else if (!(section == L"mail" && folder == L"inbox")) navigate(L"mail", owner, L"inbox");
+}
+IAsyncAction Shell::navigate(hstring target, hstring account, hstring mailFolder) {
+    auto lifetime = shared_from_this();
+    if (closing || navigationLocked || dialogOpen || !navigation.IsEnabled()) co_return;
+    if (loading) { ++mailLoadTicket; loading = false; }
+    navigationLocked = true;
+    struct NavigationHold { std::shared_ptr<Shell> shell; bool held = true; ~NavigationHold() { if (held) shell->navigationLocked = false; } void unlock() { if (held) { shell->navigationLocked = false; held = false; } } } hold{lifetime};
+    auto beforeSave = generation;
+    auto saveGeneral = saveGeneralBeforeLeave;
+    if (saveGeneral && !(co_await saveGeneral())) co_return;
+    if (closing || generation != beforeSave) co_return;
+    if (!dirty.empty() && !(co_await confirm(L"Discard unsaved changes?", L"Your current edits have not been saved.", L"Discard"))) co_return;
+    dirty.clear();
+    saveGeneralBeforeLeave = {};
+    ++generation; ++selectionGeneration; ++readGeneration; pendingRead = Json(); selected = Json(); retainedUnread = Json(); readerFocused = false;
+    auto version = generation;
+    if (!account.empty()) owner = account;
+    auto captured = owner;
+    section = target; folder = mailFolder; cursors = {L""}; nextCursor = L"";
+    publishSyncPriority(true);
+    rebuildNavigation();
+    error(L"");
+    if (target == L"mail") {
+        if (!connected(owner) && owner != L"all") {
+            auto onboarding = stack(16); onboarding.HorizontalAlignment(HorizontalAlignment::Center); onboarding.VerticalAlignment(VerticalAlignment::Center);
+            onboarding.MaxWidth(560); onboarding.Margin(ThicknessHelper::FromUniformLength(30));
+            onboarding.Children().Append(label(L"Add your first account", 24));
+            onboarding.Children().Append(label(L"Connect Gmail, Outlook, or an IMAP account to start reading your mail."));
+            auto add = button(L"Add account", [weak = weak_from_this()] { if (auto self = weak.lock()) self->navigate(L"settings"); });
+            add.Style(Application::Current().Resources().Lookup(box_value(L"AccentButtonStyle")).as<Style>());
+            onboarding.Children().Append(add); show(onboarding); co_return;
+        }
+        auto ticket = ++mailLoadTicket; loading = true;
+        try {
+            Json body; put(body, L"accountId", owner);
+            auto result = co_await service->request(L"/account/select", owner, L"POST", body);
+            if (!current(version, captured)) { if (mailLoadTicket == ticket) loading = false; co_return; }
+            state = result;
+            if (state.HasKey(L"serverFolders")) serverFolders = object(state, L"serverFolders");
+        } catch (...) { if (mailLoadTicket == ticket) loading = false; error(errorText()); co_return; }
+        if (mailLoadTicket == ticket) loading = false;
+        hold.unlock(); mailPage(); co_await loadPage();
+    } else if (target == L"server-folders") {
+        hold.unlock();
+        auto panel = stack(12); panel.Children().Append(label(L"Server labels / folders", 26));
+        panel.Children().Append(label(L"Labels and folders are saved locally and refresh automatically. Choose one to browse downloaded mail; import history to add older messages."));
+        show(scroll(panel)); auto ticket = ++mailLoadTicket; loading = true;
+        try {
+            auto result = co_await service->request(L"/mail/folders", captured);
+            if (!current(version, captured) || !connected(captured)) { if (mailLoadTicket == ticket) loading = false; co_return; }
+            if (text(result, L"accountId") != captured) throw hresult_error(E_FAIL, L"The server folder list could not be confirmed.");
+            Json catalog; JsonArray entries;
+            for (auto const& value : array(result, L"folders")) {
+                auto entry = value.GetObject(); auto key = text(entry, L"id");
+                if (key.empty() || key == L"__archive") continue;
+                entries.Append(value);
+                auto destination = L"provider:" + key;
+                panel.Children().Append(button(text(entry, L"name"), [weak = weak_from_this(), captured, destination] { if (auto self = weak.lock()) self->navigate(L"mail", captured, destination); }));
+            }
+            catalog.Insert(L"folders", entries); put(catalog, L"provider", text(result, L"provider")); put(catalog, L"updatedAt", text(result, L"updatedAt"));
+            serverFolders.Insert(captured, catalog); rebuildNavigation();
+        } catch (...) { error(errorText()); }
+        if (mailLoadTicket == ticket) loading = false;
+    } else if (hold.unlock(), target == L"settings") co_await settingsPage(lifetime, L"mail");
+    else if (target == L"preferences") co_await settingsPage(lifetime, L"general");
+    else if (target == L"policy") co_await settingsPage(lifetime, L"policy");
+    else if (target == L"about") co_await settingsPage(lifetime, L"about");
+    else if (target == L"scheduled") co_await scheduledPage(lifetime);
+    else if (target == L"out-of-office") co_await outOfOfficePage(lifetime);
+    else if (target == L"calendar") co_await calendarPage(lifetime);
+    else if (target == L"today" || target == L"reply-suggestions") co_await reviewPage(lifetime,target);
+    else co_await workspacePage(lifetime, target);
+}
+void Shell::mailPage() {
+    mailRevision = {}; mailSearchQuery = {};
+    Grid layout; layout.Margin(ThicknessHelper::FromUniformLength(16));
+    RowDefinition top; top.Height(GridLengthHelper::Auto()); layout.RowDefinitions().Append(top);
+    layout.RowDefinitions().Append(RowDefinition());
+    auto weak = weak_from_this();
+    search = field(L"Search mail"); search.Header(nullptr); search.PlaceholderText(L"Search mail · from:, after:, or an exact phrase");
+    Grid searchBar; searchBar.ColumnSpacing(8); searchBar.ColumnDefinitions().Append(ColumnDefinition());
+    ColumnDefinition searchActions; searchActions.Width(GridLengthHelper::Auto()); searchBar.ColumnDefinitions().Append(searchActions);
+    searchBar.Children().Append(search);
+    auto submitSearch = [weak] { if (auto self = weak.lock(); self && !self->loading) self->loadPage(0, false, true); };
+    search.KeyDown([weak](auto const&, Input::KeyRoutedEventArgs const& event) {
+        if (event.Key() == Windows::System::VirtualKey::Enter) if (auto self = weak.lock(); self && !self->loading) { self->loadPage(0, false, true); event.Handled(true); }
+    });
+    auto searchButtons = actions(); searchButtons.Spacing(8);
+    auto clearSearch = button(L"Clear", [weak] { if (auto self = weak.lock(); self && !self->loading) { self->search.Text(L""); self->loadPage(0, false, true); } });
+    clearSearch.Visibility(Visibility::Collapsed);
+    Automation::AutomationProperties::SetAutomationId(clearSearch, L"mail.search.clear");
+    search.TextChanged([clear = make_weak(clearSearch)](auto const& sender, auto const&) {
+        if (auto control = clear.get()) control.Visibility(sender.template as<TextBox>().Text().empty() ? Visibility::Collapsed : Visibility::Visible);
+    });
+    searchButtons.Children().Append(clearSearch);
+    searchButtons.Children().Append(button(L"Search", submitSearch));
+    Grid::SetColumn(searchButtons, 1); searchBar.Children().Append(searchButtons); layout.Children().Append(searchBar);
+    Grid body; mailBody = body; body.Margin(ThicknessHelper::FromLengths(0, 12, 0, 0));
+    Grid list; mailList = list;
+    RowDefinition headerRow; headerRow.Height(GridLengthHelper::Auto()); list.RowDefinitions().Append(headerRow);
+    list.RowDefinitions().Append(RowDefinition());
+    RowDefinition footerRow; footerRow.Height(GridLengthHelper::Auto()); list.RowDefinitions().Append(footerRow);
+    auto heading = stack(8); heading.Margin(ThicknessHelper::FromLengths(8, 8, 8, 8));
+    auto folderTitle = std::wstring(folder); if (!folderTitle.empty()) folderTitle[0] = towupper(folderTitle[0]);
+    if (std::wstring_view(folder).starts_with(L"provider:")) for (auto const& value : array(object(serverFolders, owner.c_str()), L"folders")) {
+        auto entry = value.GetObject(); if (folder == L"provider:" + text(entry, L"id")) folderTitle = text(entry, L"name");
+    }
+    Grid listTitle; listTitle.ColumnDefinitions().Append(ColumnDefinition());
+    ColumnDefinition unreadColumn; unreadColumn.Width(GridLengthHelper::Auto()); listTitle.ColumnDefinitions().Append(unreadColumn);
+    auto titleText = stack(3); titleText.Children().Append(label(hstring(folderTitle), 20));
+    auto accountCaption = label(owner == L"all" ? L"All accounts" : owner, 12); accountCaption.Opacity(0.7);
+    titleText.Children().Append(accountCaption);
+    listTitle.Children().Append(titleText);
+    heading.Children().Append(button(L"Downloads & storage…", [weak] {if(auto self=weak.lock()) self->downloadControls(self->owner);}));
+    auto localCoverage=label(L"Search downloaded content. Incomplete bodies may not match.",11); localCoverage.MaxLines(2); heading.Children().Append(localCoverage);
+    if (std::wstring_view(folder).starts_with(L"provider:")) {
+        auto coverage = label(L"Downloaded mail only. Sync or import history to add more messages.", 11); coverage.MaxLines(2); heading.Children().Append(coverage);
+    }
+    unreadFilter = CheckBox(); unreadFilter.Content(box_value(L"Unread"));
+    Automation::AutomationProperties::SetName(unreadFilter, L"Show unread only");
+    unreadFilter.Click([submitSearch](auto const&, auto const&) { submitSearch(); });
+    Grid::SetColumn(unreadFilter, 1); listTitle.Children().Append(unreadFilter); heading.Children().Append(listTitle);
+    auto toolbar = actions(); toolbar.Spacing(4);
+    DropDownButton view; view.Content(box_value(L"View · Newest")); Flyout viewMenu; auto viewOptions = stack(8);
+    Automation::AutomationProperties::SetName(view, L"View and sort mail");
+    Automation::AutomationProperties::SetAutomationId(view, L"mail.view");
+    for (auto const& option : {std::pair{L"Reader on right",L"right"}, {L"Reader below",L"bottom"}, {L"Focused reading",L"focus"}}) {
+        auto choice = button(option.first, [weak, value = hstring(option.second), flyout = make_weak(viewMenu)] {
+            if (auto self = weak.lock()) {
+                self->mailLayout = value; self->applyMailLayout();
+                try { self->service->saveClientState(L"morrow.mail.layout", value); } catch (...) { self->error(errorText()); }
+            }
+            if (auto open = flyout.get()) open.Hide();
+        }); viewOptions.Children().Append(choice);
+    }
+    for (auto const& option : {std::pair{L"Wider sidebar",60.0}, {L"Narrower sidebar",-60.0}}) {
+        viewOptions.Children().Append(button(option.first, [weak, delta = option.second] { if (auto self = weak.lock()) self->resizeSidebar(self->navigation.OpenPaneLength() + delta); }));
+    }
+    sorting = ComboBox(); Automation::AutomationProperties::SetName(sorting, L"Sort mail");
+    sorting.Width(200); sorting.Header(box_value(L"Sort mail"));
+    for (auto sort : {L"Newest",L"Oldest",L"Sender",L"Subject",L"Unread first",L"Starred first"}) sorting.Items().Append(box_value(sort));
+    sorting.SelectedIndex(0);
+    sorting.SelectionChanged([weak, target = make_weak(view)](auto const& sender, auto const&) {
+        if (auto control = target.get()) control.Content(box_value(L"View · " + unbox_value_or<hstring>(sender.template as<ComboBox>().SelectedItem(), L"Newest")));
+        if (auto self = weak.lock(); self && !self->loading) self->loadPage(0, false, true);
+    });
+    viewOptions.Children().Append(sorting); viewMenu.Content(viewOptions); view.Flyout(viewMenu); toolbar.Children().Append(view);
+    heading.Children().Append(toolbar); list.Children().Append(heading);
+    mailSelectionActions = stack(4); mailSelectionActions.Visibility(Visibility::Collapsed);
+    Automation::AutomationProperties::SetAutomationId(mailSelectionActions, L"mail.selection.actions");
+    mailSelectionCount = label(L"", 12); mailSelectionActions.Children().Append(mailSelectionCount);
+    auto selectionButtons=actions();
+    selectionMenu = actionMenu(L"Actions", mailActionsMenu(Json()), L"Actions for selected messages");
+    Automation::AutomationProperties::SetAutomationId(selectionMenu, L"mail.selection.menu"); selectionButtons.Children().Append(selectionMenu);
+    selectionDelete = button(L"Delete", [weak] { if (auto self = weak.lock()) self->trashMessages(self->selectedMessages()); });
+    Automation::AutomationProperties::SetName(selectionDelete, L"Move selected messages to provider Trash");
+    selectionButtons.Children().Append(selectionDelete);mailSelectionActions.Children().Append(selectionButtons); heading.Children().Append(mailSelectionActions);
+    rows = ListView(); rows.SelectionMode(ListViewSelectionMode::Extended);
+    Automation::AutomationProperties::SetName(rows, L"Mail list");
+    rows.SelectionChanged([weak](auto const&, SelectionChangedEventArgs const&) {
+        if (auto self = weak.lock()) self->updateMailSelectionActions();
+        if (auto self = weak.lock(); self && !self->loading && !self->dialogOpen && self->dirty.empty()) {
+            auto messages = self->selectedMessages();
+            if ((self->pendingRead.Size() || (self->reader && !self->reader.IsEnabled())) && (messages.size() != 1
+                || text(messages[0], L"viewId") != text(self->pendingRead, L"viewId"))) {
+                self->pendingRead = Json();
+                ++self->readGeneration;
+                if (messages.size() != 1) self->renderReader(self->selected);
+            }
+            // The displayed row may match again while a different detail is pending.
+            if (messages.size() == 1) self->read(messages[0]);
+        }
+    });
+    Grid::SetRow(rows, 1); list.Children().Append(rows);
+    Grid footer; footer.ColumnSpacing(8); footer.Margin(ThicknessHelper::FromLengths(8, 8, 8, 0));
+    ColumnDefinition previousColumn; previousColumn.Width(GridLengthHelper::Auto()); footer.ColumnDefinitions().Append(previousColumn);
+    footer.ColumnDefinitions().Append(ColumnDefinition());
+    ColumnDefinition nextColumn; nextColumn.Width(GridLengthHelper::Auto()); footer.ColumnDefinitions().Append(nextColumn);
+    previous = button(L"Previous", [weak] { if (auto self = weak.lock()) self->loadPage(-1); });
+    next = button(L"Next", [weak] { if (auto self = weak.lock()) self->loadPage(1); });
+    pageLabel = label(L"", 11); pageLabel.HorizontalAlignment(HorizontalAlignment::Center); pageLabel.VerticalAlignment(VerticalAlignment::Center);
+    Grid::SetColumn(pageLabel, 1); Grid::SetColumn(next, 2);
+    footer.Children().Append(previous); footer.Children().Append(pageLabel); footer.Children().Append(next);
+    Grid::SetRow(footer, 2); list.Children().Append(footer); body.Children().Append(list);
+    Primitives::Thumb resize; mailDivider = resize; resize.IsTabStop(true);
+    Automation::AutomationProperties::SetName(resize, L"Resize mail list");
+    auto adjust = [weak, body](double horizontal, double vertical) {
+        if (auto self = weak.lock()) {
+            if (self->mailLayout == L"bottom") {
+                auto minimum = minimumMailListHeight(self->mailList);
+                self->listHeight = std::clamp(self->listHeight + vertical, minimum, std::max(minimum, body.ActualHeight() - 208.0));
+            }
+            else self->listWidth = std::clamp(self->listWidth + horizontal, 260.0, std::max(260.0, body.ActualWidth() - 328.0));
+            self->applyMailLayout();
+        }
+    };
+    resize.DragDelta([adjust](auto const&, Primitives::DragDeltaEventArgs const& e) { adjust(e.HorizontalChange(), e.VerticalChange()); });
+    resize.KeyDown([adjust](auto const&, Input::KeyRoutedEventArgs const& e) {
+        using Key = Windows::System::VirtualKey;
+        if (e.Key() == Key::Left || e.Key() == Key::Up) { adjust(-20, -20); e.Handled(true); }
+        if (e.Key() == Key::Right || e.Key() == Key::Down) { adjust(20, 20); e.Handled(true); }
+    });
+    Grid::SetColumn(resize, 1); body.Children().Append(resize);
+    reader = ContentControl(); reader.HorizontalContentAlignment(HorizontalAlignment::Stretch); reader.VerticalContentAlignment(VerticalAlignment::Stretch);
+    reader.Content(emptyMailReader());
+    readerPane = Grid(); readerNotice = ContentControl();
+    readerNotice.HorizontalContentAlignment(HorizontalAlignment::Center); readerNotice.VerticalContentAlignment(VerticalAlignment::Center);
+    readerNotice.Visibility(Visibility::Collapsed);
+    readerPane.Children().Append(reader); readerPane.Children().Append(readerNotice);
+    Grid::SetColumn(readerPane, 2); body.Children().Append(readerPane);
+    body.SizeChanged([weak](auto const& sender, auto const& args) {
+        if (auto self = weak.lock(); self && self->mailBody == sender && self->mailBody.IsLoaded()
+            && args.NewSize().Width != args.PreviousSize().Width) self->applyMailLayout();
+    });
+    applyMailLayout(); Grid::SetRow(body, 1); layout.Children().Append(body); show(layout);
+}
+void Shell::updateMailSelectionActions() {
+    if (!mailSelectionActions || !rows || section != L"mail") return;
+    auto messages = selectedMessages();
+    mailSelectionActions.Visibility(messages.empty() ? Visibility::Collapsed : Visibility::Visible);
+    mailSelectionCount.Text(to_hstring(messages.size()) + L" selected");
+    bool enabled = !loading && !dialogOpen && !closing && dirty.empty();
+    selectionMenu.IsEnabled(enabled);
+    selectionDelete.IsEnabled(enabled && !messages.empty() && std::all_of(messages.begin(), messages.end(), [&](auto const& row) { return canTrash(row); }));
+}
+void Shell::applyMailLayout() {
+    if (!mailBody || !mailList || !readerPane || !mailDivider) return;
+    mailBody.RowDefinitions().Clear(); mailBody.ColumnDefinitions().Clear();
+    Grid::SetRow(mailList, 0); Grid::SetColumn(mailList, 0); Grid::SetRow(readerPane, 0); Grid::SetColumn(readerPane, 0);
+    Grid::SetRow(mailDivider, 0); Grid::SetColumn(mailDivider, 0);
+    bool focus = mailLayout == L"focus", bottom = mailLayout == L"bottom";
+    mailList.Visibility(focus && readerFocused ? Visibility::Collapsed : Visibility::Visible);
+    readerPane.Visibility(focus && !readerFocused ? Visibility::Collapsed : Visibility::Visible);
+    mailDivider.Visibility(focus ? Visibility::Collapsed : Visibility::Visible);
+    if (focus) return;
+    if (bottom) {
+        auto minimum = minimumMailListHeight(mailList);
+        listHeight = std::max(listHeight, minimum);
+        RowDefinition list; list.Height(GridLengthHelper::FromPixels(listHeight)); list.MinHeight(minimum);
+        RowDefinition divider; divider.Height(GridLengthHelper::FromPixels(8));
+        RowDefinition detail; detail.Height(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); detail.MinHeight(200);
+        mailBody.RowDefinitions().Append(list); mailBody.RowDefinitions().Append(divider); mailBody.RowDefinitions().Append(detail);
+        Grid::SetRow(mailDivider, 1); Grid::SetRow(readerPane, 2);
+    } else {
+        auto available = mailBody.ActualWidth();
+        if (mailBody.IsLoaded()) {
+            auto rightMargin = mailBody.Parent().as<FrameworkElement>().Margin().Right;
+            available = std::min(available, root.ActualWidth() - mailBody.TransformToVisual(root).TransformPoint(Point{}).X - rightMargin);
+        }
+        auto width = available > 0 ? std::clamp(listWidth, 260.0, std::max(260.0, available - 328.0)) : listWidth;
+        ColumnDefinition list; list.Width(GridLengthHelper::FromPixels(width)); list.MinWidth(260);
+        ColumnDefinition divider; divider.Width(GridLengthHelper::FromPixels(8));
+        ColumnDefinition detail; detail.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); detail.MinWidth(320);
+        mailBody.ColumnDefinitions().Append(list); mailBody.ColumnDefinitions().Append(divider); mailBody.ColumnDefinitions().Append(detail);
+        Grid::SetColumn(mailDivider, 1); Grid::SetColumn(readerPane, 2);
+    }
+}
+IAsyncOperation<bool> Shell::loadPage(int pageDelta, bool refreshReader, bool reset, WorkspaceReadGuard validity) {
+    auto lifetime = shared_from_this();
+    auto weak = weak_from_this();
+    if (navigationLocked || section != L"mail" || !rows || (validity && !validity(state))) co_return false;
+    auto version = generation; auto captured = owner; auto targetRows = rows; auto query = search.Text();
+    // A download refreshes the displayed query, never an unsubmitted edit.
+    auto requestQuery = validity ? mailSearchQuery : query;
+    auto previousPageTicket = mailLoadTicket;
+    if (refreshReader) {
+        // Capture a newly read selected row while the old unread page is still
+        // mounted; updating the filtered page first would discard its selection.
+        if (!(co_await refreshMailReader(validity)) && validity) co_return false;
+        if (!current(version, captured) || section != L"mail" || rows != targetRows || loading
+            || dialogOpen || !dirty.empty() || !navigation.IsEnabled() || pendingRead.Size()
+            || service->writing() || search.Text() != query
+            || (validity && (mailLoadTicket != previousPageTicket || !validity(state)))) co_return false;
+    }
+    auto requested = reset ? std::vector<hstring>{L""} : cursors;
+    if (pageDelta < 0) { if (requested.size() < 2) co_return false; requested.pop_back(); }
+    if (pageDelta > 0) { if (nextCursor.empty()) co_return false; requested.push_back(nextCursor); }
+    if (refreshReader) for (auto& cursor : requested) cursor = L"";
+    auto ticket = ++mailLoadTicket; loading = true; updateMailSelectionActions();
+    auto targetPage = page; auto targetContent = page ? page.Content() : IInspectable{nullptr};
+    auto targetPrevious = previous, targetNext = next;
+    auto targetSearch = search; auto targetSorting = sorting; auto targetUnreadFilter = unreadFilter;
+    // Scope invalidation still rejects the response, but the request must undo
+    // its disabled controls while it owns this mounted page. A replacement
+    // page/control or newer request owns its own loading and enabled states.
+    auto ownsPage = [&] { return mailLoadTicket == ticket && current(version, captured) && section == L"mail"
+        && rows == targetRows && page == targetPage && (!page || page.Content() == targetContent)
+        && previous == targetPrevious && next == targetNext && search == targetSearch
+        && sorting == targetSorting && unreadFilter == targetUnreadFilter; };
+    auto currentPage = [&] { return ownsPage() && (!validity || validity(state)); };
+    auto releaseAbandonedPage = [&] {
+        if (!ownsPage()) return;
+        previous.IsEnabled(cursors.size() > 1); next.IsEnabled(!nextCursor.empty());
+        search.IsEnabled(true); sorting.IsEnabled(search.Text().empty()); unreadFilter.IsEnabled(search.Text().empty());
+        loading = false; updateMailSelectionActions();
+    };
+    previous.IsEnabled(false); next.IsEnabled(false);
+    search.IsEnabled(false); sorting.IsEnabled(false); unreadFilter.IsEnabled(false);
+    std::exception_ptr refreshFailure;
+    try {
+        Json options; put(options, L"folder", folder); put(options, L"cursor", requested.back());
+        if (requested.back().empty()) options.Insert(L"offset", Value::CreateNumberValue(static_cast<double>((requested.size() - 1) * 50)));
+        wchar_t const* sorts[] = {L"newest",L"oldest",L"sender",L"subject",L"unread",L"starred"};
+        put(options, L"sort", sorts[std::clamp(sorting.SelectedIndex(), 0, 5)]);
+        auto unread = unreadFilter.IsChecked(); options.Insert(L"unreadOnly", Value::CreateBooleanValue(unread && unread.Value()));
+        put(options, L"locale", L"en");
+        hstring path = L"/mail/page";
+        bool searching = !requestQuery.empty();
+        if (searching) { path = L"/search"; options.Remove(L"unreadOnly"); if (options.HasKey(L"offset")) options.Remove(L"offset"); put(options, L"query", requestQuery); put(options, L"scope", L"folder"); put(options, L"sort", L"relevance"); options.Insert(L"page",Value::CreateNumberValue(static_cast<double>(requested.size()-1))); }
+        auto response = co_await service->requestWithStatus(path, captured, L"POST", options);
+        if (!currentPage()) { releaseAbandonedPage(); co_return false; }
+        auto status = static_cast<unsigned>(response.GetNamedNumber(L"status", 0));
+        auto result = object(response, L"body");
+        bool expired = !requested.back().empty() && status == 409
+            && text(result, L"error") == (searching ? L"Search changed or the cursor expired. Search again." : L"Mail changed or the cursor expired. Refresh the list.");
+        if (!expired && (status < 200 || status >= 300)) throw ApiError(status, result);
+        if (expired) {
+            // A signed cursor belongs to an older revision. Retry this read once
+            // at the same bounded position; never weaken the service's validation.
+            for (auto& cursor : requested) cursor = L"";
+            if (requested.size() > (searching ? 2001u : 4001u)) requested = {L""};
+            put(options, L"cursor", L"");
+            options.Insert(searching ? L"page" : L"offset", Value::CreateNumberValue(static_cast<double>((requested.size() - 1) * (searching ? 1 : 50))));
+            result = co_await service->request(path, captured, L"POST", options);
+        }
+        if (!currentPage()) { releaseAbandonedPage(); co_return false; }
+        bool retain = !reset && pageDelta == 0 && !searching && unread && unread.Value()
+            && retainedUnread.Size() && text(retainedUnread, L"viewId") == text(selected, L"viewId");
+        if (array(result, L"messages").Size() == 0 && requested.size() > 1 && !retain) {
+            auto last = static_cast<size_t>(std::max(0.0, result.GetNamedNumber(L"total", 0) - 1)) / (searching ? 30 : 50);
+            if (last + 1 < requested.size()) {
+                requested.assign(last + 1, L""); put(options, L"cursor", L"");
+                options.Insert(searching ? L"page" : L"offset", Value::CreateNumberValue(static_cast<double>(last * (searching ? 1 : 50))));
+                result = co_await service->request(path, captured, L"POST", options);
+                if (!currentPage()) { releaseAbandonedPage(); co_return false; }
+            }
+        }
+        std::set<std::wstring> selectedIds;
+        for (auto const& message : selectedMessages()) selectedIds.insert(std::wstring(text(message, L"viewId")));
+        auto messages = array(result, L"messages");
+        if (retain) {
+            bool present = false;
+            for (auto const& value : messages) if (text(value.GetObject(), L"viewId") == text(retainedUnread, L"viewId")) present = true;
+            if (!present) messages.InsertAt(std::min(retainedUnreadIndex, messages.Size()), retainedUnread);
+        }
+        bool preserve = rows.Items().Size() == messages.Size();
+        for (uint32_t i = 0; preserve && i < messages.Size(); ++i)
+            preserve = text(rows.Items().GetAt(i).as<ListViewItem>().Tag().as<Json>(), L"viewId") == text(messages.GetAt(i).GetObject(), L"viewId");
+        if (!preserve) rows.Items().Clear();
+        uint32_t index = 0;
+        for (auto const& item : messages) {
+            auto message = item.GetObject();
+            if (text(message, L"accountId").empty() || text(message, L"viewId").empty()) throw hresult_error(E_FAIL, L"The service returned an unowned mail row.");
+            auto density = text(object(object(state, L"settings"), L"preferences"), L"density");
+            auto row = stack(density == L"compact" ? 1 : density == L"spacious" ? 6 : 3);
+            row.Padding(ThicknessHelper::FromUniformLength(density == L"compact" ? 4 : density == L"spacious" ? 12 : 8));
+            Grid heading; heading.ColumnSpacing(8);
+            ColumnDefinition nameColumn; nameColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); heading.ColumnDefinitions().Append(nameColumn);
+            ColumnDefinition dateColumn; dateColumn.Width(GridLengthHelper::Auto()); heading.ColumnDefinitions().Append(dateColumn);
+            bool unread = !flag(message, L"read");
+            auto from = text(message, L"folder") == L"sent" || text(message, L"folder") == L"drafts" ? L"To: " + text(message, L"to") : text(message, L"fromName", text(message, L"fromEmail"));
+            Grid identity; identity.ColumnSpacing(6);
+            ColumnDefinition senderColumn; senderColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); identity.ColumnDefinitions().Append(senderColumn);
+            auto sender = label(from, 14, false); sender.MaxLines(1); sender.TextTrimming(TextTrimming::CharacterEllipsis); bold(sender, unread); identity.Children().Append(sender);
+            ToolTipService::SetToolTip(sender, box_value(from));
+            if (captured == L"all" || !search.Text().empty()) {
+                ColumnDefinition accountColumn; accountColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); accountColumn.MaxWidth(160); identity.ColumnDefinitions().Append(accountColumn);
+                auto account = label(text(message, L"accountId"), 11, false); account.MaxLines(1); account.TextTrimming(TextTrimming::CharacterEllipsis);
+                Grid::SetColumn(account, 1); account.Margin(ThicknessHelper::FromLengths(0, 3, 0, 0)); identity.Children().Append(account);
+                ToolTipService::SetToolTip(account, box_value(L"Mailbox: " + text(message, L"accountId")));
+                Automation::AutomationProperties::SetName(account, L"Mailbox: " + text(message, L"accountId"));
+            }
+            heading.Children().Append(identity);
+            auto date = label(mailDateLabel(text(message, L"date")), 11, false); date.MaxWidth(100); date.MaxLines(2); date.TextTrimming(TextTrimming::CharacterEllipsis);
+            date.TextAlignment(TextAlignment::Right); date.HorizontalAlignment(HorizontalAlignment::Right); Grid::SetColumn(date, 1); heading.Children().Append(date);
+            ToolTipService::SetToolTip(date, box_value(date.Text())); row.Children().Append(heading);
+            Grid subjectLine; subjectLine.ColumnSpacing(6);
+            ColumnDefinition subjectColumn; subjectColumn.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); subjectLine.ColumnDefinitions().Append(subjectColumn);
+            ColumnDefinition dotColumn; dotColumn.Width(GridLengthHelper::Auto()); subjectLine.ColumnDefinitions().Append(dotColumn);
+            ColumnDefinition actionsColumn; actionsColumn.Width(GridLengthHelper::Auto()); subjectLine.ColumnDefinitions().Append(actionsColumn);
+            auto subject = label(text(message, L"subject", L"(No subject)"), 13, false); subject.MaxLines(1); subject.TextTrimming(TextTrimming::CharacterEllipsis); bold(subject, unread); subjectLine.Children().Append(subject);
+            auto markers = label((flag(message, L"starred") ? hstring(L"★  ") : hstring{}) + (unread ? L"●" : L""), 14, false); Grid::SetColumn(markers, 1); subjectLine.Children().Append(markers);
+            auto quick = actions(); quick.Spacing(2); quick.Visibility(Visibility::Collapsed);
+            quick.Children().Append(iconButton(unread ? L"\uE8C3" : L"\uE715", unread ? L"Mark read" : L"Mark unread", [weak, message, unread] {
+                if (auto self = weak.lock()) { Json changes; changes.Insert(L"read", Value::CreateBooleanValue(unread)); self->patch(message, changes); }
+            }));
+            auto more = actionMenu(L"More", mailActionsMenu(message), L"More actions for message: " + text(message, L"subject", L"(No subject)"));
+            more.FontSize(12); quick.Children().Append(more); Grid::SetColumn(quick, 2); subjectLine.Children().Append(quick); row.Children().Append(subjectLine);
+            row.Tag(quick);
+            if (density != L"compact") {
+                auto preview = label(text(message, L"preview"), 12, false);
+                preview.MaxLines(density == L"spacious" ? 3 : 1); preview.TextTrimming(TextTrimming::CharacterEllipsis); row.Children().Append(preview);
+            }
+            if (flag(message, L"pending")) row.Children().Append(label(L"Pending", 11, false));
+            auto entry = preserve ? rows.Items().GetAt(index).as<ListViewItem>() : ListViewItem();
+            entry.Content(row); entry.Tag(message); entry.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+            entry.ContextFlyout(mailActionsMenu(message));
+            entry.CanDrag(true);
+            if (!preserve) {
+                entry.DragStarting([weak](UIElement const& sender, DragStartingEventArgs const& event) {
+                    using Windows::ApplicationModel::DataTransfer::DataPackageOperation;
+                    if (auto self = weak.lock()) {
+                        auto token = self->startMailDrag(sender.as<ListViewItem>().Tag().as<Json>());
+                        if (!token.empty()) {
+                            event.Data().SetData(L"com.morrowmail.mail-row", box_value(token));
+                            event.Data().Properties().Insert(L"com.morrowmail.mail-row", box_value(token));
+                            event.Data().RequestedOperation(DataPackageOperation::Move); event.AllowedOperations(DataPackageOperation::Move); return;
+                        }
+                    }
+                    event.Cancel(true);
+                });
+                entry.DropCompleted([weak](auto const&, auto const&) { if (auto self = weak.lock()) { self->mailDragToken = {}; self->mailDrag = Json(); } });
+                auto weakEntry = make_weak(entry);
+                auto hovered = std::make_shared<bool>(false), focused = std::make_shared<bool>(false);
+                auto update = [weakEntry, hovered, focused] { if (auto item = weakEntry.get()) showRowActions(item, *hovered || *focused); };
+                entry.PointerEntered([hovered, update](auto const&, auto const&) { *hovered = true; update(); });
+                entry.PointerExited([hovered, update](auto const&, auto const&) { *hovered = false; update(); });
+                entry.GotFocus([focused, update](auto const&, auto const&) { *focused = true; update(); });
+                entry.LostFocus([weakEntry, focused, update](auto const&, auto const&) {
+                    *focused = false;
+                    if (auto item = weakEntry.get()) item.DispatcherQueue().TryEnqueue([update] { update(); });
+                });
+            }
+            quick.Visibility(entry.FocusState() == FocusState::Unfocused ? Visibility::Collapsed : Visibility::Visible);
+            Automation::AutomationProperties::SetName(entry, from + L", " + text(message, L"subject") + L", Mailbox: " + text(message, L"accountId") + L", " + date.Text() + (unread ? L", unread" : L", read"));
+            if (!preserve) rows.Items().Append(entry);
+            if (!preserve && selectedIds.contains(std::wstring(text(message, L"viewId")))) rows.SelectedItems().Append(entry);
+            ++index;
+        }
+        cursors = std::move(requested);
+        if (reset || pageDelta != 0) retainedUnread = Json();
+        nextCursor = text(result, L"nextCursor");
+        mailRevision = text(result, L"revision");
+        mailSearchQuery = requestQuery;
+        previous.IsEnabled(cursors.size() > 1); next.IsEnabled(!nextCursor.empty());
+        auto pageNumber = to_hstring(cursors.size());
+        auto messageCount = to_hstring(static_cast<uint64_t>(result.GetNamedNumber(L"total", 0)));
+        pageLabel.Text(L"Page " + pageNumber + L" · " + messageCount + L" messages");
+        Automation::AutomationProperties::SetName(pageLabel, L"Page " + pageNumber + L", " + messageCount + L" messages");
+        error(text(result, L"warning"));
+    } catch (...) {
+        if (currentPage()) {
+            if (validity) refreshFailure = std::current_exception();
+            else error(errorText());
+        }
+    }
+    if (!currentPage()) { releaseAbandonedPage(); co_return false; }
+    previous.IsEnabled(cursors.size() > 1); next.IsEnabled(!nextCursor.empty());
+    search.IsEnabled(true); sorting.IsEnabled(search.Text().empty()); unreadFilter.IsEnabled(search.Text().empty());
+    if (mailLoadTicket == ticket) loading = false;
+    updateMailSelectionActions();
+    if (refreshFailure) std::rethrow_exception(refreshFailure);
+    if (!validity) publishSyncPriority();
+    co_return true;
+}
+Json refreshedReaderMessage(Json const& previous, Json message) {
+    // Raw downloads contain a reader-only CID copy. Keep that explicitly
+    // loaded copy while immutable inbound content/attachment identities match;
+    // it must never be written back to the service or reused for mutable drafts.
+    if (flag(previous, L"inlineImages") && flag(previous, L"attachmentsLoaded") && flag(message, L"attachmentsLoaded")
+        && !flag(previous, L"contentIncomplete") && !flag(message, L"contentIncomplete")
+        && !flag(previous, L"providerDraft") && !flag(message, L"providerDraft")
+        && text(previous, L"folder") != L"drafts" && text(message, L"folder") != L"drafts"
+        && text(message, L"accountId") == text(previous, L"accountId") && text(message, L"id") == text(previous, L"id")
+        && text(message, L"remoteId") == text(previous, L"remoteId")
+        && text(message, L"providerFolderId") == text(previous, L"providerFolderId")
+        && text(message, L"messageId") == text(previous, L"messageId")
+        && flag(message, L"bodyTruncated") == flag(previous, L"bodyTruncated")
+        && text(message, L"body") == text(previous, L"body")
+        && array(message, L"attachments").Stringify() == array(previous, L"attachments").Stringify()) {
+        message = Json::Parse(message.Stringify());
+        put(message, L"bodyHtml", text(previous, L"bodyHtml")); message.Insert(L"inlineImages", Value::CreateBooleanValue(true));
+    }
+    return message;
+}
+IAsyncOperation<bool> Shell::refreshMailReader(WorkspaceReadGuard validity) {
+    if (closing || loading || dialogOpen || !dirty.empty() || !navigation.IsEnabled()
+        || service->writing() || section != L"mail" || pendingRead.Size() || !reader || !reader.IsEnabled()
+        || (validity && !validity(state))) co_return false;
+    if (!selected.Size()) co_return true;
+    auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
+    auto sequence = selectionGeneration; auto request = ++readGeneration;
+    auto account = text(selected, L"accountId"), id = text(selected, L"id");
+    auto before = selected.Stringify();
+    if (!connected(account) || (captured != L"all" && account != captured)) {
+        selected = Json(); retainedUnread = Json(); renderReader(selected); co_return false;
+    }
+    try {
+        auto result = co_await service->request(L"/messages/" + escaped(id), account);
+        if (!current(version, captured) || sequence != selectionGeneration || request != readGeneration
+            || selected.Stringify() != before || dialogOpen || !dirty.empty() || !navigation.IsEnabled() || service->writing()
+            || (validity && !validity(state))) co_return false;
+        auto message = object(result, L"message");
+        if (text(message, L"accountId") != account || text(message, L"id") != id
+            || (validity && text(message, L"viewId") != text(selected, L"viewId"))) throw hresult_error(E_FAIL, L"The message owner changed. Open it again.");
+        message = refreshedReaderMessage(selected, message);
+        auto sameFolder = text(message, L"folder") == text(selected, L"folder");
+        if (message.Stringify() != selected.Stringify()) {
+            selected = message;
+            if (sameFolder) { if (!validity) retainReadRow(message); } else retainedUnread = Json();
+            renderReader(message);
+        }
+        if (validity && sameFolder) retainReadRow(message,true);
+        // A revision refresh never invokes mark-on-open or changes readerFocused.
+        co_return true;
+    } catch (...) {
+        if (current(version, captured) && sequence == selectionGeneration && request == readGeneration) {
+            if (validity) { if (validity(state)) throw; }
+            else error(errorText());
+        }
+    }
+    co_return false;
+}
+IAsyncAction Shell::openSource(Json metadata) {
+    auto self = shared_from_this(); auto account = text(metadata,L"accountId"), id = text(metadata,L"id");
+    if (!connected(account) || id.empty() || loading) co_return;
+    auto version = generation;
+    try {
+        auto result = co_await service->request(L"/messages/" + escaped(id),account);
+        if (generation != version) co_return;
+        auto message = object(result,L"message");
+        if (text(message,L"accountId") != account || text(message,L"id") != id) throw hresult_error(E_FAIL,L"The source mailbox changed.");
+        co_await navigate(L"mail",account,text(message,L"folder"));
+        if (owner == account && section == L"mail" && folder == text(message,L"folder")) co_await read(message);
+    } catch (...) { error(errorText()); }
+}
+IAsyncAction Shell::read(Json metadata, bool markOnOpen) {
+    if (closing || loading || dialogOpen || !dirty.empty()) co_return;
+    auto lifetime = shared_from_this(); auto version = generation;
+    auto previousSelection = selectionGeneration; auto sequence = ++selectionGeneration;
+    auto requestGeneration = ++readGeneration;
+    auto captured = owner; auto account = text(metadata, L"accountId"); auto id = text(metadata, L"id");
+    if (!connected(account) || (captured != L"all" && captured != account)) co_return;
+    if (account == text(selected, L"accountId") && id == text(selected, L"id")
+        && readerImageOverride && readerImageGeneration == version && readerImageSelection == previousSelection) {
+        readerImageSelection = sequence;
+    }
+    pendingRead = metadata;
+    error(L"");
+    showReaderStatus(metadata, false);
+    bool detailLoaded = false;
+    struct Reading {
+        Shell& shell; uint64_t request;
+        ~Reading() { if (shell.readGeneration == request) shell.pendingRead = Json(); }
+    } reading{*this, requestGeneration};
+    try {
+        auto result = co_await service->request(L"/messages/" + escaped(id), account);
+        if (!current(version, captured) || sequence != selectionGeneration || requestGeneration != readGeneration) co_return;
+        pendingRead = Json();
+        auto message = object(result, L"message");
+        if (text(message, L"accountId") != account || text(message, L"id") != id) throw hresult_error(E_FAIL, L"The message owner changed. Open it again.");
+        selected = message;
+        detailLoaded = true;
+        publishSyncPriority();
+        bool hadRetained = retainedUnread.Size() && text(retainedUnread, L"viewId") != text(message, L"viewId");
+        if (hadRetained) retainedUnread = Json();
+        if (text(message, L"folder") == L"drafts" && !flag(message, L"providerDraft")) { co_await compose(lifetime, message); co_return; }
+        readerFocused = true; applyMailLayout(); renderReader(message);
+        bool canMarkRead = !flag(message, L"providerDeleted");
+        for (auto const& item : array(state, L"accounts")) {
+            auto entry = item.GetObject();
+            if (text(entry, L"id") == account && (text(entry, L"provider") == L"microsoft" || text(entry, L"provider") == L"google") && !flag(object(entry, L"settings"), L"canOrganize")) canMarkRead = false;
+        }
+        if (markOnOpen && canMarkRead && !flag(message, L"read") && flag(object(object(state, L"settings"), L"preferences"), L"markReadOnOpen")) {
+            Json changes; changes.Insert(L"read", Value::CreateBooleanValue(true));
+            auto updated = co_await service->request(L"/messages/" + escaped(id), account, L"PATCH", changes);
+            if (!current(version, captured) || sequence != selectionGeneration || requestGeneration != readGeneration) co_return;
+            selected = object(updated, L"message"); renderReader(selected);
+            retainReadRow(selected);
+            for (auto& cursor : cursors) cursor = L"";
+            co_await loadPage(); // Refresh at the same bounded offset; old signed cursors have a different revision.
+        } else if (hadRetained) co_await loadPage();
+    } catch (...) {
+        if (!current(version, captured) || sequence != selectionGeneration || requestGeneration != readGeneration) co_return;
+        error(errorText());
+        if (!detailLoaded) showReaderStatus(metadata, true);
+    }
+}
+void Shell::showReaderStatus(Json const& metadata, bool failed) {
+    if (!readerNotice) return;
+    // Keep the mounted message for interrupted-read reselection and image consent.
+    reader.IsEnabled(false); reader.Visibility(Visibility::Collapsed);
+    auto panel = stack(12); panel.Margin(ThicknessHelper::FromUniformLength(20)); panel.MaxWidth(420);
+    panel.Children().Append(label(failed ? L"Could not load this message" : L"Loading message…", 20));
+    panel.Children().Append(label(text(metadata, L"subject", L"(No subject)")));
+    auto weak = weak_from_this(); auto version = generation; auto captured = owner;
+    auto sequence = selectionGeneration; auto request = readGeneration;
+    if (failed) panel.Children().Append(button(L"Retry loading message", [weak, metadata, version, captured, sequence, request] {
+        if (auto self = weak.lock(); self && self->current(version, captured)
+            && self->selectionGeneration == sequence && self->readGeneration == request) self->read(metadata);
+    }));
+    auto back = button(L"Back to list", [weak, version, captured, sequence, request] {
+        if (auto self = weak.lock(); self && self->current(version, captured)
+            && self->selectionGeneration == sequence && self->readGeneration == request) {
+            ++self->readGeneration; ++self->selectionGeneration;
+            self->loading = true; self->rows.SelectedItems().Clear(); self->loading = false;
+            self->pendingRead = Json(); self->selected = Json(); self->renderReader(self->selected);
+            self->focusMail();
+        }
+    });
+    readerBack = back; panel.Children().Append(back);
+    readerNotice.Content(panel); readerNotice.Visibility(Visibility::Visible);
+    readerFocused = true; applyMailLayout();
+}
+void Shell::focusMail() {
+    if (closing || section != L"mail" || !rows) return;
+    root.UpdateLayout();
+    if (mailLayout == L"focus" && readerFocused) {
+        auto back = readerBack;
+        if (!back) return;
+        auto weak = weak_from_this(); auto target = make_weak(back);
+        auto pageTarget = make_weak(page);
+        auto version = generation, selection = selectionGeneration, request = readGeneration; auto captured = owner;
+        auto focusBack = [weak, target, pageTarget, version, selection, request, captured] {
+            auto self = weak.lock(); auto back = target.get(); auto currentPage = pageTarget.get();
+            if (!self || !self->current(version, captured) || self->section != L"mail"
+                || self->dialogOpen || !self->navigation.IsEnabled()
+                || self->selectionGeneration != selection || self->readGeneration != request
+                || self->mailLayout != L"focus" || !self->readerFocused || !back || self->readerBack != back
+                || !currentPage || self->page != currentPage || !back.IsLoaded() || !back.IsEnabled()
+                || back.Visibility() != Visibility::Visible) return;
+            bool mounted = false;
+            for (DependencyObject node = back; node; node = Media::VisualTreeHelper::GetParent(node))
+                if (node == currentPage) { mounted = true; break; }
+            if (mounted) back.Focus(FocusState::Programmatic);
+        };
+        if (back.IsLoaded()) focusBack();
+        else {
+            // Only an explicit return-to-mail request installs this one-shot.
+            // UpdateLayout need not have delivered the new reader's Loaded yet.
+            auto token = std::make_shared<event_token>();
+            *token = back.Loaded([target, token, focusBack](auto const&, auto const&) {
+                if (auto back = target.get()) back.Loaded(*token);
+                focusBack();
+            });
+        }
+        return;
+    }
+    if (auto row = rows.SelectedItem().try_as<ListViewItem>(); row && row.Focus(FocusState::Programmatic)) return;
+    rows.Focus(FocusState::Programmatic);
+}
+void Shell::renderReader(Json const& message) {
+    readerBack = nullptr;
+    reader.IsEnabled(true); reader.Visibility(Visibility::Visible);
+    if (readerNotice) { readerNotice.Content(nullptr); readerNotice.Visibility(Visibility::Collapsed); }
+    if (text(message, L"id").empty()) {
+        readerFocused = false; applyMailLayout(); reader.Content(emptyMailReader()); return;
+    }
+    Grid readerLayout;
+    RowDefinition actionRow; actionRow.Height(GridLengthHelper::Auto()); readerLayout.RowDefinitions().Append(actionRow);
+    readerLayout.RowDefinitions().Append(RowDefinition());
+    auto content = stack(8); content.Padding(ThicknessHelper::FromLengths(20, 4, 8, 16));
+    auto title = label(text(message, L"subject", L"(No subject)"), 22); content.Children().Append(title);
+    content.Children().Append(label(text(message, L"fromName") + L" <" + text(message, L"fromEmail") + L"> · " + mailDateLabel(text(message, L"date")), 12));
+    content.Children().Append(label(L"To: " + text(message, L"to") + (text(message, L"cc").empty() ? L"" : L" · Cc: " + text(message, L"cc")), 12));
+    auto weak = weak_from_this(); auto replies = actions(); replies.Spacing(8);
+    auto back = button(L"Back to list", [weak] { if (auto self = weak.lock()) { self->readerFocused = false; self->applyMailLayout(); self->focusMail(); } });
+    readerBack = back; replies.Children().Append(back);
+    // A native flyout can outlive the row that opened it. Keep its commands
+    // bound to the mounted message as well as the handlers' existing write guards.
+    auto context = [weak, message, version = generation, sequence = selectionGeneration, captured = owner]() -> std::shared_ptr<Shell> {
+        auto self = weak.lock();
+        if (!self || !self->current(version, captured) || self->section != L"mail"
+            || self->selectionGeneration != sequence
+            || text(self->selected, L"accountId") != text(message, L"accountId")
+            || text(self->selected, L"id") != text(message, L"id")
+            || self->selected.Stringify() != message.Stringify()
+            || !self->connected(text(message, L"accountId"))) return {};
+        return self;
+    };
+    if (flag(message, L"providerDraft")) replies.Children().Append(button(L"Copy to local draft", [context, message] { if (auto self = context()) self->prepare(message, L"copy"); }));
+    else {
+        MenuFlyout reply;
+        for (auto const& option : {std::pair{L"Reply", L"reply"}, {L"Reply all",L"replyAll"}, {L"Forward",L"forward"}}) {
+            auto command = menuItem(option.first, [context, message, mode = hstring(option.second)] { if (auto self = context()) self->prepare(message, mode); });
+            Automation::AutomationProperties::SetAutomationId(command, L"reader.reply." + hstring(option.second)); reply.Items().Append(command);
+        }
+        auto control = actionMenu(L"Reply", reply, L"Reply to this message");
+        Automation::AutomationProperties::SetAutomationId(control, L"reader.reply"); replies.Children().Append(control);
+    }
+    auto remote = text(message, L"remoteId", text(message, L"id"));
+    if (std::wstring_view(remote).starts_with(L"google:") || std::wstring_view(remote).starts_with(L"microsoft:") || std::wstring_view(remote).starts_with(L"imap:")) {
+        auto menu = organizationMenu(message, [context] { return bool(context()); });
+        menu.Items().Append(MenuFlyoutSeparator());
+        auto remove = menuItem(L"Move to provider Trash", [context, message] { if (auto self = context()) self->trash(message); });
+        remove.IsEnabled(canTrash(message)); menu.Items().Append(remove);
+        auto organizeButton = actionMenu(L"Organize", menu, L"Organize this message at its mail provider");
+        Automation::AutomationProperties::SetAutomationId(organizeButton, L"reader.organize"); replies.Children().Append(organizeButton);
+    }
+    MenuFlyout more;
+    for (auto const& option : {std::tuple{L"Mark read",L"Mark unread",L"read"}, {L"Star",L"Unstar",L"starred"}, {L"Mark Pending",L"Clear Pending",L"pending"}, {L"Read later",L"Clear Read later",L"lowPriority"}}) {
+        auto key = std::wstring(std::get<2>(option)); bool on = flag(message, key.c_str());
+        auto item = menuItem(on ? std::get<1>(option) : std::get<0>(option), [context, message, key, on] {
+            if (auto self = context()) { Json change; change.Insert(key, Value::CreateBooleanValue(!on)); self->patch(message, change); }
+        });
+        if (key == L"lowPriority" && text(message,L"folder") != L"inbox" && text(message,L"folder") != L"archive") item.IsEnabled(false);
+        Automation::AutomationProperties::SetAutomationId(item, L"reader.marker." + hstring(key)); more.Items().Append(item);
+    }
+    MenuFlyoutSubItem local; local.Text(L"On this device only");
+    if (text(message, L"folder") != L"drafts" && text(message, L"folder") != L"sent") {
+        auto destination = text(message, L"folder") == L"archive" || text(message, L"folder") == L"trash" ? hstring(L"inbox") : hstring(L"archive");
+        local.Items().Append(menuItem(destination == L"inbox" ? L"Move to Inbox locally" : L"Archive locally", [context, message, destination] { if (auto self = context()) { Json changes; put(changes, L"folder", destination); self->patch(message, changes); } }));
+    }
+    if (text(message, L"folder") != L"trash") local.Items().Append(menuItem(L"Move to local Trash", [context, message] { if (auto self = context()) { Json changes; put(changes, L"folder", L"trash"); self->patch(message, changes); } }));
+    if (local.Items().Size()) { more.Items().Append(MenuFlyoutSeparator()); more.Items().Append(local); }
+    auto focus = menuItem(readerFocused ? L"Show mail list" : L"Focus on this message", [context] {
+        if (auto self = context()) { self->readerFocused = !self->readerFocused; self->applyMailLayout(); }
+    });
+    more.Items().Append(focus);
+    more.Opening([context,target=make_weak(focus)](auto const&,auto const&) {
+        if(auto self=context())if(auto item=target.get())item.Text(self->readerFocused ? L"Show mail list" : L"Focus on this message");
+    });
+    auto moreButton = actionMenu(L"More", more, L"More actions for message: " + text(message, L"subject", L"(No subject)"));
+    Automation::AutomationProperties::SetAutomationId(moreButton, L"reader.more"); replies.Children().Append(moreButton);
+    auto undo=object(message,L"localFolderUndo");
+    if(!text(undo,L"token").empty()) {
+        content.Children().Append(label(L"Moved locally; the provider location was not changed.",12));
+        content.Children().Append(button(L"Undo local move to "+text(undo,L"from"),[context,message,undo] {if(auto self=context()) {Json changes;put(changes,L"undoLocalMove",text(undo,L"token"));self->patch(message,changes);}}));
+    }
+    auto summary = object(message, L"aiSummary");
+    if (!text(summary, L"text").empty()) { Expander expanded; expanded.Header(box_value(L"Saved AI summary")); expanded.Content(label(text(summary, L"text"))); content.Children().Append(expanded); }
+    appendReader(shared_from_this(), content, message);
+    MenuFlyout assistance;
+    auto settings = object(state, L"settings"), policy = object(settings, L"policy");
+    bool aiReady = flag(object(settings, L"ai"), L"configured") && flag(policy, L"enabled");
+    if (aiReady) {
+        for (auto const& option : {std::pair{L"Summarize",L"summary"}, {L"Draft reply",L"reply"}, {L"Translate",L"translate"}}) {
+            auto item = menuItem(option.first, [context, message, mode = hstring(option.second)] { if (auto self = context()) self->messageAI(message, mode); });
+            item.IsEnabled(flag(object(policy, L"behaviors"), option.second)); assistance.Items().Append(item);
+        }
+        auto history = menuItem(L"Draft reply with permitted history…", [context, message] { if (auto self = context()) self->messageAI(message, L"reply", true); });
+        history.IsEnabled(flag(object(policy, L"behaviors"), L"reply") && flag(object(policy, L"content"), L"sender")); assistance.Items().Append(history);
+    }
+    assistance.Items().Append(menuItem(aiReady ? L"AI settings and permissions…" : L"Set up AI and permissions…", [context, account = text(message, L"accountId")] { if (auto self = context()) self->navigate(L"policy", account); }));
+    auto ai = actionMenu(L"AI help", assistance, L"AI help for this message");
+    Automation::AutomationProperties::SetAutomationId(ai, L"reader.ai"); content.Children().Append(ai);
+    ScrollViewer actionScroll; actionScroll.Content(replies);
+    actionScroll.HorizontalScrollBarVisibility(ScrollBarVisibility::Auto);
+    actionScroll.VerticalScrollBarVisibility(ScrollBarVisibility::Disabled);
+    actionScroll.Margin(ThicknessHelper::FromLengths(12, 8, 12, 8));
+    Automation::AutomationProperties::SetName(actionScroll, L"Message actions");
+    readerLayout.Children().Append(actionScroll);
+    auto body = scroll(content); Grid::SetRow(body, 1); readerLayout.Children().Append(body);
+    reader.Content(readerLayout);
+}
+IAsyncAction Shell::patch(Json message, Json changes) {
+    co_await patchMessages({message}, changes);
+}
+void Shell::retainReadRow(Json const& message, bool refreshMetadata) {
+    if (text(message, L"viewId") != text(selected, L"viewId")) return;
+    if (!flag(message, L"read")) { retainedUnread = Json(); return; }
+    if (!unreadFilter.IsChecked().Value() || !(refreshMetadata ? mailSearchQuery : search.Text()).empty()) return;
+    for (uint32_t i = 0; i < rows.Items().Size(); ++i) {
+        auto row = rows.Items().GetAt(i).as<ListViewItem>().Tag().as<Json>();
+        if (text(row, L"viewId") == text(message, L"viewId")) {
+            retainedUnread = Json::Parse(row.Stringify());
+            for (auto key : {L"read", L"starred", L"pending"}) retainedUnread.Insert(key, Value::CreateBooleanValue(flag(message, key)));
+            if (refreshMetadata) {
+                // Downloaded content changes the preview even when an active
+                // read row is retained outside the unread page. Keep it bounded
+                // metadata; full bodies and attachment bytes stay in the reader.
+                auto preview = std::wstring(text(message,L"preview"));
+                if (preview.size()>240) {
+                    preview.resize(240);
+                    if (preview.back()>=0xd800 && preview.back()<=0xdbff) preview.pop_back();
+                }
+                put(retainedUnread,L"preview",hstring(preview));
+            }
+            retainedUnreadIndex = i; break;
+        }
+    }
+}
+std::vector<Json> Shell::selectedMessages(Json target) const {
+    std::vector<Json> messages;
+    if (rows && section == L"mail") for (auto const& value : rows.SelectedItems()) messages.push_back(value.as<ListViewItem>().Tag().as<Json>());
+    if (target.Size() && std::none_of(messages.begin(), messages.end(), [&](auto const& message) { return text(message, L"viewId") == text(target, L"viewId"); })) return {target};
+    return messages;
+}
+bool Shell::canTrash(Json const& message) const {
+    auto account = text(message, L"accountId");
+    if (!connected(account) || flag(message, L"providerFolderMissing") || text(message, L"folder") == L"trash") return false;
+    for (auto const& value : array(state, L"accounts")) {
+        auto connection = value.GetObject();
+        if (text(connection, L"id") == account) {
+            auto remote = text(message, L"remoteId", text(message, L"id"));
+            return std::wstring_view(remote).starts_with(std::wstring(text(connection, L"provider", L"imap") + L":"));
+        }
+    }
+    return false;
+}
+MenuFlyout Shell::mailActionsMenu(Json message) {
+    MenuFlyout menu;
+    menu.Opening([weak = weak_from_this(), message, weakMenu = make_weak(menu)](auto const&, auto const&) {
+        auto self = weak.lock(); auto menu = weakMenu.get(); if (!self || !menu) return;
+        menu.Items().Clear();
+        auto target=menu.Target();auto sourcePage=self->page.Content().try_as<DependencyObject>();
+        if(!target || !sourcePage || !self->rows)return;
+        auto mounted=[weak,weakMenu,control=make_weak(target),page=make_weak(sourcePage),rows=make_weak(self->rows)]() -> std::shared_ptr<Shell> {
+            auto current=weak.lock();auto menu=weakMenu.get();auto target=control.get();auto sourcePage=page.get();auto sourceRows=rows.get();
+            if(!current || !menu || !target || !target.IsLoaded() || current->section!=L"mail" || current->closing
+                || current->page.Content()!=sourcePage || current->rows!=sourceRows || !sourcePage)return {};
+            bool assigned=target.ContextFlyout()==menu;
+            if(auto dropdown=target.try_as<DropDownButton>())assigned=assigned || dropdown.Flyout()==menu;
+            if(!assigned)return {};
+            auto ancestor=target.try_as<DependencyObject>();
+            while(ancestor && ancestor!=sourcePage)ancestor=Media::VisualTreeHelper::GetParent(ancestor);
+            return ancestor ? current : std::shared_ptr<Shell>{};
+        };
+        if(!mounted())return;
+        // Compose restores the same mail page with a new generation. Bind a
+        // fresh opening to that mounted page, then freeze its generation for
+        // every command; retained old flyouts must still fail after navigation.
+        auto version=self->generation;auto captured=self->owner;
+        auto messages = self->selectedMessages(message);
+        auto context=[mounted,version,captured,message,messages]() -> std::shared_ptr<Shell> {
+            auto current=mounted();if(!current || !current->current(version,captured) || !current->rows)return {};
+            if(message.Size()) {
+                bool present=false;for(auto const& item:current->rows.Items()) {
+                    auto row=item.as<ListViewItem>().Tag().as<Json>();
+                    if(text(row,L"accountId")==text(message,L"accountId") && text(row,L"id")==text(message,L"id"))present=true;
+                }
+                if(!present)return {};
+            }
+            auto selected=current->selectedMessages(message);if(selected.size()!=messages.size())return {};
+            for(auto const& row:messages)if(!current->connected(text(row,L"accountId")) || std::none_of(selected.begin(),selected.end(),[&](auto const& next){return text(next,L"accountId")==text(row,L"accountId") && text(next,L"id")==text(row,L"id");}))return {};
+            return current;
+        };
+        bool enabled = !messages.empty() && !self->loading && !self->dialogOpen && !self->closing && self->dirty.empty() && !self->service->writing();
+        if (messages.size() == 1) {
+            auto replyAll=menuItem(L"Reply all",[context,message=messages[0]] {if(auto self=context())self->prepare(message,L"replyAll");});
+            replyAll.IsEnabled(enabled && text(messages[0],L"folder")!=L"drafts");menu.Items().Append(replyAll);
+            auto organization = self->organizationMenu(messages[0],[context]{return bool(context());});
+            while (organization.Items().Size()) { auto item = organization.Items().GetAt(0); organization.Items().RemoveAt(0); menu.Items().Append(item); }
+        }
+        MenuFlyoutItem remove; remove.Text(L"Delete");
+        remove.IsEnabled(enabled && !messages.empty() && std::all_of(messages.begin(), messages.end(), [&](auto const& row) { return self->canTrash(row); }));
+        remove.Click([context, messages](auto const&, auto const&) { if (auto self = context()) self->trashMessages(messages); }); menu.Items().Append(remove);
+        menu.Items().Append(MenuFlyoutSeparator());
+        for (auto const& choice : {std::tuple{L"Mark read", L"read", true}, {L"Mark unread", L"read", false}, {L"Star", L"starred", true}, {L"Unstar", L"starred", false}, {L"Mark Pending", L"pending", true}, {L"Clear Pending", L"pending", false}}) {
+            MenuFlyoutItem item; item.Text(std::get<0>(choice)); item.IsEnabled(enabled);
+            item.Click([context, messages, key = hstring(std::get<1>(choice)), value = std::get<2>(choice)](auto const&, auto const&) {
+                if (auto self = context()) { Json changes; changes.Insert(key, Value::CreateBooleanValue(value)); self->patchMessages(messages, changes); }
+            }); menu.Items().Append(item);
+        }
+        for (auto const& choice : {std::pair{L"Archive locally", L"archive"}, {L"Move to local Trash", L"trash"}}) {
+            MenuFlyoutItem item; item.Text(choice.first);
+            item.IsEnabled(enabled && (choice.second == std::wstring_view(L"trash") || std::none_of(messages.begin(), messages.end(), [](auto const& row) { return text(row, L"folder") == L"drafts"; })));
+            item.Click([context, messages, folder = hstring(choice.second)](auto const&, auto const&) { if (auto self = context()) { Json changes; put(changes, L"folder", folder); self->patchMessages(messages, changes); } }); menu.Items().Append(item);
+        }
+    });
+    return menu;
+}
+IAsyncAction Shell::patchMessages(std::vector<Json> messages, Json changes) {
+    auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
+    if (dialogOpen || navigationLocked || loading || closing || !dirty.empty() || service->writing() || messages.empty()) co_return;
+    navigationLocked = true;
+    // Refresh the currently selected row if the patch interrupts a detail read, retaining the
+    // mounted reader's Load/Hide choice and interactions for metadata changes.
+    auto interrupted = pendingRead; auto sequence = selectionGeneration;
+    pendingRead = Json();
+    ++readGeneration; loading = true; size_t completed = 0; hstring failure;
+    try {
+        for (auto const& message : messages) {
+            auto account = text(message, L"accountId"); auto id = text(message, L"id");
+            if (!connected(account)) throw hresult_error(E_FAIL, L"The owning mailbox was disconnected.");
+            auto result = co_await service->request(L"/messages/" + escaped(id), account, L"PATCH", changes);
+            auto updated = object(result, L"message");
+            if (text(updated, L"accountId") != account || text(updated, L"id") != id) throw hresult_error(E_FAIL, L"The message owner changed. Open it again.");
+            ++completed;
+            if (!current(version, captured)) break;
+            if (text(selected, L"accountId") == account && text(selected, L"id") == id) {
+                if (changes.HasKey(L"folder") || changes.HasKey(L"undoLocalMove")) { ++selectionGeneration; selected = Json(); retainedUnread = Json(); }
+                else selected = updated;
+                if (!changes.HasKey(L"folder") && !changes.HasKey(L"undoLocalMove")) retainReadRow(updated);
+                renderReader(selected);
+            }
+        }
+    } catch (...) { failure = L"Updated " + to_hstring(completed) + L" of " + to_hstring(messages.size()) + L" messages. " + errorText(); }
+    loading = false; navigationLocked = false;
+    if (current(version, captured)) {
+        for (auto& cursor : cursors) cursor = L"";
+        co_await loadPage();
+        auto chosen = selectedMessages();
+        if (current(version, captured) && sequence == selectionGeneration && interrupted.Size() && chosen.size() == 1) {
+            bool explicitRead = changes.HasKey(L"read") && std::any_of(messages.begin(), messages.end(), [&](auto const& message) {
+                return text(message, L"accountId") == text(chosen[0], L"accountId") && text(message, L"id") == text(chosen[0], L"id");
+            });
+            co_await read(chosen[0], !explicitRead);
+        }
+        if (!failure.empty()) error(failure);
+    }
+}
+void Shell::resizeSidebar(double width, bool save) {
+    if (!navigation || !std::isfinite(width)) return;
+    auto maximum = root && root.ActualWidth() > 0 ? std::clamp(root.ActualWidth() - 640.0, 180.0, 600.0) : 600.0;
+    width = std::clamp(width, 180.0, maximum);
+    auto previous = navigation.OpenPaneLength();
+    navigation.OpenPaneLength(width);
+    if (sidebarDivider) {
+        sidebarDivider.Margin(ThicknessHelper::FromLengths(width - 3, 0, 0, 0));
+        sidebarDivider.Visibility(navigation.IsPaneOpen() && navigation.DisplayMode() == NavigationViewDisplayMode::Expanded ? Visibility::Visible : Visibility::Collapsed);
+    }
+    if (width != previous && mailBody && mailBody.IsLoaded()) {
+        root.UpdateLayout(); applyMailLayout();
+    }
+    if (save && service && !closing) try { service->saveClientState(L"morrow.sidebar.width", to_hstring(width)); } catch (...) { error(errorText()); }
+}
+void Shell::updateTrashUndo() {
+    std::erase_if(trashUndos, [](auto const& entry) { return entry.expires <= GetTickCount64(); });
+    trashUndoButton.Visibility(trashUndos.empty() ? Visibility::Collapsed : Visibility::Visible);
+    trashUndoButton.IsEnabled(!loading && !dialogOpen && dirty.empty() && !closing && service && !service->writing());
+}
+IAsyncAction Shell::trash(Json message) {
+    co_await trashMessages({message});
+}
+IAsyncAction Shell::trashMessages(std::vector<Json> messages) {
+    auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
+    if (dialogOpen || navigationLocked || loading || closing || !dirty.empty() || service->writing() || messages.empty()
+        || !std::all_of(messages.begin(), messages.end(), [&](auto const& row) { return canTrash(row); })) co_return;
+    navigationLocked = true; loading = true; auto batch = ++trashBatch; size_t completed = 0; hstring failure, operationOwner, unresolved;
+    try {
+        for (auto const& message : messages) {
+            auto account = text(message, L"accountId");
+            operationOwner = account;
+            auto response = co_await service->requestWithStatus(L"/messages/" + escaped(text(message, L"id")) + L"/trash", account, L"POST", Json());
+            auto status = static_cast<unsigned>(response.GetNamedNumber(L"status",0)); auto result = object(response,L"body");
+            if (status < 200 || status >= 300) throw ApiError(status,result);
+            auto moved = object(result, L"message");
+            if (text(moved, L"accountId") != account || text(moved, L"id") != text(message, L"id") || text(result, L"undoToken").empty()) throw hresult_error(E_FAIL, L"The Trash move could not be verified. Refresh your mailbox.");
+            trashUndos.push_back({message, text(result, L"undoToken"), GetTickCount64() + 60000, batch}); ++completed;
+            if (!current(version, captured)) break;
+            if (text(selected, L"accountId") == account && text(selected, L"id") == text(message, L"id")) { selected = Json(); retainedUnread = Json(); renderReader(selected); }
+        }
+    } catch (ApiError const& error) { unresolved = unresolvedMoveOperation(error.body,operationOwner); failure = L"Moved " + to_hstring(completed) + L" of " + to_hstring(messages.size()) + L" messages. " + error.message(); }
+    catch (...) { failure = L"Moved " + to_hstring(completed) + L" of " + to_hstring(messages.size()) + L" messages. " + errorText(); }
+    loading = false; navigationLocked = false; updateTrashUndo();
+    if (current(version, captured)) {
+        for (auto& cursor : cursors) cursor = L"";
+        co_await loadPage();
+        status.Text(failure.empty() ? L"Moved to provider Trash. Undo is available for one minute." : failure);
+        if (!unresolved.empty() && current(version,captured)) co_await reviewMoves(operationOwner,unresolved);
+    }
+}
+IAsyncAction Shell::undoTrash() {
+    auto lifetime = shared_from_this();
+    if (dialogOpen || navigationLocked || loading || closing || !dirty.empty() || service->writing()) co_return;
+    updateTrashUndo(); if (trashUndos.empty()) co_return;
+    auto batch = trashUndos.back().batch; navigationLocked = true; loading = true; updateTrashUndo();
+    auto version = generation; auto captured = owner;
+    hstring operationOwner, unresolved;
+    try {
+        while (!trashUndos.empty() && trashUndos.back().batch == batch) {
+            auto entry = trashUndos.back(); trashUndos.pop_back();
+            Json body; put(body, L"undoToken", entry.token);
+            operationOwner = text(entry.message,L"accountId");
+            auto response = co_await service->requestWithStatus(L"/messages/" + escaped(text(entry.message, L"id")) + L"/undo-trash", operationOwner, L"POST", body);
+            auto status = static_cast<unsigned>(response.GetNamedNumber(L"status",0)); auto result = object(response,L"body");
+            if (status < 200 || status >= 300) throw ApiError(status,result);
+        }
+        loading = false; navigationLocked = false; updateTrashUndo();
+        if (!current(version, captured)) co_return;
+        if (section == L"mail") { for (auto& cursor : cursors) cursor = L""; co_await loadPage(); }
+        status.Text(L"Trash move undone. The message was restored.");
+    } catch (ApiError const& failure) { unresolved = unresolvedMoveOperation(failure.body,operationOwner); loading = false; navigationLocked = false; updateTrashUndo(); error(failure.message()); }
+    catch (...) { loading = false; navigationLocked = false; updateTrashUndo(); error(errorText()); }
+    if (!unresolved.empty() && current(version,captured)) co_await reviewMoves(operationOwner,unresolved);
+}
+IAsyncAction Shell::prepare(Json message, hstring mode, hstring body) {
+    auto lifetime = shared_from_this(); auto version = generation; auto captured = owner; auto sequence = selectionGeneration;
+    auto account = text(message, L"accountId");
+    if (!connected(account) || !dirty.empty()) co_return;
+    try {
+        Json input; put(input, L"mode", mode); put(input, L"messageId", text(message, L"id"));
+        if (!body.empty()) put(input, L"body", body);
+        auto result = co_await service->request(L"/drafts/prepare", account, L"POST", input);
+        if (!current(version, captured) || sequence != selectionGeneration || !dirty.empty()) co_return;
+        auto draft = object(result, L"draft");
+        if (text(draft, L"accountId") != account) throw hresult_error(E_FAIL, L"The prepared draft owner changed.");
+        co_await compose(lifetime, draft);
+    } catch (...) { error(errorText()); }
+}
+IAsyncAction Shell::messageAI(Json message, hstring action, bool history) {
+    auto lifetime = shared_from_this(); auto version = generation; auto captured = owner; auto sequence = selectionGeneration;
+    if (dialogOpen || !connected(text(message, L"accountId"))) co_return;
+    auto model = object(object(state, L"settings"), L"ai");
+    if (!co_await confirm(history ? L"Suggest with History" : L"Run email AI?",
+        text(model, L"model") + L" · " + text(model, L"baseUrl") + L"\n\n" +
+        (history ? L"Uses this message and permitted downloaded correspondence from the same sender, within your saved limits. " : L"Uses permitted content from this message. ") +
+        L"Your configured model provider may charge. Nothing is sent or saved automatically.", L"Generate")) co_return;
+    if (!current(version, captured) || sequence != selectionGeneration) co_return;
+    ContentDialog dialog; dialog.XamlRoot(root.XamlRoot()); dialog.Title(box_value(history ? L"Suggest with History" : action));
+    auto content = stack(); auto progress = label(L"Waiting for the configured model…"); content.Children().Append(progress);
+    dialog.Content(scroll(content)); dialog.CloseButtonText(L"Close");
+    std::function<void()> release;
+    IAsyncOperation<ContentDialogResult> display{nullptr};
+    try { display = showReaderPopup(lifetime, dialog, release); }
+    catch (...) { error(errorText()); co_return; }
+    Json result; bool failed = false;
+    try {
+        Json input; put(input, L"action", action); put(input, L"messageId", text(message, L"id")); input.Insert(L"includeHistory", Value::CreateBooleanValue(history));
+        result = co_await service->request(L"/ai", text(message, L"accountId"), L"POST", input);
+        if (current(version, captured) && sequence == selectionGeneration && display.Status() == AsyncStatus::Started) {
+            progress.Text(text(result, L"text"));
+            if (action == L"reply") dialog.PrimaryButtonText(L"Use in draft");
+        }
+    } catch (...) {
+        failed = true;
+        if (display.Status() == AsyncStatus::Started) progress.Text(errorText());
+    }
+    ContentDialogResult choice = ContentDialogResult::None;
+    try { choice = co_await display; } catch (...) {}
+    release(); // Closed may already have released this popup; never clear a newer dialog's guard.
+    if (!failed && !dialogOpen && choice == ContentDialogResult::Primary && current(version, captured) && sequence == selectionGeneration)
+        co_await prepare(message, L"reply", text(result, L"text"));
+}
+JsonArray Shell::syncPriorityMessages() const {
+    JsonArray messages;
+    if (section != L"mail" || !rows || (owner != L"all" && !connected(owner))) return messages;
+    std::set<std::pair<std::wstring, std::wstring>> seen;
+    auto append = [&](Json const& message) {
+        auto account = text(message, L"accountId"), id = text(message, L"id");
+        if (messages.Size() >= 51 || id.empty() || !connected(account) || (owner != L"all" && account != owner)
+            || !seen.emplace(std::wstring(account), std::wstring(id)).second) return;
+        Json entry; put(entry, L"accountId", account); put(entry, L"id", id); messages.Append(entry);
+    };
+    append(selected);
+    for (auto const& item : rows.Items()) append(item.as<ListViewItem>().Tag().as<Json>());
+    return messages;
+}
+IAsyncAction Shell::publishSyncPriority(bool clear) {
+    auto lifetime = shared_from_this();
+    if (closing || !service) co_return;
+    Json body;
+    body.Insert(L"generation", Value::CreateNumberValue(static_cast<double>(++syncPriorityGeneration)));
+    body.Insert(L"messages", clear ? JsonArray() : syncPriorityMessages());
+    auto scope = owner == L"all" || connected(owner) ? owner : hstring(L"all");
+    try { co_await service->request(L"/sync/priority", scope, L"POST", body); }
+    catch (...) {} // The hint expires; a failed hint does not alter mail or its current view.
+}
+IAsyncAction Shell::sync() {
+    auto lifetime = shared_from_this(); auto version = generation; auto captured = owner;
+    if ((!connected(captured) && captured != L"all") || service->writing() || syncing || dialogOpen || !dirty.empty()) co_return;
+    syncing = true; syncButton.IsEnabled(false);
+    error(L"Syncing mail… See Activity for progress.");
+    try {
+        co_await publishSyncPriority();
+        auto result = co_await service->request(L"/sync", section == L"today" ? L"all" : captured, L"POST");
+        if (!current(version, captured)) { syncing = false; syncButton.IsEnabled(array(state, L"accounts").Size() > 0); co_return; }
+        state = result;
+        co_await refresh(true);
+    } catch (...) { error(errorText()); }
+    syncing = false; syncButton.IsEnabled(array(state, L"accounts").Size() > 0);
+}
+void Shell::updateBadge() {
+    auto item = navigation.SettingsItem().try_as<NavigationViewItem>();
+    if (!item) return;
+    if (flag(updateResult, L"updateAvailable")) {
+        InfoBadge badge; badge.Value(-1);
+        badge.IconSource(FontIconSource());
+        auto source = badge.IconSource().as<FontIconSource>(); source.Glyph(L"!");
+        badge.Background(Media::SolidColorBrush(Windows::UI::Color{255, 180, 25, 30}));
+        Automation::AutomationProperties::SetName(badge, L"Update available"); item.InfoBadge(badge);
+    } else item.InfoBadge(nullptr);
+}
+IAsyncAction Shell::checkUpdates(bool force) {
+    auto lifetime = shared_from_this();
+    if (closing || checkingUpdates || !service || !service->alive()) co_return;
+    auto now = GetTickCount64();
+    if (!force && lastUpdateCheck && now - lastUpdateCheck < 3600000) co_return;
+    checkingUpdates = true; lastUpdateCheck = now;
+    auto channel = includePrereleases;
+    try {
+        auto result = co_await service->request(channel ? L"/updates?includePrereleases=true" : L"/updates?includePrereleases=false");
+        if (!closing && channel == includePrereleases) { updateResult = result; updateBadge(); }
+    } catch (...) { if (force && !closing && channel == includePrereleases) error(errorText()); }
+    checkingUpdates = false;
+}
+IAsyncAction Shell::shutdown() {
+    auto lifetime = shared_from_this();
+    if (closing || dialogOpen) co_return;
+    if (!restartingForUpdate && service && service->writing()) { error(L"Wait for the current save or provider operation before closing."); co_return; }
+    if ((!dirty.empty() || review->hasEdits()) && !co_await confirm(L"Discard unsaved changes and close?", L"Saved drafts and account data will stay on this device.", L"Discard and close")) co_return;
+    try {
+        auto presenter = window.AppWindow().Presenter().try_as<Microsoft::UI::Windowing::OverlappedPresenter>();
+        if (service && presenter && presenter.State() == Microsoft::UI::Windowing::OverlappedPresenterState::Restored) {
+            auto size = window.AppWindow().Size(); auto scale = windowScale(window);
+            auto saved = service->windowState();
+            auto fitted = mailWindowBounds(window, saved.GetNamedNumber(L"width", 1220), saved.GetNamedNumber(L"height", 800));
+            if (size.Width != fitted.Width || size.Height != fitted.Height)
+                service->saveWindowSize(std::clamp(static_cast<int>(std::lround(size.Width / scale)), 1040, 2400), std::clamp(static_cast<int>(std::lround(size.Height / scale)), 700, 1600));
+        }
+    } catch (...) { error(L"The window size could not be saved. Mail and settings are retained."); }
+    closing = true; ++generation; if (timer) timer.Stop(); navigation.IsEnabled(false); error(L"Closing the private service…");
+    try { if (service) co_await service->stop(); } catch (...) {}
+    closeReady = true;
+    window.Close(); Application::Current().Exit();
+}
+IAsyncAction composerWriteGuardChecks(std::shared_ptr<Shell> shell);
+
+// Called by native smoke after its disposable-workspace check, before page walkthroughs.
+// Real dialogs and foreground guards only: no model/provider/service requests.
+IAsyncAction nativeInteractionChecks(std::shared_ptr<Shell> shell) {
+    auto check = [](bool value, wchar_t const* message) { if (!value) throw hresult_error(E_FAIL, message); };
+    check(std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos
+        && !shell->closing && !shell->dialogOpen && shell->dirty.empty(), L"Interaction checks require an idle native fixture.");
+    apartment_context ui;
+    std::function<void()> lateRelease;
+    for (int i = 0; i < 2; ++i) {
+        ContentDialog dialog; dialog.XamlRoot(shell->root.XamlRoot());
+        dialog.Title(box_value(L"Fictional reader popup")); dialog.CloseButtonText(L"Close");
+        auto opened = std::make_shared<bool>(false);
+        dialog.Opened([opened](auto const&, auto const&) { *opened = true; });
+        std::function<void()> release;
+        auto display = showReaderPopup(shell, dialog, release);
+        struct Cleanup {
+            ContentDialog dialog; std::function<void()> release;
+            ~Cleanup() { try { dialog.Hide(); } catch (...) {} release(); }
+        } cleanup{dialog, release};
+        auto deadline = GetTickCount64() + 5000;
+        while (!*opened && display.Status() == AsyncStatus::Started && GetTickCount64() < deadline) {
+            co_await resume_after(std::chrono::milliseconds(20)); co_await ui;
+        }
+        check(*opened && shell->dialogOpen, L"Reader popup did not acquire its visible-dialog guard.");
+        if (lateRelease) {
+            lateRelease(); // An older model completion arrives while the next popup is visible.
+            check(shell->dialogOpen, L"An older reader popup cleared the new dialog guard.");
+        }
+        auto pageBefore = shell->page.Content(); auto generationBefore = shell->generation;
+        auto ownerBefore = shell->owner; auto sectionBefore = shell->section;
+        co_await shell->navigate(L"mail", L"blocked-navigation@fixture.invalid", L"drafts");
+        check(shell->dialogOpen && shell->current(generationBefore, ownerBefore)
+            && shell->section == sectionBefore && shell->page.Content() == pageBefore,
+            L"A foreground dialog/download guard allowed sidebar navigation.");
+        dialog.Hide();
+        while (display.Status() == AsyncStatus::Started && GetTickCount64() < deadline) {
+            co_await resume_after(std::chrono::milliseconds(20)); co_await ui;
+        }
+        check(display.Status() == AsyncStatus::Completed && !shell->dialogOpen,
+            L"Closing a reader popup retained its dialog guard.");
+        display.GetResults();
+        lateRelease = release;
+    }
+    bool rejected = false;
+    std::function<void()> release;
+    try {
+        ContentDialog unrooted; unrooted.CloseButtonText(L"Close");
+        (void)showReaderPopup(shell, unrooted, release);
+        unrooted.Hide();
+    } catch (hresult_error const&) { rejected = true; }
+    auto guardAfterFailure = shell->dialogOpen;
+    if (release) release();
+    check(rejected && !guardAfterFailure, L"A synchronous popup failure retained its dialog guard.");
+    inboxAgentReviewChecks();
+    co_await composerWriteGuardChecks(shell);
+}
+IAsyncAction openTodayMailbox(std::shared_ptr<Shell> self, hstring folder, bool unreadOnly) {
+    if (self->loading || self->dialogOpen || self->closing || !self->dirty.empty()) co_return;
+    co_await self->navigate(L"mail", L"all", folder);
+    if (unreadOnly && self->section == L"mail" && self->owner == L"all" && self->folder == folder && self->unreadFilter) {
+        self->unreadFilter.IsChecked(true); co_await self->loadPage();
+    }
+}
+IAsyncAction summarizeNow(std::shared_ptr<Shell> self, hstring mailbox) {
+    if (self->navigationLocked || self->dialogOpen || self->closing || !self->dirty.empty() || !self->connected(mailbox)) co_return;
+    auto version = self->generation; auto viewOwner = self->owner;
+    try {
+        self->error(L"Reviewing downloaded mail…");
+        auto preview = co_await self->service->request(L"/summaries/preview", mailbox, L"POST", Json());
+        if (!self->current(version, viewOwner)) co_return;
+        if (text(preview, L"accountId") != mailbox) throw hresult_error(E_FAIL, L"The preview belongs to a different mailbox.");
+        auto model = object(preview, L"model");
+        auto detail = mailbox + L"\n" + text(model, L"model") + L" · " + text(model, L"baseUrl") + L"\n\n";
+        for (auto const& value : array(preview, L"messages")) {
+            auto message = value.GetObject();
+            auto subject = text(message, L"subject");
+            detail = detail + (subject.empty() ? L"(Subject withheld)" : subject) + L"\n" + text(message, L"fromEmail") + L" · " + text(message, L"folder") + L" · " + mailDateLabel(text(message, L"date")) + L"\n\n";
+        }
+        detail = detail + to_hstring(array(preview, L"messages").Size()) + L" downloaded messages. Uses saved folder, Inbox-only and starred-only filters across all dates, up to your context limit. Only permitted fields reach the model. Provider charges may apply.";
+        self->error(L"");
+        if (!co_await self->confirm(L"Generate a saved P0–P4 summary?", detail, L"Generate summary") || !self->current(version, viewOwner)) co_return;
+        Json body; put(body, L"previewId", text(preview, L"previewId"));
+        self->error(L"Generating summary…");
+        auto result = co_await self->service->request(L"/summaries/generate", mailbox, L"POST", body);
+        if (self->current(version, viewOwner)) {
+            co_await self->refresh();
+            if (text(result, L"status") != L"completed") self->error(text(result, L"error", L"Summary was interrupted. Review before generating again."));
+        }
+    } catch (...) { self->error(errorText()); }
+}
+IAsyncAction cancelActivity(std::shared_ptr<Shell> self, hstring id) {
+    if (id.empty()) co_return;
+    if (!co_await self->confirm(L"Cancel this activity?", L"The result will be discarded. Nothing will be sent.", L"Cancel activity")) co_return;
+    try {
+        Json body; put(body, L"id", id);
+        co_await self->service->request(L"/activity/cancel", L"", L"POST", body);
+        if (self->section == L"activity") co_await workspacePage(self, L"activity");
+    } catch (...) { self->error(errorText()); }
+}
+namespace {
+// Copy only the server's content-free projection. A later Activity snapshot must
+// not replace the selected job or introduce mail/model output into its dialog.
+struct SummaryActivitySnapshot {
+    hstring id, account, status, kind, createdAt, startedAt, finishedAt, updatedAt, observedAt;
+    hstring diagnostic, messageCount = L"Not recorded";
+    bool available = false;
+};
+hstring summaryActivityStatus(hstring const& status) {
+    if (status == L"failed") return L"Failed";
+    if (status == L"cancelled") return L"Cancelled";
+    if (status == L"interrupted") return L"Interrupted";
+    if (status == L"skipped") return L"Skipped";
+    if (status == L"completed") return L"Completed";
+    return L"Unknown";
+}
+hstring summaryActivityTrigger(hstring const& kind) {
+    if (kind == L"manual") return L"Manual";
+    if (kind == L"arrival") return L"On arrival";
+    if (kind == L"scheduled") return L"Scheduled";
+    return L"Unknown";
+}
+hstring activityTime(hstring const& value) { return value.empty() ? hstring(L"Not recorded") : mailDateLabel(value); }
+hstring summaryActivityTime(SummaryActivitySnapshot const& job) {
+    if (!job.finishedAt.empty()) return L"Finished: " + activityTime(job.finishedAt);
+    if (!job.updatedAt.empty()) return L"Updated: " + activityTime(job.updatedAt);
+    if (!job.startedAt.empty()) return L"Started: " + activityTime(job.startedAt);
+    if (!job.createdAt.empty()) return L"Created: " + activityTime(job.createdAt);
+    return L"Job time not recorded";
+}
+SummaryActivitySnapshot captureSummaryActivity(Json const& task, hstring const& checkedAt) {
+    SummaryActivitySnapshot result;
+    result.account = text(task, L"accountId"); result.status = text(task, L"status"); result.observedAt = checkedAt;
+    auto job = object(task, L"summaryJob");
+    if (result.account.empty() || result.account == L"all" || text(job, L"accountId") != result.account) {
+        result.diagnostic = L"Saved job details are unavailable for this mailbox.";
+        return result;
+    }
+    result.id = text(job, L"id"); result.status = text(job, L"status"); result.kind = text(job, L"kind");
+    result.createdAt = text(job, L"createdAt"); result.startedAt = text(job, L"startedAt");
+    result.finishedAt = text(job, L"finishedAt"); result.updatedAt = text(job, L"updatedAt");
+    // diagnostic is an allowlisted server message, never job.error/provider text.
+    result.diagnostic = text(job, L"diagnostic");
+    if (result.diagnostic.empty() || result.diagnostic.size() > 512) result.diagnostic = L"No diagnostic was recorded for this job.";
+    auto count = job.GetNamedValue(L"messageCount", Value::CreateNullValue());
+    if (count.ValueType() == JsonValueType::Number) {
+        auto number = count.GetNumber();
+        if (std::isfinite(number) && number >= 0 && number <= 9007199254740991.0 && std::floor(number) == number)
+            result.messageCount = to_hstring(static_cast<uint64_t>(number));
+    }
+    auto retry = job.GetNamedValue(L"automaticRetry", Value::CreateNullValue());
+    result.available = result.id.size() == 64
+        && std::all_of(result.id.begin(), result.id.end(), [](wchar_t ch) { return (ch >= L'0' && ch <= L'9') || (ch >= L'a' && ch <= L'f'); })
+        && retry.ValueType() == JsonValueType::Boolean && !retry.GetBoolean();
+    return result;
+}
+hstring summaryActivityText(SummaryActivitySnapshot const& job) {
+    return L"Mailbox: " + job.account + L"\nStatus: " + summaryActivityStatus(job.status)
+        + L"\nTrigger: " + summaryActivityTrigger(job.kind)
+        + L"\n\n" + job.diagnostic
+        + L"\n\nCreated: " + activityTime(job.createdAt) + L"\nStarted: " + activityTime(job.startedAt)
+        + L"\nFinished: " + activityTime(job.finishedAt) + L"\nUpdated: " + activityTime(job.updatedAt)
+        + L"\nMessages in this job: " + job.messageCount
+        + L"\n\nThis job is not retried automatically."
+        + L"\nStatus snapshot observed: " + activityTime(job.observedAt);
+}
+bool summaryActivityContext(std::shared_ptr<Shell> const& shell, SummaryActivitySnapshot const& job,
+    uint64_t version, hstring const& viewOwner) {
+    // Activity lists all connected owners. viewOwner guards the page lifetime;
+    // the captured job's account, not the selected Mail account, owns the detail.
+    return job.available && shell->current(version, viewOwner) && shell->section == L"activity"
+        && shell->connected(job.account);
+}
+bool summaryActivityCurrent(std::shared_ptr<Shell> const& shell, SummaryActivitySnapshot const& job,
+    uint64_t version, hstring const& viewOwner) {
+    return summaryActivityContext(shell, job, version, viewOwner)
+        && !shell->loading && !shell->dialogOpen && !shell->navigationLocked && shell->dirty.empty();
+}
+ContentDialog summaryActivityDialog(std::shared_ptr<Shell> const& shell, SummaryActivitySnapshot const& job) {
+    ContentDialog dialog; dialog.XamlRoot(shell->root.XamlRoot()); dialog.Title(box_value(L"Summary job details"));
+    dialog.Content(scroll(label(summaryActivityText(job)))); dialog.CloseButtonText(L"Close");
+    dialog.DefaultButton(ContentDialogButton::Close);
+    return dialog;
+}
+// Only summaryActivityChecks supplies this probe. Shared value state keeps an
+// Opened callback safe even when the bounded fixture stops awaiting the dialog.
+struct SummaryActivityDialogFixture { bool opened = false, closeRequested = false; };
+IAsyncAction openSummaryActivity(std::shared_ptr<Shell> shell, SummaryActivitySnapshot job, uint64_t version, hstring viewOwner,
+    std::shared_ptr<SummaryActivityDialogFixture> fixture = {}) {
+    if (!summaryActivityCurrent(shell, job, version, viewOwner)) co_return;
+    std::function<void()> release;
+    try {
+        auto dialog = summaryActivityDialog(shell, job);
+        if (fixture) dialog.Opened([fixture](auto const& sender, auto const&) {
+            fixture->opened = true;
+            if (fixture->closeRequested) sender.template as<ContentDialog>().Hide();
+        });
+        auto display = showReaderPopup(shell, dialog, release);
+        struct CloseDialog { ContentDialog dialog; ~CloseDialog() { try { dialog.Hide(); } catch (...) {} } } close{dialog};
+        apartment_context ui;
+        while (display.Status() == AsyncStatus::Started) {
+            // Observe only cached UI ownership; this never fetches or retries a job.
+            if ((fixture && fixture->closeRequested) || !summaryActivityContext(shell, job, version, viewOwner)) { dialog.Hide(); break; }
+            co_await resume_after(std::chrono::milliseconds(250)); co_await ui;
+        }
+        co_await display;
+    } catch (...) {
+        if (shell->current(version, viewOwner) && shell->section == L"activity") shell->error(L"The saved job details could not be opened. Refresh Activity and try again.");
+    }
+    if (release) release();
+}
+StackPanel summaryActivityRow(Json const& task, hstring const& checkedAt, std::function<void(SummaryActivitySnapshot)> open) {
+    auto snapshot = captureSummaryActivity(task, checkedAt);
+    auto item = stack(4);
+    item.Children().Append(label(text(task, L"label", L"Last AI summary") + L" · " + summaryActivityStatus(snapshot.status), 18));
+    item.Children().Append(label(snapshot.account));
+    item.Children().Append(label(summaryActivityTime(snapshot), 12));
+    item.Children().Append(label(snapshot.diagnostic));
+    item.Children().Append(label(L"This job is not retried automatically.", 12));
+    if (snapshot.available) {
+        auto details = button(L"Summary job details", [snapshot, open = std::move(open)] { open(snapshot); });
+        Automation::AutomationProperties::SetAutomationId(details, L"activity.summary.details." + snapshot.id);
+        item.Children().Append(details);
+    } else {
+        item.Children().Append(label(L"Details are unavailable for this saved job.", 12));
+    }
+    return item;
+}
+}
+IAsyncAction summaryActivityChecks(std::shared_ptr<Shell> shell) {
+    auto check = [](bool condition, wchar_t const* message) { if (!condition) throw hresult_error(E_FAIL, message); };
+    check(std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos
+        && shell->section == L"activity" && shell->connected(L"one@fixture.invalid")
+        && shell->connected(L"two@fixture.invalid") && !shell->dialogOpen && !shell->loading,
+        L"Summary diagnostics checks require the owned native fixture Activity page.");
+    Json task = Json::Parse(LR"({"id":"last-summary:one@fixture.invalid","accountId":"one@fixture.invalid","label":"Last AI summary","status":"failed","updatedAt":"2026-10-15T09:00:00.000Z","error":"RAW_TASK_ERROR_CANARY","summaryJob":{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","accountId":"one@fixture.invalid","status":"failed","kind":"scheduled","createdAt":"2020-01-02T03:00:00.000Z","startedAt":"2020-01-02T03:01:00.000Z","finishedAt":null,"updatedAt":"2020-01-02T03:02:00.000Z","messageCount":7,"diagnosticCode":"model_timeout","diagnostic":"The model request exceeded its 45-second limit.","automaticRetry":false,"error":"RAW_PROVIDER_ERROR_CANARY","text":"PRIVATE_MODEL_TEXT_CANARY","items":[{"summary":"PRIVATE_MAIL_CANARY"}],"signature":"OLD_CONTEXT_CANARY"}})");
+    hstring checkedAt = L"2026-10-15T09:01:00.000Z";
+    auto original = captureSummaryActivity(task, checkedAt);
+    auto detail = summaryActivityText(original);
+    check(original.available && original.messageCount == L"7" && original.status == L"failed"
+        && original.updatedAt == L"2020-01-02T03:02:00.000Z" && original.finishedAt.empty(),
+        L"Summary diagnostics lost the exact historical job metadata.");
+    auto timedRow = summaryActivityRow(task, checkedAt, [](auto) {});
+    check(timedRow.Children().GetAt(2).as<TextBlock>().Text() == L"Updated: " + activityTime(original.updatedAt),
+        L"A terminal summary row hid its recorded update behind its start time.");
+    auto finished = Json::Parse(task.Stringify()); put(object(finished, L"summaryJob"), L"finishedAt", L"2020-01-02T03:03:00.000Z");
+    check(summaryActivityRow(finished, checkedAt, [](auto) {}).Children().GetAt(2).as<TextBlock>().Text()
+        == L"Finished: " + activityTime(L"2020-01-02T03:03:00.000Z"), L"A terminal summary row lost its known finish time.");
+    check(std::wstring_view(detail).find(L"Finished: Not recorded") != std::wstring_view::npos
+        && std::wstring_view(detail).find(L"Status snapshot observed: " + activityTime(checkedAt)) != std::wstring_view::npos
+        && std::wstring_view(detail).find(L"This job is not retried automatically.") != std::wstring_view::npos
+        && std::wstring_view(detail).find(L"CANARY") == std::wstring_view::npos,
+        L"Summary diagnostics exposed unprojected content or fabricated the finish time.");
+    for (auto const& [status, title] : {std::pair{L"failed", L"Failed"}, {L"cancelled", L"Cancelled"},
+        {L"interrupted", L"Interrupted"}, {L"skipped", L"Skipped"}, {L"completed", L"Completed"}, {L"legacy-invalid", L"Unknown"}}) {
+        auto next = Json::Parse(task.Stringify()); put(object(next, L"summaryJob"), L"status", status);
+        auto captured = captureSummaryActivity(next, checkedAt);
+        auto row = summaryActivityRow(next, checkedAt, [](auto) {});
+        check(summaryActivityStatus(captured.status) == title
+            && row.Children().GetAt(0).as<TextBlock>().Text() == hstring(L"Last AI summary · ") + title,
+            L"Summary terminal states were collapsed in the Activity row.");
+    }
+    for (auto const& [kind, title] : {std::pair{L"manual", L"Manual"}, {L"arrival", L"On arrival"}, {L"scheduled", L"Scheduled"}, {L"other", L"Unknown"}})
+        check(summaryActivityTrigger(kind) == title, L"Summary trigger labels are ambiguous.");
+    auto absent = Json::Parse(task.Stringify()); auto absentJob = object(absent, L"summaryJob");
+    for (auto key : {L"createdAt", L"startedAt", L"finishedAt", L"updatedAt", L"messageCount"}) absentJob.Insert(key, Value::CreateNullValue());
+    auto unknown = captureSummaryActivity(absent, L"");
+    auto unknownRow = summaryActivityRow(absent, L"", [](auto) {});
+    check(unknown.available && unknown.messageCount == L"Not recorded"
+        && unknownRow.Children().GetAt(2).as<TextBlock>().Text() == L"Job time not recorded"
+        && std::wstring_view(summaryActivityText(unknown)).find(L"Created: Not recorded\nStarted: Not recorded\nFinished: Not recorded\nUpdated: Not recorded") != std::wstring_view::npos,
+        L"A missing job timestamp was replaced by the Activity sorting fallback.");
+    for (auto count : {-1.0, 1.5, 9007199254740992.0}) {
+        absentJob.Insert(L"messageCount", Value::CreateNumberValue(count));
+        check(captureSummaryActivity(absent, checkedAt).messageCount == L"Not recorded", L"An invalid summary message count became a reported total.");
+    }
+    for (auto id : {L"", L" ", L"untrusted-stored-job-id"}) {
+        put(absentJob, L"id", id);
+        auto row = summaryActivityRow(absent, checkedAt, [](auto) {});
+        check(!captureSummaryActivity(absent, checkedAt).available
+            && !row.Children().GetAt(row.Children().Size() - 1).try_as<Button>(),
+            L"A legacy job without a valid opaque reference offered mismatched details.");
+    }
+    absentJob.Insert(L"id", Value::CreateNullValue());
+    check(!captureSummaryActivity(absent, checkedAt).available, L"A null job reference became actionable.");
+    auto mismatch = Json::Parse(task.Stringify()); put(object(mismatch, L"summaryJob"), L"accountId", L"two@fixture.invalid");
+    auto mismatched = captureSummaryActivity(mismatch, checkedAt);
+    check(!mismatched.available && mismatched.updatedAt.empty()
+        && mismatched.diagnostic == L"Saved job details are unavailable for this mailbox.",
+        L"A summary nested under another mailbox supplied the row's diagnosis.");
+    auto unsafeRetry = Json::Parse(task.Stringify()); object(unsafeRetry, L"summaryJob").Insert(L"automaticRetry", Value::CreateBooleanValue(true));
+    check(!captureSummaryActivity(unsafeRetry, checkedAt).available, L"A changed retry contract silently reused the no-retry detail.");
+    auto timeout = Json::Parse(task.Stringify()); auto timeoutJob = object(timeout, L"summaryJob");
+    put(timeoutJob, L"diagnosticCode", L"summary_timeout"); put(timeoutJob, L"diagnostic", L"The summary job exceeded its 90-second limit.");
+    check(captureSummaryActivity(timeout, checkedAt).diagnostic != original.diagnostic
+        && std::wstring_view(summaryActivityText(captureSummaryActivity(timeout, checkedAt))).find(L"90-second") != std::wstring_view::npos
+        && std::wstring_view(detail).find(L"45-second") != std::wstring_view::npos,
+        L"The full-job and model-request timeout diagnoses were collapsed.");
+
+    auto version = shell->generation; auto viewOwner = shell->owner; auto previousPage = shell->page.Content();
+    apartment_context ui;
+    struct RestorePage {
+        std::shared_ptr<Shell> shell; IInspectable page; Json state; uint64_t generation;
+        ~RestorePage() { shell->page.Content(page); shell->state = state; shell->generation = generation; }
+    } restore{shell, previousPage, shell->state, version};
+    std::optional<SummaryActivitySnapshot> selected;
+    auto row = summaryActivityRow(task, checkedAt, [&selected](SummaryActivitySnapshot job) { selected = std::move(job); });
+    shell->show(scroll(row)); shell->root.UpdateLayout();
+    auto details = row.Children().GetAt(row.Children().Size() - 1).as<Button>();
+    check(details.IsEnabled() && unbox_value<hstring>(details.Content()) == L"Summary job details",
+        L"Activity has no usable native saved-job detail entry.");
+    // Mutating the next/latest snapshot must not mutate a previously rendered
+    // button. Neither Today date/context filtering nor its aggregate is read.
+    auto nextJob = object(task, L"summaryJob");
+    put(nextJob, L"id", L"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    put(nextJob, L"status", L"completed"); put(nextJob, L"updatedAt", checkedAt); put(nextJob, L"diagnostic", L"A different latest job.");
+    auto peer = Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(details);
+    peer.GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
+    auto deadline = GetTickCount64() + 5000;
+    while (!selected.has_value() && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+    check(selected.has_value() && selected->id == original.id && selected->account == original.account
+        && selected->updatedAt == original.updatedAt && summaryActivityText(*selected) == detail,
+        L"The saved-job button followed a newer job or lost its original mailbox/date/context.");
+    check(summaryActivityCurrent(shell, *selected, version, viewOwner)
+        && !summaryActivityCurrent(shell, *selected, version + 1, viewOwner)
+        && !summaryActivityCurrent(shell, *selected, version, viewOwner == L"two@fixture.invalid" ? hstring(L"one@fixture.invalid") : hstring(L"two@fixture.invalid")),
+        L"A stale Activity generation or mailbox scope can open captured job details.");
+    auto disconnected = *selected; disconnected.account = L"removed@fixture.invalid";
+    check(!summaryActivityCurrent(shell, disconnected, version, viewOwner), L"A removed mailbox can open captured job details.");
+    // Activity is a workspace-wide observation even when Mail selected owner A.
+    // An explicitly displayed owner B row must open B's captured job, not A's.
+    auto otherTask = Json::Parse(task.Stringify()); put(otherTask, L"accountId", L"two@fixture.invalid");
+    put(otherTask, L"id", L"last-summary:two@fixture.invalid"); put(object(otherTask, L"summaryJob"), L"accountId", L"two@fixture.invalid");
+    std::optional<SummaryActivitySnapshot> otherSelected;
+    auto otherRow = summaryActivityRow(otherTask, checkedAt, [&otherSelected](SummaryActivitySnapshot job) { otherSelected = std::move(job); });
+    row.Children().Append(otherRow); shell->root.UpdateLayout();
+    auto otherButton = otherRow.Children().GetAt(otherRow.Children().Size() - 1).as<Button>();
+    auto otherPeer = Automation::Peers::FrameworkElementAutomationPeer::CreatePeerForElement(otherButton);
+    otherPeer.GetPattern(Automation::Peers::PatternInterface::Invoke).as<Automation::Provider::IInvokeProvider>().Invoke();
+    deadline = GetTickCount64() + 5000;
+    while (!otherSelected.has_value() && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+    check(otherSelected.has_value() && otherSelected->account == L"two@fixture.invalid" && otherSelected->id != selected->id
+        && summaryActivityCurrent(shell, *otherSelected, version, viewOwner)
+        && std::wstring_view(summaryActivityText(*otherSelected)).find(L"Mailbox: two@fixture.invalid") != std::wstring_view::npos,
+        L"A displayed summary job was blocked by the unrelated selected Mail account or opened the wrong owner.");
+
+    auto dialog = summaryActivityDialog(shell, *selected);
+    auto rendered = dialog.Content().as<ScrollViewer>().Content().as<TextBlock>();
+    check(rendered.Text() == detail && dialog.PrimaryButtonText().empty() && dialog.SecondaryButtonText().empty()
+        && dialog.CloseButtonText() == L"Close", L"Summary details lost the captured metadata or offered a work/retry action.");
+    auto opened = std::make_shared<bool>(false); dialog.Opened([opened](auto const&, auto const&) { *opened = true; });
+    std::function<void()> release;
+    auto display = showReaderPopup(shell, dialog, release);
+    struct CloseDialog { ContentDialog dialog; std::function<void()> release; ~CloseDialog() { try { dialog.Hide(); } catch (...) {} release(); } } close{dialog, release};
+    deadline = GetTickCount64() + 5000;
+    while (!*opened && display.Status() == AsyncStatus::Started && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+    check(*opened && shell->dialogOpen && rendered.Text() == detail && shell->current(version, viewOwner)
+        && shell->section == L"activity", L"The native summary dialog changed the selected saved job or navigated to Today.");
+    dialog.Hide();
+    deadline = GetTickCount64() + 5000;
+    while (display.Status() == AsyncStatus::Started && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+    check(display.Status() == AsyncStatus::Completed && !shell->dialogOpen, L"Closing summary job details retained the native modal guard.");
+    display.GetResults();
+    // Run the production by-value coroutine too: an already-open snapshot closes
+    // if its page is revoked or its owner disappears. No service request is made.
+    for (bool disconnect : {false, true}) {
+        auto captured = disconnect ? *otherSelected : *selected;
+        auto fixture = std::make_shared<SummaryActivityDialogFixture>();
+        struct CloseFixture { std::shared_ptr<SummaryActivityDialogFixture> fixture; ~CloseFixture() { fixture->closeRequested = true; } } closeFixture{fixture};
+        auto opening = openSummaryActivity(shell, captured, version, viewOwner, fixture);
+        deadline = GetTickCount64() + 5000;
+        while (!fixture->opened && opening.Status() == AsyncStatus::Started && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+        check(fixture->opened && shell->dialogOpen, L"The saved-job entry did not finish opening its guarded native dialog.");
+        if (disconnect) {
+            shell->state = Json::Parse(restore.state.Stringify());
+            JsonArray accounts;
+            for (auto const& entry : array(shell->state, L"accounts")) if (text(entry.GetObject(), L"id") != captured.account) accounts.Append(entry);
+            shell->state.Insert(L"accounts", accounts);
+        } else ++shell->generation;
+        deadline = GetTickCount64() + 5000;
+        while (opening.Status() == AsyncStatus::Started && GetTickCount64() < deadline) { co_await resume_after(std::chrono::milliseconds(10)); co_await ui; }
+        check(opening.Status() == AsyncStatus::Completed && !shell->dialogOpen, L"A revoked Activity page or removed mailbox retained its saved-job dialog.");
+        opening.GetResults(); shell->state = restore.state; shell->generation = version;
+    }
+    std::fprintf(stderr, "Summary Activity diagnostics passed: captured historical job, terminal states, safe fields, timestamps, owner guards, native detail control and dialog lifecycle.\n"); std::fflush(stderr);
+}
+IAsyncAction workspacePage(std::shared_ptr<Shell> self, hstring kind) {
+    if (kind == L"studio" || kind == L"learning" || kind == L"brain" || kind == L"categories" || kind == L"rules" || kind == L"reply-suggestions" || kind == L"skills" || kind == L"agent" || kind == L"summaries" || kind == L"records") {
+        co_await intelligencePage(self, kind); co_return;
+    }
+    auto version = self->generation; auto account = self->owner;
+    auto content = stack(16); content.Padding(ThicknessHelper::FromUniformLength(24));
+    auto heading = actions();
+    heading.Children().Append(label(kind == L"activity" ? L"Activity" : L"Today", 28));
+    if (kind == L"today") {
+        auto sync = button(L"Sync All", [weak = self->weak_from_this()] { if (auto shell = weak.lock()) shell->sync(); });
+        sync.IsEnabled(array(self->state, L"accounts").Size() > 0);
+        Automation::AutomationProperties::SetAutomationId(sync, L"mail.syncAll");
+        heading.Children().Append(sync);
+    }
+    content.Children().Append(heading);
+    content.Children().Append(label(kind == L"today" ? L"All connected accounts" : account.empty() ? L"Your workspace" : account));
+    try {
+        if (kind == L"activity") {
+            auto result = co_await self->service->request(L"/activity", account);
+            if (!self->current(version, account)) co_return;
+            content.Children().Append(label(L"Recent-mail sync checks a limited set of messages. Older downloaded messages may still have an earlier read/unread state. Opening Activity does not start provider or AI work."));
+            content.Children().Append(label(L"Activity status updated: " + mailDateLabel(text(result, L"checkedAt")) + L" (local status, not the last mailbox sync)", 12));
+            for (auto const& value : array(result, L"tasks")) {
+                auto task = value.GetObject();
+                if (std::wstring_view(text(task, L"id")).starts_with(L"last-summary:")) {
+                    content.Children().Append(summaryActivityRow(task, text(result, L"checkedAt"),
+                        [weak = self->weak_from_this(), version, account](SummaryActivitySnapshot snapshot) {
+                            if (auto shell = weak.lock()) openSummaryActivity(shell, snapshot, version, account);
+                        }));
+                    continue;
+                }
+                auto item = stack(4);
+                item.Children().Append(label(text(task, L"label") + L" · " + text(task, L"status"), 18));
+                item.Children().Append(label(text(task, L"accountId") + L"\n" + text(task, L"detail")));
+                if (!text(task, L"error").empty()) item.Children().Append(label(text(task, L"error")));
+                if (flag(task, L"cancellable")) {
+                    auto id = text(task, L"id");
+                    item.Children().Append(button(L"Cancel", [weak = self->weak_from_this(), id] {
+                        if (auto shell = weak.lock()) cancelActivity(shell, id);
+                    }));
+                }
+                content.Children().Append(item);
+            }
+            if (!array(result, L"tasks").Size()) content.Children().Append(label(L"No recent activity."));
+        } else {
+            auto totals = Grid();
+            uint64_t unread = 0, inbox = 0, drafts = 0;
+            for (auto const& value : array(self->state, L"accounts")) {
+                auto mailbox = value.GetObject();
+                auto counts = object(mailbox, L"counts");
+                unread += static_cast<uint64_t>(mailbox.GetNamedNumber(L"unread", 0));
+                inbox += static_cast<uint64_t>(counts.GetNamedNumber(L"inbox", 0));
+                drafts += static_cast<uint64_t>(counts.GetNamedNumber(L"drafts", 0));
+            }
+            auto overview = [&](hstring title, uint64_t count, hstring folder, bool unreadOnly) {
+                auto column = static_cast<int>(totals.ColumnDefinitions().Size());
+                ColumnDefinition definition; definition.Width(GridLengthHelper::FromValueAndType(1, GridUnitType::Star)); totals.ColumnDefinitions().Append(definition);
+                auto card = button(title, [weak = self->weak_from_this(), folder, unreadOnly] { if (auto shell = weak.lock()) openTodayMailbox(shell, folder, unreadOnly); });
+                auto body = stack(10); auto caption = label(title); caption.Opacity(0.7); body.Children().Append(caption); body.Children().Append(label(to_hstring(count), 28));
+                card.Content(body); card.HorizontalAlignment(HorizontalAlignment::Stretch); card.HorizontalContentAlignment(HorizontalAlignment::Stretch);
+                card.Padding(ThicknessHelper::FromUniformLength(18)); card.Margin({0, 0, column < 2 ? 14.0 : 0.0, 0});
+                Automation::AutomationProperties::SetName(card, title + L", " + to_hstring(count) + L" downloaded messages");
+                Grid::SetColumn(card, column); totals.Children().Append(card);
+            };
+            overview(L"Unread Inbox", unread, L"inbox", true); overview(L"Inbox", inbox, L"inbox", false); overview(L"Drafts", drafts, L"drafts", false);
+            content.Children().Append(totals);
+            auto scope = label(L"Downloaded mail, across all dates. Sync and AI progress appear in Activity.", 12); scope.Opacity(0.7); content.Children().Append(scope);
+            content.Children().Append(label(L"Replies to review",22));
+            content.Children().Append(label(L"Up to five current suggestions per mailbox. Review and edit before sending.",12));
+            for (auto const& entry : array(object(self->state,L"today"),L"replySuggestions")) {
+                auto proposal = entry.GetObject(); auto item = stack(8); auto mailbox = text(proposal,L"accountId");
+                item.Children().Append(label(mailbox,12)); item.Children().Append(label(text(object(proposal,L"message"),L"subject",L"Subject withheld"),18));
+                item.Children().Append(label(text(proposal,L"reason"))); auto draft = label(text(proposal,L"text")); draft.MaxLines(4); item.Children().Append(draft);
+                item.Children().Append(button(L"Review replies for this mailbox",[weak=self->weak_from_this(),mailbox]{ if (auto shell=weak.lock()) shell->navigate(L"reply-suggestions",mailbox); }));
+                content.Children().Append(item);
+            }
+            if (!array(object(self->state,L"today"),L"replySuggestions").Size()) content.Children().Append(label(L"No current suggestions. Open Reply suggestions for one mailbox to get started."));
+            content.Children().Append(label(L"Today's summaries", 22));
+            auto subtitle = label(L"A clearer view of what needs your attention."); subtitle.Opacity(0.7); content.Children().Append(subtitle);
+            auto summaryActions = actions();
+            ComboBox mailboxPicker; mailboxPicker.PlaceholderText(L"Summary mailbox"); mailboxPicker.MinWidth(220);
+            Automation::AutomationProperties::SetName(mailboxPicker, L"Summary mailbox");
+            for (auto const& value : array(self->state, L"accounts")) {
+                auto mailbox = value.GetObject(); ComboBoxItem item; item.Content(box_value(text(mailbox, L"email"))); item.Tag(box_value(text(mailbox, L"id"))); mailboxPicker.Items().Append(item);
+                if (text(mailbox, L"id") == (self->todaySummaryOwner.empty() ? self->owner : self->todaySummaryOwner)) mailboxPicker.SelectedItem(item);
+            }
+            if (!mailboxPicker.SelectedItem() && mailboxPicker.Items().Size()) mailboxPicker.SelectedIndex(0);
+            if (auto selected = mailboxPicker.SelectedItem()) self->todaySummaryOwner = unbox_value<hstring>(selected.as<ComboBoxItem>().Tag());
+            mailboxPicker.SelectionChanged([weak = self->weak_from_this()](auto const& sender, auto const&) { auto picker = sender.template as<ComboBox>(); if (auto shell = weak.lock(); shell && picker.SelectedItem()) shell->todaySummaryOwner = unbox_value<hstring>(picker.SelectedItem().as<ComboBoxItem>().Tag()); });
+            summaryActions.Children().Append(mailboxPicker);
+            auto generate = button(L"Summarize now", [weak = self->weak_from_this()] { if (auto shell = weak.lock()) summarizeNow(shell, shell->todaySummaryOwner); });
+            generate.Style(Application::Current().Resources().Lookup(box_value(L"AccentButtonStyle")).as<Style>());
+            generate.IsEnabled(mailboxPicker.Items().Size() > 0); summaryActions.Children().Append(generate);
+            content.Children().Append(summaryActions);
+            auto policy = object(object(self->state,L"settings"),L"policy"), triggers = object(policy,L"triggers"), schedule = object(policy,L"summarySchedule");
+            if (flag(triggers,L"scheduledSummary")) content.Children().Append(label(text(schedule,L"cadence") == L"daily" ? L"Scheduled daily at " + text(schedule,L"time") + L" (" + text(schedule,L"timeZone") + L"), while Morrow is open." : L"Scheduled every " + to_hstring(static_cast<unsigned>(schedule.GetNamedNumber(L"everyHours",4))) + L" hours, while Morrow is open."));
+            if (flag(triggers,L"onArrival")) content.Children().Append(label(L"New-mail summaries appear after newly synced mail is analyzed. Historical imports do not trigger them."));
+            bool found = false;
+            for (auto const& value : array(object(self->state, L"today"), L"summaries")) {
+                auto report = value.GetObject();
+                auto date = text(report, L"updatedAt", text(report, L"status") == L"completed" ? text(report, L"completedAt", text(report, L"createdAt")) : text(report, L"createdAt"));
+                if (!sameDay(date)) continue;
+                found = true;
+                auto item = stack(10); item.Padding(ThicknessHelper::FromUniformLength(18));
+                auto title = text(report, L"kind") == L"daily" ? L"Daily summary" : text(report, L"kind") == L"arrival" ? L"New mail" : text(report, L"kind") == L"manual" ? L"On-demand summary" : L"Scheduled summary";
+                item.Children().Append(label(text(report, L"accountId"), 12)); item.Children().Append(label(title, 20));
+                item.Children().Append(label(text(report, L"status") + L" · " + mailDateLabel(date) + L" · " + to_hstring(array(report, L"messageIds").Size()) + L" messages", 12));
+                if (!text(report, L"text").empty()) item.Children().Append(label(text(report, L"text")));
+                for (auto const& entry : array(report,L"items")) {
+                    auto source = entry.GetObject(); Json metadata; put(metadata,L"id",text(source,L"messageId")); put(metadata,L"accountId",text(report,L"accountId"));
+                    item.Children().Append(button(L"View original message · " + text(source,L"priority") + L" · " + text(source,L"summary"),[weak=self->weak_from_this(),metadata]{ if (auto shell=weak.lock()) shell->openSource(metadata); }));
+                }
+                if (!text(report, L"error").empty()) item.Children().Append(label(text(report, L"error")));
+                auto card = Markup::XamlReader::Load(L"<Border xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation' Background='{ThemeResource CardBackgroundFillColorDefaultBrush}' BorderBrush='{ThemeResource CardStrokeColorDefaultBrush}' BorderThickness='1' CornerRadius='12'/>").as<Border>();
+                card.Child(item); content.Children().Append(card);
+            }
+            if (!found) {
+                content.Children().Append(label(L"A fresh start for today", 20));
+                content.Children().Append(label(mailboxPicker.Items().Size() ? L"Choose Summarize now to review downloaded mail from one mailbox. You can also enable scheduled or new-mail summaries in AI & privacy." : L"Connect a mailbox to see your mail and summaries here."));
+            }
+            if (!flag(policy, L"enabled")) content.Children().Append(label(L"AI is paused in your saved permissions."));
+            content.Children().Append(button(mailboxPicker.Items().Size() ? L"AI & Privacy" : L"Add account", [weak = self->weak_from_this(), hasAccounts = mailboxPicker.Items().Size() > 0] { if (auto shell = weak.lock()) shell->navigate(hasAccounts ? L"policy" : L"settings"); }));
+            content.Children().Append(label(L"One daily summary per mailbox, updated from its latest 20 validated jobs. Today keeps those saved summaries.", 12));
+        }
+        if (self->current(version, account)) self->show(scroll(content));
+    } catch (...) { if (self->current(version, account)) self->error(errorText()); }
+}
+}
+
+struct MorrowApplication : winrt::Microsoft::UI::Xaml::ApplicationT<MorrowApplication, winrt::Microsoft::UI::Xaml::Markup::IXamlMetadataProvider> {
+    std::shared_ptr<morrow::Shell> shell;
+    winrt::Microsoft::UI::Xaml::XamlTypeInfo::XamlControlsXamlMetaDataProvider metadata;
+    // A programmatic Application has no generated App.xaml metadata provider.
+    winrt::Microsoft::UI::Xaml::Markup::IXamlType GetXamlType(winrt::hstring const& name) { return metadata.GetXamlType(name); }
+    winrt::Microsoft::UI::Xaml::Markup::IXamlType GetXamlType(winrt::Windows::UI::Xaml::Interop::TypeName const& type) { return metadata.GetXamlType(type); }
+    winrt::com_array<winrt::Microsoft::UI::Xaml::Markup::XmlnsDefinition> GetXmlnsDefinitions() { return metadata.GetXmlnsDefinitions(); }
+    MorrowApplication() {
+        startupTrace("application constructed");
+        char const* phase = "installing unhandled exception handler";
+        try {
+            startupTrace(phase);
+            UnhandledException([](auto const&, auto const& event) {
+                if (std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos) {
+                    std::fprintf(stderr, "Native XAML HRESULT: 0x%08X\n", static_cast<unsigned>(event.Exception())); std::fflush(stderr);
+                }
+                // Do not mark handled: a failed XAML initialization must still fail acceptance.
+            });
+            startupTrace("event installed");
+        } catch (...) {
+            if (std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos) {
+                std::fprintf(stderr, "Native startup constructor (%s) HRESULT: 0x%08X\n", phase, static_cast<unsigned>(winrt::to_hresult())); std::fflush(stderr);
+            }
+            throw;
+        }
+    }
+    void OnLaunched(winrt::Microsoft::UI::Xaml::LaunchActivatedEventArgs const&) {
+        startupTrace("OnLaunched entered");
+        // Application::Start initializes the core Application after the constructor, before OnLaunched.
+        char const* phase = "reading application resources";
+        try {
+            startupTrace(phase);
+            auto resources = Resources(); startupTrace("resources read");
+            phase = "reading merged dictionaries"; startupTrace(phase);
+            auto dictionaries = resources.MergedDictionaries(); startupTrace("merged dictionaries read");
+            phase = "constructing control resources"; startupTrace(phase);
+            auto controls = winrt::Microsoft::UI::Xaml::Controls::XamlControlsResources(); startupTrace("controls constructed");
+            phase = "appending control resources"; startupTrace(phase);
+            dictionaries.Append(controls); startupTrace("control resources loaded");
+            morrow::applyBrandResources(resources);
+        } catch (...) {
+            if (std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos) {
+                std::fprintf(stderr, "Native startup OnLaunched (%s) HRESULT: 0x%08X\n", phase, static_cast<unsigned>(winrt::to_hresult())); std::fflush(stderr);
+            }
+            throw;
+        }
+        shell = std::make_shared<morrow::Shell>(); shell->start();
+    }
+};
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    HANDLE instance = CreateMutexW(nullptr, FALSE, L"Local\\org.morrowmail.desktop.WinUI");
+    if (!instance) return 1;
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        if (auto existing = FindWindowW(nullptr, L"Morrow Mail")) { ShowWindow(existing, SW_RESTORE); SetForegroundWindow(existing); }
+        CloseHandle(instance); return 0;
+    }
+    int result = 0;
+    try {
+        startupTrace("initializing apartment");
+        winrt::init_apartment(winrt::apartment_type::single_threaded);
+        SetCurrentProcessExplicitAppUserModelID(L"org.morrowmail.desktop");
+        startupTrace("starting XAML application");
+        winrt::Microsoft::UI::Xaml::Application::Start([](auto const&) { winrt::make<MorrowApplication>(); });
+    } catch (...) {
+        if (std::wstring_view(GetCommandLineW()).find(L"--native-smoke") != std::wstring_view::npos) {
+            std::fprintf(stderr, "Native startup HRESULT: 0x%08X\n", static_cast<unsigned>(winrt::to_hresult())); std::fflush(stderr);
+        } else MessageBoxW(nullptr, L"Morrow Mail could not initialize. Your saved workspace is retained.", L"Morrow Mail", MB_OK | MB_ICONERROR);
+        result = 1;
+    }
+    CloseHandle(instance); return result;
+}

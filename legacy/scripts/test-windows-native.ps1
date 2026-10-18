@@ -1,0 +1,991 @@
+#requires -Version 7.2
+[CmdletBinding()]
+param(
+    [string] $PackageDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) 'build/windows-native/Morrow Mail-win32-x64'),
+    [switch] $LayoutOnly,
+    [switch] $UiSmoke,
+    [switch] $RequireCompleteObservation,
+    [switch] $ObservationsSelfTest
+)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+if ($RequireCompleteObservation -and (-not $UiSmoke -or $LayoutOnly -or $ObservationsSelfTest)) {
+    throw 'Complete observations require -UiSmoke without -LayoutOnly or -ObservationsSelfTest.'
+}
+if (-not $ObservationsSelfTest -and -not $IsWindows) { throw 'Run Windows native acceptance on Windows.' }
+$directory = if ($ObservationsSelfTest) { '' } else { (Resolve-Path -LiteralPath $PackageDirectory).Path }
+. (Join-Path $PSScriptRoot 'measure-native-processes.ps1')
+function Require([bool] $Value, [string] $Message) { if (-not $Value) { throw $Message } }
+function Require-X64([string] $Path, [bool] $DesktopHost = $false) {
+    $stream = [IO.File]::OpenRead($Path)
+    $reader = [IO.BinaryReader]::new($stream)
+    try {
+        Require ($reader.ReadUInt16() -eq 0x5a4d) "Not a PE file: $Path"
+        $stream.Position = 0x3c
+        $header = $reader.ReadUInt32()
+        Require ($header -ge 0x40 -and $header -lt $stream.Length - 6) "Invalid PE header: $Path"
+        $stream.Position = $header
+        Require ($reader.ReadUInt32() -eq 0x00004550 -and $reader.ReadUInt16() -eq 0x8664) "Expected x64 PE: $Path"
+        if ($DesktopHost) {
+            $stream.Position = $header + 24 + 70 # PE optional-header DllCharacteristics
+            Require (($reader.ReadUInt16() -band 0x1000) -eq 0) 'An unpackaged desktop host must not carry the APPCONTAINER linker flag.'
+        }
+    } finally { $reader.Dispose() }
+}
+
+# Diagnostic only: documented MINIDUMP directory/exception/memory/module records.
+# Never read ErrorText, thread locals or arbitrary heap strings. Module names are
+# bounded metadata; only an allowlisted basename may be printed, never its path.
+# MiniDumpReadDumpStream requires native mapping/interop and does not resolve the
+# stowed virtual addresses; these bounded reads avoid adding a compiler/tool.
+function Read-NativeCrash([IO.Stream] $Stream, [string[]] $AllowedModules = @()) {
+    $reader = [IO.BinaryReader]::new($Stream, [Text.Encoding]::UTF8, $true)
+    $lines = [Collections.Generic.List[string]]::new()
+    function Bounds([uint64] $Offset, [uint64] $Size) {
+        if ($Offset -gt $Stream.Length -or $Size -gt ([uint64] $Stream.Length - $Offset)) { throw 'Invalid dump bounds.' }
+    }
+    function Bytes([uint64] $Offset, [int] $Size) {
+        if ($Size -lt 0 -or $Size -gt 65536) { throw 'Invalid diagnostic read size.' }
+        Bounds $Offset $Size; $Stream.Position = [long] $Offset
+        $value = $reader.ReadBytes($Size)
+        if ($value.Length -ne $Size) { throw 'Incomplete dump.' }
+        return ,$value
+    }
+    function U32([uint64] $Offset) { return [BitConverter]::ToUInt32((Bytes $Offset 4), 0) }
+    function U64([uint64] $Offset) { return [BitConverter]::ToUInt64((Bytes $Offset 8), 0) }
+    function Line([string] $Value) {
+        # All emitted text is ASCII constants, hex numbers or allowlisted PE names.
+        if (($lines -join "`n").Length + $Value.Length + 1 -le 7000) { $lines.Add($Value) }
+    }
+    try {
+        if ($Stream.Length -gt 8GB -or (U32 0) -ne 0x504d444d) { throw 'Unsupported dump.' }
+        $count = U32 8; $directoryRva = U32 12
+        if ($count -gt 128) { throw 'Too many dump streams.' }
+        Bounds $directoryRva (12 * $count); $streams = @{}
+        for ($i = 0; $i -lt $count; $i++) {
+            $entry = $directoryRva + 12 * $i; $type = U32 $entry
+            $size = U32 ($entry + 4); $rva = U32 ($entry + 8); Bounds $rva $size
+            if ($streams.ContainsKey($type)) { throw 'Duplicate dump stream.' }
+            $streams[$type] = @{ Offset = [uint64] $rva; Size = [uint64] $size }
+        }
+        function Stream-Range([uint32] $Type, [uint64] $Size) {
+            if (-not $streams.ContainsKey($Type) -or $streams[$Type].Size -lt $Size) { throw 'Missing dump structure.' }
+            return $streams[$Type].Offset
+        }
+        $exception = Stream-Range 6 168
+        $code = U32 ($exception + 8); $parameters = U32 ($exception + 32)
+        Line ('Exception: 0x{0:X8}' -f $code)
+        if ($code -ne 0xc000027bL -or $parameters -lt 2 -or $parameters -gt 15) { return ($lines -join "`n") }
+        $pointers = U64 ($exception + 40); $stowedCount = U64 ($exception + 48)
+        if ($stowedCount -eq 0 -or $stowedCount -gt 16) { throw 'Unsupported stowed count.' }
+        $ranges = [Collections.Generic.List[object]]::new()
+        if ($streams.ContainsKey([uint32] 9)) {
+            $offset = Stream-Range 9 16; $rangeCount = U64 $offset; $fileOffset = U64 ($offset + 8)
+            if ($rangeCount -gt 65536) { throw 'Too many memory ranges.' }
+            [void] (Stream-Range 9 (16 + 16 * $rangeCount))
+            for ($i = 0; $i -lt $rangeCount; $i++) {
+                $entry = $offset + 16 + 16 * $i; $address = U64 $entry; $size = U64 ($entry + 8)
+                Bounds $fileOffset $size
+                $ranges.Add(@{ Address = $address; Size = $size; Offset = $fileOffset }); $fileOffset += $size
+            }
+        } else {
+            $offset = Stream-Range 5 4; $rangeCount = U32 $offset
+            if ($rangeCount -gt 65536) { throw 'Too many memory ranges.' }
+            [void] (Stream-Range 5 (4 + 16 * $rangeCount))
+            for ($i = 0; $i -lt $rangeCount; $i++) {
+                $entry = $offset + 4 + 16 * $i; $address = U64 $entry
+                $size = U32 ($entry + 8); $fileOffset = U32 ($entry + 12); Bounds $fileOffset $size
+                $ranges.Add(@{ Address = $address; Size = [uint64] $size; Offset = [uint64] $fileOffset })
+            }
+        }
+        $ordered = @($ranges | Sort-Object { $_.Address })
+        function Memory([uint64] $Address, [uint64] $Size) {
+            $lo = 0; $hi = $ordered.Count - 1
+            while ($lo -le $hi) {
+                $mid = ($lo + $hi) -shr 1; $range = $ordered[$mid]
+                if ($Address -lt $range.Address) { $hi = $mid - 1 }
+                elseif ($Address - $range.Address -ge $range.Size) { $lo = $mid + 1 }
+                else {
+                    $delta = $Address - $range.Address
+                    if ($Size -gt $range.Size - $delta) { throw 'Split or incomplete memory range.' }
+                    return $range.Offset + $delta
+                }
+            }
+            throw 'Address not captured.'
+        }
+        $modules = [Collections.Generic.List[object]]::new()
+        if ($streams.ContainsKey([uint32] 4)) {
+            $offset = Stream-Range 4 4; $moduleCount = U32 $offset
+            if ($moduleCount -gt 2048) { throw 'Too many modules.' }
+            [void] (Stream-Range 4 (4 + 108 * $moduleCount))
+            for ($i = 0; $i -lt $moduleCount; $i++) {
+                $entry = $offset + 4 + 108 * $i; $size = U32 ($entry + 8)
+                $name = 'module-{0}' -f $i; $nameRva = U32 ($entry + 20); $nameSize = U32 $nameRva
+                if ($nameSize -gt 0 -and $nameSize -le 2048 -and ($nameSize % 2) -eq 0) {
+                    $basename = ([Text.Encoding]::Unicode.GetString((Bytes ($nameRva + 4) $nameSize)) -split '[\\/]')[-1]
+                    if ($basename -cmatch '^[A-Za-z0-9 ._-]{1,100}\.(dll|exe)$' -and $AllowedModules -contains $basename) { $name = $basename }
+                }
+                $modules.Add(@{ Address = (U64 $entry); Size = $size; Name = $name })
+            }
+        }
+        $array = Memory $pointers (8 * $stowedCount)
+        for ($i = 0; $i -lt $stowedCount; $i++) {
+            $address = U64 ($array + 8 * $i); $offset = Memory $address 16
+            $size = U32 $offset; $signature = U32 ($offset + 4)
+            # x64 SE01 / SE02; no recursive nested-language-object interpretation.
+            if (-not (($signature -eq 0x53453031 -and $size -eq 40) -or ($signature -eq 0x53453032 -and $size -eq 56))) { throw 'Unsupported stowed structure.' }
+            $offset = Memory $address $size
+            Line ('Stowed[{0}] HRESULT: 0x{1:X8}' -f $i, (U32 ($offset + 8)))
+            if (((U32 ($offset + 12)) -band 3) -ne 1) { continue }
+            $wordSize = U32 ($offset + 24); $frames = U32 ($offset + 28)
+            if ($wordSize -ne 8 -or $frames -gt 4096) { throw 'Invalid x64 backtrace.' }
+            $frames = [Math]::Min($frames, 32)
+            if (-not $frames) { continue }
+            $trace = Memory (U64 ($offset + 32)) (8 * $frames)
+            for ($j = 0; $j -lt $frames; $j++) {
+                $ip = U64 ($trace + 8 * $j); $frame = 'unmapped'
+                foreach ($module in $modules) {
+                    if ($ip -ge $module.Address -and $ip - $module.Address -lt $module.Size) {
+                        $frame = '{0}+0x{1:X}' -f $module.Name, ($ip - $module.Address); break
+                    }
+                }
+                Line ('  [{0}] {1}' -f $j, $frame)
+            }
+        }
+        return ($lines -join "`n")
+    } finally { $reader.Dispose() }
+}
+function Test-NativeCrashReader {
+    # One synthetic fixed-layout dump, never a workspace or real process dump.
+    $stream = [IO.MemoryStream]::new([byte[]]::new(1024), $true)
+    $writer = [IO.BinaryWriter]::new($stream, [Text.Encoding]::UTF8, $true)
+    function W32([int] $Offset, [uint32] $Value) { $stream.Position = $Offset; $writer.Write($Value) }
+    function W64([int] $Offset, [uint64] $Value) { $stream.Position = $Offset; $writer.Write($Value) }
+    try {
+        W32 0 0x504d444d; W32 8 3; W32 12 32
+        W32 32 6; W32 36 168; W32 40 80
+        W32 44 9; W32 48 32; W32 52 256
+        W32 56 4; W32 60 112; W32 64 300
+        W32 88 0xc000027bL; W32 112 2; W64 120 0x1000; W64 128 1
+        W64 256 1; W64 264 512; W64 272 0x1000; W64 280 128
+        W32 300 1; W64 304 0x400000; W32 312 4096; W32 324 704
+        $moduleName = [Text.Encoding]::Unicode.GetBytes('C:\private-do-not-print\fixture.dll')
+        W32 704 $moduleName.Length; $stream.Position = 708; $writer.Write($moduleName)
+        W64 512 0x1020; W32 544 56; W32 548 0x53453032
+        W32 552 0x80070057L; W32 556 1; W32 568 8; W32 572 2; W64 576 0x1060
+        W64 608 0x400123; W64 616 0x400456
+        $result = Read-NativeCrash $stream @('fixture.dll')
+        Require ($result -ceq "Exception: 0xC000027B`nStowed[0] HRESULT: 0x80070057`n  [0] fixture.dll+0x123`n  [1] fixture.dll+0x456") 'Crash reader self-check failed.'
+        # A pointer beyond captured memory must not turn into an unchecked read.
+        W64 512 0x1080; $rejected = $false
+        try { [void] (Read-NativeCrash $stream) } catch { $rejected = $true }
+        Require $rejected 'Crash reader bounds self-check failed.'
+    } finally { $writer.Dispose(); $stream.Dispose() }
+}
+function Restore-CrashCapture($Capture) {
+    if (-not $Capture) { return }
+    try {
+        if ($Capture.Existed) {
+            foreach ($name in $Capture.Saved.Keys) {
+                $value = $Capture.Saved[$name]
+                if ($value) { $Capture.Key.SetValue($name, $value.Value, $value.Kind) }
+                else { $Capture.Key.DeleteValue($name, $false) }
+            }
+        } else {
+            $Capture.Key.Dispose(); $Capture.Key = $null
+            $Capture.Base.DeleteSubKey($Capture.Path, $false)
+        }
+    } catch { Write-Warning 'Could not restore optional per-app WER settings.' }
+    finally {
+        if ($Capture.Key) { $Capture.Key.Dispose() }; $Capture.Base.Dispose()
+        if ($Capture.Directory) {
+            try { Remove-Item -LiteralPath $Capture.Directory -Recurse -Force -ErrorAction Stop } catch { Write-Warning 'Could not remove temporary crash diagnostics; do not upload them.' }
+        }
+    }
+}
+function New-CrashCapture {
+    # Per-executable WER is machine-wide, even though the launched workspace is
+    # disposable. Never enable it beside a developer's real same-named app.
+    if (-not ($env:GITHUB_ACTIONS -ceq 'true')) { return $null }
+    $capture = $null; $base = $null; $key = $null
+    try {
+        Test-NativeCrashReader
+        $path = 'SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\Morrow Mail.exe'
+        $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
+        $key = $base.OpenSubKey($path, $true); $existed = $null -ne $key
+        if (-not $key) { $key = $base.CreateSubKey($path) }
+        $capture = @{ Base = $base; Key = $key; Path = $path; Existed = $existed; Saved = @{}; Directory = $null }
+        foreach ($name in @('DumpFolder', 'DumpType', 'DumpCount')) {
+            $capture.Saved[$name] = if ($key.GetValueNames() -contains $name) { @{ Value = $key.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames); Kind = $key.GetValueKind($name) } } else { $null }
+        }
+        $capture.Directory = Join-Path ([IO.Path]::GetTempPath()) ('morrow-native-crash-' + [Guid]::NewGuid().ToString('N'))
+        [void] (New-Item -ItemType Directory -Path $capture.Directory)
+        $key.SetValue('DumpFolder', $capture.Directory, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+        $key.SetValue('DumpType', 2, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $key.SetValue('DumpCount', 1, [Microsoft.Win32.RegistryValueKind]::DWord)
+        $cdb = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\Debuggers\x64\cdb.exe'
+        Write-Host ('Optional crash diagnostics enabled; SDK CDB present: {0}. Dumps stay temporary, never uploaded.' -f (Test-Path -LiteralPath $cdb))
+        return $capture
+    } catch {
+        if ($capture) { Restore-CrashCapture $capture }
+        else { if ($key) { $key.Dispose() }; if ($base) { $base.Dispose() } }
+        Write-Warning 'Optional WER diagnostics unavailable; original smoke assertions remain active.'
+        return $null
+    }
+}
+function Show-NativeCrash($Capture) {
+    if (-not $Capture) { return }
+    try {
+        $allowed = @('ntdll.dll', 'combase.dll', 'KERNELBASE.dll', 'kernel32.dll', 'ole32.dll', 'user32.dll', 'ucrtbase.dll', 'rpcrt4.dll')
+        $allowed += @(Get-ChildItem -LiteralPath $directory -File | Where-Object { $_.Extension -in '.exe', '.dll' } | Select-Object -First 512 -ExpandProperty Name)
+        $deadline = [DateTime]::UtcNow.AddSeconds(5)
+        do {
+            $dump = Get-ChildItem -LiteralPath $Capture.Directory -Filter '*.dmp' -File | Select-Object -First 1
+            if ($dump) {
+                $stream = $null
+                try {
+                    $stream = [IO.File]::Open($dump.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+                    $trace = Read-NativeCrash $stream $allowed
+                    Write-Host $trace; return
+                } catch { } finally { if ($stream) { $stream.Dispose() } }
+            }
+            Start-Sleep -Milliseconds 250
+        } while ([DateTime]::UtcNow -lt $deadline)
+        Write-Warning 'No complete supported crash dump available; root HRESULT remains unknown.'
+    } catch { Write-Warning 'Optional crash decoding failed; original smoke failure is retained.' }
+}
+function Isolate-NativeEnvironment([Diagnostics.ProcessStartInfo] $Start) {
+    # Fresh fixture only needs OS paths/runtime variables, never CI/cloud/model secrets.
+    $allowed = @('SystemRoot', 'WINDIR', 'SystemDrive', 'ComSpec', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'ProgramData', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432', 'PATH', 'PATHEXT', 'PSModulePath', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'PROCESSOR_LEVEL', 'PROCESSOR_REVISION', 'OS', 'SESSIONNAME', 'USERNAME', 'USERDOMAIN', 'HOMEDRIVE', 'HOMEPATH')
+    foreach ($name in @($Start.Environment.Keys)) { if ($allowed -notcontains $name) { [void] $Start.Environment.Remove($name) } }
+}
+function Wait-NativeUi([Diagnostics.Process] $Process, [int] $TimeoutMilliseconds = 180000, [long] $LaunchTimestamp = 0) {
+    Require ($TimeoutMilliseconds -gt 0 -and $TimeoutMilliseconds -le 180000) 'Invalid native UI deadline.'
+    if ($LaunchTimestamp -eq 0) { $LaunchTimestamp = [Diagnostics.Stopwatch]::GetTimestamp() }
+    # Exact readerRuntimeChecks phases only; never preserve an arbitrary reader
+    # string as lifecycle evidence. These entries survive the separate tail cap.
+    $readerPhases = @('mount-loaded', 'environment', 'controller-ready', 'initial-document',
+        'runtime-unavailable-fallback', 'isolation-settings', 'image-preference', 'metadata-hide',
+        'metadata-other-row', 'metadata-reader-interaction', 'html-document', 'script-sentinel',
+        'csp-observer', 'csp-probe-start', 'csp-settle', 'plain-document', 'plain-empty-assertion',
+        'stale-navigation', 'unload-close', 'closed-protocol', 'failure-fallback', 'multi-selection-hide', 'passed')
+    $readerPhasePattern = '^Native reader: (' + ($readerPhases -join '|') + ') \+([0-9]{1,6}) ms$'
+    $readerFailurePattern = '^Native reader: process-failed kind=(-?[0-9]{1,10}) \+([0-9]{1,6}) ms$'
+    $readerOverflowPattern = '^Native reader: process-failed-overflow \+([0-9]{1,6}) ms$'
+    $readerInitStages = 'environment-options|environment-create|controller-options|controller-ensure|core-policy|handlers|initial-render'
+    $readerInitPattern = '^Native reader: init-failed origin=(startup-timeout|hresult|exception) stage=(' + $readerInitStages + ') hr=0x([0-9A-Fa-f]{8}) \+([0-9]{1,6}) ms$'
+    $readerInitOverflowPattern = '^Native reader: init-failed-overflow \+([0-9]{1,6}) ms$'
+    $readerCompletedPattern = '^Native reader: init-completed stage=(environment-returned|controller-returned|handlers-installed|render-returned) \+([0-9]{1,6}) ms$'
+    $readerVersionPattern = '^Native reader: runtime-version value=(unavailable|[0-9]{1,10}(?:\.[0-9]{1,10}){3}(?: (?:beta|dev|canary))?) \+([0-9]{1,6}) ms$'
+    $readerDocumentPattern = '^Native reader: document-event kind=(start|decision|content-loading|dom-loaded|completed) id=([0-9]{1,20}) epoch=([0-9]{1,20}) tracked=([0-9]{1,20}) expected=([01]) live=([01]) outcome=(observed|allowed|cancelled|normal|error-page|success|failure) error=(-?[0-9]{1,10}) \+([0-9]{1,6}) ms$'
+    $readerWaitPattern = '^Native reader: wait-summary phase=(mount-loaded|environment|controller-ready|initial-document) outcome=(condition-met|deadline|cancelled|aborted) iterations=([0-9]{1,5}) maxResumeGapMs=([0-9]{1,6}) counterOverflow=([01]) \+([0-9]{1,6}) ms$'
+    $readerDetailOverflowPattern = '^Native reader: detail-overflow \+([0-9]{1,6}) ms$'
+    $readerUnavailablePattern = '^Native reader: detail-unavailable stage=(event-read|content-loading-subscribe|dom-loaded-subscribe) \+([0-9]{1,6}) ms$'
+    $safeStartup = '^Native startup: [A-Za-z0-9 .(),:_-]{1,120}$|^Native (startup|XAML) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native startup (constructor|OnLaunched) \((installing unhandled exception handler|reading application resources|reading merged dictionaries|constructing control resources|appending control resources)\) HRESULT: 0x[0-9A-Fa-f]{8}$|^Native smoke: [a-z-]{1,64}$'
+    $safeStartup += '|' + $readerPhasePattern + '|' + $readerFailurePattern + '|' + $readerOverflowPattern
+    $safeStartup += '|' + $readerInitPattern + '|' + $readerInitOverflowPattern
+    $safeStartup += '|' + $readerCompletedPattern + '|' + $readerVersionPattern + '|' + $readerDocumentPattern + '|' + $readerWaitPattern + '|' + $readerDetailOverflowPattern
+    $safeStartup += '|' + $readerUnavailablePattern
+    $safeStartup += '|^Native reader: nav-start id=[0-9]{1,20} blank=[01] redirected=[01] user=[01] expected=[01] live=[01]$'
+    $safeStartup += '|^Native reader: nav-decision id=[0-9]{1,20} cancelled=[01] expected=[01] tracked=[0-9]{1,20}$'
+    $safeStartup += '|^Native reader: nav-completed id=[0-9]{1,20} success=[01] error=-?[0-9]{1,10} live=[01] tracked=[0-9]{1,20}$'
+    $safeStartup += '|^Native reader: (render-request|render-returned|initial-document-state|initial-document-failed) active=[01] ready=[01] live=[01] expected=[01] core=[01] view=[01] loaded=[01] visible=[01] id=[0-9]{1,20} completed=[0-9]{1,20} epoch=[0-9]{1,20}$'
+    $safeStartup += '|^Native reader: nav-uri empty=[01] dataHtml=[01] dataHtmlBase64=[01] aboutBlankPrefix=[01] other=[01] length=[0-9]{1,10}$'
+    $safeLines = [Collections.Generic.Queue[string]]::new()
+    $readerEvents = [Collections.Generic.List[object]]::new()
+    $readerEventLimit = 64
+    $readerInitializationFailureLimit = 8
+    $readerDetailLimit = 24
+    $state = @{ phase = ''; characters = 0; milestones = @{}; readerOverflow = $false
+        readerFailureOverflow = $false; readerRejected = $false; readerInitializationFailures = 0
+        readerInitializationOverflow = $false; readerDetails = 0; readerDetailOverflow = $false
+        readerDetailOverflowSeen = $false; readerWaitCounterOverflow = $false; readerDetailUnavailable = $false }
+    function Keep-Line([string] $Value) {
+        # Receipt time only, with the clock captured before Process.Start. The
+        # exact fixed markers survive diagnostic-tail trimming. No CIM or file
+        # work is added to this continuous stderr reader.
+        if ($Value -ceq 'Native milestone: first-page-ready' -or $Value -ceq 'Native milestone: html-ready') {
+            $key = $Value.Substring('Native milestone: '.Length)
+            if (-not $state.milestones.ContainsKey($key)) {
+                $state.milestones[$key] = ([Diagnostics.Stopwatch]::GetTimestamp() - $LaunchTimestamp) * 1000.0 / [Diagnostics.Stopwatch]::Frequency
+            }
+            return
+        }
+        $entry = $null
+        $detail = $false
+        if ($Value -cmatch $readerPhasePattern) {
+            $entry = [ordered]@{ event = 'phase'; phase = $Matches[1]; readerElapsedMs = [int] $Matches[2] }
+        } elseif ($Value -cmatch $readerFailurePattern) {
+            [int] $kind = 0
+            if (-not [int]::TryParse($Matches[1], [ref] $kind)) { $state.readerRejected = $true; return }
+            $entry = [ordered]@{ event = 'processFailed'; kind = $kind; readerElapsedMs = [int] $Matches[2] }
+        } elseif ($Value -cmatch $readerOverflowPattern) {
+            $state.readerFailureOverflow = $true
+            $entry = [ordered]@{ event = 'processFailedOverflow'; readerElapsedMs = [int] $Matches[1] }
+        } elseif ($Value -cmatch $readerInitPattern) {
+            $origin = $Matches[1]; $stage = $Matches[2]; $elapsed = [int] $Matches[4]
+            [uint32] $code = 0
+            if (-not [uint32]::TryParse($Matches[3], [Globalization.NumberStyles]::AllowHexSpecifier,
+                [Globalization.CultureInfo]::InvariantCulture, [ref] $code) -or $code -lt 2147483648 -or $elapsed -gt 180000 -or
+                ($origin -ceq 'startup-timeout' -and $code -ne 2147943860) -or
+                ($origin -ceq 'exception' -and $code -ne 2147500037)) {
+                $state.readerRejected = $true; return
+            }
+            if ($state.readerInitializationFailures -ge $readerInitializationFailureLimit) {
+                $state.readerInitializationOverflow = $true; return
+            }
+            ++$state.readerInitializationFailures
+            $entry = [ordered]@{ event = 'initializationFailure'; origin = $origin; stage = $stage
+                hresult = $code; readerElapsedMs = $elapsed }
+        } elseif ($Value -cmatch $readerInitOverflowPattern) {
+            $elapsed = [int] $Matches[1]
+            if ($elapsed -gt 180000) { $state.readerRejected = $true; return }
+            $state.readerInitializationOverflow = $true
+            $entry = [ordered]@{ event = 'initializationFailureOverflow'; readerElapsedMs = $elapsed }
+        } elseif ($Value -cmatch $readerCompletedPattern) {
+            $stage = $Matches[1]; $elapsed = [int] $Matches[2]
+            if ($elapsed -gt 180000) { $state.readerRejected = $true; return }
+            $detail = $true
+            $entry = [ordered]@{ event = 'initializationCompleted'; stage = $stage; readerElapsedMs = $elapsed }
+        } elseif ($Value -cmatch $readerVersionPattern) {
+            $version = $Matches[1]; $elapsed = [int] $Matches[2]
+            if ($elapsed -gt 180000 -or $version.Length -gt 64) { $state.readerRejected = $true; return }
+            $detail = $true
+            $entry = [ordered]@{ event = 'runtimeVersion'; available = $version -cne 'unavailable'
+                version = $(if ($version -cne 'unavailable') { $version } else { $null }); readerElapsedMs = $elapsed }
+        } elseif ($Value -cmatch $readerDocumentPattern) {
+            $kind = $Matches[1]; $expected = $Matches[5] -ceq '1'; $live = $Matches[6] -ceq '1'
+            $outcome = $Matches[7]; $elapsed = [int] $Matches[9]
+            [uint64] $id = 0; [uint64] $epoch = 0; [uint64] $tracked = 0; [int] $code = 0
+            if (-not [uint64]::TryParse($Matches[2], [ref] $id) -or -not [uint64]::TryParse($Matches[3], [ref] $epoch) -or
+                -not [uint64]::TryParse($Matches[4], [ref] $tracked) -or -not [int]::TryParse($Matches[8], [ref] $code) -or
+                $epoch -ne 1 -or $elapsed -gt 180000 -or
+                (($kind -ceq 'start' -or $kind -ceq 'dom-loaded') -and $outcome -cne 'observed') -or
+                ($kind -ceq 'decision' -and $outcome -cnotin @('allowed', 'cancelled')) -or
+                ($kind -ceq 'content-loading' -and $outcome -cnotin @('normal', 'error-page')) -or
+                ($kind -ceq 'completed' -and $outcome -cnotin @('success', 'failure')) -or
+                ($kind -cne 'completed' -and $code -ne 0)) { $state.readerRejected = $true; return }
+            $detail = $true
+            $entry = [ordered]@{ event = 'document'; kind = $kind; navigationId = $id; epoch = $epoch
+                trackedId = $tracked; expected = $expected; live = $live; outcome = $outcome; webErrorStatus = $code; readerElapsedMs = $elapsed }
+        } elseif ($Value -cmatch $readerWaitPattern) {
+            $phase = $Matches[1]; $outcome = $Matches[2]; [uint32] $iterations = $Matches[3]
+            [uint32] $gap = $Matches[4]; $counterOverflow = $Matches[5] -ceq '1'; $elapsed = [int] $Matches[6]
+            if ($elapsed -gt 180000 -or $iterations -eq 0 -or $iterations -gt 10000 -or $gap -gt $elapsed -or
+                ($outcome -ceq 'deadline' -and $elapsed -lt 25000)) { $state.readerRejected = $true; return }
+            if ($counterOverflow) { $state.readerWaitCounterOverflow = $true }
+            $detail = $true
+            $entry = [ordered]@{ event = 'waitSummary'; phase = $phase; outcome = $outcome; iterations = $iterations
+                maxResumeGapMs = $gap; counterOverflow = $counterOverflow; readerElapsedMs = $elapsed }
+        } elseif ($Value -cmatch $readerUnavailablePattern) {
+            $stage = $Matches[1]; $elapsed = [int] $Matches[2]
+            if ($elapsed -gt 180000) { $state.readerRejected = $true; return }
+            $state.readerDetailUnavailable = $true; $detail = $true
+            $entry = [ordered]@{ event = 'detailUnavailable'; stage = $stage; readerElapsedMs = $elapsed }
+        } elseif ($Value -cmatch $readerDetailOverflowPattern) {
+            $elapsed = [int] $Matches[1]
+            if ($elapsed -gt 180000) { $state.readerRejected = $true; return }
+            $state.readerDetailOverflow = $true
+            if ($state.readerDetailOverflowSeen) { return }
+            $state.readerDetailOverflowSeen = $true
+            $entry = [ordered]@{ event = 'detailOverflow'; readerElapsedMs = $elapsed }
+        }
+        if ($detail) {
+            if ($state.readerDetails -ge $readerDetailLimit) { $state.readerDetailOverflow = $true; return }
+            ++$state.readerDetails
+        }
+        if ($entry) {
+            if ($readerEvents.Count -lt $readerEventLimit) {
+                $entry['receiptElapsedMs'] = ([Diagnostics.Stopwatch]::GetTimestamp() - $LaunchTimestamp) * 1000.0 / [Diagnostics.Stopwatch]::Frequency
+                $readerEvents.Add($entry)
+            } else { $state.readerOverflow = $true }
+        }
+        if ($Value -cnotmatch $safeStartup) {
+            if ($Value.StartsWith('Native reader: ', [StringComparison]::Ordinal)) { $state.readerRejected = $true }
+            return
+        }
+        if ($Value -cmatch '^Native smoke: [a-z-]{1,64}$') { $state.phase = $Value }
+        $safeLines.Enqueue($Value); $state.characters += $Value.Length + 1
+        while ($safeLines.Count -gt 20 -or $state.characters -gt 1025) {
+            $state.characters -= $safeLines.Dequeue().Length + 1
+        }
+    }
+    # ReadAsync fills a fixed buffer while this thread polls the owned process.
+    # Never wait for process exit with an undrained pipe, or use an unbounded line
+    # reader: native fprintf/fflush can otherwise block the UI and its deadline.
+    $buffer = [char[]]::new(1024)
+    $line = [Text.StringBuilder]::new(256)
+    $discard = $false; $eof = $false; $read = $null; $readFailed = $false; $lineTruncated = $false
+    $deadline = [Environment]::TickCount64 + $TimeoutMilliseconds
+    $tailDeadline = $null; $completed = $false
+    while ($true) {
+        $now = [Environment]::TickCount64
+        if ($null -eq $tailDeadline) {
+            if ($Process.HasExited) {
+                $completed = $true; $tailDeadline = $now + 2000
+            } elseif ($now -ge $deadline) {
+                # Only the process passed by the caller; never a name/tree kill.
+                try { $Process.Kill(); [void] $Process.WaitForExit(5000) }
+                catch { Write-Warning 'Timed-out fixture UI termination could not be confirmed.' }
+                $tailDeadline = [Environment]::TickCount64 + 2000
+            }
+        }
+        if ($null -ne $tailDeadline -and ($eof -or [Environment]::TickCount64 -ge $tailDeadline)) { break }
+        $limit = if ($null -ne $tailDeadline) { $tailDeadline } else { $deadline }
+        $wait = [int] [Math]::Min(20, [Math]::Max(0, $limit - [Environment]::TickCount64))
+        if ($eof) { if ($wait -gt 0) { Start-Sleep -Milliseconds $wait }; continue }
+        try {
+            if ($null -eq $read) { $read = $Process.StandardError.ReadAsync($buffer, 0, $buffer.Length) }
+            if (-not $read.Wait($wait)) { continue }
+            $count = $read.GetAwaiter().GetResult(); $read = $null
+            if ($count -eq 0) {
+                $eof = $true
+                if (-not $discard -and $line.Length -gt 0) { Keep-Line $line.ToString().TrimEnd([char] 13) }
+                continue
+            }
+            for ($i = 0; $i -lt $count; $i++) {
+                if ($buffer[$i] -eq [char] 10) {
+                    if (-not $discard) { Keep-Line $line.ToString().TrimEnd([char] 13) }
+                    [void] $line.Clear(); $discard = $false
+                } elseif (-not $discard) {
+                    if ($line.Length -eq 256) { [void] $line.Clear(); $discard = $true; $lineTruncated = $true }
+                    else { [void] $line.Append($buffer[$i]) }
+                }
+            }
+        } catch { $readFailed = $true; $eof = $true }
+    }
+    if ($readFailed) { Write-Warning 'Fixture stderr collection was incomplete; only validated phases are retained.' }
+    $partialLine = $discard -or $line.Length -gt 0
+    $readerLifecycle = [ordered]@{
+        eventLimit = $readerEventLimit; overflow = $state.readerOverflow; processFailureOverflow = $state.readerFailureOverflow
+        initializationFailureLimit = $readerInitializationFailureLimit; initializationFailureOverflow = $state.readerInitializationOverflow
+        detailLimit = $readerDetailLimit; detailOverflow = $state.readerDetailOverflow; waitCounterOverflow = $state.readerWaitCounterOverflow
+        detailUnavailable = $state.readerDetailUnavailable
+        receiptClock = 'launch-relative-stderr-receipt'; readerClock = 'runtime-relative-tick-count'
+        streamEnded = $eof -and -not $readFailed; partialLine = $partialLine; lineTruncated = $lineTruncated
+        readFailed = $readFailed; rejectedReaderLine = $state.readerRejected
+        complete = $eof -and -not ($readFailed -or $partialLine -or $lineTruncated -or $state.readerOverflow -or $state.readerFailureOverflow -or $state.readerInitializationOverflow -or $state.readerDetailOverflow -or $state.readerWaitCounterOverflow -or $state.readerDetailUnavailable -or $state.readerRejected)
+        events = $readerEvents.ToArray()
+    }
+    return @{ Completed = $completed; Diagnostics = ($safeLines -join "`n"); LastSmokePhase = $state.phase
+        MilestonesMs = $state.milestones; ReaderLifecycle = $readerLifecycle }
+}
+function Test-NativeUiDrain {
+    # Real pipes, fixed fictional text only: no app, workspace or network access.
+    function Start-DrainCheck([string] $Source) {
+        $start = [Diagnostics.ProcessStartInfo]::new([Environment]::ProcessPath)
+        $start.UseShellExecute = $false; $start.RedirectStandardError = $true
+        foreach ($argument in @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Source)))) {
+            $start.ArgumentList.Add($argument)
+        }
+        return [Diagnostics.Process]::Start($start)
+    }
+    $child = $null
+    try {
+        $launch = [Diagnostics.Stopwatch]::GetTimestamp()
+        $child = Start-DrainCheck @'
+[Console]::Error.WriteLine('Native milestone: first-page-ready')
+[Console]::Error.WriteLine('Native milestone: html-ready secret-token')
+[Console]::Error.WriteLine('native milestone: html-ready')
+[Console]::Error.WriteLine('Native smoke: reader-isolation')
+[Console]::Error.WriteLine('Native reader: mount-loaded +0 ms')
+[Console]::Error.WriteLine('Native reader: process-failed kind=6 +42 ms')
+[Console]::Error.WriteLine('Native reader: secret-token +1 ms')
+[Console]::Error.WriteLine('Native reader: process-failed kind=9999999999 +1 ms')
+for ($i = 0; $i -lt 4000; $i++) { [Console]::Error.WriteLine('Native reader: csp-settle +12345 ms') }
+[Console]::Error.WriteLine('Native reader: process-failed-overflow +12346 ms')
+[Console]::Error.WriteLine('secret-token-do-not-retain')
+[Console]::Error.Write('Native smoke: ' + ('x' * 262144))
+[Console]::Error.WriteLine('secret-overlong-do-not-retain')
+for ($i = 0; $i -lt 40; $i++) { [Console]::Error.WriteLine('Native reader: render-returned active=1 ready=1 live=1 expected=1 core=1 view=1 loaded=1 visible=0 id=3 completed=3 epoch=3') }
+[Console]::Error.Flush()
+exit 0
+'@
+        $result = Wait-NativeUi $child 30000 $launch
+        Require ($result.Completed -and $child.HasExited -and $child.ExitCode -eq 0) 'High-output drain self-check did not finish.'
+        Require ($result.Diagnostics.Length -le 1024 -and @($result.Diagnostics -split "`n").Count -le 20) 'Drain self-check exceeded its retention limit.'
+        Require ($result.Diagnostics -cnotmatch 'secret|xxx' -and $result.Diagnostics -cmatch 'render-returned') 'Drain self-check retained unsafe data or lost its tail.'
+        Require ($result.LastSmokePhase -ceq 'Native smoke: reader-isolation') 'Drain self-check lost its last smoke phase.'
+        Require ($result.MilestonesMs.Count -eq 1 -and $result.MilestonesMs['first-page-ready'] -gt 0) 'Exact milestone collection failed.'
+        $lifecycle = $result.ReaderLifecycle
+        Require ($lifecycle.eventLimit -eq 64 -and $lifecycle.events.Count -eq 64 -and $lifecycle.overflow -and -not $lifecycle.complete) 'Reader lifecycle retention did not expose its fixed limit.'
+        Require ($lifecycle.lineTruncated -and $lifecycle.rejectedReaderLine -and $lifecycle.processFailureOverflow) 'Reader lifecycle did not retain truncation, rejection and source-overflow diagnostics.'
+        Require ($lifecycle.events[0].phase -ceq 'mount-loaded' -and $lifecycle.events[0].readerElapsedMs -eq 0 -and
+            $lifecycle.events[1].event -ceq 'processFailed' -and $lifecycle.events[1].kind -is [int] -and
+            $lifecycle.events[1].kind -eq 6 -and $lifecycle.events[1].readerElapsedMs -eq 42) 'Reader lifecycle lost its early phase or typed ProcessFailed event.'
+        Require (($lifecycle | ConvertTo-Json -Compress -Depth 5) -cnotmatch 'secret|9999999999|render-returned') 'Reader lifecycle retained non-allowlisted text.'
+        for ($i = 1; $i -lt $lifecycle.events.Count; $i++) {
+            Require ($lifecycle.events[$i].receiptElapsedMs -ge $lifecycle.events[$i - 1].receiptElapsedMs) 'Reader lifecycle receipt times are not monotonic.'
+        }
+        $child.Dispose(); $child = $null
+        $launch = [Diagnostics.Stopwatch]::GetTimestamp()
+        $child = Start-DrainCheck @'
+[Console]::Error.WriteLine('Native milestone: first-page-ready')
+[Console]::Error.WriteLine('Native reader: mount-loaded +0 ms')
+[Console]::Error.Flush()
+Start-Sleep -Milliseconds 200
+[Console]::Error.WriteLine('Native milestone: first-page-ready')
+[Console]::Error.WriteLine('Native milestone: html-ready')
+[Console]::Error.WriteLine('Native reader: unload-close +200 ms')
+for ($i = 0; $i -lt 40; $i++) { [Console]::Error.WriteLine('Native smoke: settings-start') }
+[Console]::Error.WriteLine('Native smoke: shutdown')
+'@
+        $result = Wait-NativeUi $child 30000 $launch
+        Require ($result.Completed -and $child.ExitCode -eq 0 -and $result.MilestonesMs.Count -eq 2 -and $result.MilestonesMs['html-ready'] - $result.MilestonesMs['first-page-ready'] -ge 100) 'Milestones did not preserve first receipt times.'
+        $lifecycle = $result.ReaderLifecycle
+        Require ($lifecycle.complete -and -not $lifecycle.overflow -and $lifecycle.events.Count -eq 2 -and
+            $lifecycle.events[0].phase -ceq 'mount-loaded' -and $lifecycle.events[1].phase -ceq 'unload-close' -and
+            $lifecycle.events[1].receiptElapsedMs - $lifecycle.events[0].receiptElapsedMs -ge 100) 'Early reader phases did not survive later smoke output with separate receipt times.'
+        Require ($result.Diagnostics -cnotmatch 'Native reader:' -and $result.LastSmokePhase -ceq 'Native smoke: shutdown') 'Reader lifecycle retention changed the bounded diagnostic tail.'
+        $child.Dispose(); $child = $null
+        $child = Start-DrainCheck @'
+[Console]::Error.WriteLine('Native reader: mount-loaded +0 ms')
+[Console]::Error.WriteLine('Native reader: init-failed origin=startup-timeout stage=controller-ensure hr=0x800705B4 +20001 ms')
+[Console]::Error.WriteLine('Native reader: init-failed origin=hresult stage=environment-create hr=0x80070002 +20002 ms')
+[Console]::Error.WriteLine('Native reader: init-failed origin=exception stage=core-policy hr=0x80004005 +20003 ms')
+for ($i = 0; $i -lt 40; $i++) { [Console]::Error.WriteLine('Native smoke: settings-start') }
+exit 7
+'@
+        $result = Wait-NativeUi $child 30000
+        $lifecycle = $result.ReaderLifecycle
+        Require ($result.Completed -and $child.ExitCode -eq 7 -and $lifecycle.complete -and $lifecycle.events.Count -eq 4 -and
+            $lifecycle.initializationFailureLimit -eq 8 -and -not $lifecycle.initializationFailureOverflow) 'Complete diagnostic collection concealed an initialization-failure child exit.'
+        $init = @($lifecycle.events | Where-Object { $_.event -ceq 'initializationFailure' })
+        Require ($init.Count -eq 3 -and $init[0].origin -ceq 'startup-timeout' -and $init[0].stage -ceq 'controller-ensure' -and
+            $init[0].hresult -is [uint32] -and $init[0].hresult -eq 2147943860 -and $init[0].readerElapsedMs -eq 20001 -and
+            $init[1].origin -ceq 'hresult' -and $init[1].stage -ceq 'environment-create' -and $init[1].hresult -eq 2147942402 -and
+            $init[2].origin -ceq 'exception' -and $init[2].hresult -eq 2147500037) 'Initialization evidence lost its typed stage, origin or HRESULT.'
+        Require ($result.Diagnostics -cnotmatch 'Native reader:' -and $result.MilestonesMs.Count -eq 0) 'Initialization evidence fabricated readiness or bypassed the tail cap.'
+        $roundTrip = $lifecycle | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+        Require ($roundTrip.events[1].hresult -eq 2147943860 -and $roundTrip.events[1].origin -ceq 'startup-timeout') 'Reader report serialization lost typed initialization fields.'
+        $child.Dispose(); $child = $null
+        $child = Start-DrainCheck @'
+foreach ($line in @(
+    'Native reader: init-failed origin=raw-error stage=controller-ensure hr=0x80004005 +1 ms',
+    'Native reader: init-failed origin=hresult stage=private-path hr=0x80004005 +1 ms',
+    'Native reader: init-failed origin=hresult stage=controller-ensure hr=0x8000400Z +1 ms',
+    'Native reader: init-failed origin=hresult stage=controller-ensure hr=0x800040050 +1 ms',
+    'Native reader: init-failed origin=hresult stage=controller-ensure hr=0x80004005 +-1 ms',
+    'Native reader: init-failed origin=hresult stage=controller-ensure hr=0x80004005 +180001 ms',
+    'Native reader: init-failed origin=hresult stage=controller-ensure hr=0x80004005 +1 ms secret-token',
+    'Native reader: init-failed origin=startup-timeout stage=controller-ensure hr=0x80004005 +20001 ms',
+    'Native reader: init-failed origin=exception stage=core-policy hr=0x800705B4 +1 ms',
+    'Native reader: init-failed origin=hresult stage=core-policy hr=0x00000000 +1 ms',
+    'Native reader: init-failed-overflow +180001 ms'
+)) { [Console]::Error.WriteLine($line) }
+exit 7
+'@
+        $result = Wait-NativeUi $child 30000
+        Require ($result.Completed -and $child.ExitCode -eq 7 -and $result.ReaderLifecycle.rejectedReaderLine -and
+            -not $result.ReaderLifecycle.complete -and $result.ReaderLifecycle.events.Count -eq 0 -and $result.Diagnostics.Length -eq 0) 'Invalid initialization metadata was retained or made complete.'
+        $child.Dispose(); $child = $null
+        $child = Start-DrainCheck @'
+for ($i = 0; $i -lt 9; $i++) { [Console]::Error.WriteLine('Native reader: init-failed origin=hresult stage=handlers hr=0x80004005 +12 ms') }
+[Console]::Error.WriteLine('Native reader: init-failed-overflow +13 ms')
+exit 7
+'@
+        $result = Wait-NativeUi $child 30000
+        $lifecycle = $result.ReaderLifecycle
+        Require ($result.Completed -and $child.ExitCode -eq 7 -and $lifecycle.initializationFailureOverflow -and -not $lifecycle.complete -and
+            @($lifecycle.events | Where-Object { $_.event -ceq 'initializationFailure' }).Count -eq 8 -and
+            $lifecycle.events.Count -eq 9 -and $lifecycle.events[8].event -ceq 'initializationFailureOverflow' -and
+            $result.Diagnostics.Length -le 1024) 'Initialization diagnostics exceeded the eight-record bound or concealed overflow.'
+        $child.Dispose(); $child = $null
+        $child = Start-DrainCheck @'
+[Console]::Error.WriteLine('Native reader: init-completed stage=environment-returned +12 ms')
+[Console]::Error.WriteLine('Native reader: runtime-version value=149.0.1.2 canary +12 ms')
+[Console]::Error.WriteLine('Native reader: init-completed stage=controller-returned +14000 ms')
+[Console]::Error.WriteLine('Native reader: init-completed stage=handlers-installed +14001 ms')
+[Console]::Error.WriteLine('Native reader: init-completed stage=render-returned +14002 ms')
+[Console]::Error.WriteLine('Native reader: document-event kind=start id=2 epoch=1 tracked=0 expected=1 live=1 outcome=observed error=0 +14003 ms')
+[Console]::Error.WriteLine('Native reader: document-event kind=decision id=2 epoch=1 tracked=2 expected=0 live=1 outcome=allowed error=0 +14004 ms')
+[Console]::Error.WriteLine('Native reader: document-event kind=content-loading id=2 epoch=1 tracked=2 expected=0 live=1 outcome=normal error=0 +14005 ms')
+[Console]::Error.WriteLine('Native reader: document-event kind=dom-loaded id=2 epoch=1 tracked=2 expected=0 live=1 outcome=observed error=0 +14006 ms')
+[Console]::Error.WriteLine('Native reader: wait-summary phase=initial-document outcome=deadline iterations=400 maxResumeGapMs=230 counterOverflow=0 +25001 ms')
+for ($i = 0; $i -lt 40; $i++) { [Console]::Error.WriteLine('Native smoke: settings-start') }
+exit 7
+'@
+        $result = Wait-NativeUi $child 30000
+        $lifecycle = $result.ReaderLifecycle
+        $document = @($lifecycle.events | Where-Object { $_.event -ceq 'document' })
+        $wait = @($lifecycle.events | Where-Object { $_.event -ceq 'waitSummary' })
+        Require ($result.Completed -and $child.ExitCode -eq 7 -and $lifecycle.complete -and $lifecycle.detailLimit -eq 24 -and
+            $lifecycle.events.Count -eq 10 -and $document.Count -eq 4 -and $wait.Count -eq 1) 'Navigation diagnostic retention concealed the failing child or dropped bounded details.'
+        Require ($lifecycle.events[0].stage -ceq 'environment-returned' -and $lifecycle.events[1].available -and
+            $lifecycle.events[1].version -ceq '149.0.1.2 canary' -and $document[0].navigationId -is [uint64] -and
+            $document[0].navigationId -eq 2 -and $document[0].epoch -eq 1 -and $document[1].trackedId -eq 2 -and
+            $document[1].expected -is [bool] -and -not $document[1].expected -and $document[1].outcome -ceq 'allowed' -and
+            $document[3].kind -ceq 'dom-loaded' -and $wait[0].iterations -is [uint32] -and
+            $wait[0].iterations -eq 400 -and $wait[0].maxResumeGapMs -eq 230 -and $wait[0].readerElapsedMs -eq 25001 -and
+            $wait[0].outcome -ceq 'deadline') 'Typed navigation identity, lifecycle or wait timing changed.'
+        Require ($result.Diagnostics -cnotmatch 'Native reader:' -and $result.MilestonesMs.Count -eq 0 -and
+            @($document | Where-Object { $_.kind -ceq 'completed' }).Count -eq 0) 'Diagnostics fabricated completion/readiness or did not survive tail trimming.'
+        $roundTrip = $lifecycle | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+        Require ($roundTrip.events[9].outcome -ceq 'deadline' -and $roundTrip.events[6].navigationId -eq 2) 'Navigation evidence did not survive report serialization.'
+        $child.Dispose(); $child = $null
+        $child = Start-DrainCheck @'
+[Console]::Error.WriteLine('Native reader: runtime-version value=unavailable +0 ms')
+[Console]::Error.WriteLine('Native reader: document-event kind=completed id=18446744073709551615 epoch=1 tracked=18446744073709551615 expected=0 live=0 outcome=failure error=-2147483648 +180000 ms')
+[Console]::Error.WriteLine('Native reader: wait-summary phase=mount-loaded outcome=condition-met iterations=1 maxResumeGapMs=0 counterOverflow=0 +0 ms')
+[Console]::Error.WriteLine('Native reader: wait-summary phase=controller-ready outcome=cancelled iterations=10000 maxResumeGapMs=180000 counterOverflow=1 +180000 ms')
+[Console]::Error.WriteLine('Native reader: detail-unavailable stage=event-read +180000 ms')
+exit 7
+'@
+        $result = Wait-NativeUi $child 30000
+        $lifecycle = $result.ReaderLifecycle
+        Require ($result.Completed -and $child.ExitCode -eq 7 -and -not $lifecycle.complete -and $lifecycle.waitCounterOverflow -and
+            -not $lifecycle.rejectedReaderLine -and $lifecycle.detailUnavailable -and $lifecycle.events.Count -eq 5 -and -not $lifecycle.events[0].available -and
+            $null -eq $lifecycle.events[0].version -and $lifecycle.events[1].navigationId -eq [uint64]::MaxValue -and
+            $lifecycle.events[1].webErrorStatus -eq [int]::MinValue -and $lifecycle.events[1].readerElapsedMs -eq 180000 -and
+            $lifecycle.events[2].outcome -ceq 'condition-met' -and $lifecycle.events[3].maxResumeGapMs -eq 180000) 'Navigation/wait boundary values were lost or counter overflow was reported as complete.'
+        $child.Dispose(); $child = $null
+        $child = Start-DrainCheck @'
+foreach ($line in @(
+    'Native reader: init-completed stage=private-path +1 ms',
+    'Native reader: init-completed stage=environment-returned +180001 ms',
+    'Native reader: runtime-version value=149.0.1.2 private-token +1 ms',
+    'Native reader: runtime-version value=149.0.1 +1 ms',
+    'Native reader: runtime-version value=149.0.1.2 +180001 ms',
+    'Native reader: document-event kind=start id=18446744073709551616 epoch=1 tracked=0 expected=1 live=1 outcome=observed error=0 +1 ms',
+    'Native reader: document-event kind=start id=2 epoch=18446744073709551616 tracked=0 expected=1 live=1 outcome=observed error=0 +1 ms',
+    'Native reader: document-event kind=start id=2 epoch=1 tracked=18446744073709551616 expected=1 live=1 outcome=observed error=0 +1 ms',
+    'Native reader: document-event kind=completed id=2 epoch=1 tracked=2 expected=0 live=1 outcome=failure error=2147483648 +1 ms',
+    'Native reader: document-event kind=start id=2 epoch=2 tracked=0 expected=1 live=1 outcome=observed error=0 +1 ms',
+    'Native reader: document-event kind=start id=2 epoch=1 tracked=0 expected=2 live=1 outcome=observed error=0 +1 ms',
+    'Native reader: document-event kind=dom-loaded id=2 epoch=1 tracked=2 expected=0 live=1 outcome=success error=0 +1 ms',
+    'Native reader: document-event kind=decision id=2 epoch=1 tracked=2 expected=0 live=1 outcome=allowed error=1 +1 ms',
+    'Native reader: document-event kind=start id=2 epoch=1 tracked=0 expected=1 live=1 outcome=observed error=0 +180001 ms',
+    'Native reader: document-event kind=start id=2 epoch=1 tracked=0 expected=1 live=1 outcome=observed error=0 +1 ms secret',
+    'Native reader: wait-summary phase=private-path outcome=deadline iterations=1 maxResumeGapMs=0 counterOverflow=0 +25000 ms',
+    'Native reader: wait-summary phase=initial-document outcome=passed iterations=1 maxResumeGapMs=0 counterOverflow=0 +25000 ms',
+    'Native reader: wait-summary phase=initial-document outcome=deadline iterations=0 maxResumeGapMs=0 counterOverflow=0 +25000 ms',
+    'Native reader: wait-summary phase=initial-document outcome=deadline iterations=10001 maxResumeGapMs=0 counterOverflow=0 +25000 ms',
+    'Native reader: wait-summary phase=initial-document outcome=deadline iterations=1 maxResumeGapMs=25001 counterOverflow=0 +25000 ms',
+    'Native reader: wait-summary phase=initial-document outcome=deadline iterations=1 maxResumeGapMs=0 counterOverflow=0 +24999 ms',
+    'Native reader: wait-summary phase=initial-document outcome=aborted iterations=1 maxResumeGapMs=0 counterOverflow=0 +180001 ms',
+    'Native reader: detail-overflow +180001 ms',
+    'Native reader: detail-unavailable stage=private-path +1 ms',
+    'Native reader: detail-unavailable stage=event-read +180001 ms'
+)) { [Console]::Error.WriteLine($line) }
+exit 7
+'@
+        $result = Wait-NativeUi $child 30000
+        Require ($result.Completed -and $child.ExitCode -eq 7 -and $result.ReaderLifecycle.rejectedReaderLine -and
+            -not $result.ReaderLifecycle.complete -and $result.ReaderLifecycle.events.Count -eq 0 -and
+            $result.Diagnostics.Length -eq 0) 'Malformed, out-of-range or private navigation diagnostic text was retained.'
+        $child.Dispose(); $child = $null
+        $child = Start-DrainCheck @'
+for ($i = 0; $i -lt 27; $i++) { [Console]::Error.WriteLine('Native reader: init-completed stage=render-returned +1 ms') }
+[Console]::Error.WriteLine('Native reader: detail-overflow +2 ms')
+[Console]::Error.WriteLine('Native reader: detail-overflow +3 ms')
+exit 7
+'@
+        $result = Wait-NativeUi $child 30000
+        $lifecycle = $result.ReaderLifecycle
+        Require ($result.Completed -and $child.ExitCode -eq 7 -and -not $lifecycle.complete -and $lifecycle.detailOverflow -and
+            $lifecycle.events.Count -eq 25 -and @($lifecycle.events | Where-Object { $_.event -ceq 'initializationCompleted' }).Count -eq 24 -and
+            $lifecycle.events[24].event -ceq 'detailOverflow' -and $lifecycle.events[24].readerElapsedMs -eq 2 -and
+            $result.Diagnostics.Length -le 1024) 'Navigation details or overflow receipts exceeded their fixed budget.'
+        $child.Dispose(); $child = $null
+        $child = Start-DrainCheck "[Console]::Error.Write('Native reader: passed +8 ms'); [Console]::Error.Flush(); exit 7"
+        $result = Wait-NativeUi $child 30000
+        Require ($result.Completed -and $child.ExitCode -eq 7 -and $result.ReaderLifecycle.partialLine -and
+            -not $result.ReaderLifecycle.complete -and $result.ReaderLifecycle.events.Count -eq 1) 'Partial reader diagnostics concealed a child failure or claimed completeness.'
+        $child.Dispose(); $child = $null
+        $child = Start-DrainCheck 'Start-Sleep -Seconds 20'
+        $child.StandardError.Dispose() # Exercise the actual read-failure path without emitting app data.
+        $result = Wait-NativeUi $child 750
+        Require ($child.HasExited -and $result.ReaderLifecycle.readFailed -and -not $result.ReaderLifecycle.complete) 'Reader lifecycle claimed completeness after its stderr reader failed.'
+        $child.Dispose(); $child = $null
+        $child = Start-DrainCheck "[Console]::Error.WriteLine('Native smoke: mail-reader'); [Console]::Error.Flush(); Start-Sleep -Seconds 20"
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        $result = Wait-NativeUi $child 750
+        Require (-not $result.Completed -and $child.HasExited -and $child.ExitCode -ne 0) 'Drain deadline self-check did not terminate its child.'
+        Require ($clock.ElapsedMilliseconds -lt 8750 -and $result.Diagnostics.Length -le 1024) 'Drain deadline self-check exceeded its bounded allowance.'
+        Write-Host 'Native UI bounded stderr drain, typed initialization/navigation/wait controls, reader lifecycle retention and owned-process timeout self-check passed.'
+    } finally {
+        if ($child) {
+            try { if (-not $child.HasExited) { $child.Kill(); [void] $child.WaitForExit(5000) } }
+            finally { $child.Dispose() }
+        }
+    }
+}
+if ($ObservationsSelfTest) {
+    Test-NativeUiDrain
+    Test-NativeResourceObservation
+    return
+}
+$required = @('Morrow Mail.exe', 'Microsoft.UI.Xaml.dll', 'Microsoft.WindowsAppRuntime.dll',
+    'resources/app/backend/package.json', 'resources/app/package.json', 'resources/app/runtime/morrow-service.exe',
+    'resources/app/runtime/THIRD_PARTY_LICENSES.txt', 'licenses/windows/packages.config', 'licenses/windows/packages.sha256.json')
+foreach ($relative in $required) {
+    Require (Test-Path -LiteralPath (Join-Path $directory $relative) -PathType Leaf) "Missing native package file: $relative"
+}
+foreach ($forbidden in @('node.exe', 'electron.exe', 'resources/app.asar', 'resources/app/main.cjs',
+    'resources/app/runtime/node.exe', 'resources/app/backend/server', 'resources/app/backend/dist', 'chrome_100_percent.pak')) {
+    Require (-not (Test-Path -LiteralPath (Join-Path $directory $forbidden))) "Unexpected legacy runtime payload: $forbidden"
+}
+$files = @(Get-ChildItem -LiteralPath $directory -Recurse -Force)
+Require (-not ($files | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })) 'Package must not contain reparse points.'
+Require (-not ($files | Where-Object { $_.Name -match '^(encryption\.key|genmail\.sqlite(?:-.*)?|client-state\.json|\.env)$' })) 'Private workspace material found in candidate.'
+foreach ($file in $files | Where-Object { -not $_.PSIsContainer -and $_.Extension -in '.exe', '.dll' }) { Require-X64 $file.FullName }
+$package = Get-Content -LiteralPath (Join-Path $directory 'resources/app/backend/package.json') -Raw | ConvertFrom-Json
+$hostMetadata = Get-Content -LiteralPath (Join-Path $directory 'resources/app/package.json') -Raw | ConvertFrom-Json
+Require ($hostMetadata.serviceRuntime -ceq 'rust' -and $hostMetadata.nativeHost -ceq 'winui3' -and $hostMetadata.version -ceq $package.version) 'Native host metadata does not match the common version.'
+$exe = Join-Path $directory 'Morrow Mail.exe'
+Require-X64 $exe $true
+$service = Join-Path $directory 'resources/app/runtime/morrow-service.exe'
+Require ([Diagnostics.FileVersionInfo]::GetVersionInfo($exe).ProductVersion -ceq $package.version) 'Native PE version differs from package.json.'
+$reported = & $service --version
+Require ($LASTEXITCODE -eq 0 -and $reported -ceq "Morrow Mail $($package.version)") 'Rust service version differs from package.json.'
+foreach ($path in @($directory, (Split-Path $service))) {
+    Require (Test-Path -LiteralPath (Join-Path $path 'vcruntime140.dll')) 'App-local release VC runtime is missing.'
+}
+Write-Host 'Native package layout, x64 binaries, version and runtime boundaries passed.'
+if ($LayoutOnly) { return }
+
+$fixtures = [Collections.Generic.List[string]]::new()
+function New-Fixture {
+    $path = Join-Path ([IO.Path]::GetTempPath()) ('morrow-native-check-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory $path | Out-Null
+    [IO.File]::WriteAllText((Join-Path $path 'disposable-native-fixture'), 'Morrow native acceptance fixture', [Text.UTF8Encoding]::new($false))
+    $fixtures.Add($path)
+    return $path
+}
+$fixture = New-Fixture
+$process = $null
+$crashCapture = $null
+$handler = [Net.Http.HttpClientHandler]::new()
+$handler.UseProxy = $false
+$handler.AllowAutoRedirect = $false
+$client = [Net.Http.HttpClient]::new($handler)
+$client.Timeout = [TimeSpan]::FromSeconds(15)
+$acceptanceFailure = $null
+try {
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = [Diagnostics.ProcessStartInfo]::new($service)
+    $process.StartInfo.UseShellExecute = $false
+    $process.StartInfo.RedirectStandardInput = $true
+    $process.StartInfo.RedirectStandardOutput = $true
+    $process.StartInfo.RedirectStandardError = $true
+    foreach ($key in @('NODE_OPTIONS', 'NODE_PATH', 'ELECTRON_RUN_AS_NODE', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES')) { [void] $process.StartInfo.Environment.Remove($key) }
+    Require ($process.Start()) 'Could not start the fixture service.'
+    $token = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLowerInvariant()
+    $updateToken = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLowerInvariant()
+    $bootstrap = @{ token = $token; updateToken = $updateToken; dataDirectory = $fixture; parentPID = $PID; port = 0 } | ConvertTo-Json -Compress
+    $process.StandardInput.WriteLine($bootstrap)
+    $process.StandardInput.Flush()
+    $ready = $process.StandardOutput.ReadLineAsync()
+    Require ($ready.Wait(30000)) 'Fixture service startup timed out.'
+    $port = ($ready.Result | ConvertFrom-Json).port
+    Require ($port -is [long] -or $port -is [int]) 'Invalid private bootstrap response.'
+    Require ($port -gt 0 -and $port -le 65535) 'Invalid private service port.'
+    $endpoint = "http://127.0.0.1:$port/api/state"
+    $unauthenticated = $client.GetAsync($endpoint).GetAwaiter().GetResult()
+    try { Require ([int] $unauthenticated.StatusCode -eq 401) 'Private service accepted a request without its bearer.' }
+    finally { $unauthenticated.Dispose() }
+    $client.DefaultRequestHeaders.Authorization = [Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $token)
+    $response = $client.GetAsync($endpoint).GetAwaiter().GetResult()
+    try {
+        Require ([int] $response.StatusCode -eq 200) 'Authenticated fixture state failed.'
+        $state = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult() | ConvertFrom-Json
+        Require ($null -ne $state.accounts) 'Fixture state is missing account metadata.'
+    } finally { $response.Dispose() }
+    $process.StandardInput.Close()
+    Require ($process.WaitForExit(70000)) 'Fixture service did not drain after parent-pipe EOF.'
+    Require ($process.ExitCode -eq 0) 'Fixture service exited with failure.'
+    $process.Dispose(); $process = $null
+    Write-Host 'Private Rust startup/authentication/EOF drain passed in an isolated fresh workspace.'
+    if ($UiSmoke) {
+        Test-NativeUiDrain
+        Test-NativeResourceObservation
+        $root = Split-Path $PSScriptRoot -Parent
+        # Fixed package identity outside launch timing and the stderr drain.
+        $resourceIdentity = [ordered]@{
+            version = $package.version
+            uiSha256 = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+            serviceSha256 = (Get-FileHash -LiteralPath $service -Algorithm SHA256).Hash.ToLowerInvariant()
+            osVersion = [Environment]::OSVersion.Version.ToString()
+            logicalCpuCount = [Environment]::ProcessorCount
+        }
+        $savedIncremental = $env:CARGO_INCREMENTAL
+        Push-Location $root
+        try {
+            $env:CARGO_INCREMENTAL = '0'
+            & cargo build --manifest-path rust/Cargo.toml --locked --example native_fixture
+            Require ($LASTEXITCODE -eq 0) 'The isolated native fixture helper failed to build.'
+        } finally { $env:CARGO_INCREMENTAL = $savedIncremental; Pop-Location }
+        $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root 'rust/target' }
+        if (-not [IO.Path]::IsPathFullyQualified($target)) { $target = Join-Path $root $target }
+        $helper = Join-Path $target 'debug/examples/native_fixture.exe'
+        Require (Test-Path -LiteralPath $helper) 'The native fixture helper is missing.'
+        $owned = New-Fixture
+        & $helper seed $owned
+        Require ($LASTEXITCODE -eq 0) 'Could not seed the isolated native mailbox.'
+        $caseIndex = 0; $observationFailures = [Collections.Generic.List[int]]::new()
+        foreach ($case in @(@{ path = $fixture; mode = 'fresh' }, @{ path = $owned; mode = 'owned' }, @{ path = $owned; mode = 'owned' })) {
+            $caseIndex++
+            $resultFile = Join-Path $case.path 'native-smoke-result.json'
+            if (Test-Path -LiteralPath $resultFile) { Remove-Item -LiteralPath $resultFile }
+            $ui = [Diagnostics.ProcessStartInfo]::new($exe)
+            $ui.ArgumentList.Add('--native-smoke')
+            $ui.UseShellExecute = $false
+            $ui.RedirectStandardError = $true
+            $ui.WorkingDirectory = $directory
+            Isolate-NativeEnvironment $ui
+            $ui.Environment['MORROW_DATA_DIR'] = $case.path
+            if ($case.mode -eq 'fresh') {
+                Require (Test-Path -LiteralPath (Join-Path $case.path 'disposable-native-fixture')) 'Crash diagnostics require a marked disposable fixture.'
+                $crashCapture = New-CrashCapture
+            }
+            $sampleFile = New-NativeSampleFile $case.path
+            $collector = $null; $completion = $null; $collectorStarted = $false; $observationComplete = $false
+            $launch = [Diagnostics.Stopwatch]::GetTimestamp()
+            $process = [Diagnostics.Process]::Start($ui)
+            try {
+                # Process.Start/StartTime only; all CIM runs in the owned child.
+                try { $collector = Start-NativeResourceCollector $process $sampleFile $launch; $collectorStarted = $null -ne $collector }
+                catch { Write-Warning 'Native resource collector could not start; evidence will be incomplete.' }
+                $completion = Wait-NativeUi $process 180000 $launch
+            } finally {
+                # No sampler wait/read inside Wait-NativeUi. Separate evidence
+                # has a 2 MiB input cap, independent of the UI result's 16 KiB cap.
+                $collectorStop = Stop-NativeResourceCollector $collector
+                try {
+                    $milestones = if ($completion) { $completion.MilestonesMs } else { @{} }
+                    $resource = Read-NativeResourceReport $sampleFile $collectorStop $milestones
+                    $resource['candidate'] = $resourceIdentity
+                    $resource['run'] = $caseIndex; $resource['mode'] = $case.mode
+                    $resource['uiCompleted'] = [bool] ($completion -and $completion.Completed)
+                    $resource['missingMilestones'] = @(@('first-page-ready') + $(if ($case.mode -eq 'owned') { @('html-ready') } else { @() }) | Where-Object { -not $milestones.ContainsKey($_) })
+                    if ($resource.missingMilestones.Count) { $resource.incomplete = $true }
+                    $evidence = Join-Path $root 'test-results'
+                    [void] (New-Item -ItemType Directory -Force $evidence)
+                    [IO.File]::WriteAllText((Join-Path $evidence "windows-native-resource-$caseIndex.json"), ($resource | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+                    $summary = Get-NativeObservationSummary $resource $caseIndex $case.mode $resource.uiCompleted $collectorStarted
+                    Write-Host ('Native observation: ' + ($summary | ConvertTo-Json -Compress -Depth 8))
+                    foreach ($sample in @(Get-NativeObservationSamples $resource $caseIndex $case.mode)) {
+                        Write-Host ('Native observation sample: ' + ($sample | ConvertTo-Json -Compress -Depth 6))
+                    }
+                    $observationComplete = -not $resource.incomplete
+                    if ($resource.incomplete) { Write-Warning 'Native resource observation is incomplete; inspect its separate evidence report.' }
+                } catch {
+                    # Optional observation must not replace an original UI error.
+                    $summary = @{ run = $caseIndex; mode = $case.mode; reportUnavailable = $true; incomplete = $true
+                        collectorStarted = $collectorStarted; collector = $collectorStop }
+                    Write-Host ('Native observation: ' + ($summary | ConvertTo-Json -Compress -Depth 4))
+                    Write-Warning 'Native resource report is missing or incomplete; no complete measurement is claimed. The UI acceptance result is unchanged.'
+                }
+                if (-not $observationComplete) { $observationFailures.Add($caseIndex) }
+                # Separate diagnostic evidence, never a process-exit proof or a
+                # replacement for the UI/collector acceptance checks below.
+                try {
+                    $readerReport = [ordered]@{
+                        schemaVersion = 3; run = $caseIndex; mode = $case.mode; uiPid = $process.Id
+                        candidate = $resourceIdentity; available = $null -ne $completion
+                        uiCompleted = [bool] ($completion -and $completion.Completed)
+                        lifecycle = $(if ($completion) { $completion.ReaderLifecycle } else { $null })
+                    }
+                    $evidence = Join-Path $root 'test-results'
+                    [void] (New-Item -ItemType Directory -Force $evidence)
+                    [IO.File]::WriteAllText((Join-Path $evidence "windows-native-reader-$caseIndex.json"),
+                        ($readerReport | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+                    Write-Host ('Native reader lifecycle: ' + ($readerReport | ConvertTo-Json -Compress -Depth 6))
+                    if (-not $readerReport.available -or -not $readerReport.lifecycle.complete) {
+                        Write-Warning 'Reader lifecycle diagnostics are incomplete; process-exit evidence and acceptance are unchanged.'
+                    }
+                } catch { Write-Warning 'Reader lifecycle diagnostics could not be retained; original acceptance checks remain unchanged.' }
+            }
+            $completed = $completion.Completed
+            $diagnostics = $completion.Diagnostics
+            if ($diagnostics) { Write-Host $diagnostics }
+            if (-not $completed) {
+                try {
+                    Require (Test-Path -LiteralPath (Join-Path $case.path 'disposable-native-fixture')) 'Timeout evidence requires a marked fixture.'
+                    $evidence = Join-Path $root 'test-results'
+                    [void] (New-Item -ItemType Directory -Force $evidence)
+                    $phase = $completion.LastSmokePhase
+                    $timeout = @{ ok = $false; mode = $case.mode; timedOut = $true; phase = $phase; diagnostics = $diagnostics } | ConvertTo-Json -Compress
+                    [IO.File]::WriteAllText((Join-Path $evidence "windows-native-ui-$caseIndex-timeout.json"), $timeout, [Text.UTF8Encoding]::new($false))
+                    if (Test-Path -LiteralPath $resultFile -PathType Leaf) {
+                        $record = Get-Item -LiteralPath $resultFile
+                        Require (-not ($record.Attributes -band [IO.FileAttributes]::ReparsePoint)) 'Fixture result must be a regular file.'
+                        $reader = [IO.BinaryReader]::new([IO.File]::Open($resultFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite))
+                        try { $bytes = $reader.ReadBytes(16385) } finally { $reader.Dispose() }
+                        Require ($bytes.Length -gt 0 -and $bytes.Length -le 16384) 'Fixture result exceeds the diagnostic limit.'
+                        [IO.File]::WriteAllBytes((Join-Path $evidence "windows-native-ui-$caseIndex.json"), $bytes)
+                    }
+                } catch { Write-Warning 'Some optional timeout evidence could not be retained; the timeout remains a failure.' }
+                throw 'Native UI fixture did not finish within 180 seconds.'
+            }
+            if ($process.ExitCode -ne 0) {
+                $exitCode = $process.ExitCode
+                Write-Host ('Native UI exit code: {0} (0x{1:X8})' -f $exitCode, ($exitCode -band 0xffffffffL))
+                Show-NativeCrash $crashCapture
+                throw 'Native UI smoke failed before successful completion.'
+            }
+            Require (Test-Path -LiteralPath $resultFile) 'Native UI did not report its completed smoke checks.'
+            $result = Get-Content -LiteralPath $resultFile -Raw | ConvertFrom-Json
+            $evidence = Join-Path $root 'test-results'
+            New-Item -ItemType Directory -Force $evidence | Out-Null
+            Copy-Item -LiteralPath $resultFile -Destination (Join-Path $evidence "windows-native-ui-$caseIndex.json")
+            foreach ($capture in Get-ChildItem -LiteralPath $case.path -Filter 'mail-list-*.png' -File) {
+                Copy-Item -LiteralPath $capture.FullName -Destination (Join-Path $evidence "windows-native-ui-$caseIndex-$($capture.Name)")
+            }
+            Require ($result.ok -eq $true -and $result.mode -ceq $case.mode) "Native UI fixture assertions failed: $($result | ConvertTo-Json -Compress -Depth 4)"
+            $process.Dispose(); $process = $null
+            Restore-CrashCapture $crashCapture; $crashCapture = $null
+            if ($case.mode -eq 'owned') {
+                Require ($result.reader.htmlRuntime -ceq 'passed' -and $result.reader.fallback -ceq 'passed' -and $result.reader.staleClose -ceq 'passed') 'Native HTML reader runtime, fallback and stale-close checks must all pass.'
+                Require ($result.reader.inspection -ceq 'native-dom-no-script' -and $result.reader.cspEvidence -ceq 'native-audits-image-frame') 'Reader checks must use native DOM inspection and enforced image/frame CSP evidence.'
+                & $helper verify $case.path
+                Require ($LASTEXITCODE -eq 0) 'Native UI fixture ownership or persisted records failed verification.'
+            }
+        }
+        # Preserve the original UI/result/persistence error, if any. Only after
+        # all normal cases and their evidence have completed does this opt-in
+        # gate fail incomplete observations. Negative self-tests stay separate.
+        if ($RequireCompleteObservation) {
+            Require ($observationFailures.Count -eq 0) ('Native observation evidence is incomplete for fixture cases: ' + ($observationFailures -join ',') + '.')
+        }
+        Write-Host 'Native fresh/owned/restart UI smoke passed; no live providers or sending were exercised.'
+    }
+} catch {
+    $acceptanceFailure = $_
+    throw
+} finally {
+    Restore-CrashCapture $crashCapture
+    if ($process) {
+        try { if (-not $process.HasExited) { $process.Kill(); [void] $process.WaitForExit(5000) } }
+        catch { Write-Warning 'Fixture process cleanup could not be confirmed.' }
+        finally { $process.Dispose() }
+    }
+    $client.Dispose()
+    $cleanupFailed = $false
+    foreach ($path in $fixtures) {
+        try {
+            if (-not (Test-Path -LiteralPath $path)) { continue }
+            $item = Get-Item -LiteralPath $path
+            $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar)
+            Require ($item.PSIsContainer -and -not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+                [IO.Path]::GetDirectoryName($item.FullName) -ieq $tempRoot -and $item.Name -cmatch '^morrow-native-check-[0-9a-f]{32}$') 'Refusing cleanup outside an owned temporary fixture.'
+            $marker = Get-Item -LiteralPath (Join-Path $path 'disposable-native-fixture')
+            Require (-not $marker.PSIsContainer -and -not ($marker.Attributes -band [IO.FileAttributes]::ReparsePoint) -and
+                $marker.Length -le 64 -and [IO.File]::ReadAllText($marker.FullName) -ceq 'Morrow native acceptance fixture') 'Fixture cleanup marker does not match.'
+            # Verify ownership once: a partial recursive deletion can remove the
+            # marker before a WebView child releases its BrowserMetrics file.
+            for ($attempt = 0; $attempt -lt 5; $attempt++) {
+                try { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop; break }
+                catch {
+                    if (-not (Test-Path -LiteralPath $path)) { break }
+                    if ($attempt -eq 4) { throw }
+                    Start-Sleep -Milliseconds 1000
+                }
+            }
+        } catch {
+            $cleanupFailed = $true
+            Write-Warning 'Temporary fixture cleanup did not complete; no other processes were terminated.'
+        }
+    }
+    if ($cleanupFailed -and $null -eq $acceptanceFailure) { throw 'Native acceptance fixture cleanup failed.' }
+}

@@ -1,0 +1,23 @@
+name: Focused current-view synchronization
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/priority-mail-sync-20261011]
+permissions:
+  contents: read
+jobs:
+  macos-view:
+    runs-on: macos-15
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Verify current-view hints and retained search page
+        run: python3 -B scripts/test-macos-mail-flow.py
+  windows-view:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Verify current-view payload bounds and attachment state
+        shell: pwsh
+        run: ./scripts/test-windows-attachment-flow.ps1

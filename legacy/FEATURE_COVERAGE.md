@@ -1,0 +1,442 @@
+# Morrow Mail feature coverage
+
+The 0.8.3 source combines the current-source changes described below; the
+[release notes](docs/releases/v0.8.3.md) explain the schema migration, coverage
+and distribution limits. Publication still requires both tagged native jobs.
+
+**Current source — contextual actions:** secondary reader and row-management
+commands use named native menus, selection commands follow the current mail
+selection, and Today hosts the existing owned reply editor. Empty Cc/Bcc fields
+can be revealed without changing the draft. Existing send/source review,
+provider versus local organization and recovery controls remain. Native mounted
+fixtures are extended; SDK execution, keyboard and manual accessibility acceptance
+remain required. No completion-retention or AI policy is changed. See
+[behavior and validation boundary](docs/CONTEXTUAL_ACTIONS.md).
+
+**Current-source download controls:** Both native clients expose account-owned
+stored/indexed/incomplete/shortened-body counts, precise logical message and
+attachment byte totals, and a 30-record content-repair list. The panel reads only
+local data until an explicit history control or single-message download is
+chosen. Local archive/Trash actions have a service-authored, restart-safe last-move
+undo guarded by mailbox connection and current location; read/star/Pending edits
+survive undo. Provider Trash retains its separate one-minute undo and provider
+writes retain review/permission/no-replay behavior. This is not cache eviction,
+a hard storage quota, a global offline mode or complete provider coverage.
+Repair eligibility requires a matching current IMAP origin. Opaque connection
+and history-job references reject stale panel actions after reconnect or job
+replacement, while already-downloaded bodies still shortened by size limits
+remain explained without offering a redundant download. The repair follow-up
+refreshes shared metadata and the still-selected reader from local records on
+both platforms; it preserves committed page/search and selection ownership,
+rejects late connection or presentation results, and restores only the original
+page controls after an abandoned read. It does not mark mail read again. New
+synthetic transport checks still require matching-source native CI.
+See [behavior and remaining decisions](docs/DOWNLOAD_CONTROLS.md) and
+[verification](VERIFICATION.md#download-controls-and-local-recovery--15-october-2026).
+
+**IMAP server identity source follow-up:** imports, cached-body reuse and cached
+flag reconciliation bind to the validated server endpoint and actual login.
+Cross-server UID collisions retain separate copies and user state. An atomic
+provenance-only migration preserves IDs/data; unknown sources remain cached-only.
+Raw downloads and provider mutations reject unknown or mismatched origins before
+network access. Workspace schema 2 makes the tested prior service reject the
+upgraded workspace instead of ignoring this fence.
+See [upgrade preparation, recovery and limits](docs/IMAP_SERVER_IDENTITY.md).
+Live-account acceptance remains incomplete; the exact source-specific native
+results are recorded in [verification](VERIFICATION.md).
+
+**0.8.2 source — navigation and activity recovery:** merged PRs #48–50 add
+the Mail | Agent | Brain shell, recover abandoned AI jobs and retain cancellation
+for each mailbox/work type. Stop publication is ordered with the persisted job
+change, so a delayed request cannot cancel replacement work. Native compilation,
+Windows fixture cleanup and bounded process-observation fixes are included.
+That published version excluded summary-job diagnostics, the later IMAP/mailbox
+work and the frozen Today follow-up. Exact source, historical failures,
+paired-tag requirements and distribution limits are in the
+[release notes](docs/releases/v0.8.2.md) and
+[verification](VERIFICATION.md#v082-release-preparation--15-october-2026).
+
+**Current source — bounded IMAP read sessions:** change discovery and the following
+cached-mail flag read share one owned authenticated connection. Connections are
+not retained across sync ticks or owners. Cancellation/error drops the socket;
+the next phase checks the saved connection and revalidates capabilities and
+UIDVALIDITY. Provider-write authorization and recovery retain their own checks;
+uncertain writes still require provider review before retry. IDLE and non-MOVE
+fallback were outside the original read-session unit and are documented below.
+After stacking the identity source,
+the focused 10-case TLS run, formatting, strict Clippy and complete Rust suite
+passed (456/0/4 existing ignored). The later
+[paired native run 38723970357](https://github.com/Coke1120/Morrow-Mail/actions/runs/38723970357)
+passed for PR #53's exact tree: macOS Rust 461/0/4 and strict reader 40/40;
+Windows Rust 457/0/4 with complete fresh/owned/restart observations. Live-account,
+clean-machine and manual accessibility acceptance, Developer ID/notarization and
+Windows code signing remain incomplete. See [scope and validation](docs/IMAP_READ_SESSIONS.md)
+for the tested tree and limits on later combined candidates.
+
+**Current source — bounded IMAP notifications:** automatic-sync opt-in also
+permits read-only IDLE leases for eligible Inbox and selected custom folders.
+Custom folders require a committed UIDVALIDITY baseline, current source/selection
+identity, fresh catalog and satisfied recovery/backoff gates. At most four
+accounts and one folder per account are watched at once; accounts and folders
+rotate. Notifications coalesce into existing bounded sync and its opted-in
+arrival queue without calling a model or waking the background AI tick.
+Disabling the interval, disconnect and scope/connection changes cancel readers.
+Connection-wide failures cannot retry through other selected folders; temporary
+update pauses preserve failure/backoff state. Ordinary polling and recovery
+remain available. Identity, read-session and selected-folder prerequisites are
+stacked. The original candidate's 31 new TLS/Store cases and 18 selected-folder focused
+cases passed; formatting, strict Clippy and the full Rust suite also passed
+(505/0/4 existing ignored). These historical checks do not establish native,
+live-provider or release acceptance for later combined sources. Durable non-MOVE
+recovery has its own implementation. [Scope, lifecycle and bounds](docs/IMAP_IDLE_NOTIFICATIONS.md).
+
+**Current source — reviewed non-MOVE recovery:** servers with UIDPLUS and persistent
+UIDs can use a durable, non-atomic COPY / source deletion flag / targeted UID
+EXPUNGE sequence. MOVE remains preferred; an uncertain MOVE never falls back to
+COPY. At most 100 unfinished operations are retained workspace-wide without
+eviction. The native recovery journal opens locally; provider checks and any
+remaining source removal each require an explicit action. Unknown COPYUID cannot
+enable recovery by guessing a destination. Connection, source, UIDVALIDITY and
+exact destination checks precede recovery writes. A duplicated destination cache
+requires manual provider review rather than merging local user state. Confirmed
+adoption clears obsolete missing-source markers and source-folder flag proofs
+while preserving the cached body and user state. Details,
+limits and current validation are in [the recovery contract](docs/IMAP_MOVE_RECOVERY.md)
+and [verification](VERIFICATION.md#imap-move-recovery-candidate--15-october-2026).
+IDLE has its separate notification lifecycle; recovery does not add permanent-delete UI or
+live-provider acceptance.
+
+**Published 0.8.1 — Gmail authorization recovery:** sync, folder-catalog and
+raw-message reads may refresh a rejected access token and retry once. History
+downloads retain routine token-expiry refresh before a request; their first
+resource-API 401 preserves the checkpoint and cached mail and ends the import
+with an authorization error. It does not force another token exchange or read,
+schedule a retry or resume on restart. After authorization recovery, manual
+Resume retains the checkpoint only for the same connection; reconnecting changes
+the connection identity and requires a new import, without deleting cached mail.
+Transient history read/quota backoff remains unchanged.
+Failed token exchanges and provider writes are not automatically replayed.
+Reconnect responses without a refresh token retain an existing token only for
+the same verified mailbox, provider, client credentials and scope set; incompatible responses preserve the
+old connection. Other accounts and cached mail remain intact. Google grant
+revocation and External/Testing expiry still require attention. See
+[the correction and validation status](VERIFICATION.md#gmail-history-authorization-correction--14-october-2026).
+PR #47 passed both complete native jobs: macOS 410 and Windows 406 Rust tests,
+including all 16 Gmail regressions, with zero failures and four existing ignored
+benchmarks on each platform. The actual main merge has the same tested tree.
+This correction is not in the published, preserved v0.8.0 tag. Earlier PR #46
+tests incorrectly expected history-download 401 recovery; their passing runs do
+not validate this policy. The v0.8.1 paired tag, publisher and downloaded-asset
+verification completed on 14 October; see [publication evidence](docs/releases/v0.8.1-verification.md)
+and [release notes](docs/releases/v0.8.1.md).
+Synthetic coverage does not establish live-account acceptance.
+
+**Current source — controlled mailbox acceptance tools:** opt-in TLS runs start
+an empty target mailbox and actually download 1k/10k/50k messages, then check a
+120-message arrival burst, flags, restart/checkpoints and reconnect isolation.
+The existing service resource benchmark remains separate from the macOS and
+Windows production-view button/selection-to-layout fixtures. Strict aggregation rejects
+seeded-download claims, changed/mixed source, missing data and HTTP-as-UI evidence;
+missing platforms or explicit performance targets remain incomplete. Both native
+entries are present in this candidate, but platform compilation and measurements
+remain pending. The opt-in PR workflow validates measurement evidence and does
+not replace normal native security checks or claim full performance acceptance.
+[Run scope and limits](docs/MAILBOX_ACCEPTANCE.md).
+
+**0.8.2 source — hybrid navigation shell:** macOS and Windows share a Mail | Agent | Brain primary chrome. Cold start remains the Mail three-pane. Agent opens the existing Inbox Agent, Today, and Skills pages. Brain opens the existing persona and writing-rules page, plus categories. AI Studio is an advanced footer and Settings entry. Its More menu keeps one-release “Moved to Agent” and “Moved to Brain” hints for the pages that moved; Local Inbox Rules, local simulations, and simulation history stay there. Review-before-send, account routing, and provider writes are unchanged. Publication still requires the complete paired tagged checks.
+
+**Running activity recovery:** a summary, style analysis, memory analysis, or reply
+batch left `running` after cancel, a 90-second timeout, client disconnect, or
+worker drop is marked cancelled or failed. That finished job no longer blocks
+the next Ask, skill, Inbox Agent, or Today action. Activity can cancel a stuck
+running summary, style analysis, memory analysis, reply batch, or embedding
+batch; cancellation discards that result and does not send mail. Opening the
+app still reconciles leftover `running` work from the previous process. Import
+jobs keep their own pause and resume path and are not expired by this timeout.
+Cancellation delivery is retained for each registered mailbox/work type, so a
+later cancellation or another mailbox's reply-settings save cannot erase it.
+The reply worker registers its mailbox while claiming the job, before another
+request can cancel that claim. Cancellation and reply-settings changes publish
+their stop before releasing the Store, so a delayed response cannot stop a new
+claim. Synthetic cases cover drop before claim publication,
+drop during model work, owner isolation, retained cancellation, late results,
+replacement jobs, delayed cancellation/settings responses and stale timestamps.
+These checks are fixture tests, not
+live-account acceptance; native validation and original failed runs are recorded
+in [verification](VERIFICATION.md#activity-cancellation-and-native-verification-repairs--15-october-2026).
+
+**Current source — saved summary diagnostics:** Activity distinguishes failed,
+cancelled, interrupted and skipped summary jobs and shows their recorded job
+times. A content-free job-details view opens the selected mailbox/job snapshot
+even when Today has no valid summary for the current day or context. Known
+server-authored diagnostics distinguish model connection/HTTP/response failures,
+the 45-second model timeout and the 90-second whole-job timeout. Unknown historical
+errors use a fixed safe fallback; raw provider responses and summary/mail content
+are excluded. Missing job identity disables the detail entry; missing times stay
+unrecorded. Opening details neither generates nor retries a summary. See
+[validation and limits](VERIFICATION.md#saved-summary-job-diagnostics--15-october-2026).
+
+**0.8.0 — writing rules, Today, skill reviews and Inbox Agent:** the combined
+PR #42–46 source passed the exact-head native checks and matches the main merge.
+Writing edits survive unrelated saves, the agent revalidates account/permission/
+source scope and requires reviewed actions and complete send previews, and
+Windows retains bounded diagnostic evidence. Today still retains only 200
+completion markers and shows the latest 20 per mailbox; eviction can restore a
+suggestion, older retained completions cannot be reopened in the current view,
+and unread suggestions do not inherit category priority for final ordering.
+The separate Today follow-up is excluded. v0.8.0 was published after its paired
+tagged checks, but includes the history authorization regression corrected in
+published 0.8.1 above. The intervening v0.7.9 tag failed its
+Windows reader initialization gate and was not published; it remains preserved.
+See [release notes and limits](docs/releases/v0.8.0.md) and
+[validation](VERIFICATION.md#v080-release-preparation--14-october-2026).
+Ad-hoc Mac signing, unsigned Windows, unresolved intermittent native observation
+failures and incomplete manual/live-account acceptance remain. Historical
+preparation records describe their original checkpoints.
+
+**Current source — categories, Today suggestions, and skill review queues:** each mailbox can save up to 20 ordered categories. Today builds suggested tasks from the latest validated summary items and unread Inbox mail already on this device; completing or reopening one asks for confirmation and does not mark mail read, send mail, or change Email Brain. AI Studio can install a small local skill library and save a daily or interval schedule. `autoExecute` only means a due skill may join that mailbox’s review queue (`propose-draft` or `propose-action`). Schedules do not call a model, send mail, or update Email Brain. This is not the P0 writing-rules work and not an inbox agent.
+
+Today selects up to eight eligible unread messages per mailbox after excluding completed suggestions and summary duplicates. A newer queued or failed summary keeps the latest valid completed summary suggestions visible; changed sources still withdraw them. Completion IDs remain bounded for long provider IDs; the latest 20 completed records per mailbox remain reopenable in the current view. Both native category editors guard unsaved replacements; macOS category edits also join account/page navigation, quit and update guards. Categories label Today suggestions by their saved priority/order; their descriptions do not define classification rules. See [validation and native execution limits](VERIFICATION.md#pr-43-today-and-category-follow-up--14-october-2026).
+
+**0.7.7 — review lifecycle:** empty Today/reply projections avoid
+redundant conversation-index reads. Successful Mac Skip removes only dismissed
+ephemeral state; refresh moves edited target state on both platforms, redirecting
+selection/scroll and removing the obsolete unsaved guard. Saved mailbox drafts
+remain; failed transfers preserve edits and same-key refresh retains saved identity.
+Focused immutable-baseline/candidate and final combined paired PR checks passed.
+See [scope](docs/REVIEW_STATE_LIFECYCLE.md) and [release validation](VERIFICATION.md#v077-release-preparation--codex-cloud-12-october-2026).
+The tagged pair/publisher and six public-asset/production-signature checks passed; [publication evidence](docs/releases/v0.7.7-verification.md) retains preceding main observation failures and manual/live-account limits.
+
+**Current source — fixture resource observation:** new children of retained live
+owned parents are provisionally pinned during CIM delivery, before tree and
+managed admission. First native87/5 errors remain unknown strict gaps; final CIM,
+parent/creation, counter and same-handle exit gates remain. The successful PR36
+run and separate failed combined run are retained in the
+[capture-window evidence and limits](docs/WINDOWS_INVENTORY_WINDOW.md). This does
+not establish complete process-lifetime or live-account acceptance.
+
+**0.7.6 failed candidate — Windows observation correction:** early sibling pins retained exact identity/parent/exit/counter gates, but its tagged Windows job still failed first native87/unknown exit. The unpublished v0.7.5/v0.7.6 tags are preserved. The additional row/query-window corrections and their successful final PR checks remain separate from those failures; see [scope](docs/WINDOWS_EARLY_ADMISSION_PINS.md) and [follow-up](docs/WINDOWS_INVENTORY_WINDOW.md). Complete process-lifetime coverage is not claimed.
+
+**0.7.7 source — Today and reply review workspace:** native SwiftUI/WinUI pages share All/account tabs without changing the global mailbox, retain account-owned drafts, selections, scroll positions and unsaved automatic-check budgets for the current app session, and show loading/retry errors without discarding edits. Today initially shows three decisions and three reply shortcuts; waiting/completed/information and full summaries are folded. Original messages use the existing isolated native reader; reply text is edited in place and requires facts/commitment review before opening the normal explicit composer. Below 780 units of review content width, list and detail switch to one pane. New saved summaries can include quote-validated decision states, literal deadlines and unresolved questions; legacy summaries remain uncertain. Provider/RFC/owned reply relationships group downloaded conversations within an account. Whole-conversation source versions withdraw old and in-flight suggestions on later arrivals, departures or source edits; latest evidence reopens/updates events, while missing or truncated context stays uncertain. See [contracts, safety and limits](docs/REVIEW_WORKSPACE.md) and [validation](VERIFICATION.md#unreleased-today-and-reply-review-workspace). This source is not in v0.7.4.
+
+**0.7.4 source — Windows reading-pane fit:** side-by-side mail layout bounds the rendered list width to preserve the reader's existing 320-unit minimum and visible client edge, recalculates after window/sidebar and mounted mail-view width changes, and retains the requested list width when space returns. Native smoke checks the complete reader bounds across themes/densities, DPI-aware window shrink/expand and direct sidebar resizing. Fresh/owned/restart UI and persistence checks passed in CI and Mac mini Parallels; historical candidate strict observations failed, while the final v0.7.4 tagged attempt passed complete observation. Intermittent error 87 remains unresolved. Exact candidate results are tracked in [verification](VERIFICATION.md#windows-reading-pane-fit--mac-mini-parallels-12-october-2026); this is not included in the published v0.7.3 binary.
+
+**0.7.4 source — incremental synchronization and profiling:** unchanged imports skip writes; flag-only changes update searchable metadata without rebuilding FTS. Gmail persists atomic history pagination, coalesces IDs and handles deletions/label changes, expiry and restart. IMAP advances new UIDs within a connection/folder/UIDVALIDITY generation; bounded known-UID reconciliation uses CONDSTORE/QRESYNC only after capability/enable checks, with safe polling fallback. Graph resolves every delta event while avoiding duplicate rolling reads and allowing healthy folders past blocked ones. Draft refetch, sent fingerprints, owned attachment bytes, priority TTL and background quotas remain. [Measurements, safety bounds and remaining acceptance](docs/SYNC_PERFORMANCE.md). No live-provider or installed-app acceptance was performed for the synchronization source. The separate Windows layout candidate's Parallels fixtures are recorded above; the final combined package passed its tagged checks in attempt 1, with public ZIP/hash/Ed25519 verification; real-account and manual acceptance remain incomplete.
+
+The v0.7.3 source includes merged PR28/29. Windows first-acquire native error 87 remains unresolved and Mac mini Parallels acceptance is incomplete; see the [release notes](docs/releases/v0.7.3.md) and [tagged verification](VERIFICATION.md).
+
+**0.7.3 source — current-page synchronization:** the selected message and current page receive a bounded priority check before recent mail, while the existing Gmail/IMAP 50-row and Outlook 25-row older-cache rotation remains. IMAP/Graph reuse complete immutable bodies only with matching owner, connection and provider identity; drafts, truncated headers and uncertain content fetch normally. Provider draft-to-Sent transitions refresh the final body, while reviewed local sent payloads and owned downloaded attachment bytes survive synchronization. Settings now correctly describe provider-confirmed read/star writes. [Implementation, isolated checks and staged incremental design](docs/SYNC_PRIORITY_AND_INCREMENTAL.md). PR29 is merged on main; publication requires fresh paired tagged checks. These source changes do not establish live-account acceptance.
+
+**0.7.3 source — attachment follow-up:** Windows page/account navigation respects the existing attachment-save guard, retaining the current page and selection until completion or failure. The sidebar follow-up restores the canonical WinUI `SelectedItem` after rejected invocations, keeping account/folder labels consistent with that mailbox. Synthetic native checks reproduce the merged-main mismatch through real `ItemInvoked` events and verify account/footer restoration, duplicate activation, captured ownership, file integrity and quarantine metadata. [Review and limits](docs/ATTACHMENT_FLOW_REVIEW.md): native picker cancellation, screen readers, manual cross-platform UX and real accounts remain unverified.
+
+**0.7.3 source — mail flow follow-up:** macOS refreshes completed search results at their current page after reading or saving a reply, retaining rows during refresh and falling back once to the last valid page if needed. Smart refreshes use cached matching only. Mac/Windows attachment removal accessibility names include filenames; Mac footer removal has its own name. The [review and profiling/observation design](docs/MAIL_FLOW_REVIEW.md) describes the isolated native fixtures and remaining manual accessibility/live-account limits. Mac extreme HTML timing and Windows first-handle acquisition gaps are not declared fixed.
+
+**0.7.2 — fetch recovery:** IMAP import dates use INTERNALDATE consistently and transient read failures retain retryable checkpoints. Outlook delta resets preserve catch-up coverage; metadata-first lists and bounded individual bodies avoid aggregate body-page stalls. Gmail reads support up to 10,000 labels while organization destinations remain bounded to 1,000. Explicit incomplete-content records retain recoverable message identities and appear in account/CLI status; full MIME loading clears them only after success. Downloaded bodies survive placeholder refreshes within the existing provider identity namespace, while mutable drafts still update; cross-server IMAP identity collisions remained a limitation in that version (addressed by the current server identity follow-up). Windows revision/cursor recovery follows the Mac page/selection behavior. See [behavior and remaining limits](docs/FETCH_RECOVERY.md); the paired PR native run passed, with release-tag and manual/live-account evidence tracked separately in [verification](VERIFICATION.md).
+
+**0.7.2 — native recovery:** Windows detail loading has selection-bound loading/retry and cancellation, retaining the mounted message for interrupted reselection without leaving its controls active. Closing a composer returns to its source mailbox/page/query and restores a visible mail control's keyboard focus; unresolved or draft selections are cleared for reopening. General preferences retain their serialized field-diff saves, newer edits and failed saves; Retry is shown after a failure and hidden during retry or a new edit. macOS loading/error readers expose Back/Escape and restore list focus, keep reader errors separate from workspace notices, and reject obsolete same-message read/mark-read completions. Added macOS and Windows native assertions passed in PR CI at `13d5822164a95a235fc8051036425726be21c0b1`, including all four Windows composer-return cases and HTTP 409/400 cursor recovery probes. This does not complete manual UX/accessibility acceptance; see [verification](VERIFICATION.md) and the [earlier local baseline](VERIFICATION.md#local-native-readiness-work--unreleased).
+
+**0.7.2 — backup error repair:** An existing destination now reports a conflict asking for a new folder, instead of a generic storage error. Existing backup directories and files remain untouched. Focused attachment API/CLI, restart, backup and macOS filesystem checks passed; interactive attachment dialogs and Windows save/quarantine remain unverified.
+
+**Local developer maintenance:** `python3 scripts/clean-local-release.py` previews bounded macOS checkout cleanup; `--apply` removes known compiler outputs and release copies older than seven days. Current native candidates, reports and app workspaces are preserved. This is a manual post-release command, with no automatic publication check or global cache cleanup; see [usage and limits](README.md#local-cleanup-after-a-release-macos).
+
+**0.7.1 — read-state repair:** Fresh Gmail/IMAP Read/Unread values now replace stale local flags even when the provider snapshot is unchanged, matching Outlook's existing behavior. Confirmed flag-write responses also clear obsolete read overrides. Sparse metadata and unavailable messages retain their last known flags; local stars, Pending, folder choices and other accounts remain protected. IMAP reconciliation skips an unavailable folder only after a successful complete LIST confirms its absence; other folders advance, cached content remains, and later rounds recheck restored folders. Failed LIST/EXAMINE/FETCH responses still fail safely. Sync remains bounded (50 cached Gmail/IMAP messages per round); see [verification](VERIFICATION.md).
+
+**0.7.0 — attachments, newest-first imports and Gmail/IMAP consistency:** Both native clients can add/remove immutable owner-bound attachments, save them, review them before sending/scheduling, and include downloaded attachments in Forward/provider-draft copies. SQLite backup and uncertain-send fingerprints include attachment references; attachment content stays out of AI and list metadata. MIME downloads are bounded to 80 MiB; decoded files to 100 / 50 MiB per message. Explicit CID loading supports raster PNG/JPEG/GIF/WebP within 1 MiB of image bytes and 1.5 MiB of sanitized HTML; SVG and executable content stay inert. Larger Outlook sends use Graph upload sessions without forwarding bearer credentials to upload URLs; interrupted attempts require review and may leave a draft in Outlook. Stored attachment bytes are retained with the workspace; automatic orphan reclamation, antivirus and arbitrary attachment previews are not implemented.
+
+**0.7.0 — agent and restart UX:** CLI `sync`, `sync --dry-run`, `status`, `fetch`, `attachment-add` and `attachment-read` share the existing service/writer and explicit mailbox identity. Exit 4 reports partial sync. Draft edits preserve omitted attachment references. Inspired by [Neverest](https://github.com/pimalaya/neverest/tree/c4155b78be0010a43da36a885e47aaadaeedd4f7), sync reports state their bounded coverage and newest-first order; they do not claim a full mirror. Today combines the latest 20 validated jobs into one card per mailbox/local date and replaces each message's older summary. AI Studio does not list those summaries. Install & Restart freezes new work, drains accepted requests (up to the existing 65-second service deadline), and resumes only committed indexing chunks within the original reviewed scope/budget. Historical downloads keep their checkpoints; interrupted manual sync continues once even when periodic sync is off. Unsaved edits remain guarded. Uncertain sends/calendar writes and incomplete paid requests never replay automatically.
+
+
+New imports finish a seven-day recent pass across the chosen folders before older history; old persisted imports retain their checkpoints. Enabled regular sync is due on startup before history. Gmail/IMAP retain newest-page polling, add read/star writes and cycle through 50 cached messages per sync using durable owner/connection checkpoints. Remote deletions retain cached data, and changed IMAP UIDVALIDITY never rebinds a cached message to a new UID. Gmail needs organization permission; failed writes are not automatically replayed. This is eventual bounded reconciliation, not Gmail History API/IMAP IDLE or full mailbox mirroring. Windows ignores obsolete XAML unload events and falls back to plain text after a 20-second initialization timeout. `scripts/test-windows-clean.ps1` runs separately supplied QA fixtures against a relocated package without developer tools; clean-VM execution remains a separate acceptance requirement.
+
+**Included in beta.48 — Sync and Outlook consistency:** The native sidebar has **Sync** beside **Compose** (⌘R / Ctrl+R), with a hidden-sidebar fallback on macOS. **Today → Sync All** calls provider sync without changing the selected account. Outlook now refreshes recent Inbox/Sent, tracks configured scopes through durable per-folder Graph delta checkpoints, and cycles through downloaded messages to reconcile older read/star flags, moves and deletions. Remote flags win over legacy local flags. Explicit read/star changes write back with `Mail.ReadWrite`; permission failures require reconnect and failed writes are never automatically replayed. Mark-on-open skips Outlook accounts without that permission. Permanent server deletion retains the cached copy in local Trash; Pending, Read Later, local drafts and delivery records remain. Each cycle processes one delta page and up to 25 cached messages, continuing at the configured interval (or another manual Sync); initial catch-up takes multiple cycles. The initial newest page and later change events respect the chosen import range; the independently pausable history importer fills older missing content. Gmail/IMAP still use bounded polling and local read/star changes. Paired tagged native checks and public-download/signature verification passed; see [verification](VERIFICATION.md). This is not push sync or live-account acceptance.
+
+**Included in beta.47 — mail list layout:** Both native clients place the local date/time at the right of the sender header, with the owning mailbox beside the sender in All accounts and search results. Long names and addresses truncate; mailbox/date tooltips retain the complete values, which also remain available to accessibility. Unread emphasis stays on the sender and subject; previews use regular weight. Read/Reply All/Trash shortcuts share the subject line, leaving the header stable on hover/focus. Windows uses a labeled Delete icon in the list toolbar to keep it clear of Refresh at the minimum list width. Existing density, search, owner-bound selection and delivery/schedule warnings remain. Paired tagged native checks and public-download/signature verification passed; see [verification](VERIFICATION.md) for evidence and remaining acceptance limits.
+
+**Included in beta.46 — mail-client review follow-up:** MIME/IMAP, Gmail and Microsoft imports retain Reply-To for owned Reply / Reply All, with From fallback and unchanged owner/Bcc exclusions. Reconnect identity lookup includes disconnected cached accounts; ambiguous casing variants fail without deleting or merging data. Both native composers offer reviewed local resolution of unconfirmed delivery: user-confirmed Sent or closed-without-retry Archive. The original request ID, payload hash and decision remain durable and block replay, including interrupted scheduled sends. No provider write is made by resolution. Imported text retains the 100,000-character cap with an incomplete-text warning in readers/reply history and forwarded/copied text; legacy Gmail bodies missing these fields are refetched when encountered. macOS reader failures switch to the existing plain-text fallback with images blocked. Paired tagged native checks and public-download/signature verification passed; see [verification](VERIFICATION.md). Full attachments, continuous delta/deletion sync and live/manual acceptance remain outstanding.
+
+**Included in beta.45 — sync feedback:** Windows preserves mailbox-scoped sync warnings across workspace refreshes and displays retry timing, including partial All accounts failures. Activity projects saved sync failures even when authorization fails before a fetch, filters disconnected owners and uses fixed messages rather than stored provider errors. Pending quota retries show their scheduled time; legacy quota retries without a valid deadline remain queued with a safe pending message. History retries have no displayed attempt cap. Native Read/Unread labels state that changes stay local. Recent-mail refresh and settings explain their bounded coverage; Activity timestamps describe local status reads and do not establish per-message server freshness. No provider write-back, new polling scope or full historical status reconciliation is added. Paired tagged native checks and public-download/signature verification passed; see [verification](VERIFICATION.md) for evidence and remaining acceptance limits.
+
+**Included in beta.44 — remote read-state reconciliation:** Gmail, Outlook and IMAP imports retain the last observed server read flag in `providerSnapshot`. Changed server Read/Unread values update downloaded rows; unchanged server values preserve local read edits. Gmail's obsolete read override is released on convergence or server change. Partial metadata retains the read baseline across restart. Legacy rows without a baseline adopt their first fetched server value; legacy Gmail label IDs can supply that baseline. Other local markers and account ownership remain intact. Refresh still covers bounded newest pages, so this is not a complete historical status mirror or provider write-back.
+
+**Included in beta.44 — summary failure diagnostics:** Manual, scheduled and arrival summaries retain server-authored model connection, HTTP, timeout and invalid/incomplete-response diagnostics in their saved reports. Raw provider responses remain excluded, and failed paid calls are not automatically retried. Historical generic errors cannot recover their discarded cause; Activity continues to show the last finished summary's status.
+
+**Included in beta.44 — mail refresh review fixes:** Outlook/IMAP All Mail refresh reads bounded Inbox and Sent pages independently of inactive individual-folder choices; selected-folder imports keep their chosen scopes. Reimported Outlook provider-folder metadata updates cached membership without changing local IDs, local markers or other accounts. Regular background sync stays due while the mailbox is busy, then observes its interval after an actual attempt, including failures. These fixes do not add custom-folder polling, provider deletion reconciliation or automatic write retries.
+
+**Included in beta.44 — Windows reader follow-up:** Returning from a pending detail read to the already displayed row starts a read for the actual selection and discards the obsolete result. An interrupted marker refresh reads the currently selected owned row, including when selection changes during PATCH, and preserves the user's explicit Read/Unread change on that row. Refreshing the same owned reader after reducing multi-selection retains its per-message Hide choice. Windows smoke covers these selection changes with and without Read/Unread/Starred/Pending updates, including B remaining unread under mark-on-open. Paired tagged native checks and public-download/signature verification passed; see [verification](VERIFICATION.md) for evidence and remaining acceptance limits.
+
+**Included in beta.42 — review fixes:** Windows retains per-message Hide through local read/star/Pending updates, keeps the reader interactive when another row changes, and resumes a detail read interrupted by those updates. macOS General also auto-saves the default send delay, and Open Today uses the same save/discard protection as Done. Draft saves share the service's send gate; folder management reconciles only indexed affected mail, skipping message reads for empty changes. Updater preparation includes app-local Windows CRT dependencies, removes files owned by failed attempts for retry, and initializes after a new workspace exists. Paired tagged native checks and public-download/signature verification passed; see [verification](VERIFICATION.md) for evidence and platform limits.
+
+**Included in beta.41 — automatic external images:** Both native General settings pages offer an automatically saved, default-off HTTPS image preference for all mailboxes. The tracking disclosure explains that image servers may learn the reader's IP address and that the mail was opened. Saved opt-in applies when rendering messages, including macOS reply history; each reader retains its individual Hide/Load control. Existing settings remain blocked until opt-in, and unrelated preference saves preserve the choice. Sanitization, reader isolation, script/form/frame blocking and link review remain. Paired tagged native checks and public-download/signature verification passed; see [verification](VERIFICATION.md) for checks and platform limits.
+
+**Included in beta.40 — cached folder performance:** Downloaded provider labels/server folders and searches within them use an account-scoped SQLite membership index instead of scanning cached message JSON. A transactional first-open backfill preserves existing mail, drafts and settings; message writes maintain membership atomically, deduplicating overlapping Gmail labels/folders. Browsing remains complete during keyword-index recovery. The first upgrade can add startup time for a large cache. Paired tagged native checks and public-download/signature verification passed; see [verification](VERIFICATION.md) for fixture evidence and acceptance limits.
+
+**Included in beta.39 — provider fetch reliability:** Sync, history imports and folder/label reads share persisted quota deadlines for the saved account/connection and honor longer Retry-After values. Overlapping Gmail IDs are fetched once; cached non-draft bodies use fresh minimal metadata, while drafts/new/legacy HTML rows retain full reads. A vanished detail HTTP 404 no longer abandons its page/checkpoint. Replacement IMAP verification excludes old connection waits, including legacy sync records. This remains bounded five-scope polling, without provider-deletion reconciliation, incremental Gmail history sync or automatic write retries. Paired tagged native checks and public-download/signature verification passed; see [verification](VERIFICATION.md) for evidence and acceptance limits.
+
+**Included in beta.38 — reviewed attention workflows:** Today adds current account-owned reply previews and opens summary sources. Ask offers explicit retrieval from an already approved semantic index with embedding-cost disclosure, numbered redacted source links and stale-scope/source rejection. Smart Ask treats colons, quotes and operator-looking text as literal questions; regular Search keeps its grammar. macOS owned source links retain their reader selection across view changes and first-page boundaries. Reply cards expose permitted correspondence and approved style use; facts/voice/guardrails remain separate per mailbox. Deterministic local Inbox rules require a one-use ten-minute preview and apply, cover newest 500 downloaded Inbox rows, save up to 30 rules per account and never run automatically. Later is an independent local marker/view preserved through import and restart; Inbox/Archive mail keeps its provider folder. Both native clients expose these controls; macOS Today opens a reviewed draft directly, Windows opens the owning review queue. See [review and scope](docs/AI_EMAILY_REVIEW-2026-10-03.md) and [verification](VERIFICATION.md).
+
+**Included in beta.37:** Native Reply/Reply All and reopened reply drafts have wider composers with independently scrolling previous messages on the right; Windows stacks the panes when narrow. The read-only history API requires an explicit connected owner, returns the original and at most 20 explicit local reply ancestors as plain text, includes quoted history and reports missing/cyclic/limited chains. It neither infers complete provider conversations nor fetches missing mail. History failure/retry does not change draft contents, recipients, delivery or AI permissions.
+
+**Included in beta.37:** macOS draggable rows explicitly select their clicked message and keep their List identity on the complete row. The app exports its private opaque-token drag type as `public.data`, matching SwiftUI's registered native drop types. Existing reviewed moves and account/connection guards remain. Production-list native click checks and packaging declaration checks cover the fix; full physical-pointer/live-provider acceptance is tracked separately in [verification](VERIFICATION.md).
+
+**Included in beta.34:** Both native mail lists can drag one imported email to its owning sidebar label/server folder or available provider-backed Inbox/Archive/Spam/Trash. Drops open the existing reviewed Move flow, including Gmail’s remove-Inbox/retain-other-labels semantics. Opaque local drag tokens bind the original owner/connection and view identity; changed views, disconnected/replaced accounts, external payloads and missing/hidden/unselectable destinations are rejected. Existing keyboard/context actions remain. Bulk/cross-account moves are unsupported. Native guard checks pass; full physical-drop and live-provider acceptance remain outstanding, as recorded in [verification](VERIFICATION.md).
+
+**Included in beta.34:** Native Search makes reviewed automatic indexing the primary action. New configurations default to All downloaded mail; existing 1/3/6/12-month scopes and the older implicit three-month scope remain until the owner reviews expansion. Progress distinguishes pending work from oversized/per-message-budget/individual-chunk daily-limit exclusions and shows when the daily limit will reset. Messages can finish across daily resets; pause/restart retains completed chunk checkpoints, and pause preserves unsaved scope edits. Daily/batch settings and manual maintenance are collapsed; global AI permissions and renewed review on scope/model/connection changes remain required. Keyword search remains available; semantic retrieval retains its 12,000-chunk / four-million-scalar bound.
+
+**Included in beta.32:** Both native clients have a searchable hierarchy manager, searchable destination/parent popups and distinct email context/reader actions for Move, Gmail Labels, Create and Manage. Gmail's checklist preserves selection while filtering and submits one reviewed custom-label delta, retaining Inbox and other owners. Create-from-email uses folder review first, optional destination selection, and a separate message review. Protected folders and descendants are excluded from applicable changes; failed requests retain form inputs and do not replay writes. Full safe hierarchy metadata is cached alongside selectable sidebar names.
+
+Beta.32 IMAP TCP connection failures use the safe provider error instead of the local workspace I/O error. The [October walkthrough report](docs/WALKTHROUGH-2026-10-01.md) separates manual desktop checks, automated fixtures and outstanding acceptance; [verification](VERIFICATION.md) records the paired tagged checks and public-asset validation.
+
+
+**Current source:** React/Electron/Node and npm tooling are retired; only native clients are supported. Normal mail reading has no app-owned JavaScript: both native HTML readers use a 480-point viewport with independent native scrolling. Native reader checks no longer execute host scripts, and historical Node CI is retired. Hostile script markup remains inert security test data; see [JavaScript retirement](docs/JAVASCRIPT_RETIREMENT.md).
+
+**Included in beta.31:** Gmail label and Outlook/IMAP folder catalogs automatically download for every connected mailbox while the service runs, including when mail syncing is manual. Names are stored in encrypted local settings, restored at startup and refreshed every 15 minutes. New/reconnected accounts are discovered by a five-second worker; provider read failures keep cached names, retry only transient reads/quota responses with durable backoff, and stop on authorization or malformed responses. Both native sidebars and Settings status refresh consume this local catalog without mandatory Browse/Refresh. Provider mutations still use fresh server validation and explicit review. This is metadata caching, not a complete offline mail/attachment mirror.
+
+**Included in beta.29:** General Settings adds an auto-saved global native Compose delay: immediate by default, or 1–6 hours. Reviewed delayed mail reuses the existing frozen scheduled-send queue and per-mailbox Outbox navigation. Explicit custom schedules override the default; changing it does not reschedule pending mail. Morrow must be open, with the existing 15-minute late grace and uncertain-delivery guards. Gmail custom labels and selectable Outlook/IMAP server folders can be loaded per account and used to browse/search downloaded provider membership. These are read-only catalog queries, not full server synchronization; organization still requires its existing permission/capability checks. See VERIFICATION.md for checks and acceptance limits.
+
+**Windows visual alignment (beta.23 native clients):** WinUI uses macOS's light/dark Morrow green, workspace ordering, sidebar Compose, account/provider labels and eight combined/individual folders, with unread Inbox/Pending/Drafts badges. Default window/sidebar/reader dimensions, mail headings, a separate search row, unread-only filtering, compact previews and Settings category/model layouts now follow the native macOS presentation. System high-contrast resources remain native. This is not pixel-identical platform rendering or completed Windows visual/accessibility acceptance; see VERIFICATION.md. Publisher/custom-client permission changes are documented in the [繁體中文 OAuth setup guide](docs/OAUTH_SETUP.zh-TW.md).
+
+Morrow is an independent implementation, not a complete GenMail clone. The reference features below come from Genspark's public product-video descriptions and chapter metadata. They verify advertised capabilities, not hands-on product behavior. No claim of exhaustive parity is made.
+
+The app's versioned behavior catalog is [`rust/resources/catalog.json`](rust/resources/catalog.json): **19 behaviors**, comprising **8 model-backed actions** and **11 local simulations**. Every behavior has a server-enforced permission checkbox.
+
+Beta.17 switches Windows to the `windows/` WinUI host over the same Rust APIs. The owner explicitly waived new tests for this tag; earlier native walkthrough/reader/upgrade evidence is retained separately. Clean-machine, accessibility and live-provider acceptance remain incomplete. See [verification](VERIFICATION.md).
+
+0.6.0-beta.8: macOS retains its current inbox page and selection when reading marks mail read. Both clients show only connected accounts (empty Add account onboarding), and offer Reply All and plain-text Forward with the source account locked; neither copies original Bcc or forwards attachments. Versions through beta.4 retain the previous UI.
+
+0.6.0-beta.10 adds a **Today** dashboard in both clients using existing per-account reports (latest 20, local report day), allows reviewed embedding batches to continue after leaving Settings, and moves native toolbar actions into the sidebar/list/reader. Workspace appears first; native panes can expand with the window and the macOS View menu exposes reading layouts. OAuth and embedding failures show safe, specific diagnostics; temporary refresh errors do not imply credentials were deleted.
+
+0.6.0-beta.13 fixes delayed native split-view initialization on cold launch; pane resizing remains available.
+
+Native migration, beta.18: both clients delegate Reply/Reply All/Forward/provider-draft preparation to the local service, using its current owned source. Desktop preparation runs in Rust. Preparing is read-only and performs no provider/model request. UI guards discard results after navigation or a competing composer opens. Windows uses WinUI; retired React/Node sources are kept in Git history only.
+
+## 0.6.0-beta.14 additions
+
+Complete history removes the import date cutoff while retaining Spam/Trash exclusion, bounded pages and resumable checkpoints. Pending is a separate local account-owned marker and virtual folder. Learning adds explicitly confirmed account names/aliases; reviewed background reply-suggestion batches use permitted correspondent history and approved style, produce drafts only, and do not establish that all unanswered mail was found. Gmail/Outlook Out of Office reads and writes the provider's real settings after explicit consent/review; IMAP is unsupported. Scheduled sends require the app to stay open, have a 15-minute late grace period, and preserve uncertain-send review without automatic replay. Month view combines up to 12 checked calendars, displays cross-day/all-day events and opens reviewed creation from a clicked day. Google event reminders support notification/email; Outlook supports notification. Provider reminders work while Morrow is closed; Morrow does not send reminder emails itself.
+
+## Automatic workflows and simpler review — beta.23
+
+Today combines existing reports from all connected mailboxes (latest 20 each) while generation remains account-separated. Reply Suggestions shows only positive **Needs a reply** rows after explicit automatic-mode approval, with a daily token cap, hidden no-reply assessments and persistent Ignore. Opening a row prepares the owned native reply composer for review/edit/Send; no automatic sending. Checks cover the newest 200 downloaded Inbox messages and do not guarantee complete unanswered-thread detection. Settings collapses manual maintenance; style learning starts its first eligible proposal after enabling and continues weekly. Memory and style application remain explicit. Beta.23 passed both native platform builds and automated acceptance; full manual Windows visual/accessibility acceptance remains incomplete.
+
+**Included in beta.30:** **Summarize now** appears in Today in both native clients, alongside clearer mailbox totals, summary actions, report status and empty-state guidance. Manual generation reviews one connected mailbox, its permitted downloaded messages and the saved model, then generates and saves a P0–P4 report immediately through the existing summary pipeline. Automatic triggers are optional; existing briefing/data/filter/context permissions still apply. Single-use previews, source/connection revalidation, duplicate-request rejection, durable reports and explicit retry preserve account isolation without changing scheduled summaries. Paired native checks and public release verification are recorded in VERIFICATION.md.
+
+**Included in beta.30:** Native Mail accounts and Calendar settings automatically refresh local connection status every three seconds while open (macOS when active). Browser sign-in and reconnect status appear without reopening Settings, and IMAP saves/disconnects update their status directly. Refresh preserves unsaved credentials and settings, uses only local state reads, and retains manual refresh/retry. Platform verification limits are recorded in VERIFICATION.md. The macOS update action also waits for Settings dismissal before quitting, so the installer can proceed without a separate manual Quit.
+
+
+**Included in beta.30:** Reviewed Gmail custom-label and Outlook/IMAP custom-folder create, rename, delete and hierarchy move actions use account/connection-bound single-use previews and protect system folders. Gmail subtree rename/move is limited to 50 labels per review and can partially apply. Gmail label deletion retains mail; Outlook deletion affects contents and children; IMAP deletion removes the selected mailbox's messages. Local cached mail, overrides, Pending and drafts remain. Import traversal references follow confirmed hierarchy changes. Sidebar name filtering is local in both clients; Windows adds persisted drag/keyboard sidebar width and full-name tooltips. Folder context menus preselect existing reviewed message moves. No cross-account transfer, bulk message move or automatic provider-write retry is added. Fixture checks do not establish live-account acceptance.
+
+## Status definitions
+
+- **Implemented, manual:** runs against the configured model when requested. Internal demo fixtures have labeled illustrative output without a model; Demo is absent from the product interface. Generated text remains reviewable.
+- **Mock simulation:** deterministic local preview followed by an explicit apply action where relevant. Never invokes the model, sends mail, accesses the web/calendar, or fetches attachments.
+- **GenMail verified:** explicitly advertised in the July 2026 GenMail launch or product demonstration.
+- **Predecessor/broader Genspark:** advertised for earlier AI Inbox or Super Agent; current GenMail equivalence is unconfirmed.
+- **Inferred addition:** useful coverage supplied by this project, not directly verified as a GenMail feature.
+
+## AI behavior coverage
+
+| Behavior / catalog ID | Reference evidence | Morrow implementation |
+| --- | --- | --- |
+| Email summaries — `summary` | Predecessor/broader Genspark: Outlook summarization [5] | **Implemented.** Manual summaries plus opt-in on-open and newly synced mail triggers; persisted arrival reports validate P0–P4 classification. |
+| Suggested replies — `reply` | GenMail verified: personalized replies [1] | **Implemented.** Manual or opt-in on-reply suggestions using the configured tone and permitted context; review before insertion or sending. |
+| Ask your inbox — `ask` | Inferred addition; precise GenMail question-answer/search behavior unconfirmed | **Implemented, manual.** Selects permitted, redacted cached mail using shared Unicode/Chinese normalization and whole-token matching, then asks the model with a bounded context. Embedding retrieval is not automatically invoked. |
+| Write new emails — `write` | GenMail advertises email drafting [1]; this standalone prompt-to-draft mode is inferred | **Implemented, manual.** Turns user instructions into draft text. |
+| Rewrite drafts — `rewrite` | Inferred addition | **Implemented, manual.** Rewrites supplied draft text under the draft/body permissions. |
+| Translate — `translate` | Inferred addition | **Implemented, manual.** Translates permitted email or draft text into the chosen language. |
+| Inbox briefing — `briefing` | GenMail morning briefing verified [1]; exact scheduling rules inferred | **Implemented.** On-demand digest or opt-in daily/time-zone and 1–168-hour schedules while the service runs. Automatic reports validate P0–P4 entries for a bounded cached context, prioritizing explicit Pending, stars, unread mail, then recency. No inferred thread-completion guarantee or OS notifications. |
+| Prioritize important mail — `triage` | GenMail verified [1] | **Mock simulation.** Reviews local priority candidates and can star them locally. |
+| Smart labels — `labels` | Inferred addition | **Mock simulation.** Previews labels and applies them inside Morrow only. |
+| Email Brain — `memory` | GenMail verified: learned writing/contact context [1] | **Implemented in beta.23.** Explicit model-generated memory proposals cite supplied mail; users select what to save separately from manual voice/notes. Per-account source/permission checks apply to interactive, scheduled and batch AI. Maximum 50 reviewed memories and individual removal. Manual previews are single-use and expire after ten minutes. Optional weekly memory proposals start with an initial eligible analysis, use a saved token budget, persist across restart and wait for review before another analysis. The legacy simulated memory endpoint cannot replace an existing Brain. Separate Sent-style analysis preserves a valid approved baseline in incremental proposals; application remains manual. No model-weight training or automatic memory application. Current source also stores per-account how-you-write rules on the same Email Brain record (`id`, `text`, `enabled`, `source` of `user` or `learned`, timestamps). Add, edit, enable and delete are explicit. Enabled rules are prompt context for Write, Reply, Rewrite and reply suggestions only; they never send mail. Learn Now and Save Approved Style stay a separate review and do not create or replace those rows. Learned-source text is not edited in place. Clearing notes and memories keeps the rules. |
+| People/company research — `research` | GenMail verified [1] | **Mock simulation.** Brief based on permitted email context; unknown facts remain unknown. No web lookup. |
+| Meeting preparation — `meeting` | GenMail verified [1] | **Mock simulation.** Agenda and talking points from a selected email. No calendar retrieval. |
+| Custom email skills — `skill` | GenMail verified [1], [2] | **Implemented.** Create, edit, remove, and run saved instructions against permitted mail. A local library can be installed per mailbox. Daily or interval schedules only enqueue a review (`propose-draft` or `propose-action`); they do not call a model, send mail, update Email Brain, or execute tools. |
+| Follow-up reminders — `followup` | Earlier AI Inbox advertises task tracking [3]; this reminder workflow is inferred | **Mock simulation.** Saves a local follow-up record; no notification scheduler or automatic follow-up mail. |
+| Meeting scheduling — `schedule` | Predecessor/broader Genspark: calendar coordination [4], [5] | **Mock simulation.** Creates a local proposed event; no availability lookup, calendar booking, or invitation. |
+| Inbox cleanup — `cleanup` | Inferred addition | **Mock simulation.** Previews newsletter archiving and applies it only to Morrow's cached inbox. |
+| Unsubscribe assistant — `unsubscribe` | Inferred addition | **Mock simulation.** Records a simulated unsubscribe locally; does not visit links or contact mailing lists. |
+| Attachment discovery/comparison — `attachments` | Earlier AI Inbox verified [3] | **Mock simulation.** Uses clearly marked sample attachment fixtures. Real attachments are neither fetched nor analyzed. |
+| Batch personalized replies — `batchReplies` | Predecessor/broader Genspark verified [4] | **Mock simulation.** Previews and saves separate local draft replies. Never sends a batch. |
+
+Beta.38 AI Studio uses Assistant / Summaries as primary pages, with Writing style & notes under More. The task picker is the single task entry point. Settings keeps six everyday categories and collapses AI connection, Search index and Writing style under Advanced setup; direct links reveal those categories. AI & privacy puts permitted data first and collapses optional automatic actions, task permissions, limits and simulations. Saved automatic-assistance status remains visible, and all existing choices and explicit Save/review controls are retained. Both native clients offer an in-Studio mailbox picker; All accounts shows combined saved summary history with account labels, while new AI requests remain account-owned. Writing style & notes presents reviewed Sent-style learning first, then per-mailbox how-you-write rules, with optional daily checks and manual Learn Now; notes, memories and advanced settings are collapsed. Existing `weekly` style consent keeps its seven-day cadence; daily review requires a new opt-in. Memory suggestions remain separately weekly and require source review and item selection. Beta.27 passed both native release builds and automated acceptance, including Windows navigation and collapsed-permission smoke checks. This does not establish a usability study, full manual accessibility or live-account acceptance; see VERIFICATION.md. 0.7.8 removes the AI Studio Summaries page; saved summaries stay on Today. Studio uses the same All/account tabs as Today and Reply suggestions and does not switch the mailbox being read. Inbox-wide Assistant actions require one mailbox tab. Sync, refresh, and long AI runs do not lock sidebar or account-tab navigation; selecting an account still does.
+
+## Mail, settings, and platform coverage
+
+Writing-rule editors retain per-row text and the separate new-rule input across
+unrelated rule mutations on both native clients. Those buffers participate in
+existing navigation and quit guards. Regression assertions cover the macOS buffer
+model and Windows native control/transport flow; fresh platform CI results are
+required for this fix and are not implied by the older acceptance results above.
+
+| Area | Reference / implementation status |
+| --- | --- |
+| Agent CLI | **Included in 0.7.0:** JSON accounts/list/search/read/draft/review/send through the existing Rust service, with the app open or closed; explicit sync/status/dry-run, MIME fetch, attachment-add/read and partial-sync exit code 4. Cached reads never mark mail read or trigger AI; sends require an owning account and current reviewed payload. No account setup, watch daemon, implicit fetch or automatic resend. [Usage](docs/CLI.md). |
+| Inbox Agent | **Implemented, manual, current source.** Agent in the primary chrome opens a local multi-turn chat for one mailbox. AI Studio → More keeps a one-release Moved to Agent hint. Conversations stay in the workspace database and model calls go only to the configured OpenAI-compatible endpoint. Permitted tools and reused history share a distinct-message budget and source checks. Reply/compose uses shared writing context; drafts are published only after a complete turn, with a 50-second turn deadline and cancellation checks before publication. Archive, star, trash, read/unread, pending and send are proposals. Reviews disclose provider/local action scope; send review binds the full body, sender, recipients, effective footer and attachments to the existing reviewed delivery path. `all` is rejected. No Genspark/SAS, GenTeam, credits, connector OAuth, subagents, decks, sharing, projects, unattended execution or silent Email Brain updates. Fixture tests do not establish live-account acceptance. |
+| Indexed mail search | **Implemented in current source.** Shared SQLite FTS5 index, one/two-character Chinese and traditional/simplified normalization, safe highlights/snippets, advanced operators/filters, folder/account/all-account scopes, account badges and cached coverage, relevance/date sorting, 30-result pagination, recent/saved searches and removable filters in both clients. Downloaded mail only; no attachments, arbitrary English infix/fuzzy matching or full inbox virtualization. |
+| Smart search / semantic indexing | **Implemented, opt-in in current source.** Embedding URL/model/key and a fixed-sentence Test Connection under Settings → Advanced setup → AI connection; indexing scope/budget/review under Settings → Advanced setup → Search index. Connection testing stays in AI connection; Search index exposes automatic indexing plus collapsed manual maintenance. OpenAI-compatible or native Ollama, reviewed incremental batches, account/folder/content/date checkboxes intersected with AI permissions, estimated token budget and cancellation. Local hybrid ranking of up to 200 keyword + 200 semantic candidates; exact vector scan capped at 12,000 scoped chunks. Changed scope/model/connection invalidates vectors/results. One explicit automatic-mode approval authorizes successive batches and new/changed mail within a persisted 4,000–2,000,000 estimated-token UTC-day budget. Scope/model/permission/connection changes and clearing vectors require renewed review. Stopping preserves valid vectors; ambiguous failures never automatically replay. Actual embedding relevance and live-model acceptance remain unverified. |
+| In-app desktop updates | **Implemented from 0.5.0-beta.2.** Explicit download, pinned Ed25519/SHA-256 verification, safe extraction, installation and automatic restart; keeps the previous app and protects unsaved edits. Version 0.7.0 accepts Install & Restart during activity, drains accepted work and resumes safe checkpoints; macOS waits for Settings dismissal before quitting. Requires a writable installation parent. Older packages without updater support use manual download. Later startup crashes or interrupted installs can require manual backup recovery. |
+| Gmail and Outlook | GenMail advertises both [1]. Morrow implements browser sign-in buttons with PKCE/state/browser-bound callbacks, paged date-limited or complete-history imports. Gmail refresh checks five bounded 50-message scopes; existing history jobs retain their saved scope until restarted, and explicit manual sending. Native refresh follows the mailbox selected by a completed OAuth callback. Callback URLs are advanced registration details, not login links. Builds can include a publisher Google Desktop client for sign-in without entering credentials; current source also includes a public Microsoft desktop client ID for mail/calendar button-only sign-in. Advanced custom registration remains available for both providers. Google Cloud test-user/verification restrictions still apply. A limited authorized Gmail walkthrough is recorded in VERIFICATION.md; this is not complete provider acceptance. |
+| Provider fetch reliability | **Implemented in current source.** Sync/history/folder reads share account/connection-bound persisted quota waits, exclude old waits when verifying a replacement connection, and honor longer `Retry-After` delays. Gmail refresh deduplicates overlapping scopes and reuses cached non-draft bodies with fresh minimal metadata; drafts remain full reads. Detail 404s skip only the vanished message and preserve page progress. Gmail/IMAP also reconcile bounded cached-message batches; remote deletion retains cached data. This is bounded polling, not a full mailbox mirror. Isolated fixture checks do not establish live-account acceptance. |
+| IMAP cached metadata | **Included in 0.7.8.** Bounded UID/MODSEQ discovery prioritizes changed cached messages within the 50-message background budget, retains up to 1,000 pending UIDs, and atomically persists message/queue/scan progress. Valid legacy proofs seed folder progress once; incomplete proofs backfill conservatively. Unchanged flags use provider snapshots; missing snapshots reread FLAGS. Capability/connection/UIDVALIDITY changes invalidate proof while retaining content. Older-row rotation still checks expunges, wraps to the first cached folder, and keeps one batch slot when a changed queue would otherwise freeze the cursor. Retained mail from an older UIDVALIDITY does not erase the current folder generation. An unsolicited VANISHED expunge does not abort a discovery round that ends tagged OK. [Design and cloud evidence](docs/THUNDERBIRD_IMAP_SYNC.md). This is bounded polling; sparse UID space and large bursts require additional rounds. |
+| Mail / AI activity | **Implemented in 0.6.0-beta.8.** Independently polled per-account fetch/history/summary/learning/index status, counters, queued/paused/failure state and recent completed work in both clients. No invented progress percentage; idle does not establish complete mailbox coverage. |
+| IMAP/SMTP | Additional Morrow functionality requested for this project. TLS IMAP import and explicit SMTP sending are implemented; providers must support the configured authentication method. |
+| Selected custom IMAP folders | **Implemented in source.** Account-bound local selection of up to 20 custom selectable folders; regular/manual Sync downloads at most four 50-message pages per round and retains ascending new-UID progress. Per-folder timestamps, limited-coverage warnings and safe recovery are observational. Source, connection, selection and UIDVALIDITY checks protect in-flight commits; recreated folders require review. Initial recent pages and new mail only, with existing bounded cached-flag reconciliation; older history remains a separate import. [Contract and limits](docs/SELECTED_IMAP_FOLDERS.md). Synthetic tests do not establish native or live-account acceptance. |
+| Google and Microsoft calendars | **Implemented, manual.** Both can connect concurrently through separate calendar OAuth grants, independently of the current mail account. Google supports the same built-in Desktop client or an advanced custom registration; current source also supports Microsoft’s built-in public client, with an advanced custom-client option. Display checked calendars in a month grid, click a date, and review before creating an event without attendees. Google notification/email and Outlook notification reminders use provider-native settings. The API retains its 90-day range and bounded pagination limits. These calls use the real provider APIs when connected; no authenticated calendar testing is claimed. |
+| Multiple mail accounts | **Implemented.** Multiple Gmail, Outlook, and IMAP connections, independently collapsible account groups with remembered state, separate and combined folders, account-owned drafts/replies, a From picker for new messages, and per-account disconnect. Demo fixture data is hidden from the product interface. |
+| Safe message reading | **Implemented in 0.6.0-beta.8.** Sanitized HTML and plain-text links; isolated script-disabled reader, no forms/frames, external HTTPS images only after per-message consent, destination review before external links. Existing cache needs refetch for HTML. Version 0.7.0 includes explicit attachment download/save and CID raster loading; no malware scanning or phishing verdict. |
+| Mail organization | Search, drafts and explicitly labeled local archive/Trash actions are local. In version 0.7.0, Outlook, Gmail and IMAP Read/Unread and stars write back to supported provider messages with the required permissions. Beta.38 adds direct provider Delete in the list toolbar, reader and selection context menu, with batch Undo. Native multiple selection supports owned read/star and local Pending/archive/Trash batch actions and sequential provider Trash moves, preserving each owner and reporting partial failures. Hovered or focused native rows show read/unread, owned Reply All, and a direct provider Trash move with a one-minute Undo button and ⌘Z / Ctrl+Z. Undo is account-bound, single-use, restores the original provider location and leaves text-editing undo intact. The separate Move / Labels dialog also supports Gmail label add/remove and Inbox/Spam/Trash moves, Outlook folder/Junk/Deleted Items moves, and IMAP folder moves within the owning account. Current recovery keeps MOVE + UIDPLUS preferred and adds the explicitly confirmed, journaled UIDPLUS fallback described above; interrupted fallback moves may leave two copies. Gmail Trash uses the system label ID even when displayed as Bin, and its empty-body POST explicitly declares zero content length. Current-source Gmail/Outlook sign-in requests read/send/organization permissions by default, without a separate checkbox; older connections require browser reauthorization, and partial consent retains existing connections and cached mail. Failures show safe HTTP status and authorization/permission/quota guidance while retaining the cache; uncertain writes are never retried automatically. Outlook delta and bounded Gmail/IMAP cached-message reconciliation retain remote-deleted content locally. Gmail's bounded history and IMAP's capability-gated CONDSTORE/QRESYNC metadata reads are implemented in current source. IMAP IDLE rotates eligible Inbox and selected custom folders under the automatic-sync opt-in, with at most four accounts and one folder per account watched at once. These bounded notifications do not establish complete coverage or live-provider acceptance. Gmail/Outlook push remain unfinished. Provider permanent-delete actions, phishing reporting and sender blocking remain unimplemented. Provider-site links cover the latter manual actions. |
+| Inbox views and composition | Compact / Comfortable / Spacious density; six persisted sort orders; To, Cc, Bcc and multiple recipients (100 total). Beta.38 supports ⌘/Ctrl and Shift multiple selection on the current page, selection context actions, and retains the current read message in Unread until switching messages/view/page. Right/bottom/focused reading layouts, larger reader and full-width expansion; sender left-aligned, unread dot at the right, unread previews bold and read previews regular. Native window close hides without quitting; Dock reopens it and ⌘Q retains write/edit guards. Saved window size and presets. |
+| Custom model | User-supplied OpenAI-compatible base URL, model ID, optional API key, token limit, and temperature. Chat and embedding show saved-key status with collapsed replacement controls; model changes keep the key at the same normalized endpoint, including legacy equivalent URL spellings. Connection tests use a fixed prompt with no mail and do not save or discard an entered replacement key. Explicit Save, removal and changed-endpoint credential isolation remain. |
+| Reader AI popup and sender-history reply | **Implemented in beta.9 source.** Message-bound summary/reply/translation popup; reviewed use in an owned draft. Separate history action scans exact same-sender downloaded mail in one account, retains selected message first and newest permitted matches up to the saved 1–50 message limit, shows used/matched counts, applies field redaction and rejects changed sources. Historical bodies cap at 5,000 UTF-16 characters. No automatic delivery or provider-history fetch. |
+| AI controls | Master switch, all 19 behavior switches, folder/content scopes, and maximum context count are enforced server-side for model calls and simulations. Disabled or out-of-scope actions are rejected. |
+| Historical import & style learning | SwiftUI and WinUI settings offer date/folder choices, checkpointed pause/resume and safe error/recovery status. Transient network/5xx, HTTP 429 and recognized Gmail 403 quota failures keep retrying with persistent backoff up to hourly attempts; daily quotas wait 24 hours. Updating restores older recognized transient failures for the same connection, preserving their checkpoints and manually paused imports. Recent-mail Sync separately uses persistent quota backoff per account while the app is open. Authentication, cursor, schema and database failures do not auto-retry. Up to 50 body-only samples intersect with global permissions, with preflight sample/token estimates, editable reviewed style and optional daily proposals. Current-source Learn Now prepares and confirms samples before analysis; Save Approved Style separately activates the result for writing/replies without overwriting manual Email Brain memory. No AI on initial download, no hidden contact learning, no fine-tuning. Provider acceptance and huge-cache UI performance remain unverified. |
+| AI triggers | Four default-off triggers: opening a message, starting an empty reply, newly synced mail, and daily/interval summaries. Inbox-only and starred-only filters intersect with server permissions. Both clients share persistent per-account jobs; no automatic sending or memory changes. Initial imports do not trigger arrival summaries; this is polling, not provider push. Failed/interrupted calls require manual action. |
+| Yahoo Mail / HK | Both clients offer an IMAP/SMTP preset using Yahoo’s TLS servers, the complete email address and a Yahoo app password. Existing per-account storage and history import apply. No Yahoo OAuth/calendar/Out of Office integration or live Yahoo acceptance claim. |
+| Settings UX | SwiftUI and WinUI both offer Start here for mail, optional model setup/test, and AI permissions. WinUI retains its native category layout. SwiftUI section save hints distinguish General autosave from explicit saves. Both have separate Chat/Embedding forms, explicit permission save/discard, reviewed indexing and learning status. Calendar remains one account per provider. |
+| Update checks | Both clients check public GitHub releases at launch and hourly while running, independently of Settings. An available version adds a red ! badge to Settings and opens About on click. Manual checks and the optional pre-release channel remain available; errors retain the last known release and the hourly schedule. Semantic version comparison, timeout and one-minute backend caching; download/install stay explicit. |
+| Email footer | Plain text or sanitized HTML, native previews, immutable draft snapshots, and multipart HTML/plain delivery through Gmail, Outlook and SMTP. One global signature; no images or full HTML message editor. |
+| General settings | Display name, signature format/content, theme, density, mark-read behavior, tone, preferred AI response language, independent target translation language, and app-open sync interval (1/5/15/30 minutes or manual). General preferences auto-save with visible progress/error and retry; credentials and other reviewed actions keep explicit saves. Settings are global; workspace records remain account-specific. |
+| Local operation | Production build served on loopback, health endpoint, graceful shutdown, and a verified database/key backup command. Public hosting, shared-user access, and production certification are not supplied by these controls. |
+| Native applications | GenMail advertises Mac, Windows, iOS, and Android support [1]. Morrow provides a **native SwiftUI macOS app** and a **WinUI 3 Windows app** sharing the same Rust backend and version. iOS and Android apps are not implemented. |
+| External automation | Autonomous calendar access, web research, provider unsubscribe, attachment processing, automatic application of memory/style updates, and autonomous AI sending are **not implemented**. Separately reviewed scheduled messages can send while the app is open; no AI chooses or approves those deliveries. Relevant Studio workflows are labeled simulations. The separate Calendar page provides live **manual** reading and event creation only. |
+
+Policy changes and disconnecting the owning account invalidate pending workflow previews. Switching views keeps previews bound to their original mailbox; a different account cannot apply them. Applying a preview rechecks permissions; the same plan cannot be applied twice. AI Calendar/contact/attachment scope checkboxes do not grant live access to an external service. Calendar-page connections are separate from the AI policy and persist across mail/demo switches. No connected calendar events enter AI context, and Studio scheduling never creates a live event.
+
+Automated tests exercise local behavior and mocked provider responses. They are not evidence that a user's live mailbox, calendar, provider registration, or model endpoint is configured successfully. Remaining deployment prerequisites include real-account consent and acceptance checks; public or multi-user deployment additionally needs a defined hosting/authentication design and is currently unsupported.
+
+## Primary sources
+
+All sources below are published by **Genspark Products & Guides** (`@GensparkProduct`, channel `UC0SWcHpA_TA00XUN9qZUn8w`). Research inspected the public descriptions and chapter metadata; captions and the GenMail website could not be retrieved reliably.
+
+1. [GenMail launch](https://www.youtube.com/watch?v=i9I4frhlD80), July 2026: personal writing style, priority surfacing, morning briefing, Email Brain, in-inbox agent, research, meeting preparation, custom skills, connected mail providers, and platform claims.
+2. [Genspark Workspace 6.0 demonstration](https://www.youtube.com/watch?v=H18czf1P7qQ), July 2026: GenMail chapter at 20:19 and custom email skills at 22:01.
+3. [Genspark AI Inbox launch](https://www.youtube.com/watch?v=KHzLctOWbA4), November 2025: attachment discovery/comparison, negotiation drafts, scheduled task tracking, and a daily dashboard.
+4. [Genspark AI Secretary](https://www.youtube.com/watch?v=RqGd3LmxpKQ), June 2025: batch personalized responses and calendar availability, appointments, and invitations.
+5. [Outlook Email and Calendar with Genspark Super Agent](https://www.youtube.com/watch?v=E4-vxCKkDOs), July 2025: email summaries, replies, and calendar management.
+
+[1]: https://www.youtube.com/watch?v=i9I4frhlD80
+[2]: https://www.youtube.com/watch?v=H18czf1P7qQ
+[3]: https://www.youtube.com/watch?v=KHzLctOWbA4
+[4]: https://www.youtube.com/watch?v=RqGd3LmxpKQ
+[5]: https://www.youtube.com/watch?v=E4-vxCKkDOs
+
+## Native macOS surface
+
+`macos/Sources/MorrowMail` implements the complete interface in SwiftUI: mail folders/search/reader, reviewed compose/send, custom model settings and connection testing, all AI behavior/scope switches, the 19-tool Studio, editable Brain and skills, local activity, and Google/Outlook calendar connections and month-grid/event creation. It consumes the same feature catalog and policy-enforcing backend; mock/live distinctions in this document apply equally to both native clients. The runtime is bundled in the generated `.app`. OAuth and explicitly confirmed mail links open the user's browser; sanitized message HTML alone uses an isolated WebKit view, without a service-token or script bridge.
+
+Native acceptance checks: `morrow-native-check` validates Swift models, the isolated HTML reader, window lifecycle and actual native API client with the current Rust service and private provider fixtures. `cargo test --manifest-path rust/Cargo.toml --locked` covers provider, permission, workflow, recovery, storage and backup contracts. WinUI CI uses `scripts/test-windows-native.ps1 -UiSmoke -RequireCompleteObservation` to require complete fixture observations after UI and persistence checks. Separate macOS reader batches retain every sample; CSS/visibility diagnostic controls are explicitly not production acceptance and do not replace the original full reader gate. Historical Node differential checks are retired; see [JavaScript retirement](docs/JAVASCRIPT_RETIREMENT.md) and VERIFICATION.md for current results and remaining acceptance.
+
+## Paired desktop releases
+
+From 0.4.0-alpha.1, macOS arm64 and Windows x64 are built from one tag and published together only after platform checks pass. Windows uses WinUI 3 from beta.18; macOS remains SwiftUI. Beta.17 has an explicit owner waiver for new tests, while paired builds and signed artifact provenance remain required. Account isolation, drafts, HTML footers, AI policies and manual provider operations share one backend. Windows groups mailbox controls and pagination with the message list, keeps reader actions above the scrolling body, bounds the composer width with persistent action buttons, and offers the same three-step Settings introduction as macOS. Window controls and layouts remain platform-specific; pixel-identical visual design is not claimed. Windows includes Ctrl-based compose/search/sync/reply/save/review shortcuts and persistent sidebar/calendar recovery state. Both builds are experimental and lack stable distribution signing; real-account acceptance remains outstanding.
+
+## Rust desktop service — 0.6.0-beta.1
+
+- Both clients use 50-row mail metadata pages (maximum 100), all six sorts, SQL counts, on-demand full message/draft loading, signed revision-bound cursors, and stale-response guards. Sender/subject ordering accepts the client’s BCP 47 locale; native and differential fixtures cover numeric, accented and Chinese names.
+- The complete Rust service implements the existing account, settings, draft/send, provider organization, OAuth, calendar, AI, workflow, learning, import, summary, search and updater contracts. Ownership, To/Cc/Bcc and uncertain-send review remain enforced at the service boundary.
+- Historical-import cursor hashes are indexed outside encrypted settings and cleared at folder completion; due scheduled sends are drained while the app runs. Update installation checks authenticated service readiness before reporting success and retains the latest previous app for rollback.
+- Node and Rust retain compatible encrypted settings, message identities and recovery files. First takeover creates a verified backup; OS workspace locking plus SQLite exclusive ownership prevents legacy writers. The Rust CLI provides verified backups without Node.
+- Rust is the default desktop service from 0.6.0-beta.1, following explicit prerelease cutover approval. SwiftUI stays native; Windows used React/Electron through beta.16 and switches to WinUI in beta.18. Both platforms must pass the tagged release gates before publication; Rust never falls back to Node.
+- Isolated TLS provider/model tests and the actual native Rust client harness exercise the Rust service. See [verification](VERIFICATION.md) for current platform results, live-account/signing limits and benchmarks. The approved Windows host is WinUI 3; remaining native gates are tracked in the native migration plan.
+
+## Windows visual parity — beta.29
+
+An opaque live theme surface preserves Light/Dark contrast under native navigation, with system high-contrast resources retained. Inbox branding, search order, Sync/paging alignment, empty-reader icon and Outbox heading/mailbox controls follow the macOS design. Native controls, fonts and window chrome remain platform-specific. This is a focused alignment, not whole-app pixel parity; tagged paired native checks and the isolated Parallels visual walkthrough are recorded in VERIFICATION.md.

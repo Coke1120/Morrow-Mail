@@ -1,0 +1,1413 @@
+import SwiftUI
+import AppKit
+import UniformTypeIdentifiers
+
+struct ShellSectionBar: View {
+    var mode: String
+    var current: String
+    var select: (String) -> Void
+    private var items: [(id: String, title: String)] {
+        mode == "brain"
+            ? [("brain", "Persona & writing rules"), ("categories", "Categories")]
+            : [("agent", "Inbox Agent"), ("today", "Today"), ("skills", "Skills")]
+    }
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(items, id: \.id) { item in
+                Button(item.title) { select(item.id) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(current == item.id)
+                    .accessibilityIdentifier("shell.section.\(item.id)")
+                    .accessibilityLabel(current == item.id ? "\(item.title), selected" : item.title)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+struct MailWorkspace: View {
+    @AppStorage("collapsedMailAccounts") private var collapsedAccounts = "[]"
+    @AppStorage("mailReaderLayout") private var readerLayout = "right"
+    @AppStorage("mailSidebarVisible") private var sidebarVisible = true
+    @State private var previousSidebarVisible = true
+    @State private var expandedReader = false
+    @State private var rightListWidth: CGFloat?
+    @State private var outOfOfficeDirty = false
+    @State private var assistantDraft: (draft: Draft, generation: Int)?
+    @State private var hoveredMessage: String?
+    @State private var expandedServerAccounts: Set<String> = []
+    @State private var folderFilter = ""
+    @State private var dropTarget = ""
+    @State private var selectionClick: (modifiers: NSEvent.ModifierFlags, ids: Set<String>, anchor: String?) = ([], [], nil)
+    @State private var selectionMonitor: Any?
+    @FocusState private var messageListFocused: Bool
+    @EnvironmentObject var model: AppModel
+    private var layout: String { expandedReader ? "focus" : ["right", "bottom", "focus"].contains(readerLayout) ? readerLayout : "right" }
+    var filtered: [JSON] {
+        if !model.searchResponse.isNull { return model.searchResponse["messages"].array }
+        return model.listedMessages
+    }
+    var body: some View {
+        Group {
+            if model.starting {
+                VStack(spacing: 20) { Image(systemName: "sunrise.fill").font(.system(size: 48)).foregroundStyle(morrowGreen); Text("Morrow Mail").font(.largeTitle); ProgressView("Opening your workspace…") }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if model.state.isNull {
+                VStack { EmptyPane(title: "Morrow couldn’t start", detail: model.error, symbol: "exclamationmark.triangle"); Button("Try Again") { Task { await model.start() } }.padding(.bottom, 40) }
+            } else {
+              VStack(spacing: 0) {
+                HSplitView {
+                    if sidebarVisible { sidebar.frame(minWidth: 200, idealWidth: 230).background(InitialSplitPosition(230)) }
+                    VStack(spacing: 0) {
+                        if !sidebarVisible {
+                            HStack(spacing: 14) {
+                                Button { sidebarVisible = true } label: { Label("Show Sidebar", systemImage: "sidebar.left") }.labelStyle(.iconOnly).help("Show Sidebar")
+                                shellModes(compact: true)
+                                Spacer(minLength: 8)
+                                syncButton
+                                composeButton
+                            }.buttonStyle(.borderless).padding(.horizontal, 14).padding(.vertical, 8).background(.bar)
+                        }
+                        if model.section != "calendar" && !model.hasMailbox {
+                            VStack(spacing: 16) {
+                                EmptyPane(title: model.accounts.isEmpty ? "Add your first account" : "Choose a mailbox", detail: "Connect Gmail, Outlook, or an IMAP account to start reading your mail.", symbol: "envelope.badge")
+                                Button("Add account") { model.settings("mail") }.buttonStyle(.borderedProminent)
+                            }.padding(30)
+                        } else if model.section == "today" {
+                            VStack(spacing: 0) {
+                                if !sidebarVisible { ShellSectionBar(mode: "agent", current: model.section) { destination in
+                                    guard model.canNavigate else { return }
+                                    model.section = destination
+                                }.padding(.horizontal, 20).padding(.top, 12) }
+                                TodayView()
+                            }
+                        } else if model.section == "agent" || model.section == "skills" || model.section == "brain" || model.section == "categories" || model.section == "studio" {
+                            GeometryReader { area in
+                                StudioView(review: model.review, showSectionNavigation: !sidebarVisible).id(model.account)
+                                    .frame(width: area.size.width, height: area.size.height)
+                            }
+                        }
+                        else if model.section == "calendar" { NativeCalendarView() }
+                        else if model.section == "reply-suggestions" { ReplySuggestionsView() }
+                        else if model.section == "out-of-office" {
+                            ScrollView { OutOfOfficeView(dirty: $outOfOfficeDirty).padding(28).frame(maxWidth: .infinity, alignment: .leading) }
+                        }
+                        else if model.section == "scheduled" { ScheduledMailView() }
+                        else {
+                            VStack(spacing: 0) {
+                              NativeMailSearch().id(model.account + ":" + model.section)
+                              readingPanes
+                            }
+                        }
+                    }
+                }
+                    ActivityStatusView(value: model.activity, error: model.activityError, connectedAccounts: model.accounts.map(\.id), scope: model.account + ":" + model.section + ":" + String(model.showSettings), onOpenSettings: { model.settings("mail") }, onCancel: { model.cancelActivity($0) }).padding(.horizontal, 12).padding(.vertical, 5).background(.bar)
+                    if !model.trashUndos.isEmpty {
+                        HStack {
+                            Text("Moved to provider Trash · Undo within one minute").font(.callout)
+                            Spacer()
+                            Button("Undo (⌘Z)") { model.undoTrash() }.disabled(!model.canUndoTrash)
+                        }.padding(12).background(.bar)
+                    }
+                    if !model.error.isEmpty { statusBar(model.error, error: true) }
+                    else if !model.notice.isEmpty { statusBar(model.notice, error: false) }
+                    else if model.busy || model.backgroundBusy || model.preparingDraft { HStack { ProgressView().controlSize(.small); Text(model.preparingDraft ? "Preparing draft…" : model.syncing ? "Syncing…" : model.busy ? "Working…" : "Working in the background…").foregroundStyle(.secondary); Spacer() }.padding(9).background(.bar) }
+                    if !model.unresolvedMove.isNull {
+                        HStack {
+                            Text("An IMAP move needs review: \(model.unresolvedMove["accountId"].string)").font(.callout)
+                            Spacer()
+                            Button("Review saved move…") { model.beginMoveRecovery(model.unresolvedMove["accountId"].string, operationID: model.unresolvedMove["operationId"].string) }
+                                .disabled(!model.canNavigate || !model.canReviewMoves(model.unresolvedMove["accountId"].string))
+                        }.padding(10).background(.bar)
+                    }
+              }
+            }
+        }
+        .task(id: model.mailQueryKey) { if model.hasMailbox { await model.refreshMailPage() } }
+        .onAppear {
+            if selectionMonitor == nil {
+                // Drag-enabled rows defer their tap callback; capture modifiers and selection before AppKit handles the click.
+                selectionMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
+                    selectionClick = (event.modifierFlags, model.selectedMessages, model.selectedMessage)
+                    return event
+                }
+            }
+        }
+        .onDisappear { if let selectionMonitor { NSEvent.removeMonitor(selectionMonitor) }; selectionMonitor = nil }
+        .task(id: (model.selectedMessage ?? "") + model.state["revision"].string) { await model.loadMessage() }
+        .onChange(of: readerLayout) { _ in leaveExpandedReader() }
+        .onChange(of: outOfOfficeDirty) { model.dirty("out-of-office", $0) }
+        .onChange(of: model.selectedMessage) { selection in if selection == nil { leaveExpandedReader() } }
+        .sheet(item: $model.compose) { draft in ComposeView(initial: draft).environmentObject(model) }
+        .sheet(item: $model.organizing) { request in
+            if request["kind"].string == "move-recovery" { MoveRecoveryView(request: request).id(request.id).environmentObject(model) }
+            else { OrganizeMailView(message: request["message"], preferredKind: request["preferredKind"].string, preferredDestination: request["destinationId"].string).environmentObject(model) }
+        }
+        .sheet(item: $model.syncingFolders) { request in FolderSyncView(owner: request.id).environmentObject(model) }
+        .sheet(item: $model.managingFolders) { request in FolderManagementView(owner: request.id, initialFolder: request["folderId"].string).environmentObject(model) }
+        .sheet(item: $model.readerAssistant, onDismiss: {
+            if let pending = assistantDraft {
+                assistantDraft = nil
+                if model.draftGeneration == pending.generation { model.newDraft(pending.draft) }
+            }
+        }) { request in
+            ReaderAssistanceView(request: request) { draft in assistantDraft = (draft, model.draftGeneration) }.environmentObject(model)
+        }
+        .sheet(isPresented: $model.showSettings, onDismiss: model.finishUpdateRestart) { NativeSettingsView().environmentObject(model) }
+    }
+    private var readingPanes: some View {
+        // Keep the reader in the same container when layouts change, including its AI task state.
+        HSplitView {
+            if layout == "right" || (layout == "focus" && model.current == nil) {
+                messageList.frame(minWidth: 260, idealWidth: 320)
+                    .background {
+                        if layout == "right" {
+                            InitialSplitPosition(rightListWidth) { width in
+                                if layout == "right" { rightListWidth = width }
+                            }
+                        }
+                    }
+            }
+            VSplitView {
+                if layout == "bottom" { messageList.frame(minHeight: 160, idealHeight: 240).background(InitialSplitPosition(240)) }
+                readerPane.frame(minHeight: 200)
+            }
+            .frame(minWidth: layout == "focus" && model.current == nil ? 0 : 320)
+            .frame(width: layout == "focus" && model.current == nil ? 0 : nil)
+            .clipped()
+            .accessibilityHidden(layout == "focus" && model.current == nil)
+        }
+    }
+    @ViewBuilder private var readerPane: some View {
+        if let message = model.current {
+            if model.messageDetail.viewID == message.viewID { MessageReader(message: message, expanded: expandedReader, focused: layout == "focus", onExpand: toggleExpandedReader, onBack: backToMessages) }
+            else {
+                VStack(spacing: 0) {
+                    HStack {
+                        Button(action: backToMessages) { Label("Back to Messages", systemImage: "chevron.left") }
+                            .keyboardShortcut(.cancelAction).disabled(!model.canNavigate).accessibilityIdentifier("reader.back")
+                        Spacer()
+                    }.buttonStyle(.borderless).padding(.horizontal, 16).padding(.vertical, 10)
+                    Divider()
+                    VStack(spacing: 12) {
+                        if model.messageError.isEmpty { ProgressView("Loading message…") }
+                        else {
+                            Text(model.messageError).foregroundStyle(.secondary).textSelection(.enabled)
+                            Button("Retry loading message") { Task { await model.loadMessage() } }.disabled(!model.canNavigate)
+                        }
+                    }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+        } else { EmptyPane(title: "A little room to think", detail: "Choose a message to read, or compose something new.", symbol: "envelope.open") }
+    }
+    private func backToMessages() {
+        leaveExpandedReader(); model.selectedMessage = nil; model.messageDetail = .null
+        // Focus after the Focus layout has restored its native message list.
+        DispatchQueue.main.async { messageListFocused = true }
+    }
+    private func toggleExpandedReader() {
+        if expandedReader { leaveExpandedReader() }
+        else { previousSidebarVisible = sidebarVisible; sidebarVisible = false; expandedReader = true }
+    }
+    private func leaveExpandedReader() {
+        guard expandedReader else { return }
+        expandedReader = false; sidebarVisible = previousSidebarVisible
+    }
+    var sidebar: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "sunrise.fill").font(.title2).foregroundStyle(morrowGreen)
+                VStack(alignment: .leading) { Text("Morrow").font(.title2.weight(.bold)); Text("A calmer kind of inbox").font(.caption).foregroundStyle(.secondary) }
+                Spacer(minLength: 0)
+                Button { sidebarVisible = false } label: { Label("Hide Sidebar", systemImage: "sidebar.left") }.labelStyle(.iconOnly).buttonStyle(.borderless).help("Hide Sidebar")
+            }.padding(.horizontal, 14).padding(.vertical, 12)
+            shellModes()
+                .padding(.horizontal, 14).padding(.bottom, 8)
+            HStack(spacing: 8) {
+                composeButton.buttonStyle(.borderedProminent)
+                syncButton
+            }.controlSize(.small).padding(.horizontal, 14).padding(.bottom, 10)
+            TextField("Filter labels / folders", text: $folderFilter).textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Filter sidebar labels and folders").padding(.horizontal, 14).padding(.bottom, 10)
+            List(selection: Binding(get: { model.isMailSection ? model.account + "\n" + model.section : model.section == "scheduled" && !model.scheduledAccount.isEmpty ? model.scheduledAccount + "\n" + model.section : model.section }, set: { value in
+                guard model.canNavigate else { return }
+                let parts = value.components(separatedBy: "\n")
+                if parts.count == 2 {
+                    if parts[1] == "scheduled" { model.scheduledAccount = parts[0] }
+                    if parts[0] == model.account { model.section = parts[1] }
+                    else { model.perform { try await model.selectAccount(parts[0], folder: parts[1]) } }
+                } else { model.section = value }
+            })) {
+                if model.shellMode == "agent" {
+                    Section("Agent") {
+                        if sidebarShows("Inbox Agent") { Label("Inbox Agent", systemImage: "bubble.left.and.bubble.right").tag("agent").accessibilityIdentifier("workspace.agent") }
+                        if sidebarShows("Today") { Label("Today", systemImage: "sun.max").tag("today").accessibilityIdentifier("workspace.today") }
+                        if sidebarShows("Skills") { Label("Skills", systemImage: "square.stack.3d.up").tag("skills").accessibilityIdentifier("workspace.skills") }
+                    }
+                } else if model.shellMode == "brain" {
+                    Section("Brain") {
+                        if sidebarShows("Persona & writing rules") { Label("Persona & writing rules", systemImage: "brain.head.profile").tag("brain").accessibilityIdentifier("workspace.brain") }
+                        if sidebarShows("Categories") { Label("Categories", systemImage: "tag").tag("categories").accessibilityIdentifier("workspace.categories") }
+                    }
+                } else {
+                Section("Workspace") {
+                    Label("Reply Suggestions", systemImage: "text.bubble").tag("reply-suggestions").accessibilityIdentifier("workspace.reply-suggestions")
+                    Label("Out of Office", systemImage: "moon").tag("out-of-office").accessibilityIdentifier("workspace.out-of-office")
+                    Label("Calendar", systemImage: "calendar").tag("calendar")
+                    Label("Outbox", systemImage: "clock.arrow.circlepath").tag("scheduled").accessibilityIdentifier("workspace.scheduled")
+                }
+                if !model.accounts.isEmpty {
+                    accountGroup("all", title: "All accounts", subtitle: "Combined mail", symbol: "tray.2")
+                    ForEach(model.accounts) { account in
+                        accountGroup(account.id, title: account["email"].string, subtitle: account["provider"].string == "imap" ? "IMAP" : providerLabel(account["provider"].string), symbol: "envelope")
+                    }
+                }
+                }
+            }.listStyle(.sidebar)
+            Button { model.settings("mail") } label: { Label("Add account", systemImage: "plus") }.buttonStyle(.plain).padding(12).disabled(model.busy)
+            Divider()
+            Button { guard model.canNavigate else { return }; model.section = "studio" } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Label("AI Studio", systemImage: "sparkles")
+                    Text("Advanced").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityIdentifier("workspace.studio")
+            .accessibilityLabel(model.section == "studio" ? "AI Studio, advanced, selected" : "AI Studio, advanced")
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 18).padding(.top, 8)
+            .disabled(!model.canNavigate && model.section != "studio")
+            .background(model.section == "studio" ? morrowGreen.opacity(0.12) : Color.clear)
+            Button { model.settings(model.updateAvailable ? "about" : "general") } label: {
+                HStack {
+                    Label("Settings & connections", systemImage: "gearshape")
+                    if model.updateAvailable {
+                        Text("!").font(.caption.bold()).foregroundStyle(.white)
+                            .frame(width: 18, height: 18).background(.red, in: Circle()).accessibilityHidden(true)
+                    }
+                }
+            }
+                .accessibilityLabel(model.updateAvailable ? "Settings & connections, update available" : "Settings & connections")
+                .help(model.updateAvailable ? "A new version is available. Open App updates." : "Settings & connections")
+                .buttonStyle(.plain).frame(maxWidth: .infinity, alignment: .leading).padding(18).fixedSize(horizontal: false, vertical: true)
+        }
+    }
+    private func shellModes(compact: Bool = false) -> some View {
+        HStack(spacing: 6) {
+            ForEach([("mail", "Mail"), ("agent", "Agent"), ("brain", "Brain")], id: \.0) { mode, title in
+                Button(title) { selectShell(mode) }
+                    .font(.callout.weight(model.shellMode == mode ? .semibold : .regular))
+                    .frame(maxWidth: compact ? nil : .infinity)
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, compact ? 8 : 0)
+                    .background(model.shellMode == mode ? morrowGreen.opacity(0.16) : Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
+                    .buttonStyle(.plain)
+                    .disabled(!model.canNavigate && model.shellMode != mode)
+                    .accessibilityIdentifier("shell.\(mode)")
+                    .accessibilityLabel(model.shellMode == mode ? "\(title), selected" : title)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Mail, Agent, and Brain")
+    }
+    private func sidebarShows(_ title: String) -> Bool {
+        folderFilter.isEmpty || title.localizedCaseInsensitiveContains(folderFilter)
+    }
+    private func selectShell(_ mode: String) {
+        guard model.canNavigate else { return }
+        switch mode {
+        case "agent":
+            if model.shellMode != "agent" { model.section = "agent" }
+        case "brain":
+            if model.shellMode != "brain" { model.section = "brain" }
+        default:
+            if model.section != "inbox" { model.section = "inbox" }
+        }
+    }
+    private var syncButton: some View {
+        Button { model.perform({ try await model.sync() }, blocksNavigation: false) } label: { Label("Sync", systemImage: model.syncing ? "hourglass" : "arrow.clockwise") }
+            .fixedSize().disabled(!model.canNavigate || model.backgroundBusy || model.syncing || !model.hasMailbox)
+            .help("Sync mail in the current account view (⌘R); Today syncs all accounts. The selected message and current mail page are checked first, followed by recent mail and older downloaded messages.").accessibilityIdentifier("mail.sync")
+    }
+    private var composeButton: some View {
+        Button { model.newDraft() } label: { Label("Compose", systemImage: "square.and.pencil").frame(maxWidth: sidebarVisible ? .infinity : nil) }
+            .disabled(model.busy || !model.hasMailbox).help("New message (⌘N)")
+    }
+    func accountGroup(_ account: String, title: String, subtitle: String, symbol: String) -> some View {
+        let collapsed = Set((try? JSONDecoder().decode([String].self, from: Data(collapsedAccounts.utf8))) ?? [])
+        return DisclosureGroup(isExpanded: Binding(get: { !folderFilter.isEmpty || !collapsed.contains(account) }, set: { expanded in
+            guard folderFilter.isEmpty else { return }
+            var next = collapsed
+            if expanded { next.remove(account) } else { next.insert(account) }
+            if let data = try? JSONEncoder().encode(next.sorted()), let value = String(data: data, encoding: .utf8) { collapsedAccounts = value }
+        })) { folderRows(account) } label: {
+            HStack(spacing: 8) {
+                Image(systemName: symbol).foregroundStyle(morrowGreen)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.system(size: 12, weight: .semibold)).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    Text(subtitle).font(.caption2).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                let count = folderCount(account, "inbox")
+                if count > 0 { Text("\(count)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary) }
+            }.padding(.vertical, 5).help(title)
+        }.accessibilityIdentifier("accountGroup.\(account)")
+        .contextMenu {
+            if model.canReviewMoves(account) {
+                Button("Review IMAP moves…") { model.beginMoveRecovery(account) }.disabled(!model.canNavigate)
+            }
+        }
+    }
+    @ViewBuilder func folderRows(_ account: String) -> some View {
+        ForEach(mailFolders.filter { folderFilter.isEmpty || $0.localizedCaseInsensitiveContains(folderFilter) }, id: \.self) { folder in
+            HStack {
+                Label(folder.capitalized, systemImage: ["inbox": "tray", "starred": "star", "pending": "clock", "later": "tray.2", "sent": "paperplane", "drafts": "doc", "archive": "archivebox", "spam": "exclamationmark.shield", "trash": "trash"][folder] ?? "folder")
+                Spacer()
+                let count = folderCount(account, folder)
+                if count > 0 && ["inbox", "pending", "later", "drafts"].contains(folder) { Text("\(count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+            }.tag(account + "\n" + folder).accessibilityIdentifier("mailbox.\(account).\(folder)")
+                .background(dropTarget == account + "\n" + folder ? morrowGreen.opacity(0.18) : .clear)
+                .onDrop(of: [MailFolderDrop.type], delegate: MailFolderDrop(model: model, owner: account, destination: model.mailDropDestination(account, folder: folder), target: account + "\n" + folder, highlighted: $dropTarget))
+        }
+        if account != "all" {
+            Label("Outbox", systemImage: "clock.arrow.circlepath").tag(account + "\nscheduled").accessibilityIdentifier("mailbox.\(account).outbox")
+            DisclosureGroup(isExpanded: Binding(get: { expandedServerAccounts.contains(account) || !folderFilter.isEmpty && model.serverFolders[account] != nil }, set: { expanded in
+                if expanded {
+                    expandedServerAccounts.insert(account)
+                } else { expandedServerAccounts.remove(account) }
+            })) {
+                ForEach((model.serverFolders[account] ?? []).filter { folderFilter.isEmpty || $0["name"].string.localizedCaseInsensitiveContains(folderFilter) }) { folder in
+                    Label(folder["name"].string, systemImage: folder["kind"].string == "label" ? "tag" : "folder")
+                        .tag(account + "\nprovider:" + folder.id).help(folder["name"].string)
+                        .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                        .background(dropTarget == account + "\nprovider:" + folder.id ? morrowGreen.opacity(0.18) : .clear)
+                        .onDrop(of: [MailFolderDrop.type], delegate: MailFolderDrop(model: model, owner: account, destination: folder.id, target: account + "\nprovider:" + folder.id, highlighted: $dropTarget))
+                        .contextMenu {
+                            Button("Manage label / folder…") { model.managingFolders = .object(["id": .string(account), "folderId": .string(folder.id)]) }.disabled(!model.canNavigate)
+                            Button("Move selected message here…") { model.beginOrganize(model.current, destinationId: folder.id) }
+                                .disabled(!model.canNavigate || model.current?["accountId"].string != account || !(model.current.map(model.canOrganize) ?? false))
+                        }
+                }
+                if !model.state["serverFolders"][account]["errorCode"].isNull {
+                    Text("Folder list could not refresh. Saved names are retained.").font(.caption).foregroundStyle(.secondary)
+                } else if model.state["serverFolders"][account]["updatedAt"].isNull {
+                    Text("Loading labels / folders…").font(.caption).foregroundStyle(.secondary)
+                }
+                Button("Refresh labels / folders") { model.perform { try await model.loadServerFolders(account) } }.disabled(model.busy)
+            } label: { Text(model.accounts.first { $0.id == account }?["provider"].string == "google" ? "Gmail labels" : "Server folders") }
+            Button("Manage labels / folders…") { model.managingFolders = .object(["id": .string(account)]) }.disabled(!model.canNavigate)
+            if ["", "imap"].contains(model.accounts.first { $0.id == account }?["provider"].string ?? "") {
+                Button("Folders to sync…") { model.syncingFolders = .object(["id": .string(account)]) }.disabled(!model.canNavigate).accessibilityIdentifier("folderSync.open.\(account)")
+            }
+        }
+    }
+    func folderCount(_ account: String, _ folder: String) -> Int {
+        return model.accounts.filter { account == "all" || $0.id == account }.reduce(0) { $0 + Int(folder == "inbox" ? $1["unread"].number : $1["counts"][folder].number) }
+    }
+    var messageList: some View {
+        VStack(spacing: 0) {
+            HStack { VStack(alignment: .leading, spacing: 3) { Text(model.mailSectionTitle).font(.headline); Text(model.combined ? "All accounts" : model.account).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle) }; Spacer(); Toggle(isOn: $model.unreadOnly) { Image(systemName: "line.3.horizontal.decrease.circle") }.toggleStyle(.button).controlSize(.small).help("Show unread only").accessibilityLabel("Show unread only").disabled(!model.searchResponse.isNull) }.padding(.horizontal, 14).padding(.vertical, 10)
+            if model.section.hasPrefix("provider:") { Text("Labels and folders refresh automatically. Messages shown here are downloaded mail; import history to add older messages.").font(.caption).foregroundStyle(.secondary).padding(.horizontal, 14).padding(.bottom, 8) }
+            HStack(spacing: 12) {
+                HStack(spacing: 12) {
+                Menu {
+                    Picker("Reading layout", selection: $readerLayout) {
+                        Label("Reader on Right", systemImage: "rectangle.lefthalf.inset.filled").tag("right")
+                        Label("Reader Below", systemImage: "rectangle.bottomhalf.inset.filled").tag("bottom")
+                        Label("Focus Reading", systemImage: "rectangle").tag("focus")
+                    }
+                    Divider()
+                    ForEach(["compact", "comfortable", "spacious"], id: \.self) { density in
+                        Button { model.preference("density", density) } label: { Label(density.capitalized, systemImage: model.preferences["density"].string == density ? "checkmark" : "text.alignleft") }
+                    }
+                } label: { Label("View", systemImage: "list.bullet") }.fixedSize().accessibilityIdentifier("mail.viewMenu")
+                Menu {
+                    ForEach(mailSortOptions, id: \.0) { option in
+                        Button { model.preference("sort", option.0) } label: { Label(option.1, systemImage: model.preferences["sort"].string == option.0 ? "checkmark" : "arrow.up.arrow.down") }
+                    }
+                } label: { Label("Sort", systemImage: "arrow.up.arrow.down") }.fixedSize().accessibilityIdentifier("mail.sortMenu").disabled(!model.searchResponse.isNull)
+                }.menuStyle(.borderlessButton).controlSize(.small).disabled(model.busy)
+                Spacer(minLength: 0)
+                if !model.selectedMailRows.isEmpty {
+                    // The menu bar does not publish this label as a button the fixture can press.
+                    ReviewActionButton(title: "Delete (\(model.selectedMailRows.count))", enabled: model.canNavigate && model.selectedMailRows.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" }, identifier: "mail.deleteSelection", bordered: false) { model.trashMessages(model.selectedMailRows) }
+                        .frame(width: 110, height: 28)
+                        .help("Move selected mail to provider Trash · Undo within one minute (⌘Z)")
+                }
+            }.padding(.horizontal, 14).padding(.bottom, 8)
+            Divider()
+            if filtered.isEmpty {
+                VStack {
+                    EmptyPane(title: model.searchResponse.isNull && !model.unreadOnly ? "All clear" : "No matching messages", detail: model.searchResponse.isNull ? "There are no messages in this view." : "Adjust the search filters or import more mail.", symbol: "tray")
+                    if model.unreadOnly { Button("Clear Unread Filter") { model.unreadOnly = false }.padding(.bottom, 24) }
+                }
+            }
+            else {
+                List(filtered, id: \.viewID, selection: Binding(get: { model.selectedMessages }, set: { ids in
+                    guard selectionClick.modifiers.intersection([.command, .shift]).isEmpty else { return }
+                    DispatchQueue.main.async { if model.canNavigate { model.selectMailMessages(ids) } }
+                })) { message in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(alignment: .top, spacing: 8) {
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                Text(["sent", "drafts"].contains(message["folder"].string) ? "To: " + message["to"].string : message["fromName"].nonempty ? message["fromName"].string : message["fromEmail"].string)
+                                    .fontWeight(message["read"].bool ? .regular : .bold).lineLimit(1)
+                                    .help(["sent", "drafts"].contains(message["folder"].string) ? message["to"].string : message["fromEmail"].string)
+                                if model.combined || !model.searchResponse.isNull {
+                                    RowLabel(text: message["accountId"].string, accessibility: "Mailbox: " + message["accountId"].string, secondary: true)
+                                        .frame(maxWidth: 160, alignment: .leading)
+                                        .help("Mailbox: " + message["accountId"].string)
+                                }
+                            }
+                            Spacer(minLength: 0)
+                            Text(dateLabel(message["date"].string)).font(.caption2).foregroundStyle(.secondary)
+                                .multilineTextAlignment(.trailing).lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: 100, alignment: .trailing).layoutPriority(1)
+                                .help(dateLabel(message["date"].string))
+                        }
+                        HStack(spacing: 6) {
+                            if message["searchSubject"].array.isEmpty {
+                                RowLabel(text: message["subject"].nonempty ? message["subject"].string : "(No subject)", bold: !message["read"].bool)
+                            } else {
+                                searchHighlighted(message["searchSubject"], fallback: message["subject"].nonempty ? message["subject"].string : "(No subject)").font(.system(size: 13)).fontWeight(message["read"].bool ? .regular : .bold).lineLimit(1)
+                            }
+                            Spacer(minLength: 2)
+                            if message["starred"].bool { Image(systemName: "star.fill").foregroundStyle(.orange).font(.caption) }
+                            if message["pending"].bool { Image(systemName: "clock.fill").foregroundStyle(morrowGreen).font(.caption).accessibilityLabel("Pending") }
+                            Circle().fill(message["read"].bool ? .clear : morrowGreen).frame(width: 6, height: 6).accessibilityLabel(message["read"].bool ? "Read" : "Unread")
+                            if hoveredMessage == message.viewID || model.selectedMessages.contains(message.viewID) { rowActions(message) }
+                        }
+                        if model.preferences["density"].string != "compact" { searchHighlighted(message["searchSnippet"], fallback: message["preview"].string).foregroundStyle(.secondary).font(.caption).lineLimit(model.preferences["density"].string == "spacious" ? 4 : 2) }
+                        if message["searchMatch"].nonempty { Text(message["folder"].string + " · " + message["searchMatch"].string).font(.caption2).foregroundStyle(.secondary) }
+                        if message["deliveryStatus"].string == "unconfirmed" { Label("Check delivery", systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange) }
+                        if message["scheduledSend"]["status"].string == "scheduled" { Label("Scheduled: " + dateLabel(message["scheduledSend"]["sendAt"].string), systemImage: "clock").font(.caption).foregroundStyle(.secondary) }
+                        if message["scheduledSend"]["status"].string == "sending" { Label("Sending", systemImage: "paperplane").font(.caption).foregroundStyle(.secondary) }
+                    }.padding(.vertical, model.preferences["density"].string == "compact" ? 3 : model.preferences["density"].string == "spacious" ? 14 : 8)
+                    .contentShape(Rectangle())
+                    .onHover { inside in if inside { hoveredMessage = message.viewID } else if hoveredMessage == message.viewID { hoveredMessage = nil } }
+                    .onDrag {
+                        selectionClick.modifiers = []
+                        let provider = NSItemProvider()
+                        if let token = model.startMailDrag(message) {
+                            provider.registerDataRepresentation(forTypeIdentifier: MailFolderDrop.type, visibility: .ownProcess) { completion in
+                                completion(Data(token.utf8), nil); return nil
+                            }
+                        }
+                        return provider
+                    }
+                    .onTapGesture {
+                        guard model.canNavigate else { return }
+                        let click = selectionClick
+                        let ids: Set<String>
+                        if click.modifiers.contains(.command) {
+                            ids = click.ids.symmetricDifference([message.viewID])
+                        } else if click.modifiers.contains(.shift), let anchor = filtered.firstIndex(where: { $0.viewID == click.anchor }), let end = filtered.firstIndex(where: { $0.viewID == message.viewID }) {
+                            ids = Set(filtered[min(anchor, end)...max(anchor, end)].map(\.viewID))
+                        } else { ids = [message.viewID] }
+                        DispatchQueue.main.async {
+                            guard model.canNavigate else { return }
+                            if !click.modifiers.intersection([.command, .shift]).isEmpty, let anchor = click.anchor, ids.contains(anchor) { model.selectedMessage = anchor }
+                            model.selectMailMessages(ids)
+                            selectionClick.modifiers = []
+                        }
+                    }.tag(message.viewID)
+                }.listStyle(.inset).focused($messageListFocused).disabled(!model.canNavigate)
+                .contextMenu(forSelectionType: String.self) { ids in
+                    let messages = filtered.filter { ids.contains($0.viewID) }
+                    if messages.count == 1, let message = messages.first, model.canOrganize(message) { MessageOrganizationActions(message: message) }
+                    if !messages.isEmpty {
+                        Button("Move to Provider Trash") { model.trashMessages(messages) }
+                            .disabled(!messages.allSatisfy { model.canOrganize($0) && $0["folder"].string != "trash" })
+                        Divider()
+                        Button("Mark Read") { model.patchMessages(messages, .object(["read": .bool(true)])) }
+                        Button("Mark Unread") { model.patchMessages(messages, .object(["read": .bool(false)])) }
+                        Button("Star") { model.patchMessages(messages, .object(["starred": .bool(true)])) }
+                        Button("Unstar") { model.patchMessages(messages, .object(["starred": .bool(false)])) }
+                        Button("Mark Pending") { model.patchMessages(messages, .object(["pending": .bool(true)])) }
+                        Button("Clear Pending") { model.patchMessages(messages, .object(["pending": .bool(false)])) }
+                        Button("Read Later") { model.patchMessages(messages, .object(["lowPriority": .bool(true)])) }.disabled(messages.contains { !["inbox", "archive"].contains($0["folder"].string) })
+                        Button("Return from Later") { model.patchMessages(messages, .object(["lowPriority": .bool(false)])) }.disabled(messages.contains { !["inbox", "archive"].contains($0["folder"].string) })
+                        Button("Archive Locally") { model.patchMessages(messages, .object(["folder": .string("archive")])) }.disabled(messages.contains { $0["folder"].string == "drafts" })
+                        Button("Move to Local Trash") { model.patchMessages(messages, .object(["folder": .string("trash")])) }
+                    }
+                }
+
+            }
+            Divider()
+            if model.searchResponse.isNull {
+                HStack {
+                    Button("Previous") { Task { await model.turnMailPage(next: false) } }.disabled(model.mailCursors.count < 2 || model.mailLoading)
+                    Spacer()
+                    if model.mailLoading { ProgressView().controlSize(.small) }
+                    else { Text("Page \(model.mailCursors.count) · \(Int(model.mailPage["total"].number)) messages").font(.caption2) }
+                    Spacer()
+                    Button("Next") { Task { await model.turnMailPage(next: true) } }.disabled(!model.mailPage["nextCursor"].nonempty || model.mailLoading)
+                }.padding(10)
+            }
+        }
+    }
+    private func rowActions(_ message: JSON) -> some View {
+        HStack(spacing: 4) {
+            Button { model.patch(message, .object(["read": .bool(!message["read"].bool)])) } label: {
+                Label(message["read"].bool ? "Mark Unread" : "Mark Read", systemImage: message["read"].bool ? "envelope.badge" : "envelope.open")
+            }.help(message["read"].bool ? "Mark Unread" : "Mark Read")
+            Button { Task { await model.openDraft(message: message, mode: "replyAll") } } label: {
+                Label("Reply All", systemImage: "arrowshape.turn.up.left.2")
+            }.help("Reply All").disabled(message["folder"].string == "drafts" || !model.canNavigate || model.preparingDraft)
+            Button { model.beginOrganize(message, preferredKind: "trash") } label: {
+                Label("Move to Provider Trash", systemImage: "trash")
+            }.help(model.canOrganize(message) ? "Move to provider Trash · Undo within one minute (⌘Z)" : "Provider Trash is available for imported mail with move permission")
+                .disabled(!model.canOrganize(message) || !model.canNavigate || message["folder"].string == "trash")
+        }.labelStyle(.iconOnly).buttonStyle(.borderless).controlSize(.small)
+    }
+    func statusBar(_ text: String, error: Bool) -> some View {
+        HStack(alignment: .top) {
+            Image(systemName: error ? "exclamationmark.circle" : "checkmark.circle").foregroundStyle(error ? .orange : morrowGreen)
+            Text(text).font(.callout).textSelection(.enabled)
+            Spacer()
+            Button { if error { model.error = "" } else { model.notice = "" } } label: { Image(systemName: "xmark") }.buttonStyle(.plain).accessibilityLabel("Dismiss status")
+        }.padding(12).background(.bar)
+    }
+}
+
+@MainActor
+private struct MailFolderDrop: DropDelegate {
+    static let type = "com.morrowmail.mail-row"
+    let model: AppModel
+    let owner: String
+    let destination: String
+    let target: String
+    @Binding var highlighted: String
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [Self.type]) && model.mailDropMessage(model.mailDragToken, owner: owner, destination: destination) != nil
+    }
+    func dropEntered(info: DropInfo) { if validateDrop(info: info) { highlighted = target } }
+    func dropExited(info: DropInfo) { if highlighted == target { highlighted = "" } }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: validateDrop(info: info) ? .move : .forbidden) }
+    func performDrop(info: DropInfo) -> Bool {
+        highlighted = ""
+        guard validateDrop(info: info), let provider = info.itemProviders(for: [Self.type]).first else { return false }
+        let token = model.mailDragToken
+        provider.loadDataRepresentation(forTypeIdentifier: Self.type) { data, _ in
+            guard let data, data.count < 128, String(data: data, encoding: .utf8) == token else { return }
+            Task { @MainActor in _ = model.finishMailDrop(token, owner: owner, destination: destination) }
+        }
+        return true
+    }
+}
+
+// List Text is not an NSTextField or an accessibility text leaf.
+private struct RowLabel: NSViewRepresentable {
+    var text: String
+    var accessibility: String?
+    var bold = false
+    var secondary = false
+    func makeNSView(context: Context) -> NSTextField {
+        let field = RowLabelField(labelWithString: "")
+        field.maximumNumberOfLines = 1
+        field.lineBreakMode = .byTruncatingTail
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        apply(field)
+        return field
+    }
+    func updateNSView(_ field: NSTextField, context: Context) { apply(field) }
+    private func apply(_ field: NSTextField) {
+        if field.stringValue != text { field.stringValue = text }
+        field.font = NSFont.systemFont(ofSize: secondary ? 10 : 13, weight: bold ? .bold : .regular)
+        field.textColor = secondary ? .secondaryLabelColor : .labelColor
+        if let accessibility, field.accessibilityLabel() != accessibility { field.setAccessibilityLabel(accessibility) }
+    }
+}
+// NSHostingView is generic, so a bare cast cannot name the row's Content.
+private protocol RowHostingView {}
+extension NSHostingView: RowHostingView {}
+private final class RowLabelField: NSTextField {
+    // A nil hit stops on this field's wrapper, so the row gesture never sees the click.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard super.hitTest(point) != nil else { return nil }
+        var view = superview
+        var belowRow: NSView?
+        var host: NSView?
+        while let current = view {
+            if current is RowHostingView { host = current }
+            if current is NSTableRowView { return host ?? belowRow ?? current }
+            belowRow = current
+            view = current.superview
+        }
+        return nil
+    }
+}
+
+struct MessageReader: View {
+    @EnvironmentObject var model: AppModel
+    let message: JSON
+    let expanded: Bool
+    let focused: Bool
+    let onExpand: () -> Void
+    let onBack: () -> Void
+    @State private var detailsExpanded = false
+    @State private var summaryExpanded = false
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                if focused { Button(action: onBack) { Label("Back to Messages", systemImage: "chevron.left") }.labelStyle(.iconOnly).help("Back to Messages").keyboardShortcut(.cancelAction).disabled(!model.canNavigate).accessibilityIdentifier("reader.back") }
+                if message["folder"].string == "drafts" {
+                    Button(["scheduled", "sending"].contains(message["scheduledSend"]["status"].string) ? "Manage Schedule" : message["providerDraft"].bool ? "Copy to Local Draft" : "Edit Draft") {
+                        if message["providerDraft"].bool { Task { await model.openDraft(message: message, mode: "copy") } }
+                        else { model.newDraft(Draft(message: message)) }
+                    }
+                }
+                else {
+                    Menu {
+                        Button("Reply") { Task { await model.openDraft(message: message, mode: "reply") } }
+                        Button("Reply All") { Task { await model.openDraft(message: message, mode: "replyAll") } }
+                        Button("Forward") { Task { await model.openDraft(message: message, mode: "forward") } }
+                    } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") } primaryAction: {
+                        Task { await model.openDraft(message: message, mode: "reply") }
+                    }
+                    .help("Reply; open the menu for Reply All or Forward")
+                    .accessibilityIdentifier("reader.replyMenu")
+                    .disabled(!model.canNavigate || model.preparingDraft)
+                }
+                Spacer()
+                if model.canOrganize(message) {
+                    Menu {
+                        MessageOrganizationActions(message: message)
+                        Divider()
+                        Button("Move to provider Trash") { model.beginOrganize(message, preferredKind: "trash") }
+                            .disabled(!model.canNavigate || message["folder"].string == "trash")
+                    } label: { Label("Organize", systemImage: "folder") }
+                    .help("Move or label at your provider. Trash supports Undo for one minute (⌘Z).")
+                    .accessibilityIdentifier("reader.organizeMenu")
+                    .disabled(!model.canNavigate)
+                }
+                Menu {
+                    Button(message["starred"].bool ? "Remove star" : "Star") { model.patch(message, .object(["starred": .bool(!message["starred"].bool)])) }.disabled(!model.canNavigate)
+                    Button(message["pending"].bool ? "Clear Pending" : "Mark Pending locally") { model.patch(message, .object(["pending": .bool(!message["pending"].bool)])) }.disabled(!model.canNavigate)
+                    if message["folder"].string != "drafts" {
+                        Button(message["folder"].string == "inbox" ? "Archive locally" : "Move to Inbox locally") { model.patch(message, .object(["folder": .string(message["folder"].string == "inbox" ? "archive" : "inbox")])) }.disabled(!model.canNavigate)
+                    }
+                    Divider()
+                    Button(expanded ? "Restore Panes" : "Expand Reader", action: onExpand)
+                } label: { Label("More", systemImage: "ellipsis.circle") }
+                .help("Markers, local organization and reader layout")
+                .accessibilityIdentifier("reader.moreMenu")
+            }.buttonStyle(.borderless).controlSize(.small).padding(.horizontal, 16).padding(.vertical, 10).disabled(model.busy)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    ReaderText(text: NSAttributedString(string: message["subject"].nonempty ? message["subject"].string : "(No subject)", attributes: [.font: NSFont.systemFont(ofSize: 21, weight: .semibold), .foregroundColor: NSColor.labelColor]))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if message["localFolderUndo"]["token"].nonempty {
+                        HStack {
+                            Text("Moved locally; the provider location was not changed.").font(.caption).foregroundStyle(.secondary)
+                            Button("Undo local move to \(message["localFolderUndo"]["from"].string.capitalized)") { model.patch(message, .object(["undoLocalMove": message["localFolderUndo"]["token"]])) }.disabled(model.busy)
+                        }
+                    }
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text(message["fromName"].nonempty ? message["fromName"].string : message["fromEmail"].string)
+                            .font(.headline).lineLimit(1).help(message["fromEmail"].string)
+                        Spacer(minLength: 0)
+                        Text(dateLabel(message["date"].string)).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                    }.textSelection(.enabled)
+                    DisclosureGroup(isExpanded: $detailsExpanded) {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("From: " + message["fromName"].string + " <" + message["fromEmail"].string + ">")
+                            Text("To: " + message["to"].string)
+                            if message["cc"].nonempty { Text("Cc: " + message["cc"].string) }
+                            if message["bcc"].nonempty { Text("Bcc: " + message["bcc"].string) }
+                            Text("Mailbox: " + message["accountId"].string)
+                            Text("Date: " + dateLabel(message["date"].string))
+                            if message["providerFolderName"].nonempty { Text("Provider: " + message["providerFolderName"].string) }
+                            if !message["labels"].array.isEmpty { Text("Labels: " + message["labels"].array.map(\.string).joined(separator: ", ")) }
+                        }.font(.caption).foregroundStyle(.secondary).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 5)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text("Details")
+                            RowLabel(text: "To: " + message["to"].string, secondary: true)
+                        }.font(.caption)
+                    }
+                    if !message["aiSummary"].isNull {
+                        VStack(alignment: .leading, spacing: 5) {
+                            DisclosureGroup(isExpanded: $summaryExpanded) {
+                              VStack(alignment: .leading, spacing: 8) {
+                                ForEach(Array(message["aiSummary"]["items"].array.enumerated()), id: \.offset) { _, item in
+                                    Text(item["priority"].string + " · " + item["summary"].string).textSelection(.enabled)
+                                }
+                                if message["aiSummary"]["items"].array.isEmpty { Text(message["aiSummary"]["text"].string).textSelection(.enabled) }
+                                Text(dateLabel(message["aiSummary"]["completedAt"].string) + " · Review AI priorities.").font(.caption).foregroundStyle(.secondary)
+                              }.padding(.top, 6).frame(maxWidth: .infinity, alignment: .leading)
+                            } label: { Label(message["aiSummary"]["source"].string == "demo" ? "Illustrative demo summary" : "AI summary · Review before using", systemImage: "sparkles").font(.caption).foregroundStyle(morrowGreen) }
+                            if !summaryExpanded {
+                                Text(message["aiSummary"]["items"].array.first?["summary"].string ?? message["aiSummary"]["text"].string)
+                                    .font(.callout).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                        }.padding(10).background(morrowGreen.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                    } else { AutomaticAssistance(messageID: message.id, account: message["accountId"].string, trigger: "onOpen") }
+                    Divider()
+                    AttachmentReader(message: message).id(message.viewID)
+                    FooterPreview(footer: message["footer"])
+                    Divider()
+                    Menu {
+                        ForEach(["summary", "reply", "history", "translate"], id: \.self) { action in
+                            Button(action == "summary" ? "Summarize" : action == "reply" ? "Suggest Reply" : action == "history" ? "Suggest with History" : "Translate") {
+                                model.openAssistant(action == "history" ? "reply" : action, message: message, includeHistory: action == "history")
+                            }.disabled(!model.canNavigate || model.messageDetail.viewID != message.viewID || !model.allowed(action == "history" ? "reply" : action) || !model.policy["folders"][message["folder"].string].bool || (action == "history" && !model.policy["content"]["sender"].bool))
+                                .help(action == "history" ? "Review downloaded same-sender mail in this account, within saved AI permissions. Sender access is required." : "Open AI assistance for this message")
+                        }
+                    } label: { Label("AI help", systemImage: "sparkles") }
+                    .controlSize(.small).fixedSize().accessibilityIdentifier("reader.aiMenu")
+                    Text("AI uses your saved permissions. Generated text is yours to review.").font(.caption).foregroundStyle(.secondary)
+                }.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .onChange(of: message.viewID) { _ in detailsExpanded = false; summaryExpanded = false }
+    }
+}
+
+struct ReaderAssistanceView: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.dismiss) var dismiss
+    let request: JSON
+    let useDraft: (Draft) -> Void
+    @State private var result: JSON = .null
+    @State private var prompt = ""
+    @State private var loading = false
+    @State private var started = false
+    @State private var invalidated = false
+    @State private var localError = ""
+    @State private var work: Task<Void, Never>?
+    @State private var runID = UUID()
+    private var message: JSON { request["message"] }
+    private var action: String { request["action"].string }
+    private var history: Bool { request["includeHistory"].bool }
+    private var current: Bool { !invalidated && model.readerAssistantIsCurrent(request) }
+    private var title: String { history ? "Suggest with History" : action == "summary" ? "Summarize" : action == "reply" ? "Suggest Reply" : "Translate" }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label(title, systemImage: "sparkles").font(.title2.weight(.semibold))
+                Spacer()
+                Button("Close") { stop(); dismiss() }.keyboardShortcut(.cancelAction)
+            }
+            ScrollView {
+              VStack(alignment: .leading, spacing: 12) {
+            Text(message["subject"].nonempty ? message["subject"].string : "(No subject)").lineLimit(2).help(message["subject"].string)
+            Text(message["accountId"].string).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            if history {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Downloaded history only").font(.headline)
+                    Text("Uses this message and cached mail from \(message["fromEmail"].string) in this account. It does not fetch older mail from your provider.")
+                    Text("Up to \(Int(request["settings"]["policy"]["maxMessages"].number)) messages, including this one. Saved folder and content permissions apply; sender access is required.")
+                    Text("Permitted folders: " + permissionFolders.filter { request["settings"]["policy"]["folders"][$0].bool }.map { $0.capitalized }.joined(separator: ", "))
+                    Text("Permitted content: " + ["subject", "body", "sender"].filter { request["settings"]["policy"]["content"][$0].bool }.joined(separator: ", "))
+                }.font(.callout).foregroundStyle(.secondary).padding(12).background(morrowGreen.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+            }
+            Text(request["settings"]["ai"]["configured"].bool
+                 ? "Model: \(request["settings"]["ai"]["model"].string) · \(request["settings"]["ai"]["baseUrl"].string)"
+                 : "No model configured · Choose an AI model in Settings")
+                .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            if history || action == "translate" {
+                TextField(action == "translate" ? "Language or translation instructions (optional)" : "Reply instructions (optional)", text: $prompt)
+                    .textFieldStyle(.roundedBorder).disabled(loading || !current)
+                    .onChange(of: prompt) { _ in result = .null; localError = "" }
+            }
+            if !current {
+                Label("The message, account or AI settings changed. Close this window and reopen the action to review the new context.", systemImage: "exclamationmark.circle").foregroundStyle(.secondary)
+            } else if loading {
+                HStack { ProgressView().controlSize(.small); Text(model.preparingDraft ? "Preparing draft…" : "Generating…"); Spacer(); Button("Cancel") { stop(); localError = "Stopped waiting. The model may already be processing; no retry was started." } }
+            } else if !localError.isEmpty {
+                Text(localError).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+            if current && result["text"].nonempty {
+                Divider()
+                Text(result["source"].string == "demo" ? "Illustrative demo · Review before using" : "AI result · Review before using").font(.caption).foregroundStyle(.secondary)
+                if history && result["history"]["scope"].string == "downloaded" {
+                    Text("Used \(Int(result["history"]["usedMessages"].number)) of \(Int(result["history"]["matchedMessages"].number)) matching downloaded messages · Limit \(Int(result["history"]["maxMessages"].number))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text(result["text"].string).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
+            }
+              }.frame(maxWidth: .infinity, alignment: .leading)
+            }.frame(maxHeight: .infinity)
+            Divider()
+            HStack {
+                Button(result["text"].nonempty ? "Generate Again" : "Generate") { generate() }
+                    .disabled(loading || !current || model.busy || !request["settings"]["ai"]["configured"].bool)
+                Spacer()
+                if result["text"].nonempty && current {
+                    Button("Copy") {
+                        guard current else { return }
+                        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(result["text"].string, forType: .string)
+                    }
+                    if action == "reply" {
+                        Button("Use in Draft") {
+                            prepareDraft()
+                        }.buttonStyle(.borderedProminent).disabled(loading || model.busy || model.preparingDraft)
+                    }
+                }
+            }
+            Text("Your model provider may charge. Generated text is a suggestion; nothing is sent until you review a draft and choose Send.").font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(22).frame(width: 580, height: min(650, (NSScreen.main?.visibleFrame.height ?? 800) - 100))
+        .task {
+            guard !started else { return }
+            started = true
+            if !current { invalidate() }
+            else if !history { generate() }
+        }
+        .onChange(of: model.readerAssistantIsCurrent(request)) { valid in if !valid { invalidate() } }
+        .onDisappear { stop() }
+    }
+    private func prepareDraft() {
+        guard current, !loading, !model.busy, !model.preparingDraft else { return }
+        let run = UUID(), text = result["text"].string
+        runID = run; loading = true; localError = ""
+        work = Task { @MainActor in
+            defer { if runID == run { loading = false; work = nil } }
+            do {
+                let draft = try await model.prepareDraft(message: message, mode: "reply", body: text)
+                guard !Task.isCancelled, runID == run, current else { return }
+                useDraft(draft); dismiss()
+            } catch is CancellationError { }
+            catch { if !Task.isCancelled, runID == run, current { localError = error.localizedDescription } }
+        }
+    }
+    private func stop() { work?.cancel(); work = nil; runID = UUID(); loading = false }
+    private func invalidate() { stop(); invalidated = true; result = .null; localError = "" }
+    private func generate() {
+        guard !loading, current, !model.busy, request["settings"]["ai"]["configured"].bool else { return }
+        var payload: JSON = .object(["action": .string(action), "messageId": .string(message.id), "prompt": .string(prompt)])
+        if history { payload["includeHistory"] = .bool(true) }
+        let owner = message["accountId"].string, run = UUID()
+        runID = run; loading = true; result = .null; localError = ""
+        work = Task { @MainActor in
+            do {
+                let next = try await model.request("/ai", method: "POST", body: payload, mailbox: owner)
+                guard !Task.isCancelled, runID == run else { return }
+                guard current else { invalidate(); return }
+                result = next
+            } catch {
+                guard !Task.isCancelled, runID == run else { return }
+                guard current else { invalidate(); return }
+                localError = error.localizedDescription
+            }
+            if runID == run { loading = false; work = nil }
+        }
+    }
+}
+
+struct AutomaticAssistance: View {
+    @EnvironmentObject var model: AppModel
+    let messageID: String
+    let account: String
+    let trigger: String
+    var use: ((String) -> Void)? = nil
+    @State private var result: JSON = .null
+    @State private var loading = false
+    @State private var error = ""
+    @State private var expanded = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if loading { ProgressView(trigger == "onOpen" ? "Preparing automatic summary…" : "Preparing reply suggestion…") }
+            if result["text"].nonempty {
+                if trigger == "onOpen" {
+                    VStack(alignment: .leading, spacing: 5) {
+                        DisclosureGroup(isExpanded: $expanded) {
+                            Text(result["text"].string).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)
+                        } label: { Label(result["source"].string == "demo" ? "Illustrative demo summary" : "AI summary · Review before using", systemImage: "sparkles").font(.caption).foregroundStyle(morrowGreen) }
+                        if !expanded { Text(result["text"].string).font(.callout).foregroundStyle(.secondary).lineLimit(2) }
+                    }.padding(10).background(morrowGreen.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                } else {
+                    Text(result["source"].string == "demo" ? "Automatic assistance · Illustrative demo" : "Automatic assistance · Review before using").font(.caption).foregroundStyle(.secondary)
+                    Text(result["text"].string).textSelection(.enabled)
+                }
+                if let use { Button("Use Suggested Reply") { use(result["text"].string) }.disabled(model.busy) }
+            }
+            if !error.isEmpty { Text(error).font(.caption).foregroundStyle(.secondary) }
+        }
+        .task(id: account + "\n" + messageID + "\n" + trigger) {
+            result = .null; error = ""; loading = false; expanded = false
+            let action = trigger == "onOpen" ? "summary" : "reply", policy = model.policy, ai = model.state["settings"]["ai"], preferences = model.preferences
+            guard policy["triggers"][trigger].bool, model.allowed(action) else { return }
+            loading = true
+            do {
+                let next = try await model.request("/ai", method: "POST", body: .object(["action": .string(action), "trigger": .string(trigger), "messageId": .string(messageID)]), mailbox: account)
+                if !Task.isCancelled && policy == model.policy && ai == model.state["settings"]["ai"] && preferences == model.preferences { result = next }
+            } catch { if !Task.isCancelled { self.error = "Automatic assistance: " + error.localizedDescription } }
+            if !Task.isCancelled { loading = false }
+        }
+        .onChange(of: model.policy) { _ in result = .null; error = "" }
+        .onChange(of: model.state["settings"]["ai"]) { _ in result = .null; error = "" }
+        .onChange(of: model.preferences) { _ in result = .null; error = "" }
+    }
+}
+
+struct ScheduledMailView: View {
+    @EnvironmentObject var model: AppModel
+    @State private var jobs: [JSON] = []
+    @State private var loading = false
+    @State private var loadGeneration = 0
+    @State private var localError = ""
+    private var account: String {
+        if !model.scheduledAccount.isEmpty { return model.accounts.contains { $0.id == model.scheduledAccount } ? model.scheduledAccount : "" }
+        return model.combined ? model.accounts.first?.id ?? "" : model.account
+    }
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                SectionHeading(title: "Outbox", detail: "Delayed and scheduled mail waiting to be sent. Morrow must be open to send; catch-up is limited to 15 minutes.")
+                HStack {
+                    Picker("Mailbox", selection: Binding(get: { account }, set: { model.scheduledAccount = $0 })) {
+                        ForEach(model.accounts) { Text($0["email"].string).tag($0.id) }
+                    }.disabled(model.busy)
+                    Spacer()
+                    Button("Refresh") { Task { await load() } }.disabled(loading || model.busy || account.isEmpty)
+                    if loading { ProgressView().controlSize(.small) }
+                }
+                if !localError.isEmpty { Text(localError).foregroundStyle(.red).textSelection(.enabled) }
+                if jobs.isEmpty && !loading { Text("No scheduled messages in this mailbox.").foregroundStyle(.secondary) }
+                ForEach(jobs) { job in
+                    let message = job["payload"].isNull ? job : job["payload"]
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text(message["subject"].nonempty ? message["subject"].string : "(No subject)").font(.headline)
+                                Spacer()
+                                Text(statusLabel(job)).font(.caption).foregroundStyle(.secondary)
+                            }
+                            Text("To: " + message["to"].string).textSelection(.enabled)
+                            if message["cc"].nonempty { Text("Cc: " + message["cc"].string).textSelection(.enabled) }
+                            if message["bcc"].nonempty { Text("Bcc: " + message["bcc"].string).textSelection(.enabled) }
+                            Text("Send at: " + dateLabel(job["sendAt"].string)).font(.callout)
+                            if job["error"].nonempty { Text(job["error"].string).font(.callout).foregroundStyle(.orange).textSelection(.enabled) }
+                            HStack {
+                                if ["scheduled", "missed", "blocked"].contains(job["status"].string) {
+                                    Button("Cancel Schedule") { cancel(job, reschedule: false) }
+                                    Button("Review New Schedule") { cancel(job, reschedule: true) }.disabled(job["payload"].isNull)
+                                }
+                                if job["status"].string == "uncertain" || job["requiresSendReview"].bool {
+                                    Button("Review Delivery") { reviewDelivery(job) }.disabled(!job["draftId"].nonempty)
+                                }
+                            }.disabled(model.busy)
+                            if job["status"].string == "uncertain" { Text("Delivery may already have happened. Check Sent before reviewing a retry; this schedule cannot be cancelled.").font(.caption).foregroundStyle(.orange) }
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                    }
+                }
+            }.padding(28).frame(maxWidth: .infinity, alignment: .leading)
+        }.task(id: account) {
+            await load()
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+                if NSApp?.isActive == true && !model.busy { await load() }
+            }
+        }
+    }
+    private func statusLabel(_ job: JSON) -> String {
+        ["scheduled": "Scheduled", "sending": "Sending", "sent": "Sent", "cancelled": "Cancelled", "missed": "Missed — review required", "blocked": "Blocked — review required", "uncertain": "Check delivery"][job["status"].string] ?? "Status unavailable"
+    }
+    private func load() async {
+        let owner = account
+        loadGeneration += 1
+        let generation = loadGeneration
+        guard !owner.isEmpty, owner != "all", owner != "demo" else { jobs = []; loading = false; return }
+        loading = true; localError = ""; jobs = jobs.filter { $0["accountId"].string == owner }
+        defer { if generation == loadGeneration { loading = false } }
+        do {
+            let result = try await model.request("/scheduled", mailbox: owner)
+            guard !Task.isCancelled, account == owner, generation == loadGeneration else { return }
+            guard case .array = result["scheduled"] else { throw APIError("Morrow received an incomplete schedule list.") }
+            jobs = result["scheduled"].array.filter { $0["accountId"].string == owner && !["sent", "cancelled", "resolved"].contains($0["status"].string) }
+        } catch { if !Task.isCancelled, account == owner, generation == loadGeneration { localError = error.localizedDescription } }
+    }
+    private func cancel(_ job: JSON, reschedule: Bool) {
+        let owner = job["accountId"].string
+        let message = job["payload"].isNull ? job : job["payload"]
+        guard owner == account, ["scheduled", "missed", "blocked"].contains(job["status"].string),
+              model.confirm(reschedule ? "Cancel this schedule and review a new one?" : "Cancel this scheduled message?", detail: "Mailbox: \(owner)\nSubject: \(message["subject"].string)\nThe saved draft remains available. No replacement is scheduled until you review and confirm it.") else { return }
+        model.perform {
+            do {
+                let result = try await model.request("/scheduled/" + encodedPath(job.id) + "/cancel", method: "POST", body: .object([:]), mailbox: owner)
+                guard result["job"]["id"] == job["id"], result["job"]["accountId"].string == owner, result["job"]["status"].string == "cancelled" else { throw APIError("Cancellation could not be confirmed. Refresh Scheduled before retrying.") }
+                model.notice = "Schedule cancelled. The draft is retained."
+                try? await model.reload()
+                await load()
+                if reschedule {
+                    var message = job["payload"]
+                    message["accountId"] = .string(owner); message["id"] = job["draftId"]
+                    var draft = Draft(message: message)
+                    draft.scheduleDate = max(parsedDate(job["sendAt"].string) ?? Date(), Date().addingTimeInterval(3600))
+                    let reviewedDraft = draft
+                    // perform keeps busy true until it returns; open the editor afterwards.
+                    DispatchQueue.main.async { model.newDraft(reviewedDraft) }
+                }
+            } catch { localError = error.localizedDescription }
+        }
+    }
+    private func reviewDelivery(_ job: JSON) {
+        let owner = job["accountId"].string
+        guard owner == account, job["draftId"].nonempty else { return }
+        model.perform {
+            do {
+                let result = try await model.request("/messages/" + encodedPath(job["draftId"].string), mailbox: owner)
+                let message = result["message"]
+                guard message["accountId"].string == owner, message["deliveryStatus"].string == "unconfirmed" else { throw APIError("Refresh Scheduled and check Sent before retrying this message.") }
+                DispatchQueue.main.async { model.newDraft(Draft(message: message)) }
+            } catch { localError = error.localizedDescription }
+        }
+    }
+}
+
+struct ComposeView: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.dismiss) var dismiss
+    let initial: Draft
+    @State private var draft: Draft
+    @State private var saved: JSON
+    @State private var reviewed = false
+    @State private var showCopyRecipients = false
+    @State private var aiPrompt = ""
+    @State private var aiResult = ""
+    @State private var aiSource = ""
+    @State private var localError = ""
+    @State private var confirmSend = false
+    @State private var scheduleEnabled = false
+    @State private var sendAt: Date
+    @State private var confirmSchedule = false
+    @State private var scheduleRequestID = UUID().uuidString
+    @State private var scheduleAttempt: JSON?
+    @State private var history: JSON = .null
+    @State private var historyError = ""
+    @State private var historyLoading = false
+    init(initial: Draft) {
+        self.initial = initial; _draft = State(initialValue: initial); _saved = State(initialValue: initial.payload)
+        _sendAt = State(initialValue: initial.scheduleDate ?? Date().addingTimeInterval(3600))
+        _scheduleEnabled = State(initialValue: initial.scheduleDate != nil)
+        _showCopyRecipients = State(initialValue: !initial.cc.isEmpty || !initial.bcc.isEmpty)
+    }
+    var dirty: Bool { scheduleEnabled || scheduleAttempt != nil || draft.payload != saved || (draft.savedID.isEmpty && (!draft.to.isEmpty || !draft.cc.isEmpty || !draft.bcc.isEmpty || !draft.subject.isEmpty || !draft.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)) }
+    private var frozen: Bool { model.busy || draft.unconfirmed || draft.scheduleLocked || scheduleAttempt != nil }
+    private var reviewedSendAt: Date { scheduleAttempt.flatMap { parsedDate($0["sendAt"].string) } ?? sendAt }
+    private var defaultDelay: Int { max(0, min(6, Int(model.preferences["sendDelayHours"].number))) }
+    var body: some View {
+        VStack(spacing: 0) {
+          HStack(spacing: 0) {
+           ScrollView {
+           VStack(alignment: .leading, spacing: 16) {
+            HStack { Text(draft.savedID.isEmpty ? (draft.forwarding ? "Forward" : draft.replyToID.isEmpty ? "New message" : "Reply") : "Your draft").font(.title2.bold()); Spacer(); Text(draft.accountID == "demo" ? "Simulated send" : draft.accountID).foregroundStyle(.secondary).font(.caption) }
+            if !draft.savedID.isEmpty || !draft.replyToID.isEmpty || draft.forwarding || draft.sourceDraft || draft.unconfirmed {
+                HStack {
+                    Text("From").frame(width: 36, alignment: .leading).foregroundStyle(.secondary)
+                    Text(draft.accountID == "demo" ? "Demo workspace (simulated)" : draft.accountID).textSelection(.enabled)
+                    Image(systemName: "lock.fill").font(.caption2).foregroundStyle(.secondary)
+                }.accessibilityElement(children: .combine)
+            } else {
+                Picker("From", selection: $draft.accountID) {
+                    ForEach(model.senderAccounts) { account in Text(account["email"].string).tag(account.id) }
+                }.disabled(frozen || !draft.attachments.isEmpty)
+                .onChange(of: draft.accountID) { _ in aiResult = ""; draft.requestID = UUID().uuidString }
+            }
+            if draft.sourceDraft { Text("Editing a local copy with its downloaded attachments. The original Gmail draft stays in Gmail; changes here are not uploaded to it.").font(.caption).foregroundStyle(.secondary) }
+            if draft.forwarding { Text("Forwarding the message text and downloaded attachments. Review the attachment list before sending.").font(.caption).foregroundStyle(.secondary) }
+            if draft.scheduleLocked {
+                Label("This draft is scheduled for \(dateLabel(draft.scheduledSend["sendAt"].string)). Open Outbox and cancel its schedule before editing or sending it.", systemImage: "lock.fill").font(.callout).foregroundStyle(.orange)
+            }
+            if !draft.replyToID.isEmpty { Label("Replying from the mailbox that owns this conversation", systemImage: "lock.fill").font(.caption).foregroundStyle(.secondary) }
+            if !initial.replyToID.isEmpty && initial.savedID.isEmpty && initial.body.isEmpty && !draft.unconfirmed {
+                AutomaticAssistance(messageID: initial.replyToID, account: initial.accountID, trigger: "onReply") { text in
+                    guard !frozen else { return }
+                    if draft.body.isEmpty || model.confirm("Replace this draft’s text?", detail: "Your current text will be replaced with the suggestion. Recipients and footer stay the same.") { draft.body = text }
+                }
+            }
+            if draft.unconfirmed {
+                Label("Delivery was not confirmed. Check your provider’s Sent folder before retrying. Retrying may send a duplicate.", systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                Toggle("I checked Sent and want to retry this delivery", isOn: $reviewed).toggleStyle(.checkbox)
+                HStack {
+                    Button("I found it in Sent…") { resolveDelivery("sent") }
+                    Button("Close without retrying…") { resolveDelivery("dismissed") }
+                }.disabled(model.busy)
+            }
+            VStack(spacing: 12) {
+                recipientField("To", text: $draft.to, placeholder: "Email addresses, separated by commas")
+                if showCopyRecipients || !draft.cc.isEmpty || !draft.bcc.isEmpty {
+                    recipientField("Cc", text: $draft.cc, placeholder: "Copy recipients")
+                    recipientField("Bcc", text: $draft.bcc, placeholder: "Hidden recipients")
+                } else {
+                    ReviewActionButton(title: "Add Cc or Bcc", identifier: "compose.addCopyRecipients", bordered: false) { showCopyRecipients = true }
+                        .fixedSize()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Text("Use plain email addresses separated by commas or semicolons (100 recipients total). Bcc recipients are hidden from other recipients.").font(.caption).foregroundStyle(.secondary)
+                TextField("Subject", text: $draft.subject)
+                TextArea(title: "Message", text: $draft.body, height: 210)
+            }.textFieldStyle(.roundedBorder).disabled(frozen)
+            VStack(alignment: .leading, spacing: 8) {
+                Button { addAttachments() } label: { Label("Add attachments…", systemImage: "paperclip") }.disabled(frozen || draft.accountID.isEmpty)
+                ForEach(draft.attachments) { item in
+                    HStack {
+                        Text(item["name"].string).lineLimit(1).help(item["name"].string)
+                        Text(ByteCountFormatter.string(fromByteCount: Int64(item["size"].number), countStyle: .file)).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Remove") { draft.attachments.removeAll { $0.id == item.id } }.disabled(frozen)
+                            .accessibilityLabel("Remove attachment " + item["name"].string)
+                    }
+                }
+                Text("Choose From before attaching files. Up to 100 files / 50 MiB total. Provider send limits also apply. Files are not sent to AI.").font(.caption).foregroundStyle(.secondary)
+            }
+            if draft.footer["text"].nonempty || draft.footer["html"].nonempty {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Label("Email footer", systemImage: "signature").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Remove") { draft.footer = .object(["text": .string(""), "html": .string("")]) }.buttonStyle(.borderless).disabled(frozen)
+                            .accessibilityLabel("Remove email footer")
+                    }
+                    FooterPreview(footer: draft.footer)
+                }.padding(12).background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+            }
+            if !draft.unconfirmed && !draft.scheduleLocked && scheduleAttempt == nil {
+                DisclosureGroup("Writing assistance") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        TextField("Instructions for your assistant", text: $aiPrompt).textFieldStyle(.roundedBorder)
+                        HStack {
+                            ForEach(["write", "rewrite", "translate"], id: \.self) { action in
+                                Button(action.capitalized) { assist(action) }.disabled(model.busy || !model.allowed(action) || (action == "write" ? aiPrompt.isEmpty : draft.body.isEmpty))
+                            }
+                        }
+                        if !aiResult.isEmpty {
+                            Text(aiSource == "demo" ? "Illustrative demo result" : "AI suggestion — review before using").font(.caption).foregroundStyle(.secondary)
+                            ScrollView { Text(aiResult).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 100)
+                            Button("Use in Draft") { draft.body = aiResult; aiResult = "" }.disabled(model.busy)
+                        }
+                    }.padding(.top, 8)
+                }
+            }
+            if !draft.unconfirmed {
+                if defaultDelay > 0 && !scheduleEnabled { Text("Default send delay: \(defaultDelay) hour\(defaultDelay == 1 ? "" : "s"). Review the send time before adding this message to Outbox.").font(.caption).foregroundStyle(.secondary) }
+                Toggle("Schedule for later", isOn: $scheduleEnabled).toggleStyle(.checkbox).disabled(frozen)
+                if scheduleEnabled {
+                    DatePicker("Send at", selection: $sendAt, displayedComponents: [.date, .hourAndMinute]).disabled(frozen)
+                    Text("Time zone: \(TimeZone.current.identifier). Morrow must be open to send. A missed time can catch up within 15 minutes; after that, review and schedule again. Scheduled message contents stay locked until you cancel the schedule.").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if scheduleAttempt != nil {
+                Text("The scheduling request has been submitted. If confirmation was lost, retry the same request or check Outbox before sending another copy.").font(.callout).foregroundStyle(.orange)
+            }
+            if !localError.isEmpty { Text(localError).foregroundStyle(.red).font(.callout).textSelection(.enabled) }
+           }.padding(24)
+           }.frame(maxWidth: .infinity)
+           if !initial.replyToID.isEmpty {
+               Divider()
+               replyHistory.frame(maxWidth: .infinity)
+           }
+          }
+          Divider()
+            HStack {
+                Button(scheduleAttempt != nil || draft.scheduleLocked ? "View Outbox" : draft.unconfirmed ? "Close" : "Cancel") { close() }.keyboardShortcut(.cancelAction).disabled(model.busy)
+                Spacer()
+                if model.busy { ProgressView().controlSize(.small) }
+                Button("Save Draft") { save() }.keyboardShortcut("s").disabled(frozen)
+                if (scheduleEnabled || defaultDelay > 0 || scheduleAttempt != nil) && !draft.unconfirmed {
+                    ReviewActionButton(title: scheduleAttempt == nil ? "Review & Send Later" : "Retry Same Schedule", enabled: !(model.busy || draft.scheduleLocked || [draft.to, draft.cc, draft.bcc].allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } || draft.body.isEmpty || (scheduleEnabled && scheduleAttempt == nil && sendAt <= Date())), keyEquivalent: "d", keyModifiers: [.command, .shift]) {
+                        if !scheduleEnabled && scheduleAttempt == nil { sendAt = Date().addingTimeInterval(Double(defaultDelay) * 3600) }
+                        confirmSchedule = true
+                    }.fixedSize()
+                } else {
+                  ReviewActionButton(title: draft.unconfirmed ? "Review Retry" : "Review & Send", enabled: !(model.busy || draft.scheduleLocked || [draft.to, draft.cc, draft.bcc].allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty } || draft.body.isEmpty || (draft.unconfirmed && !reviewed)), keyEquivalent: "d", keyModifiers: [.command, .shift]) { confirmSend = true }
+                    .fixedSize()
+                }
+            }.padding(20)
+        }.frame(width: min(initial.replyToID.isEmpty ? 740 : 1180, (NSScreen.main?.visibleFrame.width ?? 1280) - 80), height: min(820, (NSScreen.main?.visibleFrame.height ?? 900) - 100))
+        .task { if !initial.replyToID.isEmpty { await loadHistory() } }
+        .interactiveDismissDisabled(dirty || model.busy)
+        .onAppear { model.dirty("compose", dirty) }
+        .onChange(of: draft) { _ in model.dirty("compose", dirty) }
+        .onChange(of: scheduleEnabled) { _ in model.dirty("compose", dirty) }
+        .onChange(of: scheduleAttempt) { _ in model.dirty("compose", dirty) }
+        .onDisappear { model.dirty("compose", false) }
+        .confirmationDialog(draft.accountID == "demo" ? "Simulate sending this message?" : "Send this message to the listed recipients?", isPresented: $confirmSend, titleVisibility: .visible) {
+            Button(draft.accountID == "demo" ? "Simulate Send" : "Send Message") { send() }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("From: \(draft.accountID)\nTo: \(draft.to)\nCc: \(draft.cc)\nBcc: \(draft.bcc)\nSubject: \(draft.subject.isEmpty ? "(No subject)" : draft.subject)\nAttachments: \(draft.attachments.map { $0["name"].string }.joined(separator: ", "))\n\(draft.unconfirmed ? "This retry may create a duplicate." : "The message and displayed footer will be sent together.")") }
+        .confirmationDialog("Schedule this message?", isPresented: $confirmSchedule, titleVisibility: .visible) {
+            Button(scheduleAttempt == nil ? "Schedule Message" : "Retry Same Schedule") { schedule() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("From: \(draft.accountID)\nTo: \(draft.to)\nCc: \(draft.cc)\nBcc: \(draft.bcc)\nSubject: \(draft.subject.isEmpty ? "(No subject)" : draft.subject)\nAttachments: \(draft.attachments.map { $0["name"].string }.joined(separator: ", "))\nSend at: \(reviewedSendAt.formatted(date: .abbreviated, time: .shortened)) (\(TimeZone.current.identifier))\nMorrow must be open. Catch-up is limited to 15 minutes; later delivery requires a new review. The reviewed message and displayed footer will be locked until this schedule is cancelled.")
+        }
+    }
+    private var replyHistory: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Previous messages").font(.title2.bold())
+            Text("Original message and linked local replies. Quoted history stays in the message text.").font(.caption).foregroundStyle(.secondary)
+            if historyLoading { ProgressView("Loading downloaded messages…") }
+            if !historyError.isEmpty {
+                Text(historyError).font(.callout).foregroundStyle(.secondary)
+                Button("Retry") { Task { await loadHistory() } }.disabled(historyLoading)
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    ForEach(history["messages"].array, id: \.viewID) { message in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(message["subject"].string).font(.headline)
+                            Text("\(message["fromName"].string) <\(message["fromEmail"].string)> · \(dateLabel(message["date"].string))").font(.caption).foregroundStyle(.secondary)
+                            Text("To: \(message["to"].string)\(message["cc"].nonempty ? " · Cc: " + message["cc"].string : "")").font(.caption).foregroundStyle(.secondary)
+                            SecureMessageBody(message: message, autoLoadExternalImages: model.preferences["autoLoadExternalImages"].bool)
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        Divider()
+                    }
+                    if history["limited"].bool { Text("Some earlier messages are unavailable, or the 20-message limit was reached.").font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+        }.padding(24).frame(maxHeight: .infinity, alignment: .top)
+    }
+    private func loadHistory() async {
+        guard !historyLoading else { return }
+        let owner = initial.accountID, id = initial.replyToID
+        historyLoading = true; historyError = ""
+        defer { historyLoading = false }
+        do {
+            let result = try await model.request("/messages/" + encodedPath(id) + "/history", mailbox: owner)
+            guard !Task.isCancelled else { return }
+            guard result["accountId"].string == owner, result["messageId"].string == id,
+                  result["messages"].array.first?.id == id, result["messages"].array.count <= 20,
+                  model.senderAccounts.contains(where: { $0.id == owner }),
+                  result["messages"].array.allSatisfy({ $0["accountId"].string == owner }) else { throw APIError("Reply history could not be verified for this mailbox.") }
+            history = result
+        } catch {
+            if !Task.isCancelled { historyError = "Previous messages could not be loaded. Your draft is retained. " + error.localizedDescription }
+        }
+    }
+    func addAttachments() {
+        guard !frozen else { return }
+        let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        let owner = draft.accountID, urls = panel.urls
+        model.perform {
+            do {
+                for url in urls {
+                    let bytes = try await Task.detached(priority: .userInitiated) {
+                        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                        guard values.isRegularFile == true, let size = values.fileSize, size <= 50 * 1024 * 1024 else { throw APIError("Choose a regular file no larger than 50 MiB.") }
+                        let handle = try FileHandle(forReadingFrom: url)
+                        defer { try? handle.close() }
+                        let data = try handle.read(upToCount: 50 * 1024 * 1024 + 1) ?? Data()
+                        guard data.count <= 50 * 1024 * 1024 else { throw APIError("The file exceeds 50 MiB.") }
+                        return data
+                    }.value
+                    guard owner == draft.accountID, draft.attachments.count < 100,
+                          draft.attachments.reduce(0, { $0 + Int($1["size"].number) }) + bytes.count <= 50 * 1024 * 1024 else { throw APIError("Attachments exceed 100 files or 50 MiB.") }
+                    let result = try await model.request("/attachments", method: "POST", body: .object(["name": .string(url.lastPathComponent), "data": .string(bytes.base64EncodedString()), "contentType": .string(UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream")]), mailbox: owner)
+                    let item = result["attachment"]
+                    guard owner == draft.accountID, item["id"].nonempty else { throw APIError("The attachment could not be confirmed.") }
+                    if !draft.attachments.contains(where: { $0.id == item.id }) { draft.attachments.append(item) }
+                }
+                draft.requestID = UUID().uuidString
+            } catch { localError = error.localizedDescription }
+        }
+    }
+    func recipientField(_ label: String, text: Binding<String>, placeholder: String) -> some View {
+        HStack {
+            Text(label).frame(width: 36, alignment: .leading).foregroundStyle(.secondary)
+            TextField(placeholder, text: text).accessibilityLabel(label)
+        }
+    }
+    func close() {
+        if scheduleAttempt != nil || draft.scheduleLocked { dismiss(); model.scheduledAccount = draft.accountID; model.section = "scheduled" }
+        else if !dirty || draft.unconfirmed || model.confirmDiscard("Discard this draft’s unsaved changes?") { dismiss() }
+    }
+    func save() {
+        guard !draft.scheduleLocked, scheduleAttempt == nil else { return }
+        let payload = draft.payload, account = draft.accountID
+        model.perform {
+            do {
+                let result = try await model.request("/drafts", method: "POST", body: payload, mailbox: account)
+                draft.savedID = result["message"].id; saved = draft.payload
+                try await model.reload(); model.notice = "Draft saved."; dismiss()
+            } catch { localError = error.localizedDescription }
+        }
+    }
+    func resolveDelivery(_ resolution: String) {
+        let owner = draft.accountID, request = draft.requestID, id = draft.savedID
+        guard draft.unconfirmed, !model.busy, !id.isEmpty,
+              model.confirm(resolution == "sent" ? "Mark this delivery as sent?" : "Close this delivery without retrying?", detail: "Mailbox: \(owner)\nTo: \(draft.to)\nSubject: \(draft.subject)\n\(resolution == "sent" ? "Confirm that you found this message in your provider’s Sent folder. The local copy will move to Sent." : "The delivery status will remain unknown. The local copy will move to Archive.")\nMorrow will retain your decision and prevent this request from being sent again.") else { return }
+        model.perform {
+            do {
+                let result = try await model.request("/drafts/resolve", method: "POST", body: .object(["draftId": .string(id), "requestId": .string(request), "resolution": .string(resolution), "confirmed": .bool(true)]), mailbox: owner)
+                let message = result["message"]
+                guard message.id == id, message["accountId"].string == owner, message["deliveryStatus"].string == "resolved", message["deliveryResolution"].string == resolution else { throw APIError("Delivery review could not be confirmed. Refresh before trying again.") }
+                model.notice = "Delivery review saved. No message was sent."
+                try? await model.reload(); dismiss()
+            } catch { localError = error.localizedDescription }
+        }
+    }
+    func send() {
+        guard !draft.scheduleLocked, scheduleAttempt == nil else { return }
+        let account = draft.accountID
+        model.perform {
+            var submitted = false
+            do {
+                if !draft.unconfirmed {
+                    let savedDraft = try await model.request("/drafts", method: "POST", body: draft.payload, mailbox: account)
+                    draft.savedID = savedDraft["message"].id; saved = draft.payload
+                }
+                var payload = draft.payload
+                payload["draftId"] = draft.savedID.isEmpty ? .null : .string(draft.savedID)
+                payload["requestId"] = .string(draft.requestID)
+                payload["retryUnconfirmed"] = .bool(draft.unconfirmed && reviewed)
+                submitted = true
+                let result = try await model.request("/send", method: "POST", body: payload, mailbox: account)
+                model.notice = result["simulated"].bool ? "Demo message sent locally." : "Message sent."
+                try? await model.reload(); dismiss()
+            } catch let error as APIError {
+                if error.payload["requiresSendReview"].bool {
+                    draft = Draft(message: error.payload["message"]); saved = draft.payload; reviewed = false
+                    try? await model.reload()
+                }
+                localError = error.localizedDescription
+            } catch {
+                // A lost HTTP response can hide a completed send. Freeze the text,
+                // keep this request ID, and require review before retrying.
+                if submitted {
+                    draft.unconfirmed = true; reviewed = false
+                    localError = "Delivery could not be confirmed. Check Sent before retrying this same message. " + error.localizedDescription
+                    try? await model.reload()
+                    if model.messages.contains(where: { $0.id == "sent:" + draft.requestID && $0["accountId"].string == account }) { model.notice = "Message sent."; dismiss() }
+                } else { localError = "The draft could not be saved, so sending was not attempted. " + error.localizedDescription }
+            }
+        }
+    }
+    func schedule() {
+        let account = draft.accountID
+        guard !draft.scheduleLocked, !draft.unconfirmed, scheduleAttempt != nil || sendAt > Date() else { localError = "Choose a future send time for an unlocked draft."; return }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let reviewedPayload = draft.payload, reviewedTime = formatter.string(from: sendAt)
+        model.perform {
+            do {
+                if scheduleAttempt == nil {
+                    let savedDraft = try await model.request("/drafts", method: "POST", body: reviewedPayload, mailbox: account)
+                    draft.savedID = savedDraft["message"].id; saved = draft.payload
+                    guard !draft.savedID.isEmpty else { throw APIError("The draft could not be confirmed, so scheduling was not attempted.") }
+                    var payload = reviewedPayload.picking(["to", "cc", "bcc", "subject", "body", "footer", "replyToId", "attachments"])
+                    payload["draftId"] = .string(draft.savedID)
+                    payload["requestId"] = .string(scheduleRequestID)
+                    payload["sendAt"] = .string(reviewedTime)
+                    scheduleAttempt = payload
+                }
+                guard let payload = scheduleAttempt else { return }
+                _ = try await model.request("/scheduled", method: "POST", body: payload, mailbox: account)
+                model.notice = "Message scheduled. Keep Morrow open at the chosen time."
+                try? await model.reload(); dismiss(); model.scheduledAccount = account; model.section = "scheduled"
+            } catch { localError = error.localizedDescription }
+        }
+    }
+    func assist(_ action: String) {
+        let payload = JSON.object(["action": .string(action), "prompt": .string(aiPrompt), "draftText": .string(draft.body)])
+        model.perform {
+            do { let result = try await model.request("/ai", method: "POST", body: payload, mailbox: draft.accountID); aiResult = result["text"].string; aiSource = result["source"].string }
+            catch { localError = error.localizedDescription }
+        }
+    }
+}
