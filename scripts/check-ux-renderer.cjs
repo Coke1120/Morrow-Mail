@@ -42,6 +42,11 @@ contextBridge.exposeInMainWorld('morrow',{
  if(channel==='mail:listProviderFolders')return ok({api:false,reason:'profile',folders:[]});
  if(channel==='mail:listSnoozed')return ok({records:[]});
  if(channel==='mail:listSignatures')return ok({signatures:[]});
+ // The current compose entry point requires the mailbox's From context.
+ if(channel==='mail:getComposeContext'){
+   const email=accounts.find(a=>a.id===payload.accountId).email;
+   return ok({fromAddress:payload.fromAddress||email,sendAs:[{email}],selfAddresses:[email],defaultCc:[],domain:'example.test',settings:{ccByDomain:{},accounts:{}}});
+ }
  if(channel==='mail:listScheduled')return queueReady?ok(queue):{success:false,error:{message:'Fixture queue read failure'}};
  if(channel==='mail:editScheduled'){const row=queue.find(r=>r.id===payload.id);queue=queue.filter(r=>r.id!==payload.id);draft={...draft,accountId:row.accountId,to:row.to,subject:row.subject,textBody:'Scheduled body preserved'};return ok({emailId:'saved-draft',accountId:row.accountId,sendAt:row.sendAt});}
  if(channel==='mail:cancelScheduled'){queue=queue.filter(r=>r.id!==payload.id);return ok(true);}
@@ -159,6 +164,7 @@ app.whenReady().then(async()=>{
  await waitFor(`$('confirm').open`);await run(`$('confirm-ok').click()`);await waitFor(`vacationCache?.accountId==='b'`);
  assert.equal(await run(`state.accountId`),'a','Settings selection does not silently change Mail');
  await run(`$('settings-account').scrollIntoView({block:'center'})`);await shot('settings-mailbox');
+ await run(`revealSettingsFold('mailbox')`);await waitFor(`settingsFoldLoaded.has('mailbox:b')`);
  await run(`$('settings-reconnect').click()`);assert.match(await run(`$('connect-title').textContent`),/b@example.test/);assert.match(await run(`$('connect-recovery-note').textContent`),/Cached mail/);assert.match(await run(`$('oauth-unavailable').textContent`),/unavailable/);
  await shot('reconnect-account');await run(`$('connect').close();$('settings').close();state.accountId='a';refreshMailVacation(true)`);
  assert.match(await run(`$('mail-ooo-status').textContent`),/a@example.test.*on until disabled/);

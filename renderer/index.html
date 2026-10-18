@@ -656,15 +656,14 @@
         <button type="button" id="settings-tab-bot" data-fold="bot" role="tab" aria-controls="settings-bot" aria-selected="false" aria-current="false" tabindex="-1">Bot access</button>
       </nav>
       <section class="settings-account-context" aria-label="Settings mailbox" hidden>
-          <label for="settings-account">Selected mailbox</label>
-          <select id="settings-account"></select>
+          <label for="settings-account">Mailbox</label>
+          <select id="settings-account" aria-describedby="settings-mailbox-note"></select>
           <p id="settings-mailbox-note" class="hint"></p>
-          <button type="button" class="ghost" id="settings-reconnect">Reconnect mailbox</button>
       </section>
       <div class="settings-folds">
         <section class="fold is-open" id="settings-prefs" data-fold="prefs" role="tabpanel" aria-labelledby="settings-tab-prefs" tabindex="0">
           <div class="fold-panel" id="settings-prefs-panel">
-          <h3 id="settings-prefs-title">General</h3>
+          <h3 id="settings-prefs-title">Appearance</h3>
           <div id="prefs">
             <div class="field">
               <label for="pref-theme">Theme</label>
@@ -674,21 +673,22 @@
               </select>
             </div>
             <div class="field">
-              <label for="pref-accent">Accent</label>
-              <input id="pref-accent" type="text" maxlength="7" spellcheck="false" autocomplete="off" />
+              <label for="pref-accent">Accent color</label>
+              <input id="pref-accent" type="text" maxlength="7" spellcheck="false" autocomplete="off" placeholder="#193C34" />
             </div>
             <div class="checks">
-              <label class="check" for="pref-folder-chips"><input id="pref-folder-chips" type="checkbox" /> Folder chips</label>
-              <label class="check" for="pref-gmail-folders"><input id="pref-gmail-folders" type="checkbox" /> Gmail folders expanded</label>
-              <label class="check" for="pref-outlook-folders"><input id="pref-outlook-folders" type="checkbox" /> Outlook folders expanded</label>
+              <h4>Sidebar &amp; navigation</h4>
+              <label class="check" for="pref-folder-chips"><input id="pref-folder-chips" type="checkbox" /> Show folder chips</label>
+              <label class="check" for="pref-gmail-folders"><input id="pref-gmail-folders" type="checkbox" /> Expand Gmail folders</label>
+              <label class="check" for="pref-outlook-folders"><input id="pref-outlook-folders" type="checkbox" /> Expand Outlook folders</label>
             </div>
           </div>
+          <p class="hint settings-save-note">Changes save automatically.</p>
           </div>
         </section>
         <section class="fold" id="settings-mail" data-fold="mail" role="tabpanel" aria-labelledby="settings-tab-mail" tabindex="0" hidden>
           <div class="fold-panel" id="settings-mail-panel" hidden>
-            <h3>Mail &amp; Sync</h3>
-            <label class="check" for="pref-compact-list"><input id="pref-compact-list" type="checkbox" /> Compact message list (one line per message)</label>
+            <h3>Message list &amp; sync</h3>
             <div class="field">
               <label for="pref-sync-horizon">Sync history</label>
               <select id="pref-sync-horizon" aria-describedby="sync-horizon-help">
@@ -696,9 +696,15 @@
                 <option value="365">Last 365 days</option>
                 <option value="0">All (unlimited)</option>
               </select>
-              <p class="hint" id="sync-horizon-help">Applies to every account on this computer. Inbox and the open folder catch up on their next sync; open other folders to sync them. Shortening history keeps downloaded mail. All can take longer and use much more disk space. Messages are shown 200 at a time; use Previous and Next for older downloaded mail.</p>
+              <p class="hint" id="sync-horizon-help">For all accounts. Downloaded mail stays when you shorten history. All takes more time and disk space.</p>
             </div>
-            <div class="field">
+            <label class="check" for="pref-compact-list"><input id="pref-compact-list" type="checkbox" /> Compact message list <span class="hint">· one line per message</span></label>
+            <details class="settings-disclosure"><summary>How history downloads</summary>
+              <p class="hint">Inbox and the open folder catch up on their next sync. Open other folders to download their history. Browse downloaded mail with Previous and Next, 200 messages at a time.</p>
+            </details>
+            <div class="settings-group">
+            <h4>Reading &amp; sending</h4>
+            <div class="field settings-short-field">
               <label for="pref-undo">Undo send (seconds)</label>
               <input id="pref-undo" type="number" min="0" max="30" step="1" />
             </div>
@@ -707,37 +713,49 @@
               <label class="check" for="pref-images"><input id="pref-images" type="checkbox" /> Load remote images</label>
               <label class="check" for="pref-snooze"><input id="pref-snooze" type="checkbox" /> Snooze</label>
             </div>
+            </div>
+            <p class="hint settings-save-note">Changes save automatically.</p>
           </div>
         </section>
         <section class="fold" id="settings-ai" data-fold="ai" role="tabpanel" aria-labelledby="settings-tab-ai" tabindex="0" hidden>
           <div class="fold-panel" id="settings-ai-panel" hidden>
-          <h3 id="settings-ai-title">AI</h3>
-          <label class="check" for="pref-ai-reply"><input id="pref-ai-reply" type="checkbox" /> Open AI write on reply</label>
-          <div id="ai-fields">
+          <h3 id="settings-ai-title">AI connection</h3>
+          <div id="ai-fields" class="settings-field-grid">
+            <div class="field">
             <label for="ai-base">Base URL</label>
             <input id="ai-base" type="text" spellcheck="false" autocomplete="off" />
-            <label for="ai-model">Model id</label>
+            </div>
+            <div class="field">
+            <label for="ai-model">Model</label>
             <input id="ai-model" type="text" list="ai-model-list" spellcheck="false" autocomplete="off" />
             <datalist id="ai-model-list"></datalist>
+            </div>
+            <div class="field settings-full-width">
             <label for="ai-key">API key</label>
-            <input id="ai-key" type="password" spellcheck="false" autocomplete="off" />
-            <div class="row">
+            <input id="ai-key" type="password" spellcheck="false" autocomplete="off" aria-describedby="ai-key-help" />
+            <p class="hint" id="ai-key-help">Leave blank to keep the saved key.</p>
+            </div>
+            <div class="row settings-full-width">
               <button type="button" class="primary" id="ai-save">Save AI</button>
               <button type="button" class="ghost" id="ai-fetch">Fetch models</button>
               <button type="button" class="ghost" id="ai-test">Test connection</button>
             </div>
-            <p id="ai-status" role="status"></p>
-            <p class="hint">The API key stays in local AI config, the same store as Morrow Mail → AI Setup. Leave the key blank to keep the saved one. Fetch models uses this form, or the saved key when the box is blank. Test connection uses the saved config — Save AI first if you changed these fields.</p>
+            <p id="ai-status" class="settings-full-width" role="status"></p>
+            <p class="hint settings-full-width">Test connection uses the saved config. Save AI first after making changes.</p>
+          </div>
+          <details class="settings-disclosure"><summary>Connection details</summary>
+            <p class="hint">The key is saved on this computer and shared with Morrow Mail → AI Setup. Fetch models uses the form above and the saved key when the key field is blank.</p>
+          </details>
+          <div class="settings-group">
+            <h4>Writing</h4>
+            <label class="check" for="pref-ai-reply"><input id="pref-ai-reply" type="checkbox" /> Open AI write on reply</label>
+            <p class="hint">This preference saves automatically.</p>
           </div>
           </div>
         </section>
         <section class="fold" id="settings-mailbox" data-fold="mailbox" role="tabpanel" aria-labelledby="settings-tab-mailbox" tabindex="0" hidden>
           <div class="fold-panel" id="settings-mailbox-panel" hidden>
-          <h3 id="settings-mailbox-title">Accounts</h3>
-          <p id="settings-capabilities" class="hint preserve-lines" role="status"></p>
-          <div class="row"><button type="button" class="ghost" id="settings-capabilities-refresh">Refresh permissions</button><button type="button" class="ghost" id="settings-calendar">Manage calendar access</button></div>
-          <details id="account-recovery"><summary>Existing user? Recover access or find missing data</summary><p>If your mailbox is listed, reconnect the same address to keep its cached work. Do not remove the account to fix sign-in.</p><p>If this profile is empty, confirm you opened the expected app and operating-system user. Back up the old app’s data before changing folders. Morrow has not verified or migrated an older profile or its credentials. Reconnecting downloads available server mail; it does not recover unsynced local drafts from another profile.</p><p>For help, open Debug log from the app sidebar and review a redacted support preview. Do not share passwords, OAuth files, or database files.</p></details>
-          <ul id="settings-accounts" class="settings-accounts" aria-label="Mailbox push"></ul>
+          <h3 id="settings-mailbox-title">Mailbox tools</h3>
           <div class="row mailbox-actions" role="group" aria-labelledby="settings-mailbox-title">
             <button type="button" class="ghost icon-label" id="inbox-rules-open">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -752,6 +770,11 @@
               </svg>
               <span>Signatures</span>
             </button>
+          </div>
+          <div class="settings-group">
+          <h4>Connected accounts</h4>
+          <ul id="settings-accounts" class="settings-accounts" aria-label="Mailbox push"></ul>
+          <div class="row">
             <button type="button" class="ghost icon-label" id="connect-open">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
@@ -759,6 +782,18 @@
               </svg>
               <span>Connect account</span>
             </button>
+            <button type="button" class="ghost" id="settings-reconnect">Reconnect mailbox</button>
+          </div>
+          </div>
+          <details class="settings-disclosure" id="account-permissions"><summary>Permissions &amp; calendar access</summary>
+            <p id="settings-capabilities" class="hint preserve-lines" role="status"></p>
+            <div class="row"><button type="button" class="ghost" id="settings-capabilities-refresh">Refresh permissions</button><button type="button" class="ghost" id="settings-calendar">Manage calendar access</button></div>
+          </details>
+          <details class="settings-disclosure" id="account-recovery"><summary>Recovery &amp; account removal</summary>
+            <p class="hint">To fix sign-in, reconnect the same address. Cached mail and local work stay in this profile.</p>
+            <p class="hint">Missing data? Check the app and operating-system user you opened. Back up old app data before changing folders. Morrow has not migrated older profiles; reconnecting downloads server mail but cannot recover their unsynced drafts.</p>
+            <p class="hint">For help, review a support preview in Debug log. Keep passwords, OAuth files, and databases private.</p>
+            <p class="hint">Removing an account is not a sign-in fix. Review what will be removed before confirming.</p>
             <button type="button" class="ghost icon-label" id="remove" disabled>
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <polyline points="3 6 5 6 21 6"></polyline>
@@ -768,16 +803,16 @@
               </svg>
               <span>Remove account</span>
             </button>
-          </div>
+          </details>
           </div>
         </section>
         <section class="fold" id="settings-ooo" data-fold="ooo" role="tabpanel" aria-labelledby="settings-tab-ooo" tabindex="0" hidden>
           <div class="fold-panel" id="settings-ooo-panel" hidden>
           <h3 id="settings-ooo-title">Out of Office</h3>
-          <p id="ooo-account" class="hint"></p>
+          <p class="hint">Replies run on your mail server, even while Morrow is closed. You’ll review changes before saving.</p>
           <p id="ooo-note" class="hint"></p>
           <div class="row">
-            <button type="button" class="ghost" id="ooo-refresh">Refresh provider settings</button>
+            <button type="button" class="ghost" id="ooo-refresh">Refresh status</button>
             <button type="button" class="ghost" id="ooo-grant" hidden>Allow Out of Office settings…</button>
             <a id="ooo-provider-link" href="https://mail.google.com/mail/u/0/#settings/general" target="_blank" rel="noreferrer" hidden>Open provider settings</a>
           </div>
@@ -790,11 +825,12 @@
               </select>
             </label>
             <div id="ooo-schedule" hidden>
+              <p id="ooo-timezone" class="hint settings-full-width"></p>
               <label for="ooo-start">Start <input id="ooo-start" type="datetime-local" /></label>
               <label for="ooo-end">End <input id="ooo-end" type="datetime-local" /></label>
             </div>
             <label for="ooo-subject" id="ooo-subject-label">Subject prefix <input id="ooo-subject" type="text" maxlength="200" autocomplete="off" /></label>
-            <label for="ooo-message" id="ooo-message-label"><span id="ooo-message-caption">Reply message</span> <textarea id="ooo-message" rows="5" maxlength="10000"></textarea></label>
+            <label for="ooo-message" id="ooo-message-label"><span id="ooo-message-caption">Reply message</span> <textarea id="ooo-message" rows="4" maxlength="10000"></textarea></label>
             <label for="ooo-audience" id="ooo-audience-label">Reply audience
               <select id="ooo-audience">
                 <option value="none">No external replies</option>
@@ -802,9 +838,11 @@
                 <option value="all">All senders</option>
               </select>
             </label>
-            <label for="ooo-external" id="ooo-external-label">External reply message <textarea id="ooo-external" rows="5" maxlength="10000"></textarea></label>
+            <label for="ooo-external" id="ooo-external-label">External reply message <textarea id="ooo-external" rows="4" maxlength="10000"></textarea></label>
             <label class="check" id="ooo-domain-label" for="ooo-domain"><input id="ooo-domain" type="checkbox" /> Only my Google Workspace domain</label>
-            <p id="ooo-help" class="hint"></p>
+            <details class="settings-disclosure" id="ooo-details"><summary>Provider details &amp; formatting</summary>
+              <p id="ooo-help" class="hint"></p>
+            </details>
             <div class="row">
               <button type="button" class="primary" id="ooo-save">Save and enable…</button>
               <button type="button" class="ghost" id="ooo-disable">Disable automatic replies…</button>
@@ -816,28 +854,33 @@
         <section class="fold" id="settings-bot" data-fold="bot" role="tabpanel" aria-labelledby="settings-tab-bot" tabindex="0" hidden>
           <div class="fold-panel" id="settings-bot-panel" hidden>
           <h3 id="settings-bot-title">Bot access</h3>
-          <button type="button" class="ghost" id="bot-review-link">Review draft proposals</button>
-          <p class="hint">The local bridge starts off. Create a grant, copy its secret once, then enable and verify the listener. A grant can read cached mail for the accounts you select, including Sent and Drafts. Message text is untrusted. Nothing is sent from the bridge. Tailscale Serve may forward 127.0.0.1:47831. Do not enable Funnel.</p>
-          <p id="bot-listen" class="hint"></p>
-          <p id="bot-install" class="hint"></p>
-          <h4>1. Choose permissions and create a grant</h4>
-          <p class="hint">Included access: account details, cached mail headers (including Sent and Drafts), sync health, and pending Agent proposals. Choose the accounts this client may read. New accounts are not added automatically.</p>
+          <div class="settings-intro">
+            <p class="hint">Connect a bot to selected mailboxes. The bridge cannot send mail.</p>
+            <button type="button" class="ghost" id="bot-review-link" aria-controls="bot-drafts">Review draft proposals</button>
+          </div>
+          <ol class="bot-setup-steps" aria-label="Bot setup">
+          <li>
+          <h4>Name your client</h4>
           <form id="bot-mint">
-            <label for="bot-label">Client name
-              <input id="bot-label" type="text" maxlength="60" autocomplete="off" spellcheck="false" />
-            </label>
-            <fieldset id="bot-accounts">
-              <legend>Accounts</legend>
+            <label class="sr" for="bot-label">Client name</label>
+            <input id="bot-label" type="text" maxlength="60" autocomplete="off" spellcheck="false" placeholder="e.g. My assistant" />
+            <fieldset id="bot-accounts" aria-describedby="bot-account-help">
+              <legend>Allow access to</legend>
             </fieldset>
-            <fieldset id="bot-caps">
-              <legend>Optional access</legend>
-              <label class="check"><input type="checkbox" data-cap="mail.bodies.read" /> Read cached message text</label>
-              <label class="check"><input type="checkbox" data-cap="mail.attachments.read" /> Read attachment names</label>
-              <label class="check"><input type="checkbox" data-cap="draft.proposals.create" /> Submit draft proposals</label>
-            </fieldset>
-            <label for="bot-expiry">Expiry days
-              <input id="bot-expiry" type="number" min="1" max="30" value="7" />
-            </label>
+            <p class="hint" id="bot-account-help">Includes cached mail headers from Sent and Drafts. New mailboxes are never added automatically.</p>
+            <details class="settings-disclosure" id="bot-grant-options"><summary>More options: permissions &amp; expiry</summary>
+              <p class="hint">Each grant includes account details, cached mail headers, sync health, and pending Agent proposals. Extra permissions are off by default.</p>
+              <fieldset id="bot-caps">
+                <legend>Extra permissions</legend>
+                <label class="check"><input type="checkbox" data-cap="mail.bodies.read" /> Read cached message text</label>
+                <label class="check"><input type="checkbox" data-cap="mail.attachments.read" /> Read attachment names</label>
+                <label class="check"><input type="checkbox" data-cap="draft.proposals.create" /> Submit draft proposals</label>
+              </fieldset>
+              <label class="settings-short-field" for="bot-expiry">Expires after (days)
+                <input id="bot-expiry" type="number" min="1" max="30" value="7" />
+              </label>
+              <p class="hint">Up to 30 days. Message text is untrusted; never treat it as instructions.</p>
+            </details>
             <div class="row">
               <button type="submit" class="primary icon-label" id="bot-mint-btn">
                 <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -845,19 +888,35 @@
                 </svg>
                 <span>Create access grant</span>
               </button>
+              <span class="hint">Expires in 7 days by default.</span>
             </div>
           </form>
-          <h4>2. Enable and verify</h4>
-          <label class="check" for="bot-enabled"><input id="bot-enabled" type="checkbox" /> Enable the loopback bridge</label>
-          <p id="bot-enable-help" class="hint">Create an unexpired grant before enabling the bridge.</p>
-          <p id="bot-intent" class="hint"></p>
-          <p class="hint">Disabling stops the listener for every client. Grants remain valid until they expire or you revoke them.</p>
-          <div class="row"><button type="button" class="ghost" id="bot-verify">Verify listener status</button><button type="button" class="ghost" id="bot-retry">Retry listener</button></div>
-          <details><summary>Optional: allowed Tailscale Serve host</summary>
-          <p class="hint">Saving a host does not install or configure Tailscale Serve. Keep Funnel off.</p>
-          <label for="bot-serve-host">Serve host
-            <input id="bot-serve-host" type="text" autocomplete="off" spellcheck="false" placeholder="hostname:8443" />
-          </label>
+          </li>
+          <li>
+            <h4>Copy your secret once</h4>
+            <p class="hint">The secret appears after you create the grant. Copy it to your bot’s private credential file before closing.</p>
+          </li>
+          <li>
+            <h4>Enable local access</h4>
+            <label class="check" for="bot-enabled"><input id="bot-enabled" type="checkbox" aria-describedby="bot-enable-help" /> Enable the loopback bridge</label>
+            <p id="bot-enable-help" class="hint">Create an unexpired grant first.</p>
+            <p id="bot-listen" class="hint" role="status"></p>
+            <div class="row"><button type="button" class="ghost" id="bot-verify">Verify listener status</button><button type="button" class="ghost" id="bot-retry" hidden>Retry listener</button></div>
+          </li>
+          </ol>
+          <p id="bot-status" role="status"></p>
+          <details class="settings-disclosure" id="bot-advanced"><summary>Advanced: grants &amp; connection</summary>
+            <h4>Access grants &amp; activity</h4>
+            <p class="hint">Disabling the bridge stops every client. Grants stay valid until expiry or revocation.</p>
+            <ul id="bot-grants" aria-label="Bot grants"></ul>
+            <h4>Connection details</h4>
+            <p id="bot-install" class="hint"></p>
+            <p id="bot-intent" class="hint"></p>
+            <p class="hint">Local access uses 127.0.0.1:47831 only. Tailscale Serve may forward it. Do not enable Funnel.</p>
+            <label for="bot-serve-host">Allowed Tailscale Serve host <span class="optional">(optional)</span>
+              <input id="bot-serve-host" type="text" autocomplete="off" spellcheck="false" placeholder="hostname:8443" />
+            </label>
+          <p class="hint">Saving a host does not install or configure Tailscale Serve.</p>
           <div class="row">
             <button type="button" class="ghost icon-label" id="bot-serve-save">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -867,16 +926,15 @@
             </button>
           </div>
           </details>
-          <h4>Access grants</h4>
-          <ul id="bot-grants" aria-label="Bot grants"></ul>
-          <h4 id="bot-draft-heading" tabindex="-1">Draft proposals</h4>
-          <ul id="bot-drafts" aria-label="Draft proposals"></ul>
-          <p id="bot-status" role="status"></p>
+          <details class="settings-disclosure" id="bot-review">
+            <summary id="bot-draft-heading">Draft proposals</summary>
+            <p class="hint">Open a proposal in compose to review it. Only Send sends the message.</p>
+            <ul id="bot-drafts" aria-label="Draft proposals"></ul>
+          </details>
           </div>
         </section>
       </div>
       <p id="settings-status" role="status"></p>
-      <p class="hint">Preferences are saved automatically on this computer.</p>
       </div>
     </dialog>
     <dialog id="move-picker" aria-labelledby="move-picker-title">
@@ -901,8 +959,8 @@
     </dialog>
     <dialog id="bot-secret" aria-labelledby="bot-secret-title">
       <form>
-        <h2 id="bot-secret-title">Grant secret</h2>
-        <p class="hint">Copy this secret now. It cannot be shown again. Store it in your bot client’s private credential file. If you lose it, replace this grant’s secret to create a new one. Morrow stores only a verifier.</p>
+        <h2 id="bot-secret-title">Copy your secret once</h2>
+        <p class="hint">Save it in your bot’s private credential file. It cannot be shown again.</p>
         <pre id="bot-secret-value"></pre>
         <p id="bot-secret-status" class="hint" role="status" aria-live="polite"></p>
         <div class="row">
@@ -915,6 +973,9 @@
           </button>
           <button type="button" class="ghost" id="bot-secret-close">Close</button>
         </div>
+        <details class="settings-disclosure"><summary>Lost a secret?</summary>
+          <p class="hint">Replace it under Bot access → Advanced: grants &amp; connection. The old secret stops working immediately. Morrow stores only a verifier.</p>
+        </details>
       </form>
     </dialog>
     <dialog id="confirm" aria-labelledby="confirm-title">

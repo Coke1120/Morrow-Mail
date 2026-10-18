@@ -407,6 +407,7 @@ textarea:focus-visible {
 }
 
 #prefs label.check { margin: 4px 0; }
+#prefs .checks h4 { grid-column: 1 / -1; }
 
 #settings-status { grid-column: 1 / -1; margin: 0; }
 
@@ -454,9 +455,6 @@ textarea:focus-visible {
 }
 
 .mailbox-actions { margin-top: 4px; }
-
-#settings > .dialog-body > .hint,
-#settings .dialog-body > .hint { margin-top: 16px; }
 
 .sheet-head {
   display: flex;
@@ -668,20 +666,64 @@ button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
 .fold-panel[hidden] { display: none; }
 
 #settings h3 {
-  margin: 2px 0 8px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--muted);
+  margin: 0 0 12px;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
 }
 
 #settings-nav button { min-height: 34px; }
 #settings .fold:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
-#settings-mail .field + .field { margin-top: 16px; }
-#settings-mail .checks { margin-top: 16px; }
-#settings-mail .hint { line-height: 1.5; }
-#settings .settings-account-context { margin: 0 0 12px; }
+#settings h4 { margin: 12px 0 8px; font-size: 13px; font-weight: 600; }
+#settings p { margin: 8px 0; font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+#settings label { font-size: 13px; }
+#settings .field label { margin: 0 0 4px; }
+#settings .check { margin: 8px 0; }
+#settings .row { margin-top: 10px; align-items: center; }
+#settings .row .hint { font-size: 12px; }
+#settings .settings-save-note { margin: 16px 0 0; font-size: 12px; }
+#settings .settings-group { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+#settings .settings-group > h4 { margin-top: 0; }
+#settings .settings-group > .row:first-child { margin-top: 0; }
+#settings .settings-short-field { max-width: 200px; }
+.settings-field-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px 16px; }
+.settings-full-width { grid-column: 1 / -1; }
+#settings .settings-field-grid p, #settings .settings-field-grid .row { margin: 0; }
+#settings .settings-field-grid .field p { margin: 6px 0 0; }
+.settings-intro { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
+#settings .settings-intro p { flex: 1 1 240px; margin: 0; }
+.settings-disclosure { margin-top: 12px; border-top: 1px solid var(--line); font-size: 13px; }
+.settings-disclosure > summary { padding: 10px 2px; color: var(--accent-ink); font-weight: 600; cursor: pointer; }
+.settings-disclosure > summary:hover { background: var(--hover); }
+.settings-disclosure > summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 2px; border-radius: 4px; }
+.settings-disclosure > :last-child:not(summary) { margin-bottom: 8px; }
+.bot-setup-steps { margin: 18px 0 0; padding-left: 28px; }
+.bot-setup-steps > li { padding-left: 8px; }
+.bot-setup-steps > li::marker { color: var(--accent-ink); font-size: 16px; font-weight: 700; }
+.bot-setup-steps > li + li { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+#settings .bot-setup-steps h4 { margin: 0 0 8px; font-size: 14px; }
+#settings .bot-setup-steps p { margin: 6px 0; }
+#settings-bot #bot-accounts { grid-template-columns: repeat(2, minmax(0, 1fr)); border: 0; padding: 0; margin-top: 10px; gap: 4px 16px; }
+#bot-accounts legend { padding: 0; font-size: 12px; color: var(--muted); }
+#bot-accounts label { overflow-wrap: anywhere; }
+#bot-accounts .hint { grid-column: 1 / -1; }
+#settings #bot-accounts label { margin: 4px 0; }
+#settings-bot #bot-label { max-width: 400px; }
+#settings-bot .settings-disclosure label:not(.check) { display: block; }
+#settings-bot .settings-disclosure label input:not([type="checkbox"]) { margin-top: 4px; }
+#bot-status:empty, #ooo-status:empty { display: none; }
+#ooo-schedule { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 16px; }
+#ooo-fields label.check { display: flex; }
+#ooo-fields label.check input { flex: 0 0 auto; }
+#ooo-fields > label, #ooo-schedule label { margin: 0; }
+#ooo-fields .settings-disclosure, #ooo-fields .row { margin-top: 0; }
+#settings .settings-account-context { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 6px 12px; margin: 0 0 12px; }
+#settings .settings-account-context label { margin: 0; }
+#settings .settings-account-context p { grid-column: 2; margin: 0; font-size: 12px; }
+@media (max-width: 620px) {
+  .settings-field-grid, #ooo-schedule, #settings-bot #bot-accounts { grid-template-columns: minmax(0, 1fr); }
+}
 .list-paging { margin-top: 8px; }
 .list-paging .row { gap: 6px; margin-top: 4px; }
 .list-paging button { padding: 4px 8px; font-size: 12px; }

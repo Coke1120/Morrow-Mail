@@ -34,7 +34,8 @@ ipcMain.handle('fixture:invoke', async (_event, channel, payload) => {
   if (channel === 'mail:listProviderFolders') return ok(providerGranted ? { api: true, folders: providerFolders } : { api: false, reason: 'scope_missing', folders: [] });
   if (channel === 'mail:grantOrganize') { providerGranted = true; return ok({ granted: true }); }
   if (channel === 'mail:oauthStatus') return ok({ google: true, accounts: accounts.map(row => ({ id: row.id, calendar: true })) });
-  if (channel === 'mail:vacationGet') return ok({ accountId: payload.accountId, provider: 'google', supported: true, settings: { mode: 'disabled' } });
+  if (channel === 'mail:vacationGet') return ok({ accountId: payload.accountId, provider: 'google', supported: true, canWrite: true,
+    revision: 'fixture', settings: { mode: 'disabled', subject: 'Away', message: 'I will reply when I return.', audience: 'contacts' } });
   if (channel === 'bot:getAccess') return ok({ accounts: [], grants: [], drafts: [], listen: {} });
   if (channel === 'calendar:status') return new Promise(resolve => statusRequests.push(resolve));
   if (channel === 'calendar:list') return new Promise((resolve, reject) => calendarRequests.push({ payload, resolve, reject }));
@@ -44,6 +45,13 @@ const count = channel => calls.filter(row => row.channel === channel).length;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 let win;
 const run = code => win.webContents.executeJavaScript(code, true);
+async function key(keyCode) {
+  win.webContents.sendInputEvent({ type: 'keyDown', keyCode });
+  if (keyCode === 'RETURN') win.webContents.sendInputEvent({ type: 'char', keyCode: '\r' });
+  if (keyCode === 'SPACE') win.webContents.sendInputEvent({ type: 'char', keyCode: ' ' });
+  win.webContents.sendInputEvent({ type: 'keyUp', keyCode });
+  await sleep(50);
+}
 async function waitFor(code) {
   for (let i = 0; i < 200; i++) { if (await run(code)) return; await sleep(25); }
   throw new Error('Timed out: ' + code);
@@ -84,6 +92,10 @@ app.whenReady().then(async () => {
   assert.equal(await run(`document.activeElement.id`), 'settings-tab-mail');
   assert.equal(await run(`$('settings-tab-mail').getAttribute('aria-selected')`), 'true');
   assert.equal(await run(`$('settings-prefs').hidden && !$('settings-mail').hidden && document.querySelector('.settings-account-context').hidden`), true);
+  await key('LEFT');
+  assert.equal(await run(`document.activeElement.id`), 'settings-tab-prefs');
+  await key('RIGHT');
+  assert.equal(await run(`document.activeElement.id`), 'settings-tab-mail');
   for (const days of [365, 0, 180]) {
     await run(`$('pref-sync-horizon').value='${days}';$('pref-sync-horizon').dispatchEvent(new Event('change'))`);
     await waitFor(`state.prefs.syncHorizon===${days} && $('settings-status').textContent.includes('Sync history saved')`);
@@ -106,6 +118,8 @@ app.whenReady().then(async () => {
   await run(`$('ai-model').value='Unsaved choice';setSettingsFold('prefs',true,false);setSettingsFold('ai',true,false);`);
   assert.equal(await run(`$('ai-model').value`), 'Unsaved choice');
   assert.equal(count('host:aiGetConfig'), 1);
+  routes.delete('host:aiGetConfig');
+  await shot('settings-ai');
   await run(`setSettingsFold('ooo',true,false)`);
   await waitFor(`settingsFoldLoaded.has('ooo:box-0')`);
   assert.equal(count('mail:vacationGet'), 1);
@@ -116,8 +130,90 @@ app.whenReady().then(async () => {
   await run(`$('settings-tab-bot').dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));`);
   assert.equal(await run(`document.activeElement.id`), 'settings-tab-prefs');
   assert.equal(await run(`document.querySelectorAll('#settings [role="tab"][tabindex="0"]').length`), 1);
+  await key('TAB');
+  assert.equal(await run(`document.activeElement.id`), 'settings-prefs', 'Tab enters the active panel');
+  await shot('settings-general');
   await run(`setSettingsFold('ooo',true,false)`);
   await shot('settings-lazy');
+
+  // Disclosures hide explanation, never consent or the reviewed provider write.
+  await run(`$('ooo-mode').value='scheduled';$('ooo-mode').dispatchEvent(new Event('change'));`);
+  assert.equal(await run(`$('ooo-start').checkVisibility() && $('ooo-end').checkVisibility() && $('ooo-timezone').checkVisibility()`), true);
+  assert.equal(await run(`$('ooo-audience').checkVisibility() && !$('ooo-help').checkVisibility()`), true);
+  await run(`$('ooo-details').querySelector('summary').focus()`);await key('RETURN');
+  assert.equal(await run(`$('ooo-help').checkVisibility()`), true, 'provider details open from the keyboard');
+  await key('RETURN');
+  await run(`$('ooo-mode').value='always';$('ooo-mode').dispatchEvent(new Event('change'));$('ooo-save').click()`);
+  await waitFor(`$('confirm').open`);
+  assert.equal(count('mail:vacationSet'), 0, 'save still requires a review');
+  await run(`$('confirm-cancel').click()`);await waitFor(`!$('confirm').open`);
+  assert.equal(count('mail:vacationSet'), 0);
+  await run(`setSettingsFold('mailbox',true,false)`);await waitFor(`settingsFoldLoaded.has('mailbox:box-0')`);
+  assert.equal(await run(`$('settings-account').checkVisibility() && $('settings-reconnect').checkVisibility()`), true);
+  assert.equal(await run(`$('settings-capabilities').checkVisibility() || $('remove').checkVisibility()`), false);
+  await shot('settings-accounts');
+  await run(`$('account-permissions').querySelector('summary').focus()`);await key('RETURN');
+  assert.equal(await run(`$('settings-calendar').checkVisibility()`), true);
+  await run(`$('account-recovery').querySelector('summary').focus()`);await key('SPACE');
+  assert.equal(await run(`$('remove').checkVisibility()`), true);
+  await run(`$('account-permissions').open=false;$('account-recovery').open=false;`);
+
+  // Exercise the default grant payload, copy-once secret, and explicit enable.
+  const botAccess = { enabled: false, accounts: accounts.map(a => ({ accountId: a.id, email: a.email })), grants: [], drafts: [], listen: {} };
+  routes.set('bot:getAccess', () => ok(botAccess));
+  routes.set('bot:mintGrant', payload => {
+    botAccess.grants.push({ ...payload, clientId: 'fixture-client', live: true, expiresAt: '2099-01-01T00:00:00Z' });
+    return ok({ secret: 'SYNTHETIC SECRET FOR OFFLINE UI CHECK', access: botAccess });
+  });
+  routes.set('bot:setEnabled', payload => {
+    botAccess.enabled = payload.enabled;
+    botAccess.listen = { listening: payload.enabled, address: '127.0.0.1', port: 47831 };
+    return ok(botAccess);
+  });
+  await run(`setSettingsFold('bot',true,false);loadBotAccess()`);
+  assert.equal(await run(`$('settings-account').checkVisibility()`), false);
+  assert.equal(await run(`$('bot-enabled').disabled`), true);
+  assert.equal(await run(`$('bot-expiry').checkVisibility() || $('bot-serve-host').checkVisibility()`), false);
+  assert.deepEqual(await run(`selectedBotAccounts()`), [], 'mailbox access remains opt-in');
+  await shot('settings-bot-first-run');
+  // An invalid expiry must reveal itself even if More options was closed.
+  await run(`$('bot-expiry').value='31';$('bot-mint-btn').click()`);
+  assert.equal(count('bot:mintGrant'), 0);
+  assert.equal(await run(`$('bot-grant-options').open && document.activeElement.id==='bot-expiry'`), true);
+  await run(`$('bot-expiry').value='7';$('bot-grant-options').open=false;
+    $('bot-label').value='My assistant';$('bot-accounts').querySelector('input').checked=true;$('bot-mint-btn').click()`);
+  await waitFor(`$('bot-secret').open && !botBusy`);
+  assert.deepEqual(calls.find(row => row.channel === 'bot:mintGrant').payload, { label: 'My assistant', accountIds: ['box-0'],
+    capabilities: ['accounts.read','mail.headers.read','health.read','agent.proposals.read'], expiryDays: 7 });
+  assert.equal(count('bot:setEnabled'), 0, 'creating a grant never enables access');
+  await run(`Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{window.fixtureCopied=value;}}});$('bot-secret-copy').click()`);
+  await waitFor(`$('bot-secret-status').textContent.startsWith('Copied.')`);
+  assert.equal(await run(`fixtureCopied===$('bot-secret-value').textContent`), true);
+  await shot('settings-bot-copy-secret');
+  await run(`$('bot-secret-close').click()`);await waitFor(`!$('bot-secret').open && $('bot-secret-value').textContent===''`);
+  assert.equal(await run(`$('bot-enabled').disabled || $('bot-enabled').checked`), false);
+  await run(`$('bot-enabled').click()`);await waitFor(`!botBusy && $('bot-listen').textContent.includes('Listening on 127.0.0.1:47831')`);
+  assert.equal(count('bot:setEnabled'), 1);
+  // Extra permissions and a changed expiry still apply when their disclosure closes.
+  await run(`$('bot-grant-options').open=true;$('bot-caps').querySelector('input').click();$('bot-expiry').value='14';
+    $('bot-grant-options').open=false;$('bot-label').value='Text reader';$('bot-accounts').querySelector('input').checked=true;$('bot-mint-btn').click()`);
+  await waitFor(`$('bot-secret').open && !botBusy`);
+  const extraGrant = calls.filter(row => row.channel === 'bot:mintGrant').at(-1).payload;
+  assert.equal(extraGrant.expiryDays, 14);
+  assert.deepEqual(extraGrant.capabilities, ['accounts.read','mail.headers.read','health.read','agent.proposals.read','mail.bodies.read']);
+  await run(`$('bot-secret-close').click()`);await waitFor(`!$('bot-secret').open && $('bot-secret-value').textContent===''`);
+  botAccess.drafts.push({proposalId:'fixture-proposal',subject:'Review this reply',to:['recipient@example.test'],bodyText:'Proposed text',status:'pending'});
+  await run(`loadBotAccess()`);
+  await run(`$('bot-advanced').querySelector('summary').focus()`);await key('RETURN');
+  assert.equal(await run(`$('bot-serve-host').checkVisibility() && $('bot-grants').querySelector('button').checkVisibility()`), true);
+  await shot('settings-bot-advanced');
+  await run(`$('bot-advanced').open=false;$('bot-review-link').click()`);
+  assert.equal(await run(`$('bot-review').open && document.activeElement.id==='bot-draft-heading' && $('bot-drafts').checkVisibility()`), true);
+  assert.equal(await run(`$('bot-drafts').querySelector('button').checkVisibility()`), true, 'the proposal review action remains reachable');
+  await key('TAB');
+  assert.equal(await run(`document.activeElement===$('bot-drafts').querySelector('button')`), true);
+  assert.equal(count('mail:send'), 0, 'reviewing proposals never sends');
+  await run(`$('bot-review').open=false;`);
   await run(`$('settings').close();`);
 
   // Provider management lives on its own primary page, including drag listeners.
@@ -311,6 +407,18 @@ app.whenReady().then(async () => {
   await run(`$('pref-snooze').focus();$('pref-snooze').scrollIntoView({block:'nearest'});`);
   assert.equal(await run(`$('pref-snooze').getBoundingClientRect().bottom<=innerHeight && document.activeElement===$('pref-snooze')`), true);
   await shot('settings-short-reduced-motion');
+  // Every Settings panel still fits horizontally in a short, narrow dark window.
+  win.setSize(560,600);
+  await run(`document.documentElement.dataset.theme='dark'`);
+  for (const name of ['prefs','mail','ai','mailbox','ooo','bot']) {
+    await run(`setSettingsFold('${name}',true,true)`);
+    await waitFor(`settingsFoldLoaded.has(settingsFoldKey('${name}')) && !document.querySelector('#settings .fold.is-open .fold-panel').inert`);
+    assert.equal(await run(`$('settings').querySelector('.dialog-body').scrollWidth<=$('settings').querySelector('.dialog-body').clientWidth+1`), true, name+' must not scroll horizontally');
+    assert.equal(await run(`document.querySelector('.settings-account-context').hidden`), !['mailbox','ooo'].includes(name));
+    await shot('settings-short-dark-'+name);
+  }
+  await run(`$('bot-review-link').click()`);
+  assert.equal(await run(`document.activeElement.id==='bot-draft-heading' && $('bot-draft-heading').getBoundingClientRect().bottom<innerHeight`), true);
   console.log(JSON.stringify({ settingsOpen: immediate, preferenceOpenReads: 0, calendarListReads: calendarRequests.length,
     retainedMonthAndSelection: true, agentScrollContainers: 1, providerPage: true, singleUpdater: true }, null, 2));
   console.log('PAGE_NAVIGATION_CHECK_OK');
