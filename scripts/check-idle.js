@@ -350,6 +350,37 @@ async function testImmediateIdleBackoff() {
   await env.controller.stop();
 }
 
+async function testResumeDuringConnectAndClose() {
+  let releaseConnect;
+  let releaseLogout;
+  const env = harness({
+    openClient: async (_account, clients) => {
+      const client = fakeClient({});
+      clients.push(client);
+      if (clients.length === 1) {
+        const logout = client.logout.bind(client);
+        client.logout = async () => {
+          await new Promise((resolve) => { releaseLogout = resolve; });
+          await logout();
+        };
+        await new Promise((resolve) => { releaseConnect = resolve; });
+      }
+      return client;
+    },
+  });
+  env.controller.start();
+  await env.time.until("connecting", () => !!releaseConnect);
+  env.controller.sleep();
+  releaseConnect();
+  await env.time.until("closing connection made during sleep", () => !!releaseLogout);
+  await env.controller.wake();
+  releaseLogout();
+  await env.time.until("push resumes after wake during close", () => env.clients[1]?.idleCalls === 1);
+  assert.strictEqual(env.clients[0].closed, true);
+  assert.strictEqual(env.controller.healthy("ada"), true);
+  await env.controller.stop();
+}
+
 async function testPollInterval() {
   assert.strictEqual(idle.backgroundPollDue(false, 0, 60 * 1000, idle.IDLE_SAFETY_POLL_MS), true);
   assert.strictEqual(idle.backgroundPollDue(true, 0, idle.IDLE_SAFETY_POLL_MS - 1, idle.IDLE_SAFETY_POLL_MS), false);
@@ -369,6 +400,7 @@ async function run() {
   await testRateLimitOnConnect();
   await testRemoveSleepAndOneConnection();
   await testImmediateIdleBackoff();
+  await testResumeDuringConnectAndClose();
   await testPollInterval();
 }
 

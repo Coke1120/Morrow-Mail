@@ -279,7 +279,7 @@ function createIdleController(options) {
           clearDebounce(session);
           await closeQuiet(session);
           if (!alive(session)) break;
-          await wait(session, IDLE_HOLD_MS);
+          if (asleep || offline) await wait(session, IDLE_HOLD_MS);
           continue;
         }
         const pauseUntil = Number(gateUntil(accountId)) || 0;
@@ -302,13 +302,13 @@ function createIdleController(options) {
         let client = null;
         try {
           const secret = await secretFor(account);
-          if (!alive(session) || asleep || offline) break;
+          if (!alive(session)) break;
+          if (asleep || offline) continue;
           client = await openClient(account, secret);
           if (!alive(session) || asleep || offline || !gateOpen(accountId)) {
             await closeClient(client);
             client = null;
-            if (!gateOpen(accountId)) continue;
-            break;
+            continue;
           }
           session.client = client;
           const caps = await readCaps(client);
@@ -323,7 +323,7 @@ function createIdleController(options) {
           await client.select(folder);
           if (!alive(session) || asleep || offline) {
             await closeQuiet(session);
-            break;
+            continue;
           }
           bind(session, client, account);
           setMode(session, "idle");
