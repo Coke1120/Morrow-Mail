@@ -23,6 +23,7 @@
   --chip-on: #102822;
   --chip-ink: #ffffff;
   --danger: #9f1239;
+  --star: #e2a100;
   --shadow-card: 0 0 0 0.5px rgba(16, 40, 34, 0.12), 0 1px 2px rgba(0, 0, 0, 0.06), 0 6px 16px rgba(0, 0, 0, 0.09);
   --shadow-pop: 0 20px 60px rgba(16, 40, 34, 0.22), 0 4px 16px rgba(16, 40, 34, 0.08);
   --folders: 260px;
@@ -53,6 +54,7 @@ html[data-nav="expanded"] {
   --chip-on: #f2f2f2;
   --chip-ink: #102822;
   --danger: #f87171;
+  --star: #f6c445;
   --shadow-card: 0 0 0 0.5px rgba(255, 255, 255, 0.08), 0 8px 24px rgba(0, 0, 0, 0.35);
   --shadow-pop: 0 20px 60px rgba(0, 0, 0, 0.55);
 }
@@ -1441,6 +1443,16 @@ button.chip[aria-current="true"] {
 
 .selection-action svg { display: block; flex: none; }
 
+#selection-star.is-starred {
+  color: var(--star);
+  background: color-mix(in srgb, var(--star) 18%, transparent);
+}
+
+#selection-star.is-starred svg {
+  fill: currentColor;
+  stroke: currentColor;
+}
+
 .list-filter { margin-top: 6px; }
 
 .list-filter input {
@@ -1707,7 +1719,16 @@ button.message .snippet {
   line-height: 1.2;
 }
 
-button.message .star { color: var(--accent-ink); margin-right: 4px; }
+button.message .star {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  margin-right: 4px;
+  color: var(--star);
+  vertical-align: -2px;
+}
+
+button.message .star svg { display: block; }
 
 .count {
   flex: none;
@@ -1845,6 +1866,12 @@ button.thread-item[aria-current="true"] { background: var(--selected); }
 .suggest-list button:hover { background: var(--hover); }
 
 .reader-actions button[aria-pressed="true"] { background: var(--selected); color: var(--accent-ink); }
+
+#reader .reader-actions button[data-action="star"].is-starred,
+#reader .reader-actions button[data-action="star"][aria-pressed="true"] {
+  color: var(--star);
+  background: color-mix(in srgb, var(--star) 18%, transparent);
+}
 
 #reader h2 {
   padding: 16px 20px 2px;

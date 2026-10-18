@@ -18,6 +18,8 @@ const idle = require("./idle");
 const debugLog = require("../debug-log");
 
 const PRIMARY_ORDER = ["inbox", "sentitems", "drafts", "deleteditems", "archive", "junkemail"];
+// Not an IMAP mailbox. List queries with this id return starred rows for one account.
+const STARRED_FOLDER_ID = "__morrow_starred__";
 const KEY_TO_WELL = {
   inbox: "inbox",
   drafts: "drafts",
@@ -102,6 +104,30 @@ function accountViews() {
   return db.listAccountRows().map((row, index) => accountView(row, index));
 }
 
+function starredMailbox(accountId) {
+  return {
+    id: STARRED_FOLDER_ID,
+    name: "Starred",
+    wellKnownName: "starred",
+    unreadCount: 0,
+    totalCount: db.countMessages({ accountId, filterFlagged: true }),
+    type: "virtual",
+    children: [],
+  };
+}
+
+function placeStarred(primary, accountId) {
+  const view = starredMailbox(accountId);
+  for (const name of ["drafts", "sentitems", "inbox"]) {
+    const index = primary.findIndex((folder) => folder.wellKnownName === name);
+    if (index >= 0) {
+      primary.splice(index + 1, 0, view);
+      return;
+    }
+  }
+  primary.unshift(view);
+}
+
 function accountView(row, index) {
   const folders = db.foldersFor(row.id);
   const primary = [];
@@ -120,6 +146,7 @@ function accountView(row, index) {
     else more.push(view);
   }
   primary.sort((a, b) => PRIMARY_ORDER.indexOf(a.wellKnownName) - PRIMARY_ORDER.indexOf(b.wellKnownName));
+  placeStarred(primary, row.id);
   const view = {
     id: row.id,
     email: row.email,
@@ -231,7 +258,10 @@ function queryFrom(params) {
     limit: query.limit,
     offset: query.offset,
   };
-  if (!out.folderKey && out.folderId && !out.accountId && KEY_TO_WELL[out.folderId]) {
+  if (out.folderId === STARRED_FOLDER_ID) {
+    out.filterFlagged = true;
+    out.folderId = null;
+  } else if (!out.folderKey && out.folderId && !out.accountId && KEY_TO_WELL[out.folderId]) {
     out.folderKey = out.folderId;
     out.folderId = null;
   }
@@ -363,7 +393,9 @@ function syncLabels(extra) {
       const account = db.accountById(accountId);
       if (account) accountLabel = account.email || account.display_name || "";
     }
-    if (accountId && folderId) {
+    if (folderId === STARRED_FOLDER_ID) {
+      if (!folderLabel) folderLabel = "Starred";
+    } else if (accountId && folderId) {
       const folder = db.folderByPath(accountId, folderId);
       if (!folderLabel && folder && folder.name) folderLabel = folder.name;
       else if (!folderLabel) folderLabel = String(folderId);
@@ -427,6 +459,16 @@ function publicSync(params) {
   if (!db.listAccountRows().length) return { state: "idle", message: "No account connected", lastSuccessAt: null };
   const accountId = params && params.accountId;
   const folderId = params && params.folderId;
+  if (folderId === STARRED_FOLDER_ID) {
+    return {
+      ...syncLabels(params),
+      state: "idle",
+      phase: "idle",
+      message: "Starred uses messages already downloaded",
+      lastSuccessAt: null,
+      lastError: "",
+    };
+  }
   if (!accountId || !folderId) return { ...syncState };
   const saved = syncScopes.get(JSON.stringify([accountId, folderId]));
   const gate = syncGates.get(accountId);
@@ -1884,13 +1926,18 @@ function answer(channel, args) {
     case "mail:listFromCache":
     case "mail:listWindowRead":
     case "mail:loadMoreAggregate":
-      if (params && params.accountId && params.folderId) noteActive(params.accountId, params.folderId);
+      if (params && params.accountId && params.folderId && params.folderId !== STARRED_FOLDER_ID) {
+        noteActive(params.accountId, params.folderId);
+      }
       return ok({ ...listPayload(params), sync: publicSync(params) });
     case "mail:getSyncStatus":
       return ok(publicSync(params));
     case "mail:listFromNetwork":
       return (async () => {
         const query = params || {};
+        if (query.folderId === STARRED_FOLDER_ID) {
+          return ok({ ...listPayload(query), sync: publicSync(query) });
+        }
         const account = query.accountId ? db.accountById(query.accountId) : null;
         if (account && query.folderId) noteActive(account.id, query.folderId);
         try {
@@ -1999,12 +2046,14 @@ function answer(channel, args) {
     case "mail:toggleStar":
       return (async () => {
         const row = db.messageById(params && params.emailId);
-        if (row && typeof params.isStarred === "boolean") {
-          const message = await applyFlags(row, params.isStarred ? ["\\Flagged"] : [], params.isStarred ? [] : ["\\Flagged"], { starred: params.isStarred ? 1 : 0 });
-          if (message) return fail("flags", message);
-          emitAccounts();
-        }
-        return ok(true);
+        if (!row) return fail("email-gone", "That message is no longer in the mailbox.");
+        if (typeof (params && params.isStarred) !== "boolean") return fail("flags", "Star needs a true or false value.");
+        // IMAP \Flagged is Gmail's star and the flag on other servers, including Outlook.
+        const on = params.isStarred;
+        const message = await applyFlags(row, on ? ["\\Flagged"] : [], on ? [] : ["\\Flagged"], { starred: on ? 1 : 0 });
+        if (message) return fail("flags", message);
+        emitAccounts();
+        return ok({ isStarred: on });
       })();
     case "mail:toggleStarBatch":
       return (async () => {
@@ -2060,8 +2109,9 @@ function answer(channel, args) {
     case "mail:moveToFolderBatch":
       return (async () => {
         try {
-          const target = params && (params.targetFolderId || params.destination);
-          if (!target) return fail("move", "Choose a folder.");
+        const target = params && (params.targetFolderId || params.destination);
+        if (target === STARRED_FOLDER_ID) return fail("move", "Starred is a filter, not a folder.");
+        if (!target) return fail("move", "Choose a folder.");
           const ids = [];
           if (params.emailId) ids.push(params.emailId);
           if (params.threadId) {
@@ -2427,6 +2477,7 @@ async function syncAccountById(id, options) {
 module.exports = {
   init,
   answer,
+  STARRED_FOLDER_ID,
   messagesForAi,
   pumpScheduled,
   startBackgroundSync,

@@ -289,6 +289,7 @@ assert.strictEqual(paneWidth(200, 20, 140, 400), 220);
 
 const folderIcon = extractFunction(appJs, "folderIcon");
 assert.strictEqual(folderIcon("inbox"), "📥");
+assert.strictEqual(folderIcon("starred"), "⭐");
 assert.strictEqual(folderIcon("archive"), "📦");
 assert.strictEqual(folderIcon("deleteditems"), "🗑️");
 assert.strictEqual(folderIcon(null), "📁");
@@ -325,6 +326,16 @@ assert.deepStrictEqual(chipFolders(outlookAccount).map((folder) => folder.wellKn
 assert.deepStrictEqual(chipFolders(null), []);
 assert.deepStrictEqual(chipFolders({ folders: { primary: [], more: [{ id: "in", wellKnownName: "inbox" }] } }).map((folder) => folder.id), ["in"]);
 assert.deepStrictEqual(chipFolders({ folders: { primary: [{ id: "x", wellKnownName: "archive" }] } }), []);
+assert.deepStrictEqual(chipFolders({
+  folders: {
+    primary: [
+      { id: "in", wellKnownName: "inbox" },
+      { id: "__morrow_starred__", wellKnownName: "starred", type: "virtual" },
+      { id: "sent", wellKnownName: "sentitems" },
+      { id: "drafts", wellKnownName: "drafts" },
+    ],
+  },
+}).map((folder) => folder.id), ["in", "sent", "drafts"]);
 const chipLabel = extractFunction(appJs, "chipLabel");
 assert.strictEqual(chipLabel({ name: "INBOX" }), "Inbox");
 assert.strictEqual(chipLabel({ name: "inbox" }), "Inbox");
@@ -1722,6 +1733,9 @@ const organizeUi = loadFunctions(appJs, [
   "providerLabelText",
   "providerLabelTree",
   "messageDragPayload",
+  "isStarredFolder",
+  "isVirtualMailbox",
+  "storableFolders",
   "organizeDrop",
   "organizeMenu",
 ]);
@@ -2327,6 +2341,48 @@ assert.ok(preload.includes("mail:archiveBatch"));
 assert.ok(preload.includes("mail:deleteBatch"));
 assert.ok(preload.includes("mail:markReadBatch"));
 assert.ok(preload.includes("mail:toggleStarBatch"));
+const starUi = loadFunctions(appJs, [
+  "filteredEmails",
+  "isStarredFolder",
+  "isVirtualMailbox",
+  "storableFolders",
+  "visibleList",
+  "messageDragPayload",
+  "providerCopy",
+  "organizeDrop",
+]);
+assert.strictEqual(starUi.isStarredFolder("__morrow_starred__"), true);
+assert.strictEqual(starUi.isStarredFolder("INBOX"), false);
+assert.strictEqual(starUi.isVirtualMailbox({ id: "__morrow_starred__", type: "virtual" }), true);
+assert.strictEqual(starUi.isVirtualMailbox({ id: "INBOX", wellKnownName: "inbox" }), false);
+assert.deepStrictEqual(starUi.storableFolders([
+  { id: "INBOX", name: "Inbox" },
+  { id: "__morrow_starred__", name: "Starred", type: "virtual" },
+]).map((folder) => folder.id), ["INBOX"]);
+const starRows = [
+  { id: "a", subject: "Hello", from: "Ada", snippet: "x", isStarred: true },
+  { id: "b", subject: "Other", from: "Bea", snippet: "y", isStarred: false },
+];
+assert.deepStrictEqual(starUi.visibleList(starRows, "", "INBOX").map((row) => row.id), ["a", "b"]);
+assert.deepStrictEqual(starUi.visibleList(starRows, "", "__morrow_starred__").map((row) => row.id), ["a"]);
+assert.deepStrictEqual(starUi.visibleList(starRows, "other", "__morrow_starred__"), []);
+assert.ok(functionSource(appJs, "renderList").includes("shownEmails()"));
+const refusedStarDrop = starUi.organizeDrop(
+  { kind: "imap", id: "__morrow_starred__", accountId: "a1" },
+  { id: "m1", accountId: "a1", folderId: "INBOX" },
+);
+assert.strictEqual(refusedStarDrop.ok, false);
+assert.match(refusedStarDrop.message, /Starred is a filter/);
+const toggleStarSource = functionSource(appJs, "toggleStar");
+assert.ok(toggleStarSource.indexOf("paintStars") < toggleStarSource.indexOf("await call"));
+assert.ok(toggleStarSource.includes("paintStars([email], previous, true)"));
+assert.ok(appJs.includes('const STARRED_FOLDER_ID = "__morrow_starred__"'));
+assert.ok(appJs.includes("starIcon(starredOn)"));
+assert.ok(appJs.includes("Still finishing the last change."));
+assert.ok(css.includes("--star:"));
+assert.ok(css.includes('#reader .reader-actions button[data-action="star"].is-starred'));
+assert.ok(engineSrc.includes("STARRED_FOLDER_ID"));
+assert.ok(engineSrc.includes('"\\\\Flagged"'));
 assert.ok(css.includes(".row-check"));
 assert.ok(css.includes("#messages.has-selection .row-check"));
 assert.ok(css.includes("body.is-mail-drag"));
@@ -6628,7 +6684,7 @@ checkGoogleOauthAlias();
 require("./check-win-secrets").run();
 require("./check-bot-client").run();
 
-checkUpdateAuth().then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-ux-remainder").run()).then(() => {
+checkUpdateAuth().then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-star").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-ux-remainder").run()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);
