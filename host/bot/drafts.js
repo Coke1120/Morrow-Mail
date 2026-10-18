@@ -34,7 +34,11 @@ function load() {
 }
 
 function save(store) {
-  writePrivate(draftPath(), `${JSON.stringify(store)}\n`);
+  const text = `${JSON.stringify(store)}\n`;
+  // load() bounds filesystem bytes, not JavaScript UTF-16 code units. Check
+  // the exact serialized bytes before replacing the last readable copy.
+  if (Buffer.byteLength(text, "utf8") > STORE_CAP) throw coded("REQUEST_TOO_LARGE");
+  writePrivate(draftPath(), text);
 }
 
 function expired(row, now) {
@@ -136,7 +140,6 @@ function submit(input) {
     reviewHash: null,
   };
   loaded.store.proposals.push(row);
-  if (JSON.stringify(loaded.store).length > STORE_CAP) throw coded("REQUEST_TOO_LARGE");
   save(loaded.store);
   return { proposal: remoteView(row), replay: false };
 }

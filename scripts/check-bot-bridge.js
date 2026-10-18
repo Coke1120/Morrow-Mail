@@ -68,7 +68,12 @@ function callBridge(options) {
       error.message = `${error.message} during ${options.operation || options.method || "request"}`;
       reject(error);
     });
-    req.end(payload);
+    if (options.beforeBody) {
+      req.flushHeaders();
+      Promise.resolve().then(options.beforeBody).then(() => req.end(payload), (error) => req.destroy(error));
+    } else {
+      req.end(payload);
+    }
   });
 }
 
@@ -716,6 +721,92 @@ async function run() {
     assert.strictEqual(seed.data.body, BODY_SENTINEL);
     assert.strictEqual(seed.data.sends, false);
     assert.strictEqual(db.messageStats().messages, beforeDrafts);
+
+    // Headers can authenticate before a user revokes access while the body is
+    // still arriving. A rejected response must not conceal a persisted draft.
+    for (const change of ["revoke", "rotate", "expire", "disable"]) {
+      const delayed = auth.mint({
+        label: `slow upload ${change}`,
+        accountIds: ["acct-a"],
+        capabilities: ["draft.proposals.create"],
+        expiryDays: 1,
+      });
+      const draftFile = path.join(dir, "bot-draft-proposals.json");
+      const before = fs.readFileSync(draftFile, "utf8");
+      const originalAuthenticate = auth.authenticate;
+      let headersSeen;
+      const authenticated = new Promise((resolve) => { headersSeen = resolve; });
+      auth.authenticate = (header) => {
+        const principal = originalAuthenticate(header);
+        if (principal && principal.clientId === delayed.grant.clientId) headersSeen();
+        return principal;
+      };
+      try {
+        const response = await callBridge({
+          token: delayed.secret,
+          installationId,
+          operation: "draft.proposals.submit",
+          params: {
+            accountId: "acct-a",
+            idempotencyKey: `slow-body-${change}`,
+            to: ["ada@example.test"],
+            subject: "Must not persist",
+            bodyText: "Revoked during upload",
+          },
+          async beforeBody() {
+            await authenticated;
+            if (change === "revoke") auth.revoke(delayed.grant.clientId);
+            if (change === "rotate") auth.rotate(delayed.grant.clientId);
+            if (change === "disable") auth.setEnabledFlag(false);
+            if (change === "expire") {
+              const access = auth.load().store;
+              access.grants.find((grant) => grant.clientId === delayed.grant.clientId).expiresAt = new Date(0).toISOString();
+              fs.writeFileSync(path.join(dir, "bot-access.json"), JSON.stringify(access));
+            }
+          },
+        });
+        assert.strictEqual(response.status, 401, change);
+        assert.strictEqual(response.json.installationId, null, change);
+        assert.strictEqual(fs.readFileSync(draftFile, "utf8"), before, `${change} during body upload must prevent draft persistence`);
+      } finally {
+        auth.authenticate = originalAuthenticate;
+        auth.setEnabledFlag(true);
+      }
+    }
+
+    // A UTF-8 store near its byte cap must reject an append without making
+    // already reviewed proposals unreadable on the next load.
+    const draftFile = path.join(dir, "bot-draft-proposals.json");
+    const savedDrafts = fs.readFileSync(draftFile, "utf8");
+    try {
+      const template = JSON.parse(savedDrafts).proposals[0];
+      const nearFull = { version: 1, proposals: [] };
+      const storeCap = 2 * 1024 * 1024;
+      const storedBytes = () => Buffer.byteLength(`${JSON.stringify(nearFull)}\n`);
+      while (storedBytes() < storeCap - 16000) {
+        const index = nearFull.proposals.length;
+        nearFull.proposals.push({
+          ...template, id: `history-${index}`, idempotencyKey: `history-${index}`,
+          clientId: "old-client", status: "dismissed", bodyText: "語".repeat(2000),
+        });
+      }
+      nearFull.proposals[0].bodyText += "a".repeat(storeCap - 4096 - storedBytes());
+      const before = `${JSON.stringify(nearFull)}\n`;
+      fs.writeFileSync(draftFile, before);
+      const oversized = await callBridge({
+        ...base,
+        operation: "draft.proposals.submit",
+        params: {
+          accountId: "acct-a", idempotencyKey: "utf8-store-overflow",
+          to: ["ada@example.test"], subject: "Byte limit", bodyText: "語".repeat(2000),
+        },
+      });
+      assert.strictEqual(oversized.status, 413, "UTF-8 append must not exceed the readable store size");
+      assert.strictEqual(fs.readFileSync(draftFile, "utf8"), before);
+      assert.strictEqual((await manage.answer("bot:getAccess", {}, settingsEvent())).data.draftsAvailable, true);
+    } finally {
+      fs.writeFileSync(draftFile, savedDrafts);
+    }
 
     const readerView = await callBridge({
       token: reader.secret,

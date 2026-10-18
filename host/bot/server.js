@@ -276,6 +276,12 @@ async function handle(req, res) {
       finish(failure({ code: "UNKNOWN_OPERATION", requestId, installationId }));
       return;
     }
+    // Body upload yields to Settings. Revalidate before dispatch, since draft
+    // proposals persist locally even if the eventual response is rejected.
+    if (!auth.recheck(principal)) {
+      finish(failure({ code: "UNAUTHENTICATED", requestId, installationId: null }));
+      return;
+    }
     operation = parsed.operation;
     accountId = accountFrom(parsed.params);
     const kind = service.kindFor(operation);
