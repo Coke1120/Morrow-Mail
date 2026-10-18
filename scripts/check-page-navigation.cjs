@@ -23,6 +23,8 @@ let providerGranted = true;
 ipcMain.handle('fixture:invoke', async (_event, channel, payload) => {
   calls.push({ channel, payload });
   if (routes.has(channel)) return routes.get(channel)(payload);
+  const preference = require('../host/settings').answer(channel, [payload]);
+  if (preference !== undefined) return preference;
   if (channel === 'app:getVersion') return new Promise(() => {}); // Boot wired; suspend unrelated startup reads.
   if (channel === 'host:aiGetConfig') return { hasKey: false, baseUrl: 'https://example.test', model: 'fixture' };
   if (channel.startsWith('host:update')) return { downloaded: true, version: 'fixture', lastCheckedAt: Date.now() };
@@ -75,6 +77,22 @@ app.whenReady().then(async () => {
   assert.deepEqual(immediate, { open: true, options: 0 }, 'dialog opens before deferred mailbox paint');
   await waitFor(`settingsFoldLoaded.has('prefs:')`);
   assert.equal(calls.length, 0, 'opening Preferences reuses saved prefs and loads no closed folds');
+  assert.equal(await run(`document.querySelectorAll('#settings [role="tabpanel"]:not([hidden])').length`), 1);
+  assert.equal(await run(`$('settings-log')===null && $('settings-about')===null`), true, 'rail links are not duplicated');
+  await run(`$('settings-tab-prefs').focus();$('settings-tab-prefs').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}));`);
+  await waitFor(`settingsFoldLoaded.has('mail:')`);
+  assert.equal(await run(`document.activeElement.id`), 'settings-tab-mail');
+  assert.equal(await run(`$('settings-tab-mail').getAttribute('aria-selected')`), 'true');
+  assert.equal(await run(`$('settings-prefs').hidden && !$('settings-mail').hidden && document.querySelector('.settings-account-context').hidden`), true);
+  for (const days of [365, 0, 180]) {
+    await run(`$('pref-sync-horizon').value='${days}';$('pref-sync-horizon').dispatchEvent(new Event('change'))`);
+    await waitFor(`state.prefs.syncHorizon===${days} && $('settings-status').textContent.includes('Sync history saved')`);
+    assert.equal(require('../host/settings').syncHorizonDays(), days, 'UI preference reaches settings.json');
+  }
+  await shot('settings-mail-sync');
+  await run(`$('settings').close();openSettings()`);
+  await waitFor(`settingsFoldLoaded.has('mail:')`);
+  assert.equal(await run(`$('settings-tab-mail').getAttribute('aria-selected')`), 'true', 'reopen remembers the tab');
   await run(`window.settingsOption=$('settings-account').firstElementChild;openSettings();`);
   assert.equal(await run(`settingsOption===$('settings-account').firstElementChild`), true);
   let finishAi;
@@ -92,6 +110,13 @@ app.whenReady().then(async () => {
   await waitFor(`settingsFoldLoaded.has('ooo:box-0')`);
   assert.equal(count('mail:vacationGet'), 1);
   assert.equal(count('bot:getAccess'), 0);
+  await run(`$('settings-tab-ooo').focus();$('settings-tab-ooo').dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true}));`);
+  await waitFor(`settingsFoldLoaded.has('bot:')`);
+  assert.equal(await run(`document.activeElement.id`), 'settings-tab-bot');
+  await run(`$('settings-tab-bot').dispatchEvent(new KeyboardEvent('keydown',{key:'Home',bubbles:true}));`);
+  assert.equal(await run(`document.activeElement.id`), 'settings-tab-prefs');
+  assert.equal(await run(`document.querySelectorAll('#settings [role="tab"][tabindex="0"]').length`), 1);
+  await run(`setSettingsFold('ooo',true,false)`);
   await shot('settings-lazy');
   await run(`$('settings').close();`);
 
@@ -219,9 +244,73 @@ app.whenReady().then(async () => {
   assert.equal(await run(`$('updates')===null && $('update-check')===null`), true);
   await run(`$('about-update-check').click()`);
   await waitCalls('host:updateCheck', 1);
-  await run(`$('about-dialog').close();openSettings();$('settings-about').click();`);
+  await run(`$('about-dialog').close();$('rail-about').click();`);
   assert.equal(await run(`$('about-dialog').open`), true);
   await shot('about-rail');
+  win.setSize(1180,820);
+  await run(`$('about-dialog').close();showMail();state.accountId='box-0';state.folderId='Inbox';state.query='';state.listScope='';`);
+  let mail = Array.from({length:2105}, (_,i)=>({id:'paged-'+i,accountId:'box-0',folderId:'Inbox',
+    subject:'Downloaded message '+(i+1),from:'Sender <sender@example.test>',snippet:'Cached preview',date:'2026-10-19T08:00:00Z'}));
+  routes.set('mail:listFromCache', payload => ok({emails:mail.slice(payload.offset, payload.offset+payload.limit),total:mail.length,initialSyncDone:true}));
+  await run(`loadList()`);
+  assert.equal(await run(`document.querySelectorAll('.message-row').length`), 200);
+  for (let page = 1; page <= 10; page++) {
+    await run(`$('list-next').click()`);
+    await waitFor(`state.listOffset===${page*200} && !state.busy && !state.listLoading`);
+    assert.ok(await run(`document.querySelectorAll('.message-row').length<=200`));
+  }
+  assert.equal(await run(`$('list-page-status').textContent`), '2001–2105 of 2105 downloaded');
+  assert.equal(await run(`$('list-next').disabled && !$('list-prev').disabled`), true);
+  assert.equal(await run(`document.querySelectorAll('.message-row').length`), 105);
+  await shot('message-last-page');
+  await run(`loadList()`);
+  assert.equal(await run(`state.listOffset`), 2000, 'refresh preserves the current page');
+  mail = mail.slice(0, 1900);
+  await run(`loadList()`);
+  assert.equal(await run(`state.listOffset`), 1800, 'deletion of last page recovers the last available page');
+  await run(`$('list-prev').click()`);
+  await waitFor(`state.listOffset===1600 && !state.busy`);
+  await run(`window.retainedRow=document.querySelector('.message-row');openSettings();setSettingsFold('mail',true,false)`);
+  await waitFor(`settingsFoldLoaded.has('mail:')`);
+  assert.equal(await run(`$('pref-compact-list').checked`), false);
+  await run(`$('pref-compact-list').click()`);
+  await waitFor(`state.prefs.compactList===true`);
+  assert.equal(require('../host/settings').answer('morrow:configGetCompactMessageList', []), true);
+  await run(`$('settings').close();retainedRow.querySelector('button.message').focus();`);
+  const compact = await run(`(()=>{
+    const row=document.querySelector('.message-row');
+    const from=row.querySelector('.from').getBoundingClientRect();
+    const subject=row.querySelector('.subject').getBoundingClientRect();
+    return {retained:row===retainedRow, height:row.getBoundingClientRect().height,
+      snippet:getComputedStyle(row.querySelector('.snippet')).display,
+      oneLine:Math.abs(from.top+from.height/2-subject.top-subject.height/2)<2};
+  })()`);
+  assert.equal(compact.retained, true, 'density changes retain row DOM and handlers');
+  assert.equal(compact.height, 32);
+  assert.equal(compact.snippet, 'none');
+  assert.equal(compact.oneLine, true, 'sender and subject share a single line');
+  await shot('message-compact-page');
+  await run(`openSettings();setSettingsFold('mail',true,false)`);
+  await waitFor(`settingsFoldLoaded.has('mail:')`);
+  assert.equal(await run(`$('pref-compact-list').checked`), true);
+  await shot('settings-compact-sync');
+  await run(`$('pref-compact-list').click()`);
+  await waitFor(`state.prefs.compactList===false`);
+  await run(`$('settings').close();retainedRow.querySelector('button.message').focus();`);
+  assert.equal(await run(`document.querySelector('.message-row').getBoundingClientRect().height`), 60);
+  // Reduced motion and a short window retain one tab panel and reachable controls.
+  win.webContents.debugger.attach('1.3');
+  await win.webContents.debugger.sendCommand('Emulation.setEmulatedMedia', {features:[{name:'prefers-reduced-motion',value:'reduce'}]});
+  win.setSize(800,600);
+  await run(`openSettings();setSettingsFold('mail',true,true);`);
+  await waitFor(`settingsFoldLoaded.has('mail:')`);
+  assert.equal(await run(`morrowMotion.reduced()`), true);
+  assert.equal(await run(`document.querySelectorAll('#settings [role="tabpanel"]:not([hidden])').length`), 1);
+  assert.equal(await run(`$('settings-mail-panel').getAnimations().length`), 0);
+  assert.equal(await run(`$('settings').scrollWidth<=$('settings').clientWidth+1`), true);
+  await run(`$('pref-snooze').focus();$('pref-snooze').scrollIntoView({block:'nearest'});`);
+  assert.equal(await run(`$('pref-snooze').getBoundingClientRect().bottom<=innerHeight && document.activeElement===$('pref-snooze')`), true);
+  await shot('settings-short-reduced-motion');
   console.log(JSON.stringify({ settingsOpen: immediate, preferenceOpenReads: 0, calendarListReads: calendarRequests.length,
     retainedMonthAndSelection: true, agentScrollContainers: 1, providerPage: true, singleUpdater: true }, null, 2));
   console.log('PAGE_NAVIGATION_CHECK_OK');

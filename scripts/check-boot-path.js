@@ -662,7 +662,7 @@ assert.strictEqual(control.value, "");
 const ipcSrc = fs.readFileSync(path.join(root, "host/ipc.js"), "utf8");
 const settingsSrc = fs.readFileSync(path.join(root, "host/settings.js"), "utf8");
 const prefs = prefRows();
-assert.strictEqual(prefs.length, 10);
+assert.strictEqual(prefs.length, 12);
 const prefKinds = new Set();
 for (const [id, getChannel, setChannel, kind] of prefs) {
   assert.ok(html.includes('id="' + id + '"'), `settings control missing ${id}`);
@@ -671,7 +671,7 @@ for (const [id, getChannel, setChannel, kind] of prefs) {
   assert.ok(used.has(getChannel) && used.has(setChannel), `renderer does not call ${setChannel}`);
   assert.ok(settingsSrc.includes('"' + getChannel + '"'), `settings store missing ${getChannel}`);
   assert.ok(settingsSrc.includes('"' + setChannel + '"'), `settings store missing ${setChannel}`);
-  assert.ok(kind === "select" || kind === "text" || kind === "bool" || kind === "seconds");
+  assert.ok(kind === "select" || kind === "text" || kind === "bool" || kind === "seconds" || kind === "days");
   prefKinds.add(kind);
 }
 assert.ok(prefKinds.has("select") && prefKinds.has("text") && prefKinds.has("bool") && prefKinds.has("seconds"));
@@ -886,7 +886,7 @@ assert.strictEqual(scheduledLine({ subject: "Hi", to: ["ada@example.com", "grace
 const engineSrc = fs.readFileSync(path.join(root, "host/mail/engine.js"), "utf8");
 assert.ok(!engineSrc.includes("INBOX_LIMIT") && !engineSrc.includes("OTHER_LIMIT"));
 assert.ok(engineSrc.includes("const REFRESH_PAGES = [20, 30, 30]"));
-assert.ok(engineSrc.includes("const SYNC_DAYS = 180"));
+assert.ok(engineSrc.includes('require("../settings")'));
 assert.ok(engineSrc.includes("const POLL_MS = 45000"));
 assert.ok(engineSrc.includes('require("./idle")'));
 assert.ok(engineSrc.includes("backgroundPollDue"));
@@ -918,7 +918,7 @@ assert.ok(!functionSource(appJs, "filteredEmails").includes("mail:search"));
 assert.ok(!functionSource(appJs, "filteredEmails").includes("textBody"));
 const independentDoc = fs.readFileSync(path.join(root, "docs/INDEPENDENT_UI.md"), "utf8");
 const parityDoc = fs.readFileSync(path.join(root, "docs/PARITY_SHELL.md"), "utf8");
-assert.ok(independentDoc.includes("does not download the whole mailbox"));
+assert.ok(independentDoc.includes("All removes the date bound"));
 assert.ok(independentDoc.includes("already downloaded"));
 assert.ok(independentDoc.includes("last 180 days"));
 assert.ok(independentDoc.includes("advertises IDLE"));
@@ -926,8 +926,8 @@ assert.ok(parityDoc.includes("Push: on"));
 assert.ok(parityDoc.includes("Push: polling"));
 assert.ok(parityDoc.includes("about every 25 minutes"));
 assert.ok(!independentDoc.includes("last 30 days"));
-assert.ok(parityDoc.includes("180-day window"));
-assert.ok(parityDoc.includes("Older than 180 days is not downloaded."));
+assert.ok(parityDoc.includes("180 days by default, 365 days, or All"));
+assert.ok(parityDoc.includes("Shortening the horizon keeps mail already stored."));
 assert.ok(!parityDoc.includes("30-day window"));
 assert.ok(!parityDoc.includes("Older than 30 days"));
 assert.ok(parityDoc.includes("does not call `mail:search`"));
@@ -6875,7 +6875,7 @@ require("./check-bake-google-oauth").run();
 require("./check-win-secrets").run();
 require("./check-bot-client").run();
 
-checkUpdateAuth().then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-mail-calendar-consent").run()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-star").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-ux-remainder").run()).then(() => require("./check-mail-persistence").run()).then(() => {
+checkUpdateAuth().then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-mail-calendar-consent").run()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-star").run()).then(() => require("./check-settings-horizon").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => require("./check-search-scope").run()).then(() => require("./check-rules-context").run()).then(() => require("./check-scheduled-management").run()).then(() => require("./check-ux-remainder").run()).then(() => require("./check-mail-persistence").run()).then(() => {
   return require("./check-compose-identity").run();
 }).then(() => {
   console.log("ui-path-ok");

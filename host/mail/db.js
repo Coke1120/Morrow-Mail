@@ -1099,8 +1099,8 @@ function selectMessages(query) {
   const scope = resolveScope(query);
   const { clauses, params } = whereFor(scope);
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-  const limit = Math.min(Math.max(Number(query.limit) || 50, 1), 500);
-  const offset = Math.max(Number(query.offset) || 0, 0);
+  const limit = Math.min(Math.max(Math.floor(Number(query.limit)) || 2000, 1), 2000);
+  const offset = Number.isFinite(Number(query.offset)) ? Math.max(Math.floor(Number(query.offset)), 0) : 0;
   const join = query.fromMe ? "JOIN accounts a ON a.id = m.account_id" : "";
   return all(
     `SELECT m.* FROM messages m ${join} ${where} ORDER BY m.list_sort_ts DESC, m.id DESC LIMIT ? OFFSET ?`,
