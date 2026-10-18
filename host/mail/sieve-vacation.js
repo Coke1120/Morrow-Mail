@@ -102,6 +102,7 @@ function createProtocol(socket) {
   let buffer = Buffer.alloc(0);
   const readers = [];
   let failed = null;
+  let ended = false;
   const fail = error => {
     failed = failed || error;
     socket.destroy();
@@ -113,10 +114,18 @@ function createProtocol(socket) {
     else flush();
   };
   const onError = () => fail(safe('The mail server closed the vacation connection.', 502));
-  const onEnd = () => { if (readers.length) fail(safe('The mail server closed the vacation connection.', 502)); };
+  const onEnd = () => {
+    ended = true;
+    flush();
+    if (readers.length) onError();
+  };
+  const onTimeout = () => fail(safe('This IMAP server did not answer vacation settings in time.', 502));
   socket.on('data', onData);
   socket.on('error', onError);
   socket.on('end', onEnd);
+  socket.on('close', onEnd);
+  socket.on('timeout', onTimeout);
+  socket.setTimeout?.(10000);
   function flush() {
     while (readers.length && !failed) {
       const reader = readers[0];
@@ -143,6 +152,7 @@ function createProtocol(socket) {
     if (failed) return reject(failed);
     readers.push({ ...reader, resolve, reject });
     flush();
+    if (ended && readers.length) onError();
   });
   return {
     readLine: () => enqueue({ type: 'line' }),
@@ -151,6 +161,8 @@ function createProtocol(socket) {
       socket.removeListener('data', onData);
       socket.removeListener('error', onError);
       socket.removeListener('end', onEnd);
+      socket.removeListener('close', onEnd);
+      socket.removeListener('timeout', onTimeout);
       if (buffer.length) socket.unshift(buffer);
       buffer = Buffer.alloc(0);
     },
@@ -241,7 +253,10 @@ async function runVacation(socket, mail, operation, upgrade) {
   const secureSocket = await upgrade(socket, mail.imapHost);
   secureSocket.setTimeout?.(10000);
   const protocol = createProtocol(secureSocket);
-  const caps = capabilities(await command(protocol, 'CAPABILITY'));
+  // RFC 5804: the server sends a fresh capability greeting after STARTTLS.
+  const securedGreeting = await readResponse(protocol);
+  if (!/^OK(?: |$)/i.test(securedGreeting.at(-1))) throw safe('The mail server rejected vacation access.', 502);
+  const caps = capabilities(securedGreeting);
   const available = extensions(caps);
   if (!available.includes('vacation')) throw safe('This IMAP server does not offer server-managed vacation replies. Morrow will not send local automatic replies.');
   await authenticate(protocol, mail, caps);
@@ -269,10 +284,11 @@ async function runVacation(socket, mail, operation, upgrade) {
     return { extensions: available, active: active === SCRIPT_NAME ? '' : active, script: '' };
   }
   if (active && active !== SCRIPT_NAME) throw safe('This IMAP server already has an active Sieve script. Morrow will not replace it. Manage vacation replies in your provider’s settings.', 409);
-  const bytes = Buffer.from(operation.script);
+  const bytes = Buffer.from(operation.script.replace(/\r?\n/g, '\r\n'));
   if (bytes.length > 20000) throw safe('Automatic reply text is too long for this IMAP server.');
   protocol.write(`PUTSCRIPT "${SCRIPT_NAME}" {${bytes.length}+}\r\n`);
   protocol.write(bytes);
+  protocol.write('\r\n');
   const uploaded = await readResponse(protocol);
   if (!/^OK(?: |$)/i.test(uploaded.at(-1))) throw safe('The mail server rejected the vacation change. Refresh before trying again; Morrow will not retry automatically.', 502);
   try {
@@ -305,7 +321,16 @@ function connectManageSieve(mail) {
 
 function upgradeTls(socket, host) {
   return new Promise((resolve, reject) => {
-    const secure = tls.connect({ socket, servername: host, rejectUnauthorized: true }, () => resolve(secure));
+    const onTimeout = () => {
+      secure.destroy();
+      reject(safe('This IMAP server did not answer vacation settings in time.', 502));
+    };
+    const secure = tls.connect({ socket, servername: host, rejectUnauthorized: true }, () => {
+      secure.removeListener('timeout', onTimeout);
+      resolve(secure);
+    });
+    secure.setTimeout(10000);
+    secure.once('timeout', onTimeout);
     secure.once('error', () => reject(safe('The vacation connection could not be verified. Morrow will not send local automatic replies.', 502)));
   });
 }
@@ -319,7 +344,7 @@ async function manageSieve(mail, operation, connect = connectManageSieve, upgrad
     if (error?.safe) throw error;
     throw safe('This IMAP server could not be reached for vacation settings. Morrow will not send local automatic replies.', 502);
   } finally {
-    socket.end();
+    socket.destroy();
   }
 }
 

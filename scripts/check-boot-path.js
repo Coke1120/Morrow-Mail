@@ -2178,6 +2178,20 @@ const threaded = selection.bulkRemovalCalls([
 assert.strictEqual(threaded.length, 1);
 assert.strictEqual(threaded[0].channel, "mail:threadArchive");
 assert.strictEqual(threaded[0].params.threadId, "t1");
+const selectionState = {
+  prefs: { conversation: true },
+  emails: [
+    { id: "account-one-mail", accountId: "a1", threadId: "shared-thread" },
+    { id: "account-two-mail", accountId: "a2", threadId: "shared-thread" },
+  ],
+  email: { id: "account-two-mail", accountId: "a2", threadId: "shared-thread" },
+  thread: [{ id: "another-account-two-mail", accountId: "a2", threadId: "shared-thread" }],
+};
+const selectionMembers = new Function("state", `${functionSource(appJs, "withSelectionMembers")}; return withSelectionMembers;`)(selectionState);
+const crossAccountRemoval = selection.bulkRemovalCalls([selectionMembers(selectionState.emails[0])], "trash", true);
+assert.strictEqual(crossAccountRemoval[0].channel, "mail:delete", "a thread in another mailbox must not expand the selection");
+selectionState.emails.push({ id: "another-account-one-mail", accountId: "a1", threadId: "shared-thread" });
+assert.strictEqual(selection.bulkRemovalCalls([selectionMembers(selectionState.emails[0])], "trash", true)[0].channel, "mail:threadTrash");
 const messageUnit = selection.conversationRemoval(
   { id: "m1", threadId: "t1" },
   false,
@@ -2767,6 +2781,10 @@ async function checkAiDraft() {
   assert.strictEqual(removedSkill.success, true);
   assert.ok(removedSkill.data.library.some((row) => row.id === "newsletter-digest"));
   assert.ok(!removedSkill.data.skills.some((row) => row.id === "newsletter-digest"));
+  const secondRemoved = brain.answer("emailBrain:removeSkill", [{ skillId: "meeting-prep" }]);
+  assert.strictEqual(secondRemoved.data.library.length, 2);
+  assert.ok(secondRemoved.data.library.every((row) => row.runMode === "on_demand" && row.schedule === "disabled"));
+  brain.answer("emailBrain:installSkill", [{ skillId: "meeting-prep" }]);
   const installedSkill = brain.answer("emailBrain:installSkill", [{ skillId: "newsletter-digest" }]);
   assert.strictEqual(installedSkill.success, true);
   assert.ok(installedSkill.data.skills.some((row) => row.id === "newsletter-digest"));
@@ -3017,6 +3035,12 @@ async function checkAiDraft() {
     }
     assert.strictEqual(agent.cronMatches("0 8 * * 1", new Date(2026, 9, 19, 8, 0, 0)), true);
     assert.strictEqual(agent.cronMatches("0 8 * * 1", new Date(2026, 9, 19, 9, 0, 0)), false);
+    assert.strictEqual(agent.cronMatches("0 8 */2 * *", new Date(2026, 9, 19, 8)), true);
+    assert.strictEqual(agent.cronMatches("0 8 */2 * *", new Date(2026, 9, 20, 8)), false);
+    assert.strictEqual(agent.cronMatches("0 8 * */2 *", new Date(2026, 0, 1, 8)), true);
+    assert.strictEqual(agent.cronMatches("0 8 * */2 *", new Date(2026, 1, 1, 8)), false);
+    assert.strictEqual(agent.cronMatches("0 8 */2 * 1", new Date(2026, 9, 21, 8)), false);
+    assert.strictEqual(agent.cronMatches("0 8 20 * 1", new Date(2026, 9, 19, 8)), true);
     const nextMonday = agent.nextCron("0 8 * * 1-5", new Date(2026, 9, 17, 9, 0, 0));
     assert.strictEqual(nextMonday.getDay(), 1);
     assert.strictEqual(nextMonday.getHours(), 8);
@@ -3416,6 +3440,50 @@ async function checkSignaturesAndSchedule(engine, db) {
   assert.deepStrictEqual(engine.answer("mail:listScheduled", [{ accountId: "imap-drop" }]).data, []);
   assert.ok(!engine.answer("mail:listAccounts").data.some((row) => row.id === "imap-drop"));
   assert.ok(engine.answer("mail:listAccounts").data.some((row) => row.id === "imap-test"));
+}
+
+async function checkComposeMailbox() {
+  const state = {
+    accounts: [
+      { id: "sidebar", email: "sidebar@example.invalid", platform: "imap" },
+      { id: "source", email: "source@example.invalid", platform: "imap" },
+    ],
+    accountId: "sidebar",
+    composeMeta: { accountId: "source" },
+    composeQuote: { text: "Quoted original" },
+    prefs: { undoSend: 0 },
+  };
+  const fields = Object.fromEntries(Object.entries({
+    "compose-to": "recipient@example.invalid", "compose-cc": "", "compose-bcc": "",
+    "compose-subject": "Reply", "compose-body": "Thanks", "schedule-preset": "1h", "schedule-at": "",
+  }).map(([id, value]) => [id, { value }]));
+  const calls = [];
+  const call = async (channel, payload) => { calls.push({ channel, payload }); return {}; };
+  const syncNames = ["selectedAccount", "composeAccount", "isLive", "composePayload", "composeHasRecipient", "outgoingBody", "toHtml"];
+  const asyncNames = ["saveDraft", "scheduleMail", "sendMail"];
+  const methods = new Function("state", "$", "call", "showStatus", "scheduleAt", "loadScheduled", "sendDelayMs", "hideUndoSend", "deliverMail", `
+    ${syncNames.map((name) => functionSource(appJs, name)).join("\n")}
+    ${asyncNames.map((name) => "async " + functionSource(appJs, name)).join("\n")}
+    return { saveDraft, scheduleMail, sendMail };
+  `)(state, (id) => fields[id], call, () => {}, () => new Date("2090-01-01T00:00:00Z"), async () => {}, () => 0, () => {},
+    (payload) => call("mail:send", payload));
+  for (const kind of ["reply", "all", "forward"]) {
+    const seed = compose.composeSeed({ ...engineMail, accountId: "source" }, kind, "source@example.invalid");
+    assert.strictEqual(seed.accountId, "source");
+    state.composeMeta = { accountId: seed.accountId };
+    await methods.saveDraft();
+    await methods.scheduleMail();
+    await methods.sendMail();
+  }
+  assert.strictEqual(calls.length, 9);
+  assert.deepStrictEqual(calls.slice(0, 3).map((row) => row.channel), ["mail:upsertDraft", "mail:scheduleSend", "mail:send"]);
+  assert.ok(calls.every(({ payload }) => payload.accountId === "source" && payload.fromAddress === "source@example.invalid"));
+  assert.ok(calls.every(({ payload }) => payload.body.includes("Quoted original")));
+  state.accounts = state.accounts.filter((account) => account.id !== "source");
+  await methods.saveDraft();
+  await methods.scheduleMail();
+  await methods.sendMail();
+  assert.strictEqual(calls.length, 9, "a removed reply account must not fall back to the sidebar mailbox");
 }
 
 async function checkTidy() {
@@ -5187,6 +5255,29 @@ async function checkProviderApi() {
     const outlookLoaded = await engine.answer("mail:vacationGet", [{ accountId: "outlook-live" }]);
     assert.strictEqual(outlookLoaded.data.provider, "microsoft");
     assert.strictEqual(outlookLoaded.data.settings.message, "Inside");
+    const vacationOauth = require("../host/mail/oauth");
+    const originalAccessTokenFor = vacationOauth.accessTokenFor;
+    const beforeRefresh = secrets.getPassword("outlook-live:vacation");
+    try {
+      vacationOauth.accessTokenFor = async (_account, raw) => {
+        const blob = JSON.parse(raw);
+        return { token: blob.accessToken, store: JSON.stringify({ ...blob, refreshToken: blob.accessToken }) };
+      };
+      const refreshed = await engine.answer("mail:vacationGet", [{ accountId: "outlook-live" }]);
+      assert.strictEqual(refreshed.success, true, "the request's own refresh must not be treated as a reconnect");
+      vacationOauth.accessTokenFor = async (_account, raw) => {
+        // A new consent arrives while the old token refresh is in flight.
+        secrets.setPassword("outlook-live:vacation", beforeRefresh);
+        return { token: JSON.parse(raw).accessToken, store: raw };
+      };
+      const reconnected = await engine.answer("mail:vacationGet", [{ accountId: "outlook-live" }]);
+      assert.strictEqual(reconnected.success, false);
+      assert.strictEqual(reconnected.error.code, "conflict");
+      assert.strictEqual(secrets.getPassword("outlook-live:vacation"), beforeRefresh);
+    } finally {
+      vacationOauth.accessTokenFor = originalAccessTokenFor;
+      secrets.setPassword("outlook-live:vacation", beforeRefresh);
+    }
     const outlookSaved = await engine.answer("mail:vacationPut", [{
       accountId: "outlook-live",
       confirmed: true,
@@ -5265,6 +5356,10 @@ async function checkProviderApi() {
       assert.strictEqual(imapSaved.success, true);
       assert.match(sieveState.script, /vacation :days 1 :subject "Away" "Hello";/);
       assert.doesNotMatch(sieveState.script, /date/);
+      sieveState.active = "";
+      const inactiveScript = await engine.answer("mail:vacationGet", [{ accountId: "imap-test" }]);
+      assert.strictEqual(inactiveScript.data.settings.mode, "disabled");
+      assert.strictEqual(inactiveScript.data.settings.message, "Hello");
       sieveState.active = "other-filters";
       const blockedScript = await engine.answer("mail:vacationPut", [{
         accountId: "imap-test",
@@ -5760,6 +5855,42 @@ async function checkInboxRules() {
   }, "");
   assert.strictEqual(graphHidden.editable, false);
   assert.ok(!JSON.stringify(graphHidden).includes("secret@example.com"));
+  const editableGraph = {
+    id: "first-rule", displayName: "First", sequence: 1,
+    conditions: { subjectContains: ["news"] }, actions: { markAsRead: true },
+  };
+  for (const extra of [{ exceptions: { senderContains: ["keep-unread"] } }, { isReadOnly: true }]) {
+    const protectedRule = { ...editableGraph, ...extra };
+    assert.strictEqual(rules.fromGraphRule(protectedRule, "").editable, false);
+    const methods = [];
+    await assert.rejects(rules.saveGraph("", {
+      id: protectedRule.id, name: "Edited", match: { subject: "news" }, actions: { markRead: true },
+    }, "", async (_url, init) => {
+      methods.push(init.method || "GET");
+      return jsonResponse(protectedRule);
+    }), /does not rewrite/);
+    assert.deepStrictEqual(methods, ["GET"]);
+  }
+  let replacementSequence;
+  const editedGraph = await rules.saveGraph("", {
+    id: editableGraph.id, name: "Edited", match: { subject: "news" }, actions: { markRead: true },
+  }, "", async (url, init) => {
+    if (init.method === "POST") {
+      const body = JSON.parse(init.body);
+      replacementSequence = body.sequence;
+      return jsonResponse({ ...body, id: "replacement-rule" });
+    }
+    if (init.method === "DELETE") return jsonResponse({});
+    if (String(url).endsWith("/first-rule")) return jsonResponse(editableGraph);
+    return jsonResponse({ value: [editableGraph, { ...editableGraph, id: "last-rule", sequence: 9 }] });
+  });
+  assert.strictEqual(replacementSequence, 1);
+  assert.strictEqual(editedGraph.id, "replacement-rule");
+  for (const addLabelIds of [["Label_1", "Label_2"], ["STARRED", "SPAM"], ["STARRED", "UNREAD"]]) {
+    assert.strictEqual(rules.fromGmailFilter({
+      id: "custom-labels", criteria: { from: "news@" }, action: { addLabelIds },
+    }).editable, false);
+  }
   const seenGraph = [];
   const listedGraph = await rules.listGraph("token", "archive-id", async (url) => {
     seenGraph.push(String(url));
@@ -5851,6 +5982,15 @@ async function checkInboxRules() {
   assert.deepStrictEqual(both.map((step) => step.ruleId), ["a", "b"]);
   assert.strictEqual(rules.matches({ match: { hasAttachment: false } }, { hasAttachments: true }), false);
   assert.strictEqual(rules.matches({ match: { text: "Unsub" } }, { subject: "Weekly", snippet: "please unsubscribe" }), true);
+  let ruleAttempts = 0;
+  await assert.rejects(rules.runImapPlan({
+    account: { id: "rules-imap", profile: "custom", auth_kind: "password" },
+    folder: { path: "INBOX", well_known: "inbox" },
+    rules: [{ id: "read", enabled: true, match: { subject: "Hi" }, actions: { markRead: true } }],
+    messages: [{ uid: 1, subject: "Hi" }, { uid: 2, subject: "Hi" }],
+    remote: { async changeFlags() { ruleAttempts += 1; throw Object.assign(new Error("Rate limit"), { status: 429 }); } },
+  }), (error) => error.status === 429);
+  assert.strictEqual(ruleAttempts, 1, "throttling must stop the rule batch and reach the sync pause handler");
 
   const db = require("../host/mail/db");
   const sidecar = require("../host/mail/sidecar");
@@ -6242,7 +6382,7 @@ async function checkInboxRules() {
 checkGoogleOauthAlias();
 checkUpdateAuth();
 
-checkAiDraft().then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => {
+checkAiDraft().then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);

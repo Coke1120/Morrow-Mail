@@ -108,6 +108,15 @@ function selectedAccount() {
   return state.accounts.find((account) => account.id === state.accountId) || null;
 }
 
+function composeAccount() {
+  const id = state.composeMeta && state.composeMeta.accountId;
+  return state.accounts.find((account) => account.id === id) || null;
+}
+
+function signatureAccount() {
+  return $("compose").open ? composeAccount() : selectedAccount();
+}
+
 function isLive(account) {
   return !!(account && account.platform === "imap");
 }
@@ -1712,6 +1721,7 @@ function composeSeed(email, kind, self) {
   if (kind === "forward") {
     return {
       kind: "forward",
+      accountId: message.accountId || "",
       title: "Forward",
       to: "",
       cc: "",
@@ -1726,6 +1736,7 @@ function composeSeed(email, kind, self) {
   const parties = replyParties(message, self, all);
   const seed = {
     kind: all ? "all" : "reply",
+    accountId: message.accountId || "",
     title: all ? "Reply All" : "Reply",
     to: parties.to,
     cc: parties.cc,
@@ -2733,12 +2744,12 @@ function withSelectionMembers(email) {
   if (state.prefs.conversation !== false && email) {
     const threadId = String(email.threadId || "");
     const open = state.email;
-    if (open && (open.id === email.id || (threadId && String(open.threadId || "") === threadId))) {
+    if (open && open.accountId === email.accountId && (open.id === email.id || (threadId && String(open.threadId || "") === threadId))) {
       for (const row of state.thread || []) members.push(row);
     }
     if (threadId) {
       for (const row of state.emails || []) {
-        if (row && String(row.threadId || "") === threadId) members.push(row);
+        if (row && row.accountId === email.accountId && String(row.threadId || "") === threadId) members.push(row);
       }
     }
   }
@@ -4992,7 +5003,7 @@ function composePayload(account) {
 }
 
 function syncCompose() {
-  const account = selectedAccount();
+  const account = composeAccount();
   const live = isLive(account);
   $("compose-note").textContent = live
     ? `From ${account.email}`
@@ -5048,7 +5059,7 @@ function showSignatureEmpty(message) {
 
 async function fillSignatures() {
   const gen = signatureGen += 1;
-  const accountId = state.accountId;
+  const accountId = composeAccount()?.id;
   let pack = null;
   try {
     pack = await call("mail:listSignatures", accountId ? { accountId } : {});
@@ -5158,7 +5169,7 @@ function startSignatureEdit(row, isDefault) {
 }
 
 async function loadSignatureEditor() {
-  const accountId = state.accountId;
+  const accountId = signatureAccount()?.id;
   const pack = await call("mail:listSignatures", accountId ? { accountId } : {});
   if ($("signatures").open) paintSignatures(pack);
   return pack;
@@ -5203,7 +5214,7 @@ async function submitSignature(event) {
     showSignatureStatus("Add signature text.", true);
     return;
   }
-  const account = selectedAccount();
+  const account = signatureAccount();
   if (!isLive(account)) {
     showSignatureStatus("Connect an account before saving a signature.", true);
     return;
@@ -5546,6 +5557,7 @@ async function openCompose(seed) {
   state.draftId = null;
   state.signatureText = "";
   state.composeMeta = {
+    accountId: fields.accountId || state.accountId,
     inReplyTo: fields.inReplyTo || "",
     threadId: fields.threadId || "",
   };
@@ -5590,7 +5602,7 @@ async function openCompose(seed) {
 
 async function loadScheduled() {
   const gen = scheduledGen += 1;
-  const account = selectedAccount();
+  const account = composeAccount();
   let data = null;
   try {
     data = await call("mail:listScheduled", account ? { accountId: account.id } : {});
@@ -5611,7 +5623,7 @@ async function cancelScheduled(id) {
 }
 
 async function scheduleMail() {
-  const account = selectedAccount();
+  const account = composeAccount();
   if (!isLive(account)) return;
   if (!composeHasRecipient()) {
     showStatus("Add a recipient.", true);
@@ -5629,7 +5641,7 @@ async function scheduleMail() {
 }
 
 async function saveDraft() {
-  const account = selectedAccount();
+  const account = composeAccount();
   if (!isLive(account)) return;
   showStatus("Saving draft…");
   const saved = await call("mail:upsertDraft", composePayload(account));
@@ -5663,7 +5675,7 @@ async function deliverMail(payload) {
 
 // shortcut: the wait is local; mail:send is immediate once it starts, upgrade when the host can recall a send
 async function sendMail() {
-  const account = selectedAccount();
+  const account = composeAccount();
   if (!isLive(account)) return;
   if (!composeHasRecipient()) {
     showStatus("Add a recipient.", true);
@@ -6305,7 +6317,9 @@ async function refreshVacation() {
       || draft.message !== (current.message || "")
       || draft.externalMessage !== (current.externalMessage || "")
       || draft.audience !== (current.audience || "all")
-      || draft.restrictToDomain !== (current.restrictToDomain === true);
+      || draft.restrictToDomain !== (current.restrictToDomain === true)
+      || $("ooo-start").value !== vacationLocalValue(current.start)
+      || $("ooo-end").value !== vacationLocalValue(current.end);
     if (dirty) {
       const answer = await askConfirm({
         title: "Refresh provider settings",

@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const net = require("node:net");
+const { EventEmitter } = require("node:events");
 const sieve = require("../host/mail/sieve-vacation");
 const vacation = require("../host/mail/vacation-api");
 
@@ -109,6 +110,15 @@ async function run() {
   assert.equal(vacation.revisionOf("same"), vacation.revisionOf("same"));
   assert.notEqual(vacation.revisionOf("same"), vacation.revisionOf("other"));
 
+  for (const event of ["timeout", "close", "end"]) {
+    const socket = new EventEmitter();
+    socket.destroy = () => { socket.destroyed = true; };
+    const pending = sieve.runVacation(socket, mail, { action: "read" }, async (value) => value);
+    socket.emit(event);
+    await assert.rejects(pending, /vacation (settings in time|connection)/);
+    assert.equal(socket.destroyed, true);
+  }
+
   const calls = [];
   const described = await vacation.read("google", "token", async (url, init) => {
     calls.push({ url: String(url), method: init.method || "GET", redirect: init.redirect });
@@ -138,8 +148,7 @@ async function run() {
     socket.write(greeting);
     assert.equal(await io.line(), "STARTTLS");
     socket.write("OK\r\n");
-    assert.equal(await io.line(), "CAPABILITY");
-    socket.write(greeting);
+    setImmediate(() => socket.write(greeting));
     const auth = await io.line();
     assert.equal(Buffer.from(auth.split('"')[3], "base64").toString(), `\0${mail.email}\0${mail.password}`);
     socket.write("OK\r\n");
@@ -160,8 +169,7 @@ async function run() {
     socket.write(greeting);
     assert.equal(await io.line(), "STARTTLS");
     socket.write("OK\r\n");
-    assert.equal(await io.line(), "CAPABILITY");
-    socket.write(greeting);
+    setImmediate(() => socket.write(greeting));
     await io.line();
     socket.write("OK\r\n");
     assert.equal(await io.line(), "LISTSCRIPTS");
@@ -169,6 +177,8 @@ async function run() {
     const upload = await io.line();
     assert.match(upload, /^PUTSCRIPT "morrow-vacation" \{(\d+)\+\}$/);
     stored = (await io.bytes(Number(upload.match(/\{(\d+)/)[1]))).toString("utf8");
+    assert.equal(await io.line(), "", "PUTSCRIPT must terminate after the literal bytes");
+    assert.ok(!/(?<!\r)\n/.test(stored), "Sieve script lines use CRLF");
     socket.write("OK\r\n");
     assert.equal(await io.line(), 'SETACTIVE "morrow-vacation"');
     socket.write("OK\r\n");
@@ -176,7 +186,7 @@ async function run() {
     const bytes = Buffer.from(stored);
     socket.write(`{${bytes.length}}\r\n`);
     socket.write(bytes);
-    socket.write("OK\r\n");
+    socket.write("\r\nOK\r\n");
     assert.equal(await io.line(), "LOGOUT");
     socket.end();
   });

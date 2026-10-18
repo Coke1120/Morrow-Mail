@@ -1,4 +1,4 @@
-const { apiJson, safeNext } = require("./provider-http");
+const { apiJson, safeNext, isRateLimit } = require("./provider-http");
 
 const GMAIL_FILTERS = "https://gmail.googleapis.com/gmail/v1/users/me/settings/filters";
 const GRAPH_RULES = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messageRules";
@@ -205,9 +205,11 @@ function fromGmailFilter(filter) {
   if (action.forward) unsupported = "forward";
   else if (criteria.negatedQuery || criteria.sizeComparison || (criteria.size != null && criteria.size !== "")) unsupported = "custom";
   else if (criteria.excludeChats === false) unsupported = "custom";
-  else if (add.some((id) => id === "IMPORTANT" || id.startsWith("CATEGORY_"))) unsupported = "custom";
+  else if (add.some((id) => (GMAIL_RESERVED.has(id) && !["STARRED", "TRASH"].includes(id)) || id.startsWith("CATEGORY_"))) unsupported = "custom";
   else if (remove.some((id) => id !== "UNREAD" && id !== "INBOX")) unsupported = "custom";
   const userAdds = add.filter((id) => !GMAIL_RESERVED.has(id) && !id.startsWith("CATEGORY_"));
+  // The editor has one label picker. Do not silently discard other labels.
+  if (!unsupported && userAdds.length > 1) unsupported = "custom";
   const leavesInbox = remove.includes("INBOX");
   // Gmail files a label by adding it and removing INBOX. That is the same
   // filter as archive plus the label, so the label stays in addLabelIds.
@@ -292,7 +294,9 @@ function fromGraphRule(rule, archiveFolderId) {
   const conditions = asObject(rule.conditions);
   const actions = asObject(rule.actions);
   const multi = ["senderContains", "recipientContains", "subjectContains", "bodyContains"].some((key) => many(conditions[key]));
-  const unsupported = multi || extraKeys(conditions, KNOWN_GRAPH_CONDITIONS) || extraKeys(actions, KNOWN_GRAPH_ACTIONS);
+  const unsupported = rule.isReadOnly === true || multi
+    || extraKeys(rule.exceptions, [])
+    || extraKeys(conditions, KNOWN_GRAPH_CONDITIONS) || extraKeys(actions, KNOWN_GRAPH_ACTIONS);
   const move = ruleId(actions.moveToFolder) || "";
   const trash = actions.delete === true;
   const archiveId = ruleId(archiveFolderId);
@@ -478,14 +482,18 @@ async function deleteGraph(accessToken, id, fetchImpl) {
 
 async function saveGraph(accessToken, input, archiveFolderId, fetchImpl) {
   const rule = normalizeDraft(input, "microsoft");
+  let sequence;
   if (rule.id) {
     const current = await getGraph(accessToken, rule.id, archiveFolderId, fetchImpl);
     if (!current.editable) {
       invalid("That Outlook rule uses an action Morrow Mail does not rewrite. Delete it, then create a new one.");
     }
+    sequence = current.sequence;
   }
-  const listed = await listGraph(accessToken, archiveFolderId, fetchImpl);
-  const sequence = listed.reduce((max, row) => Math.max(max, Number(row.sequence) || 0), 0) + 1;
+  if (!sequence) {
+    const listed = await listGraph(accessToken, archiveFolderId, fetchImpl);
+    sequence = listed.reduce((max, row) => Math.max(max, Number(row.sequence) || 0), 0) + 1;
+  }
   const created = await createGraph(accessToken, rule, sequence, archiveFolderId, fetchImpl);
   if (rule.id && rule.id !== created.id) {
     try {
@@ -639,7 +647,8 @@ async function runImapPlan(ctx) {
     try {
       await runImapStep(ctx, step);
       applied += 1;
-    } catch {
+    } catch (error) {
+      if (isRateLimit(error)) throw error;
       failed += 1;
     }
   }

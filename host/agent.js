@@ -178,7 +178,7 @@ function listHomeSkills() {
 
 function listLibrarySkills() {
   const installed = new Set(installedIds(readStore()));
-  return CATALOG.filter((skill) => !installed.has(skill.id)).map(publicSkill);
+  return CATALOG.filter((skill) => !installed.has(skill.id)).map((skill) => publicSkill(skill, null));
 }
 
 function installSkill(params) {
@@ -1235,11 +1235,11 @@ function fieldValid(field, min, max) {
   });
 }
 
-function fieldMatch(field, value) {
+function fieldMatch(field, value, min = 0) {
   if (field === "*") return true;
   return String(field || "").split(",").some((bit) => {
     const step = bit.match(/^\*\/(\d+)$/);
-    if (step) return value % Number(step[1]) === 0;
+    if (step) return (value - min) % Number(step[1]) === 0;
     const range = bit.match(/^(\d+)-(\d+)(?:\/(\d+))?$/);
     if (range) {
       const start = Number(range[1]);
@@ -1272,15 +1272,13 @@ function cronMatches(expr, date) {
   if (!fields || !(date instanceof Date) || Number.isNaN(date.getTime())) return false;
   if (!fieldMatch(fields.minute, date.getMinutes())) return false;
   if (!fieldMatch(fields.hour, date.getHours())) return false;
-  if (!fieldMatch(fields.month, date.getMonth() + 1)) return false;
-  const domRestricted = fields.dom !== "*";
-  const dowRestricted = fields.dow !== "*";
-  const domOk = fieldMatch(fields.dom, date.getDate());
+  if (!fieldMatch(fields.month, date.getMonth() + 1, 1)) return false;
+  const domRestricted = !fields.dom.startsWith("*");
+  const dowRestricted = !fields.dow.startsWith("*");
+  const domOk = fieldMatch(fields.dom, date.getDate(), 1);
   const dowOk = dowMatch(fields.dow, date);
   if (domRestricted && dowRestricted) return domOk || dowOk;
-  if (domRestricted) return domOk;
-  if (dowRestricted) return dowOk;
-  return true;
+  return domOk && dowOk;
 }
 
 function nextCron(expr, from) {
