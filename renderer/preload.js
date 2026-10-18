@@ -43,6 +43,8 @@ const INVOKE = [
   "mail:createProviderFolder",
   "mail:renameProviderFolder",
   "mail:deleteProviderFolder",
+  "mail:moveProviderFolder",
+  "mail:moveFolder",
   "mail:modifyMessageLabels",
   "mail:moveProviderMessage",
   "mail:removeAccount",

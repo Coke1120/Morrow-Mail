@@ -1593,16 +1593,139 @@ assert.ok(parity.includes("Multi-select"));
 assert.ok(parity.includes("one message"));
 assert.ok(independentDoc.includes("Right-click"));
 assert.ok(independentDoc.includes("Drag a message row"));
-const folderChrome = loadFunctions(appJs, ["folderActionMenu", "actionConfirm", "confirmsBefore"]);
+const folderChrome = loadFunctions(appJs, [
+  "folderDelimiter",
+  "nestRows",
+  "imapParent",
+  "folderTree",
+  "providerParent",
+  "providerLabelText",
+  "providerLabelTree",
+  "joinedPath",
+  "moveNodesFromFolders",
+  "descendantIds",
+  "moveTargetFlags",
+  "messageTargetFlags",
+  "filterMoveNodes",
+  "showMoveRoot",
+  "visibleMoveNodes",
+  "movePathPreview",
+  "movePreviewLine",
+  "moveRequestAfterConfirm",
+  "relocatedFolderId",
+  "moveMenuItem",
+  "imapFolderMenu",
+  "folderActionMenu",
+  "actionConfirm",
+  "confirmsBefore",
+]);
 const travelMenu = folderChrome.folderActionMenu({ id: "Label_9", name: "Work/Travel", editable: true }, "gmail");
-assert.deepStrictEqual(travelMenu.items.map((item) => item.id), ["rename", "delete", "create"]);
-assert.deepStrictEqual(travelMenu.items.map((item) => item.label), ["Rename", "Delete", "Add label"]);
+assert.deepStrictEqual(travelMenu.items.map((item) => item.id), ["rename", "move", "delete", "create"]);
+assert.deepStrictEqual(travelMenu.items.map((item) => item.label), ["Rename", "Move…", "Delete", "Add label"]);
+assert.strictEqual(travelMenu.items[1].disabled, false);
 assert.strictEqual(travelMenu.note, "");
 const systemMenu = folderChrome.folderActionMenu({ id: "INBOX", name: "Inbox", editable: false }, "gmail");
-assert.deepStrictEqual(systemMenu.items.map((item) => item.id), ["create"]);
+assert.deepStrictEqual(systemMenu.items.map((item) => item.id), ["move", "create"]);
+assert.strictEqual(systemMenu.items[0].disabled, true);
+assert.match(systemMenu.items[0].reason, /cannot be moved/);
 assert.match(systemMenu.note, /cannot be renamed or deleted/);
+const outlookSystem = folderChrome.folderActionMenu({ id: "in", name: "Inbox", editable: false }, "outlook");
+assert.strictEqual(outlookSystem.items[0].disabled, true);
+assert.match(outlookSystem.items[0].reason, /Outlook folder cannot be moved/);
+const inboxMenu = folderChrome.imapFolderMenu({ id: "INBOX", name: "Inbox", wellKnownName: "inbox", type: "system" });
+assert.strictEqual(inboxMenu.items[0].disabled, true);
+assert.match(inboxMenu.items[0].reason, /cannot be moved/);
+const notesMenu = folderChrome.imapFolderMenu({ id: "Notes", name: "Notes", type: "user" });
+assert.strictEqual(notesMenu.items[0].disabled, false);
+assert.strictEqual(notesMenu.items[0].label, "Move…");
 const outlookMenuRow = folderChrome.folderActionMenu({ id: "f1", name: "Receipts", editable: true }, "outlook");
-assert.strictEqual(outlookMenuRow.items[2].label, "Add folder");
+assert.strictEqual(outlookMenuRow.items.find((item) => item.id === "create").label, "Add folder");
+const gmailFolders = [
+  { id: "L1", name: "Work", editable: true },
+  { id: "L2", name: "Work/Travel", editable: true },
+  { id: "L3", name: "Work/Travel/Hotels", editable: true },
+  { id: "L4", name: "Personal", editable: true },
+  { id: "INBOX", name: "INBOX", editable: false },
+];
+const gmailNodes = folderChrome.moveNodesFromFolders("gmail", gmailFolders, "/");
+const travelFlags = folderChrome.moveTargetFlags(gmailNodes, "L2", "gmail", "/");
+const travelById = Object.fromEntries(travelFlags.nodes.map((node) => [node.id, node]));
+assert.strictEqual(travelById.L2.disabled, true);
+assert.match(travelById.L2.reason, /itself/);
+assert.strictEqual(travelById.L3.disabled, true);
+assert.match(travelById.L3.reason, /sub-label/);
+assert.strictEqual(travelById.L1.disabled, true);
+assert.match(travelById.L1.reason, /already there/);
+assert.strictEqual(travelById.L4.disabled, false);
+assert.strictEqual(travelFlags.root.disabled, false);
+const workFlags = folderChrome.moveTargetFlags(gmailNodes, "L1", "gmail", "/");
+assert.strictEqual(workFlags.root.disabled, true);
+assert.strictEqual(workFlags.nodes.find((node) => node.id === "L2").disabled, true);
+assert.strictEqual(workFlags.nodes.find((node) => node.id === "L4").disabled, false);
+const hotelMatches = folderChrome.filterMoveNodes(gmailNodes, "HoTeL");
+assert.deepStrictEqual(hotelMatches.map((node) => node.id), ["L1", "L2", "L3"]);
+assert.strictEqual(hotelMatches.find((node) => node.id === "L3").match, true);
+assert.strictEqual(hotelMatches.find((node) => node.id === "L1").match, false);
+assert.strictEqual(folderChrome.showMoveRoot("hotel"), false);
+assert.strictEqual(folderChrome.showMoveRoot("top"), true);
+assert.strictEqual(folderChrome.showMoveRoot(""), true);
+const collapsed = folderChrome.visibleMoveNodes(gmailNodes, [], false).map((node) => node.id);
+assert.deepStrictEqual(collapsed, ["L1", "L4", "INBOX"]);
+const travelNode = gmailNodes.find((node) => node.id === "L2");
+const personalNode = gmailNodes.find((node) => node.id === "L4");
+assert.strictEqual(folderChrome.movePathPreview(travelNode, personalNode, "gmail", "/"), "Personal/Travel");
+assert.strictEqual(folderChrome.movePathPreview(travelNode, { isRoot: true }, "gmail", "/"), "Travel");
+assert.strictEqual(folderChrome.movePreviewLine({
+  purpose: "relocate",
+  kind: "gmail",
+  delimiter: "/",
+  source: travelNode,
+}, personalNode), "New path: Personal/Travel");
+assert.match(folderChrome.movePreviewLine({
+  purpose: "relocate",
+  kind: "gmail",
+  source: travelNode,
+}, travelById.L2), /itself/);
+const imapNodes = folderChrome.moveNodesFromFolders("imap", [
+  { id: "INBOX", name: "Inbox", wellKnownName: "inbox" },
+  { id: "Work", name: "Work" },
+  { id: "Work/Travel", name: "Travel" },
+  { id: "Work/Travel/Hotels", name: "Hotels" },
+  { id: "Personal", name: "Personal" },
+], "/");
+const imapFlags = folderChrome.moveTargetFlags(imapNodes, "Work/Travel", "imap", "/");
+const imapById = Object.fromEntries(imapFlags.nodes.map((node) => [node.id, node]));
+assert.strictEqual(imapById["Work/Travel"].disabled, true);
+assert.strictEqual(imapById["Work/Travel/Hotels"].disabled, true);
+assert.strictEqual(imapById.Work.disabled, true);
+assert.strictEqual(imapById.Personal.disabled, false);
+assert.strictEqual(imapFlags.root.disabled, false);
+assert.strictEqual(folderChrome.movePathPreview(
+  { id: "Work.Travel", name: "Travel", label: "Travel" },
+  { id: "Archive" },
+  "imap",
+  ".",
+), "Archive.Travel");
+assert.strictEqual(folderChrome.moveRequestAfterConfirm("mail:moveProviderFolder", { ok: false, name: "" }, {
+  folderId: "L2",
+  destinationId: "L4",
+}), null);
+assert.strictEqual(folderChrome.moveRequestAfterConfirm("mail:moveFolder", null, { folderId: "Work" }), null);
+assert.deepStrictEqual(folderChrome.moveRequestAfterConfirm("mail:moveProviderFolder", { ok: true }, {
+  accountId: "a1",
+  folderId: "L2",
+  destinationId: "L4",
+}), { accountId: "a1", folderId: "L2", destinationId: "L4" });
+assert.strictEqual(folderChrome.relocatedFolderId("Work/Travel", [
+  { from: "Work", to: "Personal/Work" },
+  { from: "Work/Travel", to: "Personal/Work/Travel" },
+]), "Personal/Work/Travel");
+assert.strictEqual(folderChrome.relocatedFolderId("INBOX", [{ from: "Work", to: "Personal/Work" }]), "INBOX");
+const commitMove = functionSource(appJs, "commitFolderMove");
+assert.ok(commitMove.indexOf("moveRequestAfterConfirm") < commitMove.indexOf('call("mail:moveProviderFolder"'));
+assert.ok(commitMove.indexOf("moveRequestAfterConfirm") < commitMove.indexOf('call("mail:moveFolder"'));
+assert.ok(commitMove.indexOf("if (!request) return") < commitMove.indexOf('call("mail:moveProviderFolder"'));
+assert.ok(commitMove.indexOf("if (!request) return") < commitMove.indexOf('call("mail:moveFolder"'));
 const renameCopy = folderChrome.actionConfirm("rename", { provider: "gmail", name: "Work/Travel" });
 assert.strictEqual(renameCopy.title, "Rename label");
 assert.strictEqual(renameCopy.confirm, "Confirm");
@@ -1619,6 +1742,35 @@ assert.strictEqual(deleteCopy.confirm, "Confirm");
 const gmailDelete = folderChrome.actionConfirm("delete", { provider: "gmail", name: "Work/Travel" });
 assert.match(gmailDelete.body, /removes the label/);
 assert.match(gmailDelete.body, /stay in the mailbox/);
+const labelMoveCopy = folderChrome.actionConfirm("move-label", {
+  provider: "gmail",
+  name: "Work/Travel",
+  destination: "Personal",
+});
+assert.strictEqual(labelMoveCopy.title, "Move label");
+assert.strictEqual(labelMoveCopy.confirm, "Confirm");
+assert.strictEqual(labelMoveCopy.cancel, "Cancel");
+assert.strictEqual(labelMoveCopy.needsName, false);
+assert.match(labelMoveCopy.body, /Work\/Travel/);
+assert.match(labelMoveCopy.body, /Personal/);
+assert.match(labelMoveCopy.body, /Nested labels/);
+const outlookFolderMove = folderChrome.actionConfirm("move-label", {
+  provider: "outlook",
+  name: "Receipts",
+  destination: "(Top level / root)",
+});
+assert.strictEqual(outlookFolderMove.title, "Move folder");
+assert.match(outlookFolderMove.body, /Receipts/);
+assert.match(outlookFolderMove.body, /Top level/);
+assert.match(outlookFolderMove.body, /Outlook/);
+const imapFolderMove = folderChrome.actionConfirm("move-label", {
+  provider: "imap",
+  name: "Work/Travel",
+  destination: "Archive",
+});
+assert.match(imapFolderMove.body, /Work\/Travel/);
+assert.match(imapFolderMove.body, /Archive/);
+assert.match(imapFolderMove.body, /mail server/);
 const moveCopy = folderChrome.actionConfirm("move", { subject: "Travel plans", target: "Notes", channel: "imap" });
 assert.strictEqual(moveCopy.title, "Move message");
 assert.match(moveCopy.body, /Travel plans/);
@@ -1637,12 +1789,21 @@ assert.strictEqual(folderChrome.confirmsBefore("mail:moveToFolder"), true);
 assert.strictEqual(folderChrome.confirmsBefore("mail:moveProviderMessage"), true);
 assert.strictEqual(folderChrome.confirmsBefore("mail:renameProviderFolder"), true);
 assert.strictEqual(folderChrome.confirmsBefore("mail:deleteProviderFolder"), true);
+assert.strictEqual(folderChrome.confirmsBefore("mail:moveProviderFolder"), true);
+assert.strictEqual(folderChrome.confirmsBefore("mail:moveFolder"), true);
 assert.strictEqual(folderChrome.confirmsBefore("mail:modifyMessageLabels"), false);
 assert.strictEqual(folderChrome.confirmsBefore("mail:createProviderFolder"), false);
 assert.ok(appJs.includes('confirmRelocation("mail:moveToFolder"'));
 assert.ok(appJs.includes('confirmRelocation("mail:moveProviderMessage"'));
 assert.ok(appJs.includes('confirmsBefore("mail:renameProviderFolder")'));
 assert.ok(appJs.includes('confirmsBefore("mail:deleteProviderFolder")'));
+assert.ok(appJs.includes('confirmsBefore("mail:moveProviderFolder")') || appJs.includes('channel === "mail:moveProviderFolder"'));
+assert.ok(appJs.includes("moveRequestAfterConfirm"));
+assert.ok(appJs.includes("Move…"));
+assert.ok(html.includes('id="move-picker"'));
+assert.ok(html.includes('id="move-picker-filter"'));
+assert.ok(css.includes("#move-picker-tree"));
+assert.ok(css.includes(".move-node"));
 assert.ok(!appJs.includes('confirmsBefore("mail:modifyMessageLabels")'));
 assert.ok(!appJs.includes("state.providerRename"));
 assert.ok(!appJs.includes('rename.textContent = "Rename"'));
@@ -1827,6 +1988,8 @@ for (const channel of [
   "mail:createProviderFolder",
   "mail:renameProviderFolder",
   "mail:deleteProviderFolder",
+  "mail:moveProviderFolder",
+  "mail:moveFolder",
   "mail:modifyMessageLabels",
   "mail:moveProviderMessage",
   "calendar:status",
@@ -1843,6 +2006,8 @@ for (const channel of [
   "mail:createProviderFolder",
   "mail:renameProviderFolder",
   "mail:deleteProviderFolder",
+  "mail:moveProviderFolder",
+  "mail:moveFolder",
   "mail:modifyMessageLabels",
   "mail:moveProviderMessage",
   "calendar:status",
@@ -2752,6 +2917,7 @@ async function checkTidy() {
       fetchMessages: remote.fetchMessages,
       listFolderRecords: remote.listFolderRecords,
       findText: remote.findText,
+      renameBox: remote.renameBox,
     };
     const folders = [
       { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
@@ -3054,6 +3220,208 @@ async function checkTidy() {
     assert.strictEqual(gmail.success, true);
     assert.deepStrictEqual(gmail.data, []);
     assert.deepStrictEqual(boxes, ["[Gmail]/All Mail"]);
+
+    function seedMoveAccount(id, email, delimiter, folders) {
+      db.insertAccount({
+        id,
+        email,
+        username: email,
+        profile: "custom",
+        imapHost: "imap.example.test",
+        imapPort: 993,
+        imapTls: true,
+        smtpHost: "smtp.example.test",
+        smtpPort: 465,
+        smtpTls: true,
+        delimiter,
+        createdAt: Date.now(),
+      });
+      secrets.setPassword(id, "pw");
+      db.replaceFolders(id, folders, delimiter);
+    }
+    function stampFolder(accountId, folderPath, messageId) {
+      db.applyFolderSync(accountId, folderPath, {
+        messages: [],
+        keepOthers: true,
+        validity: 4,
+        uidCursor: 12,
+        windowDone: true,
+        horizonDays: 180,
+      });
+      db.insertMessage({
+        id: messageId,
+        accountId,
+        folderPath,
+        uid: 8,
+        uidValidity: 4,
+        threadId: messageId,
+        subject: messageId,
+        snippet: "cached",
+        from: "Ada <ada@example.com>",
+        date: "2026-08-01T00:00:00.000Z",
+        listSortTs: 1785542400000,
+        unread: true,
+        bodyComplete: true,
+      });
+    }
+    const slashTree = [
+      { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+      { path: "Work", name: "Work", wellKnown: null },
+      { path: "Work/Travel", name: "Travel", wellKnown: null },
+      { path: "Work/Travel/Hotels", name: "Hotels", wellKnown: null },
+      { path: "Personal", name: "Personal", wellKnown: null },
+    ];
+    const planned = db.planImapPathMove(slashTree, "Work", "Personal", "/");
+    assert.strictEqual(planned.ok, true);
+    assert.deepStrictEqual(planned.renames.map((step) => [step.from, step.to]), [
+      ["Work", "Personal/Work"],
+      ["Work/Travel", "Personal/Work/Travel"],
+      ["Work/Travel/Hotels", "Personal/Work/Travel/Hotels"],
+    ]);
+    assert.strictEqual(db.planImapPathMove(slashTree, "Work", "Work/Travel", "/").code, "invalid");
+    assert.strictEqual(db.planImapPathMove(slashTree, "Work/Travel", "Work", "/").code, "invalid");
+    assert.strictEqual(db.planImapPathMove(slashTree, "INBOX", "Personal", "/").code, "invalid");
+    assert.strictEqual(db.planImapPathMove(slashTree.concat([
+      { path: "Personal/Work", name: "Work", wellKnown: null },
+    ]), "Work", "Personal", "/").code, "collision");
+    const dotPlan = db.planImapPathMove([
+      { path: "Work", name: "Work" },
+      { path: "Work.Travel", name: "Travel" },
+      { path: "Archive", name: "Archive" },
+    ], "Work", "Archive", ".");
+    assert.strictEqual(dotPlan.ok, true);
+    assert.deepStrictEqual(dotPlan.renames.map((step) => step.to), ["Archive.Work", "Archive.Work.Travel"]);
+
+    seedMoveAccount("imap-clash", "clash@example.com", "/", slashTree.concat([
+      { path: "Personal/Work", name: "Work", wellKnown: null },
+    ]));
+    stampFolder("imap-clash", "Work", "m-clash");
+    const renames = [];
+    remote.renameBox = async (_client, from, to) => { renames.push([from, to]); };
+    remote.withClient = async (_account, _password, fn) => fn({});
+    const clashMove = await engine.answer("mail:moveFolder", [{
+      accountId: "imap-clash",
+      folderId: "Work",
+      destinationId: "Personal",
+    }]);
+    assert.strictEqual(clashMove.success, false);
+    assert.strictEqual(clashMove.error.code, "collision");
+    assert.deepStrictEqual(renames, []);
+    assert.strictEqual(db.messageById("m-clash").folder_path, "Work");
+    const inboxMove = await engine.answer("mail:moveFolder", [{
+      accountId: "imap-clash",
+      folderId: "INBOX",
+      destinationId: "Personal",
+    }]);
+    assert.strictEqual(inboxMove.success, false);
+    assert.strictEqual(inboxMove.error.code, "invalid");
+    assert.deepStrictEqual(renames, []);
+
+    seedMoveAccount("imap-miss", "miss@example.com", "/", [
+      { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+      { path: "Work", name: "Work", wellKnown: null },
+      { path: "Personal", name: "Personal", wellKnown: null },
+    ]);
+    stampFolder("imap-miss", "Work", "m-miss");
+    remote.listFolderRecords = async () => ({
+      folders: [
+        { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+        { path: "Personal", name: "Personal", wellKnown: null },
+      ],
+      delimiter: "/",
+    });
+    const missedMove = await engine.answer("mail:moveFolder", [{
+      accountId: "imap-miss",
+      folderId: "Work",
+      destinationId: "Personal",
+    }]);
+    assert.strictEqual(missedMove.success, false);
+    assert.strictEqual(missedMove.error.code, "partial");
+    assert.deepStrictEqual(renames, [["Work", "Personal/Work"]]);
+    assert.strictEqual(db.folderByPath("imap-miss", "Work").sync_horizon_days, 180);
+    assert.strictEqual(db.folderByPath("imap-miss", "Work").uid_cursor, 12);
+    assert.strictEqual(db.messageById("m-miss").folder_path, "Work");
+    assert.strictEqual(db.folderByPath("imap-miss", "Personal/Work"), null);
+
+    seedMoveAccount("imap-kids", "kids@example.com", "/", slashTree);
+    stampFolder("imap-kids", "Work", "m-kids-work");
+    stampFolder("imap-kids", "Work/Travel/Hotels", "m-kids-hotels");
+    renames.length = 0;
+    remote.listFolderRecords = async () => ({
+      folders: [
+        { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+        { path: "Personal", name: "Personal", wellKnown: null },
+        { path: "Personal/Work", name: "Work", wellKnown: null },
+        { path: "Work/Travel", name: "Travel", wellKnown: null },
+        { path: "Work/Travel/Hotels", name: "Hotels", wellKnown: null },
+      ],
+      delimiter: "/",
+    });
+    const kidsMove = await engine.answer("mail:moveFolder", [{
+      accountId: "imap-kids",
+      folderId: "Work",
+      destinationId: "Personal",
+    }]);
+    assert.strictEqual(kidsMove.success, true);
+    assert.match(kidsMove.data.warning, /Work\/Travel/);
+    assert.strictEqual(db.messageById("m-kids-work").folder_path, "Personal/Work");
+    assert.strictEqual(db.messageById("m-kids-hotels").folder_path, "Work/Travel/Hotels");
+    assert.strictEqual(db.folderByPath("imap-kids", "Personal/Work").sync_horizon_days, 180);
+    assert.strictEqual(db.folderByPath("imap-kids", "Personal/Work").uid_cursor, 12);
+    assert.strictEqual(db.folderByPath("imap-kids", "Personal/Work").window_done, 1);
+    assert.strictEqual(db.folderByPath("imap-kids", "Work/Travel/Hotels").sync_horizon_days, 180);
+
+    seedMoveAccount("imap-move", "move@example.com", "/", slashTree);
+    stampFolder("imap-move", "Work", "m-move-work");
+    stampFolder("imap-move", "Work/Travel", "m-move-travel");
+    stampFolder("imap-move", "Work/Travel/Hotels", "m-move-hotels");
+    renames.length = 0;
+    remote.listFolderRecords = async () => ({
+      folders: [
+        { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+        { path: "Personal", name: "Personal", wellKnown: null },
+        { path: "Personal/Work", name: "Work", wellKnown: null },
+        { path: "Personal/Work/Travel", name: "Travel", wellKnown: null },
+        { path: "Personal/Work/Travel/Hotels", name: "Hotels", wellKnown: null },
+      ],
+      delimiter: "/",
+    });
+    const fullMove = await engine.answer("mail:moveFolder", [{
+      accountId: "imap-move",
+      folderId: "Work",
+      destinationId: "Personal",
+    }]);
+    assert.strictEqual(fullMove.success, true);
+    assert.strictEqual(fullMove.data.warning, "");
+    assert.strictEqual(fullMove.data.id, "Personal/Work");
+    assert.deepStrictEqual(renames, [["Work", "Personal/Work"]]);
+    assert.strictEqual(db.messageById("m-move-work").folder_path, "Personal/Work");
+    assert.strictEqual(db.messageById("m-move-travel").folder_path, "Personal/Work/Travel");
+    assert.strictEqual(db.messageById("m-move-hotels").folder_path, "Personal/Work/Travel/Hotels");
+    assert.strictEqual(db.countInFolder("imap-move", "Work"), 0);
+    const movedWork = db.folderByPath("imap-move", "Personal/Work");
+    assert.strictEqual(movedWork.sync_horizon_days, 180);
+    assert.strictEqual(movedWork.uid_cursor, 12);
+    assert.strictEqual(movedWork.window_done, 1);
+    assert.strictEqual(movedWork.uid_validity, 4);
+    assert.strictEqual(db.folderByPath("imap-move", "Personal/Work/Travel/Hotels").sync_horizon_days, 180);
+    assert.strictEqual(db.messageByUid("imap-move", "Personal/Work/Travel", 8, 4).id, "m-move-travel");
+
+    seedMoveAccount("imap-dot", "dot@example.com", ".", [
+      { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+      { path: "Work", name: "Work", wellKnown: null },
+      { path: "Work.Travel", name: "Travel", wellKnown: null },
+      { path: "Archive", name: "Archive", wellKnown: null },
+    ]);
+    stampFolder("imap-dot", "Work", "m-dot-work");
+    stampFolder("imap-dot", "Work.Travel", "m-dot");
+    const dotRewrite = db.rewriteFolderPaths("imap-dot", dotPlan.renames);
+    assert.deepStrictEqual(dotRewrite.moved.map((step) => step.to), ["Archive.Work.Travel", "Archive.Work"]);
+    assert.deepStrictEqual(dotRewrite.skipped, []);
+    assert.strictEqual(db.messageById("m-dot").folder_path, "Archive.Work.Travel");
+    assert.strictEqual(db.folderByPath("imap-dot", "Archive.Work.Travel").sync_horizon_days, 180);
+    assert.strictEqual(db.folderByPath("imap-dot", "Archive.Work").uid_cursor, 12);
+    assert.strictEqual(db.folderByPath("imap-dot", "Work"), null);
     await checkSignaturesAndSchedule(engine, db);
   } finally {
     if (savedRemote) {
@@ -3063,6 +3431,7 @@ async function checkTidy() {
       remote.fetchMessages = savedRemote.fetchMessages;
       remote.listFolderRecords = savedRemote.listFolderRecords;
       remote.findText = savedRemote.findText;
+      remote.renameBox = savedRemote.renameBox;
     }
     delete process.env.GENMAIL_PAGE_DELAY_MS;
     for (const [key, value] of Object.entries(prev)) {
@@ -3220,6 +3589,145 @@ async function checkProviderApi() {
     assert.strictEqual(labelBody.labelListVisibility, "labelShow");
     assert.strictEqual(created.id, "Label_1");
     assert.strictEqual(created.editable, true);
+    const gmailTree = [
+      { id: "L1", name: "Work", type: "user", editable: true },
+      { id: "L2", name: "Work/Travel", type: "user", editable: true },
+      { id: "L3", name: "Work/Travel/Hotels", type: "user", editable: true },
+      { id: "L4", name: "Personal", type: "user", editable: true },
+      { id: "INBOX", name: "INBOX", type: "system", editable: false },
+    ];
+    const movedPlan = gmailApi.planGmailLabelMove(gmailTree, "L1", "L4");
+    assert.strictEqual(movedPlan.ok, true);
+    assert.deepStrictEqual(movedPlan.renames, [
+      { id: "L3", from: "Work/Travel/Hotels", to: "Personal/Work/Travel/Hotels" },
+      { id: "L2", from: "Work/Travel", to: "Personal/Work/Travel" },
+      { id: "L1", from: "Work", to: "Personal/Work" },
+    ]);
+    const nestedPlan = gmailApi.planGmailLabelMove(gmailTree, "L2", "L4");
+    assert.strictEqual(nestedPlan.ok, true);
+    assert.deepStrictEqual(nestedPlan.renames.map((step) => step.to), [
+      "Personal/Travel/Hotels",
+      "Personal/Travel",
+    ]);
+    const nameClash = gmailApi.planGmailLabelMove(gmailTree.concat([
+      { id: "Lx", name: "Personal/Work/Travel", type: "user", editable: true },
+    ]), "L1", "L4");
+    assert.strictEqual(nameClash.ok, false);
+    assert.strictEqual(nameClash.code, "collision");
+    assert.match(nameClash.message, /Personal\/Work\/Travel/);
+    assert.match(nameClash.message, /not started/);
+    assert.strictEqual(gmailApi.planGmailLabelMove(gmailTree, "L1", "L3").code, "invalid");
+    assert.strictEqual(gmailApi.planGmailLabelMove(gmailTree, "L1", "L2").code, "invalid");
+    assert.strictEqual(gmailApi.planGmailLabelMove(gmailTree, "L2", "L1").code, "invalid");
+    assert.strictEqual(gmailApi.planGmailLabelMove(gmailTree, "L1", "").code, "invalid");
+    assert.strictEqual(gmailApi.planGmailLabelMove(gmailTree, "INBOX", "L4").code, "invalid");
+    const gmailList = {
+      labels: gmailTree.map((label) => ({ id: label.id, name: label.name, type: label.type })),
+    };
+    let gmailPatches = 0;
+    await assert.rejects(
+      () => gmailApi.moveLabel("token", "INBOX", "L4", async (_url, init) => {
+        if (init && init.method === "PATCH") gmailPatches += 1;
+        return jsonResponse(gmailList);
+      }),
+      (error) => error && error.code === "invalid",
+    );
+    assert.strictEqual(gmailPatches, 0);
+    gmailPatches = 0;
+    await assert.rejects(
+      () => gmailApi.moveLabel("token", "L1", "L4", async (_url, init) => {
+        if (init && init.method === "PATCH") gmailPatches += 1;
+        return jsonResponse({
+          labels: gmailList.labels.concat([{ id: "Lx", name: "Personal/Work", type: "user" }]),
+        });
+      }),
+      (error) => error && error.code === "collision" && /Personal\/Work/.test(error.message),
+    );
+    assert.strictEqual(gmailPatches, 0);
+    const patchNames = [];
+    await assert.rejects(
+      () => gmailApi.moveLabel("token", "L1", "L4", async (url, init) => {
+        if (!init || init.method !== "PATCH") return jsonResponse(gmailList);
+        const body = JSON.parse(init.body);
+        patchNames.push(body.name);
+        if (String(url).endsWith("/L3")) return jsonResponse({}, 500);
+        return jsonResponse({ id: "ok", name: body.name, type: "user" });
+      }),
+      (error) => {
+        assert.strictEqual(error.code, "partial");
+        assert.match(error.message, /Partly renamed/);
+        assert.match(error.message, /Work\/Travel\/Hotels/);
+        assert.match(error.message, /only partly renamed/);
+        assert.ok(error.failed.some((step) => step.from === "Work/Travel/Hotels"));
+        assert.ok(error.moved.some((step) => step.to === "Personal/Work"));
+        return true;
+      },
+    );
+    assert.deepStrictEqual(patchNames, [
+      "Personal/Work/Travel/Hotels",
+      "Personal/Work/Travel",
+      "Personal/Work",
+    ]);
+    const applied = [];
+    const renamed = await gmailApi.moveLabel("token", "L2", "L4", async (url, init) => {
+      if (!init || init.method !== "PATCH") return jsonResponse(gmailList);
+      const body = JSON.parse(init.body);
+      applied.push({ id: decodeURIComponent(String(url).split("/labels/").pop()), name: body.name });
+      return jsonResponse({ id: applied.at(-1).id, name: body.name, type: "user" });
+    });
+    assert.deepStrictEqual(applied, [
+      { id: "L3", name: "Personal/Travel/Hotels" },
+      { id: "L2", name: "Personal/Travel" },
+    ]);
+    assert.strictEqual(renamed.name, "Personal/Travel");
+    const graphTree = [
+      { id: "in", name: "Inbox", type: "system", editable: false, wellKnown: "inbox", parentId: "" },
+      { id: "work", name: "Work", type: "user", editable: true, parentId: "" },
+      { id: "rec", name: "Receipts", type: "user", editable: true, parentId: "work" },
+      { id: "tax", name: "Taxes", type: "user", editable: true, parentId: "rec" },
+      { id: "dup", name: "receipts", type: "user", editable: true, parentId: "" },
+    ];
+    assert.strictEqual(gmailApi.planGraphFolderMove(graphTree, "rec", "").code, "collision");
+    assert.strictEqual(gmailApi.planGraphFolderMove(graphTree, "rec", "tax").code, "invalid");
+    assert.strictEqual(gmailApi.planGraphFolderMove(graphTree, "rec", "work").code, "invalid");
+    assert.strictEqual(gmailApi.planGraphFolderMove(graphTree, "in", "work").code, "invalid");
+    const rootPlan = gmailApi.planGraphFolderMove(graphTree.filter((row) => row.id !== "dup"), "rec", "");
+    assert.strictEqual(rootPlan.ok, true);
+    assert.strictEqual(rootPlan.destinationId, "msgfolderroot");
+    assert.ok(gmailApi.graphFolderMoveUrl("rec").endsWith("/mailFolders/rec/move"));
+    let graphMoves = 0;
+    await assert.rejects(
+      () => gmailApi.moveMailFolder("token", "in", "work", async (url) => {
+        if (String(url).includes("/move")) graphMoves += 1;
+        return jsonResponse({
+          value: [
+            { id: "in", displayName: "Inbox", wellKnownName: "inbox", parentFolderId: "msgfolderroot" },
+            { id: "work", displayName: "Work", parentFolderId: "msgfolderroot", childFolderCount: 0 },
+          ],
+        });
+      }),
+      (error) => error && error.code === "invalid",
+    );
+    assert.strictEqual(graphMoves, 0);
+    const graphBodies = [];
+    const graphMoved = await gmailApi.moveMailFolder("token", "rec", "", async (url, init) => {
+      const href = String(url);
+      if (href.includes("/childFolders")) return jsonResponse({ value: [] });
+      if (href.endsWith("/move")) {
+        graphBodies.push(JSON.parse(init.body));
+        assert.strictEqual(init.method, "POST");
+        return jsonResponse({ id: "rec", displayName: "Receipts", parentFolderId: "msgfolderroot" });
+      }
+      return jsonResponse({
+        value: [
+          { id: "work", displayName: "Work", parentFolderId: "msgfolderroot", childFolderCount: 1 },
+          { id: "rec", displayName: "Receipts", parentFolderId: "work", childFolderCount: 0 },
+        ],
+      });
+    });
+    assert.deepStrictEqual(graphBodies, [{ destinationId: "msgfolderroot" }]);
+    assert.strictEqual(graphMoved.id, "rec");
+    assert.strictEqual(graphMoved.parentId, "msgfolderroot");
     const modifyUrls = [];
     const modified = await gmailApi.modifyLabels("token", "<abc@example.com>", ["Label_1"], [], async (url, init) => {
       modifyUrls.push(String(url));
@@ -3322,23 +3830,49 @@ async function checkProviderApi() {
       });
     }
     const calls = [];
+    const gmailLabels = [
+      { id: "Label_9", name: "Travel", type: "user" },
+      { id: "INBOX", name: "INBOX", type: "system" },
+      { id: "Label_blank", type: "user" },
+    ];
+    const graphFolders = [
+      { id: "folder-1", displayName: "Projects", parentFolderId: "msgfolderroot", childFolderCount: 0 },
+    ];
+    const gmailPatchFail = new Set();
+    const providerCalls = [];
     function route(url, init) {
       const href = String(url);
       const method = (init && init.method) || "GET";
       calls.push({ href, method });
       if (href.startsWith("https://gmail.googleapis.com/gmail/v1/users/me/labels") && method === "GET" && !href.includes("/labels/")) {
-        return jsonResponse({
-          labels: [
-            { id: "Label_9", name: "Travel", type: "user" },
-            { id: "INBOX", name: "INBOX", type: "system" },
-            { id: "Label_blank", type: "user" },
-          ],
-        });
+        return jsonResponse({ labels: gmailLabels.map((label) => ({ ...label })) });
+      }
+      if (method === "PATCH" && href.includes("/gmail/v1/users/me/labels/")) {
+        const id = decodeURIComponent(href.split("/labels/").pop().split("?")[0]);
+        const body = JSON.parse(init.body);
+        providerCalls.push({ kind: "gmail-patch", id, name: body.name });
+        if (gmailPatchFail.has(id)) return jsonResponse({}, 500);
+        const row = gmailLabels.find((label) => label.id === id);
+        if (row) row.name = body.name;
+        return jsonResponse({ id, name: body.name, type: "user" });
       }
       if (href.includes("rfc822msgid")) return jsonResponse({ messages: [{ id: "msg-1" }] });
       if (method === "POST" && href.includes("/messages/msg-1/modify")) return jsonResponse({});
       if (href.startsWith("https://graph.microsoft.com/v1.0/me/mailFolders") && method === "GET") {
-        return jsonResponse({ value: [{ id: "folder-1", displayName: "Projects" }] });
+        if (href.includes("/childFolders")) return jsonResponse({ value: [] });
+        return jsonResponse({ value: graphFolders.map((folder) => ({ ...folder })) });
+      }
+      if (method === "POST" && href.includes("/mailFolders/") && href.endsWith("/move")) {
+        const id = decodeURIComponent(href.split("/mailFolders/")[1].split("/move")[0]);
+        const body = JSON.parse(init.body);
+        providerCalls.push({ kind: "graph-move", id, destinationId: body.destinationId });
+        const row = graphFolders.find((folder) => folder.id === id);
+        return jsonResponse({
+          id,
+          displayName: row ? row.displayName : id,
+          parentFolderId: body.destinationId,
+          childFolderCount: 0,
+        });
       }
       if (href.startsWith("https://graph.microsoft.com/v1.0/me/calendars") && !href.includes("/calendarView") && method === "GET") {
         return jsonResponse({ value: [{ id: "cal-ms", name: "Grace", isDefaultCalendar: true }] });
@@ -3454,6 +3988,64 @@ async function checkProviderApi() {
     }]);
     assert.strictEqual(changed.success, true);
     assert.ok(calls.some((call) => call.href.includes("/messages/msg-1/modify")));
+    gmailLabels.splice(0, gmailLabels.length,
+      { id: "L1", name: "Work", type: "user" },
+      { id: "L2", name: "Work/Travel", type: "user" },
+      { id: "L3", name: "Work/Travel/Hotels", type: "user" },
+      { id: "L4", name: "Personal", type: "user" },
+      { id: "Lx", name: "Personal/Work", type: "user" },
+      { id: "INBOX", name: "INBOX", type: "system" },
+    );
+    const blockedMove = await engine.answer("mail:moveProviderFolder", [{
+      accountId: "gmail-live",
+      folderId: "L1",
+      destinationId: "L4",
+    }]);
+    assert.strictEqual(blockedMove.success, false);
+    assert.strictEqual(blockedMove.error.code, "collision");
+    assert.match(blockedMove.error.message, /Personal\/Work/);
+    assert.strictEqual(providerCalls.filter((call) => call.kind === "gmail-patch").length, 0);
+    gmailLabels.splice(gmailLabels.findIndex((label) => label.id === "Lx"), 1);
+    gmailPatchFail.add("L3");
+    const partialMove = await engine.answer("mail:moveProviderFolder", [{
+      accountId: "gmail-live",
+      folderId: "L1",
+      destinationId: "L4",
+    }]);
+    assert.strictEqual(partialMove.success, false);
+    assert.strictEqual(partialMove.error.code, "partial");
+    assert.match(partialMove.error.message, /Work\/Travel\/Hotels/);
+    assert.match(partialMove.error.message, /Partly renamed/);
+    assert.ok(providerCalls.some((call) => call.kind === "gmail-patch" && call.name === "Personal/Work/Travel/Hotels"));
+    gmailPatchFail.clear();
+    gmailLabels.splice(0, gmailLabels.length,
+      { id: "L1", name: "Work", type: "user" },
+      { id: "L2", name: "Work/Travel", type: "user" },
+      { id: "L3", name: "Work/Travel/Hotels", type: "user" },
+      { id: "L4", name: "Personal", type: "user" },
+      { id: "INBOX", name: "INBOX", type: "system" },
+    );
+    providerCalls.length = 0;
+    const providerMoved = await engine.answer("mail:moveProviderFolder", [{
+      accountId: "gmail-live",
+      folderId: "L1",
+      destinationId: "L4",
+    }]);
+    assert.strictEqual(providerMoved.success, true);
+    assert.strictEqual(providerMoved.data.name, "Personal/Work");
+    assert.deepStrictEqual(providerCalls.filter((call) => call.kind === "gmail-patch").map((call) => call.name), [
+      "Personal/Work/Travel/Hotels",
+      "Personal/Work/Travel",
+      "Personal/Work",
+    ]);
+    const lockedMove = await engine.answer("mail:moveProviderFolder", [{
+      accountId: "gmail-live",
+      folderId: "INBOX",
+      destinationId: "L4",
+    }]);
+    assert.strictEqual(lockedMove.success, false);
+    assert.strictEqual(lockedMove.error.code, "invalid");
+    assert.strictEqual(providerCalls.filter((call) => call.kind === "gmail-patch" && call.id === "INBOX").length, 0);
 
     liveAccount({
       id: "outlook-live",
@@ -3484,6 +4076,38 @@ async function checkProviderApi() {
     assert.strictEqual(folders.data.api, true);
     assert.strictEqual(folders.data.source, "graph");
     assert.ok(folders.data.folders.some((folder) => folder.id === "folder-1" && folder.name === "Projects" && folder.editable === true));
+    graphFolders.splice(0, graphFolders.length,
+      { id: "inbox-id", displayName: "Inbox", wellKnownName: "inbox", parentFolderId: "msgfolderroot", childFolderCount: 0 },
+      { id: "work-id", displayName: "Work", parentFolderId: "msgfolderroot", childFolderCount: 1 },
+      { id: "rec-id", displayName: "Receipts", parentFolderId: "work-id", childFolderCount: 0 },
+      { id: "dup-id", displayName: "receipts", parentFolderId: "msgfolderroot", childFolderCount: 0 },
+    );
+    const graphClash = await engine.answer("mail:moveProviderFolder", [{
+      accountId: "outlook-live",
+      folderId: "rec-id",
+      destinationId: "",
+    }]);
+    assert.strictEqual(graphClash.success, false);
+    assert.strictEqual(graphClash.error.code, "collision");
+    assert.strictEqual(providerCalls.filter((call) => call.kind === "graph-move").length, 0);
+    graphFolders.splice(graphFolders.findIndex((folder) => folder.id === "dup-id"), 1);
+    const graphMovedFolder = await engine.answer("mail:moveProviderFolder", [{
+      accountId: "outlook-live",
+      folderId: "rec-id",
+      destinationId: "",
+    }]);
+    assert.strictEqual(graphMovedFolder.success, true);
+    assert.deepStrictEqual(providerCalls.filter((call) => call.kind === "graph-move"), [
+      { kind: "graph-move", id: "rec-id", destinationId: "msgfolderroot" },
+    ]);
+    const graphLocked = await engine.answer("mail:moveProviderFolder", [{
+      accountId: "outlook-live",
+      folderId: "inbox-id",
+      destinationId: "work-id",
+    }]);
+    assert.strictEqual(graphLocked.success, false);
+    assert.strictEqual(graphLocked.error.code, "invalid");
+    assert.strictEqual(providerCalls.filter((call) => call.kind === "graph-move").length, 1);
     const month = await engine.answer("calendar:list", [{
       accountId: "outlook-live",
       timeMin: october.timeMin,

@@ -70,7 +70,7 @@ Work and school mailboxes cannot grant those delegated permissions until an admi
 - `mail:addAccount` is the IMAP baseline.
 - `mail:grantOrganize` stores the organize token on that mailbox after the email matches.
 - `calendar:connect` stores the calendar token the same way.
-- `mail:listProviderFolders`, create, rename, and delete call Gmail labels or Graph `mailFolders` only when the organize marker is granted.
+- `mail:listProviderFolders`, create, rename, delete, and move call Gmail labels or Graph `mailFolders` only when the organize marker is granted. Gmail move is `labels.patch` on the label and its descendants. Outlook move is `POST /me/mailFolders/{id}/move`. IMAP folder move uses `RENAME` on the mailbox and does not need that grant.
 - `mail:modifyMessageLabels` and `mail:moveProviderMessage` use the provider message id looked up by RFC Message-ID.
 - `calendar:list` and `calendar:createEvent` call the calendar APIs for a month range.
 

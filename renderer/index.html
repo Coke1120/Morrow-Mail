@@ -480,6 +480,26 @@
       <p class="hint">The API key stays in local AI config, the same store as GenMail → AI Setup. Leave the key blank to keep the saved one. Fetch models uses this form, or the saved key when the box is blank. Test connection uses the saved config — Save AI first if you changed these fields. Preferences are saved on this computer.</p>
       </div>
     </dialog>
+    <dialog id="move-picker" aria-labelledby="move-picker-title">
+      <form id="move-picker-form">
+        <h2 id="move-picker-title">Move</h2>
+        <p id="move-picker-source"></p>
+        <label for="move-picker-filter">Filter</label>
+        <div class="move-filter">
+          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+            <circle cx="11" cy="11" r="8" fill="none" stroke="currentColor" stroke-width="2"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></line>
+          </svg>
+          <input id="move-picker-filter" type="search" autocomplete="off" spellcheck="false" placeholder="Filter by path" />
+        </div>
+        <div id="move-picker-tree" role="tree" aria-label="Destinations"></div>
+        <p id="move-picker-preview"></p>
+        <div class="row">
+          <button type="submit" class="primary" id="move-picker-ok">Move</button>
+          <button type="button" class="ghost" id="move-picker-cancel">Cancel</button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="confirm" aria-labelledby="confirm-title">
       <form id="confirm-form">
         <h2 id="confirm-title">Confirm</h2>

@@ -53,6 +53,11 @@ function graphFolderUrl(id) {
   return `${GRAPH_ROOT}/mailFolders/${encodeURIComponent(folderId)}`;
 }
 
+function graphFolderMoveUrl(id) {
+  const base = graphFolderUrl(id);
+  return base ? `${base}/move` : "";
+}
+
 function graphMessageLookup(rfcMessageId) {
   const raw = String(rfcMessageId || "").trim();
   if (!raw || raw.length > 998 || /['"\\\u0000-\u001f\u007f]/.test(raw)) return "";
@@ -187,6 +192,121 @@ async function renameLabel(accessToken, id, name, fetchImpl) {
     throw error;
   }
   return renamed;
+}
+
+function gmailLeaf(name) {
+  const text = String(name || "");
+  const cut = text.lastIndexOf("/");
+  return cut >= 0 ? text.slice(cut + 1) : text;
+}
+
+function gmailTreeParent(labels, source) {
+  const byName = new Map();
+  for (const row of labels) {
+    if (row && row.name && !byName.has(row.name)) byName.set(row.name, row);
+  }
+  let name = String(source.name || "");
+  let cut = name.lastIndexOf("/");
+  while (cut > 0) {
+    const parent = byName.get(name.slice(0, cut));
+    if (parent && parent.id !== source.id) return parent;
+    name = name.slice(0, cut);
+    cut = name.lastIndexOf("/");
+  }
+  return null;
+}
+
+function planGmailLabelMove(labels, sourceId, destinationId) {
+  const rows = (Array.isArray(labels) ? labels : []).filter((row) => row && row.id && row.name);
+  const source = rows.find((row) => row.id === String(sourceId || ""));
+  if (!source) return { ok: false, code: "not-found", message: "That Gmail label is not in this mailbox." };
+  if (source.editable === false || source.type === "system" || GMAIL_LOCKED.has(source.id)) {
+    return { ok: false, code: "invalid", message: "This Gmail label cannot be moved." };
+  }
+  const destRaw = destinationId ? String(destinationId) : "";
+  const root = !destRaw;
+  const dest = root ? null : rows.find((row) => row.id === destRaw);
+  if (!root && !dest) return { ok: false, code: "not-found", message: "That destination is not in this mailbox." };
+  const moving = rows.filter((row) => row.name === source.name || row.name.startsWith(`${source.name}/`));
+  const movingIds = new Set(moving.map((row) => row.id));
+  if (dest && movingIds.has(dest.id)) {
+    return { ok: false, code: "invalid", message: "A label cannot move into itself or one of its own sub-labels." };
+  }
+  const parent = gmailTreeParent(rows, source);
+  if ((root && !parent) || (dest && parent && dest.id === parent.id)) {
+    return { ok: false, code: "invalid", message: "This label is already there." };
+  }
+  const nextName = dest ? `${dest.name}/${gmailLeaf(source.name)}` : gmailLeaf(source.name);
+  if (!nextName || nextName.length > 200) {
+    return { ok: false, code: "invalid", message: "That path is too long for Gmail." };
+  }
+  const renames = moving.map((row) => ({
+    id: row.id,
+    from: row.name,
+    to: nextName + row.name.slice(source.name.length),
+  }));
+  renames.sort((a, b) => b.from.length - a.from.length || b.from.localeCompare(a.from));
+  const taken = new Map();
+  for (const row of rows) {
+    if (!movingIds.has(row.id)) taken.set(row.name, row.id);
+  }
+  const used = new Set();
+  for (const step of renames) {
+    if (!step.to || step.to.length > 200) {
+      return { ok: false, code: "invalid", message: "That path is too long for Gmail." };
+    }
+    if (taken.has(step.to) || used.has(step.to)) {
+      return {
+        ok: false,
+        code: "collision",
+        message: `“${step.to}” already exists, so this move was not started.`,
+      };
+    }
+    used.add(step.to);
+  }
+  return { ok: true, sourceId: source.id, sourceName: source.name, nextName, renames };
+}
+
+function partialMoveMessage(moved, failed) {
+  const failedNames = failed.map((step) => step.from).join(", ");
+  const movedNames = moved.map((step) => `${step.from} → ${step.to}`).join(", ");
+  const head = moved.length
+    ? `Partly renamed (${movedNames}). Failed: ${failedNames}. The mailbox is only partly renamed.`
+    : `No labels were renamed. Failed: ${failedNames}.`;
+  return head.slice(0, 280);
+}
+
+async function moveLabel(accessToken, id, destinationId, fetchImpl) {
+  const labels = await listLabels(accessToken, fetchImpl);
+  const plan = planGmailLabelMove(labels, id, destinationId);
+  if (!plan.ok) {
+    const error = new Error(plan.message);
+    error.code = plan.code || "invalid";
+    throw error;
+  }
+  const moved = [];
+  const failed = [];
+  for (const step of plan.renames) {
+    try {
+      await renameLabel(accessToken, step.id, step.to, fetchImpl);
+      moved.push(step);
+    } catch (error) {
+      failed.push({
+        id: step.id,
+        from: step.from,
+        to: step.to,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  if (failed.length) {
+    const error = new Error(partialMoveMessage(moved, failed));
+    error.code = "partial";
+    error.failed = failed;
+    error.moved = moved;
+    throw error;
+  }
+  return { id: plan.sourceId, name: plan.nextName, renamed: moved };
 }
 
 async function deleteLabel(accessToken, id, fetchImpl) {
@@ -352,6 +472,92 @@ async function renameMailFolder(accessToken, id, name, fetchImpl) {
     throw error;
   }
   return renamed;
+}
+
+function graphDescendantIds(folders, sourceId) {
+  const children = new Map();
+  for (const row of folders) {
+    if (!row || !row.parentId) continue;
+    const list = children.get(row.parentId) || [];
+    list.push(row.id);
+    children.set(row.parentId, list);
+  }
+  const ids = new Set();
+  const stack = (children.get(sourceId) || []).slice();
+  while (stack.length) {
+    const id = stack.pop();
+    if (ids.has(id)) continue;
+    ids.add(id);
+    for (const child of children.get(id) || []) stack.push(child);
+  }
+  return ids;
+}
+
+function graphListedParent(folders, row) {
+  if (!row || !row.parentId) return null;
+  return folders.find((item) => item.id === row.parentId) || null;
+}
+
+function planGraphFolderMove(folders, sourceId, destinationId) {
+  const rows = (Array.isArray(folders) ? folders : []).filter((row) => row && row.id);
+  const source = rows.find((row) => row.id === String(sourceId || ""));
+  if (!source) return { ok: false, code: "not-found", message: "That Outlook folder is not in this mailbox." };
+  if (source.editable === false || source.wellKnown || source.type === "system") {
+    return { ok: false, code: "invalid", message: "This Outlook folder cannot be moved." };
+  }
+  const destRaw = destinationId ? String(destinationId) : "";
+  const root = !destRaw || destRaw === "msgfolderroot" || destRaw === "root";
+  const dest = root ? null : rows.find((row) => row.id === destRaw);
+  if (!root && !dest) return { ok: false, code: "not-found", message: "That destination is not in this mailbox." };
+  const kids = graphDescendantIds(rows, source.id);
+  if (dest && (dest.id === source.id || kids.has(dest.id))) {
+    return { ok: false, code: "invalid", message: "A folder cannot move into itself or one of its own sub-folders." };
+  }
+  const parent = graphListedParent(rows, source);
+  if ((root && !parent) || (dest && parent && dest.id === parent.id)) {
+    return { ok: false, code: "invalid", message: "This folder is already there." };
+  }
+  const parentKey = root ? "" : dest.id;
+  const sibling = rows.find((row) => {
+    if (row.id === source.id) return false;
+    const rowParent = graphListedParent(rows, row);
+    const rowParentId = rowParent ? rowParent.id : "";
+    return rowParentId === parentKey && String(row.name || "").toLowerCase() === String(source.name || "").toLowerCase();
+  });
+  if (sibling) {
+    return {
+      ok: false,
+      code: "collision",
+      message: `“${source.name}” already exists there, so this move was not started.`,
+    };
+  }
+  return {
+    ok: true,
+    sourceId: source.id,
+    destinationId: root ? "msgfolderroot" : dest.id,
+  };
+}
+
+async function moveMailFolder(accessToken, id, destinationId, fetchImpl) {
+  const folders = await listMailFolders(accessToken, fetchImpl);
+  const plan = planGraphFolderMove(folders, id, destinationId);
+  if (!plan.ok) {
+    const error = new Error(plan.message);
+    error.code = plan.code || "invalid";
+    throw error;
+  }
+  const json = await apiJson(graphFolderMoveUrl(plan.sourceId), accessToken, {
+    method: "POST",
+    fetchImpl,
+    body: { destinationId: plan.destinationId },
+  });
+  const moved = normalizeGraphFolder(json);
+  if (!moved) {
+    const error = new Error("Outlook did not return the moved folder.");
+    error.code = "provider";
+    throw error;
+  }
+  return moved;
 }
 
 async function deleteMailFolder(accessToken, id, fetchImpl) {
@@ -539,6 +745,7 @@ module.exports = {
   gmailModifyUrl,
   gmailMessageQuery,
   graphFolderUrl,
+  graphFolderMoveUrl,
   graphMessageLookup,
   graphMoveUrl,
   normalizeGmailLabel,
@@ -549,11 +756,15 @@ module.exports = {
   createLabel,
   renameLabel,
   deleteLabel,
+  planGmailLabelMove,
+  moveLabel,
   modifyLabels,
   listMailFolders,
   createMailFolder,
   renameMailFolder,
   deleteMailFolder,
+  planGraphFolderMove,
+  moveMailFolder,
   moveMessage,
   searchGmail,
   searchGraph,

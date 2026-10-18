@@ -1627,6 +1627,127 @@ dialog h2 {
 
 #confirm { width: min(440px, calc(100vw - 24px)); }
 
+#move-picker { width: min(480px, calc(100vw - 24px)); }
+
+#move-picker-source,
+#move-picker-preview {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+#move-picker-source { color: var(--muted); }
+
+#move-picker-preview {
+  min-height: 1.45em;
+  margin-top: 10px;
+}
+
+.move-filter { position: relative; margin-top: 4px; }
+
+.move-filter svg {
+  position: absolute;
+  left: 10px;
+  top: 9px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.move-filter input { padding-left: 32px; }
+
+#move-picker-tree {
+  margin-top: 8px;
+  max-height: min(360px, 46vh);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 4px;
+  background: var(--paper);
+}
+
+.move-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-height: 32px;
+}
+
+.move-row .twist,
+.twist-spacer {
+  flex: none;
+  width: 22px;
+  height: 22px;
+}
+
+.move-row .twist {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.move-row .twist:hover,
+.move-row .twist:focus-visible { background: var(--hover); color: var(--ink); }
+
+.move-node {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  font-size: 13px;
+}
+
+.move-node span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.move-node:hover,
+.move-node:focus-visible { background: var(--hover); }
+
+.move-node[aria-selected="true"] { background: var(--selected); }
+
+.move-node[aria-disabled="true"] { color: var(--muted); cursor: not-allowed; }
+
+.move-node.match { font-weight: 600; }
+
+.move-empty {
+  margin: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.organize-menu button.menuitem:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+.organize-menu button.menuitem:disabled:hover,
+.organize-menu button.menuitem:disabled:focus-visible { background: transparent; }
+
+.menu-reason {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: normal;
+  color: var(--muted);
+}
+
 #confirm-body {
   margin: 0;
   font-size: 14px;

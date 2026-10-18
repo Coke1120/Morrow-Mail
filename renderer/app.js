@@ -113,6 +113,11 @@ function foldersOf(account) {
   return [...(account.folders.primary || []), ...(account.folders.more || [])];
 }
 
+function accountDelimiter(account) {
+  if (account && account.delimiter) return String(account.delimiter);
+  return folderDelimiter(foldersOf(account));
+}
+
 function inboxOf(account) {
   const folders = foldersOf(account);
   return folders.find((folder) => folder.wellKnownName === "inbox") || folders[0] || null;
@@ -317,6 +322,220 @@ function providerLabelTree(folders) {
   return nestRows(rows, (folder) => providerParent(folder, byId, byName), providerLabelText);
 }
 
+function joinedPath(node, byId, sep) {
+  const parts = [];
+  let current = node;
+  const seen = new Set();
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    parts.unshift(String(current.label || current.name || current.id));
+    current = current.parentId ? byId.get(current.parentId) : null;
+  }
+  return parts.join(sep);
+}
+
+function moveNodesFromFolders(kind, folders, delimiter) {
+  const tree = kind === "imap" ? folderTree(folders, delimiter) : providerLabelTree(folders);
+  const nodes = tree.map((folder) => ({
+    id: String(folder.id),
+    name: String(folder.name || folder.id),
+    label: String(folder.label || folder.name || folder.id),
+    parentId: folder.parentId ? String(folder.parentId) : "",
+    depth: folder.depth || 0,
+  }));
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  for (const node of nodes) {
+    if (kind === "gmail") node.path = node.name;
+    else if (kind === "imap") node.path = node.id;
+    else node.path = joinedPath(node, byId, " / ");
+  }
+  return nodes;
+}
+
+function descendantIds(nodes, source, kind, delimiter) {
+  const ids = new Set();
+  if (!source) return ids;
+  if (kind === "gmail") {
+    const prefix = String(source.name || "");
+    for (const node of nodes) {
+      if (!node || node.id === source.id) continue;
+      const name = String(node.name || "");
+      if (prefix && (name === prefix || name.startsWith(prefix + "/"))) ids.add(node.id);
+    }
+    return ids;
+  }
+  if (kind === "imap") {
+    const sep = delimiter || "/";
+    const prefix = String(source.id || "");
+    for (const node of nodes) {
+      if (!node || node.id === source.id) continue;
+      if (prefix && String(node.id).startsWith(prefix + sep)) ids.add(node.id);
+    }
+    return ids;
+  }
+  const children = new Map();
+  for (const node of nodes) {
+    if (!node || !node.parentId) continue;
+    const list = children.get(node.parentId) || [];
+    list.push(node.id);
+    children.set(node.parentId, list);
+  }
+  const stack = (children.get(source.id) || []).slice();
+  while (stack.length) {
+    const id = stack.pop();
+    if (ids.has(id)) continue;
+    ids.add(id);
+    for (const child of children.get(id) || []) stack.push(child);
+  }
+  return ids;
+}
+
+function moveTargetFlags(nodes, sourceId, kind, delimiter) {
+  const list = Array.isArray(nodes) ? nodes : [];
+  const source = list.find((node) => node && node.id === String(sourceId || ""));
+  const noun = kind === "gmail" ? "label" : "folder";
+  const sub = kind === "gmail" ? "sub-label" : "sub-folder";
+  if (!source) {
+    const reason = "Choose a " + noun + ".";
+    return {
+      root: { disabled: true, reason: reason },
+      nodes: list.map((node) => Object.assign({}, node, { disabled: true, reason: reason })),
+    };
+  }
+  const blocked = descendantIds(list, source, kind, delimiter);
+  const currentParent = source.parentId || "";
+  function reasonFor(id, isRoot) {
+    if (!isRoot && id === source.id) return "A " + noun + " cannot move into itself.";
+    if (!isRoot && blocked.has(id)) return "A " + noun + " cannot move into its own " + sub + ".";
+    const already = isRoot ? !currentParent : id === currentParent;
+    if (already) return "This " + noun + " is already there.";
+    return "";
+  }
+  return {
+    root: { disabled: !!reasonFor("", true), reason: reasonFor("", true) },
+    nodes: list.map((node) => {
+      const reason = reasonFor(node.id, false);
+      return Object.assign({}, node, { disabled: !!reason, reason: reason });
+    }),
+  };
+}
+
+function messageTargetFlags(nodes, currentId) {
+  const current = String(currentId || "");
+  return {
+    root: { disabled: true, reason: "", hidden: true },
+    nodes: (Array.isArray(nodes) ? nodes : []).map((node) => {
+      const same = !!(current && node.id === current);
+      return Object.assign({}, node, {
+        disabled: same,
+        reason: same ? "That message is already in this folder." : "",
+      });
+    }),
+  };
+}
+
+function filterMoveNodes(nodes, query) {
+  const list = Array.isArray(nodes) ? nodes : [];
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return list.map((node) => Object.assign({}, node, { match: false }));
+  const byId = new Map(list.map((node) => [node.id, node]));
+  const keep = new Set();
+  for (const node of list) {
+    const hay = String(node.path || node.name || node.label || "").toLowerCase();
+    if (!hay.includes(q)) continue;
+    keep.add(node.id);
+    let parent = node.parentId;
+    const seen = new Set();
+    while (parent && byId.has(parent) && !seen.has(parent)) {
+      seen.add(parent);
+      keep.add(parent);
+      parent = byId.get(parent).parentId;
+    }
+  }
+  return list.filter((node) => keep.has(node.id)).map((node) => Object.assign({}, node, {
+    match: String(node.path || node.name || node.label || "").toLowerCase().includes(q),
+  }));
+}
+
+function showMoveRoot(query) {
+  const q = String(query || "").trim().toLowerCase();
+  if (!q) return true;
+  return "(top level / root)".includes(q);
+}
+
+function visibleMoveNodes(nodes, expanded, filtering) {
+  const list = Array.isArray(nodes) ? nodes : [];
+  if (filtering) return list.slice();
+  const open = expanded instanceof Set ? expanded : new Set(expanded || []);
+  const hidden = new Set();
+  const out = [];
+  for (const node of list) {
+    if (node.parentId && hidden.has(node.parentId)) {
+      hidden.add(node.id);
+      continue;
+    }
+    out.push(node);
+    let hasChild = false;
+    for (const other of list) {
+      if (other.parentId === node.id) {
+        hasChild = true;
+        break;
+      }
+    }
+    if (hasChild && !open.has(node.id)) hidden.add(node.id);
+  }
+  return out;
+}
+
+function movePathPreview(source, destination, kind, delimiter) {
+  const row = source || {};
+  const dest = destination || {};
+  const root = !destination || dest.isRoot === true;
+  if (kind === "gmail") {
+    const name = String(row.name || "");
+    const cut = name.lastIndexOf("/");
+    const leaf = cut >= 0 ? name.slice(cut + 1) : name;
+    if (root) return leaf;
+    return String(dest.path || dest.name || "") + "/" + leaf;
+  }
+  if (kind === "imap") {
+    const sep = delimiter || "/";
+    const id = String(row.id || row.path || "");
+    const cut = id.lastIndexOf(sep);
+    const leaf = cut >= 0 ? id.slice(cut + 1) : (id || String(row.label || ""));
+    if (root) return leaf;
+    return String(dest.id || dest.path || "") + sep + leaf;
+  }
+  const leaf = String(row.label || row.name || "");
+  if (root) return leaf;
+  return String(dest.path || dest.label || dest.name || "") + " / " + leaf;
+}
+
+function movePreviewLine(session, target) {
+  const view = session || {};
+  if (!target) return "Choose a destination.";
+  if (target.disabled) return target.reason || "That destination is not available.";
+  if (view.purpose === "message") {
+    const where = target.path || target.label || target.name || "that folder";
+    return "Move the message to “" + where + "”.";
+  }
+  const next = movePathPreview(view.source || view, target, view.kind, view.delimiter);
+  return "New path: " + next;
+}
+
+function moveRequestAfterConfirm(channel, answer, params) {
+  if (!confirmsBefore(channel)) return params || null;
+  if (!answer || answer.ok !== true) return null;
+  return params || null;
+}
+
+function relocatedFolderId(current, renames) {
+  const id = String(current || "");
+  const rows = Array.isArray(renames) ? renames : [];
+  const hit = rows.find((row) => row && row.from === id);
+  return hit && hit.to ? String(hit.to) : id;
+}
+
 function messageDragPayload(email) {
   if (!email || !email.id || !email.accountId) return null;
   return {
@@ -416,16 +635,45 @@ function organizeMenu(email, imapFolders, providerPayload, provider) {
   return { move: move, add: [], remove: [], outlook: labels, note: "" };
 }
 
+function moveMenuItem(folder, provider) {
+  const outlook = provider === "outlook";
+  const editable = !!(folder && folder.editable);
+  if (editable) return { id: "move", label: "Move…", disabled: false, reason: "" };
+  return {
+    id: "move",
+    label: "Move…",
+    disabled: true,
+    reason: outlook ? "This Outlook folder cannot be moved." : "This Gmail label cannot be moved.",
+  };
+}
+
+function imapFolderMenu(folder) {
+  const system = !!(folder && (folder.wellKnownName || folder.type === "system" || String(folder.id || "").toUpperCase() === "INBOX"));
+  return {
+    name: String((folder && (folder.name || folder.id)) || "Folder"),
+    items: [{
+      id: "move",
+      label: "Move…",
+      disabled: system,
+      reason: system ? "This folder cannot be moved." : "",
+    }],
+    note: "",
+  };
+}
+
 function folderActionMenu(folder, provider) {
   const outlook = provider === "outlook";
   const name = String((folder && (folder.name || folder.id)) || (outlook ? "Folder" : "Label"));
   const editable = !!(folder && folder.editable);
   const items = [];
   if (editable) {
-    items.push({ id: "rename", label: "Rename" });
-    items.push({ id: "delete", label: "Delete" });
+    items.push({ id: "rename", label: "Rename", disabled: false, reason: "" });
+    items.push(moveMenuItem(folder, provider));
+    items.push({ id: "delete", label: "Delete", disabled: false, reason: "" });
+  } else {
+    items.push(moveMenuItem(folder, provider));
   }
-  items.push({ id: "create", label: outlook ? "Add folder" : "Add label" });
+  items.push({ id: "create", label: outlook ? "Add folder" : "Add label", disabled: false, reason: "" });
   return {
     name: name,
     editable: editable,
@@ -465,6 +713,24 @@ function actionConfirm(kind, detail) {
       name: "",
     };
   }
+  if (kind === "move-label") {
+    const provider = row.provider || "gmail";
+    const name = String(row.name || (provider === "gmail" ? "Label" : "Folder"));
+    const destination = String(row.destination || "(Top level / root)");
+    const outlook = provider === "outlook";
+    const imap = provider === "imap";
+    let body = "Move “" + name + "” into “" + destination + "” on Gmail? Nested labels are renamed with it.";
+    if (outlook) body = "Move “" + name + "” into “" + destination + "” on Outlook? Folders inside it move with it.";
+    if (imap) body = "Move “" + name + "” into “" + destination + "” on the mail server? Folders inside it follow that rename.";
+    return {
+      title: outlook || imap ? "Move folder" : "Move label",
+      body: body,
+      confirm: "Confirm",
+      cancel: "Cancel",
+      needsName: false,
+      name: "",
+    };
+  }
   if (kind === "move") {
     const subject = String(row.subject || "(no subject)");
     const target = String(row.target || "that folder");
@@ -487,7 +753,9 @@ function confirmsBefore(channel) {
   return channel === "mail:moveToFolder"
     || channel === "mail:moveProviderMessage"
     || channel === "mail:renameProviderFolder"
-    || channel === "mail:deleteProviderFolder";
+    || channel === "mail:deleteProviderFolder"
+    || channel === "mail:moveProviderFolder"
+    || channel === "mail:moveFolder";
 }
 
 function calendarMode(payload) {
@@ -1395,7 +1663,7 @@ function renderAccounts() {
       nav.appendChild(note);
     }
     if (expanded) {
-    for (const folder of folderTree(foldersOf(account))) {
+    for (const folder of folderTree(foldersOf(account), accountDelimiter(account))) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "folder";
@@ -1424,9 +1692,14 @@ function renderAccounts() {
         button.appendChild(count);
       }
       const unread = folder.unreadCount ? `, ${folder.unreadCount} unread` : "";
-      button.setAttribute("aria-label", `${folder.name || "Folder"}${unread}`);
+      button.setAttribute("aria-label", `${folder.name || "Folder"}${unread}. Right-click to move.`);
       button.addEventListener("click", () => {
         selectFolder(account.id, folder.id).catch((error) => showStatus(error.message, true));
+      });
+      button.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        openImapFolderMenu(folder, account, event.clientX, event.clientY);
       });
       nav.appendChild(button);
     }
@@ -1485,8 +1758,8 @@ function appendProviderBlock(nav, account) {
     row.setAttribute("aria-haspopup", "menu");
     const shown = folder.label || folder.name;
     row.setAttribute("aria-label", folder.editable
-      ? shown + ". Right-click for Rename and Delete."
-      : shown);
+      ? shown + ". Right-click for Rename, Move, and Delete."
+      : shown + ". Right-click to move.");
     row.style.paddingLeft = (folder.depth * 14) + "px";
     const name = document.createElement("span");
     name.className = "name";
@@ -1780,6 +2053,7 @@ const READER_ICON = {
   archive: "M4 4h16v3H4V4zm1 5h14v10H5V9zm4 2v2h6v-2H9z",
   trash: "M9 3h6l1 2h4v2H4V5h4l1-2zm-2 6h10l-.8 12H7.8L7 9zm3 2v8h2v-8H10zm4 0v8h2v-8h-2z",
   organize: "M3 6h7l2 2h9v11H3V6z",
+  move: "M3 6h7l2 2h9v11H3V6z",
 };
 
 function readerIcon(name) {
@@ -1820,21 +2094,9 @@ function renderActions(pane, email) {
   star.setAttribute("aria-pressed", email.isStarred ? "true" : "false");
   const archive = readerButton("archive", "Archive", () => archiveOpen(email));
   const trash = readerButton("trash", "Trash", () => trashOpen(email));
-  const move = document.createElement("select");
-  move.dataset.action = "move";
-  move.setAttribute("aria-label", "Move to folder");
-  move.append(option("", "Move"));
   const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
-  for (const folder of folderTree(foldersOf(account))) {
-    if (!folder || folder.id === email.folderId) continue;
-    move.append(option(folder.id, indentedName(folder)));
-  }
-  move.addEventListener("change", () => {
-    const target = move.value;
-    move.value = "";
-    if (!target) return;
-    guard(() => moveOpen(email, target));
-  });
+  const move = readerButton("move", "Move", () => openMessageMovePicker(email, "imap"));
+  move.setAttribute("aria-label", "Move to folder");
   let snooze = null;
   if (state.prefs.snooze !== false) {
     snooze = document.createElement("select");
@@ -1929,7 +2191,14 @@ function appendLabelActions(bar, email) {
     return;
   }
   if (payload.source === "graph" || payload.provider === "microsoft") {
-    bar.append(labelSelect("Move in Outlook", "Move in Outlook", labels, (id) => moveOutlook(email, id)));
+    const outlookMove = document.createElement("button");
+    outlookMove.type = "button";
+    outlookMove.className = "ghost";
+    outlookMove.dataset.action = "move-outlook";
+    outlookMove.setAttribute("aria-label", "Move in Outlook");
+    outlookMove.textContent = "Move in Outlook";
+    outlookMove.addEventListener("click", () => openMessageMovePicker(email, "outlook"));
+    bar.append(outlookMove);
   }
 }
 
@@ -2789,19 +3058,375 @@ function focusProviderCreate() {
   if (input.scrollIntoView) input.scrollIntoView({ block: "nearest" });
 }
 
+function appendFolderMenuItem(menu, item, run) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "menuitem";
+  button.setAttribute("role", "menuitem");
+  if (item.disabled) {
+    button.disabled = true;
+    button.title = item.reason || item.label;
+    const label = document.createElement("span");
+    label.textContent = item.label;
+    button.appendChild(label);
+    if (item.reason) {
+      const reason = document.createElement("span");
+      reason.className = "menu-reason";
+      reason.textContent = item.reason;
+      button.appendChild(reason);
+    }
+  } else {
+    button.textContent = item.label;
+    button.addEventListener("click", () => {
+      closeOrganizeMenu();
+      run(item);
+    });
+  }
+  menu.appendChild(button);
+}
+
+function strokeIcon(shapes, size) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", String(size || 16));
+  svg.setAttribute("height", String(size || 16));
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  for (const d of shapes) {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", d);
+    svg.appendChild(path);
+  }
+  return svg;
+}
+
+const MOVE_CHEVRON_RIGHT = "M9 18l6-6-6-6";
+const MOVE_CHEVRON_DOWN = "M6 9l6 6 6-6";
+const MOVE_FOLDER = "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z";
+
+let moveSession = null;
+
+function moveRowKey(id) {
+  return id ? "id:" + id : "root";
+}
+
+function accountForMove(accountId) {
+  return state.accounts.find((account) => account.id === accountId) || selectedAccount();
+}
+
+function openMoveSession(session) {
+  const parents = new Set();
+  for (const node of session.nodes) {
+    if (node.parentId) parents.add(node.parentId);
+  }
+  session.expanded = parents;
+  session.query = "";
+  session.activeKey = "";
+  session.animated = false;
+  moveSession = session;
+  $("move-picker-title").textContent = session.title;
+  const source = $("move-picker-source");
+  if (session.purpose === "message") source.textContent = "Message: " + (session.sourceName || "this message");
+  else source.textContent = (session.kind === "gmail" ? "Label: " : "Folder: ") + (session.sourcePath || session.sourceName || "");
+  $("move-picker-filter").value = "";
+  paintMoveTree();
+  if (!$("move-picker").open) openDialog("move-picker");
+  setTimeout(() => {
+    const input = $("move-picker-filter");
+    if (input && $("move-picker").open) input.focus();
+  }, 0);
+}
+
+function openRelocatePicker(kind, folder, account, folders, delimiter) {
+  const nodes = moveNodesFromFolders(kind, folders, delimiter);
+  const source = nodes.find((node) => node.id === String(folder.id));
+  if (!source) {
+    showStatus(kind === "gmail" ? "That label is not in this list." : "That folder is not in this list.", true);
+    return;
+  }
+  openMoveSession({
+    purpose: "relocate",
+    kind: kind,
+    title: kind === "gmail" ? "Move label" : "Move folder",
+    accountId: account.id,
+    sourceId: source.id,
+    sourceName: source.label || source.name,
+    sourcePath: source.path || source.name,
+    source: source,
+    delimiter: delimiter || "/",
+    nodes: nodes,
+  });
+}
+
+function openMessageMovePicker(email, kind) {
+  if (!email) return;
+  const account = accountForMove(email.accountId);
+  if (!account) return;
+  if (kind === "outlook") {
+    const payload = providerPayloadFor(account);
+    const view = providerFolderState(payload);
+    if (view.mode !== "live") {
+      showStatus((payload && payload.message) || providerCopy(view.reason, "outlook"), true);
+      return;
+    }
+    openMoveSession({
+      purpose: "message",
+      kind: "outlook",
+      title: "Move to folder",
+      accountId: account.id,
+      sourceId: "",
+      sourceName: email.subject || "Message",
+      sourcePath: email.subject || "Message",
+      source: { id: "", name: "", label: "" },
+      email: email,
+      delimiter: "/",
+      nodes: moveNodesFromFolders("outlook", view.folders, "/"),
+    });
+    return;
+  }
+  const delimiter = accountDelimiter(account);
+  openMoveSession({
+    purpose: "message",
+    kind: "imap",
+    title: "Move to folder",
+    accountId: account.id,
+    sourceId: email.folderId || "",
+    sourceName: email.subject || "Message",
+    sourcePath: email.subject || "Message",
+    source: { id: email.folderId || "", name: "", label: "" },
+    email: email,
+    delimiter: delimiter,
+    nodes: moveNodesFromFolders("imap", foldersOf(account), delimiter),
+  });
+}
+
+function moveRowsFor(session) {
+  const filtering = !!String(session.query || "").trim();
+  const flags = session.purpose === "message"
+    ? messageTargetFlags(session.nodes, session.sourceId)
+    : moveTargetFlags(session.nodes, session.sourceId, session.kind, session.delimiter);
+  const filtered = filterMoveNodes(flags.nodes, session.query);
+  const visible = visibleMoveNodes(filtered, session.expanded, filtering);
+  const rows = [];
+  if (session.purpose !== "message" && showMoveRoot(session.query)) {
+    rows.push({
+      key: "root",
+      isRoot: true,
+      id: "",
+      label: "(Top level / root)",
+      path: "(Top level / root)",
+      depth: 0,
+      disabled: flags.root.disabled,
+      reason: flags.root.reason,
+      hasChild: false,
+      expanded: false,
+      match: false,
+    });
+  }
+  for (const node of visible) {
+    let hasChild = false;
+    for (const other of session.nodes) {
+      if (other.parentId === node.id) {
+        hasChild = true;
+        break;
+      }
+    }
+    rows.push({
+      key: moveRowKey(node.id),
+      isRoot: false,
+      id: node.id,
+      label: node.label || node.name,
+      path: node.path || node.name,
+      name: node.name,
+      depth: node.depth || 0,
+      disabled: node.disabled,
+      reason: node.reason,
+      hasChild: hasChild,
+      expanded: filtering || session.expanded.has(node.id),
+      match: !!node.match,
+    });
+  }
+  return rows;
+}
+
+function activeMoveTarget(session) {
+  if (!session) return null;
+  const rows = moveRowsFor(session);
+  return rows.find((row) => row.key === session.activeKey) || null;
+}
+
+function paintMoveTree() {
+  const session = moveSession;
+  const tree = $("move-picker-tree");
+  const preview = $("move-picker-preview");
+  const ok = $("move-picker-ok");
+  if (!session || !tree) return;
+  const rows = moveRowsFor(session);
+  if (!rows.some((row) => row.key === session.activeKey)) {
+    const enabled = rows.find((row) => !row.disabled);
+    session.activeKey = enabled ? enabled.key : (rows[0] ? rows[0].key : "");
+  }
+  const active = rows.find((row) => row.key === session.activeKey) || null;
+  tree.replaceChildren();
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "move-empty";
+    empty.textContent = "No matching labels or folders.";
+    tree.appendChild(empty);
+  }
+  for (const row of rows) {
+    const line = document.createElement("div");
+    line.className = "move-row";
+    line.style.paddingLeft = (6 + row.depth * 16) + "px";
+    if (row.hasChild) {
+      const twist = document.createElement("button");
+      twist.type = "button";
+      twist.className = "twist";
+      twist.setAttribute("aria-label", (row.expanded ? "Collapse " : "Expand ") + row.label);
+      twist.setAttribute("aria-expanded", row.expanded ? "true" : "false");
+      twist.appendChild(strokeIcon([row.expanded ? MOVE_CHEVRON_DOWN : MOVE_CHEVRON_RIGHT], 14));
+      twist.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!moveSession) return;
+        if (moveSession.expanded.has(row.id)) moveSession.expanded.delete(row.id);
+        else moveSession.expanded.add(row.id);
+        paintMoveTree();
+      });
+      line.appendChild(twist);
+    } else {
+      const spacer = document.createElement("span");
+      spacer.className = "twist-spacer";
+      spacer.setAttribute("aria-hidden", "true");
+      line.appendChild(spacer);
+    }
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "move-node";
+    if (row.match) button.classList.add("match");
+    button.dataset.key = row.key;
+    button.setAttribute("role", "treeitem");
+    button.setAttribute("aria-selected", row.key === session.activeKey ? "true" : "false");
+    if (row.disabled) {
+      button.setAttribute("aria-disabled", "true");
+      button.title = row.reason || "";
+    }
+    button.appendChild(strokeIcon([MOVE_FOLDER], 15));
+    const text = document.createElement("span");
+    text.textContent = row.label;
+    button.appendChild(text);
+    button.addEventListener("click", () => {
+      if (!moveSession) return;
+      moveSession.activeKey = row.key;
+      paintMoveTree();
+    });
+    line.appendChild(button);
+    tree.appendChild(line);
+  }
+  preview.textContent = movePreviewLine(session, active);
+  ok.disabled = !active || active.disabled;
+  const current = tree.querySelector('[aria-selected="true"]');
+  if (current && current.scrollIntoView) current.scrollIntoView({ block: "nearest" });
+  if (!session.animated) {
+    session.animated = true;
+    const motion = motionApi();
+    if (motion) motion.rows(tree.querySelectorAll(".move-node"));
+  }
+}
+
+function closeMovePicker() {
+  moveSession = null;
+  const dialog = $("move-picker");
+  if (dialog && dialog.open) dialog.close();
+}
+
+function finishMovePick() {
+  const session = moveSession;
+  const target = activeMoveTarget(session);
+  if (!session || !target || target.disabled) return;
+  closeMovePicker();
+  if (session.purpose === "message") {
+    guard(() => (session.kind === "outlook"
+      ? moveOutlook(session.email, target.id)
+      : moveOpen(session.email, target.id)));
+    return;
+  }
+  guard(() => commitFolderMove(session, target));
+}
+
+async function commitFolderMove(session, target) {
+  const channel = session.kind === "imap" ? "mail:moveFolder" : "mail:moveProviderFolder";
+  const params = {
+    accountId: session.accountId,
+    folderId: session.sourceId,
+    destinationId: target && target.isRoot ? "" : (target && target.id) || "",
+  };
+  const answer = confirmsBefore(channel)
+    ? await askConfirm(actionConfirm("move-label", {
+      provider: session.kind,
+      name: session.sourcePath || session.sourceName,
+      destination: target && target.isRoot ? "(Top level / root)" : (target.path || target.label || target.name),
+    }))
+    : { ok: true };
+  const request = moveRequestAfterConfirm(channel, answer, params);
+  if (!request) return;
+  if (session.kind === "imap") {
+    const data = await call("mail:moveFolder", request);
+    const next = relocatedFolderId(state.folderId, data && data.renames);
+    if (next) state.folderId = next;
+    if (data && data.warning) showStatus(data.warning, true);
+    else showStatus("Folder moved.");
+    await loadAccounts(state.accountId);
+    return;
+  }
+  try {
+    await call("mail:moveProviderFolder", request);
+    showStatus(session.kind === "outlook" ? "Folder moved." : "Label moved.");
+  } finally {
+    await loadProviderFolders(accountGen);
+  }
+}
+
+function onMovePickerKey(event) {
+  const dialog = $("move-picker");
+  if (!dialog || !dialog.open || !moveSession) return;
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+  const rows = moveRowsFor(moveSession);
+  if (!rows.length) return;
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const index = rows.findIndex((row) => row.key === moveSession.activeKey);
+    const delta = event.key === "ArrowDown" ? 1 : -1;
+    let next = index < 0 ? (delta > 0 ? 0 : rows.length - 1) : index + delta;
+    if (next < 0) next = 0;
+    if (next >= rows.length) next = rows.length - 1;
+    moveSession.activeKey = rows[next].key;
+    paintMoveTree();
+    return;
+  }
+  const active = rows.find((row) => row.key === moveSession.activeKey);
+  if (!active || active.isRoot || !active.hasChild) return;
+  event.preventDefault();
+  const open = moveSession.expanded.has(active.id);
+  if (event.key === "ArrowRight" && !open) moveSession.expanded.add(active.id);
+  if (event.key === "ArrowLeft" && open) moveSession.expanded.delete(active.id);
+  paintMoveTree();
+}
+
 function openFolderMenu(folder, provider, x, y) {
   const model = folderActionMenu(folder, provider);
   const menu = ensureOrganizeMenu();
   menu.setAttribute("aria-label", provider === "outlook" ? "Folder" : "Label");
   menu.replaceChildren();
+  const account = selectedAccount();
+  const payload = account ? providerPayloadFor(account) : null;
+  const view = providerFolderState(payload);
   for (const item of model.items) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "menuitem";
-    button.setAttribute("role", "menuitem");
-    button.textContent = item.label;
-    button.addEventListener("click", () => {
-      closeOrganizeMenu();
+    appendFolderMenuItem(menu, item, () => {
       if (item.id === "create") {
         focusProviderCreate();
         return;
@@ -2810,9 +3435,16 @@ function openFolderMenu(folder, provider, x, y) {
         guard(() => confirmRenameFolder(folder, provider));
         return;
       }
+      if (item.id === "move") {
+        if (!account || view.mode !== "live") {
+          showStatus("That list is not available.", true);
+          return;
+        }
+        openRelocatePicker(provider, folder, account, view.folders, "/");
+        return;
+      }
       guard(() => confirmDeleteFolder(folder, provider));
     });
-    menu.appendChild(button);
   }
   if (model.note) {
     const note = document.createElement("p");
@@ -2821,6 +3453,33 @@ function openFolderMenu(folder, provider, x, y) {
     menu.appendChild(note);
   }
   placeMenu(menu, x, y);
+}
+
+function openImapFolderMenu(folder, account, x, y) {
+  const model = imapFolderMenu(folder);
+  const menu = ensureOrganizeMenu();
+  menu.setAttribute("aria-label", "Folder");
+  menu.replaceChildren();
+  for (const item of model.items) {
+    appendFolderMenuItem(menu, item, () => {
+      if (item.id !== "move") return;
+      openRelocatePicker("imap", folder, account, foldersOf(account), accountDelimiter(account));
+    });
+  }
+  placeMenu(menu, x, y);
+}
+
+function appendMenuAction(menu, label, run) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "menuitem";
+  button.setAttribute("role", "menuitem");
+  button.textContent = label;
+  button.addEventListener("click", () => {
+    closeOrganizeMenu();
+    run();
+  });
+  menu.appendChild(button);
 }
 
 function openOrganizeMenu(email, x, y) {
@@ -2832,10 +3491,10 @@ function openOrganizeMenu(email, x, y) {
   const menu = ensureOrganizeMenu();
   menu.setAttribute("aria-label", "Move and labels");
   menu.replaceChildren();
-  appendMenuGroup(menu, "Move to folder", model.move, (item) => moveOpen(email, item.id));
+  if (model.move.length) appendMenuAction(menu, "Move to folder…", () => openMessageMovePicker(email, "imap"));
   appendMenuGroup(menu, "Add Gmail label", model.add, (item) => changeLabels(email, [item.id], []));
   appendMenuGroup(menu, "Remove Gmail label", model.remove, (item) => changeLabels(email, [], [item.id]));
-  appendMenuGroup(menu, "Move in Outlook", model.outlook, (item) => moveOutlook(email, item.id));
+  if (model.outlook.length) appendMenuAction(menu, "Move in Outlook…", () => openMessageMovePicker(email, "outlook"));
   if (model.note) {
     const note = document.createElement("p");
     note.className = "organize-note";
@@ -6450,6 +7109,20 @@ function wire() {
   $("tidy").addEventListener("click", () => guard(tidyInbox));
   $("settings-open").addEventListener("click", openSettings);
   $("settings-close").addEventListener("click", () => closeDialog("settings"));
+  $("move-picker-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    finishMovePick();
+  });
+  $("move-picker-cancel").addEventListener("click", () => closeMovePicker());
+  $("move-picker-filter").addEventListener("input", () => {
+    if (!moveSession) return;
+    moveSession.query = $("move-picker-filter").value;
+    paintMoveTree();
+  });
+  $("move-picker").addEventListener("keydown", onMovePickerKey);
+  $("move-picker").addEventListener("close", () => {
+    moveSession = null;
+  });
   $("confirm-form").addEventListener("submit", (event) => {
     event.preventDefault();
     submitConfirm();

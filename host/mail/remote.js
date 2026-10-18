@@ -447,6 +447,10 @@ async function createBox(client, folderPath) {
   await client.mailboxCreate(folderPath);
 }
 
+async function renameBox(client, fromPath, toPath) {
+  await client.mailboxRename(fromPath, toPath);
+}
+
 async function appendRaw(client, folderPath, raw, flags) {
   return client.append(folderPath, raw, flags, new Date());
 }
@@ -533,6 +537,7 @@ module.exports = {
   changeFlags,
   removeUid,
   createBox,
+  renameBox,
   appendRaw,
   findText,
   buildRaw,

@@ -913,6 +913,98 @@ function setScheduledSendAt(id, sendAt) {
   transaction(() => run("UPDATE scheduled_sends SET send_at = ?, status = 'pending', error = NULL WHERE id = ?", [sendAt, id]));
 }
 
+function planImapPathMove(folders, sourcePath, destinationParent, delimiter) {
+  const sep = delimiter || "/";
+  const rows = (Array.isArray(folders) ? folders : []).filter((row) => row && row.path);
+  const source = String(sourcePath || "");
+  const row = rows.find((item) => item.path === source);
+  if (!row) return { ok: false, code: "not-found", message: "That folder is not in this mailbox." };
+  const well = row.wellKnown || row.well_known || "";
+  if (well || source.toUpperCase() === "INBOX") {
+    return { ok: false, code: "invalid", message: "This folder cannot be moved." };
+  }
+  const parent = destinationParent ? String(destinationParent) : "";
+  if (parent === source || (parent && (parent.startsWith(`${source}${sep}`)))) {
+    return { ok: false, code: "invalid", message: "A folder cannot move into itself or one of its own sub-folders." };
+  }
+  const known = new Set(rows.map((item) => item.path));
+  let current = "";
+  let cursor = source;
+  let cut = cursor.lastIndexOf(sep);
+  while (cut > 0) {
+    const maybe = cursor.slice(0, cut);
+    if (known.has(maybe)) {
+      current = maybe;
+      break;
+    }
+    cursor = maybe;
+    cut = cursor.lastIndexOf(sep);
+  }
+  if (parent === current) return { ok: false, code: "invalid", message: "This folder is already there." };
+  const leafCut = source.lastIndexOf(sep);
+  const leaf = leafCut >= 0 ? source.slice(leafCut + 1) : source;
+  if (!leaf) return { ok: false, code: "invalid", message: "That folder name cannot be moved." };
+  const next = parent ? `${parent}${sep}${leaf}` : leaf;
+  const moving = rows.filter((item) => item.path === source || item.path.startsWith(`${source}${sep}`));
+  const movingPaths = new Set(moving.map((item) => item.path));
+  const renames = moving.map((item) => {
+    const suffix = item.path.slice(source.length);
+    const to = next + suffix;
+    const nameCut = to.lastIndexOf(sep);
+    return { from: item.path, to, name: nameCut >= 0 ? to.slice(nameCut + 1) : to };
+  });
+  const used = new Set();
+  for (const step of renames) {
+    const clash = rows.find((item) => item.path === step.to && !movingPaths.has(item.path));
+    if (clash || used.has(step.to)) {
+      return {
+        ok: false,
+        code: "collision",
+        message: `“${step.to}” already exists, so this move was not started.`,
+      };
+    }
+    used.add(step.to);
+  }
+  return { ok: true, source, next, renames, delimiter: sep };
+}
+
+function confirmedImapRenames(plan, serverFolders) {
+  const server = new Set((serverFolders || []).map((folder) => folder && folder.path).filter(Boolean));
+  return ((plan && plan.renames) || []).filter((step) => step && step.from !== step.to && server.has(step.to) && !server.has(step.from));
+}
+
+function rewriteFolderPaths(accountId, moves) {
+  const ordered = (Array.isArray(moves) ? moves : [])
+    .filter((move) => move && move.from && move.to && move.from !== move.to)
+    .sort((a, b) => b.from.length - a.from.length || String(b.from).localeCompare(String(a.from)));
+  return transaction(() => {
+    const moved = [];
+    const skipped = [];
+    for (const move of ordered) {
+      const source = get("SELECT * FROM folders WHERE account_id = ? AND path = ?", [accountId, move.from]);
+      if (!source) {
+        skipped.push({ from: move.from, to: move.to, reason: "missing" });
+        continue;
+      }
+      const dest = get("SELECT path FROM folders WHERE account_id = ? AND path = ?", [accountId, move.to]);
+      if (dest) {
+        skipped.push({ from: move.from, to: move.to, reason: "collision" });
+        continue;
+      }
+      run(
+        "UPDATE folders SET path = ?, name = ? WHERE account_id = ? AND path = ?",
+        [move.to, move.name || source.name, accountId, move.from]
+      );
+      run(
+        "UPDATE messages SET folder_path = ? WHERE account_id = ? AND folder_path = ?",
+        [move.to, accountId, move.from]
+      );
+      moved.push({ from: move.from, to: move.to });
+    }
+    return { moved, skipped };
+  });
+}
+
 function recentInbox(limit) {
   if (!db) return [];
   const n = Math.min(Math.max(Number(limit) || 20, 1), 40);
@@ -952,6 +1044,9 @@ module.exports = {
   clearAuthError,
   removeAccount,
   replaceFolders,
+  planImapPathMove,
+  confirmedImapRenames,
+  rewriteFolderPaths,
   foldersFor,
   folderByPath,
   folderByWellKnown,

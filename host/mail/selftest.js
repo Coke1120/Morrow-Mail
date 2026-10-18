@@ -265,6 +265,64 @@ async function run() {
   const openedEmail = opened && opened.then ? await opened : opened;
   if (!openedEmail || !openedEmail.data || !openedEmail.data.email.htmlBody) problem(problems, "open email");
 
+  db.replaceFolders("imap-test", [
+    { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+    { path: "Drafts", name: "Drafts", wellKnown: "drafts" },
+    { path: "Sent", name: "Sent", wellKnown: "sentitems" },
+    { path: "Notes", name: "Notes", wellKnown: null },
+    { path: "Archive", name: "Archive", wellKnown: "archive" },
+    { path: "Work", name: "Work", wellKnown: null },
+    { path: "Work/Travel", name: "Travel", wellKnown: null },
+  ], "/");
+  db.applyFolderSync("imap-test", "Work", {
+    messages: [],
+    keepOthers: true,
+    validity: 4,
+    uidCursor: 12,
+    windowDone: true,
+    horizonDays: 180,
+  });
+  db.applyFolderSync("imap-test", "Work/Travel", {
+    messages: [],
+    keepOthers: true,
+    validity: 4,
+    uidCursor: 9,
+    windowDone: true,
+    horizonDays: 180,
+  });
+  db.insertMessage({
+    id: "m-nested",
+    accountId: "imap-test",
+    folderPath: "Work/Travel",
+    uid: 3,
+    uidValidity: 4,
+    threadId: "thr-nested",
+    subject: "Nested stay",
+    snippet: "still cached",
+    from: "Ada <ada@example.com>",
+    date: new Date().toISOString(),
+    listSortTs: Date.now(),
+    unread: false,
+    bodyComplete: true,
+  });
+  const pathPlan = db.planImapPathMove(db.foldersFor("imap-test").map((folder) => ({
+    path: folder.path,
+    name: folder.name,
+    wellKnown: folder.well_known,
+  })), "Work", "Archive", "/");
+  if (!pathPlan.ok) problem(problems, "imap path plan");
+  const rewritten = pathPlan.ok ? db.rewriteFolderPaths("imap-test", pathPlan.renames) : { moved: [], skipped: ["plan"] };
+  if (rewritten.skipped.length || db.messageById("m-nested").folder_path !== "Archive/Work/Travel") {
+    problem(problems, "imap path rewrite dropped or skipped cached mail");
+  }
+  const keptFolder = db.folderByPath("imap-test", "Archive/Work");
+  if (!keptFolder || keptFolder.sync_horizon_days !== 180 || keptFolder.uid_cursor !== 12 || keptFolder.window_done !== 1) {
+    problem(problems, "imap path rewrite dropped the sync horizon");
+  }
+  if (!db.messageById("m-test") || db.messageById("m-test").folder_path !== "INBOX" || db.messageById("m-test").subject !== "Analytical Engine") {
+    problem(problems, "imap path rewrite disturbed inbox mail");
+  }
+
   db.close();
   await db.open(db.file());
   const again = db.messageById("m-test");

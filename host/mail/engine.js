@@ -151,6 +151,7 @@ function accountView(row, index) {
     folders: { primary, more },
     groups: [],
     imapSmtpProfile: row.profile,
+    delimiter: row.delimiter || "/",
     imapUsername: row.username,
     authKind: row.auth_kind || "password",
   };
@@ -1839,6 +1840,55 @@ function answer(channel, args) {
         resurfacedAt: row.until_iso,
         acknowledged: false,
       })));
+    case "mail:moveFolder":
+      return (async () => {
+        const account = db.accountById(params && params.accountId);
+        if (!account) return fail("not-found", "That account is not connected.");
+        const delimiter = account.delimiter || "/";
+        const sourceId = params && params.folderId ? String(params.folderId) : "";
+        const destinationId = params && params.destinationId ? String(params.destinationId) : "";
+        const records = db.foldersFor(account.id).map((folder) => ({
+          path: folder.path,
+          name: folder.name,
+          wellKnown: folder.well_known,
+        }));
+        const plan = db.planImapPathMove(records, sourceId, destinationId, delimiter);
+        if (!plan.ok) return fail(plan.code || "invalid", plan.message);
+        let listed = null;
+        try {
+          await exclusive(account.id, async () => {
+            const password = await secretFor(account);
+            await remote.withClient(account, password, async (client) => {
+              await remote.renameBox(client, plan.source, plan.next);
+              listed = await remote.listFolderRecords(client);
+            });
+          });
+        } catch (error) {
+          return fail("PROVIDER_ERROR", remote.explain(error));
+        }
+        const serverFolders = listed && Array.isArray(listed.folders) ? listed.folders : [];
+        const confirmed = db.confirmedImapRenames(plan, serverFolders);
+        const rewrite = db.rewriteFolderPaths(account.id, confirmed);
+        const sourceMoved = rewrite.moved.some((row) => row.from === plan.source);
+        if (!sourceMoved || rewrite.skipped.length) {
+          const message = rewrite.skipped.length
+            ? "The server renamed the folder, but the local cache already had the new path, so cached mail was left in place."
+            : "The server did not show the folder at its new path, so cached mail was left in place.";
+          return fail("partial", message);
+        }
+        if (serverFolders.length) db.replaceFolders(account.id, serverFolders, (listed && listed.delimiter) || delimiter);
+        const movedFrom = new Set(rewrite.moved.map((row) => row.from));
+        const missed = plan.renames.filter((step) => !movedFrom.has(step.from));
+        const accounts = accountViews();
+        broadcast("mail:accountsUpdated", { source: "server", accounts });
+        broadcast("mail:emailsUpdated", { accountId: account.id, folderId: plan.next, folderIds: null });
+        return ok({
+          id: plan.next,
+          from: plan.source,
+          renames: rewrite.moved,
+          warning: missed.length ? `These folders stayed at their old paths: ${missed.map((step) => step.from).join(", ")}` : "",
+        });
+      })();
     case "mail:createFolder":
       return (async () => {
         const account = db.accountById(params && params.accountId);

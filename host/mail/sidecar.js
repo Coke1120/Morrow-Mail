@@ -12,6 +12,7 @@ const CHANNELS = new Set([
   "mail:createProviderFolder",
   "mail:renameProviderFolder",
   "mail:deleteProviderFolder",
+  "mail:moveProviderFolder",
   "mail:modifyMessageLabels",
   "mail:moveProviderMessage",
   "calendar:status",
@@ -41,7 +42,7 @@ function publicError(error) {
 function failFrom(error) {
   const code = error && error.code;
   if (code === "provider_network") return fail("provider", publicError(error));
-  if (code === "oauth_not_ready" || code === "scope_missing" || code === "needs_auth" || code === "invalid" || code === "not-found" || code === "too_many" || code === "account_mismatch" || code === "oauth" || code === "imap_only" || code === "no_account") {
+  if (code === "oauth_not_ready" || code === "scope_missing" || code === "needs_auth" || code === "invalid" || code === "not-found" || code === "too_many" || code === "account_mismatch" || code === "oauth" || code === "imap_only" || code === "no_account" || code === "collision" || code === "partial") {
     return fail(code, publicError(error));
   }
   return fail("provider", publicError(error));
@@ -394,6 +395,19 @@ async function renameProviderFolder(params) {
   }
 }
 
+async function moveProviderFolder(params) {
+  const ready = await withPurpose(params, "organize");
+  if (ready.error) return ready.error;
+  try {
+    const moved = ready.provider === "google"
+      ? await gmail.moveLabel(ready.token.accessToken, params && params.folderId, params && params.destinationId)
+      : await gmail.moveMailFolder(ready.token.accessToken, params && params.folderId, params && params.destinationId);
+    return ok(moved);
+  } catch (error) {
+    return failFrom(error);
+  }
+}
+
 async function deleteProviderFolder(params) {
   const ready = await withPurpose(params, "organize");
   if (ready.error) return ready.error;
@@ -554,6 +568,8 @@ function answer(channel, args) {
         return renameProviderFolder(params || {});
       case "mail:deleteProviderFolder":
         return deleteProviderFolder(params || {});
+      case "mail:moveProviderFolder":
+        return moveProviderFolder(params || {});
       case "mail:modifyMessageLabels":
         return modifyMessageLabels(params || {});
       case "mail:moveProviderMessage":
