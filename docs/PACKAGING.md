@@ -98,4 +98,4 @@ Mail, settings, and `ai.json` follow Electron's userData path for Morrow Mail on
 
 ## Version
 
-`package.json` version drives the app and the release tag `v${version}`. Stay on `0.1.0-alpha.N`. The current version is `0.1.0-alpha.12`.
+`package.json` version drives the app and the release tag `v${version}`. Stay on `0.1.0-alpha.N`. The current version is `0.1.0-alpha.13`.
