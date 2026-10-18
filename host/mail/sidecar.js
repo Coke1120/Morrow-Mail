@@ -201,6 +201,12 @@ async function organizeToken(account) {
   }
 }
 
+async function gmailSendAsToken(account) {
+  // sendAs.list uses the same settings scope as vacation. Read only; never consent here.
+  if (providerOf(account) !== "google" || !gateAccount(account, "vacation").ok) return null;
+  return tokenFor(account, "vacation");
+}
+
 async function tokenFor(account, purpose) {
   const key = secretKey(account, purpose);
   const raw = secrets.getPassword(key);
@@ -1203,6 +1209,7 @@ module.exports = {
   gateAccount,
   monthWindow,
   organizeToken,
+  gmailSendAsToken,
   rememberVacation,
   grantPurpose,
 };

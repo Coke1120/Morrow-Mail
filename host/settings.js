@@ -14,6 +14,7 @@ const DEFAULTS = {
   sidebarGmailFoldersExpanded: true,
   sidebarOutlookFoldersExpanded: false,
   composeQuoteWidth: 420,
+  brainCompose: { ccByDomain: {}, accounts: {} },
 };
 
 const GET = {
@@ -28,6 +29,7 @@ const GET = {
   "morrow:configGetSidebarGmailFoldersExpanded": "sidebarGmailFoldersExpanded",
   "morrow:configGetSidebarOutlookFoldersExpanded": "sidebarOutlookFoldersExpanded",
   "morrow:configGetComposeQuoteWidth": "composeQuoteWidth",
+  "emailBrain:getComposeSettings": "brainCompose",
 };
 
 const SET = {
@@ -42,6 +44,7 @@ const SET = {
   "morrow:configSetSidebarGmailFoldersExpanded": "sidebarGmailFoldersExpanded",
   "morrow:configSetSidebarOutlookFoldersExpanded": "sidebarOutlookFoldersExpanded",
   "morrow:configSetComposeQuoteWidth": "composeQuoteWidth",
+  "emailBrain:saveComposeSettings": "brainCompose",
 };
 
 const BOOLS = new Set([
@@ -67,6 +70,11 @@ function reject(key) {
 }
 
 function cast(key, value, loose) {
+  if (key === "brainCompose") {
+    const policy = require("../shared/compose-policy");
+    try { return policy.normalizeSettings(value); }
+    catch (error) { if (!loose) throw error; return policy.emptySettings(); }
+  }
   if (key === "theme") {
     const theme = typeof value === "string" ? value.trim().toLowerCase() : "";
     if (theme === "light" || theme === "dark") return theme;

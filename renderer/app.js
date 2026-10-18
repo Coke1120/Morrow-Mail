@@ -1737,20 +1737,19 @@ function addressRows(value) {
 
 // shortcut: Reply puts the sender in To. Reply All keeps other To and Cc in Cc. Upgrade if Reply-To should replace From.
 function replyParties(email, self, all) {
-  const mineRow = addressRows(self)[0];
-  const mine = mineRow ? mineRow.addr : String(self || "").trim().toLowerCase();
+  const mine = new Set(addressRows(self).map((row) => row.addr));
   const seen = new Set();
   const take = (value) => {
     const out = [];
     for (const row of addressRows(value)) {
-      if (!row || seen.has(row.addr) || row.addr === mine) continue;
+      if (!row || seen.has(row.addr) || mine.has(row.addr)) continue;
       seen.add(row.addr);
       out.push(row.text);
     }
     return out;
   };
   const from = addressRows(email && email.from)[0];
-  const fromOther = from && from.addr !== mine ? from : null;
+  const fromOther = from && !mine.has(from.addr) ? from : null;
   if (fromOther) seen.add(fromOther.addr);
   const toRows = take(email && email.to);
   const ccRows = take(email && email.cc);
@@ -1927,6 +1926,7 @@ function composeSeed(email, kind, self) {
   if (kind === "forward") {
     return {
       kind: "forward",
+      sourceMessageId: message.id || "",
       accountId: message.accountId || "",
       title: "Forward",
       to: "",
@@ -1942,6 +1942,7 @@ function composeSeed(email, kind, self) {
   const parties = replyParties(message, self, all);
   const seed = {
     kind: all ? "all" : "reply",
+    sourceMessageId: message.id || "",
     accountId: message.accountId || "",
     title: all ? "Reply All" : "Reply",
     to: parties.to,
@@ -6038,7 +6039,7 @@ function composePayload(account) {
     to: $("compose-to").value.trim(),
     subject: $("compose-subject").value,
     body: toHtml(outgoingBody($("compose-body").value, state.composeQuote && state.composeQuote.text)),
-    fromAddress: account.email,
+    fromAddress: meta.fromAddress || account.preferredFromAddress || account.email,
     draftId: state.draftId || undefined,
     emailId: state.draftId || undefined,
   };
@@ -6055,10 +6056,10 @@ function syncCompose() {
   const account = composeAccount();
   const live = isLive(account);
   const locked = state.composePending || state.composeQueued || state.composeInitializing;
-  for (const id of ["compose-save", "compose-send", "compose-schedule"]) $(id).disabled = !live || locked;
-  $("compose-schedule").disabled = !live || locked || !!state.botDraftReview;
+  for (const id of ["compose-save", "compose-send", "compose-schedule"]) $(id).disabled = !live || locked || !!state.composeIdentityError;
+  $("compose-schedule").disabled = !live || locked || !!state.composeIdentityError || !!state.botDraftReview;
   $("compose-close").disabled = state.composePending || state.composeInitializing;
-  for (const id of ["compose-to", "compose-cc", "compose-bcc", "compose-subject", "compose-body", "signature", "signatures-from-compose", "ai-mode", "ai-prompt", "ai-generate", "schedule-preset", "schedule-at"]) $(id).disabled = locked;
+  for (const id of ["compose-from", "compose-to", "compose-cc", "compose-bcc", "compose-subject", "compose-body", "signature", "signatures-from-compose", "ai-mode", "ai-prompt", "ai-generate", "schedule-preset", "schedule-at"]) $(id).disabled = locked;
   paintComposeNote();
 }
 
@@ -6066,7 +6067,7 @@ function paintComposeNote() {
   const account = composeAccount();
   const live = isLive(account);
   let text = live
-    ? `From ${account.email}`
+    ? `From ${(state.composeMeta && state.composeMeta.fromAddress) || account.preferredFromAddress || account.email}`
     : "Connect an account before saving or sending.";
   const review = state.botDraftReview;
   if (review) {
@@ -6641,6 +6642,66 @@ function toggleComposeQuoteCollapse() {
   if (motion && motion.fadePane) motion.fadePane($("compose-quote-body"), "y");
 }
 
+async function initializeComposeIdentity(fields) {
+  const account = composeAccount();
+  const picker = $("compose-from");
+  picker.replaceChildren();
+  $("compose-from-note").textContent = "";
+  if (!account) return;
+  const context = await call("mail:getComposeContext", { accountId: account.id,
+    sourceMessageId: fields.sourceMessageId || undefined, kind: fields.kind || "new",
+    fromAddress: fields.fromAddress || undefined });
+  if (!context || !context.fromAddress) throw new Error("The mailbox did not return a From address.");
+  state.composeMeta.fromAddress = context.fromAddress;
+  const choices = context.sendAs || [];
+  for (const row of choices) picker.appendChild(option(row.email, row.email));
+  if (!choices.some((row) => row.email === context.fromAddress)) {
+    picker.appendChild(option(context.fromAddress, context.fromAddress + " (saved address — configure in Brain)"));
+  }
+  picker.value = context.fromAddress;
+  if ((fields.kind === "reply" || fields.kind === "all") && fields.quoteEmail && !fields.draftId && !fields.botDraft) {
+    const parties = replyParties(fields.quoteEmail, context.selfAddresses, fields.kind === "all");
+    $("compose-to").value = parties.to;
+    $("compose-cc").value = parties.cc;
+  }
+  state.composeIdentity = { ...context, kind: fields.kind || "new", baseCc: $("compose-cc").value,
+    ccEdited: !!fields.draftId || !!fields.botDraft };
+  applyComposeCc();
+  paintComposeIdentity();
+}
+
+function applyComposeCc() {
+  const context = state.composeIdentity;
+  if (!context || context.ccEdited) return;
+  $("compose-cc").value = window.morrowComposePolicy.seedCc(context.baseCc,
+    context.defaultCc, $("compose-to").value, $("compose-bcc").value, context.selfAddresses);
+}
+
+function paintComposeIdentity() {
+  const context = state.composeIdentity;
+  if (!context) return;
+  const row = context.sendAs.find((item) => item.email === state.composeMeta.fromAddress);
+  const text = [];
+  if (context.receivedAddress) text.push("Received as " + context.receivedAddress + ".");
+  else if (context.fallback) text.push("No received address matched this mailbox's known aliases. Add a missing alias in Email Brain or choose From.");
+  text.push("CC domain: " + (context.domain || "none") + ".");
+  if (row && row.source === "configured") text.push("Confirm this alias is enabled for sending with your provider.");
+  if (context.warning) text.push(context.warning);
+  $("compose-from-note").textContent = text.join(" ");
+}
+
+function changeComposeFrom() {
+  if (!state.composeIdentity || state.composePending || state.composeQueued || state.composeInitializing) return;
+  const context = state.composeIdentity;
+  const fromAddress = $("compose-from").value;
+  state.composeMeta.fromAddress = fromAddress;
+  context.domain = window.morrowComposePolicy.ccDomain(fromAddress, composeAccount(), context.settings, context.kind);
+  context.defaultCc = context.settings.ccByDomain[context.domain] || [];
+  applyComposeCc();
+  paintComposeIdentity();
+  paintComposeNote();
+}
+
 async function openCompose(seed) {
   if (sendTimer || state.composePending || state.composeInitializing) {
     showStatus("Finish the pending message first. Use Undo send to resume editing during the send delay.");
@@ -6649,6 +6710,8 @@ async function openCompose(seed) {
   if ($("compose").open && !(await requestComposeClose())) return;
   const fields = seed || {};
   state.composeInitializing = true;
+  state.composeIdentityError = false;
+  state.composeIdentity = null;
   resetDraftWrite();
   state.draftId = fields.draftId || null;
   state.composeQueued = false;
@@ -6684,6 +6747,12 @@ async function openCompose(seed) {
   paintQuoteBody();
   openDialog("compose");
   scheduleComposeLayout();
+  try { await initializeComposeIdentity(fields); }
+  catch (error) {
+    state.composeIdentityError = true;
+    $("compose-from-note").textContent = "Could not resolve the From address. Close and reopen compose to retry. " + error.message;
+    setComposeStatus("From address could not be loaded. Your text is retained.", true);
+  }
   const initial = composeSnapshot();
   await Promise.all([fillSignatures(!!fields.draftId), loadScheduled()]);
   state.composeInitializing = false;
@@ -6725,6 +6794,7 @@ function setComposeStatus(text, isError) {
 
 function composeSnapshot() {
   return JSON.stringify({ accountId: state.composeMeta && state.composeMeta.accountId,
+    fromAddress: state.composeMeta && state.composeMeta.fromAddress,
     to: $("compose-to").value, cc: $("compose-cc").value, bcc: $("compose-bcc").value,
     subject: $("compose-subject").value, body: $("compose-body").value,
     quote: state.composeQuote && state.composeQuote.text });
@@ -6755,6 +6825,7 @@ async function resumeDraft(email) {
   const draft = data && data.email;
   if (!draft || !draft.isDraft || draft.accountId !== email.accountId) throw new Error("That draft is no longer available.");
   await openCompose({ title: "Resume draft", draftId: draft.id, accountId: draft.accountId,
+    fromAddress: draft.from,
     to: people(draft.to), cc: people(draft.cc), bcc: people(draft.bcc), subject: draft.subject,
     body: readable(draft), inReplyTo: draft.inReplyTo || "", threadId: draft.threadId || "" });
 }
@@ -6812,7 +6883,7 @@ async function editScheduledMail(row) {
 }
 
 async function composeOperation(work) {
-  if (state.composePending || state.composeQueued || state.composeInitializing) return false;
+  if (state.composePending || state.composeQueued || state.composeInitializing || state.composeIdentityError) return false;
   state.composePending = true;
   syncCompose();
   try { await work(); return true; }
@@ -6837,7 +6908,7 @@ async function scheduleMail() {
     state.composeQueued = true;
     $("compose-title").textContent = "Scheduled receipt";
     state.composeBaseline = composeSnapshot();
-    setComposeStatus(`Scheduled for ${when.toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone}) from ${account.email}. View scheduled mail to cancel or edit. Sends while Morrow is open; a missed time sends on next launch.`);
+    setComposeStatus(`Scheduled for ${when.toLocaleString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone}) from ${state.composeMeta.fromAddress || account.email}. View scheduled mail to cancel or edit. Sends while Morrow is open; a missed time sends on next launch.`);
     await loadScheduled();
   });
 }
@@ -6900,7 +6971,7 @@ async function deliverMail(payload) {
 // The local delay can be canceled only before mail:send begins.
 async function sendMail() {
   const account = composeAccount();
-  if (!isLive(account) || state.composePending || state.composeQueued || state.composeInitializing || sendTimer) return;
+  if (!isLive(account) || state.composePending || state.composeQueued || state.composeInitializing || state.composeIdentityError || sendTimer) return;
   if (!composeHasRecipient()) {
     setComposeStatus("Add at least one recipient.", true);
     $("compose-to").focus();
@@ -8716,6 +8787,9 @@ function clearBrainEdit() {
 async function loadBrain() {
   brainSnapshot = await call("emailBrain:getCached");
   if (brainIsOpen()) paintBrain(brainSnapshot, brainView);
+  if (brainIsOpen() && window.morrowBrainCompose) {
+    await window.morrowBrainCompose.load({ call, accounts: () => state.accounts, selectedId: () => state.accountId });
+  }
 }
 
 function showCategoryStatus(text, isError) {
@@ -11257,6 +11331,11 @@ function wireBot() {
 }
 
 function wire() {
+  if (window.morrowBrainCompose) window.morrowBrainCompose.wire();
+  $("compose-from").addEventListener("change", changeComposeFrom);
+  $("compose-cc").addEventListener("input", () => {
+    if (state.composeIdentity) state.composeIdentity.ccEdited = true;
+  });
   $("inbox-rules-account").addEventListener("change", () => changeInboxRulesAccount($("inbox-rules-account").value).catch((error) => showInboxRuleStatus(error.message, true)));
   document.addEventListener("keydown", onShellKey);
   wireBot();

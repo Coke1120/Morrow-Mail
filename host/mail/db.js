@@ -162,6 +162,12 @@ function migrate() {
   } catch { /* fresh table already has the columns */ }
 
   run(`CREATE INDEX IF NOT EXISTS messages_folder ON messages(account_id, folder_path, list_sort_ts)`);
+  if (!all("PRAGMA table_info(messages)").some((row) => row.name === "recipient_headers_json")) {
+    run("ALTER TABLE messages ADD COLUMN recipient_headers_json TEXT");
+  }
+  if (!all("PRAGMA table_info(accounts)").some((row) => row.name === "send_as_json")) {
+    run("ALTER TABLE accounts ADD COLUMN send_as_json TEXT");
+  }
   run(`CREATE INDEX IF NOT EXISTS messages_thread ON messages(account_id, thread_id)`);
   run(`CREATE TABLE IF NOT EXISTS snooze (
     account_id TEXT NOT NULL,
@@ -789,6 +795,7 @@ function applyFolderSync(accountId, folderPath, report) {
         message.unread ? 1 : 0, message.starred ? 1 : 0, message.isDraft ? 1 : 0,
         message.hasAttachments ? 1 : 0, message.htmlBody || null, message.textBody || null,
         JSON.stringify(message.attachments || []), message.bodyComplete ? 1 : 0,
+        JSON.stringify(message.recipientHeaders || {}),
       ];
       if (found) {
         run(
@@ -797,7 +804,7 @@ function applyFolderSync(accountId, folderPath, report) {
             thread_id = ?, rfc_message_id = ?, in_reply_to = ?, subject = ?, snippet = ?,
             from_addr = ?, to_json = ?, cc_json = ?, bcc_json = ?, date_iso = ?, list_sort_ts = ?,
             unread = ?, starred = ?, is_draft = ?, has_attachments = ?, html_body = ?, text_body = ?,
-            attachments_json = ?, body_complete = ?
+            attachments_json = ?, body_complete = ?, recipient_headers_json = ?
           WHERE id = ?`,
           [message.uid, report.validity, ...fields, id]
         );
@@ -806,8 +813,8 @@ function applyFolderSync(accountId, folderPath, report) {
           `INSERT INTO messages (
             id, account_id, folder_path, uid, uid_validity, thread_id, rfc_message_id, in_reply_to,
             subject, snippet, from_addr, to_json, cc_json, bcc_json, date_iso, list_sort_ts,
-            unread, starred, is_draft, has_attachments, html_body, text_body, attachments_json, body_complete
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            unread, starred, is_draft, has_attachments, html_body, text_body, attachments_json, body_complete, recipient_headers_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             id, accountId, folderPath, message.uid, report.validity,
             ...fields,
@@ -911,8 +918,8 @@ function insertMessageRecord(row) {
       `INSERT INTO messages (
         id, account_id, folder_path, uid, uid_validity, thread_id, rfc_message_id, in_reply_to,
         subject, snippet, from_addr, to_json, cc_json, bcc_json, date_iso, list_sort_ts,
-        unread, starred, is_draft, has_attachments, html_body, text_body, attachments_json, body_complete
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        unread, starred, is_draft, has_attachments, html_body, text_body, attachments_json, body_complete, recipient_headers_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         row.id, row.accountId, row.folderPath, row.uid || 0, row.uidValidity || 0,
         row.threadId || row.id, row.rfcMessageId || null, row.inReplyTo || null,
@@ -921,6 +928,7 @@ function insertMessageRecord(row) {
         row.date, row.listSortTs, row.unread ? 1 : 0, row.starred ? 1 : 0, row.isDraft ? 1 : 0,
         row.hasAttachments ? 1 : 0, row.htmlBody || null, row.textBody || null,
         JSON.stringify(row.attachments || []), row.bodyComplete ? 1 : 0,
+        JSON.stringify(row.recipientHeaders || {}),
       ]
     );
     indexText(row.id);
@@ -929,6 +937,10 @@ function insertMessageRecord(row) {
 function messageById(id) {
   if (!id) return null;
   return get("SELECT * FROM messages WHERE id = ?", [id]);
+}
+
+function saveSendAs(accountId, value) {
+  transaction(() => run("UPDATE accounts SET send_as_json = ? WHERE id = ?", [JSON.stringify(value), accountId]));
 }
 
 function selectBotHeaders(accountId, folderPaths, limit) {
@@ -1476,6 +1488,7 @@ module.exports = {
   accountByEmail,
   insertAccount,
   updateAccountLogin,
+  saveSendAs,
   setAuthError,
   clearAuthError,
   removeAccount,
