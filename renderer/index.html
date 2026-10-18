@@ -115,6 +115,7 @@
           <p id="product-name" class="product-name">Morrow Mail</p>
           <p id="banner"></p>
           <p id="version"></p>
+          <p id="update-quit-note" hidden>Ready updates also install automatically when you quit.</p>
           <p id="update-status" role="status"></p>
           <button type="button" class="ghost" id="update-check">Check for updates</button>
             <button type="button" class="ghost" id="update-install" hidden>Install</button>
@@ -587,6 +588,12 @@
         <button type="button" class="ghost" id="settings-close">Close</button>
       </div>
       <div class="row"><button type="button" class="ghost" id="settings-log">Debug log</button><button type="button" class="ghost" id="settings-about">About &amp; updates</button></div>
+      <section class="settings-account-context" aria-label="Settings mailbox">
+          <label for="settings-account">Selected mailbox</label>
+          <select id="settings-account"></select>
+          <p id="settings-mailbox-note" class="hint"></p>
+          <button type="button" class="ghost" id="settings-reconnect">Reconnect mailbox</button>
+      </section>
       <div class="settings-layout">
         <section aria-labelledby="settings-prefs-title">
           <h3 id="settings-prefs-title">Preferences</h3>
@@ -636,10 +643,6 @@
             <p id="ai-status" role="status"></p>
           </div>
           <h3 id="settings-mailbox-title">Mailbox</h3>
-          <label for="settings-account">Selected mailbox</label>
-          <select id="settings-account"></select>
-          <p id="settings-mailbox-note" class="hint"></p>
-          <button type="button" class="ghost" id="settings-reconnect">Reconnect mailbox</button>
           <p id="settings-capabilities" class="hint preserve-lines" role="status"></p>
           <div class="row"><button type="button" class="ghost" id="settings-capabilities-refresh">Refresh permissions</button><button type="button" class="ghost" id="settings-calendar">Manage calendar access</button></div>
           <details id="account-recovery"><summary>Existing user? Recover access or find missing data</summary><p>If your mailbox is listed, reconnect the same address to keep its cached work. Do not remove the account to fix sign-in.</p><p>If this profile is empty, confirm you opened the expected app and operating-system user. Back up the old app’s data before changing folders. Morrow has not verified or migrated an older profile or its credentials. Reconnecting downloads available server mail; it does not recover unsynced local drafts from another profile.</p><p>For help, open Debug log from Settings and review a redacted support preview. Do not share passwords, OAuth files, or database files.</p></details>

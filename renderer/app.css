@@ -2471,3 +2471,12 @@ textarea { min-height: 140px; resize: vertical; }
 #compose-ai-tools, #compose-schedule-tools { margin-top: 10px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; }
 #compose details > summary { cursor: pointer; color: var(--accent-ink); }
 #compose details > summary:focus-visible { outline: 2px solid var(--accent-ink); outline-offset: 4px; }
+
+#scheduled-dialog #scheduled { max-height: none; overflow: visible; padding-left: 0; }
+#side-mail > #scheduled-open { margin: 4px 8px; color: #fff; border-color: rgba(255,255,255,.3); }
+.mail-ooo { flex: 0 0 auto; color: #fff; border-color: rgba(255,255,255,.3); }
+.mail-ooo .hint, .mail-ooo button.ghost { color: #fff; }
+.mail-ooo button.ghost { border-color: rgba(255,255,255,.3); }
+.mail-ooo button.ghost:hover, #side-mail > #scheduled-open:hover { background: rgba(255,255,255,.12); }
+.settings-account-context { margin-top: 14px; padding: 12px; background: var(--hover); border-radius: 10px; }
+#side-mail > #scheduled-open, .mail-ooo button.ghost { background: transparent; }

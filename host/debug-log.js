@@ -18,7 +18,7 @@ function note(source, text) {
   if (!line) return;
   rows.push({
     at: Date.now(),
-    source: String(source || "host").slice(0, 40),
+    source: redactDebugText(source || "host").slice(0, 40),
     text: line,
   });
   if (rows.length > MAX) rows.splice(0, rows.length - MAX);

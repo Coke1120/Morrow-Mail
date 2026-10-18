@@ -72,6 +72,7 @@ let draftSeq = 0;
 let suggestGen = 0;
 let signatureGen = 0;
 let signatureEditId = "";
+let signatureEditorAccountId = "";
 let scheduledGen = 0;
 let sendTimer = null;
 let sendGen = 0;
@@ -127,7 +128,8 @@ function composeAccount() {
 }
 
 function signatureAccount() {
-  return $("compose").open ? composeAccount() : settingsAccount();
+  if (signatureEditorAccountId) return state.accounts.find(account => account.id === signatureEditorAccountId) || null;
+  return ($("settings").open ? settingsAccount() : composeAccount()) || settingsAccount();
 }
 
 function isLive(account) {
@@ -5401,7 +5403,7 @@ function syncCompose() {
   for (const id of ["compose-save", "compose-send", "compose-schedule"]) $(id).disabled = !live || locked;
   $("compose-schedule").disabled = !live || locked || !!state.botDraftReview;
   $("compose-close").disabled = state.composePending || state.composeInitializing;
-  for (const id of ["compose-to", "compose-cc", "compose-bcc", "compose-subject", "compose-body", "signature", "ai-generate", "schedule-preset", "schedule-at"]) $(id).disabled = locked;
+  for (const id of ["compose-to", "compose-cc", "compose-bcc", "compose-subject", "compose-body", "signature", "signatures-from-compose", "ai-mode", "ai-prompt", "ai-generate", "schedule-preset", "schedule-at"]) $(id).disabled = locked;
   paintComposeNote();
 }
 
@@ -5495,7 +5497,7 @@ async function fillSignatures(preserveBody) {
     showSignatureEmpty(error instanceof Error ? error.message : String(error));
     return;
   }
-  if (gen !== signatureGen) return;
+  if (gen !== signatureGen || state.composeQueued || state.composePending) return;
   const rows = signatureRows(pack);
   state.signatures = rows;
   if (!rows.length) {
@@ -5520,6 +5522,7 @@ async function fillSignatures(preserveBody) {
 }
 
 function onSignatureChange() {
+  if (state.composeQueued || state.composePending) return;
   const row = state.signatures.find((item) => String(item.id) === $("signature").value);
   const text = signaturePlain(row);
   $("compose-body").value = applySignature($("compose-body").value, state.signatureText, text);
@@ -5599,11 +5602,13 @@ function startSignatureEdit(row, isDefault) {
 async function loadSignatureEditor() {
   const accountId = signatureAccount()?.id;
   const pack = await call("mail:listSignatures", accountId ? { accountId } : {});
-  if ($("signatures").open) paintSignatures(pack);
+  if ($("signatures").open && signatureAccount()?.id === accountId) paintSignatures(pack);
   return pack;
 }
 
 function openSignatures() {
+  signatureEditorAccountId = ($("settings").open ? settingsAccount() : composeAccount())?.id || settingsAccount()?.id || "";
+  $("signatures-title").textContent = "Signatures · " + (signatureAccount()?.email || "No mailbox");
   clearSignatureForm();
   showSignatureStatus("");
   openDialog("signatures");
@@ -5691,6 +5696,7 @@ function resetDraftWrite() {
 }
 
 function paintDraft() {
+  if (state.composeQueued || state.composePending) return;
   const view = state.draftWrite;
   const pending = !!(view && view.pending);
   const cancel = $("ai-cancel");
@@ -5715,6 +5721,7 @@ function onDraftEvent(event) {
 }
 
 async function startDraftWrite() {
+  if (state.composeQueued || state.composePending || state.composeInitializing) return;
   const mode = $("ai-mode").value || "custom";
   const prompt = $("ai-prompt").value;
   const existing = $("compose-body").value;
@@ -6508,6 +6515,7 @@ function paintUpdate(view) {
     install.disabled = !!view.busy;
   }
   $("about-update-quit").hidden = !view.install;
+  $("update-quit-note").hidden = !view.install;
 }
 
 function showUpdate(snapshot) {
@@ -7066,6 +7074,7 @@ function vacationSummary(data, now = Date.now()) {
   if (settings.mode !== "scheduled") return "Out of Office: unknown";
   const day = 86400000;
   let start = Date.parse(settings.start), end = Date.parse(settings.end);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return "Out of Office: scheduled — dates unavailable; manage to review";
   if (data.provider === "imap") { start = Math.floor(start / day) * day; end = Math.ceil(end / day) * day; }
   const format = time => Number.isFinite(time) ? (data.provider === "imap" ? new Date(time).toISOString().slice(0, 10) + " 00:00 UTC" : new Date(time).toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")") : "unknown";
   const phase = Number.isFinite(end) && now >= end ? "ended" : Number.isFinite(start) && now < start ? "scheduled" : "scheduled / active within these dates";
@@ -8584,8 +8593,9 @@ function proposalContext(proposal, kind) {
   const account = state.accounts.find(row => row.id === proposal.accountId);
   const who = account?.email || proposal.accountId || "Unknown — verified when opening source";
   const source = proposal.subject || proposal.messageId || "Missing source";
-  const action = kind === "draft" ? "Review reply draft" : "File message";
-  const target = kind === "draft" ? "Recipients: verified from source when reviewed" : "Destination: " + (proposal.labelName || "Unknown") + " (Gmail label when granted; otherwise a folder move)";
+  const filing = folderProvider(account) === "gmail" ? "Add Gmail label when granted, otherwise move to IMAP folder" : "Move message to folder";
+  const action = kind === "draft" ? "Review reply draft" : filing;
+  const target = kind === "draft" ? "Recipients: verified from source when reviewed" : "Destination: " + (proposal.labelName || "Unknown");
   return "Account: " + who + "\nSource: " + source + (proposal.messageId ? " · " + proposal.messageId : "") + "\nAction: " + action + "\n" + target + "\nState: " + (proposal.status || "Pending review") + (kind === "draft" ? " · Opening does not send or schedule." : " · Requires provider confirmation.");
 }
 async function describeDraftSource(node, draft) {
@@ -10500,6 +10510,7 @@ function wire() {
   $("signatures-close").addEventListener("click", () => closeDialog("signatures"));
   $("signatures").addEventListener("close", () => {
     signatureEditId = "";
+    signatureEditorAccountId = "";
   });
   $("signature-cancel").addEventListener("click", clearSignatureForm);
   $("signature-form").addEventListener("submit", (event) => {

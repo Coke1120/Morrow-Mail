@@ -7,6 +7,8 @@ async function run() {
   const env = { MORROW_MAIL_DIR: process.env.MORROW_MAIL_DIR, MORROW_MAIL_SECRETS: process.env.MORROW_MAIL_SECRETS };
   process.env.MORROW_MAIL_DIR = dir; process.env.MORROW_MAIL_SECRETS = 'memory';
   const engine = require('../host/mail/engine'), db = require('../host/mail/db');
+  const remote = require('../host/mail/remote'), secrets = require('../host/mail/secrets');
+  const sendSmtp = remote.sendSmtp;
   try {
     await engine.init();
     db.insertAccount({id:'queue',email:'queue@example.invalid',username:'queue',profile:'custom',createdAt:Date.now(),imapHost:'invalid',imapPort:993,imapTls:true,smtpHost:'invalid',smtpPort:587,smtpTls:true});
@@ -26,7 +28,20 @@ async function run() {
     db.insertScheduled({id:'unsupported',accountId:'queue',payloadJson:JSON.stringify({attachments:[{name:'file'}]}),sendAt:Date.now()+60000,createdAt:Date.now()});
     assert.equal(engine.answer('mail:editScheduled',[{id:'unsupported'}]).success,false);
     assert.ok(db.scheduledById('unsupported'), 'failed edit preserves queued payload');
+    secrets.setPassword('queue', 'fixture-only');
+    let started, release;
+    const active = new Promise(resolve => { started=resolve; });
+    let sends=0;
+    remote.sendSmtp = async () => { sends++; started(); return new Promise(resolve=>{release=()=>resolve({messageId:'<fixture>'});}); };
+    for (const id of ['first','second']) db.insertScheduled({id,accountId:'queue',payloadJson:JSON.stringify({to:'recipient@example.invalid',body:'<p>Queued</p>'}),sendAt:Date.now()-1000,createdAt:Date.now()});
+    const pumping = engine.pumpScheduled(); await active;
+    assert.equal(engine.answer('mail:cancelScheduled',[{id:'first'}]).error.code,'sending');
+    assert.equal(engine.answer('mail:editScheduled',[{id:'first'}]).error.code,'sending');
+    assert.equal(engine.answer('mail:cancelScheduled',[{id:'second'}]).success,true);
+    release(); await pumping;
+    assert.equal(sends,1,'a due row canceled while another send awaits I/O must not be delivered');
   } finally {
+    remote.sendSmtp = sendSmtp; secrets.deletePassword("queue");
     db.close(); for(const [key,value] of Object.entries(env)){if(value===undefined)delete process.env[key];else process.env[key]=value;}
     fs.rmSync(dir,{recursive:true,force:true});
   }

@@ -63,6 +63,9 @@ async function run() {
   assert.equal(ui.run(`calls.filter(x=>x.channel==='mail:scheduleSend').length`),1);
   assert.equal(get('compose-send').disabled,true);
   assert.equal(get('compose-schedule').disabled,true);
+  ui.run(`state.draftWrite={pending:false,text:'Late AI response',base:'',previous:''};paintDraft()`);
+  assert.equal(get('compose-body').value,'Schedule once','late AI completion cannot change a queued receipt');
+  assert.equal(get('ai-generate').disabled,true);
   assert.equal(ui.run(`calls.filter(x=>x.channel==='mail:send').length`),1);
   await ui.run('requestComposeClose()');
   ui.run(`call=async(channel,payload)=>({email:{id:payload.emailId,isDraft:true,accountId:'a',to:['recipient@example.test'],subject:'Saved',textBody:'Saved body',inReplyTo:'source',threadId:'thread'}})`);
