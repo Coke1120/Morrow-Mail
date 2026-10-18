@@ -105,6 +105,7 @@ function normalizeGraphFolder(folder) {
   const id = safeId(folder.id);
   const name = cleanName(folder.displayName) || id;
   const well = folder.wellKnownName ? String(folder.wellKnownName).toLowerCase() : "";
+  const count = Number(folder.childFolderCount);
   return {
     id,
     name,
@@ -112,6 +113,7 @@ function normalizeGraphFolder(folder) {
     editable: !well,
     wellKnown: well || null,
     parentId: safeId(folder.parentFolderId) || "",
+    childCount: Number.isFinite(count) && count > 0 ? count : 0,
   };
 }
 
@@ -263,21 +265,55 @@ async function graphCollect(accessToken, startUrl, fetchImpl) {
   return rows.sort(byName);
 }
 
-async function listMailFolders(accessToken, fetchImpl) {
-  const url = new URL(`${GRAPH_ROOT}/mailFolders`);
+const CHILD_REQUESTS = 50;
+
+function graphFolderListUrl(path) {
+  const url = new URL(path);
   url.searchParams.set("$top", "100");
   url.searchParams.set("$select", "id,displayName,parentFolderId,childFolderCount,wellKnownName");
-  return graphCollect(accessToken, url.toString(), fetchImpl);
+  return url.toString();
 }
 
-async function createMailFolder(accessToken, name, fetchImpl) {
+async function listMailFolders(accessToken, fetchImpl) {
+  const rows = await graphCollect(accessToken, graphFolderListUrl(`${GRAPH_ROOT}/mailFolders`), fetchImpl);
+  const seen = new Set(rows.map((folder) => folder.id));
+  const queue = rows.filter((folder) => folder.childCount > 0);
+  let hops = 0;
+  while (queue.length && hops < CHILD_REQUESTS && rows.length < MAX_LABELS) {
+    const parent = queue.shift();
+    hops += 1;
+    const children = await graphCollect(
+      accessToken,
+      graphFolderListUrl(`${GRAPH_ROOT}/mailFolders/${encodeURIComponent(parent.id)}/childFolders`),
+      fetchImpl
+    );
+    for (const child of children) {
+      if (!child || seen.has(child.id)) continue;
+      if (rows.length >= MAX_LABELS) {
+        const error = new Error("This mailbox has more than 1,000 folders.");
+        error.code = "too_many";
+        throw error;
+      }
+      seen.add(child.id);
+      rows.push(child);
+      if (child.childCount > 0) queue.push(child);
+    }
+  }
+  return rows.sort(byName);
+}
+
+async function createMailFolder(accessToken, name, parentId, fetchImpl) {
   const folder = cleanName(name);
   if (!folder) {
     const error = new Error("Add a folder name.");
     error.code = "invalid";
     throw error;
   }
-  const json = await apiJson(`${GRAPH_ROOT}/mailFolders`, accessToken, {
+  const parent = safeId(parentId);
+  const url = parent
+    ? `${GRAPH_ROOT}/mailFolders/${encodeURIComponent(parent)}/childFolders`
+    : `${GRAPH_ROOT}/mailFolders`;
+  const json = await apiJson(url, accessToken, {
     method: "POST",
     fetchImpl,
     body: { displayName: folder },

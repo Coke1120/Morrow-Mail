@@ -374,7 +374,7 @@ async function createProviderFolder(params) {
   try {
     const created = ready.provider === "google"
       ? await gmail.createLabel(ready.token.accessToken, params && params.name)
-      : await gmail.createMailFolder(ready.token.accessToken, params && params.name);
+      : await gmail.createMailFolder(ready.token.accessToken, params && params.name, params && params.parentId);
     return ok(created);
   } catch (error) {
     return failFrom(error);

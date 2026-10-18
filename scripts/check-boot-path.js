@@ -1397,6 +1397,194 @@ assert.deepStrictEqual(providerUi.providerFolderState({
   reason: "",
   folders: [{ id: "Label_9", name: "Travel" }],
 });
+const organizeUi = loadFunctions(appJs, [
+  "providerFolderState",
+  "providerCopy",
+  "folderDelimiter",
+  "nestRows",
+  "imapParent",
+  "folderTree",
+  "providerParent",
+  "providerLabelText",
+  "providerLabelTree",
+  "messageDragPayload",
+  "organizeDrop",
+  "organizeMenu",
+]);
+assert.deepStrictEqual(organizeUi.folderTree([
+  { id: "INBOX", name: "Inbox" },
+  { id: "INBOX/Work", name: "Work" },
+  { id: "INBOX/Work/2024", name: "2024" },
+  { id: "Notes", name: "Notes" },
+  { id: "Archive/Old", name: "Old" },
+]).map((folder) => [folder.id, folder.depth, folder.label, folder.parentId]), [
+  ["INBOX", 0, "Inbox", ""],
+  ["INBOX/Work", 1, "Work", "INBOX"],
+  ["INBOX/Work/2024", 2, "2024", "INBOX/Work"],
+  ["Notes", 0, "Notes", ""],
+  ["Archive/Old", 0, "Old", ""],
+]);
+assert.strictEqual(organizeUi.folderDelimiter([
+  { id: "INBOX", name: "Inbox" },
+  { id: "INBOX.Work", name: "Work" },
+]), ".");
+assert.deepStrictEqual(organizeUi.folderTree([
+  { id: "INBOX", name: "Inbox" },
+  { id: "INBOX.Work", name: "Work" },
+]).map((folder) => [folder.id, folder.depth, folder.parentId]), [
+  ["INBOX", 0, ""],
+  ["INBOX.Work", 1, "INBOX"],
+]);
+assert.deepStrictEqual(organizeUi.providerLabelTree([
+  { id: "INBOX", name: "INBOX", editable: false },
+  { id: "L1", name: "Work", editable: true },
+  { id: "L2", name: "Work/Travel", editable: true },
+  { id: "L3", name: "Work/Travel/2024", editable: true },
+  { id: "L4", name: "Solo/Missing", editable: true },
+]).map((folder) => [folder.id, folder.depth, folder.label, folder.parentId]), [
+  ["INBOX", 0, "INBOX", ""],
+  ["L1", 0, "Work", ""],
+  ["L2", 1, "Travel", "L1"],
+  ["L3", 2, "2024", "L2"],
+  ["L4", 0, "Solo/Missing", ""],
+]);
+assert.deepStrictEqual(organizeUi.providerLabelTree([
+  { id: "in", name: "Inbox", parentId: "msgfolderroot", editable: false },
+  { id: "c1", name: "Receipts", parentId: "in", editable: true },
+]).map((folder) => [folder.id, folder.depth, folder.label, folder.parentId]), [
+  ["in", 0, "Inbox", ""],
+  ["c1", 1, "Receipts", "in"],
+]);
+assert.deepStrictEqual(organizeUi.providerLabelTree([
+  { id: "a", name: "A", parentId: "b" },
+  { id: "b", name: "B", parentId: "a" },
+]).map((folder) => [folder.id, folder.depth]), [
+  ["a", 0],
+  ["b", 1],
+]);
+const dragMessage = { id: "m1", accountId: "a1", folderId: "INBOX" };
+assert.deepStrictEqual(organizeUi.messageDragPayload(dragMessage), {
+  id: "m1",
+  accountId: "a1",
+  folderId: "INBOX",
+});
+assert.strictEqual(organizeUi.messageDragPayload({ id: "m1" }), null);
+assert.deepStrictEqual(organizeUi.organizeDrop({ kind: "imap", id: "Notes", accountId: "a1" }, dragMessage), {
+  ok: true,
+  channel: "mail:moveToFolder",
+  params: {
+    emailId: "m1",
+    accountId: "a1",
+    targetFolderId: "Notes",
+    folderId: "INBOX",
+  },
+});
+assert.strictEqual(organizeUi.organizeDrop({ kind: "imap", id: "INBOX", accountId: "a1" }, dragMessage).reason, "same_folder");
+assert.strictEqual(organizeUi.organizeDrop({ kind: "imap", id: "Notes", accountId: "other" }, dragMessage).reason, "other_account");
+assert.deepStrictEqual(organizeUi.organizeDrop({ kind: "gmail", id: "Label_9", api: true }, dragMessage), {
+  ok: true,
+  channel: "mail:modifyMessageLabels",
+  params: {
+    accountId: "a1",
+    emailId: "m1",
+    addLabelIds: ["Label_9"],
+    removeLabelIds: [],
+  },
+});
+const blockedDrop = organizeUi.organizeDrop({
+  kind: "gmail",
+  id: "Label_9",
+  api: false,
+  reason: "scope_missing",
+}, dragMessage);
+assert.strictEqual(blockedDrop.ok, false);
+assert.strictEqual(blockedDrop.reason, "scope_missing");
+assert.strictEqual(
+  blockedDrop.message,
+  "Gmail labels need the gmail.modify grant. This mailbox stays on IMAP until then.",
+);
+assert.deepStrictEqual(organizeUi.organizeDrop({ kind: "outlook", id: "folder-1", api: true }, dragMessage), {
+  ok: true,
+  channel: "mail:moveProviderMessage",
+  params: {
+    accountId: "a1",
+    emailId: "m1",
+    destinationId: "folder-1",
+  },
+});
+const blockedOutlook = organizeUi.organizeDrop({
+  kind: "outlook",
+  id: "folder-1",
+  api: false,
+  reason: "scope_missing",
+  gate: "Outlook folders need the Mail.ReadWrite grant. This mailbox stays on IMAP until then.",
+}, dragMessage);
+assert.strictEqual(blockedOutlook.ok, false);
+assert.strictEqual(blockedOutlook.message, "Outlook folders need the Mail.ReadWrite grant. This mailbox stays on IMAP until then.");
+const grantMenu = organizeUi.organizeMenu(
+  dragMessage,
+  [{ id: "INBOX", name: "Inbox" }, { id: "Notes", name: "Notes" }, { id: "INBOX/Work", name: "Work" }],
+  { api: false, reason: "scope_missing", accountId: "a1", folders: [] },
+  "gmail",
+);
+assert.deepStrictEqual(grantMenu.move.map((folder) => [folder.id, folder.depth]), [
+  ["INBOX/Work", 1],
+  ["Notes", 0],
+]);
+assert.deepStrictEqual(grantMenu.add, []);
+assert.deepStrictEqual(grantMenu.remove, []);
+assert.strictEqual(
+  grantMenu.note,
+  "Gmail labels need the gmail.modify grant. This mailbox stays on IMAP until then.",
+);
+const gmailMenu = organizeUi.organizeMenu(dragMessage, [{ id: "INBOX", name: "Inbox" }], {
+  api: true,
+  accountId: "a1",
+  source: "gmail",
+  folders: [
+    { id: "L1", name: "Work", editable: true },
+    { id: "L2", name: "Work/Travel", editable: true },
+    { id: "INBOX", name: "INBOX", editable: false },
+  ],
+}, "gmail");
+assert.deepStrictEqual(gmailMenu.add.map((folder) => [folder.id, folder.depth, folder.label]), [
+  ["L1", 0, "Work"],
+  ["L2", 1, "Travel"],
+]);
+assert.strictEqual(gmailMenu.remove.length, 2);
+assert.strictEqual(gmailMenu.outlook.length, 0);
+assert.strictEqual(gmailMenu.note, "");
+const outlookMenu = organizeUi.organizeMenu(dragMessage, [], {
+  api: true,
+  accountId: "a1",
+  source: "graph",
+  folders: [
+    { id: "in", name: "Inbox", parentId: "root", editable: false },
+    { id: "c1", name: "Receipts", parentId: "in", editable: true },
+  ],
+}, "outlook");
+assert.deepStrictEqual(outlookMenu.outlook.map((folder) => [folder.id, folder.depth, folder.label]), [
+  ["in", 0, "Inbox"],
+  ["c1", 1, "Receipts"],
+]);
+assert.strictEqual(outlookMenu.add.length, 0);
+assert.strictEqual(organizeUi.organizeMenu(dragMessage, [{ id: "Notes", name: "Notes" }], {
+  api: false,
+  reason: "error",
+  message: "Outlook did not return a folder list.",
+  accountId: "a1",
+}, "outlook").note, "Outlook did not return a folder list.");
+assert.strictEqual(organizeUi.organizeMenu(null, [], null, "gmail").note, "Choose a message first.");
+assert.ok(appJs.includes("contextmenu"));
+assert.ok(appJs.includes("application/x-genmail-message"));
+assert.ok(appJs.includes("dropKind"));
+assert.ok(css.includes(".organize-menu") && css.includes(".drop-target"));
+assert.ok(parity.includes("right-click"));
+assert.ok(parity.includes("Dragging a message row"));
+assert.ok(parity.includes("Multi-select"));
+assert.ok(parity.includes("one message"));
+assert.ok(independentDoc.includes("Right-click"));
+assert.ok(independentDoc.includes("Drag a message row"));
 assert.strictEqual(
   providerUi.providerCopy("scope_missing", "gmail"),
   "Gmail labels need the gmail.modify grant. This mailbox stays on IMAP until then.",
@@ -1645,6 +1833,7 @@ const gmailApi = require("../host/mail/provider-api");
 assert.strictEqual(gmailApi.normalizeGmailLabel({ id: "Label_x", type: "user" }), null);
 assert.strictEqual(gmailApi.normalizeGmailLabel({ id: "INBOX", type: "system" }).name, "INBOX");
 assert.strictEqual(gmailApi.normalizeGmailLabel({ id: "INBOX", type: "system" }).editable, false);
+assert.strictEqual(gmailApi.normalizeGmailLabel({ id: "Label_2", name: "Work/Travel", type: "user" }).name, "Work/Travel");
 assert.throws(() => gmailApi.normalizeGmailLabels({}), /label list/);
 assert.ok(gmailApi.gmailModifyUrl("msg-1").endsWith("/messages/msg-1/modify"));
 assert.ok(decodeURIComponent(gmailApi.graphSearchUrl('say "hi"', 10)).includes('$search="say+hi"'));
@@ -2698,6 +2887,47 @@ function jsonResponse(body, status = 200) {
 }
 
 async function checkProviderApi() {
+  const seenFolders = [];
+  const nested = await gmailApi.listMailFolders("token", async (url) => {
+    const href = String(url);
+    seenFolders.push(href);
+    if (href.includes("/childFolders")) {
+      return jsonResponse({
+        value: [{
+          id: "child-1",
+          displayName: "Receipts",
+          parentFolderId: "folder-1",
+          childFolderCount: 0,
+        }],
+      });
+    }
+    return jsonResponse({
+      value: [{
+        id: "folder-1",
+        displayName: "Projects",
+        parentFolderId: "root",
+        childFolderCount: 1,
+      }],
+    });
+  });
+  assert.ok(seenFolders.some((href) => href.includes("/mailFolders/folder-1/childFolders")));
+  assert.ok(nested.some((folder) => folder.id === "child-1" && folder.parentId === "folder-1" && folder.name === "Receipts"));
+  const flatSeen = [];
+  const flat = await gmailApi.listMailFolders("token", async (url) => {
+    flatSeen.push(String(url));
+    return jsonResponse({ value: [{ id: "folder-1", displayName: "Projects", childFolderCount: 0 }] });
+  });
+  assert.strictEqual(flatSeen.length, 1);
+  assert.ok(!flatSeen[0].includes("/childFolders"));
+  assert.strictEqual(flat.length, 1);
+  const createdChild = await gmailApi.createMailFolder("token", "Receipts", "folder-1", async (url, init) => {
+    assert.ok(String(url).includes("/mailFolders/folder-1/childFolders"));
+    assert.strictEqual(init.method, "POST");
+    assert.strictEqual(JSON.parse(init.body).displayName, "Receipts");
+    return jsonResponse({ id: "child-1", displayName: "Receipts", parentFolderId: "folder-1" });
+  });
+  assert.strictEqual(createdChild.id, "child-1");
+  assert.strictEqual(createdChild.parentId, "folder-1");
   const gmailHits = await gmailApi.searchGmail("token", "needle", 80, async (url) => {
     const href = String(url);
     if (href.includes("format=metadata")) {

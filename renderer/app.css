@@ -916,6 +916,83 @@ button.provider-mini {
   white-space: nowrap;
 }
 
+.provider-icon { flex: none; opacity: 0.92; }
+
+.provider-create.stacked {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.provider-block select {
+  width: 100%;
+  margin: 4px 0;
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 6px;
+  background: transparent;
+  color: #fff;
+  font-size: 12px;
+}
+
+button.folder.drop-target,
+.provider-row.drop-target {
+  background: rgba(255, 255, 255, 0.22);
+  outline: 1px dashed rgba(255, 255, 255, 0.85);
+  outline-offset: -2px;
+}
+
+button.message[draggable="true"] { cursor: grab; }
+
+.message-row.dragging button.message { opacity: 0.55; }
+
+.organize-menu {
+  position: fixed;
+  z-index: 40;
+  min-width: 220px;
+  max-width: 320px;
+  max-height: min(70vh, 420px);
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: var(--shadow-card);
+}
+
+.organize-menu[hidden] { display: none; }
+
+.organize-menu h3 {
+  margin: 8px 8px 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.organize-menu button.menuitem {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  font-size: 13px;
+}
+
+.organize-menu button.menuitem:hover,
+.organize-menu button.menuitem:focus-visible { background: var(--hover); }
+
+.organize-note {
+  margin: 6px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .provider-create { width: 100%; }
 
 .shell {

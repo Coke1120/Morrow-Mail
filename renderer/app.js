@@ -34,6 +34,7 @@ const state = {
   },
   providerFolders: null,
   providerRename: "",
+  dragMessage: null,
   oauthStatus: null,
   oauthPending: false,
   view: "mail",
@@ -213,6 +214,207 @@ function providerCopy(reason, provider) {
 
 function showOrganizeGrant(reason) {
   return reason === "scope_missing" || reason === "password_account";
+}
+
+function folderDelimiter(folders) {
+  const rows = Array.isArray(folders) ? folders : [];
+  const ids = new Set(rows.filter((folder) => folder && folder.id).map((folder) => String(folder.id)));
+  const seps = ["/", "."];
+  for (let index = 0; index < seps.length; index += 1) {
+    const sep = seps[index];
+    for (const id of ids) {
+      const cut = id.lastIndexOf(sep);
+      if (cut > 0 && ids.has(id.slice(0, cut))) return sep;
+    }
+  }
+  return "/";
+}
+
+function imapParent(folder, byId, sep) {
+  let id = String(folder.id);
+  let cut = id.lastIndexOf(sep);
+  while (cut > 0) {
+    const parent = byId.get(id.slice(0, cut));
+    if (parent && parent.id !== folder.id) return parent;
+    id = id.slice(0, cut);
+    cut = id.lastIndexOf(sep);
+  }
+  return null;
+}
+
+function nestRows(rows, parentOf, labelOf) {
+  const list = Array.isArray(rows) ? rows.filter((row) => row && row.id) : [];
+  const children = new Map();
+  const childIds = new Set();
+  for (const row of list) {
+    const parent = parentOf(row);
+    if (!parent || parent.id === row.id) continue;
+    const kids = children.get(parent.id) || [];
+    kids.push(row);
+    children.set(parent.id, kids);
+    childIds.add(row.id);
+  }
+  const out = [];
+  const seen = new Set();
+  function walk(row, depth) {
+    if (!row || seen.has(row.id) || depth > 12) return;
+    seen.add(row.id);
+    const parent = depth ? parentOf(row) : null;
+    out.push(Object.assign({}, row, {
+      depth: depth,
+      label: labelOf(row, depth),
+      parentId: parent && parent.id ? parent.id : "",
+    }));
+    const kids = children.get(row.id) || [];
+    for (const kid of kids) walk(kid, depth + 1);
+  }
+  for (const row of list) {
+    if (!childIds.has(row.id)) walk(row, 0);
+  }
+  for (const row of list) {
+    if (!seen.has(row.id)) walk(row, 0);
+  }
+  return out;
+}
+
+function folderTree(folders, delimiter) {
+  const rows = Array.isArray(folders) ? folders.filter((folder) => folder && folder.id) : [];
+  const sep = delimiter || folderDelimiter(rows);
+  const byId = new Map(rows.map((folder) => [String(folder.id), folder]));
+  return nestRows(rows, (folder) => imapParent(folder, byId, sep), (folder) => String(folder.name || folder.id));
+}
+
+function providerParent(folder, byId, byName) {
+  if (folder.parentId && byId.has(String(folder.parentId))) {
+    const parent = byId.get(String(folder.parentId));
+    if (parent && parent.id !== folder.id) return parent;
+  }
+  let name = String(folder.name || "");
+  let cut = name.lastIndexOf("/");
+  while (cut > 0) {
+    const parent = byName.get(name.slice(0, cut));
+    if (parent && parent.id !== folder.id) return parent;
+    name = name.slice(0, cut);
+    cut = name.lastIndexOf("/");
+  }
+  return null;
+}
+
+function providerLabelText(folder, depth) {
+  const name = String(folder.name || folder.id);
+  if (!depth) return name;
+  const cut = name.lastIndexOf("/");
+  if (cut > 0 && cut < name.length - 1) return name.slice(cut + 1);
+  return name;
+}
+
+function providerLabelTree(folders) {
+  const rows = Array.isArray(folders) ? folders.filter((folder) => folder && folder.id && folder.name) : [];
+  const byId = new Map(rows.map((folder) => [String(folder.id), folder]));
+  const byName = new Map();
+  for (const folder of rows) {
+    if (!byName.has(folder.name)) byName.set(folder.name, folder);
+  }
+  return nestRows(rows, (folder) => providerParent(folder, byId, byName), providerLabelText);
+}
+
+function messageDragPayload(email) {
+  if (!email || !email.id || !email.accountId) return null;
+  return {
+    id: String(email.id),
+    accountId: String(email.accountId),
+    folderId: email.folderId ? String(email.folderId) : "",
+  };
+}
+
+function organizeDrop(target, message) {
+  const email = messageDragPayload(message);
+  if (!email) return { ok: false, reason: "no_message", message: "Choose a message first." };
+  if (!target || !target.id || !target.kind) {
+    return { ok: false, reason: "no_target", message: "Drop the message on a folder or label." };
+  }
+  if (target.kind === "imap") {
+    if (target.accountId && target.accountId !== email.accountId) {
+      return { ok: false, reason: "other_account", message: "Move stays inside this mailbox." };
+    }
+    if (target.id === email.folderId) {
+      return { ok: false, reason: "same_folder", message: "That message is already in this folder." };
+    }
+    return {
+      ok: true,
+      channel: "mail:moveToFolder",
+      params: {
+        emailId: email.id,
+        accountId: email.accountId,
+        targetFolderId: target.id,
+        folderId: email.folderId,
+      },
+    };
+  }
+  if (target.kind === "gmail" || target.kind === "outlook") {
+    if (target.accountId && target.accountId !== email.accountId) {
+      return { ok: false, reason: "other_account", message: "Labels stay on the mailbox that owns this message." };
+    }
+    if (target.api !== true) {
+      return {
+        ok: false,
+        reason: target.reason || "scope_missing",
+        message: target.gate || providerCopy(target.reason || "scope_missing", target.kind),
+      };
+    }
+    if (target.kind === "gmail") {
+      return {
+        ok: true,
+        channel: "mail:modifyMessageLabels",
+        params: {
+          accountId: email.accountId,
+          emailId: email.id,
+          addLabelIds: [target.id],
+          removeLabelIds: [],
+        },
+      };
+    }
+    return {
+      ok: true,
+      channel: "mail:moveProviderMessage",
+      params: {
+        accountId: email.accountId,
+        emailId: email.id,
+        destinationId: target.id,
+      },
+    };
+  }
+  return { ok: false, reason: "unsupported", message: "That target cannot take a message." };
+}
+
+function organizeMenu(email, imapFolders, providerPayload, provider) {
+  const message = messageDragPayload(email);
+  const moveTree = folderTree(imapFolders);
+  const move = message ? moveTree.filter((folder) => folder.id !== message.folderId) : [];
+  if (!message) return { move: [], add: [], remove: [], outlook: [], note: "Choose a message first." };
+  if (provider !== "gmail" && provider !== "outlook") {
+    return { move: move, add: [], remove: [], outlook: [], note: "" };
+  }
+  if (providerPayload && providerPayload.accountId && providerPayload.accountId !== message.accountId) {
+    return {
+      move: move,
+      add: [],
+      remove: [],
+      outlook: [],
+      note: "Labels follow the mailbox that owns this message.",
+    };
+  }
+  const view = providerFolderState(providerPayload);
+  if (view.mode !== "live") {
+    const note = (providerPayload && providerPayload.message) || providerCopy(view.reason, provider);
+    return { move: move, add: [], remove: [], outlook: [], note: note };
+  }
+  const labels = providerLabelTree(view.folders);
+  if (provider === "gmail") {
+    const editable = labels.filter((folder) => folder.editable);
+    return { move: move, add: editable, remove: editable, outlook: [], note: "" };
+  }
+  return { move: move, add: [], remove: [], outlook: labels, note: "" };
 }
 
 function calendarMode(payload) {
@@ -1055,10 +1257,14 @@ function renderAccounts() {
       nav.appendChild(note);
     }
     if (expanded) {
-    for (const folder of foldersOf(account)) {
+    for (const folder of folderTree(foldersOf(account))) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "folder";
+      button.dataset.dropKind = "imap";
+      button.dataset.dropId = folder.id;
+      button.dataset.dropAccount = account.id;
+      button.style.paddingLeft = (8 + folder.depth * 14) + "px";
       if (account.id === state.accountId && folder.id === state.folderId) {
         button.setAttribute("aria-current", "true");
       }
@@ -1070,7 +1276,7 @@ function renderAccounts() {
       icon.textContent = folderIcon(folder.wellKnownName);
       const name = document.createElement("span");
       name.className = "name";
-      name.textContent = folder.name || folder.id;
+      name.textContent = folder.label || folder.name || folder.id;
       label.append(icon, name);
       button.appendChild(label);
       if (folder.unreadCount) {
@@ -1131,9 +1337,13 @@ function appendProviderBlock(nav, account) {
     note.textContent = provider === "outlook" ? "No Outlook folders returned." : "No Gmail labels returned.";
     block.appendChild(note);
   }
-  for (const folder of view.folders) {
+  for (const folder of providerLabelTree(view.folders)) {
     const row = document.createElement("div");
     row.className = "provider-row";
+    row.dataset.dropKind = provider === "outlook" ? "outlook" : "gmail";
+    row.dataset.dropId = folder.id;
+    row.title = folder.name;
+    row.style.paddingLeft = (folder.depth * 14) + "px";
     if (state.providerRename === folder.id && folder.editable) {
       const form = document.createElement("form");
       form.className = "provider-create";
@@ -1154,8 +1364,8 @@ function appendProviderBlock(nav, account) {
     } else {
       const name = document.createElement("span");
       name.className = "name";
-      name.textContent = folder.name;
-      row.appendChild(name);
+      name.textContent = folder.label || folder.name;
+      row.append(providerMark(provider), name);
       if (folder.editable) {
         const rename = document.createElement("button");
         rename.type = "button";
@@ -1177,17 +1387,30 @@ function appendProviderBlock(nav, account) {
   }
   const form = document.createElement("form");
   form.className = "provider-create";
+  let parentSelect = null;
+  if (provider === "outlook") {
+    parentSelect = document.createElement("select");
+    parentSelect.setAttribute("aria-label", "Inside Outlook folder");
+    parentSelect.append(option("", "Top level"));
+    for (const folder of providerLabelTree(view.folders)) {
+      parentSelect.append(option(folder.id, indentedName(folder)));
+    }
+    form.appendChild(parentSelect);
+  }
   const input = document.createElement("input");
   input.maxLength = 200;
+  input.placeholder = provider === "outlook" ? "Folder name" : "Parent/Child";
   input.setAttribute("aria-label", provider === "outlook" ? "New Outlook folder" : "New Gmail label");
   const submit = document.createElement("button");
   submit.type = "submit";
   submit.className = "provider-mini";
   submit.textContent = provider === "outlook" ? "Add folder" : "Add label";
   form.append(input, submit);
+  if (parentSelect) form.classList.add("stacked");
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    guard(() => createProviderFolder(input.value));
+    const parentId = parentSelect ? parentSelect.value : "";
+    guard(() => createProviderFolder(input.value, parentId));
   });
   block.appendChild(form);
   nav.appendChild(block);
@@ -1298,9 +1521,13 @@ function rowAction(action, label, run) {
 function messageRow(email) {
   const row = document.createElement("div");
   row.className = "message-row";
+  row.dataset.emailId = email.id || "";
+  row.dataset.accountId = email.accountId || "";
+  row.dataset.folderId = email.folderId || "";
   const button = document.createElement("button");
   button.type = "button";
   button.className = "message";
+  button.draggable = true;
   button.setAttribute("data-testid", "mail-list-message-row");
   if (email.unread) button.classList.add("unread");
   if (state.email && state.email.id === email.id) button.setAttribute("aria-current", "true");
@@ -1438,6 +1665,7 @@ const READER_ICON = {
   star: "m12 3.2 2.47 5.01 5.53.8-4 3.9.94 5.5L12 15.9l-4.94 2.51.94-5.5-4-3.9 5.53-.8L12 3.2z",
   archive: "M4 4h16v3H4V4zm1 5h14v10H5V9zm4 2v2h6v-2H9z",
   trash: "M9 3h6l1 2h4v2H4V5h4l1-2zm-2 6h10l-.8 12H7.8L7 9zm3 2v8h2v-8H10zm4 0v8h2v-8h-2z",
+  organize: "M3 6h7l2 2h9v11H3V6z",
 };
 
 function readerIcon(name) {
@@ -1483,9 +1711,9 @@ function renderActions(pane, email) {
   move.setAttribute("aria-label", "Move to folder");
   move.append(option("", "Move"));
   const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
-  for (const folder of foldersOf(account)) {
+  for (const folder of folderTree(foldersOf(account))) {
     if (!folder || folder.id === email.folderId) continue;
-    move.append(option(folder.id, folder.name || folder.id));
+    move.append(option(folder.id, indentedName(folder)));
   }
   move.addEventListener("change", () => {
     const target = move.value;
@@ -1515,11 +1743,63 @@ function renderActions(pane, email) {
   const forward = readerButton("forward", "Forward", () => openCompose(composeSeed(email, "forward", self)));
   const menus = document.createElement("div");
   menus.className = "reader-menus";
-  menus.append(move);
+  menus.append(move, organizeButton(email));
   if (snooze) menus.append(snooze);
   bar.append(reply, replyAll, forward, star, archive, trash, menus);
   appendLabelActions(bar, email);
   pane.appendChild(bar);
+}
+
+function indentedName(folder) {
+  const depth = folder && folder.depth ? folder.depth : 0;
+  const text = (folder && (folder.label || folder.name || folder.id)) || "";
+  if (!depth) return text;
+  return "\u00A0".repeat(depth * 2) + text;
+}
+
+function providerMark(provider) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "14");
+  svg.setAttribute("height", "14");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.classList.add("provider-icon");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", provider === "outlook"
+    ? "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
+    : "M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z");
+  svg.appendChild(path);
+  return svg;
+}
+
+function organizeButton(email) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "ghost icon-btn";
+  button.dataset.action = "organize";
+  button.setAttribute("aria-label", "Organize");
+  button.setAttribute("aria-haspopup", "menu");
+  button.title = "Organize";
+  const icon = readerIcon("organize");
+  if (icon) button.appendChild(icon);
+  const text = document.createElement("span");
+  text.textContent = "Organize";
+  button.appendChild(text);
+  button.addEventListener("click", () => {
+    const rect = button.getBoundingClientRect();
+    openOrganizeMenu(email, rect.left, rect.bottom + 4);
+  });
+  button.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openOrganizeMenu(email, event.clientX, event.clientY);
+  });
+  return button;
 }
 
 function appendLabelActions(bar, email) {
@@ -1527,14 +1807,15 @@ function appendLabelActions(bar, email) {
   if (!payload || payload.accountId !== email.accountId) return;
   const view = providerFolderState(payload);
   if (view.mode !== "live") return;
+  const labels = providerLabelTree(view.folders);
   if (payload.source === "gmail" || payload.provider === "google") {
-    const editable = view.folders.filter((folder) => folder.editable);
+    const editable = labels.filter((folder) => folder.editable);
     bar.append(labelSelect("Add Gmail label", "Add label", editable, (id) => changeLabels(email, [id], [])));
     bar.append(labelSelect("Remove Gmail label", "Remove label", editable, (id) => changeLabels(email, [], [id])));
     return;
   }
   if (payload.source === "graph" || payload.provider === "microsoft") {
-    bar.append(labelSelect("Move in Outlook", "Move in Outlook", view.folders, (id) => moveOutlook(email, id)));
+    bar.append(labelSelect("Move in Outlook", "Move in Outlook", labels, (id) => moveOutlook(email, id)));
   }
 }
 
@@ -1542,7 +1823,7 @@ function labelSelect(aria, placeholder, folders, run) {
   const select = document.createElement("select");
   select.setAttribute("aria-label", aria);
   select.append(option("", placeholder));
-  for (const folder of folders) select.append(option(folder.id, folder.name));
+  for (const folder of folders) select.append(option(folder.id, indentedName(folder)));
   select.addEventListener("change", () => {
     const id = select.value;
     select.value = "";
@@ -2239,8 +2520,8 @@ async function grantOrganize() {
   await loadProviderFolders(accountGen);
 }
 
-async function createProviderFolder(name) {
-  await call("mail:createProviderFolder", { accountId: state.accountId, name });
+async function createProviderFolder(name, parentId) {
+  await call("mail:createProviderFolder", { accountId: state.accountId, name, parentId: parentId || "" });
   state.providerRename = "";
   showStatus("Saved on the provider.");
   await loadProviderFolders(accountGen);
@@ -2276,7 +2557,232 @@ async function moveOutlook(email, destinationId) {
     emailId: email.id,
     destinationId,
   });
-  showStatus("Moved in Outlook. Refresh to update the IMAP list.");
+  showStatus("Moved in Outlook.");
+  if (isLive(selectedAccount())) await loadList(true);
+}
+
+function ensureOrganizeMenu() {
+  let menu = $("organize-menu");
+  if (menu) return menu;
+  menu = document.createElement("div");
+  menu.id = "organize-menu";
+  menu.className = "organize-menu";
+  menu.hidden = true;
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("aria-label", "Move and labels");
+  document.body.appendChild(menu);
+  return menu;
+}
+
+function closeOrganizeMenu() {
+  const menu = $("organize-menu");
+  if (!menu) return;
+  menu.hidden = true;
+  menu.dataset.open = "";
+  menu.replaceChildren();
+}
+
+function appendMenuGroup(menu, title, items, run) {
+  if (!items || !items.length) return;
+  const heading = document.createElement("h3");
+  heading.textContent = title;
+  menu.appendChild(heading);
+  for (const item of items) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "menuitem";
+    button.setAttribute("role", "menuitem");
+    button.style.paddingLeft = (12 + (item.depth || 0) * 14) + "px";
+    button.textContent = item.label || item.name || item.id;
+    button.title = item.name || item.label || item.id;
+    button.addEventListener("click", () => {
+      closeOrganizeMenu();
+      guard(() => run(item));
+    });
+    menu.appendChild(button);
+  }
+}
+
+function openOrganizeMenu(email, x, y) {
+  if (!email) return;
+  const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
+  const provider = folderProvider(account);
+  const listed = account ? providerPayloadFor(account) : null;
+  const model = organizeMenu(email, foldersOf(account), listed, provider);
+  const menu = ensureOrganizeMenu();
+  menu.replaceChildren();
+  appendMenuGroup(menu, "Move to folder", model.move, (item) => moveOpen(email, item.id));
+  appendMenuGroup(menu, "Add Gmail label", model.add, (item) => changeLabels(email, [item.id], []));
+  appendMenuGroup(menu, "Remove Gmail label", model.remove, (item) => changeLabels(email, [], [item.id]));
+  appendMenuGroup(menu, "Move in Outlook", model.outlook, (item) => moveOutlook(email, item.id));
+  if (model.note) {
+    const note = document.createElement("p");
+    note.className = "organize-note";
+    note.textContent = model.note;
+    menu.appendChild(note);
+  }
+  if (!menu.childElementCount) {
+    const note = document.createElement("p");
+    note.className = "organize-note";
+    note.textContent = "No folders to show.";
+    menu.appendChild(note);
+  }
+  menu.hidden = false;
+  menu.dataset.open = "";
+  menu.style.left = "8px";
+  menu.style.top = "8px";
+  const rect = menu.getBoundingClientRect();
+  const maxX = Math.max(8, window.innerWidth - rect.width - 8);
+  const maxY = Math.max(8, window.innerHeight - rect.height - 8);
+  menu.style.left = Math.min(Math.max(8, x), maxX) + "px";
+  menu.style.top = Math.min(Math.max(8, y), maxY) + "px";
+  setTimeout(() => {
+    if (menu.hidden) return;
+    menu.dataset.open = "1";
+    const first = menu.querySelector("[role='menuitem']");
+    if (first) first.focus();
+  }, 0);
+}
+
+function emailFromRow(row) {
+  if (!row) return null;
+  const id = row.dataset.emailId;
+  const found = state.emails.find((email) => email && email.id === id);
+  if (found) return found;
+  if (!id || !row.dataset.accountId) return null;
+  return { id, accountId: row.dataset.accountId, folderId: row.dataset.folderId || "" };
+}
+
+function dropTargetFrom(node) {
+  if (!node) return null;
+  const kind = node.dataset.dropKind;
+  const id = node.dataset.dropId;
+  if (!kind || !id) return null;
+  if (kind === "imap") return { kind, id, accountId: node.dataset.dropAccount || "" };
+  const provider = kind === "outlook" ? "outlook" : "gmail";
+  const payload = state.providerFolders;
+  const view = providerFolderState(payload);
+  return {
+    kind,
+    id,
+    accountId: (payload && payload.accountId) || "",
+    api: view.mode === "live",
+    reason: view.reason,
+    gate: (payload && payload.message) || providerCopy(view.reason, provider),
+  };
+}
+
+async function dropOrganized(target, message) {
+  const plan = organizeDrop(target, message);
+  if (!plan.ok) throw new Error(plan.message || "That message could not be moved.");
+  if (plan.channel === "mail:moveToFolder") {
+    await moveOpen(message, plan.params.targetFolderId);
+    return;
+  }
+  if (plan.channel === "mail:modifyMessageLabels") {
+    await changeLabels(message, plan.params.addLabelIds, plan.params.removeLabelIds);
+    return;
+  }
+  await moveOutlook(message, plan.params.destinationId);
+}
+
+function clearDropTargets() {
+  for (const node of document.querySelectorAll(".drop-target")) node.classList.remove("drop-target");
+}
+
+function onListContext(event) {
+  const row = event.target.closest && event.target.closest(".message-row");
+  const email = emailFromRow(row);
+  if (!email) return;
+  event.preventDefault();
+  openOrganizeMenu(email, event.clientX, event.clientY);
+}
+
+function onReaderContext(event) {
+  if (!state.email) return;
+  if (event.target.closest && event.target.closest("input, textarea, select, a")) return;
+  event.preventDefault();
+  openOrganizeMenu(state.email, event.clientX, event.clientY);
+}
+
+function onMessageDragStart(event) {
+  const button = event.target.closest && event.target.closest("button.message");
+  if (!button || !event.dataTransfer) return;
+  const row = button.closest(".message-row");
+  const payload = messageDragPayload(emailFromRow(row));
+  if (!payload) {
+    event.preventDefault();
+    return;
+  }
+  state.dragMessage = payload;
+  event.dataTransfer.setData("application/x-genmail-message", JSON.stringify(payload));
+  event.dataTransfer.effectAllowed = "copyMove";
+  if (row) row.classList.add("dragging");
+}
+
+function onMessageDragEnd() {
+  state.dragMessage = null;
+  clearDropTargets();
+  for (const row of document.querySelectorAll(".message-row.dragging")) row.classList.remove("dragging");
+}
+
+function onFolderDragOver(event) {
+  const node = event.target.closest && event.target.closest("[data-drop-kind]");
+  if (!node || !state.dragMessage) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = node.dataset.dropKind === "gmail" ? "copy" : "move";
+  clearDropTargets();
+  node.classList.add("drop-target");
+}
+
+function onFolderDrop(event) {
+  const node = event.target.closest && event.target.closest("[data-drop-kind]");
+  clearDropTargets();
+  if (!node) return;
+  event.preventDefault();
+  let message = state.dragMessage;
+  const raw = event.dataTransfer && event.dataTransfer.getData("application/x-genmail-message");
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.id) message = parsed;
+    } catch {
+      // The in-memory drag payload still names the message.
+    }
+  }
+  state.dragMessage = null;
+  for (const row of document.querySelectorAll(".message-row.dragging")) row.classList.remove("dragging");
+  if (!message) return;
+  guard(() => dropOrganized(dropTargetFrom(node), message));
+}
+
+function wireOrganize() {
+  $("messages").addEventListener("contextmenu", onListContext);
+  $("reader").addEventListener("contextmenu", onReaderContext);
+  $("messages").addEventListener("dragstart", onMessageDragStart);
+  $("messages").addEventListener("dragend", onMessageDragEnd);
+  const folders = $("folders");
+  folders.addEventListener("dragover", onFolderDragOver);
+  folders.addEventListener("drop", onFolderDrop);
+  document.addEventListener("click", (event) => {
+    const menu = $("organize-menu");
+    if (!menu || menu.hidden || menu.dataset.open !== "1") return;
+    if (menu.contains(event.target)) return;
+    closeOrganizeMenu();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const menu = $("organize-menu");
+    if (!menu || menu.hidden) return;
+    event.preventDefault();
+    closeOrganizeMenu();
+  });
+  document.addEventListener("scroll", (event) => {
+    const menu = $("organize-menu");
+    if (!menu || menu.hidden) return;
+    if (event.target === menu || (event.target && menu.contains && menu.contains(event.target))) return;
+    closeOrganizeMenu();
+  }, true);
 }
 
 async function selectFolder(accountId, folderId) {
@@ -5652,6 +6158,7 @@ async function loadOauthStatus() {
 
 function wire() {
   document.addEventListener("keydown", onShellKey);
+  wireOrganize();
   const motion = motionApi();
   if (motion) motion.bindChrome(document);
   for (const dialog of document.querySelectorAll("dialog")) {
