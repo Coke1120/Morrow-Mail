@@ -8624,19 +8624,17 @@ function paintBrainSkills(lists, errorText) {
 async function reviewDraft(draft) {
   const body = String((draft && (draft.body || draft.text)) || "").trim();
   if (!body) throw new Error("That draft is empty.");
-  const email = state.email;
-  const account = email
-    ? (state.accounts.find((item) => item.id === email.accountId) || selectedAccount())
-    : selectedAccount();
-  const self = (account && (account.preferredFromAddress || account.email)) || "";
-  const seed = email && email.id
-    ? composeSeed(email, "reply", self)
-    : {
-      title: "New message",
-      to: (draft && draft.to) || "",
-      subject: (draft && draft.subject) || "",
-      body: "",
-    };
+  const messageId = draft && draft.messageId;
+  if (!messageId) throw new Error("This proposal has no source message. Open the intended message and request a new draft.");
+  const data = await call("mail:openEmail", { emailId: messageId });
+  const email = data && data.email;
+  if (!email || email.id !== messageId || !email.accountId || (draft.accountId && draft.accountId !== email.accountId)) {
+    throw new Error("The proposal's source message or account is unavailable. Open the intended message and request a new draft.");
+  }
+  const account = state.accounts.find((item) => item.id === email.accountId);
+  if (!account) throw new Error("The proposal's mailbox is no longer connected. Reconnect it before reviewing this reply.");
+  const self = account.preferredFromAddress || account.email || "";
+  const seed = composeSeed(email, "reply", self);
   await openCompose(withSuggestion(seed, body));
 }
 
