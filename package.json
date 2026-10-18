@@ -1,6 +1,6 @@
 {
   "name": "morrow-mail",
-  "version": "0.1.0-alpha.8",
+  "version": "0.1.0-alpha.9",
   "description": "Morrow Mail. Private Electron client.",
   "main": "host/main.js",
   "private": true,
