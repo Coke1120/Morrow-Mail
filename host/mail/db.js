@@ -162,6 +162,7 @@ function migrate() {
     created_at INTEGER NOT NULL
   )`);
   run(`CREATE INDEX IF NOT EXISTS scheduled_due ON scheduled_sends(status, send_at)`);
+  ensureSearchIndex();
 }
 
 async function open(target) {
@@ -253,6 +254,7 @@ function clearAuthError(id) {
 
 function removeAccount(id) {
   transaction(() => {
+    forgetIds(all("SELECT id FROM messages WHERE account_id = ?", [id]));
     run("DELETE FROM messages WHERE account_id = ?", [id]);
     run("DELETE FROM folders WHERE account_id = ?", [id]);
     run("DELETE FROM snooze WHERE account_id = ?", [id]);
@@ -283,6 +285,7 @@ function replaceFolders(accountId, folders, delimiter) {
     }
     for (const pathName of existing) {
       if (next.has(pathName)) continue;
+      forgetIds(all("SELECT id FROM messages WHERE account_id = ? AND folder_path = ?", [accountId, pathName]));
       run("DELETE FROM messages WHERE account_id = ? AND folder_path = ?", [accountId, pathName]);
       run("DELETE FROM folders WHERE account_id = ? AND path = ?", [accountId, pathName]);
     }
@@ -335,6 +338,188 @@ function horizonWrite(report) {
   return { touch: 1, value: days };
 }
 
+// Local full-text index for synced mail. sql.js in this app has no FTS5 module,
+// so subject, from, and body are tokenized into message_fts. The list filter
+// stays a separate in-memory match and does not read this index.
+const SEARCH_INDEX_VERSION = "1";
+const SEARCH_BODY_CAP = 200000;
+const SEARCH_TERM_CAP = 4000;
+const SEARCH_QUERY_CAP = 16;
+const SEARCH_RESULT_CAP = 100;
+const INDEXED_PATCH = new Set(["subject", "from_addr", "text_body", "html_body", "snippet"]);
+
+function safePoint(code) {
+  if (!Number.isFinite(code) || code < 0 || code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF)) return " ";
+  return String.fromCodePoint(code);
+}
+
+function htmlToText(html) {
+  return String(html || "")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#(\d+);/g, (_match, n) => safePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_match, n) => safePoint(parseInt(n, 16)));
+}
+
+function squash(value) {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, SEARCH_BODY_CAP);
+}
+
+function plainBody(row) {
+  const text = squash(row.text_body);
+  if (text) return text;
+  const html = squash(htmlToText(row.html_body));
+  if (html) return html;
+  return squash(row.snippet);
+}
+
+function foldTerm(value) {
+  return String(value || "").normalize("NFKC").toLowerCase().normalize("NFD").replace(/\p{M}+/gu, "");
+}
+
+function tokenize(value) {
+  const found = foldTerm(value).match(/[\p{L}\p{N}]+/gu) || [];
+  const terms = [];
+  const seen = new Set();
+  for (const term of found) {
+    if (!term || term.length > 80) continue;
+    if (seen.has(term)) continue;
+    seen.add(term);
+    terms.push(term);
+    if (terms.length >= SEARCH_TERM_CAP) break;
+  }
+  return terms;
+}
+
+function termUpper(term) {
+  const chars = Array.from(term);
+  for (let i = chars.length - 1; i >= 0; i -= 1) {
+    const code = chars[i].codePointAt(0);
+    if (code < 0x10FFFD) {
+      chars[i] = String.fromCodePoint(code + 1);
+      return chars.slice(0, i + 1).join("");
+    }
+  }
+  return `${term}\u{10FFFD}`;
+}
+
+function forgetIndex(messageId) {
+  if (!messageId) return;
+  run("DELETE FROM message_fts WHERE message_id = ?", [messageId]);
+  run("DELETE FROM message_fts_doc WHERE message_id = ?", [messageId]);
+}
+
+function forgetIds(rows) {
+  for (const row of rows) forgetIndex(row.id);
+}
+
+function indexText(messageId) {
+  forgetIndex(messageId);
+  const row = get(
+    "SELECT id, subject, from_addr, text_body, html_body, snippet FROM messages WHERE id = ?",
+    [messageId]
+  );
+  if (!row) return;
+  const subject = row.subject || "";
+  const sender = row.from_addr || "";
+  const body = plainBody(row);
+  run(
+    "INSERT INTO message_fts_doc (message_id, subject, sender, body) VALUES (?, ?, ?, ?)",
+    [messageId, subject, sender, body]
+  );
+  const stmt = db.prepare("INSERT INTO message_fts (term, message_id, field) VALUES (?, ?, ?)");
+  try {
+    const fields = [
+      ["subject", subject],
+      ["sender", sender],
+      ["body", body],
+    ];
+    for (const [field, text] of fields) {
+      for (const term of tokenize(text)) stmt.run([term, messageId, field]);
+    }
+  } finally {
+    stmt.free();
+  }
+}
+
+function ensureSearchIndex() {
+  run(`CREATE TABLE IF NOT EXISTS message_fts_meta (
+    meta_key TEXT PRIMARY KEY,
+    meta_value TEXT NOT NULL
+  )`);
+  run(`CREATE TABLE IF NOT EXISTS message_fts_doc (
+    message_id TEXT PRIMARY KEY,
+    subject TEXT NOT NULL,
+    sender TEXT NOT NULL,
+    body TEXT NOT NULL
+  )`);
+  run(`CREATE TABLE IF NOT EXISTS message_fts (
+    term TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    field TEXT NOT NULL,
+    PRIMARY KEY (term, message_id, field)
+  )`);
+  run("CREATE INDEX IF NOT EXISTS message_fts_message ON message_fts(message_id)");
+  const version = get("SELECT meta_value AS value FROM message_fts_meta WHERE meta_key = 'version'");
+  const messages = get("SELECT COUNT(*) AS n FROM messages").n;
+  const docs = get("SELECT COUNT(*) AS n FROM message_fts_doc").n;
+  if (version && version.value === SEARCH_INDEX_VERSION && messages === docs) return;
+  transaction(() => {
+    run("DELETE FROM message_fts");
+    run("DELETE FROM message_fts_doc");
+    for (const row of all("SELECT id FROM messages")) indexText(row.id);
+    run("DELETE FROM message_fts_meta WHERE meta_key = 'version'");
+    run("INSERT INTO message_fts_meta (meta_key, meta_value) VALUES ('version', ?)", [SEARCH_INDEX_VERSION]);
+  });
+}
+
+function searchResultLimit(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return SEARCH_RESULT_CAP;
+  return Math.min(Math.max(Math.trunc(n), 1), SEARCH_RESULT_CAP);
+}
+
+function searchMessages(options) {
+  if (!db) return [];
+  const query = options || {};
+  const tokens = tokenize(query.query).slice(0, SEARCH_QUERY_CAP);
+  if (!tokens.length) return [];
+  const joins = [];
+  const params = [];
+  tokens.forEach((token, index) => {
+    joins.push(
+      `JOIN (
+        SELECT message_id, MAX(CASE field WHEN 'subject' THEN 6 WHEN 'sender' THEN 4 ELSE 1 END) AS weight
+        FROM message_fts
+        WHERE term >= ? AND term < ?
+        GROUP BY message_id
+      ) t${index} ON t${index}.message_id = m.id`
+    );
+    params.push(token, termUpper(token));
+  });
+  const rank = tokens.map((_token, index) => `t${index}.weight`).join(" + ");
+  let where = "";
+  if (query.accountId) {
+    where = " WHERE m.account_id = ?";
+    params.push(query.accountId);
+  }
+  params.push(searchResultLimit(query.limit));
+  return all(
+    `SELECT m.* FROM messages m
+     ${joins.join("\n")}
+     ${where}
+     ORDER BY (${rank}) DESC, m.list_sort_ts DESC
+     LIMIT ?`,
+    params
+  );
+}
+
 function applyFolderSync(accountId, folderPath, report) {
   return transaction(() => {
     const previous = get(
@@ -342,6 +527,7 @@ function applyFolderSync(accountId, folderPath, report) {
       [accountId, folderPath]
     );
     if (previous && previous.uid_validity && report.validity && previous.uid_validity !== report.validity) {
+      forgetIds(all("SELECT id FROM messages WHERE account_id = ? AND folder_path = ?", [accountId, folderPath]));
       run("DELETE FROM messages WHERE account_id = ? AND folder_path = ?", [accountId, folderPath]);
       run(
         "UPDATE folders SET uid_cursor = 0, window_done = 0, sync_horizon_days = NULL WHERE account_id = ? AND path = ?",
@@ -358,6 +544,7 @@ function applyFolderSync(accountId, folderPath, report) {
         // uid <= 0 is a local-only copy (a send or draft not yet given a server uid).
         if (Number(row.uid) <= 0 || keep.has(Number(row.uid))) continue;
         if (report.retainOlderThan && Number(row.list_sort_ts) < report.retainOlderThan) continue;
+        forgetIndex(row.id);
         run("DELETE FROM messages WHERE id = ?", [row.id]);
       }
     }
@@ -417,6 +604,7 @@ function applyFolderSync(accountId, folderPath, report) {
           ]
         );
       }
+      indexText(id);
     }
     const cursor = report.uidCursor == null ? null : Number(report.uidCursor);
     const done = report.windowDone === true ? 1 : (report.windowDone === false ? 0 : null);
@@ -499,6 +687,7 @@ function pruneMissing(accountId, folderPath, liveUids, retainOlderThan) {
     for (const row of stored) {
       if (Number(row.uid) <= 0 || keep.has(Number(row.uid))) continue;
       if (retainOlderThan && Number(row.list_sort_ts) < retainOlderThan) continue;
+      forgetIndex(row.id);
       run("DELETE FROM messages WHERE id = ?", [row.id]);
     }
   });
@@ -530,6 +719,7 @@ function insertMessage(row) {
         JSON.stringify(row.attachments || []), row.bodyComplete ? 1 : 0,
       ]
     );
+    indexText(row.id);
   });
 }
 
@@ -554,11 +744,18 @@ function updateMessage(id, patch) {
   }
   if (!assignments.length) return;
   params.push(id);
-  transaction(() => run(`UPDATE messages SET ${assignments.join(", ")} WHERE id = ?`, params));
+  const reindex = Object.keys(patch).some((key) => INDEXED_PATCH.has(key));
+  transaction(() => {
+    run(`UPDATE messages SET ${assignments.join(", ")} WHERE id = ?`, params);
+    if (reindex) indexText(id);
+  });
 }
 
 function deleteMessage(id) {
-  transaction(() => run("DELETE FROM messages WHERE id = ?", [id]));
+  transaction(() => {
+    forgetIndex(id);
+    run("DELETE FROM messages WHERE id = ?", [id]);
+  });
 }
 
 function jsonList(value) {
@@ -1057,6 +1254,7 @@ module.exports = {
   messageByRfc,
   pruneMissing,
   insertMessage,
+  searchMessages,
   messageById,
   messagesByThread,
   updateMessage,

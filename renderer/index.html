@@ -71,7 +71,7 @@
         <button type="button" class="ghost" id="agent-open" aria-label="Agent">Agent</button>
         <form id="search-form" role="search">
           <label class="sr" for="search-query">Search all mail</label>
-          <input id="search-query" type="search" placeholder="Search all mail" autocomplete="off" spellcheck="false" />
+          <input id="search-query" type="search" placeholder="Search all mail" title="Search synced subject, from, and body" autocomplete="off" spellcheck="false" />
         </form>
       </div>
     </header>
@@ -109,7 +109,7 @@
           <div class="list-filter">
             <label class="sr" for="list-filter">Filter loaded messages</label>
             <input id="list-filter" data-testid="list-filter" type="search" placeholder="Filter subject, from, snippet" autocomplete="off" spellcheck="false" />
-            <p class="list-filter-note">Loaded messages only. Does not search the server.</p>
+            <p class="list-filter-note">Loaded messages only. Does not search the server. Toolbar search uses the local index.</p>
           </div>
         </div>
       </div>

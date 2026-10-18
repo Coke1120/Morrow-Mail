@@ -1322,6 +1322,15 @@ async function searchAccount(account, text, limit) {
   return searchImap(account, text, limit);
 }
 
+function searchLocal(params) {
+  const query = params || {};
+  return db.searchMessages({
+    query: query.query,
+    accountId: query.accountId || null,
+    limit: query.limit,
+  }).map(listRow);
+}
+
 async function searchRemote(params) {
   const text = String((params && params.query) || "").trim();
   if (!text) return [];
@@ -1739,6 +1748,8 @@ function answer(channel, args) {
       return ok({ pending: 0, dead: 0, sends: 0 });
     case "mail:ops:getNetworkState":
       return ok({ state: "connected" });
+    case "mail:searchLocal":
+      return ok(searchLocal(params || {}));
     case "mail:search":
       return (async () => {
         try {

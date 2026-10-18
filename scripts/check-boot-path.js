@@ -846,6 +846,11 @@ assert.ok(engineSrc.includes("limit: 40"));
 assert.ok(engineSrc.includes("sync_horizon_days"));
 const dbSrc = fs.readFileSync(path.join(root, "host/mail/db.js"), "utf8");
 assert.ok(dbSrc.includes("ADD COLUMN sync_horizon_days INTEGER"));
+assert.ok(dbSrc.includes("CREATE TABLE IF NOT EXISTS message_fts"));
+assert.ok(engineSrc.includes('case "mail:searchLocal"'));
+assert.ok(appJs.includes("mail:searchLocal"));
+assert.ok(!functionSource(appJs, "filteredEmails").includes("mail:search"));
+assert.ok(!functionSource(appJs, "filteredEmails").includes("textBody"));
 const independentDoc = fs.readFileSync(path.join(root, "docs/INDEPENDENT_UI.md"), "utf8");
 const parityDoc = fs.readFileSync(path.join(root, "docs/PARITY_SHELL.md"), "utf8");
 assert.ok(independentDoc.includes("does not download the whole mailbox"));
@@ -3655,6 +3660,222 @@ async function checkTidy() {
     assert.strictEqual(gmail.success, true);
     assert.deepStrictEqual(gmail.data, []);
     assert.deepStrictEqual(boxes, ["[Gmail]/All Mail"]);
+
+    const now = Date.now();
+    db.insertMessage({
+      id: "m-fts-body",
+      accountId: "imap-test",
+      folderPath: "INBOX",
+      uid: 9001,
+      uidValidity: 7,
+      threadId: "thr-fts",
+      subject: "Weekly notes",
+      snippet: "see below",
+      from: "Grace Hopper <grace@example.com>",
+      date: new Date(now).toISOString(),
+      listSortTs: now,
+      unread: true,
+      textBody: "The quartz oscilloscope arrived.",
+      bodyComplete: true,
+    });
+    db.insertMessage({
+      id: "m-fts-html",
+      accountId: "imap-test",
+      folderPath: "INBOX",
+      uid: 9002,
+      uidValidity: 7,
+      threadId: "thr-fts-html",
+      subject: "Html only",
+      snippet: "preview line",
+      from: "Ada <ada@example.com>",
+      date: new Date(now + 1).toISOString(),
+      listSortTs: now + 1,
+      unread: true,
+      htmlBody: "<script>notindexedtoken</script><p>Visible <b>kaleidoscope</b> markup</p>",
+      bodyComplete: true,
+    });
+    db.insertMessage({
+      id: "m-fts-snippet",
+      accountId: "imap-test",
+      folderPath: "INBOX",
+      uid: 9003,
+      uidValidity: 7,
+      threadId: "thr-fts-snippet",
+      subject: "Header only",
+      snippet: "snippetonlyword in the preview",
+      from: "Charles <charles@example.com>",
+      date: new Date(now + 2).toISOString(),
+      listSortTs: now + 2,
+      unread: true,
+      bodyComplete: false,
+    });
+    db.insertMessage({
+      id: "m-fts-rank-body",
+      accountId: "imap-test",
+      folderPath: "INBOX",
+      uid: 9004,
+      uidValidity: 7,
+      threadId: "thr-fts-rank-body",
+      subject: "Ordinary note",
+      snippet: "later",
+      from: "Bea <bea@example.com>",
+      date: new Date(now + 3).toISOString(),
+      listSortTs: now + 50,
+      unread: true,
+      textBody: "A quartz lantern sits in the body.",
+      bodyComplete: true,
+    });
+    db.insertMessage({
+      id: "m-fts-rank-subject",
+      accountId: "imap-test",
+      folderPath: "INBOX",
+      uid: 9005,
+      uidValidity: 7,
+      threadId: "thr-fts-rank-subject",
+      subject: "Quartz lantern status",
+      snippet: "earlier",
+      from: "Cee <cee@example.com>",
+      date: new Date(now).toISOString(),
+      listSortTs: now,
+      unread: true,
+      textBody: "Nothing special here.",
+      bodyComplete: true,
+    });
+    db.insertAccount({
+      id: "imap-other",
+      email: "other@example.com",
+      username: "other@example.com",
+      profile: "custom",
+      imapHost: "imap.example.test",
+      imapPort: 993,
+      imapTls: true,
+      smtpHost: "smtp.example.test",
+      smtpPort: 465,
+      smtpTls: true,
+      delimiter: "/",
+      createdAt: now,
+    });
+    db.insertMessage({
+      id: "m-fts-other",
+      accountId: "imap-other",
+      folderPath: "INBOX",
+      uid: 3,
+      uidValidity: 1,
+      threadId: "thr-other",
+      subject: "Other mailbox",
+      snippet: "hidden",
+      from: "Other <other@example.com>",
+      date: new Date(now).toISOString(),
+      listSortTs: now,
+      unread: true,
+      textBody: "oscilloscope belongs to the other account",
+      bodyComplete: true,
+    });
+    const bodyHit = engine.answer("mail:searchLocal", [{ query: "OSCILLOSCOPE", limit: 10 }]);
+    assert.strictEqual(bodyHit.success, true);
+    assert.ok(bodyHit.data.some((row) => row.id === "m-fts-body"));
+    assert.ok(bodyHit.data.some((row) => row.id === "m-fts-other"));
+    const prefixed = engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "oscill", limit: 10 }]);
+    assert.deepStrictEqual(prefixed.data.map((row) => row.id), ["m-fts-body"]);
+    const infix = engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "scope", limit: 10 }]);
+    assert.deepStrictEqual(infix.data, []);
+    const fromHit = engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "hopper", limit: 10 }]);
+    assert.deepStrictEqual(fromHit.data.map((row) => row.id), ["m-fts-body"]);
+    const subjectHit = engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "weekly", limit: 10 }]);
+    assert.deepStrictEqual(subjectHit.data.map((row) => row.id), ["m-fts-body"]);
+    const snippetNotBody = engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "below", limit: 10 }]);
+    assert.deepStrictEqual(snippetNotBody.data, []);
+    const htmlHit = engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "kaleidoscope", limit: 10 }]);
+    assert.deepStrictEqual(htmlHit.data.map((row) => row.id), ["m-fts-html"]);
+    const scriptSkip = engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "notindexedtoken", limit: 10 }]);
+    assert.deepStrictEqual(scriptSkip.data, []);
+    const snippetHit = engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "snippetonlyword", limit: 10 }]);
+    assert.deepStrictEqual(snippetHit.data.map((row) => row.id), ["m-fts-snippet"]);
+    const ranked = engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "quartz lantern", limit: 10 }]);
+    assert.deepStrictEqual(ranked.data.map((row) => row.id), ["m-fts-rank-subject", "m-fts-rank-body"]);
+    db.insertMessage({
+      id: "m-fts-cafe",
+      accountId: "imap-test",
+      folderPath: "INBOX",
+      uid: 9006,
+      uidValidity: 7,
+      threadId: "thr-cafe",
+      subject: "Café menu",
+      snippet: "drinks",
+      from: "Ada <ada@example.com>",
+      date: new Date(now).toISOString(),
+      listSortTs: now,
+      unread: false,
+      textBody: "Coffee.",
+      bodyComplete: true,
+    });
+    const folded = engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "cafe", limit: 10 }]);
+    assert.deepStrictEqual(folded.data.map((row) => row.id), ["m-fts-cafe"]);
+    assert.deepStrictEqual(engine.answer("mail:searchLocal", [{ query: "   ", limit: 10 }]).data, []);
+    assert.deepStrictEqual(engine.answer("mail:searchLocal", [{ query: "...", limit: 10 }]).data, []);
+    db.updateMessage("m-fts-body", { unread: 0 });
+    assert.deepStrictEqual(
+      engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "oscilloscope", limit: 10 }]).data.map((row) => row.id),
+      ["m-fts-body"]
+    );
+    db.applyFolderSync("imap-test", "INBOX", {
+      messages: [{
+        uid: 9001,
+        threadId: "thr-fts",
+        subject: "Weekly notes",
+        snippet: "see below",
+        from: "Grace Hopper <grace@example.com>",
+        date: new Date(now).toISOString(),
+        listSortTs: now,
+        textBody: "The prism replaced the old instrument.",
+        bodyComplete: true,
+      }],
+      validity: 7,
+      keepOthers: true,
+    });
+    assert.deepStrictEqual(engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "oscilloscope", limit: 10 }]).data, []);
+    const synced = engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "weekly prism", limit: 10 }]);
+    assert.deepStrictEqual(synced.data.map((row) => row.id), ["m-fts-body"]);
+    assert.deepStrictEqual(engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "weekly kaleidoscope", limit: 10 }]).data, []);
+    db.updateMessage("m-fts-snippet", { text_body: "fullbodyword arrived", html_body: null });
+    assert.deepStrictEqual(engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "snippetonlyword", limit: 10 }]).data, []);
+    assert.deepStrictEqual(
+      engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "fullbodyword", limit: 10 }]).data.map((row) => row.id),
+      ["m-fts-snippet"]
+    );
+    db.deleteMessage("m-fts-body");
+    assert.deepStrictEqual(engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "prism", limit: 10 }]).data, []);
+    db.insertMessage({
+      id: "m-fts-gone",
+      accountId: "imap-test",
+      folderPath: "LocalIndex",
+      uid: 4,
+      uidValidity: 1,
+      threadId: "thr-fts-gone",
+      subject: "Drop me",
+      snippet: "soon",
+      from: "Ada <ada@example.com>",
+      date: new Date(now).toISOString(),
+      listSortTs: now,
+      unread: true,
+      textBody: "vanishword stays until sync drops it",
+      bodyComplete: true,
+    });
+    assert.deepStrictEqual(
+      engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "vanishword", limit: 10 }]).data.map((row) => row.id),
+      ["m-fts-gone"]
+    );
+    db.applyFolderSync("imap-test", "LocalIndex", {
+      messages: [],
+      uids: [],
+      validity: 1,
+      keepOthers: false,
+    });
+    assert.deepStrictEqual(engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "vanishword", limit: 10 }]).data, []);
+    db.deleteMessage("m-fts-html");
+    assert.deepStrictEqual(engine.answer("mail:searchLocal", [{ accountId: "imap-test", query: "kaleidoscope", limit: 10 }]).data, []);
+    db.removeAccount("imap-other");
+    assert.deepStrictEqual(engine.answer("mail:searchLocal", [{ query: "oscilloscope", limit: 10 }]).data, []);
 
     function seedMoveAccount(id, email, delimiter, folders) {
       db.insertAccount({
