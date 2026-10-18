@@ -167,6 +167,29 @@ function chipLabel(folder) {
   return name;
 }
 
+// Keep this id aligned with host/mail/engine.js STARRED_FOLDER_ID.
+const STARRED_FOLDER_ID = "__morrow_starred__";
+
+function isStarredFolder(folderId) {
+  return String(folderId || "") === "__morrow_starred__";
+}
+
+function isVirtualMailbox(folder) {
+  if (!folder) return false;
+  if (typeof folder === "string") return isStarredFolder(folder);
+  return isStarredFolder(folder.id) || folder.type === "virtual";
+}
+
+function storableFolders(folders) {
+  return (Array.isArray(folders) ? folders : []).filter((folder) => folder && !isVirtualMailbox(folder));
+}
+
+function visibleList(emails, query, folderId) {
+  const rows = filteredEmails(emails, query);
+  if (isStarredFolder(folderId)) return rows.filter((email) => email && email.isStarred);
+  return rows;
+}
+
 function accountLabel(account) {
   const email = (account && (account.email || account.displayEmail)) || "";
   const name = (account && account.name) || "";
@@ -587,6 +610,9 @@ function organizeDrop(target, message) {
     return { ok: false, reason: "no_target", message: "Drop the message on a folder or label." };
   }
   if (target.kind === "imap") {
+    if (target.id === "__morrow_starred__" || target.type === "virtual") {
+      return { ok: false, reason: "virtual", message: "Starred is a filter. Use the star control to flag a message." };
+    }
     if (target.accountId && target.accountId !== email.accountId) {
       return { ok: false, reason: "other_account", message: "Move stays inside this mailbox." };
     }
@@ -641,8 +667,9 @@ function organizeDrop(target, message) {
 }
 
 function organizeMenu(email, imapFolders, providerPayload, provider) {
+  const stored = storableFolders(imapFolders);
   const message = messageDragPayload(email);
-  const moveTree = folderTree(imapFolders);
+  const moveTree = folderTree(stored);
   const move = message ? moveTree.filter((folder) => folder.id !== message.folderId) : [];
   if (!message) return { move: [], add: [], remove: [], outlook: [], note: "Choose a message first." };
   if (provider !== "gmail" && provider !== "outlook") {
@@ -1986,9 +2013,12 @@ function renderAccounts() {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "folder";
-      button.dataset.dropKind = "imap";
-      button.dataset.dropId = folder.id;
-      button.dataset.dropAccount = account.id;
+      const virtual = isVirtualMailbox(folder);
+      if (!virtual) {
+        button.dataset.dropKind = "imap";
+        button.dataset.dropId = folder.id;
+        button.dataset.dropAccount = account.id;
+      }
       button.style.paddingLeft = (8 + folder.depth * 14) + "px";
       if (account.id === state.accountId && folder.id === state.folderId) {
         button.setAttribute("aria-current", "true");
@@ -2013,12 +2043,14 @@ function renderAccounts() {
       }
       const unread = folder.unreadCount ? `, ${folder.unreadCount} unread` : "";
       const serverName = String(folder.name || folder.id || "");
-      button.title = serverName && serverName !== labelText ? serverName : labelText;
-      button.setAttribute("aria-label", `${labelText || "Folder"}${unread}. Right-click to move.`);
+      button.title = virtual ? "Starred messages in this mailbox" : (serverName && serverName !== labelText ? serverName : labelText);
+      button.setAttribute("aria-label", virtual
+        ? "Starred. Downloaded messages flagged with a star."
+        : `${labelText || "Folder"}${unread}. Right-click to move.`);
       button.addEventListener("click", () => {
         selectFolder(account.id, folder.id).catch((error) => showStatus(error.message, true));
       });
-      button.addEventListener("contextmenu", (event) => {
+      if (!virtual) button.addEventListener("contextmenu", (event) => {
         event.preventDefault();
         event.stopPropagation();
         openImapFolderMenu(folder, account, event.clientX, event.clientY);
@@ -2917,9 +2949,10 @@ function messageRow(email) {
     const star = document.createElement("span");
     star.className = "star";
     star.setAttribute("aria-hidden", "true");
-    star.textContent = "★";
+    star.appendChild(starIcon(true, 13));
     from.appendChild(star);
   }
+  if (email.isStarred) row.dataset.starred = "true";
   from.append(name);
   const subjectLine = document.createElement("span");
   subjectLine.className = "subject-line";
@@ -2963,7 +2996,7 @@ function messageRow(email) {
 
 function shownEmails() {
   const input = $("list-filter");
-  return filteredEmails(state.emails, input ? input.value : "");
+  return visibleList(state.emails, input ? input.value : "", state.folderId);
 }
 
 function rememberLoadedSelection() {
@@ -3052,6 +3085,11 @@ function paintSelectionBar(shown) {
   const messages = selectionMoveMessages();
   const starred = selectedMessages().length > 0 && selectedMessages().every((email) => email.isStarred);
   setSelectionLabel("selection-star", starred ? "Unstar" : "Star");
+  const starButton = $("selection-star");
+  if (starButton) {
+    starButton.classList.toggle("is-starred", starred);
+    starButton.setAttribute("aria-pressed", starred ? "true" : "false");
+  }
   const account = messages[0]
     ? (state.accounts.find((item) => item.id === messages[0].accountId) || selectedAccount())
     : selectedAccount();
@@ -3141,17 +3179,23 @@ function renderList() {
     title.textContent = state.query ? `Search: ${state.query}` : (chipLabel(folder) || "Messages");
   }
   renderChips(account);
-  const shown = filteredEmails(state.emails, $("list-filter") ? $("list-filter").value : "");
+  const shown = shownEmails();
   paintSelectionBar(shown);
   paintSearchCoverage(shown);
   if (!shown.length) {
     const empty = document.createElement("p");
     empty.className = "empty";
+    const listQuery = $("list-filter") && String($("list-filter").value || "").trim();
     if (!state.accounts.length && !state.query) {
       empty.textContent = "Connect a mailbox to download messages here.";
+    } else if (state.query && !state.emails.length) {
+      empty.textContent = `No downloaded messages match “${state.query}”. Older mail or complete bodies may not be downloaded.`;
+    } else if (isStarredFolder(state.folderId) && !listQuery) {
+      empty.textContent = "No starred messages in the mail already downloaded.";
     } else if (!state.emails.length) {
-      empty.textContent = state.query ? `No downloaded messages match “${state.query}”. Older mail or complete bodies may not be downloaded.` : currentFolderSync()?.lastSuccessAt
-        ? "No downloaded messages in this folder. Sync checks recent mail; older mail may be outside the download window." : "Mail has not been downloaded for this folder yet. Use Sync to download recent mail.";
+      empty.textContent = currentFolderSync()?.lastSuccessAt
+        ? "No downloaded messages in this folder. Sync checks recent mail; older mail may be outside the download window."
+        : "Mail has not been downloaded for this folder yet. Use Sync to download recent mail.";
     } else {
       empty.textContent = "No loaded messages match that filter.";
     }
@@ -3198,6 +3242,33 @@ const READER_ICON = {
   move: "M3 6h7l2 2h9v11H3V6z",
 };
 
+const STAR_PATH = "M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z";
+
+function starIcon(filled, size) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", String(size || 16));
+  svg.setAttribute("height", String(size || 16));
+  svg.setAttribute("aria-hidden", "true");
+  svg.classList.add("star-icon");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", STAR_PATH);
+  if (filled) {
+    path.setAttribute("fill", "currentColor");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "1");
+    path.setAttribute("stroke-linejoin", "round");
+  } else {
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "2");
+    path.setAttribute("stroke-linecap", "round");
+    path.setAttribute("stroke-linejoin", "round");
+  }
+  svg.appendChild(path);
+  return svg;
+}
+
 function readerIcon(name) {
   const d = READER_ICON[name];
   if (!d) return null;
@@ -3213,14 +3284,14 @@ function readerIcon(name) {
   return svg;
 }
 
-function readerButton(action, label, run) {
+function readerButton(action, label, run, iconNode) {
   const button = document.createElement("button");
   button.type = "button";
   button.className = "ghost icon-btn";
   button.dataset.action = action;
   button.setAttribute("aria-label", label);
   button.title = label;
-  const icon = readerIcon(action);
+  const icon = iconNode || readerIcon(action);
   if (icon) button.appendChild(icon);
   const text = document.createElement("span");
   text.textContent = label;
@@ -3232,8 +3303,15 @@ function readerButton(action, label, run) {
 function renderActions(pane, email) {
   const bar = document.createElement("div");
   bar.className = "reader-actions";
-  const star = readerButton("star", email.isStarred ? "Unstar" : "Star", () => toggleStar(email));
-  star.setAttribute("aria-pressed", email.isStarred ? "true" : "false");
+  const starredOn = !!email.isStarred;
+  const star = readerButton("star", starredOn ? "Unstar" : "Star", () => toggleStar(email), starIcon(starredOn));
+  star.classList.toggle("is-starred", starredOn);
+  star.setAttribute("aria-pressed", starredOn ? "true" : "false");
+  star.addEventListener("click", (event) => {
+    if (!state.busy) return;
+    event.stopImmediatePropagation();
+    showStatus("Still finishing the last change.", true);
+  }, true);
   const archive = readerButton("archive", "Archive", () => archiveOpen(email));
   const trash = readerButton("trash", "Trash", () => trashOpen(email));
   const account = state.accounts.find((item) => item.id === email.accountId) || selectedAccount();
@@ -3816,15 +3894,47 @@ function focusAction(name) {
   if (control) control.focus();
 }
 
-async function toggleStar(email) {
-  const isStarred = !email.isStarred;
-  await call("mail:toggleStar", { emailId: email.id, accountId: email.accountId, isStarred });
-  email.isStarred = isStarred;
-  const row = state.emails.find((item) => item.id === email.id);
-  if (row) row.isStarred = isStarred;
+function eachStarRow(email, visit) {
+  const id = email && email.id;
+  if (!id) return;
+  visit(email);
+  for (const row of state.emails || []) {
+    if (row && row.id === id && row !== email) visit(row);
+  }
+  if (state.email && state.email.id === id && state.email !== email) visit(state.email);
+  for (const row of state.thread || []) {
+    if (row && row.id === id && row !== email) visit(row);
+  }
+}
+
+function paintStars(emails, isStarred, focus) {
+  const ids = new Set();
+  for (const email of emails || []) {
+    if (!email || !email.id) continue;
+    ids.add(email.id);
+    eachStarRow(email, (row) => {
+      row.isStarred = !!isStarred;
+    });
+  }
   renderList();
-  renderReader(false);
-  focusAction("star");
+  if (state.email && ids.has(state.email.id)) {
+    renderReader(false);
+    if (focus) focusAction("star");
+  }
+}
+
+async function toggleStar(email) {
+  if (!email || !email.id) throw new Error("That message is no longer in the mailbox.");
+  const next = !email.isStarred;
+  const previous = !!email.isStarred;
+  paintStars([email], next, true);
+  try {
+    await call("mail:toggleStar", { emailId: email.id, accountId: email.accountId, isStarred: next });
+  } catch (error) {
+    paintStars([email], previous, true);
+    throw error;
+  }
+  showStatus(next ? "Starred." : "Removed the star.");
 }
 
 async function setRead(email, isRead) {
@@ -4355,7 +4465,7 @@ function openMessageMovePicker(email, kind) {
     source: { id: email.folderId || "", name: "", label: "" },
     email: email,
     delimiter: delimiter,
-    nodes: moveNodesFromFolders("imap", foldersOf(account), delimiter),
+    nodes: moveNodesFromFolders("imap", storableFolders(foldersOf(account)), delimiter),
   });
 }
 
@@ -4626,7 +4736,7 @@ function openImapFolderMenu(folder, account, x, y) {
   for (const item of model.items) {
     appendFolderMenuItem(menu, item, () => {
       if (item.id !== "move") return;
-      openRelocatePicker("imap", folder, account, foldersOf(account), accountDelimiter(account));
+      openRelocatePicker("imap", folder, account, storableFolders(foldersOf(account)), accountDelimiter(account));
     });
   }
   placeMenu(menu, x, y);
@@ -4818,15 +4928,20 @@ async function bulkSetRead(isRead) {
 async function bulkStar(isStarred) {
   const messages = selectedMessages();
   if (!messages.length || refusePaused(messages)) return;
+  const previous = new Map(messages.map((email) => [email.id, !!email.isStarred]));
+  paintStars(messages, isStarred);
   const outcome = await runBulk(bulkFlagCalls(messages, isStarred ? "star" : "unstar"));
   const completed = new Set(outcome.outcomes.filter((row) => row.status === "completed").map((row) => row.id));
-  for (const email of messages.filter((row) => completed.has(row.id))) {
-    email.isStarred = isStarred;
-    if (state.email && state.email.id === email.id) state.email.isStarred = isStarred;
+  for (const email of messages) {
+    if (completed.has(email.id)) continue;
+    eachStarRow(email, (row) => {
+      row.isStarred = previous.get(email.id) === true;
+    });
   }
   renderList();
   renderReader(false);
-  showStatus(receiptText(isStarred ? "Star" : "Unstar", outcome), !!outcome.error);
+  const failed = (outcome.outcomes || []).some((row) => row.status !== "completed");
+  showStatus(receiptText(isStarred ? "Star" : "Unstar", outcome), !!(outcome.error || failed));
 }
 
 async function applySelectionLabels(label, mode) {
@@ -5217,7 +5332,7 @@ async function selectFolder(accountId, folderId) {
   renderAccounts();
   syncRemove();
   renderReader(false);
-  const live = isLive(selectedAccount());
+  const live = isLive(selectedAccount()) && !isStarredFolder(folderId);
   if (live) showStatus("Syncing…");
   else if (!undoOpIds && !sendTimer) showStatus("");
   await loadSnoozed();

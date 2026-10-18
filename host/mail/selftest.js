@@ -71,6 +71,13 @@ async function run() {
   if (!accounts.data[0].folders.primary.some((folder) => folder.wellKnownName === "inbox")) {
     problem(problems, "inbox folder missing");
   }
+  const primaryNames = accounts.data[0].folders.primary.map((folder) => folder.wellKnownName);
+  if (primaryNames.indexOf("starred") !== primaryNames.indexOf("drafts") + 1) problem(problems, "starred folder placement");
+  const starredFolder = accounts.data[0].folders.primary.find((folder) => folder.wellKnownName === "starred");
+  if (!starredFolder || starredFolder.id !== "__morrow_starred__" || starredFolder.type !== "virtual") {
+    problem(problems, "starred folder shape");
+  }
+  if (accounts.data[0].folders.more.some((folder) => folder.id === "__morrow_starred__")) problem(problems, "starred folder stored as a mailbox");
   if (!accounts.data[0].folders.more.some((folder) => folder.id === "Notes")) problem(problems, "custom folder missing");
 
   const listed = answer("mail:listFromCache", [{ accountId: "imap-test", folderId: "INBOX", limit: 50 }]);
@@ -178,6 +185,16 @@ async function run() {
   if (!read || read.success !== true || db.messageById("m-test").unread !== 0) problem(problems, "local mark read");
   const star = await answer("mail:toggleStar", [{ emailId: "m-test", accountId: "imap-test", isStarred: true }]);
   if (!star || star.success !== true || db.messageById("m-test").starred !== 1) problem(problems, "local star");
+  const starredList = answer("mail:listFromCache", [{ accountId: "imap-test", folderId: "__morrow_starred__", limit: 50 }]);
+  if (!starredList || !starredList.data || starredList.data.emails.length !== 1 || starredList.data.emails[0].id !== "m-test" || starredList.data.emails[0].isStarred !== true) {
+    problem(problems, "starred filter");
+  }
+  const clearStar = await answer("mail:toggleStar", [{ emailId: "m-test", accountId: "imap-test", isStarred: false }]);
+  if (!clearStar || clearStar.success !== true || db.messageById("m-test").starred !== 0) problem(problems, "local unstar");
+  const clearedList = answer("mail:listFromCache", [{ accountId: "imap-test", folderId: "__morrow_starred__", limit: 50 }]);
+  if (!clearedList || !clearedList.data || clearedList.data.emails.length !== 0) problem(problems, "unstar left the starred filter");
+  const missingStar = await answer("mail:toggleStar", [{ emailId: "missing-message", accountId: "imap-test", isStarred: true }]);
+  if (!missingStar || missingStar.success !== false || !missingStar.error || !missingStar.error.message) problem(problems, "missing star was silent");
 
   const drafted = await answer("mail:upsertDraft", [{
     accountId: "imap-test",
