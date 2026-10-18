@@ -895,7 +895,7 @@ assert.ok(html.includes("Search all mail"));
 assert.ok(registered.has("mail:syncStatus"));
 const syncStatusLabel = loadFunctions(appJs, ["redactDebugText", "syncStatusLabel"]).syncStatusLabel;
 assert.strictEqual(syncStatusLabel({ state: "paused", message: "Paused for rate limit" }), "Paused for rate limit");
-assert.strictEqual(syncStatusLabel({ state: "done" }), "Sync done");
+assert.strictEqual(syncStatusLabel({ state: "done" }), "Not synced yet");
 assert.strictEqual(syncStatusLabel(null), "");
 assert.strictEqual(syncStatusLabel({ state: "error", message: "password: hunter2" }), "password [redacted]");
 const syncUi = loadFunctions(appJs, ["redactDebugText", "phaseWord", "syncClock", "syncDetail", "syncButtonLabel"]);
@@ -918,8 +918,8 @@ assert.ok(syncUi.syncDetail({
 }).includes("Fetching mail"));
 assert.ok(syncUi.syncDetail({ state: "error", accountLabel: "ada@example.com", folderLabel: "Inbox", lastError: "Sync failed" }).includes("Sync failed"));
 assert.ok(!syncUi.syncDetail({ state: "error", lastError: "password: hunter2 ya29.secrettoken" }).includes("hunter2"));
-assert.strictEqual(syncUi.syncDetail({ state: "paused", message: "Paused for rate limit" }), "Paused for rate limit");
-assert.ok(syncUi.syncDetail({ state: "done", lastSuccessAt: Date.UTC(2026, 0, 2, 15, 4) }).startsWith("Last success "));
+assert.strictEqual(syncUi.syncDetail({ state: "paused", message: "Paused for rate limit" }), "Paused for rate limit · Waiting before retrying");
+assert.ok(syncUi.syncDetail({ state: "done", accountId: "a", folderId: "inbox", accountLabel: "Ada", folderLabel: "Inbox", lastSuccessAt: Date.UTC(2026, 0, 2, 15, 4) }).startsWith("Ada · Inbox · Last checked "));
 assert.strictEqual(syncUi.syncButtonLabel({ state: "syncing" }), "Syncing");
 assert.strictEqual(syncUi.syncButtonLabel({ state: "error" }), "Sync failed");
 assert.strictEqual(syncUi.redactDebugText("bearer ya29.secretvalue password: hunter2"), "bearer [redacted] password [redacted]");
@@ -6592,7 +6592,7 @@ checkGoogleOauthAlias();
 require("./check-win-secrets").run();
 require("./check-bot-client").run();
 
-checkUpdateAuth().then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-compose-recovery").run()).then(() => {
+checkUpdateAuth().then(() => checkAiDraft()).then(() => checkComposeMailbox()).then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => require("./check-account-recovery").run()).then(() => require("./check-mail-serialization").run()).then(() => require("./check-vacation").run()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => require("./check-bot-bridge").run()).then(() => require("./check-ux-workflows").run()).then(() => require("./check-operation-receipts").run()).then(() => require("./check-compose-recovery").run()).then(() => require("./check-dialog-feedback").run()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);

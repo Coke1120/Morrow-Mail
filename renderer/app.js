@@ -44,6 +44,7 @@ const state = {
   selectedIds: [],
   selectionAnchor: "",
   sync: null,
+  syncScopes: new Map(),
   oauthStatus: null,
   oauthPending: false,
   view: "mail",
@@ -2558,7 +2559,7 @@ function syncStatusLabel(sync) {
   if (sync.message) return redactDebugText(sync.message);
   if (sync.state === "syncing") return "Syncing…";
   if (sync.state === "paused") return "Paused for rate limit";
-  if (sync.state === "done") return "Sync done";
+  if (sync.state === "done") return sync.lastSuccessAt ? "Folder checked" : "Not synced yet";
   if (sync.state === "error") return "Sync failed";
   return "";
 }
@@ -2599,12 +2600,12 @@ function syncDetail(sync) {
   if (!sync || !sync.state) return "";
   const where = [sync.accountLabel, sync.folderLabel].filter(Boolean).join(" · ");
   const phase = phaseWord(sync.phase);
-  const success = syncClock(sync.lastSuccessAt);
-  const successLine = success ? `Last success ${success}` : "";
-  if (sync.state === "syncing") return [where, phase, successLine].filter(Boolean).join(" · ");
+  const success = sync.lastSuccessAt && sync.accountId && sync.folderId ? new Date(sync.lastSuccessAt).toLocaleString() : "";
+  const successLine = success ? `${where} · Last checked ${success}` : "";
+  if (sync.state === "syncing") return [where, phase || "Downloading recent mail", successLine].filter(Boolean).join(" · ");
   if (sync.state === "error") return [where, redactDebugText(sync.lastError || sync.message || "Sync failed")].filter(Boolean).join(" · ");
-  if (sync.state === "paused") return [sync.message || "Paused for rate limit", where].filter(Boolean).join(" · ");
-  if (sync.state === "done") return successLine || sync.message || "Sync done";
+  if (sync.state === "paused") return [sync.message || "Paused for rate limit", where, sync.retryAt ? "Retrying at " + new Date(sync.retryAt).toLocaleString() : "Waiting before retrying"].filter(Boolean).join(" · ");
+  if (sync.state === "done") return successLine || [where, "Not synced yet"].filter(Boolean).join(" · ");
   return sync.message || "";
 }
 
@@ -2626,64 +2627,56 @@ function pushDebug(source, text) {
   if (state.view === "log") refreshLog().catch(() => paintLog(debugLines));
 }
 
+function rememberSyncStatus(sync) {
+  if (!sync) return;
+  state.sync = sync;
+  if (sync.accountId && sync.folderId) state.syncScopes.set(JSON.stringify([sync.accountId, sync.folderId]), sync);
+}
+
+function currentFolderSync() {
+  const key = JSON.stringify([state.accountId, state.folderId]);
+  return state.syncScopes.get(key) || null;
+}
+
 function paintSyncControl() {
   const button = $("refresh");
   const label = $("sync-label");
   const detail = $("sync-detail");
-  const sync = state.sync;
-  const word = syncButtonLabel(sync);
-  const text = syncDetail(sync);
+  const sync = currentFolderSync();
+  const mail = state.view === "mail";
+  const word = mail ? syncButtonLabel(sync) : "Refresh";
+  const text = !mail ? "Refresh this page" : !state.accounts.length ? "No account connected"
+    : syncDetail(sync) || "Not synced yet";
   if (label) label.textContent = word;
   if (button) {
-    const busy = !!(sync && sync.state === "syncing");
+    const busy = mail && !!(sync && sync.state === "syncing");
+    button.disabled = mail && (!state.accounts.length || busy);
     button.classList.toggle("is-syncing", busy);
     button.setAttribute("aria-busy", busy ? "true" : "false");
-    button.setAttribute("aria-label", text ? `${word}. ${text}` : "Sync mail");
+    button.setAttribute("aria-label", `${word}. ${text}`);
+    button.title = !state.accounts.length && mail ? "Connect an account to sync mail." : text;
   }
-  if (detail) {
-    detail.textContent = text;
-    detail.hidden = !text;
-  }
+  if (detail) { detail.textContent = text; detail.hidden = !text; detail.title = text; }
 }
 
 function beginSync(extra) {
-  const prev = state.sync || {};
-  state.sync = Object.assign({}, prev, extra || {}, {
+  const prev = currentFolderSync() || {};
+  rememberSyncStatus(Object.assign({}, prev, extra || {}, {
     state: "syncing",
     message: "Syncing…",
     updatedAt: Date.now(),
-  });
+  }));
   paintSyncControl();
-  showStatus("Syncing…");
   pushDebug("sync", syncDetail(state.sync) || "Syncing…");
 }
 
 function finishLocalSync(kind, error) {
-  const prev = state.sync || {};
-  const now = Date.now();
   if (kind === "error") {
-    const message = redactDebugText(error instanceof Error ? error.message : String(error || "Sync failed"));
-    state.sync = Object.assign({}, prev, {
-      state: "error",
-      phase: "error",
-      message: message || "Sync failed",
-      lastError: message || "Sync failed",
-      lastErrorAt: now,
-      updatedAt: now,
-    });
-    showStatus(state.sync.message, true);
-  } else {
-    state.sync = Object.assign({}, prev, {
-      state: "done",
-      phase: "done",
-      message: "Sync done",
-      lastSuccessAt: now,
-      updatedAt: now,
-    });
-    showStatus("");
+    const message = redactDebugText(error.message || String(error));
+    rememberSyncStatus({ ...(currentFolderSync() || {}), accountId: state.accountId, folderId: state.folderId,
+      state: "error", lastError: message, message });
   }
   paintSyncControl();
-  pushDebug("sync", syncDetail(state.sync));
 }
 
 function paintLog(lines) {
@@ -3011,6 +3004,7 @@ function paintSelectionBar(shown) {
 }
 
 function renderList() {
+  paintSyncControl();
   rememberLoadedSelection();
   const list = $("messages");
   const head = $("list-head");
@@ -3032,7 +3026,8 @@ function renderList() {
     if (!state.accounts.length && !state.query) {
       empty.textContent = "No messages yet.";
     } else if (!state.emails.length) {
-      empty.textContent = state.query ? "No messages match that search." : "No messages in this folder.";
+      empty.textContent = state.query ? "No messages match that search." : currentFolderSync()?.lastSuccessAt
+        ? "No messages in this folder." : "Mail has not been downloaded for this folder yet. Use Sync to download recent mail.";
     } else {
       empty.textContent = "No loaded messages match that filter.";
     }
@@ -3887,7 +3882,7 @@ async function loadList(fromNetwork) {
   });
   if (gen !== listGen) return data;
   state.emails = (data && data.emails) || [];
-  if (data && data.sync) state.sync = Object.assign({ accountId: account.id }, data.sync);
+  if (data && data.sync) rememberSyncStatus(Object.assign({ accountId: account.id }, data.sync));
   renderList();
   return data;
 }
@@ -6114,48 +6109,12 @@ async function removeAccount() {
 }
 
 async function refresh() {
-  if (state.view === "calendar") {
-    beginSync({ phase: "calendar", accountLabel: "", folderLabel: "" });
-    try {
-      await loadCalendar();
-      finishLocalSync("done");
-    } catch (error) {
-      finishLocalSync("error", error);
-      throw error;
-    }
-    return;
-  }
-  if (state.view === "agent") {
-    beginSync({ phase: "agent", accountLabel: "", folderLabel: "" });
-    try {
-      await loadAgent();
-      finishLocalSync("done");
-    } catch (error) {
-      finishLocalSync("error", error);
-      throw error;
-    }
-    return;
-  }
-  if (state.view === "brain") {
-    beginSync({ phase: "brain", accountLabel: "", folderLabel: "" });
-    try {
-      await loadBrain();
-      finishLocalSync("done");
-    } catch (error) {
-      finishLocalSync("error", error);
-      throw error;
-    }
-    return;
-  }
-  if (state.view === "log") {
-    beginSync({ phase: "fetching", accountLabel: "Log", folderLabel: "" });
-    try {
-      await refreshLog();
-      finishLocalSync("done");
-    } catch (error) {
-      finishLocalSync("error", error);
-      throw error;
-    }
+  const pages = { calendar: [loadCalendar, "Calendar refreshed."], agent: [loadAgent, "Agent refreshed."],
+    brain: [loadBrain, "Profile reloaded."], log: [refreshLog, "Log refreshed."] };
+  if (pages[state.view]) {
+    const [load, receipt] = pages[state.view];
+    await load();
+    showStatus(receipt);
     return;
   }
   const account = selectedAccount();
@@ -6173,7 +6132,7 @@ async function refresh() {
       folderId: state.folderId,
       limit: 500,
     });
-    if (data && data.sync) state.sync = data.sync;
+    if (data && data.sync) rememberSyncStatus(data.sync);
     await loadAccounts();
     paintSyncControl();
     showStatus(syncStatusLabel(data && data.sync));
@@ -9220,6 +9179,7 @@ function startAgentPoll() {
 function markRail(view) {
   state.view = view;
   state.side = view === "mail" ? "folders" : view;
+  paintSyncControl();
   const workspace = document.querySelector(".workspace");
   if (workspace) workspace.dataset.view = view;
   const shell = $("shell");
@@ -10178,7 +10138,7 @@ async function boot() {
   api.on("mail:accountsUpdated", onAccountsUpdated);
   api.on("mail:emailsUpdated", () => scheduleReload());
   api.on("mail:syncStatus", (payload) => {
-    state.sync = payload || null;
+    rememberSyncStatus(payload);
     paintSyncControl();
     pushDebug("sync", syncDetail(payload) || syncStatusLabel(payload));
     // Background sync updates its own control; action receipts stay readable.
@@ -10202,7 +10162,7 @@ async function boot() {
   }
   await loadLook();
   try {
-    state.sync = await call("mail:getSyncStatus");
+    rememberSyncStatus(await call("mail:getSyncStatus"));
     paintSyncControl();
   } catch { /* the button stays on Sync until the next status */ }
   await loadPresets();

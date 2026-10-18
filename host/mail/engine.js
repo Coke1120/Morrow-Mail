@@ -338,10 +338,11 @@ function emitFolderSync(accountId, folderPath, okFlag) {
 
 const activeFolder = new Map();
 const syncGates = new Map();
+const syncScopes = new Map();
 let syncState = {
-  state: "done",
-  phase: "done",
-  message: "Sync done",
+  state: "idle",
+  phase: "idle",
+  message: "Not synced yet",
   accountId: null,
   accountLabel: "",
   folderId: null,
@@ -380,7 +381,8 @@ function syncLabels(extra) {
 
 function emitSync(state, extra) {
   const now = Date.now();
-  const prev = syncState || {};
+  const scopeKey = JSON.stringify([(extra && extra.accountId) || "", (extra && extra.folderId) || ""]);
+  const prev = syncScopes.get(scopeKey) || {};
   const message = debugLog.redactDebugText((extra && extra.message) || (
     state === "syncing" ? "Syncing…"
       : state === "paused" ? "Paused for rate limit"
@@ -403,10 +405,11 @@ function emitSync(state, extra) {
     folderId: place.folderId,
     folderLabel: place.folderLabel,
     updatedAt: now,
-    lastSuccessAt: state === "done" ? now : (prev.lastSuccessAt || null),
+    lastSuccessAt: state === "done" && place.accountId && place.folderId ? now : (prev.lastSuccessAt || null),
     lastError: state === "error" ? message : (prev.lastError || ""),
     lastErrorAt: state === "error" ? now : (prev.lastErrorAt || null),
   };
+  syncScopes.set(scopeKey, syncState);
   debugLog.note("sync", [state, phase, place.accountLabel, place.folderLabel, message].filter(Boolean).join(" · "));
   broadcast("mail:syncStatus", syncState);
   const accountId = syncState.accountId;
@@ -420,8 +423,19 @@ function emitSync(state, extra) {
   });
 }
 
-function publicSync() {
-  return { ...syncState };
+function publicSync(params) {
+  if (!db.listAccountRows().length) return { state: "idle", message: "No account connected", lastSuccessAt: null };
+  const accountId = params && params.accountId;
+  const folderId = params && params.folderId;
+  if (!accountId || !folderId) return { ...syncState };
+  const saved = syncScopes.get(JSON.stringify([accountId, folderId]));
+  const gate = syncGates.get(accountId);
+  if (gate && gate.until > Date.now()) return { ...(saved || {}), ...syncLabels(params), state: "paused", message: "Paused by the provider", retryAt: gate.until };
+  if (saved) return { ...saved };
+  const folder = db.folderByPath(accountId, folderId);
+  const lastSuccessAt = folder && windowOpen(folder) ? folder.synced_at : null;
+  return { ...syncLabels(params), state: lastSuccessAt ? "done" : "idle", lastSuccessAt,
+    message: lastSuccessAt ? "Folder checked" : "Not synced yet" };
 }
 
 function noteActive(accountId, folderId) {
@@ -653,6 +667,7 @@ async function syncFolderPolicy(client, account, folderPath) {
       ? await warmFolder(client, account, folder, started)
       : await bootstrapFolder(client, account, folderPath, started);
     if (!result.paused) clearStrikes(account.id);
+    if (!result.paused && result.bootstrapped) emitSync("done", { accountId: account.id, folderId: folderPath });
     return result;
   } catch (error) {
     if (http.isRateLimit(error)) {
@@ -1802,9 +1817,9 @@ function answer(channel, args) {
     case "mail:listWindowRead":
     case "mail:loadMoreAggregate":
       if (params && params.accountId && params.folderId) noteActive(params.accountId, params.folderId);
-      return ok(listPayload(params));
+      return ok({ ...listPayload(params), sync: publicSync(params) });
     case "mail:getSyncStatus":
-      return ok(publicSync());
+      return ok(publicSync(params));
     case "mail:listFromNetwork":
       return (async () => {
         const query = params || {};
@@ -1821,7 +1836,7 @@ function answer(channel, args) {
           else if (db.countMessages(queryFrom(query)) === 0) return fail("sync", remote.explain(error));
         }
         emitAccounts();
-        return ok({ ...listPayload(query), sync: publicSync() });
+        return ok({ ...listPayload(query), sync: publicSync(query) });
       })();
     case "mail:kickoffAggregateSync":
       setTimeout(() => { syncAll({ folderKey: params && params.folderKey }).catch(() => {}); }, 0);

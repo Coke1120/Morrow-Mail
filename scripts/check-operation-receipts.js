@@ -14,6 +14,8 @@ async function run() {
   const saved = { withClient: remote.withClient, moveUid: remote.moveUid, changeFlags: remote.changeFlags };
   try {
     await engine.init();
+    assert.equal(engine.answer('mail:getSyncStatus', [{}]).data.message, 'No account connected');
+    assert.equal(engine.answer('mail:getSyncStatus', [{}]).data.lastSuccessAt, null);
     db.insertAccount({ id:'receipt', email:'receipt@example.invalid', username:'receipt', profile:'custom', createdAt:Date.now(),
       imapHost:'imap.example.invalid',imapPort:993,imapTls:true,smtpHost:'smtp.example.invalid',smtpPort:587,smtpTls:true });
     secrets.setPassword('receipt', 'fixture-only');
