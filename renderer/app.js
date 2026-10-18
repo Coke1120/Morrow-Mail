@@ -6208,11 +6208,82 @@ function brainLearnedRow(section, row) {
   return row.source === "auto" || row.source === "learned";
 }
 
+function inboxRuleFormMode(backend) {
+  const kind = backend === "gmail" || backend === "microsoft" || backend === "imap" ? backend : "imap";
+  return {
+    backend: kind,
+    name: kind !== "gmail",
+    enabled: kind !== "gmail",
+    star: kind !== "microsoft",
+    label: kind === "gmail",
+    stop: kind !== "gmail",
+  };
+}
+
+function readInboxRuleForm(fields, backend) {
+  const row = fields && typeof fields === "object" ? fields : {};
+  const mode = inboxRuleFormMode(backend);
+  const attachment = row.attachment === "yes" ? true : row.attachment === "no" ? false : null;
+  const labelId = mode.label ? String(row.labelId || "").trim() : "";
+  return {
+    name: mode.name ? String(row.name || "").trim() : "",
+    enabled: mode.enabled ? row.enabled !== false : true,
+    match: {
+      from: String(row.from || "").trim(),
+      to: String(row.to || "").trim(),
+      subject: String(row.subject || "").trim(),
+      text: String(row.text || "").trim(),
+      hasAttachment: attachment,
+    },
+    actions: {
+      markRead: row.markRead === true,
+      star: mode.star ? row.star === true : false,
+      archive: row.archive === true,
+      trash: row.trash === true,
+      moveToId: String(row.moveToId || "").trim(),
+      addLabelIds: labelId ? [labelId] : [],
+      stopProcessing: mode.stop ? row.stopProcessing !== false : false,
+    },
+  };
+}
+
+function inboxRuleSummary(rule) {
+  if (!rule || typeof rule !== "object") return "";
+  const match = rule.match || {};
+  const actions = rule.actions || {};
+  const parts = [];
+  if (match.from) parts.push("From " + match.from);
+  if (match.to) parts.push("To " + match.to);
+  if (match.subject) parts.push("Subject " + match.subject);
+  if (match.text) parts.push("Text " + match.text);
+  if (match.hasAttachment === true) parts.push("Has attachment");
+  if (match.hasAttachment === false) parts.push("No attachment");
+  const verbs = [];
+  if (actions.markRead) verbs.push("Mark read");
+  if (actions.star) verbs.push("Star");
+  if (actions.archive) verbs.push("Archive");
+  if (actions.trash) verbs.push("Trash");
+  if (actions.moveToId) verbs.push("Move");
+  if (Array.isArray(actions.addLabelIds) && actions.addLabelIds.length) verbs.push("Label");
+  const left = parts.join(", ") || "Match";
+  const right = verbs.join(", ") || "No action";
+  const name = String(rule.name || "").trim();
+  const line = name ? name + " — " + left + " → " + right : left + " → " + right;
+  if (rule.enabled === false) return "Off. " + line;
+  if (rule.unsupported) return line + " — provider action";
+  return line;
+}
+
+let inboxRulesState = { api: false, backend: "", rules: [], destinations: [], reason: "", message: "" };
+let inboxRuleEditId = "";
+let inboxRulesBusy = false;
+
 function brainPaneIds() {
   return [
     ["profile", "brain-profile"],
     ["categories", "brain-categories"],
     ["skills", "brain-skills"],
+    ["rules", "brain-rules"],
   ];
 }
 
@@ -6292,6 +6363,232 @@ function categoryFromFix(data) {
   return row.name ? row : null;
 }
 
+function showInboxRuleStatus(text, isError) {
+  const node = $("inbox-rules-status");
+  if (!node) return;
+  node.textContent = text || "";
+  node.classList.toggle("error", !!isError);
+}
+
+function inboxRuleFieldsFromForm() {
+  return {
+    name: $("inbox-rule-name").value,
+    enabled: $("inbox-rule-enabled").checked,
+    from: $("inbox-rule-from").value,
+    to: $("inbox-rule-to").value,
+    subject: $("inbox-rule-subject").value,
+    text: $("inbox-rule-text").value,
+    attachment: $("inbox-rule-attachment").value,
+    markRead: $("inbox-rule-read").checked,
+    star: $("inbox-rule-star").checked,
+    archive: $("inbox-rule-archive").checked,
+    trash: $("inbox-rule-trash").checked,
+    stopProcessing: $("inbox-rule-stop").checked,
+    moveToId: $("inbox-rule-move").value,
+    labelId: $("inbox-rule-label").value,
+  };
+}
+
+function fillInboxRuleSelect(id, rows, placeholder) {
+  const select = $(id);
+  if (!select) return;
+  const current = select.value;
+  select.replaceChildren();
+  const blank = document.createElement("option");
+  blank.value = "";
+  blank.textContent = placeholder;
+  select.append(blank);
+  for (const row of rows || []) {
+    if (!row || !row.id || !row.name) continue;
+    const option = document.createElement("option");
+    option.value = row.id;
+    option.textContent = row.name;
+    select.append(option);
+  }
+  if ([...select.options].some((option) => option.value === current)) select.value = current;
+}
+
+function clearInboxRuleForm() {
+  inboxRuleEditId = "";
+  $("inbox-rule-name").value = "";
+  $("inbox-rule-enabled").checked = true;
+  $("inbox-rule-from").value = "";
+  $("inbox-rule-to").value = "";
+  $("inbox-rule-subject").value = "";
+  $("inbox-rule-text").value = "";
+  $("inbox-rule-attachment").value = "";
+  $("inbox-rule-read").checked = false;
+  $("inbox-rule-star").checked = false;
+  $("inbox-rule-archive").checked = false;
+  $("inbox-rule-trash").checked = false;
+  $("inbox-rule-stop").checked = true;
+  $("inbox-rule-move").value = "";
+  $("inbox-rule-label").value = "";
+  paintInboxRuleForm();
+}
+
+function paintInboxRuleForm() {
+  const backend = inboxRulesState && inboxRulesState.backend;
+  const mode = inboxRuleFormMode(backend);
+  const granted = !!(inboxRulesState && inboxRulesState.api);
+  $("inbox-rule-name-field").hidden = !mode.name;
+  $("inbox-rule-enabled-field").hidden = !mode.enabled;
+  $("inbox-rule-star-field").hidden = !mode.star;
+  $("inbox-rule-stop-field").hidden = !mode.stop;
+  $("inbox-rule-label-field").hidden = !mode.label;
+  $("inbox-rule-form").hidden = !granted;
+  $("inbox-rule-save").textContent = inboxRuleEditId ? "Save rule" : "Add rule";
+  $("inbox-rule-cancel").hidden = !inboxRuleEditId;
+  const grant = $("inbox-rule-grant");
+  const needsGrant = !granted && inboxRulesState && (inboxRulesState.backend === "gmail" || inboxRulesState.backend === "microsoft");
+  grant.hidden = !needsGrant;
+  grant.textContent = inboxRulesState && inboxRulesState.backend === "microsoft" ? "Grant Outlook rules" : "Grant Gmail filters";
+}
+
+function paintInboxRules() {
+  const data = inboxRulesState || {};
+  const note = $("inbox-rules-note");
+  if (note && data.message) note.textContent = data.message;
+  fillInboxRuleSelect("inbox-rule-move", data.destinations, "Do not move");
+  fillInboxRuleSelect("inbox-rule-label", data.destinations, "No extra label");
+  const root = $("inbox-rules-list");
+  root.replaceChildren();
+  const rows = Array.isArray(data.rules) ? data.rules : [];
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "hint";
+    empty.textContent = data.api ? "No inbox rules yet." : "";
+    if (empty.textContent) root.append(empty);
+  }
+  for (const row of rows) {
+    const line = document.createElement("div");
+    line.className = "inbox-rule-row";
+    const text = document.createElement("p");
+    text.textContent = inboxRuleSummary(row);
+    line.append(text);
+    if (row.editable !== false) {
+      const edit = document.createElement("button");
+      edit.type = "button";
+      edit.className = "ghost";
+      edit.textContent = "Edit";
+      edit.setAttribute("aria-label", "Edit " + (inboxRuleSummary(row) || "rule"));
+      edit.addEventListener("click", () => startInboxRuleEdit(row));
+      line.append(edit);
+    }
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "ghost";
+    del.textContent = "Delete";
+    del.setAttribute("aria-label", "Delete " + (inboxRuleSummary(row) || "rule"));
+    del.addEventListener("click", () => {
+      deleteInboxRule(row.id).catch((error) => {
+        showInboxRuleStatus(error instanceof Error ? error.message : String(error), true);
+      });
+    });
+    line.append(del);
+    root.append(line);
+  }
+  paintInboxRuleForm();
+}
+
+function startInboxRuleEdit(row) {
+  if (!row || row.editable === false) return;
+  inboxRuleEditId = row.id || "";
+  const match = row.match || {};
+  const actions = row.actions || {};
+  $("inbox-rule-name").value = row.name || "";
+  $("inbox-rule-enabled").checked = row.enabled !== false;
+  $("inbox-rule-from").value = match.from || "";
+  $("inbox-rule-to").value = match.to || "";
+  $("inbox-rule-subject").value = match.subject || "";
+  $("inbox-rule-text").value = match.text || "";
+  $("inbox-rule-attachment").value = match.hasAttachment === true ? "yes" : match.hasAttachment === false ? "no" : "";
+  $("inbox-rule-read").checked = actions.markRead === true;
+  $("inbox-rule-star").checked = actions.star === true;
+  $("inbox-rule-archive").checked = actions.archive === true;
+  $("inbox-rule-trash").checked = actions.trash === true;
+  $("inbox-rule-stop").checked = actions.stopProcessing !== false;
+  paintInboxRules();
+  if ([...$("inbox-rule-move").options].some((option) => option.value === (actions.moveToId || ""))) {
+    $("inbox-rule-move").value = actions.moveToId || "";
+  }
+  const label = Array.isArray(actions.addLabelIds) ? actions.addLabelIds[0] || "" : "";
+  if ([...$("inbox-rule-label").options].some((option) => option.value === label)) {
+    $("inbox-rule-label").value = label;
+  }
+  $("inbox-rule-save").textContent = "Save rule";
+  $("inbox-rule-cancel").hidden = false;
+}
+
+async function loadInboxRules() {
+  const account = selectedAccount();
+  if (!account) {
+    inboxRulesState = {
+      api: false,
+      backend: "",
+      reason: "no_account",
+      message: "Connect an account to add inbox rules.",
+      rules: [],
+      destinations: [],
+    };
+    paintInboxRules();
+    return;
+  }
+  const data = await call("mail:listInboxRules", { accountId: account.id });
+  inboxRulesState = data || inboxRulesState;
+  paintInboxRules();
+}
+
+async function submitInboxRule(event) {
+  event.preventDefault();
+  if (inboxRulesBusy) return;
+  const account = selectedAccount();
+  if (!account) {
+    showInboxRuleStatus("Connect an account to add inbox rules.", true);
+    return;
+  }
+  const draft = readInboxRuleForm(inboxRuleFieldsFromForm(), inboxRulesState && inboxRulesState.backend);
+  if (inboxRuleEditId) draft.id = inboxRuleEditId;
+  inboxRulesBusy = true;
+  showInboxRuleStatus("Saving…", false);
+  try {
+    await call("mail:saveInboxRule", { accountId: account.id, rule: draft });
+    clearInboxRuleForm();
+    showInboxRuleStatus("Saved.", false);
+    await loadInboxRules();
+  } catch (error) {
+    showInboxRuleStatus(error instanceof Error ? error.message : String(error), true);
+    try { await loadInboxRules(); } catch { /* keep the save error */ }
+  } finally {
+    inboxRulesBusy = false;
+  }
+}
+
+async function deleteInboxRule(id) {
+  const account = selectedAccount();
+  if (!account || !id) return;
+  if (!window.confirm("Delete this inbox rule?")) return;
+  await call("mail:deleteInboxRule", { accountId: account.id, ruleId: id });
+  if (inboxRuleEditId === id) clearInboxRuleForm();
+  showInboxRuleStatus("Deleted.", false);
+  await loadInboxRules();
+}
+
+async function grantInboxRules() {
+  const account = selectedAccount();
+  if (!account) throw new Error("Connect an account to add inbox rules.");
+  showInboxRuleStatus("Waiting for the browser…", false);
+  await call("mail:grantRules", { accountId: account.id });
+  showInboxRuleStatus("Granted.", false);
+  await loadInboxRules();
+}
+
+function openInboxRules() {
+  closeDialog("settings");
+  if (state.view !== "brain") openBrain("rules");
+  else showBrainPane("rules");
+}
+
 function showBrainPane(name) {
   const panes = brainPaneIds();
   const known = panes.some((row) => row[0] === name);
@@ -6305,6 +6602,11 @@ function showBrainPane(name) {
       tab.tabIndex = on ? 0 : -1;
     }
     if (panel) panel.hidden = !on;
+  }
+  if (next === "rules") {
+    loadInboxRules().catch((error) => {
+      showInboxRuleStatus(error instanceof Error ? error.message : String(error), true);
+    });
   }
 }
 
@@ -8568,6 +8870,21 @@ function wire() {
   }
   $("refresh").addEventListener("click", () => guard(refresh));
   $("settings-open").addEventListener("click", openSettings);
+  $("inbox-rules-open").addEventListener("click", openInboxRules);
+  $("inbox-rule-form").addEventListener("submit", (event) => {
+    submitInboxRule(event).catch((error) => {
+      showInboxRuleStatus(error instanceof Error ? error.message : String(error), true);
+    });
+  });
+  $("inbox-rule-cancel").addEventListener("click", () => {
+    clearInboxRuleForm();
+    showInboxRuleStatus("", false);
+  });
+  $("inbox-rule-grant").addEventListener("click", () => {
+    grantInboxRules().catch((error) => {
+      showInboxRuleStatus(error instanceof Error ? error.message : String(error), true);
+    });
+  });
   $("settings-close").addEventListener("click", () => closeDialog("settings"));
   $("move-picker-form").addEventListener("submit", (event) => {
     event.preventDefault();

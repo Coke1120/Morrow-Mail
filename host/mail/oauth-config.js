@@ -24,6 +24,14 @@ const CALENDAR_SCOPES = {
   microsoft: "offline_access User.Read Calendars.ReadWrite",
 };
 
+// Filters and inbox rules are their own consent. Gmail settings.basic is not included in gmail.modify.
+// Microsoft message rules need MailboxSettings.ReadWrite, which must not share an authorize URL with outlook.office.com.
+const RULES_SCOPES = {
+  google:
+    "openid email https://www.googleapis.com/auth/gmail.settings.basic https://www.googleapis.com/auth/gmail.labels",
+  microsoft: "offline_access User.Read MailboxSettings.ReadWrite Mail.Read",
+};
+
 const MARKERS = {
   imap: {
     google: "https://mail.google.com/",
@@ -36,6 +44,10 @@ const MARKERS = {
   calendar: {
     google: "https://www.googleapis.com/auth/calendar.events",
     microsoft: "Calendars.ReadWrite",
+  },
+  rules: {
+    google: "https://www.googleapis.com/auth/gmail.settings.basic",
+    microsoft: "MailboxSettings.ReadWrite",
   },
 };
 
@@ -137,6 +149,7 @@ function normalizePurpose(input) {
   const raw = typeof input === "object" && input ? input.purpose : input;
   const value = String(raw || "imap").toLowerCase();
   if (value === "calendar") return "calendar";
+  if (value === "rules" || value === "filters" || value === "inbox-rules") return "rules";
   if (value === "organize" || value === "api" || value === "mail-api") return "organize";
   return "imap";
 }
@@ -146,6 +159,7 @@ function scopesFor(provider, purpose) {
   if (!key) return "";
   const name = normalizePurpose(purpose);
   if (name === "calendar") return CALENDAR_SCOPES[key];
+  if (name === "rules") return RULES_SCOPES[key];
   if (name === "organize") return ORGANIZE_SCOPES[key];
   return SCOPES[key];
 }
@@ -175,7 +189,8 @@ function redirectUri(port, provider, purpose) {
 function profileUrl(provider, purpose) {
   const key = providerKey(provider);
   if (!key) return "";
-  if (key === "google" && normalizePurpose(purpose) === "calendar") {
+  const name = normalizePurpose(purpose);
+  if (key === "google" && (name === "calendar" || name === "rules")) {
     return "https://openidconnect.googleapis.com/v1/userinfo";
   }
   return ENDPOINTS[key].profile;
@@ -226,6 +241,7 @@ module.exports = {
   SCOPES,
   ORGANIZE_SCOPES,
   CALENDAR_SCOPES,
+  RULES_SCOPES,
   MARKERS,
   ENDPOINTS,
   IMAP_PRESETS,

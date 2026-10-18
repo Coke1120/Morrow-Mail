@@ -211,6 +211,7 @@
         <button type="button" class="brain-tab" role="tab" id="brain-tab-profile" aria-controls="brain-profile" aria-selected="true">Profile</button>
         <button type="button" class="brain-tab" role="tab" id="brain-tab-categories" aria-controls="brain-categories" aria-selected="false" tabindex="-1">Categories</button>
         <button type="button" class="brain-tab" role="tab" id="brain-tab-skills" aria-controls="brain-skills" aria-selected="false" tabindex="-1">Skills</button>
+        <button type="button" class="brain-tab" role="tab" id="brain-tab-rules" aria-controls="brain-rules" aria-selected="false" tabindex="-1">Rules</button>
       </div>
       <section id="brain-profile" role="tabpanel" aria-labelledby="brain-tab-profile">
         <p id="brain-status" role="status"></p>
@@ -272,6 +273,55 @@
         <h3>Library skills</h3>
         <div id="brain-library-skills"><p class="hint">Loading skills…</p></div>
       </section>
+      <section id="brain-rules" role="tabpanel" aria-labelledby="brain-tab-rules" hidden>
+        <h3 id="brain-rules-title">Inbox rules</h3>
+        <p class="hint" id="inbox-rules-note">Match mail, then mark it, file it, or trash it. Gmail and Outlook keep the rule on the provider. Other accounts run it here when new Inbox mail arrives.</p>
+        <p id="inbox-rules-status" role="status"></p>
+        <div id="inbox-rules-list"></div>
+        <form id="inbox-rule-form">
+          <div id="inbox-rule-name-field">
+            <label for="inbox-rule-name">Name</label>
+            <input id="inbox-rule-name" type="text" maxlength="200" autocomplete="off" />
+          </div>
+          <div id="inbox-rule-enabled-field">
+            <label class="check" for="inbox-rule-enabled"><input id="inbox-rule-enabled" type="checkbox" checked /> Enabled</label>
+          </div>
+          <label for="inbox-rule-from">From contains</label>
+          <input id="inbox-rule-from" type="text" maxlength="200" autocomplete="off" />
+          <label for="inbox-rule-to">To contains</label>
+          <input id="inbox-rule-to" type="text" maxlength="200" autocomplete="off" />
+          <label for="inbox-rule-subject">Subject contains</label>
+          <input id="inbox-rule-subject" type="text" maxlength="200" autocomplete="off" />
+          <label for="inbox-rule-text">Text contains</label>
+          <input id="inbox-rule-text" type="text" maxlength="200" autocomplete="off" />
+          <label for="inbox-rule-attachment">Attachment</label>
+          <select id="inbox-rule-attachment">
+            <option value="">Any</option>
+            <option value="yes">Has attachment</option>
+            <option value="no">No attachment</option>
+          </select>
+          <div id="inbox-rule-actions">
+            <label class="check" for="inbox-rule-read"><input id="inbox-rule-read" type="checkbox" /> Mark read</label>
+            <label class="check" id="inbox-rule-star-field" for="inbox-rule-star"><input id="inbox-rule-star" type="checkbox" /> Star</label>
+            <label class="check" for="inbox-rule-archive"><input id="inbox-rule-archive" type="checkbox" /> Archive</label>
+            <label class="check" for="inbox-rule-trash"><input id="inbox-rule-trash" type="checkbox" /> Trash</label>
+            <label class="check" id="inbox-rule-stop-field" for="inbox-rule-stop"><input id="inbox-rule-stop" type="checkbox" checked /> Stop after this rule</label>
+          </div>
+          <label for="inbox-rule-move">Move to</label>
+          <select id="inbox-rule-move"></select>
+          <div id="inbox-rule-label-field">
+            <label for="inbox-rule-label">Also label</label>
+            <select id="inbox-rule-label"></select>
+          </div>
+          <div class="row">
+            <button type="submit" class="primary" id="inbox-rule-save">Add rule</button>
+            <button type="button" class="ghost" id="inbox-rule-cancel" hidden>Cancel</button>
+          </div>
+        </form>
+        <div class="row">
+          <button type="button" class="ghost" id="inbox-rule-grant" hidden>Grant inbox rules</button>
+        </div>
+      </section>
     </section>
     </div>
     </div>
@@ -281,7 +331,7 @@
     <dialog id="connect" aria-labelledby="connect-title">
       <form id="connect-form">
         <h2 id="connect-title">Connect account</h2>
-        <p class="hint">IMAP password, or Google / Microsoft in the browser. Labels and calendar each ask for a second consent. The password stays in this app's keychain.</p>
+        <p class="hint">IMAP password, or Google / Microsoft in the browser. Labels, inbox rules, and calendar each ask for their own consent. The password stays in this app's keychain.</p>
         <label for="profile">Provider</label>
         <select id="profile" name="profile"></select>
         <div id="custom-fields" hidden>
@@ -489,6 +539,12 @@
           <h3 id="settings-mailbox-title">Mailbox</h3>
           <ul id="settings-accounts" class="settings-accounts" aria-label="Mailbox push"></ul>
           <div class="row mailbox-actions" role="group" aria-labelledby="settings-mailbox-title">
+            <button type="button" class="ghost icon-label" id="inbox-rules-open">
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
+              </svg>
+              <span>Inbox rules</span>
+            </button>
             <button type="button" class="ghost icon-label" id="signatures-open">
               <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M12 20h9"></path>

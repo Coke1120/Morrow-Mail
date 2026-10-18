@@ -11,6 +11,7 @@ const secrets = process.env.GENMAIL_MAIL_SECRETS === "memory"
   : require("./secrets");
 const oauth = require("./oauth");
 const sidecar = require("./sidecar");
+const inboxRules = require("./inbox-rules");
 const http = require("./provider-http");
 const providerApi = require("./provider-api");
 const idle = require("./idle");
@@ -428,7 +429,12 @@ function clearStrikes(accountId) {
   if (row) row.strikes = 0;
 }
 
+function localInboxRules(account) {
+  return inboxRules.backendFor(account) === "imap";
+}
+
 function resetWindow(accountId, folderPath, found) {
+  const folder = db.folderByPath(accountId, folderPath);
   db.applyFolderSync(accountId, folderPath, {
     messages: [],
     validity: found.validity,
@@ -438,6 +444,7 @@ function resetWindow(accountId, folderPath, found) {
     horizonDays: null,
     uidCursor: 0,
   });
+  if (folder && folder.well_known === "inbox") db.resetInboxRuleWatermarks(accountId);
 }
 
 async function bootstrapFolder(client, account, folderPath, started) {
@@ -521,6 +528,24 @@ async function warmFolder(client, account, folder, started) {
       keepOthers: true,
       uidCursor: next,
     });
+    if (folder.well_known === "inbox" && localInboxRules(account)) {
+      const ruled = await inboxRules.runImapPlan({
+        client,
+        remote,
+        db,
+        account,
+        folder,
+        messages: fetched.messages,
+        validity: fetched.validity || found.validity,
+      });
+      if (ruled.failed) {
+        emitSync("error", {
+          accountId: account.id,
+          folderId: folder.path,
+          message: "An inbox rule could not run.",
+        });
+      }
+    }
     broadcast("mail:emailsUpdated", { accountId: account.id, folderId: folder.path, folderIds: [folder.path] });
     if (fresh.length <= REFRESH_PAGES[index]) break;
   }
@@ -757,9 +782,11 @@ function purgeAbandonedAccounts() {
     if (secrets.getPassword(row.id)) continue;
     if (secrets.getPassword(`${row.id}:organize`)) continue;
     if (secrets.getPassword(`${row.id}:calendar`)) continue;
+    if (secrets.getPassword(`${row.id}:rules`)) continue;
     secrets.deletePassword(row.id);
     secrets.deletePassword(`${row.id}:organize`);
     secrets.deletePassword(`${row.id}:calendar`);
+    secrets.deletePassword(`${row.id}:rules`);
     db.removeAccount(row.id);
     if (idleController) idleController.forget(row.id).catch(() => {});
     idleSafetyAt.delete(row.id);
@@ -1044,6 +1071,7 @@ async function removeAccount(params) {
   secrets.deletePassword(id);
   secrets.deletePassword(`${id}:organize`);
   secrets.deletePassword(`${id}:calendar`);
+  secrets.deletePassword(`${id}:rules`);
   if (idleController) {
     try { await idleController.forget(id); } catch { /* the connection is already gone */ }
   }

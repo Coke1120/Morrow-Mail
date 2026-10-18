@@ -22,6 +22,7 @@ const syntax = [
   "host/mail/win-secrets.js",
   "host/mail/provider-http.js",
   "host/mail/provider-api.js",
+  "host/mail/inbox-rules.js",
   "host/mail/calendar-api.js",
   "host/mail/sidecar.js",
   "host/brain.js",
@@ -1272,7 +1273,7 @@ assert.strictEqual(brainUi.brainLearnedRow({ id: "priorities" }, { id: "prioriti
 assert.strictEqual(brainUi.brainLearnedRow({ id: "ai-setup" }, { id: "ai-setup:0", source: "auto" }), false);
 assert.strictEqual(brainUi.brainLearnedRow({ id: "recent-mail" }, { id: "recent-mail:0", source: "auto" }), false);
 assert.strictEqual(brainUi.brainLearnedRow({ id: "how-you-write" }, { id: "how-you-write:user:1", source: "user" }), false);
-assert.deepStrictEqual(brainUi.brainPaneIds().map((row) => row[0]), ["profile", "categories", "skills"]);
+assert.deepStrictEqual(brainUi.brainPaneIds().map((row) => row[0]), ["profile", "categories", "skills", "rules"]);
 assert.strictEqual(brainUi.brainMessage({ error: "host down", accepted: false }).text, "host down");
 assert.strictEqual(brainUi.brainMessage({ refreshing: true }).text, "Refreshing…");
 assert.strictEqual(brainUi.brainMessage({ rebuilding: true, percent: 15, refreshing: true }).text, "Rebuilding 15%…");
@@ -1336,7 +1337,7 @@ for (const channel of [
   assert.ok(used.has(channel), `renderer does not call ${channel}`);
 }
 assert.ok(html.includes('id="brain"') && html.includes('id="brain-rule"') && html.includes('id="brain-add"') && html.includes('id="brain-refresh"') && html.includes('id="brain-rebuild"'));
-assert.ok(html.includes('id="brain-tab-profile"') && html.includes('id="brain-tab-categories"') && html.includes('id="brain-tab-skills"') && html.includes('id="brain-meta"'));
+assert.ok(html.includes('id="brain-tab-profile"') && html.includes('id="brain-tab-categories"') && html.includes('id="brain-tab-skills"') && html.includes('id="brain-tab-rules"') && html.includes('id="brain-meta"'));
 assert.ok(html.includes(">Profile<") && html.includes(">Categories<") && html.includes(">Skills<"));
 assert.ok(html.includes(">Brain<") && html.includes(">Add<") && html.includes("Writing rule"));
 assert.ok(html.includes('id="brain-category-list"') && html.includes('id="brain-category-name"') && html.includes('id="brain-category-description"'));
@@ -2429,6 +2430,10 @@ for (const channel of [
   "mail:moveFolder",
   "mail:modifyMessageLabels",
   "mail:moveProviderMessage",
+  "mail:listInboxRules",
+  "mail:saveInboxRule",
+  "mail:deleteInboxRule",
+  "mail:grantRules",
   "calendar:status",
   "calendar:connect",
   "calendar:list",
@@ -2447,6 +2452,10 @@ for (const channel of [
   "mail:moveFolder",
   "mail:modifyMessageLabels",
   "mail:moveProviderMessage",
+  "mail:listInboxRules",
+  "mail:saveInboxRule",
+  "mail:deleteInboxRule",
+  "mail:grantRules",
   "calendar:status",
   "calendar:connect",
   "calendar:list",
@@ -5259,10 +5268,582 @@ async function checkOauthSession() {
   }
 }
 
+async function checkInboxRules() {
+  const os = require("os");
+  const rules = require("../host/mail/inbox-rules");
+  const ruleUi = loadFunctions(appJs, ["inboxRuleSummary", "inboxRuleFormMode", "readInboxRuleForm"]);
+  assert.deepStrictEqual(ruleUi.inboxRuleFormMode("gmail"), {
+    backend: "gmail",
+    name: false,
+    enabled: false,
+    star: true,
+    label: true,
+    stop: false,
+  });
+  assert.strictEqual(ruleUi.inboxRuleFormMode("microsoft").star, false);
+  assert.strictEqual(ruleUi.inboxRuleFormMode("imap").stop, true);
+  const uiDraft = ruleUi.readInboxRuleForm({
+    name: " News ",
+    from: " news@ ",
+    attachment: "yes",
+    markRead: true,
+    star: true,
+    stopProcessing: false,
+  }, "microsoft");
+  assert.strictEqual(uiDraft.name, "News");
+  assert.strictEqual(uiDraft.actions.star, false);
+  assert.strictEqual(uiDraft.match.hasAttachment, true);
+  assert.strictEqual(uiDraft.actions.stopProcessing, false);
+  assert.strictEqual(
+    ruleUi.inboxRuleSummary({ name: "News", enabled: false, match: { from: "news@" }, actions: { archive: true } }),
+    "Off. News — From news@ → Archive",
+  );
+  assert.strictEqual(rules.backendFor({ profile: "gmail", auth_kind: "oauth2" }), "gmail");
+  assert.strictEqual(rules.backendFor({ profile: "outlook", auth_kind: "password" }), "imap");
+  assert.strictEqual(rules.backendFor({ profile: "fastmail", authKind: "oauth2" }), "imap");
+  const gmailBody = rules.toGmailFilter({
+    match: { from: "news@letter.test", subject: "Digest", hasAttachment: false },
+    actions: { markRead: true, star: true, archive: true, addLabelIds: ["Label_9"] },
+  });
+  assert.deepStrictEqual(gmailBody.criteria, {
+    excludeChats: true,
+    from: "news@letter.test",
+    subject: "Digest",
+    hasAttachment: false,
+  });
+  assert.deepStrictEqual(gmailBody.action.addLabelIds, ["STARRED", "Label_9"]);
+  assert.deepStrictEqual(gmailBody.action.removeLabelIds, ["UNREAD", "INBOX"]);
+  assert.ok(!Object.prototype.hasOwnProperty.call(gmailBody.action, "forward"));
+  assert.throws(
+    () => rules.normalizeDraft({ match: { from: "a@b.c" }, actions: { trash: true, archive: true } }, "gmail"),
+    /Trash cannot/,
+  );
+  assert.throws(
+    () => rules.normalizeDraft({ name: "Stars", match: { from: "a@b.c" }, actions: { star: true } }, "microsoft"),
+    /cannot star/,
+  );
+  assert.throws(
+    () => rules.normalizeDraft({ match: { from: "a@b.c" }, actions: { markRead: true } }, "imap"),
+    /name/i,
+  );
+  assert.throws(
+    () => rules.normalizeDraft({ name: "Bad", match: { from: "a\nb" }, actions: { markRead: true } }, "imap"),
+    /From/,
+  );
+  const hidden = rules.fromGmailFilter({
+    id: "f-forward",
+    criteria: { from: "a@b.c" },
+    action: { forward: "secret@example.com", addLabelIds: ["STARRED"] },
+  });
+  assert.strictEqual(hidden.editable, false);
+  assert.strictEqual(hidden.unsupported, "forward");
+  assert.ok(!JSON.stringify(hidden).includes("secret@example.com"));
+  const graphBody = rules.toGraphRule({
+    name: "Newsletters",
+    match: { from: "news@", text: "unsubscribe" },
+    actions: { archive: true, markRead: true },
+  }, 2, "archive-id");
+  assert.strictEqual(graphBody.displayName, "Newsletters");
+  assert.strictEqual(graphBody.sequence, 2);
+  assert.strictEqual(graphBody.actions.moveToFolder, "archive-id");
+  assert.strictEqual(graphBody.actions.markAsRead, true);
+  assert.strictEqual(graphBody.actions.delete, false);
+  assert.deepStrictEqual(graphBody.conditions.senderContains, ["news@"]);
+  assert.deepStrictEqual(graphBody.conditions.bodyContains, ["unsubscribe"]);
+  assert.ok(!graphBody.actions.forwardTo);
+  const graphHidden = rules.fromGraphRule({
+    id: "fwd",
+    displayName: "Fwd",
+    sequence: 1,
+    isEnabled: true,
+    conditions: { subjectContains: ["hi"] },
+    actions: { forwardTo: [{ emailAddress: { address: "secret@example.com" } }], stopProcessingRules: true },
+  }, "");
+  assert.strictEqual(graphHidden.editable, false);
+  assert.ok(!JSON.stringify(graphHidden).includes("secret@example.com"));
+  const seenGraph = [];
+  const listedGraph = await rules.listGraph("token", "archive-id", async (url) => {
+    seenGraph.push(String(url));
+    return jsonResponse({
+      value: [{
+        id: "rule-1",
+        displayName: "Newsletters",
+        sequence: 1,
+        isEnabled: true,
+        conditions: { senderContains: ["news@"] },
+        actions: { moveToFolder: "archive-id", markAsRead: true, stopProcessingRules: true },
+      }],
+      "@odata.nextLink": "https://evil.example/steal",
+    });
+  });
+  assert.strictEqual(seenGraph.length, 1);
+  assert.ok(seenGraph[0].includes("/mailFolders/inbox/messageRules"));
+  assert.strictEqual(listedGraph[0].actions.archive, true);
+  assert.strictEqual(listedGraph[0].actions.moveToId, "");
+  assert.strictEqual(listedGraph[0].editable, true);
+  await assert.rejects(
+    () => rules.saveGmail("token", {
+      id: "old-id",
+      match: { from: "a@b.c" },
+      actions: { markRead: true },
+    }, async (url, init) => {
+      const method = (init && init.method) || "GET";
+      if (method === "GET") {
+        return jsonResponse({ id: "old-id", criteria: { from: "a@b.c" }, action: { removeLabelIds: ["UNREAD"] } });
+      }
+      if (method === "POST") {
+        const body = JSON.parse(init.body);
+        return jsonResponse({ id: "new-id", criteria: body.criteria, action: body.action });
+      }
+      return jsonResponse({ error: "no" }, 500);
+    }),
+    (error) => error && error.code === "partial" && !String(error.message).includes("Bearer"),
+  );
+  const plan = rules.planImap([
+    {
+      id: "a",
+      enabled: true,
+      sinceUid: 10,
+      position: 1,
+      match: { from: "news@" },
+      actions: { archive: true, markRead: true, stopProcessing: true },
+    },
+    {
+      id: "b",
+      enabled: true,
+      sinceUid: 10,
+      position: 2,
+      match: { from: "news@" },
+      actions: { star: true, stopProcessing: true },
+    },
+    {
+      id: "off",
+      enabled: false,
+      sinceUid: 0,
+      position: 0,
+      match: { from: "news@" },
+      actions: { trash: true },
+    },
+  ], [
+    { uid: 10, from: "news@letter.test", subject: "Old" },
+    { uid: 11, from: "News <news@letter.test>", subject: "Digest", hasAttachments: false },
+    { uid: 12, from: "news@letter.test", subject: "File", hasAttachments: true },
+  ]);
+  assert.deepStrictEqual(plan.map((step) => step.uid), [11, 12]);
+  assert.ok(plan.every((step) => step.ruleId === "a" && step.markRead === true && step.archive === true));
+  const both = rules.planImap([
+    {
+      id: "a",
+      enabled: true,
+      sinceUid: 0,
+      position: 1,
+      match: { subject: "Hi" },
+      actions: { markRead: true, stopProcessing: false },
+    },
+    {
+      id: "b",
+      enabled: true,
+      sinceUid: 0,
+      position: 2,
+      match: { subject: "Hi" },
+      actions: { star: true, stopProcessing: true },
+    },
+  ], [{ uid: 3, subject: "Hi" }]);
+  assert.deepStrictEqual(both.map((step) => step.ruleId), ["a", "b"]);
+  assert.strictEqual(rules.matches({ match: { hasAttachment: false } }, { hasAttachments: true }), false);
+  assert.strictEqual(rules.matches({ match: { text: "Unsub" } }, { subject: "Weekly", snippet: "please unsubscribe" }), true);
+
+  const db = require("../host/mail/db");
+  const sidecar = require("../host/mail/sidecar");
+  const secrets = require("../host/mail/secrets");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-rules-"));
+  const prevFetch = global.fetch;
+  const prevJson = process.env.GOOGLE_DESKTOP_OAUTH_JSON;
+  const prevSecrets = process.env.GENMAIL_MAIL_SECRETS;
+  process.env.GENMAIL_MAIL_SECRETS = "memory";
+  delete process.env.GOOGLE_DESKTOP_OAUTH_JSON;
+  const calls = [];
+  const remote = {
+    async changeFlags(_client, folder, uid, add) {
+      calls.push({ op: "flags", folder, uid, add });
+    },
+    async moveUid(_client, folder, uid, dest) {
+      calls.push({ op: "move", folder, uid, dest });
+      return { uid: 9, uidValidity: 8 };
+    },
+  };
+  try {
+    db.close();
+    await db.open(path.join(dir, "mail.sqlite"));
+    const accountId = "rules-imap";
+    db.insertAccount({
+      id: accountId,
+      email: "ada@example.com",
+      username: "ada@example.com",
+      profile: "custom",
+      imapHost: "imap.example.test",
+      imapPort: 993,
+      imapTls: true,
+      smtpHost: "smtp.example.test",
+      smtpPort: 465,
+      smtpTls: true,
+      delimiter: "/",
+      createdAt: Date.now(),
+      authKind: "password",
+    });
+    db.replaceFolders(accountId, [
+      { path: "INBOX", name: "Inbox", wellKnown: "inbox" },
+      { path: "Archive", name: "Archive", wellKnown: "archive" },
+      { path: "Trash", name: "Trash", wellKnown: "deleteditems" },
+      { path: "News", name: "News", wellKnown: null },
+    ], "/");
+    db.applyFolderSync(accountId, "INBOX", {
+      messages: [],
+      validity: 5,
+      uidCursor: 40,
+      windowDone: true,
+      horizonDays: 180,
+    });
+    global.fetch = async () => {
+      throw new Error("IMAP rules must not call a provider");
+    };
+    const saved = await sidecar.answer("mail:saveInboxRule", [{
+      accountId,
+      rule: {
+        name: "Newsletters",
+        enabled: true,
+        match: { from: "news@" },
+        actions: { archive: true, markRead: true, stopProcessing: true },
+      },
+    }]);
+    assert.strictEqual(saved.success, true);
+    assert.strictEqual(saved.data.sinceUid, 40);
+    assert.strictEqual(saved.data.actions.archive, true);
+    const rejected = await sidecar.answer("mail:saveInboxRule", [{
+      accountId,
+      rule: { name: "Empty", actions: { markRead: true } },
+    }]);
+    assert.strictEqual(rejected.success, false);
+    assert.strictEqual(rejected.error.code, "invalid");
+    const edited = await sidecar.answer("mail:saveInboxRule", [{
+      accountId,
+      rule: {
+        id: saved.data.id,
+        name: "Newsletters",
+        enabled: true,
+        match: { from: "news@", subject: "Digest" },
+        actions: { archive: true, markRead: true, stopProcessing: true },
+      },
+    }]);
+    assert.strictEqual(edited.success, true);
+    assert.strictEqual(edited.data.sinceUid, 40);
+    assert.strictEqual(edited.data.match.subject, "Digest");
+    const skipped = await rules.runImapPlan({
+      account: db.accountById(accountId),
+      folder: db.folderByPath(accountId, "INBOX"),
+      messages: [{ uid: 99, from: "news@letter.test", subject: "Digest" }],
+      rules: [{
+        id: "missing-dest",
+        enabled: true,
+        sinceUid: 0,
+        position: 1,
+        match: { from: "news@" },
+        actions: { moveToId: "Missing", stopProcessing: true },
+      }],
+      remote,
+      db,
+      client: {},
+      validity: 5,
+    });
+    assert.strictEqual(skipped.failed, 1);
+    assert.strictEqual(skipped.applied, 0);
+    assert.deepStrictEqual(calls, []);
+    db.insertMessage({
+      id: "m-news",
+      accountId,
+      folderPath: "INBOX",
+      uid: 41,
+      uidValidity: 5,
+      threadId: "t-news",
+      subject: "Digest",
+      snippet: "unsubscribe",
+      from: "News <news@letter.test>",
+      to: ["ada@example.com"],
+      date: new Date().toISOString(),
+      listSortTs: Date.now(),
+      unread: true,
+      bodyComplete: true,
+    });
+    const applied = await rules.runImapPlan({
+      client: {},
+      remote,
+      db,
+      account: db.accountById(accountId),
+      folder: db.folderByPath(accountId, "INBOX"),
+      messages: [{ uid: 41, from: "News <news@letter.test>", to: ["ada@example.com"], subject: "Digest", snippet: "unsubscribe" }],
+      validity: 5,
+    });
+    assert.strictEqual(applied.applied, 1);
+    assert.strictEqual(applied.failed, 0);
+    assert.deepStrictEqual(calls, [
+      { op: "flags", folder: "INBOX", uid: 41, add: ["\\Seen"] },
+      { op: "move", folder: "INBOX", uid: 41, dest: "Archive" },
+    ]);
+    const moved = db.messageById("m-news");
+    assert.strictEqual(moved.folder_path, "Archive");
+    assert.strictEqual(moved.uid, 9);
+    assert.strictEqual(moved.unread, 0);
+    const gmailAccount = { id: "g", profile: "gmail", auth_kind: "oauth2" };
+    const gmailRun = await rules.runImapPlan({
+      account: gmailAccount,
+      folder: { path: "INBOX", well_known: "inbox" },
+      messages: [{ uid: 5, from: "news@letter.test", subject: "Digest" }],
+      rules: [{
+        id: "local",
+        enabled: true,
+        sinceUid: 0,
+        position: 1,
+        match: { from: "news@" },
+        actions: { markRead: true, stopProcessing: true },
+      }],
+      remote,
+      db,
+      client: {},
+      validity: 1,
+    });
+    assert.strictEqual(gmailRun.applied, 0);
+    assert.strictEqual(calls.length, 2);
+    db.resetInboxRuleWatermarks(accountId);
+    assert.strictEqual(db.inboxRuleById(accountId, saved.data.id).sinceUid, 0);
+    const removed = await sidecar.answer("mail:deleteInboxRule", [{ accountId, ruleId: saved.data.id }]);
+    assert.strictEqual(removed.success, true);
+    assert.strictEqual(db.listInboxRules(accountId).length, 0);
+    const listed = await sidecar.answer("mail:listInboxRules", [{ accountId }]);
+    assert.strictEqual(listed.data.api, true);
+    assert.strictEqual(listed.data.backend, "imap");
+    assert.ok(listed.data.destinations.some((folder) => folder.id === "News"));
+    assert.ok(!listed.data.destinations.some((folder) => folder.wellKnown === "inbox"));
+
+    db.insertAccount({
+      id: "rules-gmail",
+      email: "ada.gmail@example.com",
+      username: "ada.gmail@example.com",
+      profile: "gmail",
+      imapHost: "imap.gmail.com",
+      imapPort: 993,
+      imapTls: true,
+      smtpHost: "smtp.gmail.com",
+      smtpPort: 465,
+      smtpTls: true,
+      delimiter: "/",
+      createdAt: Date.now(),
+      authKind: "oauth2",
+    });
+    let providerCalls = 0;
+    global.fetch = async () => {
+      providerCalls += 1;
+      throw new Error("missing grant must not call Gmail");
+    };
+    const needsGrant = await sidecar.answer("mail:listInboxRules", [{ accountId: "rules-gmail" }]);
+    assert.strictEqual(needsGrant.success, true);
+    assert.strictEqual(needsGrant.data.api, false);
+    assert.strictEqual(needsGrant.data.backend, "gmail");
+    assert.strictEqual(needsGrant.data.reason, "scope_missing");
+    assert.ok(needsGrant.data.message.includes("gmail.settings.basic"));
+    assert.strictEqual(providerCalls, 0);
+
+    process.env.GOOGLE_DESKTOP_OAUTH_JSON = JSON.stringify({
+      installed: {
+        client_id: "inbox-rules.apps.googleusercontent.com",
+        client_secret: "inbox-rules-secret",
+      },
+    });
+    secrets.setPassword("rules-gmail:rules", JSON.stringify({
+      provider: "google",
+      purpose: "rules",
+      refreshToken: "refresh-rules",
+      accessToken: "access-rules",
+      expiresAt: Date.now() + 10 * 60 * 1000,
+      grantedScopes: oauthConfig.RULES_SCOPES.google,
+      requestedScopes: oauthConfig.RULES_SCOPES.google,
+    }));
+    db.insertAccount({
+      id: "rules-ms",
+      email: "ada.outlook@example.com",
+      username: "ada.outlook@example.com",
+      profile: "outlook",
+      imapHost: "outlook.office365.com",
+      imapPort: 993,
+      imapTls: true,
+      smtpHost: "smtp.office365.com",
+      smtpPort: 587,
+      smtpTls: true,
+      delimiter: "/",
+      createdAt: Date.now(),
+      authKind: "oauth2",
+    });
+    secrets.setPassword("rules-ms:rules", JSON.stringify({
+      provider: "microsoft",
+      purpose: "rules",
+      refreshToken: "refresh-rules",
+      accessToken: "access-rules",
+      expiresAt: Date.now() + 10 * 60 * 1000,
+      grantedScopes: oauthConfig.RULES_SCOPES.microsoft,
+      requestedScopes: oauthConfig.RULES_SCOPES.microsoft,
+    }));
+    const hits = [];
+    let graphRulePosts = 0;
+    global.fetch = async (url, init) => {
+      const href = String(url);
+      const method = (init && init.method) || "GET";
+      const body = init && init.body ? JSON.parse(init.body) : null;
+      hits.push({ href, method, body, authorization: init && init.headers && init.headers.authorization });
+      if (href.includes("evil.example")) throw new Error("followed a foreign next link");
+      if (href.includes("/users/me/labels")) {
+        return jsonResponse({
+          labels: [
+            { id: "Label_9", name: "News", type: "user" },
+            { id: "INBOX", name: "INBOX", type: "system" },
+          ],
+        });
+      }
+      if (href.includes("/settings/filters")) {
+        if (method === "POST") return jsonResponse({ id: "filter-1", criteria: body.criteria, action: body.action });
+        if (method === "DELETE") return jsonResponse({}, 204);
+        return jsonResponse({ filter: [] });
+      }
+      if (href.includes("/mailFolders") && !href.includes("messageRules")) {
+        return jsonResponse({
+          value: [
+            { id: "archive-id", displayName: "Archive", wellKnownName: "archive", childFolderCount: 0 },
+            { id: "news-id", displayName: "News", childFolderCount: 0 },
+          ],
+        });
+      }
+      if (href.includes("messageRules")) {
+        if (method === "GET" && href.endsWith("/rule-1")) {
+          return jsonResponse({
+            id: "rule-1",
+            displayName: "Newsletters",
+            sequence: 1,
+            isEnabled: true,
+            conditions: { senderContains: ["news@"] },
+            actions: { moveToFolder: "archive-id", markAsRead: true, stopProcessingRules: true },
+          });
+        }
+        if (method === "POST") {
+          graphRulePosts += 1;
+          return jsonResponse({
+            id: graphRulePosts === 1 ? "rule-1" : "rule-2",
+            displayName: body.displayName,
+            sequence: body.sequence,
+            isEnabled: body.isEnabled,
+            conditions: body.conditions,
+            actions: body.actions,
+          });
+        }
+        if (method === "DELETE") return jsonResponse({}, 204);
+        return jsonResponse({
+          value: [],
+          "@odata.nextLink": "https://evil.example/steal",
+        });
+      }
+      return jsonResponse({}, 404);
+    };
+    const gmailList = await sidecar.answer("mail:listInboxRules", [{ accountId: "rules-gmail" }]);
+    assert.strictEqual(gmailList.success, true);
+    assert.strictEqual(gmailList.data.api, true);
+    assert.strictEqual(gmailList.data.backend, "gmail");
+    assert.ok(gmailList.data.destinations.some((label) => label.id === "Label_9"));
+    assert.ok(!gmailList.data.destinations.some((label) => label.id === "INBOX"));
+    assert.ok(hits.some((hit) => hit.href.includes("/settings/filters") && hit.authorization === "Bearer access-rules"));
+    const gmailSaved = await sidecar.answer("mail:saveInboxRule", [{
+      accountId: "rules-gmail",
+      rule: {
+        match: { from: "news@letter.test" },
+        actions: { archive: true, addLabelIds: ["Label_9"] },
+      },
+    }]);
+    assert.strictEqual(gmailSaved.success, true);
+    assert.strictEqual(gmailSaved.data.id, "filter-1");
+    assert.ok(gmailSaved.data.actions.archive);
+    assert.deepStrictEqual(gmailSaved.data.actions.addLabelIds, ["Label_9"]);
+    const gmailPost = hits.find((hit) => hit.method === "POST" && hit.href.includes("/settings/filters"));
+    assert.ok(gmailPost);
+    assert.ok(!gmailPost.body.action.forward);
+    assert.ok(gmailPost.body.action.removeLabelIds.includes("INBOX"));
+    const msSaved = await sidecar.answer("mail:saveInboxRule", [{
+      accountId: "rules-ms",
+      rule: {
+        name: "Newsletters",
+        match: { from: "news@" },
+        actions: { archive: true, markRead: true, stopProcessing: true },
+      },
+    }]);
+    assert.strictEqual(msSaved.success, true);
+    assert.strictEqual(msSaved.data.actions.archive, true);
+    assert.strictEqual(msSaved.data.actions.moveToId, "");
+    const msPost = hits.find((hit) => hit.method === "POST" && hit.href.includes("messageRules"));
+    assert.strictEqual(msPost.body.actions.moveToFolder, "archive-id");
+    assert.strictEqual(msPost.body.actions.markAsRead, true);
+    assert.ok(!msPost.body.actions.forwardTo);
+    assert.ok(!hits.some((hit) => hit.href.includes("evil.example")));
+    const msEdited = await sidecar.answer("mail:saveInboxRule", [{
+      accountId: "rules-ms",
+      rule: {
+        id: "rule-1",
+        name: "Newsletters",
+        match: { from: "news@", subject: "Digest" },
+        actions: { archive: true, markRead: true },
+      },
+    }]);
+    assert.strictEqual(msEdited.success, true);
+    assert.ok(hits.some((hit) => hit.method === "DELETE" && hit.href.endsWith("/rule-1")));
+    const msDeleted = await sidecar.answer("mail:deleteInboxRule", [{ accountId: "rules-ms", ruleId: "rule-1" }]);
+    assert.strictEqual(msDeleted.success, true);
+    const packed = JSON.stringify({ gmailList, gmailSaved, msSaved, msEdited, msDeleted });
+    assert.ok(!packed.includes("access-rules"));
+    assert.ok(!packed.includes("refresh-rules"));
+    assert.ok(!packed.includes("inbox-rules-secret"));
+    assert.ok(fs.readFileSync(path.join(root, "host/mail/engine.js"), "utf8").includes("runImapPlan"));
+    assert.ok(html.includes('id="inbox-rules-open"') && html.includes("Inbox rules"));
+    assert.ok(html.includes('id="brain-tab-rules"') && appJs.includes("Grant Gmail filters"));
+    assert.ok(oauthDoc.includes("https://www.googleapis.com/auth/gmail.settings.basic"));
+    assert.ok(oauthDoc.includes("MailboxSettings.ReadWrite"));
+    assert.strictEqual(oauthConfig.normalizePurpose("filters"), "rules");
+    assert.ok(!oauthConfig.RULES_SCOPES.microsoft.includes("outlook.office"));
+    assert.ok(!oauthConfig.RULES_SCOPES.google.includes("https://mail.google.com/"));
+    assert.strictEqual(
+      oauthConfig.profileUrl("google", "rules"),
+      "https://openidconnect.googleapis.com/v1/userinfo",
+    );
+    assert.strictEqual(oauthConfig.redirectPath("microsoft", "rules"), "/api/oauth/microsoft/callback");
+    assert.strictEqual(oauthConfig.hasMarker(oauthConfig.RULES_SCOPES.google, "gmail", "rules"), true);
+    assert.strictEqual(oauthConfig.hasMarker(oauthConfig.RULES_SCOPES.microsoft, "outlook", "rules"), true);
+    assert.strictEqual(oauthConfig.scopesFor("google", "rules"), oauthConfig.RULES_SCOPES.google);
+    const rulesAuth = new URL(oauthConfig.authorizeUrl("microsoft", "rules", {
+      clientId: oauthConfig.MICROSOFT_CLIENT_ID,
+      state: "state",
+      challenge: "challenge",
+      redirectUri: "http://localhost:1/api/oauth/microsoft/callback",
+    }));
+    assert.strictEqual(rulesAuth.searchParams.get("prompt"), "consent");
+    assert.strictEqual(rulesAuth.searchParams.get("scope"), oauthConfig.RULES_SCOPES.microsoft);
+  } finally {
+    global.fetch = prevFetch;
+    if (prevJson === undefined) delete process.env.GOOGLE_DESKTOP_OAUTH_JSON;
+    else process.env.GOOGLE_DESKTOP_OAUTH_JSON = prevJson;
+    if (prevSecrets === undefined) delete process.env.GENMAIL_MAIL_SECRETS;
+    else process.env.GENMAIL_MAIL_SECRETS = prevSecrets;
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 checkGoogleOauthAlias();
 checkUpdateAuth();
 
-checkAiDraft().then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => {
+checkAiDraft().then(() => checkTidy()).then(() => checkProviderApi()).then(() => checkInboxRules()).then(() => checkOauthSession()).then(() => checkAiModels()).then(() => require("./check-idle").run()).then(() => {
   console.log("ui-path-ok");
 }).catch((error) => {
   console.error(error);
