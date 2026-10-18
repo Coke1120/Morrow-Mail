@@ -273,7 +273,7 @@ async function createWindow(preloadFile, mode) {
     height: external ? 1040 : 800,
     title: "Morrow Mail",
     icon: APP_ICON,
-    backgroundColor: external ? "#4c1d95" : "#f6f3fb",
+    backgroundColor: external ? "#193c34" : "#e7f0e4",
     webPreferences: {
       preload: preloadFile,
       contextIsolation: true,

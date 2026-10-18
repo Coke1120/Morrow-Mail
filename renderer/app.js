@@ -26,7 +26,7 @@ const state = {
     gmailOpen: true,
     outlookOpen: false,
     theme: "light",
-    accent: "#7C3AED",
+    accent: "#193C34",
     conversation: true,
     images: false,
     undoSend: 5,
@@ -1272,8 +1272,13 @@ function applyShellTheme(root, theme, accent) {
   const mode = theme === "dark" ? "dark" : "light";
   root.dataset.theme = mode;
   const color = typeof accent === "string" ? accent.trim() : "";
-  if (/^#[0-9A-Fa-f]{6}$/.test(color)) root.style.setProperty("--accent", color);
-  else root.style.removeProperty("--accent");
+  if (/^#[0-9A-Fa-f]{6}$/.test(color) && color.toUpperCase() !== "#193C34") {
+    root.style.setProperty("--accent", color);
+    root.style.setProperty("--accent-ink", color);
+  } else {
+    root.style.removeProperty("--accent");
+    root.style.removeProperty("--accent-ink");
+  }
   return mode;
 }
 
@@ -6243,15 +6248,13 @@ function shellLook(prefs) {
   const src = prefs && typeof prefs === "object" ? prefs : {};
   const theme = String(src.theme || "").trim().toLowerCase() === "dark" ? "dark" : "light";
   const raw = typeof src.accent === "string" ? src.accent.trim() : "";
-  const accent = /^#[0-9A-Fa-f]{6}$/.test(raw) ? raw.toUpperCase() : "#7C3AED";
+  const accent = /^#[0-9A-Fa-f]{6}$/.test(raw) ? raw.toUpperCase() : "#193C34";
   return { theme, accent };
 }
 
 function applyLook(prefs) {
   const look = shellLook(prefs);
-  const root = document.documentElement;
-  root.dataset.theme = look.theme;
-  root.style.setProperty("--accent", look.accent);
+  applyShellTheme(document.documentElement, look.theme, look.accent);
 }
 
 function shouldListThread(conversation, fromOpen, threadId) {
