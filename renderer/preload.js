@@ -63,6 +63,7 @@ const INVOKE = [
   "mail:toggleStar",
   "mail:toggleStarBatch",
   "mail:search",
+  "mail:searchLocal",
   "mail:listThreadMessages",
   "mail:downloadAttachment",
   "mail:openAttachmentExternally",

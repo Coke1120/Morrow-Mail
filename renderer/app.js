@@ -1968,7 +1968,8 @@ function renderChips(list, account) {
   list.appendChild(row);
 }
 
-// shortcut: subject, from, and snippet of messages already loaded. Upgrade when the filter should call mail:search.
+// Filter stays on messages already loaded: subject, from, and snippet.
+// It does not call mail:search or mail:searchLocal. Toolbar search does.
 function filteredEmails(emails, query) {
   const q = String(query || "").trim().toLowerCase();
   const rows = Array.isArray(emails) ? emails : [];
@@ -3532,7 +3533,7 @@ function rememberSelection(preferredId) {
 async function loadList(fromNetwork) {
   const gen = ++listGen;
   if (state.query) {
-    const data = await call("mail:search", { query: state.query, limit: 100, filters: {} });
+    const data = await call("mail:searchLocal", { query: state.query, limit: 100 });
     if (gen !== listGen) return null;
     state.emails = Array.isArray(data) ? data : [];
     renderList();
