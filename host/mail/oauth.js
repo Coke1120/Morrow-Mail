@@ -70,25 +70,44 @@ function cancelledError() {
   return error;
 }
 
+function callbackPage(outcome) {
+  const ok = !!(outcome && outcome.ok === true);
+  const detail = outcome && outcome.message ? safeOauthMessage(outcome.message) : "";
+  const canceled = !ok && /cancel/i.test(detail);
+  return {
+    status: ok ? 200 : 400,
+    title: ok ? "Connected" : (canceled ? "Sign-in canceled" : "Sign-in not finished"),
+    body: ok ? "Return to Morrow Mail." : (detail || "Morrow Mail did not save this account."),
+  };
+}
+
 function waitForCode(server, expectedState, expectedPath, timeoutMs, signal) {
   return new Promise((resolve, reject) => {
     let settled = false;
+    let outcome = null;
     let response = null;
+    const duplicates = [];
     const shutdown = () => {
       try { server.close(); } catch { /* already closed */ }
+    };
+    const writePage = (res, page) => finishResponse(res, page.status, page.title, page.body);
+    const finish = (next) => {
+      if (outcome) return;
+      outcome = next;
+      const page = callbackPage(next);
+      writePage(response, page);
+      for (const extra of duplicates.splice(0)) writePage(extra, page);
+      shutdown();
     };
     const fail = (error) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       const canceled = error && error.code === "oauth_cancelled";
-      finishResponse(
-        response,
-        400,
-        canceled ? "Sign-in canceled" : "Sign-in not finished",
-        safeOauthMessage(error)
-      );
-      shutdown();
+      finish({
+        ok: false,
+        message: canceled ? "Sign-in canceled." : safeOauthMessage(error),
+      });
       reject(error);
     };
     const timer = setTimeout(() => {
@@ -104,29 +123,48 @@ function waitForCode(server, expectedState, expectedPath, timeoutMs, signal) {
       }
       signal.addEventListener("abort", onAbort, { once: true });
     }
+    const partsFrom = (req) => {
+      const url = new URL(req.url, "http://127.0.0.1");
+      return {
+        pathname: url.pathname,
+        err: url.searchParams.get("error"),
+        code: url.searchParams.get("code"),
+        state: url.searchParams.get("state"),
+      };
+    };
+    const validCallback = (parts) => parts.pathname === expectedPath && !parts.err && parts.code && parts.state === expectedState;
 
     server.on("request", (req, res) => {
       try {
-        if (settled) {
-          finishResponse(res, 409, "Sign-in not finished", "This sign-in is no longer waiting.");
-          return;
-        }
-        const url = new URL(req.url, "http://127.0.0.1");
-        if (url.pathname !== expectedPath) {
+        const parts = partsFrom(req);
+        if (parts.pathname !== expectedPath) {
           finishResponse(res, 404, "Not found", "Not found");
           return;
         }
-        const err = url.searchParams.get("error");
-        const code = url.searchParams.get("code");
-        const state = url.searchParams.get("state");
-        if (err) {
+        if (settled) {
+          if (!validCallback(parts)) {
+            finishResponse(res, 400, "Sign-in not finished", "Invalid OAuth callback.");
+            return;
+          }
+          if (outcome && outcome.ok === true) {
+            writePage(res, callbackPage(outcome));
+            return;
+          }
+          if (outcome) {
+            finishResponse(res, 409, "Sign-in not finished", "This sign-in is no longer waiting.");
+            return;
+          }
+          duplicates.push(res);
+          return;
+        }
+        if (parts.err) {
           response = res;
-          const error = new Error(`OAuth provider error: ${err}`);
+          const error = new Error(`OAuth provider error: ${parts.err}`);
           error.code = "oauth_provider";
           fail(error);
           return;
         }
-        if (!code || state !== expectedState) {
+        if (!parts.code || parts.state !== expectedState) {
           finishResponse(res, 400, "Sign-in not finished", "Invalid OAuth callback.");
           return;
         }
@@ -134,18 +172,13 @@ function waitForCode(server, expectedState, expectedPath, timeoutMs, signal) {
         settled = true;
         clearTimeout(timer);
         if (signal) signal.removeEventListener("abort", onAbort);
-        const complete = (outcome) => {
-          const ok = outcome && outcome.ok === true;
-          const detail = outcome && outcome.message ? safeOauthMessage(outcome.message) : "";
-          finishResponse(
-            res,
-            ok ? 200 : 400,
-            ok ? "Connected" : "Sign-in not finished",
-            ok ? "Return to Morrow Mail." : (detail || "Morrow Mail did not save this account.")
-          );
-          shutdown();
+        const complete = (result) => {
+          finish({
+            ok: !!(result && result.ok === true),
+            message: result && result.message ? result.message : "",
+          });
         };
-        resolve({ code, complete });
+        resolve({ code: parts.code, complete });
       } catch (error) {
         fail(error);
       }
@@ -352,6 +385,7 @@ function throwIfAborted(signal) {
  * Browser loopback OAuth (PKCE), same shape as Morrow-Mail desktop clients.
  * Returns tokens + IMAP preset fields for engine.connectOAuthAccount.
  * The callback page stays open until `complete` so "Connected" means the account was saved.
+ * A repeat of that callback, including one that arrives while save is still finishing, gets the same page.
  */
 async function signIn(providerInput, purposeInput, options) {
   const provider = normalizeProvider(providerInput);

@@ -5888,6 +5888,35 @@ async function checkOauthSession() {
     assert.strictEqual(page.status, 200);
     assert.match(page.body, /<h1>Connected<\/h1>/);
 
+    let repeatTarget = "";
+    let repeatPage = null;
+    const repeated = await oauthMod.signIn("microsoft", "imap", {
+      timeoutMs: 5000,
+      openBrowser: (url) => {
+        repeatTarget = callbackFrom(url);
+        repeatPage = hitLoopback(repeatTarget);
+        return Promise.resolve();
+      },
+    });
+    const invalidTarget = new URL(repeatTarget);
+    invalidTarget.searchParams.set("state", "not-the-state");
+    const invalid = await hitLoopback(invalidTarget.toString());
+    assert.strictEqual(invalid.status, 400);
+    assert.match(invalid.body, /Invalid OAuth callback/);
+    assert.doesNotMatch(invalid.body, /<h1>Connected<\/h1>/);
+    const duplicatePage = hitLoopback(repeatTarget);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    repeated.complete({ ok: true });
+    const [repeatBody, duplicateBody] = await Promise.all([repeatPage, duplicatePage]);
+    assert.strictEqual(repeatBody.status, 200);
+    assert.match(repeatBody.body, /<h1>Connected<\/h1>/);
+    assert.match(repeatBody.body, /Return to Morrow Mail/);
+    assert.strictEqual(duplicateBody.status, 200);
+    assert.match(duplicateBody.body, /<h1>Connected<\/h1>/);
+    assert.match(duplicateBody.body, /Return to Morrow Mail/);
+    assert.doesNotMatch(duplicateBody.body, /no longer waiting/);
+    assert.doesNotMatch(duplicateBody.body, /Sign-in not finished/);
+
     seen.length = 0;
     global.fetch = async (url) => {
       const href = String(url);

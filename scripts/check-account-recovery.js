@@ -100,15 +100,35 @@ async function run() {
     const wrongPassword = await engine.answer("mail:connectImapSmtp", [{ email: "wrong@example.invalid", expectedAccountId: accountId }]);
     assert.equal(wrongPassword.error.code, "account_mismatch");
     oauth.signIn = matchingSignIn;
-    const connected = await engine.answer("mail:addAccount", [{ provider: "microsoft", expectedAccountId: accountId }]);
+    let releaseSync = () => {};
+    let syncEntered = false;
+    const held = new Promise((resolve) => { releaseSync = resolve; });
+    remote.withClient = async (_account, _secret, work) => {
+      syncEntered = true;
+      await held;
+      return work({});
+    };
+    const startedAt = Date.now();
+    const connected = await Promise.race([
+      engine.answer("mail:addAccount", [{ provider: "microsoft", expectedAccountId: accountId }]),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("mail:addAccount waited on mailbox sync")), 1000)),
+    ]);
+    assert.equal(syncEntered, false, "inbox sync must not run before mail:addAccount returns");
+    assert.ok(Date.now() - startedAt < 1000);
     assert.equal(connected.success, true);
     assert.equal(connected.data.id, accountId, "re-login must reuse the original mailbox identity");
     assert.equal(connected.data.needsReauth, false);
-    assert.equal(completed, true);
+    assert.equal(completed, true, "the browser page closes when the secret is saved");
+    assert.match(secrets.getPassword(accountId), /fixture-refresh/);
+    releaseSync();
     // Let the connection's one-shot background refresh finish under the mocks.
     await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(syncEntered, true, "folder listing and inbox sync still run after save");
     retained();
     assert.equal(secrets.getPassword(`${accountId}:vacation`), "retained-vacation-token");
+    assert.equal(engine.answer("mail:cancelOAuth", []).success, true);
+    assert.equal(db.accountById(accountId).auth_error, null, "cancel after save must not mark a stored secret missing");
+    assert.match(secrets.getPassword(accountId), /fixture-refresh/);
   } finally {
     oauth.signIn = signIn;
     Object.assign(remote, savedRemote);
