@@ -11,7 +11,10 @@
   <body data-ui="first-party">
     <div class="app">
     <nav class="rail" aria-label="Morrow Mail">
-      <img class="rail-logo" src="./morrow-icon.svg" width="36" height="36" alt="" title="Morrow Mail" aria-hidden="true" />
+      <div class="rail-brand" data-label="Morrow Mail" title="Morrow Mail">
+        <img class="rail-logo" src="./morrow-icon.svg" width="36" height="36" alt="" aria-hidden="true" />
+        <span class="rail-name">Morrow Mail</span>
+      </div>
       <div class="rail-rule" aria-hidden="true"></div>
       <button type="button" class="rail-btn nav-item nav-toggle" id="nav-collapse" aria-expanded="false" aria-label="Expand sidebar" data-label="Expand sidebar" title="Expand sidebar">
         <svg class="chev-right" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -152,7 +155,7 @@
       <article id="reader" aria-label="Message"></article>
     </div>
     <section id="calendar-panel" hidden aria-label="Calendar">
-      <div class="calendar-bar">
+      <div class="calendar-bar motion-block">
         <button type="button" class="ghost" id="calendar-prev">Previous month</button>
         <h2 id="calendar-heading">Calendar</h2>
         <button type="button" class="ghost" id="calendar-next">Next month</button>
@@ -161,16 +164,21 @@
         <select id="calendar-account"></select>
         <button type="button" class="ghost" id="calendar-grant">Grant calendar access</button>
       </div>
-      <p id="calendar-status" role="status"></p>
-      <div id="calendar-layout" hidden>
+      <nav class="section-nav" id="calendar-nav" aria-label="Calendar sections">
+        <button type="button" data-scroll="calendar-layout" aria-current="true">Month</button>
+        <button type="button" data-scroll="calendar-side">Agenda</button>
+        <button type="button" data-scroll="calendar-create">Add event</button>
+      </nav>
+      <p id="calendar-status" class="motion-block" role="status"></p>
+      <div id="calendar-layout" class="motion-block" hidden>
         <div id="calendar-body"></div>
         <div id="calendar-side">
           <h3>Agenda</h3>
           <div id="calendar-agenda"></div>
         </div>
       </div>
-      <div id="calendar-detail" hidden></div>
-      <form id="calendar-create" hidden>
+      <div id="calendar-detail" class="motion-block" hidden></div>
+      <form id="calendar-create" class="motion-block" hidden>
         <label for="calendar-pick">Calendar</label>
         <select id="calendar-pick"></select>
         <label for="calendar-event-title">Title</label>
@@ -187,7 +195,7 @@
       </form>
     </section>
     <section id="agent-panel" class="primary-space" hidden aria-label="Agent">
-      <div class="space-head">
+      <div class="space-head motion-block">
         <div>
           <p class="space-kicker">Morrow Mail</p>
           <h2 id="agent-greeting">Agent</h2>
@@ -197,17 +205,23 @@
           <button type="button" class="ghost" id="agent-manage-skills">Manage Skills</button>
         </div>
       </div>
-      <p class="hint">Agent helps you ask questions about downloaded mail and review suggested tasks, drafts, and filing actions.</p>
-      <div id="agent-setup" class="setup-state" hidden><p id="agent-setup-copy" class="hint"></p><div class="row"><button type="button" class="ghost" id="agent-setup-ai">Set up AI</button><button type="button" class="ghost" id="agent-setup-connect">Connect an account</button></div></div>
+      <p class="hint motion-block">Agent helps you ask questions about downloaded mail and review suggested tasks, drafts, and filing actions.</p>
+      <nav class="section-nav" id="agent-nav" aria-label="Agent sections">
+        <button type="button" data-scroll="agent-home" aria-current="true">Todos</button>
+        <button type="button" data-scroll="agent-sections">Conversation</button>
+        <button type="button" data-scroll="agent-tools">Skills</button>
+      </nav>
+      <div id="agent-setup" class="setup-state motion-block" hidden><p id="agent-setup-copy" class="hint"></p><div class="row"><button type="button" class="ghost" id="agent-setup-ai">Set up AI</button><button type="button" class="ghost" id="agent-setup-connect">Connect an account</button></div></div>
       <p id="agent-status" role="status"></p>
       <p id="agent-context" class="hint"></p>
-      <div class="agent-scroll">
+      <div class="agent-scroll motion-block">
         <div id="agent-home" aria-label="Suggested todos"></div>
         <div id="agent-sections" class="agent-thread" role="log" aria-live="polite"></div>
       </div>
-      <div id="agent-skill-chips" aria-label="Home skill shortcuts"></div>
-      <details id="agent-tools">
+      <div id="agent-skill-chips" class="motion-block" aria-label="Home skill shortcuts"></div>
+      <details id="agent-tools" class="motion-fold motion-block">
         <summary>Skills and history</summary>
+        <div class="fold-panel">
         <p class="hint">Skills are on demand unless their schedule is enabled below. Scheduled runs need Morrow open; a missed run fires once on relaunch. Pause stops scheduled runs. Drafts need review and Send; filing proposals need confirmation.</p>
         <p id="agent-skill-status" role="status"></p>
         <div id="agent-result" hidden></div>
@@ -230,15 +244,16 @@
           <button type="button" class="ghost" id="agent-memory-save">Save notes</button>
         </div>
         <p id="agent-memory-status" role="status"></p>
+        </div>
       </details>
-      <form id="agent-composer" class="agent-composer">
+      <form id="agent-composer" class="agent-composer motion-block">
         <label class="sr" for="agent-input">Message the agent</label>
         <textarea id="agent-input" rows="2" maxlength="2000" placeholder="Ask Morrow Mail…"></textarea>
         <button type="submit" class="primary" id="agent-send">Ask</button>
       </form>
     </section>
     <section id="brain" class="primary-space" hidden aria-labelledby="brain-title">
-      <div class="brain-head">
+      <div class="brain-head motion-block">
         <div>
           <p class="space-kicker">Email Brain</p>
           <h2 id="brain-title">Email Brain</h2>
@@ -248,13 +263,13 @@
       <p class="hint">Brain holds your learned profile, writing preferences, categories, skills, and inbox rules.</p>
       <button type="button" class="ghost" id="brain-return-agent" hidden>Return to Agent</button>
       <div id="brain-setup" class="setup-state" hidden><p id="brain-setup-copy" class="hint"></p><div class="row"><button type="button" class="ghost" id="brain-setup-ai">Set up AI</button><button type="button" class="ghost" id="brain-setup-connect">Connect an account</button></div></div>
-      <div class="brain-tabs" id="brain-tabs" role="tablist" aria-label="Email Brain sections">
+      <div class="brain-tabs motion-block" id="brain-tabs" role="tablist" aria-label="Email Brain sections">
         <button type="button" class="brain-tab" role="tab" id="brain-tab-profile" aria-controls="brain-profile" aria-selected="true">Profile</button>
         <button type="button" class="brain-tab" role="tab" id="brain-tab-categories" aria-controls="brain-categories" aria-selected="false" tabindex="-1">Categories</button>
         <button type="button" class="brain-tab" role="tab" id="brain-tab-skills" aria-controls="brain-skills" aria-selected="false" tabindex="-1">Skills</button>
         <button type="button" class="brain-tab" role="tab" id="brain-tab-rules" aria-controls="brain-rules" aria-selected="false" tabindex="-1">Rules</button>
       </div>
-      <section id="brain-profile" role="tabpanel" aria-labelledby="brain-tab-profile">
+      <section id="brain-profile" class="motion-block" role="tabpanel" aria-labelledby="brain-tab-profile">
         <p id="brain-status" role="status"></p>
         <div id="brain-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><span></span></div>
         <dl id="brain-meta" class="brain-meta" hidden></dl>
@@ -277,7 +292,7 @@
         <input id="brain-fix-note" type="text" autocomplete="off" />
         <p class="hint">Fix rewrites a learned row. Forget removes it. A missing AI key points to Morrow Mail → AI Setup. Rebuild uses a connected mailbox and never sample mail.</p>
       </section>
-      <section id="brain-categories" role="tabpanel" aria-labelledby="brain-tab-categories" hidden>
+      <section id="brain-categories" class="motion-block" role="tabpanel" aria-labelledby="brain-tab-categories" hidden>
         <h3 id="brain-categories-title">Categories</h3>
         <p class="hint">Edits stay here until Save. Drag a row to reorder. The next Agent home uses the saved list. Add with AI and Fix need an API key.</p>
         <p id="brain-category-defaults" class="hint"></p>
@@ -304,7 +319,7 @@
           </div>
         </form>
       </section>
-      <section id="brain-skills" role="tabpanel" aria-labelledby="brain-tab-skills" hidden>
+      <section id="brain-skills" class="motion-block" role="tabpanel" aria-labelledby="brain-tab-skills" hidden>
         <h3 id="brain-skills-title">Skills</h3>
         <p class="hint">Skills run on demand, on a saved schedule, or stay paused. Scheduled runs need Morrow open; a missed run fires once on relaunch. Drafts need review and Send; filing proposals need confirmation.</p>
         <p id="brain-skill-status" role="status"></p>
@@ -314,7 +329,7 @@
         <h3>Library skills</h3>
         <div id="brain-library-skills"><p class="hint">Loading skills…</p></div>
       </section>
-      <section id="brain-rules" role="tabpanel" aria-labelledby="brain-tab-rules" hidden>
+      <section id="brain-rules" class="motion-block" role="tabpanel" aria-labelledby="brain-tab-rules" hidden>
         <h3 id="brain-rules-title">Inbox rules</h3>
         <label for="inbox-rules-account">Mailbox for these rules</label>
         <select id="inbox-rules-account"></select>
@@ -588,15 +603,26 @@
         <button type="button" class="ghost" id="settings-close">Close</button>
       </div>
       <div class="row"><button type="button" class="ghost" id="settings-log">Debug log</button><button type="button" class="ghost" id="settings-about">About &amp; updates</button></div>
+      <nav class="section-nav" id="settings-nav" aria-label="Settings sections">
+        <button type="button" data-fold="prefs" aria-current="true">Preferences</button>
+        <button type="button" data-fold="ai">AI</button>
+        <button type="button" data-fold="mailbox">Mailbox</button>
+        <button type="button" data-fold="ooo">Out of Office</button>
+        <button type="button" data-fold="bot">Bot</button>
+      </nav>
       <section class="settings-account-context" aria-label="Settings mailbox">
           <label for="settings-account">Selected mailbox</label>
           <select id="settings-account"></select>
           <p id="settings-mailbox-note" class="hint"></p>
           <button type="button" class="ghost" id="settings-reconnect">Reconnect mailbox</button>
       </section>
-      <div class="settings-layout">
-        <section aria-labelledby="settings-prefs-title">
-          <h3 id="settings-prefs-title">Preferences</h3>
+      <div class="settings-folds">
+        <section class="fold is-open" data-fold="prefs" aria-labelledby="settings-prefs-title">
+          <button type="button" class="fold-toggle" aria-expanded="true" aria-controls="settings-prefs-panel">
+            <h3 id="settings-prefs-title">Preferences</h3>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+          <div class="fold-panel" id="settings-prefs-panel">
           <div id="prefs">
             <div class="field">
               <label for="pref-theme">Theme</label>
@@ -624,9 +650,14 @@
             </div>
             <p id="settings-status" role="status"></p>
           </div>
+          </div>
         </section>
-        <section aria-labelledby="settings-ai-title">
-          <h3 id="settings-ai-title">AI</h3>
+        <section class="fold" data-fold="ai" aria-labelledby="settings-ai-title">
+          <button type="button" class="fold-toggle" aria-expanded="false" aria-controls="settings-ai-panel">
+            <h3 id="settings-ai-title">AI</h3>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+          <div class="fold-panel" id="settings-ai-panel" hidden>
           <div id="ai-fields">
             <label for="ai-base">Base URL</label>
             <input id="ai-base" type="text" spellcheck="false" autocomplete="off" />
@@ -642,7 +673,14 @@
             </div>
             <p id="ai-status" role="status"></p>
           </div>
-          <h3 id="settings-mailbox-title">Mailbox</h3>
+          </div>
+        </section>
+        <section class="fold" data-fold="mailbox" aria-labelledby="settings-mailbox-title">
+          <button type="button" class="fold-toggle" aria-expanded="false" aria-controls="settings-mailbox-panel">
+            <h3 id="settings-mailbox-title">Mailbox</h3>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+          <div class="fold-panel" id="settings-mailbox-panel" hidden>
           <p id="settings-capabilities" class="hint preserve-lines" role="status"></p>
           <div class="row"><button type="button" class="ghost" id="settings-capabilities-refresh">Refresh permissions</button><button type="button" class="ghost" id="settings-calendar">Manage calendar access</button></div>
           <details id="account-recovery"><summary>Existing user? Recover access or find missing data</summary><p>If your mailbox is listed, reconnect the same address to keep its cached work. Do not remove the account to fix sign-in.</p><p>If this profile is empty, confirm you opened the expected app and operating-system user. Back up the old app’s data before changing folders. Morrow has not verified or migrated an older profile or its credentials. Reconnecting downloads available server mail; it does not recover unsynced local drafts from another profile.</p><p>For help, open Debug log from Settings and review a redacted support preview. Do not share passwords, OAuth files, or database files.</p></details>
@@ -678,9 +716,14 @@
               <span>Remove account</span>
             </button>
           </div>
+          </div>
         </section>
-        <section id="settings-ooo" aria-labelledby="settings-ooo-title">
-          <h3 id="settings-ooo-title">Out of Office</h3>
+        <section class="fold" id="settings-ooo" data-fold="ooo" aria-labelledby="settings-ooo-title">
+          <button type="button" class="fold-toggle" aria-expanded="false" aria-controls="settings-ooo-panel">
+            <h3 id="settings-ooo-title">Out of Office</h3>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+          <div class="fold-panel" id="settings-ooo-panel" hidden>
           <p id="ooo-account" class="hint"></p>
           <p id="ooo-note" class="hint"></p>
           <div class="row">
@@ -718,9 +761,14 @@
             </div>
           </div>
           <p id="ooo-status" role="status"></p>
+          </div>
         </section>
-        <section id="settings-bot" aria-labelledby="settings-bot-title">
-          <h3 id="settings-bot-title">Bot access</h3>
+        <section class="fold" id="settings-bot" data-fold="bot" aria-labelledby="settings-bot-title">
+          <button type="button" class="fold-toggle" aria-expanded="false" aria-controls="settings-bot-panel">
+            <h3 id="settings-bot-title">Bot access</h3>
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </button>
+          <div class="fold-panel" id="settings-bot-panel" hidden>
           <button type="button" class="ghost" id="bot-review-link">Review draft proposals</button>
           <p class="hint">The local bridge starts off. Create a grant, copy its secret once, then enable and verify the listener. A grant can read cached mail for the accounts you select, including Sent and Drafts. Message text is untrusted. Nothing is sent from the bridge. Tailscale Serve may forward 127.0.0.1:47831. Do not enable Funnel.</p>
           <p id="bot-listen" class="hint"></p>
@@ -777,6 +825,7 @@
           <h4 id="bot-draft-heading" tabindex="-1">Draft proposals</h4>
           <ul id="bot-drafts" aria-label="Draft proposals"></ul>
           <p id="bot-status" role="status"></p>
+          </div>
         </section>
       </div>
       <p class="hint">The API key stays in local AI config, the same store as Morrow Mail → AI Setup. Leave the key blank to keep the saved one. Fetch models uses this form, or the saved key when the box is blank. Test connection uses the saved config — Save AI first if you changed these fields. Preferences are saved on this computer.</p>

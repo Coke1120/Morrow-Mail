@@ -44,6 +44,7 @@ const state = {
   },
   providerFolders: null,
   dragMessage: null,
+  dragFolder: null,
   selectedIds: [],
   selectionAnchor: "",
   sync: null,
@@ -476,6 +477,56 @@ function moveTargetFlags(nodes, sourceId, kind, delimiter) {
   };
 }
 
+function folderCanNest(kind, folder) {
+  if (!folder) return { ok: false, reason: "Choose a folder." };
+  if (isVirtualMailbox(folder)) return { ok: false, reason: "Starred is a filter, not a folder." };
+  if (kind === "imap") {
+    const item = imapFolderMenu(folder).items[0];
+    return item && item.disabled
+      ? { ok: false, reason: item.reason || "This folder cannot be moved." }
+      : { ok: true, reason: "" };
+  }
+  if (kind !== "gmail" && kind !== "outlook") {
+    return { ok: false, reason: "This mailbox cannot nest folders." };
+  }
+  const item = moveMenuItem(folder, kind);
+  return item.disabled
+    ? { ok: false, reason: item.reason || "This folder cannot be moved." }
+    : { ok: true, reason: "" };
+}
+
+function nestDropPlan(source, target, flags) {
+  if (!source || !source.folderId || !source.kind) {
+    return { ok: false, reason: "no_folder", message: "Choose a label or folder to move." };
+  }
+  if (!target || !target.kind) {
+    return { ok: false, reason: "no_target", message: "Drop onto a folder, or onto Top level to unnest." };
+  }
+  if (source.kind !== target.kind) {
+    return { ok: false, reason: "other_kind", message: "Nesting stays with this mailbox's folders." };
+  }
+  if (source.accountId && target.accountId && source.accountId !== target.accountId) {
+    return { ok: false, reason: "other_account", message: "Nesting stays inside this mailbox." };
+  }
+  const view = flags || { root: { disabled: true, reason: "Choose a folder." }, nodes: [] };
+  const dest = target.isRoot
+    ? view.root
+    : (view.nodes || []).find((node) => node && node.id === String(target.id || ""));
+  if (!dest) return { ok: false, reason: "missing", message: "That destination is not in this list." };
+  if (dest.disabled) return { ok: false, reason: "blocked", message: dest.reason || "That destination is not available." };
+  return {
+    ok: true,
+    reason: "",
+    message: "",
+    channel: source.kind === "imap" ? "mail:moveFolder" : "mail:moveProviderFolder",
+    params: {
+      accountId: source.accountId,
+      folderId: source.folderId,
+      destinationId: target.isRoot ? "" : String(target.id || ""),
+    },
+  };
+}
+
 function messageTargetFlags(nodes, currentId) {
   const current = String(currentId || "");
   return {
@@ -592,6 +643,11 @@ function relocatedFolderId(current, renames) {
   const rows = Array.isArray(renames) ? renames : [];
   const hit = rows.find((row) => row && row.from === id);
   return hit && hit.to ? String(hit.to) : id;
+}
+
+function dragGhostHotspot() {
+  // The pointer sits in the transparent spacer. The chip hangs below the folder name.
+  return { x: 14, y: 8, offset: 48 };
 }
 
 function messageDragPayload(email) {
@@ -1190,6 +1246,65 @@ function guardOoo(fn) {
 function motionApi() {
   const motion = window.morrowMotion;
   return motion && typeof motion.rows === "function" ? motion : null;
+}
+
+const pageMotionArmed = { agent: false, calendar: false, brain: false };
+
+function armPageMotion(view) {
+  if (Object.prototype.hasOwnProperty.call(pageMotionArmed, view)) pageMotionArmed[view] = true;
+}
+
+function paintMotionRows(view, nodes) {
+  if (!pageMotionArmed[view]) return;
+  const list = [];
+  if (nodes && nodes.length) {
+    for (let i = 0; i < nodes.length; i += 1) {
+      if (nodes[i] && nodes[i].nodeType === 1) list.push(nodes[i]);
+    }
+  }
+  if (!list.length) return;
+  pageMotionArmed[view] = false;
+  const motion = motionApi();
+  if (motion) motion.rows(list);
+}
+
+function playPageSections(id) {
+  const motion = motionApi();
+  const node = $(id);
+  if (!motion || !node || typeof motion.sections !== "function") return;
+  motion.sections(node.querySelectorAll(":scope > .motion-block"));
+}
+
+function setPageBusy(panel, on, label) {
+  const root = typeof panel === "string" ? $(panel) : panel;
+  if (!root || !root.querySelector) return;
+  let overlay = root.querySelector(":scope > .page-busy");
+  if (!on) {
+    root.removeAttribute("aria-busy");
+    if (overlay) overlay.remove();
+    return;
+  }
+  root.setAttribute("aria-busy", "true");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.className = "page-busy";
+    overlay.setAttribute("role", "status");
+    const spin = document.createElement("span");
+    spin.className = "page-busy-spin";
+    spin.setAttribute("aria-hidden", "true");
+    const text = document.createElement("p");
+    text.className = "page-busy-label";
+    overlay.append(spin, text);
+    root.appendChild(overlay);
+  }
+  const text = overlay.querySelector(".page-busy-label");
+  if (text) text.textContent = label || "Working…";
+}
+
+let agentLoadOverlay = false;
+
+function syncAgentPageBusy() {
+  setPageBusy("agent-panel", !!(agentChatBusy || agentLoadOverlay), "Working…");
 }
 
 function hidePane(id) {
@@ -1965,6 +2080,42 @@ function syncRemove() {
   button.title = live ? "Remove this account. Mail stays on the server." : "Connect a mailbox before removing one.";
 }
 
+function folderRootDrop(kind, accountId) {
+  const row = document.createElement("div");
+  row.className = "folder-root";
+  row.dataset.nestKind = kind;
+  row.dataset.nestRoot = "1";
+  row.dataset.nestAccount = accountId || "";
+  row.dataset.nestId = "";
+  row.setAttribute("role", "group");
+  row.setAttribute("aria-label", "Top level. Drop a folder here to unnest.");
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = "Top level";
+  row.appendChild(name);
+  return row;
+}
+
+function applyNestDrag(node, kind, folder, accountId, baseTitle, baseLabel) {
+  const nest = folderCanNest(kind, folder);
+  node.dataset.nestKind = kind;
+  node.dataset.nestId = String((folder && folder.id) || "");
+  node.dataset.nestAccount = accountId || "";
+  node.dataset.nestRoot = "0";
+  node.dataset.nestDrag = nest.ok ? "1" : "0";
+  node.draggable = !!nest.ok;
+  const title = baseTitle || "Folder";
+  const label = baseLabel || title;
+  if (nest.ok) {
+    node.title = title + " Drag onto a folder to nest, or onto Top level to unnest.";
+    node.setAttribute("aria-label", label + " Drag onto a folder to nest, or onto Top level to unnest.");
+  } else {
+    node.title = nest.reason ? title + " " + nest.reason : title;
+    node.setAttribute("aria-label", label + (nest.reason ? " " + nest.reason : ""));
+  }
+  return nest;
+}
+
 function renderAccounts() {
   renderSettingsAccounts();
   refreshMailVacation();
@@ -2009,6 +2160,7 @@ function renderAccounts() {
       nav.append(note, reconnect);
     }
     if (expanded) {
+    nav.appendChild(folderRootDrop("imap", account.id));
     for (const folder of folderTree(foldersOf(account), accountDelimiter(account))) {
       const button = document.createElement("button");
       button.type = "button";
@@ -2043,10 +2195,18 @@ function renderAccounts() {
       }
       const unread = folder.unreadCount ? `, ${folder.unreadCount} unread` : "";
       const serverName = String(folder.name || folder.id || "");
-      button.title = virtual ? "Starred messages in this mailbox" : (serverName && serverName !== labelText ? serverName : labelText);
-      button.setAttribute("aria-label", virtual
+      const baseTitle = virtual
+        ? "Starred messages in this mailbox"
+        : (serverName && serverName !== labelText ? serverName : labelText);
+      const baseLabel = virtual
         ? "Starred. Downloaded messages flagged with a star."
-        : `${labelText || "Folder"}${unread}. Right-click to move.`);
+        : `${labelText || "Folder"}${unread}. Right-click to move.`;
+      if (virtual) {
+        button.title = baseTitle;
+        button.setAttribute("aria-label", baseLabel);
+      } else {
+        applyNestDrag(button, "imap", folder, account.id, baseTitle, baseLabel);
+      }
       button.addEventListener("click", () => {
         selectFolder(account.id, folder.id).catch((error) => showStatus(error.message, true));
       });
@@ -2102,18 +2262,16 @@ function appendProviderBlock(nav, account) {
     note.textContent = provider === "outlook" ? "No Outlook folders returned." : "No Gmail labels returned.";
     block.appendChild(note);
   }
+  block.appendChild(folderRootDrop(provider, account.id));
   for (const folder of providerLabelTree(view.folders)) {
     const row = document.createElement("div");
     row.className = "provider-row";
     row.dataset.dropKind = provider === "outlook" ? "outlook" : "gmail";
     row.dataset.dropId = folder.id;
-    row.title = folder.name;
     row.tabIndex = 0;
     row.setAttribute("aria-haspopup", "menu");
     const shown = folder.label || folder.name;
-    row.setAttribute("aria-label", folder.editable
-      ? shown + ". Right-click for Rename, Move, and Delete."
-      : shown + ". Right-click to move.");
+    applyNestDrag(row, provider, folder, account.id, folder.name || shown, shown + ".");
     row.style.paddingLeft = (folder.depth * 14) + "px";
     const name = document.createElement("span");
     name.className = "name";
@@ -2249,7 +2407,9 @@ function listClickSelection(selected, anchor, visibleIds, clickedId, mods) {
     else set.add(id);
     return { ids: selectionIds(Array.from(set)), anchor: id };
   }
-  return { ids: [id], anchor: id };
+  // A plain click opens the message. It does not leave a one-row selection,
+  // so the checkbox column and selection bar stay hidden.
+  return clearListSelection();
 }
 
 function toggleSelectionId(selected, id) {
@@ -2826,6 +2986,11 @@ function setNavCollapsed(collapsed) {
     button.title = label;
     const text = button.querySelector(".nav-label");
     if (text) text.textContent = on ? "Expand" : "Collapse";
+  }
+  const brand = document.querySelector(".rail-brand");
+  if (brand) {
+    if (on) brand.setAttribute("title", "Morrow Mail");
+    else brand.removeAttribute("title");
   }
   try { localStorage.setItem("morrow.navCollapsed", on ? "1" : "0"); } catch { /* the choice stays for this window */ }
 }
@@ -5185,7 +5350,9 @@ async function dropOrganized(target, message) {
 }
 
 function clearDropTargets() {
-  for (const node of document.querySelectorAll(".drop-target")) node.classList.remove("drop-target");
+  for (const node of document.querySelectorAll(".drop-target, .drop-reject")) {
+    node.classList.remove("drop-target", "drop-reject");
+  }
 }
 
 function onListContext(event) {
@@ -5225,6 +5392,28 @@ function clearMailDragChrome() {
   for (const row of document.querySelectorAll(".message-row.dragging")) row.classList.remove("dragging");
 }
 
+function setOffsetDragGhost(event, label) {
+  if (!event || !event.dataTransfer) return;
+  const spot = dragGhostHotspot();
+  const ghost = document.createElement("div");
+  ghost.className = "drag-ghost";
+  ghost.setAttribute("aria-hidden", "true");
+  const spacer = document.createElement("div");
+  spacer.className = "drag-ghost-spacer";
+  spacer.style.height = spot.offset + "px";
+  const chip = document.createElement("div");
+  chip.className = "drag-ghost-chip";
+  chip.textContent = String(label || "Mail").slice(0, 80);
+  ghost.append(spacer, chip);
+  document.body.appendChild(ghost);
+  try {
+    event.dataTransfer.setDragImage(ghost, spot.x, spot.y);
+  } catch { /* the browser keeps its own preview */ }
+  setTimeout(() => {
+    if (ghost.parentNode) ghost.parentNode.removeChild(ghost);
+  }, 0);
+}
+
 function onMessageDragStart(event) {
   if (modifierBlocksDrag(event)) {
     event.preventDefault();
@@ -5247,6 +5436,10 @@ function onMessageDragStart(event) {
   document.body.classList.add("is-mail-drag");
   const rows = inSelection ? document.querySelectorAll(".message-row.selected") : (row ? [row] : []);
   for (const item of rows) item.classList.add("dragging");
+  const count = Array.isArray(payload.messages) ? payload.messages.length : 1;
+  const subjectNode = button.querySelector(".subject");
+  const subject = subjectNode && subjectNode.textContent ? subjectNode.textContent.trim() : "Message";
+  setOffsetDragGhost(event, count > 1 ? count + " messages" : subject);
 }
 
 function onMessageDragEnd() {
@@ -5255,7 +5448,151 @@ function onMessageDragEnd() {
   clearMailDragChrome();
 }
 
+function eventElement(event) {
+  const target = event && event.target;
+  if (!target) return null;
+  return target.nodeType === 1 ? target : target.parentElement;
+}
+
+function armFolderRoots(payload) {
+  for (const node of document.querySelectorAll(".folder-root")) {
+    const match = payload
+      && node.dataset.nestKind === payload.kind
+      && node.dataset.nestAccount === payload.accountId;
+    node.classList.toggle("is-armed", !!match);
+  }
+}
+
+function clearFolderDrag() {
+  state.dragFolder = null;
+  document.body.classList.remove("is-folder-drag");
+  for (const node of document.querySelectorAll(".dragging-folder")) node.classList.remove("dragging-folder");
+  armFolderRoots(null);
+  clearDropTargets();
+}
+
+function folderNestContext(payload) {
+  const account = accountForMove(payload && payload.accountId);
+  if (!account || !payload) return null;
+  const kind = payload.kind;
+  if (kind === "imap") {
+    const delimiter = accountDelimiter(account);
+    const nodes = moveNodesFromFolders("imap", foldersOf(account), delimiter);
+    return { nodes, flags: moveTargetFlags(nodes, payload.folderId, "imap", delimiter) };
+  }
+  if (kind !== "gmail" && kind !== "outlook") {
+    return { blocked: "This mailbox cannot nest folders." };
+  }
+  const listed = providerPayloadFor(account);
+  const view = providerFolderState(listed);
+  if (view.mode !== "live") {
+    return { blocked: (listed && listed.message) || providerCopy(view.reason, kind) };
+  }
+  const nodes = moveNodesFromFolders(kind, view.folders, "/");
+  return { nodes, flags: moveTargetFlags(nodes, payload.folderId, kind, "/") };
+}
+
+function nestTargetFrom(node) {
+  if (!node || !node.dataset || !node.dataset.nestKind) return null;
+  return {
+    kind: node.dataset.nestKind,
+    accountId: node.dataset.nestAccount || "",
+    id: node.dataset.nestId || "",
+    isRoot: node.dataset.nestRoot === "1",
+  };
+}
+
+function nestHover(payload, node) {
+  const target = nestTargetFrom(node);
+  if (!payload || !target) return { ok: false, message: "Drop onto a folder, or onto Top level to unnest." };
+  const cached = payload.nest;
+  if (cached && cached.blocked) return { ok: false, message: cached.blocked };
+  if (!cached || !cached.flags) return { ok: false, message: "That mailbox is not connected." };
+  return nestDropPlan(payload, target, cached.flags);
+}
+
+function onFolderDragStart(event) {
+  if (state.dragMessage) return;
+  const origin = eventElement(event);
+  const node = origin && origin.closest && origin.closest("[data-nest-drag='1']");
+  if (!node || !event.dataTransfer) return;
+  const payload = {
+    kind: node.dataset.nestKind,
+    accountId: node.dataset.nestAccount || "",
+    folderId: node.dataset.nestId || "",
+    name: (node.querySelector(".name") && node.querySelector(".name").textContent) || "Folder",
+  };
+  if (!payload.folderId) {
+    event.preventDefault();
+    return;
+  }
+  payload.nest = folderNestContext(payload);
+  state.dragFolder = payload;
+  event.dataTransfer.setData("application/x-morrow-folder", JSON.stringify({
+    kind: payload.kind,
+    accountId: payload.accountId,
+    folderId: payload.folderId,
+    name: payload.name,
+  }));
+  event.dataTransfer.effectAllowed = "move";
+  document.body.classList.add("is-folder-drag");
+  node.classList.add("dragging-folder");
+  armFolderRoots(payload);
+  setOffsetDragGhost(event, payload.name);
+}
+
+function onFolderDragEnd() {
+  clearFolderDrag();
+}
+
+async function dropFolderNest(source, node) {
+  const target = nestTargetFrom(node);
+  const ctx = folderNestContext(source);
+  if (!ctx) {
+    showStatus("That mailbox is not connected.", true);
+    return;
+  }
+  if (ctx.blocked) {
+    showStatus(ctx.blocked, true);
+    return;
+  }
+  const plan = nestDropPlan(source, target, ctx.flags);
+  if (!plan.ok) {
+    showStatus(plan.message, true);
+    return;
+  }
+  const sourceNode = (ctx.nodes || []).find((row) => row.id === source.folderId);
+  const destNode = target && target.isRoot ? null : (ctx.nodes || []).find((row) => row.id === (target && target.id));
+  const destinationName = target && target.isRoot
+    ? "(Top level / root)"
+    : ((destNode && (destNode.path || destNode.label || destNode.name)) || "folder");
+  await commitFolderMove({
+    kind: source.kind,
+    accountId: source.accountId,
+    sourceId: source.folderId,
+    sourceName: source.name || (sourceNode && sourceNode.label) || "Folder",
+    sourcePath: (sourceNode && (sourceNode.path || sourceNode.name)) || source.name || "Folder",
+  }, {
+    isRoot: !!(target && target.isRoot),
+    id: target && target.isRoot ? "" : (target && target.id) || "",
+    path: destinationName,
+    label: destinationName,
+    name: destinationName,
+  });
+}
+
 function onFolderDragOver(event) {
+  if (state.dragFolder) {
+    const origin = eventElement(event);
+    const node = origin && origin.closest && origin.closest("[data-nest-kind]");
+    clearDropTargets();
+    if (!node) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    const hover = nestHover(state.dragFolder, node);
+    node.classList.add(hover.ok ? "drop-target" : "drop-reject");
+    return;
+  }
   const node = event.target.closest && event.target.closest("[data-drop-kind]");
   if (!node || !state.dragMessage) return;
   event.preventDefault();
@@ -5265,6 +5602,24 @@ function onFolderDragOver(event) {
 }
 
 function onFolderDrop(event) {
+  if (state.dragFolder) {
+    const origin = eventElement(event);
+    const node = origin && origin.closest && origin.closest("[data-nest-kind]");
+    const source = {
+      kind: state.dragFolder.kind,
+      accountId: state.dragFolder.accountId,
+      folderId: state.dragFolder.folderId,
+      name: state.dragFolder.name,
+    };
+    event.preventDefault();
+    clearFolderDrag();
+    if (!node) {
+      showStatus("Drop onto a folder, or onto Top level to unnest.", true);
+      return;
+    }
+    guard(() => dropFolderNest(source, node));
+    return;
+  }
   const node = event.target.closest && event.target.closest("[data-drop-kind]");
   clearDropTargets();
   if (!node) return;
@@ -5293,6 +5648,8 @@ function wireOrganize() {
   $("messages").addEventListener("dragstart", onMessageDragStart);
   $("messages").addEventListener("dragend", onMessageDragEnd);
   const folders = $("folders");
+  folders.addEventListener("dragstart", onFolderDragStart);
+  folders.addEventListener("dragend", onFolderDragEnd);
   folders.addEventListener("dragover", onFolderDragOver);
   folders.addEventListener("drop", onFolderDrop);
   document.addEventListener("click", (event) => {
@@ -7191,10 +7548,112 @@ async function savePref(row) {
   }
 }
 
+function settingsFolds() {
+  return document.querySelectorAll("#settings .settings-folds .fold");
+}
+
+function applySettingsFold(fold, open, animate) {
+  const panel = fold.querySelector(".fold-panel");
+  const toggle = fold.querySelector(".fold-toggle");
+  fold.classList.toggle("is-open", open);
+  if (toggle) toggle.setAttribute("aria-expanded", open ? "true" : "false");
+  const motion = motionApi();
+  const live = !!(animate && motion && typeof motion.fold === "function" && !(typeof motion.reduced === "function" && motion.reduced()));
+  if (panel && live) motion.fold(panel, open);
+  else if (panel) panel.hidden = !open;
+}
+
+function setSettingsFold(name, open, animate) {
+  const want = open !== false;
+  for (const fold of settingsFolds()) {
+    const next = fold.getAttribute("data-fold") === name ? want : false;
+    if (fold.classList.contains("is-open") === next) continue;
+    applySettingsFold(fold, next, animate !== false);
+  }
+  const nav = $("settings-nav");
+  if (!nav) return;
+  for (const button of nav.querySelectorAll("[data-fold]")) {
+    button.setAttribute("aria-current", want && button.getAttribute("data-fold") === name ? "true" : "false");
+  }
+}
+
+function revealSettingsFold(name) {
+  setSettingsFold(name, true, false);
+  const fold = document.querySelector('#settings .fold[data-fold="' + name + '"]');
+  if (fold) fold.scrollIntoView({ block: "start" });
+}
+
+function wireSettingsFolds() {
+  const root = document.querySelector("#settings .settings-folds");
+  if (root && root.dataset.wired !== "1") {
+    root.dataset.wired = "1";
+    root.addEventListener("click", (event) => {
+      const toggle = event.target.closest && event.target.closest(".fold-toggle");
+      if (!toggle || !root.contains(toggle)) return;
+      const fold = toggle.closest(".fold");
+      if (!fold) return;
+      setSettingsFold(fold.getAttribute("data-fold"), !fold.classList.contains("is-open"), true);
+    });
+  }
+  const nav = $("settings-nav");
+  if (!nav || nav.dataset.wired === "1") return;
+  nav.dataset.wired = "1";
+  nav.addEventListener("click", (event) => {
+    const button = event.target.closest && event.target.closest("button[data-fold]");
+    if (!button || !nav.contains(button)) return;
+    const name = button.getAttribute("data-fold");
+    setSettingsFold(name, true, true);
+    const fold = document.querySelector('#settings .fold[data-fold="' + name + '"]');
+    if (fold) fold.scrollIntoView({ block: "nearest" });
+  });
+}
+
+function wireSectionNav(id) {
+  const nav = $(id);
+  if (!nav || nav.dataset.wired === "1") return;
+  nav.dataset.wired = "1";
+  nav.addEventListener("click", (event) => {
+    const button = event.target.closest && event.target.closest("button[data-scroll]");
+    if (!button || !nav.contains(button) || button.disabled) return;
+    const target = $(button.getAttribute("data-scroll"));
+    if (!target || target.hidden) return;
+    target.scrollIntoView({ block: "nearest" });
+    for (const item of nav.querySelectorAll("button[data-scroll]")) {
+      item.setAttribute("aria-current", item === button ? "true" : "false");
+    }
+  });
+}
+
+function bindAgentToolsMotion() {
+  const details = $("agent-tools");
+  if (!details || details.dataset.motionWired === "1") return;
+  details.dataset.motionWired = "1";
+  const summary = details.querySelector("summary");
+  const panel = details.querySelector(".fold-panel");
+  if (!summary || !panel) return;
+  summary.addEventListener("click", (event) => {
+    const motion = motionApi();
+    if (!motion || typeof motion.fold !== "function" || (typeof motion.reduced === "function" && motion.reduced())) return;
+    event.preventDefault();
+    if (!details.open) {
+      details.open = true;
+      motion.fold(panel, true);
+      return;
+    }
+    Promise.resolve(motion.fold(panel, false)).then(() => {
+      details.open = false;
+      panel.hidden = false;
+    });
+  });
+}
+
 function openSettings() {
   if (!state.settingsAccountId) state.settingsAccountId = state.accountId;
   paintSettingsMailbox();
   openDialog("settings");
+  wireSettingsFolds();
+  const motion = motionApi();
+  if (motion && typeof motion.sections === "function") motion.sections(document.querySelectorAll("#settings .fold"));
   loadSettings();
 }
 
@@ -7253,7 +7712,7 @@ async function manageMailVacation() {
   if (!id) return;
   openSettings();
   if (settingsAccount()?.id !== id && !(await changeSettingsMailbox(id))) return;
-  $("settings-ooo").scrollIntoView({ block: "start" });
+  revealSettingsFold("ooo");
   $("ooo-refresh").focus();
 }
 
@@ -7854,7 +8313,14 @@ function showBrainPane(name) {
       tab.setAttribute("aria-selected", on ? "true" : "false");
       tab.tabIndex = on ? 0 : -1;
     }
-    if (panel) panel.hidden = !on;
+    if (panel) {
+      const wasHidden = panel.hidden;
+      panel.hidden = !on;
+      if (on && wasHidden) {
+        const motion = motionApi();
+        if (motion && motion.fadePane) motion.fadePane(panel, "y");
+      }
+    }
   }
   if (next === "rules") {
     loadInboxRules().catch((error) => {
@@ -7983,6 +8449,7 @@ function paintBrain(snapshot, view) {
     }
     root.appendChild(block);
   }
+  paintMotionRows("brain", root.querySelectorAll(".brain-row"));
   const busy = brainFixBusy || !!(view && (view.refreshing || view.rebuilding || view.fixing));
   $("brain-add").textContent = brainEditId ? "Save" : "Add";
   $("brain-cancel").hidden = !brainEditId;
@@ -8771,7 +9238,7 @@ async function refreshAiSetupState() {
 }
 function openAiSetup() {
   openSettings();
-  $("settings-ai-title").scrollIntoView({ block: "start" });
+  revealSettingsFold("ai");
   $("ai-base").focus();
 }
 
@@ -9587,6 +10054,7 @@ function paintAgentHome(payload) {
     }
     root.appendChild(block);
   }
+  paintMotionRows("agent", root.querySelectorAll(".agent-section"));
 }
 
 function agentTodoCard(item) {
@@ -9671,6 +10139,7 @@ function setAgentBusy(busy) {
   if (send) send.disabled = busy;
   if (triage) triage.disabled = busy;
   if (input) input.disabled = busy;
+  syncAgentPageBusy();
 }
 
 async function sendAgentText(text) {
@@ -9704,27 +10173,39 @@ async function saveAgentMemory() {
   if (status) status.textContent = "Notes saved.";
 }
 
-async function loadAgent() {
+async function loadAgent(options) {
+  const quiet = !!(options && options.overlay === false);
   const gen = ++agentGen;
-  const [triage, history, chat] = await Promise.all([
-    call("nativeAgent:home:todosCached"),
-    call("nativeAgent:history"),
-    call("nativeAgent:chatHistory"),
-  ]);
-  if (gen !== agentGen || state.view !== "agent") return;
-  agentTurns = chat && Array.isArray(chat.turns) ? chat.turns : [];
-  const notes = $("agent-memory");
-  if (notes && document.activeElement !== notes) notes.value = (chat && chat.memory && chat.memory.notes) || "";
-  const runs = history && Array.isArray(history.runs) ? history.runs : triage && triage.runs;
-  const payload = Object.assign({}, triage, { runs });
-  paintAgent(payload, "");
-  await loadStudio();
-  const reason = triage && triage.reason;
-  if (gen !== agentGen || state.view !== "agent") return;
-  if (!(triage && triage.stale) || reason === "needs_key" || reason === "needs_mailbox") return;
-  const fresh = await call("nativeAgent:triage");
-  if (gen !== agentGen || state.view !== "agent") return;
-  paintAgent(Object.assign({}, fresh, { runs }), "");
+  const hold = (on) => {
+    if (gen !== agentGen) return;
+    agentLoadOverlay = !!on;
+    syncAgentPageBusy();
+  };
+  if (!quiet) hold(true);
+  try {
+    const [triage, history, chat] = await Promise.all([
+      call("nativeAgent:home:todosCached"),
+      call("nativeAgent:history"),
+      call("nativeAgent:chatHistory"),
+    ]);
+    if (gen !== agentGen || state.view !== "agent") return;
+    agentTurns = chat && Array.isArray(chat.turns) ? chat.turns : [];
+    const notes = $("agent-memory");
+    if (notes && document.activeElement !== notes) notes.value = (chat && chat.memory && chat.memory.notes) || "";
+    const runs = history && Array.isArray(history.runs) ? history.runs : triage && triage.runs;
+    const payload = Object.assign({}, triage, { runs });
+    paintAgent(payload, "");
+    await loadStudio();
+    if (gen !== agentGen || state.view !== "agent") return;
+    const reason = triage && triage.reason;
+    if (!(triage && triage.stale) || reason === "needs_key" || reason === "needs_mailbox") return;
+    hold(true);
+    const fresh = await call("nativeAgent:triage");
+    if (gen !== agentGen || state.view !== "agent") return;
+    paintAgent(Object.assign({}, fresh, { runs }), "");
+  } finally {
+    if (gen === agentGen) hold(false);
+  }
 }
 
 async function runTriage() {
@@ -9750,7 +10231,7 @@ function startAgentPoll() {
       stopAgentPoll();
       return;
     }
-    loadAgent().catch(() => {});
+    loadAgent({ overlay: false }).catch(() => {});
   }, 60000);
 }
 
@@ -9785,8 +10266,11 @@ function showPrimary(view, id) {
     hidePane(pane);
   }
   if (id !== "log-panel") hidePane("log-panel");
-  if (swap) revealPanel(id);
-  else {
+  if (swap) {
+    armPageMotion(view);
+    revealPanel(id);
+    playPageSections(id);
+  } else {
     const node = $(id);
     if (node) node.hidden = false;
   }
@@ -9923,6 +10407,7 @@ function paintCalendar(payload) {
   statusEl.classList.toggle("error", view.error === true);
   statusEl.classList.toggle("is-empty", !view.showGrid);
   $("calendar-create").hidden = !view.showForm;
+  syncCalendarNav(view);
   const grant = $("calendar-grant");
   grant.disabled = !connection.canGrant;
   grant.textContent = connection.label;
@@ -9976,6 +10461,26 @@ function paintCalendar(payload) {
   paintAgenda(view.events);
   const selected = selectedCalendarEvent(payload);
   paintCalendarDetail(selected, calendarNameOf(view.calendars, (selected && selected.calendarId) || state.calendarId));
+  const motionNodes = [];
+  grid.querySelectorAll(".calendar-day:not(.pad)").forEach((node) => motionNodes.push(node));
+  const agenda = $("calendar-agenda");
+  if (agenda) agenda.querySelectorAll(".agenda-item").forEach((node) => motionNodes.push(node));
+  paintMotionRows("calendar", motionNodes);
+}
+
+function syncCalendarNav(view) {
+  const nav = $("calendar-nav");
+  if (!nav) return;
+  const grid = !!(view && view.showGrid);
+  const form = !!(view && view.showForm);
+  for (const button of nav.querySelectorAll("[data-scroll]")) {
+    const id = button.getAttribute("data-scroll");
+    const enabled = id === "calendar-create" ? form : grid;
+    button.disabled = !enabled;
+    if (enabled) button.removeAttribute("title");
+    else button.title = "Shown when this month has a calendar.";
+    if (!enabled) button.setAttribute("aria-current", "false");
+  }
 }
 
 async function loadCalendar() {
@@ -10069,12 +10574,14 @@ async function submitCalendarEvent(event) {
 }
 
 function shiftMonth(delta) {
+  armPageMotion("calendar");
   const cursor = state.calendarCursor || new Date();
   state.calendarCursor = new Date(cursor.getFullYear(), cursor.getMonth() + delta, 1);
   loadCalendar().catch((error) => showStatus(error.message, true));
 }
 
 function showCalendarToday() {
+  armPageMotion("calendar");
   state.calendarCursor = new Date();
   state.calendarEventId = "";
   loadCalendar().catch((error) => showStatus(error.message, true));
@@ -10459,6 +10966,10 @@ function wire() {
   wireSelection();
   const motion = motionApi();
   if (motion) motion.bindChrome(document);
+  wireSettingsFolds();
+  wireSectionNav("agent-nav");
+  wireSectionNav("calendar-nav");
+  bindAgentToolsMotion();
   for (const dialog of document.querySelectorAll("dialog")) {
     dialog.addEventListener("cancel", (event) => {
       if (dialog.id === "compose-close-review") return;
