@@ -86,7 +86,7 @@ function checkNormal(data) {
   assert(data.closingOpacity < 0.95, `dialog did not leave, opacity ${data.closingOpacity}`);
   assert(data.closed === true, "dialog did not close");
   assert(data.agentHidden === false, "agent panel stayed hidden");
-  assert(data.shellHidden === false, "mail shell hid while agent chat is in the sidebar");
+  assert(data.shellHidden === true, "Agent must replace the mail shell");
   assert(data.agentOpacity < 0.98, `agent panel did not enter, opacity ${data.agentOpacity}`);
 }
 
@@ -97,7 +97,7 @@ function checkReduced(data) {
   assert(Math.abs(data.settledCenter - data.viewMid) < 3, `reduced dialog off center (${data.settledCenter} vs ${data.viewMid})`);
   assert(data.closed === true, "reduced dialog did not close");
   assert(data.hoverTransform === "none" || data.hoverTransform === data.beforeHover, `reduced hover changed transform (${data.hoverTransform})`);
-  assert(data.shellHidden === false, "reduced motion hid the mail shell");
+  assert(data.shellHidden === true, "Agent must replace the mail shell with reduced motion too");
   assert(data.agentHidden === false && data.agentOpacity === 1, `reduced agent opacity ${data.agentOpacity}`);
 }
 

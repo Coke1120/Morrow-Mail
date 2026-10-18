@@ -5,9 +5,9 @@ const path = require("node:path");
 
 async function run() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "morrow-account-recovery-"));
-  const env = { GENMAIL_MAIL_DIR: process.env.GENMAIL_MAIL_DIR, GENMAIL_MAIL_SECRETS: process.env.GENMAIL_MAIL_SECRETS };
-  process.env.GENMAIL_MAIL_DIR = dir;
-  process.env.GENMAIL_MAIL_SECRETS = "memory";
+  const env = { MORROW_MAIL_DIR: process.env.MORROW_MAIL_DIR, MORROW_MAIL_SECRETS: process.env.MORROW_MAIL_SECRETS };
+  process.env.MORROW_MAIL_DIR = dir;
+  process.env.MORROW_MAIL_SECRETS = "memory";
   const db = require("../host/mail/db");
   const engine = require("../host/mail/engine");
   const oauth = require("../host/mail/oauth");

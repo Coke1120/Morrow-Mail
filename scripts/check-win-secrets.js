@@ -50,15 +50,10 @@ function run() {
   store.deletePassword("oauth-fixture:vacation");
   assert.equal(store.getPassword("oauth-fixture:vacation"), null);
   assert.equal(store.getPassword("oauth-fixture"), "fixture's mailbox token");
-  const legacy = "genmail-rea\\secrets/genmail-exact_legacy_calendar";
-  files.set(legacy, "legacy-token");
   refuseWrite = true;
-  assert.equal(store.getPassword("legacy:calendar"), "legacy-token");
-  assert.equal(files.has(legacy), true, "failed migration must retain the old credential");
-  refuseWrite = false;
-  assert.equal(store.getPassword("legacy:calendar"), "legacy-token");
-  assert.equal(files.has(legacy), false);
-  assert.equal(files.get("morrow-mail\\secrets/morrow-mail_legacy_calendar"), "legacy-token");
+  assert.throws(() => store.setPassword("oauth-fixture", "replacement"), /Fixture disk failure/);
+  assert.equal(store.getPassword("oauth-fixture"), "fixture's mailbox token");
+  assert.equal(files.get("morrow-mail\\secrets/morrow-mail_oauth-fixture_calendar"), "fixture's :calendar token");
 }
 
 module.exports = { run };
