@@ -4425,6 +4425,9 @@ async function loadAccounts(preferredId) {
   state.accounts = Array.isArray(data) ? data : [];
   rememberSelection(preferredId);
   renderAccounts();
+  if (state.view === "calendar" && (calendarAccount()?.id || "") !== calendarPaintedAccountId) {
+    loadCalendar({ preferCache: true }).catch(error => showStatus(error.message, true));
+  }
   syncRemove();
   await loadSnoozed();
   if (gen !== accountGen) return;
@@ -5822,6 +5825,7 @@ async function selectFolder(accountId, folderId) {
   state.selectedIds = [];
   state.selectionAnchor = "";
   renderAccounts();
+  if (state.view === "folders") paintProviderPage();
   syncRemove();
   renderReader(false);
   const live = isLive(selectedAccount()) && !isStarredFolder(folderId);
@@ -7157,17 +7161,15 @@ function updateView(snapshot, version) {
 }
 
 function paintUpdate(view) {
-  for (const prefix of ["about-"]) {
-    $(prefix + "version").textContent = view.version ? "Version " + view.version : "";
-    const status = $(prefix + "update-status");
-    status.textContent = (view.error ? view.status + " " + view.error : view.status) + (view.lastCheckedAt ? " Last checked " + new Date(view.lastCheckedAt).toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")." : "");
-    status.classList.toggle("error", !!view.error);
-    $(prefix + "update-check").disabled = !!view.busy;
-    const install = $(prefix + "update-install");
-    install.hidden = !view.install;
-    install.textContent = "Restart and install";
-    install.disabled = !!view.busy;
-  }
+  $("about-version").textContent = view.version ? "Version " + view.version : "";
+  const status = $("about-update-status");
+  status.textContent = (view.error ? view.status + " " + view.error : view.status) + (view.lastCheckedAt ? " Last checked " + new Date(view.lastCheckedAt).toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")." : "");
+  status.classList.toggle("error", !!view.error);
+  $("about-update-check").disabled = !!view.busy;
+  const install = $("about-update-install");
+  install.hidden = !view.install;
+  install.textContent = "Restart and install";
+  install.disabled = !!view.busy;
   $("about-update-quit").hidden = !view.install;
 }
 
@@ -7829,6 +7831,7 @@ function wireSectionNav(id) {
 let agentTab = "home";
 function showAgentTab(name) {
   if (!["home", "conversation", "tools"].includes(name)) return;
+  const changed = agentTab !== name;
   agentTab = name;
   for (const tab of $("agent-nav").querySelectorAll("[data-agent-tab]")) {
     const active = tab.dataset.agentTab === name;
@@ -7839,7 +7842,7 @@ function showAgentTab(name) {
   }
   $("agent-skill-chips").hidden = name !== "home";
   // Switching sections should never scroll two competing containers.
-  $("agent-panel").scrollTop = 0;
+  if (changed) $("agent-panel").scrollTop = 0;
 }
 
 function wireAgentTabs() {
@@ -10627,6 +10630,7 @@ function paintCalendarSelection(payload) {
 let calendarGridKey = "";
 let calendarEventsKey = "";
 function paintCalendar(payload) {
+  calendarPaintedAccountId = calendarAccount()?.id || "";
   const view = calendarView(payload);
   const cursor = state.calendarCursor || new Date();
   const year = cursor.getFullYear();
@@ -10728,6 +10732,7 @@ function syncCalendarNav(view) {
 const calendarCache = new Map();
 const calendarPending = new Map();
 let calendarStatusPending = null;
+let calendarPaintedAccountId = "";
 function calendarCacheKey(account, range, calendarId) {
   return JSON.stringify([account?.id || "", range.timeMin, calendarId || ""]);
 }
@@ -10753,6 +10758,10 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
     $("calendar-panel").removeAttribute("aria-busy");
     return;
   }
+  if (state.calendarAccountId !== account.id) {
+    state.calendarId = "";
+    state.calendarEventId = "";
+  }
   state.calendarAccountId = account.id;
   const cursor = state.calendarCursor || new Date();
   state.calendarCursor = cursor;
@@ -10762,7 +10771,7 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
   const cached = calendarCache.get(key);
   if (cached) {
     applyCalendarPayload(cached.payload);
-    if (preferCache && Date.now() - cached.at < 60000) {
+    if (preferCache && Date.now() - cached.at < 60000 && !calendarPending.has(key)) {
       $("calendar-panel").removeAttribute("aria-busy");
       return;
     }
@@ -10773,7 +10782,7 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
   // Status does not gate the event list. Coalesce this account-wide read too.
   if (!calendarStatusPending) calendarStatusPending = call("calendar:status").finally(() => { calendarStatusPending = null; });
   calendarStatusPending.then(status => {
-    if (gen !== calendarGen) return;
+    if (gen !== calendarGen || calendarAccount()?.id !== account.id) return;
     state.calendarStatus = status;
     const connection = calendarConnection(status, calendarAccount(), state.calendarPayload);
     $("calendar-grant").disabled = !connection.canGrant;
@@ -10789,12 +10798,12 @@ async function loadCalendar({ preferCache = false, fresh = false } = {}) {
       calendarPending.set(key, pending);
     }
     const payload = await calendarPending.get(key);
-    if (gen !== calendarGen) return;
+    if (gen !== calendarGen || calendarAccount()?.id !== account.id) return;
     applyCalendarPayload(payload);
     rememberCalendar(key, payload);
     rememberCalendar(calendarCacheKey(account, range, state.calendarId), payload);
   } catch (error) {
-    if (gen !== calendarGen) return;
+    if (gen !== calendarGen || calendarAccount()?.id !== account.id) return;
     const message = error instanceof Error ? error.message : String(error);
     if (cached?.payload?.api) {
       $("calendar-status").textContent = "Could not refresh. Showing the saved month. " + message;
@@ -10812,6 +10821,12 @@ function showMail() {
 let calendarOpenScheduled = false;
 function showCalendar() {
   if (!state.calendarCursor) state.calendarCursor = new Date();
+  if ((calendarAccount()?.id || "") !== calendarPaintedAccountId) {
+    $("calendar-layout").hidden = true;
+    $("calendar-create").hidden = true;
+    $("calendar-detail").hidden = true;
+    $("calendar-status").textContent = "Loading calendar…";
+  }
   showPrimary("calendar", "calendar-panel");
   if (calendarOpenScheduled) return;
   calendarOpenScheduled = true;
@@ -11368,7 +11383,13 @@ function wire() {
   $("mail-ooo-refresh").addEventListener("click", () => refreshMailVacation(true));
   $("settings-account").addEventListener("change", () => changeSettingsMailbox($("settings-account").value));
   $("settings-reconnect").addEventListener("click", () => openConnectFor(settingsAccount()));
-  $("settings-calendar").addEventListener("click", () => { state.calendarAccountId = settingsAccount()?.id || ""; closeDialog("settings"); showCalendar(); });
+  $("settings-calendar").addEventListener("click", () => {
+    const accountId = settingsAccount()?.id || "";
+    if (state.calendarAccountId !== accountId) { state.calendarId = ""; state.calendarEventId = ""; }
+    state.calendarAccountId = accountId;
+    closeDialog("settings");
+    showCalendar();
+  });
   $("settings-capabilities-refresh").addEventListener("click", loadSettingsCapabilities);
   $("settings-log").addEventListener("click", async () => { await closeDialog("settings"); showLog(); });
   $("settings-about").addEventListener("click", openAbout);

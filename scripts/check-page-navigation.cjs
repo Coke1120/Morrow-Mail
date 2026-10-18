@@ -58,6 +58,8 @@ function resolveMonth(index, title = 'Fixture event') {
 }
 async function shot(name) {
   if (!process.env.MORROW_UX_EVIDENCE_DIR) return;
+  await run(`Promise.all(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{}))).then(()=>null)`);
+  await run(`new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(null))))`);
   fs.mkdirSync(process.env.MORROW_UX_EVIDENCE_DIR, { recursive: true });
   fs.writeFileSync(path.join(process.env.MORROW_UX_EVIDENCE_DIR, name + '.png'), (await win.webContents.capturePage()).toPNG());
 }
@@ -143,8 +145,11 @@ app.whenReady().then(async () => {
   await run(`void loadCalendar()`);
   await waitCalls('calendar:list', 2);
   // Return the identical event identity/data to exercise unchanged refresh.
-  calendarRequests[1].resolve(ok(await run(`state.calendarPayload`)));
-  await waitFor(`!$('calendar-panel').hasAttribute('aria-busy')`);
+  await run(`showMail();showCalendar()`);
+  await waitFor(`!calendarOpenScheduled`);
+  assert.equal(count('calendar:list'),2,'reopening joins the pending refresh');
+  calendarRequests[1].resolve(ok({...await run(`state.calendarPayload`),truncated:true}));
+  await waitFor(`!$('calendar-panel').hasAttribute('aria-busy') && state.calendarPayload.truncated`);
   assert.equal(await run(`grid.isConnected && eventButton.isConnected`), true);
   await run(`shiftMonth(1);shiftMonth(1);`);
   await waitCalls('calendar:list', 4);
@@ -165,6 +170,17 @@ app.whenReady().then(async () => {
   resolveMonth(5, 'Old account');resolveMonth(6, 'New account');
   await waitFor(`$('calendar-agenda').textContent.includes('New account')`);
   assert.doesNotMatch(await run(`$('calendar-agenda').textContent`), /Old account/);
+  await run(`shiftMonth(1)`);
+  await waitCalls('calendar:list',8);
+  await run(`state.accounts=state.accounts.filter(a=>a.id!=='box-1');`);
+  resolveMonth(7,'Removed account');
+  await sleep(30);
+  assert.equal(await run(`state.calendarPayload?.events?.some(e=>e.title==='Removed account')`),false);
+  await run(`showMail();showCalendar()`);
+  await waitCalls('calendar:list',9);
+  assert.equal(calendarRequests[8].payload.calendarId,undefined,'removed mailbox cannot leak its calendar selection');
+  resolveMonth(8,'Remaining account');
+  await waitFor(`$('calendar-agenda').textContent.includes('Remaining account')`);
   statusRequests.forEach(resolve => resolve(ok({ google: true, accounts: accounts.map(row => ({ id: row.id, calendar: true })) })));
 
   // One outer Agent scroller; all tabs and long skill/history content are reachable.
@@ -182,6 +198,8 @@ app.whenReady().then(async () => {
   assert.equal(await run(`getComputedStyle($('agent-panel')).overflowY`), 'auto');
   await run(`$('agent-tab-tools').focus();$('agent-tab-tools').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true}))`);
   assert.equal(await run(`agentTab`), 'conversation');
+  await run(`$('agent-panel').scrollTop=100;window.savedScroll=$('agent-panel').scrollTop;showAgentTab('conversation')`);
+  assert.equal(await run(`$('agent-panel').scrollTop===savedScroll && savedScroll>0`),true,'staying in Conversation preserves reading position');
   await shot('agent-single-scroll');
   win.setSize(800,600);
   await run(`showAgentTab('tools')`);

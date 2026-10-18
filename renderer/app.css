@@ -1283,7 +1283,11 @@ button.provider-mini {
   border-radius: 6px;
   background: transparent;
   font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
+
+.provider-create input { min-width: 0; }
 
 .provider-row,
 .provider-create {
