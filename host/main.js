@@ -1,4 +1,4 @@
-const { app, BrowserWindow, protocol, ipcMain, session, Menu, powerMonitor } = require("electron");
+const { app, BrowserWindow, protocol, ipcMain, session, Menu, powerMonitor, nativeImage } = require("electron");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -19,7 +19,22 @@ const FIRST_PARTY_DIR = path.join(__dirname, "..", "renderer");
 const FIRST_PARTY_PRELOAD = path.join(FIRST_PARTY_DIR, "preload.js");
 const FIRST_PARTY_HTML = path.join(FIRST_PARTY_DIR, "index.html");
 const updater = require("./updater");
-const APP_ICON = path.join(__dirname, "..", "build", "icon.png");
+
+function resolveAppIcon() {
+  // Packaged apps copy build/icon.png to resources/icon.png. A dev checkout
+  // still reads the source file; Electron's own resources directory does not have it.
+  const packaged = process.resourcesPath ? path.join(process.resourcesPath, "icon.png") : "";
+  if (packaged && fs.existsSync(packaged)) return packaged;
+  return path.join(__dirname, "..", "build", "icon.png");
+}
+
+const APP_ICON = resolveAppIcon();
+
+function applyDockIcon() {
+  if (process.platform !== "darwin" || app.dock == null) return;
+  const image = nativeImage.createFromPath(APP_ICON);
+  if (!image.isEmpty()) app.dock.setIcon(image);
+}
 
 const singleInstance = app.requestSingleInstanceLock();
 let shellWindow = null;
@@ -339,6 +354,7 @@ app.whenReady().then(async () => {
     app.exit(0);
     return;
   }
+  applyDockIcon();
   installMenu();
   registerHostAi();
   updater.registerIpc();

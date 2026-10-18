@@ -30,7 +30,9 @@
   "devDependencies": {
     "electron": "^33.4.11",
     "electron-builder": "^25.1.8",
-    "esbuild": "^0.28.2"
+    "esbuild": "^0.28.2",
+    "pe-library": "^1.0.1",
+    "resedit": "^2.0.3"
   },
   "build": {
     "appId": "com.coke1120.morrow-mail",
@@ -61,8 +63,13 @@
           "**/*",
           "!**/.gitkeep"
         ]
+      },
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
       }
     ],
+    "afterPack": "./scripts/windows-icon.js",
     "asar": true,
     "detectUpdateChannel": false,
     "publish": [
@@ -110,7 +117,9 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true
+      "createDesktopShortcut": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
     },
     "linux": {
       "icon": "build/icon.png",
