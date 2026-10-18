@@ -196,6 +196,8 @@
           <button type="button" class="ghost" id="agent-manage-skills">Manage Skills</button>
         </div>
       </div>
+      <p class="hint">Agent helps you ask questions about downloaded mail and review suggested tasks, drafts, and filing actions.</p>
+      <div id="agent-setup" class="setup-state" hidden><p id="agent-setup-copy" class="hint"></p><div class="row"><button type="button" class="ghost" id="agent-setup-ai">Set up AI</button><button type="button" class="ghost" id="agent-setup-connect">Connect an account</button></div></div>
       <p id="agent-status" role="status"></p>
       <p id="agent-context" class="hint"></p>
       <div class="agent-scroll">
@@ -205,7 +207,7 @@
       <div id="agent-skill-chips" aria-label="Home skill shortcuts"></div>
       <details id="agent-tools">
         <summary>Skills and history</summary>
-        <p class="hint">Only when I ask, or on a saved interval or cron schedule. Auto-execute is off. A schedule runs in the background and does not send mail. Pause stops it. Drafts stay in compose until you send them yourself.</p>
+        <p class="hint">Skills are on demand unless their schedule is enabled below. Scheduled runs need Morrow open; a missed run fires once on relaunch. Pause stops scheduled runs. Drafts need review and Send; filing proposals need confirmation.</p>
         <p id="agent-skill-status" role="status"></p>
         <div id="agent-result" hidden></div>
         <label for="agent-contact">Person <span class="optional">(Brief This Person)</span></label>
@@ -216,7 +218,7 @@
         <div id="studio-library"></div>
         <section id="agent-proposals-wrap" aria-labelledby="agent-proposals-title">
           <h3 id="agent-proposals-title">Proposed moves</h3>
-          <p class="hint">Nothing moves until you confirm. Auto-run is off.</p>
+          <p class="hint">Filing changes your provider mailbox only after confirmation. Marking a todo done only changes the local Agent list.</p>
           <div id="agent-proposals"></div>
         </section>
         <h3 id="agent-history-title">Run history</h3>
@@ -242,6 +244,9 @@
         </div>
         <button type="button" class="ghost" id="brain-close">Mail</button>
       </div>
+      <p class="hint">Brain holds your learned profile, writing preferences, categories, skills, and inbox rules.</p>
+      <button type="button" class="ghost" id="brain-return-agent" hidden>Return to Agent</button>
+      <div id="brain-setup" class="setup-state" hidden><p id="brain-setup-copy" class="hint"></p><div class="row"><button type="button" class="ghost" id="brain-setup-ai">Set up AI</button><button type="button" class="ghost" id="brain-setup-connect">Connect an account</button></div></div>
       <div class="brain-tabs" id="brain-tabs" role="tablist" aria-label="Email Brain sections">
         <button type="button" class="brain-tab" role="tab" id="brain-tab-profile" aria-controls="brain-profile" aria-selected="true">Profile</button>
         <button type="button" class="brain-tab" role="tab" id="brain-tab-categories" aria-controls="brain-categories" aria-selected="false" tabindex="-1">Categories</button>
@@ -300,7 +305,7 @@
       </section>
       <section id="brain-skills" role="tabpanel" aria-labelledby="brain-tab-skills" hidden>
         <h3 id="brain-skills-title">Skills</h3>
-        <p class="hint">Only when I ask, unless you save an interval or cron schedule. A schedule runs in the background while Morrow Mail is open and does not block the window. Pause keeps it from firing. Nothing is sent.</p>
+        <p class="hint">Skills run on demand, on a saved schedule, or stay paused. Scheduled runs need Morrow open; a missed run fires once on relaunch. Drafts need review and Send; filing proposals need confirmation.</p>
         <p id="brain-skill-status" role="status"></p>
         <div id="brain-skill-result"></div>
         <h3>Home skills</h3>

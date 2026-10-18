@@ -8465,15 +8465,17 @@ function proposalLine(proposal) {
 }
 
 function runModeLabel(row) {
-  let text = "";
-  if (row && (row.schedule === "paused" || row.paused === true)) text = "Paused. It runs only when you ask.";
-  else if (row && (row.schedule === "interval" || row.kind === "interval") && Number(row.everyMinutes) > 0) {
-    text = "Every " + Number(row.everyMinutes) + " min. Nothing is sent.";
-  } else if (row && (row.schedule === "cron" || row.kind === "cron") && row.cron) {
-    text = "Cron " + String(row.cron) + ". Nothing is sent.";
-  } else if (row && row.schedule === "disabled") text = "Only when I ask. Auto-run is off.";
-  else if (row && row.runMode === "on_demand") text = "Only when I ask.";
-  if (text && row && row.lastError) return text + " Last run: " + String(row.lastError);
+  let text = "On demand. Auto-run is off.";
+  const paused = row && (row.schedule === "paused" || row.paused === true);
+  if (paused) text = "Paused. No scheduled runs; Run still works on demand.";
+  else if (row && row.schedule !== "disabled" && (row.schedule === "interval" || row.kind === "interval") && Number(row.everyMinutes) > 0) text = "Scheduled · Every " + Number(row.everyMinutes) + " min.";
+  else if (row && row.schedule !== "disabled" && (row.schedule === "cron" || row.kind === "cron") && row.cron) text = "Scheduled · Cron " + String(row.cron) + ".";
+  if (text.startsWith("Scheduled")) {
+    const next = row.nextRunAt && new Date(row.nextRunAt);
+    text += next && Number.isFinite(+next) ? " Next run: " + next.toLocaleString() + " (" + Intl.DateTimeFormat().resolvedOptions().timeZone + ")." : " Next run not available.";
+    text += " Runs while Morrow is open; a missed run fires once on relaunch. Drafts need review and Send; filing needs confirmation.";
+  }
+  if (row && row.lastError) text += " Last run: " + String(row.lastError);
   return text;
 }
 
@@ -8551,6 +8553,44 @@ function setSkillStatus(text, isError) {
   }
 }
 
+function proposalContext(proposal, kind) {
+  const account = state.accounts.find(row => row.id === proposal.accountId);
+  const who = account?.email || proposal.accountId || "Unknown — verified when opening source";
+  const source = proposal.subject || proposal.messageId || "Missing source";
+  const action = kind === "draft" ? "Review reply draft" : "File message";
+  const target = kind === "draft" ? "Recipients: verified from source when reviewed" : "Destination: " + (proposal.labelName || "Unknown") + " (Gmail label when granted; otherwise a folder move)";
+  return "Account: " + who + "\nSource: " + source + (proposal.messageId ? " · " + proposal.messageId : "") + "\nAction: " + action + "\n" + target + "\nState: " + (proposal.status || "Pending review") + (kind === "draft" ? " · Opening does not send or schedule." : " · Requires provider confirmation.");
+}
+async function describeDraftSource(node, draft) {
+  if (!draft.messageId) { node.textContent += "\nSource missing — request a new draft from a message."; return; }
+  try {
+    const data = await call("mail:openEmail", { emailId: draft.messageId });
+    const source = data?.email;
+    if (!source || (draft.accountId && source.accountId !== draft.accountId)) throw new Error("Source unavailable or mailbox mismatch");
+    const account = state.accounts.find(row => row.id === source.accountId);
+    if (!account) throw new Error("Mailbox unavailable");
+    const seed = composeSeed(source, "reply", account.email);
+    node.textContent = proposalContext({ ...draft, accountId: source.accountId, subject: source.subject }, "draft").replace("Recipients: verified from source when reviewed", "To: " + seed.to + (seed.cc ? " · Cc: " + seed.cc : ""));
+  } catch { node.textContent += "\nSource unavailable — review is blocked until it can be verified."; }
+}
+async function refreshAiSetupState() {
+  let configured = null;
+  try { const result = await api.invoke("host:aiGetConfig"); configured = (result?.data || result)?.hasKey === true; } catch { /* unknown stays actionable */ }
+  for (const space of ["agent", "brain"]) {
+    const box = $(space + "-setup");
+    if (!box) continue;
+    box.hidden = configured === true && state.accounts.length > 0;
+    $(space + "-setup-copy").textContent = !state.accounts.length ? "Connect a mailbox to use mail context. Cached profile and preferences remain available." : configured === false ? "Set up AI to ask questions and run skills. Cached content and local editing remain available." : "AI setup status is unknown. Open AI settings to check configuration.";
+    $(space + "-setup-ai").hidden = configured === true;
+    $(space + "-setup-connect").hidden = state.accounts.length > 0;
+  }
+}
+function openAiSetup() {
+  openSettings();
+  $("settings-ai-title").scrollIntoView({ block: "start" });
+  $("ai-base").focus();
+}
+
 function followButton(follow, draft) {
   const button = document.createElement("button");
   button.type = "button";
@@ -8596,7 +8636,9 @@ function paintSkillBlocks(root, data) {
     const wrap = document.createElement("div");
     wrap.className = "skill-block";
     const line = document.createElement("p");
-    line.textContent = draft.subject || "Draft reply";
+    line.textContent = proposalContext(draft, "draft");
+    line.className = "preserve-lines";
+    describeDraftSource(line, draft);
     wrap.appendChild(line);
     const row = document.createElement("div");
     row.className = "row";
@@ -8630,16 +8672,18 @@ function paintProposals(root, proposals, append) {
     const wrap = document.createElement("div");
     wrap.className = "proposal-row";
     const line = document.createElement("p");
-    line.textContent = proposalLine(proposal) || "Proposed move";
+    line.textContent = proposalContext(proposal, "filing");
+    line.className = "preserve-lines";
     wrap.appendChild(line);
     const actions = document.createElement("div");
     actions.className = "row";
     const confirm = document.createElement("button");
     confirm.type = "button";
     confirm.className = "primary";
-    confirm.textContent = "Confirm move";
+    confirm.textContent = "Review filing…";
     confirm.addEventListener("click", () => {
       confirmProposal(proposal).then((data) => {
+        if (!data) return;
         wrap.remove();
         if (brainIsOpen()) setSkillStatus((data && data.detail) || "Move confirmed.", false);
       }).catch((error) => {
@@ -9146,6 +9190,8 @@ async function removeBrainSkill(row) {
 }
 
 async function confirmProposal(proposal) {
+  const answer = await askConfirm({ title: "Confirm provider filing", body: proposalContext(proposal, "filing") + "\nThis changes mail on your server. It is separate from marking a local todo done.", confirm: "Apply filing", cancel: "Cancel" });
+  if (!answer?.ok) return null;
   const data = await call("emailBrain:confirmProposal", { proposalId: proposal && proposal.id });
   if (data && data.accepted === false) throw new Error(data.error || "That move was not applied.");
   showStatus((data && data.detail) || "Move confirmed.", false);
@@ -9287,7 +9333,7 @@ function paintThread() {
   if (!agentTurns.length) {
     const empty = document.createElement("p");
     empty.className = "agent-empty hint";
-    empty.textContent = "No messages yet. Ask Morrow Mail, or run a skill. Nothing is sent.";
+    empty.textContent = "No Agent conversations saved on this computer. Ask a question or run a skill.";
     root.appendChild(empty);
     return;
   }
@@ -9368,7 +9414,8 @@ function agentTodoCard(item) {
   const done = document.createElement("button");
   done.type = "button";
   done.className = "ghost";
-  done.textContent = "Done";
+  done.textContent = "Mark todo done";
+  done.title = "Updates this Agent list only; does not archive, delete, mark read, or reply.";
   done.addEventListener("click", () => {
     updateTodo(messageId, "done").catch((error) => paintAgent(null, error instanceof Error ? error.message : String(error)));
   });
@@ -9380,7 +9427,8 @@ function agentTodoCard(item) {
     updateTodo(messageId, "dismissed").catch((error) => paintAgent(null, error instanceof Error ? error.message : String(error)));
   });
   actions.append(done, dismiss);
-  card.appendChild(actions);
+  const note = document.createElement("p"); note.className = "hint"; note.textContent = "Done and Dismiss only update this local Agent list. They do not archive, delete, or reply.";
+  card.append(actions, note);
   return card;
 }
 
@@ -9544,6 +9592,7 @@ function markRail(view) {
 }
 
 function showPrimary(view, id) {
+  if (view === "agent" || view === "brain") refreshAiSetupState();
   const swap = state.view !== view;
   if (view !== "agent") stopAgentPoll();
   markRail(view);
@@ -10248,7 +10297,12 @@ function wire() {
   });
   $("rail-agent").addEventListener("click", showAgent);
   $("rail-brain").addEventListener("click", () => openBrain("profile"));
-  $("agent-manage-skills").addEventListener("click", () => openBrain("skills"));
+  $("agent-manage-skills").addEventListener("click", () => { $("brain-return-agent").hidden = false; openBrain("skills"); });
+  $("brain-return-agent").addEventListener("click", showAgent);
+  for (const space of ["agent", "brain"]) {
+    $(space + "-setup-ai").addEventListener("click", openAiSetup);
+    $(space + "-setup-connect").addEventListener("click", () => openConnectFor(null));
+  }
   $("agent-triage").addEventListener("click", () => {
     runTriage().catch((error) => paintAgent(null, error instanceof Error ? error.message : String(error)));
   });
