@@ -2552,6 +2552,191 @@ function syncStatusLabel(sync) {
   return "";
 }
 
+function redactDebugText(text) {
+  return String(text || "")
+    .replace(/bearer\s+\S+/gi, "bearer [redacted]")
+    .replace(/\b(access[_-]?token|refresh[_-]?token|api[_-]?key|password|passwd|secret|authorization)\b\s*[:=]\s*\S+/gi, "$1 [redacted]")
+    .replace(/\bya29\.[A-Za-z0-9._-]+/g, "[redacted]")
+    .replace(/\bsk-[A-Za-z0-9]{10,}\b/g, "[redacted]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 400);
+}
+
+function phaseWord(phase) {
+  if (phase === "listing") return "Listing folders";
+  if (phase === "fetching") return "Fetching mail";
+  if (phase === "refreshing") return "Refreshing";
+  if (phase === "rules") return "Running rules";
+  if (phase === "calendar") return "Refreshing calendar";
+  if (phase === "agent") return "Refreshing agent";
+  if (phase === "brain") return "Refreshing Email Brain";
+  return "";
+}
+
+function syncClock(ms) {
+  const n = Number(ms);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  try {
+    return new Date(n).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  } catch {
+    return "";
+  }
+}
+
+function syncDetail(sync) {
+  if (!sync || !sync.state) return "";
+  const where = [sync.accountLabel, sync.folderLabel].filter(Boolean).join(" · ");
+  const phase = phaseWord(sync.phase);
+  const success = syncClock(sync.lastSuccessAt);
+  const successLine = success ? `Last success ${success}` : "";
+  if (sync.state === "syncing") return [where, phase, successLine].filter(Boolean).join(" · ");
+  if (sync.state === "error") return [where, sync.lastError || sync.message || "Sync failed"].filter(Boolean).join(" · ");
+  if (sync.state === "paused") return [sync.message || "Paused for rate limit", where].filter(Boolean).join(" · ");
+  if (sync.state === "done") return successLine || sync.message || "Sync done";
+  return sync.message || "";
+}
+
+function syncButtonLabel(sync) {
+  if (!sync || !sync.state || sync.state === "done") return "Sync";
+  if (sync.state === "syncing") return "Syncing";
+  if (sync.state === "error") return "Sync failed";
+  if (sync.state === "paused") return "Sync paused";
+  return "Sync";
+}
+
+const debugLines = [];
+
+function pushDebug(source, text) {
+  const line = redactDebugText(text);
+  if (!line) return;
+  debugLines.push({ at: Date.now(), source: String(source || "app").slice(0, 40), text: line });
+  if (debugLines.length > 200) debugLines.splice(0, debugLines.length - 200);
+  if (state.view === "log") refreshLog().catch(() => paintLog(debugLines));
+}
+
+function paintSyncControl() {
+  const button = $("refresh");
+  const label = $("sync-label");
+  const detail = $("sync-detail");
+  const sync = state.sync;
+  const word = syncButtonLabel(sync);
+  const text = syncDetail(sync);
+  if (label) label.textContent = word;
+  if (button) {
+    const busy = !!(sync && sync.state === "syncing");
+    button.classList.toggle("is-syncing", busy);
+    button.setAttribute("aria-busy", busy ? "true" : "false");
+    button.setAttribute("aria-label", text ? `${word}. ${text}` : "Sync mail");
+  }
+  if (detail) {
+    detail.textContent = text;
+    detail.hidden = !text;
+  }
+}
+
+function beginSync(extra) {
+  const prev = state.sync || {};
+  state.sync = Object.assign({}, prev, extra || {}, {
+    state: "syncing",
+    message: "Syncing…",
+    updatedAt: Date.now(),
+  });
+  paintSyncControl();
+  showStatus("Syncing…");
+  pushDebug("sync", syncDetail(state.sync) || "Syncing…");
+}
+
+function finishLocalSync(kind, error) {
+  const prev = state.sync || {};
+  const now = Date.now();
+  if (kind === "error") {
+    const message = redactDebugText(error instanceof Error ? error.message : String(error || "Sync failed"));
+    state.sync = Object.assign({}, prev, {
+      state: "error",
+      phase: "error",
+      message: message || "Sync failed",
+      lastError: message || "Sync failed",
+      lastErrorAt: now,
+      updatedAt: now,
+    });
+    showStatus(state.sync.message, true);
+  } else {
+    state.sync = Object.assign({}, prev, {
+      state: "done",
+      phase: "done",
+      message: "Sync done",
+      lastSuccessAt: now,
+      updatedAt: now,
+    });
+    showStatus("");
+  }
+  paintSyncControl();
+  pushDebug("sync", syncDetail(state.sync));
+}
+
+function paintLog(lines) {
+  const list = $("log-lines");
+  if (!list) return;
+  list.replaceChildren();
+  const rows = Array.isArray(lines) ? lines : [];
+  if (!rows.length) {
+    const item = document.createElement("li");
+    item.textContent = "No log lines yet.";
+    list.appendChild(item);
+    return;
+  }
+  for (const row of rows) {
+    const item = document.createElement("li");
+    const when = syncClock(row && row.at);
+    item.textContent = [when, row && row.source, row && row.text].filter(Boolean).join(" · ");
+    list.appendChild(item);
+  }
+}
+
+async function refreshLog() {
+  const status = $("log-status");
+  try {
+    const data = await call("host:getDebugLog", { limit: 200 });
+    const lines = data && Array.isArray(data.lines) ? data.lines : [];
+    paintLog(lines.length ? lines : debugLines);
+    if (status) status.textContent = "";
+  } catch (error) {
+    paintLog(debugLines);
+    if (status) status.textContent = error instanceof Error ? error.message : String(error);
+  }
+}
+
+function showLog() {
+  showPrimary("log", "log-panel");
+  refreshLog().catch(() => paintLog(debugLines));
+}
+
+function setNavCollapsed(collapsed) {
+  const on = !!collapsed;
+  document.documentElement.dataset.nav = on ? "collapsed" : "expanded";
+  const button = $("nav-collapse");
+  const label = on ? "Expand sidebar" : "Collapse sidebar";
+  if (button) {
+    button.setAttribute("aria-expanded", on ? "false" : "true");
+    button.setAttribute("aria-label", label);
+    button.setAttribute("data-label", label);
+    button.title = label;
+    const text = button.querySelector(".nav-label");
+    if (text) text.textContent = on ? "Expand" : "Collapse";
+  }
+  try { localStorage.setItem("morrow.navCollapsed", on ? "1" : "0"); } catch { /* the choice stays for this window */ }
+}
+
+function readNavCollapsed() {
+  try {
+    const stored = localStorage.getItem("morrow.navCollapsed");
+    if (stored === "0") return false;
+    if (stored === "1") return true;
+  } catch { /* keep the compact rail */ }
+  return true;
+}
+
 const ROW_ICON = {
   "Mark read": "M4 11h16v8H4v-8Zm0 0 8 5 8-5M4 11 12 5l8 6",
   "Mark unread": "M4 7h16v11H4V7Zm0 0 8 6 8-6",
@@ -5753,33 +5938,73 @@ async function removeAccount() {
 
 async function refresh() {
   if (state.view === "calendar") {
-    showStatus("Syncing…");
-    await loadCalendar();
-    showStatus("");
+    beginSync({ phase: "calendar", accountLabel: "", folderLabel: "" });
+    try {
+      await loadCalendar();
+      finishLocalSync("done");
+    } catch (error) {
+      finishLocalSync("error", error);
+      throw error;
+    }
     return;
   }
   if (state.view === "agent") {
-    showStatus("Syncing…");
-    await loadAgent();
-    showStatus("");
+    beginSync({ phase: "agent", accountLabel: "", folderLabel: "" });
+    try {
+      await loadAgent();
+      finishLocalSync("done");
+    } catch (error) {
+      finishLocalSync("error", error);
+      throw error;
+    }
     return;
   }
   if (state.view === "brain") {
-    showStatus("Syncing…");
-    await loadBrain();
-    showStatus("");
+    beginSync({ phase: "brain", accountLabel: "", folderLabel: "" });
+    try {
+      await loadBrain();
+      finishLocalSync("done");
+    } catch (error) {
+      finishLocalSync("error", error);
+      throw error;
+    }
+    return;
+  }
+  if (state.view === "log") {
+    beginSync({ phase: "fetching", accountLabel: "Log", folderLabel: "" });
+    try {
+      await refreshLog();
+      finishLocalSync("done");
+    } catch (error) {
+      finishLocalSync("error", error);
+      throw error;
+    }
     return;
   }
   const account = selectedAccount();
   if (!account || !state.folderId) return;
-  showStatus("Syncing…");
-  const data = await call("mail:listFromNetwork", {
+  beginSync({
+    phase: "fetching",
     accountId: account.id,
+    accountLabel: account.email || accountLabel(account),
     folderId: state.folderId,
-    limit: 500,
+    folderLabel: folderTitle(foldersOf(account), state.folderId),
   });
-  await loadAccounts();
-  showStatus(syncStatusLabel(data && data.sync));
+  try {
+    const data = await call("mail:listFromNetwork", {
+      accountId: account.id,
+      folderId: state.folderId,
+      limit: 500,
+    });
+    if (data && data.sync) state.sync = data.sync;
+    await loadAccounts();
+    paintSyncControl();
+    showStatus(syncStatusLabel(data && data.sync));
+    pushDebug("sync", syncDetail(state.sync) || syncStatusLabel(data && data.sync));
+  } catch (error) {
+    finishLocalSync("error", error);
+    throw error;
+  }
 }
 
 async function loadPresets() {
@@ -8830,8 +9055,9 @@ function markRail(view) {
     agent: "rail-agent",
     calendar: "rail-calendar",
     brain: "rail-brain",
+    log: "rail-log",
   }[view];
-  for (const id of ["rail-mail", "rail-agent", "rail-calendar", "rail-brain"]) {
+  for (const id of ["rail-mail", "rail-agent", "rail-calendar", "rail-brain", "rail-log"]) {
     const node = $(id);
     if (node) node.setAttribute("aria-current", id === current ? "page" : "false");
   }
@@ -8845,6 +9071,7 @@ function showPrimary(view, id) {
     if (pane === id) continue;
     hidePane(pane);
   }
+  if (id !== "log-panel") hidePane("log-panel");
   if (swap) revealPanel(id);
   else {
     const node = $(id);
@@ -9197,6 +9424,16 @@ function wire() {
     });
   });
   $("rail-calendar").addEventListener("click", showCalendar);
+  $("rail-log").addEventListener("click", showLog);
+  $("log-refresh").addEventListener("click", () => {
+    refreshLog().catch((error) => {
+      const status = $("log-status");
+      if (status) status.textContent = error instanceof Error ? error.message : String(error);
+    });
+  });
+  $("nav-collapse").addEventListener("click", () => {
+    setNavCollapsed(document.documentElement.dataset.nav !== "collapsed");
+  });
   $("calendar-prev").addEventListener("click", () => shiftMonth(-1));
   $("calendar-next").addEventListener("click", () => shiftMonth(1));
   $("calendar-today").addEventListener("click", showCalendarToday);
@@ -9437,11 +9674,14 @@ async function boot() {
     return;
   }
   wire();
+  setNavCollapsed(readNavCollapsed());
   watchNetwork();
   api.on("mail:accountsUpdated", onAccountsUpdated);
   api.on("mail:emailsUpdated", () => scheduleReload());
   api.on("mail:syncStatus", (payload) => {
     state.sync = payload || null;
+    paintSyncControl();
+    pushDebug("sync", syncDetail(payload) || syncStatusLabel(payload));
     if (state.query) return;
     const label = syncStatusLabel(payload);
     if (!label) return;
@@ -9465,6 +9705,10 @@ async function boot() {
     bumpUpdate({ error: error instanceof Error ? error.message : String(error) });
   }
   await loadLook();
+  try {
+    state.sync = await call("mail:getSyncStatus");
+    paintSyncControl();
+  } catch { /* the button stays on Sync until the next status */ }
   await loadPresets();
   await loadOauthStatus();
   await loadShellPrefs();

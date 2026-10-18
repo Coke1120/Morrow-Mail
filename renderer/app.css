@@ -25,6 +25,11 @@
   --shadow-pop: 0 20px 60px rgba(63, 14, 64, 0.2), 0 4px 16px rgba(63, 14, 64, 0.08);
   --folders: 260px;
   --list: 360px;
+  --rail-w: 52px;
+}
+
+html[data-nav="expanded"] {
+  --rail-w: 196px;
 }
 
 :root[data-theme="dark"] {
@@ -69,6 +74,8 @@ body {
 }
 
 .workspace {
+  position: relative;
+  z-index: 1;
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
@@ -78,35 +85,53 @@ body {
 }
 
 .rail {
-  flex: 0 0 52px;
-  width: 52px;
+  position: relative;
+  z-index: 6;
+  flex: 0 0 var(--rail-w, 52px);
+  width: var(--rail-w, 52px);
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   gap: 8px;
-  padding: 8px 0 14px;
+  padding: 8px 6px 10px;
+  overflow: visible;
   background: var(--rail);
   color: #fff;
+  transition: width 160ms ease, flex-basis 160ms ease;
 }
 
 .rail-logo {
   width: 36px;
   height: 36px;
   display: block;
+  margin: 0 auto;
   object-fit: contain;
 }
 
 .rail-rule {
   width: 24px;
   height: 1px;
+  margin: 0 auto;
   background: rgba(255, 255, 255, 0.15);
 }
+
+.rail-main,
+.rail-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+
+.rail-foot { margin-top: auto; }
 
 .rail-btn {
   width: 40px;
   height: 40px;
   display: grid;
   place-items: center;
+  margin: 0 auto;
   padding: 0;
   border: 0;
   border-radius: 12px;
@@ -114,6 +139,70 @@ body {
   color: #fff;
   cursor: pointer;
 }
+
+.rail-btn.nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  margin: 0;
+  padding: 0 10px;
+}
+
+.nav-label {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+html[data-nav="collapsed"] .rail-btn.nav-item {
+  justify-content: center;
+  width: 40px;
+  margin: 0 auto;
+  padding: 0;
+}
+
+html[data-nav="collapsed"] .nav-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
+
+html[data-nav="collapsed"] .rail-btn.nav-item:hover::after,
+html[data-nav="collapsed"] .rail-btn.nav-item:focus-visible::after {
+  content: attr(data-label);
+  position: absolute;
+  z-index: 20;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: #1a0f26;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 8px 24px rgba(26, 15, 38, 0.28);
+}
+
+.nav-toggle .chev-left { display: none; }
+
+html[data-nav="expanded"] .nav-toggle .chev-right { display: none; }
+
+html[data-nav="expanded"] .nav-toggle .chev-left { display: block; }
 
 .rail-btn:hover { background: rgba(255, 255, 255, 0.34); }
 
@@ -380,6 +469,44 @@ button.icon-label {
 
 button.icon-label svg { display: block; flex: none; }
 
+.sync-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  max-width: min(420px, 46vw);
+}
+
+.sync-detail {
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 11px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes sync-spin {
+  to { transform: rotate(360deg); }
+}
+
+button.is-syncing svg { animation: sync-spin 0.9s linear infinite; }
+
+#log-lines {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+#log-lines li {
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
 #settings,
 #signatures { width: min(920px, calc(100vw - 32px)); }
 
@@ -599,7 +726,7 @@ button.brain-skill {
 #notice {
   position: fixed;
   z-index: 30;
-  left: calc(52px + (100% - 52px) / 2);
+  left: calc(var(--rail-w, 52px) + (100% - var(--rail-w, 52px)) / 2);
   bottom: 24px;
   transform: translateX(-50%);
   display: flex;
@@ -1121,6 +1248,8 @@ nav, #messages, #reader {
   min-height: 0;
   overflow: auto;
 }
+
+nav.rail { overflow: visible; }
 
 #folders {
   flex: 1 1 auto;
@@ -1900,6 +2029,8 @@ button.thread-item[aria-current="true"] { background: var(--selected); }
 
 @media (prefers-reduced-motion: reduce) {
   .quote-chevron { transition: none; }
+  .rail { transition: none; }
+  button.is-syncing svg { animation: none; }
 }
 
 .compose-quote-body {
@@ -2255,13 +2386,13 @@ textarea { min-height: 140px; resize: vertical; }
 }
 
 @media (max-width: 800px) {
-  .app { flex-direction: column; }
+  .app { flex-direction: row; }
   .rail {
-    flex-direction: row;
-    width: 100%;
-    height: 52px;
-    flex-basis: 52px;
-    padding: 0 8px;
+    flex-direction: column;
+    width: var(--rail-w, 52px);
+    height: auto;
+    flex-basis: var(--rail-w, 52px);
+    padding: 8px 6px 10px;
   }
   .stage { flex-direction: column; }
   .primary-space { margin: 0 8px 8px; }

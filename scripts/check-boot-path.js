@@ -851,6 +851,41 @@ const syncStatusLabel = extractFunction(appJs, "syncStatusLabel");
 assert.strictEqual(syncStatusLabel({ state: "paused", message: "Paused for rate limit" }), "Paused for rate limit");
 assert.strictEqual(syncStatusLabel({ state: "done" }), "Sync done");
 assert.strictEqual(syncStatusLabel(null), "");
+const syncUi = loadFunctions(appJs, ["redactDebugText", "phaseWord", "syncClock", "syncDetail", "syncButtonLabel"]);
+assert.strictEqual(syncUi.phaseWord("listing"), "Listing folders");
+assert.strictEqual(syncUi.phaseWord("fetching"), "Fetching mail");
+assert.strictEqual(syncUi.syncClock(0), "");
+assert.ok(syncUi.syncClock(Date.UTC(2026, 0, 2, 15, 4)));
+assert.strictEqual(syncUi.syncDetail(null), "");
+assert.ok(syncUi.syncDetail({
+  state: "syncing",
+  phase: "fetching",
+  accountLabel: "ada@example.com",
+  folderLabel: "Inbox",
+  lastSuccessAt: Date.UTC(2026, 0, 2, 15, 4),
+}).includes("ada@example.com") && syncUi.syncDetail({
+  state: "syncing",
+  phase: "fetching",
+  accountLabel: "ada@example.com",
+  folderLabel: "Inbox",
+}).includes("Fetching mail"));
+assert.ok(syncUi.syncDetail({ state: "error", accountLabel: "ada@example.com", folderLabel: "Inbox", lastError: "Sync failed" }).includes("Sync failed"));
+assert.strictEqual(syncUi.syncDetail({ state: "paused", message: "Paused for rate limit" }), "Paused for rate limit");
+assert.ok(syncUi.syncDetail({ state: "done", lastSuccessAt: Date.UTC(2026, 0, 2, 15, 4) }).startsWith("Last success "));
+assert.strictEqual(syncUi.syncButtonLabel({ state: "syncing" }), "Syncing");
+assert.strictEqual(syncUi.syncButtonLabel({ state: "error" }), "Sync failed");
+assert.strictEqual(syncUi.redactDebugText("bearer ya29.secretvalue password: hunter2"), "bearer [redacted] password [redacted]");
+assert.strictEqual(syncUi.redactDebugText("api_key=sk-abcdefghij1234567890"), "api_key [redacted]");
+assert.ok(syncUi.redactDebugText("synced ada@example.com").includes("ada@example.com"));
+assert.ok(html.includes('id="sync-detail"') && html.includes('id="log-panel"') && html.includes('id="nav-collapse"') && html.includes('id="rail-log"'));
+assert.ok(html.includes('data-label="Calendar"') && html.includes('data-label="Settings"') && html.includes('data-label="Email Brain"'));
+assert.ok(html.indexOf('id="settings-open"') < html.indexOf('id="refresh"'));
+assert.ok(html.indexOf('id="rail-brain"') < html.indexOf('id="settings-open"'));
+assert.ok(registered.has("host:getDebugLog") && registered.has("mail:getSyncStatus"));
+assert.ok(appJs.includes("host:getDebugLog") && appJs.includes("mail:getSyncStatus"));
+assert.ok(css.includes('html[data-nav="collapsed"]') && css.includes(".sync-detail"));
+assert.ok(engineSrc.includes('case "mail:getSyncStatus"'));
+assert.ok(parityDoc.includes("host:getDebugLog") && independentDoc.includes("mail:getSyncStatus"));
 assert.ok(engineSrc.includes('case "mail:scheduleSend"'));
 assert.ok(engineSrc.includes('case "mail:listScheduled"'));
 assert.ok(engineSrc.includes('case "mail:cancelScheduled"'));

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="light">
+<html lang="en" data-theme="light" data-nav="collapsed">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -13,30 +13,60 @@
     <nav class="rail" aria-label="Morrow Mail">
       <img class="rail-logo" src="./morrow-icon.svg" width="36" height="36" alt="" title="Morrow Mail" aria-hidden="true" />
       <div class="rail-rule" aria-hidden="true"></div>
-      <button type="button" class="rail-btn" id="rail-agent" aria-current="false" aria-label="Agent" title="Agent">
+      <button type="button" class="rail-btn nav-item nav-toggle" id="nav-collapse" aria-expanded="false" aria-label="Expand sidebar" data-label="Expand sidebar" title="Expand sidebar">
+        <svg class="chev-right" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="9 18 15 12 9 6"></polyline>
+        </svg>
+        <svg class="chev-left" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polyline points="15 18 9 12 15 6"></polyline>
+        </svg>
+        <span class="nav-label">Expand</span>
+      </button>
+      <div class="rail-main">
+      <button type="button" class="rail-btn nav-item" id="rail-agent" aria-current="false" aria-label="Agent" data-label="Agent" title="Agent">
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
           <path fill="currentColor" d="M12 3a3 3 0 0 1 3 3v1h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h2V6a3 3 0 0 1 3-3Zm-1 4h2V6a1 1 0 1 0-2 0v1Zm-4 3v9h10V10H7Zm2 2h2v2H9v-2Zm4 0h2v2h-2v-2Z" />
         </svg>
-        <span class="sr">Agent</span>
+        <span class="nav-label">Agent</span>
       </button>
-      <button type="button" class="rail-btn" id="rail-mail" aria-current="page" aria-label="Mail" title="Mail">
+      <button type="button" class="rail-btn nav-item" id="rail-mail" aria-current="page" aria-label="Mail" data-label="Mail" title="Mail">
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
           <path fill="currentColor" d="M3.5 6.2 12 12.2l8.5-6V17a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3.5 17V6.2Zm1.7-.7h13.6L12 10.6 5.2 5.5Z" />
         </svg>
-        <span class="sr">Mail</span>
+        <span class="nav-label">Mail</span>
       </button>
-      <button type="button" class="rail-btn" id="rail-calendar" aria-current="false" aria-label="Calendar" title="Calendar">
+      <button type="button" class="rail-btn nav-item" id="rail-calendar" aria-current="false" aria-label="Calendar" data-label="Calendar" title="Calendar">
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
           <path fill="currentColor" d="M7 2h2v2h6V2h2v2h3v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4h3V2Zm11 8H6v10h12V10Z" />
         </svg>
-        <span class="sr">Calendar</span>
+        <span class="nav-label">Calendar</span>
       </button>
-      <button type="button" class="rail-btn" id="rail-brain" aria-current="false" aria-label="Email Brain" title="Email Brain">
+      <button type="button" class="rail-btn nav-item" id="rail-brain" aria-current="false" aria-label="Email Brain" data-label="Email Brain" title="Email Brain">
         <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
           <path fill="currentColor" d="M8.5 4A3.5 3.5 0 0 0 5 7.5c0 .6.1 1.2.4 1.7A3 3 0 0 0 4 11.5a3 3 0 0 0 2.2 2.9A3 3 0 0 0 8 19h3V4.3A3.5 3.5 0 0 0 8.5 4Zm7 0A3.5 3.5 0 0 0 13 4.3V19h3a3 3 0 0 0 1.8-4.6A3 3 0 0 0 20 11.5a3 3 0 0 0-1.4-2.3c.3-.5.4-1.1.4-1.7A3.5 3.5 0 0 0 15.5 4Z" />
         </svg>
-        <span class="sr">Brain</span>
+        <span class="nav-label">Brain</span>
       </button>
+      </div>
+      <div class="rail-foot">
+      <button type="button" class="rail-btn nav-item" id="rail-log" aria-current="false" aria-label="Log" data-label="Log" title="Log">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+          <polyline points="14 2 14 8 20 8"></polyline>
+          <line x1="16" y1="13" x2="8" y2="13"></line>
+          <line x1="16" y1="17" x2="8" y2="17"></line>
+          <polyline points="10 9 9 9 8 9"></polyline>
+        </svg>
+        <span class="nav-label">Log</span>
+      </button>
+      <button type="button" class="rail-btn nav-item" id="settings-open" aria-label="Settings" data-label="Settings" title="Settings">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+        <span class="nav-label">Settings</span>
+      </button>
+      </div>
     </nav>
     <div class="workspace">
     <header>
@@ -50,22 +80,18 @@
         </button>
       </div>
       <div class="actions">
-        <button type="button" class="ghost icon-label" id="refresh" aria-label="Sync mail">
+        <div class="sync-slot">
+        <button type="button" class="ghost icon-label" id="refresh" aria-label="Sync mail" aria-busy="false">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <polyline points="23 4 23 10 17 10"></polyline>
             <polyline points="1 20 1 14 7 14"></polyline>
             <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"></path>
             <path d="M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
           </svg>
-          <span>Sync</span>
+          <span id="sync-label">Sync</span>
         </button>
-        <button type="button" class="ghost icon-label" id="settings-open">
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="3"></circle>
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-          </svg>
-          <span>Settings</span>
-        </button>
+        <p id="sync-detail" class="sync-detail" hidden></p>
+        </div>
         <form id="search-form" role="search">
           <label class="sr" for="search-query">Search all mail</label>
           <input id="search-query" type="search" placeholder="Search all mail" title="Search synced subject, from, and body" autocomplete="off" spellcheck="false" />
@@ -322,6 +348,18 @@
           <button type="button" class="ghost" id="inbox-rule-grant" hidden>Grant inbox rules</button>
         </div>
       </section>
+    </section>
+    <section id="log-panel" class="primary-space" hidden aria-label="Debug log">
+      <div class="space-head">
+        <div>
+          <p class="space-kicker">Help</p>
+          <h2>Debug log</h2>
+        </div>
+        <button type="button" class="ghost" id="log-refresh">Refresh</button>
+      </div>
+      <p class="hint">Passwords, tokens, and API keys are removed before a line is shown.</p>
+      <p id="log-status" role="status"></p>
+      <ol id="log-lines"></ol>
     </section>
     </div>
     </div>
