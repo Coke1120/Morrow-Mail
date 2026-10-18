@@ -35,6 +35,22 @@ async function run() {
   ui.run(`call = async () => ({email:null})`);
   await assert.rejects(ui.run(`reviewDraft({messageId:'gone',body:'Gone'})`), /source message or account/);
   assert.ok(ui.run(`calls.every(item => item.channel === 'mail:openEmail')`));
+  const bulk = renderer();
+  bulk.run(`
+    globalThis.hits = [];
+    call = async (channel, params) => {
+      hits.push(params.emailId);
+      if (params.emailId === 'two') throw new Error('Second operation failed');
+      return {outcomes:[{id:params.emailId,status:'completed',opId:'verified-op'}]};
+    };
+  `);
+  const outcome = await bulk.run(`runBulk(['one','two','three'].map(emailId => ({channel:'mail:archive',params:{emailId}})))`);
+  assert.deepEqual(Array.from(outcome.outcomes,row=>row.status), ['completed','unknown','not_attempted']);
+  assert.deepEqual(Array.from(outcome.opIds), ['verified-op']);
+  assert.equal(bulk.run('hits.length'), 2);
+  bulk.context.outcome = outcome;
+  assert.match(bulk.run(`receiptText('Archive',outcome)`), /1 completed.*1 unknown.*1 not attempted.*Second operation failed/);
+  assert.equal(bulk.run(`receiptRows({opIds:['legacy']}, {params:{items:[{emailId:'one'},{emailId:'two'}]}}).filter(row=>row.status==='completed').length`), 0);
   console.log('ux-workflows-ok');
 }
 module.exports = { run, renderer };

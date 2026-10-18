@@ -3664,10 +3664,11 @@ async function useAttachment(channel, email, file) {
   showStatus(channel === "mail:downloadAttachment" ? "Saved." : "Opened.");
 }
 
-function showUndo(text, opIds) {
+function showUndo(text, opIds, isError) {
   undoOpIds = opIds && opIds.length ? opIds.slice() : null;
   $("undo").hidden = !undoOpIds;
-  showStatus(text);
+  $("undo").textContent = "Undo " + (undoOpIds ? undoOpIds.length : 0) + " completed changes";
+  showStatus(text, isError);
 }
 
 function clearUndo() {
@@ -3719,19 +3720,14 @@ async function replyFromList(email, kind) {
 }
 
 async function finishRemoval(email, label, data) {
-  const opIds = data && Array.isArray(data.opIds) ? data.opIds.filter(Boolean) : [];
-  if (state.email && state.email.id === email.id) {
-    state.email = null;
-    state.thread = [];
-  }
-  renderReader(false);
-  if (opIds.length) showUndo(label, opIds);
-  else {
-    clearUndo();
-    showStatus(label);
-  }
-  await loadList();
+  const outcomes = receiptRows(data, { params: { emailId: email.id } });
+  return finishBulkRemoval(label, {
+    outcomes,
+    opIds: outcomes.filter((row) => row.status === "completed" && row.opId).map((row) => row.opId),
+    error: outcomes.some((row) => row.status !== "completed") ? "Some changes could not be verified." : "",
+  }, [email.id]);
 }
+
 
 async function removeOpen(email, channel, label) {
   const threaded = channel === "mail:threadArchive" || channel === "mail:threadTrash";
@@ -3781,10 +3777,17 @@ async function moveOpen(email, targetFolderId) {
 async function undoRemoval() {
   const opIds = undoOpIds;
   if (!opIds || !opIds.length) return;
+  const prior = $("status").textContent;
   clearUndo();
-  await call("mail:undoRemoval", { opIds, kind: "move" });
-  showStatus("Undone.");
-  await loadList();
+  try {
+    const data = await call("mail:undoRemoval", { opIds, kind: "move" });
+    const outcomes = data && Array.isArray(data.outcomes) ? data.outcomes : [{ status: "unknown" }];
+    const incomplete = outcomes.some((row) => row.status !== "completed");
+    showStatus(prior + " " + receiptText("Restore", { outcomes }), incomplete);
+    await loadList();
+  } catch (error) {
+    showStatus(prior + " Restore outcome is unknown. " + error.message + " Refresh before retrying.", true);
+  }
 }
 
 async function snoozeOpen(email, preset) {
@@ -4558,38 +4561,72 @@ function refusePaused(messages) {
   return true;
 }
 
+function operationIds(spec) {
+  const params = spec.params || {};
+  return params.items ? params.items.map((item) => item.emailId || item.id) : (params.emailId ? [params.emailId] : []);
+}
+
+function receiptRows(data, spec) {
+  if (data && Array.isArray(data.outcomes)) return data.outcomes;
+  const ids = operationIds(spec);
+  // Legacy multi-message/thread responses do not establish per-message outcomes.
+  const verified = ids.length === 1 && !spec.params.threadId && data != null;
+  return ids.map((id) => ({ id, status: verified ? "completed" : "unknown" }));
+}
+
+function receiptText(label, outcome) {
+  const rows = outcome.outcomes || [];
+  const count = (status) => rows.filter((row) => row.status === status).length;
+  const parts = [count("completed") + " completed", count("failed") + " failed", count("unknown") + " unknown", count("not_attempted") + " not attempted"];
+  const errors = [...new Set(rows.map((row) => row.error).filter(Boolean))];
+  if (outcome.error && !errors.includes(outcome.error)) errors.push(outcome.error);
+  return label.replace(/[.]$/, "") + ": " + parts.join(" · ") + "." + (errors.length ? " " + errors.join(" ") : "")
+    + (count("unknown") ? " Refresh before retrying unknown changes." : "");
+}
+
 async function runBulk(calls) {
-  let outcome = { opIds: [], paused: false, error: "" };
-  let done = 0;
+  const outcome = { opIds: [], outcomes: [], done: 0, paused: false, error: "" };
+  let stopped = false;
   for (const spec of calls) {
+    if (stopped) {
+      outcome.outcomes.push(...operationIds(spec).map((id) => ({ id, status: "not_attempted" })));
+      continue;
+    }
+    let rows;
     try {
       const data = await call(spec.channel, spec.params);
-      outcome = collectBulkOutcome(outcome, data, null);
-      done += 1;
+      rows = receiptRows(data, spec);
     } catch (error) {
-      outcome = collectBulkOutcome(outcome, null, error);
-      break;
+      const message = error.message || String(error);
+      rows = operationIds(spec).map((id) => ({ id, status: "unknown", error: message }));
+      outcome.error = message;
+    }
+    outcome.outcomes.push(...rows);
+    const unresolved = rows.find((row) => row.status !== "completed");
+    if (unresolved) {
+      stopped = true;
+      outcome.error = unresolved.error || outcome.error || "Some changes could not be verified.";
     }
   }
-  outcome.done = done;
+  outcome.done = outcome.outcomes.filter((row) => row.status === "completed").length;
+  outcome.opIds = outcome.outcomes.filter((row) => row.status === "completed" && row.opId).map((row) => row.opId);
+  outcome.paused = /rate limit|rate_limit|\b429\b/i.test(outcome.error);
   return outcome;
 }
 
 async function finishBulkRemoval(label, outcome, ids) {
-  const acted = Array.isArray(ids) ? ids : [];
-  if (outcome.done > 0 && state.email && acted.indexOf(state.email.id) >= 0) {
+  const completed = new Set((outcome.outcomes || []).filter((row) => row.status === "completed").map((row) => row.id));
+  if (state.email && completed.has(state.email.id)) {
     state.email = null;
     state.thread = [];
     renderReader(false);
   }
-  if (outcome.done > 0) {
-    state.selectedIds = [];
-    state.selectionAnchor = "";
-  }
-  if (outcome.opIds.length) showUndo(outcome.paused ? "Paused for rate limit." : label, outcome.opIds);
-  else if (outcome.paused || outcome.error) showStatus(outcome.error || "Paused for rate limit", true);
-  else if (outcome.done > 0) showStatus(label);
-  if (outcome.done > 0) await loadList();
+  state.selectedIds = state.selectedIds.filter((id) => !completed.has(id));
+  const text = receiptText(label, outcome);
+  if (outcome.opIds.length) showUndo(text, outcome.opIds, !!outcome.error);
+  else { clearUndo(); showStatus(text, !!outcome.error); }
+  if (completed.size) await loadList();
+  else renderList();
 }
 
 async function bulkArchive() {
@@ -4600,8 +4637,7 @@ async function bulkArchive() {
   const gated = confirmedCalls("archive", answer, calls, {});
   if (!gated.length) return;
   const outcome = await runBulk(gated);
-  const n = messages.length;
-  await finishBulkRemoval(n === 1 ? "Archived." : "Archived " + n + " messages.", outcome, messages.map((item) => item.id));
+  await finishBulkRemoval("Archive", outcome, messages.map((item) => item.id));
 }
 
 async function bulkTrash() {
@@ -4612,19 +4648,15 @@ async function bulkTrash() {
   const gated = confirmedCalls("trash", answer, calls, {});
   if (!gated.length) return;
   const outcome = await runBulk(gated);
-  const n = messages.length;
-  await finishBulkRemoval(n === 1 ? "Moved to Trash." : "Moved " + n + " messages to Trash.", outcome, messages.map((item) => item.id));
+  await finishBulkRemoval("Move to Trash", outcome, messages.map((item) => item.id));
 }
 
 async function bulkSetRead(isRead) {
   const messages = selectedMessages();
   if (!messages.length || refusePaused(messages)) return;
   const outcome = await runBulk(bulkFlagCalls(messages, isRead ? "read" : "unread"));
-  if (outcome.error) {
-    showStatus(outcome.error, true);
-    return;
-  }
-  for (const email of messages) {
+  const completed = new Set(outcome.outcomes.filter((row) => row.status === "completed").map((row) => row.id));
+  for (const email of messages.filter((row) => completed.has(row.id))) {
     email.unread = !isRead;
     email.isRead = isRead;
     if (state.email && state.email.id === email.id) {
@@ -4634,24 +4666,21 @@ async function bulkSetRead(isRead) {
   }
   renderList();
   renderReader(false);
-  showStatus(isRead ? "Marked read." : "Marked unread.");
+  showStatus(receiptText(isRead ? "Mark read" : "Mark unread", outcome), !!outcome.error);
 }
 
 async function bulkStar(isStarred) {
   const messages = selectedMessages();
   if (!messages.length || refusePaused(messages)) return;
   const outcome = await runBulk(bulkFlagCalls(messages, isStarred ? "star" : "unstar"));
-  if (outcome.error) {
-    showStatus(outcome.error, true);
-    return;
-  }
-  for (const email of messages) {
+  const completed = new Set(outcome.outcomes.filter((row) => row.status === "completed").map((row) => row.id));
+  for (const email of messages.filter((row) => completed.has(row.id))) {
     email.isStarred = isStarred;
     if (state.email && state.email.id === email.id) state.email.isStarred = isStarred;
   }
   renderList();
   renderReader(false);
-  showStatus(isStarred ? "Starred." : "Unstarred.");
+  showStatus(receiptText(isStarred ? "Star" : "Unstar", outcome), !!outcome.error);
 }
 
 async function applySelectionLabels(label, mode) {
@@ -4669,22 +4698,8 @@ async function applySelectionLabels(label, mode) {
   const gated = confirmedCalls(action, answer, calls, detail);
   if (!gated.length) return;
   const outcome = await runBulk(gated);
-  if (outcome.paused || outcome.error) {
-    showStatus(outcome.error || "Paused for rate limit", true);
-    if (outcome.done > 0 && removes) await loadList();
-    return;
-  }
-  showStatus(mode === "add" ? "Label added in Gmail." : "Label removed in Gmail.");
-  if (removes) {
-    state.selectedIds = [];
-    state.selectionAnchor = "";
-    if (state.email && messages.some((item) => item.id === state.email.id)) {
-      state.email = null;
-      state.thread = [];
-      renderReader(false);
-    }
-    await loadList();
-  }
+  if (removes) await finishBulkRemoval("Remove label", outcome, messages.map((row) => row.id));
+  else showStatus(receiptText(mode === "add" ? "Add label" : "Remove label", outcome), !!outcome.error);
 }
 
 function dropTargetName(target) {
@@ -4724,14 +4739,11 @@ async function applyBulkMove(messages, target, targetName) {
     } else if (spec.params && spec.params.emailId) acted.push(spec.params.emailId);
   }
   if (action === "add-label") {
-    if (outcome.paused || outcome.error) showStatus(outcome.error || "Paused for rate limit", true);
-    else showStatus("Label added in Gmail.");
+    showStatus(receiptText("Add label", outcome), !!outcome.error);
     return;
   }
   const count = callCount(gated);
-  const label = action === "move"
-    ? (count === 1 ? "Moved." : "Moved " + count + " messages.")
-    : "Label removed in Gmail.";
+  const label = action === "move" ? "Move" : "Remove label";
   await finishBulkRemoval(label, outcome, acted);
 }
 
@@ -10038,10 +10050,7 @@ async function boot() {
     state.sync = payload || null;
     paintSyncControl();
     pushDebug("sync", syncDetail(payload) || syncStatusLabel(payload));
-    if (state.query) return;
-    const label = syncStatusLabel(payload);
-    if (!label) return;
-    showStatus(label, !!(payload && payload.state === "error"));
+    // Background sync updates its own control; action receipts stay readable.
   });
   api.on("mail:translate:event", onTranslateEvent);
   api.on("aiDraftWrite:event", onDraftEvent);
