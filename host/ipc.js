@@ -6,6 +6,7 @@ const { answer: brainAnswer } = require("./brain");
 const { answer: agentAnswer } = require("./agent");
 const { answer: translateAnswer } = require("./translate");
 const { answer: settingsAnswer } = require("./settings");
+const debugLog = require("./debug-log");
 
 const SESSION = {
   userId: "local-user",
@@ -157,6 +158,8 @@ function fallback(channel, args) {
   if (agent !== undefined) return agent;
   const translated = translateAnswer(channel, args);
   if (translated !== undefined) return translated;
+  const logged = debugLog.answer(channel, args);
+  if (logged !== undefined) return logged;
   // The Enabled/Effective fallback below would answer these getters with false.
   const setting = settingsAnswer(channel, args);
   if (setting !== undefined) return setting;

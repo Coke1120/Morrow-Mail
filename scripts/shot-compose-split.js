@@ -60,7 +60,7 @@ function raw(channel) {
     return { enabled: false };
   }
   if (channel === "config:getTheme") return "light";
-  if (channel === "morrow:configGetAccent") return "#7C3AED";
+  if (channel === "morrow:configGetAccent") return "#193C34";
   if (channel === "morrow:configGetUndoSendDelaySeconds") return 5;
   if (channel === "morrow:configGetComposeQuoteWidth") return 460;
   if (channel === "morrow:configSetComposeQuoteWidth") return 460;
@@ -170,7 +170,7 @@ app.whenReady().then(async () => {
     width: 1440,
     height: 900,
     show: true,
-    backgroundColor: "#572658",
+    backgroundColor: "#193c34",
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -335,7 +335,7 @@ app.whenReady().then(async () => {
     width: 560,
     height: 520,
     show: true,
-    backgroundColor: "#f6f3fb",
+    backgroundColor: "#e7f0e4",
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   await setup.loadFile(path.join(root, "host/ai-setup.html"));

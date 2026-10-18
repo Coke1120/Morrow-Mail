@@ -182,7 +182,8 @@ assert.ok(/button\.message \{\s*display:\s*flex;[^}]*min-height:\s*60px/.test(cs
 assert.ok(css.includes("#compose[open].is-quoting") && css.includes("height: calc(100vh - 32px)"), "quoting dialog fills the window");
 assert.ok(!css.includes("min(820px"), "quoting dialog no longer stops at 820px");
 assert.ok(css.includes('#compose[data-quote-collapsed="true"] .compose-quote-body'), "collapse hides the quote body");
-assert.ok(css.includes("#410c42") && css.includes("#572658") && css.includes("[data-theme=\"dark\"]"), "shell css missing plum tokens");
+assert.ok(css.includes("#193c34") && css.includes("#102822") && css.includes("#b9d5ad") && css.includes("[data-theme=\"dark\"]"), "shell css missing logo green tokens");
+assert.ok(!css.includes("#410c42") && !css.includes("#572658") && !css.includes("#7c3aed"), "shell css still uses the plum palette");
 assert.ok(appJs.includes("applyShellTheme(document.documentElement"), "shell does not paint theme or accent");
 assert.ok(css.includes(".thread") && css.includes(".attachments"), "shell css missing thread or attachment styles");
 const html = fs.readFileSync(path.join(root, "renderer/index.html"), "utf8");
@@ -337,9 +338,9 @@ const shellLook = extractFunction(appJs, "shellLook");
 const shouldListThread = extractFunction(appJs, "shouldListThread");
 const remoteImageSrcs = extractFunction(appJs, "remoteImageSrcs");
 const sendDelayMs = extractFunction(appJs, "sendDelayMs");
-assert.deepStrictEqual(shellLook(null), { theme: "light", accent: "#7C3AED" });
+assert.deepStrictEqual(shellLook(null), { theme: "light", accent: "#193C34" });
 assert.deepStrictEqual(shellLook({ theme: "dark", accent: "#abcdef" }), { theme: "dark", accent: "#ABCDEF" });
-assert.deepStrictEqual(shellLook({ theme: "DARK", accent: "purple" }), { theme: "dark", accent: "#7C3AED" });
+assert.deepStrictEqual(shellLook({ theme: "DARK", accent: "purple" }), { theme: "dark", accent: "#193C34" });
 assert.strictEqual(shouldListThread(false, [], "t-compiler"), false);
 assert.strictEqual(shouldListThread(false, [{ id: "a" }, { id: "b" }], "t"), false);
 assert.strictEqual(shouldListThread(true, [{ id: "a" }], "t"), false);
@@ -665,7 +666,10 @@ function checkSettingsRoundTrip() {
     const file = path.join(dir, "settings.json");
     assert.strictEqual(fs.existsSync(file), false);
     assert.strictEqual(answer("config:getTheme", []), "light");
-    assert.strictEqual(answer("morrow:configGetAccent", []), "#7C3AED");
+    assert.strictEqual(answer("morrow:configGetAccent", []), "#193C34");
+    fs.writeFileSync(file, JSON.stringify({ accent: "#7C3AED" }));
+    assert.strictEqual(answer("morrow:configGetAccent", []), "#193C34");
+    fs.unlinkSync(file);
     assert.strictEqual(answer("morrow:configGetConversationViewEnabled", []), true);
     assert.strictEqual(answer("morrow:configGetAutoLoadRemoteImages", []), false);
     assert.strictEqual(answer("morrow:configGetUndoSendDelaySeconds", []), 5);
@@ -874,10 +878,47 @@ assert.ok(parityDoc.includes("does not call `mail:search`"));
 assert.ok(appJs.includes("Searching all mail"));
 assert.ok(html.includes("Search all mail"));
 assert.ok(registered.has("mail:syncStatus"));
-const syncStatusLabel = extractFunction(appJs, "syncStatusLabel");
+const syncStatusLabel = loadFunctions(appJs, ["redactDebugText", "syncStatusLabel"]).syncStatusLabel;
 assert.strictEqual(syncStatusLabel({ state: "paused", message: "Paused for rate limit" }), "Paused for rate limit");
 assert.strictEqual(syncStatusLabel({ state: "done" }), "Sync done");
 assert.strictEqual(syncStatusLabel(null), "");
+assert.strictEqual(syncStatusLabel({ state: "error", message: "password: hunter2" }), "password [redacted]");
+const syncUi = loadFunctions(appJs, ["redactDebugText", "phaseWord", "syncClock", "syncDetail", "syncButtonLabel"]);
+assert.strictEqual(syncUi.phaseWord("listing"), "Listing folders");
+assert.strictEqual(syncUi.phaseWord("fetching"), "Fetching mail");
+assert.strictEqual(syncUi.syncClock(0), "");
+assert.ok(syncUi.syncClock(Date.UTC(2026, 0, 2, 15, 4)));
+assert.strictEqual(syncUi.syncDetail(null), "");
+assert.ok(syncUi.syncDetail({
+  state: "syncing",
+  phase: "fetching",
+  accountLabel: "ada@example.com",
+  folderLabel: "Inbox",
+  lastSuccessAt: Date.UTC(2026, 0, 2, 15, 4),
+}).includes("ada@example.com") && syncUi.syncDetail({
+  state: "syncing",
+  phase: "fetching",
+  accountLabel: "ada@example.com",
+  folderLabel: "Inbox",
+}).includes("Fetching mail"));
+assert.ok(syncUi.syncDetail({ state: "error", accountLabel: "ada@example.com", folderLabel: "Inbox", lastError: "Sync failed" }).includes("Sync failed"));
+assert.ok(!syncUi.syncDetail({ state: "error", lastError: "password: hunter2 ya29.secrettoken" }).includes("hunter2"));
+assert.strictEqual(syncUi.syncDetail({ state: "paused", message: "Paused for rate limit" }), "Paused for rate limit");
+assert.ok(syncUi.syncDetail({ state: "done", lastSuccessAt: Date.UTC(2026, 0, 2, 15, 4) }).startsWith("Last success "));
+assert.strictEqual(syncUi.syncButtonLabel({ state: "syncing" }), "Syncing");
+assert.strictEqual(syncUi.syncButtonLabel({ state: "error" }), "Sync failed");
+assert.strictEqual(syncUi.redactDebugText("bearer ya29.secretvalue password: hunter2"), "bearer [redacted] password [redacted]");
+assert.strictEqual(syncUi.redactDebugText("api_key=sk-abcdefghij1234567890"), "api_key [redacted]");
+assert.ok(syncUi.redactDebugText("synced ada@example.com").includes("ada@example.com"));
+assert.ok(html.includes('id="sync-detail"') && html.includes('id="log-panel"') && html.includes('id="nav-collapse"') && html.includes('id="rail-log"'));
+assert.ok(html.includes('data-label="Calendar"') && html.includes('data-label="Settings"') && html.includes('data-label="Email Brain"'));
+assert.ok(html.indexOf('id="settings-open"') < html.indexOf('id="refresh"'));
+assert.ok(html.indexOf('id="rail-brain"') < html.indexOf('id="settings-open"'));
+assert.ok(registered.has("host:getDebugLog") && registered.has("mail:getSyncStatus"));
+assert.ok(appJs.includes("host:getDebugLog") && appJs.includes("mail:getSyncStatus"));
+assert.ok(css.includes('html[data-nav="collapsed"]') && css.includes(".sync-detail"));
+assert.ok(engineSrc.includes('case "mail:getSyncStatus"'));
+assert.ok(parityDoc.includes("host:getDebugLog") && independentDoc.includes("mail:getSyncStatus"));
 assert.ok(engineSrc.includes('case "mail:scheduleSend"'));
 assert.ok(engineSrc.includes('case "mail:listScheduled"'));
 assert.ok(engineSrc.includes('case "mail:cancelScheduled"'));
@@ -2063,6 +2104,7 @@ const selection = loadFunctions(appJs, [
   "clearListSelection",
   "pruneSelection",
   "selectionShortcut",
+  "modifierBlocksDrag",
   "selectionDragPayload",
   "dragMessagesFrom",
   "coalesceProviderCalls",
@@ -2115,6 +2157,16 @@ assert.strictEqual(selection.selectionShortcut({ key: "a", ctrl: true }, false),
 assert.strictEqual(selection.selectionShortcut({ key: "a", ctrl: true, shift: true }, false), "");
 assert.strictEqual(selection.selectionShortcut({ key: "a", meta: true }, true), "");
 assert.strictEqual(selection.selectionShortcut({ key: "Escape" }, true), "");
+assert.strictEqual(selection.modifierBlocksDrag(null), false);
+assert.strictEqual(selection.modifierBlocksDrag({}), false);
+assert.strictEqual(selection.modifierBlocksDrag({ altKey: true }), false);
+assert.strictEqual(selection.modifierBlocksDrag({ shiftKey: true }), true);
+assert.strictEqual(selection.modifierBlocksDrag({ metaKey: true }), true);
+assert.strictEqual(selection.modifierBlocksDrag({ ctrlKey: true }), true);
+assert.ok(functionSource(appJs, "onMessageDragStart").includes("modifierBlocksDrag"));
+assert.ok(functionSource(appJs, "onMessageDragStart").includes("is-mail-drag"));
+assert.ok(functionSource(appJs, "onMessagePointerDown").includes("modifierBlocksDrag"));
+assert.ok(functionSource(appJs, "clearMailDragChrome").includes("is-mail-drag"));
 const dragRows = [
   { id: "m1", accountId: "a1", folderId: "INBOX" },
   { id: "m2", accountId: "a1", folderId: "INBOX" },
@@ -2261,6 +2313,10 @@ assert.ok(preload.includes("mail:deleteBatch"));
 assert.ok(preload.includes("mail:markReadBatch"));
 assert.ok(preload.includes("mail:toggleStarBatch"));
 assert.ok(css.includes(".row-check"));
+assert.ok(css.includes("#messages.has-selection .row-check"));
+assert.ok(css.includes("body.is-mail-drag"));
+assert.ok(css.includes("cursor: grabbing"));
+assert.ok(!/button\.message\[draggable="true"\]\s*\{[^}]*cursor:\s*grab/.test(css));
 assert.ok(css.includes(".selection-bar"));
 assert.ok(!parity.includes("Multi-select stays a follow-up"));
 assert.ok(!parity.includes("Multi-select is a follow-up"));

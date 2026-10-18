@@ -4,7 +4,7 @@ const { userDataDir } = require("./paths");
 
 const DEFAULTS = {
   theme: "light",
-  accent: "#7C3AED",
+  accent: "#193C34",
   conversationView: true,
   remoteImages: false,
   undoSendDelaySeconds: 5,
@@ -95,6 +95,7 @@ function readStore() {
   const store = { ...DEFAULTS };
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return store;
   for (const key of Object.keys(store)) store[key] = cast(key, parsed[key], true);
+  if (store.accent === "#7C3AED") store.accent = DEFAULTS.accent;
   return store;
 }
 
