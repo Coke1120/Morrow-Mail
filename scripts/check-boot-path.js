@@ -97,7 +97,7 @@ assert.deepStrictEqual(
     provider: "github",
     owner: "Coke1120",
     repo: "Morrow-Mail",
-    private: true,
+    private: false,
     releaseType: "prerelease",
   },
 );

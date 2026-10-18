@@ -1,6 +1,6 @@
 {
   "name": "morrow-mail",
-  "version": "0.1.0-alpha.4",
+  "version": "0.1.0-alpha.5",
   "description": "Morrow Mail. Private Electron client.",
   "main": "host/main.js",
   "private": true,
@@ -65,7 +65,7 @@
         "provider": "github",
         "owner": "Coke1120",
         "repo": "Morrow-Mail",
-        "private": true,
+        "private": false,
         "releaseType": "prerelease"
       }
     ],
