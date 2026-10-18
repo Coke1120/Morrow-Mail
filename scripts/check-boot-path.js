@@ -5770,6 +5770,42 @@ async function checkInboxRules() {
   }, "");
   assert.strictEqual(graphHidden.editable, false);
   assert.ok(!JSON.stringify(graphHidden).includes("secret@example.com"));
+  const editableGraph = {
+    id: "first-rule", displayName: "First", sequence: 1,
+    conditions: { subjectContains: ["news"] }, actions: { markAsRead: true },
+  };
+  for (const extra of [{ exceptions: { senderContains: ["keep-unread"] } }, { isReadOnly: true }]) {
+    const protectedRule = { ...editableGraph, ...extra };
+    assert.strictEqual(rules.fromGraphRule(protectedRule, "").editable, false);
+    const methods = [];
+    await assert.rejects(rules.saveGraph("", {
+      id: protectedRule.id, name: "Edited", match: { subject: "news" }, actions: { markRead: true },
+    }, "", async (_url, init) => {
+      methods.push(init.method || "GET");
+      return jsonResponse(protectedRule);
+    }), /does not rewrite/);
+    assert.deepStrictEqual(methods, ["GET"]);
+  }
+  let replacementSequence;
+  const editedGraph = await rules.saveGraph("", {
+    id: editableGraph.id, name: "Edited", match: { subject: "news" }, actions: { markRead: true },
+  }, "", async (url, init) => {
+    if (init.method === "POST") {
+      const body = JSON.parse(init.body);
+      replacementSequence = body.sequence;
+      return jsonResponse({ ...body, id: "replacement-rule" });
+    }
+    if (init.method === "DELETE") return jsonResponse({});
+    if (String(url).endsWith("/first-rule")) return jsonResponse(editableGraph);
+    return jsonResponse({ value: [editableGraph, { ...editableGraph, id: "last-rule", sequence: 9 }] });
+  });
+  assert.strictEqual(replacementSequence, 1);
+  assert.strictEqual(editedGraph.id, "replacement-rule");
+  for (const addLabelIds of [["Label_1", "Label_2"], ["STARRED", "SPAM"], ["STARRED", "UNREAD"]]) {
+    assert.strictEqual(rules.fromGmailFilter({
+      id: "custom-labels", criteria: { from: "news@" }, action: { addLabelIds },
+    }).editable, false);
+  }
   const seenGraph = [];
   const listedGraph = await rules.listGraph("token", "archive-id", async (url) => {
     seenGraph.push(String(url));
@@ -5861,6 +5897,15 @@ async function checkInboxRules() {
   assert.deepStrictEqual(both.map((step) => step.ruleId), ["a", "b"]);
   assert.strictEqual(rules.matches({ match: { hasAttachment: false } }, { hasAttachments: true }), false);
   assert.strictEqual(rules.matches({ match: { text: "Unsub" } }, { subject: "Weekly", snippet: "please unsubscribe" }), true);
+  let ruleAttempts = 0;
+  await assert.rejects(rules.runImapPlan({
+    account: { id: "rules-imap", profile: "custom", auth_kind: "password" },
+    folder: { path: "INBOX", well_known: "inbox" },
+    rules: [{ id: "read", enabled: true, match: { subject: "Hi" }, actions: { markRead: true } }],
+    messages: [{ uid: 1, subject: "Hi" }, { uid: 2, subject: "Hi" }],
+    remote: { async changeFlags() { ruleAttempts += 1; throw Object.assign(new Error("Rate limit"), { status: 429 }); } },
+  }), (error) => error.status === 429);
+  assert.strictEqual(ruleAttempts, 1, "throttling must stop the rule batch and reach the sync pause handler");
 
   const db = require("../host/mail/db");
   const sidecar = require("../host/mail/sidecar");
