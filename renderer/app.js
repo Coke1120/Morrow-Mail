@@ -63,6 +63,8 @@ let listGen = 0;
 let openGen = 0;
 let reloadTimer = null;
 let undoOpIds = null;
+let undoReceipt = "";
+let undoReceiptError = false;
 let translateSeq = 0;
 let draftSeq = 0;
 let suggestGen = 0;
@@ -108,8 +110,9 @@ function $(id) {
 
 function showStatus(text, isError) {
   const el = $("status");
-  el.textContent = text || "";
-  el.classList.toggle("error", !!isError && !!text);
+  const kept = undoOpIds && undoReceipt;
+  el.textContent = kept && text !== undoReceipt ? undoReceipt + (text ? "\n" + text : "") : (text || "");
+  el.classList.toggle("error", !!(isError || (kept && undoReceiptError)) && !!el.textContent);
 }
 
 function selectedAccount() {
@@ -1069,10 +1072,10 @@ function vacationConfirm(kind, owner, options) {
   const excerpt = (text) => String(text || "").slice(0, 240) + (String(text || "").length > 240 ? "…" : "");
   const where = "Provider: " + (provider === "imap" ? "IMAP / ManageSieve" : provider === "microsoft" ? "Microsoft" : "Google")
     + ". Mode: " + mode + ".\n" + dates + "\nAudience: " + audience
-    + (provider === "imap" ? "\nDates use whole UTC days." : "\nSaving plain text replaces rich formatting.")
-    + (row.subject ? "\nSubject: " + excerpt(row.subject) : "")
-    + "\n" + (provider === "microsoft" ? "Internal reply: " : "Reply: ") + excerpt(row.message)
-    + (provider === "microsoft" ? "\nExternal reply: " + excerpt(row.externalMessage) : "");
+    + (provider === "imap" ? "\nDates use whole UTC days." : mode === "disabled" ? "\nExisting provider templates are retained." : "\nSaving plain text replaces rich formatting.")
+    + (mode !== "disabled" ? (row.subject ? "\nSubject: " + excerpt(row.subject) : "")
+      + "\n" + (provider === "microsoft" ? "Internal reply: " : "Reply: ") + excerpt(row.message)
+      + (provider === "microsoft" ? "\nExternal reply: " + excerpt(row.externalMessage) : "") : "");
   return {
     title: mode === "disabled" ? "Save disabled settings" : "Save and enable",
     body: (mode === "disabled" ? "Save disabled settings for " : "Enable automatic replies for ") + who + "?\n\n"
@@ -2652,12 +2655,15 @@ function pushDebug(source, text) {
 function rememberSyncStatus(sync) {
   if (!sync) return;
   state.sync = sync;
-  if (sync.accountId && sync.folderId) state.syncScopes.set(JSON.stringify([sync.accountId, sync.folderId]), sync);
+  if (sync.accountId) state.syncScopes.set(JSON.stringify([sync.accountId, sync.folderId || ""]), sync);
 }
 
 function currentFolderSync() {
   const key = JSON.stringify([state.accountId, state.folderId]);
-  return state.syncScopes.get(key) || null;
+  const folder = state.syncScopes.get(key);
+  const account = state.syncScopes.get(JSON.stringify([state.accountId, ""]));
+  if (account && (account.state === "paused" || account.state === "error") && (!folder || (account.updatedAt || 0) >= (folder.updatedAt || 0))) return account;
+  return folder || null;
 }
 
 function paintSyncControl() {
@@ -3752,6 +3758,8 @@ async function useAttachment(channel, email, file) {
 }
 
 function showUndo(text, opIds, isError) {
+  undoReceipt = text;
+  undoReceiptError = !!isError;
   undoOpIds = opIds && opIds.length ? opIds.slice() : null;
   $("undo").hidden = !undoOpIds;
   $("undo").textContent = "Undo " + (undoOpIds ? undoOpIds.length : 0) + " completed changes";
@@ -3760,6 +3768,8 @@ function showUndo(text, opIds, isError) {
 
 function clearUndo() {
   undoOpIds = null;
+  undoReceipt = "";
+  undoReceiptError = false;
   $("undo").hidden = true;
 }
 
@@ -3869,7 +3879,7 @@ async function moveOpen(email, targetFolderId) {
 async function undoRemoval() {
   const opIds = undoOpIds;
   if (!opIds || !opIds.length) return;
-  const prior = $("status").textContent;
+  const prior = undoReceipt || $("status").textContent;
   clearUndo();
   try {
     const data = await call("mail:undoRemoval", { opIds, kind: "move" });
@@ -5231,7 +5241,7 @@ function scheduleReload(preferredId) {
   const preferred = typeof preferredId === "string" && preferredId ? preferredId : "";
   clearTimeout(reloadTimer);
   reloadTimer = setTimeout(() => {
-    loadAccounts(preferred || undefined).catch((error) => showStatus(error.message, true));
+    loadAccounts(preferred || undefined).catch((error) => pushDebug("sync", error.message));
   }, 150);
 }
 
@@ -7093,7 +7103,7 @@ function inboxRuleSummary(rule) {
   if (actions.trash) verbs.push("Trash");
   if (actions.moveToId) verbs.push("Move");
   if (Array.isArray(actions.addLabelIds) && actions.addLabelIds.length) verbs.push("Label");
-  const left = parts.join(", ") || "Match";
+  const left = parts.join(", ") || "All new Inbox mail";
   const right = verbs.join(", ") || "No action";
   const name = String(rule.name || "").trim();
   const line = name ? name + " — " + left + " → " + right : left + " → " + right;
@@ -7416,6 +7426,7 @@ async function submitInboxRule(event) {
     const actions = draft.actions || {};
     if (actions.trash || actions.archive || actions.moveToId || !Object.values(draft.match || {}).some((value) => value !== "" && value != null)) {
       const answer = await askConfirm({ title: "Save rule for " + accountLabel(account) + "?", body: inboxRuleSummary(draft)
+        + (actions.moveToId ? " Destination: " + ((inboxRulesState.destinations || []).find((row) => row.id === actions.moveToId)?.name || "selected folder") + "." : "")
         + (backend === "imap" ? " This local rule applies only to newly downloaded Inbox mail while Morrow is open." : " This rule runs on your mail provider."), confirm: "Save rule", cancel: "Cancel" });
       if (!answer || !answer.ok) return;
     }

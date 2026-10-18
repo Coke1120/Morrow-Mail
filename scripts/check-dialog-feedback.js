@@ -31,6 +31,10 @@ async function run(){
   assert.equal(get('status').textContent,'Log refreshed.');
   assert.equal(ui.run('currentFolderSync().lastSuccessAt'),2000);
   assert.match(ui.run(`syncDetail({state:'done',lastSuccessAt:3000})`),/Not synced yet/,'unscoped timestamp is never freshness');
+  ui.run(`rememberSyncStatus({accountId:'a',state:'paused',message:'Provider paused',updatedAt:4000});paintSyncControl();`);
+  assert.equal(ui.run('currentFolderSync().state'),'paused');
+  ui.run(`showUndo('Archive: 1 completed; 1 unknown. Provider error.', ['verified-op'], true);showStatus('Marked read.');`);
+  assert.match(get('status').textContent,/Provider error.*[\s\S]*Marked read/);
   console.log('dialog-feedback-ok');
 }
 module.exports={run};

@@ -62,7 +62,7 @@ contextBridge.exposeInMainWorld('uxFixture',{populate(){populated=true;},saveWor
 `);
 let win;const run=async code=>{try{return await win.webContents.executeJavaScript(code,true);}catch(error){throw new Error('Fixture step failed: '+code.slice(0,100)+' '+error.message);}};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-async function shot(name){if(!out)return;fs.mkdirSync(out,{recursive:true});await sleep(100);fs.writeFileSync(path.join(out,name+'.png'),(await win.webContents.capturePage()).toPNG());}
+async function shot(name){if(!out)return;fs.mkdirSync(out,{recursive:true});await sleep(300);fs.writeFileSync(path.join(out,name+'.png'),(await win.webContents.capturePage()).toPNG());}
 async function waitFor(code){for(let i=0;i<60;i++){if(await run(code))return;await sleep(50);}throw new Error('UI condition timed out: '+code);}
 app.whenReady().then(async()=>{
  session.defaultSession.webRequest.onBeforeRequest({urls:['http://*/*','https://*/*']},(_d,cb)=>cb({cancel:true}));
