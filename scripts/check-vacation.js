@@ -85,6 +85,9 @@ async function run() {
     useDate: true,
   });
   const parsed = sieve.parseVacation(dated);
+  assert.equal((dated.match(/:zone "\+0000"/g) || []).length, 2, "both date bounds must use the UTC days reviewed in the editor");
+  assert.equal(sieve.parseVacation(dated.replaceAll(' :zone "+0000"', "")), null, "legacy server-local dates must not be presented as UTC");
+  assert.equal(sieve.parseVacation(dated.replaceAll('+0000', '+0800')), null);
   assert.equal(parsed.mode, "scheduled");
   assert.equal(parsed.message, "Line\n.keep");
   assert.equal(parsed.start, "2090-10-01T00:00:00.000Z");
@@ -98,6 +101,13 @@ async function run() {
   });
   const snapped = sieve.parseVacation(midnight);
   assert.equal(snapped.end, "2090-10-02T00:00:00.000Z");
+  for (const bounds of [{ start: snapped.start }, { end: snapped.end }]) {
+    const script = sieve.buildVacation({ subject: "", message: "Hi", ...bounds, useDate: true });
+    const oneBound = sieve.parseVacation(script);
+    assert.equal(oneBound.start, bounds.start || "");
+    assert.equal(oneBound.end, bounds.end || "");
+    assert.equal((script.match(/:zone "\+0000"/g) || []).length, 1);
+  }
   assert.equal(sieve.parseVacation(sieve.buildVacation({
     subject: snapped.subject,
     message: snapped.message,
